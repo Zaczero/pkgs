@@ -4,8 +4,9 @@ description: gometry runtime, platform, optional-integration, and semantic-versi
 
 # Compatibility & deprecation policy
 
-gometry runs on CPython 3.11 or newer, requires NumPy, and needs no system GEOS,
-GDAL, or PROJ. Incompatible public removals wait for a major release.
+This release declares CPython 3.11–3.14 and free-threaded CPython 3.14t,
+requires NumPy, and needs no system GEOS, GDAL, or PROJ. Incompatible public
+removals wait for a major release.
 
 ## Runtime and platform matrix
 
@@ -16,7 +17,7 @@ release.
 
 | Surface | Supported |
 | --- | --- |
-| CPython | 3.11 or newer |
+| CPython | 3.11, 3.12, 3.13, and 3.14 |
 | Free-threaded CPython | 3.14t |
 | PyPy | Unsupported |
 | Linux | glibc and musl, `x86_64` and `aarch64` |

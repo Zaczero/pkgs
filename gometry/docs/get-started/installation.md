@@ -22,7 +22,7 @@ gometry installs from PyPI:
 
 | Requirement | Detail |
 |---|---|
-| Python | **3.11 or newer.** |
+| Python | **CPython 3.11–3.14; free-threaded CPython 3.14t.** |
 | Runtime dependencies | **NumPy.** Bulk numeric, boolean, index, and coordinate results are read-only `numpy.ndarray` objects. |
 | System libraries | **None.** No GEOS, GDAL, or system PROJ. |
 

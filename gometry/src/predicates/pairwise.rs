@@ -588,7 +588,7 @@ pub(crate) fn nearest_points(
 ///     CRS-aware distance threshold: geodesic meters on a geographic CRS,
 ///     native units on a projected one, coordinate units otherwise. A scalar
 ///     applies to every pair; with an array operand, an iterable supplies one
-///     threshold per result row.
+///     threshold per result row. Positive infinity is accepted.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
@@ -599,7 +599,10 @@ pub(crate) fn nearest_points(
 /// Returns
 /// -------
 /// bool or numpy.ndarray
-///     One result per input pair.
+///     One result per input pair. Array results retain one boolean per input
+///     row; missing rows and present empty geometries are ``False`` rather
+///     than being dropped. Positive infinity matches only admitted non-empty
+///     operands.
 ///
 /// Raises
 /// ------

@@ -148,3 +148,15 @@ def test_geodesic_metrics_reject_filled_polygon_interiors() -> None:
     # The explicit planar escape still measures filled polygon interiors.
     assert gm.distance(probe, target, unit='planar') == 0.0
     assert gm.dwithin(probe, target, 0.0, unit='planar')
+
+
+def test_dwithin_infinity_keeps_missing_and_empty_rows() -> None:
+    """An infinite threshold does not drop non-live or empty array rows."""
+    rows = gm.GeometryArray([
+        gm.Point(0.0, 0.0),
+        None,
+        gm.from_wkt('POINT EMPTY'),
+    ])
+    result = gm.dwithin(rows, gm.Point(1.0, 1.0), math.inf)
+    assert result.tolist() == [True, False, False]
+    assert gm.dwithin(gm.from_wkt('POINT EMPTY'), gm.Point(1.0, 1.0), math.inf) is False

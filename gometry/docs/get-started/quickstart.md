@@ -8,7 +8,8 @@ This tutorial builds one spatial query: given a station, find three fictional
 tutorial blocks within a 500-meter straight-line service area, then bucket that
 area into H3 cells. The fixture is illustrative. It sits near the
 Eiffel Tower only to make the coordinates recognizable; its rectangles are not
-administrative boundaries or a real boundary dataset. It needs **Python 3.11+**.
+administrative boundaries or a real boundary dataset. It needs **CPython 3.11–3.14**
+(or free-threaded CPython 3.14t).
 
 ## Install
 

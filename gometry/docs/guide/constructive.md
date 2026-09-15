@@ -23,6 +23,10 @@ exact ellipsoidal offsets.
 [`buffer`][gometry.Geometry.buffer] grows (positive distance) or shrinks (negative
 distance) a geometry by a fixed amount, producing an areal
 [`Polygon`][gometry.Polygon] or [`MultiPolygon`][gometry.MultiPolygon] result.
+For a negative distance on multipart areal input, gometry first normalizes the
+complete areal support and then erodes that union. Touching or overlapping
+members therefore share one erosion boundary rather than being eroded as
+independent polygons.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

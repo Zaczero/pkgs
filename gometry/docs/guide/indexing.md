@@ -14,6 +14,12 @@ the shared frame of its rows (the same metadata gate that binary ops enforce).
 The index exposes the distinction between *candidates* (bounding-box matches) and
 *exact* matches.
 
+An index is mutable, and its integer handles are the live row identities returned
+by queries and consumed by `remove` and `__getitem__`. Pickling stores the logical
+sparse row table, including tombstones for removed rows, and rebuilds the search
+structure on load. A round trip therefore preserves live handles and prior
+mutations rather than replaying the original source rows.
+
 !!! warning "Candidates are not matches"
     [`idx.candidates(q)`][gometry.SpatialIndex.candidates] returns everything whose **bounding box** overlaps the
     query's bounding box. Bounding boxes overlap far more often than geometries
@@ -162,6 +168,9 @@ print("within 1 deg:", idx.query(probe, predicate="dwithin", distance=1.0, unit=
 
 Distance `unit=` follows the CRS metric rules in [CRS, units & measurement](crs.md).
 The `unit='meters'` override forces SI, and `unit='planar'` uses raw coordinate math.
+`dwithin` accepts a positive-infinite threshold and matches only admitted
+non-empty geometries. Array results keep one boolean per input pair; missing rows
+and present empty geometries remain in their positions as `False`.
 
 ## Nearest neighbors
 

@@ -47,7 +47,7 @@
   `unit='planar'` / `unit='meters'` overrides
 - **Typed** — stubs, narrowed signatures, public cross-grid protocols, and a
   structured exception hierarchy
-- **Apache-2.0 OR MIT** · **Python ≥ 3.11**
+- **Apache-2.0 OR MIT** · **CPython 3.11–3.14; free-threaded CPython 3.14t**
 
 ## gometry in action
 

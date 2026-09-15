@@ -443,7 +443,9 @@ primitive scope does not certify this composite point-to-segment query.
 returned value inclusively with the supplied radius. It does not add a contact
 tolerance or widen the radius by pruning slack. A positive infinite radius
 returns `True` for admitted non-empty operands without forcing an
-unrepresentable distance result.
+unrepresentable distance result. Vectorized results retain one boolean per
+input pair: missing rows and present empty geometries remain in place as
+`False`.
 
 Geodesic Hausdorff evaluates every source vertex and uses one global
 along-track frontier for each source segment. Each target query is complete

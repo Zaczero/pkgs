@@ -96,7 +96,8 @@ pub(crate) fn nearest(
 /// distance : float, optional
 ///     Required when ``predicate='dwithin'``: the maximum separation, in
 ///     CRS-natural units — geodesic meters on a geographic CRS, native
-///     units on a projected CRS, coordinate units when CRS-free.
+///     units on a projected CRS, coordinate units when CRS-free. Positive
+///     infinity is accepted; missing or empty rows produce no pairs.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.

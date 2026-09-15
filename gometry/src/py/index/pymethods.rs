@@ -347,7 +347,9 @@ impl PySpatialIndex {
     ///     Spatial relation each match must satisfy (``'dwithin'`` requires
     ///     ``distance``).
     /// distance : float, optional
-    ///     ``'dwithin'`` distance threshold, in ``unit``.
+    ///     ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
+    ///     threshold is accepted; missing or empty query rows produce empty
+    ///     result groups rather than being dropped.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.
@@ -518,7 +520,8 @@ impl PySpatialIndex {
     ///     Spatial predicate each returned pair must satisfy.
     /// distance : float, optional
     ///     Required when ``predicate='dwithin'``: the maximum separation in
-    ///     CRS-natural units.
+    ///     CRS-natural units. Positive infinity is accepted; missing query
+    ///     rows produce no pairs.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.
@@ -570,7 +573,8 @@ impl PySpatialIndex {
     ///     rejected — unordered pairs would drop the reverse direction; use
     ///     ``join(...)`` for directed relations.
     /// distance : float, optional
-    ///     ``'dwithin'`` distance threshold, in ``unit``.
+    ///     ``'dwithin'`` distance threshold, in ``unit``. Positive infinity is
+    ///     accepted; empty geometries never produce a pair.
     /// unit : {'planar', 'meters'}, default None
     ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
     ///     units on a projected one, coordinate units without a CRS.

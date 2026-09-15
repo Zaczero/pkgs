@@ -9953,7 +9953,9 @@ class SpatialIndex(Mapping[int, Geometry]):
             Spatial relation each match must satisfy (``'dwithin'`` requires
             ``distance``).
         distance : float, optional
-            ``'dwithin'`` distance threshold, in ``unit``.
+            ``'dwithin'`` distance threshold, in ``unit``. A positive infinite
+            threshold is accepted; missing or empty query rows produce empty
+            result groups rather than being dropped.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -10017,7 +10019,8 @@ class SpatialIndex(Mapping[int, Geometry]):
             Spatial predicate each returned pair must satisfy.
         distance : float, optional
             Required when ``predicate='dwithin'``: the maximum separation in
-            CRS-natural units.
+            CRS-natural units. Positive infinity is accepted; missing query
+            rows produce no pairs.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -10072,7 +10075,8 @@ class SpatialIndex(Mapping[int, Geometry]):
             rejected — unordered pairs would drop the reverse direction; use
             ``join(...)`` for directed relations.
         distance : float, optional
-            ``'dwithin'`` distance threshold, in ``unit``.
+            ``'dwithin'`` distance threshold, in ``unit``. Positive infinity is
+            accepted; empty geometries never produce a pair.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native
             units on a projected one, coordinate units without a CRS.
@@ -16784,7 +16788,7 @@ def dwithin(
         CRS-aware distance threshold: geodesic meters on a geographic CRS,
         native units on a projected one, coordinate units otherwise. A scalar
         applies to every pair; with an array operand, an iterable supplies one
-        threshold per result row.
+        threshold per result row. Positive infinity is accepted.
     unit : {'planar', 'meters'}, default None
         Omitted follows the CRS: geodesic meters on a geographic CRS, native
         units on a projected one, coordinate units without a CRS.
@@ -16795,7 +16799,10 @@ def dwithin(
     Returns
     -------
     bool or numpy.ndarray
-        One result per input pair.
+        One result per input pair. Array results retain one boolean per input
+        row; missing rows and present empty geometries are ``False`` rather
+        than being dropped. Positive infinity matches only admitted non-empty
+        operands.
 
     Raises
     ------
@@ -16969,7 +16976,8 @@ def join(
     distance : float, optional
         Required when ``predicate='dwithin'``: the maximum separation, in
         CRS-natural units — geodesic meters on a geographic CRS, native
-        units on a projected CRS, coordinate units when CRS-free.
+        units on a projected CRS, coordinate units when CRS-free. Positive
+        infinity is accepted; missing or empty rows produce no pairs.
     unit : {'planar', 'meters'}, default None
         Omitted follows the CRS: geodesic meters on a geographic CRS, native
         units on a projected one, coordinate units without a CRS.
