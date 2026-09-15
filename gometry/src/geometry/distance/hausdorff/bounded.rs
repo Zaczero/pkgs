@@ -1284,10 +1284,19 @@ struct FloatSqrtBracket {
     upper: Option<f64>,
 }
 
+const OVERFLOW_NEWTON_STEPS: usize = 4;
+
+fn overflow_newton_step(squared: &Rational, upper: &Rational) -> Result<Rational> {
+    let reciprocal = squared.try_quotient(upper)?;
+    upper
+        .try_add(&reciprocal)?
+        .try_quotient(&Rational::from_f64(2.0)?)
+}
+
 impl FloatSqrtBracket {
-    fn into_interval(self, squared: &Rational) -> Result<SqrtInterval> {
+    fn into_interval(self, squared: &Rational, error: Option<&Rational>) -> Result<SqrtInterval> {
         match self.upper {
-            None => SqrtInterval::overflow(squared),
+            None => SqrtInterval::overflow(squared, error),
             Some(upper) if self.lower.to_bits() == upper.to_bits() => {
                 SqrtInterval::singleton(self.lower)
             },
@@ -1316,22 +1325,27 @@ impl FloatSqrtBracket {
 }
 
 impl SqrtInterval {
+    #[cfg(test)]
     fn from_squared(squared: &Rational) -> Result<Self> {
+        Self::from_squared_with_error(squared, None)
+    }
+
+    fn from_squared_with_error(squared: &Rational, error: Option<&Rational>) -> Result<Self> {
         #[cfg(test)]
         if exact_sqrt_path_forced() {
             record_sqrt_fallback();
-            return Self::from_squared_exact(squared);
+            return Self::from_squared_exact_with_error(squared, error);
         }
 
         if let Some(bracket) = Self::from_squared_fast(squared)? {
             #[cfg(test)]
             record_sqrt_fast_admission();
-            return bracket.into_interval(squared);
+            return bracket.into_interval(squared, error);
         }
 
         #[cfg(test)]
         record_sqrt_fallback();
-        Self::from_squared_exact(squared)
+        Self::from_squared_exact_with_error(squared, error)
     }
 
     /// Seed a bracket from the rounded squared value, then certify each
@@ -1423,14 +1437,14 @@ impl SqrtInterval {
         Ok(None)
     }
 
-    fn from_squared_exact(squared: &Rational) -> Result<Self> {
+    fn from_squared_exact_with_error(squared: &Rational, error: Option<&Rational>) -> Result<Self> {
         if squared.try_cmp(&square_f64(f64::MAX)?)? == Ordering::Greater {
-            return Self::overflow(squared);
+            return Self::overflow(squared, error);
         }
         let value = squared.try_clone()?;
         let rounded = value.round_sqrt()?;
         if rounded.is_infinite() {
-            return Self::overflow(squared);
+            return Self::overflow(squared, error);
         }
         match squared.try_cmp(&square_f64(rounded)?)? {
             Ordering::Equal => Self::singleton(rounded),
@@ -1440,7 +1454,7 @@ impl SqrtInterval {
             Ordering::Less => Self::adjacent(rounded.next_down(), rounded),
             Ordering::Greater => {
                 if rounded.to_bits() == f64::MAX.to_bits() {
-                    Self::overflow(squared)
+                    Self::overflow(squared, error)
                 } else {
                     Self::adjacent(rounded, rounded.next_up())
                 }
@@ -1493,13 +1507,29 @@ impl SqrtInterval {
         })
     }
 
-    fn overflow(squared: &Rational) -> Result<Self> {
+    fn overflow(squared: &Rational, error: Option<&Rational>) -> Result<Self> {
+        let maximum = Rational::from_f64(f64::MAX)?;
+        let mut upper = squared.try_quotient(&maximum)?;
+        let target = error.map(|error| maximum.try_add(error)).transpose()?;
+        let target_squared = target.as_ref().map(Rational::try_square).transpose()?;
+        for _ in 0..OVERFLOW_NEWTON_STEPS {
+            upper = overflow_newton_step(squared, &upper)?;
+            if let Some(target) = target.as_ref()
+                && matches!(upper.try_cmp(target)?, Ordering::Less | Ordering::Equal)
+            {
+                break;
+            }
+        }
+        if let (Some(target), Some(target_squared)) = (target, target_squared)
+            && squared.try_cmp(&target_squared)? != Ordering::Greater
+            && upper.try_cmp(&target)? == Ordering::Greater
+        {
+            upper = target;
+        }
         Ok(Self {
             lower: ExactDyadic::try_from_f64(f64::MAX)?,
             upper: None,
-            // If max² < q, then q/max > sqrt(q) is an exact finite upper
-            // bound even though no binary64 endpoint exists above max.
-            overflow_upper: Some(squared.try_quotient(&Rational::from_f64(f64::MAX)?)?),
+            overflow_upper: Some(upper),
         })
     }
 
@@ -1677,7 +1707,21 @@ impl<'a> SearchContext<'a> {
 }
 
 fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<SqrtInterval> {
-    let mut interval = SqrtInterval::from_squared(squared)?;
+    let mut interval = match &context.accuracy.error {
+        ErrorBound::Absolute(error) => {
+            SqrtInterval::from_squared_with_error(squared, Some(error))?
+        },
+        ErrorBound::Relative(relative) => {
+            let mut interval = SqrtInterval::from_squared_with_error(squared, None)?;
+            if interval.upper.is_none() {
+                // MAX is the proven lower root endpoint, so r*MAX is no
+                // larger than r*H and remains a valid relative allowance.
+                let error = Rational::from_f64(f64::MAX)?.try_product(relative)?;
+                interval = SqrtInterval::overflow(squared, Some(&error))?;
+            }
+            interval
+        },
+    };
     if let ErrorBound::Absolute(error) = &context.accuracy.error {
         interval.refine(squared, error)?;
     }
@@ -2952,28 +2996,100 @@ mod tests {
     }
 
     #[test]
+    fn overflow_newton_steps_remain_exact_upper_bounds() {
+        let maximum = Rational::from_f64(f64::MAX).unwrap();
+        let scale = Rational::from_f64(1.0_f64.next_up()).unwrap();
+        let squared = maximum
+            .try_square()
+            .unwrap()
+            .try_product(&scale.try_square().unwrap())
+            .unwrap();
+        let mut upper = squared.try_quotient(&maximum).unwrap();
+        for step in 0..=OVERFLOW_NEWTON_STEPS {
+            assert_ne!(
+                upper.try_square().unwrap().try_cmp(&squared).unwrap(),
+                Ordering::Less,
+                "Newton upper step {step} fell below the exact squared value"
+            );
+            if step != OVERFLOW_NEWTON_STEPS {
+                let next = overflow_newton_step(&squared, &upper).unwrap();
+                assert_ne!(
+                    next.try_cmp(&upper).unwrap(),
+                    Ordering::Greater,
+                    "Newton step {step} must not loosen the upper"
+                );
+                upper = next;
+            }
+        }
+    }
+
+    #[test]
     fn overflowed_exact_point_distance_can_certify_maximum_with_large_error() {
         let left = Shape::Point(Point::new_raw_xy(0.0, 0.0));
         let right = Shape::Point(Point::new_raw_xy(f64::MAX, 0.0));
         let scale = 1.0_f64.next_up();
         let maximum = Rational::from_f64(f64::MAX).unwrap();
+        let scale_exact = Rational::from_f64(scale).unwrap();
         let scaled_squared = maximum
             .try_square()
             .unwrap()
-            .try_product(&Rational::from_f64(scale).unwrap().try_square().unwrap())
+            .try_product(&scale_exact.try_square().unwrap())
             .unwrap();
-        let interval = SqrtInterval::from_squared(&scaled_squared).unwrap();
+        let exact_distance = maximum.try_product(&scale_exact).unwrap();
+        let true_gap = exact_distance.try_subtract(&maximum).unwrap();
+        let error = Rational::from_f64(6e292).unwrap();
+        assert_ne!(
+            true_gap.try_cmp(&error).unwrap(),
+            Ordering::Greater,
+            "the exact point distance gap must fit the chosen error"
+        );
+        let target = maximum.try_add(&error).unwrap();
+        assert_ne!(
+            scaled_squared
+                .try_cmp(&target.try_square().unwrap())
+                .unwrap(),
+            Ordering::Greater,
+            "the exact squared distance must fit the chosen candidate allowance"
+        );
+        let interval =
+            SqrtInterval::from_squared_with_error(&scaled_squared, Some(&error)).unwrap();
         let upper = interval
             .upper_rational()
             .unwrap()
             .expect("finite exact overflow upper");
-        let expected_upper = scaled_squared.try_quotient(&maximum).unwrap();
-        assert_eq!(upper.try_cmp(&expected_upper).unwrap(), Ordering::Equal);
+        let initial_upper = scaled_squared.try_quotient(&maximum).unwrap();
+        let initial_gap = initial_upper.try_subtract(&maximum).unwrap();
+        assert_eq!(
+            true_gap.try_cmp(&error).unwrap(),
+            Ordering::Less,
+            "this is the between-gaps case, not an exact-boundary tie"
+        );
+        assert_eq!(
+            initial_gap.try_cmp(&error).unwrap(),
+            Ordering::Greater,
+            "q/MAX must be too loose for the chosen error"
+        );
+        let small_error = Rational::from_f64(3e292).unwrap();
+        assert_eq!(
+            true_gap.try_cmp(&small_error).unwrap(),
+            Ordering::Greater,
+            "the negative control must be below the exact point-distance gap"
+        );
+        assert_ne!(
+            upper.try_cmp(&initial_upper).unwrap(),
+            Ordering::Greater,
+            "Newton refinement must not loosen q/MAX"
+        );
+        assert_ne!(
+            upper.try_cmp(&target).unwrap(),
+            Ordering::Greater,
+            "error-directed Newton refinement must fit MAX + error"
+        );
         let sum = sum_upper(&interval, &SqrtInterval::singleton(1.0).unwrap())
             .unwrap()
             .expect("overflow upper remains finite when summed");
         assert_eq!(
-            sum.try_cmp(&expected_upper.try_add(&Rational::one()).unwrap())
+            sum.try_cmp(&upper.try_add(&Rational::one()).unwrap())
                 .unwrap(),
             Ordering::Equal
         );
@@ -2984,12 +3100,16 @@ mod tests {
             Ordering::Greater
         );
         assert_eq!(
-            distance(&left, &right, Some(1e300), scale)
+            distance(&left, &right, Some(6e292), scale)
                 .unwrap()
                 .to_bits(),
             f64::MAX.to_bits()
         );
-        distance(&left, &right, Some(1e292), scale)
+        assert_eq!(
+            distance(&left, &right, None, scale).unwrap().to_bits(),
+            f64::MAX.to_bits()
+        );
+        distance(&left, &right, Some(3e292), scale)
             .expect_err("an allowance below the exact max-to-upper gap must not certify f64::MAX");
     }
 
