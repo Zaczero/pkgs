@@ -180,18 +180,24 @@ def test_planar_similarity_metrics_are_rust_backed() -> None:
     peak_line = gm.LineString([(0, 0), (10, 0)])
     far_peak = gm.LineString([(0, 1), (5, 8), (10, 1)])
     assert gm.hausdorff_distance(peak_line, far_peak, max_error=1e-12) == pytest.approx(
-        8
+        8, rel=0.0, abs=1e-12
     )
-    assert gm.hausdorff_distance(left, right, max_error=1e-12) == pytest.approx(1)
+    assert gm.hausdorff_distance(left, right, max_error=1e-12) == pytest.approx(
+        1, rel=0.0, abs=1e-12
+    )
     assert gm.hausdorff_distance(
         point, gm.MultiPoint([(0, 0), (1, 2)]), max_error=1e-12
-    ) == pytest.approx(5**0.5)
-    assert gm.hausdorff_distance(left, values, max_error=1e-12) == pytest.approx([1, 1])
-    assert gm.hausdorff_distance(values, left, max_error=1e-12) == pytest.approx([1, 1])
-    assert gm.hausdorff_distance(values, values, max_error=1e-12) == pytest.approx([
-        0,
-        0,
-    ])
+    ) == pytest.approx(5**0.5, rel=0.0, abs=1e-12)
+    assert gm.hausdorff_distance(left, values, max_error=1e-12) == pytest.approx(
+        [1, 1], rel=0.0, abs=1e-12
+    )
+    assert gm.hausdorff_distance(values, left, max_error=1e-12) == pytest.approx(
+        [1, 1], rel=0.0, abs=1e-12
+    )
+    assert gm.hausdorff_distance(values, values, max_error=1e-12).tolist() == [
+        0.0,
+        0.0,
+    ]
     assert gm.frechet_distance(left, right) == pytest.approx(1)
     assert gm.frechet_distance(left, values) == pytest.approx([1, 2**0.5])
     assert gm.frechet_distance(values, left) == pytest.approx([1, 2**0.5])
@@ -205,7 +211,8 @@ def test_planar_similarity_metrics_are_rust_backed() -> None:
         geo_line,
         max_error=1e-12,
         unit='planar',
-    ) == pytest.approx(1)
+    ) == pytest.approx(1, rel=0.0, abs=1e-12)
+    assert abs(gm.hausdorff_distance(lonlat, geo_line, unit='planar') - 1.0) <= 1e-9
     assert gm.frechet_distance(lonlat, geo_line, unit='planar') == pytest.approx(1)
     assert gm.frechet_distance(lonlat, geo_line) == pytest.approx(110575.06, rel=0.0001)
     with pytest.raises(ValueError, match='same length'):

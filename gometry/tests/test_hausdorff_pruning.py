@@ -71,17 +71,22 @@ def test_hausdorff_pruning_matches_independent_analytic_bounds() -> None:
 
 def test_continuous_hausdorff_retains_discrete_vertex_control() -> None:
     """The discrete metric is a control, never the bounded-contract oracle."""
-    long_line = gm.LineString([(0, 0), (100, 0)])
-    near_pt = gm.Point(50, 1)
+    vertices = [(0.0, 0.0), (100.0, 0.0)]
+    long_line = gm.LineString(vertices)
+    endpoints = gm.MultiPoint(vertices)
     max_error = 1e-12
-    actual = gm.hausdorff_distance(long_line, near_pt, max_error=max_error)
-    expected = math.sqrt(2501.0)  # approximately 50.01 for this fixture
+    actual = gm.hausdorff_distance(long_line, endpoints, max_error=max_error)
+    expected = 50.0
     assert abs(actual - expected) <= max_error
 
-    # This is retained only as a negative/control comparison with the
-    # vertex-only metric; correctness is established by ``expected`` above.
-    discrete = 50.00999900019995
-    assert actual > discrete - 1e-9
+    # A vertex-only metric sees the same two stored points and returns zero;
+    # the continuous support includes the segment midpoint, 50 units from
+    # either target point.
+    discrete = max(
+        min(math.dist(source, target) for target in vertices) for source in vertices
+    )
+    assert discrete == 0.0
+    assert actual > discrete
 
 
 def test_hausdorff_empty_and_degenerate_edges() -> None:

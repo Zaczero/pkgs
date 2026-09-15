@@ -1,4 +1,4 @@
-//! Continuous planar Hausdorff distance with a certified absolute error bound.
+//! Continuous planar Hausdorff distance with a certified error bound.
 
 mod bounded;
 

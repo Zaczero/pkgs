@@ -1,38 +1,130 @@
-//! Continuous planar Hausdorff distance with an absolute output-unit error bound.
+//! Continuous planar Hausdorff distance with a certified error bound.
 
+#[cfg(test)]
+use std::cell::Cell;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
-    CoordSeq, ExpansionBudget, LineSeq, PackedLineColumnView, Segment, Shape, XY,
+    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Segment, Shape, XY,
 };
 use crate::{try_push_vec, try_reserve_vec};
 
+const NOMINATED_SITE_COUNT: usize = 4;
+
+#[cfg(test)]
+thread_local! {
+    static LINE_FILTER_ENABLED: Cell<bool> = const { Cell::new(true) };
+    static EXACT_SPAN_EVALUATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn line_filter_enabled() -> bool {
+    LINE_FILTER_ENABLED.with(Cell::get)
+}
+
+#[cfg(not(test))]
+const fn line_filter_enabled() -> bool {
+    true
+}
+
+#[cfg(test)]
+struct LineFilterGuard(bool);
+
+#[cfg(test)]
+impl Drop for LineFilterGuard {
+    fn drop(&mut self) {
+        LINE_FILTER_ENABLED.with(|enabled| enabled.set(self.0));
+    }
+}
+
+#[cfg(test)]
+fn set_line_filter_enabled(enabled: bool) -> LineFilterGuard {
+    LineFilterGuard(LINE_FILTER_ENABLED.with(|current| {
+        let previous = current.get();
+        current.set(enabled);
+        previous
+    }))
+}
+
+#[cfg(test)]
+fn reset_exact_span_evaluations() {
+    EXACT_SPAN_EVALUATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn exact_span_evaluations() -> usize {
+    EXACT_SPAN_EVALUATIONS.with(Cell::get)
+}
+
+#[cfg(test)]
+fn count_exact_span_evaluation() {
+    EXACT_SPAN_EVALUATIONS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
 struct Accuracy {
-    error: Rational,
+    error: ErrorBound,
     scale_squared: Rational,
 }
 
+enum ErrorBound {
+    Absolute(Rational),
+    Relative(Rational),
+}
+
 impl Accuracy {
-    fn new(max_error: f64, scale: f64) -> Result<Self> {
-        if !(max_error.is_finite() && max_error > 0.0) {
-            return Err(crate::geometry::GeometryErrorKind::message(
-                "max_error must be positive and finite",
-            ));
-        }
+    const DEFAULT_RELATIVE_ERROR: f64 = 1e-9;
+
+    fn new(max_error: Option<f64>, scale: f64) -> Result<Self> {
+        let error = match max_error {
+            Some(value) if value.is_finite() && value > 0.0 => {
+                ErrorBound::Absolute(Rational::from_f64(value)?)
+            },
+            Some(_) => {
+                return Err(crate::geometry::GeometryErrorKind::message(
+                    "max_error must be positive and finite",
+                ));
+            },
+            None => ErrorBound::Relative(Rational::from_f64(Self::DEFAULT_RELATIVE_ERROR)?),
+        };
         if !(scale.is_finite() && scale > 0.0) {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "Hausdorff unit scale must be positive and finite",
             ));
         }
         Ok(Self {
-            error: Rational::from_f64(max_error)?,
+            error,
             scale_squared: Rational::from_f64(scale)?.try_square()?,
         })
+    }
+
+    fn absolute_error(&self, lower_squared: &Rational, candidate: f64) -> Result<Rational> {
+        match &self.error {
+            ErrorBound::Absolute(error) => error.try_clone(),
+            ErrorBound::Relative(relative) => {
+                // Derive the allowance from a proven lower bracket L, not
+                // from the returned approximation: L <= H makes r*L <= r*H.
+                // candidate_certified then proves both sides against r*L,
+                // which is therefore also a relative-error certificate.
+                let mut lower = Rational::from_f64(candidate)?;
+                if lower.try_square()?.try_cmp(lower_squared)? == Ordering::Greater {
+                    let predecessor = candidate.next_down();
+                    lower = if predecessor > 0.0 {
+                        Rational::from_f64(predecessor)?
+                    } else {
+                        // The predecessor of the minimum subnormal is zero.
+                        // Correct rounding to that subnormal proves that half
+                        // of it is still a lower bound on the exact root.
+                        lower.try_product(&Rational::from_f64(0.5)?)?
+                    };
+                }
+                lower.try_product(relative)
+            },
+        }
     }
 }
 
@@ -82,6 +174,7 @@ impl FloatBox {
 
 #[derive(Debug)]
 struct SupportSpan {
+    source: Segment,
     carrier: ExactCarrier,
     t_lo: Rational,
     t_hi: Rational,
@@ -291,6 +384,13 @@ impl SupportIndex {
                 continue;
             }
 
+            if line_filter_enabled()
+                && let PrimitiveId::Span(index) = item.primitive
+                && supporting_line_lower_squared(point_bounds, &support.spans[index]) > *best_upper
+            {
+                continue;
+            }
+
             let distance = support.primitive_distance_squared(item.primitive, point)?;
             let replace = match best {
                 None => true,
@@ -306,7 +406,7 @@ impl SupportIndex {
 
     fn nominate(&self, point: &ExactPoint) -> Result<Vec<PrimitiveId>> {
         let mut nominated = Vec::new();
-        try_reserve_vec(&mut nominated, 8)?;
+        try_reserve_vec(&mut nominated, NOMINATED_SITE_COUNT)?;
         if let Some(root) = self.root {
             self.nominate_node(root, point, &mut nominated)?;
         }
@@ -320,7 +420,7 @@ impl SupportIndex {
 
         nominated: &mut Vec<PrimitiveId>,
     ) -> Result<()> {
-        if nominated.len() >= 8 {
+        if nominated.len() >= NOMINATED_SITE_COUNT {
             return Ok(());
         }
 
@@ -337,7 +437,7 @@ impl SupportIndex {
             self.nominate_node(second, point, nominated)?;
         } else {
             for order_index in &self.order[node.start..node.end] {
-                if nominated.len() >= 8 {
+                if nominated.len() >= NOMINATED_SITE_COUNT {
                     break;
                 }
                 try_push_vec(&mut *nominated, self.items[*order_index].primitive)?;
@@ -561,7 +661,11 @@ impl PreparedSupport {
         point: &ExactPoint,
     ) -> Result<Rational> {
         match primitive {
-            PrimitiveId::Span(index) => point_span_distance_squared(point, &self.spans[index]),
+            PrimitiveId::Span(index) => {
+                #[cfg(test)]
+                count_exact_span_evaluation();
+                point_span_distance_squared(point, &self.spans[index])
+            },
             PrimitiveId::Point(index) => {
                 let dx = (&point.x).try_subtract(&self.points[index].x)?;
                 let dy = (&point.y).try_subtract(&self.points[index].y)?;
@@ -590,6 +694,7 @@ fn push_raw_segment(
         return try_push_vec(points, ExactPoint::from_xy(source.start)?);
     }
     try_push_vec(spans, SupportSpan {
+        source,
         start: ExactPoint::from_xy(source.start)?,
         t_lo: Rational::zero(),
         t_hi: Rational::one(),
@@ -619,6 +724,7 @@ fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
     }
     let bounds = FloatBox::from_point(&start)?.include(FloatBox::from_point(&end)?);
     Ok(SupportSpan {
+        source: span.source,
         carrier: ExactCarrier::from_segment(span.source)?,
         t_lo,
         t_hi,
@@ -691,6 +797,83 @@ fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result
     let dx = (&point.x).try_subtract(&projected.x)?;
     let dy = (&point.y).try_subtract(&projected.y)?;
     (&(&dx).try_square()?).try_add(&(&dy).try_square()?)
+}
+
+/// Return a finite lower bound for the distance from an enclosed point to a
+/// span's infinite carrier. The cross product is affine in the point, so its
+/// extrema over the point enclosure occur at the four corners. Every
+/// subsequent floating operation is widened toward the safe side; an
+/// unsupported, nonfinite, underflowed, or sign-uncertain stage declines.
+/// Restricting the carrier to the stored span can only increase the distance.
+fn supporting_line_lower_squared(point_bounds: FloatBox, span: &SupportSpan) -> f64 {
+    let Some(dx) = DdInterval::difference(span.source.end.x, span.source.start.x) else {
+        return 0.0;
+    };
+    let Some(dy) = DdInterval::difference(span.source.end.y, span.source.start.y) else {
+        return 0.0;
+    };
+
+    let mut cross_lower = f64::INFINITY;
+    let mut cross_upper = f64::NEG_INFINITY;
+    for (x, y) in point_bounds.corners() {
+        let Some(px) = DdInterval::difference(x, span.source.start.x) else {
+            return 0.0;
+        };
+        let Some(py) = DdInterval::difference(y, span.source.start.y) else {
+            return 0.0;
+        };
+        let Some(left) = dx.mul(py) else {
+            return 0.0;
+        };
+        let Some(right) = dy.mul(px) else {
+            return 0.0;
+        };
+        let Some(cross) = left.sub(right) else {
+            return 0.0;
+        };
+        let (lower, upper) = cross.outward_bounds();
+        if !(lower.is_finite() && upper.is_finite() && lower <= upper) {
+            return 0.0;
+        }
+        cross_lower = cross_lower.min(lower);
+        cross_upper = cross_upper.max(upper);
+    }
+
+    let numerator_lower = if cross_lower > 0.0 {
+        cross_lower
+    } else if cross_upper < 0.0 {
+        -cross_upper
+    } else {
+        return 0.0;
+    };
+    if !numerator_lower.is_normal() {
+        return 0.0;
+    }
+
+    let Some(norm) = dx.square().and_then(|x| dy.square().and_then(|y| x.add(y))) else {
+        return 0.0;
+    };
+    let (norm_lower, norm_upper) = norm.outward_bounds();
+    if !norm_lower.is_finite() || norm_lower > norm_upper || !norm_upper.is_normal() {
+        return 0.0;
+    }
+    // Binary64 sqrt and division are round-to-nearest on the supported
+    // x86-64-v2 target; moving one representable value outward makes each
+    // operand a conservative bound before the next operation.
+    let norm_upper = norm_upper.sqrt().next_up();
+    if !(norm_upper.is_finite() && norm_upper > 0.0) {
+        return 0.0;
+    }
+
+    let distance_lower = (numerator_lower / norm_upper).next_down();
+    if !distance_lower.is_normal() || distance_lower <= 0.0 {
+        return 0.0;
+    }
+    let squared_lower = (distance_lower * distance_lower).next_down().max(0.0);
+    if !squared_lower.is_normal() {
+        return 0.0;
+    }
+    squared_lower
 }
 
 fn nonnegative_upper_bound(value: &Rational) -> Result<f64> {
@@ -1170,8 +1353,7 @@ impl PatchQueue {
             Some(value) => nonnegative_upper_bound(value)?,
             None => f64::INFINITY,
         };
-        self.heap.try_reserve(1).map_err(Error::from)?;
-        self.heap.push(QueueEntry { key, record });
+        crate::try_push_heap(&mut self.heap, QueueEntry { key, record })?;
 
         Ok(())
     }
@@ -1229,10 +1411,9 @@ impl<'a> SearchContext<'a> {
 
 fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<SqrtInterval> {
     let mut interval = SqrtInterval::from_squared(squared)?;
-
-    let result = interval.refine(squared, &context.accuracy.error);
-
-    result?;
+    if let ErrorBound::Absolute(error) = &context.accuracy.error {
+        interval.refine(squared, error)?;
+    }
     Ok(interval)
 }
 
@@ -1460,12 +1641,13 @@ fn candidate_certified(
     if !candidate.is_finite() {
         return Ok(false);
     }
+    let error = context.accuracy.absolute_error(lower_squared, candidate)?;
     let candidate = Rational::from_f64(candidate)?;
-    let high = (&candidate).try_add(&context.accuracy.error)?;
+    let high = candidate.try_add(&error)?;
     if upper.try_cmp(&high)? == Ordering::Greater {
         return Ok(false);
     }
-    let low = (&candidate).try_subtract(&context.accuracy.error)?;
+    let low = candidate.try_subtract(&error)?;
     if low.sign() != ExactSign::Positive {
         return Ok(true);
     }
@@ -1543,7 +1725,12 @@ fn run_direction(
     }
 }
 
-pub(crate) fn distance(left: &Shape, right: &Shape, max_error: f64, scale: f64) -> Result<f64> {
+pub(crate) fn distance(
+    left: &Shape,
+    right: &Shape,
+    max_error: Option<f64>,
+    scale: f64,
+) -> Result<f64> {
     let accuracy = Accuracy::new(max_error, scale)?;
     let mut context = SearchContext::new(&accuracy);
     if left.is_empty() || right.is_empty() {
@@ -1601,7 +1788,7 @@ fn symmetric_distance(
     };
     let Some(mut candidate) = lower_candidate(context)? else {
         return Err(crate::geometry::GeometryErrorKind::message(
-            "hausdorff_distance has no finite output within the requested error",
+            "hausdorff_distance has no finite output within the effective error bound",
         ));
     };
     if candidate == 0.0 {
@@ -1609,7 +1796,7 @@ fn symmetric_distance(
     }
     if !candidate_certified(candidate, &upper, context)? {
         return Err(crate::geometry::GeometryErrorKind::message(
-            "hausdorff_distance cannot represent the requested accuracy",
+            "hausdorff_distance cannot represent the effective accuracy",
         ));
     }
     Ok(candidate)
@@ -1620,7 +1807,7 @@ pub(crate) fn line_columns(
     left_ys: &[f64],
     right_xs: &[f64],
     right_ys: &[f64],
-    max_error: f64,
+    max_error: Option<f64>,
     scale: f64,
 ) -> Result<f64> {
     let accuracy = Accuracy::new(max_error, scale)?;
@@ -1664,7 +1851,7 @@ pub(crate) fn line_columns_batch(
     left: PackedLineColumnView<'_>,
     right: PackedLineColumnView<'_>,
     out: &mut [f64],
-    max_error: f64,
+    max_error: Option<f64>,
     scale: f64,
 ) -> Result<()> {
     let accuracy = Accuracy::new(max_error, scale)?;
@@ -1737,9 +1924,25 @@ mod tests {
         )
     }
 
+    fn test_span(source: Segment) -> SupportSpan {
+        let start = ExactPoint::from_xy(source.start).unwrap();
+        let end = ExactPoint::from_xy(source.end).unwrap();
+        let bounds = FloatBox::from_point(&start)
+            .unwrap()
+            .include(FloatBox::from_point(&end).unwrap());
+        SupportSpan {
+            source,
+            carrier: ExactCarrier::from_segment(source).unwrap(),
+            t_lo: Rational::zero(),
+            t_hi: Rational::one(),
+            start,
+            bounds,
+        }
+    }
+
     #[test]
     fn queue_enclosure_keeps_unbounded_patches_and_later_witnesses() {
-        let accuracy = Accuracy::new(1e-6, 1.0).unwrap();
+        let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
         let mut context = SearchContext::new(&accuracy);
         let mut queue = PatchQueue::new();
         let patch = || {
@@ -1822,7 +2025,7 @@ mod tests {
     #[test]
     fn empty_area_patch_cannot_invent_a_source_witness() {
         let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
-        let accuracy = Accuracy::new(1e-6, 1.0).unwrap();
+        let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
         let mut context = SearchContext::new(&accuracy);
         let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
         let target = PreparedSupport::from_line_columns(&[1.0], &[1.0]).unwrap();
@@ -1872,12 +2075,39 @@ mod tests {
     }
 
     #[test]
+    fn box_subdivision_continues_on_the_representable_axis() {
+        let mut budget = ExpansionBudget::new("hausdorff_distance", "max_error");
+        let min_x = 1.0_f64;
+        let max_x = min_x.next_up();
+        let children = SourcePatch::Box(FloatBox {
+            min_x,
+            max_x,
+            min_y: 0.0,
+            max_y: 2.0,
+        })
+        .split(&mut budget)
+        .unwrap()
+        .unwrap();
+        assert_eq!(children.len(), 2);
+        for (index, child) in children.into_iter().enumerate() {
+            let SourcePatch::Box(bounds) = child else {
+                panic!("box split produced a span");
+            };
+            assert_eq!((bounds.min_x, bounds.max_x), (min_x, max_x));
+            assert_eq!(
+                (bounds.min_y, bounds.max_y),
+                if index == 0 { (0.0, 1.0) } else { (1.0, 2.0) }
+            );
+        }
+    }
+
+    #[test]
     fn parallel_strip_rejects_outside_points_with_reversed_carriers() {
         let target =
             PreparedSupport::from_line_columns(&[0.0, 4.0, 4.0, 0.0], &[0.0, 0.0, 2.0, 2.0])
                 .unwrap();
         let source = PreparedSupport::from_line_columns(&[2.0], &[1.0]).unwrap();
-        let accuracy = Accuracy::new(1e-6, 1.0).unwrap();
+        let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
         let mut context = SearchContext::new(&accuracy);
         for (y, inside) in [(1.0, true), (3.0, false), (-1.0, false)] {
             let patch = SourcePatch::Box(FloatBox {
@@ -1903,6 +2133,99 @@ mod tests {
                 assert!(upper.is_none());
             }
         }
+    }
+
+    #[test]
+    fn supporting_line_lower_stays_below_exact_segment_distance() {
+        let subnormal = f64::from_bits(1);
+        let cases = [
+            (
+                Segment {
+                    start: XY::new(0.0, 0.0),
+                    end: XY::new(3.0, 4.0),
+                },
+                XY::new(2.0, -1.0),
+            ),
+            (
+                Segment {
+                    start: XY::new(1.0e200, -1.0e200),
+                    end: XY::new(2.0e200, 1.0e200),
+                },
+                XY::new(1.5e200, 0.5e200),
+            ),
+            (
+                Segment {
+                    start: XY::new(0.0, 0.0),
+                    end: XY::new(8.0 * subnormal, 0.0),
+                },
+                XY::new(4.0 * subnormal, 8.0 * subnormal),
+            ),
+            (
+                Segment {
+                    start: XY::new(0.0, 0.0),
+                    end: XY::new(1.0, 1.0),
+                },
+                XY::new(0.5, 0.5 + 2.0_f64.powi(-52)),
+            ),
+            (
+                Segment {
+                    start: XY::new(4.0, 4.0),
+                    end: XY::new(-2.0, -1.0),
+                },
+                XY::new(0.0, 5.0),
+            ),
+        ];
+        let third = Rational::new(ExactDyadic::from_f64(1.0), ExactDyadic::from_f64(3.0)).unwrap();
+
+        for (source, query) in cases {
+            let span = test_span(source);
+            let stored = ExactPoint::from_xy(query).unwrap();
+            let subdivision = span_point(&span, &third).unwrap();
+            for point in [stored, subdivision] {
+                let lower = Rational::from_f64(supporting_line_lower_squared(
+                    FloatBox::from_point(&point).unwrap(),
+                    &span,
+                ))
+                .unwrap();
+                let exact = point_span_distance_squared(&point, &span).unwrap();
+                assert_ne!(lower.try_cmp(&exact).unwrap(), Ordering::Greater);
+            }
+        }
+    }
+
+    #[test]
+    fn line_filter_skips_only_after_an_exact_best_is_known() {
+        let target = PreparedSupport::from_parts(
+            vec![
+                test_span(Segment {
+                    start: XY::new(0.0, 1.0),
+                    end: XY::new(10.0, 1.0),
+                }),
+                test_span(Segment {
+                    start: XY::new(0.0, 10.0),
+                    end: XY::new(10.0, 0.0),
+                }),
+            ],
+            Vec::new(),
+            Vec::new(),
+        )
+        .unwrap();
+        let point = exact_point_xy(5.0, 0.0).unwrap();
+        let run = |enabled| {
+            let _guard = set_line_filter_enabled(enabled);
+            reset_exact_span_evaluations();
+            let result = target.distance_squared(&point).unwrap();
+            (result, exact_span_evaluations())
+        };
+
+        let (without_filter, without_filter_evaluations) = run(false);
+        let (with_filter, with_filter_evaluations) = run(true);
+        assert_eq!(
+            with_filter.try_cmp(&without_filter).unwrap(),
+            Ordering::Equal
+        );
+        assert_eq!(without_filter_evaluations, 2);
+        assert_eq!(with_filter_evaluations, 1);
     }
 
     #[test]
@@ -1978,7 +2301,46 @@ mod tests {
         );
         let filled =
             Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), Vec::new()).unwrap());
-        assert!((distance(&filled, &target, 1e-6, 1.0).unwrap() - 1.0).abs() <= 1e-6);
+        assert!((distance(&filled, &target, Some(1e-6), 1.0).unwrap() - 1.0).abs() <= 1e-6);
+    }
+
+    #[test]
+    fn multipart_area_boxes_and_mixed_points_use_only_source_witnesses() {
+        let multipart = crate::io::parse_wkt(
+            "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),\
+                           ((3 3,5 3,5 5,3 5,3 3)))",
+        )
+        .unwrap();
+        for ((x, y), expected_squared) in [((3.0, 1.0), 20.0), ((5.0, 3.0), 34.0)] {
+            let target = Shape::Point(Point::new_raw_xy(x, y));
+            let actual = distance(&multipart, &target, Some(1e-12), 1.0).unwrap();
+            assert!((actual - f64::sqrt(expected_squared)).abs() <= 1e-12);
+        }
+
+        let mixed = Shape::geometry_collection(vec![
+            line(&[(0.0, 0.0), (1.0, 0.0)]),
+            Shape::Point(Point::new_raw_xy(10.0, 0.0)),
+        ])
+        .unwrap();
+        let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        assert!((distance(&mixed, &origin, Some(1e-12), 1.0).unwrap() - 10.0).abs() <= 1e-12);
+    }
+
+    #[test]
+    fn nested_island_target_fill_is_part_of_the_closed_support() {
+        let source = crate::io::parse_wkt(
+            "MULTILINESTRING (\
+             (0 0,10 0,10 10,0 10,0 0),\
+             (2 2,8 2,8 8,2 8,2 2))",
+        )
+        .unwrap();
+        let target = crate::io::parse_wkt(
+            "GEOMETRYCOLLECTION (\
+             POLYGON ((0 0,10 0,10 10,0 10,0 0),(2 2,8 2,8 8,2 8,2 2)),\
+             POLYGON ((4 4,6 4,6 6,4 6,4 4)))",
+        )
+        .unwrap();
+        assert!((distance(&source, &target, Some(1e-12), 1.0).unwrap() - 3.0).abs() <= 1e-12);
     }
 
     #[test]
@@ -1986,12 +2348,12 @@ mod tests {
         let source = line(&[(0.0, 0.0), (2.0, 0.0)]);
         let target = Shape::Point(Point::new_raw_xy(1.0, 1.0));
         let (result, count) =
-            crate::test_support::allocation_count(|| distance(&source, &target, 1e-6, 1.0));
+            crate::test_support::allocation_count(|| distance(&source, &target, Some(1e-6), 1.0));
         result.unwrap();
         assert!(count > 0);
         for allowed in 0..=count {
             match crate::test_support::fail_allocations_after(allowed, || {
-                distance(&source, &target, 1e-6, 1.0)
+                distance(&source, &target, Some(1e-6), 1.0)
             }) {
                 Err(error) => assert!(matches!(
                     error.kind(),
@@ -2010,8 +2372,35 @@ mod tests {
         ] {
             let left = Shape::Point(Point::new_raw_xy(-coordinate, 0.0));
             let right = Shape::Point(Point::new_raw_xy(coordinate, 0.0));
-            assert_eq!(distance(&left, &right, 1e-9, scale).unwrap(), 2.0);
+            assert_eq!(distance(&left, &right, Some(1e-9), scale).unwrap(), 2.0);
         }
+    }
+
+    #[test]
+    fn output_range_and_scaled_absolute_error_are_certified() {
+        let huge = 2.0_f64.powi(1023);
+        let left = Shape::Point(Point::new_raw_xy(-huge, 0.0));
+        let right = Shape::Point(Point::new_raw_xy(huge, 0.0));
+        assert!(distance(&left, &right, Some(1.0), 1.0).is_err());
+
+        let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let large = Shape::Point(Point::new_raw_xy(1e200, 1e200));
+        let expected = 2.0_f64.sqrt() * 1e200;
+        let actual = distance(&origin, &large, None, 1.0).unwrap();
+        assert!((actual - expected).abs() <= 1e-9 * expected);
+
+        let vertices = [
+            (0.0, 0.0),
+            (9.0, 0.0),
+            (9.0, 3.0),
+            (4.0, 3.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+            (0.0, 0.0),
+        ];
+        let expected = 100.0 * (7.0 - 24.0_f64.sqrt());
+        let actual = distance(&polygon(&vertices), &line(&vertices), Some(0.01), 100.0).unwrap();
+        assert!((actual - expected).abs() <= 0.01);
     }
 
     #[test]
@@ -2023,29 +2412,104 @@ mod tests {
             (0.0, 2.0),
             (0.0, 0.0),
         ]] {
-            let value = distance(&polygon(&vertices), &line(&vertices), 1e-6, 1.0).unwrap();
+            let value = distance(&polygon(&vertices), &line(&vertices), Some(1e-6), 1.0).unwrap();
             assert!((value - 1.0).abs() <= 1e-6, "{value}");
         }
+    }
+
+    #[test]
+    fn default_relative_error_is_certified_without_blurring_zero() {
+        const DEFAULT_RELATIVE_ERROR: f64 = 1e-9;
+
+        let triangle = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
+        let boundary = line(&[(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)]);
+        let value = distance(&triangle, &boundary, None, 1.0).unwrap();
+        assert!((value - 1.0).abs() <= DEFAULT_RELATIVE_ERROR);
+
+        let diagonal = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+        let diagonal_value = distance(
+            &Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            &diagonal,
+            None,
+            1.0,
+        )
+        .unwrap();
+        let expected = 2.0_f64.sqrt();
+        assert!((diagonal_value - expected).abs() <= DEFAULT_RELATIVE_ERROR * expected);
+
+        let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let close = Shape::Point(Point::new_raw_xy(1e-200, 0.0));
+        assert_eq!(distance(&origin, &origin, None, 1.0).unwrap(), 0.0);
+        assert!(distance(&origin, &close, None, 1.0).unwrap() > 0.0);
+    }
+
+    #[test]
+    fn default_allowance_is_bounded_by_the_true_distance() {
+        const DEFAULT_RELATIVE_ERROR: f64 = 1e-9;
+
+        let accuracy = Accuracy::new(None, 1.0).unwrap();
+        let squared = Rational::from_f64(2.0).unwrap();
+        let candidate = squared.round_sqrt().unwrap();
+        let error = accuracy.absolute_error(&squared, candidate).unwrap();
+        let relative = Rational::from_f64(DEFAULT_RELATIVE_ERROR).unwrap();
+        let relative_squared = relative
+            .try_square()
+            .unwrap()
+            .try_product(&squared)
+            .unwrap();
+        assert_ne!(
+            error
+                .try_square()
+                .unwrap()
+                .try_cmp(&relative_squared)
+                .unwrap(),
+            Ordering::Greater,
+        );
+    }
+
+    #[test]
+    fn default_relative_error_accepts_a_valid_minimum_subnormal_result() {
+        let minimum_subnormal = f64::from_bits(1);
+        let almost_one = 1.0_f64.next_down();
+        let small_ordinate = 3.0 * 2.0_f64.powi(-28);
+        let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let nearby = Shape::Point(Point::new_raw_xy(almost_one, small_ordinate));
+
+        assert_eq!(
+            distance(&origin, &nearby, None, minimum_subnormal).unwrap(),
+            minimum_subnormal
+        );
     }
 
     #[test]
     fn zero_distinguishes_equal_support_from_close_support() {
         let baseline = line(&[(0.0, 0.0), (2.0, 0.0)]);
         let segmented = line(&[(2.0, 0.0), (1.0, 0.0), (0.0, 0.0)]);
-        assert_eq!(distance(&baseline, &segmented, 1e-3, 1.0).unwrap(), 0.0);
+        assert_eq!(
+            distance(&baseline, &segmented, Some(1e-3), 1.0).unwrap(),
+            0.0
+        );
         let nearby = line(&[(0.0, 1e-9), (2.0, 1e-9)]);
-        let value = distance(&baseline, &nearby, 1e-3, 1.0).unwrap();
+        let value = distance(&baseline, &nearby, Some(1e-3), 1.0).unwrap();
         assert!(value > 0.0);
         assert!((value - 1e-9).abs() <= 1e-3);
         let vertices = [(0.0, 0.0), (4.0, 0.0), (0.0, 3.0), (0.0, 0.0)];
-        let value = distance(&polygon(&vertices), &line(&vertices), 2.0, 1.0).unwrap();
+        let value = distance(&polygon(&vertices), &line(&vertices), Some(2.0), 1.0).unwrap();
         assert!(value > 0.0);
         assert!((value - 1.0).abs() <= 2.0);
     }
 
     #[test]
     fn identical_empty_support_is_still_undefined() {
-        assert!(distance(&Shape::empty_point(), &Shape::empty_point(), 1e-3, 1.0).is_err());
+        assert!(
+            distance(
+                &Shape::empty_point(),
+                &Shape::empty_point(),
+                Some(1e-3),
+                1.0
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -2061,14 +2525,14 @@ mod tests {
         );
         let shape =
             Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), vec![ring]).unwrap());
-        assert!(distance(&shape, &shape, 1e-6, 1.0).is_err());
+        assert!(distance(&shape, &shape, Some(1e-6), 1.0).is_err());
     }
 
     #[test]
     fn invalid_accuracy_is_rejected_before_identity() {
         let point = Shape::Point(Point::new_raw_xy(3.0, 4.0));
         for error in [0.0, -1.0, f64::INFINITY, f64::NAN] {
-            assert!(distance(&point, &point, error, 1.0).is_err());
+            assert!(distance(&point, &point, Some(error), 1.0).is_err());
         }
     }
 }

@@ -83,14 +83,6 @@ impl SimilarityOp {
     /// numerical contract and therefore must not receive a bound.
     pub(crate) fn validate_model(&self, model: &crs::MetricModel) -> crate::error::Result<()> {
         match self {
-            Self::Hausdorff { max_error: None }
-                if matches!(model, crs::MetricModel::Planar { .. }) =>
-            {
-                Err(crate::geometry::GeometryErrorKind::message(
-                    "hausdorff_distance requires max_error for planar metrics; \
-                     pass a positive finite max_error",
-                ))
-            },
             Self::Hausdorff { max_error: Some(_) }
                 if matches!(model, crs::MetricModel::Geodesic { .. }) =>
             {
@@ -176,7 +168,7 @@ impl SimilarityOp {
         if has_areal_support && matches!(model, crs::MetricModel::Planar { .. }) {
             return Ok(None);
         }
-        Ok(Some(same_storage_similarity_metric_zeros(storage)))
+        Ok(Some(same_storage_similarity_metric_zeros(storage)?))
     }
 
     pub(crate) fn has_empty_line(&self, left: &LineRows<'_>, right: &LineRows<'_>) -> bool {
@@ -196,9 +188,7 @@ impl SimilarityOp {
         values.try_reserve_exact(len)?;
         values.resize(len, 0.0);
         match self {
-            Self::Hausdorff {
-                max_error: Some(max_error),
-            } => {
+            Self::Hausdorff { max_error } => {
                 crate::geometry::hausdorff_distance_line_columns_batch(
                     left,
                     right,
@@ -206,11 +196,6 @@ impl SimilarityOp {
                     *max_error,
                     scale,
                 )?;
-            },
-            Self::Hausdorff { max_error: None } => {
-                return Err(crate::geometry::GeometryErrorKind::message(
-                    "hausdorff_distance requires max_error for planar metrics",
-                ));
             },
             Self::Frechet { .. } => {
                 crate::geometry::frechet_distance_line_columns_batch(left, right, &mut values);
@@ -229,16 +214,9 @@ impl SimilarityOp {
         scale: f64,
     ) -> crate::error::Result<f64> {
         match self {
-            Self::Hausdorff {
-                max_error: Some(max_error),
-            } => crate::geometry::hausdorff_distance_line_columns(
+            Self::Hausdorff { max_error } => crate::geometry::hausdorff_distance_line_columns(
                 left_xs, left_ys, right_xs, right_ys, *max_error, scale,
             ),
-            Self::Hausdorff { max_error: None } => {
-                Err(crate::geometry::GeometryErrorKind::message(
-                    "hausdorff_distance requires max_error for planar metrics",
-                ))
-            },
             Self::Frechet { .. } => Ok(crate::geometry::frechet_distance_line_columns(
                 left_xs, left_ys, right_xs, right_ys,
             ) * scale),

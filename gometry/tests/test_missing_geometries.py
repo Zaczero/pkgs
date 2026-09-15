@@ -471,10 +471,15 @@ def test_similarity_metrics_degrade_missing_rows_to_nan() -> None:
         assert math.isnan(pair[1])
         assert math.isnan(pair[2])
 
-        densified = gm.frechet_distance(masked, dense, densify=[0.5, 0.5, 0.5])
-        assert densified[0] == pytest.approx(0.0)
-        assert math.isnan(densified[1])
-        assert densified[2] == pytest.approx(0.0)
+    default_hausdorff = gm.hausdorff_distance(masked, masked)
+    assert default_hausdorff[0] == 0.0
+    assert math.isnan(default_hausdorff[1])
+    assert default_hausdorff[2] == 0.0
+
+    densified = gm.frechet_distance(masked, dense, densify=[0.5, 0.5, 0.5])
+    assert densified[0] == pytest.approx(0.0)
+    assert math.isnan(densified[1])
+    assert densified[2] == pytest.approx(0.0)
 
 
 def test_packed_equals_exact_treats_missing_rows_as_false() -> None:

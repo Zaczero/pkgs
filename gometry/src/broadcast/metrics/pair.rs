@@ -561,26 +561,33 @@ pub(crate) fn pair_dwithin_geodesic(
 }
 
 /// Element-wise zero metric for array-vs-self when both operands share one
-/// `Arc<GeometryArrayStorage>` — allocation-free for packed columns.
-pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorage) -> Vec<f64> {
+/// `Arc<GeometryArrayStorage>`.
+pub(crate) fn same_storage_similarity_metric_zeros(
+    storage: &GeometryArrayStorage,
+) -> crate::error::Result<Vec<f64>> {
+    let mut values = Vec::new();
     match storage {
         GeometryArrayStorage::Packed(PackedStorage::Lines {
             offsets, row_map, ..
         }) => {
             let map = row_map.as_deref();
             let rows = crate::array::line_logical_len(offsets.as_slice(), map);
-            (0..rows)
-                .map(|logical| {
+            values.try_reserve_exact(rows)?;
+            for logical in 0..rows {
+                crate::try_push_vec(
+                    &mut values,
                     if map.csr_window(offsets.as_slice(), logical).is_empty() {
                         f64::INFINITY
                     } else {
                         0.0
-                    }
-                })
-                .collect()
+                    },
+                )?;
+            }
         },
         GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-            vec![0.0; crate::array::point_logical_len(coords, row_map.as_deref())]
+            let rows = crate::array::point_logical_len(coords, row_map.as_deref());
+            values.try_reserve_exact(rows)?;
+            values.resize(rows, 0.0);
         },
         GeometryArrayStorage::Packed(PackedStorage::Polygons {
             ring_offsets,
@@ -590,24 +597,32 @@ pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorag
         }) => {
             let map = row_map.as_deref();
             let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
-            (0..rows)
-                .map(|logical| {
-                    let rings = map.csr_window(polygon_offsets.as_slice(), logical);
+            values.try_reserve_exact(rows)?;
+            for logical in 0..rows {
+                let rings = map.csr_window(polygon_offsets.as_slice(), logical);
+                crate::try_push_vec(
+                    &mut values,
                     if !rings.is_empty()
                         && (ring_offsets[rings.start] as usize) < (ring_offsets[rings.end] as usize)
                     {
                         0.0
                     } else {
                         f64::INFINITY
-                    }
-                })
-                .collect()
+                    },
+                )?;
+            }
         },
-        GeometryArrayStorage::Mixed(shapes) => shapes
-            .iter()
-            .map(|shape| if shape.is_empty() { f64::INFINITY } else { 0.0 })
-            .collect(),
+        GeometryArrayStorage::Mixed(shapes) => {
+            values.try_reserve_exact(shapes.len())?;
+            for shape in shapes {
+                crate::try_push_vec(
+                    &mut values,
+                    if shape.is_empty() { f64::INFINITY } else { 0.0 },
+                )?;
+            }
+        },
     }
+    Ok(values)
 }
 
 /// CRS-aware continuous Hausdorff distance: planar coordinate/native units under
@@ -636,14 +651,7 @@ pub(crate) fn metric_hausdorff(
     }
     dispatch_metric_model(
         model,
-        |to_metre| {
-            crate::geometry::hausdorff_distance(
-                a,
-                b,
-                max_error.expect("planar Hausdorff model was validated before evaluation"),
-                to_metre,
-            )
-        },
+        |to_metre| crate::geometry::hausdorff_distance(a, b, max_error, to_metre),
         |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
 }
@@ -655,6 +663,36 @@ pub(crate) fn require_nonempty_hausdorff(shape: &Shape) -> crate::error::Result<
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod same_storage_metric_tests {
+    use super::*;
+    use crate::geometry::Point;
+
+    #[test]
+    fn same_storage_hausdorff_output_allocation_is_retryable() {
+        let storage = GeometryArrayStorage::Mixed(vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::Point(Point::new_raw_xy(1.0, 0.0)),
+        ]);
+        let (result, count) = crate::test_support::allocation_count(|| {
+            same_storage_similarity_metric_zeros(&storage)
+        });
+        assert_eq!(result.unwrap(), [0.0, 0.0]);
+        assert!(count > 0);
+        for allowed in 0..=count {
+            match crate::test_support::fail_allocations_after(allowed, || {
+                same_storage_similarity_metric_zeros(&storage)
+            }) {
+                Err(error) => assert!(matches!(
+                    error.kind(),
+                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
+                )),
+                Ok(values) => assert_eq!(values, [0.0, 0.0]),
+            }
+        }
+    }
 }
 
 pub(crate) fn metric_frechet_with_scratch(

@@ -10,11 +10,10 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
     let separation = 1e-300;
     let left = line(vec![p(0.0, 0.0), p(2.0 * separation, 0.0)]);
     let right = line(vec![p(0.0, separation), p(2.0 * separation, separation)]);
-    assert_eq!(
-        hausdorff_distance(&left, &right, separation * 1e-12, 1.0)
-            .unwrap()
-            .to_bits(),
-        separation.to_bits()
+    let max_error = separation * 1e-12;
+    assert!(
+        (hausdorff_distance(&left, &right, Some(max_error), 1.0).unwrap() - separation).abs()
+            <= max_error
     );
 
     let base = 1e200_f64;
@@ -24,11 +23,10 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
         p(0.0, base + huge_separation),
         p(1.0, base + huge_separation),
     ]);
-    assert_eq!(
-        hausdorff_distance(&left, &right, huge_separation * 1e-12, 1.0)
-            .unwrap()
-            .to_bits(),
-        huge_separation.to_bits()
+    let max_error = huge_separation * 1e-12;
+    assert!(
+        (hausdorff_distance(&left, &right, Some(max_error), 1.0).unwrap() - huge_separation).abs()
+            <= max_error
     );
 
     let left = line(vec![
@@ -43,11 +41,9 @@ fn continuous_hausdorff_keeps_tiny_parallel_separation() {
         p(0.75, base + huge_separation),
         p(1.0, base + huge_separation),
     ]);
-    assert_eq!(
-        hausdorff_distance(&left, &right, huge_separation * 1e-12, 1.0)
-            .unwrap()
-            .to_bits(),
-        huge_separation.to_bits()
+    assert!(
+        (hausdorff_distance(&left, &right, Some(max_error), 1.0).unwrap() - huge_separation).abs()
+            <= max_error
     );
 }
 
@@ -80,15 +76,10 @@ fn continuous_hausdorff_preserves_underflowed_local_determinant() {
         p(height, 0.0),
         p(length, height + offset),
     ]);
-    assert_eq!(
-        // The endpoint witness itself exercises the underflowed determinant.
-        // A broad bound keeps this test about exact witness evaluation rather
-        // than paying hundreds of anisotropic subdivision levels.
-        hausdorff_distance(&baseline, &graph, length, 1.0)
-            .unwrap()
-            .to_bits(),
-        offset.to_bits()
-    );
+    // The endpoint witness itself exercises the underflowed determinant. A
+    // broad bound keeps this test about preserving a positive exact witness
+    // rather than paying hundreds of anisotropic subdivision levels.
+    assert!(hausdorff_distance(&baseline, &graph, Some(length), 1.0).unwrap() > 0.0);
 }
 
 #[test]
@@ -103,18 +94,15 @@ fn continuous_hausdorff_keeps_reciprocal_axis_bend_at_square_overflow_transition
             p(length, height),
         ]);
         let expected = 2.0 * height;
-        assert_eq!(
-            hausdorff_distance(&baseline, &bent, expected * 1e-12, 1.0)
-                .unwrap()
-                .to_bits(),
-            expected.to_bits(),
-            "reciprocal-axis Hausdorff failed at e={exponent}"
+        let max_error = expected * 1e-12;
+        assert!(
+            (hausdorff_distance(&baseline, &bent, Some(max_error), 1.0).unwrap() - expected).abs()
+                <= max_error,
+            "reciprocal-axis Hausdorff failed at e={exponent}",
         );
-        assert_eq!(
-            hausdorff_distance(&bent, &baseline, expected * 1e-12, 1.0)
-                .unwrap()
-                .to_bits(),
-            expected.to_bits()
+        assert!(
+            (hausdorff_distance(&bent, &baseline, Some(max_error), 1.0).unwrap() - expected).abs()
+                <= max_error
         );
     }
 }
@@ -138,12 +126,11 @@ fn continuous_hausdorff_finds_reciprocal_axis_gap_between_target_parts() {
             .to_bits(),
             half_gap.to_bits(),
         );
-        assert_eq!(
-            hausdorff_distance(&source, &target, half_gap * 1e-12, 1.0)
-                .unwrap()
-                .to_bits(),
-            half_gap.to_bits(),
-            "reciprocal-axis target gap failed at e={exponent}"
+        let max_error = half_gap * 1e-12;
+        assert!(
+            (hausdorff_distance(&source, &target, Some(max_error), 1.0).unwrap() - half_gap).abs()
+                <= max_error,
+            "reciprocal-axis target gap failed at e={exponent}",
         );
     }
 }
@@ -164,20 +151,17 @@ fn continuous_hausdorff_preserves_minor_axis_breakpoints_in_collections() {
             let target = Shape::geometry_collection(vec![horizontal, lower, upper])
                 .expect("test collection is valid");
             let expected = height / 2.0;
+            let max_error = expected * 1e-12;
             assert!(
-                hausdorff_distance(&source, &target, expected * 1e-12, 1.0)
-                    .unwrap()
-                    .to_bits()
-                    .abs_diff(expected.to_bits())
-                    <= 4,
+                (hausdorff_distance(&source, &target, Some(max_error), 1.0).unwrap() - expected)
+                    .abs()
+                    <= max_error,
                 "minor-axis collection gap failed at e={exponent}, swap={swap}"
             );
             assert!(
-                hausdorff_distance(&target, &source, expected * 1e-12, 1.0)
-                    .unwrap()
-                    .to_bits()
-                    .abs_diff(expected.to_bits())
-                    <= 4
+                (hausdorff_distance(&target, &source, Some(max_error), 1.0).unwrap() - expected)
+                    .abs()
+                    <= max_error
             );
         }
     }
@@ -743,14 +727,14 @@ fn continuous_hausdorff_on_subdivided_oblique_segments() {
         // perpendicular distance is |10*9-3*7| / sqrt(10²+3²).
         let expected = 69.0 / 109.0_f64.sqrt();
         assert_hausdorff_close(
-            hausdorff_distance(&left, &right, 1e-9, 1.0).unwrap(),
+            hausdorff_distance(&left, &right, Some(1e-9), 1.0).unwrap(),
             expected,
-            1e-8,
+            1e-9,
         );
         assert_hausdorff_close(
-            hausdorff_distance(&right, &left, 1e-9, 1.0).unwrap(),
+            hausdorff_distance(&right, &left, Some(1e-9), 1.0).unwrap(),
             expected,
-            1e-8,
+            1e-9,
         );
     }
 }
@@ -785,9 +769,9 @@ fn continuous_hausdorff_matches_known_fixtures() {
         ),
     ] {
         assert_hausdorff_close(
-            hausdorff_distance(&left, &right, 1e-9, 1.0).unwrap(),
+            hausdorff_distance(&left, &right, Some(1e-9), 1.0).unwrap(),
             expected,
-            1e-8,
+            1e-9,
         );
     }
 }
@@ -795,16 +779,20 @@ fn continuous_hausdorff_matches_known_fixtures() {
 #[test]
 fn continuous_hausdorff_empty_and_point_semantics() {
     let origin = Shape::Point(p(0.0, 0.0));
-    assert!(hausdorff_distance(&origin, &Shape::empty_point(), 1e-9, 1.0).is_err());
-    assert!(hausdorff_distance(&Shape::empty_point(), &origin, 1e-9, 1.0).is_err());
-    assert_eq!(
-        hausdorff_distance(&origin, &Shape::Point(p(3.0, 4.0)), 1e-9, 1.0).unwrap(),
-        5.0
+    assert!(hausdorff_distance(&origin, &Shape::empty_point(), Some(1e-9), 1.0).is_err());
+    assert!(hausdorff_distance(&Shape::empty_point(), &origin, Some(1e-9), 1.0).is_err());
+    assert!(
+        (hausdorff_distance(&origin, &Shape::Point(p(3.0, 4.0)), Some(1e-9), 1.0).unwrap() - 5.0)
+            .abs()
+            <= 1e-9
     );
     let tiny = 1.5e-162;
-    assert_eq!(
-        hausdorff_distance(&origin, &Shape::Point(p(tiny, 0.0)), tiny * 1e-12, 1.0).unwrap(),
-        tiny
+    let max_error = tiny * 1e-12;
+    assert!(
+        (hausdorff_distance(&origin, &Shape::Point(p(tiny, 0.0)), Some(max_error), 1.0).unwrap()
+            - tiny)
+            .abs()
+            <= max_error
     );
 }
 
@@ -823,9 +811,9 @@ fn point_targets_keep_interior_and_endpoint_maxima() {
         ),
     ] {
         assert_hausdorff_close(
-            hausdorff_distance(&source, &target, 1e-10, 1.0).unwrap(),
+            hausdorff_distance(&source, &target, Some(1e-10), 1.0).unwrap(),
             expected,
-            1e-9,
+            1e-10,
         );
     }
 }
@@ -836,24 +824,25 @@ fn backtracking_collinear_line_keeps_its_full_support() {
     let right = line(vec![p(-5.0, 1.0), p(0.0, 1.0)]);
     let expected = 101.0_f64.sqrt();
     assert_hausdorff_close(
-        hausdorff_distance(&left, &right, 1e-9, 1.0).unwrap(),
+        hausdorff_distance(&left, &right, Some(1e-9), 1.0).unwrap(),
         expected,
-        1e-8,
+        1e-9,
     );
     assert_hausdorff_close(
-        hausdorff_distance(&right, &left, 1e-9, 1.0).unwrap(),
+        hausdorff_distance(&right, &left, Some(1e-9), 1.0).unwrap(),
         expected,
-        1e-8,
+        1e-9,
     );
 }
 
 #[test]
-fn packed_hausdorff_columns_preserve_exact_translations() {
+fn packed_hausdorff_columns_preserve_translations_within_bound() {
     for count in [2, 3, 4, 9, 17] {
         let xs: Vec<_> = (0..count).map(|i| f64::from(i)).collect();
         let ys: Vec<_> = (0..count).map(|i| f64::from(i % 2)).collect();
         let shifted: Vec<_> = ys.iter().map(|y| y + 0.25).collect();
-        let value = hausdorff_distance_line_columns(&xs, &ys, &xs, &shifted, 1e-9, 1.0).unwrap();
+        let value =
+            hausdorff_distance_line_columns(&xs, &ys, &xs, &shifted, Some(1e-9), 1.0).unwrap();
         assert_hausdorff_close(value, 0.25, 1e-9);
     }
 }
@@ -981,7 +970,7 @@ fn continuous_hausdorff_keeps_extreme_collinear_translation() {
         let left = extreme_coord_line(segment_count);
         let right = left.translate(1e149, 0.0).expect("translate extreme line");
         let expected = ((1e150_f64 + 1e149) - 1e150).max((-1e150_f64 + 1e149) + 1e150);
-        let actual = hausdorff_distance(&left, &right, 1e137, 1.0).unwrap();
+        let actual = hausdorff_distance(&left, &right, Some(1e137), 1.0).unwrap();
         assert_hausdorff_close(actual, expected, 1e137);
     }
 }

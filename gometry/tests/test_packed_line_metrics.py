@@ -11,9 +11,9 @@ from tests._support import canon, floats, line_storage_twins
 def test_packed_lines_hausdorff_array_matches_mixed_storage() -> None:
     packed, mixed = line_storage_twins()
     assert packed.to_arrow().type.extension_name == 'geoarrow.linestring'
-    assert floats(
-        gm.hausdorff_distance(packed, mixed, max_error=1e-12)
-    ) == pytest.approx(floats(gm.hausdorff_distance(mixed, mixed, max_error=1e-12)))
+    assert floats(gm.hausdorff_distance(packed, mixed, max_error=1e-12)) == [
+        0.0
+    ] * len(mixed)
 
 
 def test_packed_lines_frechet_array_matches_mixed_storage() -> None:
@@ -96,9 +96,7 @@ def test_packed_lines_hausdorff_cross_take_shift_matches_oracle() -> None:
     ])
     shift = [*list(range(1, count)), 0]
     shifted = packed[shift]
-    assert floats(
-        gm.hausdorff_distance(packed, packed, max_error=1e-12)
-    ) == pytest.approx([0.0] * count)
+    assert floats(gm.hausdorff_distance(packed, packed)) == [0.0] * count
     expected = [
         gm.hausdorff_distance(left, right, max_error=1e-12)
         for left, right in zip(packed, shifted, strict=True)

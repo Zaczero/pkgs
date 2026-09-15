@@ -256,6 +256,11 @@ impl DdInterval {
         }
     }
 
+    pub(in crate::geometry) fn outward_bounds(self) -> (f64, f64) {
+        let bounds = self.bounds();
+        (bounds.lo, bounds.hi)
+    }
+
     pub(in crate::geometry) fn approximate_pair(self) -> (f64, f64) {
         let midpoint = self.tail.lo * 0.5 + self.tail.hi * 0.5;
         (self.head, midpoint)
@@ -596,6 +601,7 @@ pub(in crate::geometry) fn ray_crossing_is_right(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::tessellation::exact::ExactDyadic;
 
     #[test]
     fn ray_filter_declines_wrong_nonzero_underflow_sign() {
@@ -611,5 +617,18 @@ mod tests {
         assert_eq!(determinant.to_bits(), (-mu).to_bits());
         assert!(determinant.abs() <= bound);
         assert!(ray_crossing_is_right(a.0, a.1, b.0, b.1, p.0, p.1));
+    }
+
+    #[test]
+    fn dd_interval_bounds_contain_a_nonrepresentable_product() {
+        let left = 0.1;
+        let right = 0.2;
+        let value = DdInterval::exact(left)
+            .mul(DdInterval::exact(right))
+            .expect("normal product");
+        let (lower, upper) = value.outward_bounds();
+        let exact = ExactDyadic::from_f64(left).product(&ExactDyadic::from_f64(right));
+        assert_ne!(exact.cmp(&ExactDyadic::from_f64(lower)), Ordering::Less);
+        assert_ne!(exact.cmp(&ExactDyadic::from_f64(upper)), Ordering::Greater);
     }
 }

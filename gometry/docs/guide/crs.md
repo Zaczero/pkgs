@@ -327,14 +327,18 @@ Filled `Polygon` and `MultiPolygon` interiors are unsupported and raise
 projected CRS.
 
 Hausdorff's planar path is a certified computation rather than an unchecked
-floating-point approximation. Pass one positive, finite scalar
-`max_error` in the final result units: it is required for a CRS-free or
-projected planar result, and it is also required when `unit='planar'` selects
-coordinate-space distance on geographic data. A projected result uses native
-units by default or metres with `unit='meters'`, so the bound follows the same
-choice. Omit `max_error` only for the existing numerical geodesic path;
-supplying it to a geodesic result raises because geodesic Hausdorff is not
-certified by this parameter.
+floating-point approximation. By default its relative error is at most
+`1e-9`. Pass a positive, finite scalar `max_error` to replace that default
+with an absolute bound in the final result units. A projected result uses
+native units by default or metres with `unit='meters'`, so an absolute bound
+follows the same choice. The numerical geodesic path has no per-call
+certificate; supplying `max_error` to it raises instead of implying one.
+Neither error contract blurs set equality:
+planar Hausdorff returns zero exactly for equal closed supports, while a
+positive distance smaller than the effective error bound remains positive. If
+that bound cannot be certified within representable output or available
+generated work and memory, the call raises instead of returning an unchecked
+value.
 
 ### Geographic box boundary fidelity
 

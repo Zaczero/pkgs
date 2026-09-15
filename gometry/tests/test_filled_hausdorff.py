@@ -9,6 +9,11 @@ import gometry as gm
 import pytest
 
 PLANAR_ERROR = 1e-12
+DEFAULT_RELATIVE_ERROR = 1e-9
+
+
+def assert_bounded(actual: float, expected: float, error: float = PLANAR_ERROR) -> None:
+    assert abs(actual - expected) <= error
 
 
 def test_filled_polygon_hole_center_is_a_source_interior_maximum() -> None:
@@ -18,14 +23,20 @@ def test_filled_polygon_hole_center_is_a_source_interior_maximum() -> None:
         "(3 3, 7 3, 7 7, 3 7, 3 3))"
     )
 
-    assert gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR) == 2.0
+    assert_bounded(
+        gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR),
+        2.0,
+    )
 
 
 def test_filled_square_against_its_boundary_uses_the_inradius() -> None:
     square = gm.box(0, 0, 2, 2)
     boundary = gm.LineString([(0, 0), (2, 0), (2, 2), (0, 2), (0, 0)])
 
-    assert gm.hausdorff_distance(square, boundary, max_error=PLANAR_ERROR) == 1.0
+    assert_bounded(
+        gm.hausdorff_distance(square, boundary, max_error=PLANAR_ERROR),
+        1.0,
+    )
 
 
 @pytest.mark.parametrize(
@@ -56,11 +67,9 @@ def test_filled_l_shape_matches_feasible_inradius(width: float, height: float) -
     candidate = width + height - sqrt(2.0 * width * height)
     expected = candidate if candidate <= height else width / 2.0
 
-    assert gm.hausdorff_distance(
-        polygon, boundary, max_error=PLANAR_ERROR
-    ) == pytest.approx(
+    assert_bounded(
+        gm.hausdorff_distance(polygon, boundary, max_error=PLANAR_ERROR),
         expected,
-        abs=1e-12,
     )
 
 
@@ -82,7 +91,7 @@ def test_filled_l_shape_reflex_vertex_is_an_attained_interior_maximum() -> None:
 
     assert gm.contains(polygon, witness)
     assert gm.distance(witness, boundary) == pytest.approx(expected, abs=1e-12)
-    assert actual == pytest.approx(expected, abs=1e-12)
+    assert_bounded(actual, expected)
 
     sample_distances = [
         gm.distance(gm.Point(x / 10.0, y / 10.0), boundary)
@@ -99,7 +108,10 @@ def test_point_inside_filled_square_has_zero_directed_contribution() -> None:
 
     # The public API is symmetric: the reverse direction is the square's
     # distance to its point, while the point-to-square contribution is zero.
-    assert gm.hausdorff_distance(point, square, max_error=PLANAR_ERROR) == sqrt(18.0)
+    assert_bounded(
+        gm.hausdorff_distance(point, square, max_error=PLANAR_ERROR),
+        sqrt(18.0),
+    )
 
 
 def test_parallel_target_ridge_is_exact() -> None:
@@ -111,7 +123,10 @@ def test_parallel_target_ridge_is_exact() -> None:
         ]
     )
 
-    assert gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR) == 1.0
+    assert_bounded(
+        gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR),
+        1.0,
+    )
 
 
 def test_multiple_holes_and_hole_outside_source() -> None:
@@ -121,13 +136,17 @@ def test_multiple_holes_and_hole_outside_source() -> None:
         "(1 1, 3 1, 3 3, 1 3, 1 1), "
         "(6 6, 9 6, 9 9, 6 9, 6 6))"
     )
-    assert gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR) == 1.5
+    assert_bounded(
+        gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR),
+        1.5,
+    )
 
     small_source = gm.box(0, 0, 1, 1)
     # The small source is covered by the target; the symmetric result is
     # therefore set by the target's farthest outer corner.
-    assert gm.hausdorff_distance(small_source, target, max_error=PLANAR_ERROR) == sqrt(
-        162.0
+    assert_bounded(
+        gm.hausdorff_distance(small_source, target, max_error=PLANAR_ERROR),
+        sqrt(162.0),
     )
 
 
@@ -135,7 +154,10 @@ def test_mixed_dimension_collection_keeps_polygon_fill_and_point_union() -> None
     source = gm.GeometryCollection([gm.box(0, 0, 2, 2), gm.Point(10, 0)])
     target = gm.Point(0, 0)
 
-    assert gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR) == 10.0
+    assert_bounded(
+        gm.hausdorff_distance(source, target, max_error=PLANAR_ERROR),
+        10.0,
+    )
 
 
 def test_empty_operands_are_rejected() -> None:
@@ -150,14 +172,19 @@ def test_same_storage_empty_rows_are_rejected_before_zero_shortcut() -> None:
     values = gm.GeometryArray([gm.from_wkt("LINESTRING EMPTY")])
 
     with pytest.raises(gm.InvalidGeometryError, match="non-empty"):
-        gm.hausdorff_distance(values, values, max_error=PLANAR_ERROR)
+        gm.hausdorff_distance(values, values)
 
 
-def test_planar_hausdorff_requires_a_positive_finite_scalar_bound() -> None:
+def test_planar_hausdorff_has_a_default_and_validates_explicit_bounds() -> None:
     line = gm.LineString([(0, 0), (1, 0)])
 
-    with pytest.raises(ValueError, match="requires max_error"):
-        gm.hausdorff_distance(line, line)
+    assert gm.hausdorff_distance(line, line) == 0.0
+    shifted = gm.LineString([(0, 1), (1, 1)])
+    assert_bounded(
+        gm.hausdorff_distance(line, shifted),
+        1.0,
+        DEFAULT_RELATIVE_ERROR,
+    )
     for value in (0.0, -1.0, nan, inf, -inf):
         with pytest.raises(ValueError, match="max_error"):
             gm.hausdorff_distance(line, line, max_error=value)
@@ -178,13 +205,22 @@ def test_planar_hausdorff_bound_is_in_final_projected_units() -> None:
     left = gm.Point(0.0, 0.0, crs=2263)
     right = gm.Point(10.0, 0.0, crs=2263)
 
-    assert gm.hausdorff_distance(left, right, max_error=1e-12) == pytest.approx(10.0)
-    assert gm.hausdorff_distance(
-        left,
-        right,
-        max_error=1e-12,
-        unit="meters",
-    ) == pytest.approx(3.048006096012192)
+    expected_meters = 3.048006096012192
+    assert_bounded(gm.hausdorff_distance(left, right, max_error=PLANAR_ERROR), 10.0)
+    assert_bounded(
+        gm.hausdorff_distance(left, right, max_error=PLANAR_ERROR, unit="meters"),
+        expected_meters,
+    )
+    assert_bounded(
+        gm.hausdorff_distance(left, right),
+        10.0,
+        DEFAULT_RELATIVE_ERROR * 10.0,
+    )
+    assert_bounded(
+        gm.hausdorff_distance(left, right, unit="meters"),
+        expected_meters,
+        DEFAULT_RELATIVE_ERROR * expected_meters,
+    )
 
 
 def test_planar_hausdorff_preserves_broadcast_and_missing_rows() -> None:
@@ -192,10 +228,10 @@ def test_planar_hausdorff_preserves_broadcast_and_missing_rows() -> None:
     shifted = gm.LineString([(0, 1), (1, 1)])
     values = gm.GeometryArray([line, None, shifted])
 
-    result = gm.hausdorff_distance(values, line, max_error=PLANAR_ERROR)
-    assert result[0] == pytest.approx(0.0)
+    result = gm.hausdorff_distance(values, line)
+    assert result[0] == 0.0
     assert isnan(result[1])
-    assert result[2] == pytest.approx(1.0)
+    assert_bounded(result[2], 1.0, DEFAULT_RELATIVE_ERROR)
 
 
 def test_planar_hausdorff_distinguishes_exact_zero_from_a_close_unequal_pair() -> None:
@@ -205,7 +241,9 @@ def test_planar_hausdorff_distinguishes_exact_zero_from_a_close_unequal_pair() -
     whole = gm.LineString([(0.0, 0.0), (1.0, 0.0)])
 
     assert gm.hausdorff_distance(point, close, max_error=1e-6) > 0.0
+    assert gm.hausdorff_distance(point, close) > 0.0
     assert gm.hausdorff_distance(whole, segmented, max_error=PLANAR_ERROR) == 0.0
+    assert gm.hausdorff_distance(whole, segmented) == 0.0
 
 
 def test_planar_identity_does_not_bypass_cancelled_filled_support() -> None:
@@ -213,11 +251,11 @@ def test_planar_identity_does_not_bypass_cancelled_filled_support() -> None:
         "POLYGON ((0 0, 2 0, 0 2, 0 0), (0 0, 2 0, 0 2, 0 0))"
     )
     with pytest.raises(ValueError, match="non-empty"):
-        gm.hausdorff_distance(cancelled, cancelled, max_error=PLANAR_ERROR)
+        gm.hausdorff_distance(cancelled, cancelled)
 
     values = gm.GeometryArray([cancelled])
     with pytest.raises(ValueError, match="non-empty"):
-        gm.hausdorff_distance(values, values, max_error=PLANAR_ERROR)
+        gm.hausdorff_distance(values, values)
 
 
 def test_zero_area_polygon_keeps_closed_boundary_semantics() -> None:

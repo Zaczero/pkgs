@@ -278,8 +278,8 @@ pub(crate) fn distance_3d(
 /// CRS-aware: geodesic meters on a geographic CRS, native linear units on a
 /// projected CRS, coordinate units when CRS-free. Geographic Hausdorff
 /// distance supports point and linework operands only; filled polygon
-/// interiors require ``unit='planar'`` or a projected CRS. Planar results are
-/// certified to the requested absolute output-unit bound.
+/// interiors require ``unit='planar'`` or a projected CRS. Planar results use
+/// a certified relative bound by default or a caller-supplied absolute bound.
 ///
 /// Parameters
 /// ----------
@@ -288,9 +288,9 @@ pub(crate) fn distance_3d(
 ///     coordinate epoch.
 /// max_error : float, optional
 ///     Positive finite scalar absolute error bound in final result units.
-///     Required for planar Hausdorff distance. Omit it for the numerical
-///     geodesic Hausdorff path; geodesic results do not provide this
-///     certification contract.
+///     Planar results default to a certified relative error of at most
+///     ``1e-9``. Omit it for the numerical geodesic Hausdorff path; geodesic
+///     results do not provide this certification contract.
 /// unit : {'planar', 'meters'}, default None
 ///     Omitted follows the CRS: geodesic meters on a geographic CRS, native
 ///     units on a projected one, coordinate units without a CRS.
@@ -301,7 +301,9 @@ pub(crate) fn distance_3d(
 /// Returns
 /// -------
 /// float or numpy.ndarray
-///     One result per input pair.
+///     One result per input pair. A planar result is zero exactly when the
+///     operands have equal closed support; unequal positive distances remain
+///     positive even when smaller than the effective error bound.
 ///
 /// Raises
 /// ------
@@ -314,10 +316,12 @@ pub(crate) fn distance_3d(
 ///     If either operand is empty; Hausdorff distance is undefined for an
 ///     empty support.
 /// ValueError
-///     If ``max_error`` is not a positive finite scalar, is omitted for a
-///     planar result, or is supplied for a geodesic result.
+///     If ``max_error`` is not a positive finite scalar or is supplied for a
+///     geodesic result.
 /// GeometryError
-///     If ``unit='meters'`` is requested for a CRS-free geometry.
+///     If ``unit='meters'`` is requested for a CRS-free geometry, or a finite
+///     planar result cannot be certified within representable output and the
+///     available generated-work or memory resources.
 ///
 /// See Also
 /// --------
@@ -332,8 +336,8 @@ pub(crate) fn distance_3d(
 /// >>> import gometry as gm
 /// >>> a = gm.LineString([(0, 0), (10, 0)])
 /// >>> b = gm.LineString([(0, 1), (10, 3)])
-/// >>> gm.hausdorff_distance(a, b, max_error=1e-12)
-/// 3.0
+/// >>> abs(gm.hausdorff_distance(a, b, max_error=1e-12) - 3.0) <= 1e-12
+/// True
 #[pyfunction]
 #[pyo3(signature = (left, right, *, max_error = None, unit = None))]
 pub(crate) fn hausdorff_distance(

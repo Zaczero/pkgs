@@ -241,6 +241,7 @@ assert_type(
     gm.hausdorff_distance(LINES, LINE, max_error=1e-12),
     npt.NDArray[np.float64],
 )
+assert_type(gm.hausdorff_distance(LINES, LINE), npt.NDArray[np.float64])
 assert_type(
     gm.frechet_distance(LINES, LINE, densify=[0.5]),
     npt.NDArray[np.float64],
