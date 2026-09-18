@@ -999,24 +999,29 @@ fn overlay_polygons(
     let mut selected = Vec::new();
     crate::try_reserve_vec(&mut selected, arrangement.faces.len())?;
     for face in &arrangement.faces {
-        let Some(probe) = face_probe(face.ring.as_slice(), face.area_sign) else {
-            if face.ring.len() < 4 || face.area_sign == AreaSign::Zero {
-                try_push_vec(&mut selected, 0)?;
-                continue;
-            }
-            return Err(GeometryErrorKind::Invalid(
-                "nondegenerate overlay face has no interior probe".into(),
-            )
-            .into());
-        };
+        if face.ring.len() < 4 || face.area_sign == AreaSign::Zero {
+            try_push_vec(&mut selected, 0)?;
+            continue;
+        }
+        let mut probe = None;
         let mut area_membership = Vec::new();
         crate::try_reserve_vec(&mut area_membership, sources.len())?;
         for (source_row, source) in sources.iter().enumerate() {
-            try_push_vec(
-                &mut area_membership,
-                face_area_side(&face.ring, graph, source_row as u32, &edge_by_endpoints)
-                    .unwrap_or_else(|| source.contains_area_interior(probe)),
-            )?;
+            let inside = face_area_side(
+                &face.ring,
+                graph,
+                source_row as u32,
+                source.area_support.len() == 1,
+                &edge_by_endpoints,
+            )
+            .unwrap_or_else(|| {
+                let probe = *probe.get_or_insert_with(|| {
+                    face_probe(&face.ring, face.area_sign)
+                        .unwrap_or_else(|| longest_edge_midpoint(&face.ring))
+                });
+                source.contains_area_interior(probe)
+            });
+            try_push_vec(&mut area_membership, inside)?;
         }
         try_push_vec(
             &mut selected,
@@ -1044,6 +1049,81 @@ fn has_nonempty_point_or_line_support(shape: &Shape) -> bool {
         },
         Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::Empty(..) => false,
     }
+}
+
+/// The meridian crossed by the fewest area edges, taken between consecutive
+/// distinct vertex longitudes. An edge that ends on a meridian does not cross
+/// it.
+fn least_crossed_meridian(
+    axis: crate::geographic::PeriodicAxis,
+    edges: &[(usize, Segment)],
+) -> Result<f64> {
+    let canonical = |longitude: f64| {
+        axis.canonicalize(longitude)
+            .expect("validated geographic longitude")
+            .get()
+    };
+    let mut vertices = Vec::new();
+    crate::try_reserve_vec(&mut vertices, edges.len())?;
+    for &(_, segment) in edges {
+        try_push_vec(&mut vertices, canonical(segment.start.x))?;
+    }
+    vertices.sort_by(f64::total_cmp);
+    vertices.dedup();
+    let period = axis.period();
+    let Some(&first) = vertices.first() else {
+        return Ok(-axis.half_period());
+    };
+    // Candidate meridians sit midway between neighbouring vertex longitudes,
+    // including the gap that wraps past the seam.
+    let mut candidates = Vec::new();
+    crate::try_reserve_vec(&mut candidates, vertices.len())?;
+    for pair in vertices.array_windows::<2>() {
+        try_push_vec(&mut candidates, f64::midpoint(pair[0], pair[1]))?;
+    }
+    let last = *vertices.last().expect("nonempty vertices");
+    try_push_vec(&mut candidates, f64::midpoint(last, first + period))?;
+    let mut crossings = Vec::new();
+    crate::try_reserve_vec(&mut crossings, candidates.len() + 1)?;
+    crossings.resize(candidates.len() + 1, 0_i64);
+    let add = |from: f64, to: f64, crossings: &mut Vec<i64>| {
+        let lo = candidates.partition_point(|&candidate| candidate <= from);
+        let hi = candidates.partition_point(|&candidate| candidate < to);
+        if lo < hi {
+            crossings[lo] += 1;
+            crossings[hi] -= 1;
+        }
+    };
+    for &(_, segment) in edges {
+        let from = canonical(segment.start.x);
+        let delta = axis
+            .shortest_edge(segment.start.x, segment.end.x)
+            .expect("validated geographic longitude")
+            .delta(axis);
+        let (lo, hi) = if delta >= 0.0 {
+            (from, from + delta)
+        } else {
+            (from + delta, from)
+        };
+        // Map the interval onto [first, first + period) and split at the wrap.
+        let shift = ((lo - first) / period).floor() * period;
+        let (lo, hi) = (lo - shift, hi - shift);
+        if hi <= first + period {
+            add(lo, hi, &mut crossings);
+        } else {
+            add(lo, first + period, &mut crossings);
+            add(first, hi - period, &mut crossings);
+        }
+    }
+    let mut running = 0;
+    let mut best = (i64::MAX, candidates[0]);
+    for (index, &candidate) in candidates.iter().enumerate() {
+        running += crossings[index];
+        if running < best.0 {
+            best = (running, candidate);
+        }
+    }
+    Ok(best.1)
 }
 
 fn unwrap_geographic_area_edges(
@@ -1080,21 +1160,49 @@ fn unwrap_geographic_area_edges(
     let mut longitudes = Vec::new();
     crate::try_reserve_vec(&mut longitudes, graph.nodes.len())?;
     longitudes.resize(graph.nodes.len(), None);
+    // Chart extent of each connected boundary component, in walk order.
+    let mut components: Vec<(Vec<usize>, f64, f64)> = Vec::new();
     for seed in 0..graph.nodes.len() {
-        if longitudes[seed].is_some() {
+        if longitudes[seed].is_some() || adjacency[seed].is_empty() {
             continue;
         }
         longitudes[seed] = Some(graph.nodes[seed].point.x);
+        let mut members = Vec::new();
         let mut stack = Vec::new();
         crate::try_reserve_vec(&mut stack, graph.nodes.len())?;
         try_push_vec(&mut stack, seed)?;
+        let (mut west, mut east) = (f64::INFINITY, f64::NEG_INFINITY);
         while let Some(node) = stack.pop() {
             let longitude = longitudes[node].expect("assigned chart longitude");
+            try_push_vec(&mut members, node)?;
+            west = west.min(longitude);
+            east = east.max(longitude);
             for &(neighbor, delta) in &adjacency[node] {
                 if longitudes[neighbor].is_none() {
                     longitudes[neighbor] = Some(longitude + delta);
                     try_push_vec(&mut stack, neighbor)?;
                 }
+            }
+        }
+        try_push_vec(&mut components, (members, west, east))?;
+    }
+    // Each component is unwrapped from its own seed, so a hole or island that
+    // shares no boundary with its surroundings can land a full turn away from
+    // them. Place every component that the least-crossed meridian does not
+    // cut into the one window east of that meridian; the chart is then the
+    // sphere cut open along it, and nesting between components survives.
+    let period = axis.period();
+    let cut = least_crossed_meridian(axis, edges)?;
+    for (members, west, east) in &components {
+        let turns = ((west - cut) / period).floor();
+        let window_west = cut + turns * period;
+        if *east > window_west + period {
+            continue;
+        }
+        let shift = -turns * period;
+        if shift != 0.0 {
+            for &node in members {
+                longitudes[node] = longitudes[node].map(|longitude| longitude + shift);
             }
         }
     }
@@ -1243,17 +1351,53 @@ fn source_polygon_loops(sources: &[TopologyGraph]) -> Result<Vec<(Vec<f64>, Vec<
     Ok(loops)
 }
 
+/// The face's membership in one source, read from the source's own edges on
+/// the face ring. Being inside any one part puts the face inside the source,
+/// but being outside one part does not when another part may cover the face.
 fn face_area_side(
     ring: &[XY],
     graph: &TopologyGraph,
     source_row: u32,
+    single_part: bool,
     edge_by_endpoints: &HashMap<(PointKey, PointKey), usize>,
 ) -> Option<bool> {
-    ring.array_windows::<2>().find_map(|[start, end]| {
+    let mut outside = false;
+    for [start, end] in ring.array_windows::<2>() {
         let key = ordered_edge(PointKey::new(*start), PointKey::new(*end));
-        let edge_index = *edge_by_endpoints.get(&key)?;
-        graph.area_source_side_for_row(&graph.edges[edge_index], *start, *end, source_row)
-    })
+        let Some(&edge_index) = edge_by_endpoints.get(&key) else {
+            continue;
+        };
+        let edge = &graph.edges[edge_index];
+        match graph.area_source_side_for_row(edge, *start, *end, source_row) {
+            Some(true) => return Some(true),
+            Some(false) => outside = true,
+            None => {},
+        }
+    }
+    (outside && single_part).then_some(false)
+}
+
+/// A seam longitude has two spellings, and a stored edge longer than half a
+/// turn that ends on the seam means the ring winds the globe. Spell each seam
+/// vertex with the alias nearest its incoming off-seam neighbour, so every
+/// canonicalized edge keeps the short step the chart edge took.
+fn spell_seam_vertices(points: &mut [(Point, bool)], period: f64) {
+    let Some(first_off_seam) = points.iter().position(|&(_, on_seam)| !on_seam) else {
+        return;
+    };
+    let mut reference = points[first_off_seam].0.x;
+    let len = points.len();
+    for offset in 1..len {
+        let (point, on_seam) = &mut points[(first_off_seam + offset) % len];
+        if *on_seam {
+            point.x = [point.x - period, point.x, point.x + period]
+                .into_iter()
+                .min_by(|a, b| (a - reference).abs().total_cmp(&(b - reference).abs()))
+                .expect("three aliases");
+        } else {
+            reference = point.x;
+        }
+    }
 }
 
 fn canonicalize_polygon(
@@ -1263,22 +1407,27 @@ fn canonicalize_polygon(
     let TopologyDomain::Geographic(frame) = domain else {
         return Ok(polygon);
     };
+    let axis = frame.longitude();
     let canonicalize = |ring: &crate::geometry::Ring| {
         let mut points = Vec::new();
         crate::try_reserve_vec(&mut points, ring.coord_count())?;
         for point in ring.coords().iter_coords() {
+            let longitude = axis
+                .canonicalize(point.x)
+                .expect("derived geographic longitude is finite");
+            let at_pole = crate::geographic::Latitude::try_new(frame, point.y)
+                .expect("derived geographic latitude is admitted")
+                .identity(frame)
+                == crate::geographic::SeamIdentity::Pole;
+            let on_seam =
+                longitude.identity(axis) == crate::geographic::SeamIdentity::Seam && !at_pole;
             try_push_vec(
                 &mut points,
-                Point::new_raw_xy(
-                    frame
-                        .longitude()
-                        .canonicalize(point.x)
-                        .expect("derived geographic longitude is finite")
-                        .get(),
-                    point.y,
-                ),
+                (Point::new_raw_xy(longitude.get(), point.y), on_seam),
             )?;
         }
+        spell_seam_vertices(&mut points, axis.period());
+        let points: Vec<Point> = points.into_iter().map(|(point, _)| point).collect();
         CoordSeq::try_from_points(&points).map(crate::geometry::Ring::from_closed)
     };
     let shell = canonicalize(&polygon.shell)?;
@@ -1352,6 +1501,23 @@ fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {
             return None;
         }
     }
+}
+
+/// Stand-in probe for a sliver face with no representable interior point.
+/// The arrangement splits every source edge at every contact, so a face edge's
+/// midpoint meets a source's boundary only along that edge, whose side it
+/// already reported as exterior; its interior membership is the face's.
+fn longest_edge_midpoint(ring: &[XY]) -> XY {
+    let [start, end] = ring
+        .array_windows::<2>()
+        .max_by(|[a, b], [c, d]| {
+            (b.x - a.x)
+                .hypot(b.y - a.y)
+                .total_cmp(&(d.x - c.x).hypot(d.y - c.y))
+        })
+        .copied()
+        .expect("a nondegenerate face ring has edges");
+    XY::new(f64::midpoint(start.x, end.x), f64::midpoint(start.y, end.y))
 }
 
 fn keep_area_face(membership: &[bool], op: OverlayOp) -> bool {
