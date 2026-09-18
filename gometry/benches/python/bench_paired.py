@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import json
 import os
 import platform
@@ -30,6 +31,7 @@ from _bench_oracles import (
 )
 from _bench_registry import operation_for_row, scaling_record
 from bench_doctor import (
+    packages_required_by_operations,
     _extension_identity,
     _loaded_native_libraries,
     _package_identity,
@@ -281,6 +283,10 @@ def run_block(
         'B': (operation.competitor, pair.competitor_call),
     }
     order = ('A', 'B') if lead == 'ab' else ('B', 'A')
+    # Competitor callables import lazily; load every package the pair needs
+    # first so the attested native libraries cannot change mid-block.
+    for package in sorted(packages_required_by_operations((operation,))):
+        importlib.import_module(package)
     common_before = identity()
     block_started = clock_ns()
     if common_before.get('identity_schema_version') == IDENTITY_SCHEMA_VERSION:
