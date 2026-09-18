@@ -291,15 +291,15 @@ def test_finite_area_rescue_is_rotation_invariant_across_coordinate_magnitudes()
             for centroid in (polygon.centroid(), packed.centroid()[0]):
                 _assert_close_to_stored_reference(float(centroid.x), expected_x)
                 _assert_close_to_stored_reference(float(centroid.y), expected_y)
-        for aggregate in (
-            gm.MultiPolygon([polygons[0], polygons[2]]),
-            gm.GeometryCollection([polygons[1], polygons[0]]),
+        # A multipolygon's parts are measured as stored; a collection's
+        # members may validly overlap, so a duplicate counts once.
+        for aggregate, area in (
+            (gm.MultiPolygon([polygons[0], polygons[2]]), 2 * expected_area),
+            (gm.GeometryCollection([polygons[1], polygons[0]]), expected_area),
         ):
             packed = gm.GeometryArray([aggregate])
-            # Multipart and collection operands are unions: these two entries
-            # have the same support, so a duplicate does not double-count it.
-            assert aggregate.area == float(expected_area)
-            assert float(packed.area[0]) == float(expected_area)
+            assert aggregate.area == float(area)
+            assert float(packed.area[0]) == float(area)
             for centroid in (aggregate.centroid(), packed.centroid()[0]):
                 _assert_close_to_stored_reference(float(centroid.x), expected_x)
                 _assert_close_to_stored_reference(float(centroid.y), expected_y)

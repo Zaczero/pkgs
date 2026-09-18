@@ -494,25 +494,36 @@ pub(crate) fn unary_densify(
 }
 
 /// Area kernel shared by the spine-routed free function.
+///
+/// Polygonal operands are measured as stored: the ring sum is exact for a
+/// valid polygon, and repairing an invalid one is the caller's decision. The
+/// members of a valid geometry collection may overlap, so a collection
+/// measures its occupied support once.
 pub(crate) fn unary_area(data: &PreparedPlan, ctx: &CachelessRowContext<'_>) -> Result<f64> {
     let metric = ctx.metric.require_resolved(MetricOp::Area)?;
+    let shape = data.shape();
+    let collection = matches!(shape, Shape::GeometryCollection(_));
     match metric {
         ResolvedMetric::Planar { to_metre } => {
-            let area = if ctx.domain.is_geographic() {
-                crate::geometry::occupied_support_shape(data.shape(), ctx.domain)?.area()
-            } else {
-                crate::geometry::occupied_cartesian_area(data.shape())?
+            let area = match ctx.domain {
+                crate::geometry::TopologyDomain::Cartesian if collection => {
+                    crate::geometry::occupied_cartesian_area(shape)?
+                },
+                domain if collection => {
+                    crate::geometry::occupied_support_shape(shape, domain)?.area()
+                },
+                _ => shape.area(),
             };
             Ok(scale_area(area, to_metre.get()))
         },
         ResolvedMetric::Geodesic(metric) => {
-            crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
-            let support = crate::geometry::occupied_support_shape(data.shape(), ctx.domain)?;
-            Ok(crate::crs::geodesic_shape_area(
-                &metric.geodesic,
-                &support,
-                metric.frame,
-            ))
+            crate::crs::ensure_geographic_domain_in_frame(metric.frame, shape)?;
+            Ok(if collection {
+                let support = crate::geometry::occupied_support_shape(shape, ctx.domain)?;
+                crate::crs::geodesic_shape_area(&metric.geodesic, &support, metric.frame)
+            } else {
+                crate::crs::geodesic_shape_area(&metric.geodesic, shape, metric.frame)
+            })
         },
     }
 }

@@ -569,23 +569,17 @@ impl PyGeometryArray {
 }
 
 impl PyGeometryArray {
-    /// Restore the fused planar polygon reducer only after every selected row
-    /// has passed the cached validity owner. Invalid rows decline as a batch so
-    /// the shared per-row kernel can route each one to occupied support.
+    /// Fused planar polygon reducer: every row is measured as stored, like the
+    /// per-row kernel ([`crate::dispatch::kernels::unary_area`]).
     pub(crate) fn area_unary_packed(
         &self,
         py: Python<'_>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Option<Vec<f64>>> {
-        if self.has_missing()
-            || !matches!(
-                self.storage(),
-                GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
-            )
-        {
-            return Ok(None);
-        }
-        if matches!(
+        if !matches!(
+            self.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Polygons { .. })
+        ) || matches!(
             crate::geometry::topology_domain(&self.frame)?,
             crate::geometry::TopologyDomain::Geographic(_)
         ) {
@@ -596,22 +590,6 @@ impl PyGeometryArray {
         else {
             return Ok(None);
         };
-
-        let validation_array = self.clone();
-        let all_valid = py.detach(move || -> crate::error::Result<bool> {
-            let mut rows = validation_array.row_operation();
-            for row in rows.present_rows() {
-                let data = rows.prepared(row)?;
-                if data.validate_cached()?.is_some() {
-                    return Ok(false);
-                }
-            }
-            Ok(true)
-        })?;
-        if !all_valid {
-            return Ok(None);
-        }
-
         let scale = to_metre.get() * to_metre.get();
         self.reduce_packed_columns_detached(py, move |columns| {
             let PackedColumns::Polygons(polygon_columns) = columns else {

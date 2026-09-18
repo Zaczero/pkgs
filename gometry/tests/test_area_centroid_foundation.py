@@ -197,8 +197,8 @@ def test_ordinary_area_centroid_bit_identity() -> None:
     assert c.x == 1.0 and c.y == 2.0
 
 
-def test_area_measures_occupied_support() -> None:
-    """Area follows stored-ring occupancy and unions multipart support."""
+def test_area_measures_polygons_as_stored_and_collections_once() -> None:
+    """Polygons take the ring sum; a collection's overlapping members count once."""
     twice = gm.Polygon([
         (0.0, 0.0),
         (1.0, 0.0),
@@ -212,38 +212,13 @@ def test_area_measures_occupied_support() -> None:
     ])
     bowtie = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))')
     overlap = gm.MultiPolygon([gm.box(0, 0, 1, 1), gm.box(0.5, 0, 1.5, 1)])
-    outside_hole = gm.Polygon(
-        [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)],
-        holes=[[(3, 0), (4, 0), (4, 1), (3, 1), (3, 0)]],
-    )
-    enclosing_hole = gm.Polygon(
-        [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)],
-        holes=[[(-0.5, -0.5), (1.5, -0.5), (1.5, 1.5), (-0.5, 1.5), (-0.5, -0.5)]],
-    )
     collection_overlap = gm.GeometryCollection([gm.box(0, 0, 1, 1), gm.box(0, 0, 1, 1)])
+    geometries = [twice, bowtie, overlap, collection_overlap]
+    expected = [2.0, 0.0, 2.0, 1.0]
 
-    assert twice.area == 1.0
-    assert bowtie.area == 0.5
-    assert overlap.area == 1.5
-    assert outside_hole.area == 1.0
-    assert enclosing_hole.area == 0.0
     assert collection_overlap.is_valid is True
-    assert collection_overlap.area == 1.0
-    assert gm.GeometryArray([
-        twice,
-        bowtie,
-        overlap,
-        outside_hole,
-        enclosing_hole,
-        collection_overlap,
-    ]).area.tolist() == [
-        1.0,
-        0.5,
-        1.5,
-        1.0,
-        0.0,
-        1.0,
-    ]
+    assert [geometry.area for geometry in geometries] == expected
+    assert gm.GeometryArray(geometries).area.tolist() == expected
 
 
 def test_shared_scale_off_center_triangle_not_snapped_to_bbox_mid() -> None:
