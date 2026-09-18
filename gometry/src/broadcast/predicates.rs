@@ -589,6 +589,12 @@ fn xy_predicate_array_values(
                         let row = row.row();
                         let point = Point::new_raw_xy(x, y);
                         let row = rows.prepared_at(logical, row)?;
+                        if domain == TopologyDomain::Cartesian {
+                            return Ok(xy_location_matches(
+                                row.cartesian_point_location(point)?,
+                                inclusive,
+                            ));
+                        }
                         let row_cache = rows.frame_cache(logical)?;
                         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)))?;
                         let point_cache = crate::geometry::FrameDependentCaches::default();
@@ -618,6 +624,20 @@ fn xy_array_values(
     spec: PredicateSpec,
     domain: TopologyDomain,
 ) -> Result<Vec<bool>, (usize, crate::error::Error)> {
+    if domain == TopologyDomain::Cartesian {
+        let inclusive = spec.predicate == Predicate::Intersects;
+        original.point_tester().map_err(|error| (0, error))?;
+        return x
+            .into_iter()
+            .zip(y)
+            .map(|(x, y)| {
+                Ok(xy_location_matches(
+                    original.cartesian_point_location(Point::new_raw_xy(x, y))?,
+                    inclusive,
+                ))
+            })
+            .collect_rows();
+    }
     x.into_iter()
         .zip(y)
         .map(|(x, y)| {
@@ -635,6 +655,15 @@ fn xy_array_values(
             )
         })
         .collect_rows()
+}
+
+/// `intersects_xy` admits the boundary; `contains_xy` requires the interior.
+fn xy_location_matches(location: crate::geometry::Loc, inclusive: bool) -> bool {
+    if inclusive {
+        location != crate::geometry::Loc::Exterior
+    } else {
+        location == crate::geometry::Loc::Interior
+    }
 }
 
 pub(crate) fn xy_predicate_values(
@@ -655,6 +684,10 @@ pub(crate) fn xy_predicate_values(
     let original_cache = geometry.frame_cache()?;
     if scalar {
         let point = Point::new(x[0], y[0])?;
+        if domain == TopologyDomain::Cartesian {
+            let location = py.detach(move || original.cartesian_point_location(point))?;
+            return Ok(py_bool(py, xy_location_matches(location, inclusive)));
+        }
         let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)))?;
         let point_cache = crate::geometry::FrameDependentCaches::default();
         let value = py.detach(move || {

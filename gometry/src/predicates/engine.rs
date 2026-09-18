@@ -10,7 +10,7 @@ use std::cell::OnceCell;
 
 use crate::geometry::{
     Bounds, CompiledPattern, GeographicPrepared, Loc, PreparedPlan, Shape, TopologyDomain,
-    cartesian_point_location, graph_relate_data, line_scalar_prefers_direct_polygon_relate,
+    graph_relate_data, line_scalar_prefers_direct_polygon_relate,
 };
 use crate::try_push_vec;
 
@@ -499,6 +499,8 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     )?))
                 })
             };
+            // Point rows probe the scalar once each: index it for a batch.
+            let mut point_tester_ready = elements.len() < 2;
             let mut results = Vec::new();
             for (index, row) in elements {
                 let mut evaluate = || -> crate::error::Result<bool> {
@@ -508,6 +510,10 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     let Some(row) = row else { return Ok(false) };
                     if let Some(verdict) = gate(index, row)? {
                         return Ok(verdict);
+                    }
+                    if !point_tester_ready && row_kind_empty(row).0 == GeometryKind::Point {
+                        scalar.point_tester()?;
+                        point_tester_ready = true;
                     }
                     let element = row_operation.as_mut().map_or_else(
                         || crate::array::PreparedRow::transient(row),
@@ -686,19 +692,12 @@ fn local_point_predicate(
         if matches!(left.shape(), Shape::Point(_)) {
             return Ok(None);
         }
+        let location = || left.cartesian_point_location(*right_point);
         return Ok(Some(match spec.predicate {
-            Predicate::Intersects | Predicate::Covers => {
-                cartesian_point_location(left.shape(), *right_point)? != Loc::Exterior
-            },
-            Predicate::Disjoint => {
-                cartesian_point_location(left.shape(), *right_point)? == Loc::Exterior
-            },
-            Predicate::Contains | Predicate::ContainsProperly => {
-                cartesian_point_location(left.shape(), *right_point)? == Loc::Interior
-            },
-            Predicate::Touches => {
-                cartesian_point_location(left.shape(), *right_point)? == Loc::Boundary
-            },
+            Predicate::Intersects | Predicate::Covers => location()? != Loc::Exterior,
+            Predicate::Disjoint => location()? == Loc::Exterior,
+            Predicate::Contains | Predicate::ContainsProperly => location()? == Loc::Interior,
+            Predicate::Touches => location()? == Loc::Boundary,
             Predicate::Within | Predicate::CoveredBy | Predicate::Equals => return Ok(None),
             Predicate::Crosses | Predicate::Overlaps => false,
         }));
@@ -707,7 +706,7 @@ fn local_point_predicate(
         if matches!(right.shape(), Shape::Point(_)) {
             return Ok(None);
         }
-        let location = cartesian_point_location(right.shape(), *left_point)?;
+        let location = right.cartesian_point_location(*left_point)?;
         return Ok(Some(match spec.predicate {
             Predicate::Intersects | Predicate::CoveredBy => location != Loc::Exterior,
             Predicate::Disjoint => location == Loc::Exterior,

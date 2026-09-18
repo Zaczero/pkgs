@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
 use crate::error::Result;
-use crate::geometry::distance::RequiredPointTester;
 use crate::geometry::topology::TopologyGraph;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
@@ -452,10 +451,21 @@ impl PreparedPlan {
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
-    pub(in crate::geometry) fn point_tester_required(
-        &self,
-        _required: RequiredPointTester,
-    ) -> Result<Option<&PointBatchTester>> {
+    /// Exact Cartesian location of `point`. A point tester already built for
+    /// a batch answers probes that avoid every ring edge; everything else
+    /// takes the exact source scan, which never pays for building an index.
+    pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
+        if let Some(Some(tester)) = self.topology()?.point_tester.get()
+            && let Some(location) = tester.location_off_boundary(point)
+        {
+            return Ok(location);
+        }
+        crate::geometry::cartesian_point_location(self.shape(), point)
+    }
+
+    /// The indexed point tester of a polygonal shape, built on first use.
+    /// Build it for a batch of probes; a single probe is cheaper as a scan.
+    pub(crate) fn point_tester(&self) -> Result<Option<&PointBatchTester>> {
         Ok(self
             .topology()?
             .point_tester

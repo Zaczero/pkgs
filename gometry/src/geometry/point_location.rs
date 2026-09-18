@@ -18,9 +18,9 @@ use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, CoordSeq, Point, Polygon, Ring, RingClass, RingEdgeMembership, RingView, Shape,
-    SharedSlice, cartesian_ring_views_location, ring_edge_membership, ring_kind_columns,
-    xy_bounds_columns,
+    Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingEdgeMembership, RingView, Shape,
+    SharedSlice, XY, cartesian_ring_views_location, edge_winding, ring_edge_membership,
+    ring_kind_columns, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -94,6 +94,24 @@ impl RingPointIndex {
         }
     }
 
+    /// Winding number at a probe that avoids the ring, read from the edges
+    /// stabbed at its height; `None` when the probe lies on an edge.
+    fn winding_off_boundary(&self, x: f64, y: f64) -> Option<i64> {
+        let query = XY::new(x, y);
+        let mut winding = 0_i64;
+        let touched = self.edges.for_each_edge(y, |edge| {
+            let (ax, ay, bx, by) = self.edge_xy(edge);
+            edge_winding(XY::new(ax, ay), XY::new(bx, by), query).map_or(
+                ControlFlow::Break(()),
+                |delta| {
+                    winding += delta;
+                    ControlFlow::Continue(())
+                },
+            )
+        });
+        touched.is_none().then_some(winding)
+    }
+
     /// Exact classification without the ring envelope gate.
     fn classify_at(&self, x: f64, y: f64) -> RingClass {
         if let Some(edges) = self.edges.dense_band_edges(y) {
@@ -145,6 +163,8 @@ pub(crate) struct PolygonPointIndex {
     bounds: Option<Bounds>,
     shell: RingPointIndex,
     holes: YStabbingIndex<RingPointIndex>,
+    /// Every ring carries areal winding; a collapsed ring is line support.
+    winding_rings: bool,
 }
 
 impl PolygonPointIndex {
@@ -153,7 +173,9 @@ impl PolygonPointIndex {
         let mut hole_rings = Vec::new();
         crate::try_reserve_vec(&mut hole_rings, polygon.holes.len())?;
         for hole in polygon.holes.iter() {
-            hole_rings.push(RingPointIndex::build(hole.coords())?);
+            let ring = RingPointIndex::build(hole.coords())?;
+            index.winding_rings &= ring.kind == crate::geometry::RingKind::Winding;
+            hole_rings.push(ring);
         }
         index.holes = YStabbingIndex::build(hole_rings, |ring| {
             (
@@ -168,6 +190,7 @@ impl PolygonPointIndex {
 
     pub(in crate::geometry) fn build_shell(shell: &Ring) -> Result<Self> {
         let shell_index = RingPointIndex::build(shell.coords())?;
+        let winding_rings = shell_index.kind == crate::geometry::RingKind::Winding;
         Ok(Self {
             bounds: Some(shell_index.bounds),
             shell: shell_index,
@@ -179,7 +202,30 @@ impl PolygonPointIndex {
                     f64::NEG_INFINITY,
                 )
             })?,
+            winding_rings,
         })
+    }
+
+    /// Whether a probe that avoids every ring edge is interior; `None` when it
+    /// touches an edge or a ring is collapsed, which the exact source scan
+    /// resolves.
+    fn occupied_off_boundary(&self, x: f64, y: f64) -> Option<bool> {
+        if !self.in_bounds_xy(x, y) {
+            return Some(false);
+        }
+        if !self.winding_rings {
+            return None;
+        }
+        let shell = self.shell.winding_off_boundary(x, y)?;
+        let mut hole_occupied = false;
+        let touched = self.holes.for_each_at_point(x, y, |hole| {
+            hole.winding_off_boundary(x, y)
+                .map_or(ControlFlow::Break(()), |winding| {
+                    hole_occupied |= winding != 0;
+                    ControlFlow::Continue(())
+                })
+        });
+        touched.is_none().then_some(shell != 0 && !hole_occupied)
     }
 
     fn in_bounds_xy(&self, x: f64, y: f64) -> bool {
@@ -216,8 +262,12 @@ impl PolygonPointIndex {
     }
 
     fn location(&self, point: Point) -> Result<RingClass> {
-        if !self.in_bounds_xy(point.x, point.y) {
-            return Ok(RingClass::Exterior);
+        if let Some(occupied) = self.occupied_off_boundary(point.x, point.y) {
+            return Ok(if occupied {
+                RingClass::Interior
+            } else {
+                RingClass::Exterior
+            });
         }
         let mut hole_indices = Vec::new();
         crate::try_reserve_vec(&mut hole_indices, self.holes.len())?;
@@ -446,6 +496,37 @@ impl PointBatchTester {
             )
         })?;
         Ok(Self::MultiPolygon { parts })
+    }
+
+    /// Location of a probe that avoids every ring edge, from indexed exact
+    /// windings. `None` for a probe on an edge, a collapsed ring, or a shape
+    /// that is not polygonal: the exact source scan owns those.
+    pub(crate) fn location_off_boundary(&self, point: Point) -> Option<Loc> {
+        let occupied = match self {
+            Self::Polygon { index } => index.occupied_off_boundary(point.x, point.y)?,
+            Self::MultiPolygon { parts } => {
+                let mut occupied = false;
+                let touched = parts.for_each_at_point(point.x, point.y, |part| {
+                    part.occupied_off_boundary(point.x, point.y).map_or(
+                        ControlFlow::Break(()),
+                        |inside| {
+                            occupied |= inside;
+                            ControlFlow::Continue(())
+                        },
+                    )
+                });
+                if touched.is_some() {
+                    return None;
+                }
+                occupied
+            },
+            Self::Generic(_) => return None,
+        };
+        Some(if occupied {
+            Loc::Interior
+        } else {
+            Loc::Exterior
+        })
     }
 
     /// Strict membership — [`Shape::contains_point`] semantics.
@@ -914,6 +995,46 @@ mod tests {
             let tester = PointBatchTester::new(&shape).unwrap();
             assert_eq!(tester.contains_point(point).unwrap(), contains);
             assert_eq!(tester.covers_point(point).unwrap(), contains);
+        }
+    }
+
+    /// The indexed off-boundary answer must agree with the exact source scan
+    /// wherever it answers, and must defer on every edge contact.
+    #[test]
+    fn indexed_locations_agree_with_the_exact_scan() {
+        use crate::geometry::Coordinates as _;
+
+        for wkt in [
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0,-2 0,0 0))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,1 1,1 1,1 1))",
+            "POLYGON ((0 0,4 4,4 0,0 4,0 0))",
+            "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 2,4 2,4 4,2 4,2 2)))",
+            "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((1 1,3 1,3 3,1 3,1 1)))",
+        ] {
+            let shape = crate::io::parse_wkt(wkt).unwrap();
+            let tester = PointBatchTester::new(&shape).unwrap();
+            for step_x in -2..=18 {
+                for step_y in -2..=18 {
+                    let point = Point::new_raw_xy(f64::from(step_x) / 4.0, f64::from(step_y) / 4.0);
+                    let exact = crate::geometry::cartesian_point_location(&shape, point).unwrap();
+                    if let Some(location) = tester.location_off_boundary(point) {
+                        assert_eq!(location, exact, "{wkt} at {point:?}");
+                    } else {
+                        let mut on_edge = false;
+                        shape.for_each_segment_chain(|chain| {
+                            on_edge |= chain.segment_pairs().any(|[start, end]| {
+                                crate::geometry::point_on_segment(point, start, end)
+                            });
+                        });
+                        assert!(
+                            on_edge || wkt.contains("1 1,1 1"),
+                            "{wkt} deferred an off-boundary probe at {point:?}"
+                        );
+                    }
+                }
+            }
         }
     }
 }

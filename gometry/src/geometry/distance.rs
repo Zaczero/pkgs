@@ -13,7 +13,6 @@ mod intersects;
 mod misc;
 mod nearest;
 mod parts_sweep;
-pub(super) struct RequiredPointTester(());
 mod shape_data_distance;
 mod shape_data_nearest;
 mod shape_impl;

@@ -677,23 +677,32 @@ fn compare_rays(query: XY, left: XY, right: XY) -> Ordering {
 fn ring_probe_columns(xs: &[f64], ys: &[f64], point: XY) -> RingProbe {
     let mut winding = 0_i64;
     let mut incident = false;
-    for_each_xy_segment(xs, ys, |start, end| {
-        if same_point(start, end) {
-            return;
-        }
-        let query = point.point();
-        if point_on_segment(query, start, end) {
-            incident = true;
-            return;
-        }
-        let orientation = stored_orientation_sign(start.x, start.y, end.x, end.y, point.x, point.y);
-        if start.y <= point.y && point.y < end.y && orientation == ExactSign::Positive {
-            winding += 1;
-        } else if end.y <= point.y && point.y < start.y && orientation == ExactSign::Negative {
-            winding -= 1;
-        }
+    for_each_xy_segment(xs, ys, |start, end| match edge_winding(start, end, point) {
+        Some(delta) => winding += delta,
+        None => incident = true,
     });
     RingProbe { winding, incident }
+}
+
+/// One stored edge's contribution to the winding number at `query`: its
+/// signed upward or downward crossing of the rightward ray, or `None` when
+/// the query lies on the edge.
+pub(crate) fn edge_winding(start: XY, end: XY, query: XY) -> Option<i64> {
+    if same_point(start, end) {
+        return Some(0);
+    }
+    if point_on_segment(query.point(), start, end) {
+        return None;
+    }
+    let (direction, sign) = if start.y <= query.y && query.y < end.y {
+        (1, ExactSign::Positive)
+    } else if end.y <= query.y && query.y < start.y {
+        (-1, ExactSign::Negative)
+    } else {
+        return Some(0);
+    };
+    let orientation = stored_orientation_sign(start.x, start.y, end.x, end.y, query.x, query.y);
+    Some(if orientation == sign { direction } else { 0 })
 }
 
 fn formal_ring_winding(xs: &[f64], ys: &[f64], point: XY) -> i64 {

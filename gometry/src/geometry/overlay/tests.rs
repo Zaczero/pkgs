@@ -2908,8 +2908,13 @@ mod allocation_tests {
             || cartesian_point_location(&polygon, query),
             "scalar point location",
         );
+        // Off the boundary the indexed windings answer without allocating; a
+        // probe on a hole edge takes the exact source scan.
         let tester = PointBatchTester::new(&polygon).unwrap();
-        assert_allocation_prefixes(|| tester.covers_point(query), "prepared point location");
+        let (_, allocations) = allocation_count(|| tester.covers_point(query));
+        assert_eq!(allocations, 0);
+        let on_hole = Point::new_raw_xy(2.0, 5.0);
+        assert_allocation_prefixes(|| tester.covers_point(on_hole), "prepared point location");
     }
 
     #[test]

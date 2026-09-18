@@ -1,4 +1,3 @@
-use super::RequiredPointTester;
 use crate::geometry::distance::{
     Result, area_overlap_probe, bounds_distance_squared, bounds_squared_safe,
     coordinate_squared_safe, ensure_geodesic_linework, geodesic_distance_with_parts,
@@ -209,7 +208,7 @@ impl PreparedPlan {
         reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
     )]
     pub fn distance_points(&self, probes: impl Iterator<Item = (f64, f64)>) -> Result<Vec<f64>> {
-        let tester = self.point_tester_required(RequiredPointTester(()))?;
+        let tester = self.point_tester()?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
@@ -328,7 +327,7 @@ impl PreparedPlan {
             }
             return Ok(matches);
         }
-        let tester = self.point_tester_required(RequiredPointTester(()))?;
+        let tester = self.point_tester()?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
         let bvh = parts.bvh();
@@ -357,7 +356,7 @@ impl PreparedPlan {
         distance: f64,
         stack: &mut Vec<u32>,
     ) -> Result<bool> {
-        let tester = self.point_tester_required(RequiredPointTester(()))?;
+        let tester = self.point_tester()?;
         let parts = self.distance_parts()?;
         Self::dwithin_point_with_resolved(
             self.shape(),
