@@ -129,7 +129,7 @@ def features_case() -> tuple[Callable[[], Any], Callable[[Any], None], int, int]
 
     def validate(result: Any) -> None:
         assert len(result.geometries) == count
-        assert result.ids == list(range(count))
+        assert result.ids == tuple(range(count))
         assert result.properties[-1] == {'row': count - 1}
 
     return run, validate, 10_000, 200
@@ -305,13 +305,12 @@ def main() -> None:
 
 
 def validate_case() -> None:
-    points = gm.points([0.0, 1.0], [0.0, 1.0])
-    polygon = gm.box(-1.0, -1.0, 2.0, 2.0)
-    result = gm.intersects(polygon, points)
-    assert len(result) == 2 and result.all()
+    for build in CASES.values():
+        run, validate, _, _ = build()
+        validate(run())
     emit_validation(
         'case_resource_tail',
-        useful_output={'count': 2, 'unit': 'predicate-results'},
+        useful_output={'count': len(CASES), 'unit': 'modes'},
     )
 
 

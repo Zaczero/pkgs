@@ -227,15 +227,12 @@ def _grid_case(operation: ScalingOperation) -> PublicCase:
     zoom = {990: 8, 3_960: 9, 15_340: 10}[point]
     bbox = brazil_bbox_polygon()
     w, s, e, n = BRAZIL_BOUNDS
-    all_tiles = tuple(mercantile.tiles(w, s, e, n, [zoom], truncate=False))
-    if len(all_tiles) != point:
-        raise RuntimeError(f'grid fixture has {len(all_tiles)} tiles, want {point}')
 
     def gometry_call() -> object:
         return gm.tile_cover(bbox, zoom=zoom, cell_rule='bbox', max_cells=None)
 
     def competitor_call() -> object:
-        return all_tiles[:point]
+        return tuple(mercantile.tiles(w, s, e, n, [zoom], truncate=False))
 
     def output_validator(value: object) -> None:
         if value is None or len(value) != point:  # type: ignore[arg-type]
