@@ -22,7 +22,6 @@ autoexamples = false
 autotests = false
 autobenches = false
 description = "Rust bindings for PROJ v9.6.x"
-readme = "README.md"
 keywords = [
     "proj",
     "projection",
