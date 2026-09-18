@@ -1,10 +1,6 @@
-#![allow(
+#![expect(
     clippy::absolute_paths,
     reason = "Arrow planning is kept beside the C exporter and its native types"
-)]
-#![allow(
-    clippy::too_many_lines,
-    reason = "each GeoArrow layout has one explicit planning arm"
 )]
 
 use std::borrow::Cow;

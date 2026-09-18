@@ -186,10 +186,6 @@ impl TransformPlan {
             .map_err(|failure| failure.error)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "indexed execution mirrors the owned lane and domain dispatch in one boundary"
-    )]
     pub(crate) fn transform_coordinates_indexed(
         &self,
         x: &mut [f64],

@@ -243,7 +243,7 @@ pub(crate) fn roundtrip_error_distances(
 
 #[expect(
     clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    reason = "a Zt lane view is a bundle of borrowed slices, passed by value like the slices it holds"
 )]
 pub(crate) fn roundtrip_error_distances_zt(
     roundtrip_x: &[f64],
@@ -347,7 +347,7 @@ pub(crate) fn roundtrip_error_distances_zt(
 /// index bounds checks).
 #[expect(
     clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    reason = "a Zt lane view is a bundle of borrowed slices, passed by value like the slices it holds"
 )]
 fn roundtrip_error_zt_scalar(
     out: &mut [f64],

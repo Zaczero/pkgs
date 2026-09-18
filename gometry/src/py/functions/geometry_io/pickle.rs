@@ -609,10 +609,6 @@ pub(crate) fn reduce_geometry_array(
     materialize_array_pickle_payload(py, payload)
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "one payload planner owns the storage and missing-row encoding matrix"
-)]
 fn array_pickle_payload_detached(
     storage: &GeometryArrayStorage,
     missing: Option<&ValidityMask>,

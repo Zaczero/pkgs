@@ -84,10 +84,6 @@ pub(crate) fn rdp_keep(
 /// `tolerance` is the raw distance-scale threshold (must stay available when
 /// `tolerance_squared` overflows to +inf — recovery from tol² alone is
 /// impossible).
-#[expect(
-    clippy::too_many_lines,
-    reason = "SIMD + unsquared cold path must stay one decision tree"
-)]
 pub(crate) fn rdp_split(
     xs: &[f64],
     ys: &[f64],

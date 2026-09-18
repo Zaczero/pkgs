@@ -137,10 +137,6 @@ fn shared_edge_review_fixtures_match_oracle() {
 /// The clean fast path must match the exact arrangement engine on every
 /// curated general-position and shared-boundary admission case.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the full curated admission/defer table stays explicit for auditability"
-)]
 fn clean_overlay_matches_exact_engine_on_curated_cases() {
     let ops = [
         OverlayOp::Union,

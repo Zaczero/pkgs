@@ -641,10 +641,6 @@ pub(crate) fn array_crs_distances(
 /// (bounds-prune + intersects fast-path) rather than computing every exact
 /// distance; geodesic rows use their threshold owner and retain its early
 /// exclusion/hit behavior.
-#[expect(
-    clippy::too_many_lines,
-    reason = "planar vs geodesic dwithin branches share one metric resolution; splitting would re-resolve CRS"
-)]
 pub(crate) fn array_crs_dwithin(
     py: Python<'_>,
     array: &PyGeometryArray,

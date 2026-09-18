@@ -1,24 +1,15 @@
-// `arbitrary_source_item_ordering` is suppressed HERE and only here.  It was
-// additionally repeated verbatim in 187 files, and because lint levels cascade
-// to child modules every one of those copies was dead weight — deleting them
-// provably cannot change a lint outcome, which one `cargo clippy` run confirms.
-//
-// `clippy::absolute_paths` and `clippy::similar_names` deliberately stay
-// FILE-SCOPED (~149 files) and are NOT hoisted here.  Hoisting them looks like
-// the same cleanup and is not: those file-local blocks were the sole
-// suppression, so a crate-root allow would silently extend it to ~390 files
-// that never had one, hiding 543 + 285 real violations from any code written
-// later.  Measured, not assumed.  Keep the blast radius per-file so the lints
-// stay a usable signal.
-#![allow(
+// Crate-wide lint policy lives here and nowhere else. `similar_names` is
+// deliberately not hoisted: it stays an `expect` on the files whose axis and
+// formula vocabulary trips it, so it still flags confusable names elsewhere.
+#![expect(
     clippy::arbitrary_source_item_ordering,
     reason = "cohesive item layout is clearer than a mandated declaration order here"
 )]
-#![allow(
+#![expect(
     clippy::redundant_closure_for_method_calls,
     reason = "the suggested method paths are private module paths that do not resolve at the call site; the closure is the readable form"
 )]
-#![allow(
+#![expect(
     clippy::too_many_lines,
     reason = "a flow reads best in one place; the long functions here are single pipelines whose phases share state, and splitting them would smear one operation across helpers"
 )]

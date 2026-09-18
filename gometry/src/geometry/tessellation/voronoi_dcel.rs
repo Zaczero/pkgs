@@ -1,19 +1,14 @@
 //! Exact labelled Voronoi subdivision and its sole binary64 projection.
 
-#![allow(
-    clippy::assertions_on_result_states,
+#![expect(
     clippy::clone_on_copy,
-    clippy::collapsible_if,
     clippy::explicit_iter_loop,
     clippy::float_cmp,
     clippy::inconsistent_struct_constructor,
     clippy::items_after_statements,
-    clippy::manual_let_else,
     clippy::missing_const_for_fn,
     clippy::needless_range_loop,
     clippy::ptr_arg,
-    clippy::redundant_closure_for_method_calls,
-    clippy::too_many_lines,
     clippy::unnecessary_semicolon,
     clippy::unwrap_used,
     reason = "the DCEL mirrors the numbered construction and its proof tests keep mutations visibly local"

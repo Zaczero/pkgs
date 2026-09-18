@@ -24,10 +24,6 @@ pub(crate) fn parse_wkt(value: &str) -> Result<Shape> {
 /// member of a dimension-tagged GeometryCollection: untagged members adopt
 /// those axes; an explicit conflicting tag is rejected. An untagged outer
 /// collection leaves this `None` so heterogeneous children remain valid.
-#[expect(
-    clippy::too_many_lines,
-    reason = "WKT kind dispatch is one exhaustive match; splitting obscures coverage"
-)]
 fn parse_wkt_inner(
     value: &str,
     depth: usize,

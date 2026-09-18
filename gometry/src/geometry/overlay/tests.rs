@@ -981,10 +981,6 @@ mod binary_areal_overlay_tests {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to"
-    )]
     #[test]
     fn polygon_line_intersection_matches_generic_boundary_and_hole_cases() {
         let holed = Shape::Polygon(

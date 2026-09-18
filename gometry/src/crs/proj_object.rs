@@ -104,10 +104,6 @@ impl ProjObject {
         Ok(columns)
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one snapshot keeps all metadata from the same live PROJ object"
-    )]
     pub(super) fn info(&self, normalized: String) -> Result<CrsInfo> {
         // DOC-H block: context/object derive from `&self` typed owners on the
         // creating thread. Returned owned children are adopted into OwnedPj

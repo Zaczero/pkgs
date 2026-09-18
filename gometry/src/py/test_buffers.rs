@@ -20,8 +20,7 @@
 //! wrong side of that bargain. If this is ever revisited, the replacement must
 //! keep those tests *running*, not merely keep them present.
 
-#![allow(
-    clippy::undocumented_unsafe_blocks,
+#![expect(
     clippy::missing_const_for_fn,
     reason = "buffer-protocol slots document safety at the method level; PyO3 pymethods cannot be const"
 )]

@@ -52,6 +52,10 @@ pub(crate) enum MetricModel {
     Planar { to_metre: PositiveFiniteScale },
     /// Geodesic on the named (normalized) CRS's ellipsoid; results in meters.
     Geodesic {
+        #[expect(
+            clippy::rc_buffer,
+            reason = "Arc<str> has no fallible constructor; the CRS text is allocated fallibly and then shared"
+        )]
         crs: Arc<String>,
         frame: GeographicFrame,
         state: Arc<crate::crs::RuntimeState>,
@@ -95,6 +99,10 @@ impl MetricModel {
 /// metric would hold across a GIL-released loop.
 #[derive(Clone)]
 pub(crate) struct GeodesicMetric {
+    #[expect(
+        clippy::rc_buffer,
+        reason = "Arc<str> has no fallible constructor; the CRS text is allocated fallibly and then shared"
+    )]
     pub(crate) crs: Arc<String>,
     pub(crate) geodesic: Box<Geodesic>,
     pub(crate) frame: GeographicFrame,
@@ -173,6 +181,10 @@ pub(crate) fn metric_model_at(
 enum HorizontalComponent {
     /// A geographic CRS: measured geodesically on its own ellipsoid.
     Geodesic {
+        #[expect(
+            clippy::rc_buffer,
+            reason = "Arc<str> has no fallible constructor; the CRS text is allocated fallibly and then shared"
+        )]
         crs: Arc<String>,
         frame: GeographicFrame,
     },

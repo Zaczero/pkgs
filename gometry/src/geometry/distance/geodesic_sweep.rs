@@ -339,7 +339,7 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
 
 #[expect(
     clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    reason = "the best candidate is fold state: the seed is consumed and its successor returned"
 )]
 pub(crate) fn geodesic_capped_witness_sweep_with_parts(
     vertices: &[Point],
@@ -567,7 +567,7 @@ fn geodesic_capped_witness_sweep_core(
 
 #[expect(
     clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
+    reason = "the best candidate is fold state: the seed is consumed and its successor returned"
 )]
 pub(crate) fn geodesic_witness_sweep_with_parts(
     vertices: &[Point],

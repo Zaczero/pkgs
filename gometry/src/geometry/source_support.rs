@@ -6,7 +6,7 @@
 //! constant; at contact, the only relevant topology is the exact fan of
 //! source rays incident to the queried stored point.
 
-#![allow(
+#![expect(
     clippy::float_cmp,
     reason = "coordinate identity and formal fan ordering use exact represented values"
 )]

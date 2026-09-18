@@ -1892,10 +1892,6 @@ mod tests {
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "a table-driven corpus: the cases are data, and splitting the table hides which oracle they all answer to"
-    )]
     #[test]
     fn direct_areal_relation_matches_graph_oracle() {
         let shell_with_hole = Shape::Polygon(donut());

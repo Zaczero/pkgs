@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::many_single_char_names,
     reason = "the segment metric follows the standard closest-points notation"
 )]

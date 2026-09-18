@@ -244,10 +244,6 @@ pub(crate) fn try_unary_packed_bounds(
 ///
 /// Param-less fast paths key on ``op``; parameterized ones key on the
 /// [`PackedUnary`] variant (whose construction is compile-checked).
-#[expect(
-    clippy::too_many_lines,
-    reason = "one match arm per unary packed fast path"
-)]
 pub(crate) fn try_unary_packed_array(
     py: Python<'_>,
     array: &PyGeometryArray,

@@ -17,7 +17,7 @@
 //! budget bounds the loop, and a mesh the budget could not finish is rejected
 //! rather than returned as if it met the request.
 
-#![allow(
+#![expect(
     clippy::many_single_char_names,
     reason = "a, b, c, d name the vertices of a quad and e, f, t, u its slots, the geometry kernel convention"
 )]

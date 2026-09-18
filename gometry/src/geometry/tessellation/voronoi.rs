@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::option_if_let_else,
     clippy::unwrap_used,
     reason = "the compact deterministic selector maintains the option invariant in the adjacent match"

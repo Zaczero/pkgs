@@ -4,11 +4,6 @@
 //! `__arrow_c_array__`, and `__arrow_c_stream__`. Keep the unsafe surface
 //! boring: every C struct has one `private_data` box that owns all memory the
 //! raw pointers reference, and release callbacks are idempotent.
-#![allow(
-    clippy::unnecessary_box_returns,
-    clippy::vec_box,
-    reason = "C Data Interface child pointers require stable pointee addresses"
-)]
 
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::sync::Arc;

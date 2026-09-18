@@ -4,7 +4,7 @@
 //! that representation for tessellation so topology decisions and shared
 //! constructed vertices never depend on a lossy coordinate frame.
 
-#![allow(
+#![expect(
     clippy::missing_const_for_fn,
     clippy::useless_conversion,
     reason = "exact predicates favor uniform fallible expressions over lint-driven local rewrites"

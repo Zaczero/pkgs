@@ -53,6 +53,10 @@ fn exported(geometry: &PyGeometry) -> ExportedArray {
         .expect("test export")
 }
 
+#[expect(
+    clippy::unnecessary_box_returns,
+    reason = "C Data Interface consumers hold the schema's address, which must stay stable"
+)]
 fn exported_schema(geometry: &PyGeometry) -> Box<ArrowSchema> {
     let shapes = vec![geometry.shape.shape().clone()];
     let plan = plan_shapes(

@@ -11,7 +11,7 @@
 
 // Exact float comparisons are the algorithm's contract: seam longitudes are
 // assigned constants (±180.0) and exact-360 jumps must not split.
-#![allow(
+#![expect(
     clippy::float_cmp,
     reason = "seam topology is defined by exact assigned longitudes and exact 360-degree jumps"
 )]

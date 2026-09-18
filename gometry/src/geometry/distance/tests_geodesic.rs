@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::panic_in_result_fn,
     reason = "tests assert, and return Result only to propagate setup errors"
 )]

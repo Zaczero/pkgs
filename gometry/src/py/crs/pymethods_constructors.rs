@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::used_underscore_items,
     reason = "`_repr_html_` is IPython's display protocol name"
 )]

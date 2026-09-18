@@ -1,10 +1,3 @@
-#![cfg_attr(
-    test,
-    allow(
-        clippy::similar_names,
-        reason = "S2 differential tests compare paired latitude and longitude bounds"
-    )
-)]
 //! The exact-geometry S2 coverer: classifies candidate cells directly
 //! against gometry's predicate engine, with certificates that are sound for
 //! the true spherical cells.

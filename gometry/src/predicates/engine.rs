@@ -6,7 +6,6 @@
 //! complete matrix produced by the domain's topology relation owner. Batch and
 //! scalar surfaces therefore cannot drift in predicate semantics.
 
-#![allow(clippy::similar_names, reason = "bounds are named by axis and extreme")]
 use std::cell::OnceCell;
 
 use crate::geometry::{
@@ -453,10 +452,6 @@ impl<'a> GateOperand<'a> {
 /// `PreparedGeometry`, and the spatial-index refine loop. Rows come straight
 /// off the storage: `Mixed` rows keep their persistent handles (prepared
 /// state accumulates), packed point rows never synthesize one.
-#[expect(
-    clippy::too_many_lines,
-    reason = "cohesive kernel; splitting obscures the algorithm"
-)]
 pub(crate) fn scalar_vs_shapes<'a>(
     spec: &PredicateSpec,
     scalar: &PreparedPlan,
@@ -960,7 +955,10 @@ mod tests {
         );
         assert!(!cancelled.relate_pattern(&remote, "**2******").unwrap());
     }
-
+    #[expect(
+        clippy::similar_names,
+        reason = "bounds are named by axis and extreme, as in the public API"
+    )]
     use super::*;
     use crate::boundary::Frame;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring, Shape};

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "test-only oracle assertions name their full geometry ownership path explicitly"
-)]
 use crate::geometry::XY;
 use crate::geometry::tessellation::delaunay::take_constrained_output_reserves;
 use crate::geometry::tessellation::shape::{

@@ -311,10 +311,6 @@ impl WkbReader<'_> {
     /// declared by an enclosing element and `path` its position; a nested SRID
     /// is reconciled against them by [`resolve_nested_srid`]. Returns the
     /// resolved SRID so it flows down to this geometry's own members.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "WKB type dispatch is one exhaustive match; splitting obscures kind coverage"
-    )]
     fn read_geometry(
         &mut self,
         inherited: Option<u32>,

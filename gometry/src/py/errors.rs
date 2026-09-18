@@ -366,10 +366,6 @@ fn native_resource(error: &Error) -> Option<NativeResource> {
     }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "exhaustive Error→PyErr mapping; one arm per variant"
-)]
 impl From<Error> for PyErr {
     fn from(error: Error) -> Self {
         use crate::FrameError as F;

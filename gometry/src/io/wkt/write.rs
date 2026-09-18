@@ -207,7 +207,6 @@ fn wkt_structure_count(shape: &Shape) -> Result<usize> {
 /// the leading ~`limit` bytes instead of materializing a megabyte of WKT to
 /// truncate it; the emitted prefix is byte-identical to the full render's, so a
 /// later `truncate(limit)` yields exactly the same text.
-#[expect(clippy::too_many_lines, reason = "one match arm per WKT geometry kind")]
 fn write_wkt(
     out: &mut String,
     shape: &Shape,
