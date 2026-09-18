@@ -100,7 +100,7 @@ macro_rules! grid_cell_common_pymethods {
             ///
             /// Returns
             /// -------
-#[doc = concat!("", $class_name, "")]
+            #[doc = $class_name]
             ///     The ancestor cell.
             ///
             /// Raises
@@ -128,7 +128,7 @@ macro_rules! grid_cell_common_pymethods {
             ///
             /// Returns
             /// -------
-#[doc = concat!("CellArray of ", $class_name, "")]
+            #[doc = concat!("CellArray of ", $class_name)]
             ///     The descendant cells in the grid's public identity order.
             ///
             /// Raises
@@ -214,7 +214,7 @@ macro_rules! grid_cell_common_pymethods {
             ///
             /// Returns
             /// -------
-#[doc = concat!("CellArray of ", $class_name, "")]
+            #[doc = concat!("CellArray of ", $class_name)]
             #[getter]
             fn neighbors(&self) -> PyResult<PyCellArray> {
                 cell_neighbors_array($kind, self.cell)

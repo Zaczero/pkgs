@@ -67,7 +67,6 @@ mod clean_union;
 mod constructive;
 mod convex_contact;
 mod coverage;
-#[doc(hidden)]
 pub(crate) use coverage::vw_area_tolerance;
 mod dimension;
 pub(crate) use dimension::{Dimension, dimension, ring_is_collinear};
@@ -119,12 +118,10 @@ use access::{
 };
 pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
-#[doc(hidden)]
-pub(crate) use constructive::vw_keep;
 pub(crate) use constructive::{
     SegmentPlacement, affine_about_origin_ordinate, densify_points_budgeted_with_placement,
     rdp_keep, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
-    verify_planar_segmentize_output, verify_planar_segmentize_shape,
+    verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep,
 };
 use constructive::{
     SnapReference, assemble_region_polygons, decimal_scale, orient_ring, quantize_to_scale,
@@ -138,13 +135,10 @@ pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, tr
 pub(crate) use distance::{
     DirectedOptimizationResult, Distance3dParts, FrechetDpScratch, PreparedSupport,
     bounds_distance_squared, directed_inradius_scaled, distance_3d_with_parts,
-    frechet_distance_line_columns_batch, hausdorff_distance_line_columns_batch,
+    frechet_distance_line_columns, frechet_distance_line_columns_batch, hausdorff_distance,
+    hausdorff_distance_line_columns, hausdorff_distance_line_columns_batch,
 };
 use distance::{GeodesicSweepCaps, line_length_3d};
-#[doc(hidden)]
-pub(crate) use distance::{
-    frechet_distance_line_columns, hausdorff_distance, hausdorff_distance_line_columns,
-};
 pub(crate) use facet_bvh::{
     BVH_MIN_INDEXED_SEGMENTS, FacetBvh, NearestCandidate, PreparedLinework,
 };
@@ -168,9 +162,7 @@ use overlay::{
     binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
     clipped_linestring, line_parts_to_shape, polygon_parts_to_shape,
 };
-#[doc(hidden)]
-pub(crate) use packed_line_metrics::PackedLineColumnView;
-pub(crate) use packed_line_metrics::scale_metric_values;
+pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
 use predicates::{
     LineworkChains, TouchDirections, classify_ring_pair, face_interior_point, polygon_rings_issue,

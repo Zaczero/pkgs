@@ -573,7 +573,6 @@ fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> Result<V
     })
 }
 
-#[doc(hidden)]
 /// Visvalingam-Whyatt keep mask. `distance_tolerance` is the public
 /// distance-scale threshold (same units as `simplify`/`coverage_simplify`);
 /// the area threshold is derived **after** any chain-wide power-of-two frame

@@ -236,7 +236,6 @@ fn identity_indices(count: usize) -> Result<Vec<usize>> {
 /// `tolerance` — GEOS's coverage-simplifier convention, shared by
 /// `simplify_vw` and `coverage_simplify` so the same tolerance value means
 /// the same thing across the whole simplify family.
-#[doc(hidden)]
 pub(crate) fn vw_area_tolerance(tolerance: f64) -> f64 {
     tolerance * tolerance / 2.0
 }

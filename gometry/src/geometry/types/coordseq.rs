@@ -803,7 +803,6 @@ fn select_growable(
     CoordSeq::try_from_vecs(xs, ys, zs, ms)
 }
 
-#[doc(hidden)]
 pub struct CoordIterColumns<'a, const HAS_Z: bool, const HAS_M: bool> {
     xs: &'a [f64],
     ys: &'a [f64],
