@@ -5,9 +5,9 @@ use ahash::HashSetExt as _;
 use crate::error::Result;
 use crate::geometry::predicates::{
     LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
-    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple,
-    minimum_clearance_witness, multi_polygon_members_issue, multiline_is_simple, polygonal_repair,
-    shell_is_convex, validate_line, validate_point, validate_points,
+    line_is_ccw, line_is_closed, line_is_simple, minimum_clearance_witness,
+    multi_polygon_members_issue, multiline_is_simple, polygonal_repair, shell_is_convex,
+    validate_line, validate_point, validate_points,
 };
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
@@ -84,18 +84,10 @@ impl Shape {
     }
 
     pub fn crosses_antimeridian(&self) -> bool {
-        match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => false,
-            Self::LineString(points) => line_crosses_antimeridian(points),
-            Self::MultiLineString(lines) => lines.iter().any(line_crosses_antimeridian),
-            Self::Polygon(polygon) => polygon.rings().any(|ring| line_crosses_antimeridian(&ring)),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .any(|polygon| polygon.rings().any(|ring| line_crosses_antimeridian(&ring))),
-            Self::GeometryCollection(geometries) => {
-                geometries.iter().any(Self::crosses_antimeridian)
-            },
-        }
+        crate::geometry::crosses_antimeridian_in_frame(
+            self,
+            crate::geographic::GeographicFrame::crs84(),
+        )
     }
 }
 

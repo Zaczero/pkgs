@@ -54,8 +54,8 @@ pub(crate) use types::{
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
-    DerivedPointStrategy, crosses_antimeridian_coords_in_frame, crosses_antimeridian_in_frame,
-    geographic_crossing, geographic_crossing_bounds,
+    DerivedPointStrategy, antimeridian_frame, chain_crosses_antimeridian,
+    crosses_antimeridian_in_frame, geographic_crossing, geographic_crossing_bounds,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,
     is_ring_data_in_frame, is_simple_data_in_frame, repair_data_in_frame, repair_shape_in_frame,
     self_intersections_in_frame, topology_domain, unary_antimeridian_derived,
@@ -177,9 +177,9 @@ use predicates::{
     visit_interacting_pairs,
 };
 pub(crate) use predicates::{
-    RingClass, RingEdgeMembership, line_crosses_antimeridian, line_is_ccw, line_is_closed,
-    line_is_simple, line_is_valid, polygon_is_valid, shape_encloses_pole_in_frame,
-    shape_has_polar_ring_in_frame, shape_reaches_geographic_pole_in_frame,
+    RingClass, RingEdgeMembership, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
+    polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
+    shape_reaches_geographic_pole_in_frame,
 };
 pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
 pub(crate) use util::{

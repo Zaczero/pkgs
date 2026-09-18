@@ -40,9 +40,8 @@ pub(in crate::geometry) use validate::{shell_is_convex, shell_is_strictly_convex
 pub(crate) use validate::{validate_line, validate_point, validate_points, validate_ring};
 pub(in crate::geometry) use validity_helpers::face_interior_point;
 pub(crate) use validity_helpers::{
-    MinimumClearanceWitness, line_crosses_antimeridian, line_is_ccw, line_is_closed,
-    line_is_simple, line_is_valid, minimum_clearance_witness, multiline_is_simple,
-    polygon_is_valid,
+    MinimumClearanceWitness, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
+    minimum_clearance_witness, multiline_is_simple, polygon_is_valid,
 };
 
 #[cfg(test)]

@@ -1,17 +1,13 @@
-use std::simd::cmp::SimdPartialOrd as _;
-use std::simd::num::SimdFloat as _;
-
 #[cfg(test)]
 use ahash::HashMapExt as _;
 
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
     CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,
-    REDUCE_LANES, ReduceSimd, SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape,
-    VertexProvenance, XY, point_distance, point_distance_squared, point_in_ccw_triangle,
-    point_segment_distance, ring_winding, same_point, segment_projection, simd_mask_any,
-    squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
-    wrap_index,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, VertexProvenance, XY, point_distance,
+    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
+    same_point, segment_projection, squared_norm_is_trustworthy, try_point_distance_squared,
+    try_point_segment_distance_squared, wrap_index,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -456,38 +452,6 @@ pub(crate) fn line_is_simple(points: &CoordSeq) -> crate::error::Result<bool> {
 pub(crate) fn strictly_monotone(values: &[f64]) -> bool {
     values.is_sorted_by(|left, right| left < right)
         || values.is_sorted_by(|left, right| left > right)
-}
-
-pub(crate) fn line_crosses_antimeridian<C: Coordinates + ?Sized>(points: &C) -> bool {
-    if let Some((xs, _)) = points.xy_columns() {
-        return antimeridian_crosses_x_columns(xs);
-    }
-    points.segment_pairs().any(|[start, end]| {
-        let delta = (end.x - start.x).abs();
-        delta > 180.0 && delta < 360.0
-    })
-}
-
-fn antimeridian_crosses_x_columns(xs: &[f64]) -> bool {
-    let segments = xs.len().saturating_sub(1);
-    if segments == 0 {
-        return false;
-    }
-    let (x0, _) = xs[..segments].as_chunks::<REDUCE_LANES>();
-    let (x1, _) = xs[1..=segments].as_chunks::<REDUCE_LANES>();
-    simd_mask_any(
-        segments,
-        |index| {
-            let delta = (xs[index + 1] - xs[index]).abs();
-            delta > 180.0 && delta < 360.0
-        },
-        |start| {
-            let chunk = start / REDUCE_LANES;
-            let delta =
-                (ReduceSimd::from_array(x1[chunk]) - ReduceSimd::from_array(x0[chunk])).abs();
-            delta.simd_gt(ReduceSimd::splat(180.0)) & delta.simd_lt(ReduceSimd::splat(360.0))
-        },
-    )
 }
 
 pub(crate) fn multiline_is_simple<L: AsRef<CoordSeq>>(lines: &[L]) -> crate::error::Result<bool> {

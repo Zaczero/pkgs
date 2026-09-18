@@ -301,6 +301,25 @@ def test_crosses_antimeridian_matches_split_frame() -> None:
         _ = gm.LineString([(0, 0), (1, 1)], crs=3857).crosses_antimeridian
 
 
+@pytest.mark.parametrize('crs', [None, 4326])
+@pytest.mark.parametrize(
+    'geometry',
+    [
+        gm.LineString([(-180, 0), (180, 0)]),
+        gm.Polygon([(-180, -30), (180, -30), (180, 30), (-180, 30)]),
+        gm.Polygon([(170, 0), (-180, 0), (-180, 10), (170, 10)]),
+    ],
+    ids=['seam-to-seam-line', 'full-longitude-band', 'touching-spelled-west'],
+)
+def test_crosses_antimeridian_agrees_across_crs_and_array_lanes(
+    geometry: gm.Geometry, crs: int | None
+) -> None:
+    geometry = geometry.set_crs(crs)
+    expected = geometry.crosses_antimeridian
+    assert gm.GeometryArray([geometry]).crosses_antimeridian.tolist() == [expected]
+    assert geometry.set_crs(4326).crosses_antimeridian is expected
+
+
 def test_split_antimeridian_gates() -> None:
     with pytest.raises(gm.CRSError, match='requires a geographic CRS'):
         gm.LineString([(170, 0), (-170, 0)], crs=3857).split_antimeridian()

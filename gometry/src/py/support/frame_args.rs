@@ -5,8 +5,8 @@ use pyo3::types::PyString;
 
 use crate::py::crs;
 use crate::py::support::{
-    Bound, CRSError, Crs, Frame, FromPyObject, GeometryError, PyAny, PyAnyMethods as _, PyErr,
-    PyResult, PyStringMethods as _, coordinate_epoch_option, wgs84_crs,
+    Bound, Crs, Frame, FromPyObject, GeometryError, PyAny, PyAnyMethods as _, PyErr, PyResult,
+    PyStringMethods as _, coordinate_epoch_option, wgs84_crs,
 };
 
 /// Borrow ``value`` as UTF-8 text when it is a Python ``str``.
@@ -61,23 +61,6 @@ impl<'a, 'py> FromPyObject<'a, 'py> for Wgs84DefaultCrs {
         }
         Ok(Self::Resolved(parse_crs(Some(&value))?))
     }
-}
-
-pub(crate) fn require_antimeridian_crs(crs: Option<&str>) -> PyResult<()> {
-    // Same frame contract as `split_antimeridian`: any geographic CRS or
-    // CRS-free lon/lat; a projected frame has no antimeridian.
-    if crs.is_some()
-        && matches!(
-            crate::crs::metric_model(crs)?,
-            crate::crs::MetricModel::Planar { .. }
-        )
-    {
-        return Err(CRSError::new_err(
-            "crosses_antimeridian requires a geographic CRS; use set_crs(...) or to_crs(...) to \
-             attach one",
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) fn crs_label(crs: Option<&str>) -> String {

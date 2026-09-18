@@ -10,12 +10,11 @@ use crate::array::{
     PyCrs, PyDict, PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef,
     PyResult, PyTuple, PyTypeError, PyTypeMethods as _, Python, Result, RingLevel,
     SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_collected_geometry_items, coordinate_epoch_option,
-    crs, crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked,
-    line_crosses_antimeridian, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
-    line_logical_len, map_coordinates_callback, parse_coordinate_replacement, parse_crs,
-    physical_row, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
-    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
-    total_bounds_from_columns,
+    crs, crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw,
+    line_is_closed, line_is_simple, line_is_valid, line_logical_len, map_coordinates_callback,
+    parse_coordinate_replacement, parse_crs, physical_row, polygon_is_valid, polygon_logical_len,
+    polygon_rings_range, pymethods, replace_shape_coordinates, require_geojson_crs,
+    slice_replacement_for_shape, total_bounds_from_columns,
 };
 use crate::boundary::metadata;
 use crate::boundary::metadata::FrameError;
@@ -1293,10 +1292,13 @@ impl PyGeometryArray {
         Ok(output)
     }
 
-    pub(crate) fn crosses_antimeridian_unary_packed(&self) -> Option<PyResult<Vec<bool>>> {
+    pub(crate) fn crosses_antimeridian_unary_packed(
+        &self,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Option<PyResult<Vec<bool>>> {
         if let Some(crosses) = self
             .storage()
-            .lines_bool(|coords| Ok(line_crosses_antimeridian(coords)))
+            .lines_bool(|coords| Ok(crate::geometry::chain_crosses_antimeridian(coords, frame)))
         {
             return Some(crosses.map_err(PyErr::from));
         }

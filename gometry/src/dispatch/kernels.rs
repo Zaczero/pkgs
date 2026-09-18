@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{degrade_linref_linestring, degrade_linref_point};
-use crate::crs::{CrsError, ResolvedMetric};
+use crate::crs::ResolvedMetric;
 use crate::dispatch::MetricOp;
 use crate::dispatch::metric::{CachelessRowContext, GeodesicBinaryRow, LinearReferenceRow};
 use crate::error::Result;
@@ -320,15 +320,6 @@ pub(crate) fn unary_boundary(data: &PreparedPlan, _ctx: &CachelessRowContext<'_>
     data.shape().boundary()
 }
 
-fn ensure_antimeridian_geographic_frame(ctx: &CachelessRowContext<'_>, op: &str) -> Result<()> {
-    if ctx.frame.crs_ref().is_some() && !ctx.domain.is_geographic() {
-        return Err(CrsError::invalid(format!(
-            "{op} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
-        )));
-    }
-    Ok(())
-}
-
 /// ``is_empty`` kernel shared by the spine-routed free function.
 #[expect(
     clippy::unnecessary_wraps,
@@ -384,13 +375,11 @@ pub(crate) fn unary_crosses_antimeridian(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<bool> {
-    ensure_antimeridian_geographic_frame(ctx, "crosses_antimeridian")?;
-    Ok(match ctx.domain {
-        crate::geometry::TopologyDomain::Cartesian => data.shape().crosses_antimeridian(),
-        crate::geometry::TopologyDomain::Geographic(frame) => {
-            crate::geometry::crosses_antimeridian_in_frame(data.shape(), frame)
-        },
-    })
+    let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "crosses_antimeridian")?;
+    Ok(crate::geometry::crosses_antimeridian_in_frame(
+        data.shape(),
+        frame,
+    ))
 }
 
 /// ``split_antimeridian`` kernel shared by the spine-routed free function.
@@ -398,24 +387,7 @@ pub(crate) fn unary_split_antimeridian(
     data: &PreparedPlan,
     ctx: &CachelessRowContext<'_>,
 ) -> Result<Shape> {
-    ensure_antimeridian_geographic_frame(ctx, "split_antimeridian")?;
-    let frame = match ctx.domain {
-        crate::geometry::TopologyDomain::Geographic(frame) => frame,
-        crate::geometry::TopologyDomain::Cartesian => {
-            if ctx.frame.crs_ref().is_some() {
-                return Err(CrsError::invalid(
-                    "split_antimeridian requires a geographic CRS",
-                ));
-            }
-            let degrees = crate::geographic::AngularFactor::try_new(
-                "angular unit",
-                std::f64::consts::PI / 180.0,
-            )
-            .expect("degree angular factor is valid");
-            crate::geographic::GeographicFrame::try_new(degrees, degrees, 0.0)
-                .expect("degree geographic frame is valid")
-        },
-    };
+    let frame = crate::geometry::antimeridian_frame(ctx.frame, ctx.domain, "split_antimeridian")?;
     data.shape().split_antimeridian_in_frame(frame)
 }
 

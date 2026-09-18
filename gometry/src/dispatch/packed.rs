@@ -13,7 +13,6 @@ use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, TopologyDomain,
 };
 use crate::py::numpy::{bool_array, bounds_array, float64_array};
-use crate::py::support::require_antimeridian_crs;
 use crate::{
     DistanceUnit, F64Param, PyGeometryArray, line_interpolate_coordseq, line_substring_coordseq,
 };
@@ -220,9 +219,14 @@ pub(crate) fn try_unary_packed_bool(
             .is_valid_unary_packed()
             .map(|values| values.and_then(|values| bool_array(py, values))),
         Operation::IsConvex => packed_bool_lane(py, array, Some(array.is_convex_unary_packed())),
-        Operation::CrossesAntimeridian => match require_antimeridian_crs(array.crs_str()) {
-            Ok(()) => packed_bool_lane(py, array, array.crosses_antimeridian_unary_packed()),
-            Err(error) => Some(Err(error)),
+        Operation::CrossesAntimeridian => {
+            match crate::geometry::antimeridian_frame(&array.frame, domain, "crosses_antimeridian")
+            {
+                Ok(frame) => {
+                    packed_bool_lane(py, array, array.crosses_antimeridian_unary_packed(frame))
+                },
+                Err(error) => Some(Err(error.into())),
+            }
         },
         _ => None,
     }

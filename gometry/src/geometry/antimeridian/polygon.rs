@@ -22,12 +22,7 @@ impl Shape {
     }
 
     pub fn split_antimeridian(&self) -> Result<Self> {
-        let degrees =
-            crate::geographic::AngularFactor::try_new("angular unit", std::f64::consts::PI / 180.0)
-                .expect("degree angular factor is valid");
-        let frame = GeographicFrame::try_new(degrees, degrees, 0.0)
-            .expect("degree geographic frame is valid");
-        self.split_antimeridian_in_frame(frame)
+        self.split_antimeridian_in_frame(GeographicFrame::crs84())
     }
 
     /// Split at the antimeridian: parts that cross ±180 come back as

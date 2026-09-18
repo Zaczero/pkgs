@@ -82,7 +82,7 @@ pub(crate) use extract::{
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, crs_label, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,
-    py_text_borrow, require_antimeridian_crs,
+    py_text_borrow,
 };
 pub(crate) use geojson::{
     GeoJsonDecodeContext, JsonValueError, ScalarOrIterator, classify_scalar_or_iterator,

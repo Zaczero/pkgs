@@ -52,7 +52,7 @@ fn line_window_crosses_antimeridian(
     match domain {
         crate::geometry::TopologyDomain::Cartesian => false,
         crate::geometry::TopologyDomain::Geographic(frame) => {
-            crate::geometry::crosses_antimeridian_coords_in_frame(&view, frame)
+            crate::geometry::chain_crosses_antimeridian(&view, frame)
         },
     }
 }
