@@ -230,8 +230,8 @@ pub(crate) fn geodesic_nearest_points_with_parts(
                     ..
                 } => {
                     return Ok(Some((
-                        geodesic_segment_point(metric, *segment, first_along),
-                        geodesic_segment_point(metric, *other, second_along),
+                        geodesic_segment_point(metric, segment, first_along),
+                        geodesic_segment_point(metric, other, second_along),
                     )));
                 },
                 SegmentContact::Disjoint => {},
@@ -307,7 +307,7 @@ pub(crate) fn geodesic_nearest_points_with_parts(
 )]
 fn geodesic_segment_point(
     metric: &impl GeodesicMetric,
-    segment: crate::geometry::GeodesicSegment,
+    segment: &crate::geometry::GeodesicSegment,
     along: f64,
 ) -> Point {
     if segment.length == 0.0 || along == 0.0 {

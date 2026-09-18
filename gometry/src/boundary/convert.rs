@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Shape -> Python materializers for coordinate objects and JSON values.
 //!
 //! Convert a `Shape` into the nested Python coordinate tuples returned by the
@@ -13,7 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict};
 use serde_json::Value;
 
-use crate::py::errors::parse_error;
+use crate::py::errors::{GeometryError, parse_error};
 use crate::{Coordinates, Point, Polygon, PyList, Shape, geometry, py_bool, try_collect_results};
 
 pub(crate) fn coordinates_object(py: Python<'_>, shape: &Shape) -> PyResult<Py<PyAny>> {
@@ -129,9 +125,7 @@ pub(crate) fn json_to_py(py: Python<'_>, value: &Value) -> PyResult<Py<PyAny>> {
 
 pub(crate) fn json_text_to_py(py: Python<'_>, text: &str) -> PyResult<Py<PyAny>> {
     let value = serde_json::from_str::<Value>(text).map_err(|error| {
-        crate::py::errors::GeometryError::new_err(format!(
-            "native GeoJSON materialization failed: {error}"
-        ))
+        GeometryError::new_err(format!("native GeoJSON materialization failed: {error}"))
     })?;
     json_to_py(py, &value)
 }

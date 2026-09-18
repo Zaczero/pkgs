@@ -604,8 +604,9 @@ fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
         .filter(|piece| piece.is_polygon())
     {
         assert!(
-            arcs.iter()
-                .all(|arc| { classify_h3_arc_contact(piece.arc(), arc, &fan) == ArcContact::None }),
+            arcs.iter().all(|arc| {
+                classify_h3_arc_contact(&piece.arc(), arc, &fan) == ArcContact::None
+            }),
             "BIG boundary is certified disjoint from every ordered H3 arc"
         );
     }
@@ -755,7 +756,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
                 .unwrap()
                 .filter(|piece| piece.is_polygon() && piece.is_positive_only())
                 .all(|piece| {
-                    classify_h3_arc_contact(piece.arc(), arc, &far_fan) == ArcContact::None
+                    classify_h3_arc_contact(&piece.arc(), arc, &far_fan) == ArcContact::None
                 })
         }),
         "the distant fan has no exact reflected-boundary contact"

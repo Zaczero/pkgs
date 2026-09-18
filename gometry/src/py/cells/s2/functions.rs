@@ -1,9 +1,6 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::Typed;
 use crate::geometry::CoordSeq;
+use crate::grid::s2::bounding;
 use crate::grid::s2::cell::Cell as S2GeomCell;
 use crate::grid::s2::cellid::CellId;
 use crate::py::cells::coverage_ops::{
@@ -12,13 +9,13 @@ use crate::py::cells::coverage_ops::{
 };
 use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::s2::{
-    PyS2Cell, cell_pole_side, parse_s2_level_budget, parse_s2_level_value, s2_boundary_geometry,
-    s2_cell_array, s2_cell_from_xy, s2_cell_id,
+    PyS2Cell, cell_pole_side, parse_s2_level_budget, parse_s2_level_value, register,
+    s2_boundary_geometry, s2_cell_array, s2_cell_from_xy, s2_cell_id,
 };
 use crate::py::cells::{
     Bound, CellRule, GeometryError, GridKind, Py, PyAny, PyCellArray, PyErr, PyResult, Python,
-    Shape, bounding_query_bounds, dispatch_grid_cell_array, grid_cover_dispatch, parse_error,
-    pyfunction,
+    Shape, bounding_query_bounds, coverage_ops, dispatch_grid_cell_array, grid_cover_dispatch,
+    parse_error, pyfunction,
 };
 /// Build S2 cells from parallel lon/lat columns.
 ///
@@ -154,7 +151,7 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
                 "bounding cell requires a non-empty geometry",
             ));
         }
-        return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&shape));
+        return bounding_cell_result(bounding::bounding_cell(shape));
     }
     if let Some(array) = exact_geometry_array(value) {
         let array = array.clone();
@@ -191,10 +188,10 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
         } else {
             Shape::geometry_collection(parts)?
         };
-        return bounding_cell_result(crate::grid::s2::bounding::bounding_cell(&collection));
+        return bounding_cell_result(bounding::bounding_cell(&collection));
     }
     let bounds = bounding_query_bounds(value)?;
-    bounding_cell_result(crate::grid::s2::bounding::bounding_cell_bbox(bounds))
+    bounding_cell_result(bounding::bounding_cell_bbox(bounds))
 }
 
 fn bounding_cell_result(cell: Option<CellId>) -> PyResult<PyS2Cell> {
@@ -428,13 +425,12 @@ pub(crate) fn s2_cover(
                 max_cells: effective_max_cells,
                 ..parsed
             };
-            let cells =
-                crate::py::cells::s2::register::build_coverage(geometry, parsed, cell_rule)?;
-            crate::py::cells::coverage_ops::try_collect_cover_ids(
-                crate::py::cells::coverage_ops::SortedCells::from_sorted(cells)
+            let cells = register::build_coverage(geometry, parsed, cell_rule)?;
+            coverage_ops::try_collect_cover_ids(
+                SortedCells::from_sorted(cells)
                     .into_vec()
                     .into_iter()
-                    .map(crate::grid::s2::cellid::CellId::raw),
+                    .map(CellId::raw),
             )
         },
     )

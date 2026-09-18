@@ -1,9 +1,4 @@
 //! The Tile cell class and parsing helpers.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::exceptions::PyTypeError;
 use pyo3::pymethods;
 use pyo3::types::{PyAny, PyBool, PyDict, PyTuple};
@@ -20,7 +15,7 @@ use crate::py::cells::{
     Bound, GridKind, Py, PyAnyMethods as _, PyCellArray, PyDictMethods as _, PyResult,
     PyTupleMethods as _, Python, construct_tile, pyclass, pyfunction,
 };
-use crate::py::errors::{parse_error, tag_parse_format};
+use crate::py::errors::{ParseError, parse_error, tag_parse_format};
 
 /// One XYZ web-mercator tile: the slippy-map ``z/x/y`` address.
 ///
@@ -91,7 +86,7 @@ pub(crate) fn tile_arg(cell: &Bound<'_, PyAny>) -> PyResult<Tile> {
     let text = crate::py_text_borrow(cell, "tile must be a Tile, integer id, or string quadkey")?;
     Tile::from_quadkey(text.as_ref()).map_err(|message| {
         tag_parse_format(
-            crate::py::errors::ParseError::new_err(message),
+            ParseError::new_err(message),
             crate::error::ParseFormat::Quadkey,
         )
     })

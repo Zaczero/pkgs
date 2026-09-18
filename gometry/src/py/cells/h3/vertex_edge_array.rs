@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
@@ -24,14 +20,16 @@ use crate::py::cells::h3::{
     h3_edge_index, h3_vertex_index, validate_h3_index_ids,
 };
 use crate::py::cells::{FactorizationError, GridKind, Point, PyCellArray, Shape};
-use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
+use crate::py::errors;
+use crate::py::numpy::float64_array;
+use crate::py::row::{RowContainer, RowGetItemContainer, RowIterState, array_getitem};
 
 fn try_hex_token(id: u64) -> PyResult<String> {
     use std::fmt::Write as _;
     let mut token = String::new();
     if token.try_reserve(16).is_err() {
         drop(token);
-        return Err(crate::py::errors::native_memory_error());
+        return Err(errors::native_memory_error());
     }
     write!(&mut token, "{id:x}").expect("writing into a reserved string cannot fail");
     Ok(token)
@@ -65,7 +63,7 @@ pub(crate) struct PyH3VertexArray {
 )]
 pub(super) struct PyH3VertexArrayIter {
     source: PyH3VertexArray,
-    state: crate::py::row::RowIterState,
+    state: RowIterState,
 }
 
 /// An immutable array of H3 directed-edge ids.
@@ -96,7 +94,7 @@ pub(crate) struct PyH3EdgeArray {
 )]
 pub(super) struct PyH3EdgeArrayIter {
     source: PyH3EdgeArray,
-    state: crate::py::row::RowIterState,
+    state: RowIterState,
 }
 
 impl PyH3VertexArray {
@@ -121,7 +119,7 @@ impl PyH3VertexArrayIter {
     const fn new(source: PyH3VertexArray, reverse: bool) -> Self {
         Self {
             source,
-            state: crate::py::row::RowIterState::new(reverse),
+            state: RowIterState::new(reverse),
         }
     }
 }
@@ -130,7 +128,7 @@ impl PyH3EdgeArrayIter {
     const fn new(source: PyH3EdgeArray, reverse: bool) -> Self {
         Self {
             source,
-            state: crate::py::row::RowIterState::new(reverse),
+            state: RowIterState::new(reverse),
         }
     }
 }
@@ -444,7 +442,7 @@ macro_rules! h3_index_array_common {
                 py: Python<'_>,
                 item: &Bound<'_, PyAny>,
             ) -> PyResult<bool> {
-                let custom_index = is_custom_index_provider(item)?;
+                let custom_index = is_custom_index_provider(item);
                 match $parse(item) {
                     Ok(needle) => {
                         let needle = u64::from(needle);
@@ -489,7 +487,7 @@ macro_rules! h3_index_array_common {
                 #[pyo3(from_py_with = crate::strict_i64)] start: i64,
                 #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
             ) -> PyResult<usize> {
-                let custom_index = is_custom_index_provider(value)?;
+                let custom_index = is_custom_index_provider(value);
                 let needle = $parse(value).map(u64::from).map_err(|error| {
                     if error.is_instance_of::<crate::py::errors::GeometryError>(value.py())
                         || (error.is_instance_of::<PyTypeError>(value.py()) && !custom_index)
@@ -539,7 +537,7 @@ macro_rules! h3_index_array_common {
             /// -------
             /// int
             fn count(&self, value: &Bound<'_, PyAny>) -> PyResult<usize> {
-                let custom_index = is_custom_index_provider(value)?;
+                let custom_index = is_custom_index_provider(value);
                 let needle = match $parse(value) {
                     Ok(needle) => u64::from(needle),
                     Err(error) if custom_index => return Err(error),
@@ -1006,7 +1004,7 @@ impl PyH3EdgeArray {
             }
             Ok::<_, PyErr>(values)
         })?;
-        crate::py::numpy::float64_array(py, values)
+        float64_array(py, values)
     }
 }
 

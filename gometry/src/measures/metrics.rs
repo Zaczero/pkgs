@@ -1,12 +1,8 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::dispatch::MetricOp;
+use crate::dispatch::{MetricOp, kernels};
 use crate::{
     DistanceUnit, PyGeometry, PyGeometryArray, exact_geometry, exact_geometry_array,
     finite_f64_required,
@@ -46,7 +42,7 @@ pub(crate) fn bounds(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<P
         crate::dispatch::Operation::Bounds,
         None,
         None,
-        crate::dispatch::kernels::unary_bounds,
+        kernels::unary_bounds,
     )
 }
 
@@ -57,7 +53,7 @@ pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult
         crate::dispatch::Operation::Bounds,
         None,
         None,
-        crate::dispatch::kernels::unary_bounds,
+        kernels::unary_bounds,
     )
 }
 
@@ -106,7 +102,7 @@ pub(crate) fn area(
         geom,
         unit,
         crate::dispatch::Operation::Metric(MetricOp::Area),
-        crate::dispatch::kernels::unary_area,
+        kernels::unary_area,
     )
 }
 
@@ -116,7 +112,7 @@ pub(crate) fn area_natural_scalar(py: Python<'_>, geom: &PyGeometry) -> PyResult
         geom,
         crate::dispatch::Operation::Metric(MetricOp::Area),
         None,
-        crate::dispatch::kernels::unary_area,
+        kernels::unary_area,
     )
 }
 
@@ -127,7 +123,7 @@ pub(crate) fn area_natural_array(py: Python<'_>, values: &PyGeometryArray) -> Py
         crate::dispatch::Operation::Metric(MetricOp::Area),
         None,
         None,
-        crate::dispatch::kernels::unary_area,
+        kernels::unary_area,
     )
 }
 
@@ -207,7 +203,7 @@ pub(crate) fn length(
         geom,
         unit,
         crate::dispatch::Operation::Metric(MetricOp::Length),
-        crate::dispatch::kernels::unary_length,
+        kernels::unary_length,
     )
 }
 
@@ -259,7 +255,7 @@ pub(crate) fn length_3d(
         geom,
         unit,
         crate::dispatch::Operation::Metric(MetricOp::Length3d),
-        crate::dispatch::kernels::unary_length_3d,
+        kernels::unary_length_3d,
     )
 }
 
@@ -269,7 +265,7 @@ pub(crate) fn length_natural_scalar(py: Python<'_>, geom: &PyGeometry) -> PyResu
         geom,
         crate::dispatch::Operation::Metric(MetricOp::Length),
         None,
-        crate::dispatch::kernels::unary_length,
+        kernels::unary_length,
     )
 }
 
@@ -283,7 +279,7 @@ pub(crate) fn length_natural_array(
         crate::dispatch::Operation::Metric(MetricOp::Length),
         None,
         None,
-        crate::dispatch::kernels::unary_length,
+        kernels::unary_length,
     )
 }
 

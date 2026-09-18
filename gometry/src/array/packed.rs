@@ -1,11 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
 use crate::array::{
@@ -18,6 +10,7 @@ use crate::array::{
     row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
 };
 use crate::geometry::CoordSeqBuilder;
+use crate::py::numpy::optional_float64_array;
 
 /// Geometry-derived cache owners supplied to the computed-data constructor.
 /// Prepared/frame products deliberately do not live here: every computed
@@ -153,7 +146,7 @@ impl PyGeometryArray {
                             .map_err(crate::PyErr::from),
                     }),
             )?;
-            return crate::py::numpy::optional_float64_array(py, values);
+            return optional_float64_array(py, values);
         }
         let missing = self.missing().cloned();
         if present
@@ -172,9 +165,9 @@ impl PyGeometryArray {
                 }))
             })?
         {
-            return crate::py::numpy::optional_float64_array(py, values);
+            return optional_float64_array(py, values);
         }
-        crate::py::numpy::optional_float64_array(
+        optional_float64_array(
             py,
             crate::try_collect_results(self.storage().iter_shapes().enumerate().map(
                 |(row, shape)| {
@@ -1237,7 +1230,7 @@ fn affine_linear_is_identity(matrix: [f64; 4]) -> bool {
 #[cfg(test)]
 mod compact_nullable_tests {
     use super::*;
-    use crate::array::ShapeRow;
+    use crate::array::{ShapeRow, missing};
     use crate::geometry::{CoordWindow, MColumn, SharedSlice};
     use crate::heap_size::HeapSize as _;
 
@@ -1349,12 +1342,12 @@ mod compact_nullable_tests {
             _ => panic!("nullable point fixture must remain packed"),
         };
 
-        crate::array::missing::reset_count_valid_bytes();
+        missing::reset_count_valid_bytes();
         let dense = array.try_drop_missing().unwrap();
 
         assert_eq!(dense.len(), 10_000);
         assert!(!dense.has_missing());
-        assert_eq!(crate::array::missing::count_valid_bytes(), 0);
+        assert_eq!(missing::count_valid_bytes(), 0);
         assert!(matches!(
             dense.storage(),
             GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. })
@@ -1383,16 +1376,16 @@ mod compact_nullable_tests {
         )
         .unwrap();
 
-        crate::array::missing::reset_count_valid_bytes();
+        missing::reset_count_valid_bytes();
         pyo3::Python::initialize();
         pyo3::Python::attach(|py| {
             let _ = array.to_numpy(py).unwrap();
         });
-        assert_eq!(crate::array::missing::count_valid_bytes(), 0);
+        assert_eq!(missing::count_valid_bytes(), 0);
 
-        crate::array::missing::reset_count_valid_bytes();
+        missing::reset_count_valid_bytes();
         array.validate_impl().unwrap();
-        assert_eq!(crate::array::missing::count_valid_bytes(), 0);
+        assert_eq!(missing::count_valid_bytes(), 0);
     }
 
     #[test]

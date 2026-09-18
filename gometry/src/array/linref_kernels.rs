@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
 use crate::array::{
@@ -14,6 +10,7 @@ use crate::array::{
 use crate::broadcast::degrade_linref_float;
 use crate::geometry::{CoordSeq, CsrOffsetColumn};
 use crate::py::numpy::float64_array;
+use crate::py::vectors::Groups;
 
 enum RowInterpolatePlan {
     Shared(InterpolatePlan),
@@ -100,7 +97,7 @@ pub(crate) fn line_interpolate_points_rows(
     distances: Option<&Bound<'_, PyAny>>,
     normalized: bool,
     unit: Option<DistanceUnit>,
-) -> PyResult<crate::py::vectors::Groups> {
+) -> PyResult<Groups> {
     let plan = match (count, distances) {
         (Some(count), None) => {
             if normalized {
@@ -178,7 +175,7 @@ pub(crate) fn line_interpolate_points_rows(
             Ok(builder) => builder,
             Err((row, error)) => return Err(note_array_row(error.into(), row)),
         };
-        return crate::py::vectors::Groups::from_geometry_builder(frame, builder);
+        return Groups::from_geometry_builder(frame, builder);
     }
     let array = array.clone();
     let frame = array.frame.clone();
@@ -187,7 +184,7 @@ pub(crate) fn line_interpolate_points_rows(
         Ok(builder) => builder,
         Err((row, error)) => return Err(note_array_row(error.into(), row)),
     };
-    crate::py::vectors::Groups::from_geometry_builder(frame, builder)
+    Groups::from_geometry_builder(frame, builder)
 }
 
 fn interpolate_mixed_row_groups(

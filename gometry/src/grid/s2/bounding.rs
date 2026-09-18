@@ -1,3 +1,7 @@
+#![expect(
+    clippy::similar_names,
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
+)]
 //! Deepest single S2 cell that **provably** contains a geometry's lon/lat
 //! **bounding box**.
 //!
@@ -27,11 +31,6 @@
 //!
 //! Coverer fail-open `Boundary` is intentionally unused here (correct for
 //! outer covers, not multi-face proof). No amplification beyond the bbox.
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use crate::boundary::geographic::normalize_accepted_latitude;
 use crate::geometry::{Bounds, Shape};
 use crate::grid::s2::cell::Cell;

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Normalized S2 cell-set algebra: sorted, non-overlapping, sibling-merged
 //! id vectors with hierarchy-aware union/intersection/difference and the
 //! range searches that answer mixed-level membership.
@@ -10,6 +6,7 @@
 //! all of this is sorted-vector work — no trees, no hashing. The kernels
 //! live in [`crate::grid::cell_set`] via [`HierarchicalCell`].
 
+use crate::grid::cell::HierarchicalCell;
 #[cfg(test)]
 use crate::grid::cell_set::{
     compact_with_floor, contains_any, difference, intersection, uncompact, union,
@@ -59,7 +56,7 @@ impl ExactSizeIterator for CellIdChildren {
     }
 }
 
-impl crate::grid::cell::HierarchicalCell for CellId {
+impl HierarchicalCell for CellId {
     fn depth(self) -> u8 {
         self.level()
     }
@@ -98,7 +95,7 @@ impl crate::grid::cell::HierarchicalCell for CellId {
 mod tests {
     use super::super::projection::MAX_LEVEL;
     use super::*;
-    use crate::grid::cell_set::intersects_any;
+    use crate::grid::cell_set::{CanonicalCellSet, intersects_any};
 
     fn cell(lon: f64, lat: f64, level: u8) -> CellId {
         CellId::from_lonlat(lon, lat)
@@ -127,7 +124,7 @@ mod tests {
             Vec::new(),
         ];
         for cells in cases {
-            let ours = crate::grid::cell_set::CanonicalCellSet::new(cells.clone()).unwrap();
+            let ours = CanonicalCellSet::new(cells.clone()).unwrap();
             let mut oracle = ::s2::cellunion::CellUnion(
                 cells
                     .iter()
@@ -141,7 +138,7 @@ mod tests {
             );
             // Idempotent.
             assert_eq!(
-                crate::grid::cell_set::CanonicalCellSet::new(ours.as_slice().to_vec()).unwrap(),
+                CanonicalCellSet::new(ours.as_slice().to_vec()).unwrap(),
                 ours
             );
         }
@@ -171,7 +168,7 @@ mod tests {
         let mixed = compact_with_floor(vec![coarse, children[0]], 5).unwrap();
         assert_eq!(
             mixed,
-            crate::grid::cell_set::CanonicalCellSet::new(vec![coarse, children[0]]).unwrap()
+            CanonicalCellSet::new(vec![coarse, children[0]]).unwrap()
         );
     }
 
@@ -189,7 +186,7 @@ mod tests {
                 .all(|&child| base.contains(child))
         );
         assert_eq!(
-            crate::grid::cell_set::CanonicalCellSet::new(expanded.as_slice().to_vec())
+            CanonicalCellSet::new(expanded.as_slice().to_vec())
                 .unwrap()
                 .into_public_vec(),
             vec![base]
@@ -209,8 +206,8 @@ mod tests {
     fn set_algebra_identities() {
         let base = cell(13.4, 52.5, 10);
         let children = base.children().expect("not leaf");
-        let left = crate::grid::cell_set::CanonicalCellSet::new(vec![base]).unwrap();
-        let right = crate::grid::cell_set::CanonicalCellSet::new(children[..2].to_vec()).unwrap();
+        let left = CanonicalCellSet::new(vec![base]).unwrap();
+        let right = CanonicalCellSet::new(children[..2].to_vec()).unwrap();
 
         // union(ancestor, descendants) = ancestor.
         assert_eq!(union(left.clone(), right.clone()).unwrap(), left);
@@ -219,11 +216,11 @@ mod tests {
         // difference splits exactly: base - first two children = last two.
         assert_eq!(
             difference(&left, &right).unwrap(),
-            crate::grid::cell_set::CanonicalCellSet::new(children[2..].to_vec()).unwrap()
+            CanonicalCellSet::new(children[2..].to_vec()).unwrap()
         );
         // x - x = empty; x - empty = x.
         assert!(difference(&left, &left).unwrap().as_slice().is_empty());
-        let empty = crate::grid::cell_set::CanonicalCellSet::new(Vec::new()).unwrap();
+        let empty = CanonicalCellSet::new(Vec::new()).unwrap();
         assert_eq!(difference(&left, &empty).unwrap(), left);
         // Membership range searches.
         assert!(contains_any(left.as_slice(), children[3]));

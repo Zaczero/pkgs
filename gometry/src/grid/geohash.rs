@@ -5,12 +5,9 @@
 //! token's lexicographic order — the property that makes sorted cell sets
 //! and range membership work like the numeric systems. Even bit positions
 //! (from the top) refine longitude, odd refine latitude.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
+use crate::boundary::geographic::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
 use crate::geometry::Bounds;
+use crate::grid::coverer::RectCell;
 
 /// The canonical geohash base-32 alphabet (no `a`, `i`, `l`, `o`).
 const ALPHABET: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
@@ -108,18 +105,8 @@ impl Geohash {
     pub(crate) fn from_lonlat(lon: f64, lat: f64, precision: u8) -> Self {
         let (lon, lat) = super::canonical_lonlat(lon, lat);
         let (lon_count, lat_count) = axis_counts(precision);
-        let lon_index = discretize_axis(
-            lon,
-            crate::boundary::geographic::MIN_LONGITUDE,
-            crate::boundary::geographic::MAX_LONGITUDE,
-            lon_count,
-        );
-        let lat_index = discretize_axis(
-            lat,
-            crate::boundary::geographic::MIN_LATITUDE,
-            crate::boundary::geographic::MAX_LATITUDE,
-            lat_count,
-        );
+        let lon_index = discretize_axis(lon, MIN_LONGITUDE, MAX_LONGITUDE, lon_count);
+        let lat_index = discretize_axis(lat, MIN_LATITUDE, MAX_LATITUDE, lat_count);
         Self::from_axes(lon_index, lat_index, precision)
     }
 
@@ -280,7 +267,7 @@ pub(crate) fn roots() -> crate::error::Result<Vec<Geohash>> {
     Ok(roots)
 }
 
-impl crate::grid::coverer::RectCell for Geohash {
+impl RectCell for Geohash {
     fn depth(self) -> u8 {
         self.precision
     }

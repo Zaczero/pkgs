@@ -1,11 +1,7 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::dispatch::Operation;
+use crate::dispatch::{Operation, kernels};
 use crate::py::numpy::bool_array;
 
 macro_rules! unary_predicate {
@@ -56,7 +52,7 @@ pub(crate) fn is_simple_scalar(py: Python<'_>, geom: &crate::PyGeometry) -> PyRe
         geom,
         Operation::IsSimple,
         None,
-        crate::dispatch::kernels::unary_is_simple,
+        kernels::unary_is_simple,
     )
 }
 
@@ -110,6 +106,6 @@ fn is_simple_array_row_fallback(
         Operation::IsSimple,
         None,
         None,
-        crate::dispatch::kernels::unary_is_simple,
+        kernels::unary_is_simple,
     )
 }

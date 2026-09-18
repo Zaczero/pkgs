@@ -1,15 +1,12 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Callable cell constructors (`H3Cell(...)`, `S2Cell(...)`, ...).
 
 use pyo3::PyErr;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyAny;
 
+use crate::boundary::geographic;
 use crate::grid::geohash::Geohash;
-use crate::grid::tile::Tile;
+use crate::grid::tile::{TILE_MAX_LATITUDE, Tile};
 use crate::py::cells::coverage_ops::{GridSourceAdmission, admit_grid_geometry};
 use crate::py::cells::geohash::{PyGeohashCell, geohash_cell_arg, parse_geohash_precision};
 use crate::py::cells::h3::{PyH3Cell, h3_cell_from_xy, h3_cell_index, parse_h3_resolution};
@@ -18,6 +15,8 @@ use crate::py::cells::tiles::{PyTile, parse_tile_zoom, tile_arg};
 use crate::py::cells::{
     Bound, GeometryError, GridKind, PyCellArray, PyResult, Python, py_i64_required,
 };
+use crate::py::errors;
+use crate::py::errors::InvalidGeometryError;
 use crate::{
     I64Param, broadcast_coordinate_group, coordinate_input_with_expected,
     coordinate_inputs_are_scalar, coordinate_sequence_len_hint, exact_geometry,
@@ -76,7 +75,7 @@ fn cell_from_lonlat_or_point<C>(
         let lon = finite_coordinate_required("longitude", lon)?;
         let lat = finite_coordinate_required("latitude", lat)?;
         let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
-        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+        geographic::validate_lonlat_xy(lon, lat)?;
         return from_xy(lon, lat);
     }
     if let Some(geometry) = exact_geometry(lon) {
@@ -228,14 +227,7 @@ pub(crate) fn construct_tile(
             let admitted = admit_grid_geometry(geometry)?;
             let shape = admitted.shape.as_ref();
             let (lon, lat) = point_xy(shape)?;
-            let zoom = parse_tile_zoom(zoom)?;
-            let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
-                crate::py::errors::InvalidGeometryError::new_err(format!(
-                    "latitude {lat} is outside the square Web Mercator tile grid ±{max} degrees",
-                    max = crate::grid::tile::TILE_MAX_LATITUDE
-                ))
-            })?;
-            return Ok(PyTile { cell });
+            return tile_from_lonlat(lon, lat, parse_tile_zoom(zoom)?);
         }
         return Ok(PyTile {
             cell: tile_arg(value)?,
@@ -254,12 +246,14 @@ pub(crate) fn construct_tile(
     let lon = finite_coordinate_required("longitude", lon)?;
     let lat = finite_coordinate_required("latitude", lat)?;
     let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
-    crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
-    let zoom = parse_tile_zoom(zoom)?;
+    geographic::validate_lonlat_xy(lon, lat)?;
+    tile_from_lonlat(lon, lat, parse_tile_zoom(zoom)?)
+}
+
+fn tile_from_lonlat(lon: f64, lat: f64, zoom: u8) -> PyResult<PyTile> {
     let cell = Tile::from_lonlat(lon, lat, zoom).ok_or_else(|| {
-        crate::py::errors::InvalidGeometryError::new_err(format!(
-            "latitude {lat} is outside the square Web Mercator tile grid ±{max} degrees",
-            max = crate::grid::tile::TILE_MAX_LATITUDE
+        InvalidGeometryError::new_err(format!(
+            "latitude {lat} is outside the square Web Mercator tile grid ±{TILE_MAX_LATITUDE} degrees"
         ))
     })?;
     Ok(PyTile { cell })
@@ -301,9 +295,7 @@ where
             array.storage().point_rows().is_some()
         };
         if !is_point_storage {
-            return Err(crate::py::errors::geometry_type_err(
-                "expected Point geometry",
-            ));
+            return Err(errors::geometry_type_err("expected Point geometry"));
         }
         let admission = GridSourceAdmission::new_for_array(array).map_err(PyErr::from)?;
         let points = admission.admit_points(array).map_err(PyErr::from)?;
@@ -312,15 +304,15 @@ where
         let mut missing = Vec::new();
         crate::try_reserve_pair(&mut ids, &mut missing, points.len()).map_err(pyo3::PyErr::from)?;
         let mut any_missing = false;
-        for row in 0..points.len() {
-            let Some(point) = points[row] else {
+        for (row, point) in points.iter().enumerate() {
+            let Some(point) = point else {
                 // Array-degrades doctrine: missing geometry → missing cell.
                 crate::try_push_pair(&mut ids, &mut missing, 0, true).map_err(pyo3::PyErr::from)?;
                 any_missing = true;
                 continue;
             };
             let (lon, lat) = crate::grid::canonical_lonlat(point.x, point.y);
-            crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+            geographic::validate_lonlat_xy(lon, lat)?;
             let depth = validate_depth(depth.get(row))?;
             crate::try_push_pair(
                 &mut ids,
@@ -360,7 +352,7 @@ where
         let mut ids = crate::try_vec_with_capacity(len)?;
         for (row, (&lon, &lat)) in lon.values.iter().zip(lat.values.iter()).enumerate() {
             let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
-            crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+            geographic::validate_lonlat_xy(lon, lat)?;
             let depth = validate_depth(depth.get(row))?;
             crate::try_push(&mut ids, from_xy(lon, lat, depth)?.into_cell_array_id())?;
         }

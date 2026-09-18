@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;

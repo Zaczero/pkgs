@@ -183,7 +183,7 @@ impl<M: GeodesicMetric> SegmentMetric for M {
     ) -> Result<Option<(f64, f64)>> {
         let result = self.point_segment_query(
             probe,
-            self.make_segment(start, end)?,
+            &self.make_segment(start, end)?,
             GeodesicSegmentQuery::Minimum {
                 cutoff: best,
                 witness: GeodesicWitnessNeed::No,

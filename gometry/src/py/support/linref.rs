@@ -1,12 +1,9 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::boundary::{FloatInput, input};
 use crate::dispatch::MetricOp;
 use crate::geometry::PreparedPlan;
 use crate::py::support::{
     Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny,
-    PyGeometry, PyResult, Result, Shape, parameter_values, require_locate_point, resolve_metric,
+    PyGeometry, PyResult, Result, Shape, float_values, require_locate_point, resolve_metric,
 };
 
 pub(crate) fn line_interpolate_shape_m(
@@ -117,17 +114,17 @@ pub(crate) fn parse_interpolate_plan(
                     "normalized applies to at; count samples fractions already",
                 ));
             }
-            let count = crate::boundary::input::positive_int(
+            let count = input::positive_int(
                 "line_interpolate_points",
                 "count",
-                crate::boundary::input::py_i64_required("count", count)?,
+                input::py_i64_required("count", count)?,
             )?;
             let count = usize::try_from(count).expect("count >= 1 fits usize");
             crate::geometry::ExpansionBudget::check("line_interpolate_points", "count", count)?;
             Ok(InterpolatePlan::Count(count))
         },
         (None, Some(distances)) => {
-            let values = parameter_values(distances.py(), distances, "at")?;
+            let values = float_values(distances.py(), distances, "at", FloatInput::Parameter)?;
             if !crate::geometry::column_all_finite(&values) {
                 return Err(GeometryError::new_err("at must be finite"));
             }

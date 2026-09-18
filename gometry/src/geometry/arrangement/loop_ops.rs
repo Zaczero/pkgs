@@ -1,11 +1,8 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use ahash::HashSetExt as _;
 
 use crate::geometry::arrangement::{WindingWeight, compare_departures};
-use crate::geometry::{PointKey, Segment, XY, same_point};
+use crate::geometry::overlay::NodingScan;
+use crate::geometry::{PointKey, Segment, XY, overlay, same_point, segments};
 
 #[derive(Clone, Copy)]
 pub(crate) struct LoopCut {
@@ -66,10 +63,10 @@ pub(crate) fn positional_loop_cuts(
             return Ok(None);
         }
     }
-    let crate::geometry::overlay::NodingScan {
+    let NodingScan {
         mut events,
         overlaps_found,
-    } = crate::geometry::overlay::full_noding_events(segments)?;
+    } = overlay::full_noding_events(segments)?;
     if overlaps_found {
         // Collinear overlaps take the exactness pre-pass — general path.
         return Ok(None);
@@ -138,7 +135,7 @@ pub(crate) fn positional_loop_cuts(
         let segment = segments[ordinal as usize];
         let slice = &mut cuts[slice_start..slice_end];
         slice.sort_by(|left, right| {
-            crate::geometry::segments::compare_along_segment(segment, left.point, right.point)
+            segments::compare_along_segment(segment, left.point, right.point)
         });
         // Same-coordinate neighbors are impossible here: `same_point` and
         // `PointKey` share one canonicalization, so topologically equal

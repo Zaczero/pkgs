@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Google Encoded Polyline codec: `from_polyline`/`to_polyline`.
 //!
 //! The classic compact lat/lon line encoding (Google's Encoded Polyline
@@ -15,8 +11,10 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::boundary::geographic::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point};
-use crate::py::errors::ParseError;
+use crate::py::errors;
+use crate::py::errors::{InvalidGeometryError, ParseError};
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::{
     CRSError, Coordinates, Crs, GeometryError, PyGeometry, PyGeometryArray, PyTypeError, Shape,
@@ -45,7 +43,7 @@ fn scale(value: f64, factor: f64) -> i64 {
 fn push_encoded_char(out: &mut String, value: char) -> PyResult<()> {
     if out.try_reserve(1).is_err() {
         *out = String::new();
-        return Err(crate::py::errors::native_memory_error());
+        return Err(errors::native_memory_error());
     }
     out.push(value);
     Ok(())
@@ -73,12 +71,9 @@ fn encode_xy(
 ) -> PyResult<()> {
     // The format is WGS84 by definition: out-of-domain coordinates
     // would encode as silent nonsense.
-    if !(crate::boundary::geographic::MIN_LONGITUDE..=crate::boundary::geographic::MAX_LONGITUDE)
-        .contains(&x)
-        || !(crate::boundary::geographic::MIN_LATITUDE..=crate::boundary::geographic::MAX_LATITUDE)
-            .contains(&y)
+    if !(MIN_LONGITUDE..=MAX_LONGITUDE).contains(&x) || !(MIN_LATITUDE..=MAX_LATITUDE).contains(&y)
     {
-        return Err(crate::py::errors::InvalidGeometryError::new_err(format!(
+        return Err(InvalidGeometryError::new_err(format!(
             "to_polyline coordinate (lon {x}, lat {y}) is outside the longitude/latitude \
              domain",
         )));
@@ -195,13 +190,11 @@ fn python_str_repr(value: &str) -> PyResult<String> {
         .len()
         .checked_mul(4)
         .and_then(|length| length.checked_add(2))
-        .ok_or_else(|| {
-            crate::py::errors::native_overflow_error("polyline error text size overflows usize")
-        })?;
+        .ok_or_else(|| errors::native_overflow_error("polyline error text size overflows usize"))?;
     let mut out = String::new();
     if out.try_reserve(capacity).is_err() {
         drop(out);
-        return Err(crate::py::errors::native_memory_error());
+        return Err(errors::native_memory_error());
     }
     out.push('"');
     for byte in value.bytes() {
@@ -370,9 +363,8 @@ pub(crate) fn from_polyline(
     let epoch = coordinate_epoch_option("epoch", epoch)?;
     guard_epoch_frame(epoch, crs.as_ref())?;
     let decode_tagged = |text: &str| -> PyResult<Shape> {
-        let points = decode_line(text, factor).map_err(|err| {
-            crate::py::errors::tag_parse_format(err, crate::error::ParseFormat::Polyline)
-        })?;
+        let points = decode_line(text, factor)
+            .map_err(|err| errors::tag_parse_format(err, crate::error::ParseFormat::Polyline))?;
         Ok(shape_from_decoded_polyline(points))
     };
     if let Ok(text) = data.cast::<pyo3::types::PyString>() {

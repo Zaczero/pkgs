@@ -23,7 +23,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::build_certified_overlay_shape;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
-    point_in_segment_envelope, point_on_segment, segment_envelopes_disjoint,
+    SegmentParameter, point_in_segment_envelope, point_on_segment, segment_envelopes_disjoint,
     stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{
@@ -33,7 +33,8 @@ use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, CoverageOverlapRule, De9im,
     Dimension, ExactRationalArea, ExpansionBudget, GeometryErrorKind, GeometryKind, HashMap,
     LineSeq, Loc, Point, PointKey, Polygon, PolygonizeFull, Result, Ring, RingKind, Segment, Shape,
-    XY, for_each_candidate_pair, point_distance, same_point, segment_contact_exact, single_chain,
+    XY, for_each_candidate_pair, point_distance, same_point, same_topological_coordinate,
+    segment_contact_exact, single_chain,
 };
 use crate::{try_push_vec, try_reserve_vec};
 
@@ -1993,21 +1994,22 @@ impl ExactSourceInventory {
             None
         };
         let has_selected_area = with_boundary && cells.faces.iter().any(|&selected| selected);
-        if !has_selected_area {
-            if let Some(selected_boundary_spans) = selected_boundary_spans.as_mut() {
-                for (selected, &cell) in selected_boundary_spans.iter_mut().zip(&cells.spans) {
-                    *selected = cell;
-                }
+        if !has_selected_area
+            && let Some(selected_boundary_spans) = selected_boundary_spans.as_mut()
+        {
+            for (selected, &cell) in selected_boundary_spans.iter_mut().zip(&cells.spans) {
+                *selected = cell;
             }
         }
         let parameter = |unique: u32, homogeneous: &[ExactDyadic; 3]| -> Result<[ExactDyadic; 2]> {
             let source = partition.unique[unique as usize];
             let [x, y, w] = homogeneous;
-            let (coordinate, start, end) = if source.start.x != source.end.x {
-                (x, source.start.x, source.end.x)
-            } else {
-                (y, source.start.y, source.end.y)
-            };
+            let (coordinate, start, end) =
+                if same_topological_coordinate(source.start.x, source.end.x) {
+                    (y, source.start.y, source.end.y)
+                } else {
+                    (x, source.start.x, source.end.x)
+                };
             let start = ExactDyadic::try_from_f64(start)?;
             let direction = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
             Ok([
@@ -3205,7 +3207,7 @@ impl ExactSourceInventory {
         partition.protect_all = true;
 
         #[cfg(test)]
-        let _topology_faces_phase = crate::test_support::allocation_phase(
+        let topology_faces_phase = crate::test_support::allocation_phase(
             crate::test_support::AllocationPhase::TopologyFaces,
         );
         let (topology, edges) = partition.local_topology()?;
@@ -3322,7 +3324,7 @@ impl ExactSourceInventory {
             },
         )?;
         #[cfg(test)]
-        drop(_topology_faces_phase);
+        drop(topology_faces_phase);
 
         let output_nodes = self.certify_coverage_partition(
             partition,
@@ -3677,8 +3679,8 @@ impl ExactSourceInventory {
                 values
             },
         };
-        let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-        let (_, _, polygons) = plan.emit_xy_parts(partition, &topology)?;
+        let plan = cells.emission_plan(partition, topology, edges, global)?;
+        let (_, _, polygons) = plan.emit_xy_parts(partition, topology)?;
         Ok(polygons)
     }
 
@@ -6053,19 +6055,12 @@ impl ExactPartition<'_> {
 }
 
 #[derive(Clone, Debug)]
-enum SourceParam {
-    Start,
-    End,
-    Ratio { num: ExactDyadic, den: ExactDyadic },
-}
-
-#[derive(Clone, Debug)]
 struct NodeOnUnique {
     unique: u32,
-    parameter: SourceParam,
+    parameter: SegmentParameter,
 }
 
-impl SourceParam {
+impl SegmentParameter {
     fn reverse(&self) -> Result<Self> {
         Ok(match self {
             Self::Start => Self::End,
@@ -6075,28 +6070,6 @@ impl SourceParam {
                 den: den.try_clone()?,
             },
         })
-    }
-
-    fn cmp(&self, other: &Self, zero: &ExactDyadic, one: &ExactDyadic) -> Result<Ordering> {
-        match (self, other) {
-            (Self::Start, Self::Start) | (Self::End, Self::End) => Ok(Ordering::Equal),
-            (Self::Start, Self::End) => Ok(Ordering::Less),
-            (Self::End, Self::Start) => Ok(Ordering::Greater),
-            (Self::Start, Self::Ratio { num, den }) => try_compare_ratios(zero, one, num, den),
-            (Self::End, Self::Ratio { num, den }) => try_compare_ratios(one, one, num, den),
-            (Self::Ratio { num, den }, Self::Start) => try_compare_ratios(num, den, zero, one),
-            (Self::Ratio { num, den }, Self::End) => try_compare_ratios(num, den, one, one),
-            (
-                Self::Ratio {
-                    num: left_n,
-                    den: left_d,
-                },
-                Self::Ratio {
-                    num: right_n,
-                    den: right_d,
-                },
-            ) => try_compare_ratios(left_n, left_d, right_n, right_d),
-        }
     }
 
     fn is_open_unit(&self, zero: &ExactDyadic, one: &ExactDyadic) -> Result<bool> {
@@ -6135,15 +6108,15 @@ impl AxisValue {
 fn interpolate_ordinate(
     start: Option<f64>,
     end: Option<f64>,
-    parameter: &SourceParam,
+    parameter: &SegmentParameter,
 ) -> Result<Option<f64>> {
     let (Some(start), Some(end)) = (start, end) else {
         return Ok(None);
     };
     Ok(match parameter {
-        SourceParam::Start => Some(start),
-        SourceParam::End => Some(end),
-        SourceParam::Ratio { num, den } => {
+        SegmentParameter::Start => Some(start),
+        SegmentParameter::End => Some(end),
+        SegmentParameter::Ratio { num, den } => {
             if start.to_bits() == end.to_bits() {
                 Some(start)
             } else {
@@ -6158,7 +6131,7 @@ fn interpolate_ordinate(
 }
 
 struct SourceCut {
-    param: SourceParam,
+    param: SegmentParameter,
     handle: u32,
 }
 
@@ -6342,7 +6315,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let unique_len = unique.len();
     let mut pair_error = None;
     #[cfg(test)]
-    let _candidate_phase =
+    let candidate_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::CandidatePairs);
     match for_each_candidate_pair(&pool, single_chain, |left, right| {
         #[cfg(test)]
@@ -6376,7 +6349,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         ControlFlow::Continue(()) => {},
     }
     #[cfg(test)]
-    drop(_candidate_phase);
+    drop(candidate_phase);
     #[cfg(test)]
     update_partition_metrics(|metrics| {
         metrics.source_cut_entries = cuts.iter().map(Vec::len).sum();
@@ -6386,8 +6359,12 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     try_reserve_vec(&mut order, unique.len())?;
     for source in 0..unique.len() {
         if !same_point(unique[source].start, unique[source].end) {
-            push_contact_cut(&mut cuts[source], SourceParam::Start, start_handle[source])?;
-            push_contact_cut(&mut cuts[source], SourceParam::End, end_handle[source])?;
+            push_contact_cut(
+                &mut cuts[source],
+                SegmentParameter::Start,
+                start_handle[source],
+            )?;
+            push_contact_cut(&mut cuts[source], SegmentParameter::End, end_handle[source])?;
         }
         try_push_vec(
             &mut order,
@@ -6423,7 +6400,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             HandleKind::Constructed { unique, cut } => {
                 budget.add(1)?;
                 let param = cuts[unique as usize][cut as usize].param.clone();
-                let SourceParam::Ratio { num, den } = param else {
+                let SegmentParameter::Ratio { num, den } = param else {
                     return Err(GeometryErrorKind::Invalid(
                         "constructed partition node has no source-parameter recipe".into(),
                     )
@@ -6578,7 +6555,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     Ok(partition)
 }
 
-fn push_contact_cut(cuts: &mut Vec<SourceCut>, param: SourceParam, handle: u32) -> Result<()> {
+fn push_contact_cut(cuts: &mut Vec<SourceCut>, param: SegmentParameter, handle: u32) -> Result<()> {
     try_reserve_vec(cuts, 1)?;
     try_push_vec(cuts, SourceCut { param, handle })?;
     Ok(())
@@ -6930,14 +6907,14 @@ enum PairContact {
         source: u32,
         handle_source: u32,
         at_start: bool,
-        param: SourceParam,
+        param: SegmentParameter,
     },
     Overlap {
         cuts: Vec<OverlapCut>,
     },
     Cross {
-        t: SourceParam,
-        u: SourceParam,
+        t: SegmentParameter,
+        u: SegmentParameter,
     },
 }
 
@@ -6945,7 +6922,7 @@ struct OverlapCut {
     source: u32,
     handle_source: u32,
     at_start: bool,
-    param: SourceParam,
+    param: SegmentParameter,
 }
 
 fn classify_pair(
@@ -7081,7 +7058,7 @@ fn overlap_or_touch(
     Ok(PairContact::Overlap { cuts })
 }
 
-fn param_on_segment(segment: Segment, point: XY) -> Result<SourceParam> {
+fn param_on_segment(segment: Segment, point: XY) -> Result<SegmentParameter> {
     let dx = ExactDyadic::try_from_f64(segment.end.x)?
         .try_subtract(ExactDyadic::try_from_f64(segment.start.x)?)?;
     let dy = ExactDyadic::try_from_f64(segment.end.y)?
@@ -7089,15 +7066,15 @@ fn param_on_segment(segment: Segment, point: XY) -> Result<SourceParam> {
     if dx.cmp_magnitude(&dy).is_ge() {
         let num = ExactDyadic::try_from_f64(point.x)?
             .try_subtract(ExactDyadic::try_from_f64(segment.start.x)?)?;
-        Ok(SourceParam::Ratio { num, den: dx })
+        Ok(SegmentParameter::Ratio { num, den: dx })
     } else {
         let num = ExactDyadic::try_from_f64(point.y)?
             .try_subtract(ExactDyadic::try_from_f64(segment.start.y)?)?;
-        Ok(SourceParam::Ratio { num, den: dy })
+        Ok(SegmentParameter::Ratio { num, den: dy })
     }
 }
 
-fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)> {
+fn crossing_params(a: Segment, b: Segment) -> Result<(SegmentParameter, SegmentParameter)> {
     let rx =
         ExactDyadic::try_from_f64(a.end.x)?.try_subtract(ExactDyadic::try_from_f64(a.start.x)?)?;
     let ry =
@@ -7114,11 +7091,11 @@ fn crossing_params(a: Segment, b: Segment) -> Result<(SourceParam, SourceParam)>
     let t_num = cx.try_product(&sy)?.try_subtract(cy.try_product(&sx)?)?;
     let u_num = cx.try_product(&ry)?.try_subtract(cy.try_product(&rx)?)?;
     Ok((
-        SourceParam::Ratio {
+        SegmentParameter::Ratio {
             num: t_num,
             den: den.try_clone()?,
         },
-        SourceParam::Ratio { num: u_num, den },
+        SegmentParameter::Ratio { num: u_num, den },
     ))
 }
 

@@ -1,10 +1,8 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::fmt::Write as _;
 
 use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, PyResult, Python};
+use crate::py::functions::polyline;
+use crate::py::{arrow, arrow_c, errors, functions};
 use crate::{
     ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, SpatialCurve, exact_geometry, io,
     overlay_operator, py_bool,
@@ -55,13 +53,13 @@ impl PyGeometry {
         #[pyo3(from_py_with = crate::strict_i32)] precision: i32,
         drop_epoch: bool,
     ) -> PyResult<String> {
-        crate::py::errors::require_epoch_drop(
+        errors::require_epoch_drop(
             self.epoch(),
             drop_epoch,
             "to_polyline",
         )?;
-        let factor = crate::py::functions::polyline::polyline_precision_factor(precision)?;
-        crate::py::functions::polyline::polyline_of(self, factor)
+        let factor = polyline::polyline_precision_factor(precision)?;
+        polyline::polyline_of(self, factor)
     }
 
     /// Space-filling-curve key of this geometry's bbox center.
@@ -128,13 +126,13 @@ impl PyGeometry {
     /// 'ExtensionArray'
 pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
         match encoding {
-            ArrowEncoding::Auto => crate::py::arrow::shapes_to_arrow(
+            ArrowEncoding::Auto => arrow::shapes_to_arrow(
                 py,
                 std::slice::from_ref(self.shape.shape()),
                 self.crs_str(),
                 self.epoch(),
             ),
-            ArrowEncoding::Wkb => crate::py::arrow::shapes_to_wkb_arrow(
+            ArrowEncoding::Wkb => arrow::shapes_to_wkb_arrow(
                 py,
                 std::slice::from_ref(self.shape.shape()),
                 self.crs_str(),
@@ -144,7 +142,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     }
 
     pub fn __arrow_c_schema__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::py::arrow_c::geometry_to_schema_capsule(py, self)
+        arrow_c::geometry_to_schema_capsule(py, self)
     }
 
     #[pyo3(signature = (requested_schema = None))]
@@ -153,8 +151,8 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        crate::py::arrow::reject_requested_schema(requested_schema)?;
-        crate::py::arrow_c::geometry_to_array_capsules(py, self)
+        arrow::reject_requested_schema(requested_schema)?;
+        arrow_c::geometry_to_array_capsules(py, self)
     }
 
     #[pyo3(signature = (requested_schema = None))]
@@ -163,8 +161,8 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        crate::py::arrow::reject_requested_schema(requested_schema)?;
-        crate::py::arrow_c::geometry_to_stream_capsule(py, self)
+        arrow::reject_requested_schema(requested_schema)?;
+        arrow_c::geometry_to_stream_capsule(py, self)
     }
     pub fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
         const WKT_LIMIT: usize = 120;
@@ -191,7 +189,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     }
 
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        crate::py::functions::reduce_geometry(py, self)
+        functions::reduce_geometry(py, self)
     }
 
     pub fn __and__(
@@ -258,7 +256,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
                 let wkb = py.detach(move || io::to_wkb(shape.shape(), None, false))?;
                 let Some(capacity) = wkb.len().checked_mul(2) else {
                     drop(wkb);
-                    return Err(crate::py::errors::native_overflow_error(
+                    return Err(errors::native_overflow_error(
                         "hexadecimal WKB output size overflows usize",
                     ));
                 };
@@ -266,7 +264,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
                 if out.try_reserve(capacity).is_err() {
                     drop(wkb);
                     drop(out);
-                    return Err(crate::py::errors::native_memory_error());
+                    return Err(errors::native_memory_error());
                 }
                 for byte in wkb {
                     let _ = if spec == "x" {

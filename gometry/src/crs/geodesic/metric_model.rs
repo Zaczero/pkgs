@@ -195,6 +195,16 @@ enum HorizontalComponent {
     Planar { info: std::sync::Arc<CrsInfo> },
 }
 
+#[expect(
+    clippy::rc_buffer,
+    reason = "Arc<str> has no fallible constructor; the CRS text is allocated fallibly and then shared"
+)]
+fn shared_definition(info: &crate::crs::CrsInfo) -> Result<Arc<String>> {
+    let definition = crate::boundary::try_string_from_str(&info.definition)
+        .map_err(|()| crate::error::ResourceError::Allocation)?;
+    Arc::try_new(definition).map_err(crate::error::Error::from)
+}
+
 fn horizontal_component(
     crs: &str,
     state: &crate::crs::RuntimeState,
@@ -207,11 +217,7 @@ fn horizontal_component(
         && let Some(frame) = info.geographic_frame()
     {
         return Ok(HorizontalComponent::Geodesic {
-            crs: Arc::try_new(
-                crate::boundary::try_string_from_str(&info.definition)
-                    .map_err(|()| crate::error::ResourceError::Allocation)?,
-            )
-            .map_err(crate::error::Error::from)?,
+            crs: shared_definition(&info)?,
             frame,
         });
     }
@@ -222,11 +228,7 @@ fn horizontal_component(
                 CrsError::crs_create(crs, "geographic CRS has no typed native frame")
             })?;
             return Ok(HorizontalComponent::Geodesic {
-                crs: Arc::try_new(
-                    crate::boundary::try_string_from_str(&info.definition)
-                        .map_err(|()| crate::error::ResourceError::Allocation)?,
-                )
-                .map_err(crate::error::Error::from)?,
+                crs: shared_definition(&info)?,
                 frame,
             });
         }

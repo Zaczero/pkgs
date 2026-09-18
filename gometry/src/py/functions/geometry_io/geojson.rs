@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::collections::HashMap;
 use std::fmt;
 
@@ -15,6 +11,7 @@ use serde_json::Value;
 use serde_json::value::RawValue;
 
 use crate::py::functions::bulk_rows::{StreamedShape, batch_bulk, stream_bulk_owned};
+use crate::py::{errors, support};
 use crate::{
     Crs, Frame, GeoJsonDecodeContext, OwnedBytes, PyGeometry, PyGeometryArray, ScalarOrIterator,
     Shape, Typed, Wgs84DefaultCrs, classify_scalar_or_iterator, coerce_geojson_geometry_value,
@@ -76,7 +73,7 @@ fn decode_geojson_text(
     epoch: Option<f64>,
 ) -> crate::error::Result<DecodedGeoJson> {
     let text: &str = text.as_ref();
-    let parsed = crate::py::support::deserialize_json(text.as_bytes())?;
+    let parsed = support::deserialize_json(text.as_bytes())?;
     decode_geojson_value(parsed, crs, epoch)
 }
 
@@ -85,7 +82,7 @@ fn decode_geojson_bytes(
     crs: Option<Crs>,
     epoch: Option<f64>,
 ) -> crate::error::Result<DecodedGeoJson> {
-    let parsed = crate::py::support::deserialize_json(bytes.as_slice())?;
+    let parsed = support::deserialize_json(bytes.as_slice())?;
     decode_geojson_value(parsed, crs, epoch)
 }
 
@@ -133,11 +130,11 @@ fn parse_geojson_concrete_row(
         OwnedGeoJsonRow::Missing => parse_geojson_row_owned(None, index, crs),
         OwnedGeoJsonRow::Text(text) => {
             let text: &str = text.as_ref();
-            let value = crate::py::support::deserialize_json(text.as_bytes())?;
+            let value = support::deserialize_json(text.as_bytes())?;
             parse_geojson_row_owned(Some(value), index, crs)
         },
         OwnedGeoJsonRow::Bytes(bytes) => {
-            let value = crate::py::support::deserialize_json(bytes.as_slice())?;
+            let value = support::deserialize_json(bytes.as_slice())?;
             parse_geojson_row_owned(Some(value), index, crs)
         },
         OwnedGeoJsonRow::Value(value) => parse_geojson_row_owned(Some(value), index, crs),
@@ -475,7 +472,7 @@ fn decode_features_text(
 ) -> crate::error::Result<TextFeatureOutput> {
     let (rows_meta, collection_legacy, path_kind) = if text.trim_start().starts_with('{') {
         let (rows, legacy, is_collection) =
-            crate::py::support::deserialize_json::<FeatureTopMeta>(text.as_bytes())?.into_rows()?;
+            support::deserialize_json::<FeatureTopMeta>(text.as_bytes())?.into_rows()?;
         (
             rows,
             legacy,
@@ -486,7 +483,7 @@ fn decode_features_text(
             },
         )
     } else {
-        match crate::py::support::deserialize_json::<FeatureRowsMeta>(text.as_bytes())? {
+        match support::deserialize_json::<FeatureRowsMeta>(text.as_bytes())? {
             FeatureRowsMeta::Rows(rows) => (rows, None, FeaturePathKind::Sequence),
             FeatureRowsMeta::NotIterable => {
                 return Err(io::IoError::geojson(
@@ -539,7 +536,7 @@ fn validate_text_side_data(row: &FeatureRow) -> crate::error::Result<()> {
     if let FeatureSideData::Json(Some(value)) = &row.id {
         let text = value.get().trim();
         if text != "null" {
-            let value: Value = crate::py::support::deserialize_json(text.as_bytes())?;
+            let value: Value = support::deserialize_json(text.as_bytes())?;
             if !value.is_string() && !value.is_number() {
                 return Err(io::IoError::geojson(
                     "feature id must be a string or finite number",
@@ -590,7 +587,7 @@ fn finish_features(
 ) -> PyResult<Py<PyAny>> {
     let properties = pyo3::types::PyTuple::new(py, properties)?;
     let ids = pyo3::types::PyTuple::new(py, ids)?;
-    Ok(crate::py::support::features_type(py)?
+    Ok(support::features_type(py)?
         .getattr("_from_normalized")?
         .call1((geometries, properties, ids))?
         .unbind())
@@ -661,7 +658,7 @@ fn feature_row_from_meta(
         },
         FeatureGeometryValue::Null => FeatureGeometryInput::Null,
         FeatureGeometryValue::Value(raw) => {
-            let value = crate::py::support::parse_geojson_text(raw.get())?;
+            let value = support::parse_geojson_text(raw.get())?;
             let mut nested = Vec::new();
             io::collect_geojson_legacy_crs(&value, &mut nested);
             for legacy in nested {
@@ -1368,7 +1365,7 @@ struct RawJsonToPy<'py, 'text> {
 
 impl RawJsonToPy<'_, '_> {
     fn invalid(&self, detail: &str) -> PyErr {
-        crate::py::errors::parse_error(
+        errors::parse_error(
             format!("invalid GeoJSON Feature side data: {detail}"),
             crate::error::ParseFormat::GeoJson,
         )
@@ -1399,7 +1396,7 @@ impl RawJsonToPy<'_, '_> {
 
     fn parse_value(&mut self, depth: usize) -> PyResult<Py<PyAny>> {
         if depth > crate::geometry::MAX_NESTING {
-            return Err(crate::py::errors::parse_error(
+            return Err(errors::parse_error(
                 format!(
                     "GeoJSON Feature side data exceeds nesting depth {}",
                     crate::geometry::MAX_NESTING
@@ -1516,8 +1513,7 @@ impl RawJsonToPy<'_, '_> {
                         .text
                         .get(start..self.position)
                         .ok_or_else(|| self.invalid("invalid JSON string boundary"))?;
-                    return crate::py::support::deserialize_json(text.as_bytes())
-                        .map_err(PyErr::from);
+                    return support::deserialize_json(text.as_bytes()).map_err(PyErr::from);
                 },
                 b'\\' => {
                     if self.current().is_none() {
@@ -1582,14 +1578,13 @@ impl RawJsonToPy<'_, '_> {
                 .call1((text,))
                 .map(Bound::unbind);
         }
-        let value: f64 =
-            crate::py::support::deserialize_json(text.as_bytes()).map_err(PyErr::from)?;
+        let value: f64 = support::deserialize_json(text.as_bytes()).map_err(PyErr::from)?;
         Ok(value.into_pyobject(self.py)?.unbind().into())
     }
 }
 
 fn feature_parse_error(message: &'static str) -> PyErr {
-    crate::py::errors::parse_error(message, crate::error::ParseFormat::GeoJson)
+    errors::parse_error(message, crate::error::ParseFormat::GeoJson)
 }
 
 /// The features of a `GeoJSON` ``FeatureCollection``, or `None` for any other

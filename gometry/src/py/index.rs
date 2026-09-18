@@ -601,12 +601,7 @@ impl IndexRows {
     /// The boxed row behind `handle` (packed rows are resolved through the
     /// operation-owned array cursor above).
     fn boxed_row(&self, handle: usize) -> ShapeRow<'_> {
-        let packed_len = self.packed_len();
-        debug_assert!(handle >= packed_len);
-        self.boxed.get(handle - packed_len).map_or_else(
-            || panic!("boxed spatial index handle {handle} is out of range"),
-            |item| ShapeRow::Shape(item.shape.shape()),
-        )
+        ShapeRow::Shape(self.boxed[handle - self.packed_len()].shape.shape())
     }
 
     fn prepared_row(&self, handle: usize) -> crate::error::Result<crate::array::PreparedRow<'_>> {

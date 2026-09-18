@@ -193,6 +193,25 @@ pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
     Ring::closed_coordseq(coords)
 }
 
+/// Bracketed containers in a text encoding of `shape`: one for the geometry
+/// and one per member, ring, or nested geometry. `None` on overflow.
+pub(crate) fn text_structure_count(shape: &Shape) -> Option<usize> {
+    match shape {
+        Shape::MultiPoint(points) => points.len().checked_add(1),
+        Shape::MultiLineString(lines) => lines.len().checked_add(1),
+        Shape::Polygon(polygon) => polygon.holes.len().checked_add(1),
+        Shape::MultiPolygon(polygons) => polygons.iter().try_fold(1_usize, |total, polygon| {
+            total.checked_add(polygon.holes.len().checked_add(1)?)
+        }),
+        Shape::GeometryCollection(geometries) => {
+            geometries.iter().try_fold(1_usize, |total, geometry| {
+                total.checked_add(text_structure_count(geometry)?)
+            })
+        },
+        _ => Some(1),
+    }
+}
+
 /// Reject polygon layouts that would invent missing Z/M under a union axes
 /// header when admitting or writing a multipart geometry.
 pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {

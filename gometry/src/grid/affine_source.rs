@@ -3158,7 +3158,7 @@ impl SymbolicAffineEdge {
             )?,
         ];
         exact(AffineSourceArc::from_parent_map(
-            map,
+            &map,
             exact(Bound::new(
                 interval.start.enclosure.lo,
                 interval.end.enclosure.hi,
@@ -3497,7 +3497,7 @@ impl SymbolicAffineEdge {
             self.authority_endpoint_identity(&interval.end, start_point, end_point)?,
         ];
         exact(AffineSourceArc::from_parent_map(
-            map,
+            &map,
             exact(Bound::new(
                 interval.start.enclosure.lo,
                 interval.end.enclosure.hi,

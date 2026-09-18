@@ -1,11 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::error::Result;
 use crate::geometry::overlay::{ExactSourceInventory, OverlayOp, self_node_segments_sourced};
 use crate::geometry::{

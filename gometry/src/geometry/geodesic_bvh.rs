@@ -247,7 +247,7 @@ impl GeodesicFacetBvh {
                         if bound <= best {
                             let result = metric.point_segment_query(
                                 point,
-                                segment,
+                                &segment,
                                 GeodesicSegmentQuery::Minimum {
                                     cutoff: best,
                                     witness: GeodesicWitnessNeed::No,
@@ -315,7 +315,7 @@ impl GeodesicFacetBvh {
                         }
                         let result = metric.point_segment_query(
                             vertex,
-                            segment,
+                            &segment,
                             GeodesicSegmentQuery::Minimum {
                                 cutoff: best_distance,
                                 witness: GeodesicWitnessNeed::Yes,
@@ -414,7 +414,7 @@ impl GeodesicFacetBvh {
                         }
                         let result = metric.point_segment_query(
                             point,
-                            segment,
+                            &segment,
                             GeodesicSegmentQuery::Threshold {
                                 limit,
                                 witness: GeodesicWitnessNeed::No,

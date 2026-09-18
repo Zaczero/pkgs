@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::IntoPyObjectExt as _;
 
 use crate::py::index::{
@@ -9,6 +5,7 @@ use crate::py::index::{
     PySpatialIndex, Python, build_spatial_index, exact_geometry_array, geometry_items, pyfunction,
     query_distance,
 };
+use crate::py::numpy::int64_array;
 #[pyfunction]
 #[pyo3(
     signature = (values, geom, *, k = 1, max_distance = None, return_distance = false, unit = None, exclusive = false, ties = false),
@@ -156,11 +153,7 @@ pub(crate) fn join_indexed(
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
     let (left, right) = join_pair_columns(queries, index, predicate_op, distance, unit)?;
-    (
-        crate::py::numpy::int64_array(py, left)?,
-        crate::py::numpy::int64_array(py, right)?,
-    )
-        .into_py_any(py)
+    (int64_array(py, left)?, int64_array(py, right)?).into_py_any(py)
 }
 
 /// Parallel `(left, right)` int64 join columns plus the left collection length.

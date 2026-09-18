@@ -1,14 +1,9 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
 
+use crate::geometry::types::Point;
 use crate::py::cells::{GridKind, PyCellArray, PyResult, pyclass};
 
-pub(super) fn h3_latlng(
-    p: crate::geometry::types::Point,
-) -> Result<h3o::LatLng, h3o::error::InvalidLatLng> {
+pub(super) fn h3_latlng(p: Point) -> Result<h3o::LatLng, h3o::error::InvalidLatLng> {
     let (lon, lat) = crate::grid::canonical_lonlat(p.x, p.y);
     h3o::LatLng::new(lat, lon)
 }

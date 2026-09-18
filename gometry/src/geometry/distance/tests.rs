@@ -277,7 +277,7 @@ fn point_segment_distance_value(
     match metric
         .point_segment_query(
             probe,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff,
                 witness: GeodesicWitnessNeed::No,
@@ -316,7 +316,7 @@ fn geodesic_segment_witness(
     match metric
         .point_segment_query(
             probe,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff: f64::INFINITY,
                 witness: GeodesicWitnessNeed::Yes,
@@ -621,14 +621,10 @@ fn geodesic_group_cap_pruning_case() -> (&'static str, Shape, Shape) {
     )
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(super) fn assert_same_witness(
     name: &str,
-    actual: Option<GeodesicWitnessCandidate>,
-    expected: Option<GeodesicWitnessCandidate>,
+    actual: Option<&GeodesicWitnessCandidate>,
+    expected: Option<&GeodesicWitnessCandidate>,
 ) {
     match (actual, expected) {
         (Some(actual), Some(expected)) => {

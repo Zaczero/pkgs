@@ -1,6 +1,6 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 //! XYZ web-mercator tiles: the slippy-map `z/x/y` addressing scheme.
 //!
@@ -10,16 +10,12 @@
 //! are quadkeys (Bing's digit-per-level path; the empty quadkey is the
 //! `z0` world tile). Zoom caps at 29 — the deliberate pre-v1 limit the
 //! packed id affords.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use std::f64::consts::PI;
 
 use crate::boundary::geographic::normalized_geographic_pole;
 use crate::curves::{morton_deinterleave, morton_interleave};
 use crate::geometry::{Bounds, Point, Shape};
+use crate::grid::coverer::RectCell;
 
 pub(crate) const TILE_MAX_ZOOM: u8 = 29;
 
@@ -285,7 +281,7 @@ pub(crate) const fn root() -> Tile {
 #[cfg(test)]
 use crate::grid::cell_set::{compact_with_floor, uncompact};
 
-impl crate::grid::coverer::RectCell for Tile {
+impl RectCell for Tile {
     fn depth(self) -> u8 {
         self.z
     }

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 #[cfg(test)]
 use std::cell::Cell;
 use std::fmt::Write as _;
@@ -199,13 +195,6 @@ impl GometryArrowArray {
 
     pub(crate) fn as_mut(&mut self) -> &mut ArrowArray {
         self.0.as_mut()
-    }
-
-    #[cfg(test)]
-    fn logical_length(&self) -> PyResult<usize> {
-        usize::try_from(self.0.length).map_err(|_| {
-            GeometryError::new_err("Arrow geometry export length is negative or too large")
-        })
     }
 }
 
@@ -582,38 +571,6 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     make_array(len, [OwnedBufferSlot::Null], children)
 }
 
-/// List array over a full CSR offsets buffer with a logical row window.
-///
-/// Parent offsets and the child coordinate run stay shared; only the Arrow
-/// shell records `offset`/`length`. Used for packed Identity (offset 0) and
-/// Window (offset = row start) export without rebasing or gathering.
-///
-/// Offsets must be nonempty, non-negative, non-decreasing over the visible
-/// window, and the window terminal must not exceed the child length.
-#[cfg(test)]
-pub(crate) fn list_array_windowed(
-    offsets: crate::geometry::SharedSlice<i32>,
-    child: GometryArrowArray,
-    start: usize,
-    length: usize,
-) -> PyResult<GometryArrowArray> {
-    if offsets.is_empty() {
-        return Err(GeometryError::new_err(
-            "Arrow list offsets must contain at least one entry",
-        ));
-    }
-    let child_len = child.logical_length()?;
-    // Full offset-chain admission (window, monotonic, non-negative, terminal
-    // ≤ child length) — same contract as the import side.
-    crate::py::arrow::ensure_i32_offsets_monotonic(&offsets, start, length, child_len)?;
-    make_array_with_offset(
-        length,
-        start,
-        [OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
-        [child],
-    )
-}
-
 /// Materialize a list shell after its offsets have already been admitted by
 /// the detached export planner. No offset scan or native packing work belongs
 /// in the attached capsule egress.
@@ -628,34 +585,6 @@ pub(crate) fn admitted_list_array_windowed(
         start,
         [OwnedBufferSlot::Null, OwnedBufferSlot::I32(offsets)],
         [child],
-    )
-}
-
-/// Binary array from owned offsets + data.
-///
-/// Offsets must be nonempty; **every** entry (not only the terminal) must be
-/// non-negative and non-decreasing, and the terminal must lie within `data`.
-/// Intermediate OOB/negative values (e.g. `[100, 2]` or `[-5, 0]`) are rejected.
-#[cfg(test)]
-pub(crate) fn binary_array(
-    offsets: crate::geometry::SharedSlice<i32>,
-    data: crate::geometry::SharedSlice<u8>,
-) -> PyResult<GometryArrowArray> {
-    if offsets.is_empty() {
-        return Err(GeometryError::new_err(
-            "Arrow binary offsets must contain at least one entry",
-        ));
-    }
-    let length = offsets.len() - 1;
-    crate::py::arrow::ensure_i32_offsets_monotonic(&offsets, 0, length, data.len())?;
-    make_array(
-        length,
-        [
-            OwnedBufferSlot::Null,
-            OwnedBufferSlot::I32(offsets),
-            OwnedBufferSlot::U8(data),
-        ],
-        Vec::new(),
     )
 }
 
@@ -803,6 +732,8 @@ pub(crate) const fn wkb_schema(nullable: bool) -> SchemaNode {
 
 #[cfg(test)]
 mod owner_export_tests {
+    use crate::py::arrow_c;
+    use crate::py::arrow_c::ArrowArray;
     #[test]
     fn failed_parent_publication_releases_child_tree_once() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -810,11 +741,11 @@ mod owner_export_tests {
         use super::{OwnedBufferSlot, make_array};
         use crate::test_support::{allocation_count, fail_allocations_after};
         static RELEASES: AtomicUsize = AtomicUsize::new(0);
-        unsafe extern "C" fn counted_release(array: *mut crate::py::arrow_c::ArrowArray) {
+        unsafe extern "C" fn counted_release(array: *mut ArrowArray) {
             RELEASES.fetch_add(1, Ordering::Relaxed);
             // SAFETY: this callback wraps the production callback on an owned child.
             unsafe {
-                crate::py::arrow_c::release_array(array);
+                arrow_c::release_array(array);
             }
         }
         ensure_python();
@@ -854,75 +785,6 @@ mod owner_export_tests {
         let values = SharedSlice::try_from_vec(vec![1.0_f64, 2.0, 3.0]).unwrap();
         primitive_f64_array_windowed(values.clone(), 0, 3).unwrap();
         assert!(primitive_f64_array_windowed(values, 2, 2).is_err());
-    }
-
-    #[test]
-    fn list_window_rejects_empty_and_oob_offsets() {
-        ensure_python();
-        let empty: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![]).unwrap();
-        let child = make_array(0, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-        assert!(list_array_windowed(empty, child, 0, 0).is_err());
-
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![0, 1, 2]).unwrap();
-        let child = make_array(0, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-        assert!(list_array_windowed(offsets, child, 0, 3).is_err());
-    }
-
-    #[test]
-    fn list_rejects_non_monotonic_and_terminal_past_child() {
-        ensure_python();
-        let child = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-        // Decreasing: 0, 2, 1
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![0, 2, 1]).unwrap();
-        assert!(list_array_windowed(offsets, child, 0, 2).is_err());
-
-        let child = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-        // Terminal 5 > child length 2
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![0, 5]).unwrap();
-        assert!(list_array_windowed(offsets, child, 0, 1).is_err());
-    }
-
-    #[test]
-    fn binary_rejects_empty_offsets_and_overlong_terminal() {
-        ensure_python();
-        let empty: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![]).unwrap();
-        let data: crate::geometry::SharedSlice<u8> =
-            crate::geometry::SharedSlice::try_from_vec(vec![1_u8, 2]).unwrap();
-        assert!(binary_array(empty, data.clone()).is_err());
-
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![0, 9]).unwrap();
-        assert!(binary_array(offsets, data).is_err());
-
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![0, 2]).unwrap();
-        let data: crate::geometry::SharedSlice<u8> =
-            crate::geometry::SharedSlice::try_from_vec(vec![1_u8, 2]).unwrap();
-        binary_array(offsets, data).unwrap();
-    }
-
-    #[test]
-    fn binary_rejects_intermediate_oob_and_negative_offsets() {
-        ensure_python();
-        let data: crate::geometry::SharedSlice<u8> =
-            crate::geometry::SharedSlice::try_from_vec(vec![1_u8, 2, 3, 4]).unwrap();
-        // Intermediate 100 > data.len(); terminal 2 is fine — still reject.
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![100, 2]).unwrap();
-        assert!(binary_array(offsets, data.clone()).is_err());
-        // Negative intermediate with non-negative terminal.
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![-5, 0]).unwrap();
-        assert!(binary_array(offsets, data.clone()).is_err());
-        // Non-monotonic positive chain.
-        let offsets: crate::geometry::SharedSlice<i32> =
-            crate::geometry::SharedSlice::try_from_vec(vec![0, 3, 1]).unwrap();
-        assert!(binary_array(offsets, data).is_err());
     }
 
     #[test]

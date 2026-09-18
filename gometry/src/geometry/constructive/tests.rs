@@ -99,7 +99,7 @@ fn raw_over_limit_join_bevels_while_styled_miter_cuts() {
     };
     let vertex = point(0.0, 0.0);
     assert!(matches!(
-        offset_join(previous, current, vertex, 1.0),
+        offset_join(&previous, &current, vertex, 1.0),
         OffsetJoin::Bevel { .. }
     ));
     assert!(matches!(

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::PyErr;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 
@@ -12,6 +8,7 @@ use crate::py::classes::coordinate_methods::{
     PyResult, Python, RowIndexOrSlice, Shape, column_axis_to_py, coordinates, coordinates_object,
     parse_row_index_or_slice, py_bool, pymethods,
 };
+use crate::py::numpy::{astype_readonly, int64_array, numpy_module};
 
 #[pymethods]
 impl PyCoordinates {
@@ -212,7 +209,7 @@ impl PyCoordinates {
     /// the source row for each vertex of a ``GeometryArray``.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::py::numpy::int64_array(py, self.view.row_index_i64()?)
+        int64_array(py, self.view.row_index_i64()?)
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
@@ -283,7 +280,7 @@ impl PyCoordinates {
         if index {
             dict.set_item(
                 "index",
-                crate::py::numpy::int64_array(py, slf.borrow().view.row_index_i64()?)?,
+                int64_array(py, slf.borrow().view.row_index_i64()?)?,
             )?;
         }
         Ok(dict)
@@ -330,7 +327,7 @@ impl PyCoordinates {
         if dtype.is_none() {
             return Ok(array);
         }
-        let numpy = crate::py::numpy::numpy_module(py)?;
+        let numpy = numpy_module(py)?;
         let dtype = numpy.getattr("dtype")?.call1((dtype,))?;
         let kind = dtype.getattr("kind")?.extract::<String>()?;
         let native = dtype.getattr("isnative")?.extract::<bool>()?;
@@ -342,7 +339,7 @@ impl PyCoordinates {
                 "dtype must be a floating dtype or None",
             ));
         }
-        crate::py::numpy::astype_readonly(array.bind(py), &dtype)
+        astype_readonly(array.bind(py), &dtype)
     }
 
     /// Return the coordinates as a nested structure mirroring the geometry's topology

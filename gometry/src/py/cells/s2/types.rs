@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::grid::s2::cellid::CellId;
 use crate::py::cells::pyclass;
 

@@ -1,7 +1,8 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
+use crate::boundary::FloatInput;
 use crate::geometry::{
     Bounds, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     ZOrdinate, geographic_bounds_to_shape,
@@ -801,7 +802,7 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
         member,
         iter,
         3,
-        |item| crate::boundary::coordinate_float("coordinate", &item),
+        |item| FloatInput::Coordinate.item("coordinate", &item),
         |got| {
             InvalidGeometryError::new_err(format!(
                 "coordinate has too many ordinates (got {})",

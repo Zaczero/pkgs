@@ -1,13 +1,8 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 //! Typed bulk cell storage — the CellArray Python surface.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use std::collections::hash_map::Entry;
 use std::ops::Range;
 use std::sync::Arc;
@@ -21,20 +16,30 @@ use pyo3::types::{
 use pyo3::{Bound, Py, PyErr};
 
 use crate::HeapSize;
+use crate::array::missing::ValidityMask;
 use crate::array::{RowSelection, RowSelectionRef, physical_row, row_selection_from_logical_rows};
 use crate::broadcast::py_bool_or_not_implemented;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes};
 use crate::grid::cell::{GridCell, HierarchicalCell as _};
+use crate::grid::cell_set;
+use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
+use crate::grid::s2::cellid::CellId;
+use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::grid_kind::{
     collect_ids, collect_inferred_ids, grid_kind_from_type, is_custom_index_provider,
 };
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
-    PyAnyMethods as _, PyCellArrayIter, PyRef, checked_depth, py_i64_required, pyfunction,
-    rect_cells_to_polygon, uncompact_floor_error,
+    PyAnyMethods as _, PyCellArrayIter, PyRef, cell_ops, checked_depth, py_i64_required,
+    pyfunction, rect_cells_to_polygon, uncompact_floor_error,
+};
+use crate::py::numpy::{
+    astype_readonly, bool_array, float64_array, int64_array, numpy_module, uint64_array,
+    uint64_slice_array,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
+use crate::py::vectors::Groups;
 
 /// An immutable array of one grid cell type backed by a shared ``uint64`` id
 /// column.
@@ -114,7 +119,7 @@ trait CellArrayGrid: GridCell {
     fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
     fn parse_compact_floor(depth: Option<&Bound<'_, PyAny>>) -> PyResult<u8>;
     fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::cell_set::compact_with_floor(cells, floor)?.into_public_vec())
+        Ok(cell_set::compact_with_floor(cells, floor)?.into_public_vec())
     }
     fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
         let mut cells = crate::try_vec_with_capacity(ids.len())?;
@@ -129,7 +134,7 @@ trait CellArrayGrid: GridCell {
         Ok(ids)
     }
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
-        Ok(crate::grid::cell_set::uncompact(&cells, depth)?.into_public_vec())
+        Ok(cell_set::uncompact(&cells, depth)?.into_public_vec())
     }
     fn uncompact_floor_token(cell: &Self) -> String;
 }
@@ -162,7 +167,7 @@ impl CellArrayGrid for h3o::CellIndex {
     }
 }
 
-impl CellArrayGrid for crate::grid::s2::cellid::CellId {
+impl CellArrayGrid for CellId {
     fn from_validated_id(id: u64) -> Self {
         Self::from_raw(id).expect("ids validated at construction")
     }
@@ -184,7 +189,7 @@ impl CellArrayGrid for crate::grid::s2::cellid::CellId {
     }
 }
 
-impl CellArrayGrid for crate::grid::tile::Tile {
+impl CellArrayGrid for Tile {
     fn from_validated_id(id: u64) -> Self {
         Self::from_id(id).expect("ids validated at construction")
     }
@@ -203,7 +208,7 @@ impl CellArrayGrid for crate::grid::tile::Tile {
             "tile min_zoom",
             "min_zoom",
             0,
-            i64::from(crate::grid::tile::TILE_MAX_ZOOM),
+            i64::from(TILE_MAX_ZOOM),
         )
     }
 
@@ -212,7 +217,7 @@ impl CellArrayGrid for crate::grid::tile::Tile {
     }
 }
 
-impl CellArrayGrid for crate::grid::geohash::Geohash {
+impl CellArrayGrid for Geohash {
     fn from_validated_id(id: u64) -> Self {
         super::grid_kind::geohash_from_identity_key(id).expect("ids validated at construction")
     }
@@ -231,7 +236,7 @@ impl CellArrayGrid for crate::grid::geohash::Geohash {
             "geohash min_precision",
             "min_precision",
             1,
-            i64::from(crate::grid::geohash::GEOHASH_MAX_PRECISION),
+            i64::from(GEOHASH_MAX_PRECISION),
         )
     }
 
@@ -490,15 +495,12 @@ impl PyCellArray {
             .map(|logical| G::from_validated_id(self.id_at(logical)))
     }
 
-    fn missing_mask(&self) -> PyResult<Option<crate::array::missing::ValidityMask>> {
+    fn missing_mask(&self) -> PyResult<Option<ValidityMask>> {
         let mut values = crate::try_vec_with_capacity(self.len())?;
         for row in 0..self.len() {
             crate::try_push(&mut values, self.is_row_missing(row))?;
         }
-        Ok(crate::array::missing::ValidityMask::from_vec(
-            self.len(),
-            values,
-        )?)
+        Ok(ValidityMask::from_vec(self.len(), values)?)
     }
 
     fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> PyResult<Vec<T>>
@@ -533,7 +535,7 @@ impl PyCellArray {
             );
         }
         let dtype = dtype.expect("checked non-None above");
-        let numpy = crate::py::numpy::numpy_module(py)?;
+        let numpy = numpy_module(py)?;
         let dtype = numpy.getattr("dtype")?.call1((dtype,))?;
         let kind = dtype.getattr("kind")?.extract::<String>()?;
         let itemsize = dtype.getattr("itemsize")?.extract::<usize>()?;
@@ -631,7 +633,7 @@ impl PyCellArray {
                 values
             })
         };
-        crate::py::numpy::bool_array(py, values)
+        bool_array(py, values)
     }
 }
 
@@ -845,7 +847,7 @@ impl PyCellArray {
             let array = self.clone();
             return Ok(py.detach(move || (0..array.len()).any(|row| array.is_row_missing(row))));
         }
-        let custom_index = is_custom_index_provider(item)?;
+        let custom_index = is_custom_index_provider(item);
         let needle = match self.kind().id_from_value(item) {
             Ok(needle) => needle,
             Err(error) if custom_index => return Err(error),
@@ -942,7 +944,7 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
         let needle = if value.is_none() {
             None
         } else {
-            let custom_index = is_custom_index_provider(value)?;
+            let custom_index = is_custom_index_provider(value);
             Some(self.kind().id_from_value(value).map_err(|error| {
                 if (error.is_instance_of::<GeometryError>(value.py())
                     || error.is_instance_of::<PyTypeError>(value.py()))
@@ -999,7 +1001,7 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
         if value.is_none() {
             return Ok((0..self.len()).filter(|&row| self.is_row_missing(row)).count());
         }
-        let custom_index = is_custom_index_provider(value)?;
+        let custom_index = is_custom_index_provider(value);
         let needle = match self.kind().id_from_value(value) {
             Ok(needle) => needle,
             Err(error) if custom_index => return Err(error),
@@ -1070,7 +1072,7 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 return Err(error);
             },
         };
-        let counts = match crate::py::numpy::int64_array(py, sorted_counts) {
+        let counts = match int64_array(py, sorted_counts) {
             Ok(counts) => counts,
             Err(error) => {
                 drop(cells);
@@ -1110,7 +1112,7 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 ));
             },
         };
-        let codes = match crate::py::numpy::int64_array(py, codes) {
+        let codes = match int64_array(py, codes) {
             Ok(codes) => codes,
             Err(error) => {
                 drop(uniques);
@@ -1206,9 +1208,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         if let Some(values) = borrowed.logical_contiguous_ids() {
 // SAFETY: values is tied to slf, and owner pins that object as
             // the array base.
-            return unsafe { crate::py::numpy::uint64_slice_array(owner, values) };
+            return unsafe { uint64_slice_array(owner, values) };
         }
-        crate::py::numpy::uint64_array(owner.py(), borrowed.try_logical_ids_vec()?)
+        uint64_array(owner.py(), borrowed.try_logical_ids_vec()?)
     }
 
     /// NumPy array protocol.
@@ -1254,13 +1256,13 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 }
                 let array = if copy == Some(true) {
                     let ids = slf.borrow().try_logical_ids_vec()?;
-                    crate::py::numpy::uint64_array(py, ids)?
+                    uint64_array(py, ids)?
                 } else {
                     Self::to_numpy(slf)?
                 };
                 if !native {
                     let dtype = dtype.expect("non-native ids require a requested dtype");
-                    return crate::py::numpy::astype_readonly(array.bind(py), dtype.bind(py));
+                    return astype_readonly(array.bind(py), dtype.bind(py));
                 }
                 Ok(array)
             }
@@ -1348,7 +1350,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 Ok::<_, PyErr>(values)
             })
         })?;
-        crate::py::numpy::float64_array(py, values)
+        float64_array(py, values)
     }
 
     /// Filled WGS84 polygon of every cell, as a geometry array.
@@ -1362,7 +1364,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let shapes = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
                 cells.map_logical_cells::<G, _>(|cell| {
-                    crate::grid::cell::GridCell::boundary_shape(cell).map_err(PyErr::from)
+                    GridCell::boundary_shape(cell).map_err(PyErr::from)
                 })
             })
         })?;
@@ -1429,7 +1431,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 let value = if self.is_row_missing(row) {
                     f64::NAN
                 } else {
-                    crate::py::cells::cell_ops::cell_descendant_count(
+                    cell_ops::cell_descendant_count(
                         G::from_validated_id(self.id_at(row)), depth, G::parse_depth,
                     )? as f64
                 };
@@ -1437,7 +1439,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             }
             Ok::<_, PyErr>(values)
         })?;
-        crate::py::numpy::float64_array(py, values)
+        float64_array(py, values)
     }
 
     /// Parent cell of every input cell.
@@ -1472,7 +1474,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             for cell in self.logical_cells::<G>() {
                 crate::try_push(
                     &mut present,
-                    crate::py::cells::cell_ops::cell_parent(cell, depth, G::parse_depth)?
+                    cell_ops::cell_parent(cell, depth, G::parse_depth)?
                         .hash_key(),
                 )?;
             }
@@ -1507,7 +1509,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     ///     counts vary, so the result is a Groups, not a rectangular
     ///     CellArray.
     #[getter]
-    pub(crate) fn neighbors(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
+    pub(crate) fn neighbors(&self, py: Python<'_>) -> PyResult<Groups> {
         let kind = self.kind();
         let cells = self.clone();
         let (ids, offsets) = py.detach(move || {
@@ -1528,7 +1530,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 builder.finish()
             })
         })?;
-        crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
+        Groups::from_cell_flat(kind, ids, offsets)
     }
 
     /// Return the child cells of every cell at a finer depth, as ragged rows.
@@ -1559,7 +1561,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         &self,
         py: Python<'_>,
         depth: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let kind = self.kind();
         let cells = self.clone();
         let depth = dispatch_cell_grid!(self, G, {
@@ -1610,7 +1612,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 builder.finish()
             })
         })?;
-        crate::py::vectors::Groups::from_cell_flat(kind, ids, offsets)
+        Groups::from_cell_flat(kind, ids, offsets)
     }
 
     /// Compact this cell set to the coarsest exact covering, returned in the
@@ -1726,17 +1728,17 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             },
             GridKind::S2Cell => {
                 let cells = cells
-                    .map_logical_cells::<crate::grid::s2::cellid::CellId, _>(|cell| cell)?;
+                    .map_logical_cells::<CellId, _>(|cell| cell)?;
                 super::s2::s2_dissolve(&cells)
             },
             GridKind::Tile => {
                 let cells = cells
-                    .map_logical_cells::<crate::grid::tile::Tile, _>(|cell| cell)?;
+                    .map_logical_cells::<Tile, _>(|cell| cell)?;
                 rect_cells_to_polygon(cells)
             },
             GridKind::GeohashCell => {
                 let cells = cells
-                    .map_logical_cells::<crate::grid::geohash::Geohash, _>(|cell| cell)?;
+                    .map_logical_cells::<Geohash, _>(|cell| cell)?;
                 rect_cells_to_polygon(cells)
             },
         })
@@ -1764,8 +1766,8 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         use pyo3::IntoPyObjectExt as _;
         let tokens = match self.kind() {
             GridKind::H3Cell => self.tokens::<h3o::CellIndex>()?,
-            GridKind::S2Cell => self.tokens::<crate::grid::s2::cellid::CellId>()?,
-            GridKind::Tile => self.tokens::<crate::grid::tile::Tile>()?,
+            GridKind::S2Cell => self.tokens::<CellId>()?,
+            GridKind::Tile => self.tokens::<Tile>()?,
             GridKind::GeohashCell => return self.geohash_tokens(py),
         };
         tokens.into_py_any(py)
@@ -1795,7 +1797,7 @@ impl PyCellArray {
                 tokens.append(py.None())?;
                 continue;
             }
-            let cell = crate::grid::geohash::Geohash::from_validated_id(self.id_at(row));
+            let cell = Geohash::from_validated_id(self.id_at(row));
             let (bytes, length) = cell.token_bytes();
             let token = std::str::from_utf8(&bytes[..length]).expect("geohash alphabet is ASCII");
             tokens.append(PyString::new(py, token))?;
@@ -2005,7 +2007,7 @@ mod tests {
 
     #[test]
     fn cell_array_heap_bytes_counts_ids_and_missing_flags_once() {
-        use crate::HeapSize;
+        use crate::HeapSize as _;
 
         let cells = PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![1, 2, 3], vec![
             false, true, false,

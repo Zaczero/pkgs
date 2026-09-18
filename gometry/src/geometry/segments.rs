@@ -1,6 +1,6 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 #![expect(
     clippy::self_named_module_files,
@@ -394,7 +394,7 @@ pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Poin
     }
     for left_pair in &left_pairs {
         for right_pair in &right_pairs {
-            let candidate = pair_nearest_points(*left_pair, *right_pair)?;
+            let candidate = pair_nearest_points(left_pair, right_pair)?;
             nearest.add(candidate.left, candidate.right, &candidate.distance_key)?;
         }
     }
@@ -405,11 +405,7 @@ pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Poin
 /// [`segment_nearest_points`] over full-ordinate vertex pairs: the planar
 /// kernel finds the XY witnesses, and each foot lifts back through its
 /// host pair so Z/M interpolate.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn pair_nearest_points(left: (Point, Point), right: (Point, Point)) -> Result<FullPairNearest> {
+fn pair_nearest_points(left: &(Point, Point), right: &(Point, Point)) -> Result<FullPairNearest> {
     let left_xy = Segment {
         start: left.0.xy(),
         end: left.1.xy(),
@@ -420,8 +416,8 @@ fn pair_nearest_points(left: (Point, Point), right: (Point, Point)) -> Result<Fu
     };
     let nearest = segment_pair_nearest(left_xy, right_xy)?;
     Ok(FullPairNearest {
-        left: nearest.left.interpolate_point(&left, left_xy)?,
-        right: nearest.right.interpolate_point(&right, right_xy)?,
+        left: nearest.left.interpolate_point(left, left_xy)?,
+        right: nearest.right.interpolate_point(right, right_xy)?,
         distance_key: nearest.distance_key,
     })
 }
@@ -672,7 +668,7 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
     if point_in(start) {
         push_clip_hit(
             ClipHit {
-                parameter: ClipParameter::Start,
+                parameter: SegmentParameter::Start,
                 point: start,
             },
             &mut hits,
@@ -682,7 +678,7 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
     if point_in(end) {
         push_clip_hit(
             ClipHit {
-                parameter: ClipParameter::End,
+                parameter: SegmentParameter::End,
                 point: end,
             },
             &mut hits,
@@ -762,68 +758,44 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
 }
 
 struct ClipHit {
-    parameter: ClipParameter,
+    parameter: SegmentParameter,
     point: XY,
 }
 
-enum ClipParameter {
+/// A position on a segment in exact arithmetic: an endpoint, or the interior
+/// ratio `num / den` of the way from start to end.
+#[derive(Clone, Debug)]
+pub(in crate::geometry) enum SegmentParameter {
     Start,
-    Ratio {
-        numerator: ExactDyadic,
-        denominator: ExactDyadic,
-    },
+    Ratio { num: ExactDyadic, den: ExactDyadic },
     End,
 }
 
-impl ClipParameter {
-    fn cmp(&self, other: &Self, zero: &ExactDyadic, one: &ExactDyadic) -> Result<Ordering> {
+impl SegmentParameter {
+    pub(in crate::geometry) fn cmp(
+        &self,
+        other: &Self,
+        zero: &ExactDyadic,
+        one: &ExactDyadic,
+    ) -> Result<Ordering> {
         match (self, other) {
             (Self::Start, Self::Start) | (Self::End, Self::End) => Ok(Ordering::Equal),
             (Self::Start, Self::End) => Ok(Ordering::Less),
             (Self::End, Self::Start) => Ok(Ordering::Greater),
-            (
-                Self::Start,
-                Self::Ratio {
-                    numerator,
-                    denominator,
-                },
-            ) => try_compare_ratios(zero, one, numerator, denominator),
-            (
-                Self::End,
-                Self::Ratio {
-                    numerator,
-                    denominator,
-                },
-            ) => try_compare_ratios(one, one, numerator, denominator),
+            (Self::Start, Self::Ratio { num, den }) => try_compare_ratios(zero, one, num, den),
+            (Self::End, Self::Ratio { num, den }) => try_compare_ratios(one, one, num, den),
+            (Self::Ratio { num, den }, Self::Start) => try_compare_ratios(num, den, zero, one),
+            (Self::Ratio { num, den }, Self::End) => try_compare_ratios(num, den, one, one),
             (
                 Self::Ratio {
-                    numerator,
-                    denominator,
-                },
-                Self::Start,
-            ) => try_compare_ratios(numerator, denominator, zero, one),
-            (
-                Self::Ratio {
-                    numerator,
-                    denominator,
-                },
-                Self::End,
-            ) => try_compare_ratios(numerator, denominator, one, one),
-            (
-                Self::Ratio {
-                    numerator: left_numerator,
-                    denominator: left_denominator,
+                    num: left_num,
+                    den: left_den,
                 },
                 Self::Ratio {
-                    numerator: right_numerator,
-                    denominator: right_denominator,
+                    num: right_num,
+                    den: right_den,
                 },
-            ) => try_compare_ratios(
-                left_numerator,
-                left_denominator,
-                right_numerator,
-                right_denominator,
-            ),
+            ) => try_compare_ratios(left_num, left_den, right_num, right_den),
         }
     }
 }
@@ -841,12 +813,12 @@ fn push_clip_hit(hits: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut u
     *count += 1;
 }
 
-fn clip_segment_parameter(segment: Segment, point: XY) -> Result<ClipParameter> {
+fn clip_segment_parameter(segment: Segment, point: XY) -> Result<SegmentParameter> {
     if same_point(segment.start, point) {
-        return Ok(ClipParameter::Start);
+        return Ok(SegmentParameter::Start);
     }
     if same_point(segment.end, point) {
-        return Ok(ClipParameter::End);
+        return Ok(SegmentParameter::End);
     }
     let use_x = !same_topological_coordinate(segment.start.x, segment.end.x);
     let (point, start, end) = if use_x {
@@ -858,9 +830,9 @@ fn clip_segment_parameter(segment: Segment, point: XY) -> Result<ClipParameter> 
         ExactDyadic::try_from_f64(point)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
     let denominator =
         ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
-    Ok(ClipParameter::Ratio {
-        numerator,
-        denominator,
+    Ok(SegmentParameter::Ratio {
+        num: numerator,
+        den: denominator,
     })
 }
 
@@ -888,9 +860,9 @@ fn clip_segment_edge_cross_exact(
             .try_add(delta_y.try_product(&offset)?)?;
         let free = round_ratio(&numerator, &delta_x)?;
         Ok(ClipHit {
-            parameter: ClipParameter::Ratio {
-                numerator: offset,
-                denominator: delta_x,
+            parameter: SegmentParameter::Ratio {
+                num: offset,
+                den: delta_x,
             },
             point: XY::new(edge_start.x, free),
         })
@@ -902,9 +874,9 @@ fn clip_segment_edge_cross_exact(
             .try_add(delta_x.try_product(&offset)?)?;
         let free = round_ratio(&numerator, &delta_y)?;
         Ok(ClipHit {
-            parameter: ClipParameter::Ratio {
-                numerator: offset,
-                denominator: delta_y,
+            parameter: SegmentParameter::Ratio {
+                num: offset,
+                den: delta_y,
             },
             point: XY::new(free, edge_start.y),
         })

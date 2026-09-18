@@ -1,12 +1,7 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use std::sync::Arc;
-
 use crate::array::{ArrayRow, ValidityMask};
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
+use crate::py::numpy::float64_array;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
     PyGeometryArray, PyResult, PyTypeError, Python, Shape, geometry_type_err, line_locate_shape,
@@ -36,7 +31,7 @@ pub(crate) fn nearest_point_columns_masked(
             right.push(PyGeometryArray::missing_placeholder());
             continue;
         }
-        let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair, common);
+        let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair.as_ref(), common);
         left.push(left_shape);
         right.push(right_shape);
     }
@@ -87,7 +82,7 @@ pub(crate) fn geometry_array_line_locate_point_geometry(
                 .collect_rows()
         })
         .map_err(crate::broadcast::rows_err)?;
-    crate::py::numpy::float64_array(py, result)
+    float64_array(py, result)
 }
 
 pub(crate) fn fixed_geometry_array_nearest_points_admitted(
@@ -208,9 +203,9 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     fixed: &PyGeometry,
     array: &PyGeometryArray,
     fixed_is_left: bool,
-    crs: Arc<String>,
+    crs: &str,
     frame: GeographicFrame,
-    state: Arc<crate::crs::RuntimeState>,
+    state: &crate::crs::RuntimeState,
 ) -> PyResult<PyGeometryArray> {
     let output_frame = if fixed_is_left {
         fixed.frame.clone()
@@ -223,9 +218,9 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     let rows = py.detach(move || {
         let mut array_rows = array_owned.row_operation();
         crate::crs::with_resolved_ellipsoid_metric_at(
-            &crs,
+            crs,
             &[fixed_plan.shape()],
-            &state,
+            state,
             |crs, metric| {
                 let (semi_major, flattening) = metric.ellipsoid_parameters();
                 fixed_plan.prepare_geodesic_parts(
@@ -271,7 +266,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                                 .map_err(|error| (logical, error))?
                         };
                         let line = crate::geometry::nearest_line(
-                            pair,
+                            pair.as_ref(),
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape()),
                         )
                         .map_err(|error| (logical, error))?;

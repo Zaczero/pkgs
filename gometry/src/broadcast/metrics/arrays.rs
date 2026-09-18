@@ -1,7 +1,6 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use std::simd::StdFloat as _;
 use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
@@ -9,7 +8,7 @@ use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use pyo3::types::PyAny;
 
 use crate::PackedColumnError;
-use crate::array::{ArrayRow, ArrayRowOperation, ValidityMask};
+use crate::array::{ArrayRow, ArrayRowOperation, ValidityMask, missing};
 use crate::broadcast::bool_array_mask_missing;
 use crate::broadcast::metrics::{
     Arc, Bounds, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Point, Py,
@@ -37,10 +36,6 @@ fn float64_array_mask_missing(
 /// CRS-aware array float metric used by the spine-routed similarity lanes.
 /// Fréchet owns its optional densification; Hausdorff evaluates its original
 /// continuous supports.
-#[expect(
-    clippy::too_many_lines,
-    reason = "scalar/array operand dispatch plus packed-line batch and per-pair lanes"
-)]
 pub(crate) fn array_crs_metric_float(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -86,7 +81,7 @@ pub(crate) fn array_crs_metric_float(
             let rights = Arc::clone(right.storage_arc());
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             operation.validate_model(&model)?;
-            let missing = crate::array::missing::union_pair(array.missing(), right.missing())?;
+            let missing = missing::union_pair(array.missing(), right.missing())?;
             if Arc::ptr_eq(&lefts, &rights)
                 && let Some(values) =
                     operation.try_same_storage_identity(&model, &lefts, missing.as_ref())?
@@ -216,7 +211,7 @@ where
         + Send
         + Sync,
 {
-    let missing = crate::array::missing::union_pair(array.missing(), right.missing())?;
+    let missing = missing::union_pair(array.missing(), right.missing())?;
     if !array.is_compact_nullable()
         && !right.is_compact_nullable()
         && let (Some(lefts), Some(rights)) =
@@ -329,10 +324,6 @@ where
 }
 
 /// Per-element CRS-aware distances from `array` to `other` (scalar or array).
-#[expect(
-    clippy::too_many_lines,
-    reason = "one exhaustive owner keeps operand classification, metric resolution, and packed fast paths consistent"
-)]
 pub(crate) fn array_crs_distances(
     py: Python<'_>,
     array: &PyGeometryArray,
@@ -1019,10 +1010,6 @@ fn array_crs_dwithin_per_element_values(
 /// `array_crs_dwithin` against one fixed scalar operand: the frame is checked
 /// once at the array level, the fixed operand's distance parts and geo tree
 /// are built once, and the planar path runs with the GIL released.
-#[expect(
-    clippy::too_many_lines,
-    reason = "one exhaustive owner keeps operand classification, metric resolution, and packed fast paths consistent"
-)]
 pub(crate) fn array_crs_dwithin_scalar(
     py: Python<'_>,
     array: &PyGeometryArray,

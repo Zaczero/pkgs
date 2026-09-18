@@ -1,5 +1,3 @@
-use std::sync::Arc;
-
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
@@ -92,13 +90,7 @@ pub(crate) fn shortest_line(
                     && !array.has_missing()
                 {
                     let result = fixed_geometry_array_shortest_line_geodesic(
-                        py,
-                        geometry,
-                        array,
-                        true,
-                        crs.clone(),
-                        *frame,
-                        Arc::clone(state),
+                        py, geometry, array, true, crs, *frame, state,
                     )?;
                     return Ok(result.into_pyobject(py)?.unbind().into());
                 }
@@ -116,13 +108,7 @@ pub(crate) fn shortest_line(
                     && !array.has_missing()
                 {
                     let result = fixed_geometry_array_shortest_line_geodesic(
-                        py,
-                        geometry,
-                        array,
-                        false,
-                        crs.clone(),
-                        *frame,
-                        Arc::clone(state),
+                        py, geometry, array, false, crs, *frame, state,
                     )?;
                     return Ok(result.into_pyobject(py)?.unbind().into());
                 }
@@ -501,7 +487,8 @@ pub(crate) fn nearest_points(
                     &right_cache,
                 )
             })?;
-            let (left_shape, right_shape) = crate::geometry::nearest_point_pair(pair, common);
+            let (left_shape, right_shape) =
+                crate::geometry::nearest_point_pair(pair.as_ref(), common);
             (
                 crate::Typed(PyGeometry::with_frame(left_shape, left.frame.clone())?)
                     .into_pyobject(py)?

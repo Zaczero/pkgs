@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::error::Result;
 use crate::geometry::overlay::{
     ExactLineEmission, ExactSourceInventory, OverlayOp, Strictness, merge_chains, overlay_all,

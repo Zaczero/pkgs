@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains,
     Orientation, Point, PointKey, Polygon, Ring, ValidationIssue, XY, classify_ring_pair,
@@ -145,7 +141,7 @@ pub(crate) fn ring_contains_interior<C: Coordinates + ?Sized>(
     // directly (no per-segment `Point` gather), bit-identical to the scalar
     // parity. The AoS fallback below keeps the scalar toggle.
     if let Some((xs, ys)) = ring.xy_columns() {
-        return crate::geometry::topology::ring_contains_interior_columns(xs, ys, point);
+        return topology::ring_contains_interior_columns(xs, ys, point);
     }
     let mut inside = false;
     for [a, b] in ring.segment_pairs() {

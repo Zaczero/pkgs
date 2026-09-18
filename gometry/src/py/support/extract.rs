@@ -1,18 +1,18 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::IntoPyObjectExt as _;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyByteArray, PyBytes};
 
+use crate::boundary::FloatInput;
 use crate::geometry::{MOrdinate, ZOrdinate};
+use crate::py::errors;
+use crate::py::errors::GeometryError;
+use crate::py::numpy::reject_masked_array;
 use crate::py::support::{
     Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, Polygon, Py,
     PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring,
-    Shape, Value, classify_input, coerce_geometry, coordinate_values_at_most,
-    coordinate_values_exact, exact_geometry, is_mapping_like, is_py_bytes_or_bytearray,
-    parse_geojson_geometry_value, push_ring_shapes, pyfunction,
+    Shape, Value, classify_input, coerce_geometry, exact_geometry, float_values_at_most,
+    float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
+    push_ring_shapes, pyfunction,
 };
 
 pub(crate) enum CoercedCollectedGeometryItems {
@@ -94,7 +94,7 @@ pub(crate) fn geometry_items(values: &Bound<'_, PyAny>) -> PyResult<Vec<PyGeomet
 }
 
 pub(crate) fn missing_geometry_items_error() -> PyErr {
-    crate::py::errors::GeometryError::new_err(
+    GeometryError::new_err(
         "values contains missing geometries; call drop_missing() or \
          fill_missing(...) first (aggregates and spatial indexes skip \
          them, but collections need every row present)",
@@ -363,7 +363,7 @@ fn validate_ring_shapes(array: &PyGeometryArray) -> PyResult<()> {
                     _,
                 )
         ) {
-            return Err(crate::py::errors::geometry_type_err(
+            return Err(errors::geometry_type_err(
                 "rings requires Polygon or MultiPolygon geometries",
             ));
         }
@@ -392,11 +392,20 @@ pub(crate) fn extract_points(
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Vec<Point>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     let coordinates = crate::collect_py_iter(value, |item| {
-        coordinate_values_at_most(item.py(), &item, "coordinate", 4, |got| {
-            InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
-        })
+        float_values_at_most(
+            item.py(),
+            &item,
+            "coordinate",
+            FloatInput::Coordinate,
+            4,
+            |got| {
+                InvalidGeometryError::new_err(format!(
+                    "coordinate has too many ordinates (got {got})"
+                ))
+            },
+        )
     })?;
     let z = optional_coordinates(z, coordinates.len(), "z")?;
     let m = optional_coordinates(m, coordinates.len(), "m")?;
@@ -448,10 +457,17 @@ pub(crate) fn extract_coordinate(value: &Bound<'_, PyAny>) -> PyResult<Point> {
 /// Admit one raw coordinate once, retaining an empty member for multipart
 /// constructors that use an explicit empty point.
 pub(crate) fn extract_coordinate_or_empty(value: &Bound<'_, PyAny>) -> PyResult<Option<Point>> {
-    crate::py::numpy::reject_masked_array(value)?;
-    let coordinate = coordinate_values_at_most(value.py(), value, "coordinate", 4, |got| {
-        InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
-    })?;
+    reject_masked_array(value)?;
+    let coordinate = float_values_at_most(
+        value.py(),
+        value,
+        "coordinate",
+        FloatInput::Coordinate,
+        4,
+        |got| {
+            InvalidGeometryError::new_err(format!("coordinate has too many ordinates (got {got})"))
+        },
+    )?;
     if coordinate.is_empty() {
         return Ok(None);
     }
@@ -503,7 +519,7 @@ pub(crate) fn extract_polygons(value: &Bound<'_, PyAny>) -> PyResult<Vec<Polygon
             if let Shape::Polygon(polygon) = geometry.shape.shape() {
                 return Ok(polygon.clone());
             }
-            return Err(crate::py::errors::geometry_type_err(
+            return Err(errors::geometry_type_err(
                 "multi_polygon geometry members must be Polygon geometries",
             ));
         }
@@ -535,11 +551,18 @@ pub(crate) fn optional_coordinates(
     if value.is_none() {
         return Ok(None);
     }
-    let values = coordinate_values_exact(value.py(), value, name, expected_len, |got| {
-        InvalidGeometryError::new_err(format!(
-            "{name} must have the same length as x/y coordinates (got length {got})"
-        ))
-    })?;
+    let values = float_values_exact(
+        value.py(),
+        value,
+        name,
+        FloatInput::Coordinate,
+        expected_len,
+        |got| {
+            InvalidGeometryError::new_err(format!(
+                "{name} must have the same length as x/y coordinates (got length {got})"
+            ))
+        },
+    )?;
     if values.len() != expected_len {
         return Err(InvalidGeometryError::new_err(format!(
             "{name} must have the same length as x/y coordinates"

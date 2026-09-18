@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::py::cells::h3::{
     CellIndex, PyH3Cell, h3_cell_array, h3_cell_index, parse_h3_resolution, validate_h3_index_id,
 };

@@ -40,7 +40,7 @@ pub(crate) fn keep_arcs(
     }
     let seed_index = sections.iter().position(|section| section.shared.is_none());
     let mut inside = if let Some(seed_index) = seed_index {
-        strict_section_membership(pool, other, sections[seed_index])?
+        strict_section_membership(pool, other, &sections[seed_index])?
     } else {
         false
     };
@@ -63,7 +63,7 @@ pub(crate) fn keep_arcs(
         }
         if seeded {
             if section.starts_after_reseed || reseed_next {
-                inside = strict_section_membership(pool, other, section)?;
+                inside = strict_section_membership(pool, other, &section)?;
                 saw_reseed = true;
                 reseed_next = false;
             }
@@ -190,14 +190,10 @@ pub(crate) fn section_inside_shared_arc(
         && !compare_along_segment(segment, to, hi).is_gt()
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn strict_section_membership(
     pool: &OperandPool,
     operand: Operand,
-    section: ArcSection,
+    section: &ArcSection,
 ) -> Option<bool> {
     let midpoint = XY::new(
         f64::midpoint(section.from.x, section.to.x),

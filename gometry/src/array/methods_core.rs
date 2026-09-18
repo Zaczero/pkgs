@@ -1,12 +1,4 @@
 //! Core `GeometryArray` methods: construction, metadata, properties, iteration.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
-)]
 
 use pyo3::PyErr;
 use pyo3::types::PyList;
@@ -25,8 +17,15 @@ use crate::array::{
     replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
     total_bounds_from_columns,
 };
+use crate::boundary::metadata;
+use crate::boundary::metadata::FrameError;
+use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
+use crate::py::functions::geometry_io;
+use crate::py::numpy::int64_array;
 use crate::py::support::{own_geometry_item, parse_owned_geometry_item};
+use crate::py::vectors::Groups;
+use crate::py::viz;
 
 fn try_collect_values<T>(values: impl IntoIterator<Item = T>, capacity: usize) -> PyResult<Vec<T>> {
     let mut output = crate::try_vec_with_capacity(capacity)?;
@@ -48,9 +47,9 @@ fn normalize_streamed_geometry(
 ) -> Result<PyGeometry> {
     if let Some(expected) = explicit_crs {
         if let Some(actual) = geometry.crs_ref()
-            && !crate::boundary::metadata::crs_operationally_equal(actual, expected)?
+            && !metadata::crs_operationally_equal(actual, expected)?
         {
-            return Err(crate::boundary::metadata::FrameError::SharedCrs {
+            return Err(FrameError::SharedCrs {
                 context: "GeometryArray".into(),
                 index: row,
                 first: Some(expected.clone()),
@@ -62,9 +61,9 @@ fn normalize_streamed_geometry(
     }
     if let Some(expected) = explicit_epoch {
         if let Some(actual) = geometry.epoch()
-            && !crate::boundary::metadata::epochs_equal(actual, expected)
+            && !metadata::epochs_equal(actual, expected)
         {
-            return Err(crate::boundary::metadata::FrameError::SharedEpoch {
+            return Err(FrameError::SharedEpoch {
                 context: "GeometryArray".into(),
                 index: row,
                 first: Some(expected),
@@ -338,8 +337,7 @@ impl PyGeometryArray {
         // and batch coercion; arbitrary iterators take the row-at-a-time lane.
         let raw_items = crate::collect_py_iter(values, Ok)?;
         if let Some(wkb) = shapely_wkb_batch(values, &raw_items)? {
-            let parsed =
-                crate::py::functions::geometry_io::from_wkb(values.py(), &wkb, crs, epoch)?;
+            let parsed = geometry_io::from_wkb(values.py(), &wkb, crs, epoch)?;
             return Ok(parsed
                 .bind(values.py())
                 .extract::<PyRef<'_, Self>>()?
@@ -407,7 +405,7 @@ impl PyGeometryArray {
     }
 
     pub fn _repr_html_(&self, py: Python<'_>) -> PyResult<String> {
-        if let Some(html) = crate::py::viz::try_array_repr_html(py, self)? {
+        if let Some(html) = viz::try_array_repr_html(py, self)? {
             return Ok(html);
         }
         Ok(geometry_array_svg_grid_html_masked(
@@ -751,7 +749,7 @@ impl PyGeometryArray {
     /// Groups
     ///     One `GeometryArray` group per input row.
     #[getter]
-    pub fn parts(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
+    pub fn parts(&self, py: Python<'_>) -> PyResult<Groups> {
         self.flat_map_shapes_groups(py, |shape| {
             let mut parts = Vec::new();
             crate::boundary::try_reserve_vec(&mut parts, shape.part_count())?;
@@ -799,7 +797,7 @@ impl PyGeometryArray {
                     }),
             )?,
         };
-        crate::py::numpy::int64_array(py, values)
+        int64_array(py, values)
     }
     /// Per-geometry coordinate count. Missing rows are ``0``.
     ///
@@ -809,7 +807,7 @@ impl PyGeometryArray {
     ///     One ``int64`` coordinate count per input geometry.
     #[getter]
     pub fn num_coordinates(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::py::numpy::int64_array(
+        int64_array(
             py,
             crate::try_collect_results(self.row_operation().rows_with_missing(|| 0_i64).map(
                 |row| {
@@ -955,7 +953,7 @@ impl PyGeometryArray {
                     }),
             )?,
         };
-        crate::py::numpy::int64_array(py, values)
+        int64_array(py, values)
     }
     /// Whether each geometry is empty (no points, rings, or parts).
     ///
@@ -965,7 +963,7 @@ impl PyGeometryArray {
     ///     One result per input geometry.
     #[getter]
     pub fn is_empty(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::is_empty_array(py, self)
+        unary::is_empty_array(py, self)
     }
     /// Per-geometry closed test (see `Geometry.is_closed`).
     ///
@@ -975,7 +973,7 @@ impl PyGeometryArray {
     ///     One result per input geometry.
     #[getter]
     pub fn is_closed(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::is_closed_array(py, self)
+        unary::is_closed_array(py, self)
     }
     /// Per-geometry ring test (see `Geometry.is_ring`).
     ///
@@ -985,7 +983,7 @@ impl PyGeometryArray {
     ///     One result per input geometry.
     #[getter]
     pub fn is_ring(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::is_ring_array(py, self)
+        unary::is_ring_array(py, self)
     }
     /// Per-geometry counter-clockwise test (see `Geometry.is_ccw`).
     ///
@@ -995,7 +993,7 @@ impl PyGeometryArray {
     ///     One result per input geometry.
     #[getter]
     pub fn is_ccw(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::is_ccw_array(py, self)
+        unary::is_ccw_array(py, self)
     }
     /// Per-geometry simplicity test (see `Geometry.is_simple`).
     ///
@@ -1009,7 +1007,7 @@ impl PyGeometryArray {
         // does not share an instruction-cache footprint with the full unary
         // fallback (UnaryRowMode / frame-cache / linref monomorphization).
         // Nullable still rides the mask-aware packed lane in the same helper.
-        crate::predicates::unary::is_simple_array(py, self)
+        unary::is_simple_array(py, self)
     }
     /// Per-geometry polygon convexity test (see `Geometry.is_convex`).
     ///
@@ -1018,7 +1016,7 @@ impl PyGeometryArray {
     /// numpy.ndarray
     #[getter]
     pub fn is_convex(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::is_convex_array(py, self)
+        unary::is_convex_array(py, self)
     }
     /// Element-wise antimeridian-crossing test.
     ///
@@ -1034,7 +1032,7 @@ impl PyGeometryArray {
     ///     required).
     #[getter]
     pub fn crosses_antimeridian(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::crosses_antimeridian_array(py, self)
+        unary::crosses_antimeridian_array(py, self)
     }
 }
 

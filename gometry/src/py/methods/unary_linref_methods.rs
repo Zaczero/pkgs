@@ -1,11 +1,7 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::dispatch::MetricOp;
+use crate::dispatch::{MetricOp, kernels};
 use crate::py::errors::GeometryError;
 use crate::py::support::LineReferenceBasis;
 use crate::{
@@ -334,9 +330,7 @@ impl PyGeometry {
                 crate::dispatch::Operation::Metric(MetricOp::LineInterpolate),
                 None,
                 default,
-                move |data, ctx| crate::dispatch::kernels::unary_line_interpolate_point_m(
-                    data, ctx, &m
-                )
+                move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m)
             )?;
             return value.into_pyobject(py).map(Bound::unbind);
         }
@@ -350,9 +344,7 @@ impl PyGeometry {
             op,
             resolver,
             move |data, ctx| {
-                crate::dispatch::kernels::unary_line_interpolate_point(
-                    data, ctx, &distance, normalized,
-                )
+                kernels::unary_line_interpolate_point(data, ctx, &distance, normalized)
             },
         )?;
         value.into_pyobject(py).map(Bound::unbind)
@@ -385,9 +377,7 @@ impl PyGeometry {
                 crate::dispatch::Operation::Metric(MetricOp::LineSubstring),
                 None,
                 default,
-                move |data, ctx| crate::dispatch::kernels::unary_line_substring_m(
-                    data, ctx, &start, &end
-                )
+                move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end)
             );
         }
         let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);
@@ -397,13 +387,7 @@ impl PyGeometry {
         end_distance.ensure_finite("end")?;
         let resolver = op.resolver_with_line_unit(unit, normalized);
         crate::dispatch::unary_scalar_linref_shape(py, self, op, resolver, move |data, ctx| {
-            crate::dispatch::kernels::unary_line_substring(
-                data,
-                ctx,
-                &start_distance,
-                &end_distance,
-                normalized,
-            )
+            kernels::unary_line_substring(data, ctx, &start_distance, &end_distance, normalized)
         })
     }
 
@@ -428,9 +412,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Metric(MetricOp::InterpolateM),
             unit,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_interpolate_m(
-                data, ctx, &start_m, &end_m, overwrite,
-            )
+            move |data, ctx| kernels::unary_interpolate_m(data, ctx, &start_m, &end_m, overwrite,)
         )
     }
 
@@ -555,9 +537,7 @@ impl PyGeometryArray {
                 crate::dispatch::Operation::Metric(MetricOp::LineInterpolate),
                 None,
                 default,
-                move |data, ctx| crate::dispatch::kernels::unary_line_interpolate_point_m(
-                    data, ctx, &m
-                )
+                move |data, ctx| kernels::unary_line_interpolate_point_m(data, ctx, &m)
             )?;
             return value.into_pyobject(py).map(|value| value.unbind().into());
         }
@@ -576,9 +556,7 @@ impl PyGeometryArray {
         };
         let value =
             crate::dispatch::unary_array_linref_shapes(py, self, &packed, move |data, ctx| {
-                crate::dispatch::kernels::unary_line_interpolate_point(
-                    data, ctx, &distance, normalized,
-                )
+                kernels::unary_line_interpolate_point(data, ctx, &distance, normalized)
             })?;
         value.into_pyobject(py).map(|value| value.unbind().into())
     }
@@ -610,9 +588,7 @@ impl PyGeometryArray {
                 crate::dispatch::Operation::Metric(MetricOp::LineSubstring),
                 None,
                 default,
-                move |data, ctx| crate::dispatch::kernels::unary_line_substring_m(
-                    data, ctx, &start, &end
-                )
+                move |data, ctx| kernels::unary_line_substring_m(data, ctx, &start, &end)
             );
         }
         let op = crate::dispatch::Operation::Metric(MetricOp::LineSubstring);
@@ -632,13 +608,7 @@ impl PyGeometryArray {
             metric: model,
         };
         crate::dispatch::unary_array_linref_shapes(py, self, &packed, move |data, ctx| {
-            crate::dispatch::kernels::unary_line_substring(
-                data,
-                ctx,
-                &start_distance,
-                &end_distance,
-                normalized,
-            )
+            kernels::unary_line_substring(data, ctx, &start_distance, &end_distance, normalized)
         })
     }
 
@@ -663,9 +633,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Metric(MetricOp::InterpolateM),
             unit,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_interpolate_m(
-                data, ctx, &start_m, &end_m, overwrite,
-            )
+            move |data, ctx| kernels::unary_interpolate_m(data, ctx, &start_m, &end_m, overwrite,)
         )
     }
 

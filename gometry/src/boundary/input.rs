@@ -3,19 +3,17 @@
 //! Small boundary helpers that coerce Python ints/floats/option values and
 //! parse affine-transform / origin / epoch / accuracy arguments. Re-exported at
 //! the crate root so every module reaches them through `use super::*`.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use numpy::PyUntypedArray;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
 use pyo3::{FromPyObject, ffi};
 
-use crate::py::errors::GeometryError;
-use crate::{Positive, Shape, crs, parameter_values_exact};
+use crate::boundary::FloatInput;
+use crate::py::errors;
+use crate::py::errors::{GeometryError, InvalidGeometryError};
+use crate::py::numpy::reject_masked_array;
+use crate::{Positive, Shape, crs, float_values_exact};
 
 pub(crate) fn py_i64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<i64> {
     // A non-int where an int is required is a plain `TypeError` (like the
@@ -117,7 +115,7 @@ pub(crate) fn py_index_object<'py>(
     name: &str,
     value: &Bound<'py, PyAny>,
 ) -> PyResult<Bound<'py, PyAny>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     if value.cast_exact::<PyBool>().is_ok() {
         return Err(PyTypeError::new_err(format!("{name} must be an integer")));
     }
@@ -137,7 +135,7 @@ fn call_py_number_index<'py>(value: &Bound<'py, PyAny>) -> PyResult<Bound<'py, P
 /// failures as a failed classification. A plain ``TypeError`` means the
 /// value is a sequence; every other exception belongs to the provider.
 pub(crate) fn f64_scalar(value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     match value.extract::<f64>() {
         Ok(value) => Ok(Some(value)),
         Err(error) if error.is_instance_of::<PyTypeError>(value.py()) => {
@@ -197,11 +195,7 @@ pub(crate) fn int_min_error(op: &str, param: &str, min: i64, got: i64) -> PyErr 
     } else {
         format!("{op} {param}")
     };
-    crate::py::errors::integer_parameter_error(
-        format!("{label} must be >= {min}, got {got}"),
-        param,
-        got,
-    )
+    errors::integer_parameter_error(format!("{label} must be >= {min}, got {got}"), param, got)
 }
 
 /// Require ``value >= 0`` with the canonical ``{op} {param}`` message.
@@ -235,7 +229,7 @@ pub(crate) fn bounded_int(
     if value < *range.start() {
         Err(int_min_error(op, param, *range.start(), value))
     } else {
-        Err(crate::py::errors::integer_parameter_error(
+        Err(errors::integer_parameter_error(
             format!("{op} {param} must be <= {}, got {value}", range.end()),
             param,
             value,
@@ -247,32 +241,33 @@ pub(crate) fn bounded_int(
 /// by the grid pair parameters; wrong type raises `TypeError`, wrong arity
 /// `GeometryError`.
 fn grid_pair(value: &Bound<'_, PyAny>, name: &str, expected: &str) -> PyResult<(f64, f64)> {
-    let values = match parameter_values_exact(value.py(), value, name, 2, |got| {
-        crate::py::errors::parameter_error(
-            format!("snap_to_grid {name} must be {expected}, got {got} values"),
-            name,
-        )
-    }) {
-        Ok(values) => values,
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && (value.cast::<PyString>().is_ok()
-                    || value.cast::<PyBytes>().is_ok()
-                    || (value
-                        .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
-                        .is_none()
-                        && value
-                            .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
-                            .is_none())) =>
-        {
-            return Err(PyTypeError::new_err(format!(
-                "snap_to_grid {name} must be {expected}"
-            )));
-        },
-        Err(error) => return Err(error),
-    };
+    let values =
+        match float_values_exact(value.py(), value, name, FloatInput::Parameter, 2, |got| {
+            errors::parameter_error(
+                format!("snap_to_grid {name} must be {expected}, got {got} values"),
+                name,
+            )
+        }) {
+            Ok(values) => values,
+            Err(error)
+                if error.is_instance_of::<PyTypeError>(value.py())
+                    && (value.cast::<PyString>().is_ok()
+                        || value.cast::<PyBytes>().is_ok()
+                        || (value
+                            .getattr_opt(pyo3::intern!(value.py(), "__iter__"))?
+                            .is_none()
+                            && value
+                                .getattr_opt(pyo3::intern!(value.py(), "__getitem__"))?
+                                .is_none())) =>
+            {
+                return Err(PyTypeError::new_err(format!(
+                    "snap_to_grid {name} must be {expected}"
+                )));
+            },
+            Err(error) => return Err(error),
+        };
     let [x, y] = values.as_slice() else {
-        return Err(crate::py::errors::parameter_error(
+        return Err(errors::parameter_error(
             format!(
                 "snap_to_grid {name} must be {expected}, got {} values",
                 values.len()
@@ -302,7 +297,7 @@ pub(crate) fn validate_grid_origin(origin: (f64, f64)) -> PyResult<(f64, f64)> {
     if x.is_finite() && y.is_finite() {
         Ok((x, y))
     } else {
-        Err(crate::py::errors::float_parameter_error(
+        Err(errors::float_parameter_error(
             format!("snap_to_grid origin must be finite, got ({x}, {y})"),
             "origin",
             if x.is_finite() { y } else { x },
@@ -348,7 +343,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for GridOrigin {
 /// (the GeoPandas/DuckDB-interoperable order).
 pub(crate) fn validate_curve_level(level: i64) -> PyResult<crate::curves::CurveLevel> {
     if !(1..=32).contains(&level) {
-        return Err(crate::py::errors::integer_parameter_error(
+        return Err(errors::integer_parameter_error(
             format!("curve level must be between 1 and 32, got {level}"),
             "level",
             level,
@@ -356,7 +351,7 @@ pub(crate) fn validate_curve_level(level: i64) -> PyResult<crate::curves::CurveL
     }
     let level = u8::try_from(level).expect("level <= 32 fits u8");
     crate::curves::CurveLevel::try_new(level).map_err(|_| {
-        crate::py::errors::integer_parameter_error(
+        errors::integer_parameter_error(
             format!("curve level must be between 1 and 32, got {level}"),
             "level",
             i64::from(level),
@@ -369,7 +364,7 @@ pub(crate) fn validate_curve_level(level: i64) -> PyResult<crate::curves::CurveL
 pub(crate) fn validate_subdivide_max_vertices(max_vertices: i64) -> PyResult<usize> {
     bounded_int("subdivide", "max_vertices", max_vertices, 8..=i64::MAX)?;
     usize::try_from(max_vertices).map_err(|_| {
-        crate::py::errors::integer_parameter_error(
+        errors::integer_parameter_error(
             "subdivide max_vertices is too large",
             "max_vertices",
             max_vertices,
@@ -383,11 +378,7 @@ pub(crate) fn parse_sample_count(value: &Bound<'_, PyAny>) -> PyResult<usize> {
     let count = py_i64_required("count", value)?;
     non_negative_int("sample_points", "count", count)?;
     usize::try_from(count).map_err(|_| {
-        crate::py::errors::integer_parameter_error(
-            "sample_points count is too large",
-            "count",
-            count,
-        )
+        errors::integer_parameter_error("sample_points count is too large", "count", count)
     })
 }
 
@@ -435,7 +426,7 @@ pub(crate) fn angle_radians(name: &str, value: &Bound<'_, PyAny>, radians: bool)
 
 /// Parse a 6-element `(a, b, d, e, xoff, yoff)` affine matrix of finite floats.
 pub(crate) fn parse_affine_matrix(matrix: &Bound<'_, PyAny>) -> PyResult<[f64; 6]> {
-    crate::py::numpy::reject_masked_array(matrix)?;
+    reject_masked_array(matrix)?;
     let names = ["a", "b", "d", "e", "xoff", "yoff"];
     let mut position = 0;
     let iter = crate::py_iter_or_error(matrix, || {
@@ -515,7 +506,7 @@ impl<'a, 'py> FromPyObject<'a, 'py> for OriginSpec {
 
 /// Parse a 2-element `(x, y)` sequence of finite numbers.
 pub(crate) fn parse_xy_pair(value: &Bound<'_, PyAny>) -> PyResult<(f64, f64)> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     // Propagate provider exceptions from `__iter__` / `__next__`; only a
     // bare "not iterable" TypeError becomes the domain message.
     let mut items = crate::py_iter_or_error(value, || {
@@ -566,7 +557,7 @@ pub(crate) fn finite_coordinate_required(name: &str, value: &Bound<'_, PyAny>) -
     let value = match f64_required(name, value) {
         Ok(value) => value,
         Err(_error) if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() => {
-            return Err(crate::py::errors::InvalidGeometryError::new_err(format!(
+            return Err(InvalidGeometryError::new_err(format!(
                 "{name} must be finite"
             )));
         },
@@ -575,14 +566,14 @@ pub(crate) fn finite_coordinate_required(name: &str, value: &Bound<'_, PyAny>) -
     if value.is_finite() {
         Ok(value)
     } else {
-        Err(crate::py::errors::InvalidGeometryError::new_err(format!(
+        Err(InvalidGeometryError::new_err(format!(
             "{name} must be finite"
         )))
     }
 }
 
 pub(crate) fn f64_required(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     let has_float_provider = value
         .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
         .is_some();
@@ -724,7 +715,7 @@ pub(crate) fn parse_area(
     if let Some(area) = area_from_object(value, name)? {
         return Ok(Some(area));
     }
-    let values = parameter_values_exact(value.py(), value, name, 4, |got| {
+    let values = float_values_exact(value.py(), value, name, FloatInput::Parameter, 4, |got| {
         GeometryError::new_err(format!(
             "{name} must be a (west, south, east, north) tuple, got {got} values"
         ))

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Detached packed-column execution over borrowed physical columns and a logical row selection.
 //!
 //! Kernels resolve logical rows through `RowSelectionRef`; only Identity and

@@ -25,7 +25,7 @@ pub enum ShapeRow<'a> {
 }
 
 impl<'a> ShapeRow<'a> {
-    pub(crate) fn line(coords: &'a CoordSeq, window: CoordWindow) -> Self {
+    pub(crate) const fn line(coords: &'a CoordSeq, window: CoordWindow) -> Self {
         Self::Line(coords, window.start(), window.end())
     }
 

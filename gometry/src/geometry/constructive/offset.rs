@@ -1,6 +1,6 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use std::num::NonZeroU32;
 
@@ -76,15 +76,15 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         (0..count)
             .map(|index| {
                 let previous = segments[wrap_index(index + count - 1, count)];
-                offset_join(previous, segments[index], vertices[index], signed)
+                offset_join(&previous, &segments[index], vertices[index], signed)
             })
             .collect()
     } else {
         (1..count)
             .map(|index| {
                 offset_join(
-                    segments[index - 1],
-                    segments[index],
+                    &segments[index - 1],
+                    &segments[index],
                     vertices[index],
                     signed,
                 )
@@ -327,7 +327,7 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
         for index in 0..vertices.len() {
             let previous = segments[wrap_index(index + segments.len() - 1, segments.len())];
             let current = segments[index];
-            let join = offset_join(previous, current, vertices[index], distance);
+            let join = offset_join(&previous, &current, vertices[index], distance);
             push_join(&mut result, join);
         }
         if let Some(first) = result.first().copied() {
@@ -337,8 +337,8 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
         push_distinct_point(&mut result, segments[0].start);
         for index in 1..vertices.len() - 1 {
             let join = offset_join(
-                segments[index - 1],
-                segments[index],
+                &segments[index - 1],
+                &segments[index],
                 vertices[index],
                 distance,
             );
@@ -431,13 +431,9 @@ impl OffsetJoin {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn offset_join(
-    previous: OffsetEdge,
-    current: OffsetEdge,
+    previous: &OffsetEdge,
+    current: &OffsetEdge,
     vertex: Point,
     distance: f64,
 ) -> OffsetJoin {

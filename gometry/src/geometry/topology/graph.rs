@@ -15,8 +15,9 @@ use crate::geometry::point_location::PolygonPointIndex;
 use crate::geometry::segment_index::{EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
     CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, RectContact,
-    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, canonical_f64_bits, dimension,
-    point_on_segment, same_point, segment_vs_rect, shared_segment_part,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, XY, antimeridian, arrangement,
+    canonical_f64_bits, dimension, overlay, point_on_segment, relate, same_point, segment_vs_rect,
+    shared_segment_part,
 };
 use crate::heap_size::HeapSize;
 
@@ -735,9 +736,7 @@ impl AreaMembership {
                 let candidates = areas
                     .iter()
                     .enumerate()
-                    .filter(|(_, support)| {
-                        crate::geometry::relate::polygon_has_nondegenerate_area(support.source())
-                    })
+                    .filter(|(_, support)| relate::polygon_has_nondegenerate_area(support.source()))
                     .map(|(polygon, support)| {
                         Ok(CartesianAreaCandidate {
                             polygon: polygon as u32,
@@ -762,9 +761,8 @@ impl AreaMembership {
                     .enumerate()
                     .filter_map(|(polygon, support)| {
                         let (shell, _) = support.geographic_rings();
-                        if !crate::geometry::relate::polygon_has_nondegenerate_area(
-                            support.source(),
-                        ) && !shell.north_pole
+                        if !relate::polygon_has_nondegenerate_area(support.source())
+                            && !shell.north_pole
                             && !shell.south_pole
                             && !shell.full_band
                         {
@@ -1285,7 +1283,7 @@ impl GraphBuilder {
                     source_row,
                     start,
                     end,
-                    staged_segments.as_ref().map_or_else(
+                    &staged_segments.as_ref().map_or_else(
                         || {
                             chart_segments(self.domain, Segment {
                                 start: start.xy(),
@@ -1330,17 +1328,13 @@ impl GraphBuilder {
             source_row,
             start,
             end,
-            chart_segments(self.domain, Segment {
+            &chart_segments(self.domain, Segment {
                 start: start.xy(),
                 end: end.xy(),
             }),
         );
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
     fn push_source_edge_charted(
         &mut self,
         support: SourceSupport,
@@ -1348,7 +1342,7 @@ impl GraphBuilder {
         source_row: u32,
         start: Point,
         end: Point,
-        charts: [Option<Segment>; 2],
+        charts: &[Option<Segment>; 2],
     ) {
         let segment = Segment {
             start: start.xy(),
@@ -1363,7 +1357,7 @@ impl GraphBuilder {
             component,
             source_row,
         });
-        for chart in charts.into_iter().flatten() {
+        for chart in charts.iter().flatten() {
             self.ensure_node(chart.start, |node| match support {
                 SourceSupport::Line => node.line = true,
                 SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. } => {
@@ -1377,7 +1371,7 @@ impl GraphBuilder {
                 },
             });
             self.chart_edges.push(ChartEdge {
-                segment: chart,
+                segment: *chart,
                 source,
             });
         }
@@ -1555,9 +1549,8 @@ impl GraphBuilder {
             },
             other => other,
         };
-        let (atomic, provenance) = crate::geometry::overlay::self_node_segments_sourced(
-            self.chart_edges.iter().map(|edge| edge.segment),
-        )?;
+        let (atomic, provenance) =
+            overlay::self_node_segments_sourced(self.chart_edges.iter().map(|edge| edge.segment))?;
         let mut bundles: HashMap<EdgeBundleKey, EdgeBundle> = HashMap::with_capacity(atomic.len());
         for (piece, owners) in atomic.into_iter().zip(provenance.iter()) {
             if same_point(piece.start, piece.end) {
@@ -1769,7 +1762,7 @@ fn chart_segments(domain: TopologyDomain, segment: Segment) -> [Option<Segment>;
     let end = XY::new(canonical_end_x + turns * axis.period(), segment.end.y);
     let half = axis.half_period();
     if end.x > half {
-        let y = crate::geometry::antimeridian::crossing_latitude_in_frame(
+        let y = antimeridian::crossing_latitude_in_frame(
             segment.end.point(),
             segment.start.point(),
             frame,
@@ -1786,7 +1779,7 @@ fn chart_segments(domain: TopologyDomain, segment: Segment) -> [Option<Segment>;
         ];
     }
     if end.x < -half {
-        let y = crate::geometry::antimeridian::crossing_latitude_in_frame(
+        let y = antimeridian::crossing_latitude_in_frame(
             segment.start.point(),
             segment.end.point(),
             frame,
@@ -1930,7 +1923,7 @@ fn compare_quotient_rays(
     right: &QuotientDart,
 ) -> std::cmp::Ordering {
     if origin.y.abs() != frame.pole() {
-        return crate::geometry::arrangement::compare_departures(
+        return arrangement::compare_departures(
             origin,
             left.segment.end,
             left.edge as u32,
@@ -1965,7 +1958,7 @@ fn compare_quotient_rays(
             -(origin.y - dart.segment.end.y).abs(),
         )
     };
-    crate::geometry::arrangement::compare_departures(
+    arrangement::compare_departures(
         XY::new(0.0, 0.0),
         direction(left),
         left.edge as u32,
@@ -2404,7 +2397,7 @@ fn condense_area_face_support(
     }
     let has_area = polygons
         .iter()
-        .any(|support| crate::geometry::relate::polygon_has_nondegenerate_area(support.source()));
+        .any(|support| relate::polygon_has_nondegenerate_area(support.source()));
     let mut edge_of_slot = vec![usize::MAX; arrangement.targets.len()];
     // Traverse the dual graph with one mutable polygon-membership set. Edge
     // provenance toggles only the polygons whose boundary is crossed, so face
@@ -2689,7 +2682,7 @@ fn translated_longitude_bounds(min: f64, max: f64, longitude: f64, period: f64) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordinateAxes, GeometryKind, LineSeq, MultiMember, Ring};
+    use crate::geometry::{CoordinateAxes, GeometryKind, LineSeq, MultiMember, Ring, predicates};
 
     fn degrees() -> crate::geographic::GeographicFrame {
         crate::crs::info("EPSG:4326")
@@ -3476,8 +3469,8 @@ mod tests {
     fn quotient_fan_orders_adjacent_diagonals_geometrically() {
         let high = f64::from_bits(1.0_f64.to_bits() + 1);
         assert_eq!(
-            crate::geometry::predicates::pseudo_angle(1.0, 1.0),
-            crate::geometry::predicates::pseudo_angle(1.0, high),
+            predicates::pseudo_angle(1.0, 1.0),
+            predicates::pseudo_angle(1.0, high),
             "adjacent diagonal rays collide after pseudo-angle rounding"
         );
         let upper = quotient_dart(0, XY::new(0.0, 0.0), XY::new(1.0, high));

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::exceptions::PyOverflowError;
 use pyo3::types::PyDict;
 
@@ -16,7 +12,9 @@ use crate::array::{
     reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
     segmented_planar_lengths_3d,
 };
-use crate::dispatch::MetricOp;
+use crate::dispatch::{MetricOp, kernels};
+use crate::py::errors;
+use crate::py::numpy::{bounds3d_array, float64_array};
 
 fn coordinate_payload_len(array: &PyGeometryArray) -> Option<usize> {
     match array.storage() {
@@ -205,13 +203,13 @@ impl PyGeometryArray {
                 Ok(bounds_3d_values_from_columns(&columns))
             })?
         {
-            return crate::py::numpy::bounds3d_array(py, values);
+            return bounds3d_array(py, values);
         }
         let values = crate::try_collect_results(
             self.bounds_3d_rows()
                 .map(|value| value.map_err(crate::PyErr::from)),
         )?;
-        crate::py::numpy::bounds3d_array(py, values)
+        bounds3d_array(py, values)
     }
     /// Per-row area, measured for the array's CRS.
     ///
@@ -285,7 +283,7 @@ impl PyGeometryArray {
                     }
                 }
             }
-            return crate::py::numpy::float64_array(py, values);
+            return float64_array(py, values);
         }
         crate::dispatch::unary_array(
             py,
@@ -293,7 +291,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Metric(MetricOp::Length3d),
             None,
             None,
-            crate::dispatch::kernels::unary_length_3d,
+            kernels::unary_length_3d,
         )
     }
 
@@ -847,7 +845,7 @@ impl PyGeometryArray {
             _ => false,
         };
         if !agrees {
-            return Err(crate::py::errors::crs_mismatch_error(
+            return Err(errors::crs_mismatch_error(
                 format!(
                     "concat requires a shared CRS; left is {}, right is {}",
                     crs_label(self.crs_str()),
@@ -859,7 +857,7 @@ impl PyGeometryArray {
             ));
         }
         if self.epoch() != other.epoch() {
-            return Err(crate::py::errors::epoch_mismatch_error(
+            return Err(errors::epoch_mismatch_error(
                 "concat requires a shared coordinate epoch",
                 self.epoch(),
                 other.epoch(),

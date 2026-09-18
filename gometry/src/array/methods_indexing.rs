@@ -1,20 +1,11 @@
-#![allow(
+#![expect(
+    clippy::similar_names,
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
+)]
+#![expect(
     clippy::used_underscore_items,
     reason = "`_with_missing` is private by Python convention, not unused"
 )]
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::needless_pass_by_value,
-    reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use std::fmt::Write as _;
 
 use numpy::{
@@ -29,8 +20,9 @@ use crate::array::{
     OverlayOp, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates, PyErr, PyGeometryArray,
     PyGeometryArrayIter, PyListMethods as _, PyResult, PyTupleMethods as _, PyTypeMethods as _,
     Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
-    overlay_operator,
+    missing, overlay_operator,
 };
+use crate::py::numpy::{bool_slice_array, false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
 
 pub(crate) enum FancyIndex {
@@ -54,7 +46,7 @@ pub(crate) fn numpy_fancy_index(
     let Ok(array) = index.cast::<PyUntypedArray>() else {
         return Ok(None);
     };
-    crate::py::numpy::reject_masked_array(index)?;
+    reject_masked_array(index)?;
     let ndim = array.ndim();
     if ndim > 1 {
         return Err(PyTypeError::new_err(format!(
@@ -687,10 +679,10 @@ impl PyGeometryArray {
     #[getter]
     pub fn is_missing(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.missing().map_or_else(
-            || crate::py::numpy::false_bool_array(py, self.len()),
+            || false_bool_array(py, self.len()),
             |mask| {
                 let values: Vec<bool> = mask.iter().collect();
-                crate::py::numpy::bool_slice_array(py, &values)
+                bool_slice_array(py, &values)
             },
         )
     }
@@ -711,7 +703,7 @@ impl PyGeometryArray {
         let incoming = ValidityMask::from_vec(expected, mask)?;
         // OR with existing bits (pandas GeometryExtensionArray semantics):
         // never unmask a row that already carries a missing placeholder.
-        let merged = crate::array::missing::union_pair(self.missing(), incoming.as_ref())?;
+        let merged = missing::union_pair(self.missing(), incoming.as_ref())?;
         self.clone().with_missing_mask(merged).map_err(PyErr::from)
     }
 

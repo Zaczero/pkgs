@@ -1,9 +1,6 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::types::PyAny;
 
+use crate::py::numpy::false_bool_array;
 use crate::{
     Bound, DefaultedF64Input, Predicate, Py, PyResult, Python, broadcast2, finite_f64_required,
     predicate_broadcast, pyfunction, relate_pattern_broadcast, relate_string_broadcast,
@@ -171,10 +168,10 @@ pub(crate) fn equals_identical(
             ) {
                 (Some(l), Some(r)) => {
                     crate::broadcast::ensure_same_len(l.len(), r.len())?;
-                    crate::py::numpy::false_bool_array(py, l.len())
+                    false_bool_array(py, l.len())
                 },
-                (Some(l), None) => crate::py::numpy::false_bool_array(py, l.len()),
-                (None, Some(r)) => crate::py::numpy::false_bool_array(py, r.len()),
+                (Some(l), None) => false_bool_array(py, l.len()),
+                (None, Some(r)) => false_bool_array(py, r.len()),
                 (None, None) => crate::broadcast::py_bool(py, false).into_py_any(py),
             };
         }

@@ -1,9 +1,8 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::types::PyTuple;
 
+use crate::boundary::geographic;
+use crate::boundary::metadata::WGS84_LONLAT;
+use crate::py::errors;
 use crate::py::functions::geocode::pluscode::{
     olc_decode, olc_encode, olc_recover, olc_require_full, olc_shorten, validate_pluscode_length,
 };
@@ -11,6 +10,7 @@ use crate::py::functions::geocode::shortlink::{shortlink_decode, shortlink_encod
 use crate::py::functions::geocode::{
     Bound, CodeInput, IntoPyObject as _, Py, PyAny, PyErr, PyResult, Python, pyfunction,
 };
+use crate::py::numpy::{float64_array, int64_array};
 use crate::{
     F64Param, Frame, GeometryError, LonLatPointsError, PyGeometry, PyGeometryArray, Shape, Typed,
     broadcast_coordinate_group, exact_geometry, exact_geometry_array, finite_coordinate_required,
@@ -24,9 +24,7 @@ fn geocode_array_codes(
     let points = match lonlat_points(array) {
         Ok(points) => points,
         Err(LonLatPointsError::Type) => {
-            return Err(crate::py::errors::geometry_type_err(
-                "expected Point geometry",
-            ));
+            return Err(errors::geometry_type_err("expected Point geometry"));
         },
         Err(LonLatPointsError::Setup(error)) => return Err(error.into()),
         Err(LonLatPointsError::Row(row, error)) => {
@@ -96,7 +94,7 @@ fn geocode_encode_broadcast(
     )?;
     let encoded =
         crate::try_collect_results(lon.values.iter().zip(&lat.values).map(|(&lon, &lat)| {
-            crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+            geographic::validate_lonlat_xy(lon, lat)?;
             operation(lon, lat)
         }))?;
     if scalar {
@@ -230,7 +228,7 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
             area.lat_hi,
         )?))
     }
-    let frame = Frame::new(Some(crate::boundary::metadata::WGS84_LONLAT.into()), None)?;
+    let frame = Frame::new(Some(WGS84_LONLAT.into()), None)?;
     match CodeInput::parse(code, "code")? {
         CodeInput::Scalar(code) => Ok(Typed(PyGeometry::with_frame(polygon_shape(&code)?, frame)?)
             .into_pyobject(py)?
@@ -286,7 +284,7 @@ pub(crate) fn pluscode_shorten(
     lat: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     code_lonlat_broadcast(py, code, reference, lat, |code, lon, lat| {
-        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+        geographic::validate_lonlat_xy(lon, lat)?;
         olc_shorten(code, lat, lon)
     })
 }
@@ -326,7 +324,7 @@ pub(crate) fn pluscode_recover(
     lat: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     code_lonlat_broadcast(py, code, reference, lat, |code, lon, lat| {
-        crate::boundary::geographic::validate_lonlat_xy(lon, lat)?;
+        geographic::validate_lonlat_xy(lon, lat)?;
         olc_recover(code, lat, lon)
     })
 }
@@ -429,9 +427,9 @@ pub(crate) fn osm_shortlink_location(
                 }
                 Ok::<_, PyErr>((lon, lat, zoom))
             })?;
-            let lon = crate::py::numpy::float64_array(py, lon)?;
-            let lat = crate::py::numpy::float64_array(py, lat)?;
-            let zoom = crate::py::numpy::int64_array(py, zoom)?;
+            let lon = float64_array(py, lon)?;
+            let lat = float64_array(py, lat)?;
+            let zoom = int64_array(py, zoom)?;
             Ok(PyTuple::new(py, [lon, lat, zoom])?.unbind().into())
         },
     }

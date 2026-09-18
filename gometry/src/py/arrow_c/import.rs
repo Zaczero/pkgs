@@ -1,10 +1,5 @@
-#![allow(
+#![expect(
     clippy::absolute_paths,
-    reason = "stream admit/decode loop is intentionally linear"
-)]
-#![allow(
-    clippy::too_many_lines,
-    clippy::needless_question_mark,
     reason = "stream admit/decode loop is intentionally linear"
 )]
 
@@ -51,7 +46,9 @@ pub(crate) fn geometries_from_arrow_c(
     if value.hasattr("__arrow_c_stream__")? {
         let capsule = value.call_method1("__arrow_c_stream__", (py.None(),))?;
         let stream = capsule_pointer::<ArrowArrayStream>(&capsule, stream_capsule_name())?;
-        return import_stream(py, stream, crs, epoch);
+        // SAFETY: `capsule_pointer` checked the stream capsule name, and the
+        // capsule keeps its stream alive while it is borrowed here.
+        return unsafe { import_stream(py, stream, crs, epoch) };
     }
     Ok(None)
 }
@@ -162,7 +159,13 @@ unsafe fn read_metadata_len(cursor: &mut *const u8) -> PyResult<usize> {
 /// Stream import admits and decodes one batch before requesting the next.
 /// Only canonical packed payloads (or explicit mixed rows) and row metadata
 /// survive across callbacks.
-pub(crate) fn import_stream(
+///
+/// # Safety
+///
+/// `stream` must be null or point to a writable, ABI-conforming
+/// `ArrowArrayStream` that stays valid for the duration of the call; the
+/// import takes ownership of its release callback.
+pub(crate) unsafe fn import_stream(
     py: Python<'_>,
     stream: *mut ArrowArrayStream,
     crs: Option<&Bound<'_, PyAny>>,
@@ -174,15 +177,15 @@ pub(crate) fn import_stream(
     // The capsule normally remains the fallback owner if moving the stream
     // shell cannot allocate. Keep an explicit stack owner as well so direct
     // native callers have the same failure-path guarantee.
+    // SAFETY: the caller supplies a live, writable stream (checked non-null).
     let _stream_guard = unsafe { ArrowReleaseGuard::from_raw(stream) }?;
     // Consume the capsule-owned stream shell before inspecting callback
     // pointers. The original capsule remains only as an inert box whose
-    // SAFETY: the caller supplies a live, writable stream (checked non-null).
     // release slot is NULL, so reentrant or repeated imports cannot callback.
+    // SAFETY: the same live stream; the guard above yields to the moved owner.
     let mut stream_owner = unsafe { MovedArrowShell::take(stream) }?;
     let stream = stream_owner.as_mut_ptr();
     // SAFETY: a valid stream provides function pointers while unreleased.
-    // SAFETY: the same live stream; the guard above yields to the moved owner.
     unsafe {
         let Some(get_schema) = (*stream).get_schema else {
             return Ok(None);

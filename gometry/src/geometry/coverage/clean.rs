@@ -269,7 +269,7 @@ fn dissolve_edge_incidences(
 mod tests {
     use super::*;
     use crate::error::{ErrorKind, ResourceError};
-    use crate::geometry::{CoordSeq, Point, Polygon, Ring, XY};
+    use crate::geometry::{CoordSeq, Point, Polygon, Ring, XY, overlay};
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn rectangle_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
@@ -298,8 +298,7 @@ mod tests {
         maxy: f64,
         subdivisions: usize,
     ) -> Shape {
-        let mut points = Vec::new();
-        points.reserve(subdivisions * 4 + 1);
+        let mut points = Vec::with_capacity(subdivisions * 4 + 1);
         for index in 0..=subdivisions {
             let fraction = index as f64 / subdivisions as f64;
             points.push(Point::new_raw_xy(minx + (maxx - minx) * fraction, miny));
@@ -343,7 +342,7 @@ mod tests {
         let (_, allocations) = allocation_count(|| run().expect("coverage clean count"));
         assert!(allocations > 0);
         for prefix in 0..allocations {
-            let result = fail_allocations_after(prefix, &run);
+            let result = fail_allocations_after(prefix, run);
             let Err(error) = result else {
                 panic!("coverage clean unexpectedly succeeded at allocation prefix {prefix}");
             };
@@ -364,10 +363,10 @@ mod tests {
     #[test]
     fn coverage_clean_builds_one_partition_after_admission() {
         let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
-        crate::geometry::overlay::reset_partition_builds();
+        overlay::reset_partition_builds();
         coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
             .expect("coverage clean");
-        assert_eq!(crate::geometry::overlay::partition_builds(), 1);
+        assert_eq!(overlay::partition_builds(), 1);
     }
 
     #[test]
@@ -447,12 +446,12 @@ mod tests {
             dense_rectangle(0.0, 0.0, 10.2, 10.0),
             dense_rectangle(10.0, 0.0, 20.0, 10.0),
         ];
-        crate::geometry::overlay::reset_partition_builds();
+        overlay::reset_partition_builds();
         let (output, allocations) = crate::test_support::allocation_count(|| {
             coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
                 .expect("dense collinear coverage clean")
         });
-        let metrics = crate::geometry::overlay::partition_metrics();
+        let metrics = overlay::partition_metrics();
         let phase_allocations = crate::test_support::allocation_phase_counts();
         assert!(phase_allocations.iter().sum::<usize>() <= allocations);
         assert_eq!(metrics.partition_builds, 1);

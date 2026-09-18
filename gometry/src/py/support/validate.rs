@@ -1,17 +1,14 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use std::num::NonZeroU32;
 
 use pyo3::types::PyString;
 
+use crate::boundary::{FloatInput, input};
 use crate::io::WktDimension;
-use crate::py::errors::integer_parameter_error;
+use crate::py::errors::{InvalidGeometryError, integer_parameter_error};
 use crate::py::support::{
     Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
     PyAnyMethods as _, PyErr, PyResult, Python, Shape, finite_f64_required, non_negative_int,
@@ -196,7 +193,7 @@ pub(crate) fn spatial_key_for_shape_opt(
     // error whatever the geometry. Emptiness is then decided BEFORE frame
     // derivation, which would otherwise raise while deriving a frame for a
     // shape that has no key either way.
-    let level = crate::boundary::input::validate_curve_level(level)?;
+    let level = input::validate_curve_level(level)?;
     if shape.is_empty() {
         return Ok(None);
     }
@@ -212,11 +209,18 @@ pub(crate) fn parse_curve_bounds(
     let Some(value) = value else {
         return Ok(None);
     };
-    let values = crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
-        GeometryError::new_err(format!(
-            "bounds must be finite (minx, miny, maxx, maxy) with min <= max; got {got} values"
-        ))
-    })?;
+    let values = crate::float_values_exact(
+        value.py(),
+        value,
+        "bounds",
+        FloatInput::Parameter,
+        4,
+        |got| {
+            GeometryError::new_err(format!(
+                "bounds must be finite (minx, miny, maxx, maxy) with min <= max; got {got} values"
+            ))
+        },
+    )?;
     let [minx, miny, maxx, maxy] = values.as_slice() else {
         return Err(GeometryError::new_err(format!(
             "bounds must be (minx, miny, maxx, maxy), got {} values",
@@ -237,9 +241,7 @@ pub(crate) fn parse_curve_bounds(
 }
 
 pub(crate) fn empty_curve_input(operation: &str) -> PyErr {
-    crate::py::errors::InvalidGeometryError::new_err(format!(
-        "{operation} requires a non-empty geometry"
-    ))
+    InvalidGeometryError::new_err(format!("{operation} requires a non-empty geometry"))
 }
 
 pub(crate) fn validate_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<NonNegative> {

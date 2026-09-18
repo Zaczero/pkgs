@@ -369,6 +369,21 @@ impl ExactPointTester {
     }
 }
 
+/// Union membership over the parts stabbed at `point`: the first part that
+/// accepts it (or fails) decides.
+fn any_part_at(
+    parts: &YStabbingIndex<PolygonPointIndex>,
+    point: Point,
+    accepts: impl Fn(&PolygonPointIndex) -> Result<bool>,
+) -> Result<bool> {
+    parts
+        .for_each_at_point(point.x, point.y, |polygon| match accepts(polygon) {
+            Ok(false) => ControlFlow::Continue(()),
+            outcome => ControlFlow::Break(outcome),
+        })
+        .unwrap_or(Ok(false))
+}
+
 pub(crate) enum PointBatchTester {
     /// Single polygon — no multipolygon Y-index indirection.
     Polygon {
@@ -438,25 +453,9 @@ impl PointBatchTester {
     pub(crate) fn contains_point(&self, point: Point) -> Result<bool> {
         match self {
             Self::Polygon { index: polygon, .. } => polygon.contains_xy(point.x, point.y),
-            Self::MultiPolygon { parts, .. } => {
-                let mut hit = false;
-                let mut error = None;
-                let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
-                    match polygon.contains_xy(point.x, point.y) {
-                        Ok(value) => hit |= value,
-                        Err(value) => {
-                            error = Some(value);
-                            return ControlFlow::Break(());
-                        },
-                    }
-                    if hit {
-                        ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
-                    }
-                });
-                error.map_or(Ok(hit), Err)
-            },
+            Self::MultiPolygon { parts, .. } => any_part_at(parts, point, |polygon| {
+                polygon.contains_xy(point.x, point.y)
+            }),
             Self::Generic(tester) => tester.contains_point(point),
         }
     }
@@ -466,23 +465,7 @@ impl PointBatchTester {
         match self {
             Self::Polygon { index: polygon, .. } => polygon.covers_xy(point.x, point.y),
             Self::MultiPolygon { parts, .. } => {
-                let mut hit = false;
-                let mut error = None;
-                let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
-                    match polygon.covers_xy(point.x, point.y) {
-                        Ok(value) => hit |= value,
-                        Err(value) => {
-                            error = Some(value);
-                            return ControlFlow::Break(());
-                        },
-                    }
-                    if hit {
-                        ControlFlow::Break(())
-                    } else {
-                        ControlFlow::Continue(())
-                    }
-                });
-                error.map_or(Ok(hit), Err)
+                any_part_at(parts, point, |polygon| polygon.covers_xy(point.x, point.y))
             },
             Self::Generic(tester) => tester.covers_point(point),
         }

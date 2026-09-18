@@ -1,36 +1,28 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::dispatch::kernels;
 use crate::py::methods::unary_constructive_methods::{
     Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, pymethods,
 };
+use crate::py::vectors::Groups;
 
 unary_shape_method!(
     build_area,
     BuildArea,
     doc_build_area,
-    crate::dispatch::kernels::unary_build_area,
+    kernels::unary_build_area,
     synthesized
 );
-unary_shape_method!(
-    node,
-    Node,
-    doc_node,
-    crate::dispatch::kernels::unary_node,
-    synthesized
-);
+unary_shape_method!(node, Node, doc_node, kernels::unary_node, synthesized);
 unary_shape_method!(
     unique_points,
     UniquePoints,
     doc_unique_points,
-    crate::dispatch::kernels::unary_unique_points
+    kernels::unary_unique_points
 );
 unary_shape_method!(
     split_antimeridian,
     SplitAntimeridian,
     doc_split_antimeridian,
-    crate::dispatch::kernels::unary_split_antimeridian
+    kernels::unary_split_antimeridian
 );
 
 #[pymethods]
@@ -56,7 +48,7 @@ impl PyGeometry {
 #[pymethods]
 impl PyGeometryArray {
     #[doc = doc_polygonize!(array)]
-    pub fn polygonize(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
+    pub fn polygonize(&self, py: Python<'_>) -> PyResult<Groups> {
         self.polygonize_impl(py)
     }
     #[doc = doc_line_merge!(array)]
@@ -68,7 +60,7 @@ impl PyGeometryArray {
         self.extremes_impl(py)
     }
     #[doc = doc_self_intersections!(array)]
-    pub fn self_intersections(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
+    pub fn self_intersections(&self, py: Python<'_>) -> PyResult<Groups> {
         self.self_intersections_impl(py)
     }
 }

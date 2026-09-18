@@ -321,10 +321,6 @@ impl PredicateSpec {
         None
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
     /// Every answer available before either operand is prepared.
     ///
     /// Ordered by what each stage has to touch: declared kinds refute without
@@ -333,8 +329,8 @@ impl PredicateSpec {
     /// pair to the exact kernel.
     pub(crate) fn pre_topology(
         &self,
-        left: GateOperand<'_>,
-        right: GateOperand<'_>,
+        left: &GateOperand<'_>,
+        right: &GateOperand<'_>,
     ) -> crate::error::Result<Option<bool>> {
         if let Some(verdict) = self.predicate.kind_gate(left.kind, right.kind) {
             return Ok(Some(verdict));
@@ -351,10 +347,6 @@ impl PredicateSpec {
         self.rectangles_meet(left, left_bounds, right, right_bounds)
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
     /// Two axis-aligned rectangles whose bounds overlap share ground, because
     /// each covers its own bounding box exactly. Reaching here means the
     /// bounds gate already found the boxes meet, so no graph decides this.
@@ -366,9 +358,9 @@ impl PredicateSpec {
     /// point means both operands already passed all three.
     fn rectangles_meet(
         &self,
-        left: GateOperand<'_>,
+        left: &GateOperand<'_>,
         left_bounds: Bounds,
-        right: GateOperand<'_>,
+        right: &GateOperand<'_>,
         right_bounds: Bounds,
     ) -> crate::error::Result<Option<bool>> {
         let meeting = match self.predicate {
@@ -384,7 +376,7 @@ impl PredicateSpec {
                 crate::geometry::cartesian_support_nonempty(shape)
             })
         };
-        Ok((rectangle(left, left_bounds)? && rectangle(right, right_bounds)?).then_some(meeting))
+        Ok((rectangle(*left, left_bounds)? && rectangle(*right, right_bounds)?).then_some(meeting))
     }
 }
 
@@ -481,7 +473,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                 } else {
                     (row_operand, scalar_operand)
                 };
-                if let Some(verdict) = spec.pre_topology(left, right)? {
+                if let Some(verdict) = spec.pre_topology(&left, &right)? {
                     return Ok(Some(verdict));
                 }
                 if spec.predicate != Predicate::Intersects
@@ -541,7 +533,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                             right: scalar,
                         }
                     };
-                    topology_scalar_pair(spec, operands)
+                    topology_scalar_pair(spec, &operands)
                 };
                 try_push_vec(&mut results, evaluate().map_err(|error| (index, error))?)
                     .map_err(|error| (index, error))?;
@@ -599,7 +591,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     (row_operand, scalar_operand)
                 };
                 if let Some(verdict) = spec
-                    .pre_topology(left, right)
+                    .pre_topology(&left, &right)
                     .map_err(|error| (index, error))?
                 {
                     try_push_vec(&mut results, verdict).map_err(|error| (index, error))?;
@@ -644,7 +636,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                 };
                 try_push_vec(
                     &mut results,
-                    topology_scalar_pair(spec, operands).map_err(|error| (index, error))?,
+                    topology_scalar_pair(spec, &operands).map_err(|error| (index, error))?,
                 )
                 .map_err(|error| (index, error))?;
             }
@@ -664,13 +656,9 @@ pub(crate) fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn topology_scalar_pair(
     spec: &PredicateSpec,
-    operands: PreparedTopologyPair<'_>,
+    operands: &PreparedTopologyPair<'_>,
 ) -> crate::error::Result<bool> {
     // The array, index and coverer paths all run the pre-topology gates before
     // admitting a pair to the relation; the scalar pair was the one lane that
@@ -678,11 +666,11 @@ pub(crate) fn topology_scalar_pair(
     // still built both topology graphs and paired their edges to discover
     // they share no point.
     if let Some((left, right)) = operands.gate_operands()
-        && let Some(verdict) = spec.pre_topology(left, right)?
+        && let Some(verdict) = spec.pre_topology(&left, &right)?
     {
         return Ok(verdict);
     }
-    if let Some(verdict) = local_point_predicate(spec, &operands)? {
+    if let Some(verdict) = local_point_predicate(spec, operands)? {
         return Ok(verdict);
     }
     Ok(predicate_matrix_value(spec, operands.relate()?))
@@ -955,10 +943,7 @@ mod tests {
         );
         assert!(!cancelled.relate_pattern(&remote, "**2******").unwrap());
     }
-    #[expect(
-        clippy::similar_names,
-        reason = "bounds are named by axis and extreme, as in the public API"
-    )]
+
     use super::*;
     use crate::boundary::Frame;
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring, Shape};
@@ -970,6 +955,10 @@ mod tests {
             .unwrap()
     }
 
+    #[expect(
+        clippy::similar_names,
+        reason = "bounds are named by axis and extreme, as in the public API"
+    )]
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
         Shape::Polygon(
             Polygon::new(
@@ -1276,7 +1265,7 @@ mod tests {
                     right: &right_plan,
                 };
                 assert_eq!(
-                    topology_scalar_pair(&spec, pair).unwrap(),
+                    topology_scalar_pair(&spec, &pair).unwrap(),
                     relation,
                     "{predicate:?} disagreed with its own relation",
                 );

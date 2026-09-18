@@ -1,17 +1,19 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::IntoPyObjectExt as _;
 use pyo3::exceptions::PyTypeError;
 
+use crate::boundary::{FloatInput, geographic};
 use crate::grid::CoverBudgetExceeded;
-use crate::py::cells::coverage_ops::{GridCoverError, GridSourceAdmission, admit_grid_geometry};
+use crate::grid::coverer::RectCell;
+use crate::py::cells::coverage_ops::{
+    GridCoverError, GridSourceAdmission, SortedCells, admit_grid_geometry,
+};
 use crate::py::cells::{
     Bound, GridKind, Point, Py, PyAny, PyAnyMethods as _, PyCellArray, PyErr, PyResult, Python,
     Shape,
 };
+use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
+use crate::py::vectors::Groups;
 use crate::{PyGeometry, Typed, exact_geometry, exact_geometry_array, expected_geometry_or_array};
 
 /// Collect one cell identity or any iterable of identities.
@@ -148,9 +150,14 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
             },
         );
     }
-    let values = match crate::parameter_values_exact(value.py(), value, "bounds", 4, |got| {
-        GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}"))
-    }) {
+    let values = match crate::float_values_exact(
+        value.py(),
+        value,
+        "bounds",
+        FloatInput::Parameter,
+        4,
+        |got| GeometryError::new_err(format!("bounds must contain exactly 4 values, got {got}")),
+    ) {
         Ok(values) => values,
         Err(error)
             if error.is_instance_of::<PyTypeError>(value.py())
@@ -173,8 +180,8 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
                 "bounds must be ordered (minx <= maxx, miny <= maxy)",
             ));
         }
-        crate::boundary::geographic::validate_lonlat_xy(*minx, *miny)?;
-        crate::boundary::geographic::validate_lonlat_xy(*maxx, *maxy)?;
+        geographic::validate_lonlat_xy(*minx, *miny)?;
+        geographic::validate_lonlat_xy(*maxx, *maxy)?;
         return Ok(BoundingQueryRegion {
             bounds: Bounds::new_raw(*minx, *miny, *maxx, *maxy),
             crosses_antimeridian: false,
@@ -239,7 +246,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
         })
     });
     let rows = result?;
-    crate::py::vectors::Groups::from_cell_rows(kind, rows)?.into_py_any(py)
+    Groups::from_cell_rows(kind, rows)?.into_py_any(py)
 }
 
 fn cover_array_rows(
@@ -332,9 +339,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
 /// boundary edges (`edge_neighbors` returns `None` there), so the planar
 /// polygonize splits the outline at ±180 / closes the lat=±90 edge without a
 /// special case.
-pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
-    cells: &crate::py::cells::coverage_ops::SortedCells<C>,
-) -> PyResult<Option<Typed>> {
+pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Option<Typed>> {
     let Some(first) = cells.as_slice().first() else {
         return Ok(None);
     };
@@ -342,9 +347,10 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
     if !cells.as_slice().iter().all(|cell| cell.depth() == depth) {
         return Ok(None);
     }
-    let capacity = cells.as_slice().len().checked_mul(4).ok_or_else(|| {
-        crate::py::errors::native_overflow_error("coverage outline size overflows usize")
-    })?;
+    let capacity =
+        cells.as_slice().len().checked_mul(4).ok_or_else(|| {
+            errors::native_overflow_error("coverage outline size overflows usize")
+        })?;
     let mut outline = crate::try_vec_with_capacity(capacity)?;
     for cell in cells.as_slice() {
         let bounds = cell.bounds();
@@ -383,10 +389,8 @@ pub(super) fn rect_dissolve<C: crate::grid::coverer::RectCell>(
 /// empty-outline sets fall back to the antimeridian-aware boundary union.
 /// Empty input reaches `coverage_to_polygon`, which raises the documented
 /// `GeometryError`.
-pub(super) fn rect_cells_to_polygon<C: crate::grid::coverer::RectCell>(
-    cells: Vec<C>,
-) -> PyResult<Typed> {
-    let cells = crate::py::cells::coverage_ops::SortedCells::new(cells);
+pub(super) fn rect_cells_to_polygon<C: RectCell>(cells: Vec<C>) -> PyResult<Typed> {
+    let cells = SortedCells::new(cells);
     if let Some(typed) = rect_dissolve(&cells)? {
         return Ok(typed);
     }

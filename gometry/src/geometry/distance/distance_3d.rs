@@ -1,12 +1,8 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::OnceLock;
 
 use crate::HeapSize;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
-use crate::geometry::{BvhCode, BvhNode, CoordSeq, Shape};
+use crate::geometry::{BvhCode, BvhNode, CoordSeq, Shape, linear};
 
 type Aabb3d = [f64; 6];
 
@@ -382,7 +378,7 @@ impl SegmentBvh3d {
     ) -> crate::error::Result<f64> {
         let mut stack = Vec::new();
         for &probe in &probe_parts.segments {
-            self.visit_with_targets(probe, target_segments, &mut stack, &mut best)?;
+            self.visit_with_targets(&probe, target_segments, &mut stack, &mut best)?;
             if best == 0.0 {
                 return Ok(0.0);
             }
@@ -390,13 +386,9 @@ impl SegmentBvh3d {
         Ok(best)
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
     fn visit_with_targets(
         &self,
-        probe: Segment3d,
+        probe: &Segment3d,
         targets: &[Segment3d],
         stack: &mut Vec<usize>,
         best: &mut f64,
@@ -471,7 +463,7 @@ pub(crate) fn segment_segment_distance_3d(
     p2: [f64; 3],
     q2: [f64; 3],
 ) -> crate::error::Result<f64> {
-    crate::geometry::linear::segment_segment_distance_3d(p1, q1, p2, q2)
+    linear::segment_segment_distance_3d(p1, q1, p2, q2)
 }
 
 pub(crate) fn distance_3d_with_parts(

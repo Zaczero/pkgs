@@ -1,13 +1,10 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::{PyAny, PyResult};
 
 use crate::geometry::{LineSeq, Point, Shape};
 use crate::grid::s2::cellid::S2Level;
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
-use crate::py::cells::{Bound, PyAnyMethods as _};
+use crate::py::cells;
+use crate::py::cells::{Bound, PyAnyMethods as _, coverage_ops};
 use crate::py::errors::{GeometryError, integer_parameter_error};
 use crate::py_i64_required;
 
@@ -35,7 +32,7 @@ pub(crate) fn parse_s2_level_value(value: i64) -> PyResult<S2Level> {
 }
 
 pub(crate) fn parse_s2_min_level_value(value: i64) -> PyResult<u8> {
-    crate::py::cells::checked_depth(
+    cells::checked_depth(
         value,
         "S2 min_level",
         "min_level",
@@ -89,7 +86,7 @@ pub(crate) fn parse_s2_level_budget(
         min_level,
         max_level,
         level_mod: validate_s2_level_mod(level_mod)?,
-        max_cells: crate::py::cells::coverage_ops::parse_max_cells(max_cells)?,
+        max_cells: coverage_ops::parse_max_cells(max_cells)?,
         target_cells: parse_s2_target_cells(target_cells)?,
     })
 }

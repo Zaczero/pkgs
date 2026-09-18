@@ -194,7 +194,7 @@ pub(crate) enum ArrayRow<'a, T> {
 }
 
 impl<'a> PresentRow<'a> {
-    fn new(source: &'a PyGeometryArray, logical: usize, row: ShapeRow<'a>) -> Self {
+    const fn new(source: &'a PyGeometryArray, logical: usize, row: ShapeRow<'a>) -> Self {
         Self {
             source,
             logical,

@@ -1,9 +1,4 @@
 //! The GeohashCell class and parsing helpers.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::pymethods;
 use pyo3::types::PyAny;
 
@@ -17,7 +12,7 @@ use crate::py::cells::cell_ops::{
 use crate::py::cells::{
     Bound, GridKind, Py, PyCellArray, PyResult, Python, construct_geohash_cell, pyclass, pyfunction,
 };
-use crate::py::errors::tag_parse_format;
+use crate::py::errors::{ParseError, tag_parse_format};
 
 /// One geohash cell: a base-32 character prefix addressing a lon/lat
 /// rectangle.
@@ -53,7 +48,7 @@ pub(super) fn _unpickle_geohash_cell(token: &str) -> PyResult<PyGeohashCell> {
 pub(crate) fn parse_geohash_token(token: &str) -> PyResult<Geohash> {
     Geohash::parse(token).map_err(|message| {
         tag_parse_format(
-            crate::py::errors::ParseError::new_err(message),
+            ParseError::new_err(message),
             crate::error::ParseFormat::Geohash,
         )
     })

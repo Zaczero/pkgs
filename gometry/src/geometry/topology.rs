@@ -1,12 +1,9 @@
 //! Shared topology staging and membership primitives.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ops::Range;
 use std::simd::cmp::SimdPartialOrd as _;
 use std::simd::num::SimdFloat as _;
 
+use crate::geometry::access::crossover::RAY_CROSSING;
 use crate::geometry::{
     CCW_ERRBOUND_A, CoordSeq, PointKey, Polygon, REDUCE_LANES, ReduceSimd, Segment, XY,
     ray_crossing_is_right, simd_reduce_f64, wrap_index,
@@ -214,7 +211,7 @@ impl OperandPool {
 /// one decision on every input, including huge-but-finite coordinates.
 pub(super) fn ring_contains_interior_open(ring: &[XY], point: XY) -> bool {
     let n = ring.len();
-    if n < crate::geometry::access::crossover::RAY_CROSSING {
+    if n < RAY_CROSSING {
         return ring_contains_interior_open_scalar(ring, point);
     }
     let px = ReduceSimd::splat(point.x);
@@ -333,7 +330,7 @@ fn ring_contains_interior_open_scalar(ring: &[XY], point: XY) -> bool {
 /// to the scalar toggle loop (same per-edge `f64` math in every lane).
 pub(super) fn ring_contains_interior_columns(xs: &[f64], ys: &[f64], point: XY) -> bool {
     let segments = xs.len().saturating_sub(1);
-    if segments < crate::geometry::access::crossover::RAY_CROSSING {
+    if segments < RAY_CROSSING {
         return ring_crossing_columns_scalar(xs, ys, point, 0..segments) % 2 == 1;
     }
     let px = ReduceSimd::splat(point.x);
@@ -393,7 +390,7 @@ fn ring_crossing_columns_scalar(xs: &[f64], ys: &[f64], point: XY, range: Range<
 /// boundary envelope is four packed compares per lane.
 pub(super) fn ring_classify_crossings_columns(xs: &[f64], ys: &[f64], point: XY) -> (u32, bool) {
     let segments = xs.len().saturating_sub(1);
-    if segments < crate::geometry::access::crossover::RAY_CROSSING {
+    if segments < RAY_CROSSING {
         return ring_classify_crossings_scalar(xs, ys, point, 0..segments);
     }
     let px = ReduceSimd::splat(point.x);
@@ -585,6 +582,7 @@ fn push_ring_edges(points: &[XY], segments: &mut Vec<Segment>) {
 mod tests {
     use super::*;
     use crate::geometry::REDUCE_SIMD_MIN;
+    use crate::geometry::access::crossover::RAY_CROSSING;
     use crate::geometry::predicates::ring_contains_interior;
 
     fn division_reference(ring: &[XY], point: XY) -> bool {
@@ -901,7 +899,7 @@ mod tests {
 
         for (name, ring, huge, vertical) in rings {
             assert!(
-                ring.len() >= crate::geometry::access::crossover::RAY_CROSSING,
+                ring.len() >= RAY_CROSSING,
                 "{name} must exercise the ray-crossing SIMD crossover",
             );
             let mut probes = edge_probes(&ring);

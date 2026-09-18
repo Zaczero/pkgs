@@ -772,7 +772,8 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         let (mut stream, remaining_at_release, released) =
             native_signal_stream(&point, batch_count, 63);
         let stream_ptr = std::ptr::from_mut::<ArrowArrayStream>(stream.as_mut());
-        let result = super::import::import_stream(py, stream_ptr, None, None);
+        // SAFETY: `stream` is a live test stream owned by this frame.
+        let result = unsafe { super::import::import_stream(py, stream_ptr, None, None) };
         let late_signal = py.check_signals().err();
         let Err(error) = result else {
             panic!(
@@ -818,7 +819,8 @@ fn stream_batch_move_allocation_failure_releases_schema_batch_and_stream_once() 
         .unwrap();
         let (mut stream, stream_releases) = fault_after_batch_stream(&point);
         let stream_ptr = std::ptr::from_mut::<ArrowArrayStream>(stream.as_mut());
-        let result = super::import::import_stream(py, stream_ptr, None, None);
+        // SAFETY: `stream` is a live test stream owned by this frame.
+        let result = unsafe { super::import::import_stream(py, stream_ptr, None, None) };
         let Err(error) = result else {
             panic!("the post-get_next allocation must fail");
         };

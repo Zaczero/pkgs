@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use ahash::HashSetExt as _;
 
 use crate::geometry::clean_union::{
@@ -9,7 +5,7 @@ use crate::geometry::clean_union::{
     shared_section, sort_dedup_cuts,
 };
 use crate::geometry::{
-    Contact, PointKey, SharedSpan, XY, same_point, segment_contact_exact,
+    Contact, PointKey, SharedSpan, XY, convex_contact, same_point, segment_contact_exact,
     segment_envelopes_disjoint, undirected_edge_key,
 };
 use crate::scratch_pool::{RetainScratch, ScratchLease, ScratchPool, nested_vec_retained_bytes};
@@ -126,7 +122,7 @@ pub(crate) fn collect_boundary_contacts(
     if matches!(
         op,
         OverlayOp::Union | OverlayOp::Intersection | OverlayOp::Difference
-    ) && let Some(scan) = crate::geometry::convex_contact::try_collect(pool)
+    ) && let Some(scan) = convex_contact::try_collect(pool)
     {
         let mut contacts = BoundaryContacts::new(pool.segments.len());
         for (segment, cuts) in scan.cuts.into_iter().enumerate() {

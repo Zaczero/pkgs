@@ -3,14 +3,8 @@
 //! No `ArrowSchemaPtr` / `ArrowArrayPtr` / `ValidatedArrowArray` / `ImportedCapsules`
 //! and no producer-backed `Send`/`Sync` buffer wrappers. Intermediate shells are
 //! non-`Send` RAII (`MovedArrowShell`); only owned trees escape admission.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::too_many_lines,
+#![expect(
     clippy::use_self,
-    clippy::type_complexity,
     clippy::missing_const_for_fn,
     reason = "owned admission capture is intentionally explicit; helpers land ahead of full native migration"
 )]
@@ -24,17 +18,20 @@ use std::sync::Arc;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 
+use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::import::schema_metadata_pairs_owned;
 use crate::py::arrow_c::native::{drop_moved_arrow, move_arrow_shell};
 use crate::py::arrow_c::{
     ArrowReleaseSlot, ArrowSchema, try_arc_from_str, try_arc_from_string, try_arc_from_vec,
 };
+use crate::py::geoarrow::GeometryEncoding;
+use crate::py::{arrow, errors, geoarrow};
 
 /// Geometry decoding selected from an owned Arrow schema tree.
 #[derive(Clone, Debug)]
 pub(crate) struct ClassifiedGeometrySchema {
-    pub(crate) encoding: crate::py::geoarrow::GeometryEncoding,
-    pub(crate) wkb_offset_width: crate::py::arrow::WkbOffsetWidth,
+    pub(crate) encoding: GeometryEncoding,
+    pub(crate) wkb_offset_width: WkbOffsetWidth,
     pub(crate) crs: Option<String>,
     pub(crate) epoch: Option<f64>,
     /// The geometry child when the root is a table/record-batch struct.
@@ -98,6 +95,10 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
     /// The caller must not retain a borrow of the shell after the callback or
     /// access it concurrently. A stream owner may remain live while detached
     /// batch decoding runs, provided that decoding does not access the stream.
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "a mutable raw pointer is handed out under exclusive access, as with `Vec::as_mut_ptr`"
+    )]
     pub(crate) fn as_mut_ptr(&mut self) -> *mut T {
         self.ptr.as_ptr()
     }
@@ -406,7 +407,7 @@ impl AdmittedArrowSchema {
         };
         let mut value = crate::try_vec_with_capacity(raw.len())?;
         value.extend_from_slice(raw);
-        crate::py::arrow::decode_extension_name(value).map(Some)
+        arrow::decode_extension_name(value).map(Some)
     }
 
     pub(crate) fn extension_metadata_bytes(&self) -> PyResult<Vec<u8>> {
@@ -491,8 +492,8 @@ fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<String>
     let s = unsafe { CStr::from_ptr(ptr) }
         .to_str()
         .map_err(|_| PyTypeError::new_err(format!("{what} is not valid UTF-8")))?;
-    let owned = crate::boundary::try_string_from_str(s)
-        .map_err(|()| crate::py::errors::native_memory_error())?;
+    let owned =
+        crate::boundary::try_string_from_str(s).map_err(|()| errors::native_memory_error())?;
     try_arc_from_string(owned)
 }
 
@@ -564,14 +565,11 @@ fn classify_stream_geometry_schema_admitted(
 fn classify_admitted_geometry_array(
     schema: &AdmittedArrowSchema,
 ) -> PyResult<(
-    crate::py::geoarrow::GeometryEncoding,
-    crate::py::arrow::WkbOffsetWidth,
+    GeometryEncoding,
+    WkbOffsetWidth,
     Option<String>,
     Option<f64>,
 )> {
-    use crate::py::arrow::WkbOffsetWidth;
-    use crate::py::geoarrow::GeometryEncoding;
-
     if schema.dictionary_present {
         return Err(PyTypeError::new_err(
             "Arrow dictionary-encoded arrays are not supported for geometry import",
@@ -582,8 +580,7 @@ fn classify_admitted_geometry_array(
         let encoding = GeometryEncoding::from_extension_name(&name)
             .ok_or_else(|| PyTypeError::new_err(GeometryEncoding::EXPECTED_EXTENSION))?;
         let metadata = schema.extension_metadata_bytes()?;
-        let (crs, epoch) =
-            crate::py::arrow::parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
+        let (crs, epoch) = arrow::parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
         validate_admitted_encoding_storage(schema, encoding)?;
         let width = if matches!(encoding, GeometryEncoding::Wkb) {
             wkb_width_from_format(format)?
@@ -610,8 +607,7 @@ fn classify_admitted_geometry_array(
     ))
 }
 
-fn wkb_width_from_format(format: &str) -> PyResult<crate::py::arrow::WkbOffsetWidth> {
-    use crate::py::arrow::WkbOffsetWidth;
+fn wkb_width_from_format(format: &str) -> PyResult<WkbOffsetWidth> {
     Ok(match format {
         "vz" => WkbOffsetWidth::View,
         "Z" => WkbOffsetWidth::Int64,
@@ -666,9 +662,8 @@ fn select_admitted_geometry_child(
 
 pub(crate) fn validate_admitted_encoding_storage(
     schema: &AdmittedArrowSchema,
-    encoding: crate::py::geoarrow::GeometryEncoding,
+    encoding: GeometryEncoding,
 ) -> PyResult<()> {
-    use crate::py::geoarrow::GeometryEncoding;
     match encoding {
         GeometryEncoding::Point => validate_admitted_coordinate_storage(schema),
         GeometryEncoding::MultiPoint | GeometryEncoding::LineString => {
@@ -758,10 +753,10 @@ fn validate_admitted_coordinate_storage(schema: &AdmittedArrowSchema) -> PyResul
             ));
         }
         let name = crate::boundary::try_string_from_str(child.name())
-            .map_err(|()| crate::py::errors::native_memory_error())?;
+            .map_err(|()| errors::native_memory_error())?;
         crate::try_push(&mut fields, (name, child.format() == "g"))?;
     }
-    crate::py::geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
+    geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
     Ok(())
 }
 

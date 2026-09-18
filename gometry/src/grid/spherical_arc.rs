@@ -630,7 +630,7 @@ impl CertifiedCapCenter {
             adjusted_resolution,
             max_dim,
         )
-        .then(|| project_h3_seed(seed).map(Self))?
+        .then(|| project_h3_seed(&seed).map(Self))?
     }
 }
 
@@ -946,7 +946,7 @@ fn certified_chart_stretch(raw: &CapLatticeProfile, scale: Bound) -> Option<Boun
     let mut maximum = Bound::exact(0.0)?;
     for seam in raw.seams() {
         for seed in seam.left().into_iter().chain(seam.right()) {
-            let certificate = certified_face_projection(seed, raw.max_dim(), scale)?;
+            let certificate = certified_face_projection(&seed, raw.max_dim(), scale)?;
             let stretch = certificate
                 .basis_norm
                 .div_nonnegative(certificate.minimum_denominator)?;
@@ -956,12 +956,8 @@ fn certified_chart_stretch(raw: &CapLatticeProfile, scale: Bound) -> Option<Boun
     Some(maximum)
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn certified_face_projection(
-    seed: ProjectionSeed,
+    seed: &ProjectionSeed,
     max_dim: i64,
     scale: Bound,
 ) -> Option<FaceProjectionCertificate> {
@@ -1034,7 +1030,7 @@ fn certified_gram_norm(g00: Bound, g01: Bound, g11: Bound) -> Option<Bound> {
 fn certified_seam_cost(raw: &CapLatticeProfile, scale: Bound) -> Option<Bound> {
     let mut maximum_charge = Bound::exact(0.0)?;
     for (left_seed, right_seed) in certified_matching_seam_pairs(raw) {
-        let seam_charge = certified_seam_charge(left_seed, right_seed, raw.max_dim(), scale)?;
+        let seam_charge = certified_seam_charge(&left_seed, &right_seed, raw.max_dim(), scale)?;
         maximum_charge = Bound::new(0.0, maximum_charge.hi.max(seam_charge.hi))?;
     }
     Some(maximum_charge)
@@ -1051,13 +1047,9 @@ fn certified_matching_seam_pairs(
 /// One directed seam's normalization charge.  The delta is deliberately
 /// formed in the two raw face carriers; normalized vectors would erase the
 /// chart mismatch that the cap must pay for.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn certified_seam_charge(
-    left_seed: ProjectionSeed,
-    right_seed: ProjectionSeed,
+    left_seed: &ProjectionSeed,
+    right_seed: &ProjectionSeed,
     max_dim: i64,
     scale: Bound,
 ) -> Option<Bound> {
@@ -1078,11 +1070,7 @@ fn certified_seam_charge(
 /// Distance between the two raw, unnormalised representations of one seam
 /// endpoint.  Matching directed endpoints are almost identical; reversing
 /// them yields the opposite edge endpoint and is macroscopically distinct.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn certified_seam_delta(left_seed: ProjectionSeed, right_seed: ProjectionSeed) -> Option<Bound> {
+fn certified_seam_delta(left_seed: &ProjectionSeed, right_seed: &ProjectionSeed) -> Option<Bound> {
     project_h3_seed_unnormalized(left_seed)?
         .sub(project_h3_seed_unnormalized(right_seed)?)?
         .squared_norm()?
@@ -1653,7 +1641,7 @@ pub(crate) fn h3_ordered_arcs(cell: h3o::CellIndex) -> Option<H3ArcSet> {
                 ordinal,
             },
         };
-        let point = project_h3_seed(seed)?;
+        let point = project_h3_seed(&seed)?;
         points[usize::from(ordinal)] = Some((
             key,
             PhysicalEndpointKey::CellVertex(key),
@@ -1709,8 +1697,8 @@ pub(crate) fn h3_bbox_positive_witnesses(cell: h3o::CellIndex) -> Option<H3BboxW
     }
     let mut witnesses = H3BboxWitnesses::empty();
     let center = cell.target_substrate_center_seed(cell.resolution())?;
-    witnesses.push(certified_h3_point_degree_window(project_h3_seed(center)?)?)?;
-    for seed in boundary.projection_seeds().copied() {
+    witnesses.push(certified_h3_point_degree_window(project_h3_seed(&center)?)?)?;
+    for seed in boundary.projection_seeds() {
         witnesses.push(certified_h3_point_degree_window(project_h3_seed(seed)?)?)?;
     }
     Some(witnesses)
@@ -2105,7 +2093,7 @@ impl H3FanPlan {
             let Some(triangle) = plan.triangle_at(index) else {
                 return H3FanPointClass::Uncertain;
             };
-            match triangle_point_class(triangle, point) {
+            match triangle_point_class(&triangle, point) {
                 H3FanPointClass::Open => return H3FanPointClass::Open,
                 H3FanPointClass::Outside => {},
                 H3FanPointClass::Uncertain => all_exterior = false,
@@ -2153,8 +2141,8 @@ impl H3FanPlan {
         let Some(vertex) = plan.vertices().find(|vertex| vertex.key == key) else {
             return FanSide::Uncertain;
         };
-        let previous = triangle_side(vertex.previous, tangent);
-        let next = triangle_side(vertex.next, tangent);
+        let previous = triangle_side(&vertex.previous, tangent);
+        let next = triangle_side(&vertex.next, tangent);
         if previous == FanSide::Open || next == FanSide::Open {
             FanSide::Open
         } else if previous == FanSide::Exterior && next == FanSide::Exterior {
@@ -2179,11 +2167,7 @@ impl H3FanPlan {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn triangle_point_class(triangle: [Vec3Bound; 3], point: Vec3Bound) -> H3FanPointClass {
+fn triangle_point_class(triangle: &[Vec3Bound; 3], point: Vec3Bound) -> H3FanPointClass {
     let [Some(first), Some(second), Some(third)] = triangle.map(|plane| plane.dot(point)) else {
         return H3FanPointClass::Uncertain;
     };
@@ -2250,17 +2234,13 @@ pub(crate) fn h3_cell_plan(cell: h3o::CellIndex, target: Resolution) -> H3CellPl
     H3CellPlan { cell, arcs, bbox }
 }
 
-#[expect(
-    clippy::too_many_lines,
-    reason = "the fixed fan certificate is one auditable proof pipeline; splitting it would obscure its fail-open exits"
-)]
 fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
     #[cfg(test)]
     H3_FAN_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
 
     let Some(center) = cell
         .target_substrate_center_seed(cell.resolution())
-        .and_then(project_h3_seed)
+        .and_then(|seed| project_h3_seed(&seed))
     else {
         return H3FanPlan::Uncertain;
     };
@@ -2573,11 +2553,7 @@ fn orient_inward(plane: Vec3Bound, witness: Vec3Bound) -> Option<Vec3Bound> {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn triangle_side(triangle: H3FanTriangle, tangent: Vec3Ball) -> FanSide {
+fn triangle_side(triangle: &H3FanTriangle, tangent: Vec3Ball) -> FanSide {
     let (Some(real), Some(diagonal)) = (
         tangent.dot(triangle.real_edge).map(Ball::sign),
         tangent.dot(triangle.diagonal).map(Ball::sign),
@@ -2670,12 +2646,8 @@ impl Vec3Ball {
 }
 
 impl AffineSourceArc {
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
     pub(crate) fn from_parent_map(
-        map: AffineParentMap,
+        map: &AffineParentMap,
         domain: Bound,
         endpoint_roles: [SourceEndpointRole; 2],
         parent_poles: [Option<PhysicalEndpointKey>; 2],
@@ -2703,7 +2675,7 @@ impl AffineSourceArc {
             }
         }
         Some(Self {
-            map,
+            map: *map,
             domain,
             endpoint_roles,
             endpoint_poles: parent_poles,
@@ -2954,7 +2926,7 @@ fn test_affine_source_arc(lon0: f64, lat0: f64, lon1: f64, lat1: f64) -> Option<
         structure,
     };
     AffineSourceArc::from_parent_map(
-        map,
+        &map,
         Bound::new(0.0, 1.0)?,
         [
             SourceEndpointRole::ParentStart,
@@ -2993,23 +2965,15 @@ const MAX_D_DEPTH: u8 = 24;
 /// one ordered minor arc.  Every undecidable structural or analytic condition
 /// deliberately reaches `Uncertain`; callers may only fail open from it.
 #[cfg(test)]
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-pub(crate) fn classify_arc_contact(source: AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
+pub(crate) fn classify_arc_contact(source: &AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
     classify_arc_contact_with_h3_fan(source, arc, None)
 }
 
 /// H3's relation entry point binds a contact to the one certified fan which
 /// owns the cell.  A mismatched supplier or an uncertified fan cannot use a
 /// structural branch to establish a negative.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn classify_h3_arc_contact(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     fan: &H3FanPlan,
 ) -> ArcContact {
@@ -3019,12 +2983,8 @@ pub(crate) fn classify_h3_arc_contact(
     classify_arc_contact_with_h3_fan(source, arc, Some(fan))
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn classify_arc_contact_with_h3_fan(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     fan: Option<&H3FanPlan>,
 ) -> ArcContact {
@@ -3039,19 +2999,15 @@ fn classify_arc_contact_with_h3_fan(
     }
     classify_with_arc_shifts(source, arc, |source, arc| {
         if source.is_vertical() {
-            classify_vertical_contact(source, arc)
+            classify_vertical_contact(&source, arc)
         } else {
-            classify_general_contact(source, arc)
+            classify_general_contact(&source, arc)
         }
     })
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn classify_with_arc_shifts(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     classify: impl Fn(AffineSourceArc, &OrderedMinorArc) -> ArcContact,
 ) -> ArcContact {
@@ -3063,7 +3019,7 @@ fn classify_with_arc_shifts(
         let Some(shifted) = arc.with_longitude_shift(shift) else {
             return ArcContact::Uncertain;
         };
-        contact = contact.combine(classify(source, &shifted));
+        contact = contact.combine(classify(*source, &shifted));
     }
     contact
 }
@@ -3074,11 +3030,7 @@ fn classify_with_arc_shifts(
 /// predicate runs. A source piece wider than the seam-split grammar can bound
 /// is ambiguous rather than being searched on an arbitrary fixed three-sheet
 /// range.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn source_arc_shift_range(source: AffineSourceArc, arc: &OrderedMinorArc) -> Option<(i64, i64)> {
+fn source_arc_shift_range(source: &AffineSourceArc, arc: &OrderedMinorArc) -> Option<(i64, i64)> {
     let source = source.longitude_span()?;
     let arc = arc.longitude?.envelope()?;
     let lower_proposal = (source.lower.lo - arc.upper.hi) / (2.0 * PI_HI);
@@ -3101,12 +3053,8 @@ fn source_arc_shift_range(source: AffineSourceArc, arc: &OrderedMinorArc) -> Opt
 /// Only exact +/-90 source endpoints can share a physical endpoint key with a
 /// cell arc.  A shared endpoint requires the H3 fan's two-triangle local side
 /// rule, so this arc-only primitive deliberately leaves it `Uncertain`.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn classify_matching_pole_contact(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     fan: Option<&H3FanPlan>,
 ) -> Option<ArcContact> {
@@ -3132,11 +3080,7 @@ fn classify_matching_pole_contact(
     None
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_zero_source(source: AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
+fn classify_zero_source(source: &AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
     let Some(point) = source.vector_at(Bound::exact(source.domain.lo).expect("finite domain"))
     else {
         return ArcContact::Uncertain;
@@ -3152,11 +3096,7 @@ fn classify_zero_source(source: AffineSourceArc, arc: &OrderedMinorArc) -> ArcCo
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_general_contact(source: AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
+fn classify_general_contact(source: &AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
     let (Some(source_span), Some(arc_span)) = (
         source.longitude_span(),
         arc.longitude.and_then(DirectedLongitudeSpan::envelope),
@@ -3194,11 +3134,7 @@ fn classify_general_contact(source: AffineSourceArc, arc: &OrderedMinorArc) -> A
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn classify_vertical_contact(source: AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
+fn classify_vertical_contact(source: &AffineSourceArc, arc: &OrderedMinorArc) -> ArcContact {
     let (Some(source_lon), Some(arc_lon), Some(latitude)) = (
         source.longitude_span(),
         arc.longitude.and_then(DirectedLongitudeSpan::envelope),
@@ -3265,12 +3201,8 @@ fn classify_vertical_contact(source: AffineSourceArc, arc: &OrderedMinorArc) -> 
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn plane_at_longitude(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     longitude: f64,
 ) -> Option<Bound> {
@@ -3286,12 +3218,8 @@ fn plane_at_longitude(
 /// that happens, use the original exact parent endpoint only if its outward
 /// longitude enclosure contains the requested endpoint.  This preserves the
 /// proof's provenance; it is not an epsilon substitution or a new sample.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn plane_at_overlap_longitude(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     longitude: f64,
 ) -> Option<Bound> {
@@ -3340,12 +3268,8 @@ const fn opposite_strict_sign(left: Bound, right: Bound) -> bool {
 /// B4's bounded finite-extrema proof.  Every box must exclude zero with the
 /// same D sign.  A zero, sign conflict, midpoint collapse, or either fixed
 /// budget limit is intentionally undecidable.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn certify_derivative_sign(
-    source: AffineSourceArc,
+    source: &AffineSourceArc,
     arc: &OrderedMinorArc,
     lambda: Bound,
 ) -> Option<CertSign> {
@@ -3898,11 +3822,7 @@ fn adjacent_float(mut value: f64, direction: i8, count: u16) -> Option<f64> {
 /// Replays a vendor H3 seed with certified primitive arithmetic.  It follows
 /// the native projection algebra directly and never converts the public
 /// `LatLng` back into a predicate carrier.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-pub(crate) fn project_h3_seed(seed: ProjectionSeed) -> Option<Vec3Bound> {
+pub(crate) fn project_h3_seed(seed: &ProjectionSeed) -> Option<Vec3Bound> {
     project_h3_seed_unnormalized(seed)?.normalized()
 }
 
@@ -3910,11 +3830,7 @@ pub(crate) fn project_h3_seed(seed: ProjectionSeed) -> Option<Vec3Bound> {
 /// A3's seam proof compares this affine carrier in its paired face frames;
 /// normalizing before subtraction would erase precisely the chart discrepancy
 /// the cap must charge.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn project_h3_seed_unnormalized(seed: ProjectionSeed) -> Option<Vec3Bound> {
+fn project_h3_seed_unnormalized(seed: &ProjectionSeed) -> Option<Vec3Bound> {
     let frame = seed.projection_frame();
     let (resolution, substrate) = match seed {
         ProjectionSeed::Point {
@@ -3946,17 +3862,13 @@ fn project_h3_seed_unnormalized(seed: ProjectionSeed) -> Option<Vec3Bound> {
     let east_coeff = sin_axis.mul(x)?.sub(cos_axis.mul(y)?)?;
     let basis = north.scale(north_coeff)?.add(east.scale(east_coeff)?)?;
     let mut scale = Bound::exact(frame.res0_u_gnomonic)?.mul(Bound::exact(frame.inv_sqrt7)?)?;
-    if substrate {
+    if *substrate {
         scale = scale.mul(Bound::exact(frame.one_third)?)?;
     }
     center.add(basis.scale(scale)?)
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn seed_native_point(seed: ProjectionSeed, sqrt3_2: f64) -> Option<[Bound; 2]> {
+fn seed_native_point(seed: &ProjectionSeed, sqrt3_2: f64) -> Option<[Bound; 2]> {
     let (x2, y_sqrt3) = match seed {
         ProjectionSeed::Point { point, .. } => (
             Bound::from_i128(i128::from(point.x2))?,
@@ -3964,7 +3876,7 @@ fn seed_native_point(seed: ProjectionSeed, sqrt3_2: f64) -> Option<[Bound; 2]> {
         ),
         ProjectionSeed::Intersection {
             segment, face_edge, ..
-        } => intersection_native_point(segment, face_edge)?,
+        } => intersection_native_point(*segment, *face_edge)?,
     };
     Some([
         x2.mul(Bound::exact(0.5)?)?,
@@ -4407,17 +4319,17 @@ mod tests {
                 panic!("fixture must enter the certified seam overlap");
             };
             assert!(
-                plane_at_longitude(source_arc, &arc, outer.hi).is_none(),
+                plane_at_longitude(&source_arc, &arc, outer.hi).is_none(),
                 "the rounded enclosure endpoint is intentionally not authority"
             );
-            let endpoint_plane = plane_at_overlap_longitude(source_arc, &arc, outer.hi);
+            let endpoint_plane = plane_at_overlap_longitude(&source_arc, &arc, outer.hi);
             assert!(
                 endpoint_plane
                     .is_some_and(|value| value.strictly_positive() || value.strictly_negative()),
                 "the retained parent endpoint proves the missing strict sign"
             );
             assert_eq!(
-                classify_general_contact(source_arc, &arc),
+                classify_general_contact(&source_arc, &arc),
                 ArcContact::None,
                 "the endpoint carrier excludes the non-contacting seam cell"
             );
@@ -4429,14 +4341,14 @@ mod tests {
         let source = test_affine_source_arc(800.0, 0.0, 900.0, 0.0)
             .expect("a finite lifted equatorial source piece");
         let arc = OrderedMinorArc::from_test_points([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]);
-        let (first, last) = source_arc_shift_range(source, &arc)
+        let (first, last) = source_arc_shift_range(&source, &arc)
             .expect("the finite source piece has a bounded periodic-copy range");
         assert!(
             first <= 2 && 2 <= last,
             "the 800..900 degree source piece needs the arc's +2 sheet"
         );
         assert_ne!(
-            classify_arc_contact(source, &arc),
+            classify_arc_contact(&source, &arc),
             ArcContact::None,
             "the exact relation must not turn a remote periodic source contact into a negative"
         );
@@ -4538,7 +4450,7 @@ mod tests {
             for (index, seam) in lattice.raw().seams().iter().enumerate() {
                 for seed in seam.left().into_iter().chain(seam.right()) {
                     let certificate =
-                        certified_face_projection(seed, lattice.raw().max_dim(), scale)
+                        certified_face_projection(&seed, lattice.raw().max_dim(), scale)
                             .unwrap_or_else(|| {
                                 panic!(
                                     "target {target:?} seam {index} needs a finite face projection"
@@ -4735,7 +4647,7 @@ mod tests {
             let max_dim = 2 * 7_i64.pow(u32::from(adjusted / 2));
             let raw = CapLatticeProfile::for_target(Resolution::Zero);
             let scale = certified_profile_scale(&raw).unwrap();
-            let certificate = certified_face_projection(seed, max_dim, scale).unwrap();
+            let certificate = certified_face_projection(&seed, max_dim, scale).unwrap();
             assert!(certificate.raw_c_radicand.strictly_positive());
             assert_eq!(certificate.raw_c_radicand.hi.to_bits(), expected_bits);
         }
@@ -4822,13 +4734,13 @@ mod tests {
         assert_eq!(raw.adjusted_resolution(), 16);
         let mut matching_max = Bound::exact(0.0).unwrap();
         for (left, right) in certified_matching_seam_pairs(&raw) {
-            let delta = certified_seam_delta(left, right).unwrap();
+            let delta = certified_seam_delta(&left, &right).unwrap();
             matching_max = Bound::new(0.0, matching_max.hi.max(delta.hi)).unwrap();
         }
         let mut reversed_min = Bound::new(f64::MAX, f64::MAX).unwrap();
         for seam in raw.seams() {
             for (left, right) in seam.left().into_iter().zip(seam.right().into_iter().rev()) {
-                let delta = certified_seam_delta(left, right).unwrap();
+                let delta = certified_seam_delta(&left, &right).unwrap();
                 reversed_min = Bound::new(reversed_min.lo.min(delta.lo), f64::MAX).unwrap();
             }
         }
@@ -5033,7 +4945,7 @@ mod tests {
         let cell = h3o::CellIndex::try_from(0x0810_1BFF_FFFF_FFFF_u64).unwrap();
         let boundary = cell.boundary_with_seeds();
         for (seed, public) in boundary.projection_seeds().zip(boundary.public.iter()) {
-            let point = project_h3_seed(*seed).expect("stored native seed is projectable");
+            let point = project_h3_seed(seed).expect("stored native seed is projectable");
             for component in [point.x, point.y, point.z] {
                 assert!(component.lo.is_finite() && component.hi.is_finite());
             }
@@ -5081,7 +4993,7 @@ mod tests {
             resolution: 1,
             substrate: false,
         };
-        let actual = project_h3_seed(seed).expect("finite native seed");
+        let actual = project_h3_seed(&seed).expect("finite native seed");
         let native = seed.native_projection_point();
         let expected = [
             native.lat_radians().cos() * native.lng_radians().cos(),
@@ -5179,7 +5091,8 @@ mod tests {
             let cell = h3o::CellIndex::try_from(raw).unwrap();
             let arcs = h3_ordered_arcs(cell).expect("raw H3 arcs");
             let center = project_h3_seed(
-                cell.target_substrate_center_seed(cell.resolution())
+                &cell
+                    .target_substrate_center_seed(cell.resolution())
                     .expect("target substrate centre"),
             )
             .expect("certified centre");
@@ -5232,7 +5145,7 @@ mod tests {
             y: Ball::new(0.0, 1.0).unwrap(),
             z: Ball::exact(0.0).unwrap(),
         };
-        assert_eq!(triangle_side(triangle, tangent), FanSide::Uncertain);
+        assert_eq!(triangle_side(&triangle, tangent), FanSide::Uncertain);
     }
 
     #[test]
@@ -5243,8 +5156,8 @@ mod tests {
         let exterior =
             test_affine_source_arc(-40.0, -10.0, -40.0, 10.0).expect("finite source degrees");
 
-        assert_eq!(classify_arc_contact(transverse, &arc), ArcContact::Open);
-        assert_eq!(classify_arc_contact(exterior, &arc), ArcContact::None);
+        assert_eq!(classify_arc_contact(&transverse, &arc), ArcContact::Open);
+        assert_eq!(classify_arc_contact(&exterior, &arc), ArcContact::None);
     }
 
     #[test]
@@ -5257,7 +5170,7 @@ mod tests {
             structure: AffineStructure::General,
         };
         let source = AffineSourceArc::from_parent_map(
-            general_zero_longitude,
+            &general_zero_longitude,
             Bound::new(0.0, 1.0).unwrap(),
             [SourceEndpointRole::Partition, SourceEndpointRole::ParentEnd],
             [None, Some(PhysicalEndpointKey::NorthPole)],
@@ -5281,7 +5194,7 @@ mod tests {
         };
         assert!(
             AffineSourceArc::from_parent_map(
-                inconsistent_constant,
+                &inconsistent_constant,
                 Bound::new(0.0, 1.0).unwrap(),
                 [
                     SourceEndpointRole::ParentStart,
@@ -5294,7 +5207,7 @@ mod tests {
         );
         assert!(
             AffineSourceArc::from_parent_map(
-                general_zero_longitude,
+                &general_zero_longitude,
                 Bound::new(0.0, 1.0).unwrap(),
                 [SourceEndpointRole::Partition, SourceEndpointRole::ParentEnd],
                 [Some(PhysicalEndpointKey::NorthPole), None],
@@ -5315,7 +5228,7 @@ mod tests {
             ]);
         let source = test_affine_source_arc(180.0, -1.0, 180.0, 1.0).unwrap();
         assert_eq!(
-            classify_arc_contact(source, &arc),
+            classify_arc_contact(&source, &arc),
             ArcContact::Open,
             "the +2pi copy is the only inner longitude overlap"
         );
@@ -5330,12 +5243,12 @@ mod tests {
             "a strictly signed n.z is General even on the equatorial plane"
         );
         let tangent = test_affine_source_arc(20.0, 0.0, 70.0, 10.0).expect("finite source degrees");
-        assert_eq!(classify_arc_contact(tangent, &arc), ArcContact::Uncertain);
+        assert_eq!(classify_arc_contact(&tangent, &arc), ArcContact::Uncertain);
 
         let unresolved = OrderedMinorArc::from_test_points([0.0, 0.0, 1.0], [1.0, 0.0, 0.0]);
         assert_eq!(unresolved.kind, ExactArcKind::UnresolvedMeridian);
         assert_eq!(
-            classify_arc_contact(tangent, &unresolved),
+            classify_arc_contact(&tangent, &unresolved),
             ArcContact::Uncertain
         );
     }
@@ -5344,7 +5257,7 @@ mod tests {
     fn zero_length_source_on_a_general_arc_is_uncertain() {
         let arc = OrderedMinorArc::from_test_points([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         let point = test_affine_source_arc(45.0, 0.0, 45.0, 0.0).unwrap();
-        assert_eq!(classify_arc_contact(point, &arc), ArcContact::Uncertain);
+        assert_eq!(classify_arc_contact(&point, &arc), ArcContact::Uncertain);
     }
 
     #[test]
@@ -5353,19 +5266,23 @@ mod tests {
         let source = test_affine_source_arc(30.0, 40.0, 60.0, 45.0).unwrap();
         let lambda = source.lambda_at(source.domain).unwrap();
         assert_eq!(
-            certify_derivative_sign(source, &arc, lambda),
+            certify_derivative_sign(&source, &arc, lambda),
             Some(CertSign::Negative),
             "this reaches B4's all-box strict derivative proof"
         );
         assert_eq!(
-            classify_arc_contact(source, &arc),
+            classify_arc_contact(&source, &arc),
             ArcContact::None,
             "the generic branch consumes the B4 certificate for a negative"
         );
 
         let too_wide = test_affine_source_arc(-100.0, 40.0, 100.0, 45.0).unwrap();
         assert_eq!(
-            certify_derivative_sign(too_wide, &arc, too_wide.lambda_at(too_wide.domain).unwrap()),
+            certify_derivative_sign(
+                &too_wide,
+                &arc,
+                too_wide.lambda_at(too_wide.domain).unwrap()
+            ),
             None,
             "a source span beyond the one-minor-arc precondition cannot certify D"
         );

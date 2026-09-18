@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::cell::Cell;
 
 use pyo3::types::{PyDict, PyTuple};
@@ -14,6 +10,7 @@ use crate::py::classes::coordinate_methods::{
     PyTupleMethods as _, Python, ReplacementAxis, Shape, coordinate_axis_order,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
+use crate::py::numpy::numpy_module;
 
 fn replacement_len_error(expected: usize, got: usize) -> PyErr {
     InvalidGeometryError::new_err(format!(
@@ -242,7 +239,7 @@ fn replacement_from_matrix(
         return replacement_from_coordinates_view(&coords, axes, expected_len);
     }
 
-    let numpy = crate::py::numpy::numpy_module(py)?;
+    let numpy = numpy_module(py)?;
     let kwargs = PyDict::new(py);
     kwargs.set_item("dtype", numpy.getattr("float64")?)?;
     let array = numpy.getattr("asarray")?.call((value,), Some(&kwargs))?;

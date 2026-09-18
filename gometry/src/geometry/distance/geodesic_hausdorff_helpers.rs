@@ -769,7 +769,7 @@ fn branch_endpoint_value<M: GeodesicMetric>(
 ) -> Result<Option<f64>> {
     let result = metric.point_segment_query(
         point,
-        *segment,
+        segment,
         GeodesicSegmentQuery::Minimum {
             cutoff: f64::INFINITY,
             witness: GeodesicWitnessNeed::Yes,
@@ -846,7 +846,7 @@ mod tests {
         let minimum = match metric
             .point_segment_query(
                 point,
-                segment,
+                &segment,
                 GeodesicSegmentQuery::Minimum {
                     cutoff: f64::INFINITY,
                     witness: GeodesicWitnessNeed::Yes,

@@ -1,11 +1,7 @@
 //! Grid factory and rectangular-grid cell-array helpers.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::prelude::*;
 
+use crate::boundary::geographic;
 use crate::error::{Error, ResourceError};
 use crate::geographic::{
     GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
@@ -17,6 +13,7 @@ use crate::grid::coverer::{self, RectCoverRule};
 use crate::grid::{CoverBudgetExceeded, CoverError};
 use crate::py::cells::cell_ops::cell_array_from_keys;
 use crate::py::cells::{CellRule, GridKind, PyCellArray, coverage_to_polygon};
+use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError, integer_parameter_error};
 use crate::{
     Frame, GeometryTransformFrame, Point, PyGeometry, PyGeometryArray, Typed, crs, crs_arc,
@@ -102,7 +99,7 @@ where
             drop(prepared);
             // A failed capacity calculation is a size error, not an
             // allocation failure; retain its public overflow class.
-            return Err(crate::py::errors::native_overflow_error(
+            return Err(errors::native_overflow_error(
                 "coverage outline size overflows usize",
             ));
         };
@@ -291,7 +288,7 @@ fn grid_cover_error_py(error: GridCoverError) -> PyErr {
         },
         GridCoverError::Budget(error) => cover_budget_err(error),
         GridCoverError::Empty(label) => empty_coverage_err(label),
-        GridCoverError::Type => crate::py::errors::geometry_type_err("expected Point geometry"),
+        GridCoverError::Type => errors::geometry_type_err("expected Point geometry"),
         GridCoverError::TileLatitude(lat) => InvalidGeometryError::new_err(format!(
             "latitude {lat} is outside the square Web Mercator tile grid ±85.05112878 degrees"
         )),
@@ -434,7 +431,7 @@ impl GridSourceAdmission {
                     self.transform_shapes(&source_shapes[..rank], Some(&logical_rows[..rank]))?;
                 for ((logical, _), shape) in source_rows[..rank].iter().zip(prefix) {
                     output[*logical] = Self::normalize_shape(shape)
-                        .map(|shape| Some(shape))
+                        .map(Some)
                         .map_err(|error| error.at_row(*logical));
                 }
                 output[row] = Err(GridCoverError::NativeRow { row, error });
@@ -444,7 +441,7 @@ impl GridSourceAdmission {
         };
         for ((logical, _), shape) in source_rows.into_iter().zip(transformed) {
             output[logical] = Self::normalize_shape(shape)
-                .map(|shape| Some(shape))
+                .map(Some)
                 .map_err(|error| error.at_row(logical));
         }
         Ok(output)
@@ -514,12 +511,12 @@ impl GridSourceAdmission {
                 })?;
         }
         for (rank, &logical) in logical_rows.iter().enumerate() {
-            crate::boundary::geographic::validate_lonlat_xy(xs[rank], ys[rank]).map_err(
-                |error| GridCoverError::NativeRow {
+            geographic::validate_lonlat_xy(xs[rank], ys[rank]).map_err(|error| {
+                GridCoverError::NativeRow {
                     row: logical,
                     error,
-                },
-            )?;
+                }
+            })?;
             output[logical] = Some(Point::new_raw_xy(xs[rank], ys[rank]));
         }
         Ok(output)
@@ -626,10 +623,7 @@ pub(crate) fn parse_max_cells(max_cells: Option<i64>) -> PyResult<Option<usize>>
     }
 }
 
-pub(crate) fn cover_working_shape(
-    frame: &crate::boundary::metadata::Frame,
-    lonlat: &Shape,
-) -> Result<Shape, GridCoverError> {
+pub(crate) fn cover_working_shape(frame: &Frame, lonlat: &Shape) -> Result<Shape, GridCoverError> {
     let domain = crate::geometry::topology_domain(frame)?;
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(lonlat, frame)

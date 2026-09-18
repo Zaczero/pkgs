@@ -1,6 +1,6 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 //! Kernels that consume resolved packed columns: CRS transform, per-row
 //! bounds, segmentize/densify, and per-row affine — plus the sanctioned
@@ -9,11 +9,6 @@
 //! Row-map normalization and GIL release happen in `packed_columns.rs` (the
 //! detached execution seam); everything here operates on already-logical
 //! contiguous columns.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use std::num::NonZeroU32;
 
 use crate::array::packed_columns::{

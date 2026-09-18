@@ -1,10 +1,7 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 
+use crate::py::errors;
 use crate::{
     GeometryError, InvalidGeometryError, PyTypeError, Shape, exact_geometry, exact_geometry_array,
     geometry_type_err, mapping_as_dict, require_geojson_crs,
@@ -253,7 +250,7 @@ pub(crate) fn to_feature(
         .and_then(|geometry| geometry.crs_str())
         .map(str::to_owned);
     let geometry = if let Some(geometry) = geometry {
-        crate::py::errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature")?;
+        errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature")?;
         require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         let shape = geometry.shape.shape().clone();
         Some(
@@ -406,7 +403,7 @@ fn to_feature_collection_impl(
         _ => None,
     };
     let (geometry_rows, row_count) = if let Some(array) = exact_geometry_array(values) {
-        crate::py::errors::require_epoch_drop(array.epoch(), drop_epoch, "to_feature_collection")?;
+        errors::require_epoch_drop(array.epoch(), drop_epoch, "to_feature_collection")?;
         require_geojson_crs(array.crs_str())?;
         if array.has_m() {
             return Err(InvalidGeometryError::new_err(
@@ -426,11 +423,7 @@ fn to_feature_collection_impl(
             }
             let geometry =
                 exact_geometry(geometry).ok_or_else(|| geometry_type_err("expected Geometry"))?;
-            crate::py::errors::require_epoch_drop(
-                geometry.epoch(),
-                drop_epoch,
-                "to_feature_collection",
-            )?;
+            errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature_collection")?;
             require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         }
         let mut shapes = crate::try_vec_with_capacity(geometry_rows.len())?;

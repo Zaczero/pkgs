@@ -1,11 +1,6 @@
 //! Grid-kind registry and id coercion for `CellArray`: which scalar cell
 //! type an array stores, per-grid id validation/round-tripping, and the
 //! Python-input -> `Vec<u64>` collectors the constructor uses.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use h3o::CellIndex;
 use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
@@ -20,7 +15,9 @@ use crate::py::cells::geohash::PyGeohashCell;
 use crate::py::cells::h3::PyH3Cell;
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::tiles::PyTile;
-use crate::py::errors::{GeometryError, ParseFormat, parse_error};
+use crate::py::errors;
+use crate::py::errors::{GeometryError, ParseError, ParseFormat, parse_error};
+use crate::py::numpy::reject_masked_array;
 
 /// Which scalar cell type a `CellArray` stores.
 #[repr(usize)]
@@ -199,10 +196,10 @@ impl GridKind {
     }
 }
 
-pub(super) fn is_custom_index_provider(value: &Bound<'_, PyAny>) -> PyResult<bool> {
-    Ok(value.cast_exact::<PyBool>().is_err()
+pub(super) fn is_custom_index_provider(value: &Bound<'_, PyAny>) -> bool {
+    value.cast_exact::<PyBool>().is_err()
         && value.cast::<PyInt>().is_err()
-        && crate::py_index_check(value))
+        && crate::py_index_check(value)
 }
 
 macro_rules! id_from_object {
@@ -280,10 +277,7 @@ fn geohash_id_from_object(value: &Bound<'_, PyAny>) -> PyResult<u64> {
         .extract()
         .map_err(|_| PyTypeError::new_err("geohash cells are constructed from string tokens"))?;
     let cell = Geohash::parse(&text).map_err(|message| {
-        crate::py::errors::tag_parse_format(
-            crate::py::errors::ParseError::new_err(message),
-            ParseFormat::Geohash,
-        )
+        errors::tag_parse_format(ParseError::new_err(message), ParseFormat::Geohash)
     })?;
     Ok(cell.identity_key())
 }
@@ -296,7 +290,7 @@ fn tile_id_from_value(value: &Bound<'_, PyAny>) -> PyResult<u64> {
             .map(Tile::id)
             .ok_or_else(|| invalid_cell_id(GridKind::Tile, id));
     }
-    let custom_index = is_custom_index_provider(value)?;
+    let custom_index = is_custom_index_provider(value);
     if value.cast_exact::<PyBool>().is_err()
         && let Some(id) = crate::py_u64_if_index("tile id", value).map_err(|error| {
             if error.is_instance_of::<PyTypeError>(value.py()) && !custom_index {
@@ -318,10 +312,7 @@ fn tile_id_from_value(value: &Bound<'_, PyAny>) -> PyResult<u64> {
         .map_err(|_| PyTypeError::new_err("tile must be a Tile, integer id, or string quadkey"))?;
     Ok(Tile::from_quadkey(&text)
         .map_err(|message| {
-            crate::py::errors::tag_parse_format(
-                crate::py::errors::ParseError::new_err(message),
-                ParseFormat::Quadkey,
-            )
+            errors::tag_parse_format(ParseError::new_err(message), ParseFormat::Quadkey)
         })?
         .id())
 }
@@ -416,7 +407,7 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);
     };
-    crate::py::numpy::reject_masked_array(ids)?;
+    reject_masked_array(ids)?;
     if array.ndim() > 1 {
         return Err(PyTypeError::new_err(
             "cell array ids must be zero- or one-dimensional",
@@ -656,7 +647,7 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
 pub(super) fn collect_inferred_ids(
     values: &Bound<'_, PyAny>,
 ) -> PyResult<(GridKind, CollectedCellIds)> {
-    crate::py::numpy::reject_masked_array(values)?;
+    reject_masked_array(values)?;
     if values.is_instance_of::<pyo3::types::PyBytes>()
         || values.is_instance_of::<pyo3::types::PyByteArray>()
         || (values.is_instance_of::<pyo3::types::PyMemoryView>()

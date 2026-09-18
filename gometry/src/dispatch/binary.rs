@@ -1,8 +1,4 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
+#![expect(
     clippy::similar_names,
     reason = "left and right operands carry the same set of derived names"
 )]
@@ -11,7 +7,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::array::{ArrayRow, ArrayRowOperation, ShapeRow, ValidityMask};
+use crate::array::{ArrayRow, ArrayRowOperation, ShapeRow, ValidityMask, missing};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     BulkElement, CollectRows as _, GeometryInput, classify_required, rows_err,
@@ -24,6 +20,8 @@ use crate::dispatch::metric::{
 };
 use crate::error::Result;
 use crate::geometry::{PreparedPlan, Shape, ShapeData, TopologyDomain};
+#[cfg(test)]
+use crate::test_support::binary_dispatch_counters;
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
 type FramedMaskedRows<R> = (Vec<R>, Option<ValidityMask>, Frame);
@@ -439,8 +437,7 @@ where
     let eligible = fast_path.is_eligible(array, other, op_name, &admission.frame);
     let pair_missing = match other {
         GeometryInput::Many(right) => {
-            crate::array::missing::union_pair(array.missing(), right.missing())
-                .map_err(PyErr::from)?
+            missing::union_pair(array.missing(), right.missing()).map_err(PyErr::from)?
         },
         GeometryInput::One(_) => None,
     };
@@ -449,7 +446,7 @@ where
 
     if eligible {
         #[cfg(test)]
-        crate::test_support::binary_dispatch_counters::fast_path_attempt();
+        binary_dispatch_counters::fast_path_attempt();
         let fast_result = fast_path.try_dispatch(
             py,
             array,
@@ -463,16 +460,16 @@ where
         );
         if let Some(result) = fast_result {
             #[cfg(test)]
-            crate::test_support::binary_dispatch_counters::fast_path_taken();
+            binary_dispatch_counters::fast_path_taken();
             drop(scratch);
             return result;
         }
         #[cfg(test)]
-        crate::test_support::binary_dispatch_counters::fast_path_declined();
+        binary_dispatch_counters::fast_path_declined();
     }
 
     #[cfg(test)]
-    crate::test_support::binary_dispatch_counters::general_lane();
+    binary_dispatch_counters::general_lane();
     let result = match other {
         GeometryInput::One(fixed) => run_binary_fixed_array_rows(
             py,
@@ -629,8 +626,7 @@ where
                     )
                 },
                 (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                    let missing =
-                        crate::array::missing::union_pair(left.missing(), right.missing())?;
+                    let missing = missing::union_pair(left.missing(), right.missing())?;
                     let left = left.clone();
                     let right = right.clone();
                     RawMetricBinary::Array(
@@ -655,8 +651,7 @@ where
                     )
                 },
                 (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                    let missing =
-                        crate::array::missing::union_pair(left.missing(), right.missing())?;
+                    let missing = missing::union_pair(left.missing(), right.missing())?;
                     let left = left.clone();
                     let right = right.clone();
                     RawMetricBinary::Array(
@@ -715,7 +710,7 @@ fn binary_frame(
     op_name: &str,
 ) -> PyResult<(Frame, TopologyDomain)> {
     #[cfg(test)]
-    crate::test_support::binary_dispatch_counters::frame_resolution();
+    binary_dispatch_counters::frame_resolution();
     let frame = Frame::compatible_parts(left.0, left.1, right.0, right.1, op_name)?;
     let domain = crate::geometry::topology_domain(&frame)?;
     Ok((frame, domain))
@@ -762,13 +757,13 @@ where
     )?;
     let missing = match admission.right {
         One(_) => None,
-        Many(right) => crate::array::missing::union_pair(left.missing(), right.missing())?,
+        Many(right) => missing::union_pair(left.missing(), right.missing())?,
     };
     let mut scratch = MetricScratch::default();
     let result = {
         let metric = resolver.resolve_ctx(&admission.frame, &mut scratch)?;
         #[cfg(test)]
-        crate::test_support::binary_dispatch_counters::general_lane();
+        binary_dispatch_counters::general_lane();
         match admission.right {
             One(right) => run_binary_fixed_array_rows(
                 py,
@@ -1083,7 +1078,7 @@ where
     let shapes = result.map_err(rows_err)?;
     let output_missing = match right {
         One(_) => Ok(left.missing().cloned()),
-        Many(right) => crate::array::missing::union_pair(left.missing(), right.missing()),
+        Many(right) => missing::union_pair(left.missing(), right.missing()),
     };
     let (shapes, output_missing) = output_missing.map(|mask| (shapes, mask))?;
     Ok(PyGeometryArray::from_shapes(shapes, frame.clone())?.with_missing_mask(output_missing)?)
@@ -1123,9 +1118,12 @@ mod tests {
     use super::*;
     use crate::boundary::metadata::Frame;
     use crate::crs::RUNTIME_STATE_TEST_LOCK;
-    use crate::dispatch::MetricResolver;
+    use crate::dispatch::{MetricResolver, kernels};
     use crate::geometry::{Point, Shape};
     use crate::py::errors::CRSError;
+    use crate::py::numpy::bool_array;
+    use crate::test_support::binary_dispatch_counters;
+    use crate::test_support::binary_dispatch_counters::Snapshot;
 
     struct RejectingFastPath;
 
@@ -1181,7 +1179,7 @@ mod tests {
             _model: Option<&MetricModel>,
             _metric: Option<&ResolvedMetric>,
         ) -> Option<PyResult<Py<PyAny>>> {
-            Some(crate::py::numpy::bool_array(py, vec![true]))
+            Some(bool_array(py, vec![true]))
         }
     }
 
@@ -1247,7 +1245,7 @@ mod tests {
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let (left, right) = point_array_pair(py, &Frame::Crs("EPSG:3857".into()));
-            crate::test_support::binary_dispatch_counters::reset();
+            binary_dispatch_counters::reset();
             let result = dispatch_binary(
                 py,
                 &left,
@@ -1262,20 +1260,17 @@ mod tests {
             .extract::<Vec<bool>>()
             .expect("fast path bool array");
             assert_eq!(result, [true]);
-            assert_eq!(
-                crate::test_support::binary_dispatch_counters::snapshot(),
-                crate::test_support::binary_dispatch_counters::Snapshot {
-                    classifications: 2,
-                    paired_array_validations: 1,
-                    frame_resolutions: 1,
-                    metric_context_acquisitions: 1,
-                    runtime_state_snapshots: 2,
-                    fast_path_attempts: 1,
-                    fast_path_taken: 1,
-                    fast_path_declines: 0,
-                    general_lane_runs: 0,
-                }
-            );
+            assert_eq!(binary_dispatch_counters::snapshot(), Snapshot {
+                classifications: 2,
+                paired_array_validations: 1,
+                frame_resolutions: 1,
+                metric_context_acquisitions: 1,
+                runtime_state_snapshots: 2,
+                fast_path_attempts: 1,
+                fast_path_taken: 1,
+                fast_path_declines: 0,
+                general_lane_runs: 0,
+            });
         });
     }
 
@@ -1285,7 +1280,7 @@ mod tests {
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let (left, right) = point_array_pair(py, &Frame::Crs("EPSG:3857".into()));
-            crate::test_support::binary_dispatch_counters::reset();
+            binary_dispatch_counters::reset();
             let result = dispatch_binary(
                 py,
                 &left,
@@ -1306,20 +1301,17 @@ mod tests {
                     .expect("general array bool"),
                 vec![true]
             );
-            assert_eq!(
-                crate::test_support::binary_dispatch_counters::snapshot(),
-                crate::test_support::binary_dispatch_counters::Snapshot {
-                    classifications: 2,
-                    paired_array_validations: 1,
-                    frame_resolutions: 1,
-                    metric_context_acquisitions: 1,
-                    runtime_state_snapshots: 2,
-                    fast_path_attempts: 1,
-                    fast_path_taken: 0,
-                    fast_path_declines: 1,
-                    general_lane_runs: 1,
-                }
-            );
+            assert_eq!(binary_dispatch_counters::snapshot(), Snapshot {
+                classifications: 2,
+                paired_array_validations: 1,
+                frame_resolutions: 1,
+                metric_context_acquisitions: 1,
+                runtime_state_snapshots: 2,
+                fast_path_attempts: 1,
+                fast_path_taken: 0,
+                fast_path_declines: 1,
+                general_lane_runs: 1,
+            });
         });
     }
 
@@ -1335,7 +1327,7 @@ mod tests {
             let right = PyGeometry::with_frame(right_shape, frame).unwrap();
             let left = Bound::new(py, array).unwrap().into_any();
             let right = Bound::new(py, right).unwrap().into_any();
-            crate::test_support::binary_dispatch_counters::reset();
+            binary_dispatch_counters::reset();
             let result = dispatch_binary(
                 py,
                 &left,
@@ -1346,7 +1338,7 @@ mod tests {
                     unit: None,
                 },
                 &NoBinaryFastPath,
-                crate::dispatch::kernels::binary_distance_3d,
+                kernels::binary_distance_3d,
             )
             .expect("3D general lane");
             assert_eq!(
@@ -1356,20 +1348,17 @@ mod tests {
                     .expect("3D array result"),
                 vec![3.0]
             );
-            assert_eq!(
-                crate::test_support::binary_dispatch_counters::snapshot(),
-                crate::test_support::binary_dispatch_counters::Snapshot {
-                    classifications: 2,
-                    paired_array_validations: 0,
-                    frame_resolutions: 1,
-                    metric_context_acquisitions: 1,
-                    runtime_state_snapshots: 2,
-                    fast_path_attempts: 0,
-                    fast_path_taken: 0,
-                    fast_path_declines: 0,
-                    general_lane_runs: 1,
-                }
-            );
+            assert_eq!(binary_dispatch_counters::snapshot(), Snapshot {
+                classifications: 2,
+                paired_array_validations: 0,
+                frame_resolutions: 1,
+                metric_context_acquisitions: 1,
+                runtime_state_snapshots: 2,
+                fast_path_attempts: 0,
+                fast_path_taken: 0,
+                fast_path_declines: 0,
+                general_lane_runs: 1,
+            });
         });
     }
 
@@ -1379,7 +1368,7 @@ mod tests {
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let (left, right) = point_array_pair(py, &Frame::Crs("EPSG:3857".into()));
-            crate::test_support::binary_dispatch_counters::reset();
+            binary_dispatch_counters::reset();
             let error = dispatch_binary(
                 py,
                 &left,
@@ -1395,7 +1384,7 @@ mod tests {
             )
             .expect_err("the disabled fast lane must expose the general error");
             assert!(error.to_string().contains("general lane error"));
-            let counters = crate::test_support::binary_dispatch_counters::snapshot();
+            let counters = binary_dispatch_counters::snapshot();
             assert_eq!(counters.classifications, 2);
             assert_eq!(counters.paired_array_validations, 1);
             assert_eq!(counters.frame_resolutions, 1);
@@ -1414,7 +1403,7 @@ mod tests {
         crate::test_support::initialize_python();
         Python::attach(|py| {
             let (left, right) = point_array_pair(py, &Frame::Crs("EPSG:3857".into()));
-            crate::test_support::binary_dispatch_counters::reset();
+            binary_dispatch_counters::reset();
             let result = crate::dispatch::dispatch_distance(py, &left, &right, None)
                 .expect("specialized metric array lane");
             assert_eq!(
@@ -1424,7 +1413,7 @@ mod tests {
                     .expect("distance array"),
                 vec![1.0]
             );
-            let counters = crate::test_support::binary_dispatch_counters::snapshot();
+            let counters = binary_dispatch_counters::snapshot();
             assert_eq!(counters.classifications, 2);
             assert_eq!(counters.paired_array_validations, 1);
             assert_eq!(counters.frame_resolutions, 1);

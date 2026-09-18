@@ -247,9 +247,9 @@ impl<'a> GeographicCandidateClassifier<'a> {
                         self.prepared.frame(),
                     )?,
                 };
-                if topology_scalar_pair(&Predicate::Covers.spec(), operands)? {
+                if topology_scalar_pair(&Predicate::Covers.spec(), &operands)? {
                     RectClass::Interior
-                } else if topology_scalar_pair(&Predicate::Intersects.spec(), operands)? {
+                } else if topology_scalar_pair(&Predicate::Intersects.spec(), &operands)? {
                     RectClass::Boundary
                 } else {
                     RectClass::Outside

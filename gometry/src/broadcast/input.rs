@@ -7,6 +7,8 @@ use crate::broadcast::{
     PyResult, PyTypeError, PyTypeMethods as _, coerce_geojson_geometry_value, crs_arc,
     ensure_same_len, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
 };
+#[cfg(test)]
+use crate::test_support::binary_dispatch_counters;
 
 pub(crate) fn parse_wkb_geometry(value: &[u8]) -> crate::error::Result<PyGeometry> {
     let geometry = crate::io::parse_wkb(value)?;
@@ -41,7 +43,7 @@ pub(crate) fn expected_geometry_or_array_for(value: &Bound<'_, PyAny>) -> PyErr 
 /// "this operand must be a Geometry or GeometryArray".
 pub(crate) fn classify_required<'a>(value: &'a Bound<'_, PyAny>) -> PyResult<GeometryInput<'a>> {
     #[cfg(test)]
-    crate::test_support::binary_dispatch_counters::classification();
+    binary_dispatch_counters::classification();
     classify_input(value).ok_or_else(|| expected_geometry_or_array_for(value))
 }
 
@@ -81,11 +83,11 @@ pub(crate) fn validate_paired_arrays(
     operation: &str,
 ) -> PyResult<Frame> {
     #[cfg(test)]
-    crate::test_support::binary_dispatch_counters::paired_array_validation();
+    binary_dispatch_counters::paired_array_validation();
     ensure_same_len(left.len(), right.len())?;
     let frame = {
         #[cfg(test)]
-        crate::test_support::binary_dispatch_counters::frame_resolution();
+        binary_dispatch_counters::frame_resolution();
         Frame::compatible_parts(
             left.crs_ref(),
             left.epoch(),

@@ -1032,7 +1032,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 0,
                 false,
             )?;
-            assert_same_witness(name, actual_witness, expected_witness);
+            assert_same_witness(name, actual_witness.as_ref(), expected_witness.as_ref());
             Ok(())
         })?;
     }
@@ -1153,7 +1153,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
                 0,
                 false,
             )?;
-            assert_same_witness(name, actual_witness, expected_witness);
+            assert_same_witness(name, actual_witness.as_ref(), expected_witness.as_ref());
             let target = actual_witness.expect("non-empty witness").target;
             assert_eq!(target.z(), expected_z, "{name} target Z");
             assert_eq!(target.m(), expected_m, "{name} target M");

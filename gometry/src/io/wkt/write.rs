@@ -1,4 +1,5 @@
 use crate::geometry::GeometryErrorKind;
+use crate::io::text_structure_count;
 use crate::io::wkt::{
     CoordinateAxes, Coordinates, GeometryKind, IoError, Point, Polygon, Result, Shape,
     extended_srid_code, require_serializable_axes,
@@ -131,8 +132,8 @@ fn format_wkt(
         .coord_count()
         .checked_mul(coordinate_bytes_per_coord)
         .ok_or_else(|| IoError::wkt("WKT coordinate byte length overflows usize"))?;
-    let structural_bytes = wkt_structure_count(shape)?
-        .checked_mul(128)
+    let structural_bytes = text_structure_count(shape)
+        .and_then(|count| count.checked_mul(128))
         .ok_or_else(|| IoError::wkt("WKT structural byte length overflows usize"))?;
     let capacity = coordinate_bytes
         .checked_add(structural_bytes)
@@ -158,43 +159,6 @@ pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
         .map_err(crate::error::Error::from)?;
     write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit)?;
     Ok(out)
-}
-
-fn wkt_structure_count(shape: &Shape) -> Result<usize> {
-    match shape {
-        Shape::MultiPoint(points) => points
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| IoError::wkt("WKT structural count overflows usize")),
-        Shape::MultiLineString(lines) => lines
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| IoError::wkt("WKT structural count overflows usize")),
-        Shape::Polygon(polygon) => polygon
-            .holes
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| IoError::wkt("WKT structural count overflows usize")),
-        Shape::MultiPolygon(polygons) => polygons.iter().try_fold(1_usize, |total, polygon| {
-            let polygon_count = polygon
-                .holes
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| IoError::wkt("WKT structural count overflows usize"))?;
-            total
-                .checked_add(polygon_count)
-                .ok_or_else(|| IoError::wkt("WKT structural count overflows usize"))
-        }),
-        Shape::GeometryCollection(geometries) => {
-            geometries.iter().try_fold(1_usize, |total, geometry| {
-                let geometry_count = wkt_structure_count(geometry)?;
-                total
-                    .checked_add(geometry_count)
-                    .ok_or_else(|| IoError::wkt("WKT structural count overflows usize"))
-            })
-        },
-        _ => Ok(1),
-    }
 }
 
 /// Streaming WKT writer: appends `shape` to `out` with no intermediate

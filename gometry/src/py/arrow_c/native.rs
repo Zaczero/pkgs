@@ -1,28 +1,12 @@
 //! Native Arrow C Data Interface admission into owned Arrow batches.
-#![allow(
-    clippy::too_many_lines,
+#![expect(
     clippy::type_complexity,
     clippy::needless_range_loop,
-    clippy::only_used_in_recursion,
-    clippy::option_as_ref_deref,
-    clippy::ref_option,
-    clippy::unnecessary_wraps,
-    clippy::needless_bool,
-    clippy::if_not_else,
-    clippy::manual_map,
     clippy::use_self,
     clippy::needless_question_mark,
-    clippy::manual_find_map,
-    clippy::manual_flatten,
     clippy::missing_const_for_fn,
-    clippy::option_if_let_else,
     reason = "owned Arrow admission + recursive capture is intentionally explicit"
 )]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -30,6 +14,7 @@ use std::sync::Arc;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::{Bound, PyAny, PyResult};
 
+use crate::boundary::metadata;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::admitted::{
@@ -37,9 +22,12 @@ use crate::py::arrow_c::admitted::{
 };
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
-    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, array_capsule_name,
-    capsule_pointer, schema_capsule_name, try_arc_from_str, try_arc_from_vec, try_arc_new,
+    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, admitted,
+    array_capsule_name, capsule_pointer, schema_capsule_name, try_arc_from_str, try_arc_from_vec,
+    try_arc_new,
 };
+use crate::py::geoarrow::GeometryEncoding;
+use crate::py::{arrow, arrow_c, errors};
 
 #[path = "native_decode.rs"]
 mod decode;
@@ -379,7 +367,7 @@ impl<'shell> CaptureLayout<'shell> {
     /// Capture shell must still be live.
     unsafe fn child_ptr(&self, index: usize) -> PyResult<*mut ArrowArray> {
         if index >= self.n_children {
-            return Err(crate::py::errors::parse_error(
+            return Err(errors::parse_error(
                 format!(
                     "Arrow child index {index} is out of range for n_children={}",
                     self.n_children
@@ -388,7 +376,7 @@ impl<'shell> CaptureLayout<'shell> {
             ));
         }
         if self.children.is_null() {
-            return Err(crate::py::errors::parse_error(
+            return Err(errors::parse_error(
                 "Arrow array children pointer is null",
                 crate::error::ParseFormat::GeoArrow,
             ));
@@ -396,7 +384,7 @@ impl<'shell> CaptureLayout<'shell> {
         // SAFETY: layout-validated children table under live shell.
         let child = unsafe { *self.children.add(index) };
         if child.is_null() {
-            return Err(crate::py::errors::parse_error(
+            return Err(errors::parse_error(
                 "Arrow child array is null",
                 crate::error::ParseFormat::GeoArrow,
             ));
@@ -499,8 +487,7 @@ pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> Py
         // Keep the producer release slot intact until the consumer shell has
         // been allocated. If the allocation is refused, the caller can still
         // release the original producer-owned shell exactly once.
-        let moved = Box::try_new(ptr::read(source))
-            .map_err(|_| crate::py::errors::native_memory_error())?;
+        let moved = Box::try_new(ptr::read(source)).map_err(|_| errors::native_memory_error())?;
         *T::release_slot(source) = None;
         Ok(Box::into_raw(moved))
     }
@@ -606,6 +593,7 @@ pub(crate) unsafe fn native_arrow_batch_from_raw_array(
 ) -> PyResult<NativeArrowBatch> {
     // The stream callback has just initialized this output shell. Install a
     // non-allocating owner before the moved-shell allocation can fail.
+    // SAFETY: caller guarantees a live, writable producer batch array.
     let _output_guard = unsafe { ArrowReleaseGuard::from_raw(array) }?;
     // SAFETY: caller guarantees a live producer batch array.
     let array_shell = unsafe { MovedArrowShell::take(array) }?;
@@ -662,28 +650,20 @@ fn validate_direct_physical_schema(
             )));
         }
         let metadata = schema.extension_metadata_bytes()?;
-        let (crs, epoch) = crate::py::arrow::parse_geoarrow_extension_metadata_for(
-            &metadata,
-            Some(classification.encoding),
-        )?;
-        if !crate::boundary::metadata::optional_crs_labels_operationally_equal(
+        let (crs, epoch) =
+            arrow::parse_geoarrow_extension_metadata_for(&metadata, Some(classification.encoding))?;
+        if !metadata::optional_crs_labels_operationally_equal(
             classification.crs.as_deref().map(String::as_str),
             crs.as_deref(),
-        )? || !crate::boundary::metadata::optional_epochs_equal(classification.epoch, epoch)
+        )? || !metadata::optional_epochs_equal(classification.epoch, epoch)
         {
-            return Err(crate::py::arrow::geoarrow_parse_error(
+            return Err(arrow::geoarrow_parse_error(
                 "Arrow C physical schema metadata conflicts with admitted Arrow metadata",
             ));
         }
     }
-    crate::py::arrow_c::admitted::validate_admitted_encoding_storage(
-        schema,
-        classification.encoding,
-    )?;
-    if matches!(
-        classification.encoding,
-        crate::py::geoarrow::GeometryEncoding::Wkb
-    ) {
+    admitted::validate_admitted_encoding_storage(schema, classification.encoding)?;
+    if matches!(classification.encoding, GeometryEncoding::Wkb) {
         let actual_width = match schema.format() {
             "vz" => WkbOffsetWidth::View,
             "Z" => WkbOffsetWidth::Int64,
@@ -721,19 +701,19 @@ unsafe fn admit_selected_struct_geometry(
     // SAFETY: shell pins the root array for the capture window.
     let root = unsafe { &*array_shell.as_ptr() };
     let n_children = usize::try_from(root.n_children).map_err(|_| {
-        crate::py::errors::parse_error(
+        errors::parse_error(
             "Arrow array n_children is negative or too large",
             crate::error::ParseFormat::GeoArrow,
         )
     })?;
     if child_index >= n_children {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             format!("Arrow child index {child_index} is out of range for n_children={n_children}"),
             crate::error::ParseFormat::GeoArrow,
         ));
     }
     if root.children.is_null() {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             "Arrow struct array children pointer is null",
             crate::error::ParseFormat::GeoArrow,
         ));
@@ -741,13 +721,13 @@ unsafe fn admit_selected_struct_geometry(
     // SAFETY: children table non-null; index in range under live shell.
     let child_ptr = unsafe { *root.children.add(child_index) };
     if child_ptr.is_null() {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             "Arrow child array is null",
             crate::error::ParseFormat::GeoArrow,
         ));
     }
     if child_index >= schema.children.len() {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             format!(
                 "Arrow child index {child_index} is out of range for schema n_children={}",
                 schema.children.len()
@@ -839,7 +819,7 @@ struct NativeNode {
 /// is only an admission instruction for table/record-batch roots.
 #[derive(Clone, Debug)]
 pub(crate) struct NativeArrowClassification {
-    pub(crate) encoding: crate::py::geoarrow::GeometryEncoding,
+    pub(crate) encoding: GeometryEncoding,
     pub(crate) wkb_offset_width: WkbOffsetWidth,
     #[expect(
         clippy::rc_buffer,
@@ -859,7 +839,7 @@ pub(crate) struct NativeArrowBatch {
 
 impl NativeArrowClassification {
     pub(crate) fn new(
-        encoding: crate::py::geoarrow::GeometryEncoding,
+        encoding: GeometryEncoding,
         wkb_offset_width: WkbOffsetWidth,
         crs: Option<String>,
         epoch: Option<f64>,
@@ -867,9 +847,7 @@ impl NativeArrowClassification {
         Ok(Self {
             encoding,
             wkb_offset_width,
-            crs: crs
-                .map(crate::py::arrow_c::try_arc_from_string)
-                .transpose()?,
+            crs: crs.map(arrow_c::try_arc_from_string).transpose()?,
             epoch,
         })
     }
@@ -982,7 +960,7 @@ fn build_owned_node_admitted(
     let mut children = crate::try_vec_with_capacity(validated.n_children)?;
     if validated.n_children > 0 {
         if schema.children.len() != validated.n_children {
-            return Err(crate::py::errors::parse_error(
+            return Err(errors::parse_error(
                 "Arrow child schema index out of range",
                 crate::error::ParseFormat::GeoArrow,
             ));
@@ -992,7 +970,7 @@ fn build_owned_node_admitted(
             let Ok(name) = crate::boundary::try_string_from_str(child_schema.name()) else {
                 drop(children);
                 drop(field_names);
-                return Err(crate::py::errors::native_memory_error());
+                return Err(errors::native_memory_error());
             };
             field_names.push(name);
             // SAFETY: children live under capture shell for this construction.
@@ -1073,7 +1051,7 @@ fn build_owned_node_admitted(
         format: validated.format,
         buffers,
         children: try_arc_from_vec(children)?,
-        schema_name: crate::py::arrow_c::try_arc_from_str(schema.name())?,
+        schema_name: arrow_c::try_arc_from_str(schema.name())?,
         field_names: try_arc_from_vec(field_names)?,
         effective_missing,
     })
@@ -1147,9 +1125,8 @@ fn project_ancestor_missing(
                     })?;
                     i64::from_le_bytes(*raw)
                 };
-                usize::try_from(value).map_err(|_| {
-                    crate::py::arrow::geoarrow_parse_error("Arrow offsets must be non-negative")
-                })
+                usize::try_from(value)
+                    .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))
             };
             let mut missing = crate::try_vec_with_capacity(child_length)?;
             missing.resize(child_length, false);
@@ -1163,12 +1140,12 @@ fn project_ancestor_missing(
                         PyTypeError::new_err("Arrow list offset index overflows")
                     })?)?;
                 if end < start {
-                    return Err(crate::py::arrow::geoarrow_parse_error(
+                    return Err(arrow::geoarrow_parse_error(
                         "Arrow list offsets must be ordered",
                     ));
                 }
                 let range = missing.get_mut(start..end).ok_or_else(|| {
-                    crate::py::arrow::geoarrow_parse_error(
+                    arrow::geoarrow_parse_error(
                         "Arrow list child offsets exceed the selected child length",
                     )
                 })?;
@@ -1384,7 +1361,7 @@ fn snapshot_native_buffers(
         // been rebased to that local origin.
         let mut data = HashMap::new();
         data.try_reserve(ranges.len())
-            .map_err(|_| crate::py::errors::native_memory_error())?;
+            .map_err(|_| errors::native_memory_error())?;
         for (&data_index, range) in ranges.iter() {
             let len = range
                 .end
@@ -1427,15 +1404,15 @@ fn snapshot_native_buffers(
             let (offsets, start, end) = snapshot_rebased_offsets(array)?;
             snapshots.push(Some(offsets));
             if matches!(array.format, ArrowFormat::Binary | ArrowFormat::LargeBinary) {
-                let len = end.checked_sub(start).ok_or_else(|| {
-                    crate::py::arrow::geoarrow_parse_error("Arrow offsets must be ordered")
-                })?;
+                let len = end
+                    .checked_sub(start)
+                    .ok_or_else(|| arrow::geoarrow_parse_error("Arrow offsets must be ordered"))?;
                 snapshots.push(Some(snapshot_one_buffer_range(array, 2, start, len)?));
             } else {
                 array.child_window = Some((
                     start,
                     end.checked_sub(start).ok_or_else(|| {
-                        crate::py::arrow::geoarrow_parse_error("Arrow offsets must be ordered")
+                        arrow::geoarrow_parse_error("Arrow offsets must be ordered")
                     })?,
                 ));
             }
@@ -1486,7 +1463,7 @@ fn snapshot_one_buffer_range(
     let bytes = unsafe {
         foreign
             .snapshot()
-            .map_err(|_| crate::py::errors::native_memory_error())?
+            .map_err(|_| errors::native_memory_error())?
     };
     // Float64 values: decode LE f64 once at admission; drop the byte copy.
     if matches!(array.format, ArrowFormat::Float64) && index == 1 {
@@ -1560,35 +1537,29 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
             i64::from_le_bytes(*bytes)
         })
     };
-    let first = usize::try_from(read(0)?).map_err(|_| {
-        crate::py::arrow::geoarrow_parse_error("Arrow offsets must be non-negative")
-    })?;
+    let first = usize::try_from(read(0)?)
+        .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))?;
     let mut rebased = crate::try_vec_with_capacity(raw.len())?;
     rebased.extend_from_slice(&raw);
     let mut last = first;
     for index in 0..slots {
-        let value = usize::try_from(read(index)?).map_err(|_| {
-            crate::py::arrow::geoarrow_parse_error("Arrow offsets must be non-negative")
-        })?;
+        let value = usize::try_from(read(index)?)
+            .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))?;
         if value < last {
-            return Err(crate::py::arrow::geoarrow_parse_error(
-                "Arrow offsets must be ordered",
-            ));
+            return Err(arrow::geoarrow_parse_error("Arrow offsets must be ordered"));
         }
-        let local = value.checked_sub(first).ok_or_else(|| {
-            crate::py::arrow::geoarrow_parse_error("Arrow offsets must be ordered")
-        })?;
+        let local = value
+            .checked_sub(first)
+            .ok_or_else(|| arrow::geoarrow_parse_error("Arrow offsets must be ordered"))?;
         last = value;
         let at = index * width;
         if width == 4 {
-            let local = i32::try_from(local).map_err(|_| {
-                crate::py::arrow::geoarrow_parse_error("Arrow offset exceeds i32 range")
-            })?;
+            let local = i32::try_from(local)
+                .map_err(|_| arrow::geoarrow_parse_error("Arrow offset exceeds i32 range"))?;
             rebased[at..at + width].copy_from_slice(&local.to_le_bytes());
         } else {
-            let local = i64::try_from(local).map_err(|_| {
-                crate::py::arrow::geoarrow_parse_error("Arrow offset exceeds i64 range")
-            })?;
+            let local = i64::try_from(local)
+                .map_err(|_| arrow::geoarrow_parse_error("Arrow offset exceeds i64 range"))?;
             rebased[at..at + width].copy_from_slice(&local.to_le_bytes());
         }
     }
@@ -1685,7 +1656,7 @@ fn validate_owned_null_count(array: &CaptureLayout, buffers: &OwnedBufferSlots) 
         }
     }
     if actual != expected {
-        return Err(crate::py::arrow::geoarrow_parse_error(format!(
+        return Err(arrow::geoarrow_parse_error(format!(
             "Arrow null_count ({expected}) does not match validity bitmap ({actual} null rows)"
         )));
     }
@@ -1790,7 +1761,7 @@ fn scan_binary_view_data_ranges_owned(
         } else {
             declared_sizes
                 .try_reserve(1)
-                .map_err(|_| crate::py::errors::native_memory_error())?;
+                .map_err(|_| errors::native_memory_error())?;
             let byte_start = checked_byte_span(
                 buffer_index,
                 8,
@@ -1814,7 +1785,7 @@ fn scan_binary_view_data_ranges_owned(
         if !ranges.contains_key(&buffer_index) {
             ranges
                 .try_reserve(1)
-                .map_err(|_| crate::py::errors::native_memory_error())?;
+                .map_err(|_| errors::native_memory_error())?;
         }
         ranges
             .entry(buffer_index)
@@ -1930,6 +1901,7 @@ mod layout_validation_tests {
     use pyo3::prelude::Python;
 
     use super::*;
+    use crate::py::geoarrow::GeometryEncoding;
 
     // Global release counters are shared across the two capsule lifecycle
     // tests. Parallel nextest interleaves `before + N` assertions and flakes
@@ -2329,7 +2301,7 @@ mod layout_validation_tests {
                 private_data: ptr::null_mut(),
             };
             let classification = NativeArrowClassification {
-                encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                encoding: GeometryEncoding::Point,
                 wkb_offset_width: WkbOffsetWidth::Int32,
                 crs: None,
                 epoch: None,
@@ -2515,7 +2487,7 @@ mod layout_validation_tests {
                     array_ptr,
                     &admitted,
                     NativeArrowClassification {
-                        encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                        encoding: GeometryEncoding::Point,
                         wkb_offset_width: WkbOffsetWidth::Int32,
                         crs: None,
                         epoch: None,
@@ -2955,7 +2927,7 @@ mod layout_validation_tests {
         let batch = NativeArrowBatch {
             node,
             classification: NativeArrowClassification {
-                encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                encoding: GeometryEncoding::Point,
                 wkb_offset_width: WkbOffsetWidth::Int32,
                 crs: None,
                 epoch: None,
@@ -3051,7 +3023,7 @@ mod layout_validation_tests {
                 &raw mut array,
                 &admitted,
                 NativeArrowClassification {
-                    encoding: crate::py::geoarrow::GeometryEncoding::Point,
+                    encoding: GeometryEncoding::Point,
                     wkb_offset_width: WkbOffsetWidth::Int32,
                     crs: None,
                     epoch: None,

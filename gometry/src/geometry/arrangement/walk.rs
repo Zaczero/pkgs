@@ -1,10 +1,6 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::cmp::Ordering;
 
-use crate::geometry::arrangement::WindingWeight;
+use crate::geometry::arrangement::{Face, IndexedTopology, WindingWeight};
 use crate::geometry::{
     HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_sign, orientation, same_point,
 };
@@ -52,8 +48,8 @@ pub(crate) fn split_ring_at_pinches(
 /// [`Arrangement::region_rings`]), so their walks skip both costs.
 pub(crate) fn arrangement_faces<const RINGS: bool>(
     points: &[XY],
-    topology: &crate::geometry::arrangement::IndexedTopology,
-) -> Vec<crate::geometry::arrangement::Face> {
+    topology: &IndexedTopology,
+) -> Vec<Face> {
     let mut faces = Vec::new();
     // One cycle scratch for sign classification when rings are not kept
     // (`RINGS=false`); for `RINGS=true` each completed cycle is moved into the
@@ -78,7 +74,7 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
             cycle.push(to);
         }
         let area_sign = open_xy_cycle_sign(&cycle);
-        faces.push(crate::geometry::arrangement::Face {
+        faces.push(Face {
             ring: if RINGS {
                 cycle
             } else {

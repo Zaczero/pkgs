@@ -48,11 +48,7 @@ impl GeodesicSweepCapsAccum {
         })
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    pub(crate) fn push_segment(&mut self, segment: GeodesicSegment, metric: &impl GeodesicMetric) {
+    pub(crate) fn push_segment(&mut self, segment: &GeodesicSegment, metric: &impl GeodesicMetric) {
         if self.anchor.is_none() {
             self.anchor = Some(segment.start);
         }
@@ -228,7 +224,7 @@ fn geodesic_capped_distance_sweep_core(
                 }
                 let result = metric.point_segment_query(
                     vertex,
-                    segment,
+                    &segment,
                     GeodesicSegmentQuery::Minimum {
                         cutoff: best,
                         witness: GeodesicWitnessNeed::No,
@@ -306,7 +302,7 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
                 }
                 let result = metric.point_segment_query(
                     vertex,
-                    segment,
+                    &segment,
                     GeodesicSegmentQuery::Threshold {
                         limit: distance,
                         witness: GeodesicWitnessNeed::No,
@@ -398,7 +394,7 @@ pub(crate) fn geodesic_target_witness(
         let cutoff = witness_refine_limit(best.as_ref(), index);
         let result = metric.point_segment_query(
             point,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff,
                 witness: GeodesicWitnessNeed::Yes,
@@ -507,7 +503,7 @@ fn geodesic_capped_witness_sweep_core(
                 }
                 let result = metric.point_segment_query(
                     vertex,
-                    segment,
+                    &segment,
                     GeodesicSegmentQuery::Minimum {
                         cutoff: best_distance,
                         witness: GeodesicWitnessNeed::Yes,

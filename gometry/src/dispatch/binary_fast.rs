@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
@@ -14,10 +10,12 @@ use crate::dispatch::binary::{
     BinaryArrayFastPath, NoBinaryFastPath, dispatch_binary, dispatch_binary_geometry,
 };
 use crate::dispatch::kernels;
+use crate::dispatch::metric::GeodesicBinaryRow;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{GeometryKind, PreparedPlan};
+use crate::predicates::engine;
 use crate::predicates::engine::Predicate;
-use crate::{DistanceUnit, DwithinDistance, OverlayOp};
+use crate::{DistanceUnit, DwithinDistance, Frame, OverlayOp};
 
 /// Predicate array-lane fast path using the shared batch engine.
 pub(crate) struct PredicateFastPath {
@@ -40,7 +38,7 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
         _left: &crate::PyGeometryArray,
         _right: GeometryInput<'_>,
         _op_name: &str,
-        _frame: &crate::boundary::metadata::Frame,
+        _frame: &Frame,
     ) -> bool {
         true
     }
@@ -51,7 +49,7 @@ impl BinaryArrayFastPath<bool> for PredicateFastPath {
         array: &crate::PyGeometryArray,
         other: GeometryInput<'_>,
         _op_name: &str,
-        frame: &crate::boundary::metadata::Frame,
+        frame: &Frame,
         domain: crate::geometry::TopologyDomain,
         missing: Option<&crate::array::ValidityMask>,
         _model: Option<&MetricModel>,
@@ -84,7 +82,7 @@ impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
         _left: &crate::PyGeometryArray,
         _right: GeometryInput<'_>,
         _op_name: &str,
-        _frame: &crate::boundary::metadata::Frame,
+        _frame: &Frame,
     ) -> bool {
         false
     }
@@ -95,7 +93,7 @@ impl BinaryArrayFastPath<crate::geometry::Shape> for OverlayFastPath {
         _left: &crate::PyGeometryArray,
         _right: GeometryInput<'_>,
         _op_name: &str,
-        _frame: &crate::boundary::metadata::Frame,
+        _frame: &Frame,
         _domain: crate::geometry::TopologyDomain,
         _missing: Option<&crate::array::ValidityMask>,
         _model: Option<&MetricModel>,
@@ -136,7 +134,7 @@ pub(crate) fn dispatch_predicate(
                 &right_cache,
                 domain,
             )
-            .and_then(|operands| crate::predicates::engine::topology_scalar_pair(&spec, operands))
+            .and_then(|operands| engine::topology_scalar_pair(&spec, &operands))
         })?;
         return Ok(crate::broadcast::py_bool(py, value));
     }
@@ -205,7 +203,7 @@ fn dispatch_metric_binary<R>(
     geodesic_kernel: impl Fn(
         &PreparedPlan,
         &PreparedPlan,
-        &crate::dispatch::metric::GeodesicBinaryRow<'_>,
+        &GeodesicBinaryRow<'_>,
     ) -> crate::error::Result<R>
     + Copy
     + Send
@@ -214,7 +212,7 @@ fn dispatch_metric_binary<R>(
         Python<'_>,
         &crate::PyGeometryArray,
         GeometryInput<'_>,
-        &crate::boundary::metadata::Frame,
+        &Frame,
         MetricOp,
         Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>>,
@@ -246,7 +244,7 @@ fn dispatch_metric_binary_admitted<R>(
     geodesic_kernel: impl Fn(
         &PreparedPlan,
         &PreparedPlan,
-        &crate::dispatch::metric::GeodesicBinaryRow<'_>,
+        &GeodesicBinaryRow<'_>,
     ) -> crate::error::Result<R>
     + Copy
     + Send
@@ -255,7 +253,7 @@ fn dispatch_metric_binary_admitted<R>(
         Python<'_>,
         &crate::PyGeometryArray,
         GeometryInput<'_>,
-        &crate::boundary::metadata::Frame,
+        &Frame,
         MetricOp,
         Option<DistanceUnit>,
     ) -> PyResult<Py<PyAny>>,
@@ -441,7 +439,7 @@ fn similarity_array_lane(
     py: Python<'_>,
     array: &crate::PyGeometryArray,
     other: GeometryInput<'_>,
-    frame: &crate::boundary::metadata::Frame,
+    frame: &Frame,
     operation: SimilarityOp,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {

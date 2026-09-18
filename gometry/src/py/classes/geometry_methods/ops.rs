@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Internal geometry operation helpers.
 //!
 //! Free `#[pyfunction]` surfaces call these instead of exposing thin method
@@ -15,6 +11,8 @@ use pyo3::types::{PyBytes, PyTuple};
 use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
+use crate::py::support;
+use crate::py::support::SpatialCurve;
 use crate::{
     Frame, PyGeometryArray, PyValidationReport, RepairMethod, Shape, VoronoiClipInput, geometry,
     io, parse_cdt_refinement, parse_precision, parse_sample_count, parse_sample_seed,
@@ -302,19 +300,18 @@ impl PyGeometry {
             make(points[2])?,
             make(points[3])?,
         ];
-        let result =
-            crate::py::support::extreme_points_type(py)?.call1(PyTuple::new(py, typed)?)?;
+        let result = support::extreme_points_type(py)?.call1(PyTuple::new(py, typed)?)?;
         Ok(Some(result.unbind()))
     }
 
     pub(crate) fn spatial_key_impl(
         &self,
-        curve: crate::py::support::SpatialCurve,
+        curve: SpatialCurve,
         level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Option<u64>> {
         // `None` on an empty scalar — see `extremes_impl`.
-        crate::py::support::spatial_key_for_shape_opt(&self.shape, curve.into(), level, bounds)
+        support::spatial_key_for_shape_opt(&self.shape, curve.into(), level, bounds)
     }
 
     pub(crate) fn subdivide_parts(

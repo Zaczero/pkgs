@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Predicate broadcast dispatch: the scalar/array operand routing over the
 //! unified [`Predicate`] table (`crate::predicates::engine`), plus the string/pattern
 //! relate broadcasts and coordinate-input broadcasts. The generic value cores
@@ -10,7 +6,7 @@
 use pyo3::IntoPyObject as _;
 use pyo3::types::PyAny;
 
-use crate::array::{ArrayRow, PackedStorage, ValidityMask};
+use crate::array::{ArrayRow, PackedStorage, ValidityMask, missing};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
@@ -21,10 +17,10 @@ use crate::broadcast::{
 };
 use crate::error::Result;
 use crate::geometry::{PreparedPlan, TopologyDomain};
-use crate::predicates::PyPreparedGeometry;
 use crate::predicates::engine::{
     GateOperand, Predicate, PreparedTopologyPair, row_kind_empty, topology_scalar_pair,
 };
+use crate::predicates::{PyPreparedGeometry, engine};
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
 
@@ -160,13 +156,13 @@ pub(crate) fn predicate_pairwise_arrays(
                     match domain {
                         TopologyDomain::Cartesian => {
                             if let Some(verdict) = spec.pre_topology(
-                                GateOperand::cartesian(
+                                &GateOperand::cartesian(
                                     left,
                                     left_bounds
                                         .as_ref()
                                         .and_then(|bounds| bounds.get(index).copied().flatten()),
                                 ),
-                                GateOperand::cartesian(
+                                &GateOperand::cartesian(
                                     right,
                                     right_bounds
                                         .as_ref()
@@ -181,7 +177,7 @@ pub(crate) fn predicate_pairwise_arrays(
                             let right_cache = right_rows.frame_cache(index)?;
                             Ok(topology_scalar_pair(
                                 &spec,
-                                PreparedTopologyPair::try_for_domain(
+                                &PreparedTopologyPair::try_for_domain(
                                     &left,
                                     &left_cache,
                                     &right,
@@ -202,7 +198,7 @@ pub(crate) fn predicate_pairwise_arrays(
                             let right_cache = right_rows.frame_cache(index)?;
                             Ok(topology_scalar_pair(
                                 &spec,
-                                PreparedTopologyPair::try_for_domain(
+                                &PreparedTopologyPair::try_for_domain(
                                     &left,
                                     &left_cache,
                                     &right,
@@ -288,11 +284,7 @@ pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-fn relate_plan_pair(operands: PreparedTopologyPair<'_>) -> crate::error::Result<String> {
+fn relate_plan_pair(operands: &PreparedTopologyPair<'_>) -> crate::error::Result<String> {
     Ok(operands.relate()?.text())
 }
 
@@ -365,7 +357,7 @@ where
     R: crate::broadcast::BulkElement,
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
-    let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
+    let missing = missing::union_pair(left.missing(), right.missing())?;
     let output_missing = missing;
     let left = left.clone();
     let right = right.clone();
@@ -456,7 +448,7 @@ pub(crate) fn relate_string_broadcast(
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
     with_prepared_operands(py, left, right, |left, right| {
-        topology_broadcast(py, left, right, "relate", relate_plan_pair)
+        topology_broadcast(py, left, right, "relate", |pair| relate_plan_pair(&pair))
     })
 }
 
@@ -480,7 +472,7 @@ pub(crate) fn relate_pattern_broadcast(
         let compiled = crate::geometry::CompiledPattern::new(pattern)
             .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
         topology_broadcast(py, left, right, "relate_pattern", move |operands| {
-            crate::predicates::engine::topology_scalar_pattern(compiled, &operands)
+            engine::topology_scalar_pattern(compiled, &operands)
         })
     })
 }
@@ -602,7 +594,7 @@ fn xy_predicate_array_values(
                         let point_cache = crate::geometry::FrameDependentCaches::default();
                         Ok(topology_scalar_pair(
                             &spec,
-                            PreparedTopologyPair::try_for_domain(
+                            &PreparedTopologyPair::try_for_domain(
                                 &row,
                                 &row_cache,
                                 &point,
@@ -633,7 +625,7 @@ fn xy_array_values(
             let point_cache = crate::geometry::FrameDependentCaches::default();
             topology_scalar_pair(
                 &spec,
-                PreparedTopologyPair::try_for_domain(
+                &PreparedTopologyPair::try_for_domain(
                     original,
                     original_cache,
                     &point,
@@ -673,7 +665,7 @@ pub(crate) fn xy_predicate_values(
                 &point_cache,
                 domain,
             )
-            .and_then(|operands| topology_scalar_pair(&spec, operands))
+            .and_then(|operands| topology_scalar_pair(&spec, &operands))
         })?;
         return Ok(py_bool(py, value));
     }

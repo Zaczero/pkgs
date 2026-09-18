@@ -1,21 +1,19 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::exceptions::{PyKeyError, PyTypeError};
 use pyo3::types::PyBool;
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use super::impl_nearest::NearestVisited;
 use crate::collections::RowIdSortScratch;
+use crate::py::crs::PyCrs;
 use crate::py::index::{
     BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexPredicate,
-    IntoPyObject as _, NearestOptions, PreparedIndexQuery, Py, PyAny, PyAnyMethods as _, PyResult,
-    PySpatialIndex, Python, build_spatial_index, exact_geometry, exact_geometry_array,
-    format_nearest, format_nearest_rows, geometry_items, join_indexed, parse_max_distance,
-    pyfunction, pymethods, query_distance, resolve_metric, restore_spatial_index, spatial_index,
-    usize_array, validate_nearest_k,
+    IntoPyObject as _, NearestCandidate, NearestOptions, PreparedIndexQuery, Py, PyAny,
+    PyAnyMethods as _, PyResult, PySpatialIndex, Python, build_spatial_index, exact_geometry,
+    exact_geometry_array, format_nearest, format_nearest_rows, geometry_items, join_indexed,
+    parse_max_distance, pyfunction, pymethods, query_distance, resolve_metric,
+    restore_spatial_index, spatial_index, usize_array, validate_nearest_k,
 };
+use crate::py::numpy::int64_array;
 use crate::{CsrBuilder, parse_spatial_index_handle};
 
 type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, bool));
@@ -23,7 +21,7 @@ type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, bool));
 fn append_nearest_candidates(
     builder: &mut CsrBuilder<usize>,
     distances: &mut Vec<f64>,
-    candidates: Vec<crate::py::index::NearestCandidate>,
+    candidates: Vec<NearestCandidate>,
     return_distance: bool,
 ) -> PyResult<()> {
     for candidate in candidates {
@@ -122,12 +120,12 @@ impl PySpatialIndex {
     /// -------
     /// CRS or None
     #[getter]
-    fn crs(&self) -> Option<crate::py::crs::PyCrs> {
+    fn crs(&self) -> Option<PyCrs> {
         self.metadata
             .as_ref()
             .and_then(crate::Frame::crs_ref)
             .cloned()
-            .map(crate::py::crs::PyCrs::from_definition)
+            .map(PyCrs::from_definition)
     }
 
     /// Coordinate epoch shared by the indexed geometries, if set.
@@ -626,10 +624,7 @@ impl PySpatialIndex {
             crate::try_push_pair(&mut left, &mut right, i as i64, j as i64)
                 .map_err(pyo3::PyErr::from)
         })?;
-        Ok((
-            crate::py::numpy::int64_array(py, left)?,
-            crate::py::numpy::int64_array(py, right)?,
-        ))
+        Ok((int64_array(py, left)?, int64_array(py, right)?))
     }
 
     /// Bounding-box candidate matches for a query geometry or array (not
@@ -991,7 +986,7 @@ impl PySpatialIndex {
                 .into_iter()
                 .map(|handle| Ok::<_, pyo3::PyErr>(handle as i64)),
         )?;
-        crate::py::numpy::int64_array(py, handles)
+        int64_array(py, handles)
     }
 
     /// Remove a geometry by its handle. Returns ``True`` if a live geometry

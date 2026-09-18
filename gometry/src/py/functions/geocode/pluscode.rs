@@ -1,8 +1,5 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::GeometryError;
+use crate::py::errors;
 use crate::py::functions::geocode::PyResult;
 
 const OLC_ALPHABET: &[u8; 20] = b"23456789CFGHJMPQRVWX";
@@ -250,7 +247,7 @@ pub(super) fn olc_require_full(code: &str) -> PyResult<()> {
     if olc_is_full(code) {
         Ok(())
     } else {
-        Err(crate::py::errors::parse_error(
+        Err(errors::parse_error(
             format!("{code:?} is not a full plus code"),
             crate::error::ParseFormat::PlusCode,
         ))
@@ -316,7 +313,7 @@ pub(super) fn olc_recover(code: &str, latitude: f64, longitude: f64) -> PyResult
         return Ok(code.to_ascii_uppercase());
     }
     if !olc_is_short(code) {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             format!("{code:?} is not a short plus code"),
             crate::error::ParseFormat::PlusCode,
         ));

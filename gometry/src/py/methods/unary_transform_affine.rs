@@ -1,25 +1,12 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::dispatch::kernels;
 use crate::py::methods::unary_transform_methods::{
     Bound, DefaultedF64Input, GeometryArrayStorage, OriginSpec, PyAny, PyGeometry, PyGeometryArray,
     PyResult, Python, angle_radians, finite_f64_required, parse_affine_matrix, parse_precision,
     pymethods,
 };
 
-unary_shape_method!(
-    reverse,
-    Reverse,
-    doc_reverse,
-    crate::dispatch::kernels::unary_reverse
-);
-unary_shape_method!(
-    swap_xy,
-    SwapXy,
-    doc_swap_xy,
-    crate::dispatch::kernels::unary_swap_xy
-);
+unary_shape_method!(reverse, Reverse, doc_reverse, kernels::unary_reverse);
+unary_shape_method!(swap_xy, SwapXy, doc_swap_xy, kernels::unary_swap_xy);
 
 #[pymethods]
 impl PyGeometry {
@@ -32,7 +19,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Normalize,
             None,
             default,
-            crate::dispatch::kernels::unary_normalize
+            kernels::unary_normalize
         )
     }
 
@@ -46,7 +33,7 @@ impl PyGeometry {
             crate::dispatch::Operation::OrientPolygons,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_orient_polygons(data, ctx, ccw)
+            move |data, ctx| kernels::unary_orient_polygons(data, ctx, ccw)
         )
     }
 
@@ -60,7 +47,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Quantize,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_quantize(data, ctx, precision)
+            move |data, ctx| kernels::unary_quantize(data, ctx, precision)
         )
     }
 
@@ -78,7 +65,7 @@ impl PyGeometry {
             crate::dispatch::Operation::AffineTransform,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_affine_transform(data, ctx, &matrix)
+            move |data, ctx| kernels::unary_affine_transform(data, ctx, &matrix)
         )
     }
 
@@ -98,7 +85,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Translate,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_translate(data, ctx, xoff, yoff)
+            move |data, ctx| kernels::unary_translate(data, ctx, xoff, yoff)
         )
     }
 
@@ -123,7 +110,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Rotate,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_rotate(data, ctx, angle, spec)
+            move |data, ctx| kernels::unary_rotate(data, ctx, angle, spec)
         )
     }
 
@@ -152,7 +139,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Scale,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_scale(data, ctx, xfact, yfact, spec)
+            move |data, ctx| kernels::unary_scale(data, ctx, xfact, yfact, spec)
         )
     }
 
@@ -187,7 +174,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Skew,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_skew(data, ctx, xs, ys, spec)
+            move |data, ctx| kernels::unary_skew(data, ctx, xs, ys, spec)
         )
     }
 }
@@ -206,7 +193,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Normalize,
             None,
             default,
-            crate::dispatch::kernels::unary_normalize
+            kernels::unary_normalize
         )
     }
 
@@ -220,7 +207,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::OrientPolygons,
             None,
             crate::dispatch::PackedUnary::OrientPolygons { ccw },
-            move |data, ctx| crate::dispatch::kernels::unary_orient_polygons(data, ctx, ccw)
+            move |data, ctx| kernels::unary_orient_polygons(data, ctx, ccw)
         )
     }
 
@@ -234,7 +221,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Quantize,
             None,
             crate::dispatch::PackedUnary::Quantize { precision },
-            move |data, ctx| crate::dispatch::kernels::unary_quantize(data, ctx, precision)
+            move |data, ctx| kernels::unary_quantize(data, ctx, precision)
         )
     }
 
@@ -248,7 +235,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::AffineTransform,
             None,
             crate::dispatch::PackedUnary::Affine { matrix },
-            move |data, ctx| crate::dispatch::kernels::unary_affine_transform(data, ctx, &matrix)
+            move |data, ctx| kernels::unary_affine_transform(data, ctx, &matrix)
         )
     }
 
@@ -270,7 +257,7 @@ impl PyGeometryArray {
             crate::dispatch::PackedUnary::Affine {
                 matrix: [1.0, 0.0, 0.0, 1.0, xoff, yoff],
             },
-            move |data, ctx| crate::dispatch::kernels::unary_translate(data, ctx, xoff, yoff)
+            move |data, ctx| kernels::unary_translate(data, ctx, xoff, yoff)
         )
     }
 
@@ -298,7 +285,7 @@ impl PyGeometryArray {
                 origin: spec,
                 angle_radians: angle,
             },
-            move |data, ctx| crate::dispatch::kernels::unary_rotate(data, ctx, angle, spec)
+            move |data, ctx| kernels::unary_rotate(data, ctx, angle, spec)
         )
     }
 
@@ -331,7 +318,7 @@ impl PyGeometryArray {
                 xfact,
                 yfact,
             },
-            move |data, ctx| crate::dispatch::kernels::unary_scale(data, ctx, xfact, yfact, spec)
+            move |data, ctx| kernels::unary_scale(data, ctx, xfact, yfact, spec)
         )
     }
 
@@ -372,7 +359,7 @@ impl PyGeometryArray {
                 tan_x,
                 tan_y,
             },
-            move |data, ctx| { crate::dispatch::kernels::unary_skew(data, ctx, xs, ys, spec) }
+            move |data, ctx| { kernels::unary_skew(data, ctx, xs, ys, spec) }
         )
     }
 }

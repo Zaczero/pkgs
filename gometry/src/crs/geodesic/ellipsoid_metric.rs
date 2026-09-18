@@ -183,11 +183,7 @@ impl<'a> EllipsoidMetric<'a> {
             .expect("geographic metric received an admitted point")
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    fn to_geodesic_segment(&self, segment: GeodesicSegment) -> GeodesicSegment {
+    fn to_geodesic_segment(&self, segment: &GeodesicSegment) -> GeodesicSegment {
         GeodesicSegment {
             start: self.to_geodesic_point(segment.start),
             end: self.to_geodesic_point(segment.end),
@@ -240,7 +236,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         &self,
         segment: &GeodesicSegment,
     ) -> crate::error::Result<Self::PreparedSegment> {
-        let geodesic_segment = self.to_geodesic_segment(*segment);
+        let geodesic_segment = self.to_geodesic_segment(segment);
         Ok(PreparedMetricSegment {
             source_segment: *segment,
             inner: PreparedSegment::new(self.normalized(), &geodesic_segment)?,
@@ -252,7 +248,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     fn point_segment_query(
         &self,
         point: Point,
-        segment: GeodesicSegment,
+        segment: &GeodesicSegment,
         query: GeodesicSegmentQuery,
         scratch: &mut GeodesicSegmentScratch,
     ) -> crate::error::Result<GeodesicSegmentQueryResult> {
@@ -304,8 +300,8 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         first: &GeodesicSegment,
         second: &GeodesicSegment,
     ) -> crate::error::Result<SegmentContact> {
-        let first = self.to_geodesic_segment(*first);
-        let second = self.to_geodesic_segment(*second);
+        let first = self.to_geodesic_segment(first);
+        let second = self.to_geodesic_segment(second);
         if self.intersection.get().is_none() {
             let solver = IntersectSolver::new(self.normalized())?;
             let _ = self.intersection.set(solver);
@@ -314,7 +310,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
             .intersection
             .get()
             .expect("intersection solver is initialized");
-        let contact = geodesic_segment_contact(self.normalized(), solver, first, second)?;
+        let contact = geodesic_segment_contact(self.normalized(), solver, &first, &second)?;
         Ok(match contact {
             SegmentContact::Contact {
                 first_along,
@@ -453,7 +449,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     }
 
     fn is_equatorial_segment(&self, segment: &GeodesicSegment) -> bool {
-        let segment = self.to_geodesic_segment(*segment);
+        let segment = self.to_geodesic_segment(segment);
         segment.start.y == 0.0
             && segment.end.y == 0.0
             && longitude_difference(segment.start.x, segment.end.x).abs() < 180.0
@@ -472,7 +468,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         segment: &GeodesicSegment,
         target: Point,
     ) -> Option<f64> {
-        let segment = self.to_geodesic_segment(*segment);
+        let segment = self.to_geodesic_segment(segment);
         let target = self.to_geodesic_point(target);
         if segment.start.y != 0.0 || segment.end.y != 0.0 {
             return None;

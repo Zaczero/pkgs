@@ -1,21 +1,18 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::dispatch::MetricOp;
+use crate::dispatch::{MetricOp, kernels};
 use crate::py::errors::GeometryError;
 use crate::py::methods::unary_transform_methods::{
     Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input,
-    DefaultedI64Input, DistanceUnit, F64Param, GridOrigin, PyAny, PyErr, PyGeometry,
-    PyGeometryArray, PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
+    DefaultedI64Input, DistanceUnit, F64Param, GridOrigin, PyAny, PyGeometry, PyGeometryArray,
+    PyResult, Python, QUADRANT_SEGMENTS_DEFAULT_I64, SimplifyMethod, SmoothMethod,
     finite_f64_required, parse_grid_size, pymethods, validate_buffer_miter_limit,
     validate_buffer_quadrant_segments, validate_densify_fraction, validate_max_segment_length,
     validate_smooth_iterations,
 };
+use crate::py::vectors::Groups;
 
 #[pymethods]
 impl PyGeometry {
@@ -47,7 +44,7 @@ impl PyGeometry {
             unit,
             default,
             move |data, ctx| {
-                crate::dispatch::kernels::unary_buffer(
+                kernels::unary_buffer(
                     data,
                     ctx,
                     &distance,
@@ -87,7 +84,7 @@ impl PyGeometry {
             unit,
             default,
             move |data, ctx| {
-                crate::dispatch::kernels::unary_offset_curve(
+                kernels::unary_offset_curve(
                     data,
                     ctx,
                     &distance,
@@ -112,11 +109,7 @@ impl PyGeometry {
         preserve_topology: bool,
     ) -> PyResult<crate::Typed> {
         let tolerance = F64Param::parse_raw(tolerance, "tolerance", unary_len!(scalar))?;
-        tolerance.try_validate(|value| {
-            crate::NonNegative::try_new("tolerance", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        tolerance.require_non_negative("tolerance")?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -125,13 +118,7 @@ impl PyGeometry {
             None,
             default,
             move |data, ctx| {
-                crate::dispatch::kernels::unary_simplify(
-                    data,
-                    ctx,
-                    &tolerance,
-                    method,
-                    preserve_topology,
-                )
+                kernels::unary_simplify(data, ctx, &tolerance, method, preserve_topology)
             }
         )
     }
@@ -163,13 +150,7 @@ impl PyGeometry {
             None,
             default,
             move |data, ctx| {
-                crate::dispatch::kernels::unary_smooth(
-                    data,
-                    ctx,
-                    &iterations,
-                    method,
-                    keep_endpoints,
-                )
+                kernels::unary_smooth(data, ctx, &iterations, method, keep_endpoints)
             }
         )
     }
@@ -194,7 +175,7 @@ impl PyGeometry {
             crate::dispatch::Operation::SnapToGrid
         };
         unary_spine_shapes!(scalar, py, self, op, None, default, move |data, ctx| {
-            crate::dispatch::kernels::unary_snap_to_grid(data, ctx, size, origin, repair)
+            kernels::unary_snap_to_grid(data, ctx, size, origin, repair)
         })
     }
 
@@ -209,11 +190,7 @@ impl PyGeometry {
         tolerance: DefaultedF64Input,
     ) -> PyResult<crate::Typed> {
         let tolerance = tolerance.resolve_raw(py, "tolerance", unary_len!(scalar))?;
-        tolerance.try_validate(|value| {
-            crate::NonNegative::try_new("tolerance", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        tolerance.require_non_negative("tolerance")?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -221,9 +198,7 @@ impl PyGeometry {
             crate::dispatch::Operation::RemoveRepeatedPoints,
             None,
             default,
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_remove_repeated_points(data, ctx, &tolerance)
-            }
+            move |data, ctx| { kernels::unary_remove_repeated_points(data, ctx, &tolerance) }
         )
     }
 
@@ -259,9 +234,7 @@ impl PyGeometry {
                     crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     unit,
                     default,
-                    move |data, ctx| {
-                        crate::dispatch::kernels::unary_segmentize(data, ctx, &max_length)
-                    }
+                    move |data, ctx| { kernels::unary_segmentize(data, ctx, &max_length) }
                 )
             },
             (None, Some(fraction)) => {
@@ -274,9 +247,7 @@ impl PyGeometry {
                     crate::dispatch::Operation::Metric(MetricOp::Segmentize),
                     None,
                     default,
-                    move |data, ctx| {
-                        crate::dispatch::kernels::unary_densify(data, ctx, &fraction)
-                    }
+                    move |data, ctx| { kernels::unary_densify(data, ctx, &fraction) }
                 )
             },
             _ => Err(GeometryError::new_err(
@@ -308,7 +279,7 @@ impl PyGeometry {
             Bounds::new(minx, miny, maxx, maxy)?
         };
         crate::dispatch::unary_scalar_shape_admitted(py, self, domain, move |data, ctx| {
-            crate::dispatch::kernels::unary_clip_by_rect(data, ctx, rect, false)
+            kernels::unary_clip_by_rect(data, ctx, rect, false)
         })
     }
 
@@ -357,7 +328,7 @@ impl PyGeometryArray {
             unit,
             "quadrant_segments",
             move |data, ctx, budget| {
-                crate::dispatch::kernels::unary_buffer_budgeted(
+                kernels::unary_buffer_budgeted(
                     data,
                     ctx,
                     &distance,
@@ -397,7 +368,7 @@ impl PyGeometryArray {
             unit,
             "quadrant_segments",
             move |data, ctx, budget| {
-                crate::dispatch::kernels::unary_offset_curve_budgeted(
+                kernels::unary_offset_curve_budgeted(
                     data,
                     ctx,
                     &distance,
@@ -423,11 +394,7 @@ impl PyGeometryArray {
         preserve_topology: bool,
     ) -> PyResult<Self> {
         let tolerance = F64Param::parse_raw(tolerance, "tolerance", unary_len!(array, self))?;
-        tolerance.try_validate(|value| {
-            crate::NonNegative::try_new("tolerance", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        tolerance.require_non_negative("tolerance")?;
         unary_spine_shapes_extras!(
             array,
             py,
@@ -440,13 +407,7 @@ impl PyGeometryArray {
                 preserve_topology,
             },
             move |data, ctx| {
-                crate::dispatch::kernels::unary_simplify(
-                    data,
-                    ctx,
-                    &tolerance,
-                    method,
-                    preserve_topology,
-                )
+                kernels::unary_simplify(data, ctx, &tolerance, method, preserve_topology)
             }
         )
     }
@@ -477,7 +438,7 @@ impl PyGeometryArray {
             None,
             "iterations",
             move |data, ctx, budget| {
-                crate::dispatch::kernels::unary_smooth_budgeted(
+                kernels::unary_smooth_budgeted(
                     data,
                     ctx,
                     &iterations,
@@ -519,9 +480,7 @@ impl PyGeometryArray {
                 origin,
                 repair,
             },
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_snap_to_grid(data, ctx, size, origin, repair)
-            }
+            move |data, ctx| { kernels::unary_snap_to_grid(data, ctx, size, origin, repair) }
         )
     }
 
@@ -536,11 +495,7 @@ impl PyGeometryArray {
         tolerance: DefaultedF64Input,
     ) -> PyResult<Self> {
         let tolerance = tolerance.resolve_raw(py, "tolerance", unary_len!(array, self))?;
-        tolerance.try_validate(|value| {
-            crate::NonNegative::try_new("tolerance", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        tolerance.require_non_negative("tolerance")?;
         unary_spine_shapes_extras!(
             array,
             py,
@@ -550,9 +505,7 @@ impl PyGeometryArray {
             crate::dispatch::PackedUnary::RemoveRepeatedPoints {
                 tolerance: tolerance.clone(),
             },
-            move |data, ctx| {
-                crate::dispatch::kernels::unary_remove_repeated_points(data, ctx, &tolerance)
-            }
+            move |data, ctx| { kernels::unary_remove_repeated_points(data, ctx, &tolerance) }
         )
     }
 
@@ -591,11 +544,7 @@ impl PyGeometryArray {
                     crate::dispatch::PackedUnary::Segmentize {
                         max_segment_length: max_length.clone()
                     },
-                    move |data, ctx| crate::dispatch::kernels::unary_segmentize(
-                        data,
-                        ctx,
-                        &max_length
-                    )
+                    move |data, ctx| kernels::unary_segmentize(data, ctx, &max_length)
                 )
             },
             (None, Some(fraction)) => {
@@ -610,7 +559,7 @@ impl PyGeometryArray {
                     crate::dispatch::PackedUnary::Densify {
                         fraction: fraction.clone()
                     },
-                    move |data, ctx| crate::dispatch::kernels::unary_densify(data, ctx, &fraction)
+                    move |data, ctx| kernels::unary_densify(data, ctx, &fraction)
                 )
             },
             _ => Err(GeometryError::new_err(
@@ -648,7 +597,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::ClipByRect,
             None,
             crate::dispatch::PackedUnary::ClipByRect { rect, domain },
-            move |data, ctx| crate::dispatch::kernels::unary_clip_by_rect(data, ctx, rect, false)
+            move |data, ctx| kernels::unary_clip_by_rect(data, ctx, rect, false)
         )
     }
 
@@ -658,7 +607,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         #[pyo3(from_py_with = crate::strict_i64)] max_vertices: i64,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         self.subdivide_rows(py, max_vertices)
     }
 }

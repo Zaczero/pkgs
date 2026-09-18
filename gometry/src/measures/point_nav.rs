@@ -1,19 +1,17 @@
 //! Point navigation kernels — bearing, destination, interpolate, rhumb.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
+use crate::array::missing::{union_many, union_pair};
 use crate::array::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
+use crate::boundary::geographic;
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordinateAxes, HasM, HasZ, MOrdinate, ZOrdinate,
     same_topological_coordinate,
 };
+use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::py::numpy::float64_array;
 use crate::{
     Bound, CoordinateInput, Crs, DistanceUnit, Frame, GeometryInput, IntoPyObject as _,
@@ -37,20 +35,20 @@ fn row_zero(err: PyErr) -> PyErr {
 fn to_geodesic_point(frame: GeographicFrame, point: Point) -> PyResult<Point> {
     frame
         .to_geodesic_point(point)
-        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(point.x, point.y).into())
+        .map_err(|_| geographic::invalid_lonlat_error(point.x, point.y).into())
 }
 
 fn point_from_geodesic(frame: GeographicFrame, point: Point) -> PyResult<Point> {
     frame
         .point_from_geodesic(point)
-        .map_err(|error| crate::py::errors::CRSError::new_err(error.to_string()))
+        .map_err(|error| CRSError::new_err(error.to_string()))
 }
 
 fn require_geographic_model(crs: Option<&str>, operation: MetricOp) -> PyResult<crs::MetricModel> {
     let operation = operation.name();
     match crs::metric_model(crs)? {
         model @ crs::MetricModel::Geodesic { .. } => Ok(model),
-        crs::MetricModel::Planar { .. } => Err(crate::py::errors::CRSError::new_err(format!(
+        crs::MetricModel::Planar { .. } => Err(CRSError::new_err(format!(
             "{operation} requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one"
         ))),
     }
@@ -154,12 +152,12 @@ fn destination_point_on_geodesic(
     if same_topological_coordinate(distance, 0.0) {
         frame
             .to_geodesic_point(from)
-            .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(from.x, from.y))?;
+            .map_err(|_| geographic::invalid_lonlat_error(from.x, from.y))?;
         return Ok(from);
     }
     let from_geodesic = frame
         .to_geodesic_point(from)
-        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(from.x, from.y))?;
+        .map_err(|_| geographic::invalid_lonlat_error(from.x, from.y))?;
     let (x, y) = crs::geodesic_destination(
         geodesic,
         from_geodesic.x,
@@ -195,7 +193,7 @@ fn rhumb_destination_point(
         state,
     )?
     else {
-        return Err(crate::py::errors::InvalidGeometryError::new_err(
+        return Err(InvalidGeometryError::new_err(
             "destination(path='rhumb') crosses a pole, where the destination longitude is \
              indeterminate",
         ));
@@ -242,10 +240,10 @@ fn interpolate_point_on_geodesic(
 ) -> crate::error::Result<Point> {
     let from_geodesic = frame
         .to_geodesic_point(from)
-        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(from.x, from.y))?;
+        .map_err(|_| geographic::invalid_lonlat_error(from.x, from.y))?;
     let to_geodesic = frame
         .to_geodesic_point(to)
-        .map_err(|_| crate::boundary::geographic::invalid_lonlat_error(to.x, to.y))?;
+        .map_err(|_| geographic::invalid_lonlat_error(to.x, to.y))?;
     // One inverse (dist+az) + optional direct — total distance is never
     // solved as a separate inverse first.
     let (x, y, ratio) = crs::geodesic_point_between(
@@ -383,7 +381,7 @@ fn rhumb_interpolate_point(
         state,
     )?
     else {
-        return Err(crate::py::errors::InvalidGeometryError::new_err(
+        return Err(InvalidGeometryError::new_err(
             "point_between(path='rhumb') crosses a pole, where the destination longitude is \
              indeterminate",
         ));
@@ -433,7 +431,7 @@ pub(crate) fn point_cross_track_distance(
         .compatible(&end.frame, MetricOp::CrossTrackDistance.name())?;
     let model = resolve_metric(geometry.crs_str(), None, MetricOp::CrossTrackDistance)?;
     let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(crate::py::errors::CRSError::new_err(
+        return Err(CRSError::new_err(
             "cross_track_distance requires a geographic CRS; use set_crs(...) or to_crs(...) \
              to attach one",
         ));
@@ -449,7 +447,7 @@ pub(crate) fn point_rhumb_distance(geometry: &PyGeometry, other: &PyGeometry) ->
         .compatible(&other.frame, MetricOp::RhumbDistance.name())?;
     let model = resolve_metric(geometry.crs_str(), None, MetricOp::RhumbDistance)?;
     let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(crate::py::errors::CRSError::new_err(
+        return Err(CRSError::new_err(
             "rhumb_distance requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
@@ -464,7 +462,7 @@ pub(crate) fn point_rhumb_bearing(geometry: &PyGeometry, other: &PyGeometry) -> 
         .compatible(&other.frame, MetricOp::RhumbBearing.name())?;
     let model = resolve_metric(geometry.crs_str(), None, MetricOp::RhumbBearing)?;
     let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(crate::py::errors::CRSError::new_err(
+        return Err(CRSError::new_err(
             "bearing(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
@@ -479,7 +477,7 @@ pub(crate) fn point_rhumb_destination(
     let from = require_point(geometry, MetricOp::RhumbDestination)?;
     let model = resolve_metric(geometry.crs_str(), None, MetricOp::RhumbDestination)?;
     let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(crate::py::errors::CRSError::new_err(
+        return Err(CRSError::new_err(
             "destination(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
@@ -499,7 +497,7 @@ pub(crate) fn point_rhumb_between(
         .compatible(&other.frame, MetricOp::PointBetweenRhumb.name())?;
     let model = resolve_metric(geometry.crs_str(), None, MetricOp::PointBetweenRhumb)?;
     let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(crate::py::errors::CRSError::new_err(
+        return Err(CRSError::new_err(
             "point_between(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ));
     };
@@ -548,7 +546,7 @@ fn cross_track_points(
     state: &crs::RuntimeState,
 ) -> PyResult<f64> {
     if (from.x, from.y).eq(&(to.x, to.y)) {
-        return Err(crate::py::errors::InvalidGeometryError::new_err(
+        return Err(InvalidGeometryError::new_err(
             "cross_track_distance requires distinct start and end points",
         ));
     }
@@ -572,7 +570,7 @@ fn cross_track_points_with_radius(
     to: Point,
 ) -> PyResult<f64> {
     if (from.x, from.y).eq(&(to.x, to.y)) {
-        return Err(crate::py::errors::InvalidGeometryError::new_err(
+        return Err(InvalidGeometryError::new_err(
             "cross_track_distance requires distinct start and end points",
         ));
     }
@@ -730,7 +728,7 @@ fn broadcast_destination_param(
     if input.values.len() == len || input.scalar {
         crate::broadcast_coordinate_input(input, len, name)
     } else {
-        Err(crate::py::errors::InvalidGeometryError::new_err(format!(
+        Err(InvalidGeometryError::new_err(format!(
             "point, bearing, and distance must have the same length, got {} and {len}",
             input.values.len()
         )))
@@ -891,7 +889,7 @@ struct RhumbDistanceKernel;
 
 impl PointBinaryF64Kernel for RhumbDistanceKernel {
     fn eval_planar(self, _to_metre: f64, _left: Point, _right: Point) -> PyResult<f64> {
-        Err(crate::py::errors::CRSError::new_err(
+        Err(CRSError::new_err(
             "rhumb_distance requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ))
     }
@@ -911,7 +909,7 @@ struct RhumbBearingKernel;
 
 impl PointBinaryF64Kernel for RhumbBearingKernel {
     fn eval_planar(self, _to_metre: f64, _left: Point, _right: Point) -> PyResult<f64> {
-        Err(crate::py::errors::CRSError::new_err(
+        Err(CRSError::new_err(
             "bearing(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ))
     }
@@ -1050,7 +1048,7 @@ impl PointBinaryGeometryKernel for RhumbInterpolatePointKernel<'_> {
         _left: Point,
         _right: Point,
     ) -> PyResult<Shape> {
-        Err(crate::py::errors::CRSError::new_err(
+        Err(CRSError::new_err(
             "point_between(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ))
     }
@@ -1289,7 +1287,7 @@ struct RhumbDestinationKernel<'a> {
 
 impl PointUnaryGeometryKernel for RhumbDestinationKernel<'_> {
     fn eval_planar(self, _to_metre: f64, _row: usize, _point: Point) -> PyResult<Shape> {
-        Err(crate::py::errors::CRSError::new_err(
+        Err(CRSError::new_err(
             "destination(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
         ))
     }
@@ -1620,13 +1618,13 @@ const fn input_missing<'a>(input: &'a GeometryInput<'_>) -> Option<&'a ValidityM
 fn union_missing_masks(
     inputs: &[&GeometryInput<'_>],
 ) -> crate::error::Result<Option<ValidityMask>> {
-    crate::array::missing::union_many(inputs.iter().map(|input| input_missing(input)))
+    union_many(inputs.iter().map(|input| input_missing(input)))
 }
 
 fn union_point_operand_missing(
     inputs: &[&PointOperand<'_>],
 ) -> crate::error::Result<Option<ValidityMask>> {
-    crate::array::missing::union_many(inputs.iter().map(|input| input.missing()))
+    union_many(inputs.iter().map(|input| input.missing()))
 }
 
 #[derive(Clone, Copy)]
@@ -1728,7 +1726,7 @@ impl<'a> PointBinaryPlan<'a> {
             },
         };
         let output_frame = left.frame().compatible(right.frame(), operation.name())?;
-        let missing = crate::array::missing::union_pair(left.missing(), right.missing())?;
+        let missing = union_pair(left.missing(), right.missing())?;
         Ok(Self {
             left,
             right,
@@ -2561,7 +2559,7 @@ pub(crate) fn cross_track_distance(
 
 pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: MetricOp) -> PyResult<()> {
     if unit.is_some() {
-        return Err(crate::py::errors::GeometryError::new_err(format!(
+        return Err(GeometryError::new_err(format!(
             "{} does not accept unit when path='rhumb'; rhumb distances are meters",
             operation.name()
         )));

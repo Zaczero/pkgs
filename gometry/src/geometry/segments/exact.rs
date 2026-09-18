@@ -2,13 +2,13 @@
 //! Orientation uses an outward interval and exact stored-dyadic fallback over
 //! the complete finite binary64 domain.
 
-use crate::geometry::Ordering;
 use crate::geometry::exact_arith::{SPLITTER, dd_add, dd_mul, scale_shift_for_magnitude, two_sum};
 pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
 use crate::geometry::tessellation::exact::Interval;
+use crate::geometry::{Ordering, same_topological_coordinate};
 
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
@@ -73,11 +73,7 @@ fn certified_product(left: f64, right: f64) -> Option<f64> {
 
 fn certified_difference(left: f64, right: f64) -> Option<f64> {
     let difference = left - right;
-    (difference.is_normal() || same_stored_value(left, right)).then_some(difference)
-}
-
-const fn same_stored_value(left: f64, right: f64) -> bool {
-    left.to_bits() == right.to_bits() || (binary_zero(left) && binary_zero(right))
+    (difference.is_normal() || same_topological_coordinate(left, right)).then_some(difference)
 }
 
 pub(super) fn dd_cross(

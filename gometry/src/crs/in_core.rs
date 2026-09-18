@@ -1,7 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! In-core projection formulas — WGS84 Web Mercator (EPSG:3857) and UTM — used
 //! by the transform fast paths that avoid a PROJ pipeline. Pure closed-form
 //! math (no PROJ FFI, no caches), kept isolated from the transform plumbing.

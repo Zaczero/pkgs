@@ -1,3 +1,4 @@
+use crate::boundary::FloatInput;
 use crate::py::crs::{
     Bound, CRSError, Crs, PyAny, PyAnyMethods as _, PyBool, PyCrs, PyDict, PyDictMethods as _,
     PyList, PyListMethods as _, PyResult, PyStringMethods as _, PyTuple, PyTupleMethods as _,
@@ -453,16 +454,23 @@ fn cf_standard_parallel_values(value: &Bound<'_, PyAny>, maximum: usize) -> PyRe
             "standard_parallel must be finite",
         ));
     }
-    crate::parameter_values_at_most(value.py(), value, "standard_parallel", maximum, |got| {
-        let expected = if maximum == 1 {
-            "exactly 1 value for this projection"
-        } else {
-            "1 or 2 values"
-        };
-        CRSError::new_err(format!(
-            "CF CRS dictionary standard_parallel must have {expected} (got {got})"
-        ))
-    })
+    crate::float_values_at_most(
+        value.py(),
+        value,
+        "standard_parallel",
+        FloatInput::Parameter,
+        maximum,
+        |got| {
+            let expected = if maximum == 1 {
+                "exactly 1 value for this projection"
+            } else {
+                "1 or 2 values"
+            };
+            CRSError::new_err(format!(
+                "CF CRS dictionary standard_parallel must have {expected} (got {got})"
+            ))
+        },
+    )
 }
 
 /// Projected linear units from admitted CF metadata (`units` / `proj_units`).

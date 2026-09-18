@@ -218,7 +218,7 @@ pub(crate) fn seed_membership(
     other: Operand,
 ) -> Option<bool> {
     let (seed_from, seed_to, _) = ordered[0];
-    strict_section_membership(pool, other, ArcSection {
+    strict_section_membership(pool, other, &ArcSection {
         from: seed_from,
         to: seed_to,
         shared: None,

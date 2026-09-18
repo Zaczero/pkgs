@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Internal `GeometryArray` operation helpers.
 //!
 //! Free `#[pyfunction]` surfaces call these instead of exposing thin method
@@ -20,6 +16,10 @@ use crate::array::{
     parse_wkt_output_dimension, require_geojson_crs, row_sample_seed, rows_err,
     validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
+use crate::py::numpy::uint64_array;
+use crate::py::support;
+use crate::py::support::SpatialCurve;
+use crate::py::vectors::Groups;
 
 impl PyGeometryArray {
     /// Per-row export rows as a Python list with ``None`` at missing rows —
@@ -292,11 +292,8 @@ impl PyGeometryArray {
         Ok(output)
     }
 
-    pub(crate) fn self_intersections_impl(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<crate::py::vectors::Groups> {
-        crate::py::vectors::Groups::from_self_intersection_rows(py, self)
+    pub(crate) fn self_intersections_impl(&self, py: Python<'_>) -> PyResult<Groups> {
+        Groups::from_self_intersection_rows(py, self)
     }
 
     pub(crate) fn equals_exact(
@@ -392,10 +389,7 @@ impl PyGeometryArray {
         bool_array(py, results)
     }
 
-    pub(crate) fn delaunay_triangles_impl(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    pub(crate) fn delaunay_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
         // Mixed-axis rows cannot land in one packed coords column (`from_points`
         // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
         // each row's ordinate layout via `carry_each`.
@@ -425,7 +419,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         min_angle: Option<&Bound<'_, PyAny>>,
         max_area: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let len = self.len();
         let min_angle = min_angle
             .map(|value| F64Param::parse(value, "min_angle", len))
@@ -465,10 +459,7 @@ impl PyGeometryArray {
         )
     }
 
-    pub(crate) fn polygon_triangles_impl(
-        &self,
-        py: Python<'_>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    pub(crate) fn polygon_triangles_impl(&self, py: Python<'_>) -> PyResult<Groups> {
         if self.earcut_rows_pack()? {
             return self.flat_map_packed_triangles_groups_budgeted(
                 py,
@@ -508,7 +499,7 @@ impl PyGeometryArray {
         &self,
         count: &Bound<'_, PyAny>,
         seed: &Bound<'_, PyAny>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let len = self.len();
         let count = I64Param::parse(count, "count", len)?;
         count
@@ -568,7 +559,7 @@ impl PyGeometryArray {
             Err((error, None)) => return Err(error.into()),
             Err((error, Some(row))) => return Err(note_array_row(error.into(), row)),
         };
-        crate::py::vectors::Groups::from_geometry_builder(self.frame.clone(), builder)
+        Groups::from_geometry_builder(self.frame.clone(), builder)
     }
 
     pub(crate) fn voronoi_polygons_impl(
@@ -576,7 +567,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         tolerance: f64,
         clip: &VoronoiClipInput,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_polygons")?;
         self.flat_map_shapes_groups_budgeted(
             py,
@@ -593,7 +584,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         tolerance: f64,
         clip: &VoronoiClipInput,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let boundary = owned_voronoi_boundary(py, clip, &self.frame, "voronoi_edges")?;
         let array = self.clone();
         let frame = self.frame.clone();
@@ -653,19 +644,14 @@ impl PyGeometryArray {
         let (columns, group_offsets) = packed;
         let (coords, line_offsets) =
             py.detach(move || crate::array::concat_packed_line_columns(columns))?;
-        crate::py::vectors::Groups::from_packed_line_groups(
-            frame,
-            coords,
-            line_offsets,
-            group_offsets,
-        )
+        Groups::from_packed_line_groups(frame, coords, line_offsets, group_offsets)
     }
 
     /// Per-row polygonize: each input geometry's own linework → its polygons,
     /// one group per input (`= scalar polygonize per row`). Pool raw linework
     /// with the free function ``polygonize``; passing a GeometryArray there
     /// pools its present rows.
-    pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<crate::py::vectors::Groups> {
+    pub(crate) fn polygonize_impl(&self, py: Python<'_>) -> PyResult<Groups> {
         self.flat_map_shapes_groups(py, move |shape| shape.polygonize(false))
     }
 
@@ -732,7 +718,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let constructor = crate::py::support::extreme_points_type(py)?;
+        let constructor = support::extreme_points_type(py)?;
         // One vertex scan per present row feeds all four direction columns;
         // empty rows degrade to an empty point per column (the geometry-lane
         // sentinel) and missing rows stay missing via the scatter machinery.
@@ -765,22 +751,18 @@ impl PyGeometryArray {
     pub(crate) fn spatial_key_impl(
         &self,
         py: Python<'_>,
-        curve: crate::py::support::SpatialCurve,
+        curve: SpatialCurve,
         level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let kind = curves::CurveKind::from(curve);
-        crate::py::numpy::uint64_array(
+        uint64_array(
             py,
             self.curve_keys(level, bounds, kind.operation_name(), kind)?,
         )
     }
 
-    pub(crate) fn subdivide_rows(
-        &self,
-        py: Python<'_>,
-        max_vertices: i64,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    pub(crate) fn subdivide_rows(&self, py: Python<'_>, max_vertices: i64) -> PyResult<Groups> {
         let max_vertices = validate_subdivide_max_vertices(max_vertices)?;
         // Per-row groups: each input geometry's subdivided parts stay grouped
         // under their source row. `iter_shapes` gives packed rows CSR views with

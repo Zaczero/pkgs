@@ -61,7 +61,7 @@ impl ProjObject {
             proj_sys::proj_errno_reset(object);
             let raw = proj_sys::proj_factors(object, proj_sys::proj_coord(lambda, phi, 0.0, 0.0));
             let error = proj_sys::proj_errno(object);
-            let factors = ProjectionFactors::from_raw(raw, unit.is_radians());
+            let factors = ProjectionFactors::from_raw(&raw, unit.is_radians());
             if error != 0 || !factors.is_finite() {
                 return Err(CrsError::invalid(proj_transform_error(error)));
             }
@@ -89,12 +89,12 @@ impl ProjObject {
                 };
                 let raw =
                     proj_sys::proj_factors(object, proj_sys::proj_coord(lambda, phi, 0.0, 0.0));
-                let factors = ProjectionFactors::from_raw(raw, unit.is_radians());
+                let factors = ProjectionFactors::from_raw(&raw, unit.is_radians());
                 if !factors.is_finite() {
                     let error = proj_sys::proj_errno(object);
                     return Err(CrsError::invalid(proj_transform_error(error)));
                 }
-                columns.push(factors);
+                columns.push(&factors);
             }
             let error = proj_sys::proj_errno(object);
             if error != 0 {

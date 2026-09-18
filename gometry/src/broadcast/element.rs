@@ -1,14 +1,10 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 
 use crate::array::ValidityMask;
 use crate::boundary::metadata::Frame;
 use crate::geometry::{Bounds, Shape};
-use crate::py::numpy::{bool_array, float64_array};
+use crate::py::numpy::{bool_array, bounds_array, float64_array};
 use crate::{PyGeometry, PyGeometryArray, Typed};
 
 /// The bulk return form of a dispatch element. Numeric and boolean lanes land
@@ -73,7 +69,7 @@ impl BulkElement for Option<Bounds> {
                 },
             }
         }
-        crate::py::numpy::bounds_array(py, flat)
+        bounds_array(py, flat)
     }
 }
 

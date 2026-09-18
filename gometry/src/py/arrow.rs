@@ -1,11 +1,6 @@
 //! Arrow interchange: attached protocol/metadata handling and the native
 //! owned batch decoder entry point.
 
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use std::sync::Arc;
 
 use pyo3::exceptions::{PyModuleNotFoundError, PyTypeError};
@@ -14,7 +9,9 @@ use pyo3::sync::PyOnceLock;
 use pyo3::types::{PyAny, PyModule, PyTuple};
 
 use crate::array::{GeometryArrayStorage, PackedStorage};
-use crate::boundary::metadata::Frame;
+use crate::boundary::metadata::{
+    Frame, epochs_equal, optional_crs_labels_operationally_equal, optional_epochs_equal,
+};
 use crate::geometry::{CoordSeqBuilder, CoordinateAxes, CsrOffsetBuilder};
 use crate::py::arrow_c::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,
@@ -22,6 +19,7 @@ use crate::py::arrow_c::{
 };
 use crate::py::geoarrow::GeometryEncoding;
 use crate::py::wire_crs::SridFrameAdmission;
+use crate::py::{arrow_c, errors, wire_crs};
 use crate::{PyGeometryArray, crs_arc, parse_crs};
 
 crate::tokens::token_enum! {
@@ -125,7 +123,7 @@ pub(crate) fn reconcile_arrow_crs(
     crs: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<String>> {
     let explicit = crate::parse_crs(crs)?;
-    crate::py::wire_crs::guard_embedded_crs_conflict(
+    wire_crs::guard_embedded_crs_conflict(
         embedded,
         explicit.as_ref().map(crate::Crs::as_str),
         "GeoArrow CRS",
@@ -141,10 +139,8 @@ pub(crate) fn reconcile_arrow_epoch(
 ) -> PyResult<Option<f64>> {
     let explicit = crate::coordinate_epoch_option("epoch", epoch)?;
     match (embedded, explicit) {
-        (Some(embedded), Some(explicit))
-            if !crate::boundary::metadata::epochs_equal(embedded, explicit) =>
-        {
-            Err(crate::py::errors::epoch_mismatch_error(
+        (Some(embedded), Some(explicit)) if !epochs_equal(embedded, explicit) => {
+            Err(errors::epoch_mismatch_error(
                 "GeoArrow epoch metadata conflicts with epoch=",
                 Some(explicit),
                 Some(embedded),
@@ -203,13 +199,10 @@ impl NativeArrowAccumulator {
             ));
         }
         if let Some(existing) = self.crs.as_deref().map(String::as_str)
-            && (!crate::boundary::metadata::optional_crs_labels_operationally_equal(
+            && (!optional_crs_labels_operationally_equal(
                 Some(existing),
                 classification.crs.as_deref().map(String::as_str),
-            )? || !crate::boundary::metadata::optional_epochs_equal(
-                self.epoch,
-                classification.epoch,
-            ))
+            )? || !optional_epochs_equal(self.epoch, classification.epoch))
         {
             return Err(geoarrow_parse_error(
                 "Arrow chunks have mixed CRS/epoch metadata",
@@ -420,8 +413,8 @@ fn combine_native_storage(
     crate::boundary::try_reserve_vec(&mut shapes, total)?;
     for part in parts {
         let mut part = part.into_shapes().map_err(|error| match error {
-            crate::py::arrow_c::NativeArrowDecodeError::Core(error) => error,
-            crate::py::arrow_c::NativeArrowDecodeError::GeoArrow(message) => {
+            NativeArrowDecodeError::Core(error) => error,
+            NativeArrowDecodeError::GeoArrow(message) => {
                 crate::geometry::GeometryErrorKind::message(message)
             },
         })?;
@@ -690,7 +683,7 @@ fn pyarrow_batch(
     }
     let schema = tuple.get_item(0)?;
     let array = tuple.get_item(1)?;
-    let batch = crate::py::arrow_c::native_arrow_batch_from_capsules_with_classification(
+    let batch = arrow_c::native_arrow_batch_from_capsules_with_classification(
         &schema,
         &array,
         classification,
@@ -779,14 +772,10 @@ pub(crate) use metadata::{
 };
 
 mod axes;
-#[cfg(test)]
-mod buffers;
 mod export;
 mod metadata;
 
 pub(crate) use axes::accumulate_geometry_axes;
-#[cfg(test)]
-pub(crate) use buffers::ensure_i32_offsets_monotonic;
 pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 
 /// Build geometries from an Arrow array, table, record batch, reader, or
@@ -887,7 +876,7 @@ fn from_arrow(
             None => {},
         }
     }
-    if let Some(output) = crate::py::arrow_c::geometries_from_arrow_c(py, data, crs, epoch)? {
+    if let Some(output) = arrow_c::geometries_from_arrow_c(py, data, crs, epoch)? {
         return Ok(output);
     }
     Err(PyTypeError::new_err(

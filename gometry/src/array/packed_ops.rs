@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
 use crate::HeapSize as _;
@@ -11,6 +7,8 @@ use crate::array::{
     column_window, curves, line_logical_len, note_array_row, parse_curve_bounds, physical_row,
     rows_err,
 };
+use crate::boundary::input;
+use crate::py::vectors::Groups;
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -316,7 +314,7 @@ impl PyGeometryArray {
     ) -> PyResult<Vec<u64>> {
         // Same level validation + CurveKind::key as the scalar spatial_key
         // kernel; only the frame source differs (total bounds vs per-shape).
-        let level = crate::boundary::input::validate_curve_level(level)?;
+        let level = input::validate_curve_level(level)?;
         let bounds = match parse_curve_bounds(bounds)? {
             Some(bounds) => Some(bounds),
             None if self.has_missing() => self.try_drop_missing()?.storage().total_bounds(),
@@ -373,7 +371,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         transform: impl Fn(&Shape) -> Result<Vec<Shape>> + Send + Sync,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         self.flat_map_shapes_groups_indexed(py, move |_, shape| transform(shape))
     }
 
@@ -381,7 +379,7 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         transform: impl Fn(usize, &Shape) -> Result<Vec<Shape>> + Send + Sync,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
         let builder = py
@@ -404,7 +402,7 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        crate::py::vectors::Groups::from_geometry_builder(frame, builder)
+        Groups::from_geometry_builder(frame, builder)
     }
 
     /// Budgeted group flattening for operations that synthesize a variable
@@ -421,7 +419,7 @@ impl PyGeometryArray {
             &mut crate::geometry::ExpansionBudget,
         ) -> Result<Vec<Shape>>
         + Send,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
         let builder = py
@@ -445,7 +443,7 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        crate::py::vectors::Groups::from_geometry_builder(frame, builder)
+        Groups::from_geometry_builder(frame, builder)
     }
 
     /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`].  The
@@ -462,7 +460,7 @@ impl PyGeometryArray {
             &mut crate::geometry::ExpansionBudget,
         ) -> Result<Vec<Point>>
         + Send,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         let array = self.clone();
         let frame = self.frame.clone();
         let builder = py
@@ -499,7 +497,7 @@ impl PyGeometryArray {
                 Ok::<_, (usize, crate::error::Error)>(builder)
             })
             .map_err(rows_err)?;
-        crate::py::vectors::Groups::from_point_builder(frame, builder)
+        Groups::from_point_builder(frame, builder)
     }
 
     pub(crate) fn boundary_unary_packed(&self) -> PyResult<Self> {

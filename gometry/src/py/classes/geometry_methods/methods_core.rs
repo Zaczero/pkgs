@@ -1,9 +1,6 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::dispatch::MetricOp;
+use crate::dispatch::{MetricOp, kernels};
 use crate::geometry::Bounds3D;
+use crate::predicates::unary;
 use crate::py::classes::geometry_methods::{
     Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
 };
@@ -235,8 +232,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_empty(&self) -> bool {
-        Python::attach(|py| crate::predicates::unary::is_empty_scalar(py, self))
-            .expect("is_empty is infallible")
+        Python::attach(|py| unary::is_empty_scalar(py, self)).expect("is_empty is infallible")
     }
     /// Number of top-level parts: ``1`` for a single point/line/polygon,
     /// the member count for a multi/collection, and ``0`` for a typed
@@ -258,8 +254,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_closed(&self) -> bool {
-        Python::attach(|py| crate::predicates::unary::is_closed_scalar(py, self))
-            .expect("is_closed is infallible")
+        Python::attach(|py| unary::is_closed_scalar(py, self)).expect("is_closed is infallible")
     }
     /// Whether the geometry is a closed, simple ``LineString`` (a ring).
     /// Geographic antimeridian crossings are normalized before the simplicity
@@ -270,7 +265,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_ring(&self) -> PyResult<bool> {
-        Python::attach(|py| crate::predicates::unary::is_ring_scalar(py, self))
+        Python::attach(|py| unary::is_ring_scalar(py, self))
     }
     /// Whether a closed ``LineString`` winds counter-clockwise.
     /// ``False`` for open lines and non-lineal geometry.
@@ -280,8 +275,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_ccw(&self) -> bool {
-        Python::attach(|py| crate::predicates::unary::is_ccw_scalar(py, self))
-            .expect("is_ccw is infallible")
+        Python::attach(|py| unary::is_ccw_scalar(py, self)).expect("is_ccw is infallible")
     }
     /// Whether the geometry has no self-intersections or self-tangencies.
     /// Repeated CONSECUTIVE vertices are removable redundancy, not a
@@ -298,7 +292,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_simple(&self) -> PyResult<bool> {
-        Python::attach(|py| crate::predicates::unary::is_simple_scalar(py, self))
+        Python::attach(|py| unary::is_simple_scalar(py, self))
     }
     /// Whether the geometry is topologically valid in its coordinate frame.
     /// Geographic antimeridian crossings are normalized first; projected and
@@ -312,7 +306,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_valid(&self) -> PyResult<bool> {
-        Python::attach(|py| crate::predicates::unary::is_valid_scalar(py, self))
+        Python::attach(|py| unary::is_valid_scalar(py, self))
     }
     /// Whether the polygon is convex.
     ///
@@ -325,7 +319,7 @@ impl PyGeometry {
     /// bool
     #[getter]
     pub fn is_convex(&self) -> PyResult<bool> {
-        Python::attach(|py| crate::predicates::unary::is_convex_scalar(py, self))
+        Python::attach(|py| unary::is_convex_scalar(py, self))
     }
     /// Whether a geographic geometry crosses the antimeridian.
     ///
@@ -340,7 +334,7 @@ impl PyGeometry {
     ///     required).
     #[getter]
     pub fn crosses_antimeridian(&self) -> PyResult<bool> {
-        Python::attach(|py| crate::predicates::unary::crosses_antimeridian_scalar(py, self))
+        Python::attach(|py| unary::crosses_antimeridian_scalar(py, self))
     }
 
     #[getter("__geo_interface__")]
@@ -425,7 +419,7 @@ impl PyGeometry {
                 self,
                 crate::dispatch::Operation::Metric(MetricOp::Length3d),
                 None,
-                crate::dispatch::kernels::unary_length_3d,
+                kernels::unary_length_3d,
             )
         })
     }

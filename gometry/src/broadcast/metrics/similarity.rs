@@ -1,12 +1,13 @@
 //! Similarity metric parameter broadcasts and scalar CRS-aware thresholds.
 
-#![allow(
+#![expect(
     clippy::similar_names,
     reason = "coordinate lanes are named by side and axis"
 )]
 use pyo3::types::{PyAny, PyAnyMethods as _};
 
 use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
+use crate::broadcast::metrics;
 use crate::broadcast::metrics::pair::{
     contains_filled_area, ensure_hausdorff_geodesic_shape, metric_hausdorff,
 };
@@ -17,6 +18,8 @@ use crate::broadcast::metrics::{
 };
 use crate::dispatch::{CachelessRowContext, MetricOp};
 use crate::geometry::{FrechetDpScratch, PackedLineColumnView, PreparedPlan};
+use crate::py::errors;
+use crate::py::errors::GeometryError;
 
 #[derive(Clone, Debug)]
 pub(crate) enum SimilarityOp {
@@ -105,15 +108,13 @@ impl SimilarityOp {
     ) -> crate::error::Result<f64> {
         match self {
             Self::Hausdorff { max_error } => metric_hausdorff(model, left, right, *max_error),
-            Self::Frechet { densify } => {
-                crate::broadcast::metrics::metric_frechet_densified_with_scratch(
-                    model,
-                    left,
-                    right,
-                    densify.at(row),
-                    scratch,
-                )
-            },
+            Self::Frechet { densify } => metrics::metric_frechet_densified_with_scratch(
+                model,
+                left,
+                right,
+                densify.at(row),
+                scratch,
+            ),
         }
     }
 
@@ -159,7 +160,7 @@ impl SimilarityOp {
                 if let crs::MetricModel::Geodesic { frame, .. } = model {
                     ensure_hausdorff_geodesic_shape(*frame, shape)?;
                 } else {
-                    crate::broadcast::metrics::require_nonempty_hausdorff(shape)?;
+                    metrics::require_nonempty_hausdorff(shape)?;
                 }
                 Ok(contains_filled_area(shape))
             })?;
@@ -255,13 +256,13 @@ fn parse_max_error(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<f64>> {
         return Ok(None);
     }
     let Some(value) = crate::f64_scalar_named("max_error", value)? else {
-        return Err(crate::py::errors::parameter_error(
+        return Err(errors::parameter_error(
             "max_error must be a scalar positive finite float",
             "max_error",
         ));
     };
     if !(value.is_finite() && value > 0.0) {
-        return Err(crate::py::errors::float_parameter_error(
+        return Err(errors::float_parameter_error(
             format!("max_error must be a positive finite scalar, got {value}"),
             "max_error",
             value,
@@ -289,7 +290,7 @@ fn validate_densify(densify: Option<f64>) -> PyResult<Option<f64>> {
     if let Some(fraction) = densify
         && !(fraction.is_finite() && fraction > 0.0 && fraction <= 1.0)
     {
-        return Err(crate::py::errors::GeometryError::new_err(format!(
+        return Err(GeometryError::new_err(format!(
             "densify must be in (0, 1], got {fraction}"
         )));
     }

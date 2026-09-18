@@ -1,7 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! The libPROJ transform-pipeline engine (`impl ProjPipeline`).
 //!
 //! Wraps a cached `PJ` transformation object and runs coordinate transforms

@@ -1,12 +1,9 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use rstar::AABB;
 use rstar::primitives::{GeomWithData, Rectangle};
 
 use crate::geometry::constructive::offset::{MiterConstruction, MiterFinish, miter_join};
 use crate::geometry::constructive::{Result, emit_arc, unit_right_normal};
+use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
     AreaSign, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact, CoordSeq,
     ExpansionBudget, Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment,
@@ -628,7 +625,7 @@ pub(in crate::geometry) fn winding_region(
     loops: &[(Vec<f64>, Vec<f64>)],
     keep: impl Fn(i32) -> bool,
 ) -> Result<Vec<Polygon>> {
-    let inventory = crate::geometry::overlay::ExactSourceInventory::from_raw_loops(loops)?;
+    let inventory = ExactSourceInventory::from_raw_loops(loops)?;
     let mut budget = crate::geometry::ExpansionBudget::new("winding_region", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.winding_polygons(&partition, |winding| keep(winding as i32))

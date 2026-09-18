@@ -1,11 +1,8 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::geometry::packed_line_metrics::PackedLineColumnView;
 use crate::geometry::{
     CoordSeq, Point, axis_extent, axis_pow2_scale, packed_line_metrics, point_distance,
     same_topological_coordinate,
@@ -30,8 +27,8 @@ pub(crate) fn frechet_distance_line_columns(
 /// Element-wise planar Fréchet over packed line CSR windows (one column
 /// kernel per pair, identity shortcuts for identical windows).
 pub(crate) fn frechet_distance_line_columns_batch(
-    left: crate::geometry::packed_line_metrics::PackedLineColumnView<'_>,
-    right: crate::geometry::packed_line_metrics::PackedLineColumnView<'_>,
+    left: PackedLineColumnView<'_>,
+    right: PackedLineColumnView<'_>,
     out: &mut [f64],
 ) {
     let len = left.logical_len();

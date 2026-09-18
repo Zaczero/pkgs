@@ -95,7 +95,7 @@ fn metric_witness(
     match metric
         .point_segment_query(
             point,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff,
                 witness: GeodesicWitnessNeed::Yes,
@@ -140,7 +140,7 @@ fn metric_threshold(
         metric
             .point_segment_query(
                 point,
-                segment,
+                &segment,
                 GeodesicSegmentQuery::Threshold {
                     limit,
                     witness: GeodesicWitnessNeed::No,
@@ -371,7 +371,7 @@ fn geodesic_threshold_owner_keeps_clear_cases_cheaper_than_full_minimum() {
     let far = metric
         .point_segment_query(
             p(0.0, 10.0),
-            segment,
+            &segment,
             GeodesicSegmentQuery::Threshold {
                 limit: 1.0,
                 witness: GeodesicWitnessNeed::No,
@@ -390,7 +390,7 @@ fn geodesic_threshold_owner_keeps_clear_cases_cheaper_than_full_minimum() {
     let _ = metric
         .point_segment_query(
             p(0.0, 10.0),
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff: f64::INFINITY,
                 witness: GeodesicWitnessNeed::No,
@@ -423,7 +423,7 @@ fn geodesic_zero_threshold_stall_fixture_closes_with_a_numerical_result() {
     let result = metric
         .point_segment_query(
             p(-1.0, 0.0),
-            segment,
+            &segment,
             GeodesicSegmentQuery::Threshold {
                 limit: 0.0,
                 witness: GeodesicWitnessNeed::No,
@@ -538,7 +538,7 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
     let result = metric
         .point_segment_query(
             query,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff: f64::INFINITY,
                 witness: GeodesicWitnessNeed::No,
@@ -560,7 +560,7 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
     let equal_cutoff = metric
         .point_segment_query(
             query,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff: minimum.distance,
                 witness: GeodesicWitnessNeed::No,
@@ -575,7 +575,7 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
     let equal_limit = metric
         .point_segment_query(
             query,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Threshold {
                 limit: minimum.distance,
                 witness: GeodesicWitnessNeed::No,
@@ -591,7 +591,7 @@ fn typed_queries_keep_attainment_exclusion_and_probe_state_distinct() {
     let outside = metric
         .point_segment_query(
             query,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Threshold {
                 limit: 0.0,
                 witness: GeodesicWitnessNeed::No,
@@ -643,7 +643,7 @@ fn point_segment_query_propagates_scratch_allocation_failure() {
     let result = fail_allocations_after(0, || {
         metric.point_segment_query(
             p(0.0, 5.0),
-            segment,
+            &segment,
             GeodesicSegmentQuery::Minimum {
                 cutoff: f64::INFINITY,
                 witness: GeodesicWitnessNeed::No,
@@ -680,7 +680,7 @@ fn geodesic_line_cache_allocation_failures_retry_without_publication() -> Result
         });
     };
     reset();
-    let run = || cached_geodesic_line(&geodesic, segment);
+    let run = || cached_geodesic_line(&geodesic, &segment);
     let (expected, allocations) = allocation_count(&run);
     let expected = expected?;
     let (_, expected_lat, expected_lon, expected_azimuth, ..) =
@@ -984,7 +984,7 @@ fn point_segment_global_frontier_keeps_multiple_local_minima() {
     let threshold = metric
         .point_segment_query(
             query,
-            segment,
+            &segment,
             GeodesicSegmentQuery::Threshold {
                 limit: 10_000_000.0,
                 witness: GeodesicWitnessNeed::Yes,

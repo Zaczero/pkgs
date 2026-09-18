@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::similar_names,
     reason = "latitude, longitude and azimuth triples are named by axis and endpoint"
 )]
@@ -162,8 +162,8 @@ pub(crate) fn longitude_difference(start: f64, end: f64) -> f64 {
 pub(crate) fn geodesic_segment_contact(
     geodesic: &Geodesic,
     solver: &IntersectSolver,
-    first: GeodesicSegment,
-    second: GeodesicSegment,
+    first: &GeodesicSegment,
+    second: &GeodesicSegment,
 ) -> Result<SegmentContact> {
     if let Some((first_along, second_along)) =
         exact_structural_segment_contact(geodesic, first, second)
@@ -193,8 +193,8 @@ pub(crate) fn geodesic_segment_contact(
 
 fn exact_structural_segment_contact(
     geodesic: &Geodesic,
-    first: GeodesicSegment,
-    second: GeodesicSegment,
+    first: &GeodesicSegment,
+    second: &GeodesicSegment,
 ) -> Option<(f64, f64)> {
     for (first_along, first_point) in [(0.0, first.start), (first.length, first.end)] {
         for (second_along, second_point) in [(0.0, second.start), (second.length, second.end)] {
@@ -207,8 +207,8 @@ fn exact_structural_segment_contact(
     if is_equatorial_segment(first) && is_equatorial_segment(second) {
         for point in [first.start, first.end, second.start, second.end] {
             if let (Some(first_along), Some(second_along)) = (
-                equatorial_parameter(point, &first),
-                equatorial_parameter(point, &second),
+                equatorial_parameter(point, first),
+                equatorial_parameter(point, second),
             ) {
                 return Some((first_along, second_along));
             }
@@ -248,7 +248,7 @@ fn exact_structural_segment_contact(
     None
 }
 
-fn is_equatorial_segment(segment: GeodesicSegment) -> bool {
+fn is_equatorial_segment(segment: &GeodesicSegment) -> bool {
     segment.start.y == 0.0
         && segment.end.y == 0.0
         && longitude_difference(segment.start.x, segment.end.x).abs() < 180.0
@@ -258,12 +258,12 @@ fn is_equatorial_segment(segment: GeodesicSegment) -> bool {
     clippy::float_cmp,
     reason = "exact represented meridian membership is structural, not a proximity test"
 )]
-fn is_meridian_segment(segment: GeodesicSegment) -> bool {
+fn is_meridian_segment(segment: &GeodesicSegment) -> bool {
     same_geodesic_longitude(segment.start.x, segment.end.x) && segment.start.y != segment.end.y
 }
 
 fn equatorial_parameter(point: Point, segment: &GeodesicSegment) -> Option<f64> {
-    if point.y != 0.0 || !is_equatorial_segment(*segment) {
+    if point.y != 0.0 || !is_equatorial_segment(segment) {
         return None;
     }
     let delta = longitude_difference(segment.start.x, segment.end.x);
@@ -275,8 +275,8 @@ fn equatorial_parameter(point: Point, segment: &GeodesicSegment) -> Option<f64> 
 
 fn equator_meridian_contact(
     geodesic: &Geodesic,
-    equator: GeodesicSegment,
-    meridian: GeodesicSegment,
+    equator: &GeodesicSegment,
+    meridian: &GeodesicSegment,
 ) -> Option<(f64, f64)> {
     if !(same_geodesic_longitude(meridian.start.x, meridian.end.x)
         && meridian.start.y.min(meridian.end.y) <= 0.0
@@ -285,7 +285,7 @@ fn equator_meridian_contact(
         return None;
     }
     let point = Point::new_raw_xy(meridian.start.x, 0.0);
-    let equator_along = equatorial_parameter(point, &equator)?;
+    let equator_along = equatorial_parameter(point, equator)?;
     let meridian_along = meridian_parameter(geodesic, meridian, 0.0)?;
     Some((equator_along, meridian_along))
 }
@@ -294,7 +294,11 @@ fn equator_meridian_contact(
     clippy::float_cmp,
     reason = "exact endpoint parameters preserve represented coordinate identity"
 )]
-fn meridian_parameter(geodesic: &Geodesic, segment: GeodesicSegment, latitude: f64) -> Option<f64> {
+fn meridian_parameter(
+    geodesic: &Geodesic,
+    segment: &GeodesicSegment,
+    latitude: f64,
+) -> Option<f64> {
     if !is_meridian_segment(segment)
         || latitude < segment.start.y.min(segment.end.y)
         || latitude > segment.start.y.max(segment.end.y)
@@ -320,8 +324,8 @@ fn meridian_parameter(geodesic: &Geodesic, segment: GeodesicSegment, latitude: f
 )]
 fn regular_root_inclusion(
     geodesic: &Geodesic,
-    first: GeodesicSegment,
-    second: GeodesicSegment,
+    first: &GeodesicSegment,
+    second: &GeodesicSegment,
     candidate: &SegmentPairWitness,
 ) -> Result<bool> {
     if !(candidate.first_along > 0.0
@@ -463,15 +467,11 @@ fn norm3(value: [f64; 3]) -> f64 {
     value[0].hypot(value[1]).hypot(value[2])
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn geodesic_segment_intersection_with_solver(
     geodesic: &Geodesic,
     solver: &IntersectSolver,
-    first: GeodesicSegment,
-    second: GeodesicSegment,
+    first: &GeodesicSegment,
+    second: &GeodesicSegment,
 ) -> Result<Option<SegmentPairWitness>> {
     let line_x = cached_geodesic_line(geodesic, first)?;
     let line_y = cached_geodesic_line(geodesic, second)?;
@@ -642,7 +642,7 @@ impl PreparedSegment {
         Ok(Self {
             geodesic: *geodesic,
             segment: *segment,
-            line: cached_point_segment_line(geodesic, *segment)?,
+            line: cached_point_segment_line(geodesic, segment)?,
         })
     }
 
@@ -807,35 +807,23 @@ impl PreparedSegment {
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn cached_geodesic_line(
     geodesic: &Geodesic,
-    segment: GeodesicSegment,
+    segment: &GeodesicSegment,
 ) -> Result<GeodesicLine> {
     cached_geodesic_line_with_caps(geodesic, segment, GEODESIC_LINE_CAPS)
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the segment is a hot Copy snapshot used to key and build the cached line"
-)]
 fn cached_point_segment_line(
     geodesic: &Geodesic,
-    segment: GeodesicSegment,
+    segment: &GeodesicSegment,
 ) -> Result<GeodesicLine> {
     cached_geodesic_line_with_caps(geodesic, segment, POINT_SEGMENT_LINE_CAPS)
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the segment is a hot Copy snapshot used to key and build the cached line"
-)]
 fn cached_geodesic_line_with_caps(
     geodesic: &Geodesic,
-    segment: GeodesicSegment,
+    segment: &GeodesicSegment,
     caps: u64,
 ) -> Result<GeodesicLine> {
     let key = GeodesicLineKey {
@@ -1538,13 +1526,9 @@ fn update_minimum(minimum: &mut GeodesicSegmentMinimum, distance: f64, along: f6
     }
 }
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn materialize_segment_point(
     line: &GeodesicLine,
-    segment: GeodesicSegment,
+    segment: &GeodesicSegment,
     along: f64,
 ) -> Result<Point> {
     if along <= 0.0 {

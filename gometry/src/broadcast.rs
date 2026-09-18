@@ -6,14 +6,10 @@
 //! predicate optimizations, the CRS-aware distance/dwithin broadcasts, and the
 //! small shared classifiers/helpers. Reaches the crate-root model and sibling
 //! modules via `use super::*`; re-exported at the crate root.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::py::errors;
 use crate::{
     Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, F64Param, Frame,
     GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
@@ -143,7 +139,7 @@ pub(crate) fn detach_collect_f64(
     py: Python<'_>,
     f: impl FnOnce() -> Result<Vec<f64>, (usize, crate::error::Error)> + Send,
 ) -> PyResult<Py<PyAny>> {
-    crate::py::numpy::float64_array(py, py.detach(f).map_err(rows_err)?)
+    float64_array(py, py.detach(f).map_err(rows_err)?)
 }
 
 /// True if `error` is a per-row line-data condition that the ARRAY linref ops
@@ -254,7 +250,7 @@ pub(crate) fn push_ring_shapes(shape: &Shape, rings: &mut Vec<Shape>) -> PyResul
             | Shape::MultiPolygon(_)
             | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _)
     ) {
-        return Err(crate::py::errors::geometry_type_err(
+        return Err(errors::geometry_type_err(
             "rings requires Polygon or MultiPolygon geometries",
         ));
     }

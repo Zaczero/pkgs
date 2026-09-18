@@ -1,13 +1,10 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Coordinate replacement payload shared by array packed/mixed paths and the
 //! `Coordinates` setter surface.
 
 use pyo3::prelude::*;
 
 use crate::geometry::{CoordSeq, CoordinateAxes, MColumn, Point, SharedSlice};
+use crate::py::errors::InvalidGeometryError;
 
 #[derive(Clone)]
 pub(crate) enum ReplacementAxis {
@@ -47,7 +44,7 @@ impl CoordinateReplacement {
                     return Ok(None);
                 }
                 if !member_has_axis {
-                    return Err(crate::py::errors::InvalidGeometryError::new_err(
+                    return Err(InvalidGeometryError::new_err(
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
@@ -101,7 +98,7 @@ impl CoordinateReplacement {
                     return Ok(None);
                 }
                 if !member_has_axis {
-                    return Err(crate::py::errors::InvalidGeometryError::new_err(
+                    return Err(InvalidGeometryError::new_err(
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
@@ -122,14 +119,14 @@ impl CoordinateReplacement {
     /// Build a full `CoordSeq` from this replacement applied to `old`.
     pub(crate) fn apply_to_seq(&self, old: &CoordSeq) -> PyResult<CoordSeq> {
         if self.positional && old.axes() != self.axes {
-            return Err(crate::py::errors::InvalidGeometryError::new_err(
+            return Err(InvalidGeometryError::new_err(
                 "coordinates must preserve each coordinate sequence axes",
             ));
         }
         let zs = match &self.zs {
             ReplacementAxis::Replace(values) => {
                 if !old.axes().has_z() {
-                    return Err(crate::py::errors::InvalidGeometryError::new_err(
+                    return Err(InvalidGeometryError::new_err(
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
@@ -140,7 +137,7 @@ impl CoordinateReplacement {
         let ms = match &self.ms {
             ReplacementAxis::Replace(values) => {
                 if !old.axes().has_m() {
-                    return Err(crate::py::errors::InvalidGeometryError::new_err(
+                    return Err(InvalidGeometryError::new_err(
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }

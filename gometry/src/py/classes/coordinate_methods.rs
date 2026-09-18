@@ -2,13 +2,10 @@
 //!
 //! Extracted `#[pymethods]` blocks for `PyCoordinates`; reach the crate-root
 //! coordinate storage and helpers via `use super::*`.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::types::{PyAny, PyDict, PyList};
 
+use crate::py::errors;
+use crate::py::numpy::float64_matrix;
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{
     Arc, Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError,
@@ -82,7 +79,7 @@ impl PyCoordinates {
                 std::ops::ControlFlow::Break(error) => return Err(error),
             }
         };
-        crate::py::numpy::float64_matrix(py, data, rows, dims)
+        float64_matrix(py, data, rows, dims)
     }
 }
 
@@ -141,7 +138,7 @@ impl RowContainer for CoordinateCursor {
                 }
             });
             let Some(points) = points else {
-                return Err(crate::py::errors::native_memory_error());
+                return Err(errors::native_memory_error());
             };
             points[row]
         } else {

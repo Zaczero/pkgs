@@ -1,7 +1,5 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::boundary::geographic::{MAX_LATITUDE, MIN_LATITUDE};
+use crate::py::errors;
 use crate::py::functions::geocode::PyResult;
 
 const SHORTLINK_ALPHABET: &[u8; 64] =
@@ -29,12 +27,9 @@ const fn build_shortlink_alphabet_lut() -> [i8; 256] {
 /// through a signed intermediate to the south pole.
 pub(super) fn shortlink_encode(lon: f64, lat: f64, zoom: u8) -> String {
     let x = ((lon + 180.0) * (2_f64.powi(32)) / 360.0) as i64 as u32;
-    let lat = lat.clamp(
-        crate::boundary::geographic::MIN_LATITUDE,
-        crate::boundary::geographic::MAX_LATITUDE,
-    );
+    let lat = lat.clamp(MIN_LATITUDE, MAX_LATITUDE);
     let scale = 2_f64.powi(32) / 180.0;
-    let y = (lat * scale - crate::boundary::geographic::MIN_LATITUDE * scale) as u32;
+    let y = (lat * scale - MIN_LATITUDE * scale) as u32;
     // Ruby interleaves x into the higher bit of each pair.
     let code = crate::curves::morton_interleave(y, x);
     let mut out = String::new();
@@ -61,7 +56,7 @@ pub(super) fn shortlink_decode(code: &str) -> PyResult<(f64, f64, u8)> {
         } else if ch.is_ascii() {
             ch as u8
         } else {
-            return Err(crate::py::errors::parse_error(
+            return Err(errors::parse_error(
                 format!("invalid OSM shortlink character {ch:?}"),
                 crate::error::ParseFormat::OsmShortlink,
             ));
@@ -80,7 +75,7 @@ pub(super) fn shortlink_decode(code: &str) -> PyResult<(f64, f64, u8)> {
             },
             _ if ch == '-' => z_offset -= 1,
             _ => {
-                return Err(crate::py::errors::parse_error(
+                return Err(errors::parse_error(
                     format!("invalid OSM shortlink character {ch:?}"),
                     crate::error::ParseFormat::OsmShortlink,
                 ));
@@ -88,14 +83,14 @@ pub(super) fn shortlink_decode(code: &str) -> PyResult<(f64, f64, u8)> {
         }
     }
     if z == 0 {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             "empty OSM shortlink",
             crate::error::ParseFormat::OsmShortlink,
         ));
     }
     if z > 30 {
         // 10 data characters max: zoom tops out at 22 (z = chars * 3).
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             "OSM shortlink is too long",
             crate::error::ParseFormat::OsmShortlink,
         ));
@@ -106,7 +101,7 @@ pub(super) fn shortlink_decode(code: &str) -> PyResult<(f64, f64, u8)> {
     // underflowing the decoded zoom.
     let zoom = z - 8 - z_offset.rem_euclid(3);
     let Ok(zoom) = u8::try_from(zoom) else {
-        return Err(crate::py::errors::parse_error(
+        return Err(errors::parse_error(
             "OSM shortlink is too short",
             crate::error::ParseFormat::OsmShortlink,
         ));

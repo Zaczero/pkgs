@@ -1,13 +1,12 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::array::{
     Arc, Bound, CRSError, CoordinateAxes, FrameEdit, GeometryArrayStorage, GeometryTransformFrame,
     Point, Py, PyAny, PyErr, PyGeometryArray, PyResult, Python, Result, Shape, TransformOptionArgs,
     ValidityMask, coordinate_epoch_option, crs, note_array_row, parse_crs, pymethods,
 };
 use crate::geometry::{OrdinateAxis, set_point_ordinate};
+use crate::predicates::unary;
+use crate::py::crs::drain_accuracy_warning;
+use crate::py::functions;
 
 fn transform_failure_pyerr(failure: crate::crs::TransformFailure) -> PyErr {
     let error: PyErr = failure.error.into();
@@ -248,7 +247,7 @@ impl PyGeometryArray {
                     Ok::<_, crate::crs::TransformFailure>((rows, mask))
                 })
                 .map_err(transform_failure_pyerr)?;
-            crate::py::crs::drain_accuracy_warning(py, &execution)?;
+            drain_accuracy_warning(py, &execution)?;
             return Ok(Self::from_shapes(converted_rows.0, output)?
                 .with_missing_mask(Some(converted_rows.1))?);
         }
@@ -295,7 +294,7 @@ impl PyGeometryArray {
                     transformer.transform_shapes_indexed(&borrowed)
                 })
                 .map_err(transform_failure_pyerr)?;
-            crate::py::crs::drain_accuracy_warning(py, &execution)?;
+            drain_accuracy_warning(py, &execution)?;
             Ok(Self::from_storage(
                 GeometryArrayStorage::Mixed(shapes),
                 output,
@@ -310,7 +309,7 @@ impl PyGeometryArray {
                         ),
                     ))
                 })?;
-            crate::py::crs::drain_accuracy_warning(py, &execution)?;
+            drain_accuracy_warning(py, &execution)?;
             Ok(result)
         }
     }
@@ -322,11 +321,11 @@ impl PyGeometryArray {
     ///     ``True`` where the geometry is valid, one entry per row.
     #[getter]
     pub fn is_valid(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::predicates::unary::is_valid_array(py, self)
+        unary::is_valid_array(py, self)
     }
 
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-        crate::py::functions::reduce_geometry_array(py, self)
+        functions::reduce_geometry_array(py, self)
     }
 }
 

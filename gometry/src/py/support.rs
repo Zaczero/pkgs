@@ -1,7 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use smol_str::SmolStr;
 
 use crate::{
@@ -12,11 +8,10 @@ use crate::{
     PyBoolMethods, PyDictMethods, PyErr, PyFloatMethods, PyGeometry, PyGeometryArray, PyInt,
     PyListMethods, PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError,
     PyTypeMethods, Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
-    VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option,
-    coordinate_values_at_most, coordinate_values_exact, exact_geometry, finite_f64_required,
-    geometry_type_err, metric_nearest_points_resolved, non_negative_int, parameter_values,
-    push_ring_shapes, py_i64_bounded, py_i64_required, pyfunction, resolve_metric, rows_err,
-    wgs84_crs,
+    VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
+    finite_f64_required, float_values, float_values_at_most, float_values_exact, geometry_type_err,
+    metric_nearest_points_resolved, non_negative_int, push_ring_shapes, py_i64_bounded,
+    py_i64_required, pyfunction, resolve_metric, rows_err, wgs84_crs,
 };
 
 pub(crate) type Crs = SmolStr;

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use pyo3::prelude::{Py, PyAny, PyResult, Python};
 
 use crate::PyGeometryArray;
@@ -25,8 +20,8 @@ pub(crate) fn array_to_arrow(
     let array = array.clone();
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_geometry_array(&array, encoding)?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_geometry_array(&array, encoding)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
     materialize_pyarrow(py, plan)
@@ -42,8 +37,8 @@ pub(crate) fn shapes_to_arrow(
     let crs = crs.map(str::to_owned);
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
     materialize_pyarrow(py, plan)
@@ -59,8 +54,8 @@ pub(crate) fn shapes_to_wkb_arrow(
     let crs = crs.map(str::to_owned);
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_wkb_shapes(&shapes, crs, epoch)?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_wkb_shapes(&shapes, crs, epoch)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
     materialize_pyarrow(py, plan)

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::sync::Arc;
 
 use crate::collections::{HashSet, HashSetExt as _};
@@ -9,6 +5,7 @@ use crate::geometry::{
     GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original, geometric_xy_cmp,
     shape_from_selected_hull, smallest_enclosing_circle,
 };
+use crate::py::errors;
 use crate::py::support::{
     Bound, Crs, Frame, FromPyObject, Polygon, PolygonizeFull, Py, PyAny, PyAnyMethods as _, PyErr,
     PyGeometryArray, PyResult, PyTypeError, Python, Result, Shape, VoronoiBoundary, exact_geometry,
@@ -50,7 +47,7 @@ pub(crate) fn voronoi_boundary_from_value<'a>(
 ) -> PyResult<VoronoiBoundary<'a>> {
     if let Some(geometry) = exact_geometry(clip) {
         let Shape::Polygon(polygon) = geometry.shape.shape() else {
-            return Err(crate::py::errors::geometry_type_err(
+            return Err(errors::geometry_type_err(
                 "Voronoi clip geometry must be a Polygon",
             ));
         };
@@ -73,7 +70,7 @@ pub(crate) fn voronoi_boundary_from_value<'a>(
                 "padded", "envelope",
             ]);
             message.push_str(", or a Polygon");
-            Err(crate::py::errors::parameter_error(message, "clip"))
+            Err(errors::parameter_error(message, "clip"))
         },
         Err(_) => Err(PyTypeError::new_err(
             "Voronoi clip must be 'padded', 'envelope', or a Polygon",

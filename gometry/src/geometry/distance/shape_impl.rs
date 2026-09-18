@@ -47,7 +47,7 @@ impl Shape {
                 crate::try_push_vec(&mut point_only, start)?;
                 return Ok::<_, crate::error::Error>(());
             }
-            caps_accum.push_segment(segment, metric);
+            caps_accum.push_segment(&segment, metric);
             segments.push(segment);
             Ok::<_, crate::error::Error>(())
         })?;
@@ -184,7 +184,7 @@ impl Shape {
     /// `LINESTRING EMPTY` when an operand is empty.
     pub fn shortest_line(&self, other: &Self) -> Result<Self> {
         crate::geometry::nearest_line(
-            self.nearest_points(other)?,
+            self.nearest_points(other)?.as_ref(),
             crate::geometry::common_axes(self, other),
         )
     }

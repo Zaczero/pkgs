@@ -14,26 +14,22 @@ use crate::py::index::{
 };
 use crate::{CsrBuilder, try_push_vec};
 
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn geographic_keep(
     spec: &PredicateSpec,
-    query: crate::geometry::GeographicPrepared<'_>,
-    candidate: crate::geometry::GeographicPrepared<'_>,
+    query: &crate::geometry::GeographicPrepared<'_>,
+    candidate: &crate::geometry::GeographicPrepared<'_>,
 ) -> PyResult<bool> {
     if let Some(verdict) = spec.pre_topology(
-        GateOperand::from_prepared(&query),
-        GateOperand::from_prepared(&candidate),
+        &GateOperand::from_prepared(query),
+        &GateOperand::from_prepared(candidate),
     )? {
         return Ok(verdict);
     }
     Ok(topology_scalar_pair(
         spec,
-        PreparedTopologyPair::Geographic {
-            left: query,
-            right: candidate,
+        &PreparedTopologyPair::Geographic {
+            left: *query,
+            right: *candidate,
         },
     )?)
 }
@@ -158,15 +154,15 @@ impl PySpatialIndex {
                     retain_row(&mut candidates, 0, |idx| match domain {
                         TopologyDomain::Cartesian => {
                             if let Some(verdict) = spec.pre_topology(
-                                GateOperand::cartesian(products.row(i)?, None),
-                                GateOperand::cartesian(products.row(idx)?, None),
+                                &GateOperand::cartesian(products.row(i)?, None),
+                                &GateOperand::cartesian(products.row(idx)?, None),
                             )? {
                                 return Ok(verdict);
                             }
                             let data = products.prepared(idx)?;
                             Ok(topology_scalar_pair(
                                 &spec,
-                                PreparedTopologyPair::Cartesian {
+                                &PreparedTopologyPair::Cartesian {
                                     left: &query,
                                     right: &data,
                                 },
@@ -184,8 +180,8 @@ impl PySpatialIndex {
                             let data = products.prepared(idx)?;
                             geographic_keep(
                                 &spec,
-                                query,
-                                crate::geometry::GeographicPrepared::try_new(
+                                &query,
+                                &crate::geometry::GeographicPrepared::try_new(
                                     &data,
                                     &*products.frame_cache(idx)?,
                                     frame,
@@ -881,7 +877,7 @@ impl PySpatialIndex {
                 keep[position] = match domain {
                     TopologyDomain::Cartesian => topology_scalar_pair(
                         &spec,
-                        PreparedTopologyPair::try_for_domain(
+                        &PreparedTopologyPair::try_for_domain(
                             query,
                             query_cache,
                             &data,
@@ -904,7 +900,7 @@ impl PySpatialIndex {
                                 &candidate_cache,
                                 frame,
                             )?;
-                            geographic_keep(&spec, query, candidate)?
+                            geographic_keep(&spec, &query, &candidate)?
                         }
                     },
                 };
@@ -1012,18 +1008,18 @@ impl PySpatialIndex {
                 retain_row(&mut matches, 0, |idx| match domain {
                     TopologyDomain::Cartesian => {
                         if let Some(verdict) = spec.pre_topology(
-                            GateOperand::cartesian(
+                            &GateOperand::cartesian(
                                 ShapeRow::Shape(query_plan.shape()),
                                 query_plan.bounds(),
                             ),
-                            GateOperand::cartesian(products.row(idx)?, None),
+                            &GateOperand::cartesian(products.row(idx)?, None),
                         )? {
                             return Ok(verdict);
                         }
                         let data = products.prepared(idx)?;
                         Ok(topology_scalar_pair(
                             &spec,
-                            PreparedTopologyPair::Cartesian {
+                            &PreparedTopologyPair::Cartesian {
                                 left: &query_plan,
                                 right: &data,
                             },
@@ -1041,8 +1037,8 @@ impl PySpatialIndex {
                         let data = products.prepared(idx)?;
                         geographic_keep(
                             &spec,
-                            query,
-                            crate::geometry::GeographicPrepared::try_new(
+                            &query,
+                            &crate::geometry::GeographicPrepared::try_new(
                                 &data,
                                 &*products.frame_cache(idx)?,
                                 frame,
@@ -1162,15 +1158,15 @@ impl PySpatialIndex {
         retain_row(out, row_start, |idx| match domain {
             TopologyDomain::Cartesian => {
                 if let Some(verdict) = spec.pre_topology(
-                    GateOperand::cartesian(ShapeRow::Shape(shape.shape()), Some(query_bounds)),
-                    GateOperand::cartesian(products.row(idx)?, None),
+                    &GateOperand::cartesian(ShapeRow::Shape(shape.shape()), Some(query_bounds)),
+                    &GateOperand::cartesian(products.row(idx)?, None),
                 )? {
                     return Ok(verdict);
                 }
                 let data = products.prepared(idx)?;
                 Ok(topology_scalar_pair(
                     &spec,
-                    PreparedTopologyPair::Cartesian {
+                    &PreparedTopologyPair::Cartesian {
                         left: shape,
                         right: &data,
                     },
@@ -1187,8 +1183,8 @@ impl PySpatialIndex {
                 let data = products.prepared(idx)?;
                 geographic_keep(
                     &spec,
-                    query,
-                    crate::geometry::GeographicPrepared::try_new(
+                    &query,
+                    &crate::geometry::GeographicPrepared::try_new(
                         &data,
                         &*products.frame_cache(idx)?,
                         frame,
@@ -1280,7 +1276,7 @@ impl PySpatialIndex {
                 if self.non_prunable_live == 0 && coordinate_distance.is_none() =>
             {
                 if *frame == crate::geographic::GeographicFrame::crs84() {
-                    (Some(crs.clone()), Some(state))
+                    (Some(Arc::clone(crs)), Some(state))
                 } else {
                     (None, None)
                 }
@@ -1348,18 +1344,18 @@ impl PySpatialIndex {
                     retain_row(ids, row_start, |idx| match domain {
                         TopologyDomain::Cartesian => {
                             if let Some(verdict) = spec.pre_topology(
-                                GateOperand::cartesian(
+                                &GateOperand::cartesian(
                                     ShapeRow::Shape(query.shape()),
                                     query.bounds(),
                                 ),
-                                GateOperand::cartesian(index_products.row(idx)?, None),
+                                &GateOperand::cartesian(index_products.row(idx)?, None),
                             )? {
                                 return Ok(verdict);
                             }
                             let data = index_products.prepared(idx)?;
                             Ok(topology_scalar_pair(
                                 spec,
-                                PreparedTopologyPair::Cartesian {
+                                &PreparedTopologyPair::Cartesian {
                                     left: &query,
                                     right: &data,
                                 },
@@ -1377,8 +1373,8 @@ impl PySpatialIndex {
                             let data = index_products.prepared(idx)?;
                             geographic_keep(
                                 spec,
-                                query,
-                                crate::geometry::GeographicPrepared::try_new(
+                                &query,
+                                &crate::geometry::GeographicPrepared::try_new(
                                     &data,
                                     &*index_products.frame_cache(idx)?,
                                     frame,

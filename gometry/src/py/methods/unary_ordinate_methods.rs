@@ -1,10 +1,7 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::dispatch::kernels;
 use crate::{DefaultedF64Input, PyGeometry, PyGeometryArray};
 
 method_doc! {
@@ -158,12 +155,7 @@ Examples
 'POINT M (1 2 5)'";
 }
 
-unary_shape_method!(
-    force_2d,
-    Force2d,
-    doc_force_2d,
-    crate::dispatch::kernels::unary_force_2d
-);
+unary_shape_method!(force_2d, Force2d, doc_force_2d, kernels::unary_force_2d);
 
 #[pymethods]
 impl PyGeometry {
@@ -181,7 +173,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Force3d,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_force_3d(data, ctx, z)
+            move |data, ctx| kernels::unary_force_3d(data, ctx, z)
         )
     }
 
@@ -198,7 +190,7 @@ impl PyGeometry {
             crate::dispatch::Operation::SetZ,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_set_z(data, ctx, z, true)
+            move |data, ctx| kernels::unary_set_z(data, ctx, z, true)
         )
     }
 
@@ -215,7 +207,7 @@ impl PyGeometry {
             crate::dispatch::Operation::SetM,
             None,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_set_m(data, ctx, m, true)
+            move |data, ctx| kernels::unary_set_m(data, ctx, m, true)
         )
     }
 }
@@ -236,7 +228,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Force3d,
             None,
             crate::dispatch::PackedUnary::Force3d { z_fill: z },
-            move |data, ctx| crate::dispatch::kernels::unary_force_3d(data, ctx, z)
+            move |data, ctx| kernels::unary_force_3d(data, ctx, z)
         )
     }
 
@@ -256,7 +248,7 @@ impl PyGeometryArray {
                 value: z,
                 overwrite: true,
             },
-            move |data, ctx| crate::dispatch::kernels::unary_set_z(data, ctx, z, true)
+            move |data, ctx| kernels::unary_set_z(data, ctx, z, true)
         )
     }
 
@@ -276,7 +268,7 @@ impl PyGeometryArray {
                 value: m,
                 overwrite: true,
             },
-            move |data, ctx| crate::dispatch::kernels::unary_set_m(data, ctx, m, true)
+            move |data, ctx| kernels::unary_set_m(data, ctx, m, true)
         )
     }
 }

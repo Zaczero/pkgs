@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use numpy::PyArrayMethods as _;
 use pyo3::IntoPyObjectExt as _;
 
@@ -10,6 +6,9 @@ use crate::array::{
     Py, PyAny, PyAnyMethods as _, PyGeometry, PyGeometryArray, PyResult, PyValueError, Python,
     SimplifyMethod, Typed, pymethods,
 };
+use crate::py::functions::polyline;
+use crate::py::numpy::numpy_module;
+use crate::py::{arrow, arrow_c, errors};
 
 impl PyGeometryArray {
     pub(crate) fn materialized_objects(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
@@ -78,7 +77,7 @@ impl PyGeometryArray {
         if let Some(dtype) = dtype
             && !dtype.is_none()
         {
-            let numpy = crate::py::numpy::numpy_module(py)?;
+            let numpy = numpy_module(py)?;
             let dtype = numpy.getattr("dtype")?.call1((dtype,))?;
             if dtype.getattr("kind")?.extract::<String>()? != "O" {
                 return Err(GeometryError::new_err("dtype must be object or None"));
@@ -111,11 +110,11 @@ impl PyGeometryArray {
     /// >>> type(gm.GeometryArray([gm.Point(1, 2)]).to_arrow()).__name__
     /// 'ExtensionArray'
     pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
-        crate::py::arrow::array_to_arrow(py, self, encoding)
+        arrow::array_to_arrow(py, self, encoding)
     }
 
     pub fn __arrow_c_schema__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        crate::py::arrow_c::array_to_schema_capsule(py, self)
+        arrow_c::array_to_schema_capsule(py, self)
     }
 
     #[pyo3(signature = (requested_schema = None))]
@@ -124,8 +123,8 @@ impl PyGeometryArray {
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        crate::py::arrow::reject_requested_schema(requested_schema)?;
-        crate::py::arrow_c::array_to_array_capsules(py, self)
+        arrow::reject_requested_schema(requested_schema)?;
+        arrow_c::array_to_array_capsules(py, self)
     }
 
     #[pyo3(signature = (requested_schema = None))]
@@ -134,8 +133,8 @@ impl PyGeometryArray {
         py: Python<'_>,
         requested_schema: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        crate::py::arrow::reject_requested_schema(requested_schema)?;
-        crate::py::arrow_c::array_to_stream_capsule(py, self)
+        arrow::reject_requested_schema(requested_schema)?;
+        arrow_c::array_to_stream_capsule(py, self)
     }
 
     /// Encode every ``LineString`` or ``Point`` row as Google polyline text (see
@@ -182,9 +181,9 @@ impl PyGeometryArray {
         #[pyo3(from_py_with = crate::strict_i32)] precision: i32,
         drop_epoch: bool,
     ) -> PyResult<Py<PyAny>> {
-        crate::py::errors::require_epoch_drop(self.epoch(), drop_epoch, "to_polyline")?;
-        let factor = crate::py::functions::polyline::polyline_precision_factor(precision)?;
-        let rows = crate::py::functions::polyline::present_polylines_of(self, factor)?;
+        errors::require_epoch_drop(self.epoch(), drop_epoch, "to_polyline")?;
+        let factor = polyline::polyline_precision_factor(precision)?;
+        let rows = polyline::present_polylines_of(self, factor)?;
         self.masked_present_row_list(py, rows)
     }
 }

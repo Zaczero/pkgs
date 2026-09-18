@@ -1,7 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 

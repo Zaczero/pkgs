@@ -591,7 +591,7 @@ fn classify_h3_overlap_parts(
     for piece in authority.filter(|piece| piece.is_polygon()) {
         if arcs
             .iter()
-            .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None)
+            .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None)
         {
             return Ok(H3LeafClass::Boundary);
         }
@@ -603,7 +603,7 @@ fn classify_h3_overlap_parts(
     for piece in selection.filter(|piece| piece.is_polygon() && piece.is_positive_only()) {
         if arcs
             .iter()
-            .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None)
+            .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None)
         {
             return Ok(H3LeafClass::Boundary);
         }
@@ -640,7 +640,7 @@ fn classify_h3_overlap_parts(
     for piece in authority.filter(|piece| !piece.is_polygon()) {
         lower_contact |= arcs
             .iter()
-            .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None);
+            .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None);
     }
     let Some(selection) = source.selection_pieces() else {
         return Ok(H3LeafClass::Boundary);
@@ -648,7 +648,7 @@ fn classify_h3_overlap_parts(
     for piece in selection.filter(|piece| !piece.is_polygon() && piece.is_positive_only()) {
         lower_contact |= arcs
             .iter()
-            .any(|arc| classify_h3_arc_contact(piece.arc(), arc, fan) != ArcContact::None);
+            .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None);
     }
     lower_contact |= source
         .lower_authority_witnesses()

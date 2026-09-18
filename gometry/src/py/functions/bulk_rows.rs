@@ -1,10 +1,8 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
+use crate::boundary::metadata;
+use crate::boundary::metadata::FrameError;
 use crate::py::wire_crs::{SharedRowCrs, SridFrameAdmission};
 use crate::{Crs, Frame, PyGeometryArray, Shape, guard_epoch_frame};
 
@@ -124,9 +122,9 @@ where
                         }
                         if let Some(explicit) = explicit_epoch
                             && let Some(row_epoch) = epoch
-                            && !crate::boundary::metadata::epochs_equal(row_epoch, explicit)
+                            && !metadata::epochs_equal(row_epoch, explicit)
                         {
-                            return Err(crate::boundary::metadata::FrameError::SharedEpoch {
+                            return Err(FrameError::SharedEpoch {
                                 context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
                                 index: row,
                                 first: Some(explicit),
@@ -139,7 +137,7 @@ where
                                 first_epoch = epoch;
                                 have_present_row = true;
                             } else if first_epoch != epoch {
-                                return Err(crate::boundary::metadata::FrameError::SharedEpoch {
+                                return Err(FrameError::SharedEpoch {
                                     context: crs_context
                                         .unwrap_or("GeometryArray")
                                         .to_owned()
@@ -223,10 +221,10 @@ pub(crate) fn stream_bulk<'py>(
         }
         if let Some(explicit) = explicit_epoch
             && let Some(row_epoch) = epoch
-            && !crate::boundary::metadata::epochs_equal(row_epoch, explicit)
+            && !metadata::epochs_equal(row_epoch, explicit)
         {
             return Err(crate::note_array_row(
-                crate::error::Error::from(crate::boundary::metadata::FrameError::SharedEpoch {
+                crate::error::Error::from(FrameError::SharedEpoch {
                     context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
                     index: row,
                     first: Some(explicit),
@@ -242,7 +240,7 @@ pub(crate) fn stream_bulk<'py>(
                 have_present_row = true;
             } else if first_epoch != epoch {
                 return Err(crate::note_array_row(
-                    crate::error::Error::from(crate::boundary::metadata::FrameError::SharedEpoch {
+                    crate::error::Error::from(FrameError::SharedEpoch {
                         context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
                         index: row,
                         first: first_epoch,
@@ -466,11 +464,11 @@ where
                 }
                 if let Some(explicit) = explicit_epoch
                     && let Some(row_epoch) = epoch
-                    && !crate::boundary::metadata::epochs_equal(row_epoch, explicit)
+                    && !metadata::epochs_equal(row_epoch, explicit)
                 {
                     return Err(BatchError::Row(
                         row,
-                        crate::boundary::metadata::FrameError::SharedEpoch {
+                        FrameError::SharedEpoch {
                             context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
                             index: row,
                             first: Some(explicit),
@@ -486,7 +484,7 @@ where
                     } else if state.first_epoch != epoch {
                         return Err(BatchError::Row(
                             row,
-                            crate::boundary::metadata::FrameError::SharedEpoch {
+                            FrameError::SharedEpoch {
                                 context: crs_context.unwrap_or("GeometryArray").to_owned().into(),
                                 index: row,
                                 first: state.first_epoch,

@@ -1,8 +1,5 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
+use crate::boundary::geographic;
 use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
     PyGeometry, PyResult, Shape, ShapeData, crs, geometry_type_err,
@@ -11,6 +8,9 @@ use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan};
 use crate::py::errors::InvalidGeometryError;
+use crate::py::support;
+#[cfg(test)]
+use crate::test_support::binary_dispatch_counters;
 use crate::{NonNegative, validate_lonlat_shape};
 
 /// Monomorphized planar/geodesic dispatch for [`crs::MetricModel`] kernels.
@@ -144,7 +144,7 @@ pub(crate) fn resolve_metric(
     operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
     #[cfg(test)]
-    crate::test_support::binary_dispatch_counters::metric_context_acquisition();
+    binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
     match unit {
         Some(DistanceUnit::Planar) => Ok(crs::MetricModel::COORDINATE),
@@ -173,7 +173,7 @@ pub(crate) fn resolve_metric_3d(
     operation: MetricOp,
 ) -> PyResult<crs::MetricModel> {
     #[cfg(test)]
-    crate::test_support::binary_dispatch_counters::metric_context_acquisition();
+    binary_dispatch_counters::metric_context_acquisition();
     let operation = operation.name();
     // Validate 3D eligibility first, so an ineligible CRS reports the
     // dimensional problem rather than a unit one, whatever `unit=` says.
@@ -240,8 +240,7 @@ pub(crate) enum LonLatPointsError {
 }
 
 fn lonlat_domain(row: usize, x: f64, y: f64) -> Result<(), LonLatPointsError> {
-    crate::boundary::geographic::validate_lonlat_xy(x, y)
-        .map_err(|error| LonLatPointsError::Row(row, error))
+    geographic::validate_lonlat_xy(x, y).map_err(|error| LonLatPointsError::Row(row, error))
 }
 
 fn transform_present(
@@ -857,7 +856,8 @@ pub(crate) fn metric_shortest_line_resolved(
             &FrameDependentCaches::default(),
             b,
             &FrameDependentCaches::default(),
-        )?,
+        )?
+        .as_ref(),
         crate::geometry::common_axes(a.shape(), b.shape()),
     )
 }
@@ -877,7 +877,7 @@ pub(crate) fn metric_minimum_clearance_line(
         model,
         |_| shape.minimum_clearance_line(),
         |_, _, state| {
-            crate::py::support::geodesic_by_identity(
+            support::geodesic_by_identity(
                 shape,
                 crs,
                 state,

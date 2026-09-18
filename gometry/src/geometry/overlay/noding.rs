@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::error::Result;
 use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,

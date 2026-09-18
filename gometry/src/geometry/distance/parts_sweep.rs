@@ -1,5 +1,5 @@
 use crate::geometry::{
-    DistanceParts, Loc, Point, Segment, Shape, point_distance, point_distance_squared,
+    DistanceParts, Loc, MultiPoint, Point, Segment, Shape, point_distance, point_distance_squared,
     point_segment_distance, point_segment_distance_squared, points_dwithin, same_point,
     segment_envelopes_disjoint, segments_intersect,
 };
@@ -198,25 +198,26 @@ pub(crate) fn quick_area_overlap(
 /// distance-query shape — land squarely in the win zone.
 pub(crate) const PUNTAL_BRUTE_MAX_SEGMENTS: usize = 24;
 
-/// Whether the puntal-vs-few-segment fast path applies; shared by squared
-/// and distance-space variants.
-fn puntal_brute_operands<'a>(a: &'a Shape, b: &'a Shape) -> Option<(&'a Shape, &'a Shape)> {
-    let puntal = |shape: &Shape| matches!(shape, Shape::Point(_) | Shape::MultiPoint(_));
-    let lineal_or_areal = |shape: &Shape| {
-        matches!(
-            shape,
-            Shape::LineString(_)
-                | Shape::MultiLineString(_)
-                | Shape::Polygon(_)
-                | Shape::MultiPolygon(_)
-        )
+/// Whether the puntal-vs-few-segment fast path applies: the puntal operand
+/// and the lineal/areal operand whose segments it probes.
+fn puntal_brute_operands<'a>(a: &'a Shape, b: &'a Shape) -> Option<(PuntalProbe<'a>, &'a Shape)> {
+    let puntal = |shape: &'a Shape| match shape {
+        Shape::Point(point) => Some(PuntalProbe::One(*point)),
+        Shape::MultiPoint(points) => Some(PuntalProbe::Many(points)),
+        _ => None,
     };
     let (points, other) = match (puntal(a), puntal(b)) {
-        (true, false) => (a, b),
-        (false, true) => (b, a),
+        (Some(points), None) => (points, b),
+        (None, Some(points)) => (points, a),
         _ => return None,
     };
-    if !lineal_or_areal(other) {
+    if !matches!(
+        other,
+        Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+    ) {
         return None;
     }
     let segments = other.segment_count();
@@ -226,49 +227,25 @@ fn puntal_brute_operands<'a>(a: &'a Shape, b: &'a Shape) -> Option<(&'a Shape, &
     Some((points, other))
 }
 
-/// SQUARED min point-to-edge for puntal vs few-segment lineal/areal.
-/// A returned `0.0` is **not** a contact certificate — callers finish via
-/// [`finish_planar_squared_min`] with [`puntal_brute_distance`] as recompute.
-/// Returns `None` when the shape pair is out of this fast path.
-pub(crate) fn puntal_brute_distance_squared(
-    a: &Shape,
-    b: &Shape,
-) -> crate::error::Result<Option<f64>> {
-    let Some((points, other)) = puntal_brute_operands(a, b) else {
-        return Ok(None);
-    };
-    let mut best_squared = f64::INFINITY;
-    let mut probe = |point: Point| -> crate::error::Result<()> {
-        other.try_for_each_vertex_pair(|start, end| {
-            best_squared = best_squared.min(point_segment_distance_squared(point, Segment {
-                start: start.into(),
-                end: end.into(),
-            })?);
-            Ok(())
-        })
-    };
-    match points {
-        Shape::Point(point) => probe(*point)?,
-        Shape::MultiPoint(coords) => {
-            for point in coords.points() {
-                probe(point)?;
-            }
-        },
-        _ => unreachable!("puntal guard restricts to Point/MultiPoint"),
-    }
-    Ok(Some(best_squared))
+enum PuntalProbe<'a> {
+    One(Point),
+    Many(&'a MultiPoint),
 }
 
-/// Distance-space min point-to-edge for the same puntal-vs-few-segment class —
-/// the recompute half of [`finish_planar_squared_min`] for this lane.
-pub(crate) fn puntal_brute_distance(a: &Shape, b: &Shape) -> crate::error::Result<Option<f64>> {
+/// Minimum of `metric` over every probe point and every segment of the other
+/// operand, or `None` when the shape pair is out of this fast path.
+fn puntal_brute_minimum(
+    a: &Shape,
+    b: &Shape,
+    metric: fn(Point, Segment) -> crate::error::Result<f64>,
+) -> crate::error::Result<Option<f64>> {
     let Some((points, other)) = puntal_brute_operands(a, b) else {
         return Ok(None);
     };
     let mut best = f64::INFINITY;
     let mut probe = |point: Point| -> crate::error::Result<()> {
         other.try_for_each_vertex_pair(|start, end| {
-            best = best.min(point_segment_distance(point, Segment {
+            best = best.min(metric(point, Segment {
                 start: start.into(),
                 end: end.into(),
             })?);
@@ -276,13 +253,28 @@ pub(crate) fn puntal_brute_distance(a: &Shape, b: &Shape) -> crate::error::Resul
         })
     };
     match points {
-        Shape::Point(point) => probe(*point)?,
-        Shape::MultiPoint(coords) => {
-            for point in coords.points() {
+        PuntalProbe::One(point) => probe(point)?,
+        PuntalProbe::Many(points) => {
+            for point in points.points() {
                 probe(point)?;
             }
         },
-        _ => unreachable!("puntal guard restricts to Point/MultiPoint"),
     }
     Ok(Some(best))
+}
+
+/// SQUARED min point-to-edge for puntal vs few-segment lineal/areal.
+/// A returned `0.0` is **not** a contact certificate — callers finish via
+/// [`finish_planar_squared_min`] with [`puntal_brute_distance`] as recompute.
+pub(crate) fn puntal_brute_distance_squared(
+    a: &Shape,
+    b: &Shape,
+) -> crate::error::Result<Option<f64>> {
+    puntal_brute_minimum(a, b, point_segment_distance_squared)
+}
+
+/// Distance-space min point-to-edge for the same puntal-vs-few-segment class —
+/// the recompute half of [`finish_planar_squared_min`] for this lane.
+pub(crate) fn puntal_brute_distance(a: &Shape, b: &Shape) -> crate::error::Result<Option<f64>> {
+    puntal_brute_minimum(a, b, point_segment_distance)
 }

@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::collections::BinaryHeap;
 use std::fmt;
 #[cfg(test)]
@@ -10,6 +6,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
 use crate::error::Result;
+use crate::geometry::distance::RequiredPointTester;
+use crate::geometry::topology::TopologyGraph;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
@@ -84,7 +82,7 @@ fn canonical_bits(value: f64) -> u64 {
 struct GeographicTopologySlot {
     key: Option<GeographicTopologyKey>,
     generation: u64,
-    graph: Option<Arc<crate::geometry::topology::TopologyGraph>>,
+    graph: Option<Arc<TopologyGraph>>,
 }
 
 #[derive(Clone, Default)]
@@ -97,7 +95,7 @@ impl FrameDependentCaches {
     pub(crate) fn geographic_topology_graph(
         &self,
         view: crate::geographic::ScalarGeographicView<'_>,
-    ) -> Result<Arc<crate::geometry::topology::TopologyGraph>> {
+    ) -> Result<Arc<TopologyGraph>> {
         #[cfg(test)]
         self.geographic_topology_accesses
             .fetch_add(1, Ordering::Relaxed);
@@ -123,8 +121,8 @@ impl FrameDependentCaches {
         #[cfg(test)]
         self.geographic_topology_builds
             .fetch_add(1, Ordering::Relaxed);
-        let built = Arc::try_new(crate::geometry::topology::TopologyGraph::geographic(view)?)
-            .map_err(crate::error::Error::from)?;
+        let built =
+            Arc::try_new(TopologyGraph::geographic(view)?).map_err(crate::error::Error::from)?;
         let mut slot = self
             .geographic_topology
             .lock()
@@ -456,7 +454,7 @@ impl PreparedPlan {
 
     pub(in crate::geometry) fn point_tester_required(
         &self,
-        _required: crate::geometry::distance::RequiredPointTester,
+        _required: RequiredPointTester,
     ) -> Result<Option<&PointBatchTester>> {
         Ok(self
             .topology()?
@@ -1415,14 +1413,10 @@ pub(crate) trait GeodesicMetric {
     fn prepare_segment(&self, segment: &GeodesicSegment) -> Result<Self::PreparedSegment>;
 
     /// Run the shared point-to-segment query owner.
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
     fn point_segment_query(
         &self,
         point: Point,
-        segment: GeodesicSegment,
+        segment: &GeodesicSegment,
         query: GeodesicSegmentQuery,
         scratch: &mut GeodesicSegmentScratch,
     ) -> Result<GeodesicSegmentQueryResult>;

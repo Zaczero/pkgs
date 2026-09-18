@@ -1,12 +1,9 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::borrow::Cow;
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyString;
 
+use crate::py::crs;
 use crate::py::support::{
     Bound, CRSError, Crs, Frame, FromPyObject, GeometryError, PyAny, PyAnyMethods as _, PyErr,
     PyResult, PyStringMethods as _, coordinate_epoch_option, wgs84_crs,
@@ -27,7 +24,7 @@ pub(crate) fn parse_crs(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Crs
     let Some(value) = value else {
         return Ok(None);
     };
-    crate::py::crs::parse_crs_inner(value, 0)
+    crs::parse_crs_inner(value, 0)
 }
 
 /// A ``crs=`` parameter whose default is gometry's WGS84 lon/lat label rather

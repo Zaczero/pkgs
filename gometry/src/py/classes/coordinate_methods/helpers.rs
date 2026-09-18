@@ -1,7 +1,3 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyTuple};
 
@@ -12,7 +8,7 @@ use crate::py::classes::coordinate_methods::{
 };
 use crate::py::errors::parameter_error;
 use crate::py::numpy::{
-    float64_array, float64_matrix, float64_slice_array, optional_float64_array,
+    float64_array, float64_matrix, float64_slice_array, int64_array, optional_float64_array,
 };
 
 /// Resolve an axis layout token to [`CoordinateAxes`]; `concept` names the
@@ -260,7 +256,7 @@ pub(crate) fn get_coordinates(
     };
     let matrix = float64_matrix(py, data, rows, dims)?;
     if return_index {
-        let indexes = crate::py::numpy::int64_array(py, view.row_index_i64()?)?;
+        let indexes = int64_array(py, view.row_index_i64()?)?;
         Ok((matrix, indexes).into_pyobject(py)?.unbind().into())
     } else {
         Ok(matrix)

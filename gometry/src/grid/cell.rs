@@ -1,14 +1,14 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 //! Shared `GridCell` trait for the four DGGS kernels (H3, S2, geohash, tile).
 //!
 //! Rectangular grids blanket-implement from [`RectGridCell`]; H3 and S2 hand-implement
 //! in `src/py/cells/{h3,s2}/` where their PyO3-facing kernels live.
 
+use crate::boundary::geographic;
 use crate::geometry::{Point, Shape};
+use crate::grid::cell_set;
 use crate::grid::coverer::RectCell;
+use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
+use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 
 /// Argument carried by a cell's `__reduce__` tuple.
 pub(crate) enum CellPickleArg {
@@ -67,7 +67,7 @@ pub(crate) trait GridCell: HierarchicalCell + Copy + Eq + Ord + Send + Sync {
     fn neighbors(self) -> crate::error::Result<Vec<Self>>;
     fn parent_at(self, depth: u8) -> Option<Self>;
     fn children_to(self, depth: u8) -> crate::error::Result<Vec<Self>> {
-        crate::grid::cell_set::uncompact(&[self], depth).map(|cells| cells.into_public_vec())
+        cell_set::uncompact(&[self], depth).map(|cells| cells.into_public_vec())
     }
     fn contains_cell(self, other: Self) -> bool {
         HierarchicalCell::contains(self, other)
@@ -146,7 +146,7 @@ impl<T: RectGridCell> GridCell for T {
     }
 
     fn area_m2(self) -> f64 {
-        crate::boundary::geographic::lonlat_rect_area_m2(self.bounds())
+        geographic::lonlat_rect_area_m2(self.bounds())
     }
 
     fn neighbors(self) -> crate::error::Result<Vec<Self>> {
@@ -162,9 +162,9 @@ impl<T: RectGridCell> GridCell for T {
     }
 }
 
-impl RectGridCell for crate::grid::geohash::Geohash {
+impl RectGridCell for Geohash {
     const MIN_DEPTH: u8 = 1;
-    const MAX_DEPTH: u8 = crate::grid::geohash::GEOHASH_MAX_PRECISION;
+    const MAX_DEPTH: u8 = GEOHASH_MAX_PRECISION;
     const DEPTH_NAME: &'static str = "precision";
 
     fn hash_key(self) -> u64 {
@@ -196,9 +196,9 @@ impl RectGridCell for crate::grid::geohash::Geohash {
     }
 }
 
-impl RectGridCell for crate::grid::tile::Tile {
+impl RectGridCell for Tile {
     const MIN_DEPTH: u8 = 0;
-    const MAX_DEPTH: u8 = crate::grid::tile::TILE_MAX_ZOOM;
+    const MAX_DEPTH: u8 = TILE_MAX_ZOOM;
     const DEPTH_NAME: &'static str = "zoom";
 
     fn hash_key(self) -> u64 {

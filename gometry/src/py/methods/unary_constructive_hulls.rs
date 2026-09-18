@@ -1,8 +1,4 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-use crate::dispatch::MetricOp;
+use crate::dispatch::{MetricOp, kernels};
 use crate::py::methods::unary_constructive_methods::{
     Bound, DefaultedF64Input, DistanceUnit, F64Param, Py, PyAny, PyErr, PyGeometry,
     PyGeometryArray, PyResult, Python, pymethods,
@@ -12,68 +8,63 @@ unary_shape_method!(
     centroid,
     Centroid,
     doc_centroid,
-    crate::dispatch::kernels::unary_centroid,
+    kernels::unary_centroid,
     synthesized
 );
 unary_shape_method!(
     point_on_surface,
     PointOnSurface,
     doc_point_on_surface,
-    crate::dispatch::kernels::unary_point_on_surface,
+    kernels::unary_point_on_surface,
     synthesized
 );
 unary_shape_method!(
     envelope,
     Envelope,
     doc_envelope,
-    crate::dispatch::kernels::unary_envelope,
+    kernels::unary_envelope,
     synthesized
 );
 unary_shape_method!(
     convex_hull,
     ConvexHull,
     doc_convex_hull,
-    crate::dispatch::kernels::unary_convex_hull
+    kernels::unary_convex_hull
 );
 unary_shape_method!(
     polylabel,
     (Metric Polylabel),
     doc_polylabel,
-    crate::dispatch::kernels::unary_polylabel,
+    kernels::unary_polylabel,
     tolerance_unit
 );
 unary_shape_method!(
     maximum_inscribed_circle,
     (Metric MaximumInscribedCircle),
     doc_maximum_inscribed_circle,
-    crate::dispatch::kernels::unary_maximum_inscribed_circle,
+    kernels::unary_maximum_inscribed_circle,
     tolerance_unit
 );
 unary_shape_method!(
     minimum_bounding_radius,
     (Metric MinimumBoundingRadius),
     doc_minimum_bounding_radius,
-    crate::dispatch::kernels::unary_minimum_bounding_radius,
+    kernels::unary_minimum_bounding_radius,
     f64_unit
 );
-unary_shape_method!(
-    boundary,
-    Boundary,
-    doc_boundary,
-    crate::dispatch::kernels::unary_boundary
-);
+unary_shape_method!(boundary, Boundary, doc_boundary, kernels::unary_boundary);
 unary_shape_method!(
     minimum_clearance,
     (Metric MinimumClearance),
     doc_minimum_clearance,
-    crate::dispatch::kernels::unary_minimum_clearance,
+    kernels::unary_minimum_clearance,
     f64_unit
 );
 unary_shape_method!(
     minimum_clearance_line,
     (Metric MinimumClearanceLine),
     doc_minimum_clearance_line,
-    crate::dispatch::kernels::unary_minimum_clearance_line,
+    kernels::unary_minimum_clearance_line,
     unit_shape
 );
 
@@ -92,18 +83,10 @@ impl PyGeometry {
         unit: Option<DistanceUnit>,
     ) -> PyResult<crate::Typed> {
         let concavity = concavity.resolve_raw(py, "concavity", unary_len!(scalar))?;
-        concavity.try_validate(|value| {
-            crate::NonNegative::try_new("concavity", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        concavity.require_non_negative("concavity")?;
         let length_threshold =
             length_threshold.resolve_raw(py, "length_threshold", unary_len!(scalar))?;
-        length_threshold.try_validate(|value| {
-            crate::NonNegative::try_new("length_threshold", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        length_threshold.require_non_negative("length_threshold")?;
         unary_spine_shapes!(
             scalar,
             py,
@@ -111,12 +94,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Metric(MetricOp::ConcaveHull),
             unit,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_concave_hull(
-                data,
-                ctx,
-                &concavity,
-                &length_threshold
-            )
+            move |data, ctx| kernels::unary_concave_hull(data, ctx, &concavity, &length_threshold)
         )
     }
     #[doc = doc_maximum_inscribed_radius!(scalar)]
@@ -139,11 +117,7 @@ impl PyGeometry {
             self,
             crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedRadius),
             unit,
-            move |data, ctx| crate::dispatch::kernels::unary_maximum_inscribed_radius(
-                data,
-                ctx,
-                tolerance.as_ref()
-            )
+            move |data, ctx| kernels::unary_maximum_inscribed_radius(data, ctx, tolerance.as_ref())
         )
     }
     #[doc = doc_minimum_bounding_circle!(scalar)]
@@ -160,7 +134,7 @@ impl PyGeometry {
             crate::dispatch::Operation::Metric(MetricOp::MinimumBoundingCircle),
             unit,
             default,
-            crate::dispatch::kernels::unary_minimum_bounding_circle
+            kernels::unary_minimum_bounding_circle
         )
     }
     #[doc = doc_minimum_rotated_rectangle!(scalar)]
@@ -172,7 +146,7 @@ impl PyGeometry {
             crate::dispatch::Operation::MinimumRotatedRectangle,
             None,
             default,
-            crate::dispatch::kernels::unary_minimum_rotated_rectangle
+            kernels::unary_minimum_rotated_rectangle
         )
     }
 }
@@ -192,18 +166,10 @@ impl PyGeometryArray {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
         let concavity = concavity.resolve_raw(py, "concavity", unary_len!(array, self))?;
-        concavity.try_validate(|value| {
-            crate::NonNegative::try_new("concavity", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        concavity.require_non_negative("concavity")?;
         let length_threshold =
             length_threshold.resolve_raw(py, "length_threshold", unary_len!(array, self))?;
-        length_threshold.try_validate(|value| {
-            crate::NonNegative::try_new("length_threshold", value)
-                .map(|_| ())
-                .map_err(PyErr::from)
-        })?;
+        length_threshold.require_non_negative("length_threshold")?;
         unary_spine_shapes!(
             array,
             py,
@@ -211,12 +177,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Metric(MetricOp::ConcaveHull),
             unit,
             default,
-            move |data, ctx| crate::dispatch::kernels::unary_concave_hull(
-                data,
-                ctx,
-                &concavity,
-                &length_threshold
-            )
+            move |data, ctx| kernels::unary_concave_hull(data, ctx, &concavity, &length_threshold)
         )
     }
     #[doc = doc_maximum_inscribed_radius!(array)]
@@ -239,11 +200,7 @@ impl PyGeometryArray {
             self,
             crate::dispatch::Operation::Metric(MetricOp::MaximumInscribedRadius),
             unit,
-            move |data, ctx| crate::dispatch::kernels::unary_maximum_inscribed_radius(
-                data,
-                ctx,
-                tolerance.as_ref()
-            )
+            move |data, ctx| kernels::unary_maximum_inscribed_radius(data, ctx, tolerance.as_ref())
         )
     }
     #[doc = doc_minimum_bounding_circle!(array)]
@@ -260,7 +217,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::Metric(MetricOp::MinimumBoundingCircle),
             unit,
             default,
-            crate::dispatch::kernels::unary_minimum_bounding_circle
+            kernels::unary_minimum_bounding_circle
         )
     }
     #[doc = doc_minimum_rotated_rectangle!(array)]
@@ -272,7 +229,7 @@ impl PyGeometryArray {
             crate::dispatch::Operation::MinimumRotatedRectangle,
             None,
             default,
-            crate::dispatch::kernels::unary_minimum_rotated_rectangle
+            kernels::unary_minimum_rotated_rectangle
         )
     }
 }

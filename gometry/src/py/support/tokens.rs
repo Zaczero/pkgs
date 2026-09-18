@@ -1,7 +1,5 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::py::arrow::ArrowEncoding;
+use crate::py::cells::CellRule;
 use crate::py::support::{
     BufferCapStyle, BufferJoinStyle, BufferSide, DistanceUnit, RepairMethod, Result,
     SimplifyMethod, SmoothMethod, pyfunction,
@@ -90,7 +88,7 @@ pub(crate) fn _token_vocabulary() -> Vec<(&'static str, Option<&'static str>, Ve
         (
             "ArrowEncoding",
             Some("ArrowEncoding"),
-            crate::py::arrow::ArrowEncoding::TOKENS.to_vec(),
+            ArrowEncoding::TOKENS.to_vec(),
         ),
         (
             "BufferCapStyle",
@@ -137,11 +135,7 @@ pub(crate) fn _token_vocabulary() -> Vec<(&'static str, Option<&'static str>, Ve
             Some("LineReferenceBasis"),
             LineReferenceBasis::TOKENS.to_vec(),
         ),
-        (
-            "CellRule",
-            Some("CellRule"),
-            crate::py::cells::CellRule::TOKENS.to_vec(),
-        ),
+        ("CellRule", Some("CellRule"), CellRule::TOKENS.to_vec()),
         (
             "CrsComparison",
             Some("CrsComparison"),

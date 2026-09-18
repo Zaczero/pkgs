@@ -5,20 +5,18 @@
 //! Python sequences/scalars, broadcast scalar lanes to a common length, and
 //! validate equal column lengths. Re-exported at the crate root via `use
 //! super::*`.
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-
 use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyFloat, PyInt};
 use pyo3::{Borrowed, FromPyObject};
 
+use crate::boundary::buffer_endian;
 use crate::boundary::buffer_endian::{buffer_to_column_f64, buffer_to_vec_f64};
 use crate::geometry::column_all_finite;
-use crate::py::errors::InvalidGeometryError;
+use crate::py::errors;
+use crate::py::errors::{GeometryError, InvalidGeometryError};
+use crate::py::numpy::reject_masked_array;
 use crate::{
     CoordSeq, PyBuffer, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
     collect_py_iter_exact_from_iter, collect_py_iter_from_iter, f64_required, f64_scalar_named,
@@ -30,21 +28,45 @@ pub(crate) struct CoordinateInput {
     pub scalar: bool,
 }
 
-pub(crate) fn coordinate_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
-    match crate::finite_coordinate_required(name, value) {
-        Ok(value) => Ok(value),
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
-                    .is_none() =>
-        {
-            Err(PyTypeError::new_err(format!(
-                "{name} must be a float or an iterable of finite floats"
-            )))
-        },
-        Err(error) => Err(error),
+/// How a float input is admitted: coordinates are finite values from a
+/// scalar or one-dimensional column; parameters accept any float.
+#[derive(Clone, Copy)]
+pub(crate) enum FloatInput {
+    Coordinate,
+    Parameter,
+}
+
+impl FloatInput {
+    fn admit(self, value: &Bound<'_, PyAny>, name: &str) -> PyResult<()> {
+        match self {
+            Self::Coordinate => reject_multidimensional_coordinate_array(value, name),
+            Self::Parameter => reject_masked_array(value),
+        }
     }
+
+    pub(crate) fn item(self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
+        let parsed = match self {
+            Self::Coordinate => crate::finite_coordinate_required(name, value),
+            Self::Parameter => f64_required(name, value),
+        };
+        match parsed {
+            Err(error)
+                if error.is_instance_of::<PyTypeError>(value.py())
+                    && value
+                        .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
+                        .is_none() =>
+            {
+                Err(not_a_float_iterable(name))
+            },
+            parsed => parsed,
+        }
+    }
+}
+
+fn not_a_float_iterable(name: &str) -> PyErr {
+    PyTypeError::new_err(format!(
+        "{name} must be a float or an iterable of finite floats"
+    ))
 }
 
 /// Coordinate columns are scalar or one-dimensional.  A two-dimensional
@@ -54,7 +76,7 @@ pub(crate) fn reject_multidimensional_coordinate_array(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<()> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     let dimensions = if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         buffer.dimensions()
     } else if let Ok(array) = value.cast::<PyUntypedArray>() {
@@ -89,23 +111,6 @@ fn coordinate_scalar_named(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Opt
         Err(InvalidGeometryError::new_err(format!(
             "{name} must be finite"
         )))
-    }
-}
-
-fn parameter_float(name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
-    match f64_required(name, value) {
-        Ok(value) => Ok(value),
-        Err(error)
-            if error.is_instance_of::<PyTypeError>(value.py())
-                && value
-                    .getattr_opt(pyo3::intern!(value.py(), "__float__"))?
-                    .is_none() =>
-        {
-            Err(PyTypeError::new_err(format!(
-                "{name} must be a float or an iterable of finite floats"
-            )))
-        },
-        Err(error) => Err(error),
     }
 }
 
@@ -227,19 +232,13 @@ impl F64Param {
         if let Some(value) = f64_scalar_named(name, value)? {
             return Ok(Self::Scalar(value));
         }
-        let values = coordinate_values_exact_with(
-            value.py(),
-            value,
-            name,
-            len,
-            |got| {
-                crate::py::errors::GeometryError::new_err(format!(
+        let values =
+            float_values_exact(value.py(), value, name, FloatInput::Parameter, len, |got| {
+                GeometryError::new_err(format!(
                     "{name} must be a float or a length-{len} sequence (one per geometry); \
                      got length {got}"
                 ))
-            },
-            |item| parameter_float(name, item),
-        )?;
+            })?;
         Ok(Self::PerElement(values.into_boxed_slice()))
     }
 
@@ -254,31 +253,17 @@ impl F64Param {
             if value.is_finite() {
                 return Ok(Self::Scalar(value));
             }
-            return Err(crate::py::errors::float_parameter_error(
-                non_finite(),
-                name,
-                value,
-            ));
+            return Err(errors::float_parameter_error(non_finite(), name, value));
         }
-        let values = coordinate_values_exact_with(
-            value.py(),
-            value,
-            name,
-            len,
-            |got| {
-                crate::py::errors::GeometryError::new_err(format!(
+        let values =
+            float_values_exact(value.py(), value, name, FloatInput::Parameter, len, |got| {
+                GeometryError::new_err(format!(
                     "{name} must be a float or a length-{len} sequence (one per geometry); \
                  got length {got}"
                 ))
-            },
-            |item| parameter_float(name, item),
-        )?;
+            })?;
         if let Some(&value) = values.iter().find(|value| !value.is_finite()) {
-            Err(crate::py::errors::float_parameter_error(
-                non_finite(),
-                name,
-                value,
-            ))
+            Err(errors::float_parameter_error(non_finite(), name, value))
         } else {
             Ok(Self::PerElement(values.into_boxed_slice()))
         }
@@ -292,7 +277,7 @@ impl F64Param {
         match self {
             Self::Scalar(value) => {
                 if !value.is_finite() {
-                    return Err(crate::py::errors::float_parameter_error(
+                    return Err(errors::float_parameter_error(
                         format!("{name} must be finite"),
                         name,
                         *value,
@@ -302,7 +287,7 @@ impl F64Param {
             Self::PerElement(values) => {
                 for &value in values {
                     if !value.is_finite() {
-                        return Err(crate::py::errors::float_parameter_error(
+                        return Err(errors::float_parameter_error(
                             format!("{name} must be finite"),
                             name,
                             value,
@@ -332,6 +317,15 @@ impl F64Param {
             Self::Scalar(value) => check(*value),
             Self::PerElement(values) => values.iter().copied().try_for_each(check),
         }
+    }
+
+    /// Reject any negative value, naming the parameter `name`.
+    pub(crate) fn require_non_negative(&self, name: &'static str) -> PyResult<()> {
+        self.try_validate(|value| {
+            crate::NonNegative::try_new(name, value)
+                .map(|_| ())
+                .map_err(PyErr::from)
+        })
     }
 
     /// The single value when scalar — lets a method keep its columnar/packed
@@ -377,7 +371,7 @@ impl I64Param {
         // Known receiver length: bound the drain so `itertools.repeat` cannot
         // hang (D11).
         let values = integer_values_exact(value, name, len, |got| {
-            crate::py::errors::GeometryError::new_err(format!(
+            GeometryError::new_err(format!(
                 "{name} must be an integer or a length-{len} sequence (one per geometry); \
                  got length {got}"
             ))
@@ -412,7 +406,7 @@ pub(crate) fn integer_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<i64>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     collect_py_iter_exact(
         value,
         expected,
@@ -423,7 +417,7 @@ pub(crate) fn integer_values_exact(
 
 /// Capture a coordinate column in owned native-endian storage. Contiguous and
 /// simple strided buffers fill the column directly; general inputs use
-/// [`coordinate_values`]. The producer must remain quiescent until capture
+/// [`float_values`]. The producer must remain quiescent until capture
 /// returns; retaining a `PyBuffer` pins its allocation but does not synchronize
 /// native writers.
 pub(crate) fn coordinate_column_values(
@@ -435,7 +429,7 @@ pub(crate) fn coordinate_column_values(
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         return coordinate_column_values_from_buffer(py, &buffer);
     }
-    coordinate_values(py, value, name)
+    float_values(py, value, name, FloatInput::Coordinate)
 }
 
 /// Copy an already-admitted `f64` buffer into its final native-endian column.
@@ -467,7 +461,7 @@ fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     // exporter does not support direct capture, take the ordinary contiguous
     // copy the suboffset case already falls back to. Neither choice
     // synchronizes a native writer; the producer remains quiescent for both.
-    if !crate::boundary::buffer_endian::exporter_supports_direct_capture(py, buffer) {
+    if !buffer_endian::exporter_supports_direct_capture(py, buffer) {
         return buffer_to_vec_f64(py, buffer);
     }
 
@@ -482,9 +476,7 @@ fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     }
     // General strides and byte order use PyO3's contiguous copy. A simple
     // native-endian column can fill its destination directly.
-    if buffer.dimensions() == 1
-        && crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format())
-    {
+    if buffer.dimensions() == 1 && buffer_endian::buffer_format_is_native_endian(buffer.format()) {
         let stride = buffer.strides()[0];
         let item = std::mem::size_of::<f64>() as isize;
         if stride % item == 0 {
@@ -562,18 +554,32 @@ fn coordseq_from_indirect_nd_buffer(
     let mut zs = zs_col;
     let mut ms = ms_col;
     if let Some(z_col) = z {
-        zs = Some(coordinate_values_exact(z_col.py(), z_col, "z", n, |got| {
-            InvalidGeometryError::new_err(format!(
-                "z must have the same length as x/y coordinates (got length {got})"
-            ))
-        })?);
+        zs = Some(float_values_exact(
+            z_col.py(),
+            z_col,
+            "z",
+            FloatInput::Coordinate,
+            n,
+            |got| {
+                InvalidGeometryError::new_err(format!(
+                    "z must have the same length as x/y coordinates (got length {got})"
+                ))
+            },
+        )?);
     }
     if let Some(m_col) = m {
-        ms = Some(coordinate_values_exact(m_col.py(), m_col, "m", n, |got| {
-            InvalidGeometryError::new_err(format!(
-                "m must have the same length as x/y coordinates (got length {got})"
-            ))
-        })?);
+        ms = Some(float_values_exact(
+            m_col.py(),
+            m_col,
+            "m",
+            FloatInput::Coordinate,
+            n,
+            |got| {
+                InvalidGeometryError::new_err(format!(
+                    "m must have the same length as x/y coordinates (got length {got})"
+                ))
+            },
+        )?);
     }
     Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?)
 }
@@ -590,7 +596,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<CoordSeq>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    reject_masked_array(value)?;
     let Ok(buffer) = PyBuffer::<f64>::get(value) else {
         return Ok(None);
     };
@@ -625,10 +631,10 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     let col_step = col_stride / item;
     // The direct stride walk and the ordinary copy both require a quiescent
     // producer; the copy path is not a native-writer synchronization protocol.
-    if !crate::boundary::buffer_endian::exporter_supports_direct_capture(value.py(), &buffer) {
+    if !buffer_endian::exporter_supports_direct_capture(value.py(), &buffer) {
         return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
     }
-    let native = crate::boundary::buffer_endian::buffer_format_is_native_endian(buffer.format());
+    let native = buffer_endian::buffer_format_is_native_endian(buffer.format());
     let swap = !native;
 
     let fill_column = |col: usize| -> crate::error::Result<Vec<f64>> {
@@ -656,7 +662,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 let mut value = (*base.offset(offset)).get();
                 if swap {
-                    value = crate::boundary::buffer_endian::swap_f64_endian(value);
+                    value = buffer_endian::swap_f64_endian(value);
                 }
                 slot.write(value);
             }
@@ -692,19 +698,21 @@ pub(crate) fn try_coordseq_from_nd_buffer(
 
     // Optional parallel z/m columns (only valid when D == 2).
     if let Some(z_col) = z {
-        let values = coordinate_values_exact(z_col.py(), z_col, "z", n, |got| {
-            InvalidGeometryError::new_err(format!(
-                "z must have the same length as x/y coordinates (got length {got})"
-            ))
-        })?;
+        let values =
+            float_values_exact(z_col.py(), z_col, "z", FloatInput::Coordinate, n, |got| {
+                InvalidGeometryError::new_err(format!(
+                    "z must have the same length as x/y coordinates (got length {got})"
+                ))
+            })?;
         zs = Some(values);
     }
     if let Some(m_col) = m {
-        let values = coordinate_values_exact(m_col.py(), m_col, "m", n, |got| {
-            InvalidGeometryError::new_err(format!(
-                "m must have the same length as x/y coordinates (got length {got})"
-            ))
-        })?;
+        let values =
+            float_values_exact(m_col.py(), m_col, "m", FloatInput::Coordinate, n, |got| {
+                InvalidGeometryError::new_err(format!(
+                    "m must have the same length as x/y coordinates (got length {got})"
+                ))
+            })?;
         ms = Some(values);
     }
 
@@ -732,7 +740,7 @@ pub(crate) fn coordinate_column_values_exact(
         }
         return coordinate_column_values_from_buffer(py, &buffer);
     }
-    coordinate_values_exact(py, value, name, expected, on_len)
+    float_values_exact(py, value, name, FloatInput::Coordinate, expected, on_len)
 }
 
 /// Optional `z`/`m` column for the columnar constructor path — the
@@ -776,12 +784,13 @@ pub(crate) fn optional_coordinate_column_values_from_buffer(
     coordinate_column_values_from_buffer(py, buffer).map(Some)
 }
 
-pub(crate) fn coordinate_values(
+pub(crate) fn float_values(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &str,
+    kind: FloatInput,
 ) -> PyResult<Vec<f64>> {
-    reject_multidimensional_coordinate_array(value, name)?;
+    kind.admit(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         // Normalize non-native endian (e.g. NumPy `>f8` on little-endian) —
         // raw `to_vec` reinterprets bytes and silently corrupts.
@@ -792,42 +801,22 @@ pub(crate) fn coordinate_values(
     // `__len__` before any length check and panics on capacity overflow.
     // Unknown cardinality: `collect_py_iter` / try_push → MemoryError on
     // unbounded growth, never hang-then-abort (D11 part 1).
-    let iter = py_iter_or_error(value, || {
-        PyTypeError::new_err(format!(
-            "{name} must be a float or an iterable of finite floats"
-        ))
-    })?;
-    collect_py_iter_from_iter(value, iter, |item| coordinate_float(name, &item))
+    let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
+    collect_py_iter_from_iter(value, iter, |item| kind.item(name, &item))
 }
 
-pub(crate) fn parameter_values(
+/// Collect a value with a variable but finite arity. Reading at most
+/// `maximum + 1` items makes malformed or infinite providers terminate while
+/// retaining the caller's arity admission rules.
+pub(crate) fn float_values_at_most(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &str,
-) -> PyResult<Vec<f64>> {
-    crate::py::numpy::reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        return buffer_to_vec_f64(py, &buffer);
-    }
-    let iter = py_iter_or_error(value, || {
-        PyTypeError::new_err(format!(
-            "{name} must be a float or an iterable of finite floats"
-        ))
-    })?;
-    collect_py_iter_from_iter(value, iter, |item| parameter_float(name, &item))
-}
-
-/// Collect a coordinate with a variable but finite arity. Reading only five
-/// items makes malformed or infinite coordinate providers terminate while
-/// retaining the normal 2/3/4-ordinate admission rules at the caller.
-pub(crate) fn coordinate_values_at_most(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    name: &str,
+    kind: FloatInput,
     maximum: usize,
     on_excess: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
-    reject_multidimensional_coordinate_array(value, name)?;
+    kind.admit(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got > maximum {
@@ -835,89 +824,31 @@ pub(crate) fn coordinate_values_at_most(
         }
         return buffer_to_vec_f64(py, &buffer);
     }
-    let iter = py_iter_or_error(value, || {
-        PyTypeError::new_err(format!(
-            "{name} must be a float or an iterable of finite floats"
-        ))
-    })?;
+    let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
     collect_py_iter_at_most_from_iter(
         value,
         iter,
         maximum,
-        |item| coordinate_float(name, &item),
+        |item| kind.item(name, &item),
         on_excess,
     )
 }
 
-pub(crate) fn parameter_values_at_most(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    name: &str,
-    maximum: usize,
-    on_excess: impl FnOnce(usize) -> PyErr,
-) -> PyResult<Vec<f64>> {
-    crate::py::numpy::reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        let got = buffer.item_count();
-        if got > maximum {
-            return Err(on_excess(got));
-        }
-        return buffer_to_vec_f64(py, &buffer);
-    }
-    let iter = py_iter_or_error(value, || {
-        PyTypeError::new_err(format!(
-            "{name} must be a float or an iterable of finite floats"
-        ))
-    })?;
-    collect_py_iter_at_most_from_iter(
-        value,
-        iter,
-        maximum,
-        |item| parameter_float(name, &item),
-        on_excess,
-    )
-}
-
-/// Collect exactly `expected` finite-f64 coordinate values (D11).
+/// Collect exactly `expected` values (D11).
 ///
 /// Buffer / ndarray fast paths stay zero-copy-friendly (length-checked then
 /// bulk copy). Bare iterables stop after `expected + 1` items so
 /// `itertools.repeat` cannot hang when a sibling column or receiver pins
 /// the count.
-pub(crate) fn coordinate_values_exact(
+pub(crate) fn float_values_exact(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     name: &str,
+    kind: FloatInput,
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
-    reject_multidimensional_coordinate_array(value, name)?;
-    coordinate_values_exact_with(py, value, name, expected, on_len, |item| {
-        coordinate_float(name, item)
-    })
-}
-
-pub(crate) fn parameter_values_exact(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    name: &str,
-    expected: usize,
-    on_len: impl FnOnce(usize) -> PyErr,
-) -> PyResult<Vec<f64>> {
-    coordinate_values_exact_with(py, value, name, expected, on_len, |item| {
-        parameter_float(name, item)
-    })
-}
-
-fn coordinate_values_exact_with(
-    py: Python<'_>,
-    value: &Bound<'_, PyAny>,
-    name: &str,
-    expected: usize,
-    on_len: impl FnOnce(usize) -> PyErr,
-    convert: impl Fn(&Bound<'_, PyAny>) -> PyResult<f64>,
-) -> PyResult<Vec<f64>> {
-    crate::py::numpy::reject_masked_array(value)?;
+    kind.admit(value, name)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         let got = buffer.item_count();
         if got != expected {
@@ -925,12 +856,8 @@ fn coordinate_values_exact_with(
         }
         return buffer_to_vec_f64(py, &buffer);
     }
-    let iter = py_iter_or_error(value, || {
-        PyTypeError::new_err(format!(
-            "{name} must be a float or an iterable of finite floats"
-        ))
-    })?;
-    collect_py_iter_exact_from_iter(value, iter, expected, |item| convert(&item), on_len)
+    let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
+    collect_py_iter_exact_from_iter(value, iter, expected, |item| kind.item(name, &item), on_len)
 }
 
 /// Reported sequence length when discoverable without draining a bare
@@ -991,13 +918,13 @@ pub(crate) fn coordinate_input_with_expected(
     let values = if coordinate_sequence_len_hint(value, name)?.is_none()
         && let Some(expected) = expected
     {
-        coordinate_values_exact(py, value, name, expected, |got| {
+        float_values_exact(py, value, name, FloatInput::Coordinate, expected, |got| {
             InvalidGeometryError::new_err(format!(
                 "{name} must have the same length, got {got} and {expected}"
             ))
         })?
     } else {
-        coordinate_values(py, value, name)?
+        float_values(py, value, name, FloatInput::Coordinate)?
     };
     if column_all_finite(&values) {
         Ok(CoordinateInput {
@@ -1023,18 +950,18 @@ pub(crate) fn parameter_input_with_expected(
                 scalar: true,
             });
         }
-        return Err(crate::py::errors::GeometryError::new_err(non_finite()));
+        return Err(GeometryError::new_err(non_finite()));
     }
     let values = if coordinate_sequence_len_hint(value, name)?.is_none()
         && let Some(expected) = expected
     {
-        parameter_values_exact(py, value, name, expected, |got| {
-            crate::py::errors::GeometryError::new_err(format!(
+        float_values_exact(py, value, name, FloatInput::Parameter, expected, |got| {
+            GeometryError::new_err(format!(
                 "{name} must have the same length, got {got} and {expected}"
             ))
         })?
     } else {
-        parameter_values(py, value, name)?
+        float_values(py, value, name, FloatInput::Parameter)?
     };
     if column_all_finite(&values) {
         Ok(CoordinateInput {
@@ -1042,7 +969,7 @@ pub(crate) fn parameter_input_with_expected(
             scalar: false,
         })
     } else {
-        Err(crate::py::errors::GeometryError::new_err(non_finite()))
+        Err(GeometryError::new_err(non_finite()))
     }
 }
 

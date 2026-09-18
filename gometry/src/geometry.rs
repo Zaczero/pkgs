@@ -1,6 +1,6 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 //! Geometry kernel — the shared math/conversion substrate plus the core
 //! `Shape`/`Polygon`/`Bounds` utility impls.
@@ -321,13 +321,9 @@ pub(crate) fn common_axes(a: &Shape, b: &Shape) -> CoordinateAxes {
 /// The `shortest_line` Shape for a nearest pair: the witness `LineString`, or
 /// `LINESTRING EMPTY` (in `common` axes) when an operand is empty. The single
 /// place the empty→sentinel and common-axes rules meet for the line surface.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
-pub(crate) fn nearest_line(pair: Option<(Point, Point)>, common: CoordinateAxes) -> Result<Shape> {
+pub(crate) fn nearest_line(pair: Option<&(Point, Point)>, common: CoordinateAxes) -> Result<Shape> {
     match pair {
-        Some((start, end)) => Ok(Shape::LineString(LineSeq::segment(start, end)?)),
+        Some((start, end)) => Ok(Shape::LineString(LineSeq::segment(*start, *end)?)),
         None => Ok(Shape::typed_empty(GeometryKind::LineString, common)),
     }
 }
@@ -335,17 +331,13 @@ pub(crate) fn nearest_line(pair: Option<(Point, Point)>, common: CoordinateAxes)
 /// The `(left, right)` witness Shapes for `nearest_points`: the points dropped to
 /// their common axes, or `(POINT EMPTY, POINT EMPTY)` when an operand is empty.
 /// Mirrors [`nearest_line`] so the tuple and the line stay consistent.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 pub(crate) fn nearest_point_pair(
-    pair: Option<(Point, Point)>,
+    pair: Option<&(Point, Point)>,
     common: CoordinateAxes,
 ) -> (Shape, Shape) {
     match pair {
         Some((left, right)) => {
-            let (left, right) = coerce_to_common_axes(left, right);
+            let (left, right) = coerce_to_common_axes(*left, *right);
             (Shape::Point(left), Shape::Point(right))
         },
         None => (

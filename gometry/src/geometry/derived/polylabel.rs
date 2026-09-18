@@ -1,20 +1,17 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::num::NonZeroU32;
 
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::facet_bvh::Facet;
 use crate::geometry::tessellation::exact::{
     self, ExactDyadic, ExactRational as Rational, try_compare_ratios,
 };
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
     ExpansionBudget, FacetBvh, Orientation, Point, Polygon, PolylabelCell, PreparedLinework,
-    PreparedSupport, Ring, Segment, Shape, XY, orientation,
+    PreparedSupport, Ring, Segment, Shape, XY, orientation, predicates,
 };
 impl Eq for PolylabelCell {}
 
@@ -267,56 +264,62 @@ impl CertifiedDisk {
     }
 }
 
-#[cfg(test)]
+/// Solver step counts inspected by unit tests; zero-sized outside them.
 #[derive(Debug, Default)]
 struct CircleWork {
+    #[cfg(test)]
     contains: usize,
+    #[cfg(test)]
     one_supports: usize,
+    #[cfg(test)]
     two_supports: usize,
+    #[cfg(test)]
     three_supports: usize,
+    #[cfg(test)]
     collinear_fallbacks: usize,
 }
 
-#[cfg(not(test))]
-type CircleWork = ();
-
-#[inline]
-const fn count_contains(_work: &mut CircleWork) {
-    #[cfg(test)]
-    {
-        _work.contains += 1;
+#[cfg_attr(
+    not(test),
+    expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "the counter mutates in test builds and is intentionally zero-sized in production"
+    )
+)]
+impl CircleWork {
+    const fn count_contains(&mut self) {
+        #[cfg(test)]
+        {
+            self.contains += 1;
+        }
     }
-}
 
-#[inline]
-const fn count_one_support(_work: &mut CircleWork) {
-    #[cfg(test)]
-    {
-        _work.one_supports += 1;
+    const fn count_one_support(&mut self) {
+        #[cfg(test)]
+        {
+            self.one_supports += 1;
+        }
     }
-}
 
-#[inline]
-const fn count_two_support(_work: &mut CircleWork) {
-    #[cfg(test)]
-    {
-        _work.two_supports += 1;
+    const fn count_two_support(&mut self) {
+        #[cfg(test)]
+        {
+            self.two_supports += 1;
+        }
     }
-}
 
-#[inline]
-const fn count_three_support(_work: &mut CircleWork) {
-    #[cfg(test)]
-    {
-        _work.three_supports += 1;
+    const fn count_three_support(&mut self) {
+        #[cfg(test)]
+        {
+            self.three_supports += 1;
+        }
     }
-}
 
-#[inline]
-const fn count_collinear_fallback(_work: &mut CircleWork) {
-    #[cfg(test)]
-    {
-        _work.collinear_fallbacks += 1;
+    const fn count_collinear_fallback(&mut self) {
+        #[cfg(test)]
+        {
+            self.collinear_fallbacks += 1;
+        }
     }
 }
 
@@ -326,23 +329,23 @@ fn solve_enclosing_circle_order(
     work: &mut CircleWork,
 ) -> Result<MinimumCircle> {
     let mut circle = MinimumCircle::new_one(order[0]);
-    count_one_support(work);
+    work.count_one_support();
     for i in 1..order.len() {
-        count_contains(work);
+        work.count_contains();
         if circle.contains(points, order[i])? {
             continue;
         }
         circle = MinimumCircle::new_one(order[i]);
-        count_one_support(work);
+        work.count_one_support();
         for j in 0..i {
-            count_contains(work);
+            work.count_contains();
             if circle.contains(points, order[j])? {
                 continue;
             }
             circle = MinimumCircle::new_two(order[i], order[j]);
-            count_two_support(work);
+            work.count_two_support();
             for k in 0..j {
-                count_contains(work);
+                work.count_contains();
                 if circle.contains(points, order[k])? {
                     continue;
                 }
@@ -352,10 +355,10 @@ fn solve_enclosing_circle_order(
                 circle = if exact::try_orient2d(points[a].xy(), points[b].xy(), points[c].xy())?
                     == ExactSign::Zero
                 {
-                    count_collinear_fallback(work);
+                    work.count_collinear_fallback();
                     MinimumCircle::widest_pair(points, a, b, c)?
                 } else {
-                    count_three_support(work);
+                    work.count_three_support();
                     MinimumCircle::new_three(a, b, c)
                 };
             }
@@ -399,15 +402,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircl
         order.swap(index, other);
     }
 
-    #[cfg(test)]
-    {
-        let mut work = CircleWork::default();
-        solve_enclosing_circle_order(points, &order, &mut work)
-    }
-    #[cfg(not(test))]
-    {
-        solve_enclosing_circle_order(points, &order, &mut ())
-    }
+    solve_enclosing_circle_order(points, &order, &mut CircleWork::default())
 }
 
 impl MinimumCircle {
@@ -1076,19 +1071,19 @@ fn segment_enters_candidate(
             )
         };
         match c1.sign() {
-            crate::geometry::exact_arith::ExactSign::Zero => {
-                if c0.sign() != crate::geometry::exact_arith::ExactSign::Positive {
+            ExactSign::Zero => {
+                if c0.sign() != ExactSign::Positive {
                     return Ok(false);
                 }
             },
-            crate::geometry::exact_arith::ExactSign::Positive => {
+            ExactSign::Positive => {
                 update_lower(
                     &mut lower,
                     &mut lower_closed,
                     (zero.try_clone()?.try_subtract(c0)?, c1),
                 )?;
             },
-            crate::geometry::exact_arith::ExactSign::Negative => {
+            ExactSign::Negative => {
                 update_upper(
                     &mut upper,
                     &mut upper_closed,
@@ -1121,10 +1116,10 @@ fn candidate_center_is_strictly_inside(
 fn candidate_covers_point(candidate: &[Point], point: Point, counter_clockwise: bool) -> bool {
     candidate.iter().enumerate().all(|(index, &start)| {
         let end = candidate[(index + 1) % candidate.len()];
-        match (counter_clockwise, orientation(start, end, point)) {
-            (true, Orientation::Clockwise) | (false, Orientation::CounterClockwise) => false,
-            _ => true,
-        }
+        !matches!(
+            (counter_clockwise, orientation(start, end, point)),
+            (true, Orientation::Clockwise) | (false, Orientation::CounterClockwise)
+        )
     })
 }
 
@@ -1304,7 +1299,7 @@ fn build_inscribed_circle_once(
     closed.push(points[0]);
     let seq = CoordSeq::try_from_points(&closed)?;
     let winding = crate::geometry::ring_winding(&seq);
-    let strict_convex = crate::geometry::predicates::shell_is_strictly_convex(&seq);
+    let strict_convex = predicates::shell_is_strictly_convex(&seq);
     if winding.is_degenerate() || !strict_convex {
         return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
             "maximum_inscribed_circle",
@@ -1401,7 +1396,7 @@ impl<'a> PolylabelField<'a> {
     fn boundary_distance(&mut self, point: Point, bound: f64) -> Result<f64> {
         if let Some(frame) = self.frame {
             let linework = &self.linework;
-            let mut refine = |facet: crate::geometry::facet_bvh::Facet| {
+            let mut refine = |facet: Facet| {
                 let mut best = f64::INFINITY;
                 for index in 0..facet.segment_count as usize {
                     best = best.min(
@@ -1518,7 +1513,7 @@ impl<'a> PolylabelField<'a> {
 mod tests {
     use super::*;
     use crate::error::{ErrorKind, ResourceError};
-    use crate::geometry::LineSeq;
+    use crate::geometry::{LineSeq, constructive, overlay};
     use crate::{CoordSeq, Polygon, Ring};
 
     fn circle_points(center: Point, radius: f64) -> Vec<Point> {
@@ -2138,9 +2133,9 @@ mod tests {
             )
             .unwrap(),
         );
-        crate::geometry::overlay::reset_partition_calls();
+        overlay::reset_partition_calls();
         source.maximum_inscribed_circle(Some(1e-9)).unwrap();
-        assert_eq!(crate::geometry::overlay::partition_calls(), 1);
+        assert_eq!(overlay::partition_calls(), 1);
     }
 
     #[test]
@@ -2349,7 +2344,7 @@ mod tests {
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
         let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
-        let output = crate::geometry::constructive::point_buffer(
+        let output = constructive::point_buffer(
             disk.center().expect("finite center"),
             1.0 + 1.0e-6,
             NonZeroU32::new(16).expect("non-zero"),

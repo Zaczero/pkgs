@@ -1,17 +1,15 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use std::ptr;
 
+use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::{
-    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray, Py, PyAny,
-    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTuple, Python,
-    StreamPrivate, array_capsule_destructor, array_capsule_name, c_char, ffi, release_array,
-    release_schema, release_stream, schema_capsule_destructor, schema_capsule_name,
+    ArrowArray, ArrowArrayStream, ArrowSchema, Bound, ExportedArray, GometryArrowArray,
+    GometryArrowSchema, Py, PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult,
+    PyTuple, Python, StreamPrivate, array_capsule_destructor, array_capsule_name, c_char, ffi,
+    release_array, release_schema, release_stream, schema_capsule_destructor, schema_capsule_name,
     stream_capsule_destructor, stream_capsule_name, stream_get_last_error, stream_get_next,
     stream_get_schema,
 };
+use crate::py::{arrow, arrow_c};
 
 pub(crate) type ArrowReleaseCallback<T> = unsafe extern "C" fn(*mut T);
 pub(crate) type CapsuleDestructor = unsafe extern "C" fn(*mut ffi::PyObject);
@@ -122,8 +120,7 @@ pub(crate) unsafe fn capsule_destructor_pointer<T>(
     ptr::null_mut()
 }
 pub(crate) fn register_loaded_pyarrow_extension_types(py: Python<'_>) -> PyResult<()> {
-    crate::py::arrow::gometry_arrow_module(py)?
-        .call_method0("_register_extension_types_if_available")?;
+    arrow::gometry_arrow_module(py)?.call_method0("_register_extension_types_if_available")?;
     Ok(())
 }
 
@@ -137,7 +134,7 @@ pub(crate) fn geometry_to_schema_capsule(
     let node = py
         .detach(move || {
             let description =
-                crate::py::arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch());
+                arrow_c::describe_shape(shape.shape(), frame.crs_str(), frame.epoch());
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -156,10 +153,7 @@ pub(crate) fn array_to_schema_capsule(
     let array = array.clone();
     let node = py
         .detach(move || {
-            let description = crate::py::arrow_c::describe_geometry_array(
-                &array,
-                crate::py::arrow::ArrowEncoding::Auto,
-            );
+            let description = arrow_c::describe_geometry_array(&array, ArrowEncoding::Auto);
             description.materialize_schema()
         })
         .map_err(|error| error.into_py_err(py))?;
@@ -179,11 +173,11 @@ pub(crate) fn geometry_to_array_capsules(
     let epoch = geometry.epoch();
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(plan)?;
     array_capsules(py, export)
 }
 
@@ -196,14 +190,11 @@ pub(crate) fn array_to_array_capsules(
     let array = array.clone();
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_geometry_array(
-                &array,
-                crate::py::arrow::ArrowEncoding::Auto,
-            )?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_geometry_array(&array, ArrowEncoding::Auto)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(plan)?;
     array_capsules(py, export)
 }
 
@@ -217,11 +208,11 @@ pub(crate) fn geometry_to_stream_capsule(
     let epoch = geometry.epoch();
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_shapes(&shapes, crs, epoch)?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_shapes(&shapes, crs, epoch)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(plan)?;
     stream_capsule(py, export)
 }
 
@@ -233,21 +224,15 @@ pub(crate) fn array_to_stream_capsule(
     let array = array.clone();
     let plan = py
         .detach(move || {
-            let plan = crate::py::arrow_c::plan_geometry_array(
-                &array,
-                crate::py::arrow::ArrowEncoding::Auto,
-            )?;
-            crate::py::arrow_c::prepare_export_plan(plan)
+            let plan = arrow_c::plan_geometry_array(&array, ArrowEncoding::Auto)?;
+            arrow_c::prepare_export_plan(plan)
         })
         .map_err(|error| error.into_py_err(py))?;
-    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
+    let export = arrow_c::materialize_export_plan(plan)?;
     stream_capsule(py, export)
 }
 
-pub(crate) fn schema_capsule(
-    py: Python<'_>,
-    schema: crate::py::arrow_c::GometryArrowSchema,
-) -> PyResult<Py<PyAny>> {
+pub(crate) fn schema_capsule(py: Python<'_>, schema: GometryArrowSchema) -> PyResult<Py<PyAny>> {
     owned_capsule(
         py,
         schema.into_box(),
@@ -273,7 +258,7 @@ pub(crate) fn pyarrow_array_from_export(
     // PyArrow must be loaded before the existing registry hook runs. This is
     // the attached materialization boundary; direct capsule exports remain
     // dependency-free.
-    let pyarrow = crate::py::arrow::pyarrow_module(py)?;
+    let pyarrow = arrow::pyarrow_module(py)?;
     register_loaded_pyarrow_extension_types(py)?;
     let capsules = array_capsules(py, export)?;
     let tuple = capsules.bind(py).cast::<PyTuple>()?;

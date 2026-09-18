@@ -1,7 +1,5 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
+use crate::boundary::metadata;
+use crate::boundary::metadata::FrameError;
 use crate::{Crs, PyResult, crs_arc, io};
 
 pub(crate) enum SharedRowCrs {
@@ -31,13 +29,11 @@ impl SharedRowCrs {
             Self::Shared(existing) if fallback.is_none() => {
                 let agrees = match (existing.as_ref(), row_crs.as_ref()) {
                     (None, None) => true,
-                    (Some(left), Some(right)) => {
-                        crate::boundary::metadata::crs_operationally_equal(left, right)?
-                    },
+                    (Some(left), Some(right)) => metadata::crs_operationally_equal(left, right)?,
                     _ => false,
                 };
                 if !agrees {
-                    return Err(crate::boundary::metadata::FrameError::SharedCrs {
+                    return Err(FrameError::SharedCrs {
                         context: context.into(),
                         index: row,
                         first: existing.clone(),
@@ -167,7 +163,7 @@ impl SridFrameAdmission {
     ) -> crate::error::Result<()> {
         let first_crs = self.cache.resolve(first)?.map(crs_arc);
         let other_crs = self.cache.resolve(other)?.map(crs_arc);
-        Err(crate::boundary::metadata::FrameError::SharedCrs {
+        Err(FrameError::SharedCrs {
             context: context.into(),
             index: row,
             first: first_crs,
@@ -184,9 +180,9 @@ pub(crate) fn guard_embedded_crs_conflict(
     if let (Some(embedded), Some(explicit)) = (embedded, explicit)
         && embedded != explicit
         && !io::is_wire_alias_restore(explicit, embedded)
-        && !crate::boundary::metadata::crs_labels_operationally_equal(embedded, explicit)?
+        && !metadata::crs_labels_operationally_equal(embedded, explicit)?
     {
-        return Err(crate::boundary::metadata::FrameError::EmbeddedCrsConflict {
+        return Err(FrameError::EmbeddedCrsConflict {
             explicit: explicit.into(),
             embedded: embedded.into(),
             source: source.into(),

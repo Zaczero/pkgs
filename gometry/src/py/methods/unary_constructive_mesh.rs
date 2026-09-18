@@ -1,12 +1,9 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use crate::py::errors::GeometryError;
 use crate::py::methods::unary_constructive_methods::{
     Bound, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, pymethods,
 };
 use crate::py::support::{TriangulationMethod, VoronoiClipInput};
+use crate::py::vectors::Groups;
 
 #[pymethods]
 impl PyGeometry {
@@ -85,7 +82,7 @@ impl PyGeometryArray {
         method: TriangulationMethod,
         min_angle: Option<&Bound<'_, PyAny>>,
         max_area: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         match method {
             TriangulationMethod::Earcut => {
                 require_plain_triangulation_options(min_angle, max_area)?;
@@ -106,7 +103,7 @@ impl PyGeometryArray {
         &self,
         count: &Bound<'_, PyAny>,
         seed: &Bound<'_, PyAny>,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         self.sample_points_impl(count, seed)
     }
     #[doc = doc_voronoi_polygons!(array)]
@@ -119,7 +116,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         tolerance: f64,
         clip: VoronoiClipInput,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         self.voronoi_polygons_impl(py, tolerance, &clip)
     }
     #[doc = doc_voronoi_edges!(array)]
@@ -132,7 +129,7 @@ impl PyGeometryArray {
         py: Python<'_>,
         tolerance: f64,
         clip: VoronoiClipInput,
-    ) -> PyResult<crate::py::vectors::Groups> {
+    ) -> PyResult<Groups> {
         self.voronoi_edges_impl(py, tolerance, &clip)
     }
 }

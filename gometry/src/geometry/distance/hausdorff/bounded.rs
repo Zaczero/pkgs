@@ -8,6 +8,7 @@ use std::collections::BinaryHeap;
 use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceInventory};
+use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
     CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape, XY,
@@ -215,7 +216,7 @@ impl FloatBox {
         })
     }
 
-    fn include(self, other: Self) -> Self {
+    const fn include(self, other: Self) -> Self {
         Self {
             min_x: self.min_x.min(other.min_x),
             max_x: self.max_x.max(other.max_x),
@@ -224,7 +225,7 @@ impl FloatBox {
         }
     }
 
-    fn corners(self) -> [(f64, f64); 4] {
+    const fn corners(self) -> [(f64, f64); 4] {
         [
             (self.min_x, self.min_y),
             (self.min_x, self.max_y),
@@ -311,7 +312,7 @@ impl UnreducedRatio {
         Self::from_rational(left)?.try_subtract(&Self::from_rational(right)?)
     }
 
-    fn is_zero(&self) -> bool {
+    const fn is_zero(&self) -> bool {
         self.numerator.is_zero()
     }
 
@@ -458,11 +459,7 @@ impl UnreducedRatio {
     }
 
     fn outward_upper(&self) -> Result<f64> {
-        crate::geometry::tessellation::exact::outward_ratio_bounds(
-            &self.numerator,
-            &self.denominator,
-        )
-        .map(|(_, upper)| upper)
+        exact::outward_ratio_bounds(&self.numerator, &self.denominator).map(|(_, upper)| upper)
     }
 
     #[cfg(test)]
@@ -624,7 +621,6 @@ impl SupportIndex {
             crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
             )
-            .into()
         })
     }
 
@@ -708,10 +704,10 @@ impl SupportIndex {
         if let (Some(left), Some(right)) = (node.left, node.right) {
             let left_lower = aabb_lower_squared(point, self.nodes[left].bounds)?;
             let right_lower = aabb_lower_squared(point, self.nodes[right].bounds)?;
-            let (first, second) = if left_lower.try_cmp(&right_lower)? != Ordering::Greater {
-                (left, right)
-            } else {
+            let (first, second) = if left_lower.try_cmp(&right_lower)? == Ordering::Greater {
                 (right, left)
+            } else {
+                (left, right)
             };
             self.nominate_node(first, point, nominated)?;
             self.nominate_node(second, point, nominated)?;
@@ -834,37 +830,17 @@ impl PreparedSupport {
         }
         let mut spans = Vec::new();
         try_reserve_vec(&mut spans, metric_spans.len())?;
-        let mut boundary_spans = metric_boundary_spans.as_ref().map(|_| Vec::new());
-        if let Some(boundary_spans) = boundary_spans.as_mut() {
-            try_reserve_vec(boundary_spans, metric_spans.len())?;
-        }
-        for (index, span) in metric_spans.into_iter().enumerate() {
+        for span in metric_spans {
             try_push_vec(&mut spans, support_span(span)?)?;
-            if let Some(boundary_spans) = boundary_spans.as_mut() {
-                try_push_vec(
-                    boundary_spans,
-                    metric_boundary_spans.as_ref().unwrap()[index],
-                )?;
-            }
         }
 
         let mut points = Vec::new();
         try_reserve_vec(&mut points, metric_points.len())?;
-        let mut boundary_points = metric_boundary_points.as_ref().map(|_| Vec::new());
-        if let Some(boundary_points) = boundary_points.as_mut() {
-            try_reserve_vec(boundary_points, metric_points.len())?;
-        }
-        for (index, point) in metric_points.into_iter().enumerate() {
+        for point in metric_points {
             try_push_vec(
                 &mut points,
                 ExactPoint::from_homogeneous(point.homogeneous)?,
             )?;
-            if let Some(boundary_points) = boundary_points.as_mut() {
-                try_push_vec(
-                    boundary_points,
-                    metric_boundary_points.as_ref().unwrap()[index],
-                )?;
-            }
         }
 
         let mut faces = Vec::new();
@@ -887,8 +863,8 @@ impl PreparedSupport {
         }
 
         let mut prepared = Self::from_parts(spans, points, faces)?;
-        prepared.boundary_spans = boundary_spans;
-        prepared.boundary_points = boundary_points;
+        prepared.boundary_spans = metric_boundary_spans;
+        prepared.boundary_points = metric_boundary_points;
         Ok(prepared)
     }
 
@@ -916,10 +892,8 @@ impl PreparedSupport {
         for edge in &boundary_edges {
             let edge_bounds =
                 FloatBox::from_point(&edge.start)?.include(FloatBox::from_point(&edge.end)?);
-            area_bounds = Some(match area_bounds {
-                None => edge_bounds,
-                Some(current) => current.include(edge_bounds),
-            });
+            area_bounds =
+                Some(area_bounds.map_or(edge_bounds, |current| current.include(edge_bounds)));
         }
 
         if spans.is_empty() && points.is_empty() && faces.is_empty() {
@@ -930,7 +904,6 @@ impl PreparedSupport {
 
         let index = SupportIndex::build(&spans, &points)?;
         Ok(Self {
-            index,
             spans,
             points,
             faces,
@@ -938,6 +911,7 @@ impl PreparedSupport {
             boundary_points: None,
             boundary_edges,
             area_bounds,
+            index,
         })
     }
 
@@ -959,7 +933,7 @@ impl PreparedSupport {
             let selected = self
                 .boundary_spans
                 .as_ref()
-                .map_or(true, |flags| flags[index]);
+                .is_none_or(|flags| flags[index]);
             if selected {
                 try_push_vec(&mut spans, span.try_clone()?)?;
             }
@@ -978,7 +952,7 @@ impl PreparedSupport {
             let selected = self
                 .boundary_points
                 .as_ref()
-                .map_or(true, |flags| flags[index]);
+                .is_none_or(|flags| flags[index]);
             if selected {
                 try_push_vec(&mut points, point.try_clone()?)?;
             }
@@ -1116,11 +1090,10 @@ impl PreparedSupport {
         if let Some(point) = self.points.first() {
             return Ok(Some(point.try_clone()?));
         }
-        Ok(self
-            .boundary_edges
+        self.boundary_edges
             .first()
             .map(|edge| edge.start.try_clone())
-            .transpose()?)
+            .transpose()
     }
 
     fn source_box_witness(
@@ -1175,15 +1148,13 @@ impl PreparedSupport {
     }
 
     fn distance_squared(&self, point: &ExactPoint) -> Result<Rational> {
-        let result = if self.contains_area(point)? {
+        if self.contains_area(point)? {
             Ok(Rational::zero())
         } else {
             self.index
                 .nearest(self, point)
                 .and_then(|distance| distance.to_rational())
-        };
-
-        result
+        }
     }
 }
 
@@ -1210,16 +1181,16 @@ fn push_raw_segment(
     }
     try_push_vec(spans, SupportSpan {
         source,
-        start: ExactPoint::from_xy(source.start)?,
+        carrier: ExactCarrier::from_segment(source)?,
         t_lo: Rational::zero(),
         t_hi: Rational::one(),
+        start: ExactPoint::from_xy(source.start)?,
         bounds: FloatBox {
             min_x: source.start.x.min(source.end.x),
             max_x: source.start.x.max(source.end.x),
             min_y: source.start.y.min(source.end.y),
             max_y: source.start.y.max(source.end.y),
         },
-        carrier: ExactCarrier::from_segment(source)?,
     })
 }
 
@@ -1249,7 +1220,7 @@ fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
 }
 
 fn exact_point_xy(x: f64, y: f64) -> Result<ExactPoint> {
-    Ok(ExactPoint::from_xy(XY::new(x, y))?)
+    ExactPoint::from_xy(XY::new(x, y))
 }
 
 impl ExactCarrier {
@@ -1427,12 +1398,12 @@ fn nonnegative_pair_upper_bound(value: &UnreducedRatio) -> Result<f64> {
 
 fn square_f64(value: f64) -> Result<Rational> {
     let value = ExactDyadic::try_from_f64(value)?;
-    Rational::from_dyadic(value.try_product(&value)?)
+    Ok(Rational::from_dyadic(value.try_product(&value)?))
 }
 
 #[cfg(test)]
 fn dyadic_as_f64(value: &ExactDyadic) -> Result<f64> {
-    Rational::from_dyadic(value.try_clone()?)?.round()
+    Rational::from_dyadic(value.try_clone()?).round()
 }
 
 #[cfg(test)]
@@ -1524,20 +1495,20 @@ fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> 
     let max_y = Rational::from_f64(bounds.max_y)?;
     let zero = Rational::zero();
     let dx = if point.x.try_cmp(&min_x)? == Ordering::Less {
-        (&min_x).try_subtract(&point.x)?
+        min_x.try_subtract(&point.x)?
     } else if point.x.try_cmp(&max_x)? == Ordering::Greater {
-        (&point.x).try_subtract(&max_x)?
+        point.x.try_subtract(&max_x)?
     } else {
         zero.try_clone()?
     };
     let dy = if point.y.try_cmp(&min_y)? == Ordering::Less {
-        (&min_y).try_subtract(&point.y)?
+        min_y.try_subtract(&point.y)?
     } else if point.y.try_cmp(&max_y)? == Ordering::Greater {
-        (&point.y).try_subtract(&max_y)?
+        point.y.try_subtract(&max_y)?
     } else {
         zero
     };
-    (&(&dx).try_square()?).try_add(&(&dy).try_square()?)
+    dx.try_square()?.try_add(&dy.try_square()?)
 }
 
 fn point_in_cycle(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<bool> {
@@ -1547,11 +1518,11 @@ fn point_in_cycle(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<bool> {
     for index in 0..cycle.len() {
         let left = &cycle[index];
         let right = &cycle[(index + 1) % cycle.len()];
-        let dx = (&right.x).try_subtract(&left.x)?;
-        let dy = (&right.y).try_subtract(&left.y)?;
-        let px = (&point.x).try_subtract(&left.x)?;
-        let py = (&point.y).try_subtract(&left.y)?;
-        let cross = (&(&dx).try_product(&py)?).try_subtract(&(&dy).try_product(&px)?)?;
+        let dx = right.x.try_subtract(&left.x)?;
+        let dy = right.y.try_subtract(&left.y)?;
+        let px = point.x.try_subtract(&left.x)?;
+        let py = point.y.try_subtract(&left.y)?;
+        let cross = dx.try_product(&py)?.try_subtract(&dy.try_product(&px)?)?;
         if cross.is_zero()
             && between(&point.x, &left.x, &right.x)?
             && between(&point.y, &left.y, &right.y)?
@@ -1575,11 +1546,11 @@ fn cycle_crosses_ray(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<bool> {
         if left_above == right_above {
             continue;
         }
-        let dx = (&right.x).try_subtract(&left.x)?;
-        let dy = (&right.y).try_subtract(&left.y)?;
-        let px = (&point.x).try_subtract(&left.x)?;
-        let py = (&point.y).try_subtract(&left.y)?;
-        let cross = (&(&dx).try_product(&py)?).try_subtract(&(&dy).try_product(&px)?)?;
+        let dx = right.x.try_subtract(&left.x)?;
+        let dy = right.y.try_subtract(&left.y)?;
+        let px = point.x.try_subtract(&left.x)?;
+        let py = point.y.try_subtract(&left.y)?;
+        let cross = dx.try_product(&py)?.try_subtract(&dy.try_product(&px)?)?;
         let rising = right.y.try_cmp(&left.y)? == Ordering::Greater;
         if (rising && cross.sign() == ExactSign::Positive)
             || (!rising && cross.sign() == ExactSign::Negative)
@@ -1605,20 +1576,20 @@ fn segment_box_intersection(edge: &BoundaryEdge, bounds: FloatBox) -> Result<Opt
     if point_in_box(&edge.end, bounds)? {
         return Ok(Some(edge.end.try_clone()?));
     }
-    let dx = (&edge.end.x).try_subtract(&edge.start.x)?;
-    let dy = (&edge.end.y).try_subtract(&edge.start.y)?;
+    let dx = edge.end.x.try_subtract(&edge.start.x)?;
+    let dy = edge.end.y.try_subtract(&edge.start.y)?;
     for x in [bounds.min_x, bounds.max_x] {
         if dx.is_zero() {
             continue;
         }
         let x = Rational::from_f64(x)?;
-        let parameter = (&(&x).try_subtract(&edge.start.x)?).try_quotient(&dx)?;
+        let parameter = x.try_subtract(&edge.start.x)?.try_quotient(&dx)?;
         if parameter.try_cmp(&Rational::zero())? == Ordering::Less
             || parameter.try_cmp(&Rational::one())? == Ordering::Greater
         {
             continue;
         }
-        let y = (&edge.start.y).try_add(&(&dy).try_product(&parameter)?)?;
+        let y = edge.start.y.try_add(&dy.try_product(&parameter)?)?;
         if y.try_cmp(&Rational::from_f64(bounds.min_y)?)? != Ordering::Less
             && y.try_cmp(&Rational::from_f64(bounds.max_y)?)? != Ordering::Greater
         {
@@ -1630,13 +1601,13 @@ fn segment_box_intersection(edge: &BoundaryEdge, bounds: FloatBox) -> Result<Opt
             continue;
         }
         let y = Rational::from_f64(y)?;
-        let parameter = (&(&y).try_subtract(&edge.start.y)?).try_quotient(&dy)?;
+        let parameter = y.try_subtract(&edge.start.y)?.try_quotient(&dy)?;
         if parameter.try_cmp(&Rational::zero())? == Ordering::Less
             || parameter.try_cmp(&Rational::one())? == Ordering::Greater
         {
             continue;
         }
-        let x = (&edge.start.x).try_add(&(&dx).try_product(&parameter)?)?;
+        let x = edge.start.x.try_add(&dx.try_product(&parameter)?)?;
         if x.try_cmp(&Rational::from_f64(bounds.min_x)?)? != Ordering::Less
             && x.try_cmp(&Rational::from_f64(bounds.max_x)?)? != Ordering::Greater
         {
@@ -1838,11 +1809,13 @@ impl SourcePatch {
                     x: min_x.try_midpoint(&max_x)?,
                     y: min_y.try_midpoint(&max_y)?,
                 };
-                let half_x =
-                    (&(&max_x).try_subtract(&min_x)?).try_quotient(&Rational::from_f64(2.0)?)?;
-                let half_y =
-                    (&(&max_y).try_subtract(&min_y)?).try_quotient(&Rational::from_f64(2.0)?)?;
-                let radius = (&(&half_x).try_square()?).try_add(&(&half_y).try_square()?)?;
+                let half_x = max_x
+                    .try_subtract(&min_x)?
+                    .try_quotient(&Rational::from_f64(2.0)?)?;
+                let half_y = max_y
+                    .try_subtract(&min_y)?
+                    .try_quotient(&Rational::from_f64(2.0)?)?;
+                let radius = half_x.try_square()?.try_add(&half_y.try_square()?)?;
                 Ok((center, radius))
             },
             Self::Point(point) => Ok((source.points[*point].try_clone()?, Rational::zero())),
@@ -1984,12 +1957,12 @@ impl SourcePatch {
             Some(Ordering::Equal | Ordering::Greater) => BoxSplitAxis::X,
             None => return Self::split_box_four_way(bounds, budget),
         };
-        let axis = match (preferred, split_x, split_y) {
-            (BoxSplitAxis::X, true, _) => BoxSplitAxis::X,
-            (BoxSplitAxis::X, false, true) => BoxSplitAxis::Y,
-            (BoxSplitAxis::Y, _, true) => BoxSplitAxis::Y,
-            (BoxSplitAxis::Y, true, false) => BoxSplitAxis::X,
-            _ => return Ok(None),
+        // At least one axis splits, so the preferred axis yields only when it cannot.
+        let axis = match preferred {
+            BoxSplitAxis::X if split_x => BoxSplitAxis::X,
+            BoxSplitAxis::Y if split_y => BoxSplitAxis::Y,
+            BoxSplitAxis::X => BoxSplitAxis::Y,
+            BoxSplitAxis::Y => BoxSplitAxis::X,
         };
         budget.add(2)?;
         let mut children = Vec::new();
@@ -2090,7 +2063,7 @@ impl FloatSqrtBracket {
         let midpoint = ExactDyadic::try_from_f64(self.lower)?
             .try_add(ExactDyadic::try_from_f64(upper)?)?
             .try_product(&ExactDyadic::try_from_f64(0.5)?)?;
-        let midpoint_squared = Rational::from_dyadic(midpoint.try_product(&midpoint)?)?;
+        let midpoint_squared = Rational::from_dyadic(midpoint.try_product(&midpoint)?);
         Ok(Some(match squared.try_cmp(&midpoint_squared)? {
             Ordering::Less => self.lower,
             Ordering::Equal if self.lower.to_bits() & 1 == 0 => self.lower,
@@ -2314,7 +2287,7 @@ impl SqrtInterval {
         };
         loop {
             let width =
-                Rational::from_dyadic(upper.try_clone()?.try_subtract(self.lower.try_clone()?)?)?;
+                Rational::from_dyadic(upper.try_clone()?.try_subtract(self.lower.try_clone()?)?);
             if width.try_cmp(error)? != Ordering::Greater {
                 self.upper = Some(upper);
                 return Ok(());
@@ -2325,8 +2298,8 @@ impl SqrtInterval {
                 .try_clone()?
                 .try_add(upper.try_clone()?)?
                 .try_product(&ExactDyadic::try_from_f64(0.5)?)?;
-            let midpoint_rational = Rational::from_dyadic(midpoint.try_clone()?)?;
-            let midpoint_squared = (&midpoint_rational).try_square()?;
+            let midpoint_rational = Rational::from_dyadic(midpoint.try_clone()?);
+            let midpoint_squared = midpoint_rational.try_square()?;
 
             match squared.try_cmp(&midpoint_squared)? {
                 Ordering::Equal => {
@@ -2345,7 +2318,7 @@ impl SqrtInterval {
 
     fn upper_rational(&self) -> Result<Option<Rational>> {
         if let Some(value) = &self.upper {
-            return Ok(Some(Rational::from_dyadic(value.try_clone()?)?));
+            return Ok(Some(Rational::from_dyadic(value.try_clone()?)));
         }
         self.overflow_upper
             .as_ref()
@@ -2421,7 +2394,7 @@ struct PatchQueue {
 }
 
 impl PatchQueue {
-    fn new(stable_ties: bool) -> Self {
+    const fn new(stable_ties: bool) -> Self {
         Self {
             heap: BinaryHeap::new(),
             stable_ties,
@@ -2450,8 +2423,7 @@ impl PatchQueue {
     }
 
     fn pop(&mut self) -> Option<PatchRecord> {
-        let record = self.heap.pop().map(|entry| entry.record);
-        record
+        self.heap.pop().map(|entry| entry.record)
     }
 
     fn max_upper(&self) -> Result<Option<Rational>> {
@@ -2494,7 +2466,7 @@ impl<'a> SearchContext<'a> {
         }
     }
 
-    fn new_directed(
+    const fn new_directed(
         accuracy: &'a Accuracy,
         output_scale: Rational,
         output_tolerance: Rational,
@@ -2544,7 +2516,7 @@ impl<'a> SearchContext<'a> {
     }
 }
 
-fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<SqrtInterval> {
+fn sqrt_upper(squared: &Rational, context: &SearchContext<'_>) -> Result<SqrtInterval> {
     if context.exact_upper {
         return SqrtInterval::from_squared_with_error(squared, None);
     }
@@ -2570,7 +2542,7 @@ fn sqrt_upper(squared: &Rational, context: &mut SearchContext<'_>) -> Result<Sqr
 fn sum_upper(left: &SqrtInterval, right: &SqrtInterval) -> Result<Option<Rational>> {
     if let (Some(left), Some(right)) = (&left.upper, &right.upper) {
         let sum = left.try_clone()?.try_add(right.try_clone()?)?;
-        return Ok(Some(Rational::from_dyadic(sum)?));
+        return Ok(Some(Rational::from_dyadic(sum)));
     }
     let (Some(left), Some(right)) = (left.upper_rational()?, right.upper_rational()?) else {
         return Ok(None);
@@ -2583,7 +2555,7 @@ fn fixed_site_upper(
     source: &PreparedSupport,
     target: &PreparedSupport,
     nominated: &[PrimitiveId],
-    context: &mut SearchContext<'_>,
+    context: &SearchContext<'_>,
 ) -> Result<Option<Rational>> {
     if nominated.is_empty() {
         return Ok(None);
@@ -2669,7 +2641,7 @@ fn parallel_strip_upper(
     source: &PreparedSupport,
     target: &PreparedSupport,
     nominated: &[PrimitiveId],
-    context: &mut SearchContext<'_>,
+    context: &SearchContext<'_>,
 ) -> Result<Option<Rational>> {
     let mut span_indices = Vec::new();
     try_reserve_vec(&mut span_indices, nominated.len())?;
@@ -2689,7 +2661,7 @@ fn parallel_strip_upper(
             .faces
             .iter()
             .flat_map(|face| face.iter().map(Vec::len))
-            .try_fold(0usize, |count, length| {
+            .try_fold(0_usize, |count, length| {
                 count
                     .checked_add(length)
                     .ok_or(crate::error::ResourceError::SizeOverflow)
@@ -2758,7 +2730,7 @@ fn parallel_strip_upper(
             let separation_squared = separation
                 .try_square()?
                 .try_quotient(&left.carrier.norm_squared)?;
-            let half = (&separation_squared).try_quotient(&Rational::from_f64(4.0)?)?;
+            let half = separation_squared.try_quotient(&Rational::from_f64(4.0)?)?;
             let squared = context.scaled_squared(&half)?;
             let Some(upper) = sqrt_upper(&squared, context)?.upper_rational()? else {
                 continue;
@@ -2774,7 +2746,7 @@ fn patch_upper(
     patch: &SourcePatch,
     source: &PreparedSupport,
     target: &PreparedSupport,
-    context: &mut SearchContext<'_>,
+    context: &SearchContext<'_>,
 ) -> Result<Option<Rational>> {
     let (center, radius_squared) = patch.center_and_radius_squared(source)?;
     let center_squared = target.distance_squared(&center)?;
@@ -2806,7 +2778,7 @@ fn patch_upper(
     Ok(best)
 }
 
-fn upper_is_below_lower(upper: &Rational, context: &mut SearchContext<'_>) -> Result<bool> {
+fn upper_is_below_lower(upper: &Rational, context: &SearchContext<'_>) -> Result<bool> {
     let Some(lower) = &context.lower_squared else {
         return Ok(false);
     };
@@ -2848,7 +2820,7 @@ fn build_patch(
     Ok(Some(PatchRecord { patch, upper }))
 }
 
-fn lower_candidate(context: &mut SearchContext<'_>) -> Result<Option<f64>> {
+fn lower_candidate(context: &SearchContext<'_>) -> Result<Option<f64>> {
     let Some(lower) = &context.lower_squared else {
         return Ok(None);
     };
@@ -2858,7 +2830,7 @@ fn lower_candidate(context: &mut SearchContext<'_>) -> Result<Option<f64>> {
 fn candidate_certified(
     candidate: f64,
     upper: &Rational,
-    context: &mut SearchContext<'_>,
+    context: &SearchContext<'_>,
 ) -> Result<bool> {
     let Some(lower_squared) = &context.lower_squared else {
         return Ok(false);
@@ -2876,11 +2848,11 @@ fn candidate_certified(
     if low.sign() != ExactSign::Positive {
         return Ok(true);
     }
-    let low_squared = (&low).try_square()?;
+    let low_squared = low.try_square()?;
     Ok(lower_squared.try_cmp(&low_squared)? != Ordering::Less)
 }
 
-fn queue_upper(queue: &PatchQueue, context: &mut SearchContext<'_>) -> Result<Option<Rational>> {
+fn queue_upper(queue: &PatchQueue, context: &SearchContext<'_>) -> Result<Option<Rational>> {
     let Some(lower) = context
         .lower_squared
         .as_ref()
@@ -2988,11 +2960,11 @@ impl DirectedOptimizationResult {
         self.center
     }
 
-    pub(in crate::geometry) fn source_support(&self) -> &PreparedSupport {
+    pub(in crate::geometry) const fn source_support(&self) -> &PreparedSupport {
         &self.source
     }
 
-    pub(in crate::geometry) fn boundary_support(&self) -> &PreparedSupport {
+    pub(in crate::geometry) const fn boundary_support(&self) -> &PreparedSupport {
         &self.boundary
     }
 
@@ -3013,7 +2985,7 @@ impl DirectedOptimizationResult {
 
 fn downward_sqrt(squared: &Rational) -> Result<f64> {
     let interval = SqrtInterval::from_squared_with_error(squared, None)?;
-    Rational::from_dyadic(interval.lower)?.round()
+    Rational::from_dyadic(interval.lower).round()
 }
 
 fn movement_lower_squared(
@@ -3022,7 +2994,7 @@ fn movement_lower_squared(
 ) -> Result<Rational> {
     let witness_interval = SqrtInterval::from_squared_with_error(witness_squared, None)?;
     let movement_interval = SqrtInterval::from_squared_with_error(movement_squared, None)?;
-    let witness_lower = Rational::from_dyadic(witness_interval.lower)?;
+    let witness_lower = Rational::from_dyadic(witness_interval.lower);
     let Some(movement_upper) = movement_interval.upper_rational()? else {
         return Ok(Rational::zero());
     };
@@ -3043,7 +3015,7 @@ fn directed_candidate(
     source: &PreparedSupport,
     target: &PreparedSupport,
     upper: &Rational,
-    context: &mut SearchContext<'_>,
+    context: &SearchContext<'_>,
 ) -> Result<Option<DirectedCandidate>> {
     let (Some(witness), Some(witness_squared)) = (
         context.lower_witness.as_ref(),
@@ -3097,8 +3069,7 @@ fn directed_candidate(
     if upper_scaled.try_cmp(&certified_radius)? == Ordering::Less {
         return Err(crate::geometry::GeometryErrorKind::message(
             "directed inradius upper enclosure fell below its emitted clearance",
-        )
-        .into());
+        ));
     }
     let gap = upper_scaled.try_subtract(&certified_radius)?;
     if gap.try_cmp(&context.output_tolerance)? == Ordering::Greater {
@@ -3181,14 +3152,12 @@ pub(crate) fn directed_inradius_scaled(
     if !(tolerance.is_finite() && tolerance > 0.0) {
         return Err(crate::geometry::GeometryErrorKind::message(
             "maximum inscribed circle tolerance must be positive and finite",
-        )
-        .into());
+        ));
     }
     if !(output_scale.is_finite() && output_scale > 0.0) {
         return Err(crate::geometry::GeometryErrorKind::message(
             "maximum inscribed circle scale must be positive and finite",
-        )
-        .into());
+        ));
     }
     let accuracy = Accuracy::new(Some(1.0), 1.0)?;
     let output_scale = Rational::from_f64(output_scale)?;
@@ -3395,7 +3364,8 @@ mod tests {
     use std::fmt::Write as _;
 
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq, Point};
+    use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+    use crate::geometry::{CoordSeq, LineSeq, Point, derived};
 
     fn line(vertices: &[(f64, f64)]) -> Shape {
         let points: Vec<_> = vertices
@@ -3552,7 +3522,6 @@ mod tests {
             .try_product(&ExactDyadic::try_from_f64(0.5).expect("finite half"))
             .expect("midpoint");
         Rational::from_dyadic(midpoint)
-            .expect("dyadic midpoint")
             .try_square()
             .expect("squared midpoint")
     }
@@ -3591,8 +3560,7 @@ mod tests {
     fn directed_adjacent_box_refinement_work_scales_with_boundary_spans() {
         for count in [8, 16, 32, 64] {
             let shape = adjacent_box_union(count);
-            let tolerance =
-                crate::geometry::derived::scale_aware_default_tolerance(&shape).unwrap();
+            let tolerance = derived::scale_aware_default_tolerance(&shape).unwrap();
             let (source, boundary) = adjacent_box_prepared_support(count);
             let limit = count * 64;
             let (result, work) = {
@@ -3626,7 +3594,7 @@ mod tests {
     fn directed_four_way_adjacent_box_refinement_exceeds_linear_work_envelope() {
         let count = 16;
         let shape = adjacent_box_union(count);
-        let tolerance = crate::geometry::derived::scale_aware_default_tolerance(&shape).unwrap();
+        let tolerance = derived::scale_aware_default_tolerance(&shape).unwrap();
         let limit = count * 64;
         let _guard = limit_refinement_work(limit);
         let result =
@@ -3688,7 +3656,6 @@ mod tests {
     fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
         let interval = SqrtInterval::from_squared(squared).expect("sqrt interval");
         let lower = Rational::from_dyadic(interval.lower.try_clone().expect("lower clone"))
-            .expect("lower rational")
             .try_square()
             .expect("lower square");
         assert_ne!(
@@ -3699,7 +3666,6 @@ mod tests {
         let lower_value = dyadic_as_f64(&interval.lower).expect("lower binary64");
         if let Some(upper) = &interval.upper {
             let upper_squared = Rational::from_dyadic(upper.try_clone().expect("upper clone"))
-                .expect("upper rational")
                 .try_square()
                 .expect("upper square");
             assert_ne!(
@@ -3768,10 +3734,7 @@ mod tests {
             ("rounded squared underflow", underflowing_squared),
             (
                 "root below minimum subnormal",
-                Rational::from_dyadic(below_minimum)
-                    .unwrap()
-                    .try_square()
-                    .unwrap(),
+                Rational::from_dyadic(below_minimum).try_square().unwrap(),
             ),
             ("maximum square", squared(maximum)),
             (
@@ -3781,7 +3744,6 @@ mod tests {
                         .try_add(ExactDyadic::from_f64(2.0_f64.powi(969)))
                         .unwrap(),
                 )
-                .unwrap()
                 .try_square()
                 .unwrap(),
             ),
@@ -3792,7 +3754,6 @@ mod tests {
                         .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))
                         .unwrap(),
                 )
-                .unwrap()
                 .try_square()
                 .unwrap(),
             ),
@@ -3847,17 +3808,13 @@ mod tests {
             squared_midpoint(1.0, 1.0_f64.next_up()),
             squared_midpoint(minimum_subnormal, f64::from_bits(2)),
             squared_midpoint(largest_subnormal, minimum_normal),
-            Rational::from_dyadic(below_minimum)
-                .unwrap()
-                .try_square()
-                .unwrap(),
+            Rational::from_dyadic(below_minimum).try_square().unwrap(),
             squared(maximum),
             Rational::from_dyadic(
                 ExactDyadic::from_f64(maximum)
                     .try_add(ExactDyadic::from_f64(2.0_f64.powi(969)))
                     .unwrap(),
             )
-            .unwrap()
             .try_square()
             .unwrap(),
             Rational::from_dyadic(
@@ -3865,7 +3822,6 @@ mod tests {
                     .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))
                     .unwrap(),
             )
-            .unwrap()
             .try_square()
             .unwrap(),
         ];
@@ -3971,7 +3927,7 @@ mod tests {
         context
             .update_lower(Rational::from_f64(4.0).unwrap())
             .unwrap();
-        let upper = queue_upper(&queue, &mut context).unwrap().unwrap();
+        let upper = queue_upper(&queue, &context).unwrap().unwrap();
         assert_ne!(
             upper.try_cmp(&Rational::from_f64(2.0).unwrap()).unwrap(),
             Ordering::Less
@@ -3982,7 +3938,7 @@ mod tests {
                 upper: None,
             })
             .unwrap();
-        assert!(queue_upper(&queue, &mut context).unwrap().is_none());
+        assert!(queue_upper(&queue, &context).unwrap().is_none());
     }
 
     #[test]
@@ -4065,9 +4021,7 @@ mod tests {
     #[test]
     fn subdivision_uses_the_shared_generated_work_budget() {
         let mut budget = ExpansionBudget::new("hausdorff_distance", "max_error");
-        budget
-            .add(crate::geometry::generated_budget::GENERATED_ITEM_LIMIT)
-            .unwrap();
+        budget.add(GENERATED_ITEM_LIMIT).unwrap();
         let patch = SourcePatch::Box(FloatBox {
             min_x: 0.0,
             max_x: 1.0,
@@ -4202,7 +4156,7 @@ mod tests {
                 .unwrap();
         let source = PreparedSupport::from_line_columns(&[2.0], &[1.0]).unwrap();
         let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
-        let mut context = SearchContext::new(&accuracy);
+        let context = SearchContext::new(&accuracy);
         for (y, inside) in [(1.0, true), (3.0, false), (-1.0, false)] {
             let patch = SourcePatch::Box(FloatBox {
                 min_x: 2.0,
@@ -4215,7 +4169,7 @@ mod tests {
                 &source,
                 &target,
                 &[PrimitiveId::Span(0), PrimitiveId::Span(2)],
-                &mut context,
+                &context,
             )
             .unwrap();
             if inside {
@@ -4805,10 +4759,7 @@ mod tests {
         let mut context = SearchContext::new_directed(&accuracy, Rational::one(), Rational::one());
         let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
         let target = source.boundary_clone().unwrap();
-        context
-            .budget
-            .add(crate::geometry::generated_budget::GENERATED_ITEM_LIMIT)
-            .unwrap();
+        context.budget.add(GENERATED_ITEM_LIMIT).unwrap();
         let error = run_directed(
             &source,
             &target,
@@ -4994,7 +4945,7 @@ mod tests {
         let huge = 2.0_f64.powi(1023);
         let left = Shape::Point(Point::new_raw_xy(-huge, 0.0));
         let right = Shape::Point(Point::new_raw_xy(huge, 0.0));
-        assert!(distance(&left, &right, Some(1.0), 1.0).is_err());
+        distance(&left, &right, Some(1.0), 1.0).unwrap_err();
 
         let origin = Shape::Point(Point::new_raw_xy(0.0, 0.0));
         let large = Shape::Point(Point::new_raw_xy(1e200, 1e200));
@@ -5232,15 +5183,13 @@ mod tests {
 
     #[test]
     fn identical_empty_support_is_still_undefined() {
-        assert!(
-            distance(
-                &Shape::empty_point(),
-                &Shape::empty_point(),
-                Some(1e-3),
-                1.0
-            )
-            .is_err()
-        );
+        distance(
+            &Shape::empty_point(),
+            &Shape::empty_point(),
+            Some(1e-3),
+            1.0,
+        )
+        .unwrap_err();
     }
 
     #[test]
@@ -5256,14 +5205,14 @@ mod tests {
         );
         let shape =
             Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), vec![ring]).unwrap());
-        assert!(distance(&shape, &shape, Some(1e-6), 1.0).is_err());
+        distance(&shape, &shape, Some(1e-6), 1.0).unwrap_err();
     }
 
     #[test]
     fn invalid_accuracy_is_rejected_before_identity() {
         let point = Shape::Point(Point::new_raw_xy(3.0, 4.0));
         for error in [0.0, -1.0, f64::INFINITY, f64::NAN] {
-            assert!(distance(&point, &point, Some(error), 1.0).is_err());
+            distance(&point, &point, Some(error), 1.0).unwrap_err();
         }
     }
 }

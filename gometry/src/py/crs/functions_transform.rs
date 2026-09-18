@@ -1,19 +1,18 @@
-#![allow(
+#![expect(
     clippy::similar_names,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
+    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use pyo3::exceptions::PyTypeError;
 
+use crate::boundary::FloatInput;
 use crate::check_i32_min;
 use crate::py::crs::{
     Bound, CrsCoordinateArgs, IntoPyObject as _, Py, PyAny, PyAnyMethods as _, PyErr, PyResult,
     Python, TransformOptionArgs, crs, crs_normalize, finite_coordinate_required, pyfunction,
 };
+use crate::py::errors;
 use crate::py::errors::{AccuracyWarning, GeometryError};
+use crate::py::numpy::{float64_array, float64_matrix, reject_masked_array};
 
 /// Drain the one diagnostic published by the shared PROJ pipeline seam.
 ///
@@ -362,9 +361,9 @@ pub(crate) fn coordinates_to_matrix_py(
     }
     let rows = x.len();
     let columns = if z.is_some() { 3 } else { 2 };
-    let capacity = rows.checked_mul(columns).ok_or_else(|| {
-        crate::py::errors::GeometryError::new_err("coordinate matrix size overflows usize")
-    })?;
+    let capacity = rows
+        .checked_mul(columns)
+        .ok_or_else(|| GeometryError::new_err("coordinate matrix size overflows usize"))?;
     let mut flat = crate::try_vec_with_capacity(capacity)?;
     match z {
         None => {
@@ -381,7 +380,7 @@ pub(crate) fn coordinates_to_matrix_py(
             }
         },
     }
-    crate::py::numpy::float64_matrix(py, flat, rows, columns)
+    float64_matrix(py, flat, rows, columns)
 }
 
 /// Rebuild the Python result tuple — `(x, y)`, `(x, y, z)`, or
@@ -407,7 +406,7 @@ pub(crate) fn coordinates_to_py(
     // `np.asarray(column)` reads the f64 lane directly, `list(column)`
     // still works, and the type mirrors `array.coords` (measured: the
     // list-of-PyFloat build was ~2/3 of a 500k transform's wall time).
-    let column = |values: Vec<f64>| crate::py::numpy::float64_array(py, values);
+    let column = |values: Vec<f64>| float64_array(py, values);
     match zt {
         crate::Zt::None => Ok((column(x)?, column(y)?).into_pyobject(py)?.unbind().into()),
         crate::Zt::Z(z) => Ok((column(x)?, column(y)?, column(z.values)?)
@@ -518,9 +517,9 @@ pub(crate) fn crs_transform_bounds(
     only_best: Option<bool>,
     force_over: bool,
 ) -> PyResult<Py<PyAny>> {
-    crate::py::numpy::reject_masked_array(bounds)?;
+    reject_masked_array(bounds)?;
     let densify = u32::try_from(densify).map_err(|_| {
-        crate::py::errors::integer_parameter_error(
+        errors::integer_parameter_error(
             format!("bounds densify must be between 0 and 10000, got {densify}"),
             "densify",
             densify,
@@ -593,7 +592,7 @@ pub(crate) fn crs_transform_bounds(
                 )?;
                 Ok((result.into_pyobject(py)?.unbind().into(), execution))
             },
-            _ => Err(crate::py::errors::GeometryError::new_err(
+            _ => Err(GeometryError::new_err(
                 "bounds must be a 4-tuple or 6-tuple of finite floats",
             )),
         },
@@ -601,9 +600,9 @@ pub(crate) fn crs_transform_bounds(
             let columns = rows.first().map_or(4, BoundsRow::width);
             let len = rows.len();
             let (out, execution) = py.detach(move || {
-                let capacity = len.checked_mul(columns).ok_or_else(|| {
-                    crate::py::errors::GeometryError::new_err("bounds matrix size overflows usize")
-                })?;
+                let capacity = len
+                    .checked_mul(columns)
+                    .ok_or_else(|| GeometryError::new_err("bounds matrix size overflows usize"))?;
                 let mut out = crate::try_vec_with_capacity(capacity)?;
                 if columns == 4 {
                     let mut input_rows = crate::try_vec_with_capacity(len)?;
@@ -653,10 +652,7 @@ pub(crate) fn crs_transform_bounds(
                     Ok::<_, PyErr>((out, execution))
                 }
             })?;
-            Ok((
-                crate::py::numpy::float64_matrix(py, out, len, columns)?,
-                execution,
-            ))
+            Ok((float64_matrix(py, out, len, columns)?, execution))
         },
     })?;
     drain_accuracy_warning(py, &execution)?;
@@ -695,25 +691,23 @@ fn classify_bounds_shape(
     // Empty input is not a batch of zero rows — it fails the scalar contract
     // (same diagnostic as a wrong-length box).
     if items.is_empty() {
-        return Err(crate::py::errors::GeometryError::new_err(
+        return Err(GeometryError::new_err(
             "bounds must be a 4-tuple or 6-tuple of finite floats",
         ));
     }
     if let Some(first) = first_scalar {
         if !first.is_finite() {
-            return Err(crate::py::errors::GeometryError::new_err(
-                "bounds must be finite",
-            ));
+            return Err(GeometryError::new_err("bounds must be finite"));
         }
         let mut values = crate::try_vec_with_capacity(items.len())?;
         crate::try_push(&mut values, first)?;
         for item in &items[1..] {
-            // Match coordinate_values' element contract: f64-extractable only.
+            // Match float_values' element contract: f64-extractable only.
             let value = crate::finite_f64_required("bounds", item)?;
             crate::try_push(&mut values, value)?;
         }
         if !matches!(values.len(), 4 | 6) {
-            return Err(crate::py::errors::GeometryError::new_err(
+            return Err(GeometryError::new_err(
                 "bounds must be a 4-tuple or 6-tuple of finite floats",
             ));
         }
@@ -723,20 +717,21 @@ fn classify_bounds_shape(
     crate::try_reserve_hint(&mut rows, items.len())?;
     let mut width = None;
     for item in items {
-        let values = crate::parameter_values_at_most(py, item, "bounds", 6, |got| {
-            GeometryError::new_err(format!(
-                "bounds rows must be 4-tuples or 6-tuples of finite floats; got {got} values"
-            ))
-        })?;
+        let values =
+            crate::float_values_at_most(py, item, "bounds", FloatInput::Parameter, 6, |got| {
+                GeometryError::new_err(format!(
+                    "bounds rows must be 4-tuples or 6-tuples of finite floats; got {got} values"
+                ))
+            })?;
         let row_width = values.len();
         if !matches!(row_width, 4 | 6) {
-            return Err(crate::py::errors::GeometryError::new_err(
+            return Err(GeometryError::new_err(
                 "bounds rows must be 4-tuples or 6-tuples of finite floats",
             ));
         }
         if let Some(width) = width {
             if width != row_width {
-                return Err(crate::py::errors::GeometryError::new_err(
+                return Err(GeometryError::new_err(
                     "bounds rows must all have the same dimensionality",
                 ));
             }
@@ -882,6 +877,6 @@ pub(crate) fn crs_roundtrip(
     if coordinates.scalar {
         Ok(errors[0].into_pyobject(py)?.unbind().into())
     } else {
-        Ok(crate::py::numpy::float64_array(py, errors)?)
+        Ok(float64_array(py, errors)?)
     }
 }

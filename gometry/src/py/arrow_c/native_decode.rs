@@ -14,7 +14,9 @@ use crate::geometry::{
     Shape, SharedSlice, ZOrdinate, column_all_finite,
 };
 use crate::io;
+use crate::py::arrow::WkbOffsetWidth;
 use crate::py::geoarrow::GeometryEncoding;
+use crate::py::{arrow, arrow_c};
 
 /// Errors that can be produced after the Arrow producer has been released.
 /// Arrow structure errors retain the GeoArrow parse boundary; geometry and WKB
@@ -44,7 +46,7 @@ impl NativeArrowDecodeError {
 
     pub(crate) fn into_py_err(self) -> pyo3::PyErr {
         match self {
-            Self::GeoArrow(message) => crate::py::arrow::geoarrow_parse_error(message),
+            Self::GeoArrow(message) => arrow::geoarrow_parse_error(message),
             Self::Core(error) => error.into(),
         }
     }
@@ -109,10 +111,8 @@ pub(crate) fn decode_batch(batch: NativeArrowBatch) -> DecodeResult<NativeDecode
         GeometryEncoding::Polygon => decode_polygons(&node)?,
         GeometryEncoding::MultiPolygon => decode_multipolygons(&node)?,
         GeometryEncoding::Wkb => match classification.wkb_offset_width {
-            crate::py::arrow::WkbOffsetWidth::View => decode_binary_view_wkb(&node)?,
-            crate::py::arrow::WkbOffsetWidth::Int32 | crate::py::arrow::WkbOffsetWidth::Int64 => {
-                decode_offset_wkb(&node)?
-            },
+            WkbOffsetWidth::View => decode_binary_view_wkb(&node)?,
+            WkbOffsetWidth::Int32 | WkbOffsetWidth::Int64 => decode_offset_wkb(&node)?,
         },
     };
     Ok(decoded)
@@ -1074,7 +1074,7 @@ fn combined_validity(
     for row in 0..length {
         push(&mut values, !missing(row))?;
     }
-    Ok(Some(crate::py::arrow_c::try_arc_from_vec_native(values)?))
+    Ok(Some(arrow_c::try_arc_from_vec_native(values)?))
 }
 
 fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
@@ -1096,6 +1096,8 @@ mod tests {
         NativeArrowBatch, NativeArrowClassification, OwnedBuffer, OwnedBufferSlots,
     };
     use super::{ArrowFormat, NativeDecodedStorage, NativeNode};
+    use crate::py::arrow::WkbOffsetWidth;
+    use crate::py::geoarrow::GeometryEncoding;
 
     #[test]
     fn direct_point_decode_reuses_admitted_columns_and_retries_allocation_prefixes() {
@@ -1137,8 +1139,8 @@ mod tests {
                 NativeArrowBatch {
                     node,
                     classification: NativeArrowClassification {
-                        encoding: crate::py::geoarrow::GeometryEncoding::Point,
-                        wkb_offset_width: crate::py::arrow::WkbOffsetWidth::Int32,
+                        encoding: GeometryEncoding::Point,
+                        wkb_offset_width: WkbOffsetWidth::Int32,
                         crs: None,
                         epoch: None,
                     },
@@ -1240,12 +1242,10 @@ mod tests {
         }
     }
 
-    fn classification(
-        encoding: crate::py::geoarrow::GeometryEncoding,
-    ) -> NativeArrowClassification {
+    fn classification(encoding: GeometryEncoding) -> NativeArrowClassification {
         NativeArrowClassification {
             encoding,
-            wkb_offset_width: crate::py::arrow::WkbOffsetWidth::Int32,
+            wkb_offset_width: WkbOffsetWidth::Int32,
             crs: None,
             epoch: None,
         }
@@ -1264,7 +1264,7 @@ mod tests {
         let node = list_node(&[0, 2, 4, 6], coordinates, Some(vec![true, false, false]));
         let decoded = NativeArrowBatch {
             node,
-            classification: classification(crate::py::geoarrow::GeometryEncoding::LineString),
+            classification: classification(GeometryEncoding::LineString),
         }
         .decode()
         .expect("direct linestring decode");
@@ -1289,7 +1289,7 @@ mod tests {
         let node = list_node(&[0, 1], rings, None);
         let decoded = NativeArrowBatch {
             node,
-            classification: classification(crate::py::geoarrow::GeometryEncoding::Polygon),
+            classification: classification(GeometryEncoding::Polygon),
         }
         .decode()
         .expect("direct polygon decode");

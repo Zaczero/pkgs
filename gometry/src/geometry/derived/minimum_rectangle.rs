@@ -407,8 +407,13 @@ fn exact_width(direction: (f64, f64), minimum: Point, maximum: Point) -> [u64; L
     magnitude
 }
 
-fn mul_68(left: &[u64; LIMBS], right: &[u64; LIMBS]) -> [u64; DOUBLE_LIMBS] {
-    let mut result = [0_u64; DOUBLE_LIMBS];
+/// Schoolbook product of little-endian magnitudes; `OUT` holds every carry.
+fn wide_product<const L: usize, const R: usize, const OUT: usize>(
+    left: &[u64; L],
+    right: &[u64; R],
+) -> [u64; OUT] {
+    const { assert!(OUT >= L + R) };
+    let mut result = [0_u64; OUT];
     let Some((left_start, left_end)) = nonzero_span(left) else {
         return result;
     };
@@ -428,43 +433,7 @@ fn mul_68(left: &[u64; LIMBS], right: &[u64; LIMBS]) -> [u64; DOUBLE_LIMBS] {
         {
             // Even a zero source limb must receive and propagate the carry
             // from its lower neighbour.  The final carry belongs directly
-            // above the right operand's *actual* top limb, not limb 68.
-            let index = i + j;
-            let total = u128::from(result[index]) + u128::from(lhs) * u128::from(rhs) + carry;
-            result[index] = total as u64;
-            carry = total >> 64;
-        }
-        let mut index = i + right_end + 1;
-        while carry != 0 {
-            let total = u128::from(result[index]) + carry;
-            result[index] = total as u64;
-            carry = total >> 64;
-            index += 1;
-        }
-    }
-    result
-}
-
-fn mul_136_68(left: &[u64; DOUBLE_LIMBS], right: &[u64; LIMBS]) -> [u64; TRIPLE_LIMBS] {
-    let mut result = [0_u64; TRIPLE_LIMBS];
-    let Some((left_start, left_end)) = nonzero_span(left) else {
-        return result;
-    };
-    let Some((right_start, right_end)) = nonzero_span(right) else {
-        return result;
-    };
-    for (i, &lhs) in left.iter().enumerate().take(left_end + 1).skip(left_start) {
-        if lhs == 0 {
-            continue;
-        }
-        let mut carry = 0_u128;
-        for (j, &rhs) in right
-            .iter()
-            .enumerate()
-            .take(right_end + 1)
-            .skip(right_start)
-        {
-            // Carry must cross sparse zero limbs exactly as above.
+            // above the right operand's *actual* top limb, not its last slot.
             let index = i + j;
             let total = u128::from(result[index]) + u128::from(lhs) * u128::from(rhs) + carry;
             result[index] = total as u64;
@@ -536,8 +505,10 @@ fn candidate_area_order(
     }
     let (left_a, left_o, left_n) = candidate_score_terms(hull, left.candidate);
     let (right_a, right_o, right_n) = candidate_score_terms(hull, right.candidate);
-    let lhs = mul_136_68(&mul_68(&left_a, &left_o), &right_n);
-    let rhs = mul_136_68(&mul_68(&right_a, &right_o), &left_n);
+    let left_ao: [u64; DOUBLE_LIMBS] = wide_product(&left_a, &left_o);
+    let right_ao: [u64; DOUBLE_LIMBS] = wide_product(&right_a, &right_o);
+    let lhs: [u64; TRIPLE_LIMBS] = wide_product(&left_ao, &right_n);
+    let rhs: [u64; TRIPLE_LIMBS] = wide_product(&right_ao, &left_n);
     cmp_wide(&lhs, &rhs)
 }
 
@@ -720,7 +691,7 @@ impl Candidate {
         // edge certificate below; this is the compatibility fast path, never
         // an enclosure test over the hull.
         if let Some(legacy) = self.legacy_corners(hull)
-            && legacy_rectangle_is_certified(hull, legacy, self)
+            && legacy_rectangle_is_certified(hull, &legacy, self)
         {
             return Ok([legacy[0], legacy[1], legacy[2], legacy[3], legacy[0]]);
         }
@@ -975,13 +946,9 @@ fn cross_delta_order(start: Point, end: Point, current: Point, next: Point) -> O
 /// Sound O(1) certificate for preserving a legacy unnormalised rectangle.
 /// Each retained support must be locally minimal for its *actual emitted
 /// edge*.  Convexity turns that local statement into global support truth.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-)]
 fn legacy_rectangle_is_certified(
     hull: &[Point],
-    corners: [Point; 4],
+    corners: &[Point; 4],
     candidate: Candidate,
 ) -> bool {
     if !corners
@@ -1472,9 +1439,11 @@ fn exact_squared_distance(point: Point, preferred: &PreferredCorner) -> [u64; TR
     let y_denominator_square = denominator_square(Axis::Y);
     // `(Rx / Dx)^2 + (Ry / Dy)^2` has common positive denominator
     // `Dx^2 * Dy^2`, so compare its exact numerator instead.
+    let x_square: [u64; DOUBLE_LIMBS] = wide_product(&x, &x);
+    let y_square: [u64; DOUBLE_LIMBS] = wide_product(&y, &y);
     add_triple_magnitude(
-        &mul_136_68(&mul_68(&x, &x), &y_denominator_square),
-        &mul_136_68(&mul_68(&y, &y), &x_denominator_square),
+        &wide_product(&x_square, &y_denominator_square),
+        &wide_product(&y_square, &x_denominator_square),
     )
 }
 
@@ -1612,7 +1581,7 @@ mod tests {
         let mut right = [0_u64; LIMBS];
         right[0] = u64::MAX;
         right[2] = 1;
-        let product = mul_68(&left, &right);
+        let product: [u64; DOUBLE_LIMBS] = wide_product(&left, &right);
         assert_eq!(product[0], 1);
         assert_eq!(product[1], u64::MAX - 1);
         assert_eq!(product[2], u64::MAX);
@@ -1699,7 +1668,7 @@ mod tests {
         let candidate = select_minimum_candidate(&rectangle);
         assert!(legacy_rectangle_is_certified(
             &rectangle,
-            candidate.legacy_corners(&rectangle).unwrap(),
+            &candidate.legacy_corners(&rectangle).unwrap(),
             candidate,
         ));
     }

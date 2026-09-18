@@ -270,11 +270,7 @@ impl AreaOfInterest {
 }
 
 impl ProjectionFactors {
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    pub(crate) fn from_raw(raw: proj_sys::PJ_FACTORS, radians: bool) -> Self {
+    pub(crate) fn from_raw(raw: &proj_sys::PJ_FACTORS, radians: bool) -> Self {
         let angle = |value: f64| if radians { value } else { value.to_degrees() };
         Self {
             meridional_scale: raw.meridional_scale,
@@ -326,11 +322,7 @@ impl ProjectionFactorColumns {
         }
     }
 
-    #[expect(
-        clippy::large_types_passed_by_value,
-        reason = "the owned Copy aggregate is a hot kernel snapshot; a borrow adds pointer and lifetime plumbing without changing its data flow"
-    )]
-    pub(crate) fn push(&mut self, factors: ProjectionFactors) {
+    pub(crate) fn push(&mut self, factors: &ProjectionFactors) {
         self.meridional_scale.push(factors.meridional_scale);
         self.parallel_scale.push(factors.parallel_scale);
         self.areal_scale.push(factors.areal_scale);

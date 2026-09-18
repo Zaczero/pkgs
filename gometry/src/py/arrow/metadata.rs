@@ -1,17 +1,16 @@
-#![allow(
-    clippy::absolute_paths,
-    reason = "file-local domain naming, dependency paths, or cohesive item layout is clearer here"
-)]
 use pyo3::types::{PyBytes, PyTuple, PyTupleMethods as _};
 use pyo3::{IntoPyObject as _, pyclass, pyfunction, pymethods};
 use serde_json::Value;
 
+use crate::boundary::metadata::{optional_crs_labels_operationally_equal, optional_epochs_equal};
 use crate::py::arrow::{
     Bound, GeometryEncoding, Py, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
     PyTypeMethods as _, Python, WkbOffsetWidth,
 };
 use crate::py::arrow_c::NativeArrowClassification;
 use crate::py::errors::{GeometryError, ParseFormat, parse_error};
+use crate::py::support::JsonValueError;
+use crate::py::{arrow, errors, geoarrow, support};
 
 /// One native admission result for a GeoParquet geometry column.
 ///
@@ -335,7 +334,7 @@ pub(crate) fn arrow_classification_for_value(
     value: &Bound<'_, PyAny>,
     field: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<NativeArrowClassification> {
-    let pa = crate::py::arrow::pyarrow_module(value.py())?;
+    let pa = arrow::pyarrow_module(value.py())?;
     arrow_classification(pa, value, field)
 }
 
@@ -444,7 +443,7 @@ fn ensure_pyarrow_point_struct(
         let is_float64 = pyarrow_type_is_float64(&types, &field_type)?;
         crate::try_push(&mut fields, (name.as_str(), is_float64))?;
     }
-    crate::py::geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
+    geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
     Ok(())
 }
 
@@ -613,10 +612,10 @@ pub(crate) fn reconcile_extension_sources(
             let encoding = GeometryEncoding::from_extension_name(&type_src.0);
             let type_frame = parse_geoarrow_extension_metadata_for(&type_src.1, encoding)?;
             let field_frame = parse_geoarrow_extension_metadata_for(&field_src.1, encoding)?;
-            if !crate::boundary::metadata::optional_crs_labels_operationally_equal(
+            if !optional_crs_labels_operationally_equal(
                 type_frame.0.as_deref(),
                 field_frame.0.as_deref(),
-            )? || !crate::boundary::metadata::optional_epochs_equal(type_frame.1, field_frame.1)
+            )? || !optional_epochs_equal(type_frame.1, field_frame.1)
             {
                 return Err(geoarrow_parse_error(
                     "conflicting GeoArrow extension metadata between ExtensionType and field",
@@ -872,14 +871,12 @@ pub(crate) fn py_parse_geoparquet_column_frame(
     metadata: &Bound<'_, PyAny>,
     column_name: &str,
 ) -> PyResult<GeoParquetColumnFrame> {
-    let value = crate::py::support::py_to_json_value_classified(metadata).map_err(|error| {
+    let value = support::py_to_json_value_classified(metadata).map_err(|error| {
         match error {
-            crate::py::support::JsonValueError::NonFinite => GeoParquetAdmissionError::Metadata(
-                format!("invalid GeoParquet column '{column_name}': epoch must be finite"),
-            ),
-            crate::py::support::JsonValueError::Python(error) => {
-                GeoParquetAdmissionError::from(error)
-            },
+            JsonValueError::NonFinite => GeoParquetAdmissionError::Metadata(format!(
+                "invalid GeoParquet column '{column_name}': epoch must be finite"
+            )),
+            JsonValueError::Python(error) => GeoParquetAdmissionError::from(error),
         }
         .into_py_err()
     })?;
@@ -911,7 +908,7 @@ pub(crate) fn py_admit_geoparquet_geometry_storage(
 }
 
 fn geoparquet_meta_error(detail: impl std::fmt::Display) -> PyErr {
-    let error = crate::py::errors::parse_error(
+    let error = errors::parse_error(
         format!("malformed GeoParquet geo metadata: {detail}"),
         crate::error::ParseFormat::GeoParquet,
     );
@@ -963,7 +960,7 @@ fn admit_geoparquet_geometry_storage(
             "unsupported GeoParquet geometry encoding: {encoding:?}"
         )));
     };
-    let pa = crate::py::arrow::pyarrow_module(py)?;
+    let pa = arrow::pyarrow_module(py)?;
     // Extension name/metadata decode errors (e.g. non-UTF-8) and source
     // conflicts surface as GeoParquet metadata — one boundary class for the
     // reader (Python previously used `_metadata_error` / format=geoparquet).
@@ -1221,7 +1218,7 @@ fn geoarrow_native_layout(
         let is_float64 = pyarrow_type_is_float64(&types, &field_type)?;
         crate::try_push(&mut ordinate_fields, (name.as_str(), is_float64))?;
     }
-    let axes = crate::py::geoarrow::classify_geoarrow_ordinates(ordinate_fields).ok();
+    let axes = geoarrow::classify_geoarrow_ordinates(ordinate_fields).ok();
     Ok(axes.map(|axes| (depth, axes.has_z, axes.has_m)))
 }
 
@@ -1473,13 +1470,14 @@ mod tests {
     use pyo3::types::PyAnyMethods as _;
 
     use super::GeoParquetAdmissionError;
+    use crate::py::errors::{GeometryError, ParseError};
 
     #[test]
     fn geoparquet_error_categories_keep_python_projections_distinct() {
         crate::test_support::initialize_python();
         pyo3::Python::attach(|py| {
             let layout = GeoParquetAdmissionError::Layout("wrong storage".to_owned()).into_py_err();
-            assert!(layout.is_instance_of::<crate::py::errors::GeometryError>(py));
+            assert!(layout.is_instance_of::<GeometryError>(py));
             assert_eq!(
                 layout
                     .value(py)
@@ -1492,7 +1490,7 @@ mod tests {
 
             let metadata =
                 GeoParquetAdmissionError::Metadata("bad declaration".to_owned()).into_py_err();
-            assert!(metadata.is_instance_of::<crate::py::errors::ParseError>(py));
+            assert!(metadata.is_instance_of::<ParseError>(py));
             assert_eq!(
                 metadata
                     .value(py)
