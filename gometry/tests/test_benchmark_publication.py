@@ -610,6 +610,12 @@ def test_publication_rejects_absent_or_untracked_lock_identity(tmp_path: Path) -
         _publish(run_manifest, tmp_path)
 
 
+def test_publication_ignores_packages_no_block_loaded(tmp_path: Path) -> None:
+    result = _result(tmp_path)
+    result['doctor']['metadata']['packages']['unused'] = package_identity('unused')  # type: ignore[index]
+    _publish(_run_manifest(tmp_path, result), tmp_path)
+
+
 def test_publication_writes_only_the_deterministic_summary(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
     current = tmp_path / 'current'

@@ -288,7 +288,7 @@ def _package_identity(name: str) -> dict[str, Any] | None:
     return {
         'available': True,
         'version': distribution['version'],
-        'display_name': PACKAGE_DISPLAY_NAMES.get(name, name),
+        'display_name': PACKAGES[name],
         'module': module,
         'distribution': distribution,
         'native_libraries': [],
@@ -847,55 +847,20 @@ def collect_contention(*, exclude_pgids: set[int] | None = None) -> dict[str, An
     }
 
 
-# Full inventory for doctor output (import name → distribution name).
-PACKAGE_INVENTORY: dict[str, str] = {
-    'gometry': 'gometry',
-    'numpy': 'numpy',
-    'shapely': 'shapely',
-    'pyproj': 'pyproj',
-    'h3': 'h3',
-    's2sphere': 's2sphere',
-    'geopandas': 'geopandas',
-    'pyarrow': 'pyarrow',
-    'mercantile': 'mercantile',
-    'pygeohash': 'pygeohash',
-}
-
-# Display names for competitor libraries (summarizer still prefers competitor_label).
-PACKAGE_DISPLAY_NAMES: dict[str, str] = {
+# Every package a benchmark row loads, by import name (also its distribution
+# name), with the label its comparator rows carry.
+PACKAGES: dict[str, str] = {
     'gometry': 'gometry',
     'numpy': 'NumPy',
     'shapely': 'Shapely',
     'pyproj': 'pyproj',
     'h3': 'h3-py',
-    's2sphere': 's2sphere',
     'geopandas': 'GeoPandas',
     'pyarrow': 'pyarrow',
     'mercantile': 'Mercantile',
     'pygeohash': 'pygeohash',
 }
-
-# Competitor-label tokens → import names (multi-lib labels split on ' + ').
-_LABEL_PACKAGE: dict[str, str] = {
-    'Shapely': 'shapely',
-    'GeoPandas': 'geopandas',
-    'pyproj': 'pyproj',
-    'h3-py': 'h3',
-    'Mercantile': 'mercantile',
-    's2sphere': 's2sphere',
-}
-
-# Competitor row-name prefix → import name.
-_PREFIX_PACKAGE: dict[str, str] = {
-    'shapely': 'shapely',
-    'pyproj': 'pyproj',
-    'h3': 'h3',
-    's2sphere': 's2sphere',
-    'geopandas': 'geopandas',
-    'mercantile': 'mercantile',
-    'pygeohash': 'pygeohash',
-    'rtree': 'rtree',
-}
+_PACKAGE_BY_LABEL = {label: name for name, label in PACKAGES.items()}
 
 
 def packages_required_by_operations(operations: Any) -> set[str]:
@@ -904,19 +869,10 @@ def packages_required_by_operations(operations: Any) -> set[str]:
     Always includes gometry/numpy. Optional competitor packages are
     required only when a selected public row names them.
     """
-    required = {'gometry', 'numpy'}
     if operations is None:
-        # Standalone doctor / full public RELEASE surface.
-        required.update({
-            'shapely',
-            'pyproj',
-            'h3',
-            'geopandas',
-            'pyarrow',
-            'mercantile',
-            'pygeohash',
-        })
-        return required
+        # Standalone doctor / full public release surface.
+        return set(PACKAGES)
+    required = {'gometry', 'numpy'}
     for op in operations:
         gometry = getattr(op, 'gometry', '') or ''
         if 'from_arrow' in gometry or 'arrow' in gometry:
@@ -924,14 +880,14 @@ def packages_required_by_operations(operations: Any) -> set[str]:
         competitor = getattr(op, 'competitor', None)
         if competitor:
             prefix = str(competitor).split('.', 1)[0]
-            if prefix in _PREFIX_PACKAGE:
-                required.add(_PREFIX_PACKAGE[prefix])
+            if prefix in PACKAGES:
+                required.add(prefix)
         label = getattr(op, 'competitor_label', None)
         if label:
             for token in str(label).split(' + '):
                 token = token.strip()
-                if token in _LABEL_PACKAGE:
-                    required.add(_LABEL_PACKAGE[token])
+                if token in _PACKAGE_BY_LABEL:
+                    required.add(_PACKAGE_BY_LABEL[token])
     return required
 
 
@@ -943,12 +899,12 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         except (ImportError, ModuleNotFoundError):
             pass
     packages: dict[str, dict[str, Any]] = {}
-    for name, dist in PACKAGE_INVENTORY.items():
+    for name, label in PACKAGES.items():
         available = importlib.util.find_spec(name) is not None
         packages[name] = {
             'available': available,
-            'version': _package_version(dist),
-            'display_name': PACKAGE_DISPLAY_NAMES.get(name, name),
+            'version': _package_version(name),
+            'display_name': label,
         }
         if available:
             identity = _package_identity(name)
@@ -998,7 +954,6 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         'load_average': contention['metadata']['load_average'],
         'top_cpu_processes': contention['metadata']['top_cpu_processes'],
         'packages': packages,
-        'package_display_names': dict(PACKAGE_DISPLAY_NAMES),
         'extension': extension,
         'loaded_native_libraries': loaded_native_libraries,
         'native_library_identity': {
@@ -1036,24 +991,15 @@ def collect(*, operations: Any = None) -> dict[str, Any]:
         )
     required = required_runtime_modules
     for package in sorted(required):
-        info = packages.get(package)
-        if info is None:
-            # Optional inventory extension (e.g. rtree on internal filters).
-            available = importlib.util.find_spec(package) is not None
-            if not available:
-                hard_failures.append(
-                    f'competitor package {package!r} is not importable'
-                )
-            continue
+        info = packages[package]
         if not info['available']:
             if package in {'gometry', 'numpy'}:
                 hard_failures.append(
                     f'required Python package {package!r} is not importable'
                 )
             else:
-                display = PACKAGE_DISPLAY_NAMES.get(package, package)
                 hard_failures.append(
-                    f'competitor package {package!r} ({display}) is not importable'
+                    f'competitor package {package!r} ({PACKAGES[package]}) is not importable'
                 )
         elif not info['version']:
             hard_failures.append(

@@ -844,23 +844,17 @@ def _validate_block_identity(
         raise SystemExit(
             'publication rejected: paired block dependency identity is missing'
         )
-    for name, package in expected_packages.items():
-        expected_version = package.get('version') if isinstance(package, dict) else None
-        observed_package = observed_packages.get(name)
-        if isinstance(package, dict) and isinstance(observed_package, dict):
-            expected_identity = {
-                key: package.get(key)
-                for key in ('available', 'version', 'module', 'distribution')
-            }
-            observed_identity = {
-                key: observed_package.get(key)
-                for key in ('available', 'version', 'module', 'distribution')
-            }
-            if expected_identity != observed_identity:
-                raise SystemExit(
-                    f'publication rejected: paired block dependency identity mismatch for {name}'
-                )
-        elif expected_version and observed_package != expected_version:
+    # A block attests the packages its pair loaded; each must be the one the
+    # run recorded.
+    fields = ('available', 'version', 'module', 'distribution')
+    for name, observed_package in observed_packages.items():
+        package = expected_packages.get(name)
+        if (
+            not isinstance(package, dict)
+            or not isinstance(observed_package, dict)
+            or {key: package.get(key) for key in fields}
+            != {key: observed_package.get(key) for key in fields}
+        ):
             raise SystemExit(
                 f'publication rejected: paired block dependency identity mismatch for {name}'
             )
