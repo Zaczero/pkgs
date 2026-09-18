@@ -396,10 +396,6 @@ impl RectangleSide {
     clippy::float_cmp,
     reason = "bounds are exact extrema of these stored source coordinates"
 )]
-#[expect(
-    clippy::too_many_lines,
-    reason = "the complete four-side certificate stays together so no partial traversal can certify a cap"
-)]
 fn subdivided_axis_aligned_rectangle(source: &Shape, bounds: Bounds) -> ExactResult<bool> {
     let Shape::Polygon(polygon) = source else {
         return Ok(false);
@@ -1621,13 +1617,7 @@ impl LiftedRingFill {
     /// Copies whose lifted longitude can lie on this finite ring fill.  The
     /// range is edge-proportional through the chain's extrema, never a global
     /// degree-based fallback.  The later exact PIP walks these copies.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "module unit tests inspect the exact periodic preimage range"
-        )
-    )]
+    #[cfg(test)]
     fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
         match self.direct_preimages(longitude).ok()? {
             DirectPreimages::Copies(copies) => Some(copies),
@@ -2757,13 +2747,7 @@ impl LiftedChain {
         Ok((difference.ordering() == Ordering::Equal).then_some(degree))
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "module unit tests inspect the exact periodic preimage range"
-        )
-    )]
+    #[cfg(test)]
     fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
         match self.direct_preimages(longitude).ok()? {
             DirectPreimages::Copies(copies) => Some(copies),
@@ -2771,6 +2755,7 @@ impl LiftedChain {
         }
     }
 
+    #[cfg(test)]
     fn direct_preimages(&self, longitude: f64) -> ExactResult<DirectPreimages> {
         let (minimum, maximum) = match self.longitude_envelope() {
             Ok(envelope) => envelope,
@@ -2895,11 +2880,6 @@ pub(crate) struct SelectionAffinePiece {
     )]
     interval: ParentInterval,
     latitude_zone: i64,
-    #[expect(
-        dead_code,
-        reason = "retained for exact periodic-image unit certificates"
-    )]
-    longitude_wrap: i64,
     // Exact degree endpoints after the selected reflect/wrap map.  They are
     // kept beside the spherical evaluator because the selection image may
     // veto an authority negative only through its own affine planar PIP;
@@ -3349,7 +3329,6 @@ impl SymbolicAffineEdge {
             },
             interval,
             latitude_zone: zone,
-            longitude_wrap,
             selection,
         }))
     }
@@ -4563,13 +4542,7 @@ impl GeographicCoverageSource {
     /// even when another component has an exact, independently certifiable
     /// carrier.  H3 splits only this global fail-open case; an exact axis
     /// rectangle remains atomic, including its polygon holes.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "H3 coverer unit tests inspect the aggregate cap certificate"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn cap_is_globally_fail_open(&self) -> bool {
         self.exact_axis_rect.is_none()
             && (self.unknown
@@ -4756,13 +4729,7 @@ impl GeographicCoverageSource {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "module unit tests inspect the selected arc inventory"
-        )
-    )]
+    #[cfg(test)]
     pub(crate) fn selection_arcs(&self) -> Option<impl ExactSizeIterator<Item = &AffineSourceArc>> {
         (!self.unknown).then(|| self.selection.edges.iter().map(|piece| &piece.carrier.arc))
     }
@@ -4833,21 +4800,6 @@ impl GeographicCoverageSource {
         &self,
     ) -> impl ExactSizeIterator<Item = Option<GridDegreePoint>> + '_ {
         self.points.iter().map(|record| record.authority.bounds)
-    }
-
-    #[expect(
-        dead_code,
-        reason = "module unit tests inspect the selected point image"
-    )]
-    pub(crate) fn selection_points(
-        &self,
-    ) -> impl ExactSizeIterator<Item = Option<GridDegreePoint>> + '_ {
-        self.points.iter().map(|record| {
-            record
-                .selection
-                .as_ref()
-                .and_then(|selection| selection.bounds)
-        })
     }
 
     pub(crate) fn positive_selection_points(
@@ -5111,10 +5063,7 @@ impl GeographicCoverageSource {
         }
     }
 
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "module unit tests inspect retained ring fills")
-    )]
+    #[cfg(test)]
     fn ring_fills(&self) -> impl ExactSizeIterator<Item = &LiftedRingFill> {
         self.ring_fills.iter()
     }

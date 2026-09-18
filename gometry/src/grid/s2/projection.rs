@@ -40,19 +40,6 @@ impl Point3 {
             self.x * other.y - self.y * other.x,
         )
     }
-
-    /// The angle to `other` in radians (numerically stable for small and
-    /// near-π angles, unlike plain `acos` of the dot product).
-    #[expect(
-        dead_code,
-        reason = "spherical angle helper retained for S2 identity; area path uses factored solid-angle formula"
-    )]
-    pub(crate) fn angle(self, other: Self) -> f64 {
-        let cross = self.cross(other);
-        (cross.x * cross.x + cross.y * cross.y + cross.z * cross.z)
-            .sqrt()
-            .atan2(self.dot(other))
-    }
 }
 
 /// Geocentric XYZ of a lon/lat in degrees (unit sphere).
