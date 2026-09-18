@@ -164,7 +164,6 @@ pub(crate) struct CoverStats {
     )
 )]
 impl CoverStats {
-    #[inline]
     const fn raw_classify(&mut self, level: u8) {
         #[cfg(not(test))]
         let _ = level;
@@ -176,7 +175,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn unique_local_point_probe(&mut self) {
         #[cfg(test)]
         {
@@ -184,7 +182,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn local_duplicate_hit(&mut self) {
         #[cfg(test)]
         {
@@ -192,7 +189,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn carried_certificate_hit(&mut self, level: u8) {
         #[cfg(not(test))]
         let _ = level;
@@ -203,7 +199,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn productive_path_reuse(&mut self, level: u8) {
         #[cfg(not(test))]
         let _ = level;
@@ -214,7 +209,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn productive_path_hit(&mut self) {
         #[cfg(test)]
         {
@@ -222,7 +216,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn visible_queue_peak(&mut self, len: usize) {
         #[cfg(not(test))]
         let _ = len;
@@ -234,7 +227,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn productive_frontier(&mut self, emitted: usize, queued: usize) {
         #[cfg(not(test))]
         let _ = (emitted, queued);
@@ -247,7 +239,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn committed_emission(&mut self) {
         #[cfg(test)]
         {
@@ -255,7 +246,6 @@ impl CoverStats {
         }
     }
 
-    #[inline]
     const fn invisible_stack_peak(&mut self, len: usize) {
         #[cfg(not(test))]
         let _ = len;
@@ -268,7 +258,6 @@ impl CoverStats {
     }
 
     #[cfg(test)]
-    #[inline]
     const fn certificate_storage_peak(&mut self, len: usize) {
         if len > self.certificate_storage_peak {
             self.certificate_storage_peak = len;

@@ -301,7 +301,6 @@ impl StaticStrTree {
     }
 }
 
-#[inline]
 fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
     let left_lower = left.lower();
     let left_upper = left.upper();
@@ -313,7 +312,6 @@ fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
         && left_upper[1] >= right_lower[1]
 }
 
-#[inline]
 fn distance_2(envelope: &AABB<[f64; 2]>, point: &[f64; 2]) -> f64 {
     let lower = envelope.lower();
     let upper = envelope.upper();

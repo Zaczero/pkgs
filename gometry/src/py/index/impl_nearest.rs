@@ -55,14 +55,12 @@ impl HeapNearest {
 }
 
 impl NearestState for HeapNearest {
-    #[inline]
     fn ceiling(&self, max_distance: Option<NonNegative>) -> Option<f64> {
         let nearest = (self.nearest.len() == self.k)
             .then(|| self.nearest.peek().expect("full nearest heap").distance);
         combine_nearest_ceiling(nearest, max_distance)
     }
 
-    #[inline]
     fn accept(&mut self, candidate: NearestCandidate) -> PyResult<()> {
         push_nearest_candidate(&mut self.nearest, self.k, candidate)
     }
@@ -78,7 +76,6 @@ pub(super) struct OneNearest {
 }
 
 impl NearestState for OneNearest {
-    #[inline]
     fn ceiling(&self, max_distance: Option<NonNegative>) -> Option<f64> {
         combine_nearest_ceiling(
             self.best.as_ref().map(|candidate| candidate.distance),
@@ -86,7 +83,6 @@ impl NearestState for OneNearest {
         )
     }
 
-    #[inline]
     fn accept(&mut self, candidate: NearestCandidate) -> PyResult<()> {
         if self
             .best
@@ -109,7 +105,6 @@ impl NearestState for OneNearest {
     }
 }
 
-#[inline]
 const fn combine_nearest_ceiling(
     nearest: Option<f64>,
     max_distance: Option<NonNegative>,
@@ -132,7 +127,6 @@ struct HeapLeafPolicy<'a> {
 }
 
 impl HeapLeafPolicy<'_> {
-    #[inline]
     fn visit_leaf<B>(
         &mut self,
         tree: &StaticStrTree,
@@ -642,7 +636,6 @@ impl PySpatialIndex {
         state.finish()
     }
 
-    #[inline]
     pub(super) fn consider_nearest_candidate<S: NearestState>(
         &self,
         entry_idx: usize,
