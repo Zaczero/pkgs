@@ -162,13 +162,16 @@ def load_public_symbols(stub_path: Path, init_path: Path) -> frozenset[str]:
                 f'{name}.{member}' for member in _class_members(name, stub_declarations)
             )
 
-    source_declarations: dict[Path, dict[str, ast.ClassDef]] = {}
+    source_declarations: dict[Path, dict[str, ast.ClassDef]] = {
+        stub_path: stub_declarations
+    }
     for public_name, source_path, declared_name in _facade_imports(
         init_path, stub_path, public_all
     ):
-        declarations = source_declarations.setdefault(
-            source_path, _class_declarations(_tree(source_path))
-        )
+        declarations = source_declarations.get(source_path)
+        if declarations is None:
+            declarations = _class_declarations(_tree(source_path))
+            source_declarations[source_path] = declarations
         if declared_name not in declarations:
             continue
         symbols.update(
