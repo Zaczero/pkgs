@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::error::Error;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::{env, fs};
 
@@ -6,63 +7,15 @@ const LIBTIFF_VERSION: &str = "4.7.2";
 const LIBTIFF_PATH: &str = "libtiff";
 const LIBTIFF_COMMIT: &str = "d01a94be176f5f6a87f7ee1c0b32e65416aa2b4d";
 
-fn main() {
+type BuildResult<T = ()> = Result<T, Box<dyn Error>>;
+
+fn main() -> BuildResult {
     println!("cargo:rerun-if-changed=libtiff");
     println!("cargo:rerun-if-changed=libtiff.pin");
 
-    let source = PathBuf::from(LIBTIFF_PATH);
-    let cmake = source.join("CMakeLists.txt");
-    let version = source.join("VERSION");
-    let hint = "run `git submodule update --init gometry/native/libtiff-sys/libtiff`";
-    if !cmake.is_file() || !version.is_file() {
-        panic!("libtiff source is not initialized (missing CMakeLists.txt or VERSION); {hint}");
-    }
-    let expected_pin = format!(
-        "url = https://gitlab.com/libtiff/libtiff.git\ncommit = d01a94be176f5f6a87f7ee1c0b32e65416aa2b4d\ntag = v{LIBTIFF_VERSION}\nversion = {LIBTIFF_VERSION}\n"
-    );
-    let pin = fs::read_to_string("libtiff.pin")
-        .unwrap_or_else(|error| panic!("cannot read libtiff.pin: {error}"));
-    if pin != expected_pin {
-        panic!("libtiff.pin does not describe the pinned libtiff source");
-    }
-    let actual_version = fs::read_to_string(version)
-        .unwrap_or_else(|error| panic!("cannot read libtiff VERSION: {error}"));
-    if actual_version.trim() != LIBTIFF_VERSION {
-        panic!(
-            "unsupported libtiff VERSION {:?}; expected {LIBTIFF_VERSION}",
-            actual_version.trim()
-        );
-    }
-    let cmake_text = fs::read_to_string(cmake)
-        .unwrap_or_else(|error| panic!("cannot read libtiff CMakeLists.txt: {error}"));
-    if !cmake_text.contains("add_subdirectory(build)") {
-        panic!("libtiff CMakeLists.txt is not the unmodified upstream build; {hint}");
-    }
-    if source.join(".git").exists() {
-        let git = |args: &[&str]| {
-            Command::new("git")
-                .args(["-C", LIBTIFF_PATH])
-                .args(args)
-                .output()
-                .unwrap_or_else(|error| panic!("cannot inspect libtiff submodule: {error}"))
-        };
-        let head = git(&["rev-parse", "HEAD"]);
-        if !head.status.success() || String::from_utf8_lossy(&head.stdout).trim() != LIBTIFF_COMMIT
-        {
-            panic!("libtiff submodule is not pinned to {LIBTIFF_COMMIT}");
-        }
-        if !git(&["diff", "--exit-code"]).status.success()
-            || !git(&["diff", "--cached", "--exit-code"]).status.success()
-        {
-            panic!("libtiff submodule has tracked changes; restore the pinned upstream tree");
-        }
-        let status = git(&["status", "--porcelain", "--untracked-files=all"]);
-        if !status.status.success() || !status.stdout.is_empty() {
-            panic!("libtiff submodule has untracked files; restore the pinned upstream tree");
-        }
-    }
+    verify_pinned_source(Path::new(LIBTIFF_PATH))?;
     let zlib_root = PathBuf::from(
-        env::var_os("DEP_Z_ROOT").expect("libz-sys must provide its bundled zlib root"),
+        env::var_os("DEP_Z_ROOT").ok_or("libz-sys must provide its bundled zlib root")?,
     );
     let zlib_library = if env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         zlib_root.join("lib/z.lib")
@@ -94,15 +47,17 @@ fn main() {
     if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("linux") {
         config.define("CMAKE_REQUIRED_LIBRARIES", "m");
     }
-    if let Some(flags) = release_native_flags("CFLAGS") {
-        if env::var_os("CFLAGS").is_none() && !flags.is_empty() {
-            config.cflag(&flags);
-        }
+    if let Some(flags) = release_native_flags("CFLAGS")?
+        && env::var_os("CFLAGS").is_none()
+        && !flags.is_empty()
+    {
+        config.cflag(&flags);
     }
-    if let Some(flags) = release_native_flags("CXXFLAGS") {
-        if env::var_os("CXXFLAGS").is_none() && !flags.is_empty() {
-            config.cxxflag(&flags);
-        }
+    if let Some(flags) = release_native_flags("CXXFLAGS")?
+        && env::var_os("CXXFLAGS").is_none()
+        && !flags.is_empty()
+    {
+        config.cxxflag(&flags);
     }
 
     let dst = config.build();
@@ -122,27 +77,95 @@ fn main() {
     println!("cargo:include={}", dst.join("include").display());
     println!("cargo:library={}", library.display());
     println!("cargo:z_library={}", zlib_library.display());
+    Ok(())
 }
 
-fn release_native_flags(name: &str) -> Option<String> {
+fn verify_pinned_source(source: &Path) -> BuildResult {
+    let cmake = source.join("CMakeLists.txt");
+    let version = source.join("VERSION");
+    let hint = "run `git submodule update --init gometry/native/libtiff-sys/libtiff`";
+    if !cmake.is_file() || !version.is_file() {
+        return Err(format!(
+            "libtiff source is not initialized (missing CMakeLists.txt or VERSION); {hint}"
+        )
+        .into());
+    }
+    let expected_pin = format!(
+        "url = https://gitlab.com/libtiff/libtiff.git\ncommit = {LIBTIFF_COMMIT}\ntag = v{LIBTIFF_VERSION}\nversion = {LIBTIFF_VERSION}\n"
+    );
+    let pin = fs::read_to_string("libtiff.pin")
+        .map_err(|error| format!("cannot read libtiff.pin: {error}"))?;
+    if pin != expected_pin {
+        return Err("libtiff.pin does not describe the pinned libtiff source".into());
+    }
+    let actual_version = fs::read_to_string(version)
+        .map_err(|error| format!("cannot read libtiff VERSION: {error}"))?;
+    if actual_version.trim() != LIBTIFF_VERSION {
+        return Err(format!(
+            "unsupported libtiff VERSION {:?}; expected {LIBTIFF_VERSION}",
+            actual_version.trim()
+        )
+        .into());
+    }
+    let cmake_text = fs::read_to_string(cmake)
+        .map_err(|error| format!("cannot read libtiff CMakeLists.txt: {error}"))?;
+    if !cmake_text.contains("add_subdirectory(build)") {
+        return Err(
+            format!("libtiff CMakeLists.txt is not the unmodified upstream build; {hint}").into(),
+        );
+    }
+    if !source.join(".git").exists() {
+        return Ok(());
+    }
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(["-C", LIBTIFF_PATH])
+            .args(args)
+            .output()
+            .map_err(|error| format!("cannot inspect libtiff submodule: {error}"))
+    };
+    let head = git(&["rev-parse", "HEAD"])?;
+    if !head.status.success() || String::from_utf8_lossy(&head.stdout).trim() != LIBTIFF_COMMIT {
+        return Err(format!("libtiff submodule is not pinned to {LIBTIFF_COMMIT}").into());
+    }
+    if !git(&["diff", "--exit-code"])?.status.success()
+        || !git(&["diff", "--cached", "--exit-code"])?.status.success()
+    {
+        return Err(
+            "libtiff submodule has tracked changes; restore the pinned upstream tree".into(),
+        );
+    }
+    let status = git(&["status", "--porcelain", "--untracked-files=all"])?;
+    if !status.status.success() || !status.stdout.is_empty() {
+        return Err(
+            "libtiff submodule has untracked files; restore the pinned upstream tree".into(),
+        );
+    }
+    Ok(())
+}
+
+fn release_native_flags(name: &str) -> BuildResult<Option<String>> {
     let declared_name = format!("GOMETRY_RELEASE_{name}");
     println!("cargo:rerun-if-env-changed={declared_name}");
     println!("cargo:rerun-if-env-changed={name}");
     let target_suffix = env::var("TARGET").unwrap_or_default().replace('-', "_");
     let target_name = format!("{name}_{target_suffix}");
     println!("cargo:rerun-if-env-changed={target_name}");
-    let declared = env::var_os(&declared_name)?;
+    let Some(declared) = env::var_os(&declared_name) else {
+        return Ok(None);
+    };
     let declared = declared.to_string_lossy().into_owned();
     for ambient_name in [name.to_owned(), target_name] {
         if let Some(ambient) = env::var_os(&ambient_name) {
             let ambient = ambient.to_string_lossy();
             if ambient != declared {
-                panic!(
+                return Err(format!(
                     "release native flags disagree: {declared_name}={declared:?}, \
                      {ambient_name}={ambient:?}"
-                );
+                )
+                .into());
             }
         }
     }
-    Some(declared)
+    Ok(Some(declared))
 }
