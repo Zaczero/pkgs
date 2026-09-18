@@ -75,13 +75,13 @@ pub(crate) fn contains(
 /// See Also
 /// --------
 /// contains : Boundary contact allowed.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.contains_properly(gm.box(0, 0, 2, 2), gm.Point(1, 1))
 /// True
+#[pyfunction]
 pub(crate) fn contains_properly(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
@@ -232,13 +232,13 @@ pub(crate) fn covered_by(
 /// ------
 /// InvalidGeometryError
 ///     If ``x``/``y`` are non-finite or differ in length.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.contains_xy(gm.box(0, 0, 2, 2), 1, 1)
 /// True
+#[pyfunction]
 pub(crate) fn contains_xy(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
@@ -271,13 +271,13 @@ pub(crate) fn contains_xy(
 /// ------
 /// InvalidGeometryError
 ///     If ``x``/``y`` are non-finite or differ in length.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.intersects_xy(gm.box(0, 0, 2, 2), 3, 3)
 /// False
+#[pyfunction]
 pub(crate) fn intersects_xy(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
@@ -351,13 +351,13 @@ pub(crate) fn intersects(
 /// See Also
 /// --------
 /// intersects : Logical negation.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.disjoint(gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3))
 /// True
+#[pyfunction]
 pub(crate) fn disjoint(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,

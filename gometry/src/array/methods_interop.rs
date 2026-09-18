@@ -20,13 +20,13 @@ impl PyGeometryArray {
     /// -------
     /// object
     ///     A pandas Series sharing this geometry array.
-    #[pyo3(signature = (*, index = None, name = None), text_signature = "($self, *, index=None, name=None)")]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> type(gm.GeometryArray([gm.Point(1, 2, crs=4326)]).to_pandas()).__name__
     /// 'Series'
+    #[pyo3(signature = (*, index = None, name = None), text_signature = "($self, *, index=None, name=None)")]
     pub fn to_pandas(
         &self,
         py: Python<'_>,
@@ -66,13 +66,13 @@ impl PyGeometryArray {
     /// -------
     /// object
     ///     A Polars Series containing WKB or EWKB values.
-    #[pyo3(signature = (*, name = "geometry", drop_epoch = false, drop_crs = false))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> type(gm.GeometryArray([gm.Point(1, 2, crs=4326)]).to_polars()).__name__
     /// 'Series'
+    #[pyo3(signature = (*, name = "geometry", drop_epoch = false, drop_crs = false))]
     pub fn to_polars(
         &self,
         py: Python<'_>,
@@ -103,13 +103,13 @@ impl PyGeometryArray {
     /// -------
     /// object
     ///     A GeoPandas GeoSeries carrying this array's CRS.
-    #[pyo3(signature = (*, drop_epoch = false))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> type(gm.GeometryArray([gm.Point(1, 2, crs=4326)]).to_geopandas()).__name__
     /// 'GeoSeries'
+    #[pyo3(signature = (*, drop_epoch = false))]
     pub fn to_geopandas(&self, py: Python<'_>, drop_epoch: bool) -> PyResult<Py<PyAny>> {
         let module = py.import("gometry._geopandas")?;
         let kwargs = PyDict::new(py);
@@ -144,7 +144,6 @@ impl PyGeometryArray {
     /// GeometryError
     ///     If encoding is unknown, or attributes clash with the geometry
     ///     column or mismatch the row count.
-    #[pyo3(signature = (path, *, attributes = None, encoding = "wkb", **kwargs))]
     ///
     /// Examples
     /// --------
@@ -154,6 +153,7 @@ impl PyGeometryArray {
     /// >>> gm.GeometryArray([gm.Point(1, 2, crs=4326)]).to_geoparquet(path)
     /// >>> os.path.getsize(path) > 0
     /// True
+    #[pyo3(signature = (path, *, attributes = None, encoding = "wkb", **kwargs))]
     pub fn to_geoparquet(
         &self,
         py: Python<'_>,

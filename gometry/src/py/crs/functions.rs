@@ -290,13 +290,13 @@ pub(crate) fn crs_same(
 /// -------
 /// dict
 ///     The unit-of-measure record (name, category, conversion factor).
-#[pyfunction(signature = (authority, code))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_unit('EPSG', '9001')['name']
 /// 'metre'
+#[pyfunction(signature = (authority, code))]
 pub(crate) fn crs_unit(authority: &str, code: &str) -> PyResult<crs::UnitInfo> {
     Ok(crs::unit_info(authority, code)?)
 }
@@ -316,13 +316,13 @@ pub(crate) fn crs_unit(authority: &str, code: &str) -> PyResult<crs::UnitInfo> {
 /// -------
 /// list
 ///     One record per matching unit of measure.
-#[pyfunction(signature = (authority, *, category = None, allow_deprecated = false))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_units('EPSG')[0]['name']
 /// '(bin)'
+#[pyfunction(signature = (authority, *, category = None, allow_deprecated = false))]
 pub(crate) fn crs_units<'py>(
     py: Python<'py>,
     authority: &str,
@@ -340,13 +340,13 @@ pub(crate) fn crs_units<'py>(
 /// -------
 /// list
 ///     One entry per available PROJ operation.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_proj_operations()[0]['id']
 /// 'adams_hemi'
+#[pyfunction]
 pub(crate) fn crs_proj_operations() -> Vec<crs::ProjOperationCatalogInfo> {
     crs::proj_operations()
 }
@@ -357,13 +357,13 @@ pub(crate) fn crs_proj_operations() -> Vec<crs::ProjOperationCatalogInfo> {
 /// -------
 /// list
 ///     One entry per ellipsoid in the CRS database.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_ellipsoids()[0]['id']
 /// 'MERIT'
+#[pyfunction]
 pub(crate) fn crs_ellipsoids() -> Vec<crs::EllipsoidCatalogInfo> {
     crs::ellipsoids()
 }
@@ -374,13 +374,13 @@ pub(crate) fn crs_ellipsoids() -> Vec<crs::EllipsoidCatalogInfo> {
 /// -------
 /// list
 ///     One entry per prime meridian in the CRS database.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_prime_meridians()[0]['id']
 /// 'greenwich'
+#[pyfunction]
 pub(crate) fn crs_prime_meridians() -> Vec<crs::PrimeMeridianCatalogInfo> {
     crs::prime_meridians()
 }

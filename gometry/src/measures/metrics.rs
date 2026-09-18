@@ -19,13 +19,13 @@ use crate::{
 /// -------
 /// numpy.ndarray
 ///     ``(minx, miny, maxx, maxy)`` per row.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.bounds(gm.GeometryArray([gm.box(0, 0, 2, 3)])).tolist()
 /// [[0.0, 0.0, 2.0, 3.0]]
+#[pyfunction]
 pub(crate) fn bounds(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     if exact_geometry(values).is_some() {
         return Err(PyTypeError::new_err(
@@ -84,14 +84,14 @@ pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult
 /// --------
 /// area : CRS-natural property form.
 /// length : Length/perimeter with the same ``unit`` override.
-#[pyfunction]
-#[pyo3(signature = (geom, *, unit = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.area(gm.box(0, 0, 2, 2), unit='planar')
 /// 4.0
+#[pyfunction]
+#[pyo3(signature = (geom, *, unit = None))]
 pub(crate) fn area(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
@@ -185,14 +185,14 @@ fn measure_natural_or_override(
 /// --------
 /// length : CRS-natural property form.
 /// area : Area with the same ``unit`` override.
-#[pyfunction]
-#[pyo3(signature = (geom, *, unit = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.length(gm.LineString([(0, 0), (3, 4)]), unit='planar')
 /// 5.0
+#[pyfunction]
+#[pyo3(signature = (geom, *, unit = None))]
 pub(crate) fn length(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
@@ -237,14 +237,14 @@ pub(crate) fn length(
 /// length_3d : CRS-natural property form.
 /// length : The 2D sibling, with the same ``unit`` override.
 /// distance_3d : Pairwise 3D distance under the same metric.
-#[pyfunction]
-#[pyo3(signature = (geom, *, unit = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.length_3d(gm.from_wkt('LINESTRING Z (0 0 0, 3 4 0)'), unit='planar')
 /// 5.0
+#[pyfunction]
+#[pyo3(signature = (geom, *, unit = None))]
 pub(crate) fn length_3d(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,
@@ -305,13 +305,13 @@ pub(crate) fn length_natural_array(
 ///     If operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
 ///     If ``tolerance`` is invalid.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.snap(gm.Point(0.01, 0), gm.Point(0, 0), 0.1).to_wkt()
 /// 'POINT (0 0)'
+#[pyfunction]
 pub(crate) fn snap(
     geom: &Bound<'_, PyAny>,
     reference: &Bound<'_, PyAny>,

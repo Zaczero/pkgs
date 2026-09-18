@@ -91,16 +91,16 @@ impl PyCrs {
     /// ------
     /// CRSError
     ///     If export fails or a formatting option is invalid.
-    #[pyo3(
-        signature = (*, version = crs::WktVersion::Wkt2_2019, pretty = false, output_axis = crs::WktAxisRule::Auto, strict = true, indentation_width = 4),
-        text_signature = "($self, *, version='WKT2_2019', pretty=False, output_axis='auto', strict=True, indentation_width=4)"
-    )]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).to_wkt().startswith('GEOGCRS')
     /// True
+    #[pyo3(
+        signature = (*, version = crs::WktVersion::Wkt2_2019, pretty = false, output_axis = crs::WktAxisRule::Auto, strict = true, indentation_width = 4),
+        text_signature = "($self, *, version='WKT2_2019', pretty=False, output_axis='auto', strict=True, indentation_width=4)"
+    )]
     fn to_wkt(
         slf: &Bound<'_, Self>,
         version: crs::WktVersion,
@@ -146,13 +146,13 @@ impl PyCrs {
     /// ------
     /// CRSError
     ///     If export fails or a formatting option is invalid.
-    #[pyo3(signature = (*, version = 5, pretty = false, approximate_tmerc = false, indentation_width = 2, max_line_length = 80))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> '+proj=longlat' in gm.CRS(4326).to_proj()
     /// True
+    #[pyo3(signature = (*, version = 5, pretty = false, approximate_tmerc = false, indentation_width = 2, max_line_length = 80))]
     fn to_proj(
         slf: &Bound<'_, Self>,
         #[pyo3(from_py_with = crate::strict_i64)] version: i64,
@@ -189,13 +189,13 @@ impl PyCrs {
     /// ------
     /// CRSError
     ///     If export fails or a formatting option is invalid.
-    #[pyo3(signature = (*, pretty = false, indentation_width = 2))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> 'GeographicCRS' in gm.CRS(4326).to_projjson()
     /// True
+    #[pyo3(signature = (*, pretty = false, indentation_width = 2))]
     fn to_projjson(
         slf: &Bound<'_, Self>,
         pretty: bool,
@@ -238,16 +238,16 @@ impl PyCrs {
     /// ------
     /// CRSError
     ///     If export fails.
-    #[pyo3(
-        signature = (*, wkt_version = crs::WktVersion::Wkt2_2019),
-        text_signature = "($self, *, wkt_version='WKT2_2019')"
-    )]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).to_cf().get('grid_mapping_name')
     /// 'latitude_longitude'
+    #[pyo3(
+        signature = (*, wkt_version = crs::WktVersion::Wkt2_2019),
+        text_signature = "($self, *, wkt_version='WKT2_2019')"
+    )]
     fn to_cf(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
@@ -270,13 +270,13 @@ impl PyCrs {
     /// Returns
     /// -------
     /// CRS
-    #[pyo3(signature = (*, name = None))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4979).to_2d().to_epsg()
     /// 4326
+    #[pyo3(signature = (*, name = None))]
     fn to_2d(slf: &Bound<'_, Self>, name: Option<&str>) -> PyResult<Self> {
         Ok(Self::from_definition(crs_arc(crs::to_2d(
             &slf.get().definition,
@@ -298,13 +298,13 @@ impl PyCrs {
     /// Returns
     /// -------
     /// CRS
-    #[pyo3(signature = (*, name = None))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).to_3d().to_epsg()
     /// 4979
+    #[pyo3(signature = (*, name = None))]
     fn to_3d(slf: &Bound<'_, Self>, name: Option<&str>) -> PyResult<Self> {
         Ok(Self::from_definition(crs_arc(crs::to_3d(
             &slf.get().definition,

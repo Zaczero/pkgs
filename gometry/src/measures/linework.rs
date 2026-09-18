@@ -24,13 +24,13 @@ use crate::{
 ///     If operands' CRS or coordinate-epoch metadata differ.
 /// GeometryTypeError
 ///     If either operand is not lineal.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.shared_paths(gm.LineString([(0, 0), (2, 0)]), gm.LineString([(1, 0), (3, 0)])).to_wkt()
 /// 'GEOMETRYCOLLECTION (MULTILINESTRING ((1 0, 2 0)), MULTILINESTRING EMPTY)'
+#[pyfunction]
 pub(crate) fn shared_paths(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
@@ -69,14 +69,14 @@ pub(crate) fn shared_paths(
 ///     If operands' CRS or coordinate-epoch metadata differ.
 /// GeometryTypeError
 ///     If ``geom`` is not lineal.
-#[pyfunction]
-#[pyo3(signature = (geom, splitter, *, tolerance = 0.0))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.split(gm.LineString([(0, 0), (2, 0)]), gm.Point(1, 0)).to_wkt()
 /// ['LINESTRING (0 0, 1 0)', 'LINESTRING (1 0, 2 0)']
+#[pyfunction]
+#[pyo3(signature = (geom, splitter, *, tolerance = 0.0))]
 pub(crate) fn split(
     py: Python<'_>,
     geom: &Bound<'_, PyAny>,

@@ -307,10 +307,6 @@ pub(crate) fn crs_transform(
 ///     If coordinate columns are non-finite or differ in length.
 /// GeometryError
 ///     If ``direction`` is invalid.
-#[pyfunction(
-    signature = (operation, x, y, z = None, *, t = None, direction = crs::ProjDirection::Forward),
-    text_signature = "(operation, x, y, z=None, *, t=None, direction='forward')"
-)]
 ///
 /// Examples
 /// --------
@@ -319,6 +315,10 @@ pub(crate) fn crs_transform(
 /// >>> op = gm.CRS(4326).operation(3857).get('definition') or ''
 /// >>> np.round(np.asarray(gm.crs_apply(op, -122.4, 37.8)), 1).tolist()
 /// [-13625505.7, 4551210.9]
+#[pyfunction(
+    signature = (operation, x, y, z = None, *, t = None, direction = crs::ProjDirection::Forward),
+    text_signature = "(operation, x, y, z=None, *, t=None, direction='forward')"
+)]
 pub(crate) fn crs_apply(
     py: Python<'_>,
     operation: &str,

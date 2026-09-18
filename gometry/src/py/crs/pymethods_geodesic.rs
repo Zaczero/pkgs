@@ -20,16 +20,16 @@ impl PyCrs {
     /// Returns
     /// -------
     /// bool
-    #[pyo3(
-        signature = (other, *, mode),
-        text_signature = "($self, other, *, mode)"
-    )]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).same_as(gm.CRS(4326), mode='exact')
     /// True
+    #[pyo3(
+        signature = (other, *, mode),
+        text_signature = "($self, other, *, mode)"
+    )]
     fn same_as(
         slf: &Bound<'_, Self>,
         other: &Bound<'_, PyAny>,
@@ -53,13 +53,13 @@ impl PyCrs {
     /// ------
     /// CRSError
     ///     If identification fails.
-    #[pyo3(signature = (*, authority = None))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).identify()[0]['code']
     /// '4326'
+    #[pyo3(signature = (*, authority = None))]
     fn identify(
         slf: &Bound<'_, Self>,
         authority: Option<&str>,
@@ -133,7 +133,6 @@ impl PyCrs {
     /// ------
     /// InvalidGeometryError
     ///     If ``lon``/``lat`` are non-finite or differ in length.
-    #[pyo3(signature = (lon, lat, *, radians = false))]
     ///
     /// Examples
     /// --------
@@ -141,6 +140,7 @@ impl PyCrs {
     /// >>> f = gm.CRS(3857).factors(0.0, 0.0)
     /// >>> round(f['meridional_scale'], 5)
     /// 1.0
+    #[pyo3(signature = (lon, lat, *, radians = false))]
     fn factors(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
@@ -178,13 +178,13 @@ impl PyCrs {
     ///     one of ``z1``/``z2`` is given.
     /// GeometryError
     ///     If the CRS does not expose a usable ellipsoid for geodesic use.
-    #[pyo3(signature = (lon1, lat1, lon2, lat2, z1 = None, z2 = None, *, radians = false))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> round(gm.CRS(4326).geodesic_inverse(-122.4, 37.8, -122.3, 37.9)['distance'])
     /// 14165
+    #[pyo3(signature = (lon1, lat1, lon2, lat2, z1 = None, z2 = None, *, radians = false))]
     fn geodesic_inverse(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
@@ -235,7 +235,6 @@ impl PyCrs {
     ///     If the value is not a recognized CRS.
     /// InvalidGeometryError
     ///     If coordinate columns are non-finite or differ in length.
-    #[pyo3(signature = (lon, lat, azimuth, distance, *, radians = false))]
     ///
     /// Examples
     /// --------
@@ -243,6 +242,7 @@ impl PyCrs {
     /// >>> d = gm.CRS(4326).geodesic_direct(-122.4, 37.8, 45.0, 1000.0)
     /// >>> (round(d['longitude'], 5), round(d['latitude'], 5))
     /// (-122.39197, 37.80637)
+    #[pyo3(signature = (lon, lat, azimuth, distance, *, radians = false))]
     fn geodesic_direct(
         slf: &Bound<'_, Self>,
         py: Python<'_>,
@@ -292,7 +292,6 @@ impl PyCrs {
     ///     If the value is not a recognized CRS.
     /// InvalidGeometryError
     ///     If coordinate columns are non-finite or differ in length.
-    #[pyo3(signature = (lon1, lat1, lon2, lat2, distance, *, normalized = false, radians = false))]
     ///
     /// Examples
     /// --------
@@ -301,6 +300,7 @@ impl PyCrs {
     /// ...     -122.4, 37.8, -122.3, 37.9, 0.5, normalized=True)
     /// >>> (round(mid['longitude'], 5), round(mid['latitude'], 5))
     /// (-122.35003, 37.85001)
+    #[pyo3(signature = (lon1, lat1, lon2, lat2, distance, *, normalized = false, radians = false))]
     fn geodesic_interpolate(
         slf: &Bound<'_, Self>,
         py: Python<'_>,

@@ -7,13 +7,13 @@ use crate::py::errors::native_memory_error;
 /// dict
 ///     Engine metadata. ``paths`` is the effective per-context grid search
 ///     path configured through :func:`crs_configure`.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_engine()['version']
 /// '9.6.2'
+#[pyfunction]
 pub(crate) fn crs_engine() -> PyResult<crs::EngineInfo> {
     let state = crs::runtime_state_snapshot()?;
     Ok(crs::engine_info_with_state(&state)?)

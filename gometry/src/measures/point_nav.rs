@@ -2472,17 +2472,17 @@ fn cross_track_broadcast(
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// CRSError
 ///     If a coordinate is outside the longitude/latitude domain.
-#[pyfunction]
-#[pyo3(
-    signature = (left, right, *, path = NavigationPath::Geodesic),
-    text_signature = "(left, right, *, path='geodesic')"
-)]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.bearing(gm.Point(0, 0), gm.Point(1, 0))
 /// 90.0
+#[pyfunction]
+#[pyo3(
+    signature = (left, right, *, path = NavigationPath::Geodesic),
+    text_signature = "(left, right, *, path='geodesic')"
+)]
 pub(crate) fn bearing(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,
@@ -2661,17 +2661,17 @@ pub(crate) fn destination(
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
 ///     If ``distance`` is not finite.
-#[pyfunction]
-#[pyo3(
-    signature = (left, right, distance, *, normalized = false, path = NavigationPath::Geodesic, unit = None),
-    text_signature = "(left, right, distance, *, normalized=False, path='geodesic', unit=None)"
-)]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.point_between(gm.Point(0, 0), gm.Point(2, 0), 0.5).to_wkt()
 /// 'POINT (0.5 0)'
+#[pyfunction]
+#[pyo3(
+    signature = (left, right, distance, *, normalized = false, path = NavigationPath::Geodesic, unit = None),
+    text_signature = "(left, right, distance, *, normalized=False, path='geodesic', unit=None)"
+)]
 pub(crate) fn point_between(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,

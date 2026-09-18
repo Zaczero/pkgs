@@ -66,13 +66,13 @@ pub(crate) fn relate(
 ///     If the operands' CRS or coordinate-epoch metadata differ.
 /// GeometryError
 ///     If ``pattern`` is not a 9-character DE-9IM pattern.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.relate_pattern(gm.box(0, 0, 1, 1), gm.box(0.5, 0.5, 1.5, 1.5), 'T*T***T**')
 /// True
+#[pyfunction]
 pub(crate) fn relate_pattern(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,

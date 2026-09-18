@@ -196,8 +196,6 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
 /// ------
 /// TypeError
 ///     If ``values`` is not geometry-like.
-#[pyfunction]
-#[pyo3(signature = (values, *, axes = None, return_index = false))]
 ///
 /// Examples
 /// --------
@@ -209,6 +207,8 @@ pub(crate) fn coordinate_view_for_input(input: GeometryInput<'_>) -> coordinates
 /// ... )
 /// >>> matrix.tolist(), indexes.tolist()
 /// ([[1.0, 2.0]], [0])
+#[pyfunction]
+#[pyo3(signature = (values, *, axes = None, return_index = false))]
 pub(crate) fn get_coordinates(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,

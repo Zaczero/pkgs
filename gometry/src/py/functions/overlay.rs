@@ -374,7 +374,6 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 /// See Also
 /// --------
 /// polygonize_full : The same pooled aggregate plus dangles, cut edges, and invalid-ring diagnostics.
-#[pyfunction]
 ///
 /// Examples
 /// --------
@@ -385,6 +384,7 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 /// ...     gm.LineString([(1, 1), (0, 0)]),
 /// ... ]).to_wkt()
 /// ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
+#[pyfunction]
 pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
     let (metadata, shapes) = pooled_shapes(values)?;
     let polygons = py.detach(move || {
@@ -419,7 +419,6 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 /// PolygonizeResult
 ///     Pooled polygons plus source-row ``Groups`` for cut edges, dangles, and
 ///     invalid rings.
-#[pyfunction]
 ///
 /// Examples
 /// --------
@@ -431,6 +430,7 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 /// ... ])
 /// >>> result.polygons.to_wkt()
 /// ['POLYGON ((0 0, 1 0, 1 1, 0 0))']
+#[pyfunction]
 pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let (metadata, shapes) = pooled_shapes_with_rows(values)?;
     let full = py.detach(move || {
@@ -610,8 +610,6 @@ pub(crate) fn coverage_is_valid(
 /// See Also
 /// --------
 /// coverage_is_valid : The boolean verdict.
-#[pyfunction]
-#[pyo3(signature = (values, *, gap_width = 0.0))]
 ///
 /// Examples
 /// --------
@@ -619,6 +617,8 @@ pub(crate) fn coverage_is_valid(
 /// >>> len(gm.coverage_invalid_edges(
 /// ...     [gm.box(0, 0, 1, 1), gm.box(0.5, 0, 1.5, 1)]))
 /// 2
+#[pyfunction]
+#[pyo3(signature = (values, *, gap_width = 0.0))]
 pub(crate) fn coverage_invalid_edges(
     py: Python<'_>,
     values: &Bound<'_, PyAny>,

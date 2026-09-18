@@ -75,7 +75,6 @@ impl PyGeometryArray {
     /// Returns
     /// -------
     /// GeometryArray
-    #[pyo3(signature = (*others))]
     ///
     /// Examples
     /// --------
@@ -83,6 +82,7 @@ impl PyGeometryArray {
     /// >>> a = gm.GeometryArray([gm.box(0, 0, 1, 1)])
     /// >>> a.concat(gm.GeometryArray([gm.Point(2, 2)])).to_wkt()
     /// ['POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))', 'POINT (2 2)']
+    #[pyo3(signature = (*others))]
     pub fn concat(&self, others: &Bound<'_, pyo3::types::PyTuple>) -> PyResult<Self> {
         if others.is_empty() {
             return Ok(self.clone());
@@ -313,7 +313,6 @@ impl PyGeometryArray {
     /// GeometryArray
     ///     A new array with the same rows in curve-key order; empty and
     ///     missing rows sort last.
-    #[pyo3(signature = (*, curve = SpatialCurve::Hilbert, level = 16, bounds = None), text_signature = "($self, *, curve='hilbert', level=16, bounds=None)")]
     ///
     /// Examples
     /// --------
@@ -321,6 +320,7 @@ impl PyGeometryArray {
     /// >>> arr = gm.GeometryArray([gm.Point(1, 0), gm.Point(0, 0)])
     /// >>> arr.sort_by_spatial_key().to_wkt()
     /// ['POINT (0 0)', 'POINT (1 0)']
+    #[pyo3(signature = (*, curve = SpatialCurve::Hilbert, level = 16, bounds = None), text_signature = "($self, *, curve='hilbert', level=16, bounds=None)")]
     pub fn sort_by_spatial_key(
         &self,
         curve: SpatialCurve,
@@ -443,7 +443,6 @@ impl PyGeometryArray {
     /// -------
     /// tuple of (GeometryArray, list)
     ///     One union per distinct key plus the parallel keys in first-occurrence order.
-    #[pyo3(signature = (by))]
     ///
     /// Examples
     /// --------
@@ -452,6 +451,7 @@ impl PyGeometryArray {
     /// >>> geoms, keys = arr.dissolve(by=[0, 0])
     /// >>> geoms.to_wkt()
     /// ['POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))']
+    #[pyo3(signature = (by))]
     pub fn dissolve(&self, py: Python<'_>, by: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         // Fixed-count alignment via keystone: fallible exact reserve + stop after
         // expected+1 so unbounded `itertools.repeat` cannot grow forever.

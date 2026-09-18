@@ -184,13 +184,13 @@ fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> 
 /// -------
 /// dict
 ///     The current CRS engine configuration.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> isinstance(gm.crs_config(), dict)
 /// True
+#[pyfunction]
 pub(crate) fn crs_config() -> PyResult<crs::RuntimeConfig> {
     Ok(crs::runtime_config()?)
 }
@@ -201,13 +201,13 @@ pub(crate) fn crs_config() -> PyResult<crs::RuntimeConfig> {
 /// -------
 /// dict
 ///     The configuration after the reset.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> isinstance(gm.crs_reset(), dict)
 /// True
+#[pyfunction]
 pub(crate) fn crs_reset() -> PyResult<crs::RuntimeConfig> {
     Ok(crs::reset_runtime_config()?)
 }
@@ -217,7 +217,6 @@ pub(crate) fn crs_reset() -> PyResult<crs::RuntimeConfig> {
 /// Returns
 /// -------
 /// None
-#[pyfunction]
 ///
 /// Examples
 /// --------
@@ -225,6 +224,7 @@ pub(crate) fn crs_reset() -> PyResult<crs::RuntimeConfig> {
 /// >>> gm.crs_clear_cache()
 /// >>> True
 /// True
+#[pyfunction]
 pub(crate) fn crs_clear_cache() {
     crs::clear_cache();
     // Drop Python-side catalog list materializations on this thread immediately
@@ -238,13 +238,13 @@ pub(crate) fn crs_clear_cache() {
 /// -------
 /// dict
 ///     CRS cache statistics (generation, entry counts, per-bucket info).
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_cache_info()['total_capacity'] > 0
 /// True
+#[pyfunction]
 pub(crate) fn crs_cache_info() -> crs::CacheInfo {
     crs::cache_info()
 }

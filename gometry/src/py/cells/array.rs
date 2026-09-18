@@ -1452,7 +1452,6 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// Returns
     /// -------
     /// CellArray
-    #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
     ///
     /// Examples
     /// --------
@@ -1467,6 +1466,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// >>> assert parent is not None
     /// >>> parent.token
     /// '86283082fffffff'
+    #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
     pub(crate) fn parent(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let kind = self.kind();
         let present = dispatch_cell_grid!(self, G, {
@@ -1545,7 +1545,6 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// -------
     /// Groups of CellArray
     ///     One row of children per input cell, in input order.
-    #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
 ///
     /// Examples
     /// --------
@@ -1557,6 +1556,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     /// >>> assert children is not None
     /// >>> len(children)
     /// 7
+    #[pyo3(signature = (depth = None, /), text_signature = "($self, depth=None, /)")]
     pub(crate) fn children(
         &self,
         py: Python<'_>,

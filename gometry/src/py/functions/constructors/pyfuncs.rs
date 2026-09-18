@@ -512,14 +512,14 @@ pub(super) fn polygons(
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
-#[pyfunction]
-#[pyo3(signature = (values, *, crs = None, epoch = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.multi_points([[(0, 0), (1, 1)]]).to_wkt()
 /// ['MULTIPOINT ((0 0), (1 1))']
+#[pyfunction]
+#[pyo3(signature = (values, *, crs = None, epoch = None))]
 pub(super) fn multi_points(
     values: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,
@@ -556,14 +556,14 @@ pub(super) fn multi_points(
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
-#[pyfunction]
-#[pyo3(signature = (values, *, crs = None, epoch = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.multi_line_strings([[[(0, 0), (1, 1)]]]).to_wkt()
 /// ['MULTILINESTRING ((0 0, 1 1))']
+#[pyfunction]
+#[pyo3(signature = (values, *, crs = None, epoch = None))]
 pub(super) fn multi_line_strings(
     values: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,
@@ -600,14 +600,14 @@ pub(super) fn multi_line_strings(
 ///     If ``epoch`` is set without ``crs``, or ``crs`` is not recognized.
 /// GeometryError
 ///     If ``epoch`` is not a finite decimal year.
-#[pyfunction]
-#[pyo3(signature = (values, *, crs = None, epoch = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.multi_polygons([[[[(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]]]]).to_wkt()
 /// ['MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)))']
+#[pyfunction]
+#[pyo3(signature = (values, *, crs = None, epoch = None))]
 pub(super) fn multi_polygons(
     values: &Bound<'_, PyAny>,
     crs: Option<&Bound<'_, PyAny>>,

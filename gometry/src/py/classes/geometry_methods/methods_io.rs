@@ -117,13 +117,13 @@ impl PyGeometry {
     /// Returns
     /// -------
     /// object
-    #[pyo3(signature = (*, encoding = ArrowEncoding::Auto), text_signature = "($self, *, encoding='auto')")]
         ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> type(gm.Point(1, 2).to_arrow()).__name__
     /// 'ExtensionArray'
+    #[pyo3(signature = (*, encoding = ArrowEncoding::Auto), text_signature = "($self, *, encoding='auto')")]
 pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
         match encoding {
             ArrowEncoding::Auto => arrow::shapes_to_arrow(

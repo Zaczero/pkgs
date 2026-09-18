@@ -53,17 +53,17 @@ impl PyCrs {
     /// ------
     /// CRSError
     ///     If the CRS arguments are unrecognized.
-    #[pyo3(signature = (target, *, at = None, area_of_interest = None, source_epoch = None, target_epoch = None, authority = None, accuracy = None, allow_ballpark = None, only_best = None, force_over = false))]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the PyO3 method directly exposes PROJ's independent operation-selection inputs"
-    )]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.CRS(4326).operation(3857)['name']
     /// 'pipeline'
+    #[pyo3(signature = (target, *, at = None, area_of_interest = None, source_epoch = None, target_epoch = None, authority = None, accuracy = None, allow_ballpark = None, only_best = None, force_over = false))]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the PyO3 method directly exposes PROJ's independent operation-selection inputs"
+    )]
     fn operation<'py>(
         slf: &Bound<'py, Self>,
         target: &Bound<'_, PyAny>,
@@ -154,13 +154,13 @@ impl PyCrs {
     /// Returns
     /// -------
     /// list of CrsOperationInfo
-    #[pyo3(signature = (target, *, area_of_interest = None, source_epoch = None, target_epoch = None, authority = None, accuracy = None, allow_ballpark = None, only_best = None, force_over = false))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> len(gm.CRS(4326).operations(3857)) >= 1
     /// True
+    #[pyo3(signature = (target, *, area_of_interest = None, source_epoch = None, target_epoch = None, authority = None, accuracy = None, allow_ballpark = None, only_best = None, force_over = false))]
     fn operations<'py>(
         slf: &Bound<'py, Self>,
         target: &Bound<'_, PyAny>,

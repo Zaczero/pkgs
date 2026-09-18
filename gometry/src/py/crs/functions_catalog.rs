@@ -34,14 +34,14 @@ pub(crate) fn crs_authorities(py: Python<'_>) -> PyResult<Bound<'_, pyo3::types:
 /// Returns
 /// -------
 /// list of str
-#[pyfunction]
-#[pyo3(signature = (authority, *, kind = None, allow_deprecated = false))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_codes('EPSG')[:3]
 /// ['10150', '10151', '10156']
+#[pyfunction]
+#[pyo3(signature = (authority, *, kind = None, allow_deprecated = false))]
 pub(crate) fn crs_codes(
     authority: &str,
     kind: Option<&str>,
@@ -84,14 +84,14 @@ pub(crate) fn crs_non_deprecated(
 /// Returns
 /// -------
 /// list of CrsCatalogInfo
-#[pyfunction]
-#[pyo3(signature = (name, *, authority = None, kind = None, approximate = false, limit = 20))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_search('WGS 84')[0]['code']
 /// '4326'
+#[pyfunction]
+#[pyo3(signature = (name, *, authority = None, kind = None, approximate = false, limit = 20))]
 pub(crate) fn crs_search(
     name: &str,
     authority: Option<String>,
@@ -137,14 +137,14 @@ pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {
 /// Returns
 /// -------
 /// list of CrsCatalogInfo
-#[pyfunction]
-#[pyo3(signature = (*, authority = None, kind = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false, celestial_body = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_catalog(authority='EPSG')[0]['code']
 /// '2000'
+#[pyfunction]
+#[pyo3(signature = (*, authority = None, kind = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false, celestial_body = None))]
 pub(crate) fn crs_catalog(
     authority: Option<&str>,
     kind: Option<String>,
@@ -194,14 +194,14 @@ pub(crate) fn crs_catalog(
 /// Returns
 /// -------
 /// list of CrsCatalogInfo
-#[pyfunction]
-#[pyo3(signature = (*, datum_name = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_utm_zones()[0]['code']
 /// '10286'
+#[pyfunction]
+#[pyo3(signature = (*, datum_name = None, area_of_interest = None, contains_area_of_interest = false, allow_deprecated = false))]
 pub(crate) fn crs_utm_zones(
     datum_name: Option<String>,
     area_of_interest: Option<&Bound<'_, PyAny>>,
@@ -226,14 +226,14 @@ pub(crate) fn crs_utm_zones(
 /// Returns
 /// -------
 /// list of CrsCelestialBodyInfo
-#[pyfunction]
-#[pyo3(signature = (*, authority = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.crs_celestial_bodies()[0]['name']
 /// '1_Ceres'
+#[pyfunction]
+#[pyo3(signature = (*, authority = None))]
 pub(crate) fn crs_celestial_bodies<'py>(
     py: Python<'py>,
     authority: Option<&str>,

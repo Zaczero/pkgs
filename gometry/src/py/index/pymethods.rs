@@ -287,7 +287,6 @@ impl PySpatialIndex {
     /// -------
     /// Geometry or object
     ///     The live geometry, else ``default``.
-    #[pyo3(signature = (handle, /, default = None))]
     ///
     /// Examples
     /// --------
@@ -296,6 +295,7 @@ impl PySpatialIndex {
     /// >>> g = idx.get(0)
     /// >>> g is not None and g.to_wkt().startswith('POLYGON')
     /// True
+    #[pyo3(signature = (handle, /, default = None))]
     pub(crate) fn get(
         &self,
         py: Python<'_>,
@@ -369,7 +369,6 @@ impl PySpatialIndex {
     /// GeometryError
     ///     If a query parameter is invalid, or ``unit='meters'`` is requested
     ///     for a CRS-free geometry.
-    #[pyo3(signature = (geom, *, predicate = "intersects", distance = None, unit = None))]
     ///
     /// Examples
     /// --------
@@ -377,6 +376,7 @@ impl PySpatialIndex {
     /// >>> idx = gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)])
     /// >>> idx.query(gm.Point(0.5, 0.5)).tolist()
     /// [0]
+    #[pyo3(signature = (geom, *, predicate = "intersects", distance = None, unit = None))]
     pub(crate) fn query(
         &self,
         py: Python<'_>,
@@ -537,7 +537,6 @@ impl PySpatialIndex {
     ///     If the query and index CRS/coordinate-epoch frames differ.
     /// GeometryError
     ///     If a predicate or distance option is invalid.
-    #[pyo3(signature = (queries, *, predicate = "intersects", distance = None, unit = None))]
     ///
     /// Examples
     /// --------
@@ -546,6 +545,7 @@ impl PySpatialIndex {
     /// >>> left, right = idx.join(gm.GeometryArray([gm.Point(0.5, 0.5)]))
     /// >>> (left.tolist(), right.tolist())
     /// ([0], [0])
+    #[pyo3(signature = (queries, *, predicate = "intersects", distance = None, unit = None))]
     pub(crate) fn join(
         &self,
         py: Python<'_>,
@@ -593,7 +593,6 @@ impl PySpatialIndex {
     ///     If ``predicate`` is unknown or directional, ``distance`` is missing
     ///     or invalid for ``predicate='dwithin'``, or ``unit='meters'`` is
     ///     requested for a CRS-free geometry.
-    #[pyo3(signature = (*, predicate = "intersects", distance = None, unit = None))]
     ///
     /// Examples
     /// --------
@@ -602,6 +601,7 @@ impl PySpatialIndex {
     /// >>> left, right = idx.self_join()
     /// >>> (left.tolist(), right.tolist())
     /// ([], [])
+    #[pyo3(signature = (*, predicate = "intersects", distance = None, unit = None))]
     pub(crate) fn self_join(
         &self,
         py: Python<'_>,
@@ -657,7 +657,6 @@ impl PySpatialIndex {
     /// GeometryError
     ///     If a query parameter is invalid, or ``unit='meters'`` is requested
     ///     for a CRS-free geometry.
-    #[pyo3(signature = (geom, *, distance = None, unit = None))]
     ///
     /// Examples
     /// --------
@@ -665,6 +664,7 @@ impl PySpatialIndex {
     /// >>> idx = gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)])
     /// >>> idx.candidates(gm.box(0, 0, 1, 1)).tolist()
     /// [0]
+    #[pyo3(signature = (geom, *, distance = None, unit = None))]
     pub(crate) fn candidates(
         &self,
         py: Python<'_>,
@@ -791,10 +791,6 @@ impl PySpatialIndex {
     /// GeometryError
     ///     If ``k`` or ``max_distance`` is invalid, or ``unit='meters'`` is
     ///     requested for a CRS-free geometry.
-    #[pyo3(
-        signature = (geom, *, k = 1, max_distance = None, return_distance = false, unit = None, exclusive = false, ties = false),
-        text_signature = "($self, geom, *, k=1, max_distance=None, return_distance=False, unit=None, exclusive=False, ties=False)"
-    )]
     ///
     /// Examples
     /// --------
@@ -802,6 +798,10 @@ impl PySpatialIndex {
     /// >>> idx = gm.SpatialIndex([gm.box(0, 0, 1, 1), gm.box(2, 2, 3, 3)])
     /// >>> idx.nearest(gm.Point(4, 4)).tolist()
     /// [1]
+    #[pyo3(
+        signature = (geom, *, k = 1, max_distance = None, return_distance = false, unit = None, exclusive = false, ties = false),
+        text_signature = "($self, geom, *, k=1, max_distance=None, return_distance=False, unit=None, exclusive=False, ties=False)"
+    )]
     pub(crate) fn nearest(
         &self,
         py: Python<'_>,

@@ -72,7 +72,6 @@ impl PyGeometryArray {
     /// See Also
     /// --------
     /// coverage_is_valid : The boolean verdict.
-    #[pyo3(signature = (*, gap_width = 0.0))]
     ///
     /// Examples
     /// --------
@@ -81,6 +80,7 @@ impl PyGeometryArray {
     /// ...     [gm.box(0, 0, 1, 1), gm.box(0.5, 0, 1.5, 1)]
     /// ... ).coverage_invalid_edges())
     /// 2
+    #[pyo3(signature = (*, gap_width = 0.0))]
     pub fn coverage_invalid_edges(&self, py: Python<'_>, gap_width: f64) -> PyResult<Self> {
         let shapes = self.present_shapes()?;
         let edges = py.detach(move || geometry::coverage_invalid_edges(&shapes, gap_width))?;

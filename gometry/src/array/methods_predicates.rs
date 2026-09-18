@@ -102,13 +102,13 @@ impl PyGeometryArray {
     /// See Also
     /// --------
     /// from_arrow : Decode a GeoArrow array into a ``GeometryArray``.
-    #[pyo3(signature = (*, encoding = ArrowEncoding::Auto), text_signature = "($self, *, encoding='auto')")]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> type(gm.GeometryArray([gm.Point(1, 2)]).to_arrow()).__name__
     /// 'ExtensionArray'
+    #[pyo3(signature = (*, encoding = ArrowEncoding::Auto), text_signature = "($self, *, encoding='auto')")]
     pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<PyAny>> {
         arrow::array_to_arrow(py, self, encoding)
     }
@@ -168,13 +168,13 @@ impl PyGeometryArray {
     /// See Also
     /// --------
     /// from_polyline : Decode Google polyline text into geometries.
-    #[pyo3(signature = (*, precision = 5, drop_epoch = false))]
     ///
     /// Examples
     /// --------
     /// >>> import gometry as gm
     /// >>> gm.GeometryArray([gm.LineString([(0, 0), (1, 1)])]).to_polyline()
     /// ['??_ibE_ibE']
+    #[pyo3(signature = (*, precision = 5, drop_epoch = false))]
     pub fn to_polyline(
         &self,
         py: Python<'_>,

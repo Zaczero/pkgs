@@ -89,13 +89,13 @@ pub(super) fn _unpickle_h3_cell(
 /// ------
 /// GeometryError
 ///     If ``resolution`` is out of range.
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> len(gm.h3_pentagons(7))
 /// 12
+#[pyfunction]
 pub(super) fn h3_pentagons(resolution: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
     let resolution = parse_h3_resolution(resolution)?;
     h3_cell_array(resolution.pentagons())
@@ -106,13 +106,13 @@ pub(super) fn h3_pentagons(resolution: &Bound<'_, PyAny>) -> PyResult<PyCellArra
 /// Returns
 /// -------
 /// CellArray of H3Cell
-#[pyfunction]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> len(gm.h3_base_cells())
 /// 122
+#[pyfunction]
 pub(super) fn h3_base_cells() -> PyResult<PyCellArray> {
     h3_cell_array(CellIndex::base_cells())
 }

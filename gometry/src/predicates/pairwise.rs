@@ -241,14 +241,14 @@ pub(crate) fn distance(
 /// --------
 /// distance : The 2D sibling, with the same ``unit`` override.
 /// length_3d : Total 3D length under the same metric.
-#[pyfunction]
-#[pyo3(signature = (left, right, *, unit = None))]
 ///
 /// Examples
 /// --------
 /// >>> import gometry as gm
 /// >>> gm.distance_3d(gm.from_wkt('POINT Z (0 0 0)'), gm.from_wkt('POINT Z (0 0 3)'))
 /// 3.0
+#[pyfunction]
+#[pyo3(signature = (left, right, *, unit = None))]
 pub(crate) fn distance_3d(
     py: Python<'_>,
     left: &Bound<'_, PyAny>,

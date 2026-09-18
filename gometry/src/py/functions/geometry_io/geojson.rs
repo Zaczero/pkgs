@@ -380,11 +380,6 @@ pub(crate) fn from_geojson(
 /// --------
 /// from_geojson : Decode geometry while dropping feature side data.
 /// to_feature_collection : Encode geometry and aligned side data.
-#[pyfunction]
-#[pyo3(
-    signature = (features, *, crs = Wgs84DefaultCrs::Default, epoch = None),
-    text_signature = "(features, *, crs='OGC:CRS84', epoch=None)"
-)]
 ///
 /// Examples
 /// --------
@@ -396,6 +391,11 @@ pub(crate) fn from_geojson(
 /// ... }])
 /// >>> feats.geometries.to_wkt()
 /// ['POINT (1 2)']
+#[pyfunction]
+#[pyo3(
+    signature = (features, *, crs = Wgs84DefaultCrs::Default, epoch = None),
+    text_signature = "(features, *, crs='OGC:CRS84', epoch=None)"
+)]
 pub(crate) fn from_features(
     py: Python<'_>,
     features: &Bound<'_, PyAny>,
