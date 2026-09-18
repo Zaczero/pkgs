@@ -4355,6 +4355,7 @@ pub(crate) fn occupied_cartesian_support(shape: &Shape) -> Result<Shape> {
     inventory.occupied_cartesian_support(&partition)
 }
 
+#[cfg(test)]
 pub(crate) fn cartesian_support_nonempty(shape: &Shape) -> Result<bool> {
     let inventory = ExactSourceInventory::from_shapes(&[shape])?;
     let mut budget = ExpansionBudget::new("support", "exact partition");

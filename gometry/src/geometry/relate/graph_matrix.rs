@@ -587,10 +587,11 @@ const fn rectangle_edges(bounds: Bounds) -> [Segment; 4] {
     clippy::float_cmp,
     reason = "the certificate compares vertices with their exact bounds"
 )]
-/// Whether `shape` covers `bounds` exactly: a hole-free polygon whose every
-/// vertex sits on the box, whose every step runs along one of its sides, and
-/// which reaches all four corners. Extra collinear vertices along a side are
-/// admitted; a degenerate box is not.
+/// Whether `shape` is exactly the box `bounds`: a hole-free polygon whose every
+/// vertex sits on the box, whose every step runs along one of its sides, which
+/// reaches all four corners, and whose winding encloses the box. Extra
+/// collinear vertices along a side are admitted; a degenerate box, or a ring
+/// whose traversals cancel, is not.
 pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
     let Shape::Polygon(polygon) = shape else {
         return false;
@@ -622,7 +623,7 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
     {
         return false;
     }
-    seen.iter().all(|&corner| corner)
+    seen.iter().all(|&corner| corner) && ring_has_area(&polygon.shell)
 }
 
 #[expect(

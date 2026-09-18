@@ -157,9 +157,11 @@ pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
 use linear::{normalize_line_distance, push_distinct_point};
 use ordinates::{carry_each, carry_ordinates};
 pub(crate) use ordinates::{carry_overlay_ordinates, carry_overlay_ordinates_from_graph};
+#[cfg(test)]
+pub(crate) use overlay::cartesian_support_nonempty;
 pub(crate) use overlay::{
-    OverlayOp, Strictness, cartesian_support_nonempty, empty_shape_for_dimension_with_axes,
-    exact_intersects_bounds, rect_polygon,
+    OverlayOp, Strictness, empty_shape_for_dimension_with_axes, exact_intersects_bounds,
+    rect_polygon,
 };
 use overlay::{
     binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,

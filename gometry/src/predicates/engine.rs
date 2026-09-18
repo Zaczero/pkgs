@@ -370,10 +370,9 @@ impl PredicateSpec {
         };
         let rectangle = |operand: GateOperand<'_>, bounds: Bounds| {
             operand.row.try_with_shape(|shape| {
-                if !crate::geometry::is_axis_aligned_rectangle(shape, bounds) {
-                    return Ok(false);
-                }
-                crate::geometry::cartesian_support_nonempty(shape)
+                Ok::<_, crate::error::Error>(crate::geometry::is_axis_aligned_rectangle(
+                    shape, bounds,
+                ))
             })
         };
         Ok((rectangle(*left, left_bounds)? && rectangle(*right, right_bounds)?).then_some(meeting))
@@ -768,17 +767,11 @@ fn pattern_bounds_gate(
             let Some(bounds) = operand.bounds else {
                 return Ok(None);
             };
-            let is_filled_rectangle =
-                operand
-                    .row
-                    .try_with_shape(|shape| -> crate::error::Result<bool> {
-                        let Shape::Polygon(polygon) = shape else {
-                            return Ok(false);
-                        };
-                        Ok(crate::geometry::is_axis_aligned_rectangle(shape, bounds)
-                            && !crate::geometry::ring_winding(polygon.shell.coords())
-                                .is_degenerate())
-                    })?;
+            let is_filled_rectangle = operand.row.try_with_shape(|shape| {
+                Ok::<_, crate::error::Error>(crate::geometry::is_axis_aligned_rectangle(
+                    shape, bounds,
+                ))
+            })?;
             if !is_filled_rectangle {
                 return Ok(None);
             }

@@ -38,11 +38,6 @@ fn spatial_index_rows(
             crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
             continue;
         };
-        if domain == TopologyDomain::Cartesian
-            && !crate::geometry::cartesian_support_nonempty(item.shape.shape())?
-        {
-            return Err(GeometryError::new_err("cannot index empty geometry"));
-        }
         let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
             crate::try_push(&mut entries, IndexEntry { idx, envelope })?;
@@ -117,11 +112,6 @@ fn packed_index_payload(
         };
         match domain {
             TopologyDomain::Cartesian => {
-                if matches!(shape_row, crate::array::ShapeRow::Rings(..))
-                    && !shape_row.try_with_shape(crate::geometry::cartesian_support_nonempty)?
-                {
-                    return Err(GeometryError::new_err("cannot index empty geometry"));
-                }
                 crate::try_push_vec(&mut entries, IndexEntry {
                     idx: logical,
                     envelope: bounds_envelope(bounds),
@@ -546,19 +536,17 @@ mod ownership_tests {
         assert!(index.rows.boxed.is_empty());
     }
 
+    /// A ring whose traversals cancel has no support; the index still holds
+    /// its envelope, and exact refinement answers queries against it.
     #[test]
-    fn cartesian_index_rejects_empty_effective_support() {
+    fn cartesian_index_keeps_rows_with_cancelled_support() {
         pyo3::Python::initialize();
         let shape = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))")
             .expect("test WKT admits");
         let item = PyGeometry::with_frame(ShapeData::new(shape), Frame::None).unwrap();
-        let error = spatial_index(vec![item]).expect_err("empty support must not be indexed");
-        assert!(error.to_string().contains("cannot index empty geometry"));
-    }
+        let index = spatial_index(vec![item]).unwrap();
+        assert_eq!(index.live_handles_sorted().unwrap(), [0]);
 
-    #[test]
-    fn packed_cartesian_index_rejects_empty_effective_support() {
-        pyo3::Python::initialize();
         let array = PyGeometryArray::packed_polygons(
             CoordSeq::try_from_vecs(
                 vec![0.0, 2.0, 2.0, 0.0, 0.0, 0.0, 2.0, 2.0, 0.0],
@@ -572,8 +560,8 @@ mod ownership_tests {
             Frame::None,
         )
         .unwrap();
-        let error = packed_spatial_index(&array).expect_err("empty support must not be indexed");
-        assert!(error.to_string().contains("cannot index empty geometry"));
+        let index = packed_spatial_index(&array).unwrap().unwrap();
+        assert_eq!(index.live_handles_sorted().unwrap(), [0]);
     }
 
     #[test]

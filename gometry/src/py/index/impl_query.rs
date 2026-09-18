@@ -973,11 +973,6 @@ impl PySpatialIndex {
         policy: IndexEnvelope,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
-        if matches!(self.domain()?, crate::geometry::TopologyDomain::Cartesian)
-            && !crate::geometry::cartesian_support_nonempty(shape)?
-        {
-            return Ok(());
-        }
         let start = out.len();
         let cover = index_envelopes(shape, bounds, self.domain()?)?;
         for envelope in cover.windows(policy) {

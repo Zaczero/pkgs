@@ -80,11 +80,6 @@ impl PySpatialIndex {
             .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
         let effective_frame = self.metadata.as_ref().unwrap_or(&geometry.frame);
         let domain = crate::geometry::topology_domain(effective_frame)?;
-        if matches!(domain, crate::geometry::TopologyDomain::Cartesian)
-            && !crate::geometry::cartesian_support_nonempty(geometry.shape.shape())?
-        {
-            return Err(GeometryError::new_err("cannot index empty geometry"));
-        }
         let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
         let non_prunable_live = usize::from(!geodesic_prunable_point(&geometry.shape));
         let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
@@ -138,11 +133,6 @@ impl PySpatialIndex {
                 .shape
                 .bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
-            if matches!(domain, crate::geometry::TopologyDomain::Cartesian)
-                && !crate::geometry::cartesian_support_nonempty(geometry.shape.shape())?
-            {
-                return Err(GeometryError::new_err("cannot index empty geometry"));
-            }
             let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
                 if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
@@ -201,11 +191,6 @@ impl PySpatialIndex {
                 .quick_bounds()
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
             let shape = row.with_shape(std::clone::Clone::clone)?;
-            if matches!(domain, crate::geometry::TopologyDomain::Cartesian)
-                && !crate::geometry::cartesian_support_nonempty(&shape)?
-            {
-                return Err(GeometryError::new_err("cannot index empty geometry"));
-            }
             let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
                 if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {

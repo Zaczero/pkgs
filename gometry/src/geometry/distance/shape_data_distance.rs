@@ -537,8 +537,7 @@ impl PreparedPlan {
         if crate::geometry::is_axis_aligned_rectangle(left, left_bounds)
             && crate::geometry::is_axis_aligned_rectangle(right, right_bounds)
         {
-            return Ok(crate::geometry::cartesian_support_nonempty(left)?
-                && crate::geometry::cartesian_support_nonempty(right)?);
+            return Ok(true);
         }
         // Containment first (raycast over the rings, no prepared linework) so
         // the common area-overlap case never builds `distance_parts`. The

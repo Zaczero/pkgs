@@ -149,13 +149,14 @@ pub(crate) use clip::{
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     line_parts_to_shape,
 };
+#[cfg(test)]
+pub(crate) use exact_partition::cartesian_support_nonempty;
 pub(in crate::geometry) use exact_partition::{
     ExactChainView, ExactLineEmission, ExactMetricSpan, ExactMetricSupport, ExactPartition,
     ExactSourceInventory, NodeId, certify_emitted_incidence,
 };
 pub(crate) use exact_partition::{
-    cartesian_support_nonempty, exact_intersects_bounds, occupied_cartesian_area,
-    occupied_cartesian_support,
+    exact_intersects_bounds, occupied_cartesian_area, occupied_cartesian_support,
 };
 #[cfg(test)]
 pub(in crate::geometry) use exact_partition::{
