@@ -259,10 +259,10 @@ pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
     predicates::polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, rings, point)
 }
 pub(crate) use relate::{
-    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, admitted_bounds_are_sound,
-    graph_intersects_bounds, graph_relate_data, graph_relate_data_geographic,
-    graph_relate_data_geographic_with_left_graph, graph_relate_data_geographic_with_right_graph,
-    graph_relate_shapes, is_axis_aligned_rectangle, line_scalar_prefers_direct_polygon_relate,
+    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, graph_intersects_bounds,
+    graph_relate_data, graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
+    graph_relate_data_geographic_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
+    line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,

@@ -905,7 +905,11 @@ impl Shape {
         let subject =
             crate::geometry::GeographicPrepared::try_new(&subject_plan, &subject_cache, frame)?;
         let subject_bounds_sound = bounds.is_none_or(|bounds| {
-            crate::geometry::admitted_bounds_are_sound(subject.view(), bounds)
+            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                Some(subject.view().shape()),
+                bounds,
+                frame,
+            )
         });
         let rectangle_bounds_sound =
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(None, rect, frame);

@@ -22,6 +22,9 @@ use crate::geometry::{
 pub(crate) struct FrameDependentCaches {
     entry: Mutex<Option<(GeodesicPartsKey, FrameDependentEntry)>>,
     geographic_topology: Mutex<GeographicTopologySlot>,
+    /// The frame the stored coordinates were admitted in, with whether their
+    /// raw box then stands in for the shape.
+    admission: Mutex<Option<(crate::geographic::GeographicFrame, bool)>>,
     #[cfg(test)]
     geographic_topology_accesses: AtomicUsize,
     #[cfg(test)]
@@ -91,6 +94,30 @@ struct FrameDependentEntry {
 }
 
 impl FrameDependentCaches {
+    /// Whether the raw box is sound in `frame`, once the coordinates have
+    /// been admitted there; `None` before that admission.
+    pub(crate) fn admitted_bounds_sound(
+        &self,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Option<bool> {
+        self.admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .filter(|&(admitted, _)| admitted == frame)
+            .map(|(_, bounds_sound)| bounds_sound)
+    }
+
+    pub(crate) fn record_admission(
+        &self,
+        frame: crate::geographic::GeographicFrame,
+        bounds_sound: bool,
+    ) {
+        *self
+            .admission
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((frame, bounds_sound));
+    }
+
     pub(crate) fn geographic_topology_graph(
         &self,
         view: crate::geographic::ScalarGeographicView<'_>,

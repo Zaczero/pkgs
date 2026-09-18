@@ -335,6 +335,12 @@ impl<'a> ScalarGeographicView<'a> {
         Ok(Self { frame, shape })
     }
 
+    /// A view of a shape whose coordinates a prior [`Self::try_new`] admitted
+    /// in `frame`; the coordinates are immutable, so the admission holds.
+    pub(crate) const fn previously_admitted(frame: GeographicFrame, shape: &'a Shape) -> Self {
+        Self { frame, shape }
+    }
+
     pub(crate) const fn shape(self) -> &'a Shape {
         self.shape
     }

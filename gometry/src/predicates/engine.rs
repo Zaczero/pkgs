@@ -414,15 +414,11 @@ impl<'a> GateOperand<'a> {
         let plan = prepared.plan();
         let row = ShapeRow::Shape(plan.shape());
         let (kind, _) = row_kind_empty(row);
-        let bounds = plan.bounds();
-        let bounds_sound = bounds.is_some_and(|bounds| {
-            crate::geometry::admitted_bounds_are_sound(prepared.view(), bounds)
-        });
         Self {
             row,
             kind,
-            bounds,
-            bounds_sound,
+            bounds: plan.bounds(),
+            bounds_sound: prepared.bounds_sound(),
         }
     }
 

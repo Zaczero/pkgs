@@ -28,6 +28,7 @@ pub(crate) struct GeographicPrepared<'a> {
     plan: &'a PreparedPlan,
     frame_cache: &'a crate::geometry::FrameDependentCaches,
     view: ScalarGeographicView<'a>,
+    bounds_sound: bool,
 }
 
 impl<'a> GeographicPrepared<'a> {
@@ -45,12 +46,26 @@ impl<'a> GeographicPrepared<'a> {
         self.view
     }
 
-    /// Admit `plan.shape()` once. Box facts and the exact graph reuse this view.
+    /// Whether the operand's raw box stands in for it in this frame.
+    pub(crate) const fn bounds_sound(&self) -> bool {
+        self.bounds_sound
+    }
+
+    /// Admit `plan.shape()` once per frame; later pairs reuse the admission
+    /// and its box fact from the plan's frame cache.
     pub(crate) fn try_new(
         plan: &'a PreparedPlan,
         frame_cache: &'a crate::geometry::FrameDependentCaches,
         frame: GeographicFrame,
     ) -> crate::error::Result<Self> {
+        if let Some(bounds_sound) = frame_cache.admitted_bounds_sound(frame) {
+            return Ok(Self {
+                plan,
+                frame_cache,
+                view: ScalarGeographicView::previously_admitted(frame, plan.shape()),
+                bounds_sound,
+            });
+        }
         let view = match ScalarGeographicView::try_new(frame, plan.shape()) {
             Ok(view) => view,
             Err(GeographicViewError::Resource) => {
@@ -63,10 +78,19 @@ impl<'a> GeographicPrepared<'a> {
                 ));
             },
         };
+        let bounds_sound = plan.bounds().is_some_and(|bounds| {
+            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                Some(plan.shape()),
+                bounds,
+                frame,
+            )
+        });
+        frame_cache.record_admission(frame, bounds_sound);
         Ok(Self {
             plan,
             frame_cache,
             view,
+            bounds_sound,
         })
     }
 }
@@ -75,34 +99,6 @@ impl GeographicPrepared<'_> {
     pub(crate) fn graph(self) -> Result<std::sync::Arc<TopologyGraph>> {
         self.frame_cache.geographic_topology_graph(self.view)
     }
-}
-
-/// Whether admitted coordinates let a raw box stand in for the operand.
-///
-/// Seam-crossing and pole vertices, and bound edges the frame would move, make
-/// the box a lie. Clip rectangles without a shape stay longitude-edge-only.
-pub(crate) fn admitted_bounds_are_sound(
-    view: crate::geographic::ScalarGeographicView<'_>,
-    bounds: Bounds,
-) -> bool {
-    let frame = view.frame();
-    if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
-        return false;
-    }
-    let mut reaches_pole = false;
-    view.for_each_coordinate(|coordinate| {
-        reaches_pole |= coordinate.identity(frame) == crate::geographic::SeamIdentity::Pole;
-    });
-    if reaches_pole {
-        return false;
-    }
-    let unmoved = |x: f64| {
-        frame
-            .longitude()
-            .canonicalize(x)
-            .is_ok_and(|canonical| canonical.get().to_bits() == x.to_bits())
-    };
-    unmoved(bounds.minx()) && unmoved(bounds.maxx())
 }
 
 /// Compute the complete relation matrix, using a direct Cartesian fold where
@@ -172,9 +168,12 @@ pub(crate) fn graph_relate_data_geographic(
     right: GeographicPrepared<'_>,
 ) -> Result<De9im> {
     debug_assert_eq!(left.frame(), right.frame());
-    if let Some(matrix) =
-        try_areal_relate_geographic(left.plan.shape(), right.plan.shape(), left.frame())?
-    {
+    if let Some(matrix) = try_areal_relate_geographic(
+        left.plan.shape(),
+        || left.bounds_sound(),
+        right.plan.shape(),
+        || right.bounds_sound(),
+    )? {
         return Ok(matrix);
     }
     if let Some(point) = shape_point(right.plan.shape()) {
@@ -204,9 +203,12 @@ pub(crate) fn graph_relate_data_geographic_with_left_graph(
     left_graph: &TopologyGraph,
     right: GeographicPrepared<'_>,
 ) -> Result<De9im> {
-    if let Some(matrix) =
-        try_areal_relate_geographic(left.shape(), right.plan.shape(), right.frame())?
-    {
+    if let Some(matrix) = try_areal_relate_geographic(
+        left.shape(),
+        || plan_bounds_sound(left, right.frame()),
+        right.plan.shape(),
+        || right.bounds_sound(),
+    )? {
         return Ok(matrix);
     }
     if let Some(point) = shape_point(right.plan.shape()) {
@@ -234,9 +236,12 @@ pub(crate) fn graph_relate_data_geographic_with_right_graph(
     right: &PreparedPlan,
     right_graph: &TopologyGraph,
 ) -> Result<De9im> {
-    if let Some(matrix) =
-        try_areal_relate_geographic(left.plan.shape(), right.shape(), left.frame())?
-    {
+    if let Some(matrix) = try_areal_relate_geographic(
+        left.plan.shape(),
+        || left.bounds_sound(),
+        right.shape(),
+        || plan_bounds_sound(right, left.frame()),
+    )? {
         return Ok(matrix);
     }
     if let Some(point) = shape_point(right.shape()) {
@@ -354,28 +359,31 @@ fn try_convex_relate(left: &Shape, right: &Shape) -> Option<De9im> {
     })
 }
 
+/// The direct areal fold reads raw coordinate boxes, so it runs only when both
+/// boxes stand in for their operands; points and lines never take it.
 fn try_areal_relate_geographic(
     left: &Shape,
+    left_bounds_sound: impl FnOnce() -> bool,
     right: &Shape,
-    frame: crate::geographic::GeographicFrame,
+    right_bounds_sound: impl FnOnce() -> bool,
 ) -> Result<Option<De9im>> {
-    let Some(left_bounds) = left.bounds() else {
-        return Ok(None);
-    };
-    let Some(right_bounds) = right.bounds() else {
-        return Ok(None);
-    };
-    if crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(left), left_bounds, frame)
-        && crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
-            Some(right),
-            right_bounds,
-            frame,
+    let areal = |shape: &Shape| {
+        matches!(
+            shape,
+            Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
         )
-    {
+    };
+    if areal(left) && areal(right) && left_bounds_sound() && right_bounds_sound() {
         try_areal_relate(left, right)
     } else {
         Ok(None)
     }
+}
+
+fn plan_bounds_sound(plan: &PreparedPlan, frame: crate::geographic::GeographicFrame) -> bool {
+    plan.bounds().is_some_and(|bounds| {
+        crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(plan.shape()), bounds, frame)
+    })
 }
 
 /// Fold a complete DE-9IM matrix from the one arrangement shared by two
@@ -2247,6 +2255,23 @@ mod tests {
         );
     }
 
+    fn areal_fold(
+        left: &Shape,
+        right: &Shape,
+        frame: crate::geographic::GeographicFrame,
+    ) -> Result<Option<De9im>> {
+        let sound = |shape: &Shape| {
+            shape.bounds().is_some_and(|bounds| {
+                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                    Some(shape),
+                    bounds,
+                    frame,
+                )
+            })
+        };
+        try_areal_relate_geographic(left, || sound(left), right, || sound(right))
+    }
+
     fn geographic_graph_oracle(
         left: &Shape,
         right: &Shape,
@@ -2560,7 +2585,7 @@ mod tests {
         ] {
             let expected = geographic_graph_oracle(&left, &right, frame);
             assert_eq!(
-                try_areal_relate_geographic(&left, &right, frame)
+                areal_fold(&left, &right, frame)
                     .expect("safe geographic areal allocation")
                     .expect("safe geographic areal admission")
                     .0,
@@ -2613,7 +2638,7 @@ mod tests {
             ("longitude 360", noncanonical),
         ] {
             assert!(
-                try_areal_relate_geographic(&left, &ordinary, frame)
+                areal_fold(&left, &ordinary, frame)
                     .expect("geographic admission allocation")
                     .is_none(),
                 "{name}: fold admission"

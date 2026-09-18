@@ -604,7 +604,13 @@ fn overlay_bounds_facts_geographic(
     }
     let raw_coordinate_bounds_sound =
         originals.views().iter().zip(&bounds).all(|(view, bounds)| {
-            bounds.is_some_and(|bounds| crate::geometry::admitted_bounds_are_sound(*view, bounds))
+            bounds.is_some_and(|bounds| {
+                crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+                    Some(view.shape()),
+                    bounds,
+                    view.frame(),
+                )
+            })
         });
     Ok(overlay_bounds_facts_from(
         bounds,
