@@ -147,12 +147,10 @@ def validate_producer_identity(value: Any) -> dict[str, Any]:
 
 
 def common_identity(value: dict[str, Any]) -> dict[str, Any]:
-    """Return the process/build identity without side-specific attribution."""
-    validate_producer_identity(value)
-    common = copy.deepcopy(value)
-    common.pop('implementation', None)
-    common.pop('arm', None)
-    return common
+    """Project the process/build identity without side-specific attribution."""
+    return {
+        key: item for key, item in value.items() if key not in {'implementation', 'arm'}
+    }
 
 
 def identity_for_arm(

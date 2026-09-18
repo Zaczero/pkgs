@@ -43,7 +43,6 @@ from bench_doctor import (
 from benchmark_identity import (
     IDENTITY_SCHEMA_VERSION,
     identity_for_arm,
-    validate_producer_identity,
 )
 from benchmark_observation import make_observation
 
@@ -126,7 +125,7 @@ def _arm_identity(
         package_info=package_info if isinstance(package_info, dict) else None,
         loaded_native_libraries=identity.get('loaded_native_libraries'),
     )
-    result = identity_for_arm(
+    return identity_for_arm(
         identity,
         side=side,
         row=row,
@@ -136,8 +135,6 @@ def _arm_identity(
         native_libraries=implementation['native_libraries'],
         native_library_status=implementation['native_library_status'],
     )
-    validate_producer_identity(result)
-    return result
 
 
 def _consume_output(value: object) -> None:
@@ -221,11 +218,8 @@ def run_block(
     block_id: str,
     pair_id: str,
     lead: str,
-    profile: str = 'release',
-    run_id: str = 'unbound',
     warmups: int,
     repetitions: int,
-    phase: str = 'warm',
     clock_ns: Callable[[], int] = time.perf_counter_ns,
     identity: Callable[[], dict[str, Any]] = producer_identity,
     builder: Callable[[], Any] | None = None,
@@ -237,14 +231,7 @@ def run_block(
         raise SystemExit(
             'paired block warmups must be non-negative and repetitions positive'
         )
-    if phase not in {'warm', 'steady', 'first-use'}:
-        raise SystemExit(f'paired block phase is unsupported: {phase!r}')
-    declared_phase = getattr(operation, 'phase', 'warm')
-    if declared_phase != phase:
-        raise SystemExit(
-            f'paired block phase does not match operation metadata: '
-            f'{phase!r} != {declared_phase!r}'
-        )
+    phase = operation.phase
     if phase == 'first-use':
         raise SystemExit(
             'first-use cannot be paired in one shared process: the first arm warms '
@@ -340,8 +327,6 @@ def run_block(
     return {
         'schema_version': PAIR_ARTIFACT_SCHEMA_VERSION,
         'artifact_type': 'gometry-paired-block',
-        'profile': profile,
-        'run_id': run_id,
         'block_id': block_id,
         'pair_id': pair_id,
         'operation': {
@@ -372,15 +357,9 @@ def run_block(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--gometry', required=True)
-    parser.add_argument('--competitor', required=True)
     parser.add_argument('--pair-id', required=True)
     parser.add_argument('--block-id', required=True)
     parser.add_argument('--lead', choices=('ab', 'ba'), required=True)
-    parser.add_argument('--profile', choices=('smoke', 'release'), required=True)
-    parser.add_argument('--run-id', required=True)
-    parser.add_argument(
-        '--phase', choices=('warm', 'steady', 'first-use'), required=True
-    )
     parser.add_argument('--warmups', type=int, required=True)
     parser.add_argument('--repetitions', type=int, required=True)
     parser.add_argument('--output', type=Path, required=True)
@@ -393,19 +372,11 @@ def main(argv: list[str] | None = None) -> int:
     operation = operation_for_row(args.gometry)
     if operation is None or operation.gometry != args.gometry:
         raise SystemExit(f'unknown gometry public row: {args.gometry}')
-    if operation.competitor != args.competitor:
-        raise SystemExit(
-            f'competitor does not match manifest for {args.gometry}: '
-            f'{args.competitor!r} != {operation.competitor!r}'
-        )
     artifact = run_block(
         operation=operation,
         block_id=args.block_id,
         pair_id=args.pair_id,
         lead=args.lead,
-        profile=args.profile,
-        run_id=args.run_id,
-        phase=args.phase,
         warmups=args.warmups,
         repetitions=args.repetitions,
     )

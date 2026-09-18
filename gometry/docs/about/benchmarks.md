@@ -14,15 +14,16 @@ and are not reproduced here.
 
 ## Producing a run
 
-```bash title="template: replace <run-id> with the identifier printed by the first command"
+```bash title="template: replace <run> with the directory printed by the first command"
 uv run python benches/drivers/bench.py --profile release
-uv run python benches/drivers/bench.py --analyze target/bench/results/<run-id>/run.json
+uv run python benches/drivers/bench.py --publish target/bench/results/<run>/run.json
 ```
 
-`<run-id>` is the directory the measurement command prints. Measurement writes
-only raw artifacts and a run manifest; it cannot touch tracked evidence.
-Analysis reads exactly one manifest and produces the normalized review files
-that a publication consumes.
+Measurement writes raw artifacts and a run manifest under `target/` and never
+touches tracked files. Publication validates that one run — complete, release
+profile, oracle passed, every block measured the recorded build — and rewrites
+`benches/results/current/summary.md`, the table above. Git versions the table;
+the raw evidence stays with the run.
 
 ## What the run measures
 

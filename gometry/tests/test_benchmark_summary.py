@@ -18,6 +18,12 @@ for _path in (_BENCHES / 'support',):
 import benchmark_observation as bo  # noqa: E402
 import summarize_bench as sb  # noqa: E402
 
+from tests._bench_support import producer  # noqa: E402
+
+
+def _load(paths: list[Path]) -> dict[str, sb.BenchStats]:
+    return sb._load_all_blocks({path: json.loads(path.read_text()) for path in paths})
+
 
 def _observation(metric: str, value: float, *, phase: str = 'warm') -> dict:
     return bo.make_observation(
@@ -46,9 +52,18 @@ def _block(
     metric: str = 'duration',
     gometry_value: float = 1.0,
     competitor_value: float = 2.0,
-    identity: str = 'same',
 ) -> dict:
     order = ['A', 'B'] if lead == 'ab' else ['B', 'A']
+    provenance = {
+        'A': producer('gometry.op/10k', 'A'),
+        'B': producer('shapely.op/10k', 'B'),
+    }
+    observations = {
+        'A': _observation(metric, gometry_value),
+        'B': _observation(metric, competitor_value),
+    }
+    for side, observation in observations.items():
+        observation['producer_identity'] = provenance[side]
     return {
         'schema_version': 1,
         'artifact_type': 'gometry-paired-block',
@@ -76,17 +91,17 @@ def _block(
                 'row': 'gometry.op/10k',
                 'started_monotonic_ns': 2 if lead == 'ab' else 12,
                 'ended_monotonic_ns': 3 if lead == 'ab' else 13,
-                'provenance_before': {'extension': identity},
-                'provenance_after': {'extension': identity},
-                'observation': _observation(metric, gometry_value),
+                'provenance_before': provenance['A'],
+                'provenance_after': provenance['A'],
+                'observation': observations['A'],
             },
             'B': {
                 'row': 'shapely.op/10k',
                 'started_monotonic_ns': 12 if lead == 'ab' else 2,
                 'ended_monotonic_ns': 13 if lead == 'ab' else 3,
-                'provenance_before': {'extension': identity},
-                'provenance_after': {'extension': identity},
-                'observation': _observation(metric, competitor_value),
+                'provenance_before': provenance['B'],
+                'provenance_after': provenance['B'],
+                'observation': observations['B'],
             },
         },
     }
@@ -117,7 +132,7 @@ def test_real_block_populates_both_arm_stats_without_ordinal_matching(
     second_path = tmp_path / 'block-02.json'
     first_path.write_text(json.dumps(first), encoding='utf-8')
     second_path.write_text(json.dumps(second), encoding='utf-8')
-    stats = sb._load_all_blocks([first_path, second_path])
+    stats = _load([first_path, second_path])
     assert set(stats) == {'gometry.op/10k', 'shapely.op/10k'}
     assert stats['gometry.op/10k'].nrun == stats['shapely.op/10k'].nrun == 2
     assert stats['gometry.op/10k'].blocks == stats['shapely.op/10k'].blocks
@@ -135,7 +150,7 @@ def test_missing_lead_or_one_block_rejects_declared_release_matrix() -> None:
         1.0,
         2.0,
         2.0,
-        {'id': 'same'},
+        {'A': {'id': 'same'}, 'B': {'id': 'same'}},
         'warm',
         None,
     )
@@ -157,20 +172,61 @@ def test_missing_lead_or_one_block_rejects_declared_release_matrix() -> None:
         )
 
 
-def test_swapped_arm_identity_and_metric_type_fail_closed(tmp_path: Path) -> None:
+def _with_identity(payload: dict, side: str, identity: dict) -> dict:
+    arm = payload['arms'][side]
+    arm['provenance_before'] = arm['provenance_after'] = identity
+    arm['observation']['producer_identity'] = identity
+    return payload
+
+
+@pytest.mark.parametrize(
+    ('mutate', 'message'),
+    [
+        (
+            lambda payload: _with_identity(
+                payload, 'B', {**producer('shapely.op/10k', 'B'), 'git_commit': 'other'}
+            ),
+            'mismatched common producer identities',
+        ),
+        (
+            lambda payload: _with_identity(
+                payload, 'A', producer('gometry.op/10k', 'B')
+            ),
+            'producer attribution is swapped',
+        ),
+        (
+            lambda payload: payload['arms']['B'].update(
+                provenance_after={
+                    **producer('shapely.op/10k', 'B'),
+                    'git_commit': 'other',
+                }
+            ),
+            'producer identity changed',
+        ),
+    ],
+    ids=['common', 'attribution', 'mid-block'],
+)
+def test_arm_identity_disagreement_fails_closed(
+    tmp_path: Path, mutate, message: str
+) -> None:
     payload = _block()
-    payload['arms']['B']['provenance_before'] = {'extension': 'other'}
+    mutate(payload)
     path = tmp_path / 'bad-identity.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
-    with pytest.raises(SystemExit, match='producer identity'):
-        sb._load_all_blocks([path])
+    with pytest.raises(SystemExit, match=message):
+        _load([path])
 
+
+def test_arm_metric_type_disagreement_fails_closed(tmp_path: Path) -> None:
     payload = _block()
     payload['arms']['B']['observation'] = _observation('scaling_ratio', 2.0)
+    payload['arms']['B']['observation']['producer_identity'] = payload['arms']['B'][
+        'provenance_before'
+    ]
     path = tmp_path / 'bad-metric.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match='mismatched metric types'):
-        sb._load_all_blocks([path])
+        _load([path])
 
 
 @pytest.mark.parametrize('mutation', ['reversed', 'overlap'])
@@ -185,7 +241,7 @@ def test_block_timestamps_must_match_lead_without_overlap(
     path = tmp_path / f'{mutation}-timestamps.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match='timestamps'):
-        sb._load_all_blocks([path])
+        _load([path])
 
 
 def test_paired_arms_require_the_same_operation_oracle_identity(tmp_path: Path) -> None:
@@ -194,7 +250,7 @@ def test_paired_arms_require_the_same_operation_oracle_identity(tmp_path: Path) 
     path = tmp_path / 'bad-oracle-identity.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match='oracle identity'):
-        sb._load_all_blocks([path])
+        _load([path])
 
 
 def test_phase_mismatch_across_arms_and_sampling_fails_closed(tmp_path: Path) -> None:
@@ -203,7 +259,7 @@ def test_phase_mismatch_across_arms_and_sampling_fails_closed(tmp_path: Path) ->
     path = tmp_path / 'bad-phase.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match='mismatched phase'):
-        sb._load_all_blocks([path])
+        _load([path])
 
 
 def test_phase_mismatch_on_arm_a_fails_closed(tmp_path: Path) -> None:
@@ -212,7 +268,7 @@ def test_phase_mismatch_on_arm_a_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / 'bad-phase-a.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match='arm A has mismatched phase'):
-        sb._load_all_blocks([path])
+        _load([path])
 
 
 def test_useful_work_mismatch_across_arms_fails_closed(tmp_path: Path) -> None:
@@ -224,7 +280,7 @@ def test_useful_work_mismatch_across_arms_fails_closed(tmp_path: Path) -> None:
     path = tmp_path / 'bad-useful-work.json'
     path.write_text(json.dumps(payload), encoding='utf-8')
     with pytest.raises(SystemExit, match='mismatched useful work'):
-        sb._load_all_blocks([path])
+        _load([path])
 
 
 def test_scaling_point_mismatch_across_blocks_fails_closed(tmp_path: Path) -> None:
@@ -251,7 +307,7 @@ def test_scaling_point_mismatch_across_blocks_fails_closed(tmp_path: Path) -> No
     second_path = tmp_path / 'second.json'
     first_path.write_text(json.dumps(first), encoding='utf-8')
     second_path.write_text(json.dumps(second), encoding='utf-8')
-    stats = sb._load_all_blocks([first_path, second_path])
+    stats = _load([first_path, second_path])
     meta = dataclasses.replace(_meta(), scaling=first['operation']['scaling'])
     with pytest.raises(SystemExit, match='scaling point'):
         sb._build_rows([meta], stats, equivalence_margin=0.03)
@@ -305,4 +361,4 @@ def test_block_artifact_is_immutable_in_identity_fields(tmp_path: Path) -> None:
     mutated['arms']['A']['row'] = 'shapely.other'
     path.write_text(json.dumps(mutated), encoding='utf-8')
     with pytest.raises(SystemExit, match='operation and arm row identity'):
-        sb._load_all_blocks([path])
+        _load([path])

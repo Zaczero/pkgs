@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -22,126 +20,12 @@ import bench as bench_driver  # noqa: E402
 from _bench_registry import ALL_PUBLIC_OPERATIONS, scaling_record  # noqa: E402
 from benchmark_observation import make_observation  # noqa: E402
 
-_HASH = hashlib.sha256(b'x').hexdigest()
-
-
-def _file(path: str = '/checkout/file') -> dict[str, object]:
-    return {'path': path, 'sha256': _HASH, 'size_bytes': 1}
-
-
-def _distribution(name: str) -> dict[str, object]:
-    return {
-        'name': name,
-        'version': '1',
-        'location': '/checkout',
-        'metadata': _file(f'/checkout/{name}.dist-info/METADATA'),
-        'record': _file(f'/checkout/{name}.dist-info/RECORD'),
-        'record_available': True,
-        '_record_files': [
-            f'/checkout/{name}/__init__.py',
-            f'/checkout/{name}/lib.cpython.so',
-            f'/checkout/{name}/_crs.cpython.so',
-        ],
-    }
-
-
-def _package(name: str) -> dict[str, object]:
-    return {
-        'available': True,
-        'version': '1',
-        'module': _file(f'/checkout/{name}/__init__.py'),
-        'distribution': _distribution(name),
-        'native_libraries': [],
-    }
-
-
-def _producer(row: str, side: str, lock_path: str = 'lock') -> dict[str, object]:
-    packages = {
-        name: _package(name)
-        for name in (
-            'gometry',
-            'numpy',
-            'shapely',
-            'pyproj',
-            'h3',
-            'geopandas',
-            'pyarrow',
-            'mercantile',
-            'pygeohash',
-        )
-    }
-    extension = {
-        **_file('/checkout/target/release/gometry.so'),
-        'build_info': {
-            'schema_version': 1,
-            'source_inputs_format': 'sha256-path-nul-content-nul',
-            'source_inputs_sha256': _HASH,
-            'profile_family': 'release',
-            'opt_level': '3',
-            'debug': False,
-            'debug_assertions': False,
-            'target': 'test-target',
-            'target_features': 'sse2',
-        },
-    }
-    runtime = 'gometry' if side == 'A' else 'comparator'
-    package_name = 'gometry' if runtime == 'gometry' else row.split('.', 1)[0]
-    geos = _file('/checkout/libgeos_c.so')
-    proj = _file('/checkout/libproj.so')
-    python_native = _file('/checkout/libpython.so')
-    native_libraries = (
-        [{key: extension[key] for key in ('path', 'sha256', 'size_bytes')}]
-        if runtime == 'gometry'
-        else (
-            [geos]
-            if package_name in {'shapely', 'geopandas'}
-            else [proj]
-            if package_name == 'pyproj'
-            else []
-        )
-    )
-    implementation = {
-        'runtime': runtime,
-        'row': row,
-        'module_name': 'gometry._lib' if runtime == 'gometry' else package_name,
-        'module': packages[package_name]['module'],
-        'distribution': packages[package_name]['distribution'],
-        'native_libraries': native_libraries,
-        'native_library_status': 'identified' if native_libraries else 'not-applicable',
-    }
-    return {
-        'identity_schema_version': 1,
-        'git_commit': 'deadbeef',
-        'source_inputs_sha256': _HASH,
-        'extension': extension,
-        'uv_lock': {'path': lock_path, 'sha256': _HASH, 'size_bytes': 1},
-        'python': {
-            'executable': '/python',
-            'version': '3.14 test build',
-            'implementation': 'CPython',
-            'cache_tag': 'cpython-314',
-            'build': {
-                'implementation': 'CPython',
-                'version': '3.14',
-                'build': ['build', 'date'],
-                'debug': False,
-            },
-        },
-        'packages': packages,
-        'loaded_native_libraries': [
-            {key: extension[key] for key in ('path', 'sha256', 'size_bytes')},
-            geos,
-            proj,
-            python_native,
-        ],
-        'native_library_identity': {
-            'available': True,
-            'source': '/proc/self/maps',
-            'reason': None,
-        },
-        'implementation': implementation,
-        'arm': {'side': side, 'row': row},
-    }
+from tests._bench_support import (  # noqa: E402
+    HASH,
+    file_identity,
+    package_identity,
+    producer,
+)
 
 
 def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, object]:
@@ -172,8 +56,8 @@ def _block_payload(operation, index: int, lock_path: str = 'lock') -> dict[str, 
         warmup_iterations=2,
         calibration_iterations=5,
     )
-    provenance_a = _producer(operation.gometry, 'A', lock_path)
-    provenance_b = _producer(operation.competitor, 'B', lock_path)
+    provenance_a = producer(operation.gometry, 'A', lock_path)
+    provenance_b = producer(operation.competitor, 'B', lock_path)
     observation_a['producer_identity'] = provenance_a
     observation_b['producer_identity'] = provenance_b
     return {
@@ -253,7 +137,7 @@ def _result(tmp_path: Path) -> dict[str, object]:
     artifacts.insert(0, str(oracle))
     metadata = {
         'git_commit': 'deadbeef',
-        'source_inputs_sha256': _HASH,
+        'source_inputs_sha256': HASH,
         'python_executable': '/python',
         'python': '3.14',
         'python_version': '3.14 test build',
@@ -263,12 +147,12 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'python_cache_tag': 'cpython-314',
         'extension': {
             'path': '/checkout/target/release/gometry.so',
-            'sha256': _HASH,
+            'sha256': HASH,
             'size_bytes': 1,
             'build_info': {
                 'schema_version': 1,
                 'source_inputs_format': 'sha256-path-nul-content-nul',
-                'source_inputs_sha256': _HASH,
+                'source_inputs_sha256': HASH,
                 'profile_family': 'release',
                 'opt_level': '3',
                 'debug': False,
@@ -277,9 +161,9 @@ def _result(tmp_path: Path) -> dict[str, object]:
                 'target_features': 'sse2',
             },
         },
-        'uv_lock': {'path': str(lock), 'sha256': _HASH, 'size_bytes': 1},
+        'uv_lock': {'path': str(lock), 'sha256': HASH, 'size_bytes': 1},
         'packages': {
-            package: _package(package)
+            package: package_identity(package)
             for package in (
                 'gometry',
                 'numpy',
@@ -363,34 +247,19 @@ def _result(tmp_path: Path) -> dict[str, object]:
 
 def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Path:
     result = _result(tmp_path) if result is None else result
-    run_directory = tmp_path / 'run-1-release'
+    run_directory = tmp_path / 'run'
     raw_directory = run_directory / 'raw'
     raw_directory.mkdir(parents=True)
-    source_artifacts = [Path(str(path)) for path in result['source_artifacts']]
-    copied: list[Path] = []
-    for source in source_artifacts:
-        artifact = raw_directory / source.name
+    artifacts = []
+    for source in result.pop('source_artifacts'):
+        artifact = raw_directory / Path(str(source)).name
         shutil.copy2(source, artifact)
-        copied.append(artifact)
+        artifacts.append(f'raw/{artifact.name}')
     result.update({
         'manifest_type': bench_driver._RUN_MANIFEST_TYPE,
         'schema_version': bench_driver._MANIFEST_SCHEMA_VERSION,
-        'run_id': 'run-1-release',
-        'artifacts': [f'raw/{path.name}' for path in copied],
-        'raw_artifacts': [
-            {
-                'path': f'raw/{artifact.name}',
-                'sha256': bench_driver._file_sha256(artifact),
-                'size_bytes': artifact.stat().st_size,
-            }
-            for artifact in copied
-        ],
+        'artifacts': artifacts,
     })
-    matrix, matrix_digest = bench_driver._paired_matrix_identity(
-        result['public_operations'], result['sampling']
-    )
-    result['paired_matrix'] = matrix
-    result['paired_matrix_sha256'] = matrix_digest
     manifest = run_directory / 'run.json'
     manifest.write_text(
         json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
@@ -398,34 +267,17 @@ def _run_manifest(tmp_path: Path, result: dict[str, object] | None = None) -> Pa
     return manifest
 
 
-def _analysis(tmp_path: Path) -> tuple[Path, Path]:
-    run_manifest = _run_manifest(tmp_path)
-    analysis_manifest = bench_driver.analyze_run(
-        run_manifest, output_dir=tmp_path / 'analyses'
-    )
-    return run_manifest, analysis_manifest
-
-
 def _mutate_first_block(run_manifest: Path, mutate) -> None:
-    result = json.loads(run_manifest.read_text(encoding='utf-8'))
-    for record in result['raw_artifacts']:
-        candidate = run_manifest.parent / record['path']
-        payload = json.loads(candidate.read_text(encoding='utf-8'))
-        if payload.get('artifact_type') == 'gometry-paired-block':
-            raw = candidate
-            break
-    else:
-        raise AssertionError('fixture has no paired block artifact')
-    mutate(payload)
-    raw.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
-    for record in result['raw_artifacts']:
-        if record['path'] == f'raw/{raw.name}':
-            record['sha256'] = bench_driver._file_sha256(raw)
-            record['size_bytes'] = raw.stat().st_size
-            break
-    run_manifest.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
-    )
+    for raw in sorted(run_manifest.parent.joinpath('raw').glob('block-*.json')):
+        payload = json.loads(raw.read_text(encoding='utf-8'))
+        mutate(payload)
+        raw.write_text(json.dumps(payload), encoding='utf-8')
+        return
+    raise AssertionError('fixture has no paired block artifact')
+
+
+def _publish(run_manifest: Path, tmp_path: Path) -> Path:
+    return bench_driver.publish_run(run_manifest, current_dir=tmp_path / 'current')
 
 
 def test_release_measurement_cannot_publish_or_mutate_current(
@@ -505,7 +357,7 @@ def test_release_measurement_cannot_publish_or_mutate_current(
     def fail_if_called(*_: object, **__: object) -> None:
         raise AssertionError('measurement invoked publication')
 
-    monkeypatch.setattr(bench_driver, 'publish_current_run', fail_if_called)
+    monkeypatch.setattr(bench_driver, 'publish_run', fail_if_called)
     monkeypatch.setattr(
         sys,
         'argv',
@@ -543,7 +395,7 @@ def test_publication_rejects_filtered_run_without_touching_current(
     sentinel = current / 'sentinel'
     sentinel.write_text('keep', encoding='utf-8')
     with pytest.raises(SystemExit, match='filtered'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
     assert sentinel.read_text(encoding='utf-8') == 'keep'
 
 
@@ -563,22 +415,22 @@ def test_non_release_and_incomplete_runs_are_unpublishable(
     result['publishable'] = False
     run_manifest = _run_manifest(tmp_path, result)
     with pytest.raises(SystemExit, match=message):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
 def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> None:
     result = _result(tmp_path)
     run_manifest = _run_manifest(tmp_path, result)
     next(run_manifest.parent.joinpath('raw').glob('block-*.json')).unlink()
-    with pytest.raises(SystemExit, match='missing raw artifact'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+    with pytest.raises(SystemExit, match='references a missing artifact'):
+        _publish(run_manifest, tmp_path)
     incomplete_root = tmp_path / 'incomplete'
     incomplete_root.mkdir()
     incomplete = _result(incomplete_root)
     del incomplete['doctor']['metadata']['uv_lock']  # type: ignore[index]
     incomplete_manifest = _run_manifest(incomplete_root, incomplete)
     with pytest.raises(SystemExit, match='missing benchmark identity metadata'):
-        bench_driver.analyze_run(incomplete_manifest, output_dir=tmp_path / 'stage2')
+        _publish(incomplete_manifest, tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -600,27 +452,19 @@ def test_publication_rejects_missing_artifact_and_metadata(tmp_path: Path) -> No
             lambda payload: payload.__setitem__('lead_order', ['B', 'A']),
             'extra or swapped',
         ),
-        (
-            lambda payload: payload.__setitem__('profile', 'smoke'),
-            'profile identity mismatch',
-        ),
-        (
-            lambda payload: payload.__setitem__('run_id', 'other-run-release'),
-            'run identity mismatch',
-        ),
     ],
-    ids=('operation', 'block', 'lead', 'profile', 'run'),
+    ids=('operation', 'block', 'lead'),
 )
-def test_analysis_rejects_exact_matrix_mutations(
+def test_publication_rejects_exact_matrix_mutations(
     tmp_path: Path, mutation, message: str
 ) -> None:
     run_manifest = _run_manifest(tmp_path)
     _mutate_first_block(run_manifest, mutation)
     with pytest.raises(SystemExit, match=message):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_comparator_module_mutation(tmp_path: Path) -> None:
+def test_publication_rejects_comparator_module_mutation(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
@@ -631,10 +475,10 @@ def test_analysis_rejects_comparator_module_mutation(tmp_path: Path) -> None:
 
     _mutate_first_block(run_manifest, mutate)
     with pytest.raises(SystemExit, match='module identity mismatch'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_native_library_mutation(tmp_path: Path) -> None:
+def test_publication_rejects_native_library_mutation(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
@@ -645,17 +489,17 @@ def test_analysis_rejects_native_library_mutation(tmp_path: Path) -> None:
 
     _mutate_first_block(run_manifest, mutate)
     with pytest.raises(SystemExit, match='native-library identity mismatch'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_comparator_native_library_mutation(tmp_path: Path) -> None:
+def test_publication_rejects_comparator_native_library_mutation(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
         identity = payload['arms']['B']['provenance_before']
         identity['implementation']['native_libraries'] = [
             {
-                **_file('/checkout/libgeos_c.so'),
+                **file_identity('/checkout/libgeos_c.so'),
                 'sha256': '1' * 64,
             }
         ]
@@ -665,10 +509,10 @@ def test_analysis_rejects_comparator_native_library_mutation(tmp_path: Path) -> 
 
     _mutate_first_block(run_manifest, mutate)
     with pytest.raises(SystemExit, match='native-library identity mismatch'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_dependency_lock_mutation(tmp_path: Path) -> None:
+def test_publication_rejects_dependency_lock_mutation(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
@@ -680,16 +524,7 @@ def test_analysis_rejects_dependency_lock_mutation(tmp_path: Path) -> None:
 
     _mutate_first_block(run_manifest, mutate)
     with pytest.raises(SystemExit, match='lock identity mismatch'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
-
-
-def test_analysis_accepts_real_shape_engine_attribution(tmp_path: Path) -> None:
-    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
-    summary = json.loads((analysis_manifest.parent / 'summary.json').read_text())
-    first = summary['operations'][0]['blocks'][0]['producer_identities']['B']
-    assert first['implementation']['native_libraries'][0]['path'].endswith(
-        'libgeos_c.so'
-    )
+        _publish(run_manifest, tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -700,7 +535,7 @@ def test_analysis_accepts_real_shape_engine_attribution(tmp_path: Path) -> None:
         ('hash', 'native-library identity mismatch'),
     ],
 )
-def test_analysis_rejects_geos_attribution_mutations(
+def test_publication_rejects_geos_attribution_mutations(
     tmp_path: Path, mutation: str, message: str
 ) -> None:
     run_manifest = _run_manifest(tmp_path)
@@ -712,7 +547,7 @@ def test_analysis_rejects_geos_attribution_mutations(
             identity['implementation']['native_library_status'] = 'not-applicable'
         elif mutation == 'unrelated':
             identity['implementation']['native_libraries'] = [
-                _file('/checkout/libpython.so')
+                file_identity('/checkout/libpython.so')
             ]
         else:
             identity['implementation']['native_libraries'][0]['sha256'] = '1' * 64
@@ -721,10 +556,10 @@ def test_analysis_rejects_geos_attribution_mutations(
 
     _mutate_first_block(run_manifest, mutate)
     with pytest.raises(SystemExit, match=message):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_effective_build_fact_mutation(tmp_path: Path) -> None:
+def test_publication_rejects_effective_build_fact_mutation(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
 
     def mutate(payload: dict[str, object]) -> None:
@@ -736,42 +571,31 @@ def test_analysis_rejects_effective_build_fact_mutation(tmp_path: Path) -> None:
 
     _mutate_first_block(run_manifest, mutate)
     with pytest.raises(SystemExit, match='effective build identity'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_extra_paired_artifact(tmp_path: Path) -> None:
+def test_publication_rejects_extra_paired_artifact(tmp_path: Path) -> None:
     run_manifest = _run_manifest(tmp_path)
     result = json.loads(run_manifest.read_text(encoding='utf-8'))
-    source = next(
-        candidate
-        for record in result['raw_artifacts']
-        if (candidate := run_manifest.parent / record['path'])
-        and json.loads(candidate.read_text(encoding='utf-8')).get('artifact_type')
-        == 'gometry-paired-block'
-    )
+    source = next(run_manifest.parent.joinpath('raw').glob('block-*.json'))
     extra = run_manifest.parent / 'raw' / 'extra-paired.json'
     shutil.copy2(source, extra)
     result['artifacts'].append(f'raw/{extra.name}')
-    result['raw_artifacts'].append({
-        'path': f'raw/{extra.name}',
-        'sha256': bench_driver._file_sha256(extra),
-        'size_bytes': extra.stat().st_size,
-    })
-    run_manifest.write_text(
-        json.dumps(result, indent=2, sort_keys=True) + '\n', encoding='utf-8'
-    )
+    run_manifest.write_text(json.dumps(result), encoding='utf-8')
     with pytest.raises(SystemExit, match='duplicate paired matrix identity'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+        _publish(run_manifest, tmp_path)
 
 
-def test_analysis_rejects_mismatched_external_oracle_artifact(tmp_path: Path) -> None:
+def test_publication_rejects_mismatched_external_oracle_artifact(
+    tmp_path: Path,
+) -> None:
     run_manifest = _run_manifest(tmp_path)
     oracle = run_manifest.parent / 'raw' / 'oracle.json'
     payload = json.loads(oracle.read_text(encoding='utf-8'))
     payload['verified'] -= 1
     oracle.write_text(json.dumps(payload), encoding='utf-8')
-    with pytest.raises(SystemExit, match='raw artifact digest mismatch'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'stage')
+    with pytest.raises(SystemExit, match='oracle artifact is incomplete'):
+        _publish(run_manifest, tmp_path)
 
 
 def test_publication_rejects_absent_or_untracked_lock_identity(tmp_path: Path) -> None:
@@ -783,183 +607,40 @@ def test_publication_rejects_absent_or_untracked_lock_identity(tmp_path: Path) -
     }
     run_manifest = _run_manifest(tmp_path, result)
     with pytest.raises(SystemExit, match='requires a lock file identity'):
-        bench_driver.analyze_run(run_manifest, output_dir=tmp_path / 'analyses')
+        _publish(run_manifest, tmp_path)
 
 
-def test_publication_is_complete_and_deterministic(tmp_path: Path) -> None:
-    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
+def test_publication_writes_only_the_deterministic_summary(tmp_path: Path) -> None:
+    run_manifest = _run_manifest(tmp_path)
     current = tmp_path / 'current'
-    bench_driver.publish_current_run(
-        analysis_manifest, output_dir=tmp_path / 'stage', current_dir=current
-    )
-    first = {
-        path.relative_to(current).as_posix(): path.read_bytes()
-        for path in current.rglob('*')
-        if path.is_file()
-    }
-    assert {'identity.json', 'summary.json', 'summary.md'} <= set(first)
-    assert len([path for path in first if path.startswith('raw/')]) == 319
-    summary_md = (current / 'summary.md').read_text(encoding='utf-8')
+    current.mkdir()
+    (current / 'summary.md').write_text('previous table', encoding='utf-8')
+
+    published = _publish(run_manifest, tmp_path)
+    first = published.read_bytes()
+    assert published == current / 'summary.md'
+    assert sorted(path.name for path in current.iterdir()) == ['summary.md']
+    summary_md = first.decode('utf-8')
     assert '## Run environment' in summary_md
     assert 'CPU `test` on core `1`' in summary_md
     assert 'Python `3.14 test build`' in summary_md
     assert 'gometry `1`' in summary_md
     assert 'GEOS 3.13.0; PROJ 9.5.0' in summary_md
     assert '<table>' not in summary_md
-    summary = json.loads((current / 'summary.json').read_text(encoding='utf-8'))
-    assert len(summary['operations']) == 53
-    assert all(operation['blocks'] for operation in summary['operations'])
-    assert len(summary['scaling_curves']) == 6
-    overlay = next(
-        curve
-        for curve in summary['scaling_curves']
-        if curve['curve_id'] == 'overlay-input-count'
-    )
-    assert [point['point'] for point in overlay['points']] == [64, 256, 1_024]
-    assert 'gometry_shape' not in overlay
-    assert 'competitor_shape' not in overlay
-    assert overlay['points'][0]['gometry_seconds_per_useful_work'] > 0
-    assert overlay['endpoint_growth']['gometry_median_ratio'] > 0
-    bench_driver.publish_current_run(
-        analysis_manifest, output_dir=tmp_path / 'stage-again', current_dir=current
-    )
-    second = {
-        path.relative_to(current).as_posix(): path.read_bytes()
-        for path in current.rglob('*')
-        if path.is_file()
-    }
-    assert second == first
-    assert not list(current.parent.glob(f'.{current.name}.publication-*'))
+    assert '#### union_all: n-ary overlay input count' in summary_md
+
+    assert _publish(run_manifest, tmp_path).read_bytes() == first
 
 
-def test_publication_final_rename_failure_restores_previous_current(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
-    current = tmp_path / 'published' / 'current'
-    current.mkdir(parents=True)
-    (current / 'sentinel').write_bytes(b'previous evidence')
-    (current / 'nested').mkdir()
-    (current / 'nested' / 'bytes').write_bytes(b'\x00\x01previous')
-    before = {
-        path.relative_to(current).as_posix(): path.read_bytes()
-        for path in current.rglob('*')
-        if path.is_file()
-    }
-
-    real_rename = Path.rename
-    rename_calls = 0
-
-    def fail_final_rename(self: Path, target: Path) -> Path:
-        nonlocal rename_calls
-        rename_calls += 1
-        if rename_calls == 2:
-            raise OSError('injected final publication rename failure')
-        return real_rename(self, target)
-
-    monkeypatch.setattr(Path, 'rename', fail_final_rename)
-    with pytest.raises(OSError, match='injected final'):
-        bench_driver.publish_current_run(
-            analysis_manifest,
-            output_dir=tmp_path / 'evidence',
-            current_dir=current,
-        )
-
-    after = {
-        path.relative_to(current).as_posix(): path.read_bytes()
-        for path in current.rglob('*')
-        if path.is_file()
-    }
-    assert after == before
-    assert not list(current.parent.glob(f'.{current.name}.publication-*'))
-
-
-def test_publication_custom_roots_do_not_require_cross_filesystem_rename(
-    tmp_path: Path,
-) -> None:
-    other_root = Path('/dev/shm')  # noqa: S108 - deliberate cross-filesystem test
-    if not other_root.is_dir():
-        pytest.skip('Linux shared-memory filesystem is unavailable')
-    if os.stat(other_root).st_dev == os.stat(tmp_path).st_dev:
-        pytest.skip('test roots are on one filesystem')
-    scratch = Path(tempfile.mkdtemp(prefix='gometry-publication-', dir=other_root))
-    try:
-        _run_manifest_path, analysis_manifest = _analysis(tmp_path)
-        current = tmp_path / 'published' / 'current'
-        published = bench_driver.publish_current_run(
-            analysis_manifest,
-            output_dir=scratch / 'evidence',
-            current_dir=current,
-        )
-        assert published == current
-        assert (current / 'summary.json').is_file()
-        assert (scratch / 'evidence').is_dir()
-        assert not list(current.parent.glob(f'.{current.name}.publication-*'))
-    finally:
-        shutil.rmtree(scratch)
-
-
-def test_cli_requires_explicit_analysis_then_publish_manifests(
+def test_cli_publishes_one_run_manifest(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     run_manifest = _run_manifest(tmp_path)
-    analysis_root = tmp_path / 'cli-analyses'
-    monkeypatch.setattr(
-        sys,
-        'argv',
-        [
-            'bench.py',
-            '--analyze',
-            str(run_manifest),
-            '--output-dir',
-            str(analysis_root),
-        ],
-    )
-    bench_driver.main()
-    analysis_manifest = analysis_root / 'run-1-release-analysis/analysis.json'
-    assert analysis_manifest.is_file()
-
     current = tmp_path / 'current'
     monkeypatch.setattr(
         sys,
         'argv',
-        [
-            'bench.py',
-            '--publish',
-            str(analysis_manifest),
-            '--output-dir',
-            str(tmp_path / 'stage'),
-            '--current-dir',
-            str(current),
-        ],
+        ['bench.py', '--publish', str(run_manifest), '--current-dir', str(current)],
     )
     bench_driver.main()
-    assert (current / 'summary.json').is_file()
-
-
-def test_publication_rejects_changed_raw_artifact(tmp_path: Path) -> None:
-    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
-    source = Path(
-        json.loads(analysis_manifest.read_text(encoding='utf-8'))['source_run_manifest']
-    )
-    artifact = next(source.parent.joinpath('raw').glob('block-*.json'))
-    artifact.write_bytes(artifact.read_bytes() + b'\n')
-    with pytest.raises(SystemExit, match='digest mismatch'):
-        bench_driver.publish_current_run(
-            analysis_manifest,
-            output_dir=tmp_path / 'stage',
-            current_dir=tmp_path / 'current',
-        )
-    assert not (tmp_path / 'current').exists()
-
-
-def test_publication_rejects_changed_analysis_summary(tmp_path: Path) -> None:
-    _run_manifest_path, analysis_manifest = _analysis(tmp_path)
-    summary = analysis_manifest.parent / 'summary.json'
-    summary.write_text(summary.read_text(encoding='utf-8') + ' ', encoding='utf-8')
-    with pytest.raises(SystemExit, match='analysis summary identity is stale'):
-        bench_driver.publish_current_run(
-            analysis_manifest,
-            output_dir=tmp_path / 'stage',
-            current_dir=tmp_path / 'current',
-        )
+    assert (current / 'summary.md').is_file()

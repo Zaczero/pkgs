@@ -34,6 +34,11 @@ if str(_SUPPORT) not in sys.path:
     sys.path.insert(0, str(_SUPPORT))
 
 from bench_doctor import collect, collect_contention, select_benchmark_cpu
+from benchmark_statistics import (
+    bootstrap_interval,
+    bootstrap_median_interval,
+    percentile,
+)
 from benchmark_identity import identity_for_arm
 from benchmark_observation import metric_spec, measurement_summary, validate_observation
 
@@ -42,7 +47,6 @@ if TYPE_CHECKING:
 
 DEFAULT_SEED = 20_260_709
 MIN_MEASURED_ROUNDS = 9
-BOOTSTRAP_SAMPLES = 10_000
 IDENTIFY_TIMEOUT_SECONDS = 30
 CASE_TIMEOUT_SECONDS = 300
 PERF_BINARY = 'perf'
@@ -1181,7 +1185,7 @@ def summarize_counter_values(values: Sequence[float], seed: int) -> dict[str, An
     numeric = [float(value) for value in values]
     q1 = percentile(numeric, 0.25)
     q3 = percentile(numeric, 0.75)
-    ci_low, ci_high = bootstrap_median_ci(numeric, seed)
+    ci_low, ci_high = bootstrap_median_interval(numeric, seed=seed)
     return {
         'samples': list(values),
         'median': statistics.median(values),
@@ -1246,37 +1250,8 @@ def summarize_counter_ratios(
     return summary
 
 
-def percentile(values: Sequence[float], quantile: float) -> float:
-    ordered = sorted(values)
-    if not ordered:
-        raise ValueError('percentile requires at least one value')
-    position = quantile * (len(ordered) - 1)
-    lower = math.floor(position)
-    upper = math.ceil(position)
-    if lower == upper:
-        return ordered[lower]
-    weight = position - lower
-    return ordered[lower] * (1.0 - weight) + ordered[upper] * weight
-
-
-def bootstrap_median_ci(
-    values: Sequence[float], seed: int, *, samples: int = BOOTSTRAP_SAMPLES
-) -> tuple[float, float]:
-    rng = random.Random(seed)
-    size = len(values)
-    medians = [
-        statistics.median(values[rng.randrange(size)] for _ in range(size))
-        for _ in range(samples)
-    ]
-    return percentile(medians, 0.025), percentile(medians, 0.975)
-
-
 def bootstrap_ratio_ci(
-    baseline: Sequence[float],
-    candidate: Sequence[float],
-    seed: int,
-    *,
-    samples: int = BOOTSTRAP_SAMPLES,
+    baseline: Sequence[float], candidate: Sequence[float], seed: int
 ) -> tuple[float, float]:
     """Bootstrap the ratio while preserving each blocked A/B pair.
 
@@ -1286,17 +1261,14 @@ def bootstrap_ratio_ci(
     """
     if len(baseline) != len(candidate):
         raise ValueError('paired bootstrap requires equal sample counts')
-    if not baseline:
-        raise ValueError('paired bootstrap requires at least one sample')
-    rng = random.Random(seed)
-    ratios = []
-    size = len(baseline)
-    for _ in range(samples):
-        indexes = [rng.randrange(size) for _ in range(size)]
-        med_a = statistics.median(baseline[index] for index in indexes)
+
+    def ratio(indexes: Sequence[int]) -> float:
         med_b = statistics.median(candidate[index] for index in indexes)
-        ratios.append(med_a / med_b if med_b else float('inf'))
-    return percentile(ratios, 0.025), percentile(ratios, 0.975)
+        if not med_b:
+            return float('inf')
+        return statistics.median(baseline[index] for index in indexes) / med_b
+
+    return bootstrap_interval(len(baseline), ratio, seed=seed)
 
 
 def compare_paired_ratios(
@@ -1317,7 +1289,7 @@ def compare_paired_ratios(
         raise ValueError('paired block ratios must be finite and positive')
     log_ratios = [math.log(value) for value in numeric]
     ratio = math.exp(statistics.median(log_ratios))
-    log_ci = bootstrap_median_ci(log_ratios, seed)
+    log_ci = bootstrap_median_interval(log_ratios, seed=seed)
     ratio_ci = (math.exp(log_ci[0]), math.exp(log_ci[1]))
     differences = [value - 1.0 for value in numeric]
     difference = statistics.median(differences)
@@ -1350,7 +1322,7 @@ def summarize(
     median = statistics.median(values)
     q1 = percentile(values, 0.25)
     q3 = percentile(values, 0.75)
-    ci_low, ci_high = bootstrap_median_ci(values, seed)
+    ci_low, ci_high = bootstrap_median_interval(values, seed=seed)
     return {
         'metric': metric,
         'unit': unit,

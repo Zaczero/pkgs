@@ -240,7 +240,6 @@ def test_first_use_is_not_claimed_for_a_shared_process_pair() -> None:
             block_id='pair-1-block-1-ab',
             pair_id='pair-1',
             lead='ab',
-            phase='first-use',
             warmups=0,
             repetitions=1,
             clock_ns=_clock(),
