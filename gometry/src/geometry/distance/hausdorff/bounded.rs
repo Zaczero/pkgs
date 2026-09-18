@@ -3095,7 +3095,6 @@ fn run_directed(
     source: &PreparedSupport,
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
-    box_split_strategy: BoxSplitStrategy,
 ) -> Result<DirectedCandidate> {
     context.require_positive_witness = source.has_positive_area()?;
     let mut queue = PatchQueue::new(context.exact_upper);
@@ -3125,9 +3124,12 @@ fn run_directed(
         }
         #[cfg(test)]
         count_refinement_work()?;
+        // Four-way box splitting exhausted a budget of 64 refinements per box
+        // on 16 adjacent unit boxes; halving the longest axis stays within it
+        // (`directed_adjacent_box_refinement_work_scales_with_boundary_spans`).
         let Some(children) = record
             .patch
-            .split_with_strategy(&mut context.budget, box_split_strategy)?
+            .split_with_strategy(&mut context.budget, BoxSplitStrategy::LongestAxis)?
         else {
             return Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
                 "maximum_inscribed_circle",
@@ -3170,12 +3172,7 @@ pub(crate) fn directed_inradius_scaled(
     // containment, but that path reads its spans/faces/index, not these flags.
     source.boundary_spans = None;
     source.boundary_points = None;
-    let candidate = run_directed(
-        &source,
-        &target,
-        &mut context,
-        BoxSplitStrategy::LongestAxis,
-    )?;
+    let candidate = run_directed(&source, &target, &mut context)?;
     Ok(DirectedOptimizationResult {
         center: candidate.center,
         center_squared: candidate.center_squared,
@@ -3442,16 +3439,6 @@ mod tests {
     }
 
     fn directed_candidate_for(shape: &Shape, tolerance: f64, scale: f64) -> DirectedCandidate {
-        directed_candidate_for_strategy(shape, tolerance, scale, BoxSplitStrategy::LongestAxis)
-            .unwrap()
-    }
-
-    fn directed_candidate_for_strategy(
-        shape: &Shape,
-        tolerance: f64,
-        scale: f64,
-        box_split_strategy: BoxSplitStrategy,
-    ) -> Result<DirectedCandidate> {
         let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
         let mut context = SearchContext::new_directed(
             &accuracy,
@@ -3460,7 +3447,7 @@ mod tests {
         );
         let source = PreparedSupport::from_shape_with_boundary(shape, &mut context.budget).unwrap();
         let boundary = source.boundary_clone().unwrap();
-        run_directed(&source, &boundary, &mut context, box_split_strategy)
+        run_directed(&source, &boundary, &mut context).unwrap()
     }
 
     fn test_span(source: Segment) -> SupportSpan {
@@ -3571,12 +3558,7 @@ mod tests {
                     Rational::one(),
                     Rational::from_f64(tolerance).unwrap(),
                 );
-                let result = run_directed(
-                    &source,
-                    &boundary,
-                    &mut context,
-                    BoxSplitStrategy::LongestAxis,
-                );
+                let result = run_directed(&source, &boundary, &mut context);
                 let work = refinement_work();
                 (result, work)
             };
@@ -3588,23 +3570,6 @@ mod tests {
                 "adjacent boxes used {work} refinements, limit {limit}"
             );
         }
-    }
-
-    #[test]
-    fn directed_four_way_adjacent_box_refinement_exceeds_linear_work_envelope() {
-        let count = 16;
-        let shape = adjacent_box_union(count);
-        let tolerance = derived::scale_aware_default_tolerance(&shape).unwrap();
-        let limit = count * 64;
-        let _guard = limit_refinement_work(limit);
-        let result =
-            directed_candidate_for_strategy(&shape, tolerance, 1.0, BoxSplitStrategy::FourWay);
-        let work = refinement_work();
-        assert!(
-            result.is_err(),
-            "four-way directed refinement unexpectedly closed"
-        );
-        assert_eq!(work, limit + 1);
     }
 
     #[test]
@@ -4760,13 +4725,7 @@ mod tests {
         let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
         let target = source.boundary_clone().unwrap();
         context.budget.add(GENERATED_ITEM_LIMIT).unwrap();
-        let error = run_directed(
-            &source,
-            &target,
-            &mut context,
-            BoxSplitStrategy::LongestAxis,
-        )
-        .unwrap_err();
+        let error = run_directed(&source, &target, &mut context).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(
