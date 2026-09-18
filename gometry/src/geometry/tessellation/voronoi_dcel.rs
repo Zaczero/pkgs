@@ -4357,15 +4357,14 @@ mod tests {
         })
         .collect();
         let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-        let error = match build(
+        let Err(error) = build(
             &sites,
             VoronoiBoundary::Envelope,
             &mut budget,
             true,
             &certified_delaunay(&sites).unwrap(),
-        ) {
-            Ok(_) => panic!("colliding exact vertices unexpectedly embedded"),
-            Err(error) => error,
+        ) else {
+            panic!("colliding exact vertices unexpectedly embedded")
         };
         assert!(
             error
@@ -4635,7 +4634,7 @@ mod tests {
             let midpoint = atoms.vertices[edge.endpoints[0].0 as usize]
                 .point
                 .midpoint(&atoms.vertices[edge.endpoints[1].0 as usize].point);
-            assert!(nearest_site(&midpoint, &sites).is_err());
+            nearest_site(&midpoint, &sites).unwrap_err();
         }
         let mut fail_budget = ExpansionBudget::new("test", "frame-only tie");
         let clip =
@@ -4829,17 +4828,14 @@ mod tests {
         )
         .unwrap();
         let mut budget = ExpansionBudget::new("test", "edges-only collision");
-        let error = match build_edges(
+        let Err(error) = build_edges(
             &sites,
             VoronoiBoundary::Polygon(&clip),
             &mut budget,
             true,
             &certified_delaunay(&sites).unwrap(),
-        ) {
-            Ok(_) => {
-                panic!("colliding exact vertices unexpectedly embedded on the edges-only path")
-            },
-            Err(error) => error,
+        ) else {
+            panic!("colliding exact vertices unexpectedly embedded on the edges-only path")
         };
         assert!(
             error
@@ -5263,7 +5259,7 @@ mod tests {
         let point = exact::ExactPoint::from_xy(XY::new(0.0, 10.0));
         assert_eq!(nearest_site(&point, &sites).unwrap(), SiteId(2));
         let true_tie = exact::ExactPoint::from_xy(XY::new(0.0, 0.0));
-        assert!(nearest_site(&true_tie, &sites[..2]).is_err());
+        nearest_site(&true_tie, &sites[..2]).unwrap_err();
     }
 
     #[test]
@@ -5603,7 +5599,7 @@ mod tests {
         let restored =
             dual_build_rings(&sites, &mesh, complex, &clip, &mut construction_budget).unwrap();
         let mut restored_budget = ExpansionBudget::new("test", "restored dual mutation fixture");
-        assert!(dual_embed(&restored, &clip, &sites, &mut restored_budget).is_ok());
+        dual_embed(&restored, &clip, &sites, &mut restored_budget).unwrap();
 
         let mut mutations = Vec::new();
 

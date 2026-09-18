@@ -7,13 +7,12 @@ use pyo3::prelude::{Py, PyAny, PyResult, Python};
 
 use crate::PyGeometryArray;
 use crate::py::arrow::ArrowEncoding;
+use crate::py::arrow_c;
+use crate::py::arrow_c::PreparedArrowExportPlan;
 
-fn materialize_pyarrow(
-    py: Python<'_>,
-    plan: crate::py::arrow_c::PreparedArrowExportPlan,
-) -> PyResult<Py<PyAny>> {
-    let export = crate::py::arrow_c::materialize_export_plan(plan)?;
-    crate::py::arrow_c::pyarrow_array_from_export(py, export)
+fn materialize_pyarrow(py: Python<'_>, plan: PreparedArrowExportPlan) -> PyResult<Py<PyAny>> {
+    let export = arrow_c::materialize_export_plan(plan)?;
+    arrow_c::pyarrow_array_from_export(py, export)
 }
 
 /// Build and pack an array export without holding Python state in the native

@@ -779,8 +779,8 @@ fn continuous_hausdorff_matches_known_fixtures() {
 #[test]
 fn continuous_hausdorff_empty_and_point_semantics() {
     let origin = Shape::Point(p(0.0, 0.0));
-    assert!(hausdorff_distance(&origin, &Shape::empty_point(), Some(1e-9), 1.0).is_err());
-    assert!(hausdorff_distance(&Shape::empty_point(), &origin, Some(1e-9), 1.0).is_err());
+    hausdorff_distance(&origin, &Shape::empty_point(), Some(1e-9), 1.0).unwrap_err();
+    hausdorff_distance(&Shape::empty_point(), &origin, Some(1e-9), 1.0).unwrap_err();
     assert!(
         (hausdorff_distance(&origin, &Shape::Point(p(3.0, 4.0)), Some(1e-9), 1.0).unwrap() - 5.0)
             .abs()
@@ -838,7 +838,7 @@ fn backtracking_collinear_line_keeps_its_full_support() {
 #[test]
 fn packed_hausdorff_columns_preserve_translations_within_bound() {
     for count in [2, 3, 4, 9, 17] {
-        let xs: Vec<_> = (0..count).map(|i| f64::from(i)).collect();
+        let xs: Vec<_> = (0..count).map(f64::from).collect();
         let ys: Vec<_> = (0..count).map(|i| f64::from(i % 2)).collect();
         let shifted: Vec<_> = ys.iter().map(|y| y + 0.25).collect();
         let value =

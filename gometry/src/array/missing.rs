@@ -290,7 +290,6 @@ impl ValidityMask {
     /// then scan at most one block for each query.
     pub(crate) fn rank_for_rows(&self, rows: &[usize]) -> crate::error::Result<ValidityRank<'_>> {
         let scalar_work = rows.iter().fold(0_usize, |work, &logical| {
-            assert!(logical < self.len, "validity row must be in bounds");
             if self.is_valid(logical) {
                 work.saturating_add(rank_scan_bytes(self.bit_offset, logical))
             } else {
@@ -449,7 +448,7 @@ fn build_rank_blocks(mask: &ValidityMask) -> crate::error::Result<Vec<usize>> {
     Ok(blocks)
 }
 
-fn rank_scan_bytes(bit_offset: usize, logical: usize) -> usize {
+const fn rank_scan_bytes(bit_offset: usize, logical: usize) -> usize {
     if logical == 0 {
         return 0;
     }
@@ -458,7 +457,7 @@ fn rank_scan_bytes(bit_offset: usize, logical: usize) -> usize {
     last - first + 1
 }
 
-fn rank_block_scan_bytes(bit_offset: usize, logical: usize) -> usize {
+const fn rank_block_scan_bytes(bit_offset: usize, logical: usize) -> usize {
     let within = logical % RANK_BLOCK_BITS;
     if within == 0 {
         0

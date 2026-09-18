@@ -605,42 +605,50 @@ impl<'a> PreparedRow<'a> {
 
 impl HeapSize for RowProducts {
     fn heap_bytes(&self) -> usize {
-        let chunks = self
-            .owner
-            .chunks
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut retained =
-            crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<RowProductOwner>();
-        match self.selection.as_deref() {
-            crate::array::RowSelectionRef::Identity => {
-                retained +=
-                    chunks.capacity() * std::mem::size_of::<(usize, Arc<RowProductChunk>)>();
-                retained += chunks.values().map(HeapSize::heap_bytes).sum::<usize>();
-            },
-            selection => {
-                for (&chunk_index, chunk) in &*chunks {
-                    let selected = match selection {
-                        crate::array::RowSelectionRef::Window { start, len } => {
-                            let end = start.saturating_add(len);
-                            let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
-                            let chunk_end = chunk_start.saturating_add(chunk.cells.len());
-                            start < chunk_end && chunk_start < end
-                        },
-                        crate::array::RowSelectionRef::Gather(rows) => {
-                            rows.iter().any(|&row| row / ROWS_PER_CHUNK == chunk_index)
-                        },
-                        crate::array::RowSelectionRef::Identity => unreachable!(),
-                    };
-                    if !selected {
-                        continue;
-                    }
-                    retained += std::mem::size_of::<(usize, Arc<RowProductChunk>)>();
-                    retained += chunk.heap_bytes_for_selection(selection, chunk_index);
-                }
-            },
-        }
+        let chunk_bytes = {
+            let chunks = self
+                .owner
+                .chunks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            match self.selection.as_deref() {
+                crate::array::RowSelectionRef::Identity => {
+                    chunks.capacity() * std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
+                        + chunks.values().map(HeapSize::heap_bytes).sum::<usize>()
+                },
+                selection => chunks
+                    .iter()
+                    .filter(|&(&chunk_index, chunk)| {
+                        selection_touches_chunk(selection, chunk_index, chunk.cells.len())
+                    })
+                    .map(|(&chunk_index, chunk)| {
+                        std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
+                            + chunk.heap_bytes_for_selection(selection, chunk_index)
+                    })
+                    .sum::<usize>(),
+            }
+        };
+        let retained = crate::heap_size::ARC_CONTROL_BYTES
+            + std::mem::size_of::<RowProductOwner>()
+            + chunk_bytes;
         retained + self.selection.heap_bytes()
+    }
+}
+
+fn selection_touches_chunk(
+    selection: crate::array::RowSelectionRef<'_>,
+    chunk_index: usize,
+    chunk_len: usize,
+) -> bool {
+    match selection {
+        crate::array::RowSelectionRef::Identity => true,
+        crate::array::RowSelectionRef::Window { start, len } => {
+            let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
+            start < chunk_start.saturating_add(chunk_len) && chunk_start < start.saturating_add(len)
+        },
+        crate::array::RowSelectionRef::Gather(rows) => {
+            rows.iter().any(|&row| row / ROWS_PER_CHUNK == chunk_index)
+        },
     }
 }
 
@@ -938,9 +946,8 @@ mod frame_cache_row_tests {
             .iter()
             .map(|&logical| {
                 operation.present_row_at(logical).unwrap().map(|row| {
-                    let point = match row.row() {
-                        ShapeRow::Point(point) => point,
-                        _ => unreachable!("point fixture yields point rows"),
+                    let ShapeRow::Point(point) = row.row() else {
+                        unreachable!("point fixture yields point rows")
                     };
                     (row.logical(), point.x)
                 })

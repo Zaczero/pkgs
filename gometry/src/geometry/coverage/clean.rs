@@ -41,7 +41,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         return Err(GeometryErrorKind::NonNegativeFinite("grid_size", grid_size).into());
     }
     #[cfg(test)]
-    let _admission_phase =
+    let admission_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::Admission);
     let mut snapped = Vec::new();
     crate::try_reserve_vec(&mut snapped, rows.len())?;
@@ -73,9 +73,9 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     }
 
     #[cfg(test)]
-    drop(_admission_phase);
+    drop(admission_phase);
     #[cfg(test)]
-    let _source_staging_phase =
+    let source_staging_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::SourceStaging);
     let mut shape_refs = Vec::new();
     crate::try_reserve_vec(&mut shape_refs, snapped.len())?;
@@ -86,7 +86,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
     #[cfg(test)]
-    drop(_source_staging_phase);
+    drop(source_staging_phase);
     let mut row_areas = Vec::new();
     crate::try_reserve_vec(&mut row_areas, prepared.len())?;
     for row in &prepared {

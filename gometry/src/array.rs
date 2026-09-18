@@ -259,7 +259,7 @@ impl ArrayRows {
         })
     }
 
-    fn logical_rows<'a>(&'a self) -> LogicalRows<'a> {
+    fn logical_rows(&self) -> LogicalRows<'_> {
         let remaining = self.len();
         let state = match self {
             Self::Dense(storage) => LogicalRowsState::Dense(storage.iter_rows()),

@@ -9,7 +9,7 @@ use crate::geometry::segments::{
 };
 use crate::geometry::{
     HashMap, HashMapExt as _, Orientation, PointKey, Segment, XY, dedup_consecutive_xy,
-    for_each_candidate_pair, same_point, single_chain, undirected_segment_edge_key,
+    for_each_candidate_pair, same_point, segments, single_chain, undirected_segment_edge_key,
 };
 
 /// One original source ordinal that owned a unique undirected edge, plus
@@ -477,9 +477,7 @@ pub(crate) fn split_segment_at(segment: Segment, cuts: &mut Vec<XY>, out: &mut V
         out.push(segment);
         return;
     }
-    cuts.sort_by(|left, right| {
-        crate::geometry::segments::compare_along_segment(segment, *left, *right)
-    });
+    cuts.sort_by(|left, right| segments::compare_along_segment(segment, *left, *right));
     dedup_consecutive_xy(cuts);
     let mut previous = segment.start;
     for &cut in cuts.iter() {

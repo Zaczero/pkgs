@@ -24,9 +24,7 @@
 #[path = "../../frozen_i64_bound.rs"]
 mod frozen_i64_bound;
 
-use frozen_i64_bound::{
-    ImmutableI64Owner, frozen_i64_owner, require_immutable_i64_owner,
-};
+use frozen_i64_bound::{ImmutableI64Owner, frozen_i64_owner, require_immutable_i64_owner};
 
 /// Proven owner — implements the production seal (same shape as `Groups`).
 struct FrozenGroups;

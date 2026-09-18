@@ -177,10 +177,12 @@ pub(crate) fn import_stream(
     let _stream_guard = unsafe { ArrowReleaseGuard::from_raw(stream) }?;
     // Consume the capsule-owned stream shell before inspecting callback
     // pointers. The original capsule remains only as an inert box whose
+    // SAFETY: the caller supplies a live, writable stream (checked non-null).
     // release slot is NULL, so reentrant or repeated imports cannot callback.
     let mut stream_owner = unsafe { MovedArrowShell::take(stream) }?;
     let stream = stream_owner.as_mut_ptr();
     // SAFETY: a valid stream provides function pointers while unreleased.
+    // SAFETY: the same live stream; the guard above yields to the moved owner.
     unsafe {
         let Some(get_schema) = (*stream).get_schema else {
             return Ok(None);

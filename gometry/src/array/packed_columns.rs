@@ -162,7 +162,7 @@ pub(crate) struct XyColumns<'a> {
     pub ys: &'a [f64],
 }
 
-impl<'a> PointColumns<'a> {
+impl PointColumns<'_> {
     pub(crate) const fn row_layout(&self) -> PointRowLayout {
         self.layout
     }

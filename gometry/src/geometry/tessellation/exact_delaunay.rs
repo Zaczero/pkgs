@@ -333,8 +333,8 @@ impl Mesh {
     fn try_legalize(&mut self, xy: &impl Fn(usize) -> XY) -> Result<()> {
         let mut stack = Vec::new();
         crate::try_reserve_vec(&mut stack, self.halfedges.len())?;
-        for e in 0..self.halfedges.len() {
-            if self.halfedges[e] != EMPTY && self.halfedges[e] > e {
+        for (e, &twin) in self.halfedges.iter().enumerate() {
+            if twin != EMPTY && twin > e {
                 crate::try_push_vec(&mut stack, e)?;
             }
         }

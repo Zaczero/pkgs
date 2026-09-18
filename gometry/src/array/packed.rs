@@ -69,7 +69,7 @@ impl PyGeometryArray {
         self.rows.logical_row(logical)
     }
 
-    pub(crate) fn logical_rows<'a>(&'a self) -> LogicalRows<'a> {
+    pub(crate) fn logical_rows(&self) -> LogicalRows<'_> {
         self.rows.logical_rows()
     }
 
@@ -1326,8 +1326,8 @@ mod compact_nullable_tests {
     fn drop_missing_reuses_compact_points_without_prefix_rank_work() {
         let present = PyGeometryArray::packed_points(
             CoordSeq::try_from_vecs(
-                (0..10_000).map(|row| row as f64).collect(),
-                (0..10_000).map(|row| (row * 2) as f64).collect(),
+                (0..10_000).map(f64::from).collect(),
+                (0..10_000).map(|row| f64::from(row * 2)).collect(),
                 None,
                 None,
             )
@@ -1366,8 +1366,8 @@ mod compact_nullable_tests {
     fn compact_bulk_publication_and_validation_use_the_cursor() {
         let present = PyGeometryArray::packed_points(
             CoordSeq::try_from_vecs(
-                (0..10_000).map(|row| row as f64).collect(),
-                (0..10_000).map(|row| (row * 2) as f64).collect(),
+                (0..10_000).map(f64::from).collect(),
+                (0..10_000).map(|row| f64::from(row * 2)).collect(),
                 None,
                 None,
             )

@@ -85,12 +85,10 @@ fn svg_bounds(shape: &Shape) -> Option<Bounds> {
         miny -= pad;
         maxy += pad;
     }
-    let out = Bounds::new_raw(minx, miny, maxx, maxy);
-    let (min_x, min_y, max_x, max_y) = out.into_tuple();
-    ([min_x, min_y, max_x, max_y].iter().all(|v| v.is_finite())
-        && (max_x - min_x).is_finite()
-        && (max_y - min_y).is_finite())
-    .then_some(out)
+    ([minx, miny, maxx, maxy].iter().all(|v| v.is_finite())
+        && (maxx - minx).is_finite()
+        && (maxy - miny).is_finite())
+    .then(|| Bounds::new_raw(minx, miny, maxx, maxy))
 }
 
 /// Render a shape to a standalone SVG document. The Y axis is flipped (so geo

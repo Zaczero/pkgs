@@ -363,10 +363,10 @@ mod tests {
 
         fn forward_unframed(
             _setup: &Self::Setup,
-            lam_rad: f64,
-            lat_rad: f64,
+            longitude: f64,
+            latitude: f64,
         ) -> Result<(f64, f64)> {
-            Ok((lam_rad, lat_rad))
+            Ok((longitude, latitude))
         }
 
         fn inverse_unframed(_setup: &Self::Setup, x: f64, y: f64) -> Result<(f64, f64)> {
