@@ -4,7 +4,7 @@ use crate::geographic::{
     RingTurn, ScalarGeographicView,
 };
 use crate::geometry::antimeridian::{
-    collect_points, dedup_consecutive, resolve_seam_aliases, segment_coords,
+    SeamRing, collect_points, ring_follows_seam, segment_coords, split_ring_at_seam,
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
@@ -410,13 +410,17 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     // self-intersecting rings.  Set difference is the structural operation the
     // source polygon already expresses, and the native overlay kernel gives us
     // the correct seam-connected annulus without a second stitching model.
+    // A hole tracing the seam is split with the crossing holes: the polygon's
+    // interior lies across the seam from it.
     let mut crossing_holes = Vec::new();
     let mut stationary_holes = Vec::new();
     for hole in polygon.holes.iter() {
-        if segment_coords(&collect_points(hole.coords())).is_empty() {
-            stationary_holes.push(hole.clone());
-        } else {
-            crossing_holes.push(hole.clone());
+        let points = collect_points(hole.coords());
+        match split_ring_at_seam(&points) {
+            SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
+                stationary_holes.push(Ring::from_closed(CoordSeq::try_from_points(&spelled)?));
+            },
+            _ => crossing_holes.push(hole.clone()),
         }
     }
     if !crossing_holes.is_empty() {
@@ -434,38 +438,14 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         return polygons_from_shape(result);
     }
 
-    let mut exterior = collect_points(polygon.shell.coords());
-    resolve_seam_aliases(&mut exterior);
-    let exterior = dedup_consecutive(exterior);
-    let mut segments = segment_coords(&exterior);
-    if segments.is_empty() {
-        return Ok(vec![polygon.clone()]);
-    }
-    let mut kept_holes: Vec<&Ring> = Vec::new();
-    for hole in polygon.holes.iter() {
-        let coords = collect_points(hole.coords());
-        let hole_segments = segment_coords(&coords);
-        if hole_segments.is_empty() {
-            kept_holes.push(hole);
-        } else {
-            // A crossing hole participates in the seam stitching. Its
-            // unwrapped winding must be CW (a hole); reverse when not.
-            let unwrapped: Vec<Point> = coords
-                .iter()
-                .map(|point| {
-                    let mut point = *point;
-                    point.x = point.x.rem_euclid(360.0);
-                    point
-                })
-                .collect();
-            if ring_is_ccw(&unwrapped) {
-                let reversed: Vec<Point> = coords.into_iter().rev().collect();
-                segments.extend(segment_coords(&reversed));
-            } else {
-                segments.extend(hole_segments);
-            }
-        }
-    }
+    let segments = match split_ring_at_seam(&collect_points(polygon.shell.coords())) {
+        SeamRing::Whole(shell) => {
+            let shell = Ring::from_closed(CoordSeq::try_from_points(&shell)?);
+            return Ok(vec![Polygon::new(shell, stationary_holes)?]);
+        },
+        SeamRing::Pieces(pieces) => pieces,
+    };
+    let kept_holes: Vec<&Ring> = stationary_holes.iter().collect();
     if preferred != PoleClosure::Auto {
         // Caller knows the pole: close over it directly, no inference/retry.
         let (stitched, _) = extend_over_poles(segments, preferred)?;
@@ -901,6 +881,112 @@ mod tests {
         let inner = Shape::geometry_collection(vec![point]).unwrap();
         let shape = Shape::geometry_collection(vec![line, inner]).unwrap();
         assert_eq!(split_crs84(&shape), shape);
+    }
+
+    fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Shape {
+        let ring = |points: &[(f64, f64)]| {
+            let mut xs: Vec<f64> = points.iter().map(|&(x, _)| x).collect();
+            let mut ys: Vec<f64> = points.iter().map(|&(_, y)| y).collect();
+            xs.push(xs[0]);
+            ys.push(ys[0]);
+            closed_ring(&xs, &ys)
+        };
+        Shape::Polygon(
+            Polygon::new(ring(shell), holes.iter().map(|hole| ring(hole)).collect()).unwrap(),
+        )
+    }
+
+    /// Every spelling of the seam vertices names one polygon, so each must
+    /// split into valid parts covering the same chart area.
+    fn assert_seam_spellings_split_alike(
+        shell: &[(f64, f64)],
+        holes: &[&[(f64, f64)]],
+        parts: usize,
+        area: f64,
+    ) {
+        let seam: Vec<(usize, usize)> = std::iter::once(shell)
+            .chain(holes.iter().copied())
+            .enumerate()
+            .flat_map(|(ring, points)| {
+                points
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (x, _))| x.abs() == 180.0)
+                    .map(move |(vertex, _)| (ring, vertex))
+            })
+            .collect();
+        for spelling in 0..1_u32 << seam.len() {
+            let mut rings: Vec<Vec<(f64, f64)>> = std::iter::once(shell)
+                .chain(holes.iter().copied())
+                .map(<[_]>::to_vec)
+                .collect();
+            for (bit, &(ring, vertex)) in seam.iter().enumerate() {
+                rings[ring][vertex].0 = if (spelling >> bit) & 1 == 1 {
+                    180.0
+                } else {
+                    -180.0
+                };
+            }
+            let hole_rings: Vec<&[(f64, f64)]> = rings[1..].iter().map(Vec::as_slice).collect();
+            let split = split_crs84(&polygon(&rings[0], &hole_rings));
+            assert_eq!(
+                split.validate().unwrap(),
+                None,
+                "spelling {spelling:b}: {split:?}"
+            );
+            assert_eq!(
+                split.part_count(),
+                parts,
+                "spelling {spelling:b}: {split:?}"
+            );
+            assert!(
+                (split.area() - area).abs() < 1e-9,
+                "spelling {spelling:b}: {split:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn seam_run_between_opposite_sides_belongs_to_its_interior_side() {
+        // Fiji's dissolved outline: it reaches the seam from the east at
+        // -15.5, runs south along it to -19.15, and leaves to the west.
+        let shell = [
+            (-180.0, -19.153_409),
+            (-179.963_319_5, -15.507_781_7),
+            (-178.980_216_6, -15.967_318_2),
+            (-178.045_034, -17.836_819_8),
+            (-178.011_665, -19.811_436_8),
+            (-178.928_670_8, -21.213_499_6),
+            (-179.094_029_1, -20.818_838_7),
+            (180.0, -19.800_520_5),
+            (179.648_239_9, -19.405_357_3),
+            (176.805_793_9, -17.730_552_9),
+            (177.194_871, -16.601_579),
+            (180.0, -15.508_868_1),
+        ];
+        let reversed: Vec<(f64, f64)> = shell.iter().rev().copied().collect();
+        let area = split_crs84(&polygon(&shell, &[])).area();
+        for ring in [&shell[..], &reversed[..]] {
+            assert_seam_spellings_split_alike(ring, &[], 2, area);
+        }
+    }
+
+    #[test]
+    fn hole_notch_touching_the_seam_trims_its_side() {
+        let shell = [
+            (170.0, -10.0),
+            (-170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+        ];
+        let notch = [(175.0, 0.0), (180.0, 0.0), (180.0, 5.0), (175.0, 5.0)];
+        assert_seam_spellings_split_alike(&shell, &[&notch], 2, 400.0 - 25.0);
+    }
+
+    #[test]
+    fn seam_edge_of_a_one_sided_polygon_keeps_it_whole() {
+        let shell = [(170.0, 0.0), (180.0, 0.0), (180.0, 10.0), (170.0, 10.0)];
+        assert_seam_spellings_split_alike(&shell, &[], 1, 100.0);
     }
 
     #[test]

@@ -8,7 +8,7 @@ pub(super) fn collect_points<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> 
 
 /// Resolve the two exact chart aliases of a quotient seam from the incoming
 /// edge. Pole aliases remain interchangeable. No neighborhood is snapped.
-pub(super) fn resolve_seam_aliases(coords: &mut [Point]) {
+fn resolve_seam_aliases(coords: &mut [Point]) {
     let Some(last) = coords.last() else {
         return;
     };
@@ -28,7 +28,7 @@ pub(super) fn resolve_seam_aliases(coords: &mut [Point]) {
 
 /// Drop exact consecutive duplicates. One-ULP neighbors are distinct source
 /// vertices; Z/M differences also retain the source segment boundary.
-pub(super) fn dedup_consecutive(coords: Vec<Point>) -> Vec<Point> {
+fn dedup_consecutive(coords: Vec<Point>) -> Vec<Point> {
     let mut result: Vec<Point> = Vec::with_capacity(coords.len());
     for point in coords {
         if let Some(last) = result.last()
@@ -56,18 +56,7 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
     let mut pieces: Vec<Vec<Point>> = Vec::new();
     for &[start, end] in coords.array_windows::<2>() {
         piece.push(start);
-        let delta = end.x - start.x;
-        if delta > 180.0 && delta != 360.0 {
-            // Westward exit: close on -180, reopen on 180.
-            let (west, east) = crossing_points(start, end);
-            piece.push(west);
-            pieces.push(std::mem::replace(&mut piece, vec![east]));
-        } else if -delta > 180.0 && -delta != 360.0 {
-            // Eastward exit: close on 180, reopen on -180.
-            let (west, east) = crossing_points(end, start);
-            piece.push(east);
-            pieces.push(std::mem::replace(&mut piece, vec![west]));
-        }
+        split_transit(&mut piece, &mut pieces, start, end);
     }
     if pieces.is_empty() {
         return pieces;
@@ -83,6 +72,134 @@ pub(crate) fn segment_coords(points: &[Point]) -> Vec<Vec<Point>> {
         pieces.push(piece);
     }
     pieces
+}
+
+/// A closed ring cut at the seam.
+pub(crate) enum SeamRing {
+    /// The ring transits the seam: pieces that start and end on it.
+    Pieces(Vec<Vec<Point>>),
+    /// The ring keeps to one side: its closed coordinates with every seam
+    /// vertex spelled on that side.
+    Whole(Vec<Point>),
+}
+
+/// Cut a closed ring at every seam transit.
+///
+/// A seam vertex lies on both chart sides, so its spelling decides nothing.
+/// A run of seam vertices enters on the side of the vertex it came from and
+/// leaves on the side of the vertex it goes to. In a transiting ring each run
+/// lies in the cut: seam stitching rebuilds its edges on whichever side the
+/// interior occupies, which neither neighbour alone determines. A run that
+/// returns to its entry latitude on the side it entered from only touches the
+/// seam.
+pub(crate) fn split_ring_at_seam(points: &[Point]) -> SeamRing {
+    let coords = dedup_consecutive(points.to_vec());
+    let cycle = &coords[..coords.len().saturating_sub(1)];
+    let Some(start) = cycle.iter().position(|&point| !on_seam(point)) else {
+        // Only a full-longitude band lies wholly on the seam; its sides are
+        // its stored spellings.
+        let pieces = segment_coords(points);
+        return if pieces.is_empty() {
+            SeamRing::Whole(points.to_vec())
+        } else {
+            SeamRing::Pieces(pieces)
+        };
+    };
+    let vertex = |offset: usize| cycle[(start + offset) % cycle.len()];
+    let mut whole = Vec::with_capacity(coords.len());
+    whole.push(vertex(0));
+    let mut pieces: Vec<Vec<Point>> = Vec::new();
+    let mut piece = vec![vertex(0)];
+    let mut transits = false;
+    let mut offset = 1;
+    while offset <= cycle.len() {
+        let current = vertex(offset);
+        if !on_seam(current) {
+            let previous = *piece.last().expect("a piece holds its opening vertex");
+            let cut = pieces.len();
+            split_transit(&mut piece, &mut pieces, previous, current);
+            transits |= pieces.len() != cut;
+            piece.push(current);
+            whole.push(current);
+            offset += 1;
+            continue;
+        }
+        let run = offset;
+        while on_seam(vertex(offset)) {
+            offset += 1;
+        }
+        let (first, last) = (vertex(run), vertex(offset - 1));
+        let entry = seam_side(vertex(run - 1), first);
+        let exit = seam_side(vertex(offset), last);
+        transits |= entry != exit;
+        whole.extend((run..offset).map(|index| spelled(vertex(index), entry)));
+        if entry == exit && first.y == last.y {
+            piece.extend((run..offset).map(|index| spelled(vertex(index), entry)));
+        } else {
+            piece.push(spelled(first, entry));
+            pieces.push(std::mem::replace(&mut piece, vec![spelled(last, exit)]));
+        }
+    }
+    if !transits {
+        // `whole` runs from the first off-seam vertex back to it.
+        whole.pop();
+        whole.rotate_right(start);
+        whole.push(whole[0]);
+        return SeamRing::Whole(whole);
+    }
+    // The trailing piece ends at the ring's start, where the leading piece
+    // begins.
+    let leading = &mut pieces[0];
+    piece.extend(leading.drain(1..));
+    *leading = piece;
+    SeamRing::Pieces(pieces)
+}
+
+/// Whether consecutive ring vertices trace an edge along the seam.
+pub(crate) fn ring_follows_seam(points: &[Point]) -> bool {
+    points
+        .array_windows::<2>()
+        .any(|&[start, end]| on_seam(start) && on_seam(end) && start.y != end.y)
+}
+
+/// A seam vertex other than a pole, where every longitude is the same point.
+fn on_seam(point: Point) -> bool {
+    point.x.abs() == 180.0 && point.y.abs() != 90.0
+}
+
+/// The chart side a seam vertex takes beside an off-seam neighbour: the one
+/// the short edge between them reaches. A neighbour on the prime meridian is
+/// half a turn away on both sides, and the stored spelling breaks that tie.
+fn seam_side(neighbour: Point, vertex: Point) -> f64 {
+    if neighbour.x > 0.0 {
+        180.0
+    } else if neighbour.x < 0.0 {
+        -180.0
+    } else {
+        vertex.x
+    }
+}
+
+const fn spelled(mut point: Point, side: f64) -> Point {
+    point.x = side;
+    point
+}
+
+/// Close `piece` at the seam and open the next one when the chart edge from
+/// `start` to `end` transits it.
+fn split_transit(piece: &mut Vec<Point>, pieces: &mut Vec<Vec<Point>>, start: Point, end: Point) {
+    let delta = end.x - start.x;
+    if delta > 180.0 && delta != 360.0 {
+        // Westward exit: close on -180, reopen on 180.
+        let (west, east) = crossing_points(start, end);
+        piece.push(west);
+        pieces.push(std::mem::replace(piece, vec![east]));
+    } else if -delta > 180.0 && -delta != 360.0 {
+        // Eastward exit: close on 180, reopen on -180.
+        let (west, east) = crossing_points(end, start);
+        piece.push(east);
+        pieces.push(std::mem::replace(piece, vec![west]));
+    }
 }
 
 /// The pair of seam points `((-180, lat), (180, lat))` for an ordered

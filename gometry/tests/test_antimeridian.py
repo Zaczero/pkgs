@@ -113,9 +113,11 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     ).split_antimeridian()
     assert both.geometry_type == 'MultiPolygon'
     assert len(gm.parts(both)) == 2
+    # A ring touching the seam keeps to its side: its seam vertices take that
+    # side's spelling and nothing else changes.
     seam_ring = gm.Polygon([(166, 77), (180, 78), (-180, 81), (162, 81)])
     canonical = seam_ring.split_antimeridian()
-    assert canonical.to_wkt() == seam_ring.to_wkt()
+    assert canonical.to_wkt() == 'POLYGON ((166 77, 180 78, 180 81, 162 81, 166 77))'
     again = canonical.split_antimeridian()
     assert again.to_wkt() == canonical.to_wkt()
     donut_source = gm.from_geojson(
@@ -147,6 +149,33 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     assert split_rows[0].geometry_type == 'MultiLineString'
     assert split_rows[1].geometry_type == 'LineString'
     assert line.split_antimeridian().to_wkt() == split_rows[0].to_wkt()
+
+
+@pytest.mark.parametrize('seam', [180.0, -180.0])
+@pytest.mark.parametrize(
+    'ring',
+    [
+        # Reaches the seam along an edge and stays east of it.
+        [(170.0, 0.0), ('seam', 0.0), ('seam', 10.0), (170.0, 10.0)],
+        # Runs along the seam, then leaves to the west: Fiji's outline.
+        [
+            (177.0, -16.0),
+            ('seam', -15.5),
+            ('seam', -19.2),
+            (-179.0, -21.0),
+            ('seam', -19.8),
+            (177.0, -19.0),
+        ],
+    ],
+    ids=['touching', 'transiting'],
+)
+def test_seam_vertex_spelling_does_not_change_validity(
+    ring: list[tuple[float | str, float]], seam: float
+) -> None:
+    spelled = [(seam if x == 'seam' else x, y) for x, y in ring]
+    polygon = gm.Polygon(spelled, crs=4326)
+    assert polygon.is_valid
+    assert gm.union_all([polygon]).is_valid
 
 
 def test_centroid_and_point_on_surface_array_match_scalar_antimeridian() -> None:
