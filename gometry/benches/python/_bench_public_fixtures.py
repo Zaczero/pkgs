@@ -755,8 +755,11 @@ def service_areas_1024():
 
 
 def _invalid_wkt_classes() -> dict[str, list[str]]:
-    """Deterministic WKT for four invalid classes."""
+    """Deterministic WKT for the invalid classes."""
     bowties: list[str] = []
+    double_bowties: list[str] = []
+    self_overlap_loops: list[str] = []
+    crossing_bands: list[str] = []
     exterior_holes: list[str] = []
     overlapping_holes: list[str] = []
     nested_holes: list[str] = []
@@ -764,6 +767,20 @@ def _invalid_wkt_classes() -> dict[str, list[str]]:
         x = 10.0 * i
         # bowtie (self-crossing hourglass)
         bowties.append(f'POLYGON(({x} 0, {x + 2} 2, {x + 2} 0, {x} 2, {x} 0))')
+        double_bowties.append(
+            f'POLYGON(({x} 0, {x + 2} 2, {x + 4} 0, {x + 6} 2, {x + 6} 0, '
+            f'{x + 4} 2, {x + 2} 0, {x} 2, {x} 0))'
+        )
+        # a ring that winds back across its own interior
+        self_overlap_loops.append(
+            f'POLYGON(({x} 0, {x + 6} 0, {x + 6} 6, {x + 2} 6, {x + 2} 2, '
+            f'{x + 4} 2, {x + 4} 4, {x} 4, {x} 0))'
+        )
+        # a band whose ring crosses back over its own edges twice
+        crossing_bands.append(
+            f'POLYGON(({x} 0, {x + 8} 0, {x + 8} 2, {x + 1} 2, {x + 1} -1, '
+            f'{x + 3} -1, {x + 3} 3, {x} 3, {x} 0))'
+        )
         # exterior hole: hole outside shell (invalid)
         exterior_holes.append(
             f'POLYGON(({x} 0, {x + 4} 0, {x + 4} 4, {x} 4, {x} 0), '
@@ -783,6 +800,9 @@ def _invalid_wkt_classes() -> dict[str, list[str]]:
         )
     return {
         'bowtie': bowties,
+        'double_bowtie': double_bowties,
+        'self_overlap_loop': self_overlap_loops,
+        'crossing_band': crossing_bands,
         'exterior_hole': exterior_holes,
         'overlapping_holes': overlapping_holes,
         'nested_holes': nested_holes,
@@ -840,12 +860,17 @@ def validity_10k_shapely():
 
 
 def repair_1k_wkt() -> list[str]:
-    """250 examples from each invalid class."""
+    """250 examples from each self-intersection class.
+
+    The hole classes are excluded: gometry's linework repair recombines each
+    polygon as shell minus holes, while GEOS applies even-odd to every ring, so
+    those rows would time two different results.
+    """
 
     def build():
         classes = _invalid_wkt_classes()
         out: list[str] = []
-        for key in ('bowtie', 'exterior_hole', 'overlapping_holes', 'nested_holes'):
+        for key in ('bowtie', 'double_bowtie', 'self_overlap_loop', 'crossing_band'):
             out.extend(classes[key][:250])
         assert len(out) == 1000
         return out

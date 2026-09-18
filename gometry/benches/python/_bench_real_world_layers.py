@@ -107,14 +107,6 @@ def country_exteriors_multilinestring(
     return gm.MultiLineString(chains, crs=4326)
 
 
-def country_collection(
-    parts: gm.GeometryArray | None = None,
-) -> gm.GeometryCollection:
-    if parts is None:
-        parts = load_country_parts()
-    return gm.GeometryCollection(list(parts), crs=4326)
-
-
 def brazil_geometry() -> gm.Geometry:
     """Brazil selected by ISO3166-1:alpha2 == 'BR' (never by row index)."""
 
@@ -228,16 +220,6 @@ def country_parts_shapely():
         return shapely.get_parts(coll)
 
     return _cached('country_parts_sh', build)
-
-
-def country_collection_shapely():
-    import shapely
-
-    def build():
-        parts = country_parts_shapely()
-        return shapely.GeometryCollection(list(parts))
-
-    return _cached('country_collection_sh', build)
 
 
 def country_exteriors_shapely():

@@ -459,10 +459,10 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     _op(
         'CRS & geodesy',
         'geodesic country area',
-        '217-country collection',
+        '217 countries',
         ('GeometryArray.area',),
-        'gometry.geodesic_area/217_country_collection',
-        'pyproj.Geod.geometry_area_perimeter/217_country_collection',
+        'gometry.geodesic_area/217_countries',
+        'pyproj.Geod.geometry_area_perimeter/217_countries',
         'pyproj',
         ('geodesic',),
     ),

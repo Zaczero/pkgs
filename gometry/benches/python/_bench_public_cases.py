@@ -70,10 +70,9 @@ from _bench_real_world_layers import (
     BRAZIL_BOUNDS,
     brazil_bbox_polygon,
     brazil_geometry,
-    country_collection,
-    country_collection_shapely,
     country_exteriors_multilinestring,
     country_exteriors_shapely,
+    country_parts_shapely,
     country_pois_10k,
     country_pois_10k_shapely,
     load_country_geojson_text,
@@ -1622,8 +1621,13 @@ def build_geohash_encode() -> PublicCase:
         import pygeohash
 
         for precision in (1, 6, 12):
+            # gometry canonicalizes longitude +180 to the same meridian at -180.
             expected = [
-                pygeohash.encode(float(lat), float(lon), precision=precision)
+                pygeohash.encode(
+                    float(lat),
+                    -180.0 if lon == 180.0 else float(lon),
+                    precision=precision,
+                )
                 for lon, lat in zip(data['edge_lon'], data['edge_lat'], strict=True)
             ]
             if (
@@ -1778,24 +1782,22 @@ def build_from_geojson() -> PublicCase:
 
 
 def build_geodesic_area() -> PublicCase:
-    coll_gm = country_collection()
-    coll_sh = country_collection_shapely()
+    parts_gm = load_country_parts()
+    parts_sh = country_parts_shapely()
     from pyproj import Geod
 
     geod = Geod(ellps='WGS84')
 
     def gometry_call():
-        return coll_gm.area
+        return parts_gm.area
 
     def competitor_call():
-        area, _perim = geod.geometry_area_perimeter(coll_sh)
-        return abs(area)
+        return np.asarray([
+            abs(geod.geometry_area_perimeter(part)[0]) for part in parts_sh
+        ])
 
-    _reg('gometry.geodesic_area/217_country_collection', gometry_call)
-    _reg(
-        'pyproj.Geod.geometry_area_perimeter/217_country_collection',
-        competitor_call,
-    )
+    _reg('gometry.geodesic_area/217_countries', gometry_call)
+    _reg('pyproj.Geod.geometry_area_perimeter/217_countries', competitor_call)
     return _case(
         gometry_call,
         competitor_call,
@@ -1875,7 +1877,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.index.nearest/1k_queries_10k_polygons_k1': build_index_nearest,
     'gometry.index.build/10k_polygons': build_index_build,
     'gometry.from_geojson/217_countries_2_26mb': build_from_geojson,
-    'gometry.geodesic_area/217_country_collection': build_geodesic_area,
+    'gometry.geodesic_area/217_countries': build_geodesic_area,
     'gometry.geodesic_length/1034_exteriors_16135_vertices': build_geodesic_length,
 }
 
