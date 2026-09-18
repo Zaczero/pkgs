@@ -9,6 +9,7 @@ of this publication matrix.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +22,17 @@ if str(_TOOLS) not in sys.path:
 
 from public_inventory import load_public_symbols, unknown_public_symbols
 
-PUBLIC_API_SYMBOLS = load_public_symbols(
-    _ROOT / 'python' / 'gometry' / '_lib.pyi',
-    _ROOT / 'python' / 'gometry' / '__init__.py',
-)
+
+@functools.cache
+def public_api_symbols() -> frozenset[str]:
+    """Public API inventory, parsed on first use: every paired-block worker
+    imports this registry, and only manifest validation needs the inventory.
+    """
+    return load_public_symbols(
+        _ROOT / 'python' / 'gometry' / '_lib.pyi',
+        _ROOT / 'python' / 'gometry' / '__init__.py',
+    )
+
 
 Domain = Literal[
     'Array construction & I/O',
@@ -787,7 +795,7 @@ def validate_canonical_symbols(
                 f'benchmark row {operation.gometry!r} has no canonical API symbol'
             )
         unknown = unknown_public_symbols(
-            operation.canonical_symbols, PUBLIC_API_SYMBOLS
+            operation.canonical_symbols, public_api_symbols()
         )
         if unknown:
             raise ValueError(
@@ -815,7 +823,7 @@ def validate_scaling_operations(
         if scaling is None:
             continue
         unknown = unknown_public_symbols(
-            operation.canonical_symbols, PUBLIC_API_SYMBOLS
+            operation.canonical_symbols, public_api_symbols()
         )
         if unknown:
             raise ValueError(

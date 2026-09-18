@@ -154,19 +154,37 @@ def _uv_lock_identity() -> dict[str, Any]:
     return {'path': None, 'sha256': None, 'size_bytes': None}
 
 
+_CONTENT_DIGESTS: dict[tuple[str, int, int, int], tuple[str, int]] = {}
+
+
+def _content_digest(path: Path) -> tuple[str, int]:
+    """SHA-256 and byte size of `path`, reused while its stat identity holds.
+
+    A paired block attests the extension and every loaded native library both
+    before and after timing; a changed file has a new stat key and is hashed
+    again, so the attestation still detects replacement.
+    """
+    stat = path.stat()
+    key = (str(path), stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    known = _CONTENT_DIGESTS.get(key)
+    if known is None:
+        payload = path.read_bytes()
+        known = _CONTENT_DIGESTS[key] = (
+            hashlib.sha256(payload).hexdigest(),
+            len(payload),
+        )
+    return known
+
+
 def _file_identity(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
     try:
         path = path.resolve()
-        payload = path.read_bytes()
-        return {
-            'path': str(path),
-            'sha256': hashlib.sha256(payload).hexdigest(),
-            'size_bytes': len(payload),
-        }
+        sha256, size = _content_digest(path)
     except OSError:
         return None
+    return {'path': str(path), 'sha256': sha256, 'size_bytes': size}
 
 
 def _module_identity(name: str) -> dict[str, Any] | None:
@@ -357,14 +375,14 @@ def _extension_identity() -> dict[str, Any]:
         import gometry._lib as lib
 
         path = Path(lib.__file__).resolve()
-        payload = path.read_bytes()
+        sha256, size = _content_digest(path)
         build_info = getattr(lib, '__build_info__', None)
         if not isinstance(build_info, dict):
             build_info = None
         return {
             'path': str(path),
-            'sha256': hashlib.sha256(payload).hexdigest(),
-            'size_bytes': path.stat().st_size,
+            'sha256': sha256,
+            'size_bytes': size,
             'build_info': build_info,
         }
     except (ImportError, OSError, AttributeError) as exc:

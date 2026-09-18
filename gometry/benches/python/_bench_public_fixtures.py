@@ -91,6 +91,18 @@ def _building_exterior(
     return _radial_polygon_xy(cx, cy, n_verts, radius, phase)
 
 
+def _building_hole(
+    cx: float, cy: float, index: int, n_verts: int, radius: float, phase: float
+) -> list[tuple[float, float]]:
+    """Reversed hole strictly inside the footprint from `_building_exterior`."""
+    if index % 7 == 0:
+        # Concave rows: centre the hole in the L's solid corner, clear of the notch.
+        cx, cy = cx - 0.35 * radius, cy - 0.35 * radius
+    hole = _radial_polygon_xy(cx, cy, max(4, n_verts // 2), radius * 0.25, phase + 0.3)
+    hole.reverse()
+    return hole
+
+
 # ---------------------------------------------------------------------------
 # POINTS / roads / buildings / mixed
 # ---------------------------------------------------------------------------
@@ -194,12 +206,7 @@ def buildings_10k_gometry():
             exterior = _building_exterior(cx, cy, i, n_verts, radius, phase)
             holes: list[list[tuple[float, float]]] | None = None
             if i % 5 == 0:
-                # reversed 0.25-scale hole (CW if exterior is CCW)
-                hole = _radial_polygon_xy(
-                    cx, cy, max(4, n_verts // 2), radius * 0.25, phase + 0.3
-                )
-                hole.reverse()
-                holes = [hole]
+                holes = [_building_hole(cx, cy, i, n_verts, radius, phase)]
             geoms.append(gm.Polygon(exterior, holes))
         arr = gm.GeometryArray(geoms, crs=_CRS_UTM)
         return arr
@@ -224,11 +231,7 @@ def buildings_10k_shapely():
             exterior = _building_exterior(cx, cy, i, n_verts, radius, phase)
             holes = None
             if i % 5 == 0:
-                hole = _radial_polygon_xy(
-                    cx, cy, max(4, n_verts // 2), radius * 0.25, phase + 0.3
-                )
-                hole.reverse()
-                holes = [hole]
+                holes = [_building_hole(cx, cy, i, n_verts, radius, phase)]
             geoms.append(shapely.Polygon(exterior, holes))
         return np.asarray(geoms, dtype=object)
 

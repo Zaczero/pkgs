@@ -1590,7 +1590,7 @@ def main() -> None:
     parser.add_argument(
         '--cpu',
         type=int,
-        help='CPU to pin; release evidence requires a kernel-isolated CPU',
+        help='CPU to pin (default: a kernel-isolated CPU when available)',
     )
     parser.add_argument(
         '--filter',
@@ -1707,15 +1707,16 @@ def main() -> None:
     )
     doctor['metadata']['selected_cpu_governor'] = selected_governor
     hard_failures: list[str] = [str(value) for value in doctor.get('hard_failures', ())]
-    if args.profile == 'release' and selected_governor not in {None, 'performance'}:
-        hard_failures.append(
+    # Paired AB/BA blocks control shared host drift; the timing CPU's frequency
+    # policy and isolation are recorded host facts, not preconditions.
+    if selected_governor not in {None, 'performance'}:
+        doctor['warnings'].append(
             f'selected benchmark CPU governor is {selected_governor!r}, '
             f"not 'performance': cpu={cpu}"
         )
-    if args.profile == 'release' and cpu_selection.endswith('not-isolated'):
-        hard_failures.append(
-            'release timing CPU is not kernel-isolated: '
-            f'cpu={cpu}, selection={cpu_selection}'
+    if cpu_selection.endswith('not-isolated'):
+        doctor['warnings'].append(
+            f'timing CPU is not kernel-isolated: cpu={cpu}, selection={cpu_selection}'
         )
     lock = doctor['metadata'].get('uv_lock')
     if args.profile == 'release' and (

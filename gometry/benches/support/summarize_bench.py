@@ -23,9 +23,10 @@ _TOOLS = GOMETRY_ROOT / 'tools'
 if str(_TOOLS) not in sys.path:
     sys.path.insert(0, str(_TOOLS))
 
+from _bench_registry import public_api_symbols
 from benchmark_observation import measurement_summary, validate_observation
 from benchmark_identity import common_identity, validate_producer_identity
-from public_inventory import load_public_symbols, unknown_public_symbols
+from public_inventory import unknown_public_symbols
 
 DOMAIN_ORDER = (
     'Array construction & I/O',
@@ -37,10 +38,6 @@ DOMAIN_ORDER = (
 PRACTICAL_EQUIVALENCE_MARGIN = 0.03
 BOOTSTRAP_SAMPLES = 10_000
 DEFAULT_BOOTSTRAP_SEED = 20_260_824
-PUBLIC_API_SYMBOLS = load_public_symbols(
-    GOMETRY_ROOT / 'python' / 'gometry' / '_lib.pyi',
-    GOMETRY_ROOT / 'python' / 'gometry' / '__init__.py',
-)
 SMOKE_BANNER = 'Smoke/debug run — not publishable release evidence.'
 
 
@@ -224,7 +221,7 @@ def _parse_public_operations(raw: Any) -> list[PublicOpMeta]:
                 f'public_operations[{index}] must declare canonical_symbols'
             )
         canonical_symbols = tuple(str(value) for value in raw_canonical)
-        unknown = unknown_public_symbols(canonical_symbols, PUBLIC_API_SYMBOLS)
+        unknown = unknown_public_symbols(canonical_symbols, public_api_symbols())
         if unknown:
             raise SystemExit(
                 f'public_operations[{index}] maps to non-public API symbol(s): '
