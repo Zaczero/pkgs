@@ -63,9 +63,13 @@ An operation over a whole collection is a free function that takes the
 collection, the way Python's `sum(iterable)` is: [`gm.union_all(values)`][gometry.union_all],
 [`gm.intersection_all`][gometry.intersection_all], [`gm.polygonize(values)`][gometry.polygonize], and the
 [`gm.coverage_*`][gometry.coverage_union] family accept a `GeometryArray` or any iterable of geometries.
-An array method is therefore always the row-wise mirror of the scalar method:
-[`arr.polygonize()`][gometry.GeometryArray.polygonize] polygonizes each row, while
-`gm.polygonize(arr)` pools every row's linework into one graph.
+An array method that shares a scalar method's name is therefore always its
+row-wise mirror: [`arr.polygonize()`][gometry.GeometryArray.polygonize] polygonizes
+each row, while `gm.polygonize(arr)` pools every row's linework into one graph.
+Methods with no scalar counterpart treat the array as a container, like
+[`arr.concat(...)`][gometry.GeometryArray.concat] and
+[`arr.drop_missing()`][gometry.GeometryArray.drop_missing], or group its rows by
+aligned keys, like [`arr.dissolve(by=...)`][gometry.GeometryArray.dissolve].
 
 I/O follows the same rule. If you already hold a geometry, serialize from it:
 [`geom.to_wkb()`][gometry.Geometry.to_wkb], [`geom.to_geojson()`][gometry.Geometry.to_geojson]. If bytes or text create a geometry, use a
