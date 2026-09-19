@@ -524,7 +524,7 @@ pub(crate) fn metric_interpolate_m(
 /// The operation is a **local projection approximation** of geodesic
 /// construction: one extent-validated local frame is chosen, the shape is
 /// transformed there, the planar kernel runs at meter scale, and the result is
-/// transformed back. Distortion accumulates when the geometry spans many UTM
+/// transformed back. The frame must hold the input and the result together. Distortion accumulates when the geometry spans many UTM
 /// zones, sits far from the anchor, or uses a large distance relative to the
 /// feature size. The returned geometry is tagged with the input CRS; it is a
 /// CRS-aware local projection result, not an exact ellipsoidal buffer.

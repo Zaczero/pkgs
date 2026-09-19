@@ -92,8 +92,9 @@ print(panels([
 
 !!! warning "Geographic buffers use a local projection approximation"
     On a geographic CRS, `buffer` and `offset_curve` are **not** exact
-    ellipsoidal offsets. gometry picks one bounded local frame with
-    [`estimate_local_crs()`][gometry.Geometry.estimate_local_crs], reprojects, runs the
+    ellipsoidal offsets. gometry picks one bounded local frame that holds both
+    the input and the result, as
+    [`estimate_local_crs()`][gometry.Geometry.estimate_local_crs] does, reprojects, runs the
     planar constructive kernel at the requested meter distance, then
     reprojects back to the source CRS. It is intended for city-scale features
     and modest radii; distortion grows when the
