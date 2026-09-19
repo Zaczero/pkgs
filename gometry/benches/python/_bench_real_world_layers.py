@@ -60,7 +60,7 @@ def _polygon_rings(geometry: gm.Geometry) -> list[gm.Geometry]:
         return [geometry.exterior, *geometry.interiors]
     if geometry.geometry_type == 'MultiPolygon':
         rings: list[gm.Geometry] = []
-        for part in gm.parts(geometry):
+        for part in geometry.parts:
             rings.append(part.exterior)
             rings.extend(part.interiors)
         return rings
@@ -93,7 +93,7 @@ def country_boundary_lines(
         if geometry.geometry_type == 'Polygon':
             lines.append(geometry.exterior)
         elif geometry.geometry_type == 'MultiPolygon':
-            lines.extend(part.exterior for part in gm.parts(geometry))
+            lines.extend(part.exterior for part in geometry.parts)
     return gm.GeometryArray(lines, crs=4326)
 
 

@@ -35,20 +35,20 @@ def test_coverage_signed_zero_shared_edge_valid_and_union() -> None:
 def test_empty_linestring_parts_scalar_array_agree() -> None:
     # Chosen behaviour: atomic empty LineString is ONE part (itself), matching
     # Point/Polygon atomics (`part_count == 1`). Empty MultiLineString has zero
-    # parts. Scalar, array-row, and free `parts` agree.
+    # parts. Scalar and array-row parts agree.
     empty = gm.from_wkt('LINESTRING EMPTY')
     assert len(empty.parts) == 1
     assert next(iter(empty.parts)).is_empty
     arr = gm.GeometryArray([empty])
     assert len(arr[0].parts) == 1
-    assert len(gm.parts(empty)) == 1
-    assert isinstance(gm.parts(arr), gm.Groups)
-    assert len(gm.parts(arr)) == 1
+    assert len(gm.MultiLineString([]).parts) == 0
+    assert isinstance(arr.parts, gm.Groups)
+    assert len(arr.parts) == 1
     point_array = gm.GeometryArray([gm.Point()])
-    assert len(gm.parts(point_array)) == 1
+    assert len(point_array.parts) == 1
     explicit = gm.from_wkt('MULTIPOINT (EMPTY, (0 0))')
-    assert gm.parts(explicit).to_wkt() == ['POINT EMPTY', 'POINT (0 0)']
-    assert gm.parts(gm.GeometryArray([explicit]))[0].to_wkt() == [
+    assert [part.to_wkt() for part in explicit.parts] == ['POINT EMPTY', 'POINT (0 0)']
+    assert gm.GeometryArray([explicit]).parts[0].to_wkt() == [
         'POINT EMPTY',
         'POINT (0 0)',
     ]
@@ -63,7 +63,7 @@ def test_empty_linestring_parts_scalar_array_agree() -> None:
         ),
     ]:
         geometry = gm.from_wkt(text)
-        assert gm.parts(gm.GeometryArray([geometry]))[0].to_wkt() == expected
+        assert gm.GeometryArray([geometry]).parts[0].to_wkt() == expected
 
 
 def test_relate_antimeridian_seam_matches_contains() -> None:
@@ -257,19 +257,6 @@ def test_planar_segmentize_rejects_unrepresentable_output_distinct_from_budget_e
     assert budget.value.operation == 'segmentize'
     assert budget.value.parameter == 'max_segment_length'
     assert budget.value.produced > 16_000_000
-
-
-def test_empty_linestring_parts_family() -> None:
-    # Atomic empty LineString is one part (itself); empty MultiLineString has zero.
-    # Scalar, array-row, and free `parts` agree.
-    empty = gm.from_wkt('LINESTRING EMPTY')
-    assert len(empty.parts) == 1
-    assert next(iter(empty.parts)).is_empty
-    arr = gm.GeometryArray([empty])
-    assert len(arr[0].parts) == 1
-    free = gm.parts(empty)
-    assert len(free) == 1
-    assert gm.MultiLineString([]).parts.__len__() == 0
 
 
 def test_union_all_splits_antimeridian_like_binary() -> None:

@@ -684,7 +684,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'ValidationReport',
         'area',
         'bearing',
-        'bounds',
         'box',
         'boxes',
         'contains',
@@ -736,7 +735,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'nearest',
         'nearest_points',
         'overlaps',
-        'parts',
         'point_between',
         'points',
         'polygonize',
@@ -746,7 +744,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'relate_pattern',
         'require',
         'rhumb_distance',
-        'rings',
         'shared_paths',
         'shortest_line',
         'snap',
@@ -887,35 +884,11 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
         assert gm.equals(getattr(gm, name)(single), left)
 
 
-def test_bulk_free_functions_accept_raw_iterables_uniformly() -> None:
-    """Every bulk free function takes the same input vocabulary.
-
-    Rule 4's justification for `gm.parts`/`gm.rings` existing beside `geom.parts`
-    and `GeometryArray.parts()` is that free functions also accept raw
-    iterables. Every collection form keeps one output group per source row;
-    `gm.area`/`gm.bounds` continue to accept the same input vocabulary.
-    """
+def test_area_accepts_a_raw_iterable_as_an_array() -> None:
     point = gm.Point(0, 0)
-    line = gm.LineString([(0, 0), (1, 1)])
-    donut = gm.Polygon(
-        [(0, 0), (4, 0), (4, 4), (0, 4)], holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]]
-    )
-
-    assert gm.area([point, line]).tolist() == [0.0, 0.0]
-    parts = gm.parts([point, line])
-    assert isinstance(parts, gm.Groups)
-    assert parts.offsets.tolist() == [0, 1, 2]
-    assert parts.values.to_wkt() == [point.to_wkt(), line.to_wkt()]
-    rings = gm.rings([donut])
-    assert isinstance(rings, gm.Groups)
-    assert rings.offsets.tolist() == [0, 2]
-    assert len(rings.values) == 2
-    # generators and tuples, not just lists
-    assert len(gm.parts(g for g in (point, line))) == 2
-    assert gm.rings((donut, donut)).offsets.tolist() == [0, 2, 4]
-    # and the array/scalar forms keep working
-    assert len(gm.parts(gm.GeometryArray([point, line]))) == 2
-    assert len(gm.rings(donut)) == 2
+    square = gm.box(0, 0, 2, 2)
+    assert gm.area([point, square]).tolist() == [0.0, 4.0]
+    assert gm.area(g for g in (square,)).tolist() == [4.0]
 
 
 def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
@@ -929,8 +902,6 @@ def test_geometry_kind_rejections_are_catchable_as_geometry_error() -> None:
     point = gm.Point(0, 0)
     triangle = gm.MultiPoint([(0, 0), (1, 1), (0, 1)])
     for label, call in (
-        ('rings on an array of points', lambda: gm.rings(gm.GeometryArray([point]))),
-        ('rings on a raw iterable', lambda: gm.rings([point])),
         (
             'voronoi clip of the wrong kind',
             lambda: triangle.voronoi_polygons(clip=point),

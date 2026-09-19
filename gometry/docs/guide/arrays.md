@@ -350,8 +350,7 @@ print("offsets:", groups.offsets.tolist())
 `Groups` is generic over the value type: index hits store `int64` rows (read-only
 `.values` / `.offsets` ndarray views over CSR storage); geometry-valued ragged
 results wrap per-row [`GeometryArray`][gometry.GeometryArray] slices.
-`GeometryArray.parts`, [`parts`][gometry.parts], and [`rings`][gometry.rings]
-return one geometry group per source row for every collection form, keeping
+[`GeometryArray.parts`][gometry.GeometryArray.parts] returns one geometry group per source row, keeping
 empty and missing rows as empty groups, so `offsets` remains a source-row map.
 Coordinate extraction is the flat numeric exception:
 [`get_coordinates`][gometry.get_coordinates] returns one matrix and, when
@@ -403,7 +402,7 @@ missing, aggregates skip, exports emit `None`.** Fixed-width fact lanes that can
 `None` keep their ndarray shape with **sentinels** — for example bounds use `NaN`,
 topological dimensions use `-1`, and some curve-key lanes use `0`. Those sentinels can
 collide with valid values, so **[`is_missing`][gometry.GeometryArray.is_missing] is authoritative**. Flattening and
-explode-style operations ([`parts`][gometry.parts], [`rings`][gometry.rings], triangulations, sampled points) skip missing
+explode-style operations ([`parts`][gometry.GeometryArray.parts], triangulations, sampled points) skip missing
 rows entirely.
 
 Missing rows enter through any constructor or importer (`GeometryArray([g, None])`,

@@ -685,8 +685,7 @@ impl PyGeometryArray {
     ///
     /// Simple geometries form one-element groups, multipart and collection
     /// geometries expose their immediate members, and empty or missing rows
-    /// form empty groups. The free function ``parts`` uses the same grouped
-    /// result for every collection input.
+    /// form empty groups.
     ///
     /// Returns
     /// -------

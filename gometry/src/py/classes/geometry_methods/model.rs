@@ -620,9 +620,8 @@ impl PyGeometry {
     /// Lazy view over this geometry's top-level parts.
     ///
     /// Simple geometries expose themselves as a one-row view; multipart and
-    /// collection geometries expose their members. Use free function ``parts`` for
-    /// a materialized `GeometryArray` on scalar input or row-preserving
-    /// `Groups` on collection input.
+    /// collection geometries expose their members. `GeometryArray(geom.parts)`
+    /// materializes them as an array.
     ///
     /// Returns
     /// -------

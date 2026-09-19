@@ -85,7 +85,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
     assert snapped.crs == 'EPSG:3857'
     assert shared.geometry_type == 'GeometryCollection'
     assert shared.crs == 'EPSG:3857'
-    assert [part.to_wkt() for part in gm.parts(shared)] == [
+    assert [part.to_wkt() for part in shared.parts] == [
         'MULTILINESTRING ((1 0, 2 0))',
         'MULTILINESTRING ((0 0, 1 0))',
     ]
@@ -212,7 +212,7 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
             gm.LineString([(0, 0), (1, 0)]),
         ),
     )
-    assert [part.to_wkt() for part in gm.parts(shared_array[0])] == [
+    assert [part.to_wkt() for part in shared_array[0].parts] == [
         'MULTILINESTRING ((0 0, 1 0))',
         'MULTILINESTRING EMPTY',
     ]
@@ -229,11 +229,11 @@ def test_planar_buffer_simplify_and_polygon_overlay_are_rust_backed() -> None:
             ]),
         ),
     )
-    assert [part.to_wkt() for part in gm.parts(pairwise_shared[0])] == [
+    assert [part.to_wkt() for part in pairwise_shared[0].parts] == [
         'MULTILINESTRING ((0 0, 1 0))',
         'MULTILINESTRING EMPTY',
     ]
-    assert [part.to_wkt() for part in gm.parts(pairwise_shared[1])] == [
+    assert [part.to_wkt() for part in pairwise_shared[1].parts] == [
         'MULTILINESTRING EMPTY',
         'MULTILINESTRING ((11 0, 12 0))',
     ]
@@ -1070,7 +1070,7 @@ def test_shared_paths_tiny_collinear_segments_stay_same_direction() -> None:
     # leave the backward (opposite) component empty.
     for length in (1.0, 1e-160, 1e-162, 1e-170):
         line = gm.LineString([(0.0, 0.0), (length, 0.0)])
-        forward, backward = gm.parts(gm.shared_paths(line, line))
+        forward, backward = gm.shared_paths(line, line).parts
         assert not forward.is_empty, length
         assert backward.is_empty, length
 
@@ -1078,10 +1078,10 @@ def test_shared_paths_tiny_collinear_segments_stay_same_direction() -> None:
 def test_shared_paths_jointly_nodes_partial_overlaps_into_maximal_runs() -> None:
     left = gm.LineString([(0, 0), (2, 0), (4, 0)])
 
-    same, opposite = gm.parts(gm.shared_paths(left, gm.LineString([(1, 0), (3, 0)])))
+    same, opposite = gm.shared_paths(left, gm.LineString([(1, 0), (3, 0)])).parts
     assert same.to_wkt() == 'MULTILINESTRING ((1 0, 2 0, 3 0))'
     assert opposite.is_empty
 
-    same, opposite = gm.parts(gm.shared_paths(left, gm.LineString([(3, 0), (1, 0)])))
+    same, opposite = gm.shared_paths(left, gm.LineString([(3, 0), (1, 0)])).parts
     assert same.is_empty
     assert opposite.to_wkt() == 'MULTILINESTRING ((1 0, 2 0, 3 0))'

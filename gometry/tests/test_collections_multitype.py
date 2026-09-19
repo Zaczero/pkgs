@@ -18,7 +18,7 @@ def test_nested_geometry_collection_predicates_metrics_and_roundtrip() -> None:
     assert gm.contains(wkt_back, gm.Point(0.5, 0.5))
     geojson_back = gm.from_geojson(outer.to_geojson())
     assert geojson_back.geometry_type == 'GeometryCollection'
-    assert gm.parts(geojson_back)[0].geometry_type == 'GeometryCollection'
+    assert geojson_back.parts[0].geometry_type == 'GeometryCollection'
 
 
 def test_geometry_collection_with_empty_member_predicates_and_metrics() -> None:

@@ -68,7 +68,6 @@ def test_array_bounds_with_empty_rows_and_empty_arrays() -> None:
     empty = gm.GeometryArray([])
     assert empty.bounds.shape == (0, 4)
     assert empty.total_bounds is None
-    assert gm.bounds(empty).shape == (0, 4)
     assert empty.geometry_type == []
 
 
@@ -322,10 +321,7 @@ def test_array_parts_preserve_source_row_grouping() -> None:
     assert groups[0].to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
     assert groups[1].to_wkt() == ['POINT (2 2)']
     assert len(groups[2]) == len(groups[3]) == 0
-    free = gm.parts(rows)
-    assert isinstance(free, gm.Groups)
-    assert free.offsets.tolist() == [0, 2, 3, 3, 3]
-    assert free[0].to_wkt() == ['POINT (0 0)', 'POINT (1 1)']
+    assert groups.offsets.tolist() == [0, 2, 3, 3, 3]
 
 
 def test_groups_counts_dtype_values_and_readonly() -> None:

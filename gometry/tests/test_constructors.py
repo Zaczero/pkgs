@@ -39,7 +39,7 @@ def test_box_can_explicitly_split_antimeridian_crossing_bounds() -> None:
         gm.GeometryArray([wrapped, whole_world], crs=4326).crosses_antimeridian,
         [False, False],
     )
-    assert [part.to_wkt() for part in gm.parts(wrapped)] == [
+    assert [part.to_wkt() for part in wrapped.parts] == [
         'POLYGON ((170 -10, 180 -10, 180 10, 170 10, 170 -10))',
         'POLYGON ((-180 -10, -170 -10, -170 10, -180 10, -180 -10))',
     ]
@@ -171,7 +171,7 @@ def test_geographic_box_tessellation_leaves_projected_and_split_boxes_unchanged(
     projected = gm.box(0.0, 0.0, 1000.0, 1000.0, crs=3857)
     assert projected.to_wkt() == 'POLYGON ((0 0, 1000 0, 1000 1000, 0 1000, 0 0))'
     split = gm.box(170.0, -10.0, -170.0, 10.0, crs=4326, wrap='split')
-    assert [part.to_wkt() for part in gm.parts(split)] == [
+    assert [part.to_wkt() for part in split.parts] == [
         'POLYGON ((170 -10, 180 -10, 180 10, 170 10, 170 -10))',
         'POLYGON ((-180 -10, -170 -10, -170 10, -180 10, -180 -10))',
     ]

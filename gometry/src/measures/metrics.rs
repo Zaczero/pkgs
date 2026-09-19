@@ -1,50 +1,8 @@
-use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::dispatch::{MetricOp, kernels};
-use crate::{
-    DistanceUnit, PyGeometry, PyGeometryArray, exact_geometry, exact_geometry_array,
-    finite_f64_required,
-};
-
-/// Axis-aligned bounds as a matrix (see `GeometryArray.bounds`).
-///
-/// Parameters
-/// ----------
-/// values : iterable of Geometry or GeometryArray
-///     Input geometry collection.
-///
-/// Returns
-/// -------
-/// numpy.ndarray
-///     ``(minx, miny, maxx, maxy)`` per row.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> gm.bounds(gm.GeometryArray([gm.box(0, 0, 2, 3)])).tolist()
-/// [[0.0, 0.0, 2.0, 3.0]]
-#[pyfunction]
-pub(crate) fn bounds(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    if exact_geometry(values).is_some() {
-        return Err(PyTypeError::new_err(
-            "gm.bounds(values) is bulk-only; use geom.bounds for a single Geometry",
-        ));
-    }
-    if exact_geometry_array(values).is_none() {
-        let array = PyGeometryArray::new(values, None, None)?;
-        return bounds_array(py, &array);
-    }
-    crate::dispatch::dispatch_unary(
-        py,
-        values,
-        crate::dispatch::Operation::Bounds,
-        None,
-        None,
-        kernels::unary_bounds,
-    )
-}
+use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};
 
 pub(crate) fn bounds_array(py: Python<'_>, values: &PyGeometryArray) -> PyResult<Py<PyAny>> {
     crate::dispatch::unary_array(

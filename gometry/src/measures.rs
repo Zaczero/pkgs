@@ -9,7 +9,7 @@ mod point_nav;
 
 pub(crate) use linework::{shared_paths, split};
 pub(crate) use metrics::{
-    area, area_natural_array, area_natural_scalar, bounds, bounds_array, length, length_3d,
+    area, area_natural_array, area_natural_scalar, bounds_array, length, length_3d,
     length_natural_array, length_natural_scalar, snap,
 };
 pub(crate) use point_nav::{

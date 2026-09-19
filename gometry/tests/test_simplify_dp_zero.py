@@ -48,7 +48,7 @@ def test_dp_zero_collection_and_missing_rows() -> None:
     collinear = gm.LineString([(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)])
     collection = gm.GeometryCollection([bent, collinear])
     out = collection.simplify(0.0, method='dp')
-    assert [g.to_wkt() for g in gm.parts(out)] == [
+    assert [g.to_wkt() for g in out.parts] == [
         'LINESTRING (0 0, 1 1, 2 0)',
         'LINESTRING (0 0, 2 0)',
     ]

@@ -81,9 +81,9 @@ use numeric::{DwithinDistance, Finite, NonNegative, Positive};
 mod text;
 mod tokens;
 use measures::{
-    area, area_natural_array, area_natural_scalar, bearing, bounds, bounds_array,
-    cross_track_distance, length, length_3d, length_natural_array, length_natural_scalar,
-    point_between, rhumb_distance, shared_paths, snap, split,
+    area, area_natural_array, area_natural_scalar, bearing, bounds_array, cross_track_distance,
+    length, length_3d, length_natural_array, length_natural_scalar, point_between, rhumb_distance,
+    shared_paths, snap, split,
 };
 mod array;
 pub(crate) use array::{
@@ -97,8 +97,8 @@ use broadcast::{
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
     metric_nearest_points_resolved, metric_shortest_line_resolved, multipoint_splitter_from_array,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    parse_wkb_geometry, push_ring_shapes, py_bool, relate_pattern_broadcast,
-    relate_string_broadcast, require_point, resolve_metric, rows_err, xy_predicate,
+    parse_wkb_geometry, py_bool, relate_pattern_broadcast, relate_string_broadcast, require_point,
+    resolve_metric, rows_err, xy_predicate,
 };
 mod dispatch;
 pub(crate) use py::classes::{
@@ -166,14 +166,13 @@ use py::support::{
     missing_geometry_items_error, nearest_point_columns_masked, note_array_row,
     optional_coordinates, owned_voronoi_boundary, parse_crs, parse_crs_epoch, parse_curve_bounds,
     parse_geojson_geometry_value, parse_geojson_slice, parse_interpolate_plan, parse_precision,
-    parse_spatial_index_handle, parse_wkt_output_dimension, parts, point_from_bounds,
-    py_polygonize_full, py_text_borrow, py_to_json_value, require_geojson_crs,
-    require_locate_point, require_locate_points, resolve_line_metric, rings,
-    validate_buffer_miter_limit, validate_buffer_quadrant_segments, validate_densify_fraction,
-    validate_distance, validate_distance_arg, validate_dwithin_distance,
-    validate_dwithin_distance_arg, validate_equals_exact_tolerance, validate_max_segment_length,
-    validate_nearest_k, validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten,
-    wrapped_box,
+    parse_spatial_index_handle, parse_wkt_output_dimension, point_from_bounds, py_polygonize_full,
+    py_text_borrow, py_to_json_value, require_geojson_crs, require_locate_point,
+    require_locate_points, resolve_line_metric, validate_buffer_miter_limit,
+    validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance,
+    validate_distance_arg, validate_dwithin_distance, validate_dwithin_distance_arg,
+    validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k,
+    validate_smooth_iterations, voronoi_edges_flatten, voronoi_flatten, wrapped_box,
 };
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};
@@ -244,7 +243,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         PyValidationReport,
     );
     py::functions::constructors::register(m)?;
-    add_functions!(m; area, length, length_3d, bounds);
+    add_functions!(m; area, length, length_3d);
     add_functions!(m;
         snap, shared_paths,
         // Spatial predicates and pairwise measures.
@@ -262,7 +261,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         coverage_is_valid, coverage_invalid_edges, coverage_simplify, coverage_clean,
         coverage_union, polygonize, polygonize_full,
         // IO, validation, and coordinate access.
-        parts, rings, get_coordinates,
+        get_coordinates,
         from_wkt, from_wkb, from_geojson, from_features, to_feature, to_feature_collection,
         from_polyline, require,
         // Pickle payload rebuilders (private; see the `__reduce__` impls).

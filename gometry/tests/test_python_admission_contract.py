@@ -506,9 +506,9 @@ def test_one_shot_coordinate_and_part_sources_are_consumed_once() -> None:
         Once([Once([Once([(0, 0), (4, 0), (4, 4), (0, 4)])])])
     )
     assert len(multi_polygon.parts) == 1
-    rings = gm.rings(Once([polygon]))
+    rings = gm.GeometryArray(Once([polygon])).boundary().parts
     assert len(rings) == 1 and len(rings[0]) == 2
-    parts = gm.parts(Once([polygon]))
+    parts = gm.GeometryArray(Once([polygon])).parts
     assert len(parts) == 1 and len(parts[0]) == 1
 
 

@@ -99,7 +99,7 @@ def test_multipart_geoms_and_sequence_protocol() -> None:
     point = gm.Point(1, 2)
     assert [part.to_wkt() for part in point.parts] == ['POINT (1 2)']
     assert [part.to_wkt() for part in point.parts] == [
-        part.to_wkt() for part in gm.parts(point)
+        part.to_wkt() for part in point.parts
     ]
     mp = gm.from_wkt('MULTIPOINT(0 0, 1 1, 2 2)')
     assert isinstance(mp, gm.MultiPoint)
@@ -337,7 +337,7 @@ def test_empty_metrics_and_accessors() -> None:
     assert pe.bounds is None
     assert pg.bounds is None
     assert pg.exterior.to_wkt() == 'LINESTRING EMPTY'
-    assert list(gm.rings(pg)) == []
+    assert list(pg.boundary().parts) == []
     assert pe.centroid().to_wkt() == 'POINT EMPTY'
     assert pg.centroid().to_wkt() == 'POINT EMPTY'
     assert pe.buffer(1).to_wkt() == 'POLYGON EMPTY'

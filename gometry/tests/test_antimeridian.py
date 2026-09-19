@@ -23,7 +23,7 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     measured = gm.LineString(
         [(170, 0), (-170, 0)], z=[10, 20], m=[1, 3]
     ).split_antimeridian()
-    east, west = (list(part.coords) for part in gm.parts(measured))
+    east, west = (list(part.coords) for part in measured.parts)
     assert east[-1] == (180.0, 0.0, 15.0, 2.0)
     assert west[0] == (-180.0, 0.0, 15.0, 2.0)
     for line, expected in (
@@ -48,7 +48,7 @@ def test_split_antimeridian_lines_and_seam_latitudes() -> None:
     ):
         seam = [
             coordinate[1:]
-            for part in gm.parts(line.split_antimeridian())
+            for part in line.split_antimeridian().parts
             for coordinate in part.coords
             if abs(coordinate[0]) == 180.0
         ]
@@ -68,8 +68,8 @@ def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
         gm.union_all(gm.GeometryArray([left, right])),
     ]
     for output in outputs:
-        assert len(gm.parts(output)) == 1
-        assert gm.parts(output)[0].geometry_type == 'Polygon'
+        assert len(output.parts) == 1
+        assert output.parts[0].geometry_type == 'Polygon'
         assert gm.equals(output, left)
 
     for output in [
@@ -84,13 +84,13 @@ def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
         gm.box(179.5, -1.0, 180.0, 1.0, crs=4326),
         gm.box(-180.0, -1.0, -179.5, 1.0, crs=4326),
     )
-    assert len(gm.parts(seam_union)) == 1
+    assert len(seam_union.parts) == 1
     assert not seam_union.is_empty
 
 
 def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     box = gm.Polygon([(170, 40), (-170, 40), (-170, 50), (170, 50)], crs=4326)
-    parts = gm.parts(box.split_antimeridian())
+    parts = box.split_antimeridian().parts
     assert [part.geometry_type for part in parts] == ['Polygon', 'Polygon']
     seam_lats = sorted({
         y
@@ -112,7 +112,7 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
         '{"type": "Polygon", "coordinates": [[[100, 60], [175, 65], [-175, 65], [-120, 0], [-170, -85], [175, -85], [0, -68], [-90, 0], [-90, 80], [0, 85], [100, 60]]]}'
     ).split_antimeridian()
     assert both.geometry_type == 'MultiPolygon'
-    assert len(gm.parts(both)) == 2
+    assert len(both.parts) == 2
     # A ring touching the seam keeps to its side: its seam vertices take that
     # side's spelling and nothing else changes.
     seam_ring = gm.Polygon([(166, 77), (180, 78), (-180, 81), (162, 81)])
@@ -126,7 +126,7 @@ def test_split_antimeridian_polygons_use_affine_chart_crossings() -> None:
     )
     donut = donut_source.split_antimeridian()
     assert donut.geometry_type == 'MultiPolygon'
-    halves = gm.parts(donut)
+    halves = donut.parts
     assert len(halves) == 2
     for point, expected in (
         (gm.Point(172, 57, crs=4326), True),
@@ -354,7 +354,7 @@ def test_split_antimeridian_ordinate_policy(
 ) -> None:
     split = gm.from_wkt(wkt, crs=4326).split_antimeridian()
     assert split.coordinate_axes == axes
-    east = list(gm.parts(split)[0].coords)[-1]
+    east = list(split.parts[0].coords)[-1]
     assert east[2:] == seam
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
@@ -415,7 +415,7 @@ def test_split_antimeridian_affine_fraction_uses_native_units(
         )
         seam = [
             coordinate
-            for part in gm.parts(line.split_antimeridian())
+            for part in line.split_antimeridian().parts
             for coordinate in part.coords
             if abs(coordinate[0] * scale) == 180.0
         ]
@@ -463,7 +463,7 @@ def test_split_antimeridian_normalizes_only_admitted_pole_ulp_in_chart(
         crs=crs,
     )
     split = line.split_antimeridian()
-    assert any(y == sign * pole for part in gm.parts(split) for _, y in part.coords)
+    assert any(y == sign * pole for part in split.parts for _, y in part.coords)
     assert split.split_antimeridian().to_wkt() == split.to_wkt()
 
     two_outside = math.nextafter(exterior, math.copysign(math.inf, sign))
@@ -484,14 +484,14 @@ def test_split_antimeridian_review_regressions() -> None:
     doubled = gm.LineString(
         [(170, 0), (170, 0), (-170, 0)], z=[0, 100, 200], m=[0, 10, 20]
     )
-    east = list(gm.parts(doubled.split_antimeridian())[0].coords)
+    east = list(doubled.split_antimeridian().parts[0].coords)
     assert east[-1] == (180.0, 0.0, 150.0, 15.0)
     two_holes = gm.from_wkt(
         'POLYGON ((170 0, -170 0, -170 30, 170 30, 170 0), (172 5, 174 5, 174 10, 172 10, 172 5), (172 15, 174 15, 174 20, 172 20, 172 15))'
     )
     assert sorted(
         len(cast('gm.Polygon', p).interiors)
-        for p in gm.parts(two_holes.split_antimeridian())
+        for p in two_holes.split_antimeridian().parts
     ) == [0, 2]
     swath = gm.Polygon([
         (98.0, 60.0),
@@ -633,7 +633,7 @@ def test_split_antimeridian_full_longitude_band() -> None:
     split = band.split_antimeridian()
     assert split.geometry_type == 'MultiPolygon'
     assert not split.is_empty
-    assert len(gm.parts(split)) == 2
+    assert len(split.parts) == 2
     for longitude in (175.0, -175.0):
         point = gm.Point(longitude, 0.0, crs=4326)
         assert gm.contains(band, point)
@@ -642,12 +642,8 @@ def test_split_antimeridian_full_longitude_band() -> None:
         point = gm.Point(175.0, latitude, crs=4326)
         assert not gm.contains(band, point)
         assert not gm.contains(split, point)
-    assert any(
-        gm.contains(part, gm.Point(175, 0, crs=4326)) for part in gm.parts(split)
-    )
-    assert any(
-        gm.contains(part, gm.Point(-175, 0, crs=4326)) for part in gm.parts(split)
-    )
+    assert any(gm.contains(part, gm.Point(175, 0, crs=4326)) for part in split.parts)
+    assert any(gm.contains(part, gm.Point(-175, 0, crs=4326)) for part in split.parts)
 
 
 def test_split_antimeridian_line_crossing_north_pole() -> None:
@@ -1045,7 +1041,7 @@ def test_thin_crossing_band_split_preserves_chart_area_and_support(
         crs=4326,
     )
     split = polygon.split_antimeridian()
-    parts = list(gm.parts(split))
+    parts = list(split.parts)
     unwrapped_width = 20.0
     # The analytic rectangle uses the stored binary64 endpoint height, not
     # the decimal request that may round at a nonzero base latitude.

@@ -94,7 +94,7 @@ square_with_hole = gm.Polygon(
     holes=[[(1, 1), (2, 1), (2, 2), (1, 2)]],
 )
 print(square_with_hole.to_wkt())
-print("rings:", len(gm.rings(square_with_hole)))
+print("holes:", len(square_with_hole.interiors))
 print("area:", square_with_hole.area)
 
 ```
@@ -205,8 +205,8 @@ These properties and functions apply to every geometry type:
 | [`geom.is_empty`][gometry.Geometry.is_empty] | whether the geometry holds no coordinates |
 | [`bounds`][gometry.Geometry.bounds] | `(minx, miny, maxx, maxy)` tuple |
 | [`geom.coords`][gometry.Geometry.coords] | every vertex as a flat, indexable [`Coordinates`][gometry.Coordinates] view |
-| [`gm.parts`][gometry.parts] | component geometries of a multi-part |
-| [`gm.rings`][gometry.rings] | rings of a [`Polygon`][gometry.Polygon] (exterior first) |
+| [`geom.parts`][gometry.Geometry.parts] | component geometries of a multi-part |
+| [`poly.exterior`][gometry.Polygon.exterior] / [`poly.interiors`][gometry.Polygon.interiors] | the shell and hole rings of a [`Polygon`][gometry.Polygon] |
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -220,7 +220,8 @@ print("type:", poly.geometry_type)
 print("coordinate_axes:", poly.coordinate_axes)
 print("bounds:", poly.bounds)
 print("vertices:", len(poly.coords))
-print("rings:", len(gm.rings(poly)))
+print("parts:", len(poly.parts))
+print("holes:", len(poly.interiors))
 
 ```
 

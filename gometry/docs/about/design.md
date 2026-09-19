@@ -110,7 +110,7 @@ is [`gm.from_geojson`][gometry.from_geojson]. The same rule rejects the
 GeoPandas verbs that are aliases by another name: `clip(mask)` is
 [`gm.intersection`][gometry.intersection] (with
 [`clip_by_rect`][gometry.Geometry.clip_by_rect] for the cheap rectangular case) and
-`explode` is [`gm.parts`][gometry.parts]. Convenience accessors that are
+`explode` is [`arr.parts`][gometry.GeometryArray.parts]. Convenience accessors that are
 one-liners over existing surface stay out too: no recursive
 `GeometryCollection.flatten()` (recurse over `parts`), no `Tile.ul`/`Tile.lr`
 corner properties (read `tile.polygon.bounds`), and no geohash

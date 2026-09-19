@@ -999,7 +999,7 @@ def test_s2_to_polygon_handles_the_antimeridian() -> None:
     outline = coverage.to_polygon()
     assert outline.is_valid
     assert outline.geometry_type in ('Polygon', 'MultiPolygon')
-    for part in gm.parts(outline):
+    for part in outline.parts:
         bounds = part.bounds
         assert bounds is not None
         minx, _, maxx, _ = bounds

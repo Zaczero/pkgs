@@ -42,7 +42,7 @@ def test_fill_missing_array_fill_only_consumes_missing_rows() -> None:
 
 def test_parts_and_rings_order_and_typing() -> None:
     multi = gm.MultiPoint([(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)])
-    parts = gm.parts(multi)
+    parts = multi.parts
     assert len(parts) == 3
     assert all(isinstance(p, gm.Point) for p in parts)
     assert [p.to_wkt() for p in parts] == [
@@ -55,7 +55,7 @@ def test_parts_and_rings_order_and_typing() -> None:
         [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)],
         holes=[[(1.0, 1.0), (2.0, 1.0), (2.0, 2.0), (1.0, 2.0)]],
     )
-    rings = gm.rings(donut)
+    rings = donut.boundary().parts
     assert len(rings) == 2
     assert all(isinstance(r, gm.LineString) for r in rings)
     assert rings[0].to_wkt().startswith('LINESTRING (0 0')

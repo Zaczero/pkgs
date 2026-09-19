@@ -567,7 +567,6 @@ impl PyGeometryArray {
             )?)
         }))
     }
-
 }
 
 #[path = "map_shapes.rs"]

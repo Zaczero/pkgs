@@ -852,7 +852,7 @@ def test_geometry_array_and_geometry_item_coercion_accept_wkb_and_geo_interface(
     np.testing.assert_array_equal(left, [0])
     np.testing.assert_array_equal(right, [0])
     np.testing.assert_allclose(
-        gm.bounds([wkbs[0], gm.Point(3, 4), GeoInterfaceObject(5, 6)]),
+        gm.GeometryArray([wkbs[0], gm.Point(3, 4), GeoInterfaceObject(5, 6)]).bounds,
         [[1, 2, 1, 2], [3, 4, 3, 4], [5, 6, 5, 6]],
     )
     assert gm.get_coordinates([
@@ -1185,11 +1185,9 @@ def test_v1_api_convenience_and_ewkb_helpers() -> None:
     assert not values.has_z.any()
     assert not values.has_m.any()
     np.testing.assert_allclose(
-        gm.bounds(values), [[21.0, 52.0, 21.0, 52.0], [22.0, 52.0, 22.0, 52.0]]
+        values.bounds, [[21.0, 52.0, 21.0, 52.0], [22.0, 52.0, 22.0, 52.0]]
     )
     assert values.total_bounds == (21.0, 52.0, 22.0, 52.0)
-    with pytest.raises(TypeError, match='bulk-only'):
-        gm.bounds(point)
     assert point.bounds == (21.0, 52.0, 21.0, 52.0)
     assert gm.box(0, 0, 2, 2).area == 4
     np.testing.assert_allclose(
@@ -1329,9 +1327,7 @@ def test_empty_geometry_collection_wkt_roundtrips() -> None:
     assert empty.area == 0
     assert empty.length == 0
     assert empty.validate().valid
-    assert len(gm.parts(empty)) == 0
-    with pytest.raises(TypeError, match='bulk-only'):
-        gm.bounds(empty)
+    assert len(empty.parts) == 0
 
 
 def test_multi_geometries_and_collections_roundtrip_through_public_io() -> None:
@@ -1353,13 +1349,13 @@ def test_multi_geometries_and_collections_roundtrip_through_public_io() -> None:
     assert gm.contains(multipoint, gm.Point(2, 2, crs=4326))
     assert gm.contains(multipolygon, gm.Point(3, 3, crs=4326))
     assert gm.intersects(collection, gm.Point(3, 3, crs=4326))
-    assert [part.geometry_type for part in gm.parts(collection)] == [
+    assert [part.geometry_type for part in collection.parts] == [
         'MultiPoint',
         'MultiLineString',
         'MultiPolygon',
     ]
     assert len(collection.coords) == 16
-    assert [ring.geometry_type for ring in list(gm.rings(multipolygon))] == [
+    assert [ring.geometry_type for ring in list(multipolygon.boundary().parts)] == [
         'LineString',
         'LineString',
     ]

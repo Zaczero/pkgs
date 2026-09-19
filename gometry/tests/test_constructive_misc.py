@@ -77,7 +77,7 @@ def test_minimum_bounding_circle_polygon_contains_support_points() -> None:
         (math.cos(4.205), math.sin(4.205)),
     ])
     circle = points.minimum_bounding_circle()
-    assert all(gm.covers(circle, point) for point in gm.parts(points))
+    assert all(gm.covers(circle, point) for point in points.parts)
 
 
 def test_cell_parity_accessors() -> None:

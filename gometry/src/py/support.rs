@@ -10,8 +10,8 @@ use crate::{
     PyTypeMethods, Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
     finite_f64_required, float_values, float_values_at_most, float_values_exact, geometry_type_err,
-    metric_nearest_points_resolved, non_negative_int, push_ring_shapes, py_i64_bounded,
-    py_i64_required, pyfunction, resolve_metric, rows_err, wgs84_crs,
+    metric_nearest_points_resolved, non_negative_int, py_i64_bounded, py_i64_required, pyfunction,
+    resolve_metric, rows_err, wgs84_crs,
 };
 
 pub(crate) type Crs = SmolStr;
@@ -78,7 +78,7 @@ pub(crate) use extract::{
     copy_wkb_payload, ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate,
     extract_coordinate_or_empty, extract_lines, extract_points, extract_polygons, geometry_items,
     missing_geometry_items_error, optional_coordinates, own_geometry_item,
-    parse_owned_geometry_item, parts, rings,
+    parse_owned_geometry_item,
 };
 pub(crate) use frame_args::{
     Wgs84DefaultCrs, crs_label, deserialized_epoch, guard_epoch_frame, parse_crs, parse_crs_epoch,

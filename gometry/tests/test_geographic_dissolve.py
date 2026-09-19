@@ -44,7 +44,7 @@ def test_collection_area_counts_overlapping_members_once(
 
     dissolved = gm.union_all(members)
     assert collection == pytest.approx(
-        sum(part.area for part in gm.parts(dissolved)), rel=1e-12
+        sum(part.area for part in dissolved.parts), rel=1e-12
     )
     assert collection < sum(member.area for member in members)
 

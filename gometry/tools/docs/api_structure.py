@@ -109,11 +109,10 @@ PAGES: tuple[Page, ...] = (
     Page(
         'toplevel/measurement',
         'Measurement',
-        'Area, length, distance, bounds, nearest points, and similarity measures.',
+        'Area, length, distance, nearest points, and similarity measures.',
         (
             section(
                 'area',
-                'bounds',
                 'distance',
                 'distance_3d',
                 'frechet_distance',
@@ -144,16 +143,14 @@ PAGES: tuple[Page, ...] = (
         (('Constructive operations', '../../guide/constructive.md'),),
     ),
     Page(
-        'toplevel/constructive-parts-validation',
-        'Constructive, parts & validation',
-        'Noding, splitting, snapping, decomposition, polygonization, and validation boundaries.',
+        'toplevel/constructive-validation',
+        'Constructive & validation',
+        'Noding, splitting, snapping, polygonization, and validation boundaries.',
         (
             section(
-                'parts',
                 'polygonize',
                 'polygonize_full',
                 'require',
-                'rings',
                 'shared_paths',
                 'snap',
                 'split',

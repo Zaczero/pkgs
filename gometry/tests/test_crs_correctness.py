@@ -604,7 +604,7 @@ def test_geometry_collection_infers_and_validates_member_metadata() -> None:
     collection = gm.GeometryCollection([first, second])
     assert collection.crs == 'EPSG:4326'
     assert collection.epoch == 2020.0
-    assert [part.crs for part in gm.parts(collection)] == ['EPSG:4326', 'EPSG:4326']
+    assert [part.crs for part in collection.parts] == ['EPSG:4326', 'EPSG:4326']
     assert (
         gm.GeometryCollection([first, second], crs=4326, epoch=2020.0).crs
         == 'EPSG:4326'
@@ -631,9 +631,9 @@ def test_explicit_frame_metadata_fills_missing_array_and_collection_items() -> N
     collection = gm.GeometryCollection([bare, crs_only], crs=4326, epoch=2020.0)
     assert collection.crs == 'EPSG:4326'
     assert collection.epoch == 2020.0
-    assert [item.epoch for item in gm.parts(collection)] == [2020.0, 2020.0]
+    assert [item.epoch for item in collection.parts] == [2020.0, 2020.0]
     epoch_collection = gm.GeometryCollection([crs_only, epoch_tagged], epoch=2020.0)
-    assert [item.epoch for item in gm.parts(epoch_collection)] == [2020.0, 2020.0]
+    assert [item.epoch for item in epoch_collection.parts] == [2020.0, 2020.0]
     with pytest.raises(ValueError, match='one shared CRS'):
         gm.GeometryArray([bare, crs_only])
     with pytest.raises(
@@ -901,7 +901,7 @@ def test_mixed_2d_3d_collection_proj_batch_preserves_per_member_axes() -> None:
     standalone_3d = pt_3d.to_crs(4978)
     standalone_2d = pt_2d.to_crs(4978)
     mixed = gm.GeometryCollection([pt_3d, pt_2d], crs=4979).to_crs(4978)
-    out_3d, out_2d = gm.parts(mixed)
+    out_3d, out_2d = mixed.parts
     assert out_3d.coordinate_axes == 'XYZM'
     assert out_3d.coords.to_nested() == standalone_3d.coords.to_nested()
     assert out_3d.z == pytest.approx(standalone_3d.z)

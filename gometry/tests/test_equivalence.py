@@ -376,7 +376,7 @@ FRAME_CASES: list[tuple[str, Callable[[], object]]] = [
             _FRAME_POLY(), gm.box(1.0, 1.0, 3.0, 4.0, crs=3857, epoch=2020.0)
         ),
     ),
-    ('parts', lambda: gm.parts(_FRAME_SITES())),
+    ('parts', lambda: _FRAME_SITES().parts),
     ('triangulate', lambda: _FRAME_SITES().triangulate(method='delaunay')),
     ('voronoi_polygons', lambda: _FRAME_SITES().voronoi_polygons()),
     (
@@ -393,7 +393,7 @@ FRAME_CASES: list[tuple[str, Callable[[], object]]] = [
 def each_geometry(value: object) -> list[gm.Geometry]:
     if isinstance(value, gm.Geometry):
         return [value]
-    assert isinstance(value, (list, tuple, gm.GeometryArray))
+    assert isinstance(value, (list, tuple, gm.GeometryArray, gm.GeometryParts))
     out: list[gm.Geometry] = []
     for item in value:
         assert isinstance(item, gm.Geometry)

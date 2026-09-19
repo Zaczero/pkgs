@@ -9,7 +9,6 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::py::errors;
 use crate::{
     Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, F64Param, Frame,
     GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
@@ -239,23 +238,4 @@ pub(crate) fn py_bool_or_not_implemented<T>(
         || py.NotImplemented(),
         |value| py_bool(py, predicate(value)),
     )
-}
-
-/// Collect polygonal rings as bare `Shape::LineString` values (no scalar
-/// `PyGeometry` staging). Used by free `gm.rings`.
-pub(crate) fn push_ring_shapes(shape: &Shape, rings: &mut Vec<Shape>) -> PyResult<()> {
-    if !matches!(
-        *shape,
-        Shape::Polygon(_)
-            | Shape::MultiPolygon(_)
-            | Shape::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _)
-    ) {
-        return Err(errors::geometry_type_err(
-            "rings requires Polygon or MultiPolygon geometries",
-        ));
-    }
-    shape.for_each_ring(|ring| {
-        rings.push(Shape::LineString(ring.as_line()));
-    });
-    Ok(())
 }

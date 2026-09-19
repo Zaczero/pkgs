@@ -1036,9 +1036,8 @@ class Geometry:
         """Lazy view over this geometry's top-level parts.
 
         Simple geometries expose themselves as a one-row view; multipart and
-        collection geometries expose their members. Use free function ``parts`` for
-        a materialized `GeometryArray` on scalar input or row-preserving
-        `Groups` on collection input.
+        collection geometries expose their members. `GeometryArray(geom.parts)`
+        materializes them as an array.
 
         Returns
         -------
@@ -3878,6 +3877,18 @@ class Point(Geometry):
 
     __match_args__: Final = ('x', 'y')
 
+    @property
+    def parts(self) -> GeometryParts[Point]:
+        """Lazy view over this geometry's top-level parts.
+
+        Simple geometries expose themselves as a one-row view; multipart and
+        collection geometries expose their members. `GeometryArray(geom.parts)`
+        materializes them as an array.
+
+        Returns
+        -------
+        GeometryParts
+        """
     @overload
     def destination(
         self,
@@ -4478,6 +4489,18 @@ class LineString(Geometry):
 
     __match_args__: Final = ('coords',)
 
+    @property
+    def parts(self) -> GeometryParts[LineString]:
+        """Lazy view over this geometry's top-level parts.
+
+        Simple geometries expose themselves as a one-row view; multipart and
+        collection geometries expose their members. `GeometryArray(geom.parts)`
+        materializes them as an array.
+
+        Returns
+        -------
+        GeometryParts
+        """
 @final
 class MultiLineString(Geometry):
     """A collection of linestrings.
@@ -4730,6 +4753,18 @@ class Polygon(Geometry):
         """
     __match_args__: Final = ('exterior', 'interiors')
 
+    @property
+    def parts(self) -> GeometryParts[Polygon]:
+        """Lazy view over this geometry's top-level parts.
+
+        Simple geometries expose themselves as a one-row view; multipart and
+        collection geometries expose their members. `GeometryArray(geom.parts)`
+        materializes them as an array.
+
+        Returns
+        -------
+        GeometryParts
+        """
     @property
     def exterior(self) -> LineString:
         """Exterior ring as a closed ``LineString``."""
@@ -5634,8 +5669,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
         Simple geometries form one-element groups, multipart and collection
         geometries expose their immediate members, and empty or missing rows
-        form empty groups. The free function ``parts`` uses the same grouped
-        result for every collection input.
+        form empty groups.
 
         Returns
         -------
@@ -14483,31 +14517,6 @@ def shared_paths(
     """
 
 @overload
-def bounds(values: GeometryArray[Geometry | None]) -> npt.NDArray[np.float64]: ...
-@overload
-def bounds(
-    values: GeometryArray[Geometry | None] | Iterable[_GeometryLike | None],
-) -> npt.NDArray[np.float64]:
-    """Axis-aligned bounds as a matrix (see `GeometryArray.bounds`).
-
-    Parameters
-    ----------
-    values : iterable of Geometry or GeometryArray
-        Input geometry collection.
-
-    Returns
-    -------
-    numpy.ndarray
-        ``(minx, miny, maxx, maxy)`` per row.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.bounds(gm.GeometryArray([gm.box(0, 0, 2, 3)])).tolist()
-    [[0.0, 0.0, 2.0, 3.0]]
-    """
-
-@overload
 def from_polyline(
     data: str,
     *,
@@ -17190,104 +17199,6 @@ def get_coordinates(
     ... )
     >>> matrix.tolist(), indexes.tolist()
     ([[1.0, 2.0]], [0])
-    """
-
-@overload
-def parts(
-    geom: Point | MultiPoint,
-) -> GeometryArray[Point]: ...
-@overload
-def parts(
-    geom: GeometryArray[Point | MultiPoint],
-) -> Groups[GeometryArray[Point]]: ...
-@overload
-def parts(
-    geom: LineString | MultiLineString,
-) -> GeometryArray[LineString]: ...
-@overload
-def parts(
-    geom: GeometryArray[LineString | MultiLineString],
-) -> Groups[GeometryArray[LineString]]: ...
-@overload
-def parts(
-    geom: Polygon | MultiPolygon,
-) -> GeometryArray[Polygon]: ...
-@overload
-def parts(
-    geom: GeometryArray[Polygon | MultiPolygon],
-) -> Groups[GeometryArray[Polygon]]: ...
-@overload
-def parts(
-    geom: Geometry,
-) -> GeometryArray[Geometry]: ...
-@overload
-def parts(
-    geom: GeometryArray[Geometry | None],
-) -> Groups[GeometryArray[Geometry]]: ...
-@overload
-def parts(
-    geom: Iterable[_GeometryLike | None],
-) -> Groups[GeometryArray[Geometry]]:
-    """Component geometries of a multipart geometry.
-
-    Parameters
-    ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values/None
-        A scalar geometry or a collection materialized as a geometry array.
-
-    Returns
-    -------
-    GeometryArray or Groups
-        A scalar returns a flat `GeometryArray`; any collection returns one
-        geometry group per source row.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> multi = gm.from_wkt('MULTIPOINT ((0 0), (1 1))')
-    >>> for part in gm.parts(multi):
-    ...     assert part is not None
-    ...     print(part.to_wkt())
-    POINT (0 0)
-    POINT (1 1)
-    >>> groups = gm.parts([multi, None])
-    >>> groups.offsets.tolist()
-    [0, 2, 2]
-    """
-
-@overload
-def rings(
-    geom: Geometry,
-) -> GeometryArray[LineString]: ...
-@overload
-def rings(
-    geom: GeometryArray[Geometry | None],
-) -> Groups[GeometryArray[LineString]]: ...
-@overload
-def rings(
-    geom: Iterable[_GeometryLike | None],
-) -> Groups[GeometryArray[LineString]]:
-    """Return the rings (exterior + interiors) of a polygonal geometry.
-
-    Parameters
-    ----------
-    geom : Geometry, GeometryArray, or iterable of geometry-like values/None
-        A scalar geometry or a collection materialized as a geometry array.
-
-    Returns
-    -------
-    GeometryArray or Groups
-        A scalar returns a flat `GeometryArray`; any collection returns one
-        ring group per source row.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> hole = [(1, 1), (2, 1), (2, 2), (1, 2)]
-    >>> shell = [(0, 0), (4, 0), (4, 4), (0, 4)]
-    >>> donut = gm.Polygon(shell, holes=[hole])
-    >>> len(gm.rings(donut))
-    2
     """
 
 @overload

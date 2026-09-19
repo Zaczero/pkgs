@@ -349,7 +349,6 @@ if TYPE_CHECKING:
         gm.join(present_geometry_like_rows, geometry_like_rows),
         tuple[npt.NDArray[np.int64], npt.NDArray[np.int64]],
     )
-    assert_type(gm.bounds(geometry_like_rows), npt.NDArray[np.float64])
     assert_type(gm.union_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.intersection_all(geometry_like_rows), gm.Geometry)
     assert_type(gm.symmetric_difference_all(geometry_like_rows), gm.Geometry)
@@ -364,10 +363,11 @@ if TYPE_CHECKING:
         gm.get_coordinates(POINTS, return_index=coordinate_flag),
         npt.NDArray[np.float64] | tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]],
     )
-    assert_type(gm.parts(POINTS), gm.Groups[gm.GeometryArray[gm.Point]])
-    assert_type(gm.rings(POLYS), gm.Groups[gm.GeometryArray[gm.LineString]])
-    assert_type(gm.parts([POINT]), gm.Groups[gm.GeometryArray[gm.Geometry]])
-    assert_type(gm.rings([POLY]), gm.Groups[gm.GeometryArray[gm.LineString]])
+    assert_type(POINTS.parts, gm.Groups[gm.GeometryArray[gm.Geometry]])
+    assert_type(POINTS.bounds, npt.NDArray[np.float64])
+    assert_type(POLY.parts, gm.GeometryParts[gm.Polygon])
+    assert_type(POLY.exterior, gm.LineString)
+    assert_type(POLY.interiors, list[gm.LineString])
     assert_type(gm.polygonize(present_geometry_like_rows), gm.GeometryArray[gm.Polygon])
     assert_type(gm.coverage_is_valid([POLY.to_wkb()]), bool)
     assert_type(POINT.scale(2.0, origin=[0.0, 0.0]), gm.Point)

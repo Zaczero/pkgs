@@ -402,7 +402,7 @@ def test_polygon_boundary_contact_intersections_dissolve_to_maximal_lines() -> N
     overlapper = gm.union_all([gm.box(1, 0, 2, 1), gm.box(0.5, 0.4, 1.1, 0.6)])
     mixed = gm.intersection(a, overlapper)
     assert mixed.geometry_type == 'GeometryCollection'
-    kinds = {part.geometry_type for part in gm.parts(mixed)}
+    kinds = {part.geometry_type for part in mixed.parts}
     assert 'Polygon' in kinds and kinds & {'LineString', 'MultiLineString'}
     assert gm.intersection(a, gm.box(0, 0, 1, 1)).geometry_type == 'Polygon'
     touch = gm.box(1, 0, 2, 1)
@@ -440,7 +440,7 @@ def test_overlay_lines_dissolve_to_maximal_chains() -> None:
     assert gm.equals(el, gm.LineString([(0, 0), (5, 0), (5, 5)]))
     cross = gm.union(gm.LineString([(0, 0), (2, 2)]), gm.LineString([(0, 2), (2, 0)]))
     assert cross.geometry_type == 'MultiLineString'
-    assert len(gm.parts(cross)) == 4
+    assert len(cross.parts) == 4
     sym = gm.symmetric_difference(
         gm.LineString([(0, 0), (3, 0)]), gm.LineString([(1, 0), (5, 0)])
     )
@@ -457,9 +457,9 @@ def test_line_merge_dissolves_only_degree_two_nodes() -> None:
     """
     y = gm.from_wkt('MULTILINESTRING ((0 0, 1 1), (1 1, 2 0), (1 1, 1 2))').line_merge()
     assert y.geometry_type == 'MultiLineString'
-    assert len(gm.parts(y)) == 3
+    assert len(y.parts) == 3
     t = gm.from_wkt('MULTILINESTRING ((0 0, 2 0), (2 0, 4 0), (2 0, 2 2))').line_merge()
-    assert len(gm.parts(t)) == 3
+    assert len(t.parts) == 3
     chain = gm.from_wkt('MULTILINESTRING ((0 0, 1 1), (1 1, 2 2))').line_merge()
     assert gm.equals(chain, gm.LineString([(0, 0), (1, 1), (2, 2)]))
     loop = gm.from_wkt(
@@ -468,7 +468,7 @@ def test_line_merge_dissolves_only_degree_two_nodes() -> None:
     assert loop.geometry_type == 'LineString'
     assert loop.is_ring
     crossing = gm.from_wkt('MULTILINESTRING ((0 0, 2 2), (2 0, 0 2))').line_merge()
-    assert len(gm.parts(crossing)) == 2
+    assert len(crossing.parts) == 2
     signed = gm.union(
         gm.LineString([(-1.0, 0.0), (0.0, 0.0)]),
         gm.LineString([(0.0, -0.0), (1.0, 0.0)]),

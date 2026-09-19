@@ -1,4 +1,3 @@
-use pyo3::IntoPyObjectExt as _;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyByteArray, PyBytes};
 
@@ -8,11 +7,10 @@ use crate::py::errors;
 use crate::py::errors::GeometryError;
 use crate::py::numpy::reject_masked_array;
 use crate::py::support::{
-    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, Polygon, Py,
-    PyAny, PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring,
-    Shape, Value, classify_input, coerce_geometry, exact_geometry, float_values_at_most,
+    Bound, Frame, GeoJsonDecodeContext, GeometryInput, InvalidGeometryError, Point, Polygon, PyAny,
+    PyAnyMethods as _, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Ring, Shape,
+    Value, classify_input, coerce_geometry, exact_geometry, float_values_at_most,
     float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
-    push_ring_shapes, pyfunction,
 };
 
 pub(crate) enum CoercedCollectedGeometryItems {
@@ -250,141 +248,6 @@ pub(crate) fn coerce_collected_geometry_items(
         },
     };
     Ok(CoercedCollectedGeometryItems::Items(parsed))
-}
-
-/// Component geometries of a multipart geometry.
-///
-/// Parameters
-/// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values/None
-///     A scalar geometry or a collection materialized as a geometry array.
-///
-/// Returns
-/// -------
-/// GeometryArray or Groups
-///     A scalar returns a flat `GeometryArray`; any collection returns one
-///     geometry group per source row.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> multi = gm.from_wkt('MULTIPOINT ((0 0), (1 1))')
-/// >>> for part in gm.parts(multi):
-/// ...     assert part is not None
-/// ...     print(part.to_wkt())
-/// POINT (0 0)
-/// POINT (1 1)
-/// >>> groups = gm.parts([multi, None])
-/// >>> groups.offsets.tolist()
-/// [0, 2, 2]
-#[pyfunction]
-pub(crate) fn parts(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    match classify_input(geom) {
-        Some(GeometryInput::One(geometry)) => PyGeometryArray::from_shapes(
-            part_shapes(geometry.shape.shape()).map_err(pyo3::PyErr::from)?,
-            geometry.frame.clone(),
-        )?
-        .into_py_any(py),
-        Some(GeometryInput::Many(array)) => array
-            .flat_map_shapes_groups(py, part_shapes)
-            .and_then(|groups| groups.into_py_any(py)),
-        None => {
-            let array = PyGeometryArray::new(geom, None, None)?;
-            array
-                .flat_map_shapes_groups(py, part_shapes)
-                .and_then(|groups| groups.into_py_any(py))
-        },
-    }
-}
-
-fn part_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
-    let mut parts = Vec::new();
-    for part in shape.parts() {
-        crate::try_push_vec(&mut parts, part)?;
-    }
-    Ok(parts)
-}
-
-/// Return the rings (exterior + interiors) of a polygonal geometry.
-///
-/// Parameters
-/// ----------
-/// geom : Geometry, GeometryArray, or iterable of geometry-like values/None
-///     A scalar geometry or a collection materialized as a geometry array.
-///
-/// Returns
-/// -------
-/// GeometryArray or Groups
-///     A scalar returns a flat `GeometryArray`; any collection returns one
-///     ring group per source row.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> hole = [(1, 1), (2, 1), (2, 2), (1, 2)]
-/// >>> shell = [(0, 0), (4, 0), (4, 4), (0, 4)]
-/// >>> donut = gm.Polygon(shell, holes=[hole])
-/// >>> len(gm.rings(donut))
-/// 2
-#[pyfunction]
-pub(crate) fn rings(py: pyo3::Python<'_>, geom: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-    match classify_input(geom) {
-        Some(GeometryInput::One(geometry)) => {
-            let mut rings = Vec::new();
-            push_ring_shapes(geometry.shape.shape(), &mut rings)?;
-            PyGeometryArray::from_shapes(rings, geometry.frame.clone())?.into_py_any(py)
-        },
-        Some(GeometryInput::Many(array)) => {
-            validate_ring_shapes(array)?;
-            array
-                .flat_map_shapes_groups(py, ring_shapes)
-                .and_then(|groups| groups.into_py_any(py))
-        },
-        None => {
-            let array = PyGeometryArray::new(geom, None, None)?;
-            validate_ring_shapes(&array)?;
-            array
-                .flat_map_shapes_groups(py, ring_shapes)
-                .and_then(|groups| groups.into_py_any(py))
-        },
-    }
-}
-
-fn validate_ring_shapes(array: &PyGeometryArray) -> PyResult<()> {
-    for row in array.present_shape_rows() {
-        let (_, shape) = row.map_err(PyErr::from)?;
-        if !matches!(
-            shape,
-            Shape::Polygon(_)
-                | Shape::MultiPolygon(_)
-                | Shape::Empty(
-                    crate::geometry::GeometryKind::Polygon
-                        | crate::geometry::GeometryKind::MultiPolygon,
-                    _,
-                )
-        ) {
-            return Err(errors::geometry_type_err(
-                "rings requires Polygon or MultiPolygon geometries",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn ring_shapes(shape: &Shape) -> crate::Result<Vec<Shape>> {
-    let mut rings = Vec::new();
-    let mut failure = None;
-    shape.for_each_ring(|ring| {
-        if failure.is_none()
-            && let Err(error) = crate::try_push_vec(&mut rings, Shape::LineString(ring.as_line()))
-        {
-            failure = Some(error);
-        }
-    });
-    if let Some(error) = failure {
-        return Err(error);
-    }
-    Ok(rings)
 }
 
 pub(crate) fn extract_points(

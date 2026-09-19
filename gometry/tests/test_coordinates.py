@@ -230,26 +230,24 @@ def test_coordinate_extraction_parts_and_rings_helpers() -> None:
     values = gm.GeometryArray([gm.Point(9, 9, crs=4326), polygon])
     coordinates = list(values.coords.select('XY'))
     indexes = values.coords.row_index
-    rings = gm.rings(polygon)
+    rings = polygon.boundary().parts
     assert list(gm.LineString([(0, 0), (1, 1)]).coords.select('XY')) == [
         (0.0, 0.0),
         (1.0, 1.0),
     ]
     assert coordinates[:3] == [(9.0, 9.0), (0.0, 0.0), (4.0, 0.0)]
     np.testing.assert_array_equal(indexes, [0] + [1] * 10)
-    parts = gm.parts(values)
+    parts = values.parts
     assert isinstance(parts, gm.Groups)
     assert parts.offsets.tolist() == [0, 1, 2]
     assert [row.to_wkt() for row in parts[0]] == ['POINT (9 9)']
     assert [row.to_wkt() for row in parts[1]] == [values[1].to_wkt()]
-    assert rings.crs == 'EPSG:4326'
+    assert [ring.crs for ring in rings] == ['EPSG:4326', 'EPSG:4326']
     assert [ring.to_wkt() for ring in list(rings)] == [
         'LINESTRING (0 0, 4 0, 4 4, 0 4, 0 0)',
         'LINESTRING (1 1, 3 1, 3 3, 1 3, 1 1)',
     ]
     assert next(iter(polygon.coords.select('XYZ'))) == (0.0, 0.0, None)
-    with pytest.raises(TypeError):
-        gm.rings(gm.Point(0, 0))
 
 
 def test_parts_and_rings_collections_keep_groups_and_flat_values() -> None:
@@ -265,7 +263,7 @@ def test_parts_and_rings_collections_keep_groups_and_flat_values() -> None:
         None,
     ]
 
-    parts = gm.parts(iter(sources))
+    parts = gm.GeometryArray(iter(sources)).parts
     assert isinstance(parts, gm.Groups)
     assert len(parts) == 5
     assert parts.offsets.tolist() == [0, 2, 3, 4, 4, 4]
@@ -278,7 +276,12 @@ def test_parts_and_rings_collections_keep_groups_and_flat_values() -> None:
     assert parts[3].to_wkt() == []
     assert parts[4].to_wkt() == []
 
-    rings = gm.rings(iter([polygon, gm.from_wkt('POLYGON EMPTY'), None]))
+    rings = (
+        gm
+        .GeometryArray(iter([polygon, gm.from_wkt('POLYGON EMPTY'), None]))
+        .boundary()
+        .parts
+    )
     assert isinstance(rings, gm.Groups)
     assert len(rings) == 3
     assert rings.offsets.tolist() == [0, 2, 2, 2]
@@ -298,7 +301,7 @@ def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
             holes=[[(2.2, 0.2), (2.4, 0.2), (2.2, 0.4), (2.2, 0.2)]],
         ),
     ])
-    rings = gm.rings(polygons)
+    rings = polygons.boundary().parts
     assert isinstance(rings, gm.Groups)
     assert rings.offsets.tolist() == [0, 1, 1, 1, 3]
 
@@ -308,7 +311,7 @@ def test_array_ragged_helpers_retain_empty_missing_rows_and_views() -> None:
     assert np.isnan(coords[:, 2]).all()
 
     selected = polygons[[3, 1, 2]]
-    selected_rings = gm.rings(selected)
+    selected_rings = selected.boundary().parts
     assert selected_rings.offsets.tolist() == [0, 2, 2, 2]
     selected_coords, selected_indexes = gm.get_coordinates(selected, return_index=True)
     assert selected_coords.shape == (8, 2)

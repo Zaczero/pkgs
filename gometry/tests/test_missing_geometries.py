@@ -839,7 +839,7 @@ def test_masked_sort_keeps_mask_and_moves_missing_to_tail() -> None:
 def test_masked_flatten_exports_do_not_leak_placeholder(
     masked: gm.GeometryArray,
 ) -> None:
-    parts = gm.parts(masked)
+    parts = masked.parts
     assert isinstance(parts, gm.Groups)
     assert parts.offsets.tolist() == [0, 1, 1, 2]
     assert parts[0].to_wkt() == ['POINT (0 0)']
