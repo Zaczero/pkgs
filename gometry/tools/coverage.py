@@ -5,28 +5,27 @@ kernel branches and facade lines the suite never reaches — candidates for
 edge-case tests (or for deletion, when the branch is unreachable by design).
 Do not chase the percentage.
 
-The Rust side instruments the extension with `cargo llvm-cov`'s environment
-(separate `target/llvm-cov-target` dir, so the regular release build stays
-untouched), installs the instrumented module with maturin, runs pytest (with
-`pytest-cov` measuring `python/gometry` in the same pass), runs the native Rust
-suite, and aggregates every `.profraw` file into one report.
+The Rust side builds the extension under `cargo llvm-cov`'s environment in its
+own `target/llvm-cov-target`, assembles it with `python/gometry` into a scratch
+package there, and runs pytest against that package (with `pytest-cov`
+measuring the Python facade in the same pass) and then the native Rust suite.
+Every `.profraw` file aggregates into one report. The `.venv` install is never
+touched, so no rebuild is needed afterwards.
 
 Usage::
 
     .venv/bin/python tools/coverage.py            # text summaries
     .venv/bin/python tools/coverage.py --html     # + HTML for both sides
-
-The installed extension is left INSTRUMENTED afterwards — rerun
-`uv run --no-project --python .venv/bin/python --with maturin==1.14.1 maturin
-develop --release` before benchmarking or shipping.
 """
 
 from __future__ import annotations
 
 import os
 import shlex
+import shutil
 import subprocess
 import sys
+import sysconfig
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -45,10 +44,14 @@ def main() -> int:
     # whole instrumented build and every profraw file inside gometry.
     coverage_target = (ROOT / 'target' / 'llvm-cov-target').resolve()
     os.environ['CARGO_TARGET_DIR'] = str(coverage_target)
+    os.environ['PYO3_PYTHON'] = str(PYTHON)
+    # `show-env` asks on stdin before installing llvm-tools-preview for a new
+    # toolchain; without a closed stdin it waits forever.
     exports = subprocess.run(
         ['cargo', 'llvm-cov', 'show-env', '--sh'],
         check=True,
         cwd=ROOT,
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         text=True,
     ).stdout
@@ -65,39 +68,47 @@ def main() -> int:
             f'cargo-llvm-cov escaped the package target: {actual_target}'
         )
     run(['cargo', 'llvm-cov', 'clean', '--workspace'])
-    run([
-        'uv',
-        'run',
-        '--no-project',
-        f'--python={PYTHON}',
-        '--with',
-        'maturin==1.14.1',
-        'maturin',
-        'develop',
-    ])
-    run([
-        str(PYTHON),
-        '-m',
-        'pytest',
-        '-q',
-        '--no-header',
-        '--cov',
-        '--cov-report=term-missing',
-        *(['--cov-report=html:coverage-python'] if html else []),
-    ])
+    run(['cargo', 'build', '--offline', '-p', 'gometry', '--lib'])
+    package = coverage_target / 'pkg'
+    shutil.rmtree(package, ignore_errors=True)
+    shutil.copytree(ROOT / 'python' / 'gometry', package / 'gometry')
+    shutil.copy2(
+        coverage_target / 'debug' / 'libgometry.so',
+        package / 'gometry' / f'_lib{sysconfig.get_config_var("EXT_SUFFIX")}',
+    )
+    run(
+        [
+            str(PYTHON),
+            '-m',
+            'pytest',
+            'tests',
+            '--ignore=tests/typing',
+            '--cov=gometry',
+            '--cov-report=term-missing',
+            *(['--cov-report=html:coverage-python'] if html else []),
+        ],
+        env={**os.environ, 'PYTHONPATH': str(package)},
+    )
     # `show-env` already instruments every Cargo command. Use nextest directly;
     # cargo-llvm-cov warns that its test subcommands are not the right driver
-    # inside a show-env environment intended for external tests.
-    run(['cargo', 'nextest', 'run', '-p', 'gometry'])
+    # inside a show-env environment intended for external tests. The embedded
+    # interpreter needs the environment's site-packages for NumPy.
+    site_packages = subprocess.run(
+        [str(PYTHON), '-c', 'import site; print(site.getsitepackages()[0])'],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    run(
+        ['cargo', 'nextest', 'run', '--offline', '-p', 'gometry', '--lib'],
+        env={**os.environ, 'PYTHONPATH': site_packages},
+    )
     run(['cargo', 'llvm-cov', 'report'])
     if html:
         run(['cargo', 'llvm-cov', 'report', '--html'])
         print(
             'HTML: coverage-python/index.html and target/llvm-cov-target/html/index.html'
         )
-    print(
-        '\nNOTE: the installed extension is instrumented (debug); rebuild with maturin develop --release before benchmarking.'
-    )
     return 0
 
 
