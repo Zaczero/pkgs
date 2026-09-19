@@ -5,17 +5,16 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicInputs, GeographicViewError};
 use crate::geometry::overlay::{
-    ExactSourceInventory, OverlayOp, Strictness, build_overlay_shape, dedup_points,
-    overlay_declared_axes,
+    ExactSourceInventory, OverlayOp, Strictness, build_certified_overlay_shape,
+    build_overlay_shape, dedup_points, overlay_declared_axes,
 };
 use crate::geometry::predicates::ring_classify_point;
-use crate::geometry::topology::{SourceSupport, TopologyLocation};
+use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeometryErrorKind, GeometryKind, HashMap, HashSet, Point, PointKey, Segment, Shape,
-    TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates, carry_overlay_ordinates_from_graph,
-    clean_union, column_all_finite, ordered_edge, point_on_segment, relate, same_point,
-    segment_midpoint, shell_is_convex,
+    TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates, ordered_edge, point_on_segment,
+    relate, same_point, segment_midpoint,
 };
 use crate::try_push_vec;
 
@@ -122,7 +121,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             let mut refs = Vec::new();
             crate::try_reserve_vec(&mut refs, geometries.len())?;
             refs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
-            exact_cartesian_overlay(&refs, op, strictness)
+            exact_cartesian_overlay(&refs, op, strictness, bounds_certificates)
         },
         TopologyDomain::Geographic(frame) => {
             let originals = GeographicInputs::try_from_shapes(
@@ -138,11 +137,13 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
 /// The one live Cartesian overlay route. Source inventory, exact incidence,
 /// cell selection, dimensional absorption, and checked emission all belong to
 /// `ExactPartition`; this sink only serializes the certified plan and carries
-/// ordinates afterwards.
+/// ordinates afterwards. Inputs whose bounds never meet cannot interact, so
+/// each bounds-connected component is partitioned alone.
 fn exact_cartesian_overlay(
     inputs: &[&Shape],
     operation: OverlayOp,
     strictness: Strictness,
+    bounds_certificates: bool,
 ) -> Result<Shape> {
     if inputs.len() == 1 && operation == OverlayOp::Intersection {
         return Ok(inputs[0].clone());
@@ -156,6 +157,119 @@ fn exact_cartesian_overlay(
         ordered.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
     }
     let inputs = ordered.as_slice();
+    // Declared axes are a fact about the whole input, not any one component.
+    let declared_axes = overlay_declared_axes(inputs, operation);
+    let strict = strictness.is_strict();
+    let components = if bounds_certificates && inputs.len() > 1 {
+        let mut bounds = Vec::new();
+        crate::try_reserve_vec(&mut bounds, inputs.len())?;
+        for shape in inputs {
+            try_push_vec(&mut bounds, shape.bounds())?;
+        }
+        if operation == OverlayOp::Intersection && intersection_bounds_empty(&bounds) {
+            return Ok(empty_nary_overlay_shape(inputs, operation));
+        }
+        interacting_components(&bounds, operation)?
+    } else {
+        None
+    };
+    let shape = match components {
+        None => exact_partition_overlay(inputs, operation, declared_axes, strict)?,
+        Some(components) => {
+            let mut shapes = Vec::new();
+            crate::try_reserve_vec(&mut shapes, components.len())?;
+            let mut subset = Vec::new();
+            for component in components {
+                subset.clear();
+                crate::try_reserve_vec(&mut subset, component.len())?;
+                subset.extend(component.iter().map(|&index| inputs[index]));
+                shapes.push(exact_partition_overlay(
+                    &subset,
+                    operation,
+                    declared_axes,
+                    strict,
+                )?);
+            }
+            join_components(&shapes)?
+        },
+    };
+    Ok(if shape.is_empty() {
+        empty_nary_overlay_shape(inputs, operation)
+    } else {
+        shape.normalize()?
+    })
+}
+
+/// Certified per-component results joined as one arrangement emits them.
+/// Components never meet, so nothing is reclassified between them, but a
+/// bucket keeps an ordinate only when every part in it carries one: the rule
+/// one arrangement applies to its nodes.
+fn join_components(shapes: &[Shape]) -> Result<Shape> {
+    let mut points = Vec::new();
+    let mut lines = Vec::new();
+    let mut polygons = Vec::new();
+    for shape in shapes {
+        append_overlay_parts(shape, &mut points, &mut lines, &mut polygons)?;
+    }
+    let common = |axes: &mut dyn Iterator<Item = CoordinateAxes>| {
+        axes.reduce(CoordinateAxes::intersection)
+            .unwrap_or(CoordinateAxes::XY)
+    };
+    let restricted = |coords: &CoordSeq, axes: CoordinateAxes| -> Result<CoordSeq> {
+        let coords = if axes.has_z() {
+            coords.clone()
+        } else {
+            coords.set_z(None, false)?
+        };
+        if axes.has_m() {
+            Ok(coords)
+        } else {
+            coords.set_m(None, false)
+        }
+    };
+    let point_axes = common(&mut points.iter().map(|point| point.axes()));
+    for point in &mut points {
+        *point = Point::new_raw_axes(
+            point.x,
+            point.y,
+            crate::geometry::ZOrdinate(point.z().filter(|_| point_axes.has_z())),
+            crate::geometry::MOrdinate(point.m().filter(|_| point_axes.has_m())),
+        );
+    }
+    let line_axes = common(&mut lines.iter().map(CoordSeq::axes));
+    for line in &mut lines {
+        if line.axes() != line_axes {
+            *line = restricted(line, line_axes)?;
+        }
+    }
+    let polygon_axes = common(&mut polygons.iter().map(crate::geometry::Polygon::axes));
+    for polygon in &mut polygons {
+        if polygon.axes() != polygon_axes {
+            let mut holes = Vec::new();
+            crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
+            for hole in polygon.holes.iter() {
+                holes.push(crate::geometry::Ring::from_closed(restricted(
+                    hole.coords(),
+                    polygon_axes,
+                )?));
+            }
+            let shell = crate::geometry::Ring::from_closed(restricted(
+                polygon.shell.coords(),
+                polygon_axes,
+            )?);
+            *polygon = crate::geometry::Polygon::new(shell, holes)?;
+        }
+    }
+    build_certified_overlay_shape(points, lines, polygons)
+}
+
+/// One exact partition over `inputs`, already in canonical source order.
+fn exact_partition_overlay(
+    inputs: &[&Shape],
+    operation: OverlayOp,
+    declared_axes: CoordinateAxes,
+    strict: bool,
+) -> Result<Shape> {
     let union = if operation == OverlayOp::Union {
         ExactSourceInventory::from_polygonal_union(inputs)?
     } else {
@@ -167,15 +281,7 @@ fn exact_cartesian_overlay(
     };
     let mut budget = crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
     let partition = inventory.partition(&mut budget)?;
-    let declared_axes = overlay_declared_axes(inputs, operation);
-    let shape =
-        inventory.overlay_shape(&partition, operation, declared_axes, strictness.is_strict())?;
-    let shape = if shape.is_empty() {
-        empty_nary_overlay_shape(inputs, operation)
-    } else {
-        shape.normalize()?
-    };
-    Ok(shape)
+    inventory.overlay_shape(&partition, operation, declared_axes, strict)
 }
 
 pub(in crate::geometry) fn overlay_all_geographic_from(
@@ -184,13 +290,7 @@ pub(in crate::geometry) fn overlay_all_geographic_from(
     strictness: crate::geometry::Strictness,
     bounds_certificates: bool,
 ) -> Result<Shape> {
-    overlay_admitted(
-        OverlayInputs::Geographic(originals),
-        op,
-        strictness,
-        bounds_certificates,
-        false,
-    )
+    overlay_admitted(originals, op, strictness, bounds_certificates, false)
 }
 
 pub(crate) fn occupied_geographic_support(
@@ -200,7 +300,7 @@ pub(crate) fn occupied_geographic_support(
     let originals = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
         .map_err(overlay_view_error)?;
     overlay_admitted(
-        OverlayInputs::Geographic(&originals),
+        &originals,
         OverlayOp::Union,
         Strictness::Lenient,
         false,
@@ -209,68 +309,46 @@ pub(crate) fn occupied_geographic_support(
 }
 
 fn overlay_admitted(
-    originals: OverlayInputs<'_, '_>,
+    originals: &GeographicInputs<'_>,
     op: OverlayOp,
     strictness: crate::geometry::Strictness,
     bounds_certificates: bool,
     force_graph: bool,
 ) -> Result<Shape> {
-    let domain = originals.domain();
-    let bounds_facts = match originals {
-        OverlayInputs::Cartesian(shapes) => overlay_bounds_facts_cartesian(shapes, op)?,
-        OverlayInputs::Geographic(inputs) => overlay_bounds_facts_geographic(inputs, op)?,
-    };
-
-    if bounds_certificates
-        && originals.len() > 1
-        && op == OverlayOp::Intersection
-        && bounds_facts.raw_coordinate_bounds_sound
-        && intersection_bounds_empty(&bounds_facts.bounds)
-    {
+    let frame = originals.frame();
+    let bounds_facts = overlay_bounds_facts_geographic(originals, op)?;
+    let certify = bounds_certificates
+        && originals.views().len() > 1
+        && bounds_facts.raw_coordinate_bounds_sound;
+    if certify && op == OverlayOp::Intersection && intersection_bounds_empty(&bounds_facts.bounds) {
         let mut inputs = Vec::new();
-        crate::try_reserve_vec(&mut inputs, originals.len())?;
-        for index in 0..originals.len() {
-            try_push_vec(&mut inputs, originals.shape(index))?;
+        crate::try_reserve_vec(&mut inputs, originals.views().len())?;
+        for view in originals.views() {
+            try_push_vec(&mut inputs, view.shape())?;
         }
         return Ok(empty_nary_overlay_shape(&inputs, op));
     }
 
-    let mut sources: Vec<Shape> = match originals {
-        OverlayInputs::Geographic(originals) => {
-            let frame = originals.frame();
-            let mut sources = Vec::new();
-            sources
-                .try_reserve_exact(originals.views().len())
-                .map_err(crate::error::Error::from)?;
-            for view in originals.views() {
-                let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
-                    view.shape()
-                        .split_antimeridian_in_frame(frame)?
-                        .normalize()?
-                } else {
-                    view.shape().normalize()?
-                };
-                sources.push(shape);
-            }
-            sources
-        },
-        OverlayInputs::Cartesian(shapes) => {
-            let mut sources = Vec::new();
-            crate::try_reserve_vec(&mut sources, shapes.len())?;
-            for geometry in shapes {
-                try_push_vec(&mut sources, geometry.normalize()?)?;
-            }
-            sources
-        },
-    };
+    let mut sources = Vec::new();
+    sources
+        .try_reserve_exact(originals.views().len())
+        .map_err(crate::error::Error::from)?;
+    for view in originals.views() {
+        let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
+            view.shape()
+                .split_antimeridian_in_frame(frame)?
+                .normalize()?
+        } else {
+            view.shape().normalize()?
+        };
+        sources.push(shape);
+    }
 
     // The left operand remains first for the only non-commutative operation.
     // Every other operation gets a canonical source order before graph
     // construction, so input permutation cannot affect noding provenance.
     if op == OverlayOp::Difference {
-        let (left, right) = sources.split_at_mut(1);
-        right.sort_unstable_by(crate::geometry::compare_shapes);
-        let _ = left;
+        sources[1..].sort_unstable_by(crate::geometry::compare_shapes);
     } else {
         sources.sort_unstable_by(crate::geometry::compare_shapes);
     }
@@ -278,92 +356,45 @@ fn overlay_admitted(
     let mut refs = Vec::new();
     crate::try_reserve_vec(&mut refs, sources.len())?;
     refs.extend(sources.iter());
-    let noded = match domain {
-        TopologyDomain::Cartesian => None,
-        TopologyDomain::Geographic(frame) => Some(
-            GeographicInputs::try_from_shapes(frame, refs.iter().copied())
-                .map_err(overlay_view_error)?,
-        ),
-    };
-    let staged = noded.as_ref().map_or_else(
-        || OverlayInputs::Cartesian(&refs),
-        OverlayInputs::Geographic,
-    );
-    let input_crosses = match domain {
-        TopologyDomain::Cartesian => false,
-        TopologyDomain::Geographic(frame) => {
-            crate::geometry::crosses_antimeridian_in_frame(originals.shape(0), frame)
-        },
-    };
-    if originals.len() == 1 && op == OverlayOp::Intersection && !input_crosses {
-        return Ok(originals.shape(0).clone());
+    let noded = GeographicInputs::try_from_shapes(frame, refs.iter().copied())
+        .map_err(overlay_view_error)?;
+    if originals.views().len() == 1
+        && op == OverlayOp::Intersection
+        && !crate::geometry::crosses_antimeridian_in_frame(originals.views()[0].shape(), frame)
+    {
+        return Ok(originals.views()[0].shape().clone());
     }
-    // Inputs whose bounds never meet cannot interact, so for the commutative
-    // operations the result is the concatenation of each connected
-    // component's result under bounds overlap, each assembled from its own
-    // inputs alone. One overlapping pair among thousands of otherwise
-    // separate inputs used to send every input into one arrangement whose
-    // noding and face maps grew superlinearly. Every component a singleton
-    // is the old all-disjoint certificate; a difference partitions only
-    // when nothing meets its left operand, which the certificate below
-    // still decides.
-    let components =
-        if bounds_certificates && originals.len() > 1 && bounds_facts.raw_coordinate_bounds_sound {
-            match op {
-                OverlayOp::Union | OverlayOp::SymmetricDifference => {
-                    let mut bounds = Vec::new();
-                    crate::try_reserve_vec(&mut bounds, refs.len())?;
-                    for shape in &refs {
-                        try_push_vec(&mut bounds, shape.bounds())?;
-                    }
-                    let components = bounds_components(&bounds)?;
-                    Some(components).filter(|components| components.len() > 1)
-                },
-                OverlayOp::Difference | OverlayOp::Intersection => {
-                    if disjoint_bounds_certify(&bounds_facts.bounds, op) {
-                        Some(singleton_components(refs.len())?)
-                    } else {
-                        None
-                    }
-                },
-            }
-        } else {
-            None
-        };
-    let disjoint_bounds = components.is_some();
+    let components = if certify {
+        let mut bounds = Vec::new();
+        crate::try_reserve_vec(&mut bounds, refs.len())?;
+        for shape in &refs {
+            try_push_vec(&mut bounds, shape.bounds())?;
+        }
+        interacting_components(&bounds, op)?
+    } else {
+        None
+    };
     let raw_polygon_loops_eligible = bounds_facts.raw_polygon_loops_eligible && !force_graph;
-    let convex_shape = if !disjoint_bounds
-        && domain == TopologyDomain::Cartesian
-        && originals.len() == 2
-        && op == OverlayOp::Intersection
-    {
-        convex_polygon_intersection(&refs)?
+    let shape = if let Some(components) = components {
+        let mut points = Vec::new();
+        let mut lines = Vec::new();
+        let mut polygons = Vec::new();
+        for component in &components {
+            let subset = noded.try_selected(component).map_err(overlay_view_error)?;
+            let shape = assemble_overlay(
+                OverlayInputs::Geographic(&subset),
+                op,
+                raw_polygon_loops_eligible,
+            )?;
+            append_overlay_parts(&shape, &mut points, &mut lines, &mut polygons)?;
+        }
+        build_overlay_shape(points, &lines, &polygons)?
     } else {
-        None
-    };
-    let polygon_line = if !disjoint_bounds
-        && domain == TopologyDomain::Cartesian
-        && originals.len() == 2
-        && op == OverlayOp::Intersection
-    {
-        assemble_polygon_line_intersection(&refs)?
-    } else {
-        None
-    };
-    let (shape, line_graph) = if let Some(components) = components {
-        (
-            assemble_components_overlay(staged, &components, op, raw_polygon_loops_eligible)?,
-            None,
-        )
-    } else if let Some(shape) = convex_shape {
-        (shape, None)
-    } else if let Some((shape, graph)) = polygon_line {
-        (shape, Some(graph))
-    } else {
-        (
-            assemble_overlay(staged, op, raw_polygon_loops_eligible)?,
-            None,
-        )
+        assemble_overlay(
+            OverlayInputs::Geographic(&noded),
+            op,
+            raw_polygon_loops_eligible,
+        )?
     };
     let shape = if shape.is_empty() {
         empty_nary_overlay_shape(&refs, op)
@@ -372,155 +403,7 @@ fn overlay_admitted(
         // XY-defined, while ordinate restoration is a separate provenance pass.
         shape.normalize()?
     };
-    if let Some(graph) = line_graph.as_ref() {
-        carry_overlay_ordinates_from_graph(shape, &refs, op, strictness.is_strict(), graph)
-    } else {
-        carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
-    }
-}
-
-/// Assemble a binary Cartesian polygon/line intersection from one joint graph.
-/// Direct polygonal and lineal operands keep source membership unambiguous;
-/// everything else remains on the generic path rather than rebuilding source
-/// graphs here.
-fn assemble_polygon_line_intersection(inputs: &[&Shape]) -> Result<Option<(Shape, TopologyGraph)>> {
-    let [left, right] = inputs else {
-        return Ok(None);
-    };
-    let polygonal = |shape: &Shape| {
-        matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)) && !shape.is_empty()
-    };
-    let linear = |shape: &Shape| {
-        !shape.is_empty()
-            && match shape {
-                Shape::LineString(line) => relate::line_has_nonzero_segment(line),
-                Shape::MultiLineString(lines) => {
-                    !lines.has_empty_members()
-                        && lines
-                            .iter()
-                            .all(|line| relate::line_has_nonzero_segment(line))
-                },
-                _ => false,
-            }
-    };
-    let (polygon_row, line_row) = if polygonal(left) && linear(right) {
-        (0, 1)
-    } else if linear(left) && polygonal(right) {
-        (1, 0)
-    } else {
-        return Ok(None);
-    };
-
-    let graph = TopologyGraph::cartesian_many(inputs)?;
-    if graph.source_points.is_empty()
-        && !graph.edges.is_empty()
-        && !graph.area_support.is_empty()
-        && graph.source_edges.iter().all(|source| {
-            (source.source_row == polygon_row
-                && matches!(
-                    source.support,
-                    SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
-                ))
-                || (source.source_row == line_row && matches!(source.support, SourceSupport::Line))
-        })
-        && graph
-            .source_edges
-            .iter()
-            .any(|source| source.source_row == polygon_row)
-        && graph.source_edges.iter().any(|source| {
-            source.source_row == line_row && matches!(source.support, SourceSupport::Line)
-        })
-    {
-        let (points, lines) = polygon_line_overlay(&graph, polygon_row, line_row)?;
-        return Ok(Some((build_overlay_shape(points, &lines, &[])?, graph)));
-    }
-    Ok(None)
-}
-
-fn polygon_line_overlay(
-    graph: &TopologyGraph,
-    polygon_row: u32,
-    line_row: u32,
-) -> Result<(Vec<Point>, Vec<CoordSeq>)> {
-    let mut lines = Vec::new();
-    crate::try_reserve_vec(&mut lines, graph.edges.len())?;
-    for edge in &graph.edges {
-        if !graph.edge_has_line_source_for_row(edge, line_row) {
-            continue;
-        }
-        let midpoint = segment_midpoint(edge.segment).xy();
-        let location = if graph.contains_area_interior(midpoint) {
-            TopologyLocation::Interior
-        } else if graph.has_area_boundary(midpoint)
-            || graph.edge_has_area_source_for_row(edge, polygon_row)
-        {
-            TopologyLocation::Boundary
-        } else {
-            TopologyLocation::Exterior
-        };
-        if location != TopologyLocation::Exterior {
-            try_push_vec(
-                &mut lines,
-                CoordSeq::try_from_xy(&[edge.segment.start, edge.segment.end])?,
-            )?;
-        }
-    }
-
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, graph.nodes.len())?;
-    for node in graph.nodes.iter().filter(|node| {
-        graph.has_line_source_at_node(node.point, line_row)
-            && (graph.contains_area_interior(node.point) || graph.has_area_boundary(node.point))
-    }) {
-        try_push_vec(&mut points, node.point.point())?;
-    }
-    Ok((points, lines))
-}
-
-/// The polygon-only intersection lane is valid only when the result cannot
-/// contain an independent boundary contact. Two valid convex shells with a
-/// transverse boundary crossing have a positive-area, connected intersection;
-/// touch-only, nested, disjoint, and degenerate cases deliberately defer to
-/// the mixed-dimension arrangement.
-fn convex_polygon_intersection(inputs: &[&Shape]) -> Result<Option<Shape>> {
-    let [left, right] = inputs else {
-        return Ok(None);
-    };
-    let (Shape::Polygon(left), Shape::Polygon(right)) = (*left, *right) else {
-        return Ok(None);
-    };
-    if !left.holes.is_empty() || !right.holes.is_empty() {
-        return Ok(None);
-    }
-    let left_shell = left.shell.coords();
-    let right_shell = right.shell.coords();
-    let closed_finite = |shell: &CoordSeq| {
-        shell.len() >= 4
-            && shell
-                .first_coord()
-                .zip(shell.last_coord())
-                .is_some_and(|(first, last)| same_point(first, last))
-            && column_all_finite(shell.xs())
-            && column_all_finite(shell.ys())
-    };
-    if !closed_finite(left_shell)
-        || !closed_finite(right_shell)
-        || !shell_is_convex(left_shell)
-        || !shell_is_convex(right_shell)
-        || !crate::geometry::polygon_is_valid(left)?
-        || !crate::geometry::polygon_is_valid(right)?
-    {
-        return Ok(None);
-    }
-    let Some(output) = clean_union::clean_overlay(
-        std::slice::from_ref(left),
-        std::slice::from_ref(right),
-        OverlayOp::Intersection,
-    )?
-    else {
-        return Ok(None);
-    };
-    Ok(matches!(&output, Shape::Polygon(_)).then_some(output))
+    carry_overlay_ordinates(shape, &refs, op, strictness.is_strict())
 }
 
 struct OverlayBoundsFacts {
@@ -531,6 +414,13 @@ struct OverlayBoundsFacts {
 
 #[derive(Clone, Copy)]
 enum OverlayInputs<'a, 's> {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Cartesian overlays run on the exact partition; the Cartesian graph route remains its differential test oracle"
+        )
+    )]
     Cartesian(&'a [&'s Shape]),
     Geographic(&'a GeographicInputs<'s>),
 }
@@ -582,25 +472,6 @@ fn overlay_bounds_facts_from(
     }
 }
 
-fn overlay_bounds_facts_cartesian<S: Borrow<Shape>>(
-    inputs: &[S],
-    op: OverlayOp,
-) -> Result<OverlayBoundsFacts> {
-    let mut bounds = Vec::new();
-    crate::try_reserve_vec(&mut bounds, inputs.len())?;
-    for input in inputs {
-        try_push_vec(&mut bounds, input.borrow().bounds())?;
-    }
-    Ok(overlay_bounds_facts_from(
-        bounds,
-        true,
-        op,
-        inputs
-            .iter()
-            .any(|input| has_nonempty_point_or_line_support(input.borrow())),
-    ))
-}
-
 fn overlay_bounds_facts_geographic(
     originals: &GeographicInputs<'_>,
     op: OverlayOp,
@@ -631,12 +502,17 @@ fn overlay_bounds_facts_geographic(
     ))
 }
 
-/// The connected components of the inputs under bounds overlap, each as the
-/// input indices it holds. An input without bounds meets nothing and is a
-/// component of its own. Union-find with path halving over the pairs the
-/// overlap sweep yields, so the partition costs the sweep plus near-linear
-/// bookkeeping.
-fn bounds_components(bounds: &[Option<Bounds>]) -> Result<Vec<Vec<usize>>> {
+/// The bounds-connected groups of inputs to assemble, when that differs from
+/// one arrangement over every input. Inputs whose bounds never meet cannot
+/// interact: union and symmetric difference assemble each component alone,
+/// and a difference keeps only its left operand's component, because nothing
+/// outside it can subtract from it. An input without bounds meets nothing.
+/// `None` means one arrangement over all inputs, decided from the union-find
+/// roots before any group is materialized.
+fn interacting_components(
+    bounds: &[Option<Bounds>],
+    op: OverlayOp,
+) -> Result<Option<Vec<Vec<usize>>>> {
     const fn root(parent: &mut [usize], mut node: usize) -> usize {
         while parent[node] != node {
             parent[node] = parent[parent[node]];
@@ -644,73 +520,51 @@ fn bounds_components(bounds: &[Option<Bounds>]) -> Result<Vec<Vec<usize>>> {
         }
         node
     }
+    if op == OverlayOp::Intersection {
+        return Ok(None);
+    }
+    let count = bounds.len();
     let mut parent = Vec::new();
-    crate::try_reserve_vec(&mut parent, bounds.len())?;
-    parent.extend(0..bounds.len());
+    crate::try_reserve_vec(&mut parent, count)?;
+    parent.extend(0..count);
     let _ = crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
         let (a, b) = (root(&mut parent, left), root(&mut parent, right));
-        if a != b {
-            parent[b] = a;
-        }
+        parent[a.max(b)] = a.min(b);
         ControlFlow::Continue(())
-    });
-    let mut slot_of_root = Vec::new();
-    crate::try_reserve_vec(&mut slot_of_root, bounds.len())?;
-    slot_of_root.resize(bounds.len(), usize::MAX);
+    })?;
+    // Every root is its component's smallest index, so input 0 roots the left
+    // operand's component.
+    for node in 0..count {
+        parent[node] = root(&mut parent, node);
+    }
     let mut components: Vec<Vec<usize>> = Vec::new();
-    crate::try_reserve_vec(&mut components, bounds.len())?;
-    for index in 0..bounds.len() {
-        let representative = root(&mut parent, index);
-        let slot = slot_of_root[representative];
-        if slot == usize::MAX {
-            slot_of_root[representative] = components.len();
-            let mut component = Vec::new();
-            try_push_vec(&mut component, index)?;
-            try_push_vec(&mut components, component)?;
-        } else {
-            try_push_vec(&mut components[slot], index)?;
+    if op == OverlayOp::Difference {
+        let left = parent.iter().filter(|&&root| root == 0).count();
+        if left == count {
+            return Ok(None);
         }
-    }
-    Ok(components)
-}
-
-fn singleton_components(count: usize) -> Result<Vec<Vec<usize>>> {
-    let mut components = Vec::new();
-    crate::try_reserve_vec(&mut components, count)?;
-    for index in 0..count {
         let mut component = Vec::new();
-        try_push_vec(&mut component, index)?;
+        crate::try_reserve_vec(&mut component, left)?;
+        component.extend((0..count).filter(|&node| parent[node] == 0));
         try_push_vec(&mut components, component)?;
+        return Ok(Some(components));
     }
-    Ok(components)
-}
-
-fn disjoint_bounds_certify(bounds: &[Option<Bounds>], op: OverlayOp) -> bool {
-    match op {
-        OverlayOp::Difference => bounds
-            .first()
-            .and_then(|bounds| *bounds)
-            .is_some_and(|left| {
-                bounds[1..]
-                    .iter()
-                    .filter_map(|right| *right)
-                    .all(|right| bounds_strictly_disjoint(left, right))
-            }),
-        OverlayOp::Union | OverlayOp::SymmetricDifference => {
-            crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |_, _| {
-                ControlFlow::Break(())
-            })
-            .is_continue()
-        },
-        OverlayOp::Intersection => false,
+    let roots = (0..count).filter(|&node| parent[node] == node).count();
+    if roots == 1 {
+        return Ok(None);
     }
-}
-
-fn bounds_strictly_disjoint(left: Bounds, right: Bounds) -> bool {
-    left.maxx() < right.minx()
-        || right.maxx() < left.minx()
-        || left.maxy() < right.miny()
-        || right.maxy() < left.miny()
+    let mut slot_of_root = Vec::new();
+    crate::try_reserve_vec(&mut slot_of_root, count)?;
+    slot_of_root.resize(count, usize::MAX);
+    crate::try_reserve_vec(&mut components, roots)?;
+    for (node, &root) in parent.iter().enumerate() {
+        if slot_of_root[root] == usize::MAX {
+            slot_of_root[root] = components.len();
+            components.push(Vec::new());
+        }
+        try_push_vec(&mut components[slot_of_root[root]], node)?;
+    }
+    Ok(Some(components))
 }
 
 fn intersection_bounds_empty(bounds: &[Option<Bounds>]) -> bool {
@@ -836,52 +690,6 @@ fn assemble_joint_graph_overlay(
     let polygon_edges = output_polygon_edges(&polygons)?;
     let lines = overlay_lines(&graph, &source_graphs, &polygon_indexes, &polygon_edges, op)?;
     let points = overlay_points(&graph, &source_graphs, &polygon_indexes, &lines, op)?;
-    build_overlay_shape(points, &lines, &polygons)
-}
-
-/// Assemble each connected component of the inputs independently, at the XY
-/// level, and concatenate the parts for the ordinary overlay sink, so result
-/// narrowing, mixed-dimension ordering, and the ordinate carry — whose
-/// declared axes are a fact about the whole input, not any one component —
-/// stay graph-identical. A difference keeps only its left operand's
-/// component: everything that never met it cannot subtract from it.
-fn assemble_components_overlay(
-    inputs: OverlayInputs<'_, '_>,
-    components: &[Vec<usize>],
-    op: OverlayOp,
-    raw_polygon_loops_eligible: bool,
-) -> Result<Shape> {
-    let mut points = Vec::new();
-    let mut lines = Vec::new();
-    let mut polygons = Vec::new();
-    for component in components {
-        if op == OverlayOp::Difference && !component.contains(&0) {
-            continue;
-        }
-        let shape = match inputs {
-            OverlayInputs::Cartesian(shapes) => {
-                let mut subset = Vec::new();
-                subset
-                    .try_reserve_exact(component.len())
-                    .map_err(crate::error::Error::from)?;
-                subset.extend(component.iter().map(|&index| shapes[index]));
-                assemble_overlay(
-                    OverlayInputs::Cartesian(&subset),
-                    op,
-                    raw_polygon_loops_eligible,
-                )?
-            },
-            OverlayInputs::Geographic(noded) => {
-                let subset = noded.try_selected(component).map_err(overlay_view_error)?;
-                assemble_overlay(
-                    OverlayInputs::Geographic(&subset),
-                    op,
-                    raw_polygon_loops_eligible,
-                )?
-            },
-        };
-        append_overlay_parts(&shape, &mut points, &mut lines, &mut polygons)?;
-    }
     build_overlay_shape(points, &lines, &polygons)
 }
 

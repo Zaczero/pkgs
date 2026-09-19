@@ -2143,6 +2143,51 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    /// Three bounds components: an overlapping pair, an invalid bowtie with a
+    /// square across it, and a remote square. Each component is partitioned
+    /// alone, a difference keeps only its left operand's component, and an
+    /// intersection whose bounds share no box builds nothing.
+    #[test]
+    fn bounds_components_partition_alone_and_match_one_arrangement() {
+        use crate::geometry::overlay::exact_partition::{partition_builds, reset_partition_builds};
+        let first = square(0.0, 0.0, 2.0, 2.0);
+        let second = square(1.0, 1.0, 3.0, 3.0);
+        let bowtie = Shape::Polygon(polygon(&[
+            (10.0, 10.0),
+            (12.0, 12.0),
+            (10.0, 12.0),
+            (12.0, 10.0),
+            (10.0, 10.0),
+        ]));
+        let across = square(11.0, 11.0, 13.0, 13.0);
+        let remote = square(20.0, 20.0, 21.0, 21.0);
+        let inputs = [&first, &second, &bowtie, &across, &remote];
+        for (op, builds) in [
+            (OverlayOp::Union, 3),
+            (OverlayOp::SymmetricDifference, 3),
+            (OverlayOp::Difference, 1),
+            (OverlayOp::Intersection, 0),
+        ] {
+            reset_partition_builds();
+            let certified = overlay_all(
+                &inputs,
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict,
+            )
+            .unwrap();
+            assert_eq!(partition_builds(), builds, "{}", op.name());
+            let joint = super::super::nary::overlay_all_without_bounds_certificates(
+                &inputs,
+                crate::geometry::TopologyDomain::Cartesian,
+                op,
+                Strictness::Strict,
+            )
+            .unwrap();
+            assert_eq!(wkb(&certified), wkb(&joint), "{}", op.name());
+        }
+    }
+
     #[test]
     fn disjoint_ordinate_axes_match_forced_graph_wkb() {
         let inputs = [

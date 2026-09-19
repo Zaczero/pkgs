@@ -35,13 +35,6 @@ pub(crate) const fn flat_vec_retained_bytes<T>(value: &Vec<T>) -> usize {
     allocation_bytes(value.capacity(), size_of::<T>())
 }
 
-pub(crate) fn nested_vec_retained_bytes<T>(value: &Vec<Vec<T>>) -> usize {
-    value.iter().fold(
-        allocation_bytes(value.capacity(), size_of::<Vec<T>>()),
-        |bytes, inner| bytes.saturating_add(flat_vec_retained_bytes(inner)),
-    )
-}
-
 /// Conservatively charges one machine word of hash-table metadata per entry.
 /// This deliberately avoids depending on hashbrown's private bucket layout.
 pub(crate) fn hash_map_retained_bytes<K, V, S>(value: &HashMap<K, V, S>) -> usize {
@@ -380,13 +373,8 @@ mod tests {
     }
 
     #[test]
-    fn accounting_is_saturating_and_includes_nested_allocations() {
+    fn accounting_is_saturating_and_counts_table_capacity() {
         let _budget = RetainBudgetGuard::new();
-        let nested = vec![Vec::<u64>::with_capacity(3), Vec::<u64>::with_capacity(5)];
-        assert_eq!(
-            nested_vec_retained_bytes(&nested),
-            nested.capacity() * size_of::<Vec<u64>>() + u64::BITS as usize
-        );
         let impossible = usize::MAX / size_of::<u64>() + 1;
         assert_eq!(allocation_bytes(impossible, size_of::<u64>()), usize::MAX);
 

@@ -63,9 +63,7 @@ pub(crate) use antimeridian::{
 };
 mod arrangement;
 mod bvh_code;
-mod clean_union;
 mod constructive;
-mod convex_contact;
 mod coverage;
 pub(crate) use coverage::vw_area_tolerance;
 mod dimension;
@@ -150,8 +148,8 @@ use geodesic_bvh::{
 pub(crate) use line_index::{LineIndex, LineIndexSlot, PlanarMetric, SegmentMetric};
 pub(crate) use linear::{MeasureRange, MeasuredLineIndex, MeasuredLineIndexSlot};
 use linear::{normalize_line_distance, push_distinct_point};
+pub(crate) use ordinates::carry_overlay_ordinates;
 use ordinates::{carry_each, carry_ordinates};
-pub(crate) use ordinates::{carry_overlay_ordinates, carry_overlay_ordinates_from_graph};
 #[cfg(test)]
 pub(crate) use overlay::cartesian_support_nonempty;
 pub(crate) use overlay::{
@@ -264,13 +262,13 @@ pub(in crate::geometry) use segment_index::{
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 pub(in crate::geometry) use segments::try_sort_by;
 use segments::{
-    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SharedSpan, SquaredDistanceKey,
+    CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SquaredDistanceKey,
     interpolate_segment_point, nearest_points, orientation_xy, point_pair_distance_key,
     point_segment_distance_and_projection, point_segment_distance_key,
     point_segment_distance_squared, ray_crossing_is_right, segment_contact_exact,
     segment_contact_point, segment_cross_point, segment_envelopes_disjoint, segment_projection,
     segments_intersect, shared_segment_part, try_point_distance_squared,
-    try_point_segment_distance_squared, undirected_edge_key, undirected_segment_edge_key,
+    try_point_segment_distance_squared, undirected_segment_edge_key,
 };
 /// The guarded-sqrt distance is the one segment-kernel helper the broadcast
 /// lanes call directly (packed point columns).

@@ -86,8 +86,6 @@ pub(crate) enum SourceSupport {
 /// One source edge before charting and noding.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SourceEdge {
-    pub(crate) start: Point,
-    pub(crate) end: Point,
     pub(crate) segment: Segment,
     pub(crate) support: SourceSupport,
     pub(crate) component: u32,
@@ -375,21 +373,6 @@ impl TopologyGraph {
                 self.source_edges[source as usize].support,
                 SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
             )
-        })
-    }
-
-    pub(crate) fn edge_has_area_source_for_row(
-        &self,
-        edge: &TopologyEdge,
-        source_row: u32,
-    ) -> bool {
-        edge.sources.iter().any(|&source| {
-            let source = self.source_edges[source as usize];
-            source.source_row == source_row
-                && matches!(
-                    source.support,
-                    SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
-                )
         })
     }
 
@@ -1350,8 +1333,6 @@ impl GraphBuilder {
         };
         let source = self.source_edges.len() as u32;
         self.source_edges.push(SourceEdge {
-            start,
-            end,
             segment,
             support,
             component,

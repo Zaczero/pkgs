@@ -5,8 +5,6 @@ use crate::boundary::geographic::invalid_lonlat_error;
 use crate::collections::HashSet;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
-#[cfg(test)]
-use crate::geometry::convex_contact::{self, ConvexRelation};
 use crate::geometry::overlay::ExactSourceInventory;
 #[cfg(test)]
 use crate::geometry::predicates;
@@ -283,16 +281,8 @@ fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: Topology
 #[cfg(test)]
 fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Option<De9im> {
     (space == TopologySpace::Cartesian)
-        .then(|| try_cartesian_areal_relate(left, right).unwrap())
+        .then(|| try_areal_relate(left, right).unwrap())
         .flatten()
-}
-
-#[cfg(test)]
-fn try_cartesian_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
-    Ok(match try_convex_relate(left, right) {
-        Some(matrix) => Some(matrix),
-        None => try_areal_relate(left, right)?,
-    })
 }
 
 /// Whether a scalar operand broadcast against `row` reaches the direct
@@ -343,20 +333,6 @@ fn try_cartesian_polygon_line_relate_with_graphs(
         return Ok(None);
     }
     Ok(Some(exact_cartesian_relate(left.shape(), right.shape())?))
-}
-
-#[cfg(test)]
-fn try_convex_relate(left: &Shape, right: &Shape) -> Option<De9im> {
-    let (Shape::Polygon(left), Shape::Polygon(right)) = (left, right) else {
-        return None;
-    };
-    let relation = convex_contact::try_classify(left, right)?;
-    Some(match relation {
-        ConvexRelation::Disjoint => De9im(*b"FF2FF1212"),
-        ConvexRelation::ProperCrossing => De9im(*b"212101212"),
-        ConvexRelation::LeftContainsRight => De9im(*b"212FF1FF2"),
-        ConvexRelation::RightContainsLeft => De9im(*b"2FF1FF212"),
-    })
 }
 
 /// The direct areal fold reads raw coordinate boxes, so it runs only when both
@@ -1601,22 +1577,11 @@ mod tests {
         );
     }
 
-    fn assert_convex_relation_case(
-        name: &str,
-        left: &Shape,
-        right: &Shape,
-        eligible: bool,
-        expected: &str,
-    ) {
+    fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str) {
         let left_plan = PreparedPlan::transient(left).unwrap();
         let right_plan = PreparedPlan::transient(right).unwrap();
         let oracle = graph_relate_data_oracle(&left_plan, &right_plan).unwrap();
         assert_eq!(oracle.text(), expected, "{name}: oracle");
-        assert_eq!(
-            try_convex_relate(left, right).is_some(),
-            eligible,
-            "{name}: convex admission"
-        );
         assert_eq!(
             graph_relate_data(&left_plan, &right_plan).unwrap().text(),
             expected,
@@ -1631,13 +1596,11 @@ mod tests {
             reverse_oracle.0,
             "{name}: reverse"
         );
-        if eligible {
-            assert_eq!(reverse_oracle.0, oracle.transpose().0, "{name}: transpose");
-        }
+        assert_eq!(reverse_oracle.0, oracle.transpose().0, "{name}: transpose");
     }
 
     #[test]
-    fn convex_relation_dispatch_matches_the_arrangement_oracle() {
+    fn convex_pair_dispatch_matches_the_arrangement_oracle() {
         let ccw_outer = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let cw_outer = Shape::Polygon(polygon(&[
             [0.0, 0.0],
@@ -1678,7 +1641,7 @@ mod tests {
             ("tiny crossing", &tiny_base, &tiny_crossing, "212101212"),
             ("exact cancellation", &cancellation, &disjoint, "FF2FF1212"),
         ] {
-            assert_convex_relation_case(name, left, right, true, expected);
+            assert_relation_case(name, left, right, expected);
         }
     }
 
@@ -1764,7 +1727,7 @@ mod tests {
     }
 
     #[test]
-    fn convex_relation_falls_back_for_ambiguous_or_unsupported_shapes() {
+    fn ambiguous_and_unsupported_pairs_match_the_arrangement_oracle() {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
         let square4 = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let far = Shape::Polygon(rectangle(8.0, 0.0, 9.0, 1.0));
@@ -1834,7 +1797,7 @@ mod tests {
                 "2FF10F212",
             ),
         ] {
-            assert_convex_relation_case(name, left, right, false, expected);
+            assert_relation_case(name, left, right, expected);
         }
         let collapsed_left = PreparedPlan::transient(&collapsed).unwrap();
         let square_right = PreparedPlan::transient(&square).unwrap();
@@ -1845,7 +1808,6 @@ mod tests {
             "F1FF0F212"
         );
         let invalid_left = PreparedPlan::transient(&invalid).unwrap();
-        assert!(try_convex_relate(&invalid, &square).is_none());
         assert_eq!(
             graph_relate_data(&invalid_left, &square_right)
                 .unwrap()
@@ -1855,7 +1817,7 @@ mod tests {
     }
 
     #[test]
-    fn convex_relation_rejects_a_two_unique_point_ring() {
+    fn two_unique_point_ring_relates_as_linework() {
         let a = Point::new_raw_xy(10.0, 10.0);
         let b = Point::new_raw_xy(11.0, 10.0);
         // `Ring::from_closed` is the internal transport constructor. The final
@@ -1870,13 +1832,11 @@ mod tests {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
         let left = PreparedPlan::transient(&two_unique).unwrap();
         let right = PreparedPlan::transient(&square).unwrap();
-        assert!(try_convex_relate(&two_unique, &square).is_none());
         let forward = graph_relate_data(&left, &right).unwrap();
         assert_eq!(forward.text(), "FF1FF0212");
 
         let reverse_left = PreparedPlan::transient(&square).unwrap();
         let reverse_right = PreparedPlan::transient(&two_unique).unwrap();
-        assert!(try_convex_relate(&square, &two_unique).is_none());
         assert_eq!(
             graph_relate_data(&reverse_left, &reverse_right).unwrap().0,
             forward.transpose().0

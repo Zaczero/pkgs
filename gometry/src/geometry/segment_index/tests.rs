@@ -208,7 +208,8 @@ mod indexed_bounds_characterization {
             work += 1;
             pairs.push((left, right));
             ControlFlow::Continue(())
-        });
+        })
+        .unwrap();
         pairs.sort_unstable();
         (pairs, work)
     }
@@ -240,7 +241,8 @@ mod indexed_bounds_characterization {
         let result = for_each_indexed_overlapping_bounds_pair(&rows, |_, _| {
             work += 1;
             ControlFlow::Break(())
-        });
+        })
+        .unwrap();
         assert!(result.is_break());
         assert_eq!(work, 1);
     }
@@ -278,7 +280,8 @@ mod indexed_bounds_characterization {
             let result = for_each_indexed_overlapping_bounds_pair(&dense, |_, _| {
                 first_hit_work += 1;
                 ControlFlow::Break(())
-            });
+            })
+            .unwrap();
             assert!(result.is_break(), "dense n={count}");
             assert_eq!(first_hit_work, 1, "dense n={count}");
         }

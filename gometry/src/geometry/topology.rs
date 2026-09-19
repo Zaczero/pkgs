@@ -5,254 +5,13 @@ use std::simd::num::SimdFloat as _;
 
 use crate::geometry::access::crossover::RAY_CROSSING;
 use crate::geometry::{
-    CCW_ERRBOUND_A, CoordSeq, PointKey, Polygon, REDUCE_LANES, ReduceSimd, Segment, XY,
-    ray_crossing_is_right, simd_reduce_f64, wrap_index,
+    CCW_ERRBOUND_A, REDUCE_LANES, ReduceSimd, XY, ray_crossing_is_right, simd_reduce_f64,
 };
-use crate::scratch_pool::{RetainScratch, ScratchLease, ScratchPool, flat_vec_retained_bytes};
 
 mod graph;
-mod sections;
 mod staging;
 pub(crate) use graph::{AreaSupport, TopologyDomain, TopologyGraph, TopologyKey};
-pub(super) use graph::{
-    SourceSupport, TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace,
-};
-pub(super) use sections::{operand_covers_boundary, other_contains, sort_dedup_cuts};
-use staging::oriented_open_ring;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Operand {
-    Left,
-    Right,
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-pub(super) enum SectionEnd {
-    Cross,
-    Reseed,
-    None,
-}
-
-pub(super) const fn section_end(cross: bool, shared: bool) -> SectionEnd {
-    if cross && !shared {
-        SectionEnd::Cross
-    } else {
-        SectionEnd::Reseed
-    }
-}
-
-#[derive(Clone, Copy)]
-pub(super) struct Cut {
-    pub(super) point: XY,
-    pub(super) key: PointKey,
-    pub(super) cross: bool,
-}
-
-pub(super) fn add_cut(cuts: &mut Vec<Cut>, point: XY, cross: bool) {
-    cuts.push(Cut {
-        point,
-        key: PointKey::new(point),
-        cross,
-    });
-}
-
-#[cfg(test)]
-mod scratch_tests {
-    use super::*;
-
-    fn reserve(segment_capacity: usize, ring_capacity: usize) {
-        let _ = OperandPool::with_scratch(segment_capacity, ring_capacity);
-    }
-
-    #[test]
-    fn topology_scratch_is_aggregate_bounded_and_reuses_medium_columns() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        reserve(1024, 32);
-        let ((), allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
-        assert_eq!(allocations, 0);
-
-        reserve(
-            crate::scratch_pool::SCRATCH_RETAIN_BYTES / std::mem::size_of::<Segment>() + 1,
-            0,
-        );
-        let empty = OperandPool::with_scratch(0, 0);
-        assert_eq!(empty.segments.capacity(), 0);
-        assert_eq!(empty.operands.capacity(), 0);
-        assert_eq!(empty.ring_of.capacity(), 0);
-        assert_eq!(empty.rings.capacity(), 0);
-        drop(empty);
-
-        let ((), first_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
-        assert!(first_allocations > 0);
-        let ((), repeat_allocations) = crate::test_support::allocation_count(|| reserve(1024, 32));
-        assert_eq!(repeat_allocations, 0);
-    }
-
-    #[test]
-    fn topology_scratch_drops_live_ring_sources_before_retention() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let source: std::sync::Arc<[XY]> = vec![XY::new(0.0, 0.0)].into();
-        let weak = std::sync::Arc::downgrade(&source);
-        {
-            let mut pool = OperandPool::with_scratch(0, 1);
-            pool.rings.push(OrientedRing {
-                operand: Operand::Left,
-                polygon: 0,
-                ring: 0,
-                is_hole: false,
-                points: std::sync::Arc::clone(&source),
-                segments: 0..0,
-            });
-            drop(source);
-        }
-        assert!(weak.upgrade().is_none());
-        assert!(OperandPool::with_scratch(0, 1).rings.is_empty());
-    }
-
-    #[test]
-    fn topology_scratch_clears_and_returns_during_unwind() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let unwind = std::panic::catch_unwind(|| {
-            let mut pool = OperandPool::with_scratch(16, 0);
-            pool.segments.push(Segment {
-                start: XY::new(0.0, 0.0),
-                end: XY::new(1.0, 1.0),
-            });
-            panic!("representative topology failure");
-        });
-        assert!(unwind.is_err());
-        let pool = OperandPool::with_scratch(16, 0);
-        assert!(pool.segments.is_empty());
-        assert!(pool.segments.capacity() >= 16);
-    }
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct OrientedRing {
-    pub operand: Operand,
-    pub polygon: u32,
-    pub ring: u32,
-    pub is_hole: bool,
-    pub points: std::sync::Arc<[XY]>,
-    pub segments: Range<usize>,
-}
-
-#[derive(Default)]
-pub(super) struct TopologyScratch {
-    pub segments: Vec<Segment>,
-    pub operands: Vec<Operand>,
-    pub ring_of: Vec<u32>,
-    pub rings: Vec<OrientedRing>,
-}
-
-impl RetainScratch for TopologyScratch {
-    fn clear_for_reuse(&mut self) {
-        self.segments.clear();
-        self.operands.clear();
-        self.ring_of.clear();
-        self.rings.clear();
-    }
-
-    fn retained_bytes(&self) -> usize {
-        flat_vec_retained_bytes(&self.segments)
-            .saturating_add(flat_vec_retained_bytes(&self.operands))
-            .saturating_add(flat_vec_retained_bytes(&self.ring_of))
-            .saturating_add(flat_vec_retained_bytes(&self.rings))
-    }
-}
-
-pub(super) struct OperandPool {
-    scratch: ScratchLease<TopologyScratch>,
-    pub split: usize,
-}
-
-thread_local! {
-    // Reuse the column buffers per-thread so overlay staging does not allocate
-    // a fresh set of parallel provenance vectors for every operation.
-    static TOPOLOGY_SCRATCH: ScratchPool<TopologyScratch> = const { ScratchPool::new(TopologyScratch {
-        segments: Vec::new(),
-        operands: Vec::new(),
-        ring_of: Vec::new(),
-        rings: Vec::new(),
-    }) };
-}
-
-impl std::ops::Deref for OperandPool {
-    type Target = TopologyScratch;
-
-    fn deref(&self) -> &Self::Target {
-        &self.scratch
-    }
-}
-
-impl std::ops::DerefMut for OperandPool {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.scratch
-    }
-}
-
-impl OperandPool {
-    /// An empty pool reusing the per-thread scratch buffers, pre-sized for
-    /// `segment_capacity` edges and `ring_capacity` rings.
-    fn with_scratch(segment_capacity: usize, ring_capacity: usize) -> Self {
-        let mut scratch = ScratchPool::checkout(&TOPOLOGY_SCRATCH);
-        scratch.segments.reserve(segment_capacity);
-        scratch.operands.reserve(segment_capacity);
-        scratch.ring_of.reserve(segment_capacity);
-        scratch.rings.reserve(ring_capacity);
-        Self { scratch, split: 0 }
-    }
-}
-
-/// Even-odd point membership in a single open ring (orientation-free).
-///
-/// Sign-form ray crossing (see [`ray_crossing_lanes`]), matching the
-/// established predicate kernel exactly so SIMD and scalar membership share
-/// one decision on every input, including huge-but-finite coordinates.
-pub(super) fn ring_contains_interior_open(ring: &[XY], point: XY) -> bool {
-    let n = ring.len();
-    if n < RAY_CROSSING {
-        return ring_contains_interior_open_scalar(ring, point);
-    }
-    let px = ReduceSimd::splat(point.x);
-    let py = ReduceSimd::splat(point.y);
-    let crossings = simd_reduce_f64(
-        n,
-        (),
-        0_u32,
-        |(), crossings, start| {
-            let ax = ReduceSimd::from_array(std::array::from_fn(|lane| ring[start + lane].x));
-            let ay = ReduceSimd::from_array(std::array::from_fn(|lane| ring[start + lane].y));
-            // Partner vertex is the next one. Within a full SIMD chunk
-            // `start + lane + 1` lands in `1..=n`, hitting `n` only on the single
-            // cyclic-wrap lane when `n` is a multiple of the lane count; a
-            // branchless select handles that instead of the per-chunk integer
-            // `div` the `% n` form compiled to. (Non-multiple `n` keeps the wrap
-            // edge in the scalar tail, so `j < n` always holds here.)
-            let bx = ReduceSimd::from_array(std::array::from_fn(|lane| {
-                let j = start + lane + 1;
-                ring[if j < n { j } else { 0 }].x
-            }));
-            let by = ReduceSimd::from_array(std::array::from_fn(|lane| {
-                let j = start + lane + 1;
-                ring[if j < n { j } else { 0 }].y
-            }));
-            ray_crossing_lanes(ax, ay, bx, by, px, py).map_or_else(
-                || {
-                    (
-                        (),
-                        crossings
-                            + ring_crossing_count_scalar(ring, point, start..start + REDUCE_LANES),
-                    )
-                },
-                |crosses| ((), crossings + crosses.to_bitmask().count_ones()),
-            )
-        },
-        |crossings, range| crossings + ring_crossing_count_scalar(ring, point, range),
-        |(), crossings| crossings,
-    );
-    crossings % 2 == 1
-}
+pub(super) use graph::{TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace};
 
 /// SIMD ray-crossing decision for one chunk of ring edges, or `None` when any
 /// straddling lane's crossing sign cannot be trusted in plain `f64` (the
@@ -291,34 +50,6 @@ fn ray_crossing_lanes(
     let upward = by.simd_gt(ay);
     let zero = ReduceSimd::splat(0.0);
     Some(straddles & ((upward & det.simd_gt(zero)) | (!upward & det.simd_lt(zero))))
-}
-
-fn ring_crossing_count_scalar(ring: &[XY], point: XY, range: std::ops::Range<usize>) -> u32 {
-    let n = ring.len();
-    let mut crossings = 0_u32;
-    for i in range {
-        let (a, b) = (ring[i], ring[wrap_index(i + 1, n)]);
-        if (a.y > point.y) != (b.y > point.y)
-            && ray_crossing_is_right(a.x, a.y, b.x, b.y, point.x, point.y)
-        {
-            crossings += 1;
-        }
-    }
-    crossings
-}
-
-fn ring_contains_interior_open_scalar(ring: &[XY], point: XY) -> bool {
-    let n = ring.len();
-    let mut inside = false;
-    for i in 0..ring.len() {
-        let (a, b) = (ring[i], ring[wrap_index(i + 1, n)]);
-        if (a.y > point.y) != (b.y > point.y)
-            && ray_crossing_is_right(a.x, a.y, b.x, b.y, point.x, point.y)
-        {
-            inside = !inside;
-        }
-    }
-    inside
 }
 
 /// SIMD even-odd ray-crossing parity over a CLOSED ring's `SoA` columns — `xs`
@@ -461,129 +192,20 @@ fn ring_classify_crossings_scalar(
     (crossings, candidate)
 }
 
-/// Even-odd membership across shell + hole rings.
-pub(super) fn polygon_rings_contain_interior<'a>(
-    rings: impl IntoIterator<Item = &'a [XY]>,
-    point: XY,
-) -> bool {
-    rings.into_iter().fold(false, |inside, ring| {
-        inside ^ ring_contains_interior_open(ring, point)
-    })
-}
-
-/// Stage both operands into one thin segment pool plus parallel provenance.
-///
-/// Rings are staged left first, then right; [`OperandPool::split`] is the
-/// segment index where right-operand segments begin.
-fn operand_ring_vertices<P: AsRef<Polygon>>(polygons: &[P]) -> usize {
-    polygons
-        .iter()
-        .map(|polygon| {
-            let polygon = polygon.as_ref();
-            polygon.shell.coords().xs().len()
-                + polygon
-                    .holes
-                    .iter()
-                    .map(|hole| hole.coords().xs().len())
-                    .sum::<usize>()
-        })
-        .sum()
-}
-
-pub(super) fn operand_ring_count<P: AsRef<Polygon>>(polygons: &[P]) -> usize {
-    polygons
-        .iter()
-        .map(|polygon| 1 + polygon.as_ref().holes.len())
-        .sum()
-}
-
-pub(super) fn build_operand_pool<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
-    left: &[P],
-    right: &[Q],
-) -> OperandPool {
-    // Pre-size to the total ring-vertex count (an upper bound on segments) so the
-    // thin hot sweep pool and its parallel provenance never realloc while staging.
-    let capacity = operand_ring_vertices(left) + operand_ring_vertices(right);
-    let mut pool = OperandPool::with_scratch(
-        capacity,
-        operand_ring_count(left) + operand_ring_count(right),
-    );
-    // Staging stays operand-contiguous for cheap split tests, but noding callers
-    // must chain by `ring_of`: a geometric continuation across rings or operands
-    // is still a semantic boundary whose candidate pair must reach the visitor.
-    push_operand(Operand::Left, left, &mut pool);
-    pool.split = pool.segments.len();
-    push_operand(Operand::Right, right, &mut pool);
-    pool
-}
-
-fn push_operand<P: AsRef<Polygon>>(operand: Operand, polygons: &[P], pool: &mut OperandPool) {
-    for (polygon_index, polygon) in polygons.iter().enumerate() {
-        let polygon = polygon.as_ref();
-        push_ring(
-            operand,
-            polygon_index,
-            0,
-            false,
-            polygon.shell.coords(),
-            pool,
-        );
-        for (hole_index, hole) in polygon.holes.iter().enumerate() {
-            push_ring(
-                operand,
-                polygon_index,
-                hole_index + 1,
-                true,
-                hole.coords(),
-                pool,
-            );
-        }
-    }
-}
-
-fn push_ring(
-    operand: Operand,
-    polygon_index: usize,
-    ring_index: usize,
-    is_hole: bool,
-    coords: &CoordSeq,
-    pool: &mut OperandPool,
-) {
-    let Some(points) = oriented_open_ring(coords, is_hole) else {
-        return;
-    };
-    let ring_id = pool.rings.len() as u32;
-    let start = pool.segments.len();
-    push_ring_edges(&points, &mut pool.segments);
-    let end = pool.segments.len();
-    pool.operands.resize(end, operand);
-    pool.ring_of.resize(end, ring_id);
-    pool.rings.push(OrientedRing {
-        operand,
-        polygon: polygon_index as u32,
-        ring: ring_index as u32,
-        is_hole,
-        points: points.into(),
-        segments: start..end,
-    });
-}
-
-fn push_ring_edges(points: &[XY], segments: &mut Vec<Segment>) {
-    let n = points.len();
-    for i in 0..n {
-        segments.push(Segment {
-            start: points[i],
-            end: points[wrap_index(i + 1, n)],
-        });
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::REDUCE_SIMD_MIN;
     use crate::geometry::access::crossover::RAY_CROSSING;
     use crate::geometry::predicates::ring_contains_interior;
+    use crate::geometry::{CoordSeq, REDUCE_SIMD_MIN};
+
+    /// The closed-column membership kernel over an open ring's vertices.
+    fn ring_contains_interior_open(ring: &[XY], point: XY) -> bool {
+        let closed = || ring.iter().chain(std::iter::once(&ring[0]));
+        let xs: Vec<f64> = closed().map(|vertex| vertex.x).collect();
+        let ys: Vec<f64> = closed().map(|vertex| vertex.y).collect();
+        ring_contains_interior_columns(&xs, &ys, point)
+    }
 
     fn division_reference(ring: &[XY], point: XY) -> bool {
         let mut closed = ring.to_vec();
@@ -603,36 +225,6 @@ mod tests {
                 "ring={ring:?} point={point:?}",
             );
         }
-    }
-
-    #[test]
-    fn cut_sort_canonicalizes_signed_zero_before_deduplication() {
-        let segment = Segment {
-            start: XY::new(0.0, 0.0),
-            end: XY::new(4.0, 4.0),
-        };
-        let zero = XY::new(-0.0, 2.0);
-        let mut cuts = vec![
-            Cut {
-                point: zero,
-                key: PointKey::new(zero),
-                cross: false,
-            },
-            Cut {
-                point: XY::new(-0.0, 3.0),
-                key: PointKey::new(XY::new(-0.0, 3.0)),
-                cross: false,
-            },
-            Cut {
-                point: XY::new(0.0, 2.0),
-                key: PointKey::new(XY::new(0.0, 2.0)),
-                cross: true,
-            },
-        ];
-        sort_dedup_cuts(segment, &mut cuts);
-        assert_eq!(cuts.len(), 2);
-        assert_eq!(cuts[0].key, PointKey::new(zero));
-        assert!(cuts[0].cross);
     }
 
     fn edge_probes(ring: &[XY]) -> Vec<XY> {

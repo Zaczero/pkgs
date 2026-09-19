@@ -4,7 +4,6 @@
 
 use crate::collections::HashMap;
 use crate::error::Result;
-use crate::geometry::topology::TopologyGraph;
 use crate::geometry::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
     PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay, point_distance,
@@ -89,22 +88,6 @@ impl OrdinateSource {
                 }
                 Ok::<(), crate::error::Error>(())
             })?;
-        }
-        Ok(result)
-    }
-
-    fn build_from_graph(graph: &TopologyGraph, inputs: &[&Shape]) -> Result<Self> {
-        let mut result = Self::new(inputs)?;
-        for source in &graph.source_points {
-            add_vertex(&mut result.vertices, source.point)?;
-        }
-        for source in &graph.source_edges {
-            if inputs
-                .get(source.source_row as usize)
-                .is_some_and(|shape| shape.has_z() || shape.has_m())
-            {
-                result.add_source_edge(source.start, source.end)?;
-            }
         }
         Ok(result)
     }
@@ -343,21 +326,6 @@ pub(crate) fn carry_overlay_ordinates(
         return Ok(output);
     }
     let source = OrdinateSource::build_direct(inputs)?;
-    let declared_axes = overlay::overlay_declared_axes(inputs, operation);
-    carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
-}
-
-pub(crate) fn carry_overlay_ordinates_from_graph(
-    output: Shape,
-    inputs: &[&Shape],
-    operation: OverlayOp,
-    strict: bool,
-    graph: &TopologyGraph,
-) -> Result<Shape> {
-    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
-        return Ok(output);
-    }
-    let source = OrdinateSource::build_from_graph(graph, inputs)?;
     let declared_axes = overlay::overlay_declared_axes(inputs, operation);
     carry_or_degrade(&output, &source, declared_axes, operation.name(), strict)
 }

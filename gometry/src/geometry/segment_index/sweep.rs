@@ -4,8 +4,6 @@
 )]
 use std::ops::ControlFlow;
 
-use rstar::{AABB, RTreeObject};
-
 use crate::error::{ResourceError, Result};
 use crate::geometry::{Bounds, PointKey, Segment, XY};
 use crate::try_reserve_vec;
@@ -31,60 +29,44 @@ const SWEEP_MIN_ITEMS: usize = 6;
 const SWEEP_BAND_MIN: usize = 4096;
 const SWEEP_BAND_GRAIN: usize = 2048;
 
-struct IndexedBounds {
-    ordinal: usize,
-    envelope: AABB<[f64; 2]>,
-}
-
-impl RTreeObject for IndexedBounds {
-    type Envelope = AABB<[f64; 2]>;
-
-    fn envelope(&self) -> Self::Envelope {
-        self.envelope
-    }
-}
-
-fn bounds_envelope(bounds: Bounds) -> AABB<[f64; 2]> {
-    AABB::from_bounds([bounds.minx(), bounds.miny()], [
-        bounds.maxx(),
-        bounds.maxy(),
-    ])
-}
-
-/// Visit every unordered pair of inclusive-overlapping row bounds once. The
-/// R-tree query is restricted by ordinal, so separated rows cost O(n log n)
-/// and a dense set can stop on its first touching pair.
+/// Visit every unordered pair of inclusive-overlapping row bounds once, as
+/// `(lower ordinal, higher ordinal)`. Each box is its diagonal in its own chain,
+/// so the candidate sweep prunes nothing as within-run; its candidates are a
+/// superset, filtered here to the boxes that meet. Scratch growth is
+/// [`ResourceError`].
 pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair(
     bounds: &[Option<Bounds>],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
-) -> ControlFlow<()> {
-    if bounds.len() < 2 {
-        return ControlFlow::Continue(());
-    }
-    let entries = bounds
-        .iter()
-        .enumerate()
-        .filter_map(|(ordinal, bounds)| {
-            bounds.map(|bounds| IndexedBounds {
-                ordinal,
-                envelope: bounds_envelope(bounds),
-            })
-        })
-        .collect::<Vec<_>>();
-    let tree = crate::geometry::BulkRTree::bulk_load_with_params(entries);
-    for (left, bounds) in bounds
-        .iter()
-        .enumerate()
-        .filter_map(|(left, bounds)| bounds.map(|bounds| (left, bounds)))
-    {
-        for right in tree
-            .locate_in_envelope_intersecting(bounds_envelope(bounds))
-            .filter(|right| right.ordinal > left)
-        {
-            visit(left, right.ordinal)?;
+) -> Result<ControlFlow<()>> {
+    let mut ordinals = Vec::new();
+    let mut diagonals = Vec::new();
+    crate::try_reserve_vec(&mut ordinals, bounds.len())?;
+    crate::try_reserve_vec(&mut diagonals, bounds.len())?;
+    for (ordinal, bounds) in bounds.iter().enumerate() {
+        if let Some(bounds) = bounds {
+            ordinals.push(ordinal);
+            diagonals.push(Segment {
+                start: XY::new(bounds.minx(), bounds.miny()),
+                end: XY::new(bounds.maxx(), bounds.maxy()),
+            });
         }
     }
-    ControlFlow::Continue(())
+    for_each_candidate_pair(
+        &diagonals,
+        |index| index as u32,
+        |left, right| {
+            let (a, b) = (diagonals[left], diagonals[right]);
+            if a.start.x > b.end.x
+                || b.start.x > a.end.x
+                || a.start.y > b.end.y
+                || b.start.y > a.end.y
+            {
+                return ControlFlow::Continue(());
+            }
+            let (left, right) = (ordinals[left], ordinals[right]);
+            visit(left.min(right), left.max(right))
+        },
+    )
 }
 
 /// One envelope in [`for_each_candidate_pair`]'s sweep order: extents along
