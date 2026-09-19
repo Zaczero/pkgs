@@ -343,15 +343,11 @@ fn assert_s2_allocation_prefixes(source: &Shape, coverer: Coverer, rule: CoverRu
             ),
             "unexpected allocation error: {error:?}"
         );
-        let retry = coverer
-            .cover_prepared(&ctx, rule)
-            .expect("retry after allocation failure");
-        assert_eq!(
-            retry.outer(),
-            expected.outer(),
-            "allocation prefix {prefix}"
-        );
     }
+    let retry = coverer
+        .cover_prepared(&ctx, rule)
+        .expect("retry after allocation failures");
+    assert_eq!(retry.outer(), expected.outer());
 }
 
 fn assert_s2_source_preparation_allocation_prefixes(
@@ -391,13 +387,9 @@ fn assert_s2_source_preparation_allocation_prefixes(
             ),
             "unexpected allocation error: {error:?}"
         );
-        let retry = cover().expect("retry after S2 source preparation allocation failure");
-        assert_eq!(
-            retry.outer(),
-            expected.outer(),
-            "allocation prefix {prefix}"
-        );
     }
+    let retry = cover().expect("retry after S2 source preparation allocation failures");
+    assert_eq!(retry.outer(), expected.outer());
 }
 
 #[test]

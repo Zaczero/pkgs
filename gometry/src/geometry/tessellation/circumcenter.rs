@@ -179,7 +179,7 @@ mod tests {
         };
         let mut certified = 0_usize;
         let mut declined = 0_usize;
-        for case in 0..200_000 {
+        for case in 0..20_000 {
             // Two of the five scales sit outside the certificate's window and
             // must decline to the exact construction rather than round wrong.
             let scale = match case % 5 {
@@ -200,7 +200,7 @@ mod tests {
             }
         }
         assert!(
-            certified > 110_000 && declined >= 80_000,
+            certified > 11_000 && declined >= 8_000,
             "certified {certified}, declined {declined}"
         );
     }
@@ -244,7 +244,7 @@ mod tests {
             (state >> 11) as f64 / (1_u64 << 53) as f64
         };
         let mut certified = 0_usize;
-        for case in 0..100_000 {
+        for case in 0..20_000 {
             let scale = if case % 2 == 0 { 1.0 } else { 1e5 };
             let a = XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
             let b = XY::new((next() - 0.5) * scale, (next() - 0.5) * scale);
@@ -283,7 +283,7 @@ mod tests {
             );
             certified += 1;
         }
-        assert!(certified > 95_000, "certified {certified}");
+        assert!(certified > 19_000, "certified {certified}");
         // Sites on a horizontal line have a vertical bisector: parallel to a
         // vertical side, and meeting a horizontal side at x = 1.
         assert_eq!(

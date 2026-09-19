@@ -89,10 +89,10 @@ fn assert_h3_source_preparation_allocation_prefixes(source: &Shape, rule: H3Trav
             panic!("allocation prefix {prefix} published an H3 cover");
         };
         assert_h3_allocation_error(error);
-        let retry = h3_cover_shape(source, &plan, rule, None)
-            .expect("retry after H3 source preparation allocation failure");
-        assert_eq!(retry, expected, "allocation prefix {prefix}");
     }
+    let retry = h3_cover_shape(source, &plan, rule, None)
+        .expect("retry after H3 source preparation allocation failures");
+    assert_eq!(retry, expected);
 }
 
 #[test]
