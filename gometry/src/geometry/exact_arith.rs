@@ -1,6 +1,6 @@
 //! Error-free transformations and double-double arithmetic: the one home for
 //! `two_sum`, `two_product`, and the `dd_*` kernels every exact predicate and
-//! expansion builds on.
+//! expansion builds on, and for [`bounded`] certificates.
 //!
 //! The product is Dekker splitting with power-of-two rescaling, exact on every
 //! finite, non-underflowing binary64 product including mixed-exponent operands
@@ -12,6 +12,7 @@
 //! certificate callers use [`two_product_exact`], which declines a product
 //! unless its residual is representable by the returned binary64 pair.
 
+pub(crate) mod bounded;
 pub(crate) mod product_sum;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -153,9 +154,10 @@ pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
 /// head, a subnormal head, or a nonzero product that rounds to zero may have a
 /// residual below the binary64 grid and is declined rather than silently
 /// returning a false expansion. Exact zero products are admitted separately.
-/// `mul_add` is a libm call on the x86-64-v2 baseline, which is why filtered
-/// predicates, whose error bound covers their residual rounding, take
-/// [`two_product`] instead.
+/// The `mul_add` here is a libm call on the x86-64-v2 baseline, but glibc
+/// dispatches it to the hardware FMA instruction where the CPU has one, which
+/// retires fewer instructions than the Dekker split; filtered predicates,
+/// whose error bound covers their residual rounding, take [`two_product`].
 pub(crate) fn two_product_exact(left: f64, right: f64) -> Option<(f64, f64)> {
     let product = left * right;
     if !product.is_finite() {

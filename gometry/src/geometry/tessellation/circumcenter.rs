@@ -1,19 +1,14 @@
-//! The circumcenter of three sites, rounded to nearest-even and certified,
-//! in floating-point expansions.
+//! The circumcenter of three sites, rounded to nearest-even and certified.
 //!
 //! The dual Voronoi lane needs every circumcenter twice: as a binary64 point
 //! for the embedded diagram, and as an exact point for the comparisons that
-//! decide topology. Building the exact homogeneous point first and rounding
-//! it afterwards paid a multi-limb product and division per coordinate for
-//! every face. Here the center is evaluated in double-double arithmetic with
-//! a rigorous absolute error bound carried beside it, and the rounding is
-//! certified when the whole error interval lies inside one rounding cell of
-//! the candidate. A possible tie, a collinear triple, or a magnitude outside
-//! the window where the bounds hold declines to the exact construction. A
-//! few dozen flops, no heap, no multi-limb integer.
+//! decide topology. The center is evaluated in [`Bounded`] double-double
+//! arithmetic, so its rounding is certified without building the exact
+//! homogeneous point; a collinear triple, a possible tie, or a magnitude
+//! outside the window declines to the exact construction.
 
 use crate::geometry::XY;
-use crate::geometry::exact_arith::{two_product_exact, two_sum};
+use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
 
 /// Certified outward bounds around a certified rounding: the exact value lies
 /// inside `rounded`'s nearest-even cell, so it is between the two binary64
@@ -21,126 +16,6 @@ use crate::geometry::exact_arith::{two_product_exact, two_sum};
 pub(super) struct CertifiedCenter {
     pub(super) rounded: XY,
     pub(super) bounds: [(f64, f64); 2],
-}
-
-/// A double-double value with a rigorous absolute error bound on it: the
-/// exact quantity it stands for lies within `err` of `hi + lo`.
-#[derive(Clone, Copy)]
-struct Bounded {
-    hi: f64,
-    lo: f64,
-    err: f64,
-}
-
-/// The per-operation error constant, 2^-98: every double-double operation
-/// below is accurate to a few units of 2^-106 relative to its operands, and
-/// the slack absorbs the rounding of the bound arithmetic itself.
-const KAPPA: f64 = 3.155_443_620_884_047e-30;
-
-impl Bounded {
-    fn magnitude(self) -> f64 {
-        (self.hi.abs() + self.lo.abs()).next_up()
-    }
-
-    fn exact_difference(left: f64, right: f64) -> Self {
-        let (hi, lo) = two_sum(left, -right);
-        Self { hi, lo, err: 0.0 }
-    }
-
-    fn mul(self, other: Self) -> Option<Self> {
-        let (p, e) = two_product_exact(self.hi, other.hi)?;
-        let cross = self.hi.mul_add(other.lo, self.lo * other.hi);
-        let (hi, lo) = fast_two_sum(p, e + cross);
-        let product = self.magnitude() * other.magnitude();
-        let err = (self.err * other.magnitude() + other.err * self.magnitude() + KAPPA * product)
-            .next_up();
-        (hi.is_finite() && lo.is_finite() && err.is_finite()).then_some(Self { hi, lo, err })
-    }
-
-    fn add(self, other: Self) -> Self {
-        let (s, e) = two_sum(self.hi, other.hi);
-        let (hi, lo) = fast_two_sum(s, e + self.lo + other.lo);
-        let err = (self.err + other.err + KAPPA * (self.magnitude() + other.magnitude())).next_up();
-        Self { hi, lo, err }
-    }
-
-    fn neg(self) -> Self {
-        Self {
-            hi: -self.hi,
-            lo: -self.lo,
-            err: self.err,
-        }
-    }
-
-    fn twice(self) -> Self {
-        Self {
-            hi: 2.0 * self.hi,
-            lo: 2.0 * self.lo,
-            err: 2.0 * self.err,
-        }
-    }
-
-    /// `self / other`, with `other` bounded away from zero by its own error.
-    fn div(self, other: Self) -> Option<Self> {
-        let divisor_low = (other.hi.abs() - other.lo.abs() - other.err).next_down();
-        // A NaN divisor must decline too, which the partial ordering spells out.
-        if divisor_low.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
-            return None;
-        }
-        let hi = self.hi / other.hi;
-        // Remainder r = self - hi * other, in double-double.
-        let (p, e) = two_product_exact(hi, other.hi)?;
-        let (r_hi, r_lo) = {
-            let (s, t) = two_sum(self.hi, -p);
-            fast_two_sum(s, t - e + self.lo - hi * other.lo)
-        };
-        let lo = (r_hi + r_lo) / other.hi;
-        let (hi, lo) = fast_two_sum(hi, lo);
-        let quotient = Self { hi, lo, err: 0.0 }.magnitude();
-        let err = (self.err / divisor_low + quotient * other.err / divisor_low + KAPPA * quotient)
-            .next_up();
-        Some(Self { hi, lo, err })
-    }
-
-    /// The nearest-even binary64 of the exact value, when the error interval
-    /// lies strictly inside one rounding cell; `None` on a possible tie.
-    fn certified_rounding(self) -> Option<f64> {
-        if !self.err.is_finite() || self.err < 0.0 {
-            return None;
-        }
-        let candidate = self.hi + self.lo;
-        if !candidate.is_finite() || !candidate.is_normal() {
-            return None;
-        }
-        // The distance from the candidate to hi + lo, with its own rounding.
-        let (d, d_err) = two_sum(self.hi - candidate, self.lo);
-        let offset = (d.abs() + d_err.abs()).next_up();
-        let predecessor = candidate.next_down();
-        let successor = candidate.next_up();
-        if !(predecessor.is_finite() && successor.is_finite()) {
-            return None;
-        }
-        // The cells are asymmetric at every binade boundary.  Distances are
-        // formed before halving so the midpoint itself need not be a binary64.
-        let lower_midpoint_distance = 0.5 * (candidate - predecessor);
-        let upper_midpoint_distance = 0.5 * (successor - candidate);
-        let reach = (offset + self.err).next_up();
-        (reach < lower_midpoint_distance && reach < upper_midpoint_distance).then_some(candidate)
-    }
-}
-
-fn fast_two_sum(a: f64, b: f64) -> (f64, f64) {
-    let s = a + b;
-    (s, b - (s - a))
-}
-
-/// The magnitude window every nonzero coordinate and coordinate difference
-/// must lie in, so that no intermediate leaves the normal range where the
-/// error-free transformations and the bounds above hold.
-const WINDOW: f64 = 1.606_938_044_258_990_3e60; // 2^200
-
-fn inside_window(value: f64) -> bool {
-    value == 0.0 || (value.abs() >= 1.0 / WINDOW && value.abs() <= WINDOW)
 }
 
 /// The circumcenter of `a`, `b`, `c` rounded to nearest-even and certified.
@@ -159,7 +34,7 @@ pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCen
     let admitted = [a.x, a.y, b.x, b.y, c.x, c.y]
         .into_iter()
         .all(inside_window)
-        && [ux, uy, vx, vy].into_iter().all(|d| inside_window(d.hi));
+        && [ux, uy, vx, vy].into_iter().all(|d| inside_window(d.head()));
     if !admitted {
         return None;
     }
@@ -170,14 +45,9 @@ pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCen
     // The center relative to a: (vy bb - uy cc, ux cc - vx bb) / d.
     let nx = vy.mul(bb)?.add(uy.mul(cc)?.neg());
     let ny = ux.mul(cc)?.add(vx.mul(bb)?.neg());
-    let origin = |value: f64| Bounded {
-        hi: value,
-        lo: 0.0,
-        err: 0.0,
-    };
-    let x = nx.div(d)?.add(origin(a.x));
-    let y = ny.div(d)?.add(origin(a.y));
-    if !(x.hi.is_finite() && y.hi.is_finite() && x.err.is_finite() && y.err.is_finite()) {
+    let x = nx.div(d)?.add(Bounded::exact(a.x));
+    let y = ny.div(d)?.add(Bounded::exact(a.y));
+    if !(x.is_finite() && y.is_finite()) {
         return None;
     }
     let (x, y) = (x.certified_rounding()?, y.certified_rounding()?);
@@ -214,20 +84,16 @@ pub(super) fn certified_bisector_hit(a: XY, b: XY, axis: SideAxis, value: f64) -
     }
     let ux = Bounded::exact_difference(b.x, a.x);
     let uy = Bounded::exact_difference(b.y, a.y);
-    if !(inside_window(ux.hi) && inside_window(uy.hi)) {
+    if !(inside_window(ux.head()) && inside_window(uy.head())) {
         return BisectorHit::Declined;
     }
-    let exact = |v: f64| Bounded {
-        hi: v,
-        lo: 0.0,
-        err: 0.0,
-    };
+    let exact = Bounded::exact;
     // 2 ux x + 2 uy y = |b|² - |a|².
     let (fixed_slope, free_slope) = match axis {
         SideAxis::FixedX => (ux, uy),
         SideAxis::FixedY => (uy, ux),
     };
-    if free_slope.hi == 0.0 && free_slope.lo == 0.0 {
+    if free_slope.is_exact_zero() {
         return BisectorHit::Parallel;
     }
     let Some(bx_squared) = exact(b.x).mul(exact(b.x)) else {
@@ -253,7 +119,7 @@ pub(super) fn certified_bisector_hit(a: XY, b: XY, axis: SideAxis, value: f64) -
     let Some(free) = numerator.div(free_slope.twice()) else {
         return BisectorHit::Declined;
     };
-    if !(free.hi.is_finite() && free.err.is_finite()) {
+    if !free.is_finite() {
         return BisectorHit::Declined;
     }
     free.certified_rounding()
@@ -290,74 +156,6 @@ mod tests {
                 center = center.rounded
             ),
         }
-    }
-
-    #[test]
-    fn rounding_certificate_uses_signed_asymmetric_cells() {
-        let one = Bounded {
-            hi: 1.0,
-            lo: 0.0,
-            err: 0.0,
-        };
-        let lower = 0.5 * (1.0 - 1.0_f64.next_down());
-        let upper = 0.5 * (1.0_f64.next_up() - 1.0);
-        assert!(lower < upper);
-        assert_eq!(one.certified_rounding(), Some(1.0));
-        assert_eq!(Bounded { err: lower, ..one }.certified_rounding(), None);
-        assert_eq!(Bounded { err: upper, ..one }.certified_rounding(), None);
-
-        // The old symmetric upward cell admitted this interval even though
-        // its lower end crosses the predecessor midpoint.
-        assert_eq!(
-            Bounded {
-                err: 3.0 * 2.0_f64.powi(-55),
-                ..one
-            }
-            .certified_rounding(),
-            None
-        );
-        assert_eq!(
-            Bounded {
-                err: 2.0_f64.powi(-56),
-                ..one
-            }
-            .certified_rounding(),
-            Some(1.0)
-        );
-
-        let negative = Bounded {
-            hi: -1.0,
-            lo: 0.0,
-            err: 2.0_f64.powi(-56),
-        };
-        assert_eq!(negative.certified_rounding(), Some(-1.0));
-        assert_eq!(
-            Bounded {
-                hi: 0.0,
-                lo: 0.0,
-                err: 0.0,
-            }
-            .certified_rounding(),
-            None
-        );
-        assert_eq!(
-            Bounded {
-                hi: f64::from_bits(1),
-                lo: 0.0,
-                err: 0.0,
-            }
-            .certified_rounding(),
-            None
-        );
-        assert_eq!(
-            Bounded {
-                hi: f64::MAX,
-                lo: 0.0,
-                err: 0.0,
-            }
-            .certified_rounding(),
-            None
-        );
     }
 
     #[test]
