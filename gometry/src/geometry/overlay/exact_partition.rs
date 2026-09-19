@@ -552,7 +552,7 @@ struct VisibilityEntry {
     prefix_y_hi: f64,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct VisibilityIndex {
     entries: Vec<VisibilityEntry>,
 }
@@ -1724,7 +1724,9 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     stored_points: Vec<Option<XY>>,
     protect_stored: bool,
     protect_all: bool,
-    visibility: VisibilityIndex,
+    /// Built on the first cross-component contact query; a connected
+    /// arrangement never needs it.
+    visibility: std::sync::OnceLock<VisibilityIndex>,
 }
 
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
@@ -5786,10 +5788,16 @@ impl ExactPartition<'_> {
         links.extend(0..size as u32);
         let mut component_hosts = Vec::new();
         try_reserve_vec(&mut component_hosts, minima.len())?;
+        // One component has no other component to contact: it lies in the
+        // unbounded face.
+        let connected = minima.len() == 1;
         for root in minima {
-            let host = self
-                .first_left_contact(topology, root)?
-                .map_or(0, |hit| self.contact_walk(topology, edges, hit) + 1);
+            let host = if connected {
+                0
+            } else {
+                self.first_left_contact(topology, root)?
+                    .map_or(0, |hit| self.contact_walk(topology, edges, hit) + 1)
+            };
             try_push_vec(&mut component_hosts, host)?;
             if let Some(exterior) = self.exterior_walk(topology, edges, root)? {
                 // Every link reaches a component with a strictly smaller
@@ -6008,10 +6016,13 @@ impl ExactPartition<'_> {
         let (_, query_x_hi) = outward_ratio_bounds(&qx, &qw)?;
         let (query_y_lo, query_y_hi) = outward_ratio_bounds(&qy, &qw)?;
         let mut nearest: Option<(ExactDyadic, ExactDyadic, f64, VisibilityHit)> = None;
-        let candidate_range = self.visibility.candidate_range(query_y_lo, query_y_hi);
+        let visibility = self
+            .visibility
+            .get_or_try_init(|| VisibilityIndex::build(self))?;
+        let candidate_range = visibility.candidate_range(query_y_lo, query_y_hi);
         let mut candidates = Vec::new();
         try_reserve_vec(&mut candidates, candidate_range.len())?;
-        candidates.extend_from_slice(&self.visibility.entries[candidate_range]);
+        candidates.extend_from_slice(&visibility.entries[candidate_range]);
         // The exact path retained the first hit on an equal-x tie. Restore
         // span order after the y-index walk so that tie handling is unchanged.
         candidates.sort_unstable_by_key(|entry| entry.edge);
@@ -6561,7 +6572,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
     }
 
-    let mut partition = ExactPartition {
+    let partition = ExactPartition {
         unique,
         recipes,
         spans,
@@ -6574,9 +6585,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         stored_points,
         protect_stored: false,
         protect_all: false,
-        visibility: VisibilityIndex::default(),
+        visibility: std::sync::OnceLock::new(),
     };
-    partition.visibility = VisibilityIndex::build(&partition)?;
     Ok(partition)
 }
 
