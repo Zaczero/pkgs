@@ -198,3 +198,31 @@ def geo_line_storage_twins() -> tuple[gm.GeometryArray, gm.GeometryArray]:
     ])
     mixed = gm.from_wkt(['LINESTRING (0 0, 0 10)', 'LINESTRING (0 0, 10 0)'], crs=4326)
     return (packed, mixed)
+
+
+def with_validity(array: Any, validity: bytes) -> Any:
+    """Rebuild a dense GeoArrow export with a geometry-level validity bitmap,
+    keeping its storage buffers (missing slots hold placeholder rows).
+    """
+    import pyarrow as pa
+
+    storage = array.storage
+    bitmap = pa.py_buffer(validity)
+    if pa.types.is_struct(storage.type):
+        children = [storage.field(index) for index in range(storage.type.num_fields)]
+        rebuilt = pa.Array.from_buffers(
+            storage.type, len(storage), [bitmap], children=children
+        )
+    elif pa.types.is_list(storage.type):
+        rebuilt = pa.Array.from_buffers(
+            storage.type,
+            len(storage),
+            [bitmap, storage.buffers()[1]],
+            children=[storage.values],
+        )
+    else:
+        buffers = storage.buffers()
+        rebuilt = pa.Array.from_buffers(
+            storage.type, len(storage), [bitmap, buffers[1], buffers[2]]
+        )
+    return pa.ExtensionArray.from_storage(array.type, rebuilt)

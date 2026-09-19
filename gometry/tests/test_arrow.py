@@ -16,7 +16,7 @@ import pyarrow as pa
 import pytest
 from gometry._lib import CRS as _CRS
 
-from tests._support import canon, polygon_storage_twins
+from tests._support import canon, polygon_storage_twins, with_validity
 
 _WGS84_PROJJSON_METADATA = _json.dumps(
     {'crs': _CRS(4326).to_projjson_dict(), 'crs_type': 'projjson'},
@@ -456,13 +456,11 @@ assert gm.from_arrow(wkb_array).to_wkt() == ['POINT (1 2)', None]
 
 
 def test_nullable_pyarrow_import_preserves_explicit_frame() -> None:
-    from gometry._arrow import apply_missing
-
     values = gm.GeometryArray([
         gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
         gm.LineString([(2.0, 2.0), (3.0, 3.0)]),
     ])
-    nullable = apply_missing(values.to_arrow(), b'\x01')
+    nullable = with_validity(values.to_arrow(), b'\x01')
     restored = cast('gm.GeometryArray', gm.from_arrow(nullable, crs=4326, epoch=2020.0))
     assert restored.is_missing.tolist() == [False, True]
     assert restored.crs.to_epsg() == 4326
@@ -639,10 +637,8 @@ def test_from_arrow_null_count_bitmap_mismatch_rejects_all_frontends() -> None:
 
 def test_from_arrow_consistent_null_positive_still_imports() -> None:
     """P02 positive: matching null_count + bitmap still yields a missing row."""
-    from gometry._arrow import apply_missing
-
     values = gm.GeometryArray([gm.Point(1, 2), gm.Point(3, 4)])
-    nullable = apply_missing(values.to_arrow(encoding='wkb'), b'\x01')
+    nullable = with_validity(values.to_arrow(encoding='wkb'), b'\x01')
     restored = cast('gm.GeometryArray', gm.from_arrow(nullable))
     assert restored.is_missing.tolist() == [False, True]
     assert restored[0].to_wkt() == 'POINT (1 2)'
@@ -715,11 +711,15 @@ def test_sliced_geoarrow_point_import_respects_coordinate_child_offsets() -> Non
 
 
 def test_from_arrow_wkb_rejects_ewkb_srid_conflicting_with_extension_crs() -> None:
-    from gometry._arrow import to_arrow_wkb
-
-    ewkb = (gm.Point(1, 2, crs=4326)).to_wkb(include_srid=True)
-    offsets = struct.pack('<ii', 0, len(ewkb))
-    arrow = to_arrow_wkb(offsets, ewkb, 'EPSG:3857', None)
+    wkb_type = (
+        gm
+        .GeometryArray([gm.Point(0, 0, crs=3857), gm.box(0, 0, 1, 1, crs=3857)])
+        .to_arrow()
+        .type
+    )
+    assert wkb_type.extension_name == 'geoarrow.wkb'
+    ewkb = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
+    arrow = pa.ExtensionArray.from_storage(wkb_type, pa.array([ewkb], pa.binary()))
     with pytest.raises(
         gm.CRSMismatchError, match='conflicts with the embedded EWKB SRID'
     ):

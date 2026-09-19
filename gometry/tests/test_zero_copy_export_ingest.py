@@ -11,6 +11,9 @@ import sys
 
 import gometry as gm
 import numpy as np
+import pyarrow as pa
+
+from tests._support import with_validity
 
 
 def test_to_arrow_from_arrow_packed_points_roundtrip() -> None:
@@ -54,13 +57,9 @@ def test_to_arrow_from_arrow_mixed_roundtrip() -> None:
 
 def test_to_arrow_from_arrow_missing_rows_null_bitmap() -> None:
     base = gm.points([0.0, 1.0, 2.0], [0.0, 1.0, 2.0])
-    # Build a nullable column via apply_missing on the dense export.
-    from gometry._arrow import apply_missing
-
-    dense = base.to_arrow()
     # bit0 present, bit1 missing, bit2 present → mask bytes with bit1 clear
     validity = bytes([(1 << 0) | (1 << 2)])
-    nullable = apply_missing(dense, validity)
+    nullable = with_validity(base.to_arrow(), validity)
     restored = gm.from_arrow(nullable)
     assert restored.is_missing.tolist() == [False, True, False]
     present = [g for g, m in zip(restored, restored.is_missing, strict=True) if not m]
@@ -90,7 +89,6 @@ def test_gather_selection_to_arrow_roundtrip() -> None:
 
 
 def test_gather_arrow_export_owns_materialized_columns() -> None:
-    import pyarrow as pa
 
     source = gm.GeometryArray([
         gm.LineString([(float(i), 0.0), (float(i + 1), 1.0)]) for i in range(8)
@@ -197,16 +195,14 @@ def test_arrow_c_array_capsule_roundtrip_packed_points() -> None:
 
 
 def _nullable_array(dense: gm.GeometryArray, missing: list[bool]) -> gm.GeometryArray:
-    """Build a GeometryArray with an explicit missing mask via apply_missing."""
-    from gometry._arrow import apply_missing
-
+    """Build a GeometryArray with an explicit missing mask over dense storage."""
     bits = 0
     for i, is_missing in enumerate(missing):
         if not is_missing:
             bits |= 1 << i
     nbytes = (len(missing) + 7) // 8
     validity = bits.to_bytes(nbytes, 'little')
-    return gm.from_arrow(apply_missing(dense.to_arrow(), validity))
+    return gm.from_arrow(with_validity(dense.to_arrow(), validity))
 
 
 def test_capsule_window_missing_packed_lines_roundtrip() -> None:
@@ -215,8 +211,6 @@ def test_capsule_window_missing_packed_lines_roundtrip() -> None:
     Item 1 regression: list_array_windowed sets offset=start; validity bits are
     physical (offset+i), not length-only at bit 0.
     """
-    import pyarrow as pa
-
     lines = gm.GeometryArray([
         gm.LineString([(float(i), 0.0), (float(i + 1), 1.0)]) for i in range(7)
     ])
@@ -254,7 +248,6 @@ def test_capsule_window_missing_packed_lines_roundtrip() -> None:
 
 def test_capsule_window_missing_packed_polygons_roundtrip() -> None:
     """Same offset-relative validity contract for Windowed packed polygons."""
-    import pyarrow as pa
 
     def box(i: float) -> gm.Polygon:
         return gm.Polygon([
@@ -284,8 +277,6 @@ def test_capsule_window_missing_packed_polygons_roundtrip() -> None:
 
 def test_capsule_missing_packed_lines_identity_roundtrip() -> None:
     """Identity packed lines with missing still export a correct null bitmap."""
-    import pyarrow as pa
-
     lines = gm.GeometryArray([
         gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
         gm.LineString([(2.0, 0.0), (3.0, 1.0)]),

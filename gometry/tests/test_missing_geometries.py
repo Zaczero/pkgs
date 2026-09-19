@@ -15,6 +15,8 @@ import gometry as gm
 import numpy as np
 import pytest
 
+from tests._support import with_validity
+
 
 @pytest.fixture
 def masked() -> gm.GeometryArray:
@@ -817,12 +819,10 @@ def test_container_equality_and_pickle(masked: gm.GeometryArray) -> None:
     ])
     assert pickle.loads(pickle.dumps(mixed)) == mixed
 
-    from gometry._arrow import apply_missing
-
     line = gm.LineString([(0.0, 0.0), (1.0, 1.0)])
     line_masked = gm.GeometryArray([line, None])
     arrow_masked = gm.from_arrow(
-        apply_missing(gm.GeometryArray([line, line]).to_arrow(), b'\x01')
+        with_validity(gm.GeometryArray([line, line]).to_arrow(), b'\x01')
     )
     assert arrow_masked == line_masked
     assert hash(arrow_masked) == hash(line_masked)
