@@ -553,6 +553,7 @@ dependencies = [
  "lexical-core",
  "libc",
  "libsqlite3-sys",
+ "mimalloc",
  "numpy",
  "proj-sys",
  "pyo3",

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import collections
 import collections.abc
+import os
 import subprocess
 import sys
 import tempfile
@@ -29,13 +30,20 @@ _requires_rlimit_as = pytest.mark.skipif(
 def _run_child(
     script: str, *, timeout: float = 8.0
 ) -> subprocess.CompletedProcess[str]:
-    """Run *script* in a fresh interpreter under ``timeout`` wall seconds."""
+    """Run *script* in a fresh interpreter under ``timeout`` wall seconds.
+
+    The native allocator commits inside address space it reserved at startup,
+    which an address-space cap cannot refuse; reserving in small steps lets
+    the cap bite as soon as the headroom is gone instead of after the first
+    gigabyte of an infinite stream.
+    """
     return subprocess.run(
         [sys.executable, '-c', textwrap.dedent(script)],
         capture_output=True,
         check=False,
         text=True,
         timeout=timeout,
+        env={**os.environ, 'MIMALLOC_ARENA_RESERVE': '4MiB'},
     )
 
 
@@ -500,12 +508,15 @@ def test_d11_honest_points_and_buffer() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _d10_rlimit_script(body: str, *, as_bytes: int = 256 * 1024 * 1024) -> str:
+def _d10_rlimit_script(body: str, *, headroom: int = 16 * 1024 * 1024) -> str:
     """Child script: tight RLIMIT_AS so infinite collect → catchable MemoryError.
 
     N3 removed the artificial ``MAX_BARE_COLLECT`` ceiling. Valid large finite
     generators succeed; infinite streams rely on proportional fallible growth.
     Under Linux overcommit that only cleanly surfaces with a process rlimit.
+    The cap is the address space the imports already hold plus ``headroom``,
+    so how much an infinite stream materializes first does not depend on
+    what the interpreter, NumPy and the allocator reserved at startup.
     """
     indented = textwrap.indent(textwrap.dedent(body).strip(), '    ')
     return f"""\
@@ -521,8 +532,12 @@ import gometry as gm
 import numpy  # noqa: F401
 
 # This disposable child never needs to raise its address-space ceiling again.
+with open('/proc/self/status') as status:
+    in_use = next(int(line.split()[1]) * 1024 for line in status if line.startswith('VmSize:'))
 _, hard = resource.getrlimit(resource.RLIMIT_AS)
-limit = {as_bytes} if hard == resource.RLIM_INFINITY else min({as_bytes}, hard)
+limit = in_use + {headroom}
+if hard != resource.RLIM_INFINITY:
+    limit = min(limit, hard)
 resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
 
 try:
@@ -671,10 +686,7 @@ def test_n3_crs_configure_generator_2_20_matches_list() -> None:
 def test_n3_infinite_crs_configure_memoryerror_under_rlimit() -> None:
     """N3: infinite search_paths generator → catchable MemoryError under rlimit."""
     completed = _assert_terminates(
-        _d10_rlimit_script(
-            "gm.crs_configure(search_paths=itertools.repeat('/tmp'))",
-            as_bytes=128 * 1024 * 1024,
-        ),
+        _d10_rlimit_script("gm.crs_configure(search_paths=itertools.repeat('/tmp'))"),
         timeout=30.0,
     )
     blob = completed.stdout + completed.stderr

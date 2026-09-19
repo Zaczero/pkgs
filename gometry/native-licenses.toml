@@ -124,3 +124,16 @@ cargo-forbidden-features = ["sqlcipher", "bundled-sqlcipher", "bundled-sqlcipher
 notice-start = "/*\n** 2001-09-15"
 notice-end = "*/"
 notice-sha256 = "cc65d76f325d884dd49e319acf3764d5513920f34ad18e34347b8dedc6ddd2ec"
+
+[[component]]
+name          = "mimalloc"
+version       = "3.3.2"
+license       = "MIT"
+homepage      = "https://github.com/microsoft/mimalloc"
+cargo-package = "libmimalloc-sys"
+cargo-version = "0.1.49"
+cargo-checksum = "6a45a52f43e1c16f667ccfe4dd8c85b7f7c204fd5e3bf46c5b0db9a5c3c0b8e9"
+cargo-source = "c_src/mimalloc/v3/LICENSE"
+cargo-features = ["local_dynamic_tls"]
+cargo-forbidden-features = ["v2"]
+notice-sha256 = "82ade5d7d9b029044b5fbbc326207fc47c2d44ee4dd71e8a559c36d728217de9"

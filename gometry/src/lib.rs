@@ -65,6 +65,9 @@ mod test_support;
 #[cfg(test)]
 #[global_allocator]
 static TEST_ALLOCATOR: test_support::CountingAllocator = test_support::CountingAllocator;
+#[cfg(not(test))]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[macro_use]
 mod heap_size;
 pub(crate) use heap_size::HeapSize;

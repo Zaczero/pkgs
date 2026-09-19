@@ -45,6 +45,7 @@ lexical-core = { version = "1.0.6", default-features = false, features = [
   "parse-floats"
 ] }
 libc = { version = "0.2", default-features = false }
+mimalloc = { version = "0.1.52", default-features = false, features = ["local_dynamic_tls"] }
 # Keep bundled SQLite linked into bundled PROJ; this direct dependency is the
 # feature-unification lever used by proj-sys.
 libsqlite3-sys = { version = "0.35.0", default-features = false, features = [
