@@ -869,9 +869,9 @@ like centroid. Deterministic: the same input and ``seed`` always produce
 the same points (an explicit seed is required — no hidden global RNG). Array
 rows draw distinct deterministic streams derived from ``seed`` and the row
 index, and a scalar geometry IS row 0 — so ``arr.sample_points(n, seed=s)[0]``
-and ``arr[0].sample_points(n, seed=s)`` agree. An empty row yields an empty
-group rather than failing the batch; an empty SCALAR raises. Sampled points are invented interior points, so they cannot carry the
-source geometry's Z/M and are returned in XY.
+and ``arr[0].sample_points(n, seed=s)`` agree. An empty geometry has nothing
+to sample and yields no points. Sampled points are invented interior points,
+so they cannot carry the source geometry's Z/M and are returned in XY.
 
 Parameters
 ----------"
@@ -880,8 +880,6 @@ Parameters
         r"
 Raises
 ------
-InvalidGeometryError
-    If ``count > 0`` and a geometry is empty.
 GeometryError
     If ``count`` or ``seed`` is invalid.
 

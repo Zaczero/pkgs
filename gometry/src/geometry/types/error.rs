@@ -89,8 +89,6 @@ pub enum GeometryErrorKind {
     PointSplitterRequired,
     #[error("a Polygon or MultiPolygon is required")]
     PolygonRequired,
-    #[error("sample_points requires a non-empty geometry")]
-    EmptySampleSource,
     #[error(
         "snap_to_grid size is too fine for the coordinate magnitude (the snapped coordinate \
          overflowed)"
@@ -105,7 +103,7 @@ pub enum GeometryErrorKind {
     AntimeridianPoleOrdinates,
     #[error("{0}")]
     InvalidDe9imPattern(Box<str>),
-    #[error("Delaunay triangulation failed: {0}")]
+    #[error("triangulation failed: {0}")]
     Triangulation(Box<str>),
     #[error("Voronoi construction failed: {0}")]
     Voronoi(Box<str>),

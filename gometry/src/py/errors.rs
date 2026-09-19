@@ -457,7 +457,6 @@ impl From<Error> for PyErr {
                 | G::MalformedCsrOffsets
                 | G::RingTooShort(_)
                 | G::EmptyLinework
-                | G::EmptySampleSource
                 | G::AntimeridianSplitFailed(_)
                 | G::AntimeridianPoleOrdinates
                 | G::Triangulation(_)

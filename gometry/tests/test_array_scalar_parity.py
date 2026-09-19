@@ -188,8 +188,7 @@ def test_sample_points_scalar_is_row_zero_and_empty_rows_degrade() -> None:
         poly.sample_points(4, seed=7).to_wkt() == poly.sample_points(4, seed=7).to_wkt()
     )
 
-    # An empty row yields an empty group; the scalar still raises.
+    # An empty geometry samples nothing, as a row and as a scalar.
     mixed = gm.GeometryArray([poly, gm.from_wkt('POLYGON EMPTY'), poly])
     assert [len(group) for group in mixed.sample_points(3, seed=1)] == [3, 0, 3]
-    with pytest.raises(gm.InvalidGeometryError):
-        gm.from_wkt('POLYGON EMPTY').sample_points(3, seed=1)
+    assert len(gm.from_wkt('POLYGON EMPTY').sample_points(3, seed=1)) == 0

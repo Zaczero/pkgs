@@ -614,7 +614,8 @@ def test_sample_points_is_deterministic_and_area_weighted() -> None:
     assert all(gm.within(p, donut) for p in samples)
     assert not any(gm.within(p, hole) for p in samples)
     assert len(box.sample_points(0, seed=1)) == 0
-    assert len(gm.from_wkt('POLYGON EMPTY').sample_points(0, seed=1)) == 0
+    for empty in ('POLYGON EMPTY', 'POINT EMPTY', 'GEOMETRYCOLLECTION EMPTY'):
+        assert len(gm.from_wkt(empty).sample_points(3, seed=1)) == 0
     line = gm.LineString([(0, 0), (10, 0), (10, 5)])
     on_line = line.sample_points(50, seed=4)
     assert len(on_line) == 50
@@ -658,12 +659,6 @@ def test_sample_points_is_deterministic_and_area_weighted() -> None:
 
 def test_sample_points_error_gates() -> None:
     box = gm.box(0, 0, 1, 1)
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.from_wkt('POLYGON EMPTY').sample_points(3, seed=1)
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.from_wkt('POINT EMPTY').sample_points(3, seed=1)
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.from_wkt('GEOMETRYCOLLECTION EMPTY').sample_points(3, seed=1)
     with pytest.raises(gm.GeometryError, match='count must be >= 0'):
         box.sample_points(-1, seed=1)
     with pytest.raises(TypeError, match='seed'):

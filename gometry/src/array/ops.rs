@@ -534,24 +534,15 @@ impl PyGeometryArray {
                                 row_sample_seed(values[logical] as u64, 0)
                             },
                         };
-                        let values = row
+                        let points = row
                             .row()
-                            .try_with_shape(|shape| {
-                                (!shape.is_empty())
-                                    .then(|| shape.sample_points(count, seed))
-                                    .transpose()
-                            })
+                            .try_with_shape(|shape| shape.sample_points(count, seed))
                             .map_err(|error| (error, None))?;
-                        (
-                            logical,
-                            values.map(|points| {
-                                points.into_iter().map(Shape::Point).collect::<Vec<_>>()
-                            }),
-                        )
+                        (logical, Some(points))
                     },
                 };
                 builder
-                    .push_row(values.into_iter().flatten())
+                    .push_row(values.into_iter().flatten().map(Shape::Point))
                     .map_err(|error| (error, Some(row)))?;
             }
             Ok(builder)

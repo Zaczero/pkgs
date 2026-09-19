@@ -324,7 +324,8 @@ impl Shape {
     /// across point atoms (equal weight) — with the centroid rule's
     /// degenerate fallback: zero-area input samples its linework, zero
     /// length its vertices. Output points are XY (new locations have no
-    /// meaningful Z/M); CRS rides at the surface layer.
+    /// meaningful Z/M); CRS rides at the surface layer. An empty geometry
+    /// samples nothing.
     pub fn sample_points(&self, count: usize, seed: u64) -> Result<Vec<Point>> {
         ExpansionBudget::check("sample_points", "count", count)?;
         if count == 0 {
@@ -409,14 +410,14 @@ impl Shape {
         }
         let mut atoms: Vec<Point> = Vec::new();
         self.try_for_each_point(|point| try_push_vec(&mut atoms, point))?;
-        sample_weighted(
+        Ok(sample_weighted(
             count,
             seed,
             &atoms,
             |_| 1.0,
             |atom, _| Point::new(atom.x, atom.y),
         )?
-        .ok_or_else(|| GeometryErrorKind::EmptySampleSource.into())
+        .unwrap_or_default())
     }
 
     pub fn voronoi_polygons(
