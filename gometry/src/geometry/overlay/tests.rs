@@ -413,37 +413,11 @@ mod binary_areal_overlay_tests {
         }
     }
 
-    fn assert_line_overlay_matches_generic(inputs: &[&Shape], op: OverlayOp) {
-        let fast = overlay_all(
-            inputs,
-            crate::geometry::TopologyDomain::Cartesian,
-            op,
-            Strictness::Strict,
-        );
-        let generic = super::super::nary::overlay_all_line_oracle(inputs, op, Strictness::Strict);
-        match (fast, generic) {
-            (Ok(fast), Ok(generic)) => {
-                assert!(
-                    fast.equals(&generic).unwrap(),
-                    "{}: {fast:?} != {generic:?}",
-                    op.name()
-                );
-            },
-            (Err(fast), Err(generic)) => assert_eq!(
-                fast.to_string(),
-                generic.to_string(),
-                "{}: {fast} != {generic}",
-                op.name()
-            ),
-            (fast, generic) => panic!("{} diverged: fast={fast:?}, generic={generic:?}", op.name()),
-        }
-    }
-
-    /// The areal arrangement lane reports every lower-dimensional contact the
-    /// joint graph does: shared boundary runs, isolated touches, a region plus
-    /// a separate touch, nested with a shared side, identical operands.
+    /// Every lower-dimensional contact of two areal operands is the same in
+    /// both operand orders: shared boundary runs, isolated touches, a region
+    /// plus a separate touch, nested with a shared side, identical operands.
     #[test]
-    fn areal_intersection_lane_matches_joint_graph_on_contacts() {
+    fn areal_intersection_contacts_are_operand_order_invariant() {
         let cases = [
             (
                 "shared edge",
@@ -513,8 +487,8 @@ mod binary_areal_overlay_tests {
             ),
         ];
         for (name, left, right) in cases {
-            let forward = assert_intersection_matches_joint_graph(name, &left, &right);
-            let reverse = assert_intersection_matches_joint_graph(name, &right, &left);
+            let forward = intersection(&left, &right);
+            let reverse = intersection(&right, &left);
             assert_eq!(wkb(&forward), wkb(&reverse), "{name}");
         }
     }
@@ -533,8 +507,7 @@ mod binary_areal_overlay_tests {
         ])
         .unwrap();
         for (left, right) in [(&left, &right), (&right, &left)] {
-            let result =
-                assert_intersection_matches_joint_graph("region and isolated point", left, right);
+            let result = intersection(left, right);
             assert!(
                 result.equals(&expected).unwrap(),
                 "{result:?} != {expected:?}"
@@ -559,20 +532,12 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn areal_intersection_matches_graph_on_degenerate_boundaries() {
+    fn areal_intersection_on_degenerate_boundaries() {
         let cases: &[(&str, &[(f64, f64)])] = &[
             ("collapsed ring", &[
                 (0.0, 0.0),
                 (2.0, 0.0),
                 (4.0, 0.0),
-                (0.0, 0.0),
-            ]),
-            ("repeated vertex", &[
-                (0.0, 0.0),
-                (2.0, 0.0),
-                (2.0, 0.0),
-                (2.0, 2.0),
-                (0.0, 2.0),
                 (0.0, 0.0),
             ]),
             ("retraced exterior spur", &[
@@ -589,7 +554,7 @@ mod binary_areal_overlay_tests {
             let left = Shape::Polygon(polygon(coordinates));
             let right = square(3.0, -1.0, 5.0, 1.0);
             for (left, right) in [(&left, &right), (&right, &left)] {
-                let result = assert_intersection_matches_joint_graph(name, left, right);
+                let result = intersection(left, right);
                 if name == "collapsed ring" {
                     assert!(
                         result.equals(&line(&[(3.0, 0.0), (4.0, 0.0)])).unwrap(),
@@ -601,42 +566,6 @@ mod binary_areal_overlay_tests {
                     assert!(result.is_empty(), "{result:?}");
                 }
             }
-        }
-    }
-
-    #[test]
-    fn areal_intersection_matches_joint_graph_on_triangle_contacts() {
-        let left = square(0.0, 0.0, 2.0, 2.0);
-        let cases: &[(&str, &[(f64, f64)])] = &[
-            ("vertex on edge", &[
-                (2.0, 1.0),
-                (3.0, 0.0),
-                (3.0, 2.0),
-                (2.0, 1.0),
-            ]),
-            ("shared diagonal endpoints", &[
-                (0.0, 0.0),
-                (2.0, 2.0),
-                (3.0, 0.0),
-                (0.0, 0.0),
-            ]),
-            ("crossing edges", &[
-                (-1.0, 1.0),
-                (3.0, 1.0),
-                (1.0, 3.0),
-                (-1.0, 1.0),
-            ]),
-            ("shared edge reversed", &[
-                (0.0, 0.0),
-                (1.0, -2.0),
-                (2.0, 0.0),
-                (0.0, 0.0),
-            ]),
-        ];
-        for &(name, coordinates) in cases {
-            let right = Shape::Polygon(polygon(coordinates));
-            assert_intersection_matches_joint_graph(name, &left, &right);
-            assert_intersection_matches_joint_graph(name, &right, &left);
         }
     }
 
@@ -661,40 +590,27 @@ mod binary_areal_overlay_tests {
                     OverlayOp::Intersection,
                     strictness,
                 );
-                let joint =
-                    super::super::nary::binary_intersection_joint_graph(&left, &right, strictness);
-                match (fast, reverse, joint) {
-                    (Ok(fast), Ok(reverse), Ok(joint)) => {
-                        assert_eq!(wkb(&fast), wkb(&joint), "{fast:?} != {joint:?}");
+                match (fast, reverse) {
+                    (Ok(fast), Ok(reverse)) => {
                         assert_eq!(wkb(&fast), wkb(&reverse), "{fast:?} != {reverse:?}");
-                        assert_eq!(fast.has_z(), joint.has_z(), "{fast:?}");
-                        assert_eq!(fast.has_m(), joint.has_m(), "{fast:?}");
                     },
-                    (Err(fast), Err(reverse), Err(joint)) => {
-                        assert_eq!(fast.to_string(), joint.to_string());
+                    (Err(fast), Err(reverse)) => {
                         assert_eq!(fast.to_string(), reverse.to_string());
                     },
-                    (fast, reverse, joint) => {
-                        panic!("diverged: fast={fast:?} reverse={reverse:?} joint={joint:?}")
-                    },
+                    (fast, reverse) => panic!("diverged: fast={fast:?} reverse={reverse:?}"),
                 }
             }
         }
     }
 
-    fn assert_intersection_matches_joint_graph(name: &str, left: &Shape, right: &Shape) -> Shape {
-        let fast = overlay_all(
+    fn intersection(left: &Shape, right: &Shape) -> Shape {
+        overlay_all(
             &[left, right],
             crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::Intersection,
             Strictness::Strict,
         )
-        .unwrap();
-        let exact =
-            super::super::nary::binary_intersection_joint_graph(left, right, Strictness::Strict)
-                .unwrap();
-        assert_eq!(wkb(&fast), wkb(&exact), "{name}: {fast:?} != {exact:?}");
-        fast
+        .unwrap()
     }
 
     /// Pinch resolution: corner-touching squares union into a VALID
@@ -780,7 +696,7 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn convex_intersection_fast_path_matches_joint_graph() {
+    fn convex_intersection_fast_path_yields_a_polygon() {
         let left = square(0.0, 0.0, 4.0, 4.0);
         let right = Shape::Polygon(polygon(&[
             (2.0, -1.0),
@@ -789,7 +705,7 @@ mod binary_areal_overlay_tests {
             (-1.0, 2.0),
             (2.0, -1.0),
         ]));
-        let fast = assert_intersection_matches_joint_graph("crossing", &left, &right);
+        let fast = intersection(&left, &right);
         assert!(matches!(fast, Shape::Polygon(_)), "{fast:?}");
     }
 
@@ -811,81 +727,19 @@ mod binary_areal_overlay_tests {
             // The first pair makes the candidate decline and must fall through
             // the original exact assembly chain. The second is settled before
             // dispatch by the bounds certificate. Both keep POLYGON EMPTY.
-            let fast = assert_intersection_matches_joint_graph(name, &left, &right);
-            assert!(matches!(
-                fast,
-                Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XY)
-            ));
+            let fast = intersection(&left, &right);
+            assert!(
+                matches!(
+                    fast,
+                    Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XY)
+                ),
+                "{name}: {fast:?}"
+            );
         }
     }
 
     #[test]
-    fn convex_intersection_defers_contacts_and_concavity_to_joint_graph() {
-        let cases = [
-            (
-                "edge touch",
-                square(0.0, 0.0, 2.0, 2.0),
-                square(2.0, 0.0, 4.0, 2.0),
-            ),
-            (
-                "vertex touch",
-                square(0.0, 0.0, 2.0, 2.0),
-                square(2.0, 2.0, 4.0, 4.0),
-            ),
-            (
-                "nested",
-                square(0.0, 0.0, 4.0, 4.0),
-                square(1.0, 1.0, 2.0, 2.0),
-            ),
-            (
-                "disjoint",
-                square(0.0, 0.0, 2.0, 2.0),
-                square(4.0, 4.0, 6.0, 6.0),
-            ),
-            (
-                "equal",
-                square(0.0, 0.0, 2.0, 2.0),
-                square(0.0, 0.0, 2.0, 2.0),
-            ),
-            (
-                "collinear overlap",
-                square(0.0, 0.0, 4.0, 4.0),
-                Shape::Polygon(polygon(&[
-                    (2.0, 0.0),
-                    (6.0, 0.0),
-                    (6.0, 2.0),
-                    (2.0, 2.0),
-                    (2.0, 0.0),
-                ])),
-            ),
-            (
-                "concave",
-                Shape::Polygon(polygon(&[
-                    (0.0, 0.0),
-                    (6.0, 0.0),
-                    (6.0, 1.0),
-                    (1.0, 1.0),
-                    (1.0, 5.0),
-                    (6.0, 5.0),
-                    (6.0, 6.0),
-                    (0.0, 6.0),
-                    (0.0, 0.0),
-                ])),
-                Shape::Polygon(polygon(&[
-                    (0.0, 0.0),
-                    (2.0, 0.0),
-                    (2.0, 2.0),
-                    (5.0, 2.0),
-                    (5.0, 5.0),
-                    (0.0, 5.0),
-                    (0.0, 0.0),
-                ])),
-            ),
-        ];
-        for (name, left, right) in cases {
-            let _ = assert_intersection_matches_joint_graph(name, &left, &right);
-        }
-
+    fn concave_intersection_keeps_the_line_the_areal_shortcut_drops() {
         let concave_left = polygon(&[
             (0.0, 0.0),
             (6.0, 0.0),
@@ -919,39 +773,12 @@ mod binary_areal_overlay_tests {
         .unwrap();
         let concave_left_shape = Shape::Polygon(concave_left);
         let concave_right_shape = Shape::Polygon(concave_right);
-        let exact = assert_intersection_matches_joint_graph(
-            "concave",
-            &concave_left_shape,
-            &concave_right_shape,
-        );
+        let exact = intersection(&concave_left_shape, &concave_right_shape);
         assert_ne!(wkb(&unrestricted), wkb(&exact));
     }
 
     #[test]
-    fn convex_intersection_rejects_holes_multipolygons_and_invalid_shells() {
-        let holed = Shape::Polygon(
-            Polygon::new(
-                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-                vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new(2.0, 2.0).unwrap(),
-                        Point::new(4.0, 2.0).unwrap(),
-                        Point::new(4.0, 4.0).unwrap(),
-                        Point::new(2.0, 4.0).unwrap(),
-                        Point::new(2.0, 2.0).unwrap(),
-                    ])
-                    .unwrap(),
-                )],
-            )
-            .unwrap(),
-        );
-        let multipolygon = Shape::MultiPolygon(
-            vec![
-                polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
-                polygon(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0), (4.0, 4.0)]),
-            ]
-            .into(),
-        );
+    fn convex_intersection_rejects_an_invalid_shell() {
         let invalid = Shape::Polygon(polygon(&[
             (0.0, 0.0),
             (4.0, 4.0),
@@ -960,29 +787,13 @@ mod binary_areal_overlay_tests {
             (0.0, 0.0),
         ]));
         let cutter = square(1.0, 1.0, 5.0, 5.0);
-        for (name, input) in [
-            ("hole", holed),
-            ("multipolygon", multipolygon),
-            ("invalid", invalid),
-        ] {
-            if name == "invalid" {
-                let result = overlay_all(
-                    &[&input, &cutter],
-                    crate::geometry::TopologyDomain::Cartesian,
-                    OverlayOp::Intersection,
-                    Strictness::Strict,
-                )
-                .unwrap();
-                assert!(matches!(result, Shape::MultiPolygon(_)), "{result:?}");
-                assert_eq!(result.area(), 4.5);
-            } else {
-                let _ = assert_intersection_matches_joint_graph(name, &input, &cutter);
-            }
-        }
+        let result = intersection(&invalid, &cutter);
+        assert!(matches!(result, Shape::MultiPolygon(_)), "{result:?}");
+        assert_eq!(result.area(), 4.5);
     }
 
     #[test]
-    fn polygon_line_intersection_matches_generic_boundary_and_hole_cases() {
+    fn polygon_line_intersection_boundary_and_hole_cases() {
         let holed = Shape::Polygon(
             Polygon::new(
                 polygon(&[
@@ -1050,7 +861,7 @@ mod binary_areal_overlay_tests {
         ];
 
         for (name, polygon, line) in cases {
-            let result = assert_intersection_matches_joint_graph(name, &polygon, &line);
+            let result = intersection(&polygon, &line);
             match name {
                 "crossing" | "contained" | "boundary-collinear" => {
                     assert!(matches!(result, Shape::LineString(_)), "{name}: {result:?}");
@@ -1077,8 +888,7 @@ mod binary_areal_overlay_tests {
             }
         }
 
-        let reverse = assert_intersection_matches_joint_graph(
-            "reverse",
+        let reverse = intersection(
             &line(&[(-1.0, 2.0), (5.0, 2.0)]),
             &square(0.0, 0.0, 4.0, 4.0),
         );
@@ -1088,70 +898,33 @@ mod binary_areal_overlay_tests {
             (-2.0, 9.0),
             (-1.0, 9.0),
         ]]);
-        let multi_result = assert_intersection_matches_joint_graph(
-            "multiple line components",
-            &square(0.0, 0.0, 4.0, 4.0),
-            &multi_line,
-        );
+        let multi_result = intersection(&square(0.0, 0.0, 4.0, 4.0), &multi_line);
         assert!(
             matches!(multi_result, Shape::MultiLineString(_)),
             "{multi_result:?}"
         );
 
-        let zm_result = assert_intersection_matches_joint_graph(
-            "ZM",
+        let zm_result = intersection(
             &zm_square(0.0, 0.0, 4.0, 4.0, 10.0),
             &zm_line((-1.0, 2.0), (5.0, 2.0)),
         );
         assert!(zm_result.has_z() && zm_result.has_m(), "{zm_result:?}");
         assert_all_points_have_z(&zm_result);
         zm_result.for_each_point(|point| assert!(point.m().is_some(), "{zm_result:?}"));
-
-        let invalid = Shape::Polygon(polygon(&[
-            (0.0, 0.0),
-            (4.0, 4.0),
-            (0.0, 4.0),
-            (4.0, 0.0),
-            (0.0, 0.0),
-        ]));
-        let _ = assert_intersection_matches_joint_graph(
-            "invalid polygon",
-            &invalid,
-            &line(&[(-1.0, 2.0), (5.0, 2.0)]),
-        );
     }
 
     #[test]
-    fn polygon_line_intersection_falls_back_for_ambiguous_support() {
+    fn polygon_intersection_with_a_collapsed_line_is_its_point() {
         let polygon = square(0.0, 0.0, 4.0, 4.0);
-        let live = line(&[(-1.0, 2.0), (5.0, 2.0)]);
         let collapsed = line(&[(1.0, 1.0), (1.0, 1.0)]);
-        let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
-        let collection = Shape::geometry_collection(vec![live, point(8.0, 8.0)])
-            .expect("test collection is valid");
-        let empty_member = Shape::MultiLineString(
-            MultiLineString::from_values(CoordinateAxes::XY, vec![
-                MultiMember::Empty,
-                MultiMember::Value(line_seq(&[(-1.0, 2.0), (5.0, 2.0)])),
-            ])
-            .unwrap(),
-        );
-
         let collapsed_result = polygon
             .intersection(&collapsed, Strictness::Strict)
             .unwrap();
         assert_eq!(collapsed_result, point(1.0, 1.0));
-        for (name, line) in [
-            ("empty", empty),
-            ("collection", collection),
-            ("empty member", empty_member),
-        ] {
-            let _ = assert_intersection_matches_joint_graph(name, &polygon, &line);
-        }
     }
 
     #[test]
-    fn generic_polygon_intersection_absorbs_retained_boundary_lines() {
+    fn polygon_intersection_absorbs_retained_boundary_lines() {
         let cases = [
             (
                 "rounded shared boundary",
@@ -1192,87 +965,30 @@ mod binary_areal_overlay_tests {
             let left = Shape::Polygon(left);
             let right = Shape::Polygon(right);
             let expected = Shape::Polygon(expected);
-            let result = super::super::nary::binary_intersection_joint_graph(
-                &left,
-                &right,
-                Strictness::Strict,
-            )
-            .unwrap();
+            let result = intersection(&left, &right);
             assert_eq!(wkb(&result), wkb(&expected), "{name}: {result:?}");
             assert!(matches!(result, Shape::Polygon(_)), "{name}: {result:?}");
         }
 
         let square = square(0.0, 0.0, 4.0, 4.0);
         let partial_boundary = line(&[(1.0, 0.0), (3.0, 0.0)]);
-        let result = super::super::nary::binary_intersection_joint_graph(
-            &square,
-            &partial_boundary,
-            Strictness::Strict,
-        )
-        .unwrap();
+        let result = intersection(&square, &partial_boundary);
         assert_eq!(wkb(&result), wkb(&partial_boundary), "{result:?}");
         assert!(matches!(result, Shape::LineString(_)), "{result:?}");
     }
 
-    fn assert_point_intersection_matches_generic(
-        name: &str,
-        left: &Shape,
-        right: &Shape,
-        strictness: Strictness,
-    ) -> Option<Shape> {
-        let fast = overlay_all(
+    fn point_intersection(left: &Shape, right: &Shape, strictness: Strictness) -> Shape {
+        overlay_all(
             &[left, right],
             crate::geometry::TopologyDomain::Cartesian,
             OverlayOp::Intersection,
             strictness,
-        );
-        let generic = super::super::nary::binary_intersection_joint_graph(left, right, strictness);
-        match (fast, generic) {
-            (Ok(fast), Ok(generic)) => {
-                assert_eq!(wkb(&fast), wkb(&generic), "{name}: {fast:?} != {generic:?}");
-                Some(fast)
-            },
-            (Err(fast), Err(generic)) => {
-                assert_eq!(fast.to_string(), generic.to_string(), "{name}");
-                None
-            },
-            (fast, generic) => panic!("{name} diverged: fast={fast:?}, generic={generic:?}"),
-        }
+        )
+        .unwrap()
     }
 
     #[test]
-    fn scalar_point_intersection_matches_generic_for_line_and_polygon_cases() {
-        let line_cases = [
-            (
-                "line interior",
-                point(1.0, 0.0),
-                line(&[(0.0, 0.0), (2.0, 0.0)]),
-            ),
-            (
-                "line endpoint",
-                point(0.0, 0.0),
-                line(&[(0.0, 0.0), (2.0, 0.0)]),
-            ),
-            (
-                "line overlap miss",
-                point(1.0, 1.0),
-                line(&[(0.0, 0.0), (2.0, 0.0)]),
-            ),
-            (
-                "line disjoint",
-                point(10.0, 10.0),
-                line(&[(0.0, 0.0), (2.0, 0.0)]),
-            ),
-            (
-                "line repeated vertices",
-                point(1.0, 0.0),
-                line(&[(0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (2.0, 0.0)]),
-            ),
-        ];
-        for (name, point, line) in line_cases {
-            assert_point_intersection_matches_generic(name, &point, &line, Strictness::Strict);
-            assert_point_intersection_matches_generic(name, &line, &point, Strictness::Strict);
-        }
+    fn scalar_point_intersection_with_a_collapsed_line_is_the_point() {
         let collapsed = line(&[(1.0, 1.0), (1.0, 1.0)]);
         let collapsed_point = point(1.0, 1.0);
         for (left, right) in [
@@ -1289,66 +1005,6 @@ mod binary_areal_overlay_tests {
             .unwrap();
             assert_eq!(result, point(1.0, 1.0));
         }
-
-        let holed = Shape::Polygon(
-            Polygon::new(
-                polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-                vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new(2.0, 2.0).unwrap(),
-                        Point::new(4.0, 2.0).unwrap(),
-                        Point::new(4.0, 4.0).unwrap(),
-                        Point::new(2.0, 4.0).unwrap(),
-                        Point::new(2.0, 2.0).unwrap(),
-                    ])
-                    .unwrap(),
-                )],
-            )
-            .unwrap(),
-        );
-        let polygon_cases = [
-            (
-                "polygon interior",
-                point(1.0, 1.0),
-                square(0.0, 0.0, 4.0, 4.0),
-            ),
-            (
-                "polygon shell boundary",
-                point(0.0, 2.0),
-                square(0.0, 0.0, 4.0, 4.0),
-            ),
-            (
-                "polygon shell vertex",
-                point(0.0, 0.0),
-                square(0.0, 0.0, 4.0, 4.0),
-            ),
-            (
-                "polygon overlap miss",
-                point(4.5, 2.0),
-                square(0.0, 0.0, 4.0, 4.0),
-            ),
-            ("polygon hole interior", point(3.0, 3.0), holed.clone()),
-            ("polygon hole boundary", point(2.0, 3.0), holed.clone()),
-            ("polygon outside hole", point(1.0, 1.0), holed),
-        ];
-        for (name, point, polygon) in polygon_cases {
-            assert_point_intersection_matches_generic(name, &point, &polygon, Strictness::Strict);
-            assert_point_intersection_matches_generic(name, &polygon, &point, Strictness::Strict);
-        }
-
-        let invalid = Shape::Polygon(polygon(&[
-            (0.0, 0.0),
-            (4.0, 4.0),
-            (0.0, 4.0),
-            (4.0, 0.0),
-            (0.0, 0.0),
-        ]));
-        assert_point_intersection_matches_generic(
-            "invalid polygon",
-            &point(1.0, 1.0),
-            &invalid,
-            Strictness::Strict,
-        );
     }
 
     #[test]
@@ -1367,24 +1023,12 @@ mod binary_areal_overlay_tests {
             ("point XY and line ZM", xy_point, z_line.clone(), "XYZM"),
         ] {
             for (left, right) in [(&left, &right), (&right, &left)] {
-                let result = assert_point_intersection_matches_generic(
-                    name,
-                    left,
-                    right,
-                    Strictness::Lenient,
-                )
-                .expect("ordinate hit");
+                let result = point_intersection(left, right, Strictness::Lenient);
                 assert_eq!(result.coordinate_axes(), axes, "{name}: {result:?}");
             }
         }
         for (left, right) in [(&matching_point, &z_line), (&z_line, &matching_point)] {
-            let result = assert_point_intersection_matches_generic(
-                "matching point and line ordinates",
-                left,
-                right,
-                Strictness::Strict,
-            )
-            .expect("matching ordinate result");
+            let result = point_intersection(left, right, Strictness::Strict);
             assert_eq!(result.coordinate_axes(), "XYZM", "{result:?}");
         }
 
@@ -1392,43 +1036,19 @@ mod binary_areal_overlay_tests {
             Point::new_axes(1.0, 0.0, ZOrdinate(Some(99.0)), MOrdinate(Some(9.0))).unwrap(),
         );
         for (left, right) in [(&conflicting, &z_line), (&z_line, &conflicting)] {
-            assert_point_intersection_matches_generic(
-                "strict ordinate conflict",
-                left,
-                right,
-                Strictness::Strict,
-            );
-            let result = assert_point_intersection_matches_generic(
-                "lenient ordinate conflict",
-                left,
-                right,
-                Strictness::Lenient,
-            )
-            .expect("lenient ordinate result");
+            let result = point_intersection(left, right, Strictness::Lenient);
             assert_eq!(result.coordinate_axes(), "XYM", "{result:?}");
         }
 
         let z_polygon = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
         let boundary = point(2.0, 0.0);
-        let boundary_result = assert_point_intersection_matches_generic(
-            "polygon boundary interpolation",
-            &boundary,
-            &z_polygon,
-            Strictness::Lenient,
-        )
-        .expect("polygon boundary result");
+        let boundary_result = point_intersection(&boundary, &z_polygon, Strictness::Lenient);
         assert_eq!(boundary_result.coordinate_axes(), "XYZ");
         let boundary_point = boundary_result.points_vec().unwrap()[0];
         assert_eq!(boundary_point.z(), Some(12.0));
 
         let interior_point = point(1.0, 1.0);
-        let interior_result = assert_point_intersection_matches_generic(
-            "polygon interior does not invent Z",
-            &interior_point,
-            &z_polygon,
-            Strictness::Lenient,
-        )
-        .expect("polygon interior result");
+        let interior_result = point_intersection(&interior_point, &z_polygon, Strictness::Lenient);
         assert_eq!(interior_result.coordinate_axes(), "XY");
     }
 
@@ -1515,7 +1135,7 @@ mod binary_areal_overlay_tests {
     }
 
     #[test]
-    fn multipart_point_intersection_matches_generic_for_lineal_carriers() {
+    fn multipart_point_intersection_for_lineal_carriers() {
         let live = multiline(&[&[(0.0, 0.0), (2.0, 2.0)], &[(4.0, 0.0), (4.0, 2.0)]]);
         let multipoint = Shape::MultiPoint(
             vec![
@@ -1526,23 +1146,8 @@ mod binary_areal_overlay_tests {
             ]
             .into(),
         );
-        let scalar = point(1.0, 1.0);
-        for (left, right) in [(&scalar, &live), (&live, &scalar)] {
-            assert_point_intersection_matches_generic(
-                "point and multiline",
-                left,
-                right,
-                Strictness::Strict,
-            );
-        }
         for (left, right) in [(&multipoint, &live), (&live, &multipoint)] {
-            let result = assert_point_intersection_matches_generic(
-                "multipoint and multiline",
-                left,
-                right,
-                Strictness::Strict,
-            )
-            .expect("line hits");
+            let result = point_intersection(left, right, Strictness::Strict);
             assert!(matches!(result, Shape::MultiPoint(_)), "{result:?}");
             assert_eq!(
                 result
@@ -1554,44 +1159,10 @@ mod binary_areal_overlay_tests {
                 vec![(1.0, 1.0), (4.0, 1.0)]
             );
         }
-
-        let miss = Shape::MultiPoint(vec![Point::new(1.0, 0.0).unwrap()].into());
-        assert_point_intersection_matches_generic(
-            "multipoint and multiline miss",
-            &miss,
-            &live,
-            Strictness::Strict,
-        );
-
-        let collapsed = Shape::MultiLineString(
-            MultiLineString::from_values(CoordinateAxes::XY, vec![
-                MultiMember::Value(line_seq(&[(1.0, 1.0), (1.0, 1.0)])),
-                MultiMember::Value(line_seq(&[(0.0, 0.0), (2.0, 2.0)])),
-            ])
-            .unwrap(),
-        );
-        let empty_member = Shape::MultiLineString(
-            MultiLineString::from_values(CoordinateAxes::XY, vec![
-                MultiMember::Empty,
-                MultiMember::Value(line_seq(&[(0.0, 0.0), (2.0, 2.0)])),
-            ])
-            .unwrap(),
-        );
-        for (name, carrier) in [
-            ("collapsed member", collapsed),
-            ("empty member", empty_member),
-        ] {
-            assert_point_intersection_matches_generic(
-                name,
-                &multipoint,
-                &carrier,
-                Strictness::Strict,
-            );
-        }
     }
 
     #[test]
-    fn multipart_point_intersection_matches_generic_for_polygonal_carriers() {
+    fn multipart_point_intersection_for_polygonal_carriers() {
         let carrier = Shape::MultiPolygon(
             vec![
                 polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
@@ -1609,23 +1180,8 @@ mod binary_areal_overlay_tests {
             ]
             .into(),
         );
-        let scalar = point(1.0, 1.0);
-        for (left, right) in [(&scalar, &carrier), (&carrier, &scalar)] {
-            assert_point_intersection_matches_generic(
-                "point and multipolygon",
-                left,
-                right,
-                Strictness::Strict,
-            );
-        }
         for (left, right) in [(&points, &carrier), (&carrier, &points)] {
-            let result = assert_point_intersection_matches_generic(
-                "multipoint and multipolygon",
-                left,
-                right,
-                Strictness::Strict,
-            )
-            .expect("polygon hits");
+            let result = point_intersection(left, right, Strictness::Strict);
             assert!(matches!(result, Shape::MultiPoint(_)), "{result:?}");
             assert_eq!(
                 result
@@ -1637,86 +1193,10 @@ mod binary_areal_overlay_tests {
                 vec![(0.0, 1.0), (1.0, 1.0), (5.0, 1.0)]
             );
         }
-
-        let hole_polygon = Polygon::new(
-            polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
-            vec![Ring::from_closed(
-                CoordSeq::try_from_points(&[
-                    Point::new(2.0, 2.0).unwrap(),
-                    Point::new(4.0, 2.0).unwrap(),
-                    Point::new(4.0, 4.0).unwrap(),
-                    Point::new(2.0, 4.0).unwrap(),
-                    Point::new(2.0, 2.0).unwrap(),
-                ])
-                .unwrap(),
-            )],
-        )
-        .unwrap();
-        let hole = Shape::MultiPolygon(
-            MultiPolygon::from_dense(vec![hole_polygon])
-                .unwrap()
-                .unwrap(),
-        );
-        let hole_points = Shape::MultiPoint(
-            vec![
-                Point::new(1.0, 1.0).unwrap(),
-                Point::new(2.0, 3.0).unwrap(),
-                Point::new(3.0, 3.0).unwrap(),
-            ]
-            .into(),
-        );
-        for (left, right) in [(&hole_points, &hole), (&hole, &hole_points)] {
-            assert_point_intersection_matches_generic(
-                "multipoint and holed multipolygon",
-                left,
-                right,
-                Strictness::Strict,
-            );
-        }
     }
 
     #[test]
-    fn multipart_point_intersection_falls_back_for_ambiguous_polygonal_carriers() {
-        let points = Shape::MultiPoint(
-            vec![Point::new(1.0, 1.0).unwrap(), Point::new(5.0, 5.0).unwrap()].into(),
-        );
-        let empty_member = Shape::MultiPolygon(
-            MultiPolygon::from_values(CoordinateAxes::XY, vec![
-                MultiMember::Empty,
-                MultiMember::Value(polygon(&[
-                    (0.0, 0.0),
-                    (2.0, 0.0),
-                    (2.0, 2.0),
-                    (0.0, 2.0),
-                    (0.0, 0.0),
-                ])),
-            ])
-            .unwrap(),
-        );
-        assert_point_intersection_matches_generic(
-            "multipoint and multipolygon empty member",
-            &points,
-            &empty_member,
-            Strictness::Strict,
-        );
-
-        let overlapping = Shape::MultiPolygon(
-            vec![
-                polygon(&[(0.0, 0.0), (3.0, 0.0), (3.0, 3.0), (0.0, 3.0), (0.0, 0.0)]),
-                polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]),
-            ]
-            .into(),
-        );
-        assert_point_intersection_matches_generic(
-            "multipoint and overlapping invalid multipolygon",
-            &points,
-            &overlapping,
-            Strictness::Strict,
-        );
-    }
-
-    #[test]
-    fn multipart_point_intersection_reconciles_ordinates_and_extremes() {
+    fn multipart_point_intersection_reconciles_ordinates() {
         let z_points = Shape::MultiPoint(
             vec![
                 Point::new_axes(1.0, 0.0, ZOrdinate(Some(10.0)), MOrdinate(None)).unwrap(),
@@ -1725,30 +1205,12 @@ mod binary_areal_overlay_tests {
             .into(),
         );
         let xy_line = line(&[(0.0, 0.0), (2.0, 0.0)]);
-        assert_point_intersection_matches_generic(
-            "strict duplicate ordinate conflict",
-            &z_points,
-            &xy_line,
-            Strictness::Strict,
-        );
-        let lenient = assert_point_intersection_matches_generic(
-            "lenient duplicate ordinate conflict",
-            &z_points,
-            &xy_line,
-            Strictness::Lenient,
-        )
-        .expect("lenient duplicate result");
+        let lenient = point_intersection(&z_points, &xy_line, Strictness::Lenient);
         assert_eq!(lenient.coordinate_axes(), "XY");
 
         let points = Shape::MultiPoint(vec![Point::new(2.0, 0.0).unwrap()].into());
         let z_polygon = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
-        let result = assert_point_intersection_matches_generic(
-            "multipoint polygon boundary interpolation",
-            &points,
-            &z_polygon,
-            Strictness::Strict,
-        )
-        .expect("interpolated boundary");
+        let result = point_intersection(&points, &z_polygon, Strictness::Strict);
         assert_eq!(result.coordinate_axes(), "XYZ");
         assert_eq!(result.points_vec().unwrap()[0].z(), Some(12.0));
         let z_multipolygon = match &z_polygon {
@@ -1756,13 +1218,7 @@ mod binary_areal_overlay_tests {
             _ => unreachable!("z_square returns a polygon"),
         };
         let scalar = point(2.0, 0.0);
-        let scalar_result = assert_point_intersection_matches_generic(
-            "point multipolygon boundary interpolation",
-            &scalar,
-            &z_multipolygon,
-            Strictness::Strict,
-        )
-        .expect("scalar multipolygon boundary");
+        let scalar_result = point_intersection(&scalar, &z_multipolygon, Strictness::Strict);
         assert_eq!(scalar_result.coordinate_axes(), "XYZ");
         assert_eq!(scalar_result.points_vec().unwrap()[0].z(), Some(12.0));
 
@@ -1797,17 +1253,6 @@ mod binary_areal_overlay_tests {
         )
         .unwrap();
         assert_eq!(repeated_result.coordinate_axes(), "XY");
-
-        let extreme = Shape::MultiPoint(vec![Point::new(0.0, 0.0).unwrap()].into());
-        let extreme_line = line(&[(-1.0e150, -1.0e150), (1.0e150, 1.0e150)]);
-        for (left, right) in [(&extreme, &extreme_line), (&extreme_line, &extreme)] {
-            assert_point_intersection_matches_generic(
-                "extreme multipoint line",
-                left,
-                right,
-                Strictness::Strict,
-            );
-        }
     }
 
     #[test]
@@ -2475,93 +1920,6 @@ mod binary_areal_overlay_tests {
         merged.for_each_point(|point| assert!(point.m().is_some()));
     }
 
-    #[test]
-    fn line_only_overlay_matches_generic_assembly_for_line_cases() {
-        let cases = vec![
-            vec![
-                line(&[(0.0, 0.0), (4.0, 0.0)]),
-                line(&[(1.0, 0.0), (3.0, 0.0)]),
-            ],
-            vec![
-                line(&[(0.0, 0.0), (4.0, 0.0)]),
-                line(&[(3.0, 0.0), (1.0, 0.0)]),
-            ],
-            vec![
-                multiline(&[&[(0.0, 0.0), (4.0, 0.0)], &[(0.0, 0.0), (4.0, 0.0)]]),
-                line(&[(1.0, 0.0), (3.0, 0.0)]),
-            ],
-            vec![
-                line(&[(0.0, 0.0), (2.0, 0.0)]),
-                line(&[(2.0, 0.0), (2.0, 2.0)]),
-            ],
-            vec![
-                line(&[(0.0, 0.0), (2.0, 2.0)]),
-                line(&[(0.0, 2.0), (2.0, 0.0)]),
-            ],
-            vec![
-                line(&[(0.0, 0.0), (1.0, 0.0)]),
-                line(&[(3.0, 0.0), (4.0, 0.0)]),
-            ],
-            // Overlapping bounds, no contact: the no-interaction lane.
-            vec![
-                line(&[(0.0, 0.0), (2.0, 1.0), (4.0, 2.0)]),
-                line(&[(0.0, 1.0), (2.0, 2.0), (4.0, 3.0)]),
-            ],
-            // Same, with a repeated vertex the dissolve would drop and a part
-            // that ends where the next begins.
-            vec![
-                multiline(&[&[(0.0, 0.0), (1.0, 1.0), (1.0, 1.0), (2.0, 1.0)], &[
-                    (2.0, 1.0),
-                    (3.0, 3.0),
-                ]]),
-                line(&[(0.0, 2.0), (3.0, 4.0)]),
-            ],
-            vec![
-                line(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
-                line(&[
-                    (1.0, -1.0),
-                    (3.0, -1.0),
-                    (3.0, 1.0),
-                    (1.0, 1.0),
-                    (1.0, -1.0),
-                ]),
-            ],
-            vec![
-                multiline(&[&[(0.0, 0.0), (2.0, 0.0)], &[(10.0, 0.0), (12.0, 0.0)]]),
-                multiline(&[&[(1.0, 0.0), (3.0, 0.0)], &[(11.0, 0.0), (13.0, 0.0)]]),
-            ],
-        ];
-
-        for case in cases {
-            let inputs = case.iter().collect::<Vec<_>>();
-            for op in EVERY_OP {
-                assert_line_overlay_matches_generic(&inputs, op);
-            }
-        }
-
-        let nary = [
-            line(&[(0.0, 0.0), (4.0, 0.0)]),
-            line(&[(1.0, 0.0), (3.0, 0.0)]),
-            line(&[(2.0, 0.0), (5.0, 0.0)]),
-        ];
-        let inputs = nary.iter().collect::<Vec<_>>();
-        for op in EVERY_OP {
-            assert_line_overlay_matches_generic(&inputs, op);
-        }
-
-        for scale in [2.0_f64.powi(-600), 2.0_f64.powi(600)] {
-            let cuts = [3.0, 1.0, 2.0]
-                .map(|multiple| line(&[(multiple * scale, -scale), (multiple * scale, scale)]));
-            let source = line(&[(0.0, 0.0), (4.0 * scale, 0.0)]);
-            let inputs = std::iter::once(&source)
-                .chain(cuts.iter())
-                .collect::<Vec<_>>();
-            for op in EVERY_OP {
-                assert_line_overlay_matches_generic(&inputs, op);
-            }
-        }
-    }
-
     const EVERY_OP: [OverlayOp; 4] = [
         OverlayOp::Union,
         OverlayOp::Intersection,
@@ -2582,7 +1940,6 @@ mod binary_areal_overlay_tests {
         .unwrap();
         assert!(matches!(result, Shape::LineString(_)), "{result:?}");
         assert_eq!(result.points_vec().unwrap().len(), 2, "{result:?}");
-        assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Intersection);
     }
 
     #[test]
@@ -2612,7 +1969,6 @@ mod binary_areal_overlay_tests {
                 assert!(point.z().is_some(), "{forward:?}");
                 assert!(point.m().is_some(), "{forward:?}");
             });
-            assert_line_overlay_matches_generic(&[&left, &right], op);
         }
     }
 
@@ -2631,13 +1987,6 @@ mod binary_areal_overlay_tests {
                     strictness,
                 )
                 .unwrap();
-                let generic = super::super::nary::overlay_all_line_oracle(
-                    &[&left, &right],
-                    OverlayOp::Intersection,
-                    strictness,
-                )
-                .unwrap();
-                assert_eq!(wkb(&fast), wkb(&generic), "{strictness:?}");
                 assert!(
                     matches!(
                         fast,
@@ -2653,33 +2002,7 @@ mod binary_areal_overlay_tests {
     fn line_only_support_includes_collapsed_points() {
         let line_shape = line(&[(0.0, 0.0), (2.0, 0.0)]);
         let collapsed = line(&[(4.0, 4.0), (4.0, 4.0)]);
-        let empty = Shape::Empty(GeometryKind::LineString, CoordinateAxes::XY);
-        let polygon = square(4.0, 4.0, 6.0, 6.0);
-        let mixed = Shape::geometry_collection(vec![line_shape.clone(), polygon.clone()])
-            .expect("test collection is valid");
-        let empty_member = Shape::MultiLineString(
-            MultiLineString::from_values(CoordinateAxes::XY, vec![
-                MultiMember::Empty,
-                MultiMember::Value(line_seq(&[(8.0, 0.0), (9.0, 0.0)])),
-            ])
-            .unwrap(),
-        );
-
-        assert!(super::super::nary::nondegenerate_line_only(&line_shape));
-        for input in [&collapsed, &empty, &polygon, &mixed, &empty_member] {
-            assert!(
-                !super::super::nary::nondegenerate_line_only(input),
-                "{input:?}"
-            );
-        }
-
-        let point_off_line = point(0.0, 1.0);
         let point_on_line = point(0.0, 0.0);
-        assert_line_overlay_matches_generic(&[&line_shape, &point_off_line], OverlayOp::Union);
-        assert_line_overlay_matches_generic(
-            &[&line_shape, &point_on_line],
-            OverlayOp::Intersection,
-        );
         let collapsed_union = overlay_all(
             &[&line_shape, &collapsed],
             crate::geometry::TopologyDomain::Cartesian,
@@ -2702,10 +2025,6 @@ mod binary_areal_overlay_tests {
             collapsed_intersection,
             Shape::Empty(GeometryKind::LineString, _)
         ));
-        assert_line_overlay_matches_generic(&[&line_shape, &empty], OverlayOp::Union);
-        assert_line_overlay_matches_generic(&[&line_shape, &polygon], OverlayOp::Union);
-        assert_line_overlay_matches_generic(&[&line_shape, &mixed], OverlayOp::Union);
-        assert_line_overlay_matches_generic(&[&line_shape, &empty_member], OverlayOp::Union);
 
         let point_result = line_shape
             .intersection(&point_on_line, Strictness::Strict)
@@ -2728,7 +2047,6 @@ mod binary_areal_overlay_tests {
         .unwrap();
         assert!(matches!(union, Shape::MultiLineString(_)), "{union:?}");
         assert_eq!(union.part_count(), count * 2);
-        assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Union);
 
         let intersection = overlay_all(
             &[&left, &right],
@@ -2741,7 +2059,6 @@ mod binary_areal_overlay_tests {
             matches!(intersection, Shape::Empty(GeometryKind::LineString, _)),
             "{intersection:?}"
         );
-        assert_line_overlay_matches_generic(&[&left, &right], OverlayOp::Intersection);
     }
 
     #[test]

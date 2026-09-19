@@ -157,8 +157,8 @@ pub(crate) use overlay::{
     rect_polygon,
 };
 use overlay::{
-    binary_areal_overlay, clip_multipoint_columns, clip_polygonal, clipped_line_parts,
-    clipped_linestring, line_parts_to_shape, polygon_parts_to_shape,
+    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
+    line_parts_to_shape, polygon_parts_to_shape,
 };
 pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};

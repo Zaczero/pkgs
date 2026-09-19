@@ -259,14 +259,6 @@ impl<T> YStabbingIndex<T> {
         }
     }
 
-    /// Visit every item (no Y filter) — useful for tiny Linear collections
-    /// where the caller applies a tighter XY bounds gate.
-    pub(crate) fn for_each(&self, mut visit: impl FnMut(&T)) {
-        for item in &self.items {
-            visit(item);
-        }
-    }
-
     pub(crate) const fn len(&self) -> usize {
         self.items.len()
     }

@@ -1,5 +1,4 @@
-//! Source-owned planar topology over either ordinary XY or a geographic
-//! longitude quotient.
+//! Source-owned topology over a geographic longitude quotient.
 //!
 //! The graph is deliberately built from the source geometry, not from a
 //! split output geometry. Geographic crossing segments are charted only long
@@ -11,7 +10,6 @@
 
 use super::staging::oriented_open_ring_direction;
 use crate::collections::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
-use crate::geometry::point_location::PolygonPointIndex;
 use crate::geometry::segment_index::{EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
     CoordSeq, Coordinates as _, Dimension, Point, PointKey, Polygon, RectContact,
@@ -21,24 +19,12 @@ use crate::geometry::{
 };
 use crate::heap_size::HeapSize;
 
-/// The coordinate quotient used by a topology graph.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum TopologySpace {
-    Cartesian,
-    Geographic,
-}
-
-impl TopologySpace {
-    const fn is_geographic(self) -> bool {
-        matches!(self, Self::Geographic)
-    }
-}
-
-/// Complete coordinate domain for a topology graph.
+/// Coordinate domain of a topology operation: Cartesian operands run on the
+/// exact partition, geographic operands on a [`TopologyGraph`] built in the
+/// variant's frame.
 ///
 /// Geographic topology cannot exist without the native frame that defines its
-/// quotient seam and poles. Keeping that frame in the variant removes the
-/// former `Geographic` plus `None` combination.
+/// quotient seam and poles, so the frame travels in the variant.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum TopologyDomain {
     Cartesian,
@@ -46,13 +32,6 @@ pub(crate) enum TopologyDomain {
 }
 
 impl TopologyDomain {
-    pub(crate) const fn space(self) -> TopologySpace {
-        match self {
-            Self::Cartesian => TopologySpace::Cartesian,
-            Self::Geographic(_) => TopologySpace::Geographic,
-        }
-    }
-
     pub(crate) const fn is_geographic(self) -> bool {
         matches!(self, Self::Geographic(_))
     }
@@ -145,7 +124,7 @@ pub(crate) struct TopologyNode {
 
 /// One source-owned topology graph for a complete geometry operand.
 pub(crate) struct TopologyGraph {
-    pub(crate) domain: TopologyDomain,
+    pub(crate) frame: crate::geographic::GeographicFrame,
     pub(crate) effective_dimension: Option<Dimension>,
     pub(crate) boundary_dimension: Option<Dimension>,
     pub(crate) nodes: Box<[TopologyNode]>,
@@ -211,14 +190,7 @@ impl HeapSize for SourcePoint {
 
 impl HeapSize for AreaSupport {
     fn heap_bytes(&self) -> usize {
-        match self {
-            Self::Cartesian { source } => source.heap_bytes(),
-            Self::Geographic {
-                source,
-                shell,
-                holes,
-            } => source.heap_bytes() + shell.heap_bytes() + holes.heap_bytes(),
-        }
+        self.source.heap_bytes() + self.shell.heap_bytes() + self.holes.heap_bytes()
     }
 }
 
@@ -229,41 +201,32 @@ impl HeapSize for ChartRing {
 }
 
 impl TopologyGraph {
-    /// Build one graph from one complete source geometry. The domain changes
-    /// only point equivalence and source-edge charting; the noder remains the
-    /// existing planar XY noder in both spaces.
-    fn build(shape: &Shape, domain: TopologyDomain) -> crate::error::Result<Self> {
-        let mut builder = GraphBuilder::new(domain);
+    /// Build one graph from one complete source geometry. The frame sets
+    /// point equivalence and source-edge charting; noding stays the planar XY
+    /// noder over the charted edges.
+    fn build(
+        shape: &Shape,
+        frame: crate::geographic::GeographicFrame,
+    ) -> crate::error::Result<Self> {
+        let mut builder = GraphBuilder::new(frame);
         builder.collect(shape, 0)?;
         builder.finish(shape)
-    }
-
-    pub(crate) fn cartesian_many(shapes: &[&Shape]) -> crate::error::Result<Self> {
-        let mut builder = GraphBuilder::new_many(TopologyDomain::Cartesian);
-        for (source_row, shape) in shapes.iter().enumerate() {
-            builder.collect(shape, source_row as u32)?;
-        }
-        builder.finish_many(shapes.iter().copied())
     }
 
     pub(crate) fn geographic_many(
         inputs: &crate::geographic::GeographicInputs<'_>,
     ) -> crate::error::Result<Self> {
-        let mut builder = GraphBuilder::new_many(TopologyDomain::Geographic(inputs.frame()));
+        let mut builder = GraphBuilder::new(inputs.frame());
         for (source_row, view) in inputs.views().iter().enumerate() {
             builder.collect(view.shape(), source_row as u32)?;
         }
         builder.finish_many(inputs.views().iter().map(|view| view.shape()))
     }
 
-    pub(crate) fn cartesian(shape: &Shape) -> crate::error::Result<Self> {
-        Self::build(shape, TopologyDomain::Cartesian)
-    }
-
     pub(crate) fn geographic(
         view: crate::geographic::ScalarGeographicView<'_>,
     ) -> crate::error::Result<Self> {
-        Self::build(view.shape(), TopologyDomain::Geographic(view.frame()))
+        Self::build(view.shape(), view.frame())
     }
 
     pub(crate) fn node_for(&self, point: XY) -> Option<TopologyNodeId> {
@@ -294,7 +257,7 @@ impl TopologyGraph {
             .is_some_and(|id| self.nodes[id.index()].support.area_boundary)
             || self
                 .support
-                .for_each_edge_at(self.domain, &self.edges, point, |edge| {
+                .for_each_edge_at(self.frame, &self.edges, point, |edge| {
                     if edge.is_boundary {
                         std::ops::ControlFlow::Break(())
                     } else {
@@ -418,7 +381,7 @@ impl TopologyGraph {
             .is_some_and(|id| self.nodes[id.index()].support.line)
             || self
                 .support
-                .for_each_edge_at(self.domain, &self.edges, point, |edge| {
+                .for_each_edge_at(self.frame, &self.edges, point, |edge| {
                     if edge.line_support {
                         std::ops::ControlFlow::Break(())
                     } else {
@@ -459,7 +422,7 @@ impl TopologyGraph {
         }
         if self
             .support
-            .for_each_edge_at(self.domain, &self.edges, point, |edge| {
+            .for_each_edge_at(self.frame, &self.edges, point, |edge| {
                 if edge.area_interior_support {
                     std::ops::ControlFlow::Break(())
                 } else {
@@ -510,7 +473,7 @@ impl TopologyGraph {
         }
         if self
             .support
-            .for_each_edge_at(self.domain, &self.edges, midpoint, |edge| {
+            .for_each_edge_at(self.frame, &self.edges, midpoint, |edge| {
                 if edge.area_interior_support {
                     std::ops::ControlFlow::Break(())
                 } else {
@@ -531,7 +494,7 @@ impl TopologyGraph {
     }
 
     pub(crate) fn key(&self, point: XY) -> TopologyKey {
-        quotient_key(self.domain, point)
+        quotient_key(self.frame, point)
     }
 }
 
@@ -553,43 +516,39 @@ pub(crate) enum TopologyKey {
     clippy::float_cmp,
     reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
 )]
-fn quotient_key(domain: TopologyDomain, point: XY) -> TopologyKey {
-    if let TopologyDomain::Geographic(frame) = domain {
-        if point.y == frame.pole() {
-            return TopologyKey::Pole(true);
-        }
-        if point.y == -frame.pole() {
-            return TopologyKey::Pole(false);
-        }
-        let longitude = frame
-            .longitude()
-            .canonicalize(point.x)
-            .expect("validated geographic view admits every graph coordinate")
-            .get();
-        if longitude == -frame.longitude().half_period() {
-            return TopologyKey::Seam(canonical_f64_bits(point.y));
-        }
-        return TopologyKey::Coordinate(PointKey::new(XY::new(longitude, point.y)));
+fn quotient_key(frame: crate::geographic::GeographicFrame, point: XY) -> TopologyKey {
+    if point.y == frame.pole() {
+        return TopologyKey::Pole(true);
     }
-    TopologyKey::Coordinate(PointKey::new(point))
+    if point.y == -frame.pole() {
+        return TopologyKey::Pole(false);
+    }
+    let longitude = frame
+        .longitude()
+        .canonicalize(point.x)
+        .expect("validated geographic view admits every graph coordinate")
+        .get();
+    if longitude == -frame.longitude().half_period() {
+        return TopologyKey::Seam(canonical_f64_bits(point.y));
+    }
+    TopologyKey::Coordinate(PointKey::new(XY::new(longitude, point.y)))
 }
 
 #[expect(
     clippy::float_cmp,
     reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
 )]
-fn point_on_graph_segment(domain: TopologyDomain, point: XY, segment: Segment) -> bool {
-    if let TopologyDomain::Geographic(frame) = domain {
-        if point.y.abs() == frame.pole() && (segment.start.y == point.y || segment.end.y == point.y)
-        {
-            return true;
-        }
-        let period = frame.longitude().period();
-        let x = translated_longitude(&[segment.start, segment.end], point.x, period);
-        point_on_segment(XY::new(x, point.y), segment.start, segment.end)
-    } else {
-        point_on_segment(point, segment.start, segment.end)
+fn point_on_graph_segment(
+    frame: crate::geographic::GeographicFrame,
+    point: XY,
+    segment: Segment,
+) -> bool {
+    if point.y.abs() == frame.pole() && (segment.start.y == point.y || segment.end.y == point.y) {
+        return true;
     }
+    let period = frame.longitude().period();
+    let x = translated_longitude(&[segment.start, segment.end], point.x, period);
+    point_on_segment(XY::new(x, point.y), segment.start, segment.end)
 }
 
 fn segment_direction_matches(left: Segment, right: Segment) -> bool {
@@ -607,33 +566,22 @@ struct ChartEdge {
     source: u32,
 }
 
+/// A source polygon with the seam-continuous chart and pole summary that
+/// geographic containment reads.
 #[derive(Clone, Debug)]
-pub(crate) enum AreaSupport {
-    /// Cartesian containment and relation construction use the source polygon
-    /// directly, so retaining a second XY ring representation is needless.
-    Cartesian { source: Polygon },
-    /// Geographic containment needs a seam-continuous chart and pole summary.
-    Geographic {
-        source: Polygon,
-        shell: ChartRing,
-        holes: Box<[ChartRing]>,
-    },
+pub(crate) struct AreaSupport {
+    source: Polygon,
+    shell: ChartRing,
+    holes: Box<[ChartRing]>,
 }
 
 impl AreaSupport {
     pub(crate) const fn source(&self) -> &Polygon {
-        match self {
-            Self::Cartesian { source } | Self::Geographic { source, .. } => source,
-        }
+        &self.source
     }
 
     pub(crate) fn geographic_rings(&self) -> (&ChartRing, &[ChartRing]) {
-        match self {
-            Self::Geographic { shell, holes, .. } => (shell, holes),
-            Self::Cartesian { .. } => {
-                unreachable!("Cartesian area support has no geographic chart")
-            },
-        }
+        (&self.shell, &self.holes)
     }
 }
 
@@ -671,17 +619,6 @@ struct StagedChartRing {
     segments: Vec<[Option<Segment>; 2]>,
 }
 
-struct CartesianAreaCandidate {
-    polygon: u32,
-    index: PolygonPointIndex,
-}
-
-impl HeapSize for CartesianAreaCandidate {
-    fn heap_bytes(&self) -> usize {
-        self.index.heap_bytes()
-    }
-}
-
 #[derive(Clone, Copy)]
 struct GeographicAreaCandidate {
     polygon: u32,
@@ -702,102 +639,70 @@ impl HeapSize for GeographicAreaCandidate {
     }
 }
 
-enum AreaMembership {
-    Cartesian {
-        polygons: YStabbingIndex<CartesianAreaCandidate>,
-    },
-    Geographic {
-        frame: crate::geographic::GeographicFrame,
-        polygons: YStabbingIndex<GeographicAreaCandidate>,
-    },
+struct AreaMembership {
+    frame: crate::geographic::GeographicFrame,
+    polygons: YStabbingIndex<GeographicAreaCandidate>,
 }
 
 impl AreaMembership {
-    fn build(domain: TopologyDomain, areas: &[AreaSupport]) -> crate::error::Result<Self> {
-        Ok(match domain {
-            TopologyDomain::Cartesian => {
-                let candidates = areas
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, support)| relate::polygon_has_nondegenerate_area(support.source()))
-                    .map(|(polygon, support)| {
-                        Ok(CartesianAreaCandidate {
-                            polygon: polygon as u32,
-                            index: PolygonPointIndex::build(support.source())?,
-                        })
-                    })
-                    .collect::<crate::error::Result<Vec<_>>>()?;
-                Self::Cartesian {
-                    polygons: YStabbingIndex::build(candidates, |candidate| {
-                        candidate.index.envelope().unwrap_or((
-                            f64::INFINITY,
-                            f64::NEG_INFINITY,
-                            f64::INFINITY,
-                            f64::NEG_INFINITY,
-                        ))
-                    })?,
+    fn build(
+        frame: crate::geographic::GeographicFrame,
+        areas: &[AreaSupport],
+    ) -> crate::error::Result<Self> {
+        let candidates = areas
+            .iter()
+            .enumerate()
+            .filter_map(|(polygon, support)| {
+                let (shell, _) = support.geographic_rings();
+                if !relate::polygon_has_nondegenerate_area(support.source())
+                    && !shell.north_pole
+                    && !shell.south_pole
+                    && !shell.full_band
+                {
+                    return None;
                 }
-            },
-            TopologyDomain::Geographic(frame) => {
-                let candidates = areas
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(polygon, support)| {
-                        let (shell, _) = support.geographic_rings();
-                        if !relate::polygon_has_nondegenerate_area(support.source())
-                            && !shell.north_pole
-                            && !shell.south_pole
-                            && !shell.full_band
-                        {
-                            return None;
-                        }
-                        Some(GeographicAreaCandidate {
-                            polygon: polygon as u32,
-                            min_x: shell.min_x,
-                            max_x: shell.max_x,
-                            // Chart seam vertices can extend beyond the source
-                            // ring's vertex latitude extrema.
-                            y_min: if shell.south_pole {
-                                -shell.pole
-                            } else {
-                                shell.min_y
-                            },
-                            y_max: if shell.north_pole {
-                                shell.pole
-                            } else {
-                                shell.max_y
-                            },
-                            chart_south: shell.min_y,
-                            chart_north: shell.max_y,
-                            north_pole: shell.north_pole,
-                            south_pole: shell.south_pole,
-                            full_band: shell.full_band,
-                        })
-                    })
-                    .collect();
-                Self::Geographic {
-                    frame,
-                    // Longitude is periodic here, so an X-envelope on the
-                    // index would reject a legitimate wrapped copy;
-                    // `may_contain` owns that filter against all three copies.
-                    polygons: YStabbingIndex::build(candidates, |candidate| {
-                        (
-                            f64::NEG_INFINITY,
-                            f64::INFINITY,
-                            candidate.y_min,
-                            candidate.y_max,
-                        )
-                    })?,
-                }
-            },
+                Some(GeographicAreaCandidate {
+                    polygon: polygon as u32,
+                    min_x: shell.min_x,
+                    max_x: shell.max_x,
+                    // Chart seam vertices can extend beyond the source
+                    // ring's vertex latitude extrema.
+                    y_min: if shell.south_pole {
+                        -shell.pole
+                    } else {
+                        shell.min_y
+                    },
+                    y_max: if shell.north_pole {
+                        shell.pole
+                    } else {
+                        shell.max_y
+                    },
+                    chart_south: shell.min_y,
+                    chart_north: shell.max_y,
+                    north_pole: shell.north_pole,
+                    south_pole: shell.south_pole,
+                    full_band: shell.full_band,
+                })
+            })
+            .collect();
+        Ok(Self {
+            frame,
+            // Longitude is periodic here, so an X-envelope on the
+            // index would reject a legitimate wrapped copy;
+            // `may_contain` owns that filter against all three copies.
+            polygons: YStabbingIndex::build(candidates, |candidate| {
+                (
+                    f64::NEG_INFINITY,
+                    f64::INFINITY,
+                    candidate.y_min,
+                    candidate.y_max,
+                )
+            })?,
         })
     }
 
     const fn has_area(&self) -> bool {
-        match self {
-            Self::Cartesian { polygons, .. } => polygons.len() != 0,
-            Self::Geographic { polygons, .. } => polygons.len() != 0,
-        }
+        self.polygons.len() != 0
     }
 
     fn for_each_area_interior<B>(
@@ -806,42 +711,24 @@ impl AreaMembership {
         point: XY,
         mut visit: impl FnMut(u32) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
-        match self {
-            Self::Cartesian { polygons, .. } => {
-                polygons.for_each_at_point(point.x, point.y, |candidate| {
-                    if candidate.index.contains_xy_graph_oracle(point.x, point.y) {
-                        visit(candidate.polygon)
-                    } else {
-                        std::ops::ControlFlow::Continue(())
-                    }
-                })
-            },
-            Self::Geographic {
-                frame, polygons, ..
-            } => {
-                let longitude = frame
-                    .longitude()
-                    .canonicalize(point.x)
-                    .expect("validated geographic point")
-                    .get();
-                let period = frame.longitude().period();
-                let copies = [longitude - period, longitude, longitude + period];
-                polygons.for_each_at_y(point.y, |candidate| {
-                    if !candidate.may_contain(point.y, &copies, frame.pole(), period) {
-                        return std::ops::ControlFlow::Continue(());
-                    }
-                    if polygon_contains_interior(
-                        TopologySpace::Geographic,
-                        &areas[candidate.polygon as usize],
-                        point,
-                    ) {
-                        visit(candidate.polygon)
-                    } else {
-                        std::ops::ControlFlow::Continue(())
-                    }
-                })
-            },
-        }
+        let Self { frame, polygons } = self;
+        let longitude = frame
+            .longitude()
+            .canonicalize(point.x)
+            .expect("validated geographic point")
+            .get();
+        let period = frame.longitude().period();
+        let copies = [longitude - period, longitude, longitude + period];
+        polygons.for_each_at_y(point.y, |candidate| {
+            if !candidate.may_contain(point.y, &copies, frame.pole(), period) {
+                return std::ops::ControlFlow::Continue(());
+            }
+            if polygon_contains_interior(&areas[candidate.polygon as usize], point) {
+                visit(candidate.polygon)
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        })
     }
 }
 
@@ -865,10 +752,7 @@ impl GeographicAreaCandidate {
 
 impl HeapSize for AreaMembership {
     fn heap_bytes(&self) -> usize {
-        match self {
-            Self::Cartesian { polygons, .. } => polygons.heap_bytes(),
-            Self::Geographic { polygons, .. } => polygons.heap_bytes(),
-        }
+        self.polygons.heap_bytes()
     }
 }
 
@@ -882,7 +766,7 @@ struct TopologySupport {
 
 impl TopologySupport {
     fn new(
-        domain: TopologyDomain,
+        frame: crate::geographic::GeographicFrame,
         edges: &[TopologyEdge],
         nodes: &[TopologyNode],
         source_points: &[SourcePoint],
@@ -890,17 +774,17 @@ impl TopologySupport {
     ) -> crate::error::Result<Self> {
         let point_support = source_points
             .iter()
-            .map(|source| quotient_key(domain, source.point.xy()))
+            .map(|source| quotient_key(frame, source.point.xy()))
             .collect();
         let noncollapsed_point_support = source_points
             .iter()
             .filter(|source| !source.collapsed_line)
-            .map(|source| quotient_key(domain, source.point.xy()))
+            .map(|source| quotient_key(frame, source.point.xy()))
             .collect();
         let boundary_support = nodes
             .iter()
             .filter(|node| node.support.area_boundary || node.support.line_boundary)
-            .map(|node| quotient_key(domain, node.point))
+            .map(|node| quotient_key(frame, node.point))
             .collect();
         Ok(Self {
             edge_index: crate::geometry::SegmentIndex::build_from_iter(
@@ -919,64 +803,45 @@ impl TopologySupport {
     )]
     fn for_each_edge_at<B>(
         &self,
-        domain: TopologyDomain,
+        frame: crate::geographic::GeographicFrame,
         edges: &[TopologyEdge],
         point: XY,
         mut visit: impl FnMut(&TopologyEdge) -> std::ops::ControlFlow<B>,
     ) -> Option<B> {
-        match domain {
-            TopologyDomain::Geographic(frame) => {
-                let longitude = frame
-                    .longitude()
-                    .canonicalize(point.x)
-                    .expect("validated geographic point")
-                    .get();
-                let period = frame.longitude().period();
-                let half_period = frame.longitude().half_period();
-                let mut visit_copy = |x: f64, skip_full_period: bool| {
-                    let query = Segment {
-                        start: XY::new(x, point.y),
-                        end: XY::new(x, point.y),
-                    };
-                    for candidate in self.edge_index.intersecting_candidates(query) {
-                        if skip_full_period
-                            && ((candidate.segment.start.x == -half_period
-                                && candidate.segment.end.x == half_period)
-                                || (candidate.segment.start.x == half_period
-                                    && candidate.segment.end.x == -half_period))
-                        {
-                            continue;
-                        }
-                        let edge = &edges[candidate.ordinal];
-                        if point_on_graph_segment(domain, point, edge.segment)
-                            && let std::ops::ControlFlow::Break(value) = visit(edge)
-                        {
-                            return Some(value);
-                        }
-                    }
-                    None
-                };
-                if longitude == -half_period {
-                    visit_copy(longitude, false).or_else(|| visit_copy(longitude + period, true))
-                } else {
-                    visit_copy(longitude, false)
+        let longitude = frame
+            .longitude()
+            .canonicalize(point.x)
+            .expect("validated geographic point")
+            .get();
+        let period = frame.longitude().period();
+        let half_period = frame.longitude().half_period();
+        let mut visit_copy = |x: f64, skip_full_period: bool| {
+            let query = Segment {
+                start: XY::new(x, point.y),
+                end: XY::new(x, point.y),
+            };
+            for candidate in self.edge_index.intersecting_candidates(query) {
+                if skip_full_period
+                    && ((candidate.segment.start.x == -half_period
+                        && candidate.segment.end.x == half_period)
+                        || (candidate.segment.start.x == half_period
+                            && candidate.segment.end.x == -half_period))
+                {
+                    continue;
                 }
-            },
-            TopologyDomain::Cartesian => {
-                let query = Segment {
-                    start: point,
-                    end: point,
-                };
-                for candidate in self.edge_index.intersecting_candidates(query) {
-                    let edge = &edges[candidate.ordinal];
-                    if point_on_graph_segment(domain, point, edge.segment)
-                        && let std::ops::ControlFlow::Break(value) = visit(edge)
-                    {
-                        return Some(value);
-                    }
+                let edge = &edges[candidate.ordinal];
+                if point_on_graph_segment(frame, point, edge.segment)
+                    && let std::ops::ControlFlow::Break(value) = visit(edge)
+                {
+                    return Some(value);
                 }
-                None
-            },
+            }
+            None
+        };
+        if longitude == -half_period {
+            visit_copy(longitude, false).or_else(|| visit_copy(longitude + period, true))
+        } else {
+            visit_copy(longitude, false)
         }
     }
 
@@ -994,7 +859,7 @@ impl TopologySupport {
         graph: &TopologyGraph,
         bounds: crate::geometry::Bounds,
     ) -> Option<bool> {
-        if !rectangle_query_supported(graph.domain, bounds) {
+        if !rectangle_query_supported(graph.frame, bounds) {
             return None;
         }
         let center = XY::new(
@@ -1039,7 +904,10 @@ impl TopologySupport {
     }
 }
 
-fn rectangle_query_supported(domain: TopologyDomain, bounds: crate::geometry::Bounds) -> bool {
+fn rectangle_query_supported(
+    frame: crate::geographic::GeographicFrame,
+    bounds: crate::geometry::Bounds,
+) -> bool {
     if !bounds.minx().is_finite()
         || !bounds.maxx().is_finite()
         || !bounds.miny().is_finite()
@@ -1049,9 +917,6 @@ fn rectangle_query_supported(domain: TopologyDomain, bounds: crate::geometry::Bo
     {
         return false;
     }
-    let TopologyDomain::Geographic(frame) = domain else {
-        return true;
-    };
     // A geographic rectangle touching the seam or a pole is not one planar
     // disk; leave those quotient singularities to the authoritative relation.
     let axis = frame.longitude();
@@ -1088,7 +953,7 @@ impl HeapSize for TopologySupport {
 }
 
 struct GraphBuilder {
-    domain: TopologyDomain,
+    frame: crate::geographic::GeographicFrame,
     source_edges: Vec<SourceEdge>,
     source_points: Vec<SourcePoint>,
     chart_edges: Vec<ChartEdge>,
@@ -1100,23 +965,9 @@ struct GraphBuilder {
 }
 
 impl GraphBuilder {
-    fn new(domain: TopologyDomain) -> Self {
+    fn new(frame: crate::geographic::GeographicFrame) -> Self {
         Self {
-            domain,
-            source_edges: Vec::new(),
-            source_points: Vec::new(),
-            chart_edges: Vec::new(),
-            area_support: Vec::new(),
-            nodes: Vec::new(),
-            node_lookup: HashMap::new(),
-            line_boundary: HashSet::new(),
-            next_component: 0,
-        }
-    }
-
-    fn new_many(domain: TopologyDomain) -> Self {
-        Self {
-            domain,
+            frame,
             source_edges: Vec::new(),
             source_points: Vec::new(),
             chart_edges: Vec::new(),
@@ -1199,47 +1050,23 @@ impl GraphBuilder {
     }
 
     fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) -> crate::error::Result<()> {
-        // A polygon whose every ring is collinear encloses nothing, so it IS
-        // its linework: staging it as area support would give it an interior
-        // it does not have, and a boundary its rings do not bound. Routing it
-        // here makes it relate exactly as the equivalent closed line, which is
-        // the one rule a caller can predict.
-        // Cartesian only: a ring collinear in lon/lat can still bound a polar
-        // cap on the sphere, where "encloses nothing" is not a planar test.
-        if !self.domain.space().is_geographic()
-            && polygon
-                .rings()
-                .all(|ring| crate::geometry::ring_is_collinear(ring.coords()))
-        {
-            for ring in polygon.rings() {
-                self.collect_line(ring.coords(), source_row);
-            }
-            return Ok(());
-        }
         let mut staged_rings = Vec::new();
-        let support = if self.domain.space().is_geographic() {
-            let StagedChartRing {
-                ring: shell,
-                segments: shell_segments,
-            } = self.chart_ring(polygon.shell.coords())?;
-            staged_rings.push(shell_segments);
-            let mut holes = Vec::with_capacity(polygon.holes.len());
-            for hole in polygon.holes.iter() {
-                let StagedChartRing { ring, segments } = self.chart_ring(hole.coords())?;
-                holes.push(ring);
-                staged_rings.push(segments);
-            }
-            AreaSupport::Geographic {
-                source: polygon.clone(),
-                shell,
-                holes: holes.into_boxed_slice(),
-            }
-        } else {
-            AreaSupport::Cartesian {
-                source: polygon.clone(),
-            }
-        };
-        self.area_support.push(support);
+        let StagedChartRing {
+            ring: shell,
+            segments: shell_segments,
+        } = self.chart_ring(polygon.shell.coords())?;
+        staged_rings.push(shell_segments);
+        let mut holes = Vec::with_capacity(polygon.holes.len());
+        for hole in polygon.holes.iter() {
+            let StagedChartRing { ring, segments } = self.chart_ring(hole.coords())?;
+            holes.push(ring);
+            staged_rings.push(segments);
+        }
+        self.area_support.push(AreaSupport {
+            source: polygon.clone(),
+            shell,
+            holes: holes.into_boxed_slice(),
+        });
         let component = self.component();
         let area_polygon = (self.area_support.len() - 1) as u32;
         for (ring_index, (ring, is_hole)) in std::iter::once((&polygon.shell, false))
@@ -1268,7 +1095,7 @@ impl GraphBuilder {
                     end,
                     &staged_segments.as_ref().map_or_else(
                         || {
-                            chart_segments(self.domain, Segment {
+                            chart_segments(self.frame, Segment {
                                 start: start.xy(),
                                 end: end.xy(),
                             })
@@ -1311,7 +1138,7 @@ impl GraphBuilder {
             source_row,
             start,
             end,
-            &chart_segments(self.domain, Segment {
+            &chart_segments(self.frame, Segment {
                 start: start.xy(),
                 end: end.xy(),
             }),
@@ -1366,16 +1193,13 @@ impl GraphBuilder {
         let mut points: Vec<XY> = Vec::with_capacity(ring.len());
         let mut segments = Vec::with_capacity(ring.len().saturating_sub(1));
         for [start, end] in ring.segment_pairs() {
-            let charts = chart_segments(self.domain, Segment {
+            let charts = chart_segments(self.frame, Segment {
                 start: start.xy(),
                 end: end.xy(),
             });
             segments.push(charts);
             for chart in charts.into_iter().flatten() {
-                let period = match self.domain {
-                    TopologyDomain::Cartesian => 1.0,
-                    TopologyDomain::Geographic(frame) => frame.longitude().period(),
-                };
+                let period = self.frame.longitude().period();
                 let chart_start = lift_chart_longitude(chart.start, points.last().copied(), period);
                 if points.last().copied() != Some(chart_start) {
                     points.push(chart_start);
@@ -1395,10 +1219,7 @@ impl GraphBuilder {
                 (min.min(point.x), max.max(point.x))
             });
         let ys: Vec<f64> = points.iter().map(|point| point.y).collect();
-        let frame_pole = match self.domain {
-            TopologyDomain::Cartesian => f64::INFINITY,
-            TopologyDomain::Geographic(frame) => frame.pole(),
-        };
+        let frame_pole = self.frame.pole();
         let north_boundary = points.iter().any(|point| point.y == frame_pole);
         let south_boundary = points.iter().any(|point| point.y == -frame_pole);
         let min_y = points
@@ -1409,26 +1230,16 @@ impl GraphBuilder {
             .iter()
             .map(|point| point.y)
             .fold(f64::NEG_INFINITY, f64::max);
-        let summary = match self.domain {
-            TopologyDomain::Cartesian => None,
-            TopologyDomain::Geographic(frame) => Some(
-                crate::geographic::RingSummary::try_new(
-                    frame,
-                    &crate::geographic::GeographicRing::from_ring(
-                        &crate::geometry::Ring::from_closed(ring.clone()),
-                    ),
-                )
-                .expect("validated geographic ring has an exact summary"),
-            ),
-        };
-        let north_pole = summary.is_some_and(|summary| {
-            matches!(summary.turn, crate::geographic::RingTurn::Full(_))
-                && summary.south.get() > 0.0
-        });
-        let south_pole = summary.is_some_and(|summary| {
-            matches!(summary.turn, crate::geographic::RingTurn::Full(_))
-                && summary.north.get() < 0.0
-        });
+        let summary = crate::geographic::RingSummary::try_new(
+            self.frame,
+            &crate::geographic::GeographicRing::from_ring(&crate::geometry::Ring::from_closed(
+                ring.clone(),
+            )),
+        )
+        .expect("validated geographic ring has an exact summary");
+        let full_turn = matches!(summary.turn, crate::geographic::RingTurn::Full(_));
+        let north_pole = full_turn && summary.south.get() > 0.0;
+        let south_pole = full_turn && summary.north.get() < 0.0;
         Ok(StagedChartRing {
             ring: ChartRing {
                 points: points.into_boxed_slice(),
@@ -1436,19 +1247,14 @@ impl GraphBuilder {
                 south_pole,
                 north_boundary,
                 south_boundary,
-                period: match self.domain {
-                    TopologyDomain::Cartesian => 0.0,
-                    TopologyDomain::Geographic(frame) => frame.longitude().period(),
-                },
+                period: self.frame.longitude().period(),
                 pole: frame_pole,
-                full_band: summary.is_some_and(|summary| {
-                    matches!(
-                        summary.domain,
-                        crate::geographic::RingDomain::FullLongitude(_)
-                    ) && summary.south.get() < summary.north.get()
-                }),
-                south: summary.map_or(f64::NEG_INFINITY, |summary| summary.south.get()),
-                north: summary.map_or(f64::INFINITY, |summary| summary.north.get()),
+                full_band: matches!(
+                    summary.domain,
+                    crate::geographic::RingDomain::FullLongitude(_)
+                ) && summary.south.get() < summary.north.get(),
+                south: summary.south.get(),
+                north: summary.north.get(),
                 min_x,
                 max_x,
                 min_y,
@@ -1460,7 +1266,7 @@ impl GraphBuilder {
     }
 
     fn key(&self, point: XY) -> TopologyKey {
-        quotient_key(self.domain, point)
+        quotient_key(self.frame, point)
     }
 
     fn ensure_node(&mut self, point: XY, update: impl FnOnce(&mut NodeSupport)) -> TopologyNodeId {
@@ -1514,22 +1320,10 @@ impl GraphBuilder {
 
     fn finish_dimensions(
         mut self,
-        declared_dimension: Option<Dimension>,
+        effective_dimension: Option<Dimension>,
         is_collection: bool,
         has_polygonal_members: bool,
     ) -> crate::error::Result<TopologyGraph> {
-        // A shape declares surface dimension for holding a polygon at all, but
-        // a polygon that encloses nothing was staged as linework and left no
-        // area support behind. Reading the dimension back off what was staged
-        // keeps that shape from claiming a two-dimensional interior, and stays
-        // right in the geographic domain, where a ring collinear in lon/lat can
-        // still bound a polar cap and therefore does stage area support.
-        let effective_dimension = match declared_dimension {
-            Some(Dimension::Surface) if self.area_support.is_empty() => {
-                (!self.source_edges.is_empty()).then_some(Dimension::Curve)
-            },
-            other => other,
-        };
         let (atomic, provenance) =
             overlay::self_node_segments_sourced(self.chart_edges.iter().map(|edge| edge.segment))?;
         let mut bundles: HashMap<EdgeBundleKey, EdgeBundle> = HashMap::with_capacity(atomic.len());
@@ -1539,7 +1333,7 @@ impl GraphBuilder {
             }
             let start = self.ensure_node(piece.start, |_| {});
             let end = self.ensure_node(piece.end, |_| {});
-            let (key, segment, piece_reversed) = edge_bundle_key(self.domain, start, end, piece);
+            let (key, segment, piece_reversed) = edge_bundle_key(self.frame, start, end, piece);
             let bundle = bundles
                 .entry(key)
                 .or_insert_with(|| EdgeBundle::new(segment));
@@ -1577,9 +1371,8 @@ impl GraphBuilder {
         let mut bundles: Vec<_> = bundles.into_iter().collect();
         bundles.sort_unstable_by_key(|(key, _)| *key);
         let mut edges = Vec::with_capacity(bundles.len());
-        let mut bundle_endpoints = Vec::with_capacity(bundles.len());
         let mut area_transitions = Vec::with_capacity(bundles.len());
-        for (key, bundle) in bundles {
+        for (_, bundle) in bundles {
             let line_support = bundle.sources.iter().any(|&source| {
                 matches!(
                     self.source_edges[source as usize].support,
@@ -1600,39 +1393,18 @@ impl GraphBuilder {
                 line_support,
                 area_interior_support: false,
             });
-            bundle_endpoints.push((key.start.0, key.end.0));
             area_transitions.push(bundle.area_transitions);
         }
-        let area_membership = AreaMembership::build(self.domain, &self.area_support)?;
-        if matches!(self.domain, TopologyDomain::Cartesian) {
-            let arrangement_points: Vec<_> = self.nodes.iter().map(|node| node.point).collect();
-            let arrangement = crate::geometry::Arrangement::from_indexed_edges(
-                &arrangement_points,
-                &bundle_endpoints,
-            );
-            condense_area_face_support(
-                &self.area_support,
-                &mut self.nodes,
-                &mut edges,
-                &area_transitions,
-                &area_membership,
-                &arrangement,
-                &bundle_endpoints,
-            );
-        } else {
-            let TopologyDomain::Geographic(frame) = self.domain else {
-                unreachable!("Cartesian topology was handled above")
-            };
-            condense_geographic_area_face_support(
-                frame,
-                &self.area_support,
-                &mut self.nodes,
-                &mut edges,
-                &area_transitions,
-                &area_membership,
-                &self.node_lookup,
-            );
-        }
+        let area_membership = AreaMembership::build(self.frame, &self.area_support)?;
+        condense_geographic_area_face_support(
+            self.frame,
+            &self.area_support,
+            &mut self.nodes,
+            &mut edges,
+            &area_transitions,
+            &area_membership,
+            &self.node_lookup,
+        );
 
         let line_boundary = self
             .line_boundary
@@ -1679,14 +1451,14 @@ impl GraphBuilder {
                 })
         });
         let support = TopologySupport::new(
-            self.domain,
+            self.frame,
             &edges,
             &self.nodes,
             &self.source_points,
             area_membership,
         )?;
         let mut graph = TopologyGraph {
-            domain: self.domain,
+            frame: self.frame,
             effective_dimension,
             boundary_dimension,
             nodes: self.nodes.into_boxed_slice(),
@@ -1713,10 +1485,10 @@ impl GraphBuilder {
     }
 }
 
-fn chart_segments(domain: TopologyDomain, segment: Segment) -> [Option<Segment>; 2] {
-    let TopologyDomain::Geographic(frame) = domain else {
-        return [Some(segment), None];
-    };
+fn chart_segments(
+    frame: crate::geographic::GeographicFrame,
+    segment: Segment,
+) -> [Option<Segment>; 2] {
     let axis = frame.longitude();
     let start_x = axis
         .canonicalize(segment.start.x)
@@ -1814,12 +1586,11 @@ impl EdgeBundle {
     clippy::float_cmp,
     reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
 )]
-fn ray_germ_key(domain: TopologyDomain, origin: XY, target: XY) -> RayGermKey {
-    let longitude = match domain {
-        TopologyDomain::Geographic(frame) if origin.y.abs() == frame.pole() => {
-            canonical_f64_bits(origin.x)
-        },
-        TopologyDomain::Cartesian | TopologyDomain::Geographic(_) => 0,
+fn ray_germ_key(frame: crate::geographic::GeographicFrame, origin: XY, target: XY) -> RayGermKey {
+    let longitude = if origin.y.abs() == frame.pole() {
+        canonical_f64_bits(origin.x)
+    } else {
+        0
     };
     RayGermKey {
         longitude,
@@ -1829,34 +1600,14 @@ fn ray_germ_key(domain: TopologyDomain, origin: XY, target: XY) -> RayGermKey {
 }
 
 fn edge_bundle_key(
-    domain: TopologyDomain,
+    frame: crate::geographic::GeographicFrame,
     start: TopologyNodeId,
     end: TopologyNodeId,
     segment: Segment,
 ) -> (EdgeBundleKey, Segment, bool) {
-    let start_germ = ray_germ_key(domain, segment.start, segment.end);
-    let end_germ = ray_germ_key(domain, segment.end, segment.start);
+    let start_germ = ray_germ_key(frame, segment.start, segment.end);
+    let end_germ = ray_germ_key(frame, segment.end, segment.start);
     let reverse = (end, end_germ) < (start, start_germ);
-    if !domain.is_geographic() {
-        let (start, end, start_germ, end_germ) = if reverse {
-            (end, start, end_germ, start_germ)
-        } else {
-            (start, end, start_germ, end_germ)
-        };
-        // Cartesian diagnostics retain the first noded source direction. The
-        // canonical key only identifies coincident pieces; it must not choose
-        // their public display orientation.
-        return (
-            EdgeBundleKey {
-                start,
-                end,
-                start_germ,
-                end_germ,
-            },
-            segment,
-            false,
-        );
-    }
     if reverse {
         (
             EdgeBundleKey {
@@ -2143,10 +1894,9 @@ fn condense_geographic_area_face_support(
     if polygons.is_empty() || edges.is_empty() {
         return;
     }
-    let domain = TopologyDomain::Geographic(frame);
     let origins: Vec<XY> = nodes.iter().map(|node| node.point).collect();
     let arrangement = QuotientArrangement::build(frame, edges, &origins, |point| {
-        node_lookup[&quotient_key(domain, point)]
+        node_lookup[&quotient_key(frame, point)]
     });
     let face_interior = arrangement.face_interior(polygons, edges, transitions, area_membership);
     let (darts, outgoing, face_of) = (
@@ -2287,11 +2037,6 @@ struct FaceSeed {
 /// Label every face inside or outside the area, by locating ONE seed face per
 /// connected component and toggling membership across each edge the walk
 /// crosses.
-///
-/// Both condensers land here. Only the geometry that produces the faces
-/// differs — the planar one reads a prebuilt arrangement, the geographic one
-/// walks the quotient half-edge structure it builds itself — while the
-/// labelling is one algorithm and lives here once.
 fn propagate_face_interior(
     face_count: usize,
     adjacency: &[Vec<(usize, usize)>],
@@ -2364,105 +2109,6 @@ fn toggle_membership(
     }
 }
 
-fn condense_area_face_support(
-    polygons: &[AreaSupport],
-    nodes: &mut [TopologyNode],
-    edges: &mut [TopologyEdge],
-    transitions: &[Vec<(u32, i32)>],
-    area_membership: &AreaMembership,
-    arrangement: &crate::geometry::Arrangement,
-    bundle_endpoints: &[(u32, u32)],
-) {
-    if polygons.is_empty() || edges.is_empty() {
-        return;
-    }
-    let has_area = polygons
-        .iter()
-        .any(|support| relate::polygon_has_nondegenerate_area(support.source()));
-    let mut edge_of_slot = vec![usize::MAX; arrangement.targets.len()];
-    // Traverse the dual graph with one mutable polygon-membership set. Edge
-    // provenance toggles only the polygons whose boundary is crossed, so face
-    // labeling is linear after one seed classification per edge component.
-    let mut adjacency = vec![Vec::new(); arrangement.faces.len()];
-    for (edge, &(start, end)) in bundle_endpoints.iter().enumerate() {
-        let slot = arrangement.slot(start, end);
-        let twin = arrangement.twin_slot(slot);
-        let left = arrangement.face_of[slot] as usize;
-        let right = arrangement.face_of[twin] as usize;
-        edge_of_slot[slot] = edge;
-        edge_of_slot[twin] = edge;
-        if left != right {
-            adjacency[left].push((right, edge));
-            adjacency[right].push((left, edge));
-        }
-    }
-    let mut outer: Vec<Option<usize>> = vec![None; arrangement.component_count as usize];
-    for (face, data) in arrangement.faces.iter().enumerate() {
-        let candidate = &mut outer[data.component as usize];
-        if candidate.is_none_or(|current| {
-            data.area_sign
-                .prefers_as_outer_face_than(arrangement.faces[current].area_sign)
-        }) {
-            *candidate = Some(face);
-        }
-    }
-    let seeds: Vec<FaceSeed> = outer
-        .into_iter()
-        .flatten()
-        .map(|face| {
-            let slot = arrangement.face_slots[arrangement.face_starts[face] as usize] as usize;
-            let segment = Segment {
-                start: arrangement.points[arrangement.owners[slot] as usize],
-                end: arrangement.points[arrangement.targets[slot] as usize],
-            };
-            let edge = edge_of_slot[slot];
-            FaceSeed {
-                face,
-                segment,
-                edge,
-                forward: segment_direction_matches(segment, edges[edge].segment),
-            }
-        })
-        .collect();
-    let face_interior = propagate_face_interior(
-        arrangement.faces.len(),
-        &adjacency,
-        &seeds,
-        polygons,
-        transitions,
-        area_membership,
-    );
-    for (edge, &(start, end)) in edges.iter_mut().zip(bundle_endpoints) {
-        let slot = arrangement.slot(start, end);
-        let twin = arrangement.twin_slot(slot);
-        let left = face_interior[arrangement.face_of[slot] as usize];
-        let right = face_interior[arrangement.face_of[twin] as usize];
-        edge.area_interior_support = left && right;
-        edge.is_boundary = left != right;
-    }
-    for vertex in 0..arrangement.points.len() {
-        let range = arrangement.starts[vertex] as usize..arrangement.starts[vertex + 1] as usize;
-        let mut sectors = range.map(|slot| face_interior[arrangement.face_of[slot] as usize]);
-        let Some(first) = sectors.next() else {
-            continue;
-        };
-        let (mut any, mut all) = (first, first);
-        for interior in sectors {
-            any |= interior;
-            all &= interior;
-        }
-        nodes[vertex].support.area_interior = if all {
-            AreaNodeSupport::Complete
-        } else if any {
-            AreaNodeSupport::Partial
-        } else {
-            AreaNodeSupport::None
-        };
-        nodes[vertex].support.area_boundary =
-            (!has_area && nodes[vertex].support.area_boundary) || any && !all;
-    }
-}
-
 fn has_cross_component_line_overlap(edges: &[SourceEdge]) -> crate::error::Result<bool> {
     let lines: Vec<_> = edges
         .iter()
@@ -2507,10 +2153,7 @@ enum RingLocation {
     Outside,
 }
 
-fn polygon_contains_interior(space: TopologySpace, polygon: &AreaSupport, point: XY) -> bool {
-    if !space.is_geographic() {
-        return polygon.source().contains_point(point.point());
-    }
+fn polygon_contains_interior(polygon: &AreaSupport, point: XY) -> bool {
     let (shell, holes) = polygon.geographic_rings();
     if geographic_ring_location(shell, point) != RingLocation::Inside {
         return false;
@@ -2727,7 +2370,7 @@ mod tests {
         let _: Option<()> =
             graph
                 .support
-                .for_each_edge_at(graph.domain, &graph.edges, point, |edge| {
+                .for_each_edge_at(graph.frame, &graph.edges, point, |edge| {
                     let ordinal = graph
                         .edges
                         .iter()
@@ -2746,7 +2389,7 @@ mod tests {
             .iter()
             .enumerate()
             .filter_map(|(ordinal, edge)| {
-                point_on_graph_segment(graph.domain, point, edge.segment).then_some(ordinal)
+                point_on_graph_segment(graph.frame, point, edge.segment).then_some(ordinal)
             })
             .collect()
     }
@@ -2801,7 +2444,7 @@ mod tests {
             ],
             &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
         ));
-        let graph = TopologyGraph::cartesian(&shape).unwrap();
+        let graph = geographic_graph(&shape);
         assert!(graph.contains_area_interior(XY::new(1.0, 1.0)));
         assert!(!graph.contains_area_interior(XY::new(5.0, 5.0)));
         assert!(graph.has_area_boundary(XY::new(5.0, 3.0)));
@@ -3076,7 +2719,7 @@ mod tests {
             MultiMember::Value(line(&[(1.0, 0.0), (2.0, 0.0)])),
         ])
         .expect("homogeneous lines");
-        let graph = TopologyGraph::cartesian(&Shape::MultiLineString(lines)).unwrap();
+        let graph = geographic_graph(&Shape::MultiLineString(lines));
         assert_eq!(graph.line_boundary.len(), 2);
         assert!(!graph.has_line_boundary(XY::new(1.0, 0.0)));
         assert!(graph.has_line_boundary(XY::new(0.0, 0.0)));
@@ -3087,7 +2730,7 @@ mod tests {
         graph
             .area_support
             .iter()
-            .any(|polygon| polygon_contains_interior(graph.domain.space(), polygon, point))
+            .any(|polygon| polygon_contains_interior(polygon, point))
     }
 
     fn brute_has_area_boundary(graph: &TopologyGraph, point: XY) -> bool {
@@ -3095,7 +2738,7 @@ mod tests {
             .node_for(point)
             .is_some_and(|id| graph.nodes[id.index()].support.area_boundary)
             || graph.edges.iter().any(|edge| {
-                edge.is_boundary && point_on_graph_segment(graph.domain, point, edge.segment)
+                edge.is_boundary && point_on_graph_segment(graph.frame, point, edge.segment)
             })
     }
 
@@ -3106,7 +2749,7 @@ mod tests {
                     graph.source_edges[source as usize].support,
                     SourceSupport::Line
                 )
-            }) && point_on_graph_segment(graph.domain, point, edge.segment)
+            }) && point_on_graph_segment(graph.frame, point, edge.segment)
         })
     }
 
@@ -3127,7 +2770,7 @@ mod tests {
         if brute_contains_area_interior(graph, point)
             || graph.edges.iter().any(|edge| {
                 edge.area_interior_support
-                    && point_on_graph_segment(graph.domain, point, edge.segment)
+                    && point_on_graph_segment(graph.frame, point, edge.segment)
             })
         {
             return TopologyLocation::Interior;
@@ -3163,20 +2806,20 @@ mod tests {
                 graph.locate_point(point),
                 brute_locate_point(graph, point, true),
                 "indexed location mismatch at {point:?} in {:?}",
-                graph.domain
+                graph.frame
             );
             assert_eq!(
                 graph.locate_point_for_overlay(point),
                 brute_locate_point(graph, point, false),
                 "indexed overlay location mismatch at {point:?} in {:?}",
-                graph.domain
+                graph.frame
             );
         }
     }
 
     #[test]
     fn indexed_support_matches_brute_locations_at_source_noded_and_aliased_points() {
-        let cartesian = collection(vec![
+        let planar = collection(vec![
             Shape::Polygon(polygon(
                 &[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
                 &[&[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]],
@@ -3214,10 +2857,7 @@ mod tests {
             )),
             Shape::LineString(line(&[(175.0, 6.0), (180.0, 6.0), (-175.0, 6.0)])),
         ]);
-        for graph in [
-            TopologyGraph::cartesian(&cartesian).unwrap(),
-            geographic_graph(&geographic),
-        ] {
+        for graph in [geographic_graph(&planar), geographic_graph(&geographic)] {
             let mut points = Vec::new();
             points.extend(graph.nodes.iter().map(|node| node.point));
             for edge in &graph.edges {
@@ -3229,22 +2869,21 @@ mod tests {
                 ));
             }
             points.extend(graph.source_points.iter().map(|source| source.point.xy()));
-            if let TopologyDomain::Geographic(frame) = graph.domain {
-                let period = frame.longitude().period();
-                let aliases = points.clone();
-                points.extend(aliases.into_iter().flat_map(|point| {
-                    [
-                        XY::new(point.x - period, point.y),
-                        point,
-                        XY::new(point.x + period, point.y),
-                    ]
-                }));
-                points.extend([
-                    XY::new(-137.0, frame.pole()),
-                    XY::new(223.0, frame.pole()),
-                    XY::new(-137.0, -frame.pole()),
-                ]);
-            }
+            let frame = graph.frame;
+            let period = frame.longitude().period();
+            let aliases = points.clone();
+            points.extend(aliases.into_iter().flat_map(|point| {
+                [
+                    XY::new(point.x - period, point.y),
+                    point,
+                    XY::new(point.x + period, point.y),
+                ]
+            }));
+            points.extend([
+                XY::new(-137.0, frame.pole()),
+                XY::new(223.0, frame.pole()),
+                XY::new(-137.0, -frame.pole()),
+            ]);
             let one_ulp = f64::from_bits(1.0_f64.to_bits() + 1);
             points.extend([XY::new(one_ulp, 1.0), XY::new(1.0, one_ulp)]);
             assert_indexed_locations_match_brute(&graph, points);
@@ -3263,7 +2902,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&shape).unwrap();
+        let graph = geographic_graph(&shape);
         let mut ids = Vec::new();
         let _: Option<()> = graph.for_each_area_interior(XY::new(3.0, 3.0), |polygon| {
             ids.push(polygon);
@@ -3297,7 +2936,7 @@ mod tests {
 
     #[test]
     fn resolved_node_locations_match_full_point_location() {
-        let cartesian = collection(vec![
+        let planar = collection(vec![
             Shape::Polygon(polygon(
                 &[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)],
                 &[],
@@ -3317,10 +2956,7 @@ mod tests {
             )),
             Shape::LineString(line(&[(175.0, 5.0), (180.0, 5.0), (-175.0, 5.0)])),
         ]);
-        for graph in [
-            TopologyGraph::cartesian(&cartesian).unwrap(),
-            geographic_graph(&geographic),
-        ] {
+        for graph in [geographic_graph(&planar), geographic_graph(&geographic)] {
             for node in &graph.nodes {
                 assert_eq!(node.location, graph.locate_point(node.point));
             }
@@ -3334,7 +2970,7 @@ mod tests {
             Shape::LineString(line(&[(0.0, 0.0), (2.0, 0.0)])),
             Shape::Point(point(4.0, 4.0)),
         ]);
-        let graph = TopologyGraph::cartesian(&collection).unwrap();
+        let graph = geographic_graph(&collection);
         assert_eq!(graph.effective_dimension, Some(Dimension::Curve));
         assert!(graph.line_boundary.is_empty());
         assert_eq!(graph.edges.len(), 1);
@@ -3348,7 +2984,7 @@ mod tests {
             Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
             Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
         ]);
-        let graph = TopologyGraph::cartesian(&collection).unwrap();
+        let graph = geographic_graph(&collection);
         assert_eq!(graph.edges.len(), 4);
         assert!(graph.edges.iter().all(|edge| edge.sources.len() == 1));
         assert!(!graph.has_line_boundary(XY::new(1.0, 1.0)));
@@ -3362,7 +2998,7 @@ mod tests {
             for &source in &edge.sources {
                 let source = &graph.source_edges[source as usize];
                 assert!(
-                    chart_segments(graph.domain, source.segment)
+                    chart_segments(graph.frame, source.segment)
                         .into_iter()
                         .flatten()
                         .any(|chart| {
@@ -3375,12 +3011,12 @@ mod tests {
     }
 
     #[test]
-    fn cartesian_noded_bundles_keep_endpoint_provenance() {
+    fn noded_bundles_keep_endpoint_provenance() {
         let shape = collection(vec![
             Shape::LineString(line(&[(0.0, 0.0), (2.0, 2.0)])),
             Shape::LineString(line(&[(0.0, 2.0), (2.0, 0.0)])),
         ]);
-        let graph = TopologyGraph::cartesian(&shape).unwrap();
+        let graph = geographic_graph(&shape);
         assert_eq!(graph.edges.len(), 4);
         assert_edge_endpoints_and_provenance(&graph);
     }
@@ -3476,7 +3112,7 @@ mod tests {
     #[test]
     fn typed_empty_has_no_effective_dimension() {
         let shape = Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZM);
-        let graph = TopologyGraph::cartesian(&shape).unwrap();
+        let graph = geographic_graph(&shape);
         assert_eq!(graph.effective_dimension, None);
         assert!(graph.nodes.is_empty());
         assert!(graph.edges.is_empty());
@@ -3492,7 +3128,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&collection).unwrap();
+        let graph = geographic_graph(&collection);
         assert_eq!(graph.effective_dimension, Some(Dimension::Surface));
     }
 
@@ -3520,7 +3156,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&shape).unwrap();
+        let graph = geographic_graph(&shape);
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),
             TopologyLocation::Exterior
@@ -3539,7 +3175,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&adjacent).unwrap();
+        let graph = geographic_graph(&adjacent);
         assert_eq!(
             graph.locate_point(XY::new(1.0, 0.5)),
             TopologyLocation::Interior
@@ -3560,9 +3196,7 @@ mod tests {
         let duplicates = Shape::geometry_collection(vec![left.clone(), left.clone(), left, right])
             .expect("test collection is valid");
         assert_eq!(
-            TopologyGraph::cartesian(&duplicates)
-                .unwrap()
-                .locate_point(XY::new(1.0, 0.5)),
+            geographic_graph(&duplicates).locate_point(XY::new(1.0, 0.5)),
             TopologyLocation::Interior
         );
 
@@ -3576,7 +3210,7 @@ mod tests {
                 &[],
             )),
         ]);
-        let graph = TopologyGraph::cartesian(&pinch).unwrap();
+        let graph = geographic_graph(&pinch);
         assert_eq!(
             graph.locate_point(XY::new(0.0, 0.0)),
             TopologyLocation::Boundary

@@ -1098,9 +1098,17 @@ mod frame_cache_tests {
     #[test]
     fn geographic_graph_heap_bytes_survive_poison() {
         let cache = FrameDependentCaches::default();
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let point = Shape::Point(Point::new_raw_xy(1.0, 2.0));
         let graph = Arc::new(
-            crate::geometry::TopologyGraph::cartesian(&Shape::Point(Point::new_raw_xy(1.0, 2.0)))
-                .unwrap(),
+            crate::geometry::TopologyGraph::geographic(
+                crate::geographic::ScalarGeographicView::try_new(frame, &point)
+                    .expect("fixture admits"),
+            )
+            .unwrap(),
         );
         let expected = HeapSize::heap_bytes(&graph);
         assert!(expected > 0);

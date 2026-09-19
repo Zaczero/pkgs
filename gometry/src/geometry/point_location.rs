@@ -18,9 +18,8 @@ use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
-    Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingEdgeMembership, RingView, Shape,
-    SharedSlice, XY, cartesian_polygon_views_location, edge_winding, ring_edge_membership,
-    ring_kind_columns, xy_bounds_columns,
+    Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingView, Shape, SharedSlice, XY,
+    cartesian_polygon_views_location, edge_winding, ring_kind_columns, xy_bounds_columns,
 };
 
 /// One closed ring's Y-indexed edges for prepared point membership.
@@ -69,13 +68,6 @@ impl RingPointIndex {
         }
     }
 
-    fn bounds_contains(&self, x: f64, y: f64) -> bool {
-        x >= self.bounds.minx()
-            && x <= self.bounds.maxx()
-            && y >= self.bounds.miny()
-            && y <= self.bounds.maxy()
-    }
-
     fn edge_xy(&self, edge: EdgeId) -> (f64, f64, f64, f64) {
         let e = edge.as_usize();
         debug_assert_eq!(self.xs.len(), self.ys.len());
@@ -110,45 +102,6 @@ impl RingPointIndex {
             )
         });
         touched.is_none().then_some(winding)
-    }
-
-    /// Exact classification without the ring envelope gate.
-    fn classify_at(&self, x: f64, y: f64) -> RingClass {
-        if let Some(edges) = self.edges.dense_band_edges(y) {
-            let mut inside = false;
-            for &edge in edges {
-                let (ax, ay, bx, by) = self.edge_xy(edge);
-                match ring_edge_membership(ax, ay, bx, by, x, y) {
-                    RingEdgeMembership::Boundary => return RingClass::Boundary,
-                    RingEdgeMembership::Crossing => inside = !inside,
-                    RingEdgeMembership::None => {},
-                }
-            }
-            return if inside {
-                RingClass::Interior
-            } else {
-                RingClass::Exterior
-            };
-        }
-
-        let mut inside = false;
-        if self.edges.for_each_edge(y, |edge| {
-            let (ax, ay, bx, by) = self.edge_xy(edge);
-            match ring_edge_membership(ax, ay, bx, by, x, y) {
-                RingEdgeMembership::Boundary => return ControlFlow::Break(RingClass::Boundary),
-                RingEdgeMembership::Crossing => inside = !inside,
-                RingEdgeMembership::None => {},
-            }
-            ControlFlow::Continue(())
-        }) == Some(RingClass::Boundary)
-        {
-            return RingClass::Boundary;
-        }
-        if inside {
-            RingClass::Interior
-        } else {
-            RingClass::Exterior
-        }
     }
 }
 
@@ -234,13 +187,6 @@ impl PolygonPointIndex {
         })
     }
 
-    /// The closed `(min_x, max_x, min_y, max_y)` envelope, absent for an
-    /// empty polygon.
-    pub(crate) fn envelope(&self) -> Option<(f64, f64, f64, f64)> {
-        self.bounds
-            .map(|bounds| (bounds.minx(), bounds.maxx(), bounds.miny(), bounds.maxy()))
-    }
-
     /// Strict membership after the envelope candidate gate.
     #[cfg(test)]
     pub(crate) fn contains_xy(&self, x: f64, y: f64) -> Result<bool> {
@@ -290,104 +236,6 @@ impl PolygonPointIndex {
             crate::geometry::Loc::Boundary => RingClass::Boundary,
             crate::geometry::Loc::Exterior => RingClass::Exterior,
         })
-    }
-
-    /// Rounded graph oracle only. Production Cartesian point queries use
-    /// [`location`], including its exact local source-star boundary rule.
-    pub(crate) fn contains_xy_graph_oracle(&self, x: f64, y: f64) -> bool {
-        if !self.in_bounds_xy(x, y) {
-            return false;
-        }
-        self.shell.classify_at(x, y) == RingClass::Interior
-            && !self.hole_hits_xy(x, y, |class| class != RingClass::Exterior)
-    }
-
-    /// Three-way membership: `Boundary` on shell or any hole ring, `Interior`
-    /// if strictly inside the shell and strictly outside every hole, else
-    /// `Exterior`. Bounds-gate only rules out `Exterior`.
-    #[cfg(test)]
-    fn classify_xy(&self, x: f64, y: f64) -> RingClass {
-        if !self.in_bounds_xy(x, y) {
-            return RingClass::Exterior;
-        }
-        match self.shell.classify_at(x, y) {
-            RingClass::Exterior => RingClass::Exterior,
-            RingClass::Boundary => RingClass::Boundary,
-            RingClass::Interior => self.classify_holes_xy(x, y),
-        }
-    }
-
-    /// Shell already classified Interior; fold hole rings.
-    #[cfg(test)]
-    fn classify_holes_xy(&self, x: f64, y: f64) -> RingClass {
-        let mut on_hole = false;
-        let mut interior_hole = false;
-        // Few holes (common): full XY envelope gate per hole without
-        // Y-index indirection. Many holes: Y-stab then XY gate.
-        if self.holes.len() <= 32 {
-            self.holes.for_each(|hole| {
-                if interior_hole || !hole.bounds_contains(x, y) {
-                    return;
-                }
-                match hole.classify_at(x, y) {
-                    RingClass::Interior => interior_hole = true,
-                    RingClass::Boundary => on_hole = true,
-                    RingClass::Exterior => {},
-                }
-            });
-        } else {
-            let _ = self.holes.for_each_at_point(x, y, |hole| {
-                if interior_hole {
-                    return ControlFlow::Break(());
-                }
-                match hole.classify_at(x, y) {
-                    RingClass::Interior => {
-                        interior_hole = true;
-                        ControlFlow::Break(())
-                    },
-                    RingClass::Boundary => {
-                        on_hole = true;
-                        ControlFlow::Continue(())
-                    },
-                    RingClass::Exterior => ControlFlow::Continue(()),
-                }
-            });
-        }
-        if interior_hole {
-            RingClass::Exterior
-        } else if on_hole {
-            RingClass::Boundary
-        } else {
-            RingClass::Interior
-        }
-    }
-
-    /// True if any hole (after XY bounds gate) satisfies `pred`.
-    fn hole_hits_xy(&self, x: f64, y: f64, pred: impl Fn(RingClass) -> bool) -> bool {
-        let mut hit = false;
-        if self.holes.len() <= 32 {
-            self.holes.for_each(|hole| {
-                if hit || !hole.bounds_contains(x, y) {
-                    return;
-                }
-                if pred(hole.classify_at(x, y)) {
-                    hit = true;
-                }
-            });
-        } else {
-            let _ = self.holes.for_each_at_point(x, y, |hole| {
-                if hit {
-                    return ControlFlow::Break(());
-                }
-                if pred(hole.classify_at(x, y)) {
-                    hit = true;
-                    ControlFlow::Break(())
-                } else {
-                    ControlFlow::Continue(())
-                }
-            });
-        }
-        hit
     }
 }
 
@@ -587,44 +435,6 @@ impl PointBatchTester {
             Self::Generic(tester) => tester.covers_point(point),
         }
     }
-
-    /// Three-way areal membership: `Interior` (strictly inside the area),
-    /// `Boundary` (on a ring), or `Exterior`. Strictly interior to ANY part
-    /// wins over a boundary hit on another (union semantics).
-    #[cfg(test)]
-    pub(crate) fn classify_area_point(&self, point: Point) -> Option<RingClass> {
-        match self {
-            Self::Polygon { index: polygon, .. } => Some(polygon.classify_xy(point.x, point.y)),
-            Self::MultiPolygon { parts, .. } => {
-                let mut on_boundary = false;
-                let mut interior = false;
-                let _ = parts.for_each_at_point(point.x, point.y, |polygon| {
-                    if interior {
-                        return ControlFlow::Break(());
-                    }
-                    match polygon.classify_xy(point.x, point.y) {
-                        RingClass::Interior => {
-                            interior = true;
-                            ControlFlow::Break(())
-                        },
-                        RingClass::Boundary => {
-                            on_boundary = true;
-                            ControlFlow::Continue(())
-                        },
-                        RingClass::Exterior => ControlFlow::Continue(()),
-                    }
-                });
-                Some(if interior {
-                    RingClass::Interior
-                } else if on_boundary {
-                    RingClass::Boundary
-                } else {
-                    RingClass::Exterior
-                })
-            },
-            Self::Generic(_) => None,
-        }
-    }
 }
 
 impl HeapSize for PointBatchTester {
@@ -644,6 +454,14 @@ mod tests {
         CoordWindow, LineSeq, MultiPolygon, SharedSlice, XY, ring_classify_point,
     };
     use crate::{CoordSeq, Ring};
+
+    fn winding_class(ring: &RingPointIndex, x: f64, y: f64) -> RingClass {
+        match ring.winding_off_boundary(x, y) {
+            None => RingClass::Boundary,
+            Some(0) => RingClass::Exterior,
+            Some(_) => RingClass::Interior,
+        }
+    }
 
     fn closed_ring(pts: &[(f64, f64)]) -> Ring {
         let xy: Vec<XY> = pts.iter().map(|&(x, y)| XY::new(x, y)).collect();
@@ -711,7 +529,7 @@ mod tests {
 
         for (x, y) in [(5.0, 0.0), (5.0, 5.0), (9.0, 5.0), (-1.0, 5.0)] {
             assert_eq!(
-                ring.classify_at(x, y),
+                winding_class(&ring, x, y),
                 ring_classify_point(&coords, XY::new(x, y).point()),
                 "classification mismatch at ({x}, {y})"
             );
@@ -740,13 +558,13 @@ mod tests {
         drop(source_xs);
         drop(source_ys);
 
-        assert_eq!(ring.classify_at(1.0, 1.0), RingClass::Interior);
-        assert_eq!(ring.classify_at(0.0, 1.0), RingClass::Boundary);
-        assert_eq!(ring.classify_at(3.0, 1.0), RingClass::Exterior);
+        assert_eq!(winding_class(&ring, 1.0, 1.0), RingClass::Interior);
+        assert_eq!(winding_class(&ring, 0.0, 1.0), RingClass::Boundary);
+        assert_eq!(winding_class(&ring, 3.0, 1.0), RingClass::Exterior);
     }
 
     #[test]
-    fn windowed_ring_index_classifies_visible_coordinates() {
+    fn windowed_ring_index_reads_visible_coordinates() {
         let source_xs =
             SharedSlice::try_from_vec(vec![1000.0, 0.0, 2.0, 2.0, 0.0, 0.0, -1000.0]).unwrap();
         let source_ys =
@@ -766,13 +584,13 @@ mod tests {
         assert!(source_xs_weak.upgrade().is_none());
         assert!(source_ys_weak.upgrade().is_none());
 
-        assert_eq!(ring.classify_at(1.0, 1.0), RingClass::Interior);
-        assert_eq!(ring.classify_at(0.0, 1.0), RingClass::Boundary);
-        assert_eq!(ring.classify_at(3.0, 1.0), RingClass::Exterior);
+        assert_eq!(winding_class(&ring, 1.0, 1.0), RingClass::Interior);
+        assert_eq!(winding_class(&ring, 0.0, 1.0), RingClass::Boundary);
+        assert_eq!(winding_class(&ring, 3.0, 1.0), RingClass::Exterior);
     }
 
     #[test]
-    fn xyzm_ring_index_classifies_from_xy_columns() {
+    fn xyzm_ring_index_reads_xy_columns() {
         let coords = CoordSeq::try_from_vecs(
             [0.0, 2.0, 2.0, 0.0, 0.0].into(),
             [0.0, 0.0, 2.0, 2.0, 0.0].into(),
@@ -799,9 +617,9 @@ mod tests {
         drop(coords);
         assert!(z_weak.upgrade().is_none());
         assert!(m_weak.upgrade().is_none());
-        assert_eq!(ring.classify_at(1.0, 1.0), RingClass::Interior);
-        assert_eq!(ring.classify_at(0.0, 1.0), RingClass::Boundary);
-        assert_eq!(ring.classify_at(3.0, 1.0), RingClass::Exterior);
+        assert_eq!(winding_class(&ring, 1.0, 1.0), RingClass::Interior);
+        assert_eq!(winding_class(&ring, 0.0, 1.0), RingClass::Boundary);
+        assert_eq!(winding_class(&ring, 3.0, 1.0), RingClass::Exterior);
     }
 
     fn square_with_hole() -> Polygon {
@@ -825,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn contains_covers_and_classify_match_shape_kernels() {
+    fn contains_and_covers_match_shape_kernels() {
         let poly = square_with_hole();
         let shape = Shape::Polygon(poly);
         let tester = PointBatchTester::new(&shape).unwrap();
@@ -849,15 +667,6 @@ mod tests {
                 shape.covers_point(p).unwrap(),
                 "covers at ({x},{y})"
             );
-            let class = tester.classify_area_point(p).unwrap();
-            let expect = if shape.contains_point(p).unwrap() {
-                RingClass::Interior
-            } else if shape.covers_point(p).unwrap() {
-                RingClass::Boundary
-            } else {
-                RingClass::Exterior
-            };
-            assert_eq!(class, expect, "classify at ({x},{y})");
         }
     }
 
@@ -872,13 +681,8 @@ mod tests {
         let tester = PointBatchTester::new(&shape).unwrap();
         let overlap = Point::new_raw_xy(0.75, 0.75);
         assert!(tester.contains_point(overlap).unwrap());
-        assert_eq!(
-            tester.classify_area_point(overlap),
-            Some(RingClass::Interior)
-        );
         let out = Point::new_raw_xy(3.0, 3.0);
         assert!(!tester.contains_point(out).unwrap());
-        assert_eq!(tester.classify_area_point(out), Some(RingClass::Exterior));
     }
 
     #[test]
@@ -887,7 +691,6 @@ mod tests {
         let tester = PointBatchTester::new(&Shape::Polygon(poly)).unwrap();
         let p = Point::new_raw_xy(1.0, 9.0);
         assert!(tester.contains_point(p).unwrap());
-        assert_eq!(tester.classify_area_point(p), Some(RingClass::Interior));
     }
 
     #[test]

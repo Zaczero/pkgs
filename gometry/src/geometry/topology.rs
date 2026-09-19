@@ -11,7 +11,7 @@ use crate::geometry::{
 mod graph;
 mod staging;
 pub(crate) use graph::{AreaSupport, TopologyDomain, TopologyGraph, TopologyKey};
-pub(super) use graph::{TopologyEdge, TopologyLocation, TopologyNodeId, TopologySpace};
+pub(super) use graph::{TopologyEdge, TopologyLocation, TopologyNodeId};
 
 /// SIMD ray-crossing decision for one chunk of ring edges, or `None` when any
 /// straddling lane's crossing sign cannot be trusted in plain `f64` (the

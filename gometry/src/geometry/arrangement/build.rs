@@ -25,46 +25,6 @@ impl Arrangement<i32> {
         Self::build::<true>(segments, |_| 1)
     }
 
-    /// Build from already-deduplicated edges whose endpoint ordinals index
-    /// `points`. This avoids rebuilding the vertex map when a caller already
-    /// owns the planar graph and needs only its face columns.
-    pub(crate) fn from_indexed_edges(points: &[XY], edges: &[(u32, u32)]) -> Self {
-        let mut spares = arrangement_spares();
-        let mut typed = typed_spares::<i32>();
-        let mut arrangement_points = std::mem::take(&mut spares.points);
-        arrangement_points.clear();
-        arrangement_points.extend_from_slice(points);
-        let mut indexed_edges = std::mem::take(&mut typed.edges);
-        indexed_edges.clear();
-        indexed_edges.reserve(edges.len());
-        for &(start, end) in edges {
-            debug_assert_ne!(start, end, "graph bundles exclude zero-length edges");
-            indexed_edges.push((start, end, 1));
-        }
-        let (starts, mut targets, mut multiplicities, mut edge_of_slot) = build_csr(
-            arrangement_points.len(),
-            &indexed_edges,
-            std::mem::take(&mut spares.topology.starts),
-            std::mem::take(&mut spares.topology.targets),
-            std::mem::take(&mut typed.multiplicities),
-            std::mem::take(&mut spares.edge_of_slot),
-        );
-        indexed_edges.clear();
-        sort_rows_counterclockwise(
-            &arrangement_points,
-            &starts,
-            &mut targets,
-            &mut multiplicities,
-            &mut edge_of_slot,
-        );
-        spares.points = arrangement_points;
-        spares.topology.starts = starts;
-        spares.topology.targets = targets;
-        spares.edge_of_slot = edge_of_slot;
-        typed.multiplicities = multiplicities;
-        Self::finish_topology::<false>(std::mem::take(&mut spares.ids), spares, typed)
-    }
-
     /// Specialized constructor for ONE closed loop's raw (un-noded)
     /// segments — the stroke/offset buffer's dominant caseload. Produces
     /// bit-identical topology columns to `self_node_segments` +
@@ -544,14 +504,6 @@ impl<W: WindingWeight> Arrangement<W> {
         spares.path = path;
         spares.path_ids = path_ids;
         rings
-    }
-
-    pub(crate) fn slot(&self, from: u32, to: u32) -> usize {
-        let mut range =
-            self.starts[from as usize] as usize..self.starts[from as usize + 1] as usize;
-        range
-            .find(|&slot| self.targets[slot] == to)
-            .expect("twin half-edge exists")
     }
 
     pub(crate) fn twin_slot(&self, slot: usize) -> usize {

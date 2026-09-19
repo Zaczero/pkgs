@@ -8,12 +8,9 @@ use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicVi
 use crate::geometry::overlay::ExactSourceInventory;
 #[cfg(test)]
 use crate::geometry::predicates;
-#[cfg(test)]
-use crate::geometry::relate::line_has_nonzero_segment;
 use crate::geometry::relate::{De9im, Loc, polygon_has_nondegenerate_area};
 use crate::geometry::topology::{
-    AreaSupport, TopologyDomain, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
-    TopologySpace,
+    AreaSupport, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
 };
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, HashMap, PointKey, Polygon, PreparedPlan, Ring, Segment,
@@ -99,8 +96,7 @@ impl GeographicPrepared<'_> {
     }
 }
 
-/// Compute the complete relation matrix, using a direct Cartesian fold where
-/// its operand contract is met and source-owned topology graphs otherwise.
+/// Compute the complete Cartesian relation matrix on the exact partition.
 /// Every named predicate is a projection of this result.
 pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> Result<De9im> {
     graph_relate_data(
@@ -109,15 +105,23 @@ pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> Result<De9im> 
     )
 }
 
-/// The geographic oracle the tests relate through: a degree frame stands in
-/// for a CRS, which is why this never leaves the test build.
+/// The geographic relation the tests read: a degree frame stands in for a
+/// CRS, which is why this never leaves the test build.
 #[cfg(test)]
 fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
-    graph_relate_plans(
-        &PreparedPlan::transient(left).unwrap(),
-        &PreparedPlan::transient(right).unwrap(),
-        TopologySpace::Geographic,
+    let unit =
+        crate::geographic::AngularFactor::try_new("test degrees", std::f64::consts::PI / 180.0)
+            .unwrap();
+    let frame = GeographicFrame::try_new(unit, unit, 0.0).unwrap();
+    let left = PreparedPlan::transient(left).unwrap();
+    let right = PreparedPlan::transient(right).unwrap();
+    let left_cache = crate::geometry::FrameDependentCaches::default();
+    let right_cache = crate::geometry::FrameDependentCaches::default();
+    graph_relate_data_geographic(
+        GeographicPrepared::try_new(&left, &left_cache, frame).expect("fixture admits"),
+        GeographicPrepared::try_new(&right, &right_cache, frame).expect("fixture admits"),
     )
+    .unwrap()
 }
 
 pub(crate) fn graph_relate_data(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
@@ -130,31 +134,6 @@ fn exact_cartesian_relate(left: &Shape, right: &Shape) -> Result<De9im> {
     let mut budget = crate::geometry::ExpansionBudget::new("relate", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.relate(&partition)
-}
-
-/// The source-graph relation path retained as the complete test oracle.
-#[cfg(test)]
-pub(crate) fn graph_relate_data_oracle(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    if let Some(matrix) = try_areal_relate(left.shape(), right.shape())? {
-        return Ok(matrix);
-    }
-    graph_relate_data_fallback(left, right)
-}
-
-/// Compute a Cartesian relation from source graphs for the test oracle.
-#[cfg(test)]
-fn graph_relate_data_fallback(left: &PreparedPlan, right: &PreparedPlan) -> Result<De9im> {
-    if let Some(point) = shape_point(right.shape()) {
-        let graph = TopologyGraph::cartesian(left.shape())?;
-        return Ok(graph_relate_to_point(&graph, point));
-    }
-    if let Some(point) = shape_point(left.shape()) {
-        let graph = TopologyGraph::cartesian(right.shape())?;
-        return Ok(graph_relate_to_point(&graph, point).transpose());
-    }
-    let left_graph = TopologyGraph::cartesian(left.shape())?;
-    let right_graph = TopologyGraph::cartesian(right.shape())?;
-    graph_relate(&left_graph, &right_graph)
 }
 
 #[expect(
@@ -256,35 +235,6 @@ pub(crate) fn graph_relate_data_geographic_with_right_graph(
     graph_relate(&left_graph, right_graph)
 }
 
-#[cfg(test)]
-fn graph_relate_plans(left: &PreparedPlan, right: &PreparedPlan, space: TopologySpace) -> De9im {
-    match space {
-        TopologySpace::Cartesian => graph_relate_data(left, right).unwrap(),
-        TopologySpace::Geographic => {
-            let unit = crate::geographic::AngularFactor::try_new(
-                "test degrees",
-                std::f64::consts::PI / 180.0,
-            )
-            .unwrap();
-            let frame = crate::geographic::GeographicFrame::try_new(unit, unit, 0.0).unwrap();
-            let left_cache = crate::geometry::FrameDependentCaches::default();
-            let right_cache = crate::geometry::FrameDependentCaches::default();
-            graph_relate_data_geographic(
-                GeographicPrepared::try_new(left, &left_cache, frame).expect("fixture admits"),
-                GeographicPrepared::try_new(right, &right_cache, frame).expect("fixture admits"),
-            )
-            .unwrap()
-        },
-    }
-}
-
-#[cfg(test)]
-fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Option<De9im> {
-    (space == TopologySpace::Cartesian)
-        .then(|| try_areal_relate(left, right).unwrap())
-        .flatten()
-}
-
 /// Whether a scalar operand broadcast against `row` reaches the direct
 /// polygon/line fold instead of two source topology graphs.
 ///
@@ -294,45 +244,6 @@ fn try_areal_relate_in(left: &Shape, right: &Shape, space: TopologySpace) -> Opt
 /// polygon-side answer. Batch seams ask this before resolving that graph.
 pub(crate) const fn line_scalar_prefers_direct_polygon_relate(scalar: &Shape, row: &Shape) -> bool {
     matches!((scalar, row), (Shape::LineString(_), Shape::Polygon(_)))
-}
-
-#[cfg(test)]
-pub(super) fn try_cartesian_polygon_line_relate(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-) -> Result<Option<De9im>> {
-    try_cartesian_polygon_line_relate_with_graphs(left, right, None, None)
-}
-
-#[cfg(test)]
-fn try_cartesian_polygon_line_relate_with_graphs(
-    left: &PreparedPlan,
-    right: &PreparedPlan,
-    _left_graph: Option<&TopologyGraph>,
-    _right_graph: Option<&TopologyGraph>,
-) -> Result<Option<De9im>> {
-    let (polygon, line) = if let Shape::Polygon(polygon) = left.shape() {
-        let Shape::LineString(line) = right.shape() else {
-            return Ok(None);
-        };
-        (polygon, line)
-    } else {
-        let Shape::LineString(line) = left.shape() else {
-            return Ok(None);
-        };
-        let Shape::Polygon(polygon) = right.shape() else {
-            return Ok(None);
-        };
-        (polygon, line)
-    };
-    if !polygon_has_nondegenerate_area(polygon)
-        || !line_has_nonzero_segment(line)
-        || left.validate_cached()?.is_some()
-        || right.validate_cached()?.is_some()
-    {
-        return Ok(None);
-    }
-    Ok(Some(exact_cartesian_relate(left.shape(), right.shape())?))
 }
 
 /// The direct areal fold reads raw coordinate boxes, so it runs only when both
@@ -612,12 +523,12 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
 
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "shared domain is an internal construction invariant, not a public input"
+    reason = "a shared frame is an internal construction invariant, not a public input"
 )]
 fn graph_relate(left: &TopologyGraph, right: &TopologyGraph) -> Result<De9im> {
     assert_eq!(
-        left.domain, right.domain,
-        "relation graphs must share a coordinate domain"
+        left.frame, right.frame,
+        "relation graphs must share a frame"
     );
     if let Some(point) = single_point(right) {
         return Ok(graph_relate_to_point(left, point));
@@ -819,12 +730,8 @@ fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGrap
             crate::geometry::Dimension::Surface,
         ),
         (false, false) => {
-            let arrangement = if left.domain.space() == TopologySpace::Geographic {
-                let (left_polygons, right_polygons) = geographic_area_polygons(left, right)?;
-                overlay::build_areal_arrangement(&left_polygons, &right_polygons)?
-            } else {
-                overlay::build_areal_arrangement(&left_polygons, &right_polygons)?
-            };
+            let (left_polygons, right_polygons) = geographic_area_polygons(left, right)?;
+            let arrangement = overlay::build_areal_arrangement(&left_polygons, &right_polygons)?;
             for winding in arrangement.windings {
                 let left_loc = if winding[0] != 0 {
                     Loc::Interior
@@ -886,14 +793,8 @@ fn geographic_area_polygons(
     left: &TopologyGraph,
     right: &TopologyGraph,
 ) -> crate::error::Result<(Vec<Polygon>, Vec<Polygon>)> {
-    let TopologyDomain::Geographic(left_frame) = left.domain else {
-        unreachable!("geographic relation has a geographic left graph")
-    };
-    let TopologyDomain::Geographic(right_frame) = right.domain else {
-        unreachable!("geographic relation has a geographic right graph")
-    };
-    debug_assert_eq!(left_frame, right_frame);
-    let period = left_frame.longitude().period();
+    debug_assert_eq!(left.frame, right.frame);
+    let period = left.frame.longitude().period();
     let anchor = area_center(left)
         .or_else(|| area_center(right))
         .unwrap_or(0.0);
@@ -1436,53 +1337,24 @@ mod tests {
         )
     }
 
-    fn assert_polygon_line_direct_case(name: &str, polygon: &Shape, line: &Shape, expected: &str) {
+    fn assert_polygon_line_case(name: &str, polygon: &Shape, line: &Shape, expected: &str) {
         let polygon_plan = PreparedPlan::transient(polygon).unwrap();
         let line_plan = PreparedPlan::transient(line).unwrap();
-        let oracle = graph_relate_data_oracle(
-            &PreparedPlan::transient(polygon).unwrap(),
-            &PreparedPlan::transient(line).unwrap(),
-        )
-        .unwrap();
-        let direct = try_cartesian_polygon_line_relate(&polygon_plan, &line_plan)
-            .unwrap()
-            .expect("admitted polygon/line pair");
-        assert_eq!(direct.text(), expected, "{name}: known matrix");
-        assert_eq!(direct.0, oracle.0, "{name}: generic differential");
-
-        let reverse_polygon_plan = PreparedPlan::transient(polygon).unwrap();
-        let reverse_line_plan = PreparedPlan::transient(line).unwrap();
-        let reverse_oracle = graph_relate_data_oracle(
-            &PreparedPlan::transient(line).unwrap(),
-            &PreparedPlan::transient(polygon).unwrap(),
-        )
-        .unwrap();
-        let reverse = try_cartesian_polygon_line_relate(&reverse_line_plan, &reverse_polygon_plan)
-            .unwrap()
-            .expect("admitted line/polygon pair");
-        assert_eq!(reverse.0, direct.transpose().0, "{name}: transpose");
-        assert_eq!(reverse.0, reverse_oracle.0, "{name}: reverse differential");
-
+        let forward = graph_relate_data(&polygon_plan, &line_plan).unwrap();
+        assert_eq!(forward.text(), expected, "{name}: known matrix");
         assert_eq!(
-            graph_relate_data(&polygon_plan, &line_plan).unwrap().0,
-            direct.0,
-            "{name}: prepared dispatch"
-        );
-        assert_eq!(
-            graph_relate_data(&reverse_line_plan, &reverse_polygon_plan)
-                .unwrap()
-                .0,
-            reverse.0,
-            "{name}: reverse prepared dispatch"
+            graph_relate_data(&line_plan, &polygon_plan).unwrap().0,
+            forward.transpose().0,
+            "{name}: transpose"
         );
         assert_eq!(
             graph_relate_shapes(polygon, line).unwrap().0,
-            direct.0,
+            forward.0,
             "{name}: ordinary dispatch"
         );
         assert_eq!(
             graph_relate_shapes(line, polygon).unwrap().0,
-            reverse.0,
+            forward.transpose().0,
             "{name}: reverse ordinary dispatch"
         );
     }
@@ -1528,11 +1400,7 @@ mod tests {
     }
 
     fn assert_areal_fast_path(name: &str, left: &Shape, right: &Shape) {
-        let expected = graph_relate_data_oracle(
-            &PreparedPlan::transient(left).unwrap(),
-            &PreparedPlan::transient(right).unwrap(),
-        )
-        .unwrap();
+        let expected = graph_relate_shapes(left, right).unwrap();
         let fast = try_areal_relate(left, right)
             .expect("areal fast-path allocation")
             .expect("areal fast-path admission");
@@ -1541,66 +1409,22 @@ mod tests {
             .expect("reverse areal fast-path allocation")
             .expect("reverse areal fast-path admission");
         assert_eq!(reverse.0, expected.transpose().0, "{name}: reverse");
-        assert_eq!(
-            graph_relate_data(
-                &PreparedPlan::transient(left).unwrap(),
-                &PreparedPlan::transient(right).unwrap()
-            )
-            .unwrap()
-            .0,
-            expected.0,
-            "{name}: dispatch"
-        );
-    }
-
-    fn assert_areal_fallback(name: &str, left: &Shape, right: &Shape) {
-        assert!(
-            try_areal_relate(left, right)
-                .expect("areal admission allocation")
-                .is_none(),
-            "{name}: admission"
-        );
-        assert_eq!(
-            graph_relate_data(
-                &PreparedPlan::transient(left).unwrap(),
-                &PreparedPlan::transient(right).unwrap()
-            )
-            .unwrap()
-            .0,
-            graph_relate_data_oracle(
-                &PreparedPlan::transient(left).unwrap(),
-                &PreparedPlan::transient(right).unwrap(),
-            )
-            .unwrap()
-            .0,
-            "{name}: fallback"
-        );
     }
 
     fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str) {
         let left_plan = PreparedPlan::transient(left).unwrap();
         let right_plan = PreparedPlan::transient(right).unwrap();
-        let oracle = graph_relate_data_oracle(&left_plan, &right_plan).unwrap();
-        assert_eq!(oracle.text(), expected, "{name}: oracle");
+        let forward = graph_relate_data(&left_plan, &right_plan).unwrap();
+        assert_eq!(forward.text(), expected, "{name}: forward");
         assert_eq!(
-            graph_relate_data(&left_plan, &right_plan).unwrap().text(),
-            expected,
-            "{name}: dispatch"
+            graph_relate_data(&right_plan, &left_plan).unwrap().0,
+            forward.transpose().0,
+            "{name}: transpose"
         );
-
-        let reverse_left = PreparedPlan::transient(right).unwrap();
-        let reverse_right = PreparedPlan::transient(left).unwrap();
-        let reverse_oracle = graph_relate_data_oracle(&reverse_left, &reverse_right).unwrap();
-        assert_eq!(
-            graph_relate_data(&reverse_left, &reverse_right).unwrap().0,
-            reverse_oracle.0,
-            "{name}: reverse"
-        );
-        assert_eq!(reverse_oracle.0, oracle.transpose().0, "{name}: transpose");
     }
 
     #[test]
-    fn convex_pair_dispatch_matches_the_arrangement_oracle() {
+    fn convex_pair_relations_match_known_matrices() {
         let ccw_outer = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let cw_outer = Shape::Polygon(polygon(&[
             [0.0, 0.0],
@@ -1642,46 +1466,6 @@ mod tests {
             ("exact cancellation", &cancellation, &disjoint, "FF2FF1212"),
         ] {
             assert_relation_case(name, left, right, expected);
-        }
-    }
-
-    /// A polygon whose rings enclose nothing is its linework, so it must
-    /// answer exactly as the equivalent closed line against every operand.
-    /// This is the one rule a caller can predict, and it is what the graph
-    /// staging enforces by routing such a polygon to `collect_line`.
-    #[test]
-    fn degenerate_polygon_relates_as_its_own_linework() {
-        let flat = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
-        let ring = line(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]);
-        let others = [
-            Shape::Polygon(polygon(&[
-                [0.0, 0.0],
-                [2.0, 0.0],
-                [2.0, 2.0],
-                [0.0, 2.0],
-                [0.0, 0.0],
-            ])),
-            line(&[[0.0, 0.0], [2.0, 0.0]]),
-            line(&[[1.0, -1.0], [1.0, 1.0]]),
-            Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 0.0)),
-            Shape::Point(crate::geometry::Point::new_raw_xy(5.0, 5.0)),
-        ];
-        for other in &others {
-            let as_polygon = graph_relate_data_oracle(
-                &PreparedPlan::transient(&flat).unwrap(),
-                &PreparedPlan::transient(other).unwrap(),
-            )
-            .unwrap();
-            let as_line = graph_relate_data_oracle(
-                &PreparedPlan::transient(&ring).unwrap(),
-                &PreparedPlan::transient(other).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                as_polygon.text(),
-                as_line.text(),
-                "a collapsed polygon must relate as its ring line against {other:?}"
-            );
         }
     }
 
@@ -1727,7 +1511,7 @@ mod tests {
     }
 
     #[test]
-    fn ambiguous_and_unsupported_pairs_match_the_arrangement_oracle() {
+    fn ambiguous_and_unsupported_pair_relations_match_known_matrices() {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
         let square4 = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         let far = Shape::Polygon(rectangle(8.0, 0.0, 9.0, 1.0));
@@ -1862,7 +1646,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_areal_relation_matches_graph_oracle() {
+    fn direct_areal_relation_matches_exact_relation() {
         let shell_with_hole = Shape::Polygon(donut());
         let cases = vec![
             (
@@ -2082,19 +1866,25 @@ mod tests {
             )
             .expect("line has two vertices"),
         );
-        assert_areal_fallback("line member", &areal, &line);
-        assert_areal_fallback(
-            "zero length edge",
-            &Shape::Polygon(polygon(&[
-                [0.0, 0.0],
-                [2.0, 0.0],
-                [2.0, 0.0],
-                [2.0, 2.0],
-                [0.0, 2.0],
-                [0.0, 0.0],
-            ])),
-            &areal,
-        );
+        let zero_length_edge = Shape::Polygon(polygon(&[
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [0.0, 2.0],
+            [0.0, 0.0],
+        ]));
+        for (name, left, right) in [
+            ("line member", &areal, &line),
+            ("zero length edge", &zero_length_edge, &areal),
+        ] {
+            assert!(
+                try_areal_relate(left, right)
+                    .expect("areal admission allocation")
+                    .is_none(),
+                "{name}: admission"
+            );
+        }
         let collapsed = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
         let collapsed_left = PreparedPlan::transient(&collapsed).unwrap();
         let areal_right = PreparedPlan::transient(&areal).unwrap();
@@ -2104,7 +1894,6 @@ mod tests {
                 .text(),
             "F1FF0F212"
         );
-        assert!(try_areal_relate_in(&areal, &areal, TopologySpace::Geographic).is_none());
     }
 
     #[test]
@@ -2150,31 +1939,6 @@ mod tests {
                 expected.text()
             );
         }
-    }
-
-    #[test]
-    fn areal_oracle_matches_exact_relation() {
-        let left = PreparedPlan::new(Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0))).unwrap();
-        let right = PreparedPlan::new(Shape::Polygon(rectangle(1.0, 1.0, 2.0, 2.0))).unwrap();
-
-        assert_eq!(
-            graph_relate_data_oracle(&left, &right).unwrap().text(),
-            "212FF1FF2"
-        );
-    }
-
-    #[test]
-    fn cartesian_point_oracle_matches_exact_relation() {
-        let area = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
-        let point = Shape::Point(Point::new_raw_xy(1.0, 1.0));
-
-        let left = PreparedPlan::new(area.clone()).unwrap();
-        let right = PreparedPlan::new(point.clone()).unwrap();
-        graph_relate_data_oracle(&left, &right).unwrap();
-
-        let left = PreparedPlan::new(point).unwrap();
-        let right = PreparedPlan::new(area).unwrap();
-        graph_relate_data(&left, &right).unwrap();
     }
 
     #[test]
@@ -2256,34 +2020,22 @@ mod tests {
         name: &str,
         source: &Shape,
         bounds: Bounds,
-        frame: Option<crate::geographic::GeographicFrame>,
+        frame: crate::geographic::GeographicFrame,
     ) {
-        let source_graph = frame.map_or_else(
-            || TopologyGraph::cartesian(source).unwrap(),
-            |frame| {
-                TopologyGraph::geographic(
-                    crate::geographic::ScalarGeographicView::try_new(frame, source)
-                        .expect("fixture admits"),
-                )
-                .unwrap()
-            },
-        );
-        let candidate = Shape::Polygon(rectangle(
+        let graph = |shape: &Shape| {
+            TopologyGraph::geographic(
+                crate::geographic::ScalarGeographicView::try_new(frame, shape)
+                    .expect("fixture admits"),
+            )
+            .unwrap()
+        };
+        let source_graph = graph(source);
+        let candidate_graph = graph(&Shape::Polygon(rectangle(
             bounds.minx(),
             bounds.miny(),
             bounds.maxx(),
             bounds.maxy(),
-        ));
-        let candidate_graph = frame.map_or_else(
-            || TopologyGraph::cartesian(&candidate).unwrap(),
-            |frame| {
-                TopologyGraph::geographic(
-                    crate::geographic::ScalarGeographicView::try_new(frame, &candidate)
-                        .expect("fixture admits"),
-                )
-                .unwrap()
-            },
-        );
+        )));
         let expected = graph_relate(&source_graph, &candidate_graph)
             .unwrap()
             .is_covers();
@@ -2295,7 +2047,11 @@ mod tests {
     }
 
     #[test]
-    fn rectangle_cover_certificate_matches_graph_relation() {
+    fn geographic_rectangle_cover_certificate_matches_graph_relation() {
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
         let outer = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
         let donut = Shape::Polygon(donut());
         let line = Shape::LineString(
@@ -2308,51 +2064,6 @@ mod tests {
             )
             .unwrap(),
         );
-        for (name, source, bounds) in [
-            (
-                "cartesian interior",
-                &outer,
-                Bounds::new_raw(2.0, 2.0, 8.0, 8.0),
-            ),
-            (
-                "cartesian boundary aligned",
-                &outer,
-                Bounds::new_raw(0.0, 2.0, 8.0, 8.0),
-            ),
-            (
-                "cartesian crossing",
-                &outer,
-                Bounds::new_raw(8.0, 2.0, 12.0, 8.0),
-            ),
-            (
-                "cartesian disjoint",
-                &outer,
-                Bounds::new_raw(12.0, 12.0, 14.0, 14.0),
-            ),
-            (
-                "cartesian hole",
-                &donut,
-                Bounds::new_raw(4.0, 4.0, 6.0, 6.0),
-            ),
-            (
-                "cartesian hole crossing",
-                &donut,
-                Bounds::new_raw(2.0, 2.0, 5.0, 5.0),
-            ),
-            ("cartesian line", &line, Bounds::new_raw(2.0, 2.0, 8.0, 8.0)),
-        ] {
-            assert_rectangle_cover_certificate(name, source, bounds, None);
-        }
-    }
-
-    #[test]
-    fn geographic_rectangle_cover_certificate_matches_graph_relation() {
-        let frame = crate::crs::info("EPSG:4326")
-            .unwrap()
-            .geographic_frame()
-            .unwrap();
-        let outer = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
-        let donut = Shape::Polygon(donut());
         let seam = Shape::Polygon(polygon(&[
             [170.0, -10.0],
             [-170.0, -10.0],
@@ -2379,6 +2090,21 @@ mod tests {
                 Bounds::new_raw(0.0, 2.0, 8.0, 8.0),
             ),
             (
+                "geographic crossing",
+                &outer,
+                Bounds::new_raw(8.0, 2.0, 12.0, 8.0),
+            ),
+            (
+                "geographic disjoint",
+                &outer,
+                Bounds::new_raw(12.0, 12.0, 14.0, 14.0),
+            ),
+            (
+                "geographic line",
+                &line,
+                Bounds::new_raw(2.0, 2.0, 8.0, 8.0),
+            ),
+            (
                 "geographic hole",
                 &donut,
                 Bounds::new_raw(4.0, 4.0, 6.0, 6.0),
@@ -2399,22 +2125,32 @@ mod tests {
                 Bounds::new_raw(-5.0, -5.0, 5.0, 5.0),
             ),
         ] {
-            assert_rectangle_cover_certificate(name, source, bounds, Some(frame));
+            assert_rectangle_cover_certificate(name, source, bounds, frame);
         }
         assert_rectangle_cover_certificate(
             "geographic polar interior",
             &polar,
             Bounds::new_raw(0.0, 81.0, 1.0, 82.0),
-            Some(frame),
+            frame,
         );
     }
 
     #[test]
     fn rectangle_cover_certificate_rejects_an_exact_hole() {
+        let frame = crate::crs::info("EPSG:4326")
+            .unwrap()
+            .geographic_frame()
+            .unwrap();
+        let graph = |shape: &Shape| {
+            TopologyGraph::geographic(
+                crate::geographic::ScalarGeographicView::try_new(frame, shape)
+                    .expect("fixture admits"),
+            )
+            .unwrap()
+        };
         let bounds = Bounds::new_raw(3.0, 3.0, 7.0, 7.0);
         let source = Shape::Polygon(donut());
-        let cartesian = TopologyGraph::cartesian(&source).unwrap();
-        assert_eq!(cartesian.covers_rectangle(bounds), Some(false));
+        assert_eq!(graph(&source).covers_rectangle(bounds), Some(false));
 
         let line = Shape::LineString(
             LineSeq::try_new(
@@ -2426,20 +2162,8 @@ mod tests {
             )
             .unwrap(),
         );
-        let mixed = Shape::geometry_collection(vec![source.clone(), line]).unwrap();
-        let mixed = TopologyGraph::cartesian(&mixed).unwrap();
-        assert_eq!(mixed.covers_rectangle(bounds), Some(false));
-
-        let frame = crate::crs::info("EPSG:4326")
-            .unwrap()
-            .geographic_frame()
-            .unwrap();
-        let geographic = TopologyGraph::geographic(
-            crate::geographic::ScalarGeographicView::try_new(frame, &source)
-                .expect("fixture admits"),
-        )
-        .unwrap();
-        assert_eq!(geographic.covers_rectangle(bounds), Some(false));
+        let mixed = Shape::geometry_collection(vec![source, line]).unwrap();
+        assert_eq!(graph(&mixed).covers_rectangle(bounds), Some(false));
     }
 
     #[test]
@@ -2450,9 +2174,6 @@ mod tests {
         assert_eq!(f64::midpoint(minx, maxx), minx);
 
         let source = Shape::Polygon(rectangle(minx, 0.0, maxx, 1.0));
-        let cartesian = TopologyGraph::cartesian(&source).unwrap();
-        assert_eq!(cartesian.covers_rectangle(bounds), None);
-
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()
             .geographic_frame()
@@ -2758,7 +2479,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_polygon_line_relation_covers_line_walk_and_boundary_cases() {
+    fn polygon_line_relation_covers_line_walk_and_boundary_cases() {
         let polygon = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
         for (name, line, expected) in [
             ("crossing", line(&[[-1.0, 5.0], [11.0, 5.0]]), "1F20F1102"),
@@ -2800,17 +2521,17 @@ mod tests {
                 "1F210F102",
             ),
         ] {
-            assert_polygon_line_direct_case(name, &polygon, &line, expected);
+            assert_polygon_line_case(name, &polygon, &line, expected);
         }
 
         let donut = Shape::Polygon(donut());
-        assert_polygon_line_direct_case(
+        assert_polygon_line_case(
             "hole inside",
             &donut,
             &line(&[[4.0, 4.0], [6.0, 6.0]]),
             "FF2FF1102",
         );
-        assert_polygon_line_direct_case(
+        assert_polygon_line_case(
             "hole crossing",
             &donut,
             &line(&[[-1.0, 5.0], [11.0, 5.0]]),
@@ -2844,73 +2565,7 @@ mod tests {
             )
             .expect("Z/M line has two vertices"),
         );
-        assert_polygon_line_direct_case("Z/M axes", &zm_polygon, &zm_line, "1F20F1102");
-    }
-
-    #[test]
-    fn direct_polygon_line_relation_declines_invalid_and_unsupported_inputs() {
-        let valid_polygon = Shape::Polygon(rectangle(0.0, 0.0, 10.0, 10.0));
-        let collapsed = line(&[[1.0, 1.0], [1.0, 1.0]]);
-        assert!(
-            try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&valid_polygon).unwrap(),
-                &PreparedPlan::transient(&collapsed).unwrap(),
-            )
-            .unwrap()
-            .is_none()
-        );
-        let invalid_line = Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_vecs(vec![f64::NAN, 2.0], vec![1.0, 2.0], None, None).unwrap(),
-            )
-            .unwrap(),
-        );
-        assert!(
-            try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&valid_polygon).unwrap(),
-                &PreparedPlan::transient(&invalid_line).unwrap(),
-            )
-            .unwrap()
-            .is_none()
-        );
-
-        let invalid = Shape::Polygon(polygon(&[
-            [0.0, 0.0],
-            [10.0, 10.0],
-            [0.0, 10.0],
-            [10.0, 0.0],
-            [0.0, 0.0],
-        ]));
-        assert!(
-            try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&invalid).unwrap(),
-                &PreparedPlan::transient(&line(&[[-1.0, 5.0], [11.0, 5.0]])).unwrap(),
-            )
-            .unwrap()
-            .is_none()
-        );
-
-        let multi_line = Shape::MultiLineString(
-            vec![
-                LineSeq::try_new(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-1.0, 5.0),
-                        Point::new_raw_xy(11.0, 5.0),
-                    ])
-                    .unwrap(),
-                )
-                .unwrap(),
-            ]
-            .into(),
-        );
-        assert!(
-            try_cartesian_polygon_line_relate(
-                &PreparedPlan::transient(&valid_polygon).unwrap(),
-                &PreparedPlan::transient(&multi_line).unwrap(),
-            )
-            .unwrap()
-            .is_none()
-        );
+        assert_polygon_line_case("Z/M axes", &zm_polygon, &zm_line, "1F20F1102");
     }
 
     #[test]
@@ -3103,13 +2758,6 @@ mod tests {
             ),
         ])
         .expect("test collection is valid");
-        let left_graph = TopologyGraph::cartesian(&left).unwrap();
-        let right_graph = TopologyGraph::cartesian(&right).unwrap();
-        assert_eq!(
-            graph_relate(&left_graph, &right_graph).unwrap().text(),
-            graph_relate_with_full_node_locations(&left_graph, &right_graph).text(),
-        );
-
         let geographic_left = Shape::geometry_collection(vec![
             Shape::Polygon(polygon(&[
                 [170.0, 0.0],
@@ -3150,20 +2798,21 @@ mod tests {
             .expect("EPSG:4326 must be available")
             .geographic_frame()
             .expect("EPSG:4326 must have a geographic frame");
-        let left_graph = TopologyGraph::geographic(
-            crate::geographic::ScalarGeographicView::try_new(frame, &geographic_left)
-                .expect("fixture admits"),
-        )
-        .unwrap();
-        let right_graph = TopologyGraph::geographic(
-            crate::geographic::ScalarGeographicView::try_new(frame, &geographic_right)
-                .expect("fixture admits"),
-        )
-        .unwrap();
-        assert_eq!(
-            graph_relate(&left_graph, &right_graph).unwrap().text(),
-            graph_relate_with_full_node_locations(&left_graph, &right_graph).text(),
-        );
+        let graph = |shape: &Shape| {
+            TopologyGraph::geographic(
+                crate::geographic::ScalarGeographicView::try_new(frame, shape)
+                    .expect("fixture admits"),
+            )
+            .unwrap()
+        };
+        for (left, right) in [(&left, &right), (&geographic_left, &geographic_right)] {
+            let left_graph = graph(left);
+            let right_graph = graph(right);
+            assert_eq!(
+                graph_relate(&left_graph, &right_graph).unwrap().text(),
+                graph_relate_with_full_node_locations(&left_graph, &right_graph).text(),
+            );
+        }
     }
     #[test]
     fn a_computed_crossing_node_keeps_its_boundary_provenance() {
@@ -3188,12 +2837,14 @@ mod tests {
             )
             .unwrap(),
         );
-        let matrix = graph_relate_data_oracle(
-            &PreparedPlan::transient(&star).unwrap(),
-            &PreparedPlan::transient(&probe).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(matrix.text(), "1020F1102");
+        assert_eq!(
+            graph_relate_shapes(&star, &probe).unwrap().text(),
+            "1020F1102"
+        );
+        assert_eq!(
+            graph_relate_shapes_geographic(&star, &probe).text(),
+            "1020F1102"
+        );
     }
 
     #[test]
@@ -3215,16 +2866,12 @@ mod tests {
             (2.0, 1.0),
             (1.0, 2.0),
         ]);
-        let matrix = graph_relate_data_oracle(
-            &PreparedPlan::transient(&a).unwrap(),
-            &PreparedPlan::transient(&b).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(matrix.text(), "1F1F00102");
+        assert_eq!(graph_relate_shapes(&a, &b).unwrap().text(), "1F1F00102");
+        assert_eq!(graph_relate_shapes_geographic(&a, &b).text(), "1F1F00102");
     }
 
     #[test]
-    fn point_polygon_fast_path_matches_the_full_partition_oracle() {
+    fn point_polygon_relation_matches_known_matrices() {
         let square = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
         for (name, x, y, expected) in [
             ("inside", 2.0, 2.0, "0F2FF1FF2"),
@@ -3243,8 +2890,6 @@ mod tests {
                 forward.transpose().text(),
                 "{name} point-first is the transpose"
             );
-            let oracle = graph_relate_data_oracle(&left, &right).unwrap();
-            assert_eq!(oracle.text(), expected, "{name} full-partition oracle");
         }
     }
 }
