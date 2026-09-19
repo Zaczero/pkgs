@@ -24,7 +24,7 @@ use crate::geometry::overlay::build_certified_overlay_shape;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
     SegmentParameter, point_in_segment_envelope, point_on_segment, segment_envelopes_disjoint,
-    stored_orientation_sign,
+    stored_cross_sign, stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{
     ExactDyadic, ratio_enclosure, round_ratio, try_compare_ratios,
@@ -5620,7 +5620,7 @@ impl ExactPartition<'_> {
         clippy::float_cmp,
         reason = "exact rounded coordinates are ordered by their stored binary64 values to keep emitted topology deterministic"
     )]
-    fn compare_departures(&self, origin: NodeId, left: usize, right: usize) -> Result<Ordering> {
+    fn compare_departures(&self, origin: NodeId, left: usize, right: usize) -> Ordering {
         let departure = |index: usize| {
             let span = self.spans[index];
             debug_assert!(span.start == origin || span.end == origin);
@@ -5637,28 +5637,18 @@ impl ExactPartition<'_> {
         let upper = |start: XY, end: XY| end.y > start.y || (end.y == start.y && end.x > start.x);
         let halves = upper(c, d).cmp(&upper(a, b));
         if halves != Ordering::Equal {
-            return Ok(halves);
+            return halves;
         }
-        let difference = |end, start| {
-            ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)
-        };
-        let ax = difference(b.x, a.x)?;
-        let ay = difference(b.y, a.y)?;
-        let bx = difference(d.x, c.x)?;
-        let by = difference(d.y, c.y)?;
-        let sign = ax
-            .try_product(&by)?
-            .try_subtract(ay.try_product(&bx)?)?
-            .sign();
+        let sign = stored_cross_sign(a, b, c, d);
         debug_assert!(
             left == right || sign != ExactSign::Zero,
             "distinct atoms share a departure ray"
         );
-        Ok(match sign {
+        match sign {
             ExactSign::Positive => Ordering::Less,
             ExactSign::Negative => Ordering::Greater,
             ExactSign::Zero => Ordering::Equal,
-        })
+        }
     }
 
     pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
@@ -5698,26 +5688,13 @@ impl ExactPartition<'_> {
                 cursor[node.0 as usize] += 1;
             }
         }
-        let mut row = Vec::new();
         for node in 0..vertices {
             let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
-            // Visibility wedges need the angular origin even for degree two.
-            if range.len() <= 1 {
-                continue;
-            }
-            row.clear();
-            try_reserve_vec(&mut row, range.len())?;
-            row.extend_from_slice(&edge_of_slot[range.clone()]);
-            let order = try_sort_indices(row.len(), |left, right| {
-                self.compare_departures(
-                    NodeId(node as u32),
-                    row[left as usize] as usize,
-                    row[right as usize] as usize,
-                )
-            })?;
-            for (slot, index) in range.zip(order) {
-                edge_of_slot[slot] = row[index as usize];
-            }
+            // Degree-two nodes are ordered too: visibility wedges read the
+            // angular origin.
+            edge_of_slot[range].sort_unstable_by(|&left, &right| {
+                self.compare_departures(NodeId(node as u32), left as usize, right as usize)
+            });
         }
         try_reserve_vec(&mut topology.targets, slots)?;
         for node in 0..vertices {
@@ -5794,7 +5771,7 @@ impl ExactPartition<'_> {
                 continue;
             }
             let prior = chosen.expect("a departure was selected before comparing its successor");
-            if self.compare_departures(root, edges[prior] as usize, edges[slot] as usize)?
+            if self.compare_departures(root, edges[prior] as usize, edges[slot] as usize)
                 == Ordering::Less
             {
                 chosen = Some(slot);
@@ -8728,11 +8705,11 @@ mod tests {
             for (position, &left) in departures.iter().enumerate() {
                 for &right in &departures[position + 1..] {
                     assert_eq!(
-                        partition.compare_departures(crossing, left, right).unwrap(),
+                        partition.compare_departures(crossing, left, right),
                         Ordering::Less
                     );
                     assert_eq!(
-                        partition.compare_departures(crossing, right, left).unwrap(),
+                        partition.compare_departures(crossing, right, left),
                         Ordering::Greater
                     );
                 }

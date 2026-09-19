@@ -6,10 +6,10 @@
 //! the original coordinates decide what remains.
 
 use super::CCW_ERRBOUND_A;
-use crate::geometry::Orientation;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::tessellation::exact::Interval;
+use crate::geometry::{Orientation, XY};
 
 /// Exact sign of the orientation of `c` relative to `a -> b` over the stored
 /// binary64 coordinates.
@@ -65,6 +65,38 @@ pub(in crate::geometry) fn stored_orientation_sign(
     }
 }
 
+/// Exact sign of `(b - a) x (d - c)` over stored binary64 coordinates: the
+/// turn from one segment's direction to another's. The determinant has
+/// `orient2d`'s shape — two products of rounded differences, one subtraction
+/// — so the same A-stage bound certifies it; eight exact products of the
+/// original coordinates decide the rest.
+pub(in crate::geometry) fn stored_cross_sign(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
+    let left = (b.x - a.x) * (d.y - c.y);
+    let right = (b.y - a.y) * (d.x - c.x);
+    let det = left - right;
+    if det.abs() > ((left.abs() + right.abs()) + f64::MIN_POSITIVE) * CCW_ERRBOUND_A {
+        return if det > 0.0 {
+            ExactSign::Positive
+        } else {
+            ExactSign::Negative
+        };
+    }
+    let mut sum = ExactSum::zero();
+    sum.add_product(b.x, d.y);
+    sum.subtract_product(b.x, c.y);
+    sum.subtract_product(a.x, d.y);
+    sum.add_product(a.x, c.y);
+    sum.subtract_product(b.y, d.x);
+    sum.add_product(b.y, c.x);
+    sum.add_product(a.y, d.x);
+    sum.subtract_product(a.y, c.x);
+    match sum.ordering() {
+        std::cmp::Ordering::Less => ExactSign::Negative,
+        std::cmp::Ordering::Equal => ExactSign::Zero,
+        std::cmp::Ordering::Greater => ExactSign::Positive,
+    }
+}
+
 pub(super) fn orientation_xy(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> Orientation {
     match stored_orientation_sign(ax, ay, bx, by, cx, cy) {
         ExactSign::Negative => Orientation::Clockwise,
@@ -87,6 +119,43 @@ mod tests {
             .product(&dyadic_difference(cy, ay))
             .subtract(dyadic_difference(by, ay).product(&dyadic_difference(cx, ax)))
             .sign()
+    }
+
+    #[test]
+    fn cross_sign_matches_exact_dyadics() {
+        let tiny = f64::from_bits(1);
+        let max = f64::MAX;
+        let xy = XY::new;
+        let cases = [
+            (xy(0.0, 0.0), xy(1.0, 0.0), xy(5.0, 5.0), xy(7.0, 5.0)),
+            (
+                xy(0.0, 0.0),
+                xy(1.0, 1.0),
+                xy(0.0, 0.0),
+                xy(1.0, 1.0_f64.next_up()),
+            ),
+            (xy(0.1, 0.2), xy(0.3, 0.7), xy(-4.0, 1.0), xy(-3.8, 1.5)),
+            (xy(-max, -max), xy(max, max), xy(max, -max), xy(-max, max)),
+            (
+                xy(tiny, 0.0),
+                xy(3.0 * tiny, tiny),
+                xy(0.0, 0.0),
+                xy(2.0 * tiny, tiny),
+            ),
+            (xy(1.0, 2.0), xy(3.0, 4.0), xy(3.0, 4.0), xy(1.0, 2.0)),
+            (xy(0.0, 0.0), xy(-1.0, 3.0), xy(2.0, 2.0), xy(5.0, -1.0)),
+        ];
+        for (a, b, c, d) in cases {
+            let expected = dyadic_difference(b.x, a.x)
+                .product(&dyadic_difference(d.y, c.y))
+                .subtract(dyadic_difference(b.y, a.y).product(&dyadic_difference(d.x, c.x)))
+                .sign();
+            assert_eq!(
+                stored_cross_sign(a, b, c, d),
+                expected,
+                "{a:?} {b:?} {c:?} {d:?}"
+            );
+        }
     }
 
     #[test]
