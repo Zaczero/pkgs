@@ -286,7 +286,7 @@ impl PyGeometry {
 
     pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         // An extent accessor describes what is THERE: `None` on an empty
-        // scalar, exactly like `bounds`, `bounds_3d`, `min_z` and `z_range`.
+        // scalar, exactly like `bounds`, `bounds_3d` and `min_z`.
         // Raising made these two the only members of that family that could
         // not be called on an empty geometry, while both ARRAY forms already
         // degraded per row.

@@ -544,8 +544,7 @@ impl Shape {
     }
 
     /// Smallest and largest Z ordinates present in ONE traversal, or
-    /// `None` if no vertex carries Z — the kernel behind `min_z`/`max_z`
-    /// and the single-pass `z_range`.
+    /// `None` if no vertex carries Z — the kernel behind `min_z`/`max_z`.
     pub fn z_extremes(&self) -> Option<(f64, f64)> {
         let mut extremes = None;
         self.fold_ord_extremes(&mut extremes, CoordSeq::zs, Point::z);
@@ -563,8 +562,7 @@ impl Shape {
     }
 
     /// Smallest and largest M ordinates present in ONE traversal, or
-    /// `None` if no vertex carries M — the kernel behind `min_m`/`max_m`
-    /// and the single-pass `m_range`.
+    /// `None` if no vertex carries M — the kernel behind `min_m`/`max_m`.
     pub fn m_extremes(&self) -> Option<(f64, f64)> {
         let mut extremes = None;
         self.fold_ord_extremes(&mut extremes, CoordSeq::ms, Point::m);

@@ -326,7 +326,7 @@ def test_extent_accessors_answer_none_uniformly_on_an_empty_scalar() -> None:
     """Every extent accessor describes what is THERE, or `None`.
 
     `extremes` and `spatial_key` were the only two that raised, while `bounds`,
-    `bounds_3d`, `min_z` and `z_range` all returned `None` and BOTH array forms
+    `bounds_3d` and `min_z` all returned `None` and BOTH array forms
     already degraded per row. A parameter error is still an error, whatever the
     geometry.
     """
@@ -334,7 +334,6 @@ def test_extent_accessors_answer_none_uniformly_on_an_empty_scalar() -> None:
     assert empty.bounds is None
     assert empty.bounds_3d is None
     assert empty.min_z is None
-    assert empty.z_range is None
     assert empty.extremes() is None
     assert empty.spatial_key() is None
 

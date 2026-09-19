@@ -398,18 +398,14 @@ def test_length_3d_and_ordinate_extremes_degrade_missing_rows_to_nan() -> None:
     for values in (
         rows.min_z,
         rows.max_z,
-        rows.z_range,
         rows.min_m,
         rows.max_m,
-        rows.m_range,
     ):
         assert math.isnan(values[1])
     assert rows.min_z[[0, 2]].tolist() == [4.0, 4.0]
     assert rows.max_z[[0, 2]].tolist() == [8.0, 8.0]
-    assert rows.z_range[[0, 2]].tolist() == [4.0, 4.0]
     assert rows.min_m[[0, 2]].tolist() == [10.0, 10.0]
     assert rows.max_m[[0, 2]].tolist() == [16.0, 16.0]
-    assert rows.m_range[[0, 2]].tolist() == [6.0, 6.0]
     assert np.isnan(rows.bounds_3d[1]).all()
 
 

@@ -1234,14 +1234,6 @@ class Geometry:
         float or None
         """
     @property
-    def z_range(self) -> float | None:
-        """Span of Z ordinates (``max_z - min_z``), or ``None`` without Z.
-
-        Returns
-        -------
-        float or None
-        """
-    @property
     def min_m(self) -> float | None:
         """Smallest M ordinate, or ``None`` if no vertex carries M.
 
@@ -1252,14 +1244,6 @@ class Geometry:
     @property
     def max_m(self) -> float | None:
         """Largest M ordinate, or ``None`` if no vertex carries M.
-
-        Returns
-        -------
-        float or None
-        """
-    @property
-    def m_range(self) -> float | None:
-        """Span of M ordinates (``max_m - min_m``), or ``None`` without M.
 
         Returns
         -------
@@ -6589,16 +6573,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
             where Z is absent or the row is missing.
         """
     @property
-    def z_range(self) -> npt.NDArray[np.float64]:
-        """Per-row Z span (``max_z - min_z``; ``nan`` without Z).
-
-        Returns
-        -------
-        numpy.ndarray
-            Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``; ``nan``
-            where Z is absent or the row is missing.
-        """
-    @property
     def min_m(self) -> npt.NDArray[np.float64]:
         """Per-row smallest M ordinate (``nan`` where a geometry carries no M).
 
@@ -6611,16 +6585,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @property
     def max_m(self) -> npt.NDArray[np.float64]:
         """Per-row largest M ordinate (``nan`` where a geometry carries no M).
-
-        Returns
-        -------
-        numpy.ndarray
-            Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``; ``nan``
-            where M is absent or the row is missing.
-        """
-    @property
-    def m_range(self) -> npt.NDArray[np.float64]:
-        """Per-row M span (``max_m - min_m``; ``nan`` without M).
 
         Returns
         -------

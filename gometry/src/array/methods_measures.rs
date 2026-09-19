@@ -136,21 +136,6 @@ impl PyGeometryArray {
     pub fn max_z(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.z_extreme_lane(py, |_, high| high, Shape::max_z)
     }
-    /// Per-row Z span (``max_z - min_z``; ``nan`` without Z).
-    ///
-    /// Returns
-    /// -------
-    /// numpy.ndarray
-    ///     Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``; ``nan``
-    ///     where Z is absent or the row is missing.
-    #[getter]
-    pub fn z_range(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.z_extreme_lane(
-            py,
-            |low, high| high - low,
-            |shape| shape.z_extremes().map(|(low, high)| high - low),
-        )
-    }
     /// Per-row smallest M ordinate (``nan`` where a geometry carries no M).
     ///
     /// Returns
@@ -172,21 +157,6 @@ impl PyGeometryArray {
     #[getter]
     pub fn max_m(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.m_extreme_lane(py, |_, high| high, Shape::max_m)
-    }
-    /// Per-row M span (``max_m - min_m``; ``nan`` without M).
-    ///
-    /// Returns
-    /// -------
-    /// numpy.ndarray
-    ///     Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``; ``nan``
-    ///     where M is absent or the row is missing.
-    #[getter]
-    pub fn m_range(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        self.m_extreme_lane(
-            py,
-            |low, high| high - low,
-            |shape| shape.m_extremes().map(|(low, high)| high - low),
-        )
     }
     /// Per-row 3D bounding box ``(minx, miny, minz, maxx, maxy, maxz)``.
     ///

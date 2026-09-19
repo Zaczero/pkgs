@@ -704,7 +704,6 @@ def test_geometry_array_3d_accessors_match_scalar() -> None:
     )
     assert_optional_float_array(arr.min_z, [g.min_z for g in arr])
     assert_optional_float_array(arr.max_z, [g.max_z for g in arr])
-    assert_optional_float_array(arr.z_range, [g.z_range for g in arr])
     assert_bounds3d_array(arr.bounds_3d, [g.bounds_3d for g in arr])
     np.testing.assert_allclose((arr).length_3d, [(g).length_3d for g in arr])
     assert_optional_float_array(arr.min_z, [5.0, 1.0, None])
@@ -715,7 +714,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     points = gm.points([0, 1], [0, 1], z=[5, 9], crs=4326)
     assert_optional_float_array(points.min_z, [5.0, 9.0])
     assert_optional_float_array(points.max_z, [5.0, 9.0])
-    assert_optional_float_array(points.z_range, [0.0, 0.0])
     assert_bounds3d_array(points.bounds_3d, [g.bounds_3d for g in points])
     lines = gm.GeometryArray(
         [
@@ -727,7 +725,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     )
     assert_optional_float_array(lines.min_z, [g.min_z for g in lines])
     assert_optional_float_array(lines.max_z, [g.max_z for g in lines])
-    assert_optional_float_array(lines.z_range, [g.z_range for g in lines])
     assert_bounds3d_array(lines.bounds_3d, [g.bounds_3d for g in lines])
     assert_optional_float_array(lines.min_z, [1.0, 2.0, None])
     lines_for_length = gm.GeometryArray(
@@ -751,7 +748,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     )
     assert_optional_float_array(polygons.min_z, [g.min_z for g in polygons])
     assert_optional_float_array(polygons.max_z, [g.max_z for g in polygons])
-    assert_optional_float_array(polygons.z_range, [g.z_range for g in polygons])
     assert_bounds3d_array(polygons.bounds_3d, [g.bounds_3d for g in polygons])
     assert_optional_float_array(polygons.min_z, [10.0, 1.0, None])
     polygons_for_length = gm.GeometryArray(
@@ -760,7 +756,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     np.testing.assert_allclose(
         (polygons_for_length).length_3d, [(g).length_3d for g in polygons_for_length]
     )
-    assert_optional_float_array(polygons.z_range, [0.0, 9.0, None])
     xy_lines = gm.GeometryArray(
         [gm.LineString([(0, 0), (1, 0)]), gm.LineString([(0, 0), (3, 4)])], crs=3857
     )
@@ -785,17 +780,16 @@ def test_geometry_array_pickle_round_trip_equality() -> None:
 
 
 def test_m_aggregate_family_scalar_and_array() -> None:
-    """min_m/max_m/m_range mirror the Z-aggregate family: scalar None / array
+    """min_m/max_m mirror the Z-aggregate family: scalar None / array
     nan where a geometry carries no M; values otherwise.
     """
     g = gm.from_wkt('LINESTRING M (0 0 5, 1 1 9)')
-    assert (g.min_m, g.max_m, g.m_range) == (5.0, 9.0, 4.0)
+    assert (g.min_m, g.max_m) == (5.0, 9.0)
     flat = gm.from_wkt('LINESTRING (0 0, 1 1)')
-    assert flat.min_m is None and flat.max_m is None and (flat.m_range is None)
+    assert flat.min_m is None and flat.max_m is None
     arr = gm.GeometryArray([g, flat])
     assert_optional_float_array(arr.min_m, [g.min_m for g in arr])
     assert_optional_float_array(arr.max_m, [g.max_m for g in arr])
-    assert_optional_float_array(arr.m_range, [g.m_range for g in arr])
 
 
 def test_total_bounds_is_memoized_and_refreshes_on_frame_retag() -> None:

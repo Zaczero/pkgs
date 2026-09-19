@@ -419,8 +419,8 @@ print(gm.from_wkt("POINT ZM (1 2 3 7.5)").coordinate_axes)
 ## Measuring with Z and M
 
 **3D spatial measurement** uses the Z axis. [`length_3d`][gometry.Geometry.length_3d] and point-to-point
-[`distance_3d(other)`][gometry.distance_3d] include the vertical component, and [`min_z`][gometry.Geometry.min_z] / [`max_z`][gometry.Geometry.max_z] /
-[`z_range`][gometry.Geometry.z_range] (properties) plus [`bounds_3d`][gometry.Geometry.bounds_3d] (a 6-tuple `(minx, miny, minz, maxx, maxy,
+[`distance_3d(other)`][gometry.distance_3d] include the vertical component, and [`min_z`][gometry.Geometry.min_z] / [`max_z`][gometry.Geometry.max_z]
+(properties) plus [`bounds_3d`][gometry.Geometry.bounds_3d] (a 6-tuple `(minx, miny, minz, maxx, maxy,
 maxz)`, or `None` when empty) summarize the Z extent. Because a 3D length only makes
 sense when every axis shares one linear unit, these require a **projected** CRS (or no
 CRS); a geographic CRS mixes degrees and metre heights and raises under every `unit=` —
@@ -433,7 +433,7 @@ same `unit=` override as [`gm.length`][gometry.length] and
 [`gm.distance`][gometry.distance] when you want SI metres or raw coordinate units.
 
 On a geometry without Z, accessors and metrics have different results. The
-**accessors** (`min_z` / `max_z` / `z_range` / `bounds_3d`) describe what is
+**accessors** (`min_z` / `max_z` / `bounds_3d`) describe what is
 there, returning `None` for a scalar or `nan` for an array element. The **metrics**
 (`length_3d` / `distance_3d`) require Z to compute: a scalar **raises**, while an array
 **degrades per element to `nan`** for the rows that lack Z.
@@ -442,7 +442,7 @@ there, returning `None` for a scalar or `nan` for an array element. The **metric
 import gometry as gm
 climb = gm.LineString([(0.0, 0.0), (3.0, 4.0), (3.0, 4.0)], z=[0.0, 0.0, 10.0], crs=32634)
 print('length_3d:', climb.length_3d)
-print('z_range:', climb.z_range, '| bounds_3d:', climb.bounds_3d)
+print('z extent:', climb.min_z, climb.max_z, '| bounds_3d:', climb.bounds_3d)
 a = gm.Point(0.0, 0.0, z=0.0, crs=32634)
 b = gm.Point(3.0, 4.0, z=12.0, crs=32634)
 print('distance_3d:', gm.distance_3d(a, b))
@@ -484,7 +484,7 @@ point at a given measure, `line_locate(geom, basis='m')` returns the measure
 nearest a point, and `line_substring(start_m, end_m, basis='m')` cuts the
 section between two measures. They require every vertex to carry a monotonic,
 non-decreasing M. The extent accessors mirror the Z family:
-[`min_m`][gometry.Geometry.min_m] / [`max_m`][gometry.Geometry.max_m] / [`m_range`][gometry.Geometry.m_range] summarize the measure span (`None` for a scalar, `nan` for an
+[`min_m`][gometry.Geometry.min_m] / [`max_m`][gometry.Geometry.max_m] summarize the measure span (`None` for a scalar, `nan` for an
 array element, when no vertex carries M).
 
 **Array degrade vs scalar raise.** On a `GeometryArray`, a per-row geometry-data

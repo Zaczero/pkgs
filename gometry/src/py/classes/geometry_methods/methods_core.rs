@@ -441,15 +441,6 @@ impl PyGeometry {
     pub fn max_z(&self) -> Option<f64> {
         self.shape.max_z()
     }
-    /// Span of Z ordinates (``max_z - min_z``), or ``None`` without Z.
-    ///
-    /// Returns
-    /// -------
-    /// float or None
-    #[getter]
-    pub fn z_range(&self) -> Option<f64> {
-        self.shape.z_extremes().map(|(low, high)| high - low)
-    }
     /// Smallest M ordinate, or ``None`` if no vertex carries M.
     ///
     /// Returns
@@ -467,15 +458,6 @@ impl PyGeometry {
     #[getter]
     pub fn max_m(&self) -> Option<f64> {
         self.shape.max_m()
-    }
-    /// Span of M ordinates (``max_m - min_m``), or ``None`` without M.
-    ///
-    /// Returns
-    /// -------
-    /// float or None
-    #[getter]
-    pub fn m_range(&self) -> Option<f64> {
-        self.shape.m_extremes().map(|(low, high)| high - low)
     }
     /// 3D bounding box ``(minx, miny, minz, maxx, maxy, maxz)``.
     ///

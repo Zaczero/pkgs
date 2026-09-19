@@ -150,10 +150,8 @@ def test_extension_array_take_allow_fill_canonicalizes_missing_ordinates() -> No
 
     assert np.isnan(taken.min_z[0])
     assert np.isnan(taken.max_z[0])
-    assert np.isnan(taken.z_range[0])
     assert np.isnan(taken.min_m[0])
     assert np.isnan(taken.max_m[0])
-    assert np.isnan(taken.m_range[0])
     assert taken.min_z.tolist()[1:] == [3.0]
     assert taken.max_z.tolist()[1:] == [4.0]
     assert taken.min_m.tolist()[1:] == [30.0]

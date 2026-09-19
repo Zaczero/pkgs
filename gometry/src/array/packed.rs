@@ -74,7 +74,7 @@ impl PyGeometryArray {
         self.rows.point_row_layout()
     }
 
-    /// Shared driver for the Z-extreme accessors (`min_z`/`max_z`/`z_range`):
+    /// Shared driver for the Z-extreme accessors (`min_z`/`max_z`):
     /// reads packed per-row extremes when storage exposes them, else falls back
     /// to per-shape computation. See [`Self::extreme_lane`].
     pub(crate) fn z_extreme_lane(
@@ -97,7 +97,7 @@ impl PyGeometryArray {
         )
     }
 
-    /// Shared driver for the M-extreme accessors (`min_m`/`max_m`/`m_range`):
+    /// Shared driver for the M-extreme accessors (`min_m`/`max_m`):
     /// reads packed per-row extremes when storage exposes them, else falls back
     /// to per-shape computation. See [`Self::extreme_lane`].
     pub(crate) fn m_extreme_lane(
