@@ -1755,6 +1755,15 @@ fn cycle_location(
     if cycle.len() < 3 {
         return Ok(CycleLocation::Clear);
     }
+    // Off the cycle's bounds the point is neither on it nor enclosed by it.
+    let bounds = edges
+        .iter()
+        .map(|edge| edge.bounds)
+        .reduce(FloatBox::include)
+        .expect("a cycle of three points has edges");
+    if !bounds.meets(point_bounds) {
+        return Ok(CycleLocation::Clear);
+    }
     let mut crossings = false;
     let mut left_order = cycle[cycle.len() - 1].y.try_cmp(&point.y)?;
     for index in 0..cycle.len() {
