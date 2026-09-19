@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 
 import gometry as gm
-import pytest
 
 _ANALYTIC_CASES = (
     (
@@ -90,12 +89,12 @@ def test_continuous_hausdorff_retains_discrete_vertex_control() -> None:
 
 
 def test_hausdorff_empty_and_degenerate_edges() -> None:
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
+    assert (
         gm.hausdorff_distance(
-            gm.Point(0, 0),
-            gm.GeometryCollection([]),
-            max_error=1e-12,
+            gm.Point(0, 0), gm.GeometryCollection([]), max_error=1e-12
         )
+        == math.inf
+    )
     assert gm.hausdorff_distance(gm.Point(0, 0), gm.Point(0, 0), max_error=1e-12) == 0.0
 
 

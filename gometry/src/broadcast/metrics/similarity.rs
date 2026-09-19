@@ -159,8 +159,6 @@ impl SimilarityOp {
             let areal = row.try_with_shape(|shape| -> crate::error::Result<bool> {
                 if let crs::MetricModel::Geodesic { frame, .. } = model {
                     ensure_hausdorff_geodesic_shape(*frame, shape)?;
-                } else {
-                    metrics::require_nonempty_hausdorff(shape)?;
                 }
                 Ok(contains_filled_area(shape))
             })?;
@@ -221,29 +219,6 @@ impl SimilarityOp {
             Self::Frechet { .. } => Ok(crate::geometry::frechet_distance_line_columns(
                 left_xs, left_ys, right_xs, right_ys,
             ) * scale),
-        }
-    }
-
-    #[expect(
-        clippy::unnecessary_wraps,
-        reason = "None distinguishes an ordinary window from the empty-window result, whose Result carries the operation-specific value or error"
-    )]
-    pub(crate) fn identical_window_value(
-        &self,
-        left_xs: &[f64],
-        _left_ys: &[f64],
-        right_xs: &[f64],
-        _right_ys: &[f64],
-        scale: f64,
-    ) -> Option<crate::error::Result<f64>> {
-        if !left_xs.is_empty() || !right_xs.is_empty() {
-            return Some(Ok(0.0));
-        }
-        match self {
-            Self::Hausdorff { .. } => Some(Err(crate::geometry::GeometryErrorKind::message(
-                "hausdorff_distance requires non-empty geometries",
-            ))),
-            Self::Frechet { .. } => Some(Ok(f64::INFINITY * scale)),
         }
     }
 }

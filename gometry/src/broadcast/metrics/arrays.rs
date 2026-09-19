@@ -125,15 +125,12 @@ pub(crate) fn array_crs_metric_float(
                                 if std::ptr::eq(left_xs.as_ptr(), right_xs.as_ptr())
                                     && std::ptr::eq(left_ys.as_ptr(), right_ys.as_ptr())
                                     && left_xs.len() == right_xs.len()
-                                    && let Some(value) = operation.identical_window_value(
-                                        left_xs,
-                                        left_ys,
-                                        right_xs,
-                                        right_ys,
-                                        to_metre.get(),
-                                    )
                                 {
-                                    return value;
+                                    return Ok(if left_xs.is_empty() {
+                                        f64::INFINITY
+                                    } else {
+                                        0.0
+                                    });
                                 }
                                 operation.packed_value(
                                     left_xs,

@@ -740,11 +740,6 @@ impl PreparedSupport {
         shape: &Shape,
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
-        if shape.is_empty() {
-            return Err(crate::geometry::GeometryErrorKind::message(
-                "hausdorff_distance requires non-empty support",
-            ));
-        }
         if !shape.has_area_parts() {
             let mut spans = Vec::new();
             let mut points = Vec::new();
@@ -776,11 +771,6 @@ impl PreparedSupport {
     ) -> Result<Self> {
         if !shape.has_area_parts() {
             return Self::from_shape(shape, budget);
-        }
-        if shape.is_empty() {
-            return Err(crate::geometry::GeometryErrorKind::message(
-                "hausdorff_distance requires non-empty support",
-            ));
         }
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
         let partition = inventory.partition(budget)?;
@@ -3179,11 +3169,6 @@ pub(crate) fn distance(
 ) -> Result<f64> {
     let accuracy = Accuracy::new(max_error, scale)?;
     let mut context = SearchContext::new(&accuracy);
-    if left.is_empty() || right.is_empty() {
-        return Err(crate::geometry::GeometryErrorKind::message(
-            "hausdorff_distance requires non-empty geometries",
-        ));
-    }
     let identical = left == right;
     if identical && !left.has_area_parts() {
         return Ok(0.0);
@@ -3269,9 +3254,7 @@ fn line_columns_with_accuracy(
 ) -> Result<f64> {
     let mut context = SearchContext::new(accuracy);
     if left_xs.is_empty() || right_xs.is_empty() {
-        return Err(crate::geometry::GeometryErrorKind::message(
-            "hausdorff_distance requires non-empty geometries",
-        ));
+        return Ok(f64::INFINITY);
     }
     if left_xs == right_xs && left_ys == right_ys {
         return Ok(0.0);
@@ -5114,17 +5097,6 @@ mod tests {
         let value = distance(&polygon(&vertices), &line(&vertices), Some(2.0), 1.0).unwrap();
         assert!(value > 0.0);
         assert!((value - 1.0).abs() <= 2.0);
-    }
-
-    #[test]
-    fn identical_empty_support_is_still_undefined() {
-        distance(
-            &Shape::empty_point(),
-            &Shape::empty_point(),
-            Some(1e-3),
-            1.0,
-        )
-        .unwrap_err();
     }
 
     #[test]

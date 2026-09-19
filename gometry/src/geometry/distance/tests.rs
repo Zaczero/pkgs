@@ -773,10 +773,8 @@ fn continuous_hausdorff_matches_known_fixtures() {
 }
 
 #[test]
-fn continuous_hausdorff_empty_and_point_semantics() {
+fn continuous_hausdorff_point_semantics() {
     let origin = Shape::Point(p(0.0, 0.0));
-    hausdorff_distance(&origin, &Shape::empty_point(), Some(1e-9), 1.0).unwrap_err();
-    hausdorff_distance(&Shape::empty_point(), &origin, Some(1e-9), 1.0).unwrap_err();
     assert!(
         (hausdorff_distance(&origin, &Shape::Point(p(3.0, 4.0)), Some(1e-9), 1.0).unwrap() - 5.0)
             .abs()

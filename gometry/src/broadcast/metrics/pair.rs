@@ -70,7 +70,6 @@ pub(crate) fn ensure_hausdorff_geodesic_shape(
     shape: &Shape,
 ) -> crate::error::Result<()> {
     crs::ensure_geographic_domain_in_frame(frame, shape)?;
-    require_nonempty_hausdorff(shape)?;
     if contains_filled_area(shape) {
         return Err(crs::CrsError::message(
             "geodesic distance for polygon interiors is unsupported",
@@ -635,15 +634,13 @@ pub(crate) fn metric_hausdorff(
 ) -> crate::error::Result<f64> {
     // Domain validation BEFORE the identity exit: equal operands with
     // out-of-domain latitude must still raise on a geographic model.
-    match model {
-        crs::MetricModel::Geodesic { frame, .. } => {
-            ensure_hausdorff_geodesic_shape(*frame, a)?;
-            ensure_hausdorff_geodesic_shape(*frame, b)?;
-        },
-        crs::MetricModel::Planar { .. } => {
-            require_nonempty_hausdorff(a)?;
-            require_nonempty_hausdorff(b)?;
-        },
+    if let crs::MetricModel::Geodesic { frame, .. } = model {
+        ensure_hausdorff_geodesic_shape(*frame, a)?;
+        ensure_hausdorff_geodesic_shape(*frame, b)?;
+    }
+    // Like `distance`, a supremum of infima over an empty operand is infinite.
+    if a.is_empty() || b.is_empty() {
+        return Ok(f64::INFINITY);
     }
     if a == b && !contains_filled_area(a) {
         return Ok(0.0);
@@ -653,15 +650,6 @@ pub(crate) fn metric_hausdorff(
         |to_metre| crate::geometry::hausdorff_distance(a, b, max_error, to_metre),
         |crs, _, state| crs::geodesic_hausdorff_at(crs, a, b, state),
     )
-}
-
-pub(crate) fn require_nonempty_hausdorff(shape: &Shape) -> crate::error::Result<()> {
-    if shape.is_empty() {
-        return Err(crate::geometry::GeometryErrorKind::message(
-            "hausdorff_distance requires non-empty geometries",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

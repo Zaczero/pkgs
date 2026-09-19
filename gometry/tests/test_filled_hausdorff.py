@@ -157,19 +157,12 @@ def test_mixed_dimension_collection_keeps_polygon_fill_and_point_union() -> None
     )
 
 
-def test_empty_operands_are_rejected() -> None:
+def test_empty_operands_are_infinitely_far() -> None:
     empty = gm.from_wkt('POLYGON EMPTY')
     point = gm.Point(0, 0)
 
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.hausdorff_distance(empty, point, max_error=PLANAR_ERROR)
-
-
-def test_same_storage_empty_rows_are_rejected_before_zero_shortcut() -> None:
-    values = gm.GeometryArray([gm.from_wkt('LINESTRING EMPTY')])
-
-    with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-        gm.hausdorff_distance(values, values)
+    assert gm.hausdorff_distance(empty, point, max_error=PLANAR_ERROR) == inf
+    assert gm.hausdorff_distance(empty, empty, max_error=PLANAR_ERROR) == inf
 
 
 def test_planar_hausdorff_has_a_default_and_validates_explicit_bounds() -> None:

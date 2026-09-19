@@ -289,7 +289,8 @@ pub(crate) fn distance_3d(
 /// float or numpy.ndarray
 ///     One result per input pair. A planar result is zero exactly when the
 ///     operands have equal closed support; unequal positive distances remain
-///     positive even when smaller than the effective error bound.
+///     positive even when smaller than the effective error bound. An empty
+///     operand yields ``inf``, as in ``distance``.
 ///
 /// Raises
 /// ------
@@ -298,9 +299,6 @@ pub(crate) fn distance_3d(
 ///     operand includes a filled polygon interior.
 /// CRSMismatchError
 ///     If the operands' CRS or coordinate-epoch metadata differ.
-/// InvalidGeometryError
-///     If either operand is empty; Hausdorff distance is undefined for an
-///     empty support.
 /// GeometryError
 ///     If ``max_error`` is not a positive finite scalar or is supplied for a
 ///     geodesic result; if ``unit='meters'`` is requested for a CRS-free

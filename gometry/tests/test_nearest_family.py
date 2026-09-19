@@ -727,13 +727,8 @@ class TestCrossingWitnessIsCertified:
         assert abs(first.y - target) <= math.ulp(target)
 
 
-class TestFrechetMatchesTheFamilyDegradePolicy:
-    """Hausdorff rejects an empty support while the older metrics degrade.
-
-    `distance` retains its documented ``inf`` result for an empty operand.
-    Fréchet retains its existing sentinel for compatibility; Hausdorff is
-    undefined for an empty support and raises a typed geometry error.
-    """
+class TestEmptyOperandsAreInfinitelyFar:
+    """Every distance metric returns ``inf`` for an empty operand, row by row."""
 
     EMPTY = gm.from_wkt('LINESTRING EMPTY')
     LINE = gm.LineString([(0, 0), (1, 1)])
@@ -770,21 +765,26 @@ class TestFrechetMatchesTheFamilyDegradePolicy:
             ),
         ],
     )
-    def test_empty_operand_is_typed_for_hausdorff_and_infinite_for_distance(
+    def test_empty_operand_is_infinite(
         self, name: str, left: gm.Geometry, right: gm.Geometry
     ) -> None:
-        with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-            gm.hausdorff_distance(left, right, max_error=1e-12)
+        assert gm.hausdorff_distance(left, right, max_error=1e-12) == math.inf, name
         assert gm.frechet_distance(left, right) == math.inf, name
         assert gm.distance(left, right) == math.inf, name
 
-    def test_one_empty_row_is_typed_for_hausdorff_and_total_for_siblings(self) -> None:
-        left = gm.GeometryArray([self.LINE, self.EMPTY, self.LINE])
-        right = gm.GeometryArray([self.LINE, self.LINE, self.EMPTY])
-        with pytest.raises(gm.InvalidGeometryError, match='non-empty'):
-            gm.hausdorff_distance(left, right, max_error=1e-12)
-        assert gm.frechet_distance(left, right).tolist() == [0.0, math.inf, math.inf]
-        assert gm.distance(left, right).tolist() == [0.0, math.inf, math.inf]
+    def test_empty_rows_are_infinite_without_failing_the_array(self) -> None:
+        left = gm.GeometryArray([self.LINE, self.EMPTY, self.LINE, self.EMPTY])
+        right = gm.GeometryArray([self.LINE, self.LINE, self.EMPTY, self.EMPTY])
+        expected = [0.0, math.inf, math.inf, math.inf]
+        for metric in (gm.hausdorff_distance, gm.frechet_distance, gm.distance):
+            assert metric(left, right).tolist() == expected, metric.__name__
+            assert metric(left, left).tolist() == [0.0, math.inf, 0.0, math.inf]
+        mixed = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.from_wkt('POLYGON EMPTY')])
+        assert gm.hausdorff_distance(mixed, mixed).tolist() == [0.0, math.inf]
+        assert gm.hausdorff_distance(mixed, gm.Point(0, 0)).tolist() == [
+            pytest.approx(math.sqrt(2)),
+            math.inf,
+        ]
 
     def test_missing_rows_keep_the_array_missing_result(self) -> None:
         masked = gm.GeometryArray([self.LINE, None])

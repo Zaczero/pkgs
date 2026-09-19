@@ -37,7 +37,7 @@ pub(crate) use pair::{
     metric_frechet_densified_with_scratch, metric_maximum_inscribed_radius,
     metric_minimum_clearance, metric_minimum_clearance_line, metric_nearest_points_resolved,
     metric_shortest_line_resolved, pair_distance_geodesic, pair_distance_planar,
-    pair_dwithin_geodesic, pair_dwithin_planar, require_nonempty_hausdorff, require_point,
-    resolve_metric, resolve_metric_3d, same_storage_similarity_metric_zeros,
+    pair_dwithin_geodesic, pair_dwithin_planar, require_point, resolve_metric, resolve_metric_3d,
+    same_storage_similarity_metric_zeros,
 };
 pub(crate) use similarity::{SimilarityOp, array_crs_frechet_metric_per_densify};

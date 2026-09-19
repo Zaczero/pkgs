@@ -315,22 +315,11 @@ def test_index_construction_frame_conflict() -> None:
 
 
 def test_frechet_separates_kind_from_content() -> None:
-    """Wrong KIND raises; empty CONTENT degrades to the family sentinel.
-
-    The split is the point: an empty operand remains total for `distance` and
-    Fréchet, while Hausdorff requires a non-empty support. A polygon operand is
-    still a hard error on both similarity surfaces.
-    """
+    """Wrong KIND raises; empty CONTENT degrades to ``inf``, scalar and array."""
     line = gm.from_wkt('LINESTRING (0 0, 1 1)')
     with pytest.raises(errors.GeometryTypeError, match='Frechet distance requires'):
         gm.frechet_distance(gm.box(0, 0, 1, 1), line)
     assert gm.frechet_distance(gm.from_wkt('LINESTRING EMPTY'), line) == math.inf
-    with pytest.raises(errors.InvalidGeometryError, match='non-empty'):
-        gm.hausdorff_distance(
-            gm.from_wkt('LINESTRING EMPTY'),
-            line,
-            max_error=1e-12,
-        )
 
     polygons = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 1, 2, 2)])
     with pytest.raises(errors.GeometryTypeError, match='Frechet distance requires'):
