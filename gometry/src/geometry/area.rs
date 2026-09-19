@@ -723,9 +723,11 @@ fn fast_ring_area_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<(f64, 
         let products = x0.abs() * y1.abs() + x1.abs() * y0.abs();
         cross += term;
         product_scale += products;
-        if !(cross.is_finite() && product_scale.is_finite()) {
-            return None;
-        }
+    }
+    // A non-finite term keeps the non-negative `product_scale` non-finite, so
+    // one check after the loop leaves the loop free of branches.
+    if !(cross.is_finite() && product_scale.is_finite()) {
+        return None;
     }
     let measured = cross / 2.0;
     if measured == 0.0 || product_scale == 0.0 {
