@@ -559,6 +559,81 @@ pub(crate) fn cover<C: RectCell>(
         authority_cache,
         frame,
     )?;
+    traverse(
+        roots,
+        target_depth,
+        max_cells,
+        |bounds| {
+            let candidate = classifier.admit_bounds(bounds);
+            match classifier.classify_candidate(&candidate)? {
+                RectClass::Boundary => Ok(classifier.refine_candidate(&candidate)?),
+                settled => Ok(settled),
+            }
+        },
+        |bounds| match rule {
+            RectCoverRule::Overlap => Ok(true),
+            RectCoverRule::Center => Ok(classifier.covers_point(Point::new_raw_xy(
+                f64::midpoint(bounds.minx(), bounds.maxx()),
+                f64::midpoint(bounds.miny(), bounds.maxy()),
+            ))?),
+            RectCoverRule::Within => Ok(false),
+        },
+    )
+}
+
+/// Every cell meeting one of the closed lon/lat `windows` — the `'bbox'` rule
+/// for grids whose cells are lon/lat rectangles. Cell and window are both
+/// axis-aligned in lon/lat, so meeting is closed-interval overlap on each
+/// axis and no source geometry is built.
+pub(crate) fn cover_windows<C: RectCell>(
+    windows: &[Bounds],
+    roots: Vec<C>,
+    target_depth: u8,
+    max_cells: Option<usize>,
+) -> Result<Vec<C>, CoverError> {
+    traverse(
+        roots,
+        target_depth,
+        max_cells,
+        |cell| {
+            let mut met = false;
+            for window in windows {
+                if cell.minx() > window.maxx()
+                    || cell.maxx() < window.minx()
+                    || cell.miny() > window.maxy()
+                    || cell.maxy() < window.miny()
+                {
+                    continue;
+                }
+                if cell.minx() >= window.minx()
+                    && cell.maxx() <= window.maxx()
+                    && cell.miny() >= window.miny()
+                    && cell.maxy() <= window.maxy()
+                {
+                    return Ok(RectClass::Interior);
+                }
+                met = true;
+            }
+            Ok(if met {
+                RectClass::Boundary
+            } else {
+                RectClass::Outside
+            })
+        },
+        |_| Ok(true),
+    )
+}
+
+/// The shared descent: `classify` places a cell rectangle against the source,
+/// and `boundary_leaf` decides a boundary cell at the target depth. Interior
+/// cells stream their descendants without further classification.
+fn traverse<C: RectCell>(
+    roots: Vec<C>,
+    target_depth: u8,
+    max_cells: Option<usize>,
+    mut classify: impl FnMut(Bounds) -> Result<RectClass, CoverError>,
+    mut boundary_leaf: impl FnMut(Bounds) -> Result<bool, CoverError>,
+) -> Result<Vec<C>, CoverError> {
     let mut cells = Vec::new();
     // Carry bounds through every traversal step so the terminal can be
     // refined without recomputing a cell's rectangle.
@@ -586,8 +661,7 @@ pub(crate) fn cover<C: RectCell>(
         let Some((cell, bounds)) = boundary.pop() else {
             break;
         };
-        let candidate = classifier.admit_bounds(bounds);
-        match classifier.classify_candidate(&candidate)? {
+        match classify(bounds)? {
             RectClass::Outside => {},
             RectClass::Interior => {
                 if cell.depth() >= target_depth {
@@ -599,40 +673,15 @@ pub(crate) fn cover<C: RectCell>(
                 }
             },
             RectClass::Boundary => {
-                match classifier.refine_candidate(&candidate)? {
-                    RectClass::Outside => {},
-                    RectClass::Interior => {
-                        if cell.depth() >= target_depth {
-                            emit(cell)?;
-                        } else {
-                            for child in cell.children() {
-                                crate::try_push_vec(&mut interior, child)?;
-                            }
-                        }
-                    },
-                    RectClass::Boundary => {
-                        if cell.depth() >= target_depth {
-                            let visible = match rule {
-                                RectCoverRule::Overlap => true,
-                                RectCoverRule::Center => {
-                                    let center = Point::new_raw_xy(
-                                        f64::midpoint(bounds.minx(), bounds.maxx()),
-                                        f64::midpoint(bounds.miny(), bounds.maxy()),
-                                    );
-                                    classifier.covers_point(center)?
-                                },
-                                RectCoverRule::Within => false,
-                            };
-                            if visible {
-                                emit(cell)?;
-                            }
-                        } else {
-                            // Expand in place onto `boundary` — avoid a side buffer
-                            // that copies twice. Children derived from parent edges
-                            // (Tile: one shared mid-lat) rather than full recompute.
-                            cell.push_children_bounds(bounds, &mut boundary)?;
-                        }
-                    },
+                if cell.depth() >= target_depth {
+                    if boundary_leaf(bounds)? {
+                        emit(cell)?;
+                    }
+                } else {
+                    // Expand in place onto `boundary` — avoid a side buffer
+                    // that copies twice. Children derived from parent edges
+                    // (Tile: one shared mid-lat) rather than full recompute.
+                    cell.push_children_bounds(bounds, &mut boundary)?;
                 }
             },
         }

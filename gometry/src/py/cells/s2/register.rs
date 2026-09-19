@@ -10,7 +10,9 @@ use crate::grid::affine_source::{
 };
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{CoverRule, Coverer, Covering};
-use crate::py::cells::coverage_ops::{GridCoverError, coverage_factory_shapes, envelope_windows};
+use crate::py::cells::coverage_ops::{
+    GridCoverError, coverage_factory_shapes, envelope_window_shapes,
+};
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
     _unpickle_s2_cell, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
@@ -451,7 +453,7 @@ pub(crate) fn build_coverage(
 ) -> Result<Vec<CellId>, GridCoverError> {
     let cover_shape = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
-        let windows = envelope_windows(&cover_shape)?;
+        let windows = envelope_window_shapes(&cover_shape)?;
         let mut cells = Vec::new();
         for (cell, _) in cover_s2_shapes(
             windows,

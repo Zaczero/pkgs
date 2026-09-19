@@ -3,7 +3,9 @@ use h3o::CellIndex;
 use super::tile::H3TileError;
 use crate::error::ResourceError;
 use crate::grid::h3_coverer::{H3CoverError, H3CoverPlan, H3TraversalRule, h3_cover_shape};
-use crate::py::cells::coverage_ops::{GridCoverError, coverage_factory_shapes, envelope_windows};
+use crate::py::cells::coverage_ops::{
+    GridCoverError, coverage_factory_shapes, envelope_window_shapes,
+};
 use crate::py::cells::h3::{
     _unpickle_h3_cell, _unpickle_h3_edge, _unpickle_h3_edge_array, _unpickle_h3_vertex,
     _unpickle_h3_vertex_array, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3EdgeArrayIter, PyH3Vertex,
@@ -95,9 +97,9 @@ pub(super) fn build_coverage(
                 CellRule::Within => (None, H3TraversalRule::Within),
                 CellRule::Overlap => (None, H3TraversalRule::Overlap),
                 CellRule::Bbox => (
-                    Some(crate::geometry::Shape::geometry_collection(envelope_windows(
-                        &coverage_factory_shapes(geometry, "H3")?,
-                    )?)?),
+                    Some(crate::geometry::Shape::geometry_collection(
+                        envelope_window_shapes(&coverage_factory_shapes(geometry, "H3")?)?,
+                    )?),
                     H3TraversalRule::Overlap,
                 ),
                 CellRule::Center => unreachable!("center uses the specialized tiler"),

@@ -565,14 +565,11 @@ where
     S: RectCoverSpec,
 {
     if cell_rule == CellRule::Bbox {
-        let (windows, window_shape) = envelope_window_geometry(membership, cover_shape)?;
-        return build_rect_coverage_ids::<S>(
-            &windows,
-            &window_shape,
-            depth,
-            CellRule::Overlap,
-            max_cells,
-        );
+        let windows = envelope_windows(cover_shape)?;
+        let covered = coverer::cover_windows(&windows, S::roots()?, depth, max_cells)?;
+        return try_collect_cover_ids(covered.into_iter().map(|cell| S::id(&cell)))
+            .map(SortedCells::from_sorted)
+            .map(SortedCells::into_vec);
     }
     let authority = membership.shape.as_ref();
     let authority_plan = membership.plan_or_transient()?;
@@ -666,49 +663,43 @@ pub(crate) fn coverage_factory_shapes(
 /// atomic component of the admitted working shape, split in two where it
 /// wraps the antimeridian. One merged envelope would flood the ground between
 /// distant parts, and the band behind a seam split, with unrelated cells.
-pub(crate) fn envelope_windows(cover_shape: &Shape) -> Result<Vec<Shape>, GridCoverError> {
+pub(crate) fn envelope_windows(
+    cover_shape: &Shape,
+) -> Result<Vec<crate::geometry::Bounds>, GridCoverError> {
     let mut windows = Vec::new();
     visit_grid_cover_components(cover_shape, &mut |component| {
-        push_bounds_windows(component.bounds(), &mut windows)
+        let Some(bounds) = component.bounds() else {
+            return Ok(());
+        };
+        let (west, south, east, north) =
+            (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
+        if west > east {
+            crate::try_push_vec(
+                &mut windows,
+                crate::geometry::Bounds::new_raw(west, south, 180.0, north),
+            )?;
+            crate::try_push_vec(
+                &mut windows,
+                crate::geometry::Bounds::new_raw(-180.0, south, east, north),
+            )?;
+        } else {
+            crate::try_push_vec(&mut windows, bounds)?;
+        }
+        Ok::<_, GridCoverError>(())
     })?;
     Ok(windows)
 }
 
-/// [`envelope_windows`] as one admitted geometry in `membership`'s frame, so a
-/// grid answers `'bbox'` by covering it under `'overlap'`.
-pub(crate) fn envelope_window_geometry(
-    membership: &PyGeometry,
-    cover_shape: &Shape,
-) -> Result<(PyGeometry, Shape), GridCoverError> {
-    let windows = Shape::geometry_collection(envelope_windows(cover_shape)?)?;
-    let geometry = PyGeometry::with_frame(
-        crate::ShapeData::new(windows.clone()),
-        membership.frame.clone(),
-    )?;
-    Ok((geometry, windows))
-}
-
-fn push_bounds_windows(
-    bounds: Option<crate::geometry::Bounds>,
-    out: &mut Vec<Shape>,
-) -> Result<(), GridCoverError> {
-    let Some(bounds) = bounds else {
-        return Ok(());
-    };
-    let (west, south, east, north) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
-    if west > east {
-        crate::try_push_vec(
-            out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north))?,
-        )?;
-        crate::try_push_vec(
-            out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north))?,
-        )?;
-    } else {
-        crate::try_push_vec(out, bounds_query_shape(bounds)?)?;
+/// [`envelope_windows`] as query shapes, for grids whose cells are not lon/lat
+/// rectangles and so cover the windows under `'overlap'`.
+pub(crate) fn envelope_window_shapes(cover_shape: &Shape) -> Result<Vec<Shape>, GridCoverError> {
+    let windows = envelope_windows(cover_shape)?;
+    let mut shapes = Vec::new();
+    crate::try_reserve_vec(&mut shapes, windows.len())?;
+    for window in windows {
+        shapes.push(bounds_query_shape(window)?);
     }
-    Ok(())
+    Ok(shapes)
 }
 
 fn bounds_query_shape(bounds: crate::geometry::Bounds) -> crate::error::Result<Shape> {
