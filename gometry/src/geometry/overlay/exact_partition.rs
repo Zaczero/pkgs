@@ -1427,10 +1427,14 @@ impl GlobalFaces {
         let mut protected = Vec::new();
         try_reserve_vec(&mut protected, partition.node_count())?;
         protected.resize(partition.node_count(), false);
-        if partition.protect_stored {
-            for (node, protect) in protected.iter_mut().enumerate() {
-                *protect = partition.protect_all || partition.is_stored(NodeId(node as u32));
-            }
+        match &partition.kept_nodes {
+            KeptNodes::Selected => {},
+            KeptNodes::All => protected.fill(true),
+            KeptNodes::OffRings(on_ring) => {
+                for (protect, &on_ring) in protected.iter_mut().zip(on_ring) {
+                    *protect = !on_ring;
+                }
+            },
         }
         if let Some(extra_protected) = extra_protected {
             for (protected, &extra) in protected.iter_mut().zip(extra_protected) {
@@ -1687,8 +1691,20 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     binding_starts: Vec<u32>,
     /// The unique segments through each node, by `binding_starts`.
     bindings: Vec<u32>,
-    protect_stored: bool,
-    protect_all: bool,
+    kept_nodes: KeptNodes,
+}
+
+/// Which nodes emission keeps as vertices, beyond those selection requires.
+#[derive(Debug)]
+pub(in crate::geometry) enum KeptNodes {
+    /// Only the nodes selection requires.
+    Selected,
+    /// Every node: coverage and polygonization publish each source vertex.
+    All,
+    /// Every node no polygon ring passes through, indexed by node: linework
+    /// keeps its vertices whatever else shares the arrangement, while ring
+    /// vertices on a straight run dissolve.
+    OffRings(Vec<bool>),
 }
 
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
@@ -1927,8 +1943,20 @@ impl ExactSourceInventory {
             metrics.canonical_spans = partition.spans.len();
             metrics.canonical_nodes = partition.node_count();
         });
-        partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
-        partition.protect_all = partition.protect_stored;
+        let mut on_ring = Vec::new();
+        try_reserve_vec(&mut on_ring, partition.node_count())?;
+        on_ring.resize(partition.node_count(), false);
+        for (index, span) in partition.spans.iter().enumerate() {
+            if partition
+                .owners(index)
+                .iter()
+                .any(|&(source, _)| self.source_rings[source as usize].is_some())
+            {
+                on_ring[span.start.0 as usize] = true;
+                on_ring[span.end.0 as usize] = true;
+            }
+        }
+        partition.kept_nodes = KeptNodes::OffRings(on_ring);
         Ok(partition)
     }
 
@@ -3017,8 +3045,7 @@ impl ExactSourceInventory {
         partition: &mut ExactPartition<'_>,
         build_area: bool,
     ) -> Result<Vec<Polygon>> {
-        partition.protect_stored = true;
-        partition.protect_all = true;
+        partition.kept_nodes = KeptNodes::All;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
         let mut cycles: Vec<Vec<Vec<NodeId>>> = Vec::new();
@@ -3180,8 +3207,7 @@ impl ExactSourceInventory {
         // minimal faces. Keep that identity and provenance contract in the
         // direct partition publisher rather than relying on emitted geometry
         // to preserve a source vertex.
-        partition.protect_stored = true;
-        partition.protect_all = true;
+        partition.kept_nodes = KeptNodes::All;
 
         #[cfg(test)]
         let topology_faces_phase = crate::test_support::allocation_phase(
@@ -6881,8 +6907,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         point_sources,
         binding_starts,
         bindings,
-        protect_stored: false,
-        protect_all: false,
+        kept_nodes: KeptNodes::Selected,
     })
 }
 

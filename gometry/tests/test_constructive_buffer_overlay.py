@@ -327,6 +327,38 @@ def test_array_disjoint_overlay_handles_mixed_ordinate_axes() -> None:
     )
 
 
+# A polygon whose envelope misses the line, one whose envelope overlaps it
+# without touching it (a C around the line's end), and no polygon at all.
+@pytest.mark.parametrize(
+    'polygon',
+    [
+        gm.box(1, 1, 3, 4),
+        gm.Polygon([
+            (4, 1),
+            (6, 1),
+            (6, -1),
+            (4, -1),
+            (4, -0.5),
+            (5.5, -0.5),
+            (5.5, 0.5),
+            (4, 0.5),
+        ]),
+        None,
+    ],
+)
+def test_overlay_keeps_line_vertices_whatever_else_shares_the_arrangement(
+    polygon: gm.Geometry | None,
+) -> None:
+    line = gm.LineString([(0, 0), (2, 0), (5, 0)])
+    operands = [line] if polygon is None else [line, polygon]
+    for result in (
+        gm.GeometryArray(operands).union_all(),
+        gm.GeometryArray(operands).symmetric_difference_all(),
+        gm.difference(line, polygon or gm.GeometryCollection([])),
+    ):
+        assert 'LINESTRING (0 0, 2 0, 5 0)' in str(result)
+
+
 def test_buffer_rejects_nonfinite_derived_coordinates_without_empty_fallback() -> None:
     polygon = gm.Polygon([
         (-1e308, -1e308),

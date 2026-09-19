@@ -693,7 +693,7 @@
     },
     "difference:collinear_line": {
       "kind": "geometry",
-      "wkt": "LINESTRING (0 0, 5 0)"
+      "wkt": "LINESTRING (0 0, 2 0, 5 0)"
     },
     "difference:empty_point": {
       "class": "CRSMismatchError",
@@ -12447,7 +12447,7 @@
     },
     "symmetric_difference:collinear_line": {
       "kind": "geometry",
-      "wkt": "GEOMETRYCOLLECTION (LINESTRING (0 0, 5 0), POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1)))"
+      "wkt": "GEOMETRYCOLLECTION (LINESTRING (0 0, 2 0, 5 0), POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1)))"
     },
     "symmetric_difference:empty_point": {
       "class": "CRSMismatchError",
@@ -13713,7 +13713,7 @@
     },
     "union:collinear_line": {
       "kind": "geometry",
-      "wkt": "GEOMETRYCOLLECTION (LINESTRING (0 0, 5 0), POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1)))"
+      "wkt": "GEOMETRYCOLLECTION (LINESTRING (0 0, 2 0, 5 0), POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1)))"
     },
     "union:empty_point": {
       "class": "CRSMismatchError",
@@ -13783,7 +13783,7 @@
     },
     "union_all:collinear_line": {
       "kind": "geometry",
-      "wkt": "GEOMETRYCOLLECTION (LINESTRING (0 0, 5 0), POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1)))"
+      "wkt": "GEOMETRYCOLLECTION (LINESTRING (0 0, 2 0, 5 0), POLYGON ((1 1, 3 1, 3 4, 1 4, 1 1)))"
     },
     "union_all:empty_point": {
       "class": "CRSMismatchError",
