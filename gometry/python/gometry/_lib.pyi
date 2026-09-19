@@ -135,11 +135,6 @@ from gometry._types import (
 # subtype as their input, so a typed `Point`/`Polygon`/... flows through them.
 _GeometryT = TypeVar('_GeometryT', bound=Geometry)
 _GeometryOtherT = TypeVar('_GeometryOtherT', bound=Geometry)
-# Invariant cell element type for `Groups[CellArray[...]]` self-type overloads
-# (the covariant `_CellT_co` can't appear in an input position).
-# Unbound: a `bound=Cell` here (and on `_CellT_co`) collides with the recursive
-# `Cell` protocol (`neighbors`/`children` → `CellArray[Self]`) — structural
-# membership can't prove `Self <: Cell` while `CellArray` demands that proof.
 # Dissolve group key element type (the `by` iterable's element type).
 _GroupKeyT = TypeVar('_GroupKeyT', bound=Hashable)
 _DefaultT = TypeVar('_DefaultT')
@@ -206,7 +201,6 @@ __all__ = [
     'ValidationReport',
     'area',
     'bearing',
-    'bounds',
     'box',
     'boxes',
     'contains',
@@ -289,7 +283,6 @@ __all__ = [
     'osm_shortlink_encode',
     'osm_shortlink_location',
     'overlaps',
-    'parts',
     'pluscode_encode',
     'pluscode_polygon',
     'pluscode_recover',
@@ -303,7 +296,6 @@ __all__ = [
     'relate_pattern',
     'require',
     'rhumb_distance',
-    'rings',
     's2_bounding_cell',
     's2_cells',
     's2_cover',
@@ -10676,9 +10668,11 @@ class CRS:
 
 # Element type of a `CellArray`, including `None` when the array is nullable.
 # Covariant + PEP 696 default so a bare `CellArray` means `CellArray[Cell]`
-# (the public cell protocol, non-nullable). No `bound=Cell`: recursive
-# Protocol + TypeVar bound is circular. `_CellT` is the invariant input
-# twin for dense-vs-nullable self annotations.
+# (the public cell protocol, non-nullable). `_CellT` is its invariant twin for
+# self annotations (dense vs nullable, `Groups[CellArray[...]]`), since a
+# covariant variable cannot appear in an input position. Neither is
+# `bound=Cell`: the recursive `Cell` protocol (`neighbors`/`children` ->
+# `CellArray[Self]`) cannot prove `Self <: Cell` while `CellArray` demands it.
 _CellT = TypeVar('_CellT')
 _CellT_co = TypeVar('_CellT_co', covariant=True, default=Cell)
 
