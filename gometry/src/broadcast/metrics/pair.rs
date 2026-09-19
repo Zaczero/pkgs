@@ -2,12 +2,11 @@ use crate::array::{ArrayRow, PackedStorage, PointRows, PyGeometryArray};
 use crate::boundary::geographic;
 use crate::broadcast::metrics::{
     CoordinateAxes, DistanceUnit, GeometryArrayStorage, GeometryError, GeometryKind, Point,
-    PyGeometry, PyResult, Shape, ShapeData, crs, geometry_type_err,
+    PyGeometry, PyResult, Shape, ShapeData, crs,
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan};
-use crate::py::errors::InvalidGeometryError;
 use crate::py::support;
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
@@ -356,18 +355,6 @@ pub(crate) fn lonlat_points(
         transform_present(crs, &mut xs, &mut ys, &present)?;
     }
     Ok(LonLatPointRows::Columns { xs, ys })
-}
-
-/// Extract the single point of a `Point` geometry, or error.
-pub(crate) fn require_point(geometry: &PyGeometry, operation: MetricOp) -> PyResult<Point> {
-    let operation = operation.name();
-    match geometry.shape.shape() {
-        Shape::Point(point) => Ok(*point),
-        Shape::Empty(GeometryKind::Point, _) => Err(InvalidGeometryError::new_err(format!(
-            "{operation} requires a non-empty Point"
-        ))),
-        _ => Err(geometry_type_err(format!("{operation} requires a Point"))),
-    }
 }
 
 /// CRS-aware minimum distance: planar coordinate units for a projected/CRS-free

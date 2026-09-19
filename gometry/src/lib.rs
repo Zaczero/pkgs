@@ -97,8 +97,8 @@ use broadcast::{
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
     metric_nearest_points_resolved, metric_shortest_line_resolved, multipoint_splitter_from_array,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    parse_wkb_geometry, py_bool, relate_pattern_broadcast, relate_string_broadcast, require_point,
-    resolve_metric, rows_err, xy_predicate,
+    parse_wkb_geometry, py_bool, relate_pattern_broadcast, relate_string_broadcast, resolve_metric,
+    rows_err, xy_predicate,
 };
 mod dispatch;
 pub(crate) use py::classes::{

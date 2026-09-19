@@ -4021,7 +4021,8 @@ class Point(Geometry):
         path: Literal['rhumb'],
         unit: None = None,
     ) -> Point | GeometryArray[Point]:
-        """Walk from this point along a geodesic or rhumb path.
+        """Walk from this point along a geodesic or rhumb path. An empty point
+        stays ``POINT EMPTY``.
 
         Parameters
         ----------
@@ -5272,7 +5273,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         path: Literal['rhumb'],
         unit: None = None,
     ) -> GeometryArray[Point | None]:
-        """Walk each point along a geodesic or rhumb path.
+        """Walk each point along a geodesic or rhumb path. An empty point stays
+        ``POINT EMPTY``.
 
         Parameters
         ----------
@@ -14198,7 +14200,7 @@ def bearing(
 
     Geodesic by default on a geographic CRS (on the CRS ellipsoid); grid
     azimuth on a projected or CRS-free point. ``path='rhumb'`` selects the
-    constant compass course on a geographic CRS.
+    constant compass course on a geographic CRS. An empty point yields ``nan``.
 
     Parameters
     ----------
@@ -14241,7 +14243,7 @@ def cross_track_distance(
 
     Positive when the point lies left of the directed path ``start -> end``,
     negative right, zero on it. Spherical on the CRS ellipsoid's mean radius.
-    Geographic CRS only.
+    Geographic CRS only. An empty point yields ``nan``.
 
     Parameters
     ----------
@@ -14378,7 +14380,8 @@ def point_between(
 
     CRS-aware like every metric: geodesic on a geographic CRS, planar on a
     projected CRS, and coordinate units when CRS-free. ``path='rhumb'`` follows
-    the constant-bearing track on a geographic CRS. Z/M interpolate.
+    the constant-bearing track on a geographic CRS. Z/M interpolate. An empty
+    endpoint yields ``POINT EMPTY``.
 
     Parameters
     ----------
@@ -14436,7 +14439,7 @@ def rhumb_distance(
 
     The length of the constant-bearing track on the CRS ellipsoid — the
     navigation sibling of the (shorter) geodesic `distance`. Geographic CRS
-    only.
+    only. An empty point is infinitely far, as for `distance`.
 
     Parameters
     ----------

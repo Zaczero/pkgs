@@ -18,7 +18,7 @@ use crate::{
     NavigationPath, Point, PointRows, Py, PyErr, PyGeometry, PyGeometryArray, PyResult, Python,
     Shape, broadcast_coordinate_group, classify_input, classify_required,
     coordinate_sequence_len_hint, crs, ensure_same_len, expected_geometry_or_array,
-    parameter_input_with_expected, pyfunction, require_point, resolve_metric,
+    parameter_input_with_expected, pyfunction, resolve_metric,
 };
 
 fn geometry_point(geometry: &PyGeometry) -> Option<Point> {
@@ -100,11 +100,11 @@ fn destination_point_planar(
     if same_topological_coordinate(distance, 0.0) {
         return Ok(from);
     }
-    let radians = bearing.to_radians();
+    let (sine, cosine) = crate::crs::sincos_degrees(bearing, 0.0);
     let step = distance / to_metre;
     Ok(Point::new_axes(
-        step * radians.sin() + from.x,
-        step * radians.cos() + from.y,
+        step * sine + from.x,
+        step * cosine + from.y,
         ZOrdinate(from.z()),
         MOrdinate(from.m()),
     )?)
@@ -405,13 +405,35 @@ fn rhumb_interpolate_point(
     )?))
 }
 
+/// The point operand of a navigation call; `None` for POINT EMPTY, which
+/// every navigation answers (NaN, infinity or POINT EMPTY) instead of raising.
+fn point_operand(geometry: &PyGeometry, operation: MetricOp) -> PyResult<Option<Point>> {
+    Ok(geometry.shape.shape().point_operand(operation.name())?)
+}
+
+/// Destinations from POINT EMPTY along many bearings: one empty point each.
+fn empty_destinations(py: Python<'_>, geometry: &PyGeometry, len: usize) -> PyResult<Py<PyAny>> {
+    let mut shapes = Vec::new();
+    crate::try_reserve_vec(&mut shapes, len)?;
+    shapes.resize_with(len, Shape::empty_point);
+    Ok(
+        PyGeometryArray::from_shapes(shapes, geometry.frame.clone())?
+            .into_pyobject(py)?
+            .unbind()
+            .into(),
+    )
+}
+
 pub(crate) fn point_bearing(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
-    let from = require_point(geometry, MetricOp::Bearing)?;
-    let to = require_point(other, MetricOp::Bearing)?;
+    let from = point_operand(geometry, MetricOp::Bearing)?;
+    let to = point_operand(other, MetricOp::Bearing)?;
     geometry
         .frame
         .compatible(&other.frame, MetricOp::Bearing.name())?;
     let model = resolve_metric(geometry.crs_str(), None, MetricOp::Bearing)?;
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(f64::NAN);
+    };
     point_binary_f64_eval(BearingKernel, &model, from, to)
 }
 
@@ -420,53 +442,45 @@ pub(crate) fn point_cross_track_distance(
     start: &PyGeometry,
     end: &PyGeometry,
 ) -> PyResult<f64> {
-    let probe = require_point(geometry, MetricOp::CrossTrackDistance)?;
-    let from = require_point(start, MetricOp::CrossTrackDistance)?;
-    let to = require_point(end, MetricOp::CrossTrackDistance)?;
-    geometry
-        .frame
-        .compatible(&start.frame, MetricOp::CrossTrackDistance.name())?;
-    geometry
-        .frame
-        .compatible(&end.frame, MetricOp::CrossTrackDistance.name())?;
-    let model = resolve_metric(geometry.crs_str(), None, MetricOp::CrossTrackDistance)?;
-    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(CRSError::new_err(
-            "cross_track_distance requires a geographic CRS; use set_crs(...) or to_crs(...) \
-             to attach one",
-        ));
+    const OP: MetricOp = MetricOp::CrossTrackDistance;
+    let probe = point_operand(geometry, OP)?;
+    let from = point_operand(start, OP)?;
+    let to = point_operand(end, OP)?;
+    geometry.frame.compatible(&start.frame, OP.name())?;
+    geometry.frame.compatible(&end.frame, OP.name())?;
+    let crs::MetricModel::Geodesic { crs, frame, state } =
+        require_geographic_model(geometry.crs_str(), OP)?
+    else {
+        unreachable!("a geographic model is geodesic");
+    };
+    let (Some(probe), Some(from), Some(to)) = (probe, from, to) else {
+        return Ok(f64::NAN);
     };
     cross_track_points(&crs, frame, probe, from, to, &state)
 }
 
 pub(crate) fn point_rhumb_distance(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
-    let from = require_point(geometry, MetricOp::RhumbDistance)?;
-    let to = require_point(other, MetricOp::RhumbDistance)?;
-    geometry
-        .frame
-        .compatible(&other.frame, MetricOp::RhumbDistance.name())?;
-    let model = resolve_metric(geometry.crs_str(), None, MetricOp::RhumbDistance)?;
-    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(CRSError::new_err(
-            "rhumb_distance requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ));
+    const OP: MetricOp = MetricOp::RhumbDistance;
+    let from = point_operand(geometry, OP)?;
+    let to = point_operand(other, OP)?;
+    geometry.frame.compatible(&other.frame, OP.name())?;
+    let model = require_geographic_model(geometry.crs_str(), OP)?;
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(f64::INFINITY);
     };
-    rhumb_distance_points(&crs, frame, from, to, &state)
+    point_binary_f64_eval(RhumbDistanceKernel, &model, from, to)
 }
 
 pub(crate) fn point_rhumb_bearing(geometry: &PyGeometry, other: &PyGeometry) -> PyResult<f64> {
-    let from = require_point(geometry, MetricOp::RhumbBearing)?;
-    let to = require_point(other, MetricOp::RhumbBearing)?;
-    geometry
-        .frame
-        .compatible(&other.frame, MetricOp::RhumbBearing.name())?;
-    let model = resolve_metric(geometry.crs_str(), None, MetricOp::RhumbBearing)?;
-    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(CRSError::new_err(
-            "bearing(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ));
+    const OP: MetricOp = MetricOp::RhumbBearing;
+    let from = point_operand(geometry, OP)?;
+    let to = point_operand(other, OP)?;
+    geometry.frame.compatible(&other.frame, OP.name())?;
+    let model = require_geographic_model(geometry.crs_str(), OP)?;
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(f64::NAN);
     };
-    rhumb_bearing_points(&crs, frame, from, to, &state)
+    point_binary_f64_eval(RhumbBearingKernel, &model, from, to)
 }
 
 pub(crate) fn point_rhumb_destination(
@@ -474,14 +488,17 @@ pub(crate) fn point_rhumb_destination(
     bearing: f64,
     distance: f64,
 ) -> PyResult<Shape> {
-    let from = require_point(geometry, MetricOp::RhumbDestination)?;
-    let model = resolve_metric(geometry.crs_str(), None, MetricOp::RhumbDestination)?;
-    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(CRSError::new_err(
-            "destination(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ));
+    const OP: MetricOp = MetricOp::RhumbDestination;
+    let from = point_operand(geometry, OP)?;
+    let model = require_geographic_model(geometry.crs_str(), OP)?;
+    let Some(from) = from else {
+        return Ok(Shape::empty_point());
     };
-    rhumb_destination_point(&crs, frame, from, bearing, distance, &state)
+    let kernel = RhumbDestinationKernel {
+        bearing: &[bearing],
+        distance: &[distance],
+    };
+    point_unary_geometry_eval(kernel, &model, 0, from)
 }
 
 pub(crate) fn point_rhumb_between(
@@ -490,18 +507,19 @@ pub(crate) fn point_rhumb_between(
     distance: f64,
     normalized: bool,
 ) -> PyResult<Shape> {
-    let from = require_point(geometry, MetricOp::PointBetweenRhumb)?;
-    let to = require_point(other, MetricOp::PointBetweenRhumb)?;
-    geometry
-        .frame
-        .compatible(&other.frame, MetricOp::PointBetweenRhumb.name())?;
-    let model = resolve_metric(geometry.crs_str(), None, MetricOp::PointBetweenRhumb)?;
-    let crs::MetricModel::Geodesic { crs, frame, state } = model else {
-        return Err(CRSError::new_err(
-            "point_between(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ));
+    const OP: MetricOp = MetricOp::PointBetweenRhumb;
+    let from = point_operand(geometry, OP)?;
+    let to = point_operand(other, OP)?;
+    geometry.frame.compatible(&other.frame, OP.name())?;
+    let model = require_geographic_model(geometry.crs_str(), OP)?;
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(Shape::empty_point());
     };
-    rhumb_interpolate_point(&crs, frame, from, to, distance, normalized, &state)
+    let kernel = RhumbInterpolatePointKernel {
+        distance: &[distance],
+        normalized,
+    };
+    point_binary_geometry_eval(kernel, &model, 0, from, to)
 }
 
 pub(crate) fn point_destination(
@@ -510,13 +528,14 @@ pub(crate) fn point_destination(
     distance: f64,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Shape> {
-    let from = require_point(geometry, MetricOp::Destination)?;
+    let from = point_operand(geometry, MetricOp::Destination)?;
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
-    match model {
-        crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => Ok(Shape::Point(
-            destination_point(&model, from, bearing, distance)?,
-        )),
-    }
+    let Some(from) = from else {
+        return Ok(Shape::empty_point());
+    };
+    Ok(Shape::Point(destination_point(
+        &model, from, bearing, distance,
+    )?))
 }
 
 pub(crate) fn point_interpolate(
@@ -526,15 +545,15 @@ pub(crate) fn point_interpolate(
     normalized: bool,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Shape> {
-    let from = require_point(geometry, MetricOp::Interpolate)?;
-    let to = require_point(other, MetricOp::Interpolate)?;
-    geometry.frame.compatible(&other.frame, "interpolate")?;
-    let model = resolve_metric(geometry.crs_str(), unit, MetricOp::PointBetween)?;
-    match model {
-        crs::MetricModel::Geodesic { .. } | crs::MetricModel::Planar { .. } => {
-            interpolate_point(&model, from, to, distance, normalized)
-        },
-    }
+    const OP: MetricOp = MetricOp::PointBetween;
+    let from = point_operand(geometry, OP)?;
+    let to = point_operand(other, OP)?;
+    geometry.frame.compatible(&other.frame, OP.name())?;
+    let model = resolve_metric(geometry.crs_str(), unit, OP)?;
+    let (Some(from), Some(to)) = (from, to) else {
+        return Ok(Shape::empty_point());
+    };
+    interpolate_point(&model, from, to, distance, normalized)
 }
 
 fn cross_track_points(
@@ -889,9 +908,7 @@ struct RhumbDistanceKernel;
 
 impl PointBinaryF64Kernel for RhumbDistanceKernel {
     fn eval_planar(self, _to_metre: f64, _left: Point, _right: Point) -> PyResult<f64> {
-        Err(CRSError::new_err(
-            "rhumb_distance requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ))
+        unreachable!("rhumb setup admits only a geographic CRS")
     }
 
     fn eval_geodesic(
@@ -909,9 +926,7 @@ struct RhumbBearingKernel;
 
 impl PointBinaryF64Kernel for RhumbBearingKernel {
     fn eval_planar(self, _to_metre: f64, _left: Point, _right: Point) -> PyResult<f64> {
-        Err(CRSError::new_err(
-            "bearing(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ))
+        unreachable!("rhumb setup admits only a geographic CRS")
     }
 
     fn eval_geodesic(
@@ -1048,9 +1063,7 @@ impl PointBinaryGeometryKernel for RhumbInterpolatePointKernel<'_> {
         _left: Point,
         _right: Point,
     ) -> PyResult<Shape> {
-        Err(CRSError::new_err(
-            "point_between(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ))
+        unreachable!("rhumb setup admits only a geographic CRS")
     }
 
     fn eval_geodesic(
@@ -1287,9 +1300,7 @@ struct RhumbDestinationKernel<'a> {
 
 impl PointUnaryGeometryKernel for RhumbDestinationKernel<'_> {
     fn eval_planar(self, _to_metre: f64, _row: usize, _point: Point) -> PyResult<Shape> {
-        Err(CRSError::new_err(
-            "destination(path='rhumb') requires a geographic CRS; use set_crs(...) or to_crs(...) to attach one",
-        ))
+        unreachable!("rhumb setup admits only a geographic CRS")
     }
 
     fn eval_geodesic(
@@ -1900,10 +1911,13 @@ fn destination_point_array(
             Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind())
         },
         One(geometry) => {
-            let point = require_point(geometry, MetricOp::Destination)?;
+            let point = point_operand(geometry, MetricOp::Destination)?;
             broadcast_destination_param(&mut bearing, len, "bearing")?;
             broadcast_destination_param(&mut distance, len, "distance")?;
             let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
+            let Some(point) = point else {
+                return empty_destinations(py, geometry, len);
+            };
             let axes = CoordinateAxes::from_point(point);
             let coords = py.detach(move || {
                 destination_scalar_coords_dispatch(
@@ -1949,8 +1963,11 @@ pub(crate) fn destination_point_receiver(
         let shape = point_destination(geometry, bearing.values[0], distance.values[0], unit)?;
         return Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind());
     }
-    let point = require_point(geometry, MetricOp::Destination)?;
+    let point = point_operand(geometry, MetricOp::Destination)?;
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
+    let Some(point) = point else {
+        return empty_destinations(py, geometry, len);
+    };
     let axes = CoordinateAxes::from_point(point);
     let coords = py.detach(move || {
         destination_scalar_coords_dispatch(
@@ -1983,9 +2000,18 @@ pub(crate) fn rhumb_destination_point_receiver(
         "bearing and distance",
     )?;
     validate_destination_distances(&distance.values)?;
-    let point = require_point(geometry, MetricOp::RhumbDestination)?;
+    let point = point_operand(geometry, MetricOp::RhumbDestination)?;
     let model = require_geographic_model(geometry.crs_str(), MetricOp::RhumbDestination)?;
     let metric = crs::GeodesicMetric::from_model(&model)?;
+    let Some(point) = point else {
+        if len == 1 && bearing.scalar && distance.scalar {
+            return Ok(geometry
+                .typed_shape(Shape::empty_point())?
+                .into_pyobject(py)?
+                .unbind());
+        }
+        return empty_destinations(py, geometry, len);
+    };
     if len == 1 && bearing.scalar && distance.scalar {
         let shape = rhumb_destination_point(
             &metric.crs,
@@ -2425,9 +2451,13 @@ fn cross_track_broadcast(
                                 row_at(&start_in, row)?,
                                 row_at(&end_in, row)?,
                             );
-                            let probe = require_point(&p, OP)?;
-                            let start = require_point(&s, OP)?;
-                            let end = require_point(&e, OP)?;
+                            let (Some(probe), Some(start), Some(end)) = (
+                                point_operand(&p, OP)?,
+                                point_operand(&s, OP)?,
+                                point_operand(&e, OP)?,
+                            ) else {
+                                return Ok(f64::NAN);
+                            };
                             cross_track_points(
                                 &metric.crs,
                                 metric.frame,
@@ -2450,7 +2480,7 @@ fn cross_track_broadcast(
 ///
 /// Geodesic by default on a geographic CRS (on the CRS ellipsoid); grid
 /// azimuth on a projected or CRS-free point. ``path='rhumb'`` selects the
-/// constant compass course on a geographic CRS.
+/// constant compass course on a geographic CRS. An empty point yields ``nan``.
 ///
 /// Parameters
 /// ----------
@@ -2516,7 +2546,7 @@ pub(crate) fn bearing(
 ///
 /// Positive when the point lies left of the directed path ``start -> end``,
 /// negative right, zero on it. Spherical on the CRS ellipsoid's mean radius.
-/// Geographic CRS only.
+/// Geographic CRS only. An empty point yields ``nan``.
 ///
 /// Parameters
 /// ----------
@@ -2572,7 +2602,7 @@ pub(crate) fn reject_rhumb_unit(unit: Option<DistanceUnit>, operation: MetricOp)
 /// CRS-aware like every metric: geodesic on a geographic CRS, a planar offset
 /// in native units on a projected CRS, and coordinate units when CRS-free.
 /// ``path='rhumb'`` instead follows a constant compass course in meters on a
-/// geographic CRS.
+/// geographic CRS. An empty point stays ``POINT EMPTY``.
 ///
 /// Parameters
 /// ----------
@@ -2629,7 +2659,8 @@ pub(crate) fn destination(
 ///
 /// CRS-aware like every metric: geodesic on a geographic CRS, planar on a
 /// projected CRS, and coordinate units when CRS-free. ``path='rhumb'`` follows
-/// the constant-bearing track on a geographic CRS. Z/M interpolate.
+/// the constant-bearing track on a geographic CRS. Z/M interpolate. An empty
+/// endpoint yields ``POINT EMPTY``.
 ///
 /// Parameters
 /// ----------
@@ -2735,7 +2766,7 @@ pub(crate) fn point_between(
 ///
 /// The length of the constant-bearing track on the CRS ellipsoid — the
 /// navigation sibling of the (shorter) geodesic `distance`. Geographic CRS
-/// only.
+/// only. An empty point is infinitely far, as for `distance`.
 ///
 /// Parameters
 /// ----------
@@ -2804,8 +2835,11 @@ fn rhumb_destination_point_array(
         let GeometryInput::One(geometry) = point_input else {
             unreachable!("point_len is None only for a scalar geometry")
         };
-        let point = require_point(geometry, MetricOp::RhumbDestination)?;
+        let point = point_operand(geometry, MetricOp::RhumbDestination)?;
         let model = require_geographic_model(geometry.crs_str(), MetricOp::RhumbDestination)?;
+        let Some(point) = point else {
+            return empty_destinations(py, geometry, bearing.values.len());
+        };
         let metric = crs::GeodesicMetric::from_model(&model)?;
         let axes = CoordinateAxes::from_point(point);
         let coords = py.detach(move || {

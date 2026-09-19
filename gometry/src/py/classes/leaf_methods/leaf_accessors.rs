@@ -40,7 +40,8 @@ impl PyPoint {
 
 #[pymethods]
 impl PyPoint {
-    /// Walk from this point along a geodesic or rhumb path.
+    /// Walk from this point along a geodesic or rhumb path. An empty point
+    /// stays ``POINT EMPTY``.
     ///
     /// Parameters
     /// ----------

@@ -1,6 +1,5 @@
 use crate::array::{ArrayRow, ValidityMask};
 use crate::geographic::GeographicFrame;
-use crate::geometry::GeometryKind;
 use crate::py::support::{
     CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
     Shape, metric_nearest_points_resolved, rows_err,
@@ -240,9 +239,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
 /// NaN point, the form an empty point takes in a point column, which locates
 /// nowhere.
 pub(crate) fn locate_query(shape: &Shape) -> crate::error::Result<Point> {
-    match shape {
-        Shape::Point(query) => Ok(*query),
-        Shape::Empty(GeometryKind::Point, _) => Ok(Point::new_raw_xy(f64::NAN, f64::NAN)),
-        _ => Err(crate::geometry::GeometryErrorKind::LocatePointRequired.into()),
-    }
+    Ok(shape
+        .point_operand("line_locate")?
+        .unwrap_or(Point::new_raw_xy(f64::NAN, f64::NAN)))
 }

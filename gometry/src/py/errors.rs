@@ -395,7 +395,7 @@ impl From<Error> for PyErr {
                 G::LinealRequired | G::SidedBufferRequiresLineal => {
                     geometry_type_err_with_expected(message, "LineString or MultiLineString")
                 },
-                G::LocatePointRequired => geometry_type_err_with_expected(message, "Point"),
+                G::PointRequired { .. } => geometry_type_err_with_expected(message, "Point"),
                 G::PointSplitterRequired => {
                     geometry_type_err_with_expected(message, "Point or MultiPoint")
                 },

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import gometry as gm
 import numpy as np
 import pytest
@@ -609,3 +611,57 @@ def test_point_navigation_uses_binary_free_functions_and_receiver_destination() 
     assert gm.point_between(
         pt, gm.Point(1, 0, crs=4326), 0.5, normalized=True
     ).x == pytest.approx(0.5)
+
+
+def _empty() -> gm.Geometry:
+    return gm.from_wkt('POINT EMPTY', crs=4326)
+
+
+@pytest.mark.parametrize(
+    ('call', 'expected'),
+    [
+        (lambda a, b: gm.bearing(a, b), 'nan'),
+        (lambda a, b: gm.bearing(a, b, path='rhumb'), 'nan'),
+        (gm.rhumb_distance, 'inf'),
+        (lambda a, b: gm.cross_track_distance(a, b, gm.Point(2, 0, crs=4326)), 'nan'),
+        (lambda a, b: gm.point_between(a, b, 10.0), 'POINT EMPTY'),
+        (lambda a, b: gm.point_between(a, b, 10.0, path='rhumb'), 'POINT EMPTY'),
+    ],
+    ids=[
+        'bearing',
+        'rhumb-bearing',
+        'rhumb-distance',
+        'cross-track',
+        'point-between',
+        'rhumb-point-between',
+    ],
+)
+def test_navigation_answers_an_empty_point(call: Any, expected: str) -> None:
+    point = gm.Point(1, 1, crs=4326)
+
+    def answer(value: Any) -> str:
+        return value.to_wkt() if isinstance(value, gm.Geometry) else repr(float(value))
+
+    assert answer(call(_empty(), point)) == expected
+    assert answer(call(point, _empty())) == expected
+    rows = call(gm.GeometryArray([point, _empty()]), point)
+    assert answer(rows[1]) == expected
+    with pytest.raises(gm.GeometryTypeError, match='requires a Point'):
+        call(gm.box(0, 0, 1, 1, crs=4326), point)
+
+
+@pytest.mark.parametrize('path', ['geodesic', 'rhumb'])
+def test_destination_from_an_empty_point_is_empty(path: str) -> None:
+    assert _empty().destination(90, 10, path=path).to_wkt() == 'POINT EMPTY'
+    assert _empty().destination([0, 90], 10, path=path).to_wkt() == ['POINT EMPTY'] * 2
+    rows = gm.GeometryArray([gm.Point(0, 0, crs=4326), _empty()])
+    assert rows.destination(90, 10, path=path).to_wkt()[1] == 'POINT EMPTY'
+
+
+def test_cardinal_destinations_are_exact() -> None:
+    planar = gm.Point(0, 0).destination([0, 90, 180, 270], 1)
+    assert planar.to_wkt() == ['POINT (0 1)', 'POINT (1 0)', 'POINT (0 -1)', 'POINT (-1 0)']
+    east = gm.Point(10, 50, crs=4326).destination(90, 1000, path='rhumb')
+    assert east.y == 50.0
+    north = gm.Point(10, 50, crs=4326).destination(0, 1000, path='rhumb')
+    assert north.x == 10.0

@@ -217,6 +217,7 @@ pub(crate) use nearest_lrs::{
     with_geodesic_coordseq_collect_rows_at, with_geodesic_coordseq_metric_at,
     with_geodesic_erased_at,
 };
+pub(crate) use segment::sincos_degrees;
 use segment::{
     IntersectSolver, checked_geodesic_segment, geodesic_point_segment_query, geodesic_unit_vector,
 };

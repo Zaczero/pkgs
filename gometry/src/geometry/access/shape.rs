@@ -3,9 +3,9 @@ use std::ops::ControlFlow;
 use crate::error::{ResourceError, Result};
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryKind, HasM, HasZ,
-    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape,
-    line_length_3d,
+    Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryErrorKind, GeometryKind,
+    HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring,
+    Shape, line_length_3d,
 };
 
 impl Shape {
@@ -76,6 +76,16 @@ impl Shape {
                 *has_z |= axes.has_z();
                 *has_m |= axes.has_m();
             },
+        }
+    }
+
+    /// The point an operation reads from this geometry: `None` for POINT
+    /// EMPTY, which such operations answer rather than reject.
+    pub(crate) fn point_operand(&self, operation: &'static str) -> Result<Option<Point>> {
+        match self {
+            Self::Point(point) => Ok(Some(*point)),
+            Self::Empty(GeometryKind::Point, _) => Ok(None),
+            _ => Err(GeometryErrorKind::PointRequired { operation }.into()),
         }
     }
 

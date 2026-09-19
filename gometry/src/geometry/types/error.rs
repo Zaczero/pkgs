@@ -83,8 +83,8 @@ pub enum GeometryErrorKind {
     LineStringRequired,
     #[error("a LineString or MultiLineString is required")]
     LinealRequired,
-    #[error("line_locate requires a Point")]
-    LocatePointRequired,
+    #[error("{operation} requires a Point")]
+    PointRequired { operation: &'static str },
     #[error("split requires a Point or MultiPoint splitter")]
     PointSplitterRequired,
     #[error("a Polygon or MultiPolygon is required")]

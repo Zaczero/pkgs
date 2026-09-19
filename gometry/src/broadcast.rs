@@ -15,8 +15,8 @@ use crate::{
     Point, PreparedPlan, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError,
     Python, Shape, ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
     coordinate_input_with_expected, coordinate_sequence_len_hint, crs, crs_arc, float64_array,
-    geometry_type_err, is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value,
-    point_distance, scalar_vs_shapes,
+    is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value, point_distance,
+    scalar_vs_shapes,
 };
 mod element;
 pub(crate) use element::BulkElement;
@@ -38,7 +38,7 @@ pub(crate) use metrics::{
     lonlat_points, lonlat_shape, metric_maximum_inscribed_radius, metric_minimum_clearance,
     metric_minimum_clearance_line, metric_nearest_points_resolved, metric_shortest_line_resolved,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    require_point, resolve_metric, resolve_metric_3d,
+    resolve_metric, resolve_metric_3d,
 };
 mod predicates;
 pub(crate) use predicates::{

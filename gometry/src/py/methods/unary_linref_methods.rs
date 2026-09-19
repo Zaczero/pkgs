@@ -451,7 +451,8 @@ impl PyGeometry {
 
 #[pymethods]
 impl PyGeometryArray {
-    /// Walk each point along a geodesic or rhumb path.
+    /// Walk each point along a geodesic or rhumb path. An empty point stays
+    /// ``POINT EMPTY``.
     ///
     /// Parameters
     /// ----------

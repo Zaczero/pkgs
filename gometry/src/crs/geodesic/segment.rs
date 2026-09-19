@@ -2053,7 +2053,7 @@ fn angle_round(value: f64) -> f64 {
     clippy::float_cmp,
     reason = "a pole or antimeridian is one specific representable coordinate, and the question is whether a vertex IS that coordinate; a tolerance would admit vertices merely near it"
 )]
-fn sincos_degrees(value: f64, correction: f64) -> (f64, f64) {
+pub(crate) fn sincos_degrees(value: f64, correction: f64) -> (f64, f64) {
     let reduced_turn = value.rem_euclid(360.0);
     let quadrant = ((reduced_turn / 90.0) + 0.5).floor() as i32;
     let reduced = angle_round(reduced_turn - f64::from(quadrant) * 90.0 + correction);

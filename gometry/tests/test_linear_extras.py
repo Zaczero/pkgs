@@ -255,8 +255,15 @@ def test_rhumb_trio_error_gates() -> None:
         gm.Point(0, 0, crs=4326).destination(90.0, -1.0, path='rhumb')
     with pytest.raises(gm.GeometryError, match='bearing'):
         gm.Point(0, 0, crs=4326).destination(float('nan'), 1.0, path='rhumb')
+    # The last distance that stops short of the pole and the first that
+    # reaches it with an east component still to spend.
+    reach = 57599025.01538029
+    short = gm.Point(0, 0, crs=4326).destination(
+        80.0, math.nextafter(reach, 0.0), path='rhumb'
+    )
+    assert 89.9999999 < short.y < 90.0
     with pytest.raises(gm.InvalidGeometryError, match='crosses a pole'):
-        gm.Point(0, 0, crs=4326).destination(80.0, 57599025.01538026, path='rhumb')
+        gm.Point(0, 0, crs=4326).destination(80.0, reach, path='rhumb')
     arrival = gm.Point(7, 0, crs=4326).destination(
         0.0, 10001965.729311671, path='rhumb'
     )

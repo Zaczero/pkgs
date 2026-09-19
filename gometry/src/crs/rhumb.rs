@@ -453,16 +453,12 @@ pub(crate) fn rhumb_destination_crs_at(
     ensure_geographic_lonlat(lon, lat)?;
     with_rhumb_at(crs, state, |ellipsoid| {
         let phi1 = lat.to_radians();
-        let alpha = bearing.to_radians();
+        // Degree-exact: meridional courses keep a zero east component and
+        // east-west ones a zero north component, instead of `sin(pi)` noise.
+        let (sin_alpha, cos_alpha) = crate::crs::sincos_degrees(bearing, 0.0);
         let arc = meters / ellipsoid.radius;
-        // Exactly meridional courses have a zero east component by definition;
-        // `sin(pi)` noise would otherwise leak into the longitude.
-        let east = if bearing.rem_euclid(180.0) == 0.0 {
-            0.0
-        } else {
-            arc * alpha.sin()
-        };
-        let mu2 = ellipsoid.rectifying(phi1) + arc * alpha.cos();
+        let east = arc * sin_alpha;
+        let mu2 = ellipsoid.rectifying(phi1) + arc * cos_alpha;
         // Past a pole the longitude is indeterminate — and so is ARRIVING at a
         // pole with any east component still to spend.
         if mu2.abs() > FRAC_PI_2 || (mu2.abs() == FRAC_PI_2 && east != 0.0) {
