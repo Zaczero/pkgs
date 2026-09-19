@@ -6570,7 +6570,20 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         compact_of[handle] = compact_of[root as usize];
     }
 
-    let mut binding_pairs: Vec<(u32, NodeOnUnique)> = Vec::new();
+    // Bindings grouped by node. Cuts are visited in ascending unique order,
+    // so a counting placement leaves each node's bindings in that order too,
+    // and a node met again on the same unique is a repeat to skip.
+    let mut binding_nodes: Vec<(u32, u32, &SegmentParameter)> = Vec::new();
+    let mut last_unique = Vec::new();
+    try_reserve_vec(&mut last_unique, recipes.len())?;
+    last_unique.resize(recipes.len(), u32::MAX);
+    let mut binding_starts = Vec::new();
+    let start_count = recipes
+        .len()
+        .checked_add(1)
+        .ok_or(ResourceError::SizeOverflow)?;
+    try_reserve_vec(&mut binding_starts, start_count)?;
+    binding_starts.resize(start_count, 0_u32);
     for (unique_index, source_cuts) in cuts.iter().enumerate() {
         let unique_index = u32::try_from(unique_index).map_err(|_| ResourceError::SizeOverflow)?;
         for cut in source_cuts {
@@ -6578,47 +6591,38 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             let node = compact_of[root as usize].ok_or_else(|| {
                 GeometryErrorKind::Invalid("partition binding was not compacted".into())
             })?;
-            try_reserve_vec(&mut binding_pairs, 1)?;
-            try_push_vec(
-                &mut binding_pairs,
-                (node, NodeOnUnique {
-                    unique: unique_index,
-                    parameter: cut.param.clone(),
-                }),
-            )?;
+            if last_unique[node as usize] == unique_index {
+                continue;
+            }
+            last_unique[node as usize] = unique_index;
+            binding_starts[node as usize + 1] += 1;
+            try_push_vec(&mut binding_nodes, (node, unique_index, &cut.param))?;
         }
     }
-    binding_pairs.sort_unstable_by_key(|(node, binding)| (*node, binding.unique));
-    binding_pairs.dedup_by(|left, right| left.0 == right.0 && left.1.unique == right.1.unique);
-    let mut binding_counts = Vec::new();
-    try_reserve_vec(&mut binding_counts, recipes.len())?;
-    binding_counts.resize(recipes.len(), 0_u32);
-    for &(node, _) in &binding_pairs {
-        binding_counts[node as usize] = binding_counts[node as usize]
-            .checked_add(1)
+    for node in 0..recipes.len() {
+        binding_starts[node + 1] = binding_starts[node + 1]
+            .checked_add(binding_starts[node])
             .ok_or(ResourceError::SizeOverflow)?;
     }
-    let mut binding_starts = Vec::new();
-    try_reserve_vec(
-        &mut binding_starts,
-        recipes
-            .len()
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?,
-    )?;
-    try_push_vec(&mut binding_starts, 0)?;
-    for count in binding_counts {
-        let next = binding_starts
-            .last()
-            .copied()
-            .unwrap_or(0_u32)
-            .checked_add(count)
-            .ok_or(ResourceError::SizeOverflow)?;
-        try_push_vec(&mut binding_starts, next)?;
+    let mut placement = Vec::new();
+    try_reserve_vec(&mut placement, binding_nodes.len())?;
+    placement.resize(binding_nodes.len(), 0_u32);
+    let mut cursor = Vec::new();
+    try_reserve_vec(&mut cursor, binding_starts.len())?;
+    cursor.extend_from_slice(&binding_starts);
+    for (index, &(node, ..)) in binding_nodes.iter().enumerate() {
+        placement[cursor[node as usize] as usize] = index as u32;
+        cursor[node as usize] += 1;
     }
     let mut bindings = Vec::new();
-    try_reserve_vec(&mut bindings, binding_pairs.len())?;
-    bindings.extend(binding_pairs.into_iter().map(|(_, binding)| binding));
+    try_reserve_vec(&mut bindings, binding_nodes.len())?;
+    for index in placement {
+        let (_, unique, parameter) = binding_nodes[index as usize];
+        bindings.push(NodeOnUnique {
+            unique,
+            parameter: parameter.clone(),
+        });
+    }
 
     let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
     for source in 0..unique.len() {
