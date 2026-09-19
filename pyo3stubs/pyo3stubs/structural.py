@@ -15,6 +15,13 @@ Four gates over the stub AST + live runtime:
   skips it silently); require an explicit allowlist entry per blind spot.
 * **``__match_args__`` parity** — the stub's literal tuple must equal the
   runtime value (match statements silently misbind otherwise).
+* **exports** — every ``__all__`` entry names something the stub defines,
+  once. stubtest compares ``__all__`` with the runtime's, so a name removed
+  from both but left in the stub's list survives it; star imports and IDEs
+  then offer a symbol that does not exist.
+
+A shadowed overload (one an earlier variant fully covers) is the ``validity``
+gate's, through mypy's ``overload-cannot-match``.
 
 Scalar↔array return duality is the separate ``duality`` gate
 (:mod:`pyo3stubs.duality`), activated by ``StubConfig.duality``.
@@ -307,6 +314,78 @@ def _collect_match_args(ctx: CheckContext, errors: list[str]) -> None:
             )
 
 
+#: `type X = ...` statements (Python 3.12+; none can parse on 3.11).
+_TYPE_ALIAS_NODES: tuple[type[ast.stmt], ...] = tuple(
+    node for node in (getattr(ast, 'TypeAlias', None),) if node is not None
+)
+
+
+def _module_bindings(body: list[ast.stmt]) -> set[str]:
+    """Names a module body binds, through version and platform branches."""
+    names: set[str] = set()
+    for stmt in body:
+        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(stmt.name)
+        elif isinstance(stmt, (ast.Import, ast.ImportFrom)):
+            names.update(
+                (alias.asname or alias.name).split('.')[0] for alias in stmt.names
+            )
+        elif isinstance(stmt, ast.Assign):
+            names.update(
+                target.id for target in stmt.targets if isinstance(target, ast.Name)
+            )
+        elif isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            names.add(stmt.target.id)
+        elif isinstance(stmt, _TYPE_ALIAS_NODES):
+            names.add(stmt.name.id)  # type: ignore[attr-defined]
+        elif isinstance(stmt, ast.If):
+            names |= _module_bindings(stmt.body) | _module_bindings(stmt.orelse)
+        elif isinstance(stmt, ast.Try):
+            names |= _module_bindings(stmt.body)
+            for handler in stmt.handlers:
+                names |= _module_bindings(handler.body)
+    return names
+
+
+def _exported_names(body: list[ast.stmt]) -> ast.List | ast.Tuple | None:
+    """The literal ``__all__`` list or tuple of a module body."""
+    for stmt in body:
+        if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1:
+            target, value = stmt.targets[0], stmt.value
+        elif isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+            target, value = stmt.target, stmt.value
+        else:
+            continue
+        if (
+            isinstance(target, ast.Name)
+            and target.id == '__all__'
+            and isinstance(value, (ast.List, ast.Tuple))
+        ):
+            return value
+    return None
+
+
+def _collect_exports(ctx: CheckContext, errors: list[str]) -> None:
+    path = str(ctx.cfg.stub_path)
+    exported = _exported_names(ctx.stub_ast.body)
+    if exported is None:
+        return
+    bound = _module_bindings(ctx.stub_ast.body)
+    seen: set[str] = set()
+    for elt in exported.elts:
+        if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+            continue
+        name = elt.value
+        if name in seen:
+            errors.append(f'{loc(path, elt)}: __all__: {name!r} listed twice')
+        seen.add(name)
+        if name not in bound:
+            errors.append(
+                f'{loc(path, elt)}: __all__: {name!r} is exported but the stub '
+                'never defines it'
+            )
+
+
 def collect_errors(cfg: StubConfig) -> Findings:
     """Run all structural gates; empty when clean."""
     ctx = CheckContext(cfg)
@@ -315,6 +394,7 @@ def collect_errors(cfg: StubConfig) -> Findings:
     _collect_finality(ctx, errors)
     _collect_signature_coverage(ctx, errors)
     _collect_match_args(ctx, errors)
+    _collect_exports(ctx, errors)
     defs = sum(
         len(group)
         for body in (ctx.stub_ast.body, *(c.body for c in ctx.stub_classes.values()))

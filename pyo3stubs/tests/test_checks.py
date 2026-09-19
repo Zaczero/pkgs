@@ -441,6 +441,30 @@ def test_leak_scan_sees_every_parameter_kind(tmp_path, pristine_stub, signature)
     ), errors
 
 
+@pytest.mark.parametrize(
+    ('exports', 'expect'),
+    [
+        (
+            "['Open', 'Sealed', 'documented', 'overloaded', 'removed']",
+            "'removed' is exported but the stub never defines it",
+        ),
+        (
+            "['Open', 'Sealed', 'documented', 'overloaded', 'Open']",
+            "'Open' listed twice",
+        ),
+    ],
+    ids=['undefined', 'duplicate'],
+)
+def test_structural_rejects_export_rot(tmp_path, pristine_stub, exports, expect):
+    mutated = seeded(
+        pristine_stub,
+        "__all__ = ['Open', 'Sealed', 'documented', 'overloaded']",
+        f'__all__ = {exports}',
+    )
+    errors = structural(make_config(tmp_path, stub_text=mutated))
+    assert any(expect in e for e in errors), errors
+
+
 def test_validity_rejects_a_shadowed_overload_whatever_the_config(
     tmp_path, pristine_stub
 ):
