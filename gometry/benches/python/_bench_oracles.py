@@ -463,9 +463,13 @@ def _geom_missing(g: object) -> bool:
 
 
 def _as_sequence(value: object) -> Sequence[object]:
+    import gometry as gm
+
     if value is None:
         return ()
-    if isinstance(value, (str, bytes)):
+    # A multipart geometry iterates its parts but is one result row, as a
+    # Shapely multipart (which does not iterate) already is.
+    if isinstance(value, (str, bytes, gm.Geometry)):
         return (value,)
     if isinstance(value, Sequence) and not hasattr(value, 'coords'):
         return value

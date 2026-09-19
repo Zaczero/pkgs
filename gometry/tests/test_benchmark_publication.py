@@ -224,7 +224,11 @@ def _result(tmp_path: Path) -> dict[str, object]:
         'oracle_ok': True,
         'commands_complete': True,
         'publishable': True,
-        'row_counts': {'competitors': 106},
+        'row_counts': {
+            'competitors': sum(
+                len(operation.rows) for operation in ALL_PUBLIC_OPERATIONS
+            )
+        },
         'public_operations': operations,
         'source_artifacts': artifacts,
         'oracle_artifact': 'raw/oracle.json',

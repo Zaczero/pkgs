@@ -221,6 +221,67 @@ def _overlay_case(operation: ScalingOperation) -> PublicCase:
     )
 
 
+def _disjoint_union_case(operation: ScalingOperation) -> PublicCase:
+    import gometry as gm
+    import shapely
+
+    count = int(operation.point)
+    side = int(np.ceil(np.sqrt(count)))
+    corners = [(3.0 * (index % side), 3.0 * (index // side)) for index in range(count)]
+    gm_values = gm.GeometryArray([gm.box(x, y, x + 1.0, y + 1.0) for x, y in corners])
+    sh_values = np.asarray(
+        [shapely.box(x, y, x + 1.0, y + 1.0) for x, y in corners], dtype=object
+    )
+
+    def output_validator(value: object) -> None:
+        parts = (
+            len(value)
+            if isinstance(value, gm.Geometry)
+            else int(shapely.get_num_geometries(value))
+        )
+        if parts != count:
+            raise ValueError(f'expected {count} disjoint parts, got {parts}')
+
+    return _case(
+        lambda: gm.union_all(gm_values),
+        lambda: shapely.union_all(sh_values),
+        _compare_areal_result,
+        kind='areal_result',
+        useful_work={'count': count, 'unit': operation.useful_work_unit},
+        output_validator=output_validator,
+    )
+
+
+def _holes_case(operation: ScalingOperation) -> PublicCase:
+    import gometry as gm
+    import shapely
+
+    count = int(operation.point)
+    side = int(np.ceil(np.sqrt(count)))
+    extent = 10.0 * side + 10.0
+    shell = [(0.0, 0.0), (extent, 0.0), (extent, extent), (0.0, extent), (0.0, 0.0)]
+    holes = []
+    for index in range(count):
+        x, y = 10.0 * (index % side) + 5.0, 10.0 * (index // side) + 5.0
+        holes.append([(x, y), (x, y + 2.0), (x + 2.0, y + 2.0), (x + 2.0, y), (x, y)])
+    cut = (1.0, 1.0, 0.5 * extent, 0.75 * extent)
+    gm_shell, gm_cut = gm.Polygon(shell, holes), gm.box(*cut)
+    sh_shell, sh_cut = shapely.Polygon(shell, holes), shapely.box(*cut)
+
+    def output_validator(value: object) -> None:
+        if value is None or bool(value.is_empty):  # type: ignore[union-attr]
+            raise ValueError('intersection output is empty')
+
+    return _case(
+        lambda: gm.intersection(gm_shell, gm_cut),
+        lambda: shapely.intersection(sh_shell, sh_cut),
+        _compare_areal_result,
+        kind='areal_result',
+        useful_work={'count': count, 'unit': operation.useful_work_unit},
+        output_validator=output_validator,
+    )
+
+
 def _grid_case(operation: ScalingOperation) -> PublicCase:
     import gometry as gm
     import mercantile
@@ -292,6 +353,10 @@ def _builder_for(operation: ScalingOperation) -> Callable[[], PublicCase]:
         return lambda: _candidate_case(operation)
     if operation.curve_id == 'overlay-input-count':
         return lambda: _overlay_case(operation)
+    if operation.curve_id == 'overlay-disjoint-input-count':
+        return lambda: _disjoint_union_case(operation)
+    if operation.curve_id == 'overlay-hole-count':
+        return lambda: _holes_case(operation)
     if operation.curve_id == 'grid-cover-output-count':
         return lambda: _grid_case(operation)
     if operation.curve_id == 'prepared-batch-boundary':

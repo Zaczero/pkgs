@@ -105,15 +105,18 @@ def test_manifest_serialization_retains_canonical_endpoints() -> None:
 
 def test_scaling_curves_are_sparse_ordered_and_single_dimension() -> None:
     _bench_registry.validate_scaling_operations()
-    assert len(_bench_registry.SCALING_CURVES) == 6
-    assert len(_bench_registry.SCALING_OPERATIONS) == 16
     for curve in _bench_registry.SCALING_CURVES:
         assert len(curve.points) == 3
         assert [point.point for point in curve.points] == sorted(
             point.point for point in curve.points
         )
-    assert len(set(RELEASE.rows('competitors'))) == 106
-    assert len(_bench_registry.ALL_PUBLIC_OPERATIONS) == 53
+    # A reused endpoint is an existing release row, not a derived one.
+    assert len(_bench_registry.SCALING_OPERATIONS) == sum(
+        3 - (curve.reuse is not None) for curve in _bench_registry.SCALING_CURVES
+    )
+    assert len(_bench_registry.ALL_PUBLIC_OPERATIONS) == len(RELEASE_OPERATIONS) + len(
+        _bench_registry.SCALING_OPERATIONS
+    )
 
 
 def test_scaling_curves_reuse_canonical_endpoint_rows() -> None:
@@ -153,10 +156,10 @@ def test_release_paired_worker_imports_before_a_release_run() -> None:
 
 
 def test_all_public_rows_are_unique_and_fully_paired() -> None:
-    names = [name for op in RELEASE_OPERATIONS for name in op.rows]
-    assert len(names) == len(set(names)) == 74
-    assert len({op.competitor for op in RELEASE_OPERATIONS}) == 37
-    assert len(RELEASE.rows('competitors')) == 106
+    names = [name for op in _bench_registry.ALL_PUBLIC_OPERATIONS for name in op.rows]
+    assert len(names) == len(set(names))
+    assert len({op.competitor for op in RELEASE_OPERATIONS}) == len(RELEASE_OPERATIONS)
+    assert sorted(RELEASE.rows('competitors')) == sorted(names)
     assert _bench_registry.SUITES == ('competitors',)
     assert all(
         len(unit) == 2
