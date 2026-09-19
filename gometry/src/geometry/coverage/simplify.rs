@@ -359,7 +359,7 @@ impl<'a> TopologyGuard<'a> {
                 }
                 match segment_contact_exact(shortcut, entry.segment) {
                     crate::geometry::Contact::Disjoint => false,
-                    crate::geometry::Contact::Cross { .. } => true,
+                    crate::geometry::Contact::Cross => true,
                     crate::geometry::Contact::Touch { point } => {
                         !same_point(point, prev) && !same_point(point, next)
                     },

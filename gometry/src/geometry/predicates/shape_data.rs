@@ -2,11 +2,13 @@ use std::ops::ControlFlow;
 
 use ahash::HashSetExt as _;
 
+use crate::geometry::segments::crossing_point;
 use crate::geometry::{
-    Coordinates, HashMap, HashMapExt as _, HashSet, IndexedSegment, LineworkChains, Point,
+    Contact, Coordinates, HashMap, HashMapExt as _, HashSet, IndexedSegment, LineworkChains, Point,
     PointKey, RingClass, Segment, TouchDirections, ValidationIssue, XY, face_interior_point,
-    orient_ring, ring_classify_point, ring_label, same_point, segment_cross_point,
-    segment_intersection_is_simple, segments_are_adjacent, segments_intersect, shared_segment_part,
+    orient_ring, ring_classify_point, ring_label, same_point, segment_contact_exact,
+    segment_cross_point, segment_intersection_is_simple, segments_are_adjacent, segments_intersect,
+    shared_segment_part,
 };
 
 /// A point strictly interior to `ring`, preferring a cheap vertex that is
@@ -32,22 +34,30 @@ pub(crate) fn ring_probe_point<C: Coordinates + ?Sized>(ring: &C, reference: &C)
 /// [`for_each_candidate_pair`]), stopping at the first issue.
 pub(crate) fn visit_interacting_pairs(
     chains: &LineworkChains,
-    mut visit: impl FnMut(&IndexedSegment, &IndexedSegment) -> Option<ValidationIssue>,
+    mut visit: impl FnMut(
+        &IndexedSegment,
+        &IndexedSegment,
+    ) -> crate::error::Result<Option<ValidationIssue>>,
 ) -> crate::error::Result<Option<ValidationIssue>> {
-    let mut issue = None;
+    let mut issue = Ok(None);
     let _ = chains.for_each_candidate_pair(|left, right| {
         let (left, right) = (&chains.at(left), &chains.at(right));
         // Chain-adjacent segments share an endpoint by construction, so they
         // always intersect; skip orientation tests for this valid-ring case.
-        if (segments_are_adjacent(*left, *right) || segments_intersect(left.segment, right.segment))
-            && let Some(found) = visit(left, right)
+        if !(segments_are_adjacent(*left, *right)
+            || segments_intersect(left.segment, right.segment))
         {
-            issue = Some(found);
-            return ControlFlow::Break(());
+            return ControlFlow::Continue(());
         }
-        ControlFlow::Continue(())
+        match visit(left, right) {
+            Ok(None) => ControlFlow::Continue(()),
+            found => {
+                issue = found;
+                ControlFlow::Break(())
+            },
+        }
     })?;
-    Ok(issue)
+    issue
 }
 
 /// Classify one intersecting pair: same-ring pairs use the simplicity rule;
@@ -58,52 +68,55 @@ pub(crate) fn classify_ring_pair(
     right: &IndexedSegment,
     touches: &mut TouchDirections,
     describe: &impl Fn(usize, usize) -> String,
-) -> Option<ValidationIssue> {
+) -> crate::error::Result<Option<ValidationIssue>> {
     if left.line == right.line {
         if segment_intersection_is_simple(*left, *right) {
-            return None;
+            return Ok(None);
         }
-        return Some(ValidationIssue::new(
+        return Ok(Some(ValidationIssue::new(
             "self_intersection",
             format!("{} has a self-intersection", ring_label(left.line)),
-            pair_contact_point(left.segment, right.segment).map(XY::point),
+            pair_contact_point(left.segment, right.segment)?.map(XY::point),
             "$",
-        ));
+        )));
     }
     if let Some((_, part)) = shared_segment_part(left.segment, right.segment) {
         if part.len() >= 2 && !same_point(part[0], part[1]) {
-            return Some(ValidationIssue::new(
+            return Ok(Some(ValidationIssue::new(
                 "shared_linework",
                 format!("{} on a line", describe(left.line, right.line)),
                 Some(part[0].point()),
                 "$",
-            ));
+            )));
         }
         record_touch(touches, left, right, part[0].point());
-        return None;
+        return Ok(None);
     }
-    let point = segment_cross_point(left.segment, right.segment)?;
-    let left_interior =
-        !same_point(point, left.segment.start) && !same_point(point, left.segment.end);
-    let right_interior =
-        !same_point(point, right.segment.start) && !same_point(point, right.segment.end);
-    if left_interior && right_interior {
-        return Some(ValidationIssue::new(
+    // A proper crossing is interior to both segments: the rings cross. Any
+    // other contact is an endpoint of one on the other, a touch.
+    match segment_contact_exact(left.segment, right.segment) {
+        Contact::Cross => Ok(Some(ValidationIssue::new(
             "ring_intersection",
             describe(left.line, right.line),
-            Some(point.point()),
+            Some(crossing_point(left.segment, right.segment)?.point.point()),
             "$",
-        ));
+        ))),
+        Contact::Touch { point } => {
+            record_touch(touches, left, right, point.point());
+            Ok(None)
+        },
+        Contact::Disjoint | Contact::Collinear { .. } => Ok(None),
     }
-    record_touch(touches, left, right, point.point());
-    None
 }
 
 /// First contact point of an intersecting pair, or `None` when the pair does
 /// not actually meet.
-pub(crate) fn pair_contact_point(left: Segment, right: Segment) -> Option<XY> {
+pub(crate) fn pair_contact_point(
+    left: Segment,
+    right: Segment,
+) -> crate::error::Result<Option<XY>> {
     if let Some((_, part)) = shared_segment_part(left, right) {
-        return Some(part[0]);
+        return Ok(Some(part[0]));
     }
     segment_cross_point(left, right)
 }

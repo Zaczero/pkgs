@@ -396,10 +396,8 @@ fn segment_nearest_points_uses_intersection_for_crossing() {
     assert_eq!(left, right);
 }
 
-/// Placement rounds once. The parametric solve has three roundings available
-/// to it — the fraction, the product, and the sum — and a crossing whose exact
-/// ordinates are representable must survive all of them. Interpolating from a
-/// binary64 fraction placed this pair at `(-0.333_333_333_333_333_37,
+/// The crossing is the nearest-even rounding of the exact point. Interpolating
+/// from a binary64 fraction places this pair at `(-0.333_333_333_333_333_37,
 /// 0.833_333_333_333_333_3)`, an ulp off on both axes.
 #[test]
 fn segment_cross_point_is_the_correctly_rounded_crossing() {
@@ -412,10 +410,14 @@ fn segment_cross_point_is_the_correctly_rounded_crossing() {
         start: XY::new(0.0, 1.0),
         end: XY::new(-1.0, 0.5),
     };
-    let point = segment_cross_point(left, right).expect("certified crossing");
+    let point = segment_cross_point(left, right)
+        .unwrap()
+        .expect("certified crossing");
     assert_eq!(
         point,
-        segment_cross_point(right, left).expect("symmetric crossing")
+        segment_cross_point(right, left)
+            .unwrap()
+            .expect("symmetric crossing")
     );
     assert_eq!(point.x.to_bits(), (-1.0_f64 / 3.0).to_bits());
     assert_eq!(point.y.to_bits(), (5.0_f64 / 6.0).to_bits());
@@ -447,15 +449,16 @@ fn segment_cross_point_meets_an_axis_aligned_edge_exactly() {
             XY::new(1.0, 0.0),
         ),
     ] {
-        let point = segment_cross_point(diagonal, edge).expect("certified crossing");
+        let point = segment_cross_point(diagonal, edge)
+            .unwrap()
+            .expect("certified crossing");
         assert_eq!(point.x.to_bits(), expected.x.to_bits(), "{name}: x");
         assert_eq!(point.y.to_bits(), expected.y.to_bits(), "{name}: y");
     }
 }
 
-/// The split-product crossing solver must keep the robust predicate's
-/// near-parallel crossing and place it symmetrically, without relying on a
-/// target-specific fused multiply-add path.
+/// A near-parallel crossing that the robust predicate finds is placed, and
+/// the same point is returned whichever segment comes first.
 #[test]
 fn segment_cross_point_places_near_parallel_crossing_symmetrically() {
     let left = Segment {
@@ -466,21 +469,23 @@ fn segment_cross_point_places_near_parallel_crossing_symmetrically() {
         start: XY::new(0.0, 1.0e-13),
         end: XY::new(1.0, 0.0),
     };
-    let point = segment_cross_point(left, right).expect("certified crossing");
+    let point = segment_cross_point(left, right)
+        .unwrap()
+        .expect("certified crossing");
     assert_eq!(
         point,
-        segment_cross_point(right, left).expect("symmetric crossing")
+        segment_cross_point(right, left)
+            .unwrap()
+            .expect("symmetric crossing")
     );
     assert_eq!(point.x.to_bits(), 0.5_f64.to_bits());
     assert_eq!(point.y.to_bits(), 5.0e-14_f64.to_bits());
 }
 
-/// Products at this scale overflow without the shared power-of-two frame.
-/// Existence and placement must use the same normalized coordinates and
-/// remain operand/direction invariant after replacing FMA with Dekker
-/// splitting.
+/// Products at this scale overflow binary64; the crossing is still the
+/// rounding of the exact point, invariant under operand order and direction.
 #[test]
-fn segment_cross_point_rescales_extreme_finite_coordinates() {
+fn segment_cross_point_rounds_crossings_of_extreme_finite_coordinates() {
     let scale = 2.0_f64.powi(600);
     let left = Segment {
         start: XY::new(scale, scale),
@@ -490,7 +495,9 @@ fn segment_cross_point_rescales_extreme_finite_coordinates() {
         start: XY::new(scale, 2.0 * scale),
         end: XY::new(2.0 * scale, scale),
     };
-    let point = segment_cross_point(left, right).expect("scaled crossing");
+    let point = segment_cross_point(left, right)
+        .unwrap()
+        .expect("scaled crossing");
     assert!(point.x.is_finite() && point.y.is_finite());
     for (a, b) in [
         (right, left),
@@ -498,7 +505,10 @@ fn segment_cross_point_rescales_extreme_finite_coordinates() {
         (left, reverse_segment(right)),
         (reverse_segment(right), reverse_segment(left)),
     ] {
-        assert_eq!(point, segment_cross_point(a, b).expect("same crossing"));
+        assert_eq!(
+            point,
+            segment_cross_point(a, b).unwrap().expect("same crossing")
+        );
     }
     assert_eq!(point.x.to_bits(), (1.5 * scale).to_bits());
     assert_eq!(point.x.to_bits(), point.y.to_bits());
@@ -507,10 +517,9 @@ fn segment_cross_point_rescales_extreme_finite_coordinates() {
 }
 
 /// Determinants below the ordinary-product underflow boundary still describe
-/// a real crossing. Normalization must scale them UP before both orient2d and
-/// double-double placement; otherwise the predicate and constructor diverge.
+/// a real crossing, and the predicate and the construction agree on it.
 #[test]
-fn segment_cross_point_rescales_subnormal_products() {
+fn segment_cross_point_rounds_crossings_with_subnormal_products() {
     let scale = 1.0e-180;
     let left = Segment {
         start: XY::new(0.0, 0.0),
@@ -520,14 +529,19 @@ fn segment_cross_point_rescales_subnormal_products() {
         start: XY::new(0.25 * scale, -scale),
         end: XY::new(0.25 * scale, 3.0 * scale),
     };
-    let point = segment_cross_point(left, right).expect("scaled-up crossing");
+    let point = segment_cross_point(left, right)
+        .unwrap()
+        .expect("scaled-up crossing");
     for (a, b) in [
         (right, left),
         (reverse_segment(left), right),
         (left, reverse_segment(right)),
         (reverse_segment(right), reverse_segment(left)),
     ] {
-        assert_eq!(point, segment_cross_point(a, b).expect("same crossing"));
+        assert_eq!(
+            point,
+            segment_cross_point(a, b).unwrap().expect("same crossing")
+        );
     }
     assert_eq!(point.x.to_bits(), (0.25 * scale).to_bits());
     assert_eq!(point.y.to_bits(), (0.5 * scale).to_bits());
@@ -535,9 +549,9 @@ fn segment_cross_point_rescales_subnormal_products() {
     assert!(point_on_segment(point, right.start, right.end));
 }
 
-/// Per-axis normalization preserves a tiny vertical span crossing a huge
-/// horizontal span. A single scale chosen from the largest coordinate would
-/// collapse the vertical segment to zero before orient2d saw it.
+/// A tiny vertical span crossing a huge horizontal span keeps both axes: a
+/// single scale chosen from the largest coordinate would collapse the
+/// vertical segment to zero.
 #[test]
 fn segment_cross_point_preserves_mixed_exponent_axes() {
     let horizontal = Segment {
@@ -548,7 +562,9 @@ fn segment_cross_point_preserves_mixed_exponent_axes() {
         start: XY::new(1.0e-300, -1.0e-300),
         end: XY::new(1.0e-300, 1.0e-300),
     };
-    let point = segment_cross_point(horizontal, vertical).expect("mixed-scale crossing");
+    let point = segment_cross_point(horizontal, vertical)
+        .unwrap()
+        .expect("mixed-scale crossing");
     assert_eq!(point.x.to_bits(), 1.0e-300_f64.to_bits());
     assert_eq!(point.y.to_bits(), 0.0_f64.to_bits());
     assert!(point_on_segment(point, horizontal.start, horizontal.end));
@@ -556,14 +572,14 @@ fn segment_cross_point_preserves_mixed_exponent_axes() {
     assert_eq!(
         point,
         segment_cross_point(reverse_segment(vertical), reverse_segment(horizontal))
+            .unwrap()
             .expect("same crossing")
     );
 }
 
 /// A long diagonal crossing a tiny diagonal close to its start has an exact
 /// witness, but the long segment's parametric fraction is below binary64's
-/// representable range. Raw mixed-exponent products and the better-conditioned
-/// short segment must determine placement; no axis snap can hide a failure.
+/// representable range; the exact construction still places it.
 #[test]
 fn segment_cross_point_preserves_mixed_exponents_within_each_axis() {
     let huge = 2.0_f64.powi(1000);
@@ -577,13 +593,17 @@ fn segment_cross_point_preserves_mixed_exponents_within_each_axis() {
         end: XY::new(tiny, 0.0),
     };
     let expected = 2.0_f64.powi(-1000);
-    let point = segment_cross_point(long, short).expect("mixed-scale diagonal crossing");
+    let point = segment_cross_point(long, short)
+        .unwrap()
+        .expect("mixed-scale diagonal crossing");
     assert_eq!(point, XY::new(expected, expected));
     assert!(point_on_segment(point, long.start, long.end));
     assert!(point_on_segment(point, short.start, short.end));
     assert_eq!(
         point,
-        segment_cross_point(reverse_segment(short), reverse_segment(long)).expect("same crossing")
+        segment_cross_point(reverse_segment(short), reverse_segment(long))
+            .unwrap()
+            .expect("same crossing")
     );
 }
 

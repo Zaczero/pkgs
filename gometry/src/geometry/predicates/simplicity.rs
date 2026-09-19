@@ -3,10 +3,10 @@ use std::ops::ControlFlow;
 use ahash::HashSetExt as _;
 
 use crate::geometry::{
-    CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation, Point,
-    PointKey, Polygon, Ring, Segment, SegmentIndex, Shape, ValidationIssue, XY, orientation,
-    point_on_segment, ring_winding, same_point, segment_cross_point, segments_intersect,
-    shared_segment_part,
+    Contact, CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation,
+    Point, PointKey, Polygon, Ring, Segment, SegmentIndex, Shape, ValidationIssue, XY, orientation,
+    point_on_segment, ring_winding, same_point, segment_contact_exact, segment_cross_point,
+    segments_intersect, shared_segment_part,
 };
 /// Whether a vertex-SUBSET simplification of a polygon kept its linework
 /// simple, checked on the DELTA only: removals replace vertex paths with
@@ -166,11 +166,14 @@ pub(crate) fn cross_line_touch_is_simple(left: IndexedSegment, right: IndexedSeg
             return false;
         }
         part[0]
-    } else if let Some(point) = segment_cross_point(left.segment, right.segment) {
-        point
     } else {
-        // Envelope-only candidates that never actually touch.
-        return true;
+        match segment_contact_exact(left.segment, right.segment) {
+            // Interior to both segments, so an endpoint of neither line.
+            Contact::Cross => return false,
+            Contact::Touch { point } => point,
+            // Envelope-only candidates that never actually touch.
+            Contact::Disjoint | Contact::Collinear { .. } => return true,
+        }
     };
     is_line_boundary(left, contact) && is_line_boundary(right, contact)
 }
@@ -226,11 +229,11 @@ pub(crate) fn collect_offending_pair(
     left: IndexedSegment,
     right: IndexedSegment,
     visit: &mut impl FnMut(Point),
-) {
+) -> crate::error::Result<()> {
     if !segments_intersect(left.segment, right.segment)
         || segment_intersection_is_simple(left, right)
     {
-        return;
+        return Ok(());
     }
     let (a, b) = (left.segment, right.segment);
     let collinear = orientation(a.start, a.end, b.start) == Orientation::Collinear
@@ -246,9 +249,10 @@ pub(crate) fn collect_offending_pair(
                 visit(point.point());
             }
         }
-    } else if let Some(point) = segment_cross_point(a, b) {
+    } else if let Some(point) = segment_cross_point(a, b)? {
         visit(point.point());
     }
+    Ok(())
 }
 
 pub(crate) fn non_shared_endpoint_lies_on_segment(left: Segment, right: Segment) -> bool {

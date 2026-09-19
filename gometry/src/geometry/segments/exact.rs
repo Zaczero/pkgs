@@ -5,14 +5,11 @@
 use crate::error::Result;
 use crate::geometry::Ordering;
 use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
-use crate::geometry::exact_arith::{
-    dd_add, dd_mul, scale_shift_for_magnitude, two_product_exact, two_sum,
-};
-pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
+use crate::geometry::exact_arith::{dd_add, dd_mul, two_product_exact, two_sum};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
-use crate::geometry::tessellation::exact::{ExactDyadic, Interval};
+use crate::geometry::tessellation::exact::{ExactDyadic, Interval, round_ratio};
 
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
@@ -88,16 +85,31 @@ pub(in crate::geometry) fn certified_crossing(a: Segment, b: Segment) -> Option<
     ))
 }
 
-pub(super) fn dd_cross(
-    left_a: (f64, f64),
-    left_b: (f64, f64),
-    right_a: (f64, f64),
-    right_b: (f64, f64),
-) -> (f64, f64) {
-    let left = dd_mul(left_a, left_b);
-    let right = dd_mul(right_a, right_b);
-    let (sum, sum_err) = two_sum(left.0, -right.0);
-    two_sum(sum, sum_err + (left.1 - right.1))
+/// A proper crossing rounded to nearest-even, with the exact homogeneous
+/// point when the certificate declined and the rounding had to build it.
+pub(in crate::geometry) struct RoundedCrossing {
+    pub(in crate::geometry) point: XY,
+    pub(in crate::geometry) exact: Option<[ExactDyadic; 3]>,
+}
+
+/// The nearest-even rounding of the crossing of the carriers of `a` and `b`:
+/// the double-double certificate, or the exact construction where it
+/// declines. Rounding is symmetric in the pair and monotone, so every caller
+/// that meets this crossing agrees on its point, and a crossing inside both
+/// segments rounds inside both envelopes.
+pub(in crate::geometry) fn crossing_point(a: Segment, b: Segment) -> Result<RoundedCrossing> {
+    if let Some(point) = certified_crossing(a, b) {
+        return Ok(RoundedCrossing { point, exact: None });
+    }
+    let exact = crossing_homogeneous(a, b)?;
+    let unsigned = |value: f64| if value == 0.0 { 0.0 } else { value };
+    Ok(RoundedCrossing {
+        point: XY::new(
+            unsigned(round_ratio(&exact[0], &exact[2])?),
+            unsigned(round_ratio(&exact[1], &exact[2])?),
+        ),
+        exact: Some(exact),
+    })
 }
 
 /// Quotient carrying its residual. A caller that keeps computing with the
@@ -113,19 +125,6 @@ pub(super) fn dd_quotient(numerator: (f64, f64), denominator: (f64, f64)) -> (f6
 
 fn dd_div(numerator: (f64, f64), denominator: (f64, f64)) -> f64 {
     dd_quotient(numerator, denominator).0
-}
-
-/// Clamp a double-double parameter into `[0, 1]`. A zero head carries a zero
-/// tail (an exact `two_sum` cancellation), so only the upper endpoint needs
-/// its tail inspected.
-pub(super) fn dd_clamp_unit(value: (f64, f64)) -> (f64, f64) {
-    if value.0 <= 0.0 {
-        return (0.0, 0.0);
-    }
-    if value.0 > 1.0 || (value.0 >= 1.0 && value.1 > 0.0) {
-        return (1.0, 0.0);
-    }
-    value
 }
 
 /// [`interpolate_f64`] with a double-double fraction, rounded exactly once.
@@ -513,22 +512,6 @@ pub(super) fn certified_projection(
     }
     certified_projection_fraction(compensated, segment, dx, dy, numerator, denominator)
         .map(|foot| (compensated, foot))
-}
-
-pub(super) fn segment_pair_scale_shifts(left: Segment, right: Segment) -> (i16, i16) {
-    let points = [left.start, left.end, right.start, right.end];
-    let largest_x = points
-        .into_iter()
-        .map(|point| point.x.abs())
-        .fold(0.0_f64, f64::max);
-    let largest_y = points
-        .into_iter()
-        .map(|point| point.y.abs())
-        .fold(0.0_f64, f64::max);
-    (
-        scale_shift_for_magnitude(largest_x),
-        scale_shift_for_magnitude(largest_y),
-    )
 }
 
 /// Exact orientation of `c` against the directed line `a -> b`.

@@ -327,7 +327,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
     if let Some(issue) = visit_interacting_pairs(&chains, |left, right| {
         let (left, right) = (as_member(left), as_member(right));
         if left.line == right.line {
-            return None; // same member: already validated by itself
+            return Ok(None); // same member: already validated by itself
         }
         classify_ring_pair(&left, &right, &mut touches, &overlap)
     })? {

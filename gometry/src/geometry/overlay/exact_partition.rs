@@ -27,7 +27,7 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::build_certified_overlay_shape;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
-    certified_crossing, crossing_homogeneous, point_in_segment_envelope, point_on_segment,
+    crossing_homogeneous, crossing_point, point_in_segment_envelope, point_on_segment,
     segment_envelopes_disjoint, stored_cross_sign, stored_orientation_sign, try_sort_by,
 };
 use crate::geometry::tessellation::exact::{
@@ -5029,7 +5029,7 @@ pub(in crate::geometry) fn certify_emitted_incidence(items: &[([u32; 2], Segment
                     std::ops::ControlFlow::Break(())
                 }
             },
-            Contact::Cross { .. } | Contact::Collinear { .. } => std::ops::ControlFlow::Break(()),
+            Contact::Cross | Contact::Collinear { .. } => std::ops::ControlFlow::Break(()),
         }
     })?;
     Ok(())
@@ -6178,22 +6178,14 @@ impl<'a> PointArena<'a> {
             self.unique[segments[0] as usize],
             self.unique[segments[1] as usize],
         );
+        let crossing = crossing_point(first, second)?;
         let exact = std::cell::OnceCell::new();
-        let point = if let Some(point) = certified_crossing(first, second) {
-            point
-        } else {
+        if let Some(point) = crossing.exact {
             #[cfg(test)]
             update_partition_metrics(|metrics| metrics.declined_crossings += 1);
-            let [x, y, w] = crossing_homogeneous(first, second)?;
-            let point = XY::new(round_ratio(&x, &w)?, round_ratio(&y, &w)?);
-            let _ = exact.set(Box::try_new([x, y, w])?);
-            point
-        };
-        let unsigned = |value: f64| if value == 0.0 { 0.0 } else { value };
-        self.push(
-            NodeRecipe::Crossing { segments, exact },
-            XY::new(unsigned(point.x), unsigned(point.y)),
-        )
+            let _ = exact.set(Box::try_new(point)?);
+        }
+        self.push(NodeRecipe::Crossing { segments, exact }, crossing.point)
     }
 
     /// Move an entry out, leaving a stored placeholder behind.

@@ -25,13 +25,10 @@ mod exact;
 pub(crate) use exact::orientation;
 pub(super) use exact::{CCW_ERRBOUND_A, orientation_xy, ray_crossing_is_right};
 pub(in crate::geometry) use exact::{
-    DdInterval, certified_crossing, crossing_homogeneous, dd_strict_cmp, stored_cross_sign,
+    DdInterval, crossing_homogeneous, crossing_point, dd_strict_cmp, stored_cross_sign,
     stored_orientation_sign,
 };
-use exact::{
-    certified_projection, dd_clamp_unit, dd_cross, dd_diff, dd_interpolate, dd_quotient,
-    exact_power_of_two, segment_pair_scale_shifts,
-};
+use exact::{certified_projection, dd_interpolate};
 
 fn projection_difference(left: f64, right: f64) -> Result<ExactDyadic> {
     ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
@@ -715,9 +712,7 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
             }
         } else if orientations.straddles_or_touches() {
             if orientations.has_collinear() {
-                if let Some(point) =
-                    segment_cross_point_with_orientations(segment, edge, orientations)
-                {
+                if let Some(point) = touch_endpoint(segment, edge, orientations) {
                     push_clip_hit(
                         ClipHit {
                             parameter: clip_segment_parameter(segment, point)?,
@@ -1175,7 +1170,7 @@ fn segment_pair_nearest(left: Segment, right: Segment) -> Result<SegmentPairNear
     // One contact computation, not an `intersects` probe followed by a
     // separate placement. When the pair meets, the shared point IS the
     // nearest pair; otherwise fall through to the projection feet below.
-    if let Some(point) = segment_contact_point(left, right) {
+    if let Some(point) = segment_contact_point(left, right)? {
         return Ok(SegmentPairNearest {
             left: SegmentWitness::RoundedIntersection(point),
             right: SegmentWitness::RoundedIntersection(point),
@@ -1231,14 +1226,15 @@ fn segment_pair_nearest(left: Segment, right: Segment) -> Result<SegmentPairNear
 /// denominator and had no finiteness guard, so a caller could receive a point
 /// on neither segment — or a non-finite one — with no way to tell. It backed
 /// the public `nearest_points`/`shortest_line` witness.
-pub(super) fn segment_contact_point(left: Segment, right: Segment) -> Option<XY> {
-    match segment_contact_exact(left, right) {
-        Contact::Cross { point } | Contact::Touch { point } => Some(point),
+pub(super) fn segment_contact_point(left: Segment, right: Segment) -> Result<Option<XY>> {
+    Ok(match segment_contact_exact(left, right) {
+        Contact::Cross => Some(crossing_point(left, right)?.point),
+        Contact::Touch { point } => Some(point),
         // A positive-length overlap has no single crossing; its near end is a
         // real point of both segments and is the conventional witness.
         Contact::Collinear { span } => Some(span.start),
         Contact::Disjoint => None,
-    }
+    })
 }
 
 /// Certified clamped point-to-segment projection over the complete finite
@@ -2227,39 +2223,21 @@ pub(super) const ON_SEGMENT_EPSILON: f64 = 1e-9;
 ///
 /// **Existence is decided exactly** by the robust orientation predicates, so
 /// floating-point conditioning can never drop a true crossing (nor invent
-/// one). Placement then solves the parametric system in double-double
-/// (error-free split-product) arithmetic, with an exact power-of-two rescale
-/// when coordinate magnitudes would overflow products, and clamps into the
-/// segment extent that existence already certified. The returned point is the
-/// plain X/Y crossing; Z/M is restored later.
-pub(super) fn segment_cross_point(a: Segment, b: Segment) -> Option<XY> {
-    match segment_contact_exact(a, b) {
-        Contact::Cross { point } | Contact::Touch { point } => Some(point),
+/// one). A touching endpoint is returned bit-exactly and a proper crossing as
+/// [`crossing_point`], the nearest-even rounding of the exact point. The
+/// returned point is the plain X/Y crossing; Z/M is restored later.
+pub(super) fn segment_cross_point(a: Segment, b: Segment) -> Result<Option<XY>> {
+    Ok(match segment_contact_exact(a, b) {
+        Contact::Cross => Some(crossing_point(a, b)?.point),
+        Contact::Touch { point } => Some(point),
         Contact::Disjoint | Contact::Collinear { .. } => None,
-    }
+    })
 }
 
-pub(crate) fn segment_cross_point_with_orientations(
-    a: Segment,
-    b: Segment,
-    orientations: PairOrientations,
-) -> Option<XY> {
-    // Existence: each segment's endpoints must straddle (or touch) the other's
-    // line. Exact arithmetic — the only rounding-free way to make this call.
-    if orientations.right_start == orientations.right_end {
-        // Same strict side: no crossing. Both collinear: parallel overlap,
-        // handled by the endpoint-overlap path.
-        return None;
-    }
-    if orientations.left_start == orientations.left_end {
-        return None;
-    }
-    // A crossing certified through a COLLINEAR endpoint is that endpoint,
-    // bit-exactly: a straight segment meets the other's carrier line only
-    // once, so the touching endpoint IS the intersection. Parametric
-    // placement would land within an ulp of it and split coincident
-    // strokes inconsistently across pairs (T-junction ulp-twins — the
-    // erosion fold repro pinned in `winding_buffer_tests`).
+/// The endpoint at which a pair of segments touches without crossing:
+/// a straight segment meets the other's carrier once, so an endpoint on it is
+/// the contact, bit-exactly. `None` when neither straddles on an endpoint.
+fn touch_endpoint(a: Segment, b: Segment, orientations: PairOrientations) -> Option<XY> {
     if orientations.right_start == Orientation::Collinear {
         return Some(b.start);
     }
@@ -2272,105 +2250,28 @@ pub(crate) fn segment_cross_point_with_orientations(
     if orientations.left_end == Orientation::Collinear {
         return Some(a.end);
     }
-    // Placement is solved parametrically along the first segment, so it is
-    // not symmetric in argument order at the last ULP. Canonicalize segment
-    // direction and pair order so each pair's shared noding point is stable,
-    // avoiding ULP-twin nodes whose hairline slivers leak invalid rings out of
-    // repair/polygonize.
-    let canonical = |segment: Segment| {
-        if (segment.start.x, segment.start.y) <= (segment.end.x, segment.end.y) {
-            segment
-        } else {
-            Segment {
-                start: segment.end,
-                end: segment.start,
-            }
-        }
-    };
-    let (a, b) = (canonical(a), canonical(b));
-    // A crossing can be an unrepresentable 2^-2000 along the long segment but
-    // an ordinary 0.5 on the short one. The tuple is the stable tie-breaker.
-    let a_span = segment_span_magnitude(a);
-    let b_span = segment_span_magnitude(b);
-    let a_tuple = (a.start.x, a.start.y, a.end.x, a.end.y);
-    let b_tuple = (b.start.x, b.start.y, b.end.x, b.end.y);
-    let span_order = a_span.total_cmp(&b_span);
-    let (a, b) = if span_order.is_lt() || (span_order.is_eq() && a_tuple <= b_tuple) {
-        (a, b)
-    } else {
-        (b, a)
-    };
-    // Preserve mixed-exponent raw products first; a coherent overflow or
-    // underflow retries in the safe per-axis power-of-two frame.
-    if let Some(point) = segment_cross_placement(a, b, 1.0, 1.0) {
-        return Some(point);
-    }
-    let (x_shift, y_shift) = segment_pair_scale_shifts(a, b);
-    segment_cross_placement(
-        a,
-        b,
-        exact_power_of_two(x_shift),
-        exact_power_of_two(y_shift),
-    )
+    None
 }
 
-fn segment_span_magnitude(segment: Segment) -> f64 {
-    (segment.end.x - segment.start.x)
-        .abs()
-        .max((segment.end.y - segment.start.y).abs())
-}
-
-/// The placement half of [`segment_cross_point`]: existence is already
-/// certified, so the parametric solution is clamped into `[0, 1]` rather than
-/// re-checked. `None` only when the products of `scale`-adjusted coordinates
-/// are non-finite (which the shared safe-magnitude frame prevents for finite
-/// segment pairs of a coherent scale).
-fn segment_cross_placement(a: Segment, b: Segment, x_scale: f64, y_scale: f64) -> Option<XY> {
-    // Differences carry their rounding tails (`two_sum`), so the placement is
-    // computed on the exact float-endpoint geometry, not on pre-rounded
-    // deltas. Per-axis power-of-two scales give every 2-D cross the same
-    // positive x_scale*y_scale factor, preserving signs and fractions.
-    let a_dx = dd_diff(x_scale * a.end.x, x_scale * a.start.x);
-    let a_dy = dd_diff(y_scale * a.end.y, y_scale * a.start.y);
-    let b_dx = dd_diff(x_scale * b.end.x, x_scale * b.start.x);
-    let b_dy = dd_diff(y_scale * b.end.y, y_scale * b.start.y);
-    let offset_x = dd_diff(x_scale * b.start.x, x_scale * a.start.x);
-    let offset_y = dd_diff(y_scale * b.start.y, y_scale * a.start.y);
-    let denominator = dd_cross(a_dx, b_dy, a_dy, b_dx);
-    let numerator = dd_cross(offset_x, b_dy, offset_y, b_dx);
-    if ![denominator.0, denominator.1, numerator.0, numerator.1]
-        .into_iter()
-        .all(f64::is_finite)
+/// The single point shared by a pair of segments that are not collinear:
+/// a touching endpoint bit-exactly, or the nearest-even rounding of a
+/// proper crossing; `None` when they do not meet.
+pub(crate) fn segment_cross_point_with_orientations(
+    a: Segment,
+    b: Segment,
+    orientations: PairOrientations,
+) -> Result<Option<XY>> {
+    // Same strict side: no crossing. Both collinear: parallel overlap,
+    // handled by the endpoint-overlap path.
+    if orientations.right_start == orientations.right_end
+        || orientations.left_start == orientations.left_end
     {
-        return None;
+        return Ok(None);
     }
-    if denominator == (0.0, 0.0) {
-        return None;
+    if let Some(point) = touch_endpoint(a, b, orientations) {
+        return Ok(Some(point));
     }
-    let along_a = dd_quotient(numerator, denominator);
-    if !along_a.0.is_finite() {
-        return None;
-    }
-    let along_a = dd_clamp_unit(along_a);
-    // Snap to an axis-aligned segment's fixed ordinate so a crossing on a
-    // vertical/horizontal edge lands exactly on it (no `-1e-16` drift) — this
-    // covers the common rectilinear polygon-boundary case; diagonals fall back
-    // to the interpolated value.
-    let x = if b_dx == (0.0, 0.0) {
-        b.start.x
-    } else if a_dx == (0.0, 0.0) {
-        a.start.x
-    } else {
-        dd_interpolate(a.start.x, a.end.x, along_a)
-    };
-    let y = if b_dy == (0.0, 0.0) {
-        b.start.y
-    } else if a_dy == (0.0, 0.0) {
-        a.start.y
-    } else {
-        dd_interpolate(a.start.y, a.end.y, along_a)
-    };
-    (x.is_finite() && y.is_finite()).then_some(XY::new(x, y))
+    Ok(Some(crossing_point(a, b)?.point))
 }
 
 pub(crate) fn point_on_segment(
@@ -2569,27 +2470,15 @@ pub(super) struct SharedSpan {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum Contact {
     Disjoint,
-    Cross { point: XY },
-    Touch { point: XY },
-    Collinear { span: SharedSpan },
-}
-
-/// Midpoint of the two segments' overlapping bounding extent.
-///
-/// A crossing certified by straddle lies in both segments, hence in both
-/// bounding boxes, hence in their intersection. This is the tightest bounded
-/// point available without a placement solve — used only where placement has
-/// already declined.
-fn segment_extent_overlap_midpoint(left: Segment, right: Segment) -> XY {
-    let overlap = |a0: f64, a1: f64, b0: f64, b1: f64| {
-        let low = a0.min(a1).max(b0.min(b1));
-        let high = a0.max(a1).min(b0.max(b1));
-        f64::midpoint(low, high)
-    };
-    XY::new(
-        overlap(left.start.x, left.end.x, right.start.x, right.end.x),
-        overlap(left.start.y, left.end.y, right.start.y, right.end.y),
-    )
+    /// A proper crossing, interior to both segments; [`crossing_point`]
+    /// places it.
+    Cross,
+    Touch {
+        point: XY,
+    },
+    Collinear {
+        span: SharedSpan,
+    },
 }
 
 pub(super) fn segment_contact_with_orientations(
@@ -2602,23 +2491,10 @@ pub(super) fn segment_contact_with_orientations(
             .map_or(Contact::Disjoint, |span| Contact::Collinear { span })
     } else if orientations.straddles_or_touches() {
         if orientations.has_collinear() {
-            segment_cross_point_with_orientations(left, right, orientations)
+            touch_endpoint(left, right, orientations)
                 .map_or(Contact::Disjoint, |point| Contact::Touch { point })
         } else {
-            // Existence is certified exactly by the straddle above, so a
-            // failed placement must NOT become `Disjoint` — that would be a
-            // false negative, the one error class these predicates exist to
-            // prevent. Placement only declines on non-finite products, which
-            // the power-of-two rescale frame rules out for finite input, so
-            // the fallback is unreachable in practice; when it is taken, the
-            // midpoint of the two segments' overlapping extent is a bounded
-            // point inside the region that provably contains the crossing.
-            // Never fall back to an operand endpoint: that can sit arbitrarily
-            // far from the true crossing while looking like a real answer.
-            Contact::Cross {
-                point: segment_cross_point_with_orientations(left, right, orientations)
-                    .unwrap_or_else(|| segment_extent_overlap_midpoint(left, right)),
-            }
+            Contact::Cross
         }
     } else {
         Contact::Disjoint
@@ -2633,7 +2509,7 @@ pub(super) fn segment_contact_exact(left: Segment, right: Segment) -> Contact {
 pub(super) fn segment_contact(left: Segment, right: Segment) -> SegmentContact {
     match segment_contact_exact(left, right) {
         Contact::Disjoint => SegmentContact::None,
-        Contact::Cross { .. } => SegmentContact::Cross,
+        Contact::Cross => SegmentContact::Cross,
         Contact::Touch { .. } | Contact::Collinear { .. } => SegmentContact::Touch,
     }
 }

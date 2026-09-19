@@ -368,6 +368,7 @@ pub(in crate::geometry) struct NodingScan {
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
     let mut overlaps_found = false;
+    let mut failure = Ok(());
     // L1-aware sweep: large pools take the monotone-run path, avoiding the flat
     // SweepEntry sort that exceeds L1 at ~1 K segments (the arrangement noding
     // behind union/difference fallback, symmetric_difference, intersection,
@@ -409,15 +410,23 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
         if shares_endpoint {
             return std::ops::ControlFlow::Continue(());
         }
-        if let Some(point) = segment_cross_point_with_orientations(a, b, orientations) {
-            for (target, segment) in [(left, a), (right, b)] {
-                if !same_point(point, segment.start) && !same_point(point, segment.end) {
-                    events.push((target as u32, point));
+        match segment_cross_point_with_orientations(a, b, orientations) {
+            Ok(Some(point)) => {
+                for (target, segment) in [(left, a), (right, b)] {
+                    if !same_point(point, segment.start) && !same_point(point, segment.end) {
+                        events.push((target as u32, point));
+                    }
                 }
-            }
+            },
+            Ok(None) => {},
+            Err(error) => {
+                failure = Err(error);
+                return std::ops::ControlFlow::Break(());
+            },
         }
         std::ops::ControlFlow::Continue(())
     })?;
+    failure?;
     Ok(NodingScan {
         events,
         overlaps_found,

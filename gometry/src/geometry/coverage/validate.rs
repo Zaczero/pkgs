@@ -1,9 +1,9 @@
 use crate::collections::{try_hash_map_with_capacity, try_hash_set_with_capacity};
 use crate::geometry::coverage::{HashMap, Result};
 use crate::geometry::{
-    Bounds, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point, PointKey, Polygon,
-    Segment, Shape, XY, canonical_f64_bits, line_segments, same_point, segment_cross_point,
-    undirected_segment_edge_key,
+    Bounds, Contact, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, Point, PointKey,
+    Polygon, Segment, Shape, XY, canonical_f64_bits, line_segments, same_point,
+    segment_contact_exact, undirected_segment_edge_key,
 };
 
 /// One row's boundary segments plus its envelope.
@@ -334,9 +334,14 @@ pub(crate) fn segment_offends_row(
     // landing mid-segment (the T-join) is each side's own interior contact,
     // so both rows flag symmetrically.
     let crossing = other.segments.iter().any(|&other_seg| {
-        segment_cross_point(segment, other_seg).is_some_and(|point| {
-            !same_point(point, segment.start) && !same_point(point, segment.end)
-        })
+        match segment_contact_exact(segment, other_seg) {
+            // A proper crossing is interior to both segments.
+            Contact::Cross => true,
+            Contact::Touch { point } => {
+                !same_point(point, segment.start) && !same_point(point, segment.end)
+            },
+            Contact::Disjoint | Contact::Collinear { .. } => false,
+        }
     });
     if crossing {
         return Ok(true);

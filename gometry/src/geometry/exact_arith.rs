@@ -38,10 +38,6 @@ pub(crate) fn fast_two_sum(left: f64, right: f64) -> (f64, f64) {
     (sum, right - (sum - left))
 }
 
-pub(crate) const MAX_CROSS_COORD_EXPONENT: i32 = 480;
-
-pub(crate) const MIN_CROSS_COORD_EXPONENT: i32 = -400;
-
 /// Lowest rounded-product exponent whose 106-bit exact product still fits the
 /// binary64 subnormal grid in its residual.
 const MIN_EXACT_PRODUCT_EXPONENT: i32 = -969;
@@ -65,25 +61,6 @@ pub(crate) fn dd_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
 pub(crate) fn dd_add(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
     let (head, head_err) = two_sum(lhs.0, rhs.0);
     two_sum(head, head_err + (lhs.1 + rhs.1))
-}
-
-pub(crate) fn dd_diff(end: f64, start: f64) -> (f64, f64) {
-    two_sum(end, -start)
-}
-
-pub(crate) fn scale_shift_for_magnitude(largest: f64) -> i16 {
-    if largest == 0.0 {
-        return 0;
-    }
-    let exponent = floor_binary_exponent(largest);
-    let shift = if exponent > MAX_CROSS_COORD_EXPONENT {
-        MAX_CROSS_COORD_EXPONENT - exponent
-    } else if exponent < MIN_CROSS_COORD_EXPONENT {
-        MIN_CROSS_COORD_EXPONENT - exponent
-    } else {
-        0
-    };
-    i16::try_from(shift).expect("binary64 normalization shift fits i16")
 }
 
 pub(crate) fn floor_binary_exponent(value: f64) -> i32 {

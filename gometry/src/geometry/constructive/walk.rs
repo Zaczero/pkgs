@@ -88,7 +88,7 @@ pub(crate) fn reflex_cross(
     if !segments_intersect(incoming, outgoing) {
         return Ok(None);
     }
-    let Some(point) = segment_cross_point(incoming, outgoing) else {
+    let Some(point) = segment_cross_point(incoming, outgoing)? else {
         return Ok(None);
     };
     let t_in = segment_projection(point, incoming)?;
@@ -674,7 +674,7 @@ impl ShellCoverageIndex {
             for entry in self.boundary.intersecting_candidates(segment) {
                 match crate::geometry::segment_contact_exact(segment, entry.segment) {
                     Contact::Disjoint => {},
-                    Contact::Cross { .. } => return Ok(false),
+                    Contact::Cross => return Ok(false),
                     Contact::Touch { point } => {
                         contacts.push((segment_projection(point, segment)?, point));
                     },

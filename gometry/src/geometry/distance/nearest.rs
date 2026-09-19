@@ -118,7 +118,7 @@ pub(crate) fn parts_boundary_witness(
         return Ok(witness);
     }
     if let Some((left_segment, right_segment)) = parts_crossing_pair(left_parts, right_parts)
-        && let Some(point) = segment_contact_point(left_segment, right_segment)
+        && let Some(point) = segment_contact_point(left_segment, right_segment)?
     {
         return Ok(Some(point.point()));
     }

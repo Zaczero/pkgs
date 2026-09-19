@@ -78,7 +78,7 @@ pub(crate) fn positional_loop_cuts(
     let n_events = events.len();
     // Group the cut events by exact point: one transversal crossing is the
     // SAME bit pattern visited from exactly two distinct ordinals
-    // (`segment_cross_point` canonicalizes operand order). Anything else —
+    // (the crossing is the rounding of one exact point). Anything else —
     // concurrent crossings, ulp-twin placements, one-sided events left by
     // endpoint-filtered T-junctions — bails.
     let mut by_key: Vec<u32> = (0..n_events as u32).collect();
