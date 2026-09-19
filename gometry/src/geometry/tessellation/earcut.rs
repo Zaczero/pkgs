@@ -38,7 +38,7 @@ pub(crate) fn earcut_polygon_with(
         holes.push(hole);
     }
     validate_hole_interactions(&ring, &holes)?;
-    eliminate_holes(&mut ring, &holes, polygon)?;
+    eliminate_holes(&mut ring, &holes)?;
     earcut_linked_ring_with(&ring, emit)
 }
 
@@ -299,11 +299,7 @@ pub(crate) const fn ring_segments_adjacent(len: usize, left: usize, right: usize
     left.abs_diff(right) == 1 || (left == 0 && right == len - 1)
 }
 
-pub(crate) fn eliminate_holes(
-    ring: &mut Vec<Point>,
-    holes: &[Vec<Point>],
-    _polygon: &Polygon,
-) -> Result<()> {
+pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Result<()> {
     let mut order = (0..holes.len()).collect::<Vec<_>>();
     order.sort_by(|&left, &right| compare_hole_leftmost_xy_slope(&holes[left], &holes[right]));
     for hole_index in order {
