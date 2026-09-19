@@ -203,8 +203,7 @@ pub(crate) fn distance(
 /// Distance is over linework: points/multipoints as degenerate segments,
 /// polygons via their boundary rings. Part of the 3D Euclidean family with
 /// ``length_3d`` only — area and perimeter are inherently 2D (XY footprint)
-/// and have no 3D form; ``bounds_3d`` gives the 3D extent (there is no
-/// ``envelope_3d``).
+/// and have no 3D form; the 3D extent is ``bounds`` with ``min_z``/``max_z``.
 ///
 /// A projected CRS gives native linear units and a CRS-free geometry gives
 /// coordinate units — the same defaults as the 2D ``distance``. A geographic

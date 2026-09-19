@@ -195,12 +195,13 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 |---|---|---|
 | `g.inv(...)` distance | [`gm.distance(a, b)`][gometry.distance] | |
 | `g.inv(...)` azimuth | [`gm.bearing(a, b)`][gometry.bearing] | |
+| `g.inv(...)` back azimuth | `gm.bearing(b, a)` | |
 | `g.fwd(lon, lat, az, d)` | `point.destination(bearing, distance)` | |
 | `g.line_length(...)` | `line.length` | |
 | `g.geometry_area_perimeter(...)` | `poly.area` / `poly.length` | |
-| `g.npts(...)` | [`gm.point_between(a, b, 0.5, normalized=True)`][gometry.point_between] / [`gm.CRS(4326).geodesic_interpolate(...)`][gometry.CRS.geodesic_interpolate] | |
+| `g.npts(...)` | [`gm.point_between(a, b, 0.5, normalized=True)`][gometry.point_between] | |
 | geographic meter buffer | `point.buffer(meters)` on a geographic CRS (local-projection approximation) | |
-| non-WGS 84 ellipsoid | [`gm.CRS(code).geodesic_inverse(...)`][gometry.CRS.geodesic_inverse] / `.geodesic_direct(...)` / `.geodesic_interpolate(...)`; [`geom.area`][gometry.Geometry.area] / [`geom.length`][gometry.Geometry.length] under that CRS | |
+| non-WGS 84 ellipsoid | The same calls on points in that geographic CRS, e.g. `gm.Point(lon, lat, crs=4230)`; [`geom.area`][gometry.Geometry.area] / [`geom.length`][gometry.Geometry.length] likewise | |
 
 ## h3-py
 

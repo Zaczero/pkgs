@@ -1,63 +1,16 @@
-use std::simd::cmp::SimdPartialEq as _;
-use std::simd::num::SimdFloat as _;
-
 use geographiclib_rs::{Geodesic, PolygonArea, Winding, geodesic_capability as caps};
 
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::{
-    CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo, GeodesicInterpolateInfo,
-    GeodesicInverseInfo, inverse_distance, inverse_distance_azimuths, with_geodesic_erased_at,
+    CrsError, DirectGeodesic as _, EllipsoidMetric, GeodesicDirectInfo,
+    ensure_geographic_domain_in_frame, geographic_metric_frame_at, inverse_distance,
+    inverse_distance_azimuths, normalize, with_geodesic_at, with_geodesic_erased_at,
 };
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
-    Coordinates, Point, Polygon, REDUCE_LANES, ReduceSimd, Shape, canonicalize_zero,
-    same_topological_coordinate, simd_mask_all,
+    Coordinates, Point, Polygon, Shape, canonicalize_zero, same_topological_coordinate,
 };
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AngleUnit {
-    Degrees,
-    Radians,
-}
-
-impl AngleUnit {
-    pub(crate) const fn of(radians: bool) -> Self {
-        if radians {
-            Self::Radians
-        } else {
-            Self::Degrees
-        }
-    }
-
-    pub(crate) fn is_radians(self) -> bool {
-        self == Self::Radians
-    }
-}
-
-fn angle_to_degrees<const RADIANS: bool>(v: f64) -> f64 {
-    if RADIANS { v.to_degrees() } else { v }
-}
-
-fn degrees_into<const RADIANS: bool>(v: f64) -> f64 {
-    if RADIANS { v.to_radians() } else { v }
-}
-
-fn distance_along<const NORMALIZED: bool>(distance: f64, total: f64) -> f64 {
-    if NORMALIZED {
-        distance * total
-    } else if distance < 0.0 {
-        total + distance
-    } else {
-        distance
-    }
-}
-
-impl From<bool> for AngleUnit {
-    fn from(radians: bool) -> Self {
-        Self::of(radians)
-    }
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DistanceMode {
@@ -376,6 +329,15 @@ fn geodesic_ring_measure_lonlat(
     (perimeter, area)
 }
 
+pub(crate) fn geodesic_length_at(crs: &str, shape: &Shape, state: &RuntimeState) -> Result<f64> {
+    let frame = geographic_metric_frame_at(crs, state)?;
+    ensure_geographic_domain_in_frame(frame, shape)?;
+    let crs = normalize(crs)?;
+    with_geodesic_at(&crs, state, |geodesic| {
+        Ok(geodesic_shape_length(geodesic, shape, frame))
+    })
+}
+
 pub(crate) fn geodesic_line_length<C: Coordinates + ?Sized>(
     geodesic: &Geodesic,
     points: &C,
@@ -443,39 +405,17 @@ pub(crate) fn geodesic_direct_on_ellipsoid(
     latitude: f64,
     azimuth: f64,
     distance: f64,
-    angle_unit: AngleUnit,
 ) -> Result<GeodesicDirectInfo> {
-    match angle_unit {
-        AngleUnit::Degrees => geodesic_direct_on_ellipsoid_const::<false>(
-            geodesic, longitude, latitude, azimuth, distance,
-        ),
-        AngleUnit::Radians => geodesic_direct_on_ellipsoid_const::<true>(
-            geodesic, longitude, latitude, azimuth, distance,
-        ),
-    }
-}
-
-pub(crate) fn geodesic_direct_on_ellipsoid_const<const RADIANS: bool>(
-    geodesic: &Geodesic,
-    longitude: f64,
-    latitude: f64,
-    azimuth: f64,
-    distance: f64,
-) -> Result<GeodesicDirectInfo> {
-    let (input_longitude, input_latitude) = (longitude, latitude);
-    let longitude = angle_to_degrees::<RADIANS>(longitude);
-    let latitude = angle_to_degrees::<RADIANS>(latitude);
-    let azimuth = angle_to_degrees::<RADIANS>(azimuth);
-    let (latitude, longitude, final_azimuth) =
+    let (end_latitude, end_longitude, final_azimuth) =
         geodesic.direct(latitude, longitude, azimuth, distance);
     let mut info = GeodesicDirectInfo {
-        longitude: degrees_into::<RADIANS>(longitude),
-        latitude: degrees_into::<RADIANS>(latitude),
-        final_azimuth: degrees_into::<RADIANS>(final_azimuth),
+        longitude: end_longitude,
+        latitude: end_latitude,
+        final_azimuth,
     };
     if same_topological_coordinate(distance, 0.0) {
-        info.longitude = input_longitude;
-        info.latitude = input_latitude;
+        info.longitude = longitude;
+        info.latitude = latitude;
     }
     if !info.longitude.is_finite() || !info.latitude.is_finite() || !info.final_azimuth.is_finite()
     {
@@ -486,42 +426,13 @@ pub(crate) fn geodesic_direct_on_ellipsoid_const<const RADIANS: bool>(
     Ok(info)
 }
 
-pub(crate) fn endpoints_are_repeated(
-    lon1: &[f64],
-    lat1: &[f64],
-    lon2: &[f64],
-    lat2: &[f64],
-) -> bool {
-    let column_bits_eq_value = |column: &[f64], value: u64| {
-        simd_mask_all(
-            column.len(),
-            |index| column[index].to_bits() == value,
-            |start| {
-                let chunk = start / REDUCE_LANES;
-                let (chunks, _) = column.as_chunks::<REDUCE_LANES>();
-                ReduceSimd::from_array(chunks[chunk])
-                    .to_bits()
-                    .simd_eq(std::simd::Simd::<u64, REDUCE_LANES>::splat(value))
-            },
-        )
-    };
-    column_bits_eq_value(lon1, lon1[0].to_bits())
-        && column_bits_eq_value(lat1, lat1[0].to_bits())
-        && column_bits_eq_value(lon2, lon2[0].to_bits())
-        && column_bits_eq_value(lat2, lat2[0].to_bits())
-}
-
-pub(crate) fn geodesic_line_solution_const<const RADIANS: bool>(
+pub(crate) fn geodesic_line_solution(
     geodesic: &Geodesic,
     lon1: f64,
     lat1: f64,
     lon2: f64,
     lat2: f64,
 ) -> Result<(f64, f64, f64, f64)> {
-    let lon1 = angle_to_degrees::<RADIANS>(lon1);
-    let lat1 = angle_to_degrees::<RADIANS>(lat1);
-    let lon2 = angle_to_degrees::<RADIANS>(lon2);
-    let lat2 = angle_to_degrees::<RADIANS>(lat2);
     let (total, forward_azimuth, _) = inverse_distance_azimuths(geodesic, lon1, lat1, lon2, lat2);
     if !total.is_finite() || !forward_azimuth.is_finite() {
         return Err(CrsError::invalid(
@@ -531,105 +442,13 @@ pub(crate) fn geodesic_line_solution_const<const RADIANS: bool>(
     Ok((lon1, lat1, forward_azimuth, total))
 }
 
-pub(crate) fn geodesic_interpolate_on_line_const<const RADIANS: bool, const NORMALIZED: bool>(
+/// The point `fraction` of the way along a solved geodesic line, clamped to
+/// its endpoints.
+pub(crate) fn geodesic_interpolate_on_line(
     geodesic: &Geodesic,
     (longitude, latitude, forward_azimuth, total): (f64, f64, f64, f64),
-    distance: f64,
-) -> Result<GeodesicInterpolateInfo> {
-    let target = distance_along::<NORMALIZED>(distance, total).clamp(0.0, total);
-    let direct = geodesic_direct_on_ellipsoid_const::<false>(
-        geodesic,
-        longitude,
-        latitude,
-        forward_azimuth,
-        target,
-    )?;
-    let info = GeodesicInterpolateInfo {
-        longitude: degrees_into::<RADIANS>(direct.longitude),
-        latitude: degrees_into::<RADIANS>(direct.latitude),
-        final_azimuth: degrees_into::<RADIANS>(direct.final_azimuth),
-        distance: target,
-    };
-    if !info.longitude.is_finite() || !info.latitude.is_finite() || !info.final_azimuth.is_finite()
-    {
-        return Err(CrsError::invalid(
-            "geodesic interpolate calculation failed".to_owned(),
-        ));
-    }
-    Ok(info)
-}
-
-pub(crate) fn geodesic_inverse_on_ellipsoid(
-    geodesic: &Geodesic,
-    lon1: f64,
-    lat1: f64,
-    lon2: f64,
-    lat2: f64,
-    z1: Option<f64>,
-    z2: Option<f64>,
-    angle_unit: AngleUnit,
-) -> Result<GeodesicInverseInfo> {
-    match (angle_unit, z1, z2) {
-        (AngleUnit::Degrees, Some(z1), Some(z2)) => {
-            geodesic_inverse_on_ellipsoid_const::<false, true>(
-                geodesic, lon1, lat1, lon2, lat2, z1, z2,
-            )
-        },
-        (AngleUnit::Degrees, ..) => geodesic_inverse_on_ellipsoid_const::<false, false>(
-            geodesic, lon1, lat1, lon2, lat2, 0.0, 0.0,
-        ),
-        (AngleUnit::Radians, Some(z1), Some(z2)) => {
-            geodesic_inverse_on_ellipsoid_const::<true, true>(
-                geodesic, lon1, lat1, lon2, lat2, z1, z2,
-            )
-        },
-        (AngleUnit::Radians, ..) => geodesic_inverse_on_ellipsoid_const::<true, false>(
-            geodesic, lon1, lat1, lon2, lat2, 0.0, 0.0,
-        ),
-    }
-}
-
-pub(crate) fn geodesic_inverse_on_ellipsoid_const<const RADIANS: bool, const HEIGHT: bool>(
-    geodesic: &Geodesic,
-    lon1: f64,
-    lat1: f64,
-    lon2: f64,
-    lat2: f64,
-    z1: f64,
-    z2: f64,
-) -> Result<GeodesicInverseInfo> {
-    let lon1 = angle_to_degrees::<RADIANS>(lon1);
-    let lat1 = angle_to_degrees::<RADIANS>(lat1);
-    let lon2 = angle_to_degrees::<RADIANS>(lon2);
-    let lat2 = angle_to_degrees::<RADIANS>(lat2);
-    let (distance, forward_azimuth, reverse_azimuth) =
-        inverse_distance_azimuths(geodesic, lon1, lat1, lon2, lat2);
-    // Guarded sqrt (the `line_length_3d` discipline): `hypot` is a per-row libm
-    // call, so combine the geodesic distance and the height delta in squared
-    // space and reserve `hypot` for the overflow/underflow rescue.
-    let distance_3d = HEIGHT.then(|| {
-        let dz = z2 - z1;
-        let squared = distance * distance + dz * dz;
-        if crate::geometry::squared_norm_is_trustworthy(squared, distance == 0.0 && dz == 0.0) {
-            squared.sqrt()
-        } else {
-            distance.hypot(dz)
-        }
-    });
-    let info = GeodesicInverseInfo {
-        distance,
-        distance_3d,
-        forward_azimuth: degrees_into::<RADIANS>(forward_azimuth),
-        reverse_azimuth: degrees_into::<RADIANS>(reverse_azimuth),
-    };
-    if !info.distance.is_finite()
-        || info
-            .distance_3d
-            .is_some_and(|distance| !distance.is_finite())
-        || !info.forward_azimuth.is_finite()
-        || !info.reverse_azimuth.is_finite()
-    {
-        return Err(CrsError::invalid("geodesic calculation failed".to_owned()));
-    }
-    Ok(info)
+    fraction: f64,
+) -> Result<GeodesicDirectInfo> {
+    let target = (fraction * total).clamp(0.0, total);
+    geodesic_direct_on_ellipsoid(geodesic, longitude, latitude, forward_azimuth, target)
 }

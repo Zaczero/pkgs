@@ -10,9 +10,7 @@ use geographiclib_rs::{Geodesic, GeodesicLine, geodesic_capability as caps};
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::crs::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError, CrsInfo,
-    GeodesicDirectColumns, GeodesicDirectInfo, GeodesicInterpolateInfo, GeodesicInverseInfo,
-    GeometryErrorKind, Point, ensure_same_geodesic_len, ensure_thread_caches_current, lru_resolve,
-    normalize,
+    GeodesicDirectInfo, Point, ensure_thread_caches_current, lru_resolve, normalize,
 };
 use crate::error::Result;
 use crate::geometry::GeodesicNumericalPolicy;
@@ -173,7 +171,6 @@ thread_local! {
 }
 
 mod bearing;
-mod bulk;
 mod cache;
 mod distance;
 mod domain;
@@ -192,11 +189,7 @@ pub(crate) use bearing::{
     geodesic_cross_track_with_radius, geodesic_destination, geodesic_destination_crs_at,
     geodesic_for_crs_at, geodesic_point_between,
 };
-pub(crate) use bulk::{
-    geodesic_direct, geodesic_direct_columns, geodesic_interpolates, geodesic_inverse,
-    geodesic_inverses, geodesic_length_at,
-};
-pub(crate) use cache::{with_geodesic, with_geodesic_at, with_geodesic_cache_at};
+pub(crate) use cache::{with_geodesic_at, with_geodesic_cache_at};
 pub(crate) use distance::{
     geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_point_distances,
     geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
@@ -205,7 +198,7 @@ pub(crate) use distance::{
 pub(crate) use domain::{
     ensure_geodesic_lonlat_crs_at, ensure_geographic_columns_in_frame,
     ensure_geographic_coordseq_in_frame, ensure_geographic_domain_in_frame,
-    ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, ensure_latitudes_in_domain,
+    ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
 };
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
@@ -215,12 +208,9 @@ use lower_bound::{LowerBoundKernel, cached_lower_bound_kernel};
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{
-    AngleUnit, DistanceMode, endpoints_are_repeated, geodesic_direct_on_ellipsoid,
-    geodesic_direct_on_ellipsoid_const, geodesic_interpolate_on_line_const,
-    geodesic_inverse_on_ellipsoid, geodesic_inverse_on_ellipsoid_const,
-    geodesic_line_length_columns, geodesic_line_solution_const, geodesic_ring_measure_columns,
-    geodesic_shape_area, geodesic_shape_length, with_ellipsoid_metric_at,
-    with_resolved_ellipsoid_metric_at,
+    DistanceMode, geodesic_interpolate_on_line, geodesic_length_at, geodesic_line_length_columns,
+    geodesic_line_solution, geodesic_ring_measure_columns, geodesic_shape_area,
+    geodesic_shape_length, with_ellipsoid_metric_at, with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use metric_model::{
     GeodesicMetric, MetricModel, ResolvedMetric, ensure_3d_metric, geographic_metric_frame_at,

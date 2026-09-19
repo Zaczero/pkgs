@@ -420,8 +420,7 @@ print(gm.from_wkt("POINT ZM (1 2 3 7.5)").coordinate_axes)
 
 **3D spatial measurement** uses the Z axis. [`length_3d`][gometry.Geometry.length_3d] and point-to-point
 [`distance_3d(other)`][gometry.distance_3d] include the vertical component, and [`min_z`][gometry.Geometry.min_z] / [`max_z`][gometry.Geometry.max_z]
-(properties) plus [`bounds_3d`][gometry.Geometry.bounds_3d] (a 6-tuple `(minx, miny, minz, maxx, maxy,
-maxz)`, or `None` when empty) summarize the Z extent. Because a 3D length only makes
+(properties) summarize the Z extent that complements the XY [`bounds`][gometry.Geometry.bounds]. Because a 3D length only makes
 sense when every axis shares one linear unit, these require a **projected** CRS (or no
 CRS); a geographic CRS mixes degrees and metre heights and raises under every `unit=` —
 reproject first.
@@ -433,7 +432,7 @@ same `unit=` override as [`gm.length`][gometry.length] and
 [`gm.distance`][gometry.distance] when you want SI metres or raw coordinate units.
 
 On a geometry without Z, accessors and metrics have different results. The
-**accessors** (`min_z` / `max_z` / `bounds_3d`) describe what is
+**accessors** (`min_z` / `max_z`) describe what is
 there, returning `None` for a scalar or `nan` for an array element. The **metrics**
 (`length_3d` / `distance_3d`) require Z to compute: a scalar **raises**, while an array
 **degrades per element to `nan`** for the rows that lack Z.
@@ -442,7 +441,7 @@ there, returning `None` for a scalar or `nan` for an array element. The **metric
 import gometry as gm
 climb = gm.LineString([(0.0, 0.0), (3.0, 4.0), (3.0, 4.0)], z=[0.0, 0.0, 10.0], crs=32634)
 print('length_3d:', climb.length_3d)
-print('z extent:', climb.min_z, climb.max_z, '| bounds_3d:', climb.bounds_3d)
+print('z extent:', climb.min_z, climb.max_z)
 a = gm.Point(0.0, 0.0, z=0.0, crs=32634)
 b = gm.Point(3.0, 4.0, z=12.0, crs=32634)
 print('distance_3d:', gm.distance_3d(a, b))

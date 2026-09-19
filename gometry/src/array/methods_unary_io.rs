@@ -1,4 +1,5 @@
 use crate::array::{Bound, Py, PyAny, PyGeometryArray, PyResult, Python, SpatialCurve, pymethods};
+use crate::py::numpy::uint64_array;
 
 #[pymethods]
 impl PyGeometryArray {
@@ -44,6 +45,6 @@ impl PyGeometryArray {
         #[pyo3(from_py_with = crate::strict_i64)] level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        self.spatial_key_impl(py, curve, level, bounds)
+        uint64_array(py, self.curve_keys(level, bounds, curve.into())?)
     }
 }

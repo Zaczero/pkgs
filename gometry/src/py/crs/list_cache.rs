@@ -1,6 +1,6 @@
 //! Thread-local caches of already-built Python containers for static PROJ
 //! catalog reads (`crs_units`, `crs_celestial_bodies`) and rich CRS dict
-//! materializations (`crs_info`, `crs_operation`, `crs_operations`).
+//! materializations (`crs_operation`, `crs_operations`).
 //!
 //! Rust-side LRUs still own the PROJ DB work; this layer stores the
 //! IntoPyObject materialization so warm hits return an isolation-safe copy
@@ -25,7 +25,6 @@ use crate::crs;
 const UNITS_PY_CAPACITY: usize = 16;
 const BODIES_PY_CAPACITY: usize = 8;
 const AUTHORITIES_PY_CAPACITY: usize = 4;
-const INFO_PY_CAPACITY: usize = 64;
 const OPERATION_PY_CAPACITY: usize = 32;
 const OPERATIONS_PY_CAPACITY: usize = 32;
 
@@ -46,12 +45,6 @@ struct BodiesPyEntry {
 struct AuthoritiesPyEntry {
     generation: u64,
     list: Py<PyList>,
-}
-
-struct InfoPyEntry {
-    generation: u64,
-    crs: String,
-    dict: Py<PyDict>,
 }
 
 struct OperationPyEntry {
@@ -75,7 +68,6 @@ thread_local! {
     static BODIES_PY_CACHE: RefCell<Vec<BodiesPyEntry>> = const { RefCell::new(Vec::new()) };
     static AUTHORITIES_PY_CACHE: RefCell<Vec<AuthoritiesPyEntry>> =
         const { RefCell::new(Vec::new()) };
-    static INFO_PY_CACHE: RefCell<Vec<InfoPyEntry>> = const { RefCell::new(Vec::new()) };
     static OPERATION_PY_CACHE: RefCell<Vec<OperationPyEntry>> = const { RefCell::new(Vec::new()) };
     static OPERATIONS_PY_CACHE: RefCell<Vec<OperationsPyEntry>> = const { RefCell::new(Vec::new()) };
 }
@@ -285,36 +277,6 @@ pub(crate) fn authorities_py_list(py: Python<'_>) -> PyResult<Bound<'_, PyList>>
     })
 }
 
-/// Cached `crs_info` Python dict for a normalized CRS identifier.
-pub(crate) fn crs_info_py_dict<'py>(
-    py: Python<'py>,
-    normalized_crs: &str,
-) -> PyResult<Bound<'py, PyDict>> {
-    let state = crs::runtime_state_snapshot()?;
-    let generation = state.generation;
-    INFO_PY_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        py_lru_resolve(
-            &mut cache,
-            INFO_PY_CAPACITY,
-            generation,
-            |e| e.generation,
-            |e| e.crs == normalized_crs,
-            |e| isolation_copy_dict(py, &e.dict),
-            || {
-                let info = (*crs::info_with_state(normalized_crs, &state)?).clone();
-                let built = info.into_pyobject(py)?;
-                let owned = freeze_top_dict(py, built)?;
-                Ok(InfoPyEntry {
-                    generation,
-                    crs: normalized_crs.to_owned(),
-                    dict: owned,
-                })
-            },
-        )
-    })
-}
-
 /// Cached single-operation dict for `(source, target, options)`.
 pub(crate) fn crs_operation_py_dict<'py>(
     py: Python<'py>,
@@ -407,7 +369,6 @@ pub(crate) fn clear_py_list_caches() {
     UNITS_PY_CACHE.with(|cache| cache.borrow_mut().clear());
     BODIES_PY_CACHE.with(|cache| cache.borrow_mut().clear());
     AUTHORITIES_PY_CACHE.with(|cache| cache.borrow_mut().clear());
-    INFO_PY_CACHE.with(|cache| cache.borrow_mut().clear());
     OPERATION_PY_CACHE.with(|cache| cache.borrow_mut().clear());
     OPERATIONS_PY_CACHE.with(|cache| cache.borrow_mut().clear());
 }

@@ -309,11 +309,8 @@ impl PyGeometryArray {
         &self,
         level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
-        _operation: &'static str,
         kind: curves::CurveKind,
     ) -> PyResult<Vec<u64>> {
-        // Same level validation + CurveKind::key as the scalar spatial_key
-        // kernel; only the frame source differs (total bounds vs per-shape).
         let level = input::validate_curve_level(level)?;
         let bounds = match parse_curve_bounds(bounds)? {
             Some(bounds) => Some(bounds),

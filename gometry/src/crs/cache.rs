@@ -520,14 +520,19 @@ mod tests {
 
     use super::*;
     use crate::crs::catalog::{authority_matches, catalog_with_state};
+    use crate::crs::geodesic::with_geodesic_at;
     use crate::crs::operations::operations_info;
     use crate::crs::{
         CrsObjectKind, ProjDirection, RUNTIME_STATE_TEST_LOCK, TransformPlan, WGS84_A,
-        apply_operation, catalog, clear_cache, configure_runtime, factors, geodesic_direct_columns,
-        geodesic_interpolates, geodesic_inverse, geodesic_inverses, info, non_deprecated,
+        apply_operation, catalog, clear_cache, configure_runtime, factors, info, non_deprecated,
         operation_info_at, reset_runtime_config, rhumb_distance_crs, same, search,
         to_wkt_with_options, transform_coordinates,
     };
+
+    fn resolve_geodesic(crs: &str) {
+        let state = runtime_state_snapshot().unwrap();
+        with_geodesic_at(crs, &state, |_| Ok(())).unwrap();
+    }
 
     fn transform_known_point(
         pipeline: &ProjPipeline,
@@ -607,7 +612,7 @@ mod tests {
         operations_info("EPSG:4267", "EPSG:4326", &options).unwrap();
         same("EPSG:4326", "OGC:CRS84", CrsComparison::IgnoreAxisOrder).unwrap();
         factors("EPSG:3857", -73.0, 41.0, false).unwrap();
-        geodesic_inverse("EPSG:4326", -73.0, 41.0, -72.0, 42.0, None, None, false).unwrap();
+        resolve_geodesic("EPSG:4326");
         rhumb_distance_crs("EPSG:4326", -73.0, 41.0, -72.0, 42.0).unwrap();
         to_wkt_with_options(
             "EPSG:4326",
@@ -949,22 +954,12 @@ mod tests {
             .collect();
 
         for crs in crs_values.iter().take(CRS_GEODESIC_CACHE_CAPACITY) {
-            geodesic_inverse(crs, -73.0, 41.0, -74.0, 42.0, None, None, false).unwrap();
+            resolve_geodesic(crs);
         }
         let first = crs_values[0].clone();
         let second = crs_values[1].clone();
-        geodesic_inverse(&first, -73.0, 41.0, -74.0, 42.0, None, None, false).unwrap();
-        geodesic_inverse(
-            &crs_values[CRS_GEODESIC_CACHE_CAPACITY],
-            -73.0,
-            41.0,
-            -74.0,
-            42.0,
-            None,
-            None,
-            false,
-        )
-        .unwrap();
+        resolve_geodesic(&first);
+        resolve_geodesic(&crs_values[CRS_GEODESIC_CACHE_CAPACITY]);
 
         CRS_GEODESIC_CACHE.with(|cache| {
             let cache = cache.borrow();
@@ -972,63 +967,5 @@ mod tests {
             assert!(cache.iter().any(|item| item.definition == first));
             assert!(!cache.iter().any(|item| item.definition == second));
         });
-    }
-
-    #[test]
-    fn geodesic_batch_kernels_reject_mismatched_lengths() {
-        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
-        let inverse = geodesic_inverses(
-            "EPSG:4326",
-            &[-73.0, -72.0],
-            &[41.0],
-            &[-74.0, -75.0],
-            &[42.0, 43.0],
-            None,
-            None,
-            false,
-        )
-        .unwrap_err();
-        assert!(inverse.to_string().contains("must have the same length"));
-
-        let inverse_z = geodesic_inverses(
-            "EPSG:4326",
-            &[-73.0, -72.0],
-            &[41.0, 42.0],
-            &[-74.0, -75.0],
-            &[42.0, 43.0],
-            Some(&[0.0]),
-            Some(&[1.0, 2.0]),
-            false,
-        )
-        .unwrap_err();
-        assert!(inverse_z.to_string().contains("must have the same length"));
-
-        let direct = geodesic_direct_columns(
-            "EPSG:4326",
-            &[-73.0, -72.0],
-            &[41.0],
-            &[45.0],
-            &[1_000.0],
-            false,
-        )
-        .unwrap_err();
-        assert!(direct.to_string().contains("must have the same length"));
-
-        let interpolate = geodesic_interpolates(
-            "EPSG:4326",
-            &[-73.0, -72.0],
-            &[41.0],
-            &[-74.0, -75.0],
-            &[42.0, 43.0],
-            &[0.5, 0.5],
-            true,
-            false,
-        )
-        .unwrap_err();
-        assert!(
-            interpolate
-                .to_string()
-                .contains("must have the same length")
-        );
     }
 }

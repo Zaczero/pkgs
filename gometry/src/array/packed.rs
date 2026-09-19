@@ -246,6 +246,40 @@ impl PyGeometryArray {
         self.crs_ref() == geom.crs_ref() && self.epoch() == geom.epoch()
     }
 
+    /// Whether any present row carries a Z ordinate.
+    pub(crate) fn has_z(&self) -> bool {
+        self.any_present_axes(CoordinateAxes::has_z)
+    }
+
+    /// Whether any present row carries an M ordinate.
+    pub(crate) fn has_m(&self) -> bool {
+        self.any_present_axes(CoordinateAxes::has_m)
+    }
+
+    /// Whether any present row's ordinate layout satisfies `carries`. Packed
+    /// storage shares one coordinate column, so its answer is a single axes
+    /// read.
+    fn any_present_axes(&self, carries: fn(CoordinateAxes) -> bool) -> bool {
+        if self
+            .missing()
+            .as_ref()
+            .is_some_and(|mask| mask.present_count() == 0)
+        {
+            return false;
+        }
+        match self.storage() {
+            GeometryArrayStorage::Packed(
+                PackedStorage::Points { coords, .. }
+                | PackedStorage::Lines { coords, .. }
+                | PackedStorage::Polygons { coords, .. },
+            ) => carries(coords.axes()),
+            GeometryArrayStorage::Mixed(shapes) => shapes
+                .iter()
+                .enumerate()
+                .any(|(row, shape)| !self.is_row_missing(row) && carries(shape.axes())),
+        }
+    }
+
     /// The single ordinate layout shared by every PRESENT row, or `None` when
     /// present rows disagree. Packed storage owns one layout even through row
     /// selections and missing placeholders, so its answer is O(1). Mixed

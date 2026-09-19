@@ -109,11 +109,10 @@ pub(crate) use tokens::{
 };
 pub(crate) use validate::{
     check_i32_min, note_array_row, parse_curve_bounds, parse_precision, parse_spatial_index_handle,
-    parse_wkt_output_dimension, spatial_key_for_shape_opt, validate_buffer_miter_limit,
-    validate_buffer_quadrant_segments, validate_densify_fraction, validate_distance,
-    validate_distance_arg, validate_dwithin_distance, validate_dwithin_distance_arg,
-    validate_equals_exact_tolerance, validate_max_segment_length, validate_nearest_k,
-    validate_smooth_iterations,
+    parse_wkt_output_dimension, validate_buffer_miter_limit, validate_buffer_quadrant_segments,
+    validate_densify_fraction, validate_distance, validate_distance_arg, validate_dwithin_distance,
+    validate_dwithin_distance_arg, validate_equals_exact_tolerance, validate_max_segment_length,
+    validate_nearest_k, validate_smooth_iterations,
 };
 
 /// Restore CPython's sequence-pattern flag for immutable PyO3 classes.

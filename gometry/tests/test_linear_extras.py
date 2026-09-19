@@ -323,26 +323,12 @@ def test_w4b_interpolate_m_endpoint_exact_and_multipart_prefix() -> None:
 
 
 def test_extent_accessors_answer_none_uniformly_on_an_empty_scalar() -> None:
-    """Every extent accessor describes what is THERE, or `None`.
-
-    `extremes` and `spatial_key` were the only two that raised, while `bounds`,
-    `bounds_3d` and `min_z` all returned `None` and BOTH array forms
-    already degraded per row. A parameter error is still an error, whatever the
-    geometry.
-    """
+    """Every scalar extent accessor describes what is THERE, or `None`."""
     empty = gm.from_wkt('POLYGON EMPTY')
     assert empty.bounds is None
-    assert empty.bounds_3d is None
     assert empty.min_z is None
     assert empty.extremes() is None
-    assert empty.spatial_key() is None
 
-    # non-empty still answers
     point = gm.Point(0, 0)
     assert point.bounds == (0.0, 0.0, 0.0, 0.0)
     assert point.extremes() is not None
-    assert point.spatial_key() == 0
-
-    # a bad parameter is an error even on an empty geometry
-    with pytest.raises(gm.GeometryError):
-        empty.spatial_key(level=99)

@@ -197,22 +197,21 @@ def _build_geo_metadata(
 
     # GeoParquet 1.1: 4-number bbox for 2D; 6-number when Z is present
     # (xmin, ymin, zmin, xmax, ymax, zmax). M is not a GeoParquet 1.x ordinate.
-    if arr.any_has_z:
+    if arr.has_z.any():
         import numpy as np
 
-        per_row = arr.bounds_3d  # (n, 6) with NaN for missing / no-Z rows
         bounds = arr.total_bounds
-        if per_row is not None and len(per_row) > 0 and bounds is not None:
-            finite_z = per_row[np.isfinite(per_row[:, 2]) & np.isfinite(per_row[:, 5])]
-            if len(finite_z) > 0:
-                column_meta['bbox'] = [
-                    bounds[0],
-                    bounds[1],
-                    float(finite_z[:, 2].min()),
-                    bounds[2],
-                    bounds[3],
-                    float(finite_z[:, 5].max()),
-                ]
+        min_z = arr.min_z  # NaN for missing / no-Z rows
+        has_z_extent = np.isfinite(min_z)
+        if bounds is not None and has_z_extent.any():
+            column_meta['bbox'] = [
+                bounds[0],
+                bounds[1],
+                float(min_z[has_z_extent].min()),
+                bounds[2],
+                bounds[3],
+                float(arr.max_z[has_z_extent].max()),
+            ]
     else:
         bounds = arr.total_bounds
         if bounds is not None:
@@ -340,7 +339,9 @@ def to_geoparquet(
     """
     pa = _pyarrow()
     arr = _as_array(values)
-    if arr.any_has_m:
+    # Packed storage keeps its M axis when every row is missing or the array is
+    # empty; native encoding writes that axis and the reader rejects it.
+    if 'M' in (arr.common_coordinate_axes or '') or arr.has_m.any():
         raise GeometryError(
             'geoparquet 1.x does not support M ordinates; use force_2d() or set_m(None)'
         )
@@ -770,7 +771,7 @@ def _decode_geometry_column(
 
     # GeoParquet 1.x has no M ordinate; reject schema-wide from decoded content
     # OR structural native storage (empty/all-null native XYM must not slip).
-    if result.any_has_m or storage_has_m:
+    if storage_has_m or result.has_m.any():
         raise _metadata_error(
             'geoparquet 1.x does not support M ordinates; use force_2d() or set_m(None)'
         )

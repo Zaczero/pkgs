@@ -1,5 +1,4 @@
 use crate::dispatch::{MetricOp, kernels};
-use crate::geometry::Bounds3D;
 use crate::predicates::unary;
 use crate::py::classes::geometry_methods::{
     Bound, Py, PyAny, PyDict, PyGeometry, PyResult, PyTuple, Python, Typed, pymethods,
@@ -458,15 +457,5 @@ impl PyGeometry {
     #[getter]
     pub fn max_m(&self) -> Option<f64> {
         self.shape.max_m()
-    }
-    /// 3D bounding box ``(minx, miny, minz, maxx, maxy, maxz)``.
-    ///
-    /// Returns
-    /// -------
-    /// tuple of float or None
-    ///     ``None`` when the geometry is empty or carries no Z ordinate.
-    #[getter]
-    pub fn bounds_3d(&self) -> Option<(f64, f64, f64, f64, f64, f64)> {
-        self.shape.bounds_3d().map(Bounds3D::into_tuple)
     }
 }

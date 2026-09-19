@@ -1,4 +1,7 @@
-use crate::py::crs::{Bound, PyCrs, PyResult, Python, crs, pymethods};
+use crate::py::crs::{
+    Bound, Py, PyAny, PyCrs, PyDict, PyResult, Python, crs, crs_factors, crs_geoid_models,
+    crs_non_deprecated, crs_same, pymethods,
+};
 #[pymethods]
 impl PyCrs {
     /// Whether this CRS is geographic (lon/lat on an ellipsoid).
@@ -249,8 +252,152 @@ impl PyCrs {
     /// CrsInfo
     #[getter]
     fn info<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyDict>> {
-        // Receiver-local cache (not the free ``crs_info`` bounded global LRU):
-        // held CRS objects must not thrash that capacity-64 cache.
         self.cached_info_dict(py)
+    }
+
+    /// Test whether this CRS describes the same system as ``other``.
+    ///
+    /// Parameters
+    /// ----------
+    /// other : str or int or CRS
+    ///     The other CRS-like value to compare against.
+    ///
+    /// mode : str
+    ///     One of ``'ignore_axis_order'``
+    ///     (same but axis-swapped CRS count as equal), or ``'exact'``
+    ///     (strict, detail-identical match).
+    ///
+    /// Returns
+    /// -------
+    /// bool
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> gm.CRS(4326).same_as(gm.CRS(4326), mode='exact')
+    /// True
+    #[pyo3(
+        signature = (other, *, mode),
+        text_signature = "($self, other, *, mode)"
+    )]
+    fn same_as(
+        slf: &Bound<'_, Self>,
+        other: &Bound<'_, PyAny>,
+        mode: crs::CrsComparison,
+    ) -> PyResult<bool> {
+        crs_same(slf.as_any(), other, mode)
+    }
+
+    /// Candidate authority matches for this CRS, best first.
+    ///
+    /// Parameters
+    /// ----------
+    /// authority : str, optional
+    ///     Restrict matches to this authority.
+    ///
+    /// Returns
+    /// -------
+    /// list of CrsIdentifyCandidate
+    ///
+    /// Raises
+    /// ------
+    /// CRSError
+    ///     If identification fails.
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> gm.CRS(4326).identify()[0]['code']
+    /// '4326'
+    #[pyo3(signature = (*, authority = None))]
+    fn identify(
+        slf: &Bound<'_, Self>,
+        authority: Option<&str>,
+    ) -> PyResult<Vec<crs::IdentifyCandidate>> {
+        slf.borrow().cached_identify(authority)
+    }
+
+    /// Non-deprecated authority objects equivalent to this CRS.
+    ///
+    /// Returns
+    /// -------
+    /// list of CrsAuthorityObject
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> gm.CRS(4326).non_deprecated
+    /// []
+    #[getter]
+    fn non_deprecated(slf: &Bound<'_, Self>) -> PyResult<Vec<crs::AuthorityObjectInfo>> {
+        crs_non_deprecated(slf.as_any())
+    }
+
+    /// Geoid model names available for this CRS.
+    ///
+    /// Returns
+    /// -------
+    /// list of str
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> gm.CRS(4326).geoid_models
+    /// []
+    #[getter]
+    fn geoid_models(slf: &Bound<'_, Self>) -> PyResult<Vec<String>> {
+        crs_geoid_models(slf.as_any())
+    }
+
+    /// Map-projection factors (scale, distortion, Tissot, …) at a lon/lat.
+    ///
+    /// For a **projected** CRS the evaluation point is geographic lon/lat on
+    /// the base ellipsoid and the returned scales/distortions describe the
+    /// projection at that location. For a pure geographic CRS the factors are
+    /// near-identity (meridional/parallel scale ≈ 1).
+    ///
+    /// Parameters
+    /// ----------
+    /// lon : float or sequence of float
+    ///     Longitude of the evaluation point(s), degrees unless
+    ///     ``radians=True``.
+    ///
+    /// lat : float or sequence of float
+    ///     Latitude of the evaluation point(s), degrees unless
+    ///     ``radians=True``.
+    ///
+    /// radians : bool, optional
+    ///     Interpret angular inputs as radians (default ``False``).
+    ///
+    /// Returns
+    /// -------
+    /// dict
+    ///     Scalar call: mapping of factor names to floats
+    ///     (``meridional_scale``, ``parallel_scale``, ``areal_scale``,
+    ///     ``angular_distortion``, ``meridian_parallel_angle``,
+    ///     ``meridian_convergence``, ``tissot_semimajor``,
+    ///     ``tissot_semiminor``, ``dx_dlam``, ``dx_dphi``, ``dy_dlam``,
+    ///     ``dy_dphi``). Array call: same keys with float arrays.
+    ///
+    /// Raises
+    /// ------
+    /// InvalidGeometryError
+    ///     If ``lon``/``lat`` are non-finite or differ in length.
+    ///
+    /// Examples
+    /// --------
+    /// >>> import gometry as gm
+    /// >>> f = gm.CRS(3857).factors(0.0, 0.0)
+    /// >>> round(f['meridional_scale'], 5)
+    /// 1.0
+    #[pyo3(signature = (lon, lat, *, radians = false))]
+    fn factors(
+        slf: &Bound<'_, Self>,
+        py: Python<'_>,
+        lon: &Bound<'_, PyAny>,
+        lat: &Bound<'_, PyAny>,
+        radians: bool,
+    ) -> PyResult<Py<PyDict>> {
+        crs_factors(py, slf.as_any(), lon, lat, radians)
     }
 }

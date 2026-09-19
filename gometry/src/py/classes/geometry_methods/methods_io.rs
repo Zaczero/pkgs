@@ -4,8 +4,8 @@ use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, 
 use crate::py::functions::polyline;
 use crate::py::{arrow, arrow_c, errors, functions};
 use crate::{
-    ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, SpatialCurve, exact_geometry, io,
-    overlay_operator, py_bool,
+    ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, exact_geometry, io, overlay_operator,
+    py_bool,
 };
 
 frozen_pymethods! {
@@ -62,50 +62,6 @@ impl PyGeometry {
         polyline::polyline_of(self, factor)
     }
 
-    /// Space-filling-curve key of this geometry's bbox center.
-    /// Discretizes the center into a ``2^level x 2^level`` grid over ``bounds``
-    /// and returns its distance along the selected curve.
-    ///
-    /// Parameters
-    /// ----------
-    /// curve : {'hilbert', 'morton'}, default hilbert
-    ///     ``hilbert`` prioritizes locality; ``morton`` uses Z-order.
-    ///
-    /// level : int, default 16
-    ///     Grid order (``1`` to ``32``); 16 matches GeoPandas/DuckDB.
-    ///
-    /// bounds : tuple of float, optional
-    ///     The frame ``(minx, miny, maxx, maxy)``; this geometry's own bounds
-    ///     when omitted. Keys compare across geometries only against a *shared*
-    ///     frame — pass the same ``bounds`` when keying separate geometries.
-    ///
-    /// Returns
-    /// -------
-    /// int or None
-    ///     Spatial curve key, or ``None`` for an empty geometry — the same
-    ///     contract as ``bounds`` and the other extent accessors.
-    ///
-    /// Raises
-    /// ------
-    /// GeometryError
-    ///     If ``level`` or ``bounds`` is invalid (a bad parameter is an error
-    ///     whatever the geometry).
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> bounds = (0, 0, 10, 10)
-    /// >>> gm.Point(0, 0).spatial_key(bounds=bounds) != gm.Point(10, 10).spatial_key(bounds=bounds)
-    /// True
-    #[pyo3(signature = (*, curve = SpatialCurve::Hilbert, level = 16, bounds = None), text_signature = "($self, *, curve='hilbert', level=16, bounds=None)")]
-    pub fn spatial_key(
-        &self,
-        curve: SpatialCurve,
-        #[pyo3(from_py_with = crate::strict_i64)] level: i64,
-        bounds: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Option<u64>> {
-        self.spatial_key_impl(curve, level, bounds)
-    }
     /// Export the geometry as a `GeoArrow` array.
     ///
     /// Parameters

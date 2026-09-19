@@ -616,9 +616,7 @@ fn geodesic_segment_plan(
             points.ys()[segment_index + 1],
         ))
         .expect("geographic subdivision received admitted coordinates");
-    let solution = crate::crs::geodesic_line_solution_const::<false>(
-        geodesic, start.x, start.y, end.x, end.y,
-    )?;
+    let solution = crate::crs::geodesic_line_solution(geodesic, start.x, start.y, end.x, end.y)?;
     Ok(GeodesicSegmentPlan {
         solution,
         canonical_end: end.xy(),
@@ -861,11 +859,7 @@ fn emit_geodesic_plan(
         let (mut longitude, mut latitude) = if equatorial {
             (interpolate_subdivision_ordinate(x0, x1, fraction), 0.0)
         } else {
-            let info = crate::crs::geodesic_interpolate_on_line_const::<false, true>(
-                geodesic,
-                plan.solution,
-                fraction,
-            )?;
+            let info = crate::crs::geodesic_interpolate_on_line(geodesic, plan.solution, fraction)?;
             (info.longitude, info.latitude)
         };
         let point = frame

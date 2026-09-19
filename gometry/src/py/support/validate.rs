@@ -6,12 +6,12 @@ use std::num::NonZeroU32;
 
 use pyo3::types::PyString;
 
-use crate::boundary::{FloatInput, input};
+use crate::boundary::FloatInput;
 use crate::io::WktDimension;
-use crate::py::errors::{InvalidGeometryError, integer_parameter_error};
+use crate::py::errors::integer_parameter_error;
 use crate::py::support::{
     Bound, DwithinDistance, GeometryError, GeometryErrorKind, NonNegative, Positive, PyAny,
-    PyAnyMethods as _, PyErr, PyResult, Python, Shape, finite_f64_required, non_negative_int,
+    PyAnyMethods as _, PyErr, PyResult, Python, finite_f64_required, non_negative_int,
     py_i64_bounded, py_i64_required,
 };
 
@@ -162,46 +162,6 @@ pub(crate) fn note_array_row(err: PyErr, row: usize) -> PyErr {
     err
 }
 
-/// Resolve a space-filling-curve frame: explicit `(minx, miny, maxx, maxy)`
-/// bounds, else the shape's own bounds (an empty shape has none).
-pub(crate) fn curve_frame_for(
-    shape: &Shape,
-    level: crate::curves::CurveLevel,
-    bounds: Option<&Bound<'_, PyAny>>,
-    operation: &str,
-) -> PyResult<crate::curves::CurveFrame> {
-    let bounds = match parse_curve_bounds(bounds)? {
-        Some(bounds) => bounds,
-        None => shape.bounds().ok_or_else(|| empty_curve_input(operation))?,
-    };
-    Ok(crate::curves::CurveFrame::new(bounds, level))
-}
-
-/// Shared scalar spatial-key kernel: validate level, resolve the curve frame,
-/// and emit the curve key. Array keys reuse the same [`CurveKind::key`] over a
-/// single total-bounds frame so scalar and array keys stay bit-identical for
-/// the same geometry under the same explicit bounds.
-/// Curve key for a shape, or `None` when it is empty — the scalar
-/// extent-accessor contract (`bounds` and friends answer `None` too).
-pub(crate) fn spatial_key_for_shape_opt(
-    shape: &Shape,
-    kind: crate::curves::CurveKind,
-    level: i64,
-    bounds: Option<&Bound<'_, PyAny>>,
-) -> PyResult<Option<u64>> {
-    // `level` is still validated for an empty shape — a bad parameter is an
-    // error whatever the geometry. Emptiness is then decided BEFORE frame
-    // derivation, which would otherwise raise while deriving a frame for a
-    // shape that has no key either way.
-    let level = input::validate_curve_level(level)?;
-    if shape.is_empty() {
-        return Ok(None);
-    }
-    let operation = kind.operation_name();
-    let frame = curve_frame_for(shape, level, bounds, operation)?;
-    Ok(kind.key(&frame, shape))
-}
-
 /// Parse optional explicit curve-frame bounds: four finite ordered floats.
 pub(crate) fn parse_curve_bounds(
     value: Option<&Bound<'_, PyAny>>,
@@ -238,10 +198,6 @@ pub(crate) fn parse_curve_bounds(
     Ok(Some(crate::geometry::Bounds::new_raw(
         *minx, *miny, *maxx, *maxy,
     )))
-}
-
-pub(crate) fn empty_curve_input(operation: &str) -> PyErr {
-    InvalidGeometryError::new_err(format!("{operation} requires a non-empty geometry"))
 }
 
 pub(crate) fn validate_distance_arg(value: &Bound<'_, PyAny>) -> PyResult<NonNegative> {

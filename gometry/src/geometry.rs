@@ -39,8 +39,8 @@ pub(crate) use area::{
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod types;
 pub(crate) use types::{
-    Bounds, Bounds3D, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder,
-    CoordWindow, CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
+    Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, CoordSeqBuilder, CoordWindow,
+    CoordinateAxes, Coordinates, CsrOffsetBuilder, CsrOffsetColumn, DistanceParts,
     FrameDependentCaches, GeodesicInnerInterval, GeodesicMetric, GeodesicMinimum,
     GeodesicNumericalPolicy, GeodesicParts, GeodesicPreparedSegment, GeodesicSegment,
     GeodesicSegmentDerivative, GeodesicSegmentMinimum, GeodesicSegmentQuery,

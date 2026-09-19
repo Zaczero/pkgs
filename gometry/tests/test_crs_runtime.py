@@ -57,9 +57,9 @@ def _run_isolated_child(code: str, tmpdir: str) -> subprocess.CompletedProcess[s
 
 
 def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) -> None:
-    original = gm.crs_config()
+    original = gm.crs_configure()
     assert original == {'search_paths': None, 'user_writable_directory': None}
-    before = gm.crs_info(4326)
+    before = gm.CRS(4326).info
     engine = gm.crs_engine()
     search_paths = None
     if engine['database_path'] is not None:
@@ -118,10 +118,10 @@ def test_crs_runtime_config_controls_proj_contexts_and_resets(tmp_path: Path) ->
                 configured_engine['database_path'].split('&vfs=', 1)[0]
                 == engine['database_path'].split('&vfs=', 1)[0]
             )
-        assert gm.crs_info(4326) == before
+        assert gm.CRS(4326).info == before
         assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == 'EPSG:3857'
         assert gm.crs_clear_cache() is None
-        assert gm.crs_info(4326) == before
+        assert gm.CRS(4326).info == before
         assert gm.Point(1, 2, crs=4326).to_crs(3857).crs == 'EPSG:3857'
 
         with pytest.raises(ValueError, match='search_paths entries'):
@@ -155,7 +155,7 @@ def test_crs_cache_info_reports_current_thread_cache_state() -> None:
         'crs_export',
     }
 
-    gm.crs_info(4326)
+    assert gm.CRS(4326).info['name'] == 'WGS 84'
     gm.CRS(4267).operation(4326)
     gm.CRS(4267).operations(4326)
     gm.CRS(4326).to_wkt()
@@ -173,11 +173,11 @@ def test_crs_cache_info_reports_current_thread_cache_state() -> None:
 
 
 def test_crs_configure_noop_preserves_generation_and_products(tmp_path: Path) -> None:
-    original = gm.crs_config()
+    original = gm.crs_configure()
     try:
         gm.crs_clear_cache()
         configured = gm.crs_configure(search_paths=tmp_path)
-        gm.crs_info(4326)
+        assert gm.CRS(4326).info['name'] == 'WGS 84'
         before = gm.crs_cache_info()
         assert before['total_entries'] > 0
 
@@ -258,7 +258,7 @@ def test_crs_runtime_empty_paths_use_bare_lookup_not_proj_data(
     fixture = Path(__file__).with_name('fixtures') / grid_name
     shutil.copyfile(fixture, current / grid_name)
     shutil.copyfile(fixture, ambient / grid_name)
-    original = gm.crs_config()
+    original = gm.crs_configure()
     try:
         gm.crs_reset()
         monkeypatch.chdir(current)
@@ -284,7 +284,7 @@ def test_crs_runtime_tmerc_ignores_hostile_proj_ini(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Caller and cwd proj.ini must not replace gometry Transverse Mercator defaults."""
-    original = gm.crs_config()
+    original = gm.crs_configure()
     poder = _proj_tmerc_xy(_GRS80_TMERC_PODER)
     evenden = _proj_tmerc_xy(_GRS80_TMERC_EVENDEN)
     assert poder != evenden

@@ -6,15 +6,14 @@ use crate::array::{
     Bound, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _, PackedColumnError,
     PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr,
     PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _,
-    Python, Shape, SpatialCurve, Typed, bounds_3d_values_from_columns,
-    bounds_values_from_columns_masked, crs, crs_label, ensure_geographic_columns_present,
-    geographic_bounds_values_from_columns, line_measure_masked, polygon_measure_masked, pymethods,
-    reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
-    segmented_planar_lengths_3d,
+    Python, Shape, SpatialCurve, Typed, bounds_values_from_columns_masked, crs, crs_label,
+    ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
+    polygon_measure_masked, pymethods, reduce_lines_or_polygons, resolve_metric,
+    segmented_planar_lengths, segmented_planar_lengths_3d,
 };
 use crate::dispatch::{MetricOp, kernels};
 use crate::py::errors;
-use crate::py::numpy::{bounds3d_array, float64_array};
+use crate::py::numpy::float64_array;
 
 fn coordinate_payload_len(array: &PyGeometryArray) -> Option<usize> {
     match array.storage() {
@@ -158,29 +157,6 @@ impl PyGeometryArray {
     pub fn max_m(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         self.m_extreme_lane(py, |_, high| high, Shape::max_m)
     }
-    /// Per-row 3D bounding box ``(minx, miny, minz, maxx, maxy, maxz)``.
-    ///
-    /// Returns
-    /// -------
-    /// numpy.ndarray
-    ///     Read-only ``float64`` ``numpy.ndarray`` of shape ``(n, 6)``; ``nan``
-    ///     where Z is absent or the row is missing.
-    #[getter]
-    pub fn bounds_3d(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        if !self.has_missing()
-            && self.has_z()
-            && let Some(values) = self.reduce_packed_columns_detached(py, |columns| {
-                Ok(bounds_3d_values_from_columns(&columns))
-            })?
-        {
-            return bounds3d_array(py, values);
-        }
-        let values = crate::try_collect_results(
-            self.bounds_3d_rows()
-                .map(|value| value.map_err(crate::PyErr::from)),
-        )?;
-        bounds3d_array(py, values)
-    }
     /// Per-row area, measured for the array's CRS.
     ///
     /// A geographic CRS gives ellipsoidal square meters (geodesic, on the CRS's
@@ -297,7 +273,7 @@ impl PyGeometryArray {
         #[pyo3(from_py_with = crate::strict_i64)] level: i64,
         bounds: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Self> {
-        let keys = self.curve_keys(level, bounds, "sort_by_spatial_key", curve.into())?;
+        let keys = self.curve_keys(level, bounds, curve.into())?;
         Ok(self.taken_by_keys(&keys)?)
     }
 

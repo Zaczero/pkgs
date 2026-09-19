@@ -46,7 +46,7 @@ if TYPE_CHECKING:
     POINT.triangulate(method='earcut', max_area=1.0)  # type: ignore[call-overload]
     POINT.triangulate(method='not_a_method')  # type: ignore[call-overload]
     gm.to_feature_collection(gm.Features(POINTS), properties={})  # type: ignore[arg-type]
-    POINT.spatial_key(curve='zorder')  # type: ignore[arg-type]
+    POINTS.spatial_key(curve='zorder')  # type: ignore[arg-type]
     POINTS.sort_by_spatial_key(curve='zorder')  # type: ignore[arg-type]
 
     # area/length default ``unit`` exactly like their properties, so the bare

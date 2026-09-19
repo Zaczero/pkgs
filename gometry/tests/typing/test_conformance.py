@@ -596,8 +596,6 @@ if TYPE_CHECKING:
 assert_type(POINTS.length, npt.NDArray[np.float64])
 assert_type(POINTS.is_empty, npt.NDArray[np.bool_])
 assert_type(cast('list[bool]', POINTS.is_empty.tolist()), list[bool])
-assert_type(POINT.spatial_key(), int | None)
-assert_type(POINT.spatial_key(curve='morton'), int | None)
 assert_type(POINTS.spatial_key(), npt.NDArray[np.uint64])
 assert_type(POINTS.spatial_key(curve='morton'), npt.NDArray[np.uint64])
 assert_type(POINTS.sort_by_spatial_key(), gm.GeometryArray[gm.Point])

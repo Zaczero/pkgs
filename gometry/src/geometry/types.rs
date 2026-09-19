@@ -27,8 +27,8 @@ pub(crate) use csr::{
 pub(crate) use error::GeometryErrorKind;
 pub(in crate::geometry) use primitives::GeodesicPartsKey;
 pub(crate) use primitives::{
-    Bounds, Bounds3D, CoordinateAxes, DistanceParts, GeodesicParts, GeodesicSegment, HasM, HasZ,
-    MOrdinate, Point, Polygon, Segment, XY, ZOrdinate, segment_midpoint,
+    Bounds, CoordinateAxes, DistanceParts, GeodesicParts, GeodesicSegment, HasM, HasZ, MOrdinate,
+    Point, Polygon, Segment, XY, ZOrdinate, segment_midpoint,
 };
 pub(crate) use ring::{Coordinates, Ring};
 pub(crate) use shape::{

@@ -242,38 +242,6 @@ impl Bounds {
     }
 }
 
-/// A 3D bounding box: ``(minx, miny, minz, maxx, maxy, maxz)``.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Bounds3D {
-    pub minx: f64,
-    pub miny: f64,
-    pub minz: f64,
-    pub maxx: f64,
-    pub maxy: f64,
-    pub maxz: f64,
-}
-
-impl Bounds3D {
-    pub(crate) const fn into_tuple(self) -> (f64, f64, f64, f64, f64, f64) {
-        (
-            self.minx, self.miny, self.minz, self.maxx, self.maxy, self.maxz,
-        )
-    }
-}
-
-impl From<(f64, f64, f64, f64, f64, f64)> for Bounds3D {
-    fn from((minx, miny, minz, maxx, maxy, maxz): (f64, f64, f64, f64, f64, f64)) -> Self {
-        Self {
-            minx,
-            miny,
-            minz,
-            maxx,
-            maxy,
-            maxz,
-        }
-    }
-}
-
 /// Planar engine coordinate — the XY-only working currency of the
 /// noding/arrangement/sweep kernels.
 ///

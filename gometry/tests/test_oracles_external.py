@@ -157,7 +157,7 @@ def test_estimated_polar_crs_matches_pyproj_oracle() -> None:
         actual = gm.Point(lon, lat, crs=4326).estimate_local_crs()
         crs = pyproj.CRS.from_user_input(str(actual))
         assert crs.is_projected
-        assert crs.name == gm.crs_info(actual)['name']
+        assert crs.name == gm.CRS(actual).info['name']
         assert [axis.abbrev.lower() for axis in crs.axis_info] == ['e', 'n']
         expected_xy = pyproj.Transformer.from_crs(4326, crs, always_xy=True).transform(
             lon, lat
@@ -328,56 +328,41 @@ def test_crs_projection_factors_match_pyproj_oracle() -> None:
         )
 
 
-def test_crs_geodesic_inverse_matches_pyproj_ellipsoid_oracle() -> None:
+def test_geodesic_point_navigation_matches_pyproj_ellipsoid_oracle() -> None:
     for crs in [4326, 4267]:
-        ellipsoid = gm.crs_info(crs)['ellipsoid']
+        ellipsoid = gm.CRS(crs).info['ellipsoid']
         assert ellipsoid is not None
         geod = pyproj.Geod(
             a=ellipsoid['semi_major_metre'], rf=ellipsoid['inverse_flattening']
         )
-        expected = geod.inv(-73.0, 41.0, -74.0, 42.0)
-        actual = gm.CRS(crs).geodesic_inverse(-73.0, 41.0, -74.0, 42.0)
-        actual_3d = gm.CRS(crs).geodesic_inverse(
-            -73.0, 41.0, -74.0, 42.0, z1=10.0, z2=110.0
-        )
-        expected_direct = geod.fwd(-73.0, 41.0, 45.0, 1000.0)
-        actual_direct = gm.CRS(crs).geodesic_direct(-73.0, 41.0, 45.0, 1000.0)
-        assert actual['forward_azimuth'] == pytest.approx(expected[0])
-        assert actual['reverse_azimuth'] == pytest.approx(expected[1] - 180.0)
-        assert actual['distance'] == pytest.approx(expected[2])
-        assert actual['distance_3d'] is None
-        assert actual_3d['distance_3d'] == pytest.approx(math.hypot(expected[2], 100.0))
-        assert actual_direct['longitude'] == pytest.approx(expected_direct[0])
-        assert actual_direct['latitude'] == pytest.approx(expected_direct[1])
-        assert actual_direct['final_azimuth'] == pytest.approx(
-            expected_direct[2] + 180.0
-        )
-        expected_lons, expected_lats, expected_back_azimuths = geod.fwd(
+        start = gm.Point(-73.0, 41.0, crs=crs)
+        end = gm.Point(-74.0, 42.0, crs=crs)
+        forward, back, distance = geod.inv(-73.0, 41.0, -74.0, 42.0)
+        assert gm.bearing(start, end) == pytest.approx(forward % 360.0)
+        assert gm.bearing(end, start) == pytest.approx(back % 360.0)
+        assert gm.distance(start, end) == pytest.approx(distance)
+        expected_lon, expected_lat, expected_back = geod.fwd(-73.0, 41.0, 45.0, 1000.0)
+        direct = start.destination(45.0, 1000.0)
+        assert direct.x == pytest.approx(expected_lon)
+        assert direct.y == pytest.approx(expected_lat)
+        assert gm.bearing(direct, start) == pytest.approx(expected_back % 360.0)
+        expected_lons, expected_lats, _ = geod.fwd(
             [-73.0, -73.0], [41.0, 41.0], [45.0, 90.0], [1000.0, 2000.0]
         )
-        actual_direct_batch = gm.CRS(crs).geodesic_direct(
-            [-73.0, -73.0], [41.0, 41.0], [45.0, 90.0], [1000.0, 2000.0]
-        )
-        assert actual_direct_batch['longitude'] == pytest.approx(expected_lons)
-        assert actual_direct_batch['latitude'] == pytest.approx(expected_lats)
-        assert actual_direct_batch['final_azimuth'] == pytest.approx([
-            value + 180.0 for value in expected_back_azimuths
-        ])
+        direct_batch = start.destination([45.0, 90.0], [1000.0, 2000.0])
+        assert [point.x for point in direct_batch] == pytest.approx(expected_lons)
+        assert [point.y for point in direct_batch] == pytest.approx(expected_lats)
         expected_midpoint = geod.npts(-73.0, 41.0, -74.0, 42.0, 1)[0]
-        actual_midpoint = gm.CRS(crs).geodesic_interpolate(
-            -73.0, 41.0, -74.0, 42.0, 0.5, normalized=True
-        )
-        assert actual_midpoint['longitude'] == pytest.approx(expected_midpoint[0])
-        assert actual_midpoint['latitude'] == pytest.approx(expected_midpoint[1])
-        assert actual_midpoint['distance'] == pytest.approx(expected[2] / 2)
+        midpoint = gm.point_between(start, end, 0.5, normalized=True)
+        assert midpoint.x == pytest.approx(expected_midpoint[0])
+        assert midpoint.y == pytest.approx(expected_midpoint[1])
+        assert gm.distance(start, midpoint) == pytest.approx(distance / 2)
         expected_points = geod.npts(-73.0, 41.0, -74.0, 42.0, 3)
-        actual_points = gm.CRS(crs).geodesic_interpolate(
-            -73.0, 41.0, -74.0, 42.0, [0.25, 0.5, 0.75], normalized=True
-        )
-        assert actual_points['longitude'] == pytest.approx([
+        points = gm.point_between(start, end, [0.25, 0.5, 0.75], normalized=True)
+        assert [point.x for point in points] == pytest.approx([
             point[0] for point in expected_points
         ])
-        assert actual_points['latitude'] == pytest.approx([
+        assert [point.y for point in points] == pytest.approx([
             point[1] for point in expected_points
         ])
 
@@ -396,7 +381,7 @@ def test_crs_geodesic_geometry_measurements_match_pyproj_ellipsoid_oracle() -> N
     # PROJ lacks ca_nrc_ntv2_0.tif, so this NAD27 transform degrades explicitly.
     with pytest.warns(gm.AccuracyWarning, match='ca_nrc_ntv2_0[.]tif'):
         projected_polygon = polygon.to_crs(3857)
-    ellipsoid = gm.crs_info(4267)['ellipsoid']
+    ellipsoid = gm.CRS(4267).info['ellipsoid']
     assert ellipsoid is not None
     geod = pyproj.Geod(
         a=ellipsoid['semi_major_metre'], rf=ellipsoid['inverse_flattening']

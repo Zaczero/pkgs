@@ -543,35 +543,6 @@ impl PyGeometryArray {
             ))?,
         )
     }
-    /// Whether any present geometry carries a Z ordinate.
-    ///
-    /// Returns
-    /// -------
-    /// bool
-    #[getter("any_has_z")]
-    pub fn has_z(&self) -> bool {
-        if self
-            .missing()
-            .as_ref()
-            .is_some_and(|mask| mask.present_count() == 0)
-        {
-            return false;
-        }
-        // Packed storage shares ONE coords column with uniform axes, so the
-        // whole-array answer is a single O(1) axes read — not a per-row Shape
-        // materialization + probe.
-        match self.storage() {
-            GeometryArrayStorage::Packed(
-                PackedStorage::Points { coords, .. }
-                | PackedStorage::Lines { coords, .. }
-                | PackedStorage::Polygons { coords, .. },
-            ) => coords.axes().has_z(),
-            GeometryArrayStorage::Mixed(shapes) => shapes
-                .iter()
-                .enumerate()
-                .any(|(row, shape)| !self.is_row_missing(row) && shape.has_z()),
-        }
-    }
     /// Whether each geometry carries an M ordinate. Missing rows are false.
     ///
     /// Returns
@@ -590,32 +561,6 @@ impl PyGeometryArray {
                 },
             ))?,
         )
-    }
-    /// Whether any present geometry carries an M ordinate.
-    ///
-    /// Returns
-    /// -------
-    /// bool
-    #[getter("any_has_m")]
-    pub fn has_m(&self) -> bool {
-        if self
-            .missing()
-            .as_ref()
-            .is_some_and(|mask| mask.present_count() == 0)
-        {
-            return false;
-        }
-        match self.storage() {
-            GeometryArrayStorage::Packed(
-                PackedStorage::Points { coords, .. }
-                | PackedStorage::Lines { coords, .. }
-                | PackedStorage::Polygons { coords, .. },
-            ) => coords.axes().has_m(),
-            GeometryArrayStorage::Mixed(shapes) => shapes
-                .iter()
-                .enumerate()
-                .any(|(row, shape)| !self.is_row_missing(row) && shape.has_m()),
-        }
     }
     /// Per-geometry bounds ``(minx, miny, maxx, maxy)`` (see
     /// `Geometry.bounds`), as a read-only ``(rows, 4)`` float64 ndarray.

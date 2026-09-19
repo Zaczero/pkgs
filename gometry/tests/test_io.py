@@ -1182,8 +1182,8 @@ def test_v1_api_convenience_and_ewkb_helpers() -> None:
     assert not point.has_z
     assert not point.has_m
     assert values.common_coordinate_axes == 'XY'
-    assert not values.any_has_z
-    assert not values.any_has_m
+    assert not values.has_z.any()
+    assert not values.has_m.any()
     np.testing.assert_allclose(
         gm.bounds(values), [[21.0, 52.0, 21.0, 52.0], [22.0, 52.0, 22.0, 52.0]]
     )

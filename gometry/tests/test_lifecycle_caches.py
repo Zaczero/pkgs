@@ -51,7 +51,7 @@ print("ok")
 
 
 def test_held_crs_info_is_receiver_local() -> None:
-    """1k held CRS: repeated .info is receiver-cached; free path isolated.
+    """1k held CRS: repeated .info is receiver-cached.
 
     Generation-aware invalidation after ``crs_clear_cache`` /
     ``crs_configure`` is pinned in ``tests/test_crs_metadata_info.py``.
@@ -77,13 +77,6 @@ def test_held_crs_info_is_receiver_local() -> None:
     assert all(
         isinstance(info.get('name'), str) and info['name'] for info in first_pass
     )
-
-    # Free path still works and is isolation-safe.
-    cold = gm.crs_info(4326)
-    warm = gm.crs_info(4326)
-    assert warm == cold
-    warm['name'] = 'POISON'
-    assert gm.crs_info(4326)['name'] == cold['name']
 
     # After clear, held receivers rebuild (generation-aware).
     name_before = held[0].info['name']

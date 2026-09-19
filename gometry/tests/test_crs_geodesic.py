@@ -28,25 +28,21 @@ def test_geodesic_series_domain_boundaries_reach_each_metric_path(
     assert float(geodesic.ellipsoid['inverse_flattening']) == pytest.approx(
         0.0 if flattening == 0.0 else 50.0
     )
-    inverse = geodesic.geodesic_inverse(0.0, 0.0, 1.0, 0.0)
-    assert float(inverse['distance']) > 0.0
-    direct = geodesic.geodesic_direct(0.0, 0.0, 90.0, float(inverse['distance']))
-    assert float(direct['longitude']) == pytest.approx(1.0)
-    assert float(direct['latitude']) == pytest.approx(0.0)
-
     start = gm.Point(0.0, 0.0, crs=crs)
     end = gm.Point(1.0, 0.0, crs=crs)
     line = gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=crs)
     crossing = gm.LineString([(0.5, -1.0), (0.5, 1.0)], crs=crs)
 
-    assert gm.distance(start, end) == pytest.approx(float(inverse['distance']))
+    distance = gm.distance(start, end)
+    assert distance > 0.0
+    direct = start.destination(90.0, distance)
+    assert direct.x == pytest.approx(1.0)
+    assert direct.y == pytest.approx(0.0)
     assert gm.distance(start, line) == 0.0
     assert gm.dwithin(start, line, 0.0)
     assert gm.intersects(line, crossing)
     assert gm.nearest_points(start, line)[0].to_wkt() == start.to_wkt()
-    assert gm.hausdorff_distance(start, end) == pytest.approx(
-        float(inverse['distance'])
-    )
+    assert gm.hausdorff_distance(start, end) == pytest.approx(distance)
 
 
 def test_geodesic_parallel_proximity_is_not_segment_contact() -> None:
@@ -160,23 +156,17 @@ def test_geodesic_series_domain_rejection_is_shared_across_entry_points(
 ) -> None:
     crs = _custom_geographic_crs(flattening)
     expected = r'order-six binary64 series domain \|f\| <= 0\.02'
-    geodesic = gm.CRS(crs)
     start = gm.Point(0.0, 0.0, crs=crs)
     end = gm.Point(1.0, 0.0, crs=crs)
     line = gm.LineString([(0.0, 0.0), (1.0, 0.0)], crs=crs)
     crossing = gm.LineString([(0.5, -1.0), (0.5, 1.0)], crs=crs)
     far_line = gm.LineString([(0.0, 2.0), (1.0, 2.0)], crs=crs)
     operations = [
-        ('inverse', lambda: geodesic.geodesic_inverse(0.0, 0.0, 1.0, 0.0)),
+        ('bearing', lambda: gm.bearing(start, end)),
+        ('destination', lambda: start.destination(90.0, 1000.0)),
         (
-            'direct',
-            lambda: geodesic.geodesic_direct(0.0, 0.0, 90.0, 1000.0),
-        ),
-        (
-            'interpolate',
-            lambda: geodesic.geodesic_interpolate(
-                0.0, 0.0, 1.0, 0.0, 0.5, normalized=True
-            ),
+            'point between',
+            lambda: gm.point_between(start, end, 0.5, normalized=True),
         ),
         ('line length', lambda: line.length),
         ('distance', lambda: gm.distance(start, end)),
@@ -231,29 +221,29 @@ def test_geodesic_distance_and_area_use_wgs84_ellipsoid() -> None:
     destination = start.destination(90.0, gm.distance(start, end))
     assert destination.x == pytest.approx(end.x)
     assert destination.y == pytest.approx(end.y)
-    wgs84 = gm.CRS(4326)
-    batch_destinations = wgs84.geodesic_direct(
-        [0.0, 0.0],
-        [0.0, 0.0],
-        [90.0, 0.0],
-        [gm.distance(start, end), gm.distance(start, north)],
+    batch_destinations = start.destination(
+        [90.0, 0.0], [gm.distance(start, end), gm.distance(start, north)]
     )
-    assert batch_destinations['longitude'][0] == pytest.approx(end.x)
-    assert batch_destinations['latitude'][1] == pytest.approx(north.y)
+    assert batch_destinations[0].x == pytest.approx(end.x)
+    assert batch_destinations[1].y == pytest.approx(north.y)
     point_destination = start.destination(90.0, 1000.0)
     assert point_destination.crs == 'EPSG:4326'
     midpoint = gm.point_between(start, end, 0.5, normalized=True)
     assert midpoint.x == pytest.approx(0.5)
     assert midpoint.y == pytest.approx(0.0)
-    batch_bearings = wgs84.geodesic_inverse(
-        [0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0]
+    batch_bearings = gm.bearing(
+        gm.points([0.0, 0.0], [0.0, 1.0], crs=4326),
+        gm.points([1.0, 1.0], [0.0, 0.0], crs=4326),
     )
-    assert batch_bearings['forward_azimuth'][0] == pytest.approx(90.0)
-    batch_midpoints = wgs84.geodesic_interpolate(
-        [0.0, 0.0], [0.0, 0.0], [1.0, 0.0], [0.0, 1.0], 0.5, normalized=True
+    assert batch_bearings[0] == pytest.approx(90.0)
+    batch_midpoints = gm.point_between(
+        gm.points([0.0, 0.0], [0.0, 0.0], crs=4326),
+        gm.points([1.0, 0.0], [0.0, 1.0], crs=4326),
+        0.5,
+        normalized=True,
     )
-    assert batch_midpoints['longitude'] == pytest.approx([0.5, 0.0])
-    assert batch_midpoints['latitude'] == pytest.approx([0.0, 0.5])
+    assert [point.x for point in batch_midpoints] == pytest.approx([0.5, 0.0])
+    assert [point.y for point in batch_midpoints] == pytest.approx([0.0, 0.5])
     with pytest.raises(ValueError, match='same length'):
         gm.distance(gm.points([0, 0], [0, 0], crs=4326), gm.points([1], [0], crs=4326))
     measured = gm.point_between(
@@ -319,17 +309,16 @@ def test_large_polar_buffer_uses_concise_local_crs_diagnostic() -> None:
     assert 'Point outside of projection domain' in message
 
 
-LATITUDE_DOMAIN_MSG = (
-    'geographic latitude is outside the valid \\[-90, 90\\] degree domain'
-)
+LATITUDE_DOMAIN_MSG = r'invalid longitude/latitude \(0, 95\)'
 
 
-def test_geodesic_inverse_scalar_batch_latitude_domain_parity() -> None:
-    wgs84 = gm.CRS(4326)
-    with pytest.raises(gm.CRSError, match=LATITUDE_DOMAIN_MSG):
-        wgs84.geodesic_inverse(0.0, 95.0, 1.0, 0.0)
-    with pytest.raises(gm.CRSError, match=LATITUDE_DOMAIN_MSG):
-        wgs84.geodesic_inverse([0.0], [95.0], [1.0], [0.0])
+def test_geodesic_distance_scalar_batch_latitude_domain_parity() -> None:
+    outside = gm.Point(0.0, 95.0, crs=4326)
+    end = gm.Point(1.0, 0.0, crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG):
+        gm.distance(outside, end)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG):
+        gm.distance(gm.GeometryArray([outside]), end)
 
 
 def test_transform_broadcasts_source_epoch_to_every_vertex() -> None:

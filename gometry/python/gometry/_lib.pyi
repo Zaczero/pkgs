@@ -73,12 +73,6 @@ from gometry._types import (
     CrsEllipsoidCatalogInfo,
     CrsEllipsoidInfo,
     CrsEngineInfo,
-    CrsGeodesicBatchInfo,
-    CrsGeodesicDirectBatchInfo,
-    CrsGeodesicDirectInfo,
-    CrsGeodesicInfo,
-    CrsGeodesicInterpolateBatchInfo,
-    CrsGeodesicInterpolateInfo,
     CrsGridDatabaseInfo,
     CrsIdentifyCandidate,
     CrsInfo,
@@ -234,12 +228,10 @@ __all__ = [
     'crs_celestial_bodies',
     'crs_clear_cache',
     'crs_codes',
-    'crs_config',
     'crs_configure',
     'crs_ellipsoids',
     'crs_engine',
     'crs_grid',
-    'crs_info',
     'crs_prime_meridians',
     'crs_proj_operations',
     'crs_reset',
@@ -1248,15 +1240,6 @@ class Geometry:
         float or None
         """
     @property
-    def bounds_3d(self) -> tuple[float, float, float, float, float, float] | None:
-        """3D bounding box ``(minx, miny, minz, maxx, maxy, maxz)``.
-
-        Returns
-        -------
-        tuple of float or None
-            ``None`` when the geometry is empty or carries no Z ordinate.
-        """
-    @property
     def coords(self) -> Coordinates:
         """Coordinate view over this geometry's vertices (storage-shaped index /
         cursor iteration — not an eagerly materialized vertex list).
@@ -1938,50 +1921,6 @@ class Geometry:
         >>> a, b = [(0, 0), (1, 1)], [(1, 1), (2, 2)]
         >>> (gm.MultiLineString([a, b]).line_merge()).to_wkt()
         'LINESTRING (0 0, 1 1, 2 2)'
-        """
-
-    def spatial_key(
-        self,
-        *,
-        curve: SpatialCurve = 'hilbert',
-        level: _IntScalar = 16,
-        bounds: Iterable[float] | None = None,
-    ) -> int | None:
-        """Space-filling-curve key of this geometry's bbox center.
-        Discretizes the center into a ``2^level x 2^level`` grid over ``bounds``
-        and returns its distance along the selected curve.
-
-        Parameters
-        ----------
-        curve : {'hilbert', 'morton'}, default hilbert
-            ``hilbert`` prioritizes locality; ``morton`` uses Z-order.
-
-        level : int, default 16
-            Grid order (``1`` to ``32``); 16 matches GeoPandas/DuckDB.
-
-        bounds : tuple of float, optional
-            The frame ``(minx, miny, maxx, maxy)``; this geometry's own bounds
-            when omitted. Keys compare across geometries only against a *shared*
-            frame — pass the same ``bounds`` when keying separate geometries.
-
-        Returns
-        -------
-        int or None
-            Spatial curve key, or ``None`` for an empty geometry — the same
-            contract as ``bounds`` and the other extent accessors.
-
-        Raises
-        ------
-        GeometryError
-            If ``level`` or ``bounds`` is invalid (a bad parameter is an error
-            whatever the geometry).
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> bounds = (0, 0, 10, 10)
-        >>> gm.Point(0, 0).spatial_key(bounds=bounds) != gm.Point(10, 10).spatial_key(bounds=bounds)
-        True
         """
 
     def minimum_rotated_rectangle(self) -> Point | LineString | Polygon:
@@ -5640,28 +5579,12 @@ class GeometryArray(Sequence[_GeometryT_co]):
         numpy.ndarray
         """
     @property
-    def any_has_z(self) -> bool:
-        """Whether any present geometry carries a Z ordinate.
-
-        Returns
-        -------
-        bool
-        """
-    @property
     def has_m(self) -> npt.NDArray[np.bool_]:
         """Whether each geometry carries an M ordinate. Missing rows are false.
 
         Returns
         -------
         numpy.ndarray
-        """
-    @property
-    def any_has_m(self) -> bool:
-        """Whether any present geometry carries an M ordinate.
-
-        Returns
-        -------
-        bool
         """
     @property
     def bounds(self) -> npt.NDArray[np.float64]:
@@ -6574,16 +6497,6 @@ class GeometryArray(Sequence[_GeometryT_co]):
         numpy.ndarray
             Read-only ``float64`` ``numpy.ndarray`` of shape ``(n,)``; ``nan``
             where M is absent or the row is missing.
-        """
-    @property
-    def bounds_3d(self) -> npt.NDArray[np.float64]:
-        """Per-row 3D bounding box ``(minx, miny, minz, maxx, maxy, maxz)``.
-
-        Returns
-        -------
-        numpy.ndarray
-            Read-only ``float64`` ``numpy.ndarray`` of shape ``(n, 6)``; ``nan``
-            where Z is absent or the row is missing.
         """
     @property
     def is_missing(self) -> npt.NDArray[np.bool_]:
@@ -10271,8 +10184,8 @@ class CRS:
 
     A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
     ``crs.ellipsoid``), serialize it (``crs.to_wkt()``, ``crs.to_epsg()``),
-    compute on it (``crs.factors(...)``, ``crs.geodesic_inverse(...)``), and attach it
-    to geometries via ``to_crs``. Accepts an authority string, EPSG code,
+    evaluate it (``crs.factors(...)``), and attach it to geometries via
+    ``to_crs``. Accepts an authority string, EPSG code,
     authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 
     Equality is structural — a ``CRS`` compares equal only to the same
@@ -10905,180 +10818,6 @@ class CRS:
         >>> f = gm.CRS(3857).factors(0.0, 0.0)
         >>> round(f['meridional_scale'], 5)
         1.0
-        """
-    @overload
-    def geodesic_inverse(
-        self,
-        lon1: _FloatScalarInput,
-        lat1: _FloatScalarInput,
-        lon2: _FloatScalarInput,
-        lat2: _FloatScalarInput,
-        z1: _FloatScalarInput | None = None,
-        z2: _FloatScalarInput | None = None,
-        *,
-        radians: bool = False,
-    ) -> CrsGeodesicInfo: ...
-    @overload
-    def geodesic_inverse(
-        self,
-        lon1: FloatInput,
-        lat1: FloatInput,
-        lon2: FloatInput,
-        lat2: FloatInput,
-        z1: FloatInput | None = None,
-        z2: FloatInput | None = None,
-        *,
-        radians: bool = False,
-    ) -> CrsGeodesicBatchInfo:
-        """Compute the geodesic inverse solution between two points on this CRS's ellipsoid.
-
-        Parameters
-        ----------
-        lon1, lat1 : float
-            First point.
-
-        lon2, lat2 : float
-            Second point.
-
-        z1, z2 : float, optional
-            Heights for a 3D (slant) distance.
-
-        radians : bool, optional
-            Interpret angular inputs as radians (default ``False``).
-
-        Returns
-        -------
-        CrsGeodesicInfo or CrsGeodesicBatchInfo
-
-        Raises
-        ------
-        InvalidGeometryError
-            If coordinate columns are non-finite, differ in length, or only
-            one of ``z1``/``z2`` is given.
-        GeometryError
-            If the CRS does not expose a usable ellipsoid for geodesic use.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> round(gm.CRS(4326).geodesic_inverse(-122.4, 37.8, -122.3, 37.9)['distance'])
-        14165
-        """
-    @overload
-    def geodesic_direct(
-        self,
-        lon: _FloatScalarInput,
-        lat: _FloatScalarInput,
-        azimuth: _FloatScalarInput,
-        distance: _FloatScalarInput,
-        *,
-        radians: bool = False,
-    ) -> CrsGeodesicDirectInfo: ...
-    @overload
-    def geodesic_direct(
-        self,
-        lon: FloatInput,
-        lat: FloatInput,
-        azimuth: FloatInput,
-        distance: FloatInput,
-        *,
-        radians: bool = False,
-    ) -> CrsGeodesicDirectBatchInfo:
-        """Compute the geodesic direct solution: project a point along an azimuth.
-
-        Parameters
-        ----------
-        lon, lat : float
-            Start point.
-
-        azimuth : float
-            Forward azimuth in degrees (or radians if ``radians``).
-
-        distance : float
-            Geodesic distance in meters.
-
-        radians : bool, optional
-            Interpret/return angular values as radians (default ``False``).
-
-        Returns
-        -------
-        CrsGeodesicDirectInfo or CrsGeodesicDirectBatchInfo
-
-        Raises
-        ------
-        CRSError
-            If the value is not a recognized CRS.
-        InvalidGeometryError
-            If coordinate columns are non-finite or differ in length.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> d = gm.CRS(4326).geodesic_direct(-122.4, 37.8, 45.0, 1000.0)
-        >>> (round(d['longitude'], 5), round(d['latitude'], 5))
-        (-122.39197, 37.80637)
-        """
-    @overload
-    def geodesic_interpolate(
-        self,
-        lon1: _FloatScalarInput,
-        lat1: _FloatScalarInput,
-        lon2: _FloatScalarInput,
-        lat2: _FloatScalarInput,
-        distance: _FloatScalarInput,
-        *,
-        normalized: bool = False,
-        radians: bool = False,
-    ) -> CrsGeodesicInterpolateInfo: ...
-    @overload
-    def geodesic_interpolate(
-        self,
-        lon1: FloatInput,
-        lat1: FloatInput,
-        lon2: FloatInput,
-        lat2: FloatInput,
-        distance: FloatInput,
-        *,
-        normalized: bool = False,
-        radians: bool = False,
-    ) -> CrsGeodesicInterpolateBatchInfo:
-        """Interpolate a point a given distance along the geodesic between two
-        points.
-
-        Parameters
-        ----------
-        lon1, lat1, lon2, lat2 : float
-            Endpoints of the geodesic.
-
-        distance : float
-            Distance from the first point, in meters (or a fraction if
-            ``normalized``).
-
-        normalized : bool, default False
-            Treat ``distance`` as a fraction of the total length (default
-            ``False``).
-
-        radians : bool, optional
-            Interpret/return angular values as radians (default ``False``).
-
-        Returns
-        -------
-        CrsGeodesicInterpolateInfo or CrsGeodesicInterpolateBatchInfo
-
-        Raises
-        ------
-        CRSError
-            If the value is not a recognized CRS.
-        InvalidGeometryError
-            If coordinate columns are non-finite or differ in length.
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> mid = gm.CRS(4326).geodesic_interpolate(
-        ...     -122.4, 37.8, -122.3, 37.9, 0.5, normalized=True)
-        >>> (round(mid['longitude'], 5), round(mid['latitude'], 5))
-        (-122.35003, 37.85001)
         """
     def operation(
         self,
@@ -16132,8 +15871,7 @@ def distance_3d(
     Distance is over linework: points/multipoints as degenerate segments,
     polygons via their boundary rings. Part of the 3D Euclidean family with
     ``length_3d`` only — area and perimeter are inherently 2D (XY footprint)
-    and have no 3D form; ``bounds_3d`` gives the 3D extent (there is no
-    ``envelope_3d``).
+    and have no 3D form; the 3D extent is ``bounds`` with ``min_z``/``max_z``.
 
     A projected CRS gives native linear units and a CRS-free geometry gives
     coordinate units — the same defaults as the 2D ``distance``. A geographic
@@ -18713,27 +18451,16 @@ def crs_engine() -> CrsEngineInfo:
     '9.6.2'
     """
 
-def crs_config() -> CrsRuntimeConfig:
-    """Return the current CRS engine configuration.
-
-    Returns
-    -------
-    dict
-        The current CRS engine configuration.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> isinstance(gm.crs_config(), dict)
-    True
-    """
-
 def crs_configure(
     *,
     search_paths: str | PathLike[str] | Iterable[str | PathLike[str]] | None = None,
     user_writable_directory: str | PathLike[str] | None = None,
 ) -> CrsRuntimeConfig:
     """Configure local CRS engine paths.
+
+    Omitted arguments keep their current value, so a call without arguments
+    returns the current configuration unchanged. Use `crs_reset` to restore
+    the defaults.
 
     Parameters
     ----------
@@ -18776,31 +18503,6 @@ def crs_clear_cache() -> None:
     >>> gm.crs_clear_cache()
     >>> True
     True
-    """
-
-def crs_info(value: CrsInput) -> CrsInfo:
-    """Descriptive information about a CRS.
-
-    Parameters
-    ----------
-    value : CRS-like
-        CRS as an EPSG code or authority/WKT string.
-
-    Returns
-    -------
-    dict
-        Descriptive CRS metadata (name, authority/code, datum, ellipsoid, axes).
-
-    Raises
-    ------
-    CRSError
-        If the value is not a recognized CRS.
-
-    Examples
-    --------
-    >>> import gometry as gm
-    >>> gm.crs_info(4326)['name']
-    'WGS 84'
     """
 
 def crs_cache_info() -> CrsCacheInfo:

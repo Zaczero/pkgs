@@ -48,7 +48,7 @@ STORAGE_CASES = [
         'XYZM',
         lambda a: (a.coords.coordinate_axes, a.coords.row_index, list(a.coords)),
     ),
-    StorageCase('bounds', 'XYZM', lambda a: (a.bounds, a.total_bounds, a.bounds_3d)),
+    StorageCase('bounds', 'XYZM', lambda a: (a.bounds, a.total_bounds)),
     StorageCase('z_accessors', 'XYZM', lambda a: (a.min_z, a.max_z)),
     StorageCase('geometry_type', 'XYZM', lambda a: a.geometry_type),
     StorageCase('coordinate_axes', 'XYZM', lambda a: a.coordinate_axes),

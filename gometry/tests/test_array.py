@@ -19,21 +19,6 @@ def assert_optional_float_array(actual: object, expected: list[float | None]) ->
     np.testing.assert_allclose(array, want, equal_nan=True)
 
 
-def assert_bounds3d_array(
-    actual: object,
-    expected: list[tuple[float, float, float, float, float, float] | None],
-) -> None:
-    array = np.asarray(actual)
-    want = np.array(
-        [[np.nan] * 6 if row is None else list(row) for row in expected],
-        dtype=np.float64,
-    )
-    assert array.dtype == np.float64
-    assert array.shape == want.shape
-    assert array.flags.writeable is False
-    np.testing.assert_allclose(array, want, equal_nan=True)
-
-
 def test_packed_point_array_values_and_auto_packing() -> None:
     packed = gm.points([0, 1, 2], [10, 11, 12], z=[5, 6, 7], crs=4326)
     assert len(packed) == 3
@@ -130,7 +115,6 @@ def test_mixed_axes_arrays_summarize_honestly() -> None:
     assert mixed.common_coordinate_axes is None
     np.testing.assert_array_equal(mixed.has_z, [True, False])
     np.testing.assert_array_equal(mixed.has_m, [False, True])
-    assert mixed.any_has_z and mixed.any_has_m
     assert not mixed.has_z.flags.writeable
     assert not mixed.has_m.flags.writeable
     with pytest.raises(ValueError, match='got mixed \\(XYZ, XYM\\)'):
@@ -277,7 +261,7 @@ def test_packed_axes_survive_selection_and_missing_rows_for_every_storage_kind()
         all_missing = gm.GeometryArray([None, source[0]])[[0]]
         assert all_missing.coordinate_axes == [None]
         assert all_missing.common_coordinate_axes == source.common_coordinate_axes
-        assert not all_missing.any_has_z
+        assert not all_missing.has_z.any()
 
 
 def test_fancy_index_preserves_nullable_axes_and_frame_metadata() -> None:
@@ -704,7 +688,6 @@ def test_geometry_array_3d_accessors_match_scalar() -> None:
     )
     assert_optional_float_array(arr.min_z, [g.min_z for g in arr])
     assert_optional_float_array(arr.max_z, [g.max_z for g in arr])
-    assert_bounds3d_array(arr.bounds_3d, [g.bounds_3d for g in arr])
     np.testing.assert_allclose((arr).length_3d, [(g).length_3d for g in arr])
     assert_optional_float_array(arr.min_z, [5.0, 1.0, None])
     assert (arr).length_3d[1] == pytest.approx(6.4031242374328485)
@@ -714,7 +697,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     points = gm.points([0, 1], [0, 1], z=[5, 9], crs=4326)
     assert_optional_float_array(points.min_z, [5.0, 9.0])
     assert_optional_float_array(points.max_z, [5.0, 9.0])
-    assert_bounds3d_array(points.bounds_3d, [g.bounds_3d for g in points])
     lines = gm.GeometryArray(
         [
             gm.from_wkt('LINESTRING Z (0 0 1, 3 4 5)'),
@@ -725,7 +707,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     )
     assert_optional_float_array(lines.min_z, [g.min_z for g in lines])
     assert_optional_float_array(lines.max_z, [g.max_z for g in lines])
-    assert_bounds3d_array(lines.bounds_3d, [g.bounds_3d for g in lines])
     assert_optional_float_array(lines.min_z, [1.0, 2.0, None])
     lines_for_length = gm.GeometryArray(
         [
@@ -748,7 +729,6 @@ def test_packed_z_accessors_use_column_paths() -> None:
     )
     assert_optional_float_array(polygons.min_z, [g.min_z for g in polygons])
     assert_optional_float_array(polygons.max_z, [g.max_z for g in polygons])
-    assert_bounds3d_array(polygons.bounds_3d, [g.bounds_3d for g in polygons])
     assert_optional_float_array(polygons.min_z, [10.0, 1.0, None])
     polygons_for_length = gm.GeometryArray(
         [shell_only, with_hole, gm.from_wkt('POLYGON EMPTY')], crs=3857

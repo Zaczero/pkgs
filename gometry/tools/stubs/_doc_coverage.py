@@ -281,24 +281,20 @@ def required_raises(
         }
     if qualname == 'crs_transform_bounds':
         required |= {'CRSError', 'TransformError', 'GeometryError'}
-    if qualname == 'crs_info':
-        required.add('CRSError')
     if owner == 'CRS':
         if name == 'factors':
             required.add('InvalidGeometryError')
-        elif name == 'geodesic':
-            required |= {'InvalidGeometryError', 'GeometryError'}
-        elif name == '__init__' or name in (
+        elif name in (
+            '__init__',
             'to_wkt',
             'to_proj',
             'to_projjson',
             'to_cf',
             'identify',
+            'operation',
+            'to_epsg',
+            'to_authority',
         ):
-            required.add('CRSError')
-        elif name in ('geodesic_direct', 'geodesic_interpolate'):
-            required |= {'CRSError', 'InvalidGeometryError'}
-        elif name in ('operation', 'to_epsg', 'to_authority'):
             required.add('CRSError')
     if owner == 'H3Cell' and name in (
         'parent',

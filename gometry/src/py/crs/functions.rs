@@ -1,6 +1,7 @@
 use crate::py::crs::{
-    Borrowed, Bound, CRSError, FromPyObject, Py, PyAny, PyAnyMethods as _, PyDict, PyErr, PyList,
-    PyResult, Python, Value, crs, crs_normalize, json_to_py, pyfunction,
+    Borrowed, Bound, CRSError, FromPyObject, Py, PyAny, PyAnyMethods as _, PyDict,
+    PyDictMethods as _, PyErr, PyList, PyResult, Python, Value, crs, crs_normalize, json_to_py,
+    pyfunction,
 };
 
 pub(crate) enum MinConfidence {
@@ -35,6 +36,33 @@ impl<'a, 'py> FromPyObject<'a, 'py> for MinConfidence {
         }
         Ok(Self::Supplied(value))
     }
+}
+
+/// Export a CRS to CF (Climate & Forecast) grid-mapping attributes.
+///
+/// Parameters
+/// ----------
+/// crs : str or int
+///     CRS as an EPSG code or authority/WKT string.
+///
+/// Returns
+/// -------
+/// dict
+pub(crate) fn crs_to_cf(
+    py: Python<'_>,
+    value: &Bound<'_, PyAny>,
+    wkt_version: crs::WktVersion,
+) -> PyResult<Py<PyDict>> {
+    let crs = crs_normalize(value)?;
+    let dict = PyDict::new(py);
+    for (key, value) in crs::to_cf(&crs, wkt_version)? {
+        match value {
+            crs::CfValue::String(value) => dict.set_item(key, value)?,
+            crs::CfValue::Float(value) => dict.set_item(key, value)?,
+            crs::CfValue::FloatList(value) => dict.set_item(key, value)?,
+        }
+    }
+    Ok(dict.unbind())
 }
 
 /// Serialize a CRS to WKT.
@@ -180,36 +208,6 @@ pub(crate) fn crs_proj_version(value: i64) -> PyResult<crs::ProjStringVersion> {
         5 => Ok(crs::ProjStringVersion::V5),
         _ => Err(CRSError::new_err("PROJ string version must be 5 or 4")),
     }
-}
-
-/// Descriptive information about a CRS.
-///
-/// Parameters
-/// ----------
-/// value : CRS-like
-///     CRS as an EPSG code or authority/WKT string.
-///
-/// Returns
-/// -------
-/// dict
-///     Descriptive CRS metadata (name, authority/code, datum, ellipsoid, axes).
-///
-/// Raises
-/// ------
-/// CRSError
-///     If the value is not a recognized CRS.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> gm.crs_info(4326)['name']
-/// 'WGS 84'
-#[pyfunction]
-pub(crate) fn crs_info<'py>(
-    py: Python<'py>,
-    value: &Bound<'_, PyAny>,
-) -> PyResult<Bound<'py, PyDict>> {
-    super::list_cache::crs_info_py_dict(py, &crs_normalize(value)?)
 }
 
 /// Best authority:code identifier for a CRS.

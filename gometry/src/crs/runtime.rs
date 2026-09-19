@@ -128,10 +128,6 @@ pub(crate) fn definition(value: &str) -> Result<SmolStr> {
     Ok(SmolStr::from(normalized))
 }
 
-pub(crate) fn runtime_config() -> Result<RuntimeConfig> {
-    Ok((*runtime_state_snapshot()?.config).clone())
-}
-
 pub(crate) fn configure_runtime(
     search_paths: Option<Vec<String>>,
     user_writable_directory: Option<String>,

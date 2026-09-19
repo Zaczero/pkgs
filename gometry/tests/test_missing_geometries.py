@@ -404,7 +404,6 @@ def test_length_3d_and_ordinate_extremes_degrade_missing_rows_to_nan() -> None:
     assert rows.max_z[[0, 2]].tolist() == [8.0, 8.0]
     assert rows.min_m[[0, 2]].tolist() == [10.0, 10.0]
     assert rows.max_m[[0, 2]].tolist() == [16.0, 16.0]
-    assert np.isnan(rows.bounds_3d[1]).all()
 
 
 def test_geographic_metric_fast_paths_skip_missing_placeholders() -> None:

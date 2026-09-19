@@ -141,9 +141,9 @@ assert same_location
 
 ```
 
-The raw [`CRS.geodesic_inverse`][gometry.CRS.geodesic_inverse] and related
-coordinate APIs retain their documented degree/radian argument switch; the
-native-frame rule above describes geometry metrics and topology.
+The raw-coordinate [`CRS.factors`][gometry.CRS.factors] retains its documented
+degree/radian argument switch; the native-frame rule above describes geometry
+metrics and topology.
 
 <a id="set-crs-vs-to-crs"></a>
 
@@ -369,12 +369,7 @@ crs = gm.CRS(4326)
 coordinates = gm.get_coordinates(box).tolist()
 north_latitude = max(point[1] for point in coordinates)
 north = [point for point in coordinates if point[1] == north_latitude]
-chord_length = sum(
-    crs.geodesic_inverse(
-        left[0], left[1], right[0], right[1]
-    )["distance"]
-    for left, right in zip(north, north[1:])
-)
+chord_length = gm.LineString(north, crs=crs).length
 ellipsoid = crs.ellipsoid
 a = ellipsoid["semi_major_metre"]
 flattening = 1.0 / ellipsoid["inverse_flattening"]
@@ -992,7 +987,7 @@ print("gometry reads as (lon, lat):", list(p.coords))
     gometry is always X/Y: [`Point(x, y)`][gometry.Point] is `(lon, lat)` for geographic CRSs and
     `(easting, northing)` for projected ones — there is no axis-order mode switch.
     If you are porting pyproj code, drop the lat/lon swaps.
-    [`gm.crs_info(x)`][gometry.crs_info] returns a plain dictionary of PROJ
+    [`gm.CRS(x).info`][gometry.CRS.info] returns a plain dictionary of PROJ
     metadata for iterating or serializing raw fields; the typed
     [`CRS`][gometry.CRS] properties expose the same metadata.
 
@@ -1062,9 +1057,11 @@ calls, so empty or validation-rejected input does not claim an execution. This
 observes the engine selected by the transform itself; it does not infer
 execution from whether a PROJ cache entry remains.
 
-[`gm.crs_configure`][gometry.crs_configure] applies only the options supplied.
-If those options already match the effective configuration, the update is a
-no-op: the generation and warm products remain available. An effective
+[`gm.crs_configure`][gometry.crs_configure] applies only the options supplied
+and returns the effective configuration, so calling it without arguments reads
+the configuration. If the supplied options already match the effective
+configuration, the update is a no-op: the generation and warm products remain
+available. An effective
 configuration change advances the generation and invalidates each thread's
 products when that thread next uses them. [`gm.crs_clear_cache`][gometry.crs_clear_cache]
 and [`gm.crs_reset`][gometry.crs_reset] always advance the generation. A

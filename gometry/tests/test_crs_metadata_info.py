@@ -86,8 +86,8 @@ class EmptyAuthorityCrsObject:
 
 def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     engine = gm.crs_engine()
-    geographic = gm.crs_info(4326)
-    projected = gm.crs_info('epsg:27700')
+    geographic = gm.CRS(4326).info
+    projected = gm.CRS('epsg:27700').info
     projjson = json.loads(gm.CRS(4326).to_projjson())
     projjson_dict = gm.CRS(4326).to_projjson_dict()
     assert isinstance(engine['version'], str)
@@ -207,7 +207,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert cast('dict[str, object]', geographic['horizontal_datum'])['code'] == '6326'
     assert geographic['scope'] == 'Horizontal component of 3D system.'
     assert cast('list[object]', geographic['domains'])
-    assert gm.crs_info(2037)['deprecated'] is True
+    assert gm.CRS(2037).info['deprecated'] is True
     replacements = gm.CRS(2037).non_deprecated
     assert replacements == [
         {
@@ -265,7 +265,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert prime_meridian['longitude'] == 0.0
     assert geographic['celestial_body'] == 'Earth'
     assert geographic['has_point_motion_operation'] is False
-    dynamic_info = gm.crs_info(7789)
+    dynamic_info = gm.CRS(7789).info
     dynamic_datum = cast('dict[str, object]', dynamic_info['datum'])
     assert dynamic_datum['kind'] == 'dynamic_geodetic_reference_frame'
     assert dynamic_datum['frame_reference_epoch'] == pytest.approx(2010.0)
@@ -515,7 +515,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     projected_area = cast('dict[str, object]', projected['area_of_use'])
     assert projected_area['west'] == pytest.approx(-9.01)
     assert projected_area['east'] == pytest.approx(2.01)
-    compound = gm.crs_info(7405)
+    compound = gm.CRS(7405).info
     assert compound['kind'] == 'compound'
     assert compound['is_compound'] is True
     assert compound['is_geographic'] is False
@@ -525,7 +525,7 @@ def _assert_crs_namespace_database_catalog_and_crs_info() -> None:
     assert gm.CRS(7405).is_projected
     assert gm.CRS(7405).is_vertical
     assert not gm.CRS(7405).is_geographic
-    geographic_compound = gm.crs_info(5498)
+    geographic_compound = gm.CRS(5498).info
     assert geographic_compound['is_compound'] is True
     assert geographic_compound['is_geographic'] is True
     assert geographic_compound['is_projected'] is False
@@ -698,7 +698,7 @@ def _assert_crs_namespace_input_objects_and_serialization() -> None:
     assert projjson['type'] == 'GeographicCRS'
     assert projjson['name'] == 'WGS 84'
     assert json.loads(gm.CRS(projjson).definition) == projjson
-    assert gm.crs_info(projjson)['code'] == '4326'
+    assert gm.CRS(projjson).info['code'] == '4326'
     assert gm.CRS(projjson) != 4326
     assert json.loads(gm.Point(-1.0, 50.0, crs=projjson).crs.definition) == projjson
     assert json.loads(gm.CRS(projjson).to_projjson()) == projjson
@@ -919,39 +919,35 @@ def test_crs_units_and_celestial_bodies_cache_identity() -> None:
 
 
 def test_crs_info_dict_cache_isolation() -> None:
-    """crs_info returns isolation-safe dicts; nested mutation cannot poison the cache."""
+    """CRS.info returns isolation-safe dicts; mutation cannot poison the receiver cache."""
     gm.crs_clear_cache()
-    cold = gm.crs_info(4326)
-    warm = gm.crs_info(4326)
+    wgs84 = gm.CRS(4326)
+    cold = wgs84.info
+    warm = wgs84.info
     assert warm == cold
     assert warm['name'] == 'WGS 84'
     assert warm['axes'] == cold['axes']
 
     # Top-level key replacement must not poison subsequent calls.
     warm['name'] = 'POISON'
-    assert gm.crs_info(4326)['name'] == cold['name']
+    assert wgs84.info['name'] == cold['name']
 
     # Top-level list slot replacement must not poison.
-    warm2 = gm.crs_info(4326)
+    warm2 = wgs84.info
     warm2['axes'] = [{'poison': True}]
-    assert gm.crs_info(4326)['axes'] == cold['axes']
+    assert wgs84.info['axes'] == cold['axes']
 
     # Nested dict leaves are frozen (MappingProxyType) — assignment raises and
     # cannot poison the cache even if a caller catches the error.
-    warm3 = gm.crs_info(4326)
+    warm3 = wgs84.info
     nested_axis = warm3['axes'][0]
-    try:
+    with pytest.raises(TypeError):
         nested_axis['name'] = 'POISON'  # type: ignore[index]
-    except TypeError:
-        pass
-    else:
-        # If nested were mutable, require isolation still holds.
-        pass
-    assert gm.crs_info(4326)['axes'] == cold['axes']
+    assert wgs84.info['axes'] == cold['axes']
 
     # Nested list-like containers under a nested dict (ensemble members) must
     # not accept in-place append that would poison a shared list.
-    warm4 = gm.crs_info(4326)
+    warm4 = wgs84.info
     datum = cast('dict[str, object]', warm4['datum'])
     members = datum['ensemble_members']
     before_len = len(cast('list[object]', members))
@@ -959,17 +955,17 @@ def test_crs_info_dict_cache_isolation() -> None:
         cast('list[object]', members).append({'poison': True})
     except (TypeError, AttributeError):
         pass
-    after = gm.crs_info(4326)
+    after = wgs84.info
     after_datum = cast('dict[str, object]', after['datum'])
     assert len(cast('list[object]', after_datum['ensemble_members'])) == before_len
     assert after == cold
 
-    # CRS.info shares the same cache semantics.
+    # A fresh receiver resolves the same dict.
     assert gm.CRS(4326).info == cold
 
-    # Generation bump / clear invalidates Python-side materialization.
+    # Generation bump / clear invalidates the receiver's materialization.
     gm.crs_clear_cache()
-    assert gm.crs_info(4326) == cold
+    assert wgs84.info == cold
 
 
 def test_crs_operations_dict_cache_isolation() -> None:
@@ -1096,7 +1092,7 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
         try:
             gm.crs_configure(search_paths=str(path))
             # Intentionally no crs_clear_cache — configure must bump generation.
-            assert gm.crs_info(4326)['name'] == 'STALE_CONFIGURE_ONLY'
+            assert gm.CRS(4326).info['name'] == 'STALE_CONFIGURE_ONLY'
             assert crs.info['name'] == 'STALE_CONFIGURE_ONLY'
             assert (
                 geom_crs is not None and geom_crs.info['name'] == 'STALE_CONFIGURE_ONLY'
@@ -1107,7 +1103,7 @@ def test_crs_receiver_info_invalidates_on_configure_only() -> None:
         # Windows refuses to remove an open database, unlike Unix. This proves
         # runtime reset releases PROJ's current-thread database handle.
         shutil.rmtree(path)
-    assert gm.crs_info(4326)['name'] == 'WGS 84'
+    assert gm.CRS(4326).info['name'] == 'WGS 84'
 
 
 def test_crs_receiver_identify_is_memoised_and_invalidates_on_clear() -> None:
@@ -1143,12 +1139,12 @@ def test_crs_receiver_info_invalidates_on_clear_only() -> None:
             con.close()
             # Clear only — no reconfigure. Generation bump must re-read db.
             gm.crs_clear_cache()
-            assert gm.crs_info(4326)['name'] == 'STALE_CLEAR_B'
+            assert gm.CRS(4326).info['name'] == 'STALE_CLEAR_B'
             assert crs.info['name'] == 'STALE_CLEAR_B'
         finally:
             gm.crs_reset()
             gm.crs_clear_cache()
-    assert gm.crs_info(4326)['name'] == 'WGS 84'
+    assert gm.CRS(4326).info['name'] == 'WGS 84'
 
 
 def test_crs_receiver_info_invalidates_on_reconfigure() -> None:
@@ -1166,10 +1162,10 @@ def test_crs_receiver_info_invalidates_on_reconfigure() -> None:
             assert crs.info['name'] == 'STALE_PATH_A'
             # Reconfigure only — no explicit clear between A and B.
             gm.crs_configure(search_paths=str(path_b))
-            assert gm.crs_info(4326)['name'] == 'STALE_PATH_B'
+            assert gm.CRS(4326).info['name'] == 'STALE_PATH_B'
             assert crs.info['name'] == 'STALE_PATH_B'
             assert crs.name == 'STALE_PATH_B'
         finally:
             gm.crs_reset()
             gm.crs_clear_cache()
-    assert gm.crs_info(4326)['name'] == 'WGS 84'
+    assert gm.CRS(4326).info['name'] == 'WGS 84'

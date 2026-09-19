@@ -10,15 +10,13 @@ use crate::array::{
     Arc, ArrayRow, Bound, CollectRows as _, DefaultedF64Input, Error, F64Param, Frame,
     GeometryArrayStorage, I64Param, InvalidGeometryError, PackedStorage, Py, PyAny,
     PyAnyMethods as _, PyErr, PyGeometryArray, PyResult, PyValidationReport, Python, RepairMethod,
-    Result, Shape, VoronoiClipInput, bool_array, cdt_refinement_values, curves, exact_geometry,
+    Result, Shape, VoronoiClipInput, bool_array, cdt_refinement_values, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, geometry, io, non_negative_int,
     note_array_row, owned_voronoi_boundary, pair_packed_equals_exact, parse_precision,
     parse_wkt_output_dimension, require_geojson_crs, row_sample_seed, rows_err,
     validate_equals_exact_tolerance, validate_subdivide_max_vertices,
 };
-use crate::py::numpy::uint64_array;
 use crate::py::support;
-use crate::py::support::SpatialCurve;
 use crate::py::vectors::Groups;
 
 impl PyGeometryArray {
@@ -751,20 +749,6 @@ impl PyGeometryArray {
             })
             .collect::<PyResult<Vec<_>>>()?;
         Ok(constructor.call1(PyTuple::new(py, arrays)?)?.unbind())
-    }
-
-    pub(crate) fn spatial_key_impl(
-        &self,
-        py: Python<'_>,
-        curve: SpatialCurve,
-        level: i64,
-        bounds: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Py<PyAny>> {
-        let kind = curves::CurveKind::from(curve);
-        uint64_array(
-            py,
-            self.curve_keys(level, bounds, kind.operation_name(), kind)?,
-        )
     }
 
     pub(crate) fn subdivide_rows(&self, py: Python<'_>, max_vertices: i64) -> PyResult<Groups> {

@@ -6,7 +6,6 @@ use crate::array::{
     Bounds, OriginSpec, Point, Result, RowSelectionRef, line_logical_len, polygon_logical_len,
     polygon_rings_range,
 };
-use crate::geometry::Bounds3D;
 
 /// Planar bounds of one row's contiguous vertex columns; `None` when empty.
 pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
@@ -200,28 +199,4 @@ pub(crate) fn row_ord_extremes(
         return None;
     }
     crate::geometry::column_minmax(&column[range])
-}
-
-/// Per-row 3D bounds from contiguous X/Y/Z column windows — the kernel
-/// behind packed `bounds_3d`. Empty windows yield `None`.
-pub(crate) fn row_bounds_3d(
-    xs: &[f64],
-    ys: &[f64],
-    zs: &[f64],
-    range: std::ops::Range<usize>,
-) -> Option<Bounds3D> {
-    if range.is_empty() {
-        return None;
-    }
-    let (minx, maxx) = crate::geometry::column_minmax(column_window(xs, &range))?;
-    let (miny, maxy) = crate::geometry::column_minmax(column_window(ys, &range))?;
-    let (minz, maxz) = crate::geometry::column_minmax(column_window(zs, &range))?;
-    Some(Bounds3D {
-        minx,
-        miny,
-        minz,
-        maxx,
-        maxy,
-        maxz,
-    })
 }

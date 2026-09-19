@@ -545,33 +545,10 @@ pub(crate) struct ProjectionFactorColumns {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct GeodesicInverseInfo {
-    pub distance: f64,
-    pub distance_3d: Option<f64>,
-    pub forward_azimuth: f64,
-    pub reverse_azimuth: f64,
-}
-
-#[derive(Debug, Clone)]
 pub(crate) struct GeodesicDirectInfo {
     pub longitude: f64,
     pub latitude: f64,
     pub final_azimuth: f64,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct GeodesicDirectColumns {
-    pub longitude: Vec<f64>,
-    pub latitude: Vec<f64>,
-    pub final_azimuth: Vec<f64>,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct GeodesicInterpolateInfo {
-    pub longitude: f64,
-    pub latitude: f64,
-    pub final_azimuth: f64,
-    pub distance: f64,
 }
 
 #[derive(Debug, Clone)]

@@ -1,13 +1,10 @@
-use std::simd::cmp::SimdPartialOrd as _;
-use std::simd::num::SimdFloat as _;
-
 use crate::boundary::geographic;
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::crs::RuntimeState;
-use crate::crs::geodesic::{CrsError, geographic_metric_frame_at};
+use crate::crs::geodesic::geographic_metric_frame_at;
 use crate::error::{ResourceError, Result};
 use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
-use crate::geometry::{CoordSeq, REDUCE_LANES, ReduceSimd, Shape, simd_mask_any};
+use crate::geometry::{CoordSeq, Shape};
 
 /// Validate geometry coordinates in their CRS-native geographic frame. This
 /// is the metric admission boundary; the geodesic kernels receive converted
@@ -73,36 +70,6 @@ pub(crate) fn ensure_geographic_lonlat(lon: f64, lat: f64) -> Result<()> {
     } else {
         Err(invalid_lonlat_error(lon, lat))
     }
-}
-
-/// Validate a batch of latitudes against the pole bound, honoring `radians`
-/// (the batch geodesic calculators already finite-check, but not the range).
-pub(crate) fn ensure_latitudes_in_domain(latitudes: &[f64], radians: bool) -> Result<()> {
-    let bound = if radians {
-        std::f64::consts::FRAC_PI_2
-    } else {
-        90.0
-    };
-    let bound_simd = ReduceSimd::splat(bound);
-    let (chunks, _) = latitudes.as_chunks::<REDUCE_LANES>();
-    if simd_mask_any(
-        latitudes.len(),
-        |index| latitudes[index].abs() > bound,
-        |start| {
-            let chunk = start / REDUCE_LANES;
-            ReduceSimd::from_array(chunks[chunk])
-                .abs()
-                .simd_gt(bound_simd)
-        },
-    ) {
-        let message = if radians {
-            "geographic latitude is outside the valid domain".to_owned()
-        } else {
-            "geographic latitude is outside the valid [-90, 90] degree domain".to_owned()
-        };
-        return Err(CrsError::message(message));
-    }
-    Ok(())
 }
 
 pub(crate) fn ensure_geodesic_lonlat_crs_at(crs: &str, state: &RuntimeState) -> Result<()> {

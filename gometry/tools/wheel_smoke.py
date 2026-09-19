@@ -2790,7 +2790,7 @@ projected = point.to_crs(3857)
 assert projected.crs == 'EPSG:3857'
 assert point.buffer(1000.0).area > 0
 assert gm.distance(point, other) > 0
-info = gm.crs_info(4326)
+info = gm.CRS(4326).info
 assert info['authority'] == 'EPSG' and info['code'] == '4326'
 assert gm.crs_grid('null')['available'] is True
 transformed = gm.crs_transform(4326, 3857, 21.0, 52.0)

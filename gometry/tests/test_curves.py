@@ -22,7 +22,6 @@ def test_hilbert_keys_match_geopandas_and_preserve_locality() -> None:
         (gm.points([0.1, 0.1001, 0.9], [0.1, 0.1, 0.9])).spatial_key(curve='hilbert'),
     )
     assert abs(a - b) < abs(a - c)
-    assert (gm.Point(0.0, 0.0)).spatial_key(curve='hilbert', bounds=(0, 0, 1, 1)) == 0
     assert uints((points).spatial_key(curve='hilbert')) == [0, 2863311530, 42107522]
 
 
@@ -49,17 +48,18 @@ def test_morton_keys_interleave_and_sort_orders_storage() -> None:
 
 
 def test_curve_frames_and_errors() -> None:
-    point = gm.Point(10.0, 10.0)
-    clamped = (point).spatial_key(curve='morton', bounds=(0, 0, 1, 1))
-    assert clamped == (point).spatial_key(curve='morton', bounds=(0, 0, 1, 1), level=16)
-    inside = (gm.Point(1.0, 1.0)).spatial_key(curve='morton', bounds=(0, 0, 1, 1))
+    outside_and_corner = gm.points([10.0, 1.0], [10.0, 1.0])
+    clamped, inside = uints(
+        outside_and_corner.spatial_key(curve='morton', bounds=(0, 0, 1, 1))
+    )
     assert clamped == inside
-    assert (gm.Point(3.0, 4.0)).spatial_key(curve='hilbert') == 0
+    assert uints(
+        outside_and_corner.spatial_key(curve='morton', bounds=(0, 0, 1, 1), level=16)
+    ) == [clamped, inside]
+    # A single point's own total bounds are a degenerate frame.
+    assert uints(gm.points([3.0], [4.0]).spatial_key(curve='hilbert')) == [0]
     keys = (gm.GeometryArray([])).spatial_key(curve='hilbert')
     ndarray_lane(keys, np.uint64, shape=(0,))
-    # An empty geometry has no key: `None`, like `bounds` and the rest of the
-    # extent-accessor family. The ARRAY sentinel below is unchanged.
-    assert (gm.from_wkt('POINT EMPTY')).spatial_key(curve='hilbert') is None
     rows = gm.GeometryArray([gm.Point(0, 0), gm.from_wkt('POINT EMPTY'), None])
     sentinel = np.iinfo(np.uint64).max
     assert rows.spatial_key(curve='hilbert').tolist() == [0, sentinel, sentinel]
@@ -74,9 +74,10 @@ def test_curve_frames_and_errors() -> None:
         'POINT EMPTY',
         None,
     ]
+    origin = gm.points([0.0], [0.0])
     with pytest.raises(gm.GeometryError, match='between 1 and 32, got 0'):
-        (gm.Point(0, 0)).spatial_key(curve='hilbert', level=0)
+        origin.spatial_key(curve='hilbert', level=0)
     with pytest.raises(gm.GeometryError, match='got 3 values'):
-        (gm.Point(0, 0)).spatial_key(curve='hilbert', bounds=(0, 0, 1))
+        origin.spatial_key(curve='hilbert', bounds=(0, 0, 1))
     with pytest.raises(gm.GeometryError, match='min <= max'):
-        (gm.Point(0, 0)).spatial_key(curve='hilbert', bounds=(1, 0, 0, 1))
+        origin.spatial_key(curve='hilbert', bounds=(1, 0, 0, 1))

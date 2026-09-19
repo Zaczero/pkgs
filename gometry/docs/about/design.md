@@ -90,7 +90,7 @@ discoverable: there is no `make_valid` *and* [`repair`][gometry.Geometry.repair]
 | spatial index | [`gm.SpatialIndex`][gometry.SpatialIndex] |
 | spatial join | [`gm.join`][gometry.join] |
 | polyfill | [`gm.h3_cover(geom, ...)`][gometry.h3_cover] |
-| geodesy | [`gm.bearing(a, b)`][gometry.bearing] / [`point.destination(...)`][gometry.Point.destination] (geographic CRS) / [`gm.CRS(c).geodesic_inverse(...)`][gometry.CRS.geodesic_inverse] |
+| geodesy | [`gm.distance(a, b)`][gometry.distance] / [`gm.bearing(a, b)`][gometry.bearing] / [`point.destination(...)`][gometry.Point.destination] / [`gm.point_between(a, b, d)`][gometry.point_between] on points in a geographic CRS, which selects the ellipsoid |
 | CRS transform | [`geom.to_crs`][gometry.Geometry.to_crs] / [`gm.crs_transform`][gometry.crs_transform] |
 | dissolve / unary union | [`gm.union_all`][gometry.union_all] |
 

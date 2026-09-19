@@ -83,24 +83,22 @@ pub(crate) use geodesic::geodesic_counters;
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
-    AngleUnit, DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation, GeodesicMetric,
+    DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation, GeodesicMetric,
     MetricModel, ResolvedMetric, ellipsoid_shape_at, ensure_3d_metric,
     ensure_geographic_columns_in_frame, ensure_geographic_domain_in_frame,
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, finite, geodesic_bearing,
     geodesic_cross_track_crs_at, geodesic_cross_track_radius_crs_at,
     geodesic_cross_track_with_radius, geodesic_destination, geodesic_destination_crs_at,
-    geodesic_direct, geodesic_direct_columns, geodesic_for_crs_at,
-    geodesic_frechet_at_with_scratch, geodesic_hausdorff_at, geodesic_interpolate_on_line_const,
-    geodesic_interpolates, geodesic_inverse, geodesic_inverses, geodesic_length_at,
-    geodesic_line_interpolate, geodesic_line_interpolate_coordseq, geodesic_line_length_columns,
-    geodesic_line_locate, geodesic_line_locate_coordseq, geodesic_line_solution_const,
-    geodesic_line_substring, geodesic_line_substring_coordseq, geodesic_point_between,
-    geodesic_point_distances, geodesic_point_pair_distance, geodesic_point_pair_distances,
-    geodesic_point_pair_dwithin, geodesic_point_pair_dwithin_one, geodesic_ring_measure_columns,
-    geodesic_shape_area, geodesic_shape_length, interpolate_optional_ordinate, metric_model,
-    metric_model_meters, with_ellipsoid_metric_at, with_geodesic_cache_at,
-    with_geodesic_coordseq_collect_rows_at, with_geodesic_coordseq_metric_at,
-    with_resolved_ellipsoid_metric_at,
+    geodesic_for_crs_at, geodesic_frechet_at_with_scratch, geodesic_hausdorff_at,
+    geodesic_interpolate_on_line, geodesic_length_at, geodesic_line_interpolate,
+    geodesic_line_interpolate_coordseq, geodesic_line_length_columns, geodesic_line_locate,
+    geodesic_line_locate_coordseq, geodesic_line_solution, geodesic_line_substring,
+    geodesic_line_substring_coordseq, geodesic_point_between, geodesic_point_distances,
+    geodesic_point_pair_distance, geodesic_point_pair_distances, geodesic_point_pair_dwithin,
+    geodesic_point_pair_dwithin_one, geodesic_ring_measure_columns, geodesic_shape_area,
+    geodesic_shape_length, interpolate_optional_ordinate, metric_model, metric_model_meters,
+    with_ellipsoid_metric_at, with_geodesic_cache_at, with_geodesic_coordseq_collect_rows_at,
+    with_geodesic_coordseq_metric_at, with_resolved_ellipsoid_metric_at,
 };
 pub(crate) use grids::grid_info;
 use in_core::{
@@ -108,8 +106,8 @@ use in_core::{
     try_in_core_transform_with_state, utm_crs,
 };
 pub(crate) use info::{
-    AngularUnit, engine_info_with_state, ensure_same_geodesic_len, factor_columns, factors,
-    factors_at, info, info_with_state, is_dynamic, is_dynamic_with_state, operation_info_at,
+    AngularUnit, engine_info_with_state, factor_columns, factors, factors_at, info,
+    info_with_state, is_dynamic, is_dynamic_with_state, operation_info_at,
     operation_info_with_state,
 };
 pub(crate) use introspect::Confidence;
@@ -138,7 +136,7 @@ pub(crate) use rhumb::rhumb_distance_crs;
 pub(crate) use rhumb::{rhumb_bearing_crs_at, rhumb_destination_crs_at, rhumb_distance_crs_at};
 pub(crate) use runtime::{
     clear_cache, configure_runtime, coordinate_identity_crs, cstring, definition, normalize,
-    normalize_pair, reset_runtime_config, runtime_config, runtime_state_snapshot,
+    normalize_pair, reset_runtime_config, runtime_state_snapshot,
 };
 pub(crate) use transform::{
     apply_operation, coordinates_are_finite, is_wgs84_lonlat, parse_epsg, proj_transform_error,
@@ -151,11 +149,10 @@ pub(crate) use types::{
     CelestialBodyInfo, CfValue, CrsCatalogInfo, CrsCatalogOptions, CrsComparison,
     CrsCoordinateOperationInfo, CrsInfo, CrsObjectKind, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, DatumInfo, DomainInfo, EllipsoidCatalogInfo, EllipsoidInfo,
-    EngineInfo, GeodesicDirectColumns, GeodesicDirectInfo, GeodesicInterpolateInfo,
-    GeodesicInverseInfo, GridDatabaseInfo, GridInfo, IdentifyCandidate, MethodInfo, OperationInfo,
-    OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo, ProjDirection,
-    ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors, RuntimeConfig,
-    RuntimeState, TransformExecution, TransformFailure, TransformOptions, UnitInfo,
+    EngineInfo, GeodesicDirectInfo, GridDatabaseInfo, GridInfo, IdentifyCandidate, MethodInfo,
+    OperationInfo, OperationParameterInfo, PrimeMeridianCatalogInfo, PrimeMeridianInfo,
+    ProjDirection, ProjOperationCatalogInfo, ProjectionFactorColumns, ProjectionFactors,
+    RuntimeConfig, RuntimeState, TransformExecution, TransformFailure, TransformOptions, UnitInfo,
     UtmCatalogOptions, WktAxisRule, WktVersion,
 };
 

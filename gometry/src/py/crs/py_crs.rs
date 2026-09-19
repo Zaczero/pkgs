@@ -11,8 +11,8 @@ use crate::py::crs::{
 ///
 /// A PROJ-backed CRS object: introspect it (``crs.is_geographic``,
 /// ``crs.ellipsoid``), serialize it (``crs.to_wkt()``, ``crs.to_epsg()``),
-/// compute on it (``crs.factors(...)``, ``crs.geodesic_inverse(...)``), and attach it
-/// to geometries via ``to_crs``. Accepts an authority string, EPSG code,
+/// evaluate it (``crs.factors(...)``), and attach it to geometries via
+/// ``to_crs``. Accepts an authority string, EPSG code,
 /// authority tuple, PROJJSON/CF mapping, WKT/PROJ string, or another ``CRS``.
 ///
 /// Equality is structural — a ``CRS`` compares equal only to the same
@@ -31,8 +31,6 @@ pub struct PyCrs {
     info: Mutex<Option<(u64, Arc<crs::CrsInfo>)>>,
     /// Receiver-local frozen Python dict for ``CRS.info``, stamped with the
     /// CRS runtime-config generation so ``crs_clear_cache`` invalidates it.
-    /// Kept separate from the free ``crs_info()`` bounded global LRU — held
-    /// receivers must not thrash that cache.
     info_py: Mutex<Option<(u64, Py<PyDict>)>>,
     /// ``CRS.identify()`` answers, one PROJ database query each, memoised per
     /// authority filter under the same generation stamp as ``info``.

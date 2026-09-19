@@ -187,12 +187,6 @@ __all__ = [
     'CrsEllipsoidCatalogInfo',
     'CrsEllipsoidInfo',
     'CrsEngineInfo',
-    'CrsGeodesicBatchInfo',
-    'CrsGeodesicDirectBatchInfo',
-    'CrsGeodesicDirectInfo',
-    'CrsGeodesicInfo',
-    'CrsGeodesicInterpolateBatchInfo',
-    'CrsGeodesicInterpolateInfo',
     'CrsGridDatabaseInfo',
     'CrsGridInfo',
     'CrsIdentifyCandidate',
@@ -281,7 +275,7 @@ SimplifyMethod: TypeAlias = Literal['vw', 'dp']
 SmoothMethod: TypeAlias = Literal['chaikin', 'catmull_rom']
 #: Triangulation kernel selected by ``Geometry.triangulate``.
 TriangulationMethod: TypeAlias = Literal['earcut', 'delaunay', 'constrained']
-#: Space-filling curve selected by ``spatial_key`` and ``sort_by_spatial_key``.
+#: Space-filling curve selected by ``GeometryArray.spatial_key`` and ``sort_by_spatial_key``.
 SpatialCurve: TypeAlias = Literal['hilbert', 'morton']
 #: Distance or stored-M stationing selected by the ``line_*`` reference methods.
 LineReferenceBasis: TypeAlias = Literal['distance', 'm']
@@ -1270,46 +1264,6 @@ class CrsProjectionFactorsBatch(TypedDict):
     dx_dphi: Float64Array
     dy_dlam: Float64Array
     dy_dphi: Float64Array
-
-
-class CrsGeodesicInfo(TypedDict):
-    distance: float
-    distance_3d: float | None
-    forward_azimuth: float
-    reverse_azimuth: float
-
-
-class CrsGeodesicBatchInfo(TypedDict):
-    distance: Float64Array
-    distance_3d: Float64Array
-    forward_azimuth: Float64Array
-    reverse_azimuth: Float64Array
-
-
-class CrsGeodesicDirectInfo(TypedDict):
-    longitude: float
-    latitude: float
-    final_azimuth: float
-
-
-class CrsGeodesicDirectBatchInfo(TypedDict):
-    longitude: Float64Array
-    latitude: Float64Array
-    final_azimuth: Float64Array
-
-
-class CrsGeodesicInterpolateInfo(TypedDict):
-    longitude: float
-    latitude: float
-    final_azimuth: float
-    distance: float
-
-
-class CrsGeodesicInterpolateBatchInfo(TypedDict):
-    longitude: Float64Array
-    latitude: Float64Array
-    final_azimuth: Float64Array
-    distance: Float64Array
 
 
 class CrsProjOperationCatalogInfo(TypedDict):

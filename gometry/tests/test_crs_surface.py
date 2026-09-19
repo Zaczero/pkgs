@@ -48,16 +48,14 @@ def test_crs_public_type_hints_resolve() -> None:
     for name in (
         'apply',
         'transform',
-        'info',
         'roundtrip',
         'cache_info',
         'transform_bounds',
     ):
         assert getattr(gm, f'crs_{name}') is getattr(_lib, f'crs_{name}')
     assert 'crs' in _types.CrsInfo.__annotations__
-    assert 'distance' in _types.CrsGeodesicInfo.__annotations__
     assert issubclass(_types.CrsAreaOfUse, dict)
-    assert gm.crs_info(4326)['kind'] == 'geographic_2d'
+    assert gm.CRS(4326).info['kind'] == 'geographic_2d'
     assert gm.CRS(4326).kind == 'geographic_2d'
     assert gm.CRS(3857).is_projected is True
     assert isinstance(gm.CRS(5703).geoid_models, list)
@@ -91,12 +89,10 @@ def test_crs_public_surface_stays_documented_and_native_registered() -> None:
         'celestial_bodies',
         'clear_cache',
         'codes',
-        'config',
         'configure',
         'ellipsoids',
         'engine',
         'grid',
-        'info',
         'prime_meridians',
         'proj_operations',
         'reset',

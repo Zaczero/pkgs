@@ -9,8 +9,8 @@ use crate::geometry::{Bounds, GeometryErrorKind, Shape};
 use crate::py::support::SpatialCurve;
 
 /// The two public space-filling curve families. Keeping the dispatch beside
-/// their kernels gives scalar keys, array keys, and sorting one exhaustive
-/// definition instead of parallel boundary-layer enums.
+/// their kernels gives array keys and sorting one exhaustive definition
+/// instead of parallel boundary-layer enums.
 #[derive(Clone, Copy)]
 pub(crate) enum CurveKind {
     Hilbert,
@@ -18,10 +18,6 @@ pub(crate) enum CurveKind {
 }
 
 impl CurveKind {
-    pub(crate) const fn operation_name(self) -> &'static str {
-        "spatial_key"
-    }
-
     pub(crate) fn key(self, frame: &CurveFrame, shape: &Shape) -> Option<u64> {
         match self {
             Self::Hilbert => frame.hilbert_key(shape),
@@ -211,7 +207,5 @@ mod tests {
             CurveKind::Morton.key(&frame, &shape),
             frame.morton_key(&shape)
         );
-        assert_eq!(CurveKind::Hilbert.operation_name(), "spatial_key");
-        assert_eq!(CurveKind::Morton.operation_name(), "spatial_key");
     }
 }

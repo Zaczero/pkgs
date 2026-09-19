@@ -1,6 +1,5 @@
 use crate::array::{
-    Arc, ArrayRow, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, ValidityMask,
-    coordinates,
+    Arc, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, ValidityMask, coordinates,
 };
 
 impl PyGeometryArray {
@@ -30,19 +29,6 @@ impl PyGeometryArray {
                 .with_shape(Clone::clone)
                 .map(|shape| (row.logical(), shape))
         })
-    }
-
-    /// Fixed-width 3D bounds facts: missing rows occupy an ndarray row and
-    /// therefore become the same ``NaN`` row as an empty/no-Z geometry.
-    pub(crate) fn bounds_3d_rows(
-        &self,
-    ) -> impl Iterator<Item = crate::error::Result<Option<crate::geometry::Bounds3D>>> + '_ {
-        self.row_operation()
-            .rows_with_missing(|| ())
-            .map(|row| match row {
-                ArrayRow::Missing { .. } => Ok(None),
-                ArrayRow::Present(row) => row.row().with_shape(Shape::bounds_3d),
-            })
     }
 
     /// Present row shapes as owned values for n-ary kernels that stage a

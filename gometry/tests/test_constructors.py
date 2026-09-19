@@ -204,8 +204,8 @@ def test_explicit_z_m_point_constructors_preserve_axes_without_affecting_xy_topo
     assert xyzm.coordinate_axes == 'XYZM'
     assert xyzm.coords.to_nested() == [1.0, 2.0, 3.0, 4.0]
     assert values.common_coordinate_axes is None
-    assert values.any_has_z
-    assert values.any_has_m
+    np.testing.assert_array_equal(values.has_z, [False, True])
+    np.testing.assert_array_equal(values.has_m, [False, True])
     assert gm.equals(xy, xyzm)
     assert gm.equals_exact(xy, xyzm, include_z=False, include_m=False)
     assert not gm.equals_exact(xy, xyzm)

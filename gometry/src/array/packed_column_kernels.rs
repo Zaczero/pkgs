@@ -22,7 +22,7 @@ use crate::array::{
     Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
     PackedColumnOutput, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
     column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
-    row_bounds_3d, row_bounds_values,
+    row_bounds_values,
 };
 use crate::geometry::{
     CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, XY, ZOrdinate, clip_segment,
@@ -868,24 +868,6 @@ pub(crate) fn map_masked_point_columns_to_crs(
     }
     debug_assert_eq!(present_row, present_count);
     Ok(output.finish()?)
-}
-
-/// Per-row 3D bounds from packed homogeneous storage — the kernel behind
-/// `GeometryArray.bounds_3d` (all rings for polygons, matching `Shape::bounds_3d`).
-pub(crate) fn bounds_3d_values_from_columns(
-    columns: &PackedColumns<'_>,
-) -> Vec<Option<crate::geometry::Bounds3D>> {
-    let XyColumns { xs, ys } = columns.physical_xy();
-    let zs = match &columns {
-        PackedColumns::Points(point_columns) => point_columns.coords().zs(),
-        PackedColumns::Lines(line_columns) => line_columns.coords().zs(),
-        PackedColumns::Polygons(polygon_columns) => polygon_columns.coords().zs(),
-    }
-    .expect("caller gates has_z");
-    columns.map_rows(|row| {
-        row.vertex_window()
-            .and_then(|window| row_bounds_3d(xs, ys, zs, window))
-    })
 }
 
 /// Dispatch a packed-column reduce over line or polygon storage only — the

@@ -11,6 +11,10 @@ use crate::py::errors::native_memory_error;
 ))]
 /// Configure local CRS engine paths.
 ///
+/// Omitted arguments keep their current value, so a call without arguments
+/// returns the current configuration unchanged. Use `crs_reset` to restore
+/// the defaults.
+///
 /// Parameters
 /// ----------
 /// search_paths : str, path, or sequence of these, optional
@@ -176,23 +180,6 @@ fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> 
         Err(PathTakeError::Oom) => Err(native_memory_error()),
         Err(PathTakeError::Provider(err) | PathTakeError::Err(err)) => Err(err),
     }
-}
-
-/// Return the current CRS engine configuration.
-///
-/// Returns
-/// -------
-/// dict
-///     The current CRS engine configuration.
-///
-/// Examples
-/// --------
-/// >>> import gometry as gm
-/// >>> isinstance(gm.crs_config(), dict)
-/// True
-#[pyfunction]
-pub(crate) fn crs_config() -> PyResult<crs::RuntimeConfig> {
-    Ok(crs::runtime_config()?)
 }
 
 /// Reset CRS engine configuration to defaults.

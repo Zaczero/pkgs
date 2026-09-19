@@ -62,12 +62,6 @@ def test_constructor_coordinate_lanes_reject_nonfinite_values(
         construct(value)
 
 
-@pytest.mark.parametrize('value', [2**1024, math.inf, math.nan])
-def test_geodesic_coordinate_fast_path_rejects_nonfinite_values(value: float) -> None:
-    with pytest.raises(gm.InvalidGeometryError, match=r'^lon1 must be finite$'):
-        gm.CRS(4326).geodesic_inverse(value, 0, 1, 1)
-
-
 def test_integer_domains_reject_bool_and_report_large_ids() -> None:
     with pytest.raises(TypeError, match='H3 cell'):
         gm.H3Cell(True)
@@ -75,8 +69,6 @@ def test_integer_domains_reject_bool_and_report_large_ids() -> None:
         gm.H3Cell(2**64)
     with pytest.raises(TypeError, match='integer'):
         gm.h3_cover(gm.Point(0, 0), resolution=True)
-    with pytest.raises(TypeError, match='integer'):
-        gm.Point(0, 0).spatial_key(level=True)
 
 
 def test_array_spatial_key_rejects_bool_level() -> None:
@@ -87,13 +79,9 @@ def test_array_spatial_key_rejects_bool_level() -> None:
 
 def test_spatial_key_reports_oversized_level_as_geometry_error() -> None:
     points = gm.GeometryArray([gm.Point(0, 0)])
-    for operation in (
-        lambda: gm.Point(0, 0).spatial_key(level=10**100),
-        lambda: points.sort_by_spatial_key(level=10**100),
-    ):
-        with pytest.raises(gm.GeometryError, match='integer is too large') as excinfo:
-            operation()
-        assert not isinstance(excinfo.value, OverflowError)
+    with pytest.raises(gm.GeometryError, match='integer is too large') as excinfo:
+        points.sort_by_spatial_key(level=10**100)
+    assert not isinstance(excinfo.value, OverflowError)
 
 
 def test_scalar_float_providers_are_admitted_once_and_must_be_finite() -> None:
@@ -131,10 +119,6 @@ def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
         gm.LineString([(0, 0), (10, 0)]).line_interpolate(at).to_wkt() == 'POINT (1 0)'
     )
     assert at.calls == 1
-
-    lon1 = OnceFloat(0.0)
-    gm.CRS(4326).geodesic_inverse(lon1, 0.0, 1.0, 1.0)
-    assert lon1.calls == 1
 
 
 @pytest.mark.parametrize(

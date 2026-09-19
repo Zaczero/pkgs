@@ -192,7 +192,7 @@ def _bound_crs(source: dict[str, Any], target: dict[str, Any]) -> str:
 
 
 def _datum(crs: object) -> dict[str, Any]:
-    info = gm.crs_info(crs)
+    info = gm.CRS(crs).info
     return cast('dict[str, Any]', info['datum'])
 
 
@@ -226,7 +226,7 @@ def test_public_frame_reference_epoch_retains_finite_years(
     datum = _datum(crs)
     assert datum['kind'] == kind
     assert datum['frame_reference_epoch'] == expected
-    assert 'admits_geometry_epoch' not in gm.crs_info(crs)
+    assert 'admits_geometry_epoch' not in gm.CRS(crs).info
     point = gm.Point(10.0, 50.0, crs=crs, epoch=_GEOMETRY_EPOCH)
     assert point.epoch == _GEOMETRY_EPOCH
     assert point.epoch != datum['frame_reference_epoch']

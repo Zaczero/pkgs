@@ -370,8 +370,8 @@ pub(crate) use packed_column_builder::{
     PackedColumnBuilder, PointColumnBuilder, concat_packed_line_columns,
 };
 pub(crate) use storage_helpers::{
-    column_window, packed_centroid_xy, packed_surface_point, row_bounds, row_bounds_3d,
-    row_bounds_values, row_ord_extremes,
+    column_window, packed_centroid_xy, packed_surface_point, row_bounds, row_bounds_values,
+    row_ord_extremes,
 };
 pub(crate) use storage_impl::reverse_coord_windows;
 mod coordinate_replacement;
@@ -381,12 +381,12 @@ mod packed_column_kernels;
 mod packed_columns;
 mod packed_gather;
 pub(crate) use packed_column_kernels::{
-    bounds_3d_values_from_columns, bounds_values_from_columns_masked, buffer_point_columns,
-    clip_lines_packed_xy, ensure_geographic_columns_present, geographic_bounds_values_from_columns,
-    line_measure_masked, map_masked_point_columns_to_crs,
-    packed_per_row_self_origin_affine_columns, polygon_measure_masked, reduce_lines_or_polygons,
-    segmented_planar_lengths, segmented_planar_lengths_3d, subdivide_line_columns,
-    subdivide_polygon_columns, total_bounds_from_columns,
+    bounds_values_from_columns_masked, buffer_point_columns, clip_lines_packed_xy,
+    ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
+    map_masked_point_columns_to_crs, packed_per_row_self_origin_affine_columns,
+    polygon_measure_masked, reduce_lines_or_polygons, segmented_planar_lengths,
+    segmented_planar_lengths_3d, subdivide_line_columns, subdivide_polygon_columns,
+    total_bounds_from_columns,
 };
 pub(crate) use packed_columns::{PackedColumnError, PackedColumnOutput, PackedColumns};
 pub(crate) use packed_gather::materialized_gather;

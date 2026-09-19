@@ -135,22 +135,6 @@ fn factors_batch_with_state(
     })
 }
 
-pub(crate) fn ensure_same_geodesic_len<const N: usize>(
-    inputs: [(usize, &str); N],
-    description: &str,
-) -> Result<()> {
-    let Some((expected, _)) = inputs.first() else {
-        return Ok(());
-    };
-    if inputs.iter().all(|(len, _)| len == expected) {
-        Ok(())
-    } else {
-        Err(CrsError::invalid(format!(
-            "geodesic inputs {description} must have the same length"
-        )))
-    }
-}
-
 pub(crate) fn factor_columns(
     target: &str,
     longitudes: &[f64],

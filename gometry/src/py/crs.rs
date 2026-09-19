@@ -10,15 +10,14 @@ use serde_json::Value;
 
 use crate::py::errors::{CRSError, GeometryError};
 use crate::{
-    CoordinateInput, Crs, CrsCoordinateArgs, broadcast_coordinate_group, crs, crs_arc,
-    finite_coordinate_required, finite_f64_required, json_to_py, parameter_input_with_expected,
-    parse_area, parse_crs,
+    Crs, CrsCoordinateArgs, broadcast_coordinate_group, crs, crs_arc, finite_coordinate_required,
+    finite_f64_required, json_to_py, parse_area, parse_crs,
 };
 
 mod functions;
 mod functions_catalog;
 mod functions_config;
-mod functions_geodesic;
+mod functions_factors;
 mod functions_misc;
 mod functions_transform;
 mod list_cache;
@@ -26,24 +25,19 @@ mod parsing;
 mod py_crs;
 mod pymethods_constructors;
 mod pymethods_export;
-mod pymethods_geodesic;
 mod pymethods_introspect;
 mod pymethods_operations;
 pub(crate) use functions::{
-    MinConfidence, crs_ellipsoids, crs_info, crs_prime_meridians, crs_proj_operations, crs_same,
-    crs_to_authority, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_projjson_dict, crs_to_wkt,
-    crs_unit, crs_units,
+    MinConfidence, crs_ellipsoids, crs_prime_meridians, crs_proj_operations, crs_same,
+    crs_to_authority, crs_to_cf, crs_to_epsg, crs_to_proj, crs_to_projjson, crs_to_projjson_dict,
+    crs_to_wkt, crs_unit, crs_units,
 };
 pub(crate) use functions_catalog::{
     crs_authorities, crs_catalog, crs_celestial_bodies, crs_codes, crs_geoid_models,
     crs_non_deprecated, crs_search, crs_utm_zones,
 };
-pub(crate) use functions_config::{
-    crs_cache_info, crs_clear_cache, crs_config, crs_configure, crs_reset,
-};
-pub(crate) use functions_geodesic::{
-    crs_factors, crs_geodesic, crs_geodesic_direct, crs_geodesic_interpolate, crs_to_cf,
-};
+pub(crate) use functions_config::{crs_cache_info, crs_clear_cache, crs_configure, crs_reset};
+pub(crate) use functions_factors::crs_factors;
 pub(crate) use functions_misc::{crs_engine, crs_normalize, crs_parse_required};
 pub(crate) use functions_transform::{
     crs_apply, crs_grid, crs_operation, crs_operation_at, crs_operations, crs_roundtrip,
@@ -58,9 +52,9 @@ pub(crate) use crate::boundary::TransformOptionArgs;
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_classes!(m; PyCrs);
     crate::add_functions!(m;
-        crs_apply, crs_cache_info, crs_clear_cache, crs_config, crs_configure, crs_ellipsoids,
+        crs_apply, crs_cache_info, crs_clear_cache, crs_configure, crs_ellipsoids,
         crs_engine, crs_grid,
-        crs_info, crs_prime_meridians, crs_proj_operations, crs_reset,
+        crs_prime_meridians, crs_proj_operations, crs_reset,
         crs_roundtrip, crs_transform, crs_transform_bounds, crs_unit, crs_units,
         crs_search, crs_catalog, crs_authorities, crs_codes, crs_utm_zones, crs_celestial_bodies,
     );

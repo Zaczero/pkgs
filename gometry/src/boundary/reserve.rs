@@ -165,32 +165,6 @@ pub(crate) fn try_reserve_pair<T, U>(
     Ok(())
 }
 
-/// Reserve three parallel output columns as one fallible operation. Any
-/// earlier reservation is released before the resource error is returned.
-pub(crate) fn try_reserve_triple<T, U, V>(
-    first: &mut Vec<T>,
-    second: &mut Vec<U>,
-    third: &mut Vec<V>,
-    additional: usize,
-) -> Result<()> {
-    if let Err(error) = try_reserve_vec(first, additional) {
-        *second = Vec::new();
-        *third = Vec::new();
-        return Err(error);
-    }
-    if let Err(error) = try_reserve_vec(second, additional) {
-        *first = Vec::new();
-        *third = Vec::new();
-        return Err(error);
-    }
-    if let Err(error) = try_reserve_vec(third, additional) {
-        *first = Vec::new();
-        *second = Vec::new();
-        return Err(error);
-    }
-    Ok(())
-}
-
 /// Append one item to each of two parallel output columns. A failure in the
 /// second append releases both columns before the error is converted.
 pub(crate) fn try_push_pair<T, U>(

@@ -239,33 +239,6 @@ pub(crate) fn bounds_array(py: Python<'_>, values: Vec<f64>) -> PyResult<Py<PyAn
     float64_matrix(py, values, rows, 4)
 }
 
-pub(crate) fn bounds3d_array(
-    py: Python<'_>,
-    values: impl IntoIterator<Item = Option<crate::geometry::Bounds3D>>,
-) -> PyResult<Py<PyAny>> {
-    let values = values.into_iter();
-    let mut out = crate::try_vec_with_capacity_hint(values.size_hint().0.saturating_mul(6))?;
-    for row in values {
-        match row {
-            Some(bounds) => {
-                crate::try_push(&mut out, bounds.minx)?;
-                crate::try_push(&mut out, bounds.miny)?;
-                crate::try_push(&mut out, bounds.minz)?;
-                crate::try_push(&mut out, bounds.maxx)?;
-                crate::try_push(&mut out, bounds.maxy)?;
-                crate::try_push(&mut out, bounds.maxz)?;
-            },
-            None => {
-                for _ in 0..6 {
-                    crate::try_push(&mut out, f64::NAN)?;
-                }
-            },
-        }
-    }
-    let rows = out.len() / 6;
-    float64_matrix(py, out, rows, 6)
-}
-
 // Production seal lives in a std-only module so compile-fail fixtures can
 // `#[path]`-include it (see `py/arrow_c/compile_fail/item_c_mutable_pyclass.rs`).
 #[path = "frozen_i64_bound.rs"]

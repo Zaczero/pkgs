@@ -252,6 +252,18 @@ def test_geoparquet_writer_rejects_m_ordinates(parquet_path: str) -> None:
         values.to_geoparquet(parquet_path)
 
 
+@pytest.mark.parametrize('encoding', ['wkb', 'native'])
+def test_geoparquet_writer_rejects_structural_m_without_present_rows(
+    parquet_path: str, encoding: str
+) -> None:
+    source = gm.GeometryArray([gm.Point(0, 0, m=2, crs=4326), None])
+    for values in (source[[1]], source[[]]):
+        assert values.common_coordinate_axes == 'XYM'
+        assert not values.has_m.any()
+        with pytest.raises(gm.GeometryError, match='does not support M ordinates'):
+            values.to_geoparquet(parquet_path, encoding=encoding)
+
+
 def test_geoparquet_epoch_roundtrip(parquet_path: str) -> None:
     geometries = gm.GeometryArray([gm.Point(0, 0, crs=4326)], crs=4326, epoch=2020.5)
     geometries.to_geoparquet(parquet_path)
@@ -1777,7 +1789,7 @@ def test_d14_1_z_geometries_still_decode_and_roundtrip(parquet_path: str) -> Non
     restored = _read_geometry(parquet_path)
     _assert_roundtrip(values, restored)
     assert restored[0].has_z
-    assert not restored.any_has_m
+    assert not restored.has_m.any()
 
 
 # --- D19 / N6: empty/all-null declared-vs-storage axes reconciliation ---

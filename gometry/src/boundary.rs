@@ -43,6 +43,6 @@ pub(crate) use reserve::{
     collect_py_strings, collect_sequence_items, collect_u64_sequence, copy_one_byte_buffer,
     is_one_byte_buffer, py_iter_or_error, try_boxed_str, try_collect_results, try_collect_vec,
     try_format, try_push, try_push_heap, try_push_pair, try_push_vec, try_reserve_heap,
-    try_reserve_hint, try_reserve_pair, try_reserve_triple, try_reserve_vec, try_string_from_str,
+    try_reserve_hint, try_reserve_pair, try_reserve_vec, try_string_from_str,
     try_vec_with_capacity, try_vec_with_capacity_hint, with_one_byte_buffer,
 };

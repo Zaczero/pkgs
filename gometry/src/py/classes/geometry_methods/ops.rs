@@ -12,7 +12,6 @@ use crate::py::classes::geometry_methods::{
     Bound, InvalidGeometryError, Py, PyAny, PyAnyMethods as _, PyGeometry, PyResult, Python, Typed,
 };
 use crate::py::support;
-use crate::py::support::SpatialCurve;
 use crate::{
     Frame, PyGeometryArray, PyValidationReport, RepairMethod, Shape, VoronoiClipInput, geometry,
     io, parse_cdt_refinement, parse_precision, parse_sample_count, parse_sample_seed,
@@ -286,10 +285,8 @@ impl PyGeometry {
 
     pub(crate) fn extremes_impl(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
         // An extent accessor describes what is THERE: `None` on an empty
-        // scalar, exactly like `bounds`, `bounds_3d` and `min_z`.
-        // Raising made these two the only members of that family that could
-        // not be called on an empty geometry, while both ARRAY forms already
-        // degraded per row.
+        // scalar, exactly like `bounds` and `min_z`, matching the array form's
+        // per-row degradation.
         let Some(points) = self.shape.extremes() else {
             return Ok(None);
         };
@@ -302,16 +299,6 @@ impl PyGeometry {
         ];
         let result = support::extreme_points_type(py)?.call1(PyTuple::new(py, typed)?)?;
         Ok(Some(result.unbind()))
-    }
-
-    pub(crate) fn spatial_key_impl(
-        &self,
-        curve: SpatialCurve,
-        level: i64,
-        bounds: Option<&Bound<'_, PyAny>>,
-    ) -> PyResult<Option<u64>> {
-        // `None` on an empty scalar — see `extremes_impl`.
-        support::spatial_key_for_shape_opt(&self.shape, curve.into(), level, bounds)
     }
 
     pub(crate) fn subdivide_parts(

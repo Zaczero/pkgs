@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 use crate::error::{ResourceError, Result};
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
-    Bounds, Bounds3D, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryKind, HasM, HasZ,
+    Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryKind, HasM, HasZ,
     MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape,
     line_length_3d,
 };
@@ -577,24 +577,6 @@ impl Shape {
     /// Largest M ordinate present, or `None` if no vertex carries M.
     pub fn max_m(&self) -> Option<f64> {
         self.m_extremes().map(|(_, high)| high)
-    }
-
-    /// 3D bounding box `(minx, miny, minz, maxx, maxy, maxz)`, or `None` when
-    /// the geometry is empty or carries no Z ordinate.
-    pub fn bounds_3d(&self) -> Option<Bounds3D> {
-        // XY from the column-native `bounds()` reducer; Z from the Z-column
-        // `column_minmax` fold. `None` unless there is at least one vertex
-        // and at least one Z, matching `bounds()` + `min_z()`/`max_z()`.
-        let bounds = self.bounds()?;
-        let (minz, maxz) = self.z_extremes()?;
-        Some(Bounds3D {
-            minx: bounds.minx(),
-            miny: bounds.miny(),
-            minz,
-            maxx: bounds.maxx(),
-            maxy: bounds.maxy(),
-            maxz,
-        })
     }
 
     fn fold_ord_extremes<SeqOrd, PointOrd>(

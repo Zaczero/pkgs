@@ -4,7 +4,7 @@ use crate::crs::geodesic::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError,
     ensure_thread_caches_current, lru_resolve,
 };
-use crate::crs::{RuntimeState, info_with_state, runtime_state_snapshot};
+use crate::crs::{RuntimeState, info_with_state};
 use crate::error::Result;
 
 /// Largest flattening admitted by the pinned order-six binary64 series.
@@ -83,15 +83,6 @@ fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeode
     })
 }
 
-pub(crate) fn with_geodesic_cache<T, E>(
-    crs: &str,
-    map_err: impl Fn(crate::error::Error) -> E,
-    f: impl FnOnce(&Geodesic) -> Result<T, E>,
-) -> Result<T, E> {
-    let state = runtime_state_snapshot().map_err(&map_err)?;
-    with_geodesic_cache_at(crs, &state, map_err, f)
-}
-
 pub(crate) fn with_geodesic_cache_at<T, E>(
     crs: &str,
     state: &RuntimeState,
@@ -133,10 +124,6 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
         .map_err(&map_err)?;
         f(&cache[index].object)
     })
-}
-
-pub(crate) fn with_geodesic<T>(crs: &str, f: impl FnOnce(&Geodesic) -> Result<T>) -> Result<T> {
-    with_geodesic_cache(crs, |error| error, f)
 }
 
 pub(crate) fn with_geodesic_at<T>(

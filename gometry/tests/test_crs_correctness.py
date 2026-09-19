@@ -445,8 +445,6 @@ def test_geographic_out_of_domain_raises() -> None:
         gm.bearing(gm.Point(0, 95, crs=4326), gm.Point(1, 95, crs=4326))
     with pytest.raises(ValueError):
         gm.Point(0, 95, crs=4326).destination(45, 1000)
-    with pytest.raises(ValueError):
-        gm.CRS(4326).geodesic_inverse(0, 95, 1, 95)
 
 
 def test_negative_buffer_erodes_polygon() -> None:

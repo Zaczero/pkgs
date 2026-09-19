@@ -460,7 +460,6 @@ assert all(name == "GeometryError" for _, name, _ in errs)
         'gm.boxes(itertools.repeat(0.0), [0.0], [1.0], [1.0])',
         'gm.pluscode_encode(itertools.repeat(0.0), [0.0])',
         'gm.CRS(3857).factors(itertools.repeat(0.0), [0.0])',
-        'gm.CRS(4326).geodesic_inverse(itertools.repeat(0.0), [0.0], 1.0, 1.0)',
         'gm.CRS({"grid_mapping_name": "lambert_conformal_conic", "standard_parallel": itertools.repeat(30.0)})',
         'gm.Point(0, 0).destination(itertools.repeat(0.0), [1.0])',
         'gm.point_between(gm.GeometryArray([gm.Point(0, 0)]), gm.Point(1, 1), itertools.repeat(0.0))',

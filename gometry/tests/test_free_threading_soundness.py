@@ -392,7 +392,7 @@ def test_proj_info_snapshot_survives_concurrent_reconfigure() -> None:
             thread.join(_JOIN_TIMEOUT)
         gm.crs_reset()
 
-    assert gm.crs_config() == {
+    assert gm.crs_configure() == {
         'search_paths': None,
         'user_writable_directory': None,
     }

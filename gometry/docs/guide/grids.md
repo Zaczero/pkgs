@@ -646,11 +646,13 @@ S2 and tile cell identifiers also encode locality-preserving orderings:
 
 ### Keys from geometries
 
-[`spatial_key`][gometry.Geometry.spatial_key] discretizes a geometry's
-bounding-box center onto a `2**level × 2**level` grid over [`bounds`][gometry.Geometry.bounds] and returns
-its position along the selected curve. Sorting keys tends to group nearby
-locations into blocks, but numerically close keys can be geographically distant
-at curve discontinuities.
+[`spatial_key`][gometry.GeometryArray.spatial_key] discretizes each row's
+bounding-box center onto a `2**level × 2**level` grid over one shared frame, the
+array's [`total_bounds`][gometry.GeometryArray.total_bounds] unless `bounds=` is
+given, and returns its position along the selected curve. Keys compare only
+within one frame, so pass the same `bounds=` when keying separate arrays.
+Sorting keys tends to group nearby locations into blocks, but numerically close
+keys can be geographically distant at curve discontinuities.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
@@ -711,7 +713,7 @@ geographic distances or remove discontinuities:
   Base-32 tokens sort lexicographically into an order that tends to preserve
   locality, which is why a `GeohashCell` token carries that ordering directly.
 
-Geometry rows use `spatial_key()` for GeoParquet or index packing, with
+Geometry arrays use `spatial_key()` for GeoParquet or index packing, with
 `curve='morton'` selecting Morton order. Cell identities carry their grid's
 ordering directly.
 
@@ -748,5 +750,5 @@ Coming from h3-py or s2sphere? See [Migrating](../migrating/index.md#coming-from
 - [API: h3_cover][gometry.h3_cover] · [s2_cover][gometry.s2_cover] ·
   [H3Cell][gometry.H3Cell] · [S2Cell][gometry.S2Cell] ·
   [SpatialIndex][gometry.SpatialIndex] ·
-  [Geometry.spatial_key][gometry.Geometry.spatial_key] ·
+  [GeometryArray.spatial_key][gometry.GeometryArray.spatial_key] ·
   [GeometryArray.sort_by_spatial_key][gometry.GeometryArray.sort_by_spatial_key]

@@ -114,8 +114,6 @@ def test_mixed_has_z_rows_length_and_values():
     assert bool(mask[0]) is True  # i=0
     assert bool(mask[3]) is False  # i=3, z=None (odd)
     assert bool(mask[1]) is False  # linestring XY
-    # any_has_z
-    assert arr.any_has_z is True
 
 
 def test_tall_edge_batch_masks_match_scalar_probes():
