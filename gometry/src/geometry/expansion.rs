@@ -126,65 +126,6 @@ pub(crate) fn expansion_sum_zeroelim<const NEGATE_RIGHT: bool>(
     Some(output_len)
 }
 
-/// Multiply an expansion by one scalar using caller-owned ping-pong storage.
-/// The result is retained in `output`; both buffers need room for twice the
-/// input length plus the canonical zero limb. `None` also means that a product
-/// residual falls outside the exact binary64 fast domain.
-pub(crate) fn scale_expansion_zeroelim(
-    input: &[f64],
-    scale: f64,
-    output: &mut [f64],
-    scratch: &mut [f64],
-    require_finite: bool,
-) -> Option<usize> {
-    let required = input.len().checked_mul(2)?.checked_add(1)?;
-    if required > output.len() || required > scratch.len() {
-        return None;
-    }
-    if let [value] = input {
-        let (head, tail) = two_product(*value, scale)?;
-        if !head.is_finite() || !tail.is_finite() {
-            if require_finite {
-                return None;
-            }
-        } else {
-            if tail != 0.0 {
-                output[0] = tail;
-                if head != 0.0 {
-                    output[1] = head;
-                    return Some(2);
-                }
-                return Some(1);
-            }
-            output[0] = if head == 0.0 { 0.0 } else { head };
-            return Some(1);
-        }
-    }
-    output[0] = 0.0;
-    let mut output_len = 1;
-    for &value in input {
-        let (head, tail) = two_product(value, scale)?;
-        let term = if tail == 0.0 {
-            [head, 0.0]
-        } else {
-            [tail, head]
-        };
-        let term_len = usize::from(tail != 0.0) + 1;
-        if require_finite && (!head.is_finite() || !tail.is_finite()) {
-            return None;
-        }
-        let next_len = expansion_sum_zeroelim::<false>(
-            &output[..output_len],
-            &term[..term_len],
-            scratch,
-            require_finite,
-        )?;
-        output[..next_len].copy_from_slice(&scratch[..next_len]);
-        output_len = next_len;
-    }
-    Some(output_len)
-}
-
 pub(crate) fn expansion_sign(expansion: &[f64]) -> Ordering {
     expansion
         .iter()
@@ -333,29 +274,6 @@ mod tests {
         }
     }
 
-    fn old_scale(input: &[f64], scale: f64, output: &mut [f64], scratch: &mut [f64]) -> usize {
-        output[0] = 0.0;
-        let mut output_len = 1;
-        for &value in input {
-            let head = value * scale;
-            let tail = if head.is_finite() {
-                value.mul_add(scale, -head)
-            } else {
-                0.0
-            };
-            let term = if tail == 0.0 {
-                [head, 0.0]
-            } else {
-                [tail, head]
-            };
-            let term_len = 1 + usize::from(tail != 0.0);
-            let next_len = old_area_sum(&output[..output_len], &term[..term_len], scratch);
-            output[..next_len].copy_from_slice(&scratch[..next_len]);
-            output_len = next_len;
-        }
-        output_len
-    }
-
     #[test]
     fn shared_kernel_preserves_legacy_sum_semantics() {
         let mut values = vec![
@@ -395,25 +313,6 @@ mod tests {
             let shared_len =
                 expansion_sum_zeroelim::<false>(left, right, &mut shared, false).unwrap();
             assert_semantically_equal(&legacy[..legacy_len], &shared[..shared_len]);
-
-            let mut legacy_scale = [0.0; 5];
-            let mut legacy_scratch = [0.0; 5];
-            let legacy_scale_len = old_scale(left, pair[1], &mut legacy_scale, &mut legacy_scratch);
-            let mut shared_scale = [0.0; 5];
-            let mut shared_scratch = [0.0; 5];
-            let Some(shared_scale_len) = scale_expansion_zeroelim(
-                left,
-                pair[1],
-                &mut shared_scale,
-                &mut shared_scratch,
-                false,
-            ) else {
-                continue;
-            };
-            assert_semantically_equal(
-                &legacy_scale[..legacy_scale_len],
-                &shared_scale[..shared_scale_len],
-            );
         }
 
         // The finite policy declines overflow before a partial expansion
@@ -422,58 +321,6 @@ mod tests {
         assert!(
             expansion_sum_zeroelim::<false>(&[f64::MAX], &[f64::MAX], &mut output, true).is_none()
         );
-        let mut scaled = [0.0; 3];
-        let mut scratch = [0.0; 3];
-        assert!(
-            scale_expansion_zeroelim(&[f64::MAX], 2.0, &mut scaled, &mut scratch, true).is_none()
-        );
-    }
-
-    #[test]
-    fn scale_specialization_preserves_legacy_semantics_through_64_limbs() {
-        let scales = [1.5, -1.5, f64::from_bits(1), -f64::from_bits(1), f64::MAX];
-        for length in 0..=64 {
-            let input = (0..length)
-                .map(|index| {
-                    let exponent = -900 + index as i32 * 28;
-                    let mantissa = 1.0 + (index as f64 + 1.0) * f64::EPSILON;
-                    mantissa * 2.0_f64.powi(exponent)
-                })
-                .collect::<Vec<_>>();
-            for &scale in &scales {
-                let mut legacy = vec![0.0; length * 2 + 1];
-                let mut legacy_scratch = vec![0.0; length * 2 + 1];
-                let legacy_len = old_scale(&input, scale, &mut legacy, &mut legacy_scratch);
-                let mut actual = vec![0.0; length * 2 + 1];
-                let mut actual_scratch = vec![0.0; length * 2 + 1];
-                let Some(actual_len) = scale_expansion_zeroelim(
-                    &input,
-                    scale,
-                    &mut actual,
-                    &mut actual_scratch,
-                    false,
-                ) else {
-                    continue;
-                };
-                assert_semantically_equal(&legacy[..legacy_len], &actual[..actual_len]);
-            }
-        }
-
-        for &(value, scale) in &[
-            (f64::NAN, 1.0),
-            (f64::INFINITY, 1.0),
-            (f64::NEG_INFINITY, 1.0),
-            (1.0, f64::NAN),
-            (1.0, f64::INFINITY),
-        ] {
-            let mut actual = [0.0; 3];
-            let mut actual_scratch = [0.0; 3];
-            assert!(
-                scale_expansion_zeroelim(&[value], scale, &mut actual, &mut actual_scratch, true,)
-                    .is_none(),
-                "value={value}, scale={scale}"
-            );
-        }
     }
 
     #[test]

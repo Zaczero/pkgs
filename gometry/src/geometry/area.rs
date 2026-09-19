@@ -7,9 +7,6 @@ use crate::error::Result;
 use crate::geometry::access::{REDUCE_LANES, ReduceSimd, crossover, simd_reduce_f64};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
-use crate::geometry::expansion::{
-    expansion_sum_zeroelim as fast_expansion_sum_zeroelim, scale_expansion_zeroelim,
-};
 use crate::geometry::tessellation::exact::{ExactDyadic, round_ratio};
 use crate::geometry::types::{Coordinates, Point, XY};
 use crate::geometry::{axis_pow2_scale, scaled_residual, unscale_area, wrap_index};
@@ -185,88 +182,7 @@ const fn area_sign_to_winding(sign: AreaSign) -> RingWinding {
     }
 }
 
-// --- Shewchuk expansion substrate (adapted from the `robust` crate, v1.2.0;
-// Jonathan Richard Shewchuk, "Adaptive Precision Floating-Point Arithmetic and
-// Fast Robust Geometric Predicates", 1997) -----------------------------------
-
 const EPSILON: f64 = f64::EPSILON;
-
-fn estimate(e: &[f64]) -> f64 {
-    let mut q = e[0];
-    for cur in &e[1..] {
-        q += *cur;
-    }
-    q
-}
-
-/// Add two non-overlapping expansions without exposing their scratch storage to
-/// callers.  The exact-measurement fallbacks are deliberately cold, so keeping
-/// the common arithmetic substrate here is clearer than teaching every caller
-/// its own partial-expansion representation.
-fn expansion_sum(left: &[f64], right: &[f64]) -> Vec<f64> {
-    let mut output = vec![0.0; left.len() + right.len()];
-    let len = fast_expansion_sum_zeroelim::<false>(left, right, &mut output, false)
-        .expect("output holds both inputs");
-    output.truncate(len);
-    output
-}
-
-fn exact_product_expansion(left: f64, right: f64) -> Option<Vec<f64>> {
-    let mut output = [0.0; 3];
-    let mut scratch = [0.0; 3];
-    let len = scale_expansion_zeroelim(&[left], right, &mut output, &mut scratch, false)?;
-    Some(output[..len].to_vec())
-}
-
-/// Exact expansion for the shared-frame residual `value * scale - origin *
-/// scale`.  The ordinary frame may round that subtraction to zero before the
-/// exact shoelace fallback sees it (the `2^-28` triangle is the smallest
-/// useful counterexample), so the fallback must retain both subtraction tails.
-fn exact_scaled_residual(value: f64, origin: f64, scale: f64) -> Option<Vec<f64>> {
-    let value = exact_product_expansion(value, scale)?;
-    let mut origin = exact_product_expansion(origin, scale)?;
-    for term in &mut origin {
-        *term = -*term;
-    }
-    Some(expansion_sum(&value, &origin))
-}
-
-fn expansion_product(left: &[f64], right: &[f64]) -> Option<Vec<f64>> {
-    let mut product = vec![0.0];
-    for &left_part in left {
-        for &right_part in right {
-            let term = exact_product_expansion(left_part, right_part)?;
-            product = expansion_sum(&product, &term);
-        }
-    }
-    Some(product)
-}
-
-/// Exact local ring area while every framed product residual fits binary64.
-fn exact_ring_area_sum_local(
-    xs: &[f64],
-    ys: &[f64],
-    pairs: usize,
-    ox: f64,
-    oy: f64,
-    sx: f64,
-    sy: f64,
-) -> Option<f64> {
-    let mut area = vec![0.0];
-    for index in 0..pairs {
-        let x0 = exact_scaled_residual(xs[index], ox, sx)?;
-        let y0 = exact_scaled_residual(ys[index], oy, sy)?;
-        let x1 = exact_scaled_residual(xs[index + 1], ox, sx)?;
-        let y1 = exact_scaled_residual(ys[index + 1], oy, sy)?;
-        let forward = expansion_product(&x0, &y1)?;
-        let mut reverse = expansion_product(&y0, &x1)?;
-        for term in &mut reverse {
-            *term = -*term;
-        }
-        area = expansion_sum(&area, &expansion_sum(&forward, &reverse));
-    }
-    Some(estimate(&area))
-}
 
 /// The exact area sign of a CLOSED ring stored as columns, whose edges are the
 /// contiguous pairs `(i, i + 1)`.
@@ -522,12 +438,12 @@ fn shoelace_shifted(
     )
 }
 
-/// Whether the ordinary shared-frame shoelace fold has no reliable sign or
-/// magnitude bits left.  The decisive scale is the sum of the two products
-/// *before* each subtraction: a finite nonzero cross term can already have
-/// lost its answer to product cancellation, so testing only the resulting
-/// zero/non-finite value misses the `2^-27` rotated triangle.
-fn shoelace_shifted_needs_exact(
+/// Absolute roundoff bound of [`shoelace_shifted`] for one ring. The decisive
+/// scale is the sum of the two products *before* each subtraction: a finite
+/// nonzero cross term can already have lost its answer to product
+/// cancellation, so bounding only the resulting value misses the `2^-27`
+/// rotated triangle.
+fn shoelace_shifted_roundoff(
     xs: &[f64],
     ys: &[f64],
     pairs: usize,
@@ -535,11 +451,7 @@ fn shoelace_shifted_needs_exact(
     oy: f64,
     sx: f64,
     sy: f64,
-    measured: f64,
-) -> bool {
-    if !measured.is_finite() {
-        return false;
-    }
+) -> f64 {
     let identity = sx.to_bits() == 1.0_f64.to_bits() && sy.to_bits() == 1.0_f64.to_bits();
     let mut product_scale = 0.0_f64;
     for ((&x0, &x1), (&y0, &y1)) in xs[..pairs]
@@ -559,15 +471,11 @@ fn shoelace_shifted_needs_exact(
         };
         product_scale += x0.abs() * y1.abs() + x1.abs() * y0.abs();
     }
-    if !product_scale.is_finite() {
-        return true;
-    }
     // Each edge has two rounded products, one rounded subtraction, and one
     // contribution to the fold.  This conservative IEEE-754 roundoff bound
     // is a property of the performed arithmetic, not a geometry-size knob.
     let operations = pairs.saturating_mul(4).saturating_add(1) as f64;
-    let roundoff = product_scale * f64::EPSILON * operations;
-    measured.abs() <= roundoff
+    product_scale * EPSILON * operations
 }
 
 fn closed_ring_sum_columns(xs: &[f64], ys: &[f64], pairs: usize) -> ExactSum {
@@ -672,63 +580,38 @@ pub(crate) fn polygon_area_measure_with(
     let sx = axis_pow2_scale(max_x.abs().max(min_x.abs()).max(ox.abs()));
     let sy = axis_pow2_scale(max_y.abs().max(min_y.abs()).max(oy.abs()));
     let mut area = 0.0_f64;
-    let mut needs_exact = false;
+    let mut magnitude = 0.0_f64;
+    let mut error = 0.0_f64;
+    let mut rings = 0_usize;
     visit(&mut |xs, ys, hole| {
         let pairs = xs.len().saturating_sub(1);
         if pairs == 0 {
             return;
         }
-        let signed_ring = shoelace_shifted(xs, ys, pairs, ox, oy, sx, sy);
-        let ring = signed_ring.abs();
-        if !ring.is_finite() {
-            // Overflow is an arithmetic-loss signal, not proof that the
-            // geometric result is unrepresentable: the exact shared frame can
-            // still cancel it to a finite answer.
-            needs_exact = true;
-        } else if shoelace_shifted_needs_exact(xs, ys, pairs, ox, oy, sx, sy, signed_ring) {
-            // A shared frame is required for shell/hole cancellation. Replay
-            // that same frame when the ordinary operations consumed all
-            // reliable answer bits, including a finite nonzero result.
-            needs_exact = true;
-        } else if hole {
+        let ring = shoelace_shifted(xs, ys, pairs, ox, oy, sx, sy).abs();
+        rings += 1;
+        magnitude += ring;
+        error += shoelace_shifted_roundoff(xs, ys, pairs, ox, oy, sx, sy);
+        if hole {
             area -= ring;
         } else {
             area += ring;
         }
     });
-    if needs_exact || area == 0.0 {
-        let mut exact_area2 = 0.0_f64;
-        let mut local_exact = true;
-        visit(&mut |xs, ys, hole| {
-            if !local_exact {
-                return;
-            }
-            let pairs = xs.len().saturating_sub(1);
-            if pairs == 0 {
-                return;
-            }
-            let Some(ring_area2) = exact_ring_area_sum_local(xs, ys, pairs, ox, oy, sx, sy) else {
-                local_exact = false;
-                return;
-            };
-            if hole {
-                exact_area2 -= ring_area2.abs();
-            } else {
-                exact_area2 += ring_area2.abs();
-            }
-        });
-        if !local_exact {
-            return exact_polygon_area_measure_with(visit);
-        }
-        area = exact_area2 / 2.0;
+    // The bound covers every ring's roundoff and the shell-minus-holes fold.
+    // Ring overflow is an arithmetic-loss signal rather than proof that the
+    // area is unrepresentable, and it makes the bound nonfinite, so the exact
+    // sum can still cancel it to a finite answer.
+    error += magnitude * EPSILON * rings.saturating_add(1) as f64;
+    if !(area.is_finite() && error.is_finite() && area.abs() > error) {
+        return exact_polygon_area_measure_with(visit);
     }
     unscale_area(area, sx, sy)
 }
 
-/// Exact fallback for a shared shell/hole area when a framed expansion term
-/// falls outside the binary64 residual contract.  The product-sum owner works
-/// in the original coordinate frame, so no subnormal intermediate is needed
-/// and shell/hole cancellation remains exact before one final rounding.
+/// Exact shell-minus-holes area, rounded once. The product-sum owner works in
+/// the original coordinate frame, so no subnormal intermediate is needed and
+/// shell/hole cancellation stays exact.
 fn exact_polygon_area_measure_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64], bool))) -> f64 {
     let mut total = ExactSum::zero();
     visit(&mut |xs, ys, hole| {
@@ -765,7 +648,7 @@ fn exact_polygon_area_measure_with(visit: impl Fn(&mut dyn FnMut(&[f64], &[f64],
 /// roundoff-bound folds so those rows do not first build a polygon-wide frame
 /// and then replay every vertex.  A shell/hole cancellation, overflow, long
 /// ring, or uncertain bound returns to [`polygon_area_measure_with`], whose
-/// shared frame and exact expansion preserve the extreme-coordinate contract.
+/// shared frame and exact product sum preserve the extreme-coordinate contract.
 pub(crate) fn polygon_area_measure_columns(
     xs: &[f64],
     ys: &[f64],
@@ -1226,6 +1109,47 @@ mod tests {
         let huge_ys = [0.0, 0.0, 1e300, 1e300, 0.0];
         let huge = polygon_area_measure_columns(&huge_xs, &huge_ys, &[0, 5], 0..1);
         assert!(huge.is_infinite() && huge.is_sign_positive());
+    }
+
+    #[test]
+    fn shell_hole_cancellation_rounds_the_exact_area_once() {
+        type Columns<'a> = (&'a [f64], &'a [f64]);
+        let (lo, hi) = (2.0_f64.powi(-60), 1.0 - 2.0_f64.powi(-53));
+        let cases: [(Columns<'_>, Columns<'_>, f64); 2] = [
+            // The shell bumps 2^-52 above its equal hole: both rings round to
+            // one binary64 area, and their exact difference is 2^-53.
+            (
+                (&[0.0, 1.0, 1.0, 0.5, 0.0, 0.0], &[
+                    0.0,
+                    0.0,
+                    1.0,
+                    1.0 + 2.0_f64.powi(-52),
+                    1.0,
+                    0.0,
+                ]),
+                (&[0.0, 0.0, 1.0, 1.0, 0.0], &[0.0, 1.0, 1.0, 0.0, 0.0]),
+                2.0_f64.powi(-53),
+            ),
+            // A valid thin annulus whose rounded rings leave a finite
+            // difference with no reliable bits.
+            (
+                (&[0.0, 1.0, 1.0, 0.0, 0.0], &[0.0, 0.0, 1.0, 1.0, 0.0]),
+                (&[lo, lo, hi, hi, lo], &[lo, hi, hi, lo, lo]),
+                2.0_f64.powi(-52) + 2.0_f64.powi(-59),
+            ),
+        ];
+        for ((shell_xs, shell_ys), (hole_xs, hole_ys), expected) in cases {
+            let scalar = polygon_area_measure_with(|visit| {
+                visit(shell_xs, shell_ys, false);
+                visit(hole_xs, hole_ys, true);
+            });
+            assert_eq!(scalar.to_bits(), expected.to_bits(), "{scalar:e}");
+            let xs = [shell_xs, hole_xs].concat();
+            let ys = [shell_ys, hole_ys].concat();
+            let offsets = [0, shell_xs.len() as i32, xs.len() as i32];
+            let packed = polygon_area_measure_columns(&xs, &ys, &offsets, 0..2);
+            assert_eq!(packed.to_bits(), expected.to_bits(), "{packed:e}");
+        }
     }
 
     #[test]
