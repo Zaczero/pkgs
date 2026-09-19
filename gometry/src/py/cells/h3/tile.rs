@@ -1,6 +1,6 @@
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{CoordSeq, GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape};
-use crate::grid::affine_source::visit_grid_cover_components;
+use crate::grid::affine_source::{CoverComponent, visit_grid_cover_components};
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 use crate::py::cells::h3::{CellIndex, LatLng, Resolution, TiledCell, h3_latlng};
@@ -85,28 +85,20 @@ pub(super) fn h3_tile(
 /// Accumulate one atomic center-rule H3 source into `coverage`. Aggregate shapes were
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
 pub(super) fn h3_tile_shape(
-    shape: &Shape,
+    component: CoverComponent<'_>,
     authority: &GeographicPrepared<'_>,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
 ) -> Result<(), H3TileError> {
-    match shape {
-        Shape::Polygon(polygon) => {
+    match component {
+        CoverComponent::Polygon(polygon) => {
             h3_tile_polygon(polygon, authority, resolution, max_cells, coverage)?;
         },
-        Shape::Point(point) => h3_tile_point(*point, authority, resolution, max_cells, coverage)?,
-        Shape::LineString(coords) => {
+        CoverComponent::Point(point) => h3_tile_point(point, authority, resolution, max_cells, coverage)?,
+        CoverComponent::LineString(coords) => {
             h3_tile_line(authority, coords, resolution, max_cells, coverage)?;
         },
-        // `visit_grid_cover_components` admits only these three atomic kinds
-        // and skips empties. Keeping the invariant explicit prevents a second
-        // aggregate traversal from quietly reappearing beside that owner.
-        Shape::MultiPoint(..)
-        | Shape::MultiLineString(..)
-        | Shape::MultiPolygon(..)
-        | Shape::GeometryCollection(..)
-        | Shape::Empty(..) => unreachable!("H3 tile source must be atomic"),
     }
     Ok(())
 }

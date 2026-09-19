@@ -46,7 +46,8 @@ use crate::boundary::geographic::{
 use crate::geographic::{GeographicFrame, GeographicRing, RingDomain, RingSummary, RingTurn};
 use crate::geometry::expansion::{expansion_sign, expansion_sum_zeroelim, two_product};
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, Shape, uses_linear_plan_for_len,
+    Bounds, CoordSeq, Coordinates as _, EdgeId, EdgeYIndex, LineSeq, Point, Polygon, Shape,
+    uses_linear_plan_for_len,
 };
 use crate::grid::s2::cell::Cell as S2Cell;
 use crate::grid::s2::projection::lonlat_to_point as s2_lonlat_to_point;
@@ -100,6 +101,24 @@ pub(crate) fn normalize_grid_source(shape: &Shape) -> Shape {
     normalize_accepted_geographic_latitudes(shape)
 }
 
+/// One atomic source component of a spherical grid cover.
+#[derive(Clone, Copy)]
+pub(crate) enum CoverComponent<'a> {
+    Point(Point),
+    LineString(&'a LineSeq),
+    Polygon(&'a Polygon),
+}
+
+impl CoverComponent<'_> {
+    pub(crate) fn to_shape(self) -> Shape {
+        match self {
+            Self::Point(point) => Shape::Point(point),
+            Self::LineString(line) => Shape::LineString(line.clone()),
+            Self::Polygon(polygon) => Shape::Polygon(polygon.clone()),
+        }
+    }
+}
+
 /// Visit the atomic source components used by spherical grid enumeration.
 ///
 /// A collection is syntax, not a second coverage algorithm: each grid cover
@@ -107,24 +126,27 @@ pub(crate) fn normalize_grid_source(shape: &Shape) -> Shape {
 /// one-member `MultiPolygon` and a bare `Polygon` must reach the identical
 /// rectangle certificate and affine carrier.  Polygon rings remain atomic so
 /// shell/hole authority is never split.
-pub(crate) fn visit_grid_cover_components<E>(
-    shape: &Shape,
-    visit: &mut impl FnMut(&Shape) -> Result<(), E>,
+pub(crate) fn visit_grid_cover_components<'a, E>(
+    shape: &'a Shape,
+    visit: &mut impl FnMut(CoverComponent<'a>) -> Result<(), E>,
 ) -> Result<(), E> {
     match shape {
+        Shape::Point(point) => visit(CoverComponent::Point(*point))?,
+        Shape::LineString(line) => visit(CoverComponent::LineString(line))?,
+        Shape::Polygon(polygon) => visit(CoverComponent::Polygon(polygon))?,
         Shape::MultiPoint(points) => {
             for point in points {
-                visit(&Shape::Point(point))?;
+                visit(CoverComponent::Point(point))?;
             }
         },
         Shape::MultiLineString(lines) => {
             for line in lines {
-                visit(&Shape::LineString(line.clone()))?;
+                visit(CoverComponent::LineString(line))?;
             }
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                visit(&Shape::Polygon(polygon.clone()))?;
+                visit(CoverComponent::Polygon(polygon))?;
             }
         },
         Shape::GeometryCollection(parts) => {
@@ -133,7 +155,6 @@ pub(crate) fn visit_grid_cover_components<E>(
             }
         },
         Shape::Empty(..) => {},
-        _ => visit(shape)?,
     }
     Ok(())
 }

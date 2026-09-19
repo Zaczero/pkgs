@@ -31,12 +31,8 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     let Some(strip) = sided_strip_source(&source, signed)? else {
         return Ok(Vec::new());
     };
-    let strip = Shape::Polygon(strip);
-    if strip.validate()?.is_none() {
-        let Shape::Polygon(polygon) = strip else {
-            unreachable!("strip is a polygon")
-        };
-        return Ok(vec![polygon]);
+    if strip.validate("polygon", "$")?.is_none() {
+        return Ok(vec![strip]);
     }
     let quads = sided_strip_quads(points, signed)?;
     Ok(match Shape::union_all(&quads, Strictness::Lenient)? {

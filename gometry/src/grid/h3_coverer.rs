@@ -328,7 +328,7 @@ pub(crate) fn h3_cover_shape(
     let mut merged = H3CoverAccumulator::default();
     visit_grid_cover_components(shape, &mut |component| {
         let source = GeographicCoverageSource::from_validated(
-            component,
+            &component.to_shape(),
             SphericalGridTarget::H3(plan.target),
         )
         .map_err(H3CoverError::Native)?;

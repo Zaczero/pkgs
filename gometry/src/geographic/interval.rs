@@ -42,12 +42,10 @@ impl CircularInterval {
     }
 
     pub(crate) fn windows(self, axis: PeriodicAxis) -> Option<LongitudeWindows> {
-        let Self::Arc { start, sweep } = self else {
-            return match self {
-                Self::Full => Some(LongitudeWindows::Full),
-                Self::Empty => None,
-                Self::Arc { .. } => unreachable!(),
-            };
+        let (start, sweep) = match self {
+            Self::Arc { start, sweep } => (start, sweep),
+            Self::Full => return Some(LongitudeWindows::Full),
+            Self::Empty => return None,
         };
         let west = start.get();
         if sweep == 0.0 {

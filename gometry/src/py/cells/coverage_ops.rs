@@ -668,7 +668,7 @@ pub(crate) fn envelope_windows(
 ) -> Result<Vec<crate::geometry::Bounds>, GridCoverError> {
     let mut windows = Vec::new();
     visit_grid_cover_components(cover_shape, &mut |component| {
-        let Some(bounds) = component.bounds() else {
+        let Some(bounds) = component.to_shape().bounds() else {
             return Ok(());
         };
         let (west, south, east, north) =

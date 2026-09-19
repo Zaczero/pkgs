@@ -478,14 +478,10 @@ impl PyGeometryArray {
                 })
             }));
         }
-        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+        let GeometryArrayStorage::Packed(packed) = self.storage() else {
             return None;
-        }
-        let axes = match self.uniform_axes() {
-            Ok(Some(axes)) => axes,
-            Ok(None) => unreachable!("packed storage has uniform axes"),
-            Err(error) => return Some(Err(error.into())),
         };
+        let axes = packed.axes();
         Python::attach(|py| {
             self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
                 let (sx, sy) = size.tuple();
