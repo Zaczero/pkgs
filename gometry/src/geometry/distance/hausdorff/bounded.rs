@@ -16,6 +16,8 @@ use crate::geometry::{
 use crate::{try_push_vec, try_reserve_vec};
 
 const NOMINATED_SITE_COUNT: usize = 4;
+const NEAREST_CANDIDATE_LIMIT: usize = 32;
+const HULL_SEPARATION_LIMIT: usize = 8;
 
 #[cfg(test)]
 thread_local! {
@@ -721,6 +723,215 @@ impl SupportIndex {
         }
         Ok(())
     }
+
+    /// Whether no point of `bounds` can be a local maximum of the distance
+    /// to this support. Such a maximum lies in the convex hull of its nearest
+    /// points, and a primitive can be nearest somewhere in the box only when
+    /// its conservative lower bound does not exceed `site_squared`, an upper
+    /// bound on the squared distance to the support over the box. One such
+    /// candidate, a monotone chain of them, or a box strictly separated from
+    /// the hull of all of them excludes a maximum.
+    fn excludes_local_maximum(
+        &self,
+        support: &PreparedSupport,
+        bounds: FloatBox,
+        site_squared: &Rational,
+    ) -> Result<bool> {
+        let Some(root) = self.root else {
+            return Ok(false);
+        };
+        let threshold = nonnegative_upper_bound(site_squared)?;
+        if !threshold.is_finite() {
+            return Ok(false);
+        }
+        let mut candidates = Vec::new();
+        try_reserve_vec(&mut candidates, NEAREST_CANDIDATE_LIMIT)?;
+        let mut stack = Vec::new();
+        try_push_vec(&mut stack, root)?;
+        while let Some(node_index) = stack.pop() {
+            let node = self.nodes[node_index];
+            if box_distance_lower(bounds, node.bounds) > threshold {
+                continue;
+            }
+            if let (Some(left), Some(right)) = (node.left, node.right) {
+                try_push_vec(&mut stack, left)?;
+                try_push_vec(&mut stack, right)?;
+                continue;
+            }
+            for order_index in &self.order[node.start..node.end] {
+                let item = self.items[*order_index];
+                if box_distance_lower(bounds, item.bounds) > threshold {
+                    continue;
+                }
+                if let PrimitiveId::Span(index) = item.primitive
+                    && supporting_line_lower_squared(bounds, &support.spans[index]) > threshold
+                {
+                    continue;
+                }
+                if candidates.len() == NEAREST_CANDIDATE_LIMIT {
+                    return Ok(false);
+                }
+                candidates.push(item);
+            }
+        }
+        if candidates.len() <= 1 || forms_monotone_chain(support, &candidates)? {
+            return Ok(true);
+        }
+        if candidates.len() > HULL_SEPARATION_LIMIT {
+            return Ok(false);
+        }
+        // Whole source segments and outward point boxes enclose the
+        // candidates, so separating the box from their hull suffices.
+        let mut hull_points = Vec::new();
+        try_reserve_vec(&mut hull_points, 4 * candidates.len())?;
+        for item in &candidates {
+            match item.primitive {
+                PrimitiveId::Span(index) => {
+                    let source = support.spans[index].source;
+                    hull_points.push(source.start);
+                    hull_points.push(source.end);
+                },
+                PrimitiveId::Point(_) => {
+                    hull_points.extend(item.bounds.corners().map(|(x, y)| XY::new(x, y)));
+                },
+            }
+        }
+        Ok(box_separated_from_points(bounds, &hull_points))
+    }
+}
+
+/// Whether the candidates are spans forming one open chain whose directions,
+/// taken along the chain, lie in an open half-plane. Such a chain is strictly
+/// monotone in some direction `w`, and it cannot touch an empty disk on both
+/// sides of the center: past its lowest touch point it rises in `w`, which
+/// enters the disk, and between touch points it cannot cross the disk to the
+/// other side.
+fn forms_monotone_chain(support: &PreparedSupport, candidates: &[IndexItem]) -> Result<bool> {
+    let mut spans = Vec::new();
+    let mut ends = Vec::new();
+    try_reserve_vec(&mut spans, candidates.len())?;
+    try_reserve_vec(&mut ends, candidates.len())?;
+    for item in candidates {
+        let PrimitiveId::Span(index) = item.primitive else {
+            return Ok(false);
+        };
+        let span = &support.spans[index];
+        spans.push(span);
+        ends.push([span_point(span, &span.t_lo)?, span_point(span, &span.t_hi)?]);
+    }
+    // `links[i][end]` is the span sharing endpoint `end` (0 at `t_lo`) of span
+    // `i`; an endpoint shared three ways is a branch, not a chain.
+    let mut links = Vec::new();
+    try_reserve_vec(&mut links, ends.len())?;
+    links.resize(ends.len(), [None::<usize>; 2]);
+    for first in 0..ends.len() {
+        for second in first + 1..ends.len() {
+            for first_end in 0..2 {
+                for second_end in 0..2 {
+                    if ends[first][first_end].same_position(&ends[second][second_end])? {
+                        if links[first][first_end].is_some() || links[second][second_end].is_some()
+                        {
+                            return Ok(false);
+                        }
+                        links[first][first_end] = Some(second);
+                        links[second][second_end] = Some(first);
+                    }
+                }
+            }
+        }
+    }
+    let Some(start) = (0..ends.len()).find(|&index| links[index].contains(&None)) else {
+        return Ok(false);
+    };
+    // Walk from the free end, recording each span with whether the walk runs
+    // against its `t_lo -> t_hi` carrier.
+    let mut walk = Vec::new();
+    try_reserve_vec(&mut walk, ends.len())?;
+    let mut current = start;
+    let mut reversed = links[start][0].is_some();
+    loop {
+        walk.push((current, reversed));
+        let exit = usize::from(!reversed);
+        let Some(next) = links[current][exit] else {
+            break;
+        };
+        if walk.len() == ends.len() || links[next][0] == links[next][1] {
+            return Ok(false);
+        }
+        reversed = links[next][1] == Some(current);
+        current = next;
+    }
+    if walk.len() != ends.len() {
+        return Ok(false);
+    }
+    // In an open half-plane exactly when some direction has every other one
+    // strictly counterclockwise within a half turn, or equal to it.
+    for &(first, first_reversed) in &walk {
+        let mut leads = true;
+        for &(second, second_reversed) in &walk {
+            let left = &spans[first].carrier;
+            let right = &spans[second].carrier;
+            let flip = first_reversed != second_reversed;
+            let cross = oriented_sign(
+                left.dx
+                    .try_product(&right.dy)?
+                    .try_subtract(&left.dy.try_product(&right.dx)?)?
+                    .sign(),
+                flip,
+            );
+            let dot = oriented_sign(
+                left.dx
+                    .try_product(&right.dx)?
+                    .try_add(&left.dy.try_product(&right.dy)?)?
+                    .sign(),
+                flip,
+            );
+            if !(cross == ExactSign::Positive
+                || (cross == ExactSign::Zero && dot == ExactSign::Positive))
+            {
+                leads = false;
+                break;
+            }
+        }
+        if leads {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+const fn oriented_sign(sign: ExactSign, flip: bool) -> ExactSign {
+    match (sign, flip) {
+        (ExactSign::Positive, true) => ExactSign::Negative,
+        (ExactSign::Negative, true) => ExactSign::Positive,
+        (sign, _) => sign,
+    }
+}
+
+/// Whether a line strictly separates the box from the convex hull of
+/// `points`. Two disjoint convex polygons are separated by a line through an
+/// edge of one of them, so the box axes and the lines through pairs of
+/// points are the only candidates.
+fn box_separated_from_points(bounds: FloatBox, points: &[XY]) -> bool {
+    if points.iter().all(|point| point.x > bounds.max_x)
+        || points.iter().all(|point| point.x < bounds.min_x)
+        || points.iter().all(|point| point.y > bounds.max_y)
+        || points.iter().all(|point| point.y < bounds.min_y)
+    {
+        return true;
+    }
+    let corners = bounds.corners().map(|(x, y)| XY::new(x, y));
+    points.iter().any(|&start| {
+        points.iter().any(|&end| {
+            start != end
+                && points
+                    .iter()
+                    .all(|&point| exact::orient2d(start, end, point) != ExactSign::Negative)
+                && corners
+                    .iter()
+                    .all(|&corner| exact::orient2d(start, end, corner) == ExactSign::Negative)
+        })
+    })
 }
 
 #[derive(Debug)]
@@ -995,11 +1206,10 @@ impl PreparedSupport {
         for face in &self.faces {
             let mut inside = false;
             for cycle in face {
-                if point_in_cycle(point, cycle)? {
-                    return Ok(true);
-                }
-                if cycle_crosses_ray(point, cycle)? {
-                    inside = !inside;
+                match cycle_location(point, cycle)? {
+                    CycleLocation::Boundary => return Ok(true),
+                    CycleLocation::Crosses => inside = !inside,
+                    CycleLocation::Clear => {},
                 }
             }
             if inside {
@@ -1497,39 +1707,31 @@ fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> 
     dx.try_square()?.try_add(&dy.try_square()?)
 }
 
-fn point_in_cycle(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<bool> {
-    if cycle.len() < 3 {
-        return Ok(false);
-    }
-    for index in 0..cycle.len() {
-        let left = &cycle[index];
-        let right = &cycle[(index + 1) % cycle.len()];
-        let dx = right.x.try_subtract(&left.x)?;
-        let dy = right.y.try_subtract(&left.y)?;
-        let px = point.x.try_subtract(&left.x)?;
-        let py = point.y.try_subtract(&left.y)?;
-        let cross = dx.try_product(&py)?.try_subtract(&dy.try_product(&px)?)?;
-        if cross.is_zero()
-            && between(&point.x, &left.x, &right.x)?
-            && between(&point.y, &left.y, &right.y)?
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+enum CycleLocation {
+    Boundary,
+    /// Off the cycle, with an odd number of crossings of the rightward ray.
+    Crosses,
+    Clear,
 }
 
-fn cycle_crosses_ray(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<bool> {
+/// Locate a point against one cycle in a single pass. The exact cross product
+/// runs only for edges that straddle the rightward ray or whose extent holds
+/// the point; any other edge can neither contain the point nor cross the ray.
+fn cycle_location(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<CycleLocation> {
     if cycle.len() < 3 {
-        return Ok(false);
+        return Ok(CycleLocation::Clear);
     }
     let mut crossings = false;
+    let mut left_order = cycle[cycle.len() - 1].y.try_cmp(&point.y)?;
     for index in 0..cycle.len() {
-        let left = &cycle[index];
-        let right = &cycle[(index + 1) % cycle.len()];
-        let left_above = left.y.try_cmp(&point.y)? == Ordering::Greater;
-        let right_above = right.y.try_cmp(&point.y)? == Ordering::Greater;
-        if left_above == right_above {
+        let left = &cycle[(index + cycle.len() - 1) % cycle.len()];
+        let right = &cycle[index];
+        let right_order = right.y.try_cmp(&point.y)?;
+        let straddles = (left_order == Ordering::Greater) != (right_order == Ordering::Greater);
+        let spans_y = left_order != right_order || left_order == Ordering::Equal;
+        left_order = right_order;
+        let holds_point = spans_y && between(&point.x, &left.x, &right.x)?;
+        if !straddles && !holds_point {
             continue;
         }
         let dx = right.x.try_subtract(&left.x)?;
@@ -1537,14 +1739,22 @@ fn cycle_crosses_ray(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<bool> {
         let px = point.x.try_subtract(&left.x)?;
         let py = point.y.try_subtract(&left.y)?;
         let cross = dx.try_product(&py)?.try_subtract(&dy.try_product(&px)?)?;
-        let rising = right.y.try_cmp(&left.y)? == Ordering::Greater;
-        if (rising && cross.sign() == ExactSign::Positive)
-            || (!rising && cross.sign() == ExactSign::Negative)
+        if holds_point && cross.is_zero() {
+            return Ok(CycleLocation::Boundary);
+        }
+        let rising = right_order == Ordering::Greater;
+        if straddles
+            && ((rising && cross.sign() == ExactSign::Positive)
+                || (!rising && cross.sign() == ExactSign::Negative))
         {
             crossings = !crossings;
         }
     }
-    Ok(crossings)
+    Ok(if crossings {
+        CycleLocation::Crosses
+    } else {
+        CycleLocation::Clear
+    })
 }
 
 fn between(value: &Rational, left: &Rational, right: &Rational) -> Result<bool> {
@@ -2530,16 +2740,15 @@ fn sum_upper(left: &SqrtInterval, right: &SqrtInterval) -> Result<Option<Rationa
     Ok(Some(left.try_add(&right)?))
 }
 
-fn fixed_site_upper(
+/// The least, over the nominated target primitives, of the farthest patch
+/// corner's squared distance. Distance to one primitive is convex, so this
+/// bounds the squared distance to the target over the whole patch.
+fn fixed_site_squared(
     patch: &SourcePatch,
     source: &PreparedSupport,
     target: &PreparedSupport,
     nominated: &[PrimitiveId],
-    context: &SearchContext<'_>,
 ) -> Result<Option<Rational>> {
-    if nominated.is_empty() {
-        return Ok(None);
-    }
     let corners = patch.corners(source)?;
     let mut best = None;
     for &primitive in nominated {
@@ -2552,8 +2761,7 @@ fn fixed_site_upper(
         }
         min_rational(&mut best, site_upper.expect("fixed site has corners"))?;
     }
-    let squared = context.scaled_squared(&best.expect("nonempty nominated sites"))?;
-    sqrt_upper(&squared, context)?.upper_rational()
+    Ok(best)
 }
 
 fn carrier_line_value(span: &SupportSpan, point: &ExactPoint) -> Result<Rational> {
@@ -2727,23 +2935,43 @@ fn patch_upper(
     source: &PreparedSupport,
     target: &PreparedSupport,
     context: &SearchContext<'_>,
-) -> Result<Option<Rational>> {
+) -> Result<(Option<Rational>, Option<Rational>)> {
     let (center, radius_squared) = patch.center_and_radius_squared(source)?;
-    let center_squared = target.distance_squared(&center)?;
-    let center_squared = context.scaled_squared(&center_squared)?;
     let radius_squared = context.scaled_squared(&radius_squared)?;
-    let center_interval = sqrt_upper(&center_squared, context)?;
     let radius_interval = sqrt_upper(&radius_squared, context)?;
-    let mut best = sum_upper(&center_interval, &radius_interval)?;
+    let boundary_squared = target.index.nearest(target, &center)?.to_rational()?;
+    let boundary_squared = context.scaled_squared(&boundary_squared)?;
+    let boundary_interval = sqrt_upper(&boundary_squared, context)?;
+    let mut best = if target.contains_area(&center)? {
+        // The segment from the center to any patch point crosses the target
+        // boundary no nearer than the center's depth, so the point is within
+        // the radius less that depth of the target.
+        radius_interval
+            .upper_rational()?
+            .map_or(Ok(None), |radius| {
+                let depth = Rational::from_dyadic(boundary_interval.lower.try_clone()?);
+                if radius.try_cmp(&depth)? == Ordering::Greater {
+                    radius.try_subtract(&depth).map(Some)
+                } else {
+                    Ok(Some(Rational::zero()))
+                }
+            })?
+    } else {
+        sum_upper(&boundary_interval, &radius_interval)?
+    };
 
     let nominated = target.index.nominate(&center)?;
-    if let Some(fixed) = fixed_site_upper(patch, source, target, &nominated, context)? {
-        let replaces = match &best {
-            None => true,
-            Some(current) => fixed.try_cmp(current)? == Ordering::Less,
+    let site_squared = fixed_site_squared(patch, source, target, &nominated)?;
+    if let Some(site_squared) = &site_squared {
+        let squared = context.scaled_squared(site_squared)?;
+        let fixed = sqrt_upper(&squared, context)?.upper_rational()?;
+        let replaces = match (&best, &fixed) {
+            (_, None) => false,
+            (None, Some(_)) => true,
+            (Some(current), Some(fixed)) => fixed.try_cmp(current)? == Ordering::Less,
         };
         if replaces {
-            best = Some(fixed);
+            best = fixed;
         }
     }
     if let Some(strip) = parallel_strip_upper(patch, source, target, &nominated, context)? {
@@ -2755,7 +2983,7 @@ fn patch_upper(
             best = Some(strip);
         }
     }
-    Ok(best)
+    Ok((best, site_squared))
 }
 
 fn upper_is_below_lower(upper: &Rational, context: &SearchContext<'_>) -> Result<bool> {
@@ -2791,9 +3019,19 @@ fn build_patch(
             context.update_lower(witness_squared)?;
         }
     }
-    let upper = patch_upper(&patch, source, target, context)?;
+    let (upper, site_squared) = patch_upper(&patch, source, target, context)?;
     if let Some(upper_value) = &upper
         && upper_is_below_lower(upper_value, context)?
+    {
+        return Ok(None);
+    }
+    // A maximizer inside the source area is a local maximum of the distance
+    // to the target; maximizers on the source boundary belong to its span
+    // patches.
+    if let (SourcePatch::Box(bounds), Some(site_squared)) = (&patch, &site_squared)
+        && target
+            .index
+            .excludes_local_maximum(target, *bounds, site_squared)?
     {
         return Ok(None);
     }
@@ -3323,7 +3561,6 @@ impl ExactPoint {
         })
     }
 
-    #[cfg(any(test, debug_assertions))]
     fn same_position(&self, other: &Self) -> crate::error::Result<bool> {
         Ok(self.x.try_cmp(&other.x)?.is_eq() && self.y.try_cmp(&other.y)?.is_eq())
     }
@@ -3541,6 +3778,54 @@ mod tests {
                 "adjacent boxes used {work} refinements, limit {limit}"
             );
         }
+    }
+
+    fn regular_polygon(count: usize, offset: (f64, f64)) -> Shape {
+        let vertices: Vec<(f64, f64)> = (0..=count)
+            .map(|index| {
+                let angle = std::f64::consts::TAU * (index % count) as f64 / count as f64;
+                (
+                    100.0 * angle.cos() + offset.0,
+                    100.0 * angle.sin() + offset.1,
+                )
+            })
+            .collect();
+        polygon(&vertices)
+    }
+
+    #[test]
+    fn filled_translation_refinement_stays_near_the_boundary_maximum() {
+        // A convex polygon against its translation by t is exactly |t| apart.
+        // Boxes that cannot hold an interior maximum are discarded instead of
+        // being refined until their corners fall below it; without that the
+        // 64-gon needed over 13,000 refinements, and now about ten.
+        for count in [4, 16, 64] {
+            let source = regular_polygon(count, (0.0, 0.0));
+            let target = regular_polygon(count, (1.0, 0.5));
+            let _guard = limit_refinement_work(100);
+            let value = distance(&source, &target, None, 1.0).unwrap();
+            assert!(
+                (value - 1.25_f64.sqrt()).abs() <= 1e-9 * value,
+                "{count}: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn filled_interior_maximum_inside_a_target_hole_survives_box_discards() {
+        // The hole is a 3-4-5 right triangle, so the square's farthest point
+        // from the holed target is the hole's incenter at clearance 1. Its
+        // three nearest edges form a closed cycle around it.
+        let shell = [(2.0, 2.0), (8.0, 2.0), (8.0, 8.0), (2.0, 8.0), (2.0, 2.0)];
+        let hole = [(3.0, 3.0), (3.0, 6.0), (7.0, 3.0), (3.0, 3.0)];
+        let ring = |points: &[(f64, f64)]| {
+            let points: Vec<_> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap())
+        };
+        let holed =
+            Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), vec![ring(&hole)]).unwrap());
+        let value = distance(&polygon(&shell), &holed, None, 1.0).unwrap();
+        assert!((value - 1.0).abs() <= 1e-9, "{value}");
     }
 
     #[test]
