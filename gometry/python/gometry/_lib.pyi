@@ -1033,9 +1033,9 @@ class Geometry:
     @property
     def num_geometries(self) -> int:
         """Number of top-level parts: ``1`` for a single point/line/polygon,
-        the member count for a multi/collection, and ``0`` for a typed
-        top-level empty. Explicit empty members still count in their
-        multipart's member count.
+        including a typed empty; the member count for a multi/collection, and
+        ``0`` for an empty multipart or collection. Explicit empty members
+        still count in their multipart's member count.
 
         Returns
         -------
