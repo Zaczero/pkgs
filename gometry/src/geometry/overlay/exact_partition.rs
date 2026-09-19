@@ -562,12 +562,12 @@ impl VisibilityIndex {
         let mut entries = Vec::new();
         try_reserve_vec(&mut entries, partition.spans.len())?;
         for (edge, span) in partition.spans.iter().enumerate() {
-            let [ax, ay, aw] = partition.homogeneous(span.start)?;
-            let [bx, by, bw] = partition.homogeneous(span.end)?;
-            let (ax_lo, ax_hi) = outward_ratio_bounds(&ax, &aw)?;
-            let (ay_lo, ay_hi) = outward_ratio_bounds(&ay, &aw)?;
-            let (bx_lo, bx_hi) = outward_ratio_bounds(&bx, &bw)?;
-            let (by_lo, by_hi) = outward_ratio_bounds(&by, &bw)?;
+            let [ax, ay, aw] = partition.homogeneous(span.start);
+            let [bx, by, bw] = partition.homogeneous(span.end);
+            let (ax_lo, ax_hi) = outward_ratio_bounds(ax, aw)?;
+            let (ay_lo, ay_hi) = outward_ratio_bounds(ay, aw)?;
+            let (bx_lo, bx_hi) = outward_ratio_bounds(bx, bw)?;
+            let (by_lo, by_hi) = outward_ratio_bounds(by, bw)?;
             try_push_vec(&mut entries, VisibilityEntry {
                 edge: u32::try_from(edge).map_err(|_| ResourceError::SizeOverflow)?,
                 extent: RoundedExtent {
@@ -1129,10 +1129,10 @@ impl BoundaryPlan {
             }];
             let incoming = topology.twins[self.source_darts[prior.sources.end - 1] as usize];
             let root = NodeId(topology.owners[outgoing as usize]);
-            let [_, ry, rw] = partition.homogeneous(root)?;
+            let [_, ry, rw] = partition.homogeneous(root);
             let upper = |slot: u32| -> Result<bool> {
-                let [_, y, w] = partition.homogeneous(NodeId(topology.targets[slot as usize]))?;
-                Ok(try_compare_ratios(&y, &w, &ry, &rw)? != Ordering::Less)
+                let [_, y, w] = partition.homogeneous(NodeId(topology.targets[slot as usize]));
+                Ok(try_compare_ratios(y, w, ry, rw)? != Ordering::Less)
             };
             let outgoing_upper = upper(outgoing)?;
             let incoming_upper = upper(incoming)?;
@@ -1727,6 +1727,10 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     /// Built on the first cross-component contact query; a connected
     /// arrangement never needs it.
     visibility: std::sync::OnceLock<VisibilityIndex>,
+    /// Each node's homogeneous point, evaluated once from its recipe: every
+    /// comparison, bound and emission reads it, and the partition never
+    /// changes after construction.
+    points: Vec<[ExactDyadic; 3]>,
 }
 
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
@@ -2065,8 +2069,8 @@ impl ExactSourceInventory {
                 continue;
             }
             let span = partition.spans[index];
-            let start = partition.homogeneous(span.start)?;
-            let end = partition.homogeneous(span.end)?;
+            let start = try_clone_point(partition.homogeneous(span.start))?;
+            let end = try_clone_point(partition.homogeneous(span.end))?;
             let start_parameter = parameter(span.unique, &start)?;
             let end_parameter = parameter(span.unique, &end)?;
             covered[span.start.0 as usize] = true;
@@ -2096,7 +2100,7 @@ impl ExactSourceInventory {
         for (index, &selected) in cells.nodes.iter().enumerate() {
             if selected && !covered[index] {
                 try_push_vec(&mut points, ExactMetricNode {
-                    homogeneous: partition.homogeneous(NodeId(index as u32))?,
+                    homogeneous: try_clone_point(partition.homogeneous(NodeId(index as u32)))?,
                 })?;
                 if let Some(boundary_points) = boundary_points.as_mut() {
                     try_push_vec(boundary_points, !has_selected_area)?;
@@ -2118,7 +2122,7 @@ impl ExactSourceInventory {
             for &slot in &topology.face_slots[start..end] {
                 let node = NodeId(topology.owners[slot as usize]);
                 try_push_vec(&mut cycle, ExactMetricNode {
-                    homogeneous: partition.homogeneous(node)?,
+                    homogeneous: try_clone_point(partition.homogeneous(node))?,
                 })?;
             }
             try_push_vec(&mut faces[face], cycle)?;
@@ -2465,8 +2469,8 @@ impl ExactSourceInventory {
                     continue;
                 }
                 area.add_homogeneous_cross(
-                    partition.homogeneous(NodeId(topology.owners[slot]))?,
-                    partition.homogeneous(NodeId(topology.targets[slot]))?,
+                    partition.homogeneous(NodeId(topology.owners[slot])),
+                    partition.homogeneous(NodeId(topology.targets[slot])),
                 )?;
             }
         }
@@ -3506,8 +3510,8 @@ impl ExactSourceInventory {
             perimeter += length;
             if let Some(area) = &mut area {
                 area.add_homogeneous_cross(
-                    partition.homogeneous(NodeId(topology.owners[slot]))?,
-                    partition.homogeneous(NodeId(topology.targets[slot]))?,
+                    partition.homogeneous(NodeId(topology.owners[slot])),
+                    partition.homogeneous(NodeId(topology.targets[slot])),
                 )?;
             }
             seen_rows.clear();
@@ -4942,19 +4946,19 @@ fn cycle_contains_node(
     cycle: &[NodeId],
     query: NodeId,
 ) -> Result<bool> {
-    let [qx, qy, qw] = partition.homogeneous(query)?;
+    let [qx, qy, qw] = partition.homogeneous(query);
     let mut inside = false;
     for index in 0..cycle.len() {
         let a = cycle[index];
         let b = cycle[(index + 1) % cycle.len()];
-        let [ax, ay, aw] = partition.homogeneous(a)?;
-        let [bx, by, bw] = partition.homogeneous(b)?;
-        let y_a = try_compare_ratios(&ay, &aw, &qy, &qw)?;
-        let y_b = try_compare_ratios(&by, &bw, &qy, &qw)?;
-        let dx = bx.try_product(&aw)?.try_subtract(ax.try_product(&bw)?)?;
-        let dy = by.try_product(&aw)?.try_subtract(ay.try_product(&bw)?)?;
-        let qx_rel = qx.try_product(&aw)?.try_subtract(ax.try_product(&qw)?)?;
-        let qy_rel = qy.try_product(&aw)?.try_subtract(ay.try_product(&qw)?)?;
+        let [ax, ay, aw] = partition.homogeneous(a);
+        let [bx, by, bw] = partition.homogeneous(b);
+        let y_a = try_compare_ratios(ay, aw, qy, qw)?;
+        let y_b = try_compare_ratios(by, bw, qy, qw)?;
+        let dx = bx.try_product(aw)?.try_subtract(ax.try_product(bw)?)?;
+        let dy = by.try_product(aw)?.try_subtract(ay.try_product(bw)?)?;
+        let qx_rel = qx.try_product(aw)?.try_subtract(ax.try_product(qw)?)?;
+        let qy_rel = qy.try_product(aw)?.try_subtract(ay.try_product(qw)?)?;
         let mut orientation = dx
             .try_product(&qy_rel)?
             .try_subtract(dy.try_product(&qx_rel)?)?
@@ -4970,10 +4974,10 @@ fn cycle_contains_node(
             };
         }
         if orientation == ExactSign::Zero
-            && try_compare_ratios(&qx, &qw, &ax, &aw)? != Ordering::Less
-            && try_compare_ratios(&qx, &qw, &bx, &bw)? != Ordering::Greater
-            && try_compare_ratios(&qy, &qw, &ay, &aw)? != Ordering::Less
-            && try_compare_ratios(&qy, &qw, &by, &bw)? != Ordering::Greater
+            && try_compare_ratios(qx, qw, ax, aw)? != Ordering::Less
+            && try_compare_ratios(qx, qw, bx, bw)? != Ordering::Greater
+            && try_compare_ratios(qy, qw, ay, aw)? != Ordering::Less
+            && try_compare_ratios(qy, qw, by, bw)? != Ordering::Greater
         {
             return Ok(false);
         }
@@ -5102,6 +5106,49 @@ fn walk_exact_chain(
     Ok((nodes, chain_spans))
 }
 
+fn try_clone_point(point: &[ExactDyadic; 3]) -> Result<[ExactDyadic; 3]> {
+    Ok([
+        point[0].try_clone()?,
+        point[1].try_clone()?,
+        point[2].try_clone()?,
+    ])
+}
+
+/// The homogeneous point a node recipe denotes.
+fn recipe_point(
+    recipe: &NodeRecipe,
+    stored: Option<XY>,
+    unique: &[Segment],
+) -> Result<[ExactDyadic; 3]> {
+    match recipe {
+        NodeRecipe::Stored(key) => {
+            let point = stored.unwrap_or_else(|| key.xy());
+            Ok([
+                ExactDyadic::try_from_f64(point.x)?,
+                ExactDyadic::try_from_f64(point.y)?,
+                ExactDyadic::try_from_f64(1.0)?,
+            ])
+        },
+        NodeRecipe::Constructed {
+            unique: segment,
+            num,
+            den,
+        } => {
+            let source = unique[*segment as usize];
+            let coordinate = |start, end| -> Result<ExactDyadic> {
+                let start = ExactDyadic::try_from_f64(start)?;
+                let delta = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
+                den.try_product(&start)?.try_add(num.try_product(&delta)?)
+            };
+            Ok([
+                coordinate(source.start.x, source.end.x)?,
+                coordinate(source.start.y, source.end.y)?,
+                den.try_clone()?,
+            ])
+        },
+    }
+}
+
 impl ExactPartition<'_> {
     pub(in crate::geometry) fn node_xy(&self, node: NodeId) -> Result<XY> {
         Ok(match self.recipe(node) {
@@ -5109,9 +5156,9 @@ impl ExactPartition<'_> {
                 self.stored_points[node.0 as usize].unwrap_or_else(|| key.xy())
             },
             NodeRecipe::Constructed { .. } => {
-                let [x, y, w] = self.homogeneous(node)?;
-                let x = round_ratio(&x, &w)?;
-                let y = round_ratio(&y, &w)?;
+                let [x, y, w] = self.homogeneous(node);
+                let x = round_ratio(x, w)?;
+                let y = round_ratio(y, w)?;
                 XY::new(
                     if x == 0.0 { 0.0 } else { x },
                     if y == 0.0 { 0.0 } else { y },
@@ -5330,44 +5377,22 @@ impl ExactPartition<'_> {
         self.provenance.owners(span)
     }
 
-    /// Temporary homogeneous coordinates; node identity remains the recipe index.
-    pub(in crate::geometry) fn homogeneous(&self, node: NodeId) -> Result<[ExactDyadic; 3]> {
-        match self.recipe(node) {
-            NodeRecipe::Stored(key) => {
-                let point = self.stored_points[node.0 as usize].unwrap_or_else(|| key.xy());
-                Ok([
-                    ExactDyadic::try_from_f64(point.x)?,
-                    ExactDyadic::try_from_f64(point.y)?,
-                    ExactDyadic::try_from_f64(1.0)?,
-                ])
-            },
-            NodeRecipe::Constructed { unique, num, den } => {
-                let source = self.unique[*unique as usize];
-                let coordinate = |start, end| -> Result<ExactDyadic> {
-                    let start = ExactDyadic::try_from_f64(start)?;
-                    let delta = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
-                    den.try_product(&start)?.try_add(num.try_product(&delta)?)
-                };
-                Ok([
-                    coordinate(source.start.x, source.end.x)?,
-                    coordinate(source.start.y, source.end.y)?,
-                    den.try_clone()?,
-                ])
-            },
-        }
+    /// A node's homogeneous point; node identity remains the recipe index.
+    pub(in crate::geometry) fn homogeneous(&self, node: NodeId) -> &[ExactDyadic; 3] {
+        &self.points[node.0 as usize]
     }
 
     fn node_in_bounds(&self, node: NodeId, bounds: Bounds) -> Result<bool> {
-        let [x, y, w] = self.homogeneous(node)?;
+        let [x, y, w] = self.homogeneous(node);
         let one = ExactDyadic::try_from_f64(1.0)?;
         let minx = ExactDyadic::try_from_f64(bounds.minx())?;
         let miny = ExactDyadic::try_from_f64(bounds.miny())?;
         let maxx = ExactDyadic::try_from_f64(bounds.maxx())?;
         let maxy = ExactDyadic::try_from_f64(bounds.maxy())?;
-        Ok(try_compare_ratios(&x, &w, &minx, &one)? != Ordering::Less
-            && try_compare_ratios(&x, &w, &maxx, &one)? != Ordering::Greater
-            && try_compare_ratios(&y, &w, &miny, &one)? != Ordering::Less
-            && try_compare_ratios(&y, &w, &maxy, &one)? != Ordering::Greater)
+        Ok(try_compare_ratios(x, w, &minx, &one)? != Ordering::Less
+            && try_compare_ratios(x, w, &maxx, &one)? != Ordering::Greater
+            && try_compare_ratios(y, w, &miny, &one)? != Ordering::Less
+            && try_compare_ratios(y, w, &maxy, &one)? != Ordering::Greater)
     }
 
     fn round_nodes(&self, nodes: &[NodeId]) -> Result<Vec<XY>> {
@@ -5581,11 +5606,11 @@ impl ExactPartition<'_> {
         if left == right {
             return Ok(Ordering::Equal);
         }
-        let [lx, ly, lw] = self.homogeneous(left)?;
-        let [rx, ry, rw] = self.homogeneous(right)?;
-        let x = try_compare_ratios(&lx, &lw, &rx, &rw)?;
+        let [lx, ly, lw] = self.homogeneous(left);
+        let [rx, ry, rw] = self.homogeneous(right);
+        let x = try_compare_ratios(lx, lw, rx, rw)?;
         if x == Ordering::Equal {
-            try_compare_ratios(&ly, &lw, &ry, &rw)
+            try_compare_ratios(ly, lw, ry, rw)
         } else {
             Ok(x)
         }
@@ -5753,11 +5778,11 @@ impl ExactPartition<'_> {
             ..topology.starts[root.0 as usize + 1] as usize;
         let mut chosen = None;
         let mut has_upper = false;
-        let [_, ry, rw] = self.homogeneous(root)?;
+        let [_, ry, rw] = self.homogeneous(root);
         for slot in range {
             let target = NodeId(topology.targets[slot]);
-            let [_, ty, tw] = self.homogeneous(target)?;
-            let upper = try_compare_ratios(&ty, &tw, &ry, &rw)? != Ordering::Less;
+            let [_, ty, tw] = self.homogeneous(target);
+            let upper = try_compare_ratios(ty, tw, ry, rw)? != Ordering::Less;
             // The leftward wedge follows the highest upper ray, or the highest
             // lower ray when every departure points down and right.
             if chosen.is_none() || (upper && !has_upper) {
@@ -6012,9 +6037,9 @@ impl ExactPartition<'_> {
         query: NodeId,
     ) -> Result<Option<VisibilityHit>> {
         let component = topology.component_of[query.0 as usize];
-        let [qx, qy, qw] = self.homogeneous(query)?;
-        let (_, query_x_hi) = outward_ratio_bounds(&qx, &qw)?;
-        let (query_y_lo, query_y_hi) = outward_ratio_bounds(&qy, &qw)?;
+        let [qx, qy, qw] = self.homogeneous(query);
+        let (_, query_x_hi) = outward_ratio_bounds(qx, qw)?;
+        let (query_y_lo, query_y_hi) = outward_ratio_bounds(qy, qw)?;
         let mut nearest: Option<(ExactDyadic, ExactDyadic, f64, VisibilityHit)> = None;
         let visibility = self
             .visibility
@@ -6048,20 +6073,36 @@ impl ExactPartition<'_> {
             {
                 continue;
             }
-            let [ax, ay, aw] = self.homogeneous(span.start)?;
-            let [bx, by, bw] = self.homogeneous(span.end)?;
-            let a_side = try_compare_ratios(&ay, &aw, &qy, &qw)?;
-            let b_side = try_compare_ratios(&by, &bw, &qy, &qw)?;
+            let [ax, ay, aw] = self.homogeneous(span.start);
+            let [bx, by, bw] = self.homogeneous(span.end);
+            let a_side = try_compare_ratios(ay, aw, qy, qw)?;
+            let b_side = try_compare_ratios(by, bw, qy, qw)?;
             let (x, w, hit) = if a_side == Ordering::Equal && b_side == Ordering::Equal {
-                if try_compare_ratios(&ax, &aw, &bx, &bw)? == Ordering::Greater {
-                    (ax, aw, VisibilityHit::Node(span.start))
+                if try_compare_ratios(ax, aw, bx, bw)? == Ordering::Greater {
+                    (
+                        ax.try_clone()?,
+                        aw.try_clone()?,
+                        VisibilityHit::Node(span.start),
+                    )
                 } else {
-                    (bx, bw, VisibilityHit::Node(span.end))
+                    (
+                        bx.try_clone()?,
+                        bw.try_clone()?,
+                        VisibilityHit::Node(span.end),
+                    )
                 }
             } else if a_side == Ordering::Equal {
-                (ax, aw, VisibilityHit::Node(span.start))
+                (
+                    ax.try_clone()?,
+                    aw.try_clone()?,
+                    VisibilityHit::Node(span.start),
+                )
             } else if b_side == Ordering::Equal {
-                (bx, bw, VisibilityHit::Node(span.end))
+                (
+                    bx.try_clone()?,
+                    bw.try_clone()?,
+                    VisibilityHit::Node(span.end),
+                )
             } else if a_side == b_side {
                 continue;
             } else {
@@ -6070,12 +6111,12 @@ impl ExactPartition<'_> {
                 let sy = ExactDyadic::try_from_f64(source.start.y)?;
                 let dx = ExactDyadic::try_from_f64(source.end.x)?.try_subtract(sx.try_clone()?)?;
                 let dy = ExactDyadic::try_from_f64(source.end.y)?.try_subtract(sy.try_clone()?)?;
-                let w = dy.try_product(&qw)?;
-                let height = qy.try_clone()?.try_subtract(sy.try_product(&qw)?)?;
+                let w = dy.try_product(qw)?;
+                let height = qy.try_clone()?.try_subtract(sy.try_product(qw)?)?;
                 let x = sx.try_product(&w)?.try_add(dx.try_product(&height)?)?;
                 (x, w, VisibilityHit::Span(entry.edge))
             };
-            if try_compare_ratios(&x, &w, &qx, &qw)? != Ordering::Less {
+            if try_compare_ratios(&x, &w, qx, qw)? != Ordering::Less {
                 continue;
             }
             if let Some((nx, nw, ..)) = &nearest
@@ -6572,6 +6613,11 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
     }
 
+    let mut points = Vec::new();
+    try_reserve_vec(&mut points, recipes.len())?;
+    for (recipe, &stored) in recipes.iter().zip(&stored_points) {
+        points.push(recipe_point(recipe, stored, unique)?);
+    }
     let partition = ExactPartition {
         unique,
         recipes,
@@ -6586,6 +6632,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         protect_stored: false,
         protect_all: false,
         visibility: std::sync::OnceLock::new(),
+        points,
     };
     Ok(partition)
 }
@@ -7327,21 +7374,26 @@ mod tests {
     fn live_node_injectivity_distinguishes_repetition_from_rounding_collision() {
         let case = run(&[seg(0.0, 0.0, 2.0, 0.0)]);
         let mut partition = case.partition();
-        let first = NodeId(partition.recipes.len() as u32);
-        partition.recipes.push(NodeRecipe::Constructed {
-            unique: 0,
-            num: ExactDyadic::try_from_f64(1.0).unwrap(),
-            den: ExactDyadic::try_from_f64(2.0).unwrap(),
-        });
-        let second = NodeId(partition.recipes.len() as u32);
-        partition.recipes.push(NodeRecipe::Constructed {
-            unique: 0,
-            num: ExactDyadic::try_from_f64(1.0)
+        let mut push = |num: ExactDyadic| {
+            let recipe = NodeRecipe::Constructed {
+                unique: 0,
+                num,
+                den: ExactDyadic::try_from_f64(2.0).unwrap(),
+            };
+            let node = NodeId(partition.recipes.len() as u32);
+            partition
+                .points
+                .push(recipe_point(&recipe, None, partition.unique).unwrap());
+            partition.recipes.push(recipe);
+            node
+        };
+        let first = push(ExactDyadic::try_from_f64(1.0).unwrap());
+        let second = push(
+            ExactDyadic::try_from_f64(1.0)
                 .unwrap()
                 .try_add(ExactDyadic::try_from_f64(2.0_f64.powi(-54)).unwrap())
                 .unwrap(),
-            den: ExactDyadic::try_from_f64(2.0).unwrap(),
-        });
+        );
         assert_eq!(
             partition.compare_nodes(first, second).unwrap(),
             Ordering::Less
@@ -8685,7 +8737,7 @@ mod tests {
                     );
                 }
             }
-            let [x, y, w] = partition.homogeneous(crossing).unwrap();
+            let [x, y, w] = partition.homogeneous(crossing);
             let (topology, edges) = partition.local_topology().unwrap();
             let row = topology.starts[crossing.0 as usize] as usize
                 ..topology.starts[crossing.0 as usize + 1] as usize;
@@ -8698,11 +8750,11 @@ mod tests {
             let zero = ExactDyadic::try_from_f64(0.0).unwrap();
             let one = ExactDyadic::try_from_f64(1.0).unwrap();
             assert_eq!(
-                try_compare_ratios(&x, &w, &four, &three).unwrap(),
+                try_compare_ratios(x, w, &four, &three).unwrap(),
                 Ordering::Equal
             );
             assert_eq!(
-                try_compare_ratios(&y, &w, &zero, &one).unwrap(),
+                try_compare_ratios(y, w, &zero, &one).unwrap(),
                 Ordering::Equal
             );
             let left = stored_node(&partition, XY::new(1.0, 0.0)).unwrap();

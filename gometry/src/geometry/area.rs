@@ -83,14 +83,10 @@ impl ExactRationalArea {
         Ok(())
     }
 
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "the three-coordinate homogeneous carrier is a small Copy value; borrowing it adds indirection to the exact accumulation kernel"
-    )]
     pub(in crate::geometry) fn add_homogeneous_cross(
         &mut self,
-        left: [ExactDyadic; 3],
-        right: [ExactDyadic; 3],
+        left: &[ExactDyadic; 3],
+        right: &[ExactDyadic; 3],
     ) -> Result<()> {
         let forward = left[0].try_product(&right[1])?;
         let reverse = left[1].try_product(&right[0])?;
@@ -972,19 +968,19 @@ mod tests {
     fn rational_area_accumulator_rounds_selected_fraction_once() {
         let exact = |value| ExactDyadic::try_from_f64(value).expect("finite dyadic");
         let mut area = ExactRationalArea::new().expect("one denominator");
-        area.add_homogeneous_cross([exact(0.0), exact(0.0), exact(1.0)], [
+        area.add_homogeneous_cross(&[exact(0.0), exact(0.0), exact(1.0)], &[
             exact(1.0),
             exact(0.0),
             exact(1.0),
         ])
         .expect("first edge");
-        area.add_homogeneous_cross([exact(1.0), exact(0.0), exact(1.0)], [
+        area.add_homogeneous_cross(&[exact(1.0), exact(0.0), exact(1.0)], &[
             exact(0.0),
             exact(1.0),
             exact(1.0),
         ])
         .expect("second edge");
-        area.add_homogeneous_cross([exact(0.0), exact(1.0), exact(1.0)], [
+        area.add_homogeneous_cross(&[exact(0.0), exact(1.0), exact(1.0)], &[
             exact(0.0),
             exact(0.0),
             exact(1.0),
