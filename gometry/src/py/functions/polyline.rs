@@ -107,7 +107,9 @@ fn encode_shape(shape: &Shape, factor: f64) -> PyResult<String> {
     match shape {
         Shape::LineString(points) => encode_line(points, factor),
         Shape::Point(point) => encode_point(*point, factor),
-        Shape::Empty(GeometryKind::LineString, axes) if *axes == CoordinateAxes::XY => {
+        Shape::Empty(GeometryKind::LineString | GeometryKind::Point, axes)
+            if *axes == CoordinateAxes::XY =>
+        {
             Ok(String::new())
         },
         _ => Err(geometry_type_err(

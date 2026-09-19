@@ -8,8 +8,8 @@ use crate::geometry::tessellation::{
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
-    GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, PolygonizeFull, Ring, Segment,
-    Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
+    GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring,
+    Segment, Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
 };
 use crate::{NonNegative, try_push_vec, try_reserve_vec};
 
@@ -223,21 +223,20 @@ impl Shape {
         refinement: CdtRefinement,
         budget: &mut crate::geometry::ExpansionBudget,
     ) -> Result<Vec<Point>> {
-        match self {
-            Self::Polygon(polygon) => constrained_triangle_vertices(
+        match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
+            Polygonal::Polygon(polygon) => constrained_triangle_vertices(
                 polygon.rings().map(Ring::coords),
                 self.area(),
                 refinement,
                 budget,
             ),
-            Self::MultiPolygon(polygons) => constrained_triangle_vertices(
+            Polygonal::MultiPolygon(polygons) => constrained_triangle_vertices(
                 polygons.iter().flat_map(Polygon::rings).map(Ring::coords),
                 self.area(),
                 refinement,
                 budget,
             ),
-            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(Vec::new()),
-            _ => Err(GeometryErrorKind::PolygonRequired.into()),
+            Polygonal::Empty => Ok(Vec::new()),
         }
     }
 
@@ -304,16 +303,15 @@ impl Shape {
     }
 
     fn earcut_with(&self, emit: &mut impl FnMut(Point, Point, Point) -> Result<()>) -> Result<()> {
-        match self {
-            Self::Polygon(polygon) => earcut_polygon_with(polygon, emit),
-            Self::MultiPolygon(polygons) => {
+        match self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)? {
+            Polygonal::Polygon(polygon) => earcut_polygon_with(polygon, emit),
+            Polygonal::MultiPolygon(polygons) => {
                 for polygon in polygons {
                     earcut_polygon_with(polygon, emit)?;
                 }
                 Ok(())
             },
-            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(()),
-            _ => Err(GeometryErrorKind::PolygonRequired.into()),
+            Polygonal::Empty => Ok(()),
         }
     }
 

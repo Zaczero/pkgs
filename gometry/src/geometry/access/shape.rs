@@ -4,9 +4,31 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Shape,
-    line_length_3d,
+    HasM, HasZ, LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon,
+    Shape, line_length_3d,
 };
+
+/// A lineal operand, empties included. Operations over lines match it
+/// exhaustively, so none can route a typed empty into its kind error.
+pub(crate) enum Lineal<'a> {
+    LineString(&'a LineSeq),
+    MultiLineString(&'a MultiLineString),
+    Empty,
+}
+
+/// A polygonal operand, empties included (see [`Lineal`]).
+pub(crate) enum Polygonal<'a> {
+    Polygon(&'a Polygon),
+    MultiPolygon(&'a MultiPolygon),
+    Empty,
+}
+
+/// A point-set operand, empties included (see [`Lineal`]).
+pub(crate) enum PointSet<'a> {
+    Point(Point),
+    MultiPoint(&'a MultiPoint),
+    Empty,
+}
 
 impl Shape {
     pub const fn geometry_type(&self) -> &'static str {
@@ -86,6 +108,40 @@ impl Shape {
             Self::Point(point) => Ok(Some(*point)),
             Self::Empty(GeometryKind::Point, _) => Ok(None),
             _ => Err(GeometryErrorKind::PointRequired { operation }.into()),
+        }
+    }
+
+    /// The shape as a lineal operand; `None` for any other kind.
+    pub(crate) const fn lineal(&self) -> Option<Lineal<'_>> {
+        match self {
+            Self::LineString(line) => Some(Lineal::LineString(line)),
+            Self::MultiLineString(lines) => Some(Lineal::MultiLineString(lines)),
+            Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
+                Some(Lineal::Empty)
+            },
+            _ => None,
+        }
+    }
+
+    /// The shape as a polygonal operand; `None` for any other kind.
+    pub(crate) const fn polygonal(&self) -> Option<Polygonal<'_>> {
+        match self {
+            Self::Polygon(polygon) => Some(Polygonal::Polygon(polygon)),
+            Self::MultiPolygon(polygons) => Some(Polygonal::MultiPolygon(polygons)),
+            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
+                Some(Polygonal::Empty)
+            },
+            _ => None,
+        }
+    }
+
+    /// The shape as a point-set operand; `None` for any other kind.
+    pub(crate) const fn point_set(&self) -> Option<PointSet<'_>> {
+        match self {
+            Self::Point(point) => Some(PointSet::Point(*point)),
+            Self::MultiPoint(points) => Some(PointSet::MultiPoint(points)),
+            Self::Empty(GeometryKind::Point | GeometryKind::MultiPoint, _) => Some(PointSet::Empty),
+            _ => None,
         }
     }
 

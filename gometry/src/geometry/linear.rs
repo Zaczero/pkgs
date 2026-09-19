@@ -13,8 +13,8 @@ use crate::error::Result;
 use crate::geometry::LineIndex;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
-    HasZ, LineSeq, MColumn, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan, Segment,
-    SegmentMetric, SegmentProjection, Shape, SharedSlice, distance_3d_with_parts,
+    HasZ, LineSeq, Lineal, MColumn, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan,
+    Segment, SegmentMetric, SegmentProjection, Shape, SharedSlice, distance_3d_with_parts,
     interpolate_fraction, point_distance, point_segment_selection, same_point, shape_axes_all_z,
     squared_norm_is_trustworthy,
 };
@@ -91,24 +91,18 @@ impl Shape {
     pub fn split(&self, splitter: &Self, tolerance: f64) -> Result<Vec<Self>> {
         let splitters = splitter.splitter_points()?;
         let mut pieces = Vec::new();
-        match self {
-            Self::LineString(line) => {
-                for part in split_line_by_points(line, splitters.as_slice(), tolerance)? {
-                    pieces.push(Self::LineString(LineSeq::from_proven(
-                        CoordSeq::try_from_points(&part)?,
-                    )));
-                }
-            },
-            Self::MultiLineString(lines) => {
-                for line in lines.iter() {
-                    for part in split_line_by_points(line, splitters.as_slice(), tolerance)? {
-                        pieces.push(Self::LineString(LineSeq::from_proven(
-                            CoordSeq::try_from_points(&part)?,
-                        )));
-                    }
-                }
-            },
-            _ => return Err(GeometryErrorKind::LineStringRequired.into()),
+        let lines = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
+            Lineal::LineString(line) => std::slice::from_ref(line),
+            Lineal::MultiLineString(lines) => &**lines,
+            // Nothing to split: no pieces, as for a multipart of empty members.
+            Lineal::Empty => &[],
+        };
+        for line in lines {
+            for part in split_line_by_points(line, splitters.as_slice(), tolerance)? {
+                pieces.push(Self::LineString(LineSeq::from_proven(
+                    CoordSeq::try_from_points(&part)?,
+                )));
+            }
         }
         Ok(pieces)
     }

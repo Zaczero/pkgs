@@ -664,7 +664,14 @@ impl Shape {
         let distance = Finite::try_new("distance", distance)?.get();
         if same_topological_coordinate(distance, 0.0) {
             return match self {
-                Self::LineString(_) | Self::MultiLineString(_) => Ok(self.clone()),
+                Self::LineString(_)
+                | Self::MultiLineString(_)
+                | Self::Empty(
+                    GeometryKind::LineString
+                    | GeometryKind::MultiLineString
+                    | GeometryKind::GeometryCollection,
+                    _,
+                ) => Ok(self.clone()),
                 Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
                     geometries.try_map_members(|geometry| {
                         geometry.offset_curve_budgeted(
@@ -723,6 +730,12 @@ impl Shape {
                     )
                 })?)
             },
+            Self::Empty(
+                GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => self.clone(),
             _ => return Err(GeometryErrorKind::LinealRequired.into()),
         })
     }

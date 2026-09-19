@@ -3,8 +3,8 @@ use crate::geometry::overlay::{
     ExactLineEmission, ExactSourceInventory, OverlayOp, Strictness, merge_chains, overlay_all,
 };
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, PointKey,
-    Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
+    CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, Lineal,
+    PointKey, Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
 };
 use crate::{try_push_vec, try_reserve_vec};
 impl Shape {
@@ -134,9 +134,9 @@ impl Shape {
     }
 
     pub fn line_merge(&self) -> Result<Self> {
-        let merged = match self {
-            Self::LineString(_) => self.clone(),
-            Self::MultiLineString(lines) => {
+        let merged = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
+            Lineal::LineString(_) | Lineal::Empty => self.clone(),
+            Lineal::MultiLineString(lines) => {
                 // Dissolve the component lines into maximal chains at degree-2
                 // nodes, splitting every Y/T/X junction (degree `>= 3`). The
                 // overlay line sink uses the same [`merge_chains`] rule.
@@ -159,7 +159,6 @@ impl Shape {
                     Self::narrow_lines(lines.axes(), proven)?
                 }
             },
-            _ => return Err(GeometryErrorKind::LinealRequired.into()),
         };
         carry_ordinates(merged, &[self], "line_merge", false)
     }

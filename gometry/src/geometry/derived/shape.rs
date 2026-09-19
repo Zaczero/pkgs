@@ -10,8 +10,8 @@ use crate::geometry::derived::{
     shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::geometry::{
-    DirectedOptimizationResult, GeometryErrorKind, GeometryKind, LineSeq, Point, Polygon, Ring,
-    Shape, bounds_to_shape, carry_ordinates, directed_inradius_scaled, empty_geometry,
+    DirectedOptimizationResult, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
+    bounds_to_shape, carry_ordinates, directed_inradius_scaled, empty_geometry,
 };
 use crate::{NonNegative, Positive};
 
@@ -172,18 +172,13 @@ impl Shape {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
-        match self {
-            Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(Self::empty_point()),
-            Self::Polygon(_) | Self::MultiPolygon(_) => {
-                Ok(Self::Point(polylabel_point(self, tolerance)?))
-            },
-            // The representative point of any empty polygonal input is the
-            // empty point.
-            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
-                Ok(Self::empty_point())
-            },
-            _ => Err(GeometryErrorKind::PolygonRequired.into()),
+        self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
+        // The representative point of any empty polygonal input is the empty
+        // point.
+        if self.is_empty() {
+            return Ok(Self::empty_point());
         }
+        Ok(Self::Point(polylabel_point(self, tolerance)?))
     }
 
     /// The smallest circle enclosing the geometry, as a `Polygon` — the
@@ -262,38 +257,30 @@ impl Shape {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
-        match self {
-            Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => {
-                Ok(Self::empty_polygon())
-            },
-            Self::Polygon(_) | Self::MultiPolygon(_) => {
-                let (center, radius, result) = if certify_source {
-                    let result =
-                        self.certified_inradius(tolerance, "maximum_inscribed_circle", 1.0)?;
-                    let center = result.center();
-                    let radius = result.radius_in_scale(1.0)?;
-                    (center, radius, Some(result))
-                } else {
-                    let (center, radius) = polylabel_center_radius(self, tolerance)?;
-                    (center, radius, None)
-                };
-                if radius == 0.0 || (radius > 0.0 && radius < f64::MIN_POSITIVE) {
-                    return emit_zero_radius_point(self, center);
-                }
-                build_inscribed_circle(
-                    center,
-                    radius,
-                    CIRCLE_QUADRANT_SEGMENTS,
-                    result
-                        .as_ref()
-                        .map(|result| (result.source_support(), result.boundary_support())),
-                )
-            },
-            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
-                Ok(Self::empty_polygon())
-            },
-            _ => Err(GeometryErrorKind::PolygonRequired.into()),
+        self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
+        if self.is_empty() {
+            return Ok(Self::empty_polygon());
         }
+        let (center, radius, result) = if certify_source {
+            let result = self.certified_inradius(tolerance, "maximum_inscribed_circle", 1.0)?;
+            let center = result.center();
+            let radius = result.radius_in_scale(1.0)?;
+            (center, radius, Some(result))
+        } else {
+            let (center, radius) = polylabel_center_radius(self, tolerance)?;
+            (center, radius, None)
+        };
+        if radius == 0.0 || (radius > 0.0 && radius < f64::MIN_POSITIVE) {
+            return emit_zero_radius_point(self, center);
+        }
+        build_inscribed_circle(
+            center,
+            radius,
+            CIRCLE_QUADRANT_SEGMENTS,
+            result
+                .as_ref()
+                .map(|result| (result.source_support(), result.boundary_support())),
+        )
     }
 
     pub(crate) fn maximum_inscribed_radius_in_frame(
@@ -313,19 +300,16 @@ impl Shape {
         let tolerance = tolerance
             .map(|value| Positive::try_new("tolerance", value).map(Positive::get))
             .transpose()?;
-        match self {
-            Self::Polygon(_) | Self::MultiPolygon(_) if self.is_empty() => Ok(f64::NAN),
-            Self::Polygon(_) | Self::MultiPolygon(_) => {
-                if certify_source {
-                    Ok(self
-                        .certified_inradius(tolerance, "maximum_inscribed_radius", scale)?
-                        .radius_in_scale(scale)?)
-                } else {
-                    Ok(polylabel_center_radius(self, tolerance)?.1 * scale)
-                }
-            },
-            Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => Ok(f64::NAN),
-            _ => Err(GeometryErrorKind::PolygonRequired.into()),
+        self.polygonal().ok_or(GeometryErrorKind::PolygonRequired)?;
+        if self.is_empty() {
+            return Ok(f64::NAN);
+        }
+        if certify_source {
+            Ok(self
+                .certified_inradius(tolerance, "maximum_inscribed_radius", scale)?
+                .radius_in_scale(scale)?)
+        } else {
+            Ok(polylabel_center_radius(self, tolerance)?.1 * scale)
         }
     }
 

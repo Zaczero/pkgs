@@ -24,11 +24,12 @@ mod area;
 pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 pub(crate) use access::{
-    REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, canonicalize_zero, centroid_ring_sums,
-    column_all_finite, column_mean2, column_minmax, line_length_3d_columns, line_length_columns,
-    pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z, simd_argmin_f64,
-    simd_indexed_map_f64, simd_map_f64, simd_mask_all, simd_mask_any, simd_select_indices,
-    simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64, xy_bounds_columns,
+    Lineal, PointSet, Polygonal, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, canonicalize_zero,
+    centroid_ring_sums, column_all_finite, column_mean2, column_minmax, line_length_3d_columns,
+    line_length_columns, pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z,
+    simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all, simd_mask_any,
+    simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64,
+    xy_bounds_columns,
 };
 pub(crate) use area::{
     AreaSign, ExactRationalArea, RingWinding, closed_columns_winding, cmp_area_keys_then_closed,
@@ -521,51 +522,48 @@ impl Shape {
     }
 
     fn linework(&self) -> Result<Vec<&CoordSeq>> {
-        match self {
-            Self::LineString(points) => {
-                let mut parts = Vec::new();
-                crate::try_push_vec(&mut parts, points.as_coords())?;
-                Ok(parts)
-            },
-            Self::MultiLineString(lines) => {
-                let mut parts = Vec::new();
+        let mut parts = Vec::new();
+        match self.lineal().ok_or(GeometryErrorKind::LineStringRequired)? {
+            Lineal::LineString(points) => crate::try_push_vec(&mut parts, points.as_coords())?,
+            Lineal::MultiLineString(lines) => {
                 crate::boundary::try_reserve_vec(&mut parts, lines.as_slice().len())?;
                 parts.extend(lines.iter().map(LineSeq::as_coords));
-                Ok(parts)
             },
-            Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
-                Ok(Vec::new())
-            },
-            _ => Err(GeometryErrorKind::LineStringRequired.into()),
+            Lineal::Empty => {},
         }
+        Ok(parts)
     }
 
     pub(crate) fn single_linework(&self) -> Result<&CoordSeq> {
-        match self {
-            Self::LineString(points) if !points.is_empty() => Ok(points),
-            // The right kind with no content is a structural error, not a
-            // kind error.
-            Self::LineString(_) => Err(GeometryErrorKind::EmptyLinework.into()),
-            Self::MultiLineString(lines) => match &**lines {
+        match self
+            .lineal()
+            .ok_or(GeometryErrorKind::FrechetLineStringRequired)?
+        {
+            Lineal::LineString(points) => Ok(points),
+            Lineal::MultiLineString(lines) => match &**lines {
                 [line] => Ok(line),
+                // The right kind with no content is a structural error, not a
+                // kind error.
                 [] => Err(GeometryErrorKind::EmptyLinework.into()),
                 _ => Err(GeometryErrorKind::FrechetLineStringRequired.into()),
             },
-            _ => Err(GeometryErrorKind::FrechetLineStringRequired.into()),
+            Lineal::Empty => Err(GeometryErrorKind::EmptyLinework.into()),
         }
     }
 
     fn splitter_points(&self) -> Result<Vec<Point>> {
-        match self {
-            Self::Point(point) => {
+        match self
+            .point_set()
+            .ok_or(GeometryErrorKind::PointSplitterRequired)?
+        {
+            PointSet::Point(point) => {
                 let mut points = Vec::new();
-                crate::try_push_vec(&mut points, *point)?;
+                crate::try_push_vec(&mut points, point)?;
                 Ok(points)
             },
-            Self::MultiPoint(points) => points.try_to_vec(),
-            // `POINT EMPTY` is point-like but contributes no split locations.
-            Self::Empty(GeometryKind::Point, _) => Ok(Vec::new()),
-            _ => Err(GeometryErrorKind::PointSplitterRequired.into()),
+            PointSet::MultiPoint(points) => points.try_to_vec(),
+            // An empty point set contributes no split locations.
+            PointSet::Empty => Ok(Vec::new()),
         }
     }
 }

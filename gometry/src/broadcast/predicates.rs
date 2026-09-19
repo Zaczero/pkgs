@@ -9,13 +9,13 @@ use crate::array::{ArrayRow, PackedStorage, ValidityMask, missing};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
     Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
-    GeometryErrorKind, GeometryInput, GeometryKind, Point, PredicateSpec, Py, PyErr, PyGeometry,
-    PyGeometryArray, PyResult, Python, Shape, ShapeData, broadcast_coordinate_input,
-    classify_input, coordinate_input_with_expected, coordinate_sequence_len_hint,
-    expected_geometry_or_array_for, mask_missing, py_bool, scalar_vs_shapes,
+    GeometryErrorKind, GeometryInput, Point, PredicateSpec, Py, PyErr, PyGeometry, PyGeometryArray,
+    PyResult, Python, Shape, ShapeData, broadcast_coordinate_input, classify_input,
+    coordinate_input_with_expected, coordinate_sequence_len_hint, expected_geometry_or_array_for,
+    mask_missing, py_bool, scalar_vs_shapes,
 };
 use crate::error::Result;
-use crate::geometry::{PreparedPlan, TopologyDomain};
+use crate::geometry::{PointSet, PreparedPlan, TopologyDomain};
 use crate::predicates::engine;
 use crate::predicates::engine::{
     GateOperand, Predicate, PreparedTopologyPair, row_kind_empty, topology_scalar_pair,
@@ -208,19 +208,16 @@ pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Res
     let mut points = Vec::new();
     for row in splitters.row_operation().present_rows() {
         row.row().try_with_shape(|shape| {
-            match shape {
-                Shape::Point(point) => {
-                    points.push(point.to_xy());
-                    Ok::<_, crate::error::Error>(())
-                },
-                Shape::MultiPoint(items) => {
-                    points.extend(items.iter().map(Point::to_xy));
-                    Ok(())
-                },
-                // `POINT EMPTY` is point-like but contributes no split locations.
-                Shape::Empty(GeometryKind::Point, _) => Ok(()),
-                _ => Err(GeometryErrorKind::PointSplitterRequired.into()),
+            match shape
+                .point_set()
+                .ok_or(GeometryErrorKind::PointSplitterRequired)?
+            {
+                PointSet::Point(point) => points.push(point.to_xy()),
+                PointSet::MultiPoint(items) => points.extend(items.iter().map(Point::to_xy)),
+                // An empty point set contributes no split locations.
+                PointSet::Empty => {},
             }
+            Ok::<_, crate::error::Error>(())
         })?;
     }
     Ok(Shape::multi_point(
