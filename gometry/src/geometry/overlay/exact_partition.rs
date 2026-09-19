@@ -6288,8 +6288,16 @@ struct SourceCut {
 
 #[derive(Clone, Copy)]
 enum HandleKind {
-    Stored(PointKey),
-    Constructed { unique: u32, cut: u32 },
+    /// A stored endpoint: its canonical key, and the first source spelling
+    /// the key canonicalized (signed zero included).
+    Stored {
+        key: PointKey,
+        point: XY,
+    },
+    Constructed {
+        unique: u32,
+        cut: u32,
+    },
 }
 
 struct Forest {
@@ -6330,15 +6338,22 @@ impl Forest {
             return Ok(());
         }
         match (&self.kind[a as usize], &self.kind[b as usize]) {
-            (HandleKind::Stored(left), HandleKind::Stored(right)) if left != right => Err(
-                GeometryErrorKind::Invalid("exact partition unioned distinct stored points".into())
-                    .into(),
-            ),
-            (HandleKind::Stored(_), HandleKind::Stored(_) | HandleKind::Constructed { .. }) => {
+            (HandleKind::Stored { key: left, .. }, HandleKind::Stored { key: right, .. })
+                if left != right =>
+            {
+                Err(GeometryErrorKind::Invalid(
+                    "exact partition unioned distinct stored points".into(),
+                )
+                .into())
+            },
+            (
+                HandleKind::Stored { .. },
+                HandleKind::Stored { .. } | HandleKind::Constructed { .. },
+            ) => {
                 self.parent[b as usize] = a;
                 Ok(())
             },
-            (HandleKind::Constructed { .. }, HandleKind::Stored(_)) => {
+            (HandleKind::Constructed { .. }, HandleKind::Stored { .. }) => {
                 self.parent[a as usize] = b;
                 Ok(())
             },
@@ -6374,30 +6389,21 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         .ok_or(ResourceError::SizeOverflow)?;
     let mut endpoint_of: HashMap<PointKey, u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    let mut stored_coordinates: HashMap<PointKey, XY> =
-        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     endpoint_of
-        .try_reserve(endpoint_capacity)
-        .map_err(crate::error::Error::from)?;
-    stored_coordinates
         .try_reserve(endpoint_capacity)
         .map_err(crate::error::Error::from)?;
     let mut forest = Forest::with_capacity(endpoint_capacity)?;
 
-    let intern_stored = |point: XY,
-                         endpoint_of: &mut HashMap<PointKey, u32>,
-                         stored_coordinates: &mut HashMap<PointKey, XY>,
-                         forest: &mut Forest|
-     -> Result<u32> {
-        let key = PointKey::new(point);
-        if let Some(&id) = endpoint_of.get(&key) {
-            return Ok(id);
-        }
-        let id = forest.push(HandleKind::Stored(key))?;
-        endpoint_of.insert(key, id);
-        stored_coordinates.insert(key, point);
-        Ok(id)
-    };
+    let intern_stored =
+        |point: XY, endpoint_of: &mut HashMap<PointKey, u32>, forest: &mut Forest| -> Result<u32> {
+            let key = PointKey::new(point);
+            if let Some(&id) = endpoint_of.get(&key) {
+                return Ok(id);
+            }
+            let id = forest.push(HandleKind::Stored { key, point })?;
+            endpoint_of.insert(key, id);
+            Ok(id)
+        };
 
     let mut start_handle = Vec::new();
     let mut end_handle = Vec::new();
@@ -6406,21 +6412,11 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     for &segment in unique {
         try_push_vec(
             &mut start_handle,
-            intern_stored(
-                segment.start,
-                &mut endpoint_of,
-                &mut stored_coordinates,
-                &mut forest,
-            )?,
+            intern_stored(segment.start, &mut endpoint_of, &mut forest)?,
         )?;
         try_push_vec(
             &mut end_handle,
-            intern_stored(
-                segment.end,
-                &mut endpoint_of,
-                &mut stored_coordinates,
-                &mut forest,
-            )?,
+            intern_stored(segment.end, &mut endpoint_of, &mut forest)?,
         )?;
     }
     let mut cuts: Vec<Vec<SourceCut>> = Vec::new();
@@ -6443,12 +6439,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     for &point in isolated {
         let key = PointKey::new(point);
         let existed = endpoint_of.contains_key(&key);
-        let handle = intern_stored(
-            point,
-            &mut endpoint_of,
-            &mut stored_coordinates,
-            &mut forest,
-        )?;
+        let handle = intern_stored(point, &mut endpoint_of, &mut forest)?;
         try_push_vec(&mut point_handles, handle)?;
         if existed {
             continue;
@@ -6542,11 +6533,11 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
         let id = u32::try_from(recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
         match forest.kind[root as usize] {
-            HandleKind::Stored(key) => {
+            HandleKind::Stored { key, point } => {
                 try_reserve_vec(&mut recipes, 1)?;
                 try_push_vec(&mut recipes, NodeRecipe::Stored(key))?;
                 try_reserve_vec(&mut stored_points, 1)?;
-                try_push_vec(&mut stored_points, stored_coordinates.get(&key).copied())?;
+                try_push_vec(&mut stored_points, Some(point))?;
             },
             HandleKind::Constructed { unique, cut } => {
                 budget.add(1)?;
