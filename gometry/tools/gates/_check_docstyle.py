@@ -716,6 +716,31 @@ def _doc_from_node(node: ast.AST) -> str | None:
     return inspect.cleandoc(doc).rstrip()
 
 
+def _documented_in_base(
+    classes: dict[str, ast.ClassDef], cls: ast.ClassDef, member: str
+) -> bool:
+    """Whether a stub base class of ``cls`` documents ``member``.
+
+    A leaf override that only narrows an inherited method's types carries no
+    prose: type checkers show the inherited docstring, and the base's own
+    entry is scanned under the base's name.
+    """
+    for base in cls.bases:
+        parent = classes.get(ast.unparse(base))
+        if parent is None:
+            continue
+        for item in parent.body:
+            if (
+                isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and item.name == member
+                and _doc_from_node(item)
+            ):
+                return True
+        if _documented_in_base(classes, parent, member):
+            return True
+    return False
+
+
 def load_public_all(init_path: Path = INIT_PATH) -> frozenset[str]:
     return _load_public_all(init_path)
 
@@ -823,6 +848,8 @@ def load_inventory(
                     carrier = (fn, d)
                     break
             if carrier is None:
+                if _documented_in_base(classes, cls, mname):
+                    continue
                 carrier = (group[-1], _doc_from_node(group[-1]) or '')
             fn, doc = carrier
             qname = f'{name}.{mname}'

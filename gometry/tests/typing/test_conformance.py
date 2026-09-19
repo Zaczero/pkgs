@@ -51,34 +51,34 @@ def _check_buffer_input_precision(
     column: np.ndarray[tuple[int], np.dtype[np.float64]],
     values: list[float],
 ) -> None:
-    assert_type(dense.buffer(1.0), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+    assert_type(dense.buffer(1.0), gm.GeometryArray[gm.Polygon])
     assert_type(
         nullable.buffer(1.0),
-        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+        gm.GeometryArray[gm.Polygon | None],
     )
     assert_type(
-        dense.buffer(numpy_scalar), gm.GeometryArray[gm.Polygon | gm.MultiPolygon]
+        dense.buffer(numpy_scalar), gm.GeometryArray[gm.Polygon]
     )
     assert_type(
         nullable.buffer(numpy_scalar),
-        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+        gm.GeometryArray[gm.Polygon | None],
     )
     assert_type(
-        dense.buffer(scalar_array), gm.GeometryArray[gm.Polygon | gm.MultiPolygon]
+        dense.buffer(scalar_array), gm.GeometryArray[gm.Polygon]
     )
     assert_type(
         nullable.buffer(scalar_array),
-        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+        gm.GeometryArray[gm.Polygon | None],
     )
-    assert_type(dense.buffer(column), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+    assert_type(dense.buffer(column), gm.GeometryArray[gm.Polygon])
     assert_type(
         nullable.buffer(column),
-        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+        gm.GeometryArray[gm.Polygon | None],
     )
-    assert_type(dense.buffer(values), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+    assert_type(dense.buffer(values), gm.GeometryArray[gm.Polygon])
     assert_type(
         nullable.buffer(values),
-        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+        gm.GeometryArray[gm.Polygon | None],
     )
 
 
@@ -149,7 +149,9 @@ def _check_fixed_output_nullability(
     assert_type(values.split_antimeridian(), gm.GeometryArray[gm.Geometry | None])
     assert_type(
         values.offset_curve(distances),
-        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+        gm.GeometryArray[
+            gm.LineString | gm.MultiLineString | gm.GeometryCollection | None
+        ],
     )
     assert_type(
         values.envelope(),
@@ -166,6 +168,170 @@ def _check_fixed_output_nullability(
         gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | None],
     )
     assert_type(values.node(), gm.GeometryArray[gm.MultiLineString | None])
+
+
+def _check_kind_narrowing(
+    point: gm.Point,
+    multipoint: gm.MultiPoint,
+    line: gm.LineString,
+    multiline: gm.MultiLineString,
+    polygon: gm.Polygon,
+    multipolygon: gm.MultiPolygon,
+    collection: gm.GeometryCollection,
+    geometry: gm.Geometry,
+    points: gm.GeometryArray[gm.Point],
+    lines: gm.GeometryArray[gm.LineString],
+    polygons: gm.GeometryArray[gm.Polygon],
+    nullable_points: gm.GeometryArray[gm.Point | None],
+    nullable_lines: gm.GeometryArray[gm.LineString | None],
+    nullable_polygons: gm.GeometryArray[gm.Polygon | None],
+    mixed: gm.GeometryArray[gm.Point | gm.Polygon],
+) -> None:
+    assert_type(point.boundary(), gm.GeometryCollection)
+    assert_type(collection.boundary(), gm.GeometryCollection)
+    assert_type(multiline.boundary(), gm.MultiPoint)
+    assert_type(polygon.boundary(), gm.LineString | gm.MultiLineString)
+    assert_type(
+        geometry.boundary(),
+        gm.MultiPoint | gm.LineString | gm.MultiLineString | gm.GeometryCollection,
+    )
+    assert_type(point.repair(), gm.Point)
+    assert_type(multiline.repair(), gm.MultiLineString)
+    assert_type(collection.repair(), gm.GeometryCollection)
+    assert_type(line.repair(), gm.LineString | gm.MultiLineString)
+    assert_type(multipolygon.repair(), gm.Polygon | gm.MultiPolygon)
+    assert_type(geometry.repair(), gm.Geometry)
+    assert_type(polygon.snap_to_grid(1.0), gm.Polygon)
+    assert_type(point.snap_to_grid(1.0, repair=True), gm.Point)
+    assert_type(line.snap_to_grid(1.0, repair=True), gm.LineString | gm.MultiLineString)
+    assert_type(polygon.snap_to_grid(1.0, repair=True), gm.Polygon | gm.MultiPolygon)
+    assert_type(geometry.snap_to_grid(1.0, repair=True), gm.Geometry)
+    assert_type(multipolygon.split_antimeridian(), gm.MultiPolygon)
+    assert_type(line.split_antimeridian(), gm.LineString | gm.MultiLineString)
+    assert_type(polygon.split_antimeridian(), gm.Polygon | gm.MultiPolygon)
+    assert_type(line.offset_curve(1.0), gm.LineString)
+    assert_type(collection.offset_curve(1.0), gm.GeometryCollection)
+    assert_type(
+        geometry.offset_curve(1.0),
+        gm.LineString | gm.MultiLineString | gm.GeometryCollection,
+    )
+    assert_type(line.line_merge(), gm.LineString)
+    assert_type(multiline.line_merge(), gm.LineString | gm.MultiLineString)
+    assert_type(point.clip_by_rect(0, 0, 1, 1), gm.Point)
+    assert_type(multipoint.clip_by_rect(0, 0, 1, 1), gm.MultiPoint | gm.Point)
+    assert_type(polygon.unique_points(), gm.MultiPoint)
+    assert_type(collection.unique_points(), gm.MultiPoint | gm.GeometryCollection)
+    assert_type(line.build_area(), gm.Polygon | gm.MultiPolygon)
+    assert_type(point.envelope(), gm.Point | gm.Polygon)
+
+    assert_type(points.boundary(), gm.GeometryArray[gm.GeometryCollection])
+    assert_type(lines.boundary(), gm.GeometryArray[gm.MultiPoint])
+    assert_type(
+        nullable_polygons.boundary(),
+        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+    )
+    assert_type(points.buffer(1.0), gm.GeometryArray[gm.Polygon])
+    assert_type(nullable_points.buffer(1.0), gm.GeometryArray[gm.Polygon | None])
+    assert_type(points.repair(), gm.GeometryArray[gm.Point])
+    assert_type(nullable_points.repair(), gm.GeometryArray[gm.Point | None])
+    assert_type(
+        lines.repair(), gm.GeometryArray[gm.LineString | gm.MultiLineString]
+    )
+    assert_type(
+        nullable_polygons.repair(),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(mixed.repair(), gm.GeometryArray[gm.Geometry])
+    assert_type(polygons.snap_to_grid(1.0), gm.GeometryArray[gm.Polygon])
+    assert_type(
+        nullable_lines.snap_to_grid(1.0, repair=True),
+        gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
+    )
+    assert_type(points.split_antimeridian(), gm.GeometryArray[gm.Point])
+    assert_type(
+        nullable_polygons.split_antimeridian(),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(lines.offset_curve(1.0), gm.GeometryArray[gm.LineString])
+    assert_type(nullable_lines.line_merge(), gm.GeometryArray[gm.LineString | None])
+    assert_type(points.clip_by_rect(0, 0, 1, 1), gm.GeometryArray[gm.Point])
+    assert_type(polygons.unique_points(), gm.GeometryArray[gm.MultiPoint])
+    assert_type(
+        nullable_lines.build_area(),
+        gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
+    )
+    assert_type(points.envelope(), gm.GeometryArray[gm.Point | gm.Polygon])
+
+
+def _check_overlay_narrowing(
+    point: gm.Point,
+    multipoint: gm.MultiPoint,
+    polygon: gm.Polygon,
+    points: gm.GeometryArray[gm.Point],
+    multipoints: gm.GeometryArray[gm.MultiPoint],
+    polygons: gm.GeometryArray[gm.Polygon],
+    nullable_points: gm.GeometryArray[gm.Point | None],
+    nullable_polygons: gm.GeometryArray[gm.Polygon | None],
+) -> None:
+    assert_type(gm.intersection(point, polygon), gm.Point)
+    assert_type(gm.intersection(polygon, point), gm.Point)
+    assert_type(gm.intersection(multipoint, polygon), gm.MultiPoint | gm.Point)
+    assert_type(gm.intersection(polygon, multipoint), gm.MultiPoint | gm.Point)
+    assert_type(gm.intersection(polygon, polygon), gm.Geometry)
+    assert_type(gm.intersection(points, polygon), gm.GeometryArray[gm.Point])
+    assert_type(gm.intersection(polygons, points), gm.GeometryArray[gm.Point])
+    assert_type(gm.intersection(point, polygons), gm.GeometryArray[gm.Point])
+    assert_type(gm.intersection(polygons, point), gm.GeometryArray[gm.Point])
+    assert_type(
+        gm.intersection(nullable_points, polygons),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(
+        gm.intersection(points, nullable_polygons),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(
+        gm.intersection(point, nullable_polygons),
+        gm.GeometryArray[gm.Point | None],
+    )
+    assert_type(
+        gm.intersection(multipoints, polygons),
+        gm.GeometryArray[gm.MultiPoint | gm.Point],
+    )
+    assert_type(gm.intersection(polygons, polygons), gm.GeometryArray[gm.Geometry])
+    assert_type(gm.difference(point, polygon), gm.Point)
+    assert_type(gm.difference(multipoint, polygon), gm.MultiPoint | gm.Point)
+    assert_type(gm.difference(polygon, point), gm.Geometry)
+    assert_type(gm.difference(points, polygons), gm.GeometryArray[gm.Point])
+    assert_type(
+        gm.difference(nullable_points, polygon), gm.GeometryArray[gm.Point | None]
+    )
+    assert_type(gm.union(point, multipoint), gm.Point | gm.MultiPoint)
+    assert_type(gm.union(point, polygon), gm.Geometry)
+    assert_type(
+        gm.union(points, multipoints), gm.GeometryArray[gm.Point | gm.MultiPoint]
+    )
+    assert_type(
+        gm.symmetric_difference(nullable_points, point),
+        gm.GeometryArray[gm.Point | gm.MultiPoint | None],
+    )
+    assert_type(point & polygon, gm.Point)
+    assert_type(polygon & point, gm.Point)
+    assert_type(polygon & multipoint, gm.MultiPoint | gm.Point)
+    assert_type(point & polygons, gm.GeometryArray[gm.Point])
+    assert_type(polygon & points, gm.GeometryArray[gm.Point])
+    assert_type(point & nullable_polygons, gm.GeometryArray[gm.Point | None])
+    assert_type(point - polygon, gm.Point)
+    assert_type(polygon - point, gm.Geometry)
+    assert_type(point | multipoint, gm.Point | gm.MultiPoint)
+    assert_type(point ^ point, gm.Point | gm.MultiPoint)
+    assert_type(points & polygon, gm.GeometryArray[gm.Point])
+    assert_type(polygons & point, gm.GeometryArray[gm.Point])
+    assert_type(polygons & points, gm.GeometryArray[gm.Point])
+    assert_type(nullable_points & polygons, gm.GeometryArray[gm.Point | None])
+    assert_type(points - polygons, gm.GeometryArray[gm.Point])
+    assert_type(points | multipoints, gm.GeometryArray[gm.Point | gm.MultiPoint])
+    assert_type(polygons & polygons, gm.GeometryArray[gm.Geometry])
 
 
 class _ArrowStream:
@@ -198,9 +364,9 @@ assert_type(
     gm.Groups[gm.GeometryArray[gm.LineString]],
 )
 assert_type(POINTS.simplify(0.1, method='vw'), gm.GeometryArray[gm.Point])
-assert_type(cast('gm.Polygon', POINT.buffer(1.0)), gm.Polygon)
-assert_type(cast('gm.Polygon', LINE.buffer(0.5)), gm.Polygon)
-assert_type(cast('gm.MultiPoint', LINE.boundary()), gm.MultiPoint)
+assert_type(POINT.buffer(1.0), gm.Polygon)
+assert_type(LINE.buffer(0.5), gm.Polygon | gm.MultiPolygon)
+assert_type(LINE.boundary(), gm.MultiPoint)
 assert_type(POINT.centroid(), gm.Point)
 assert_type(hash(POINT), int)
 assert_type(hash(POINTS), int)
@@ -209,7 +375,7 @@ assert_type(POLY.exterior, gm.LineString)
 # Scalar<->array return duality (the 32 `-> Self` lies, gated by pyo3stubs
 # return-parity): kind-changing array methods return the scalar leaf union,
 # kind-preserving ones return Self.
-assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon])
 assert_type(POINTS.centroid(), gm.GeometryArray[gm.Point])
 assert_type(
     POINTS.convex_hull(),
@@ -245,8 +411,8 @@ assert_type(
     npt.NDArray[np.float64],
 )
 assert_type(POLY.minimum_clearance_line(), gm.LineString)
-assert_type(cast('gm.Polygon', POLY.snap_to_grid(0.5)), gm.Polygon)
-assert_type(POLY.snap_to_grid(0.5, repair=True), gm.Geometry)
+assert_type(POLY.snap_to_grid(0.5), gm.Polygon)
+assert_type(POLY.snap_to_grid(0.5, repair=True), gm.Polygon | gm.MultiPolygon)
 assert_type(
     gm.nearest_points(POINTS, LINE),
     tuple[gm.GeometryArray[gm.Point], gm.GeometryArray[gm.Point]],
@@ -642,7 +808,7 @@ nullable_iter = next(iter(NULLABLE_POINTS))
 assert_type(nullable_iter, gm.Point | None)
 assert_type(NULLABLE_POINTS.centroid(), gm.GeometryArray[gm.Point | None])
 assert_type(
-    NULLABLE_POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None]
+    NULLABLE_POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | None]
 )
 assert_type(NULLABLE_POINTS.simplify(0.1), gm.GeometryArray[gm.Point | None])
 assert_type(NULLABLE_POINTS.drop_missing(), gm.GeometryArray[gm.Point])
@@ -659,20 +825,21 @@ assert_type(
     gm.GeometryArray([None, None]),
     gm.GeometryArray[gm.Geometry | None],
 )
-assert_type(gm.intersection(POINTS, POLY), gm.GeometryArray[gm.Geometry])
+assert_type(gm.intersection(POINTS, POLY), gm.GeometryArray[gm.Point])
+assert_type(gm.intersection(NULLABLE_POINTS, POLY), gm.GeometryArray[gm.Point | None])
+assert_type(gm.union(POINTS, POINTS), gm.GeometryArray[gm.Point | gm.MultiPoint])
 assert_type(
-    gm.intersection(NULLABLE_POINTS, POLY), gm.GeometryArray[gm.Geometry | None]
+    gm.union(NULLABLE_POINTS, POINTS),
+    gm.GeometryArray[gm.Point | gm.MultiPoint | None],
 )
-assert_type(gm.union(POINTS, POINTS), gm.GeometryArray[gm.Geometry])
-assert_type(gm.union(NULLABLE_POINTS, POINTS), gm.GeometryArray[gm.Geometry | None])
-assert_type(gm.difference(POINTS, POLY), gm.GeometryArray[gm.Geometry])
-assert_type(gm.difference(NULLABLE_POINTS, POLY), gm.GeometryArray[gm.Geometry | None])
+assert_type(gm.difference(POINTS, POLY), gm.GeometryArray[gm.Point])
+assert_type(gm.difference(NULLABLE_POINTS, POLY), gm.GeometryArray[gm.Point | None])
 assert_type(gm.symmetric_difference(POINTS, POLY), gm.GeometryArray[gm.Geometry])
 assert_type(
     gm.symmetric_difference(NULLABLE_POINTS, POLY),
     gm.GeometryArray[gm.Geometry | None],
 )
-assert_type(POLY & NULLABLE_POINTS, gm.GeometryArray[gm.Geometry | None])
+assert_type(POLY & NULLABLE_POINTS, gm.GeometryArray[gm.Point | None])
 assert_type(
     gm.nearest_points(POINTS, POLY),
     tuple[gm.GeometryArray[gm.Point], gm.GeometryArray[gm.Point]],
@@ -787,8 +954,8 @@ assert_type(POLY & POLY, gm.Geometry)
 assert_type(POLY | POLY, gm.Geometry)
 assert_type(POLY - POLY, gm.Geometry)
 assert_type(POLY ^ POLY, gm.Geometry)
-assert_type(POLY & POINTS, gm.GeometryArray[gm.Geometry])
-assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+assert_type(POLY & POINTS, gm.GeometryArray[gm.Point])
+assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon])
 assert_type(POINTS[:1], gm.GeometryArray[gm.Point])
 assert_type(POINTS.concat(POINTS), gm.GeometryArray[gm.Point])
 MULTI = gm.MultiPoint([(0.0, 0.0), (1.0, 1.0)])

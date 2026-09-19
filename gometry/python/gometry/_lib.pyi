@@ -797,6 +797,30 @@ class Geometry:
         and holds no Python references, so there is nothing to copy.
         """
     @overload
+    def __and__(
+        self, other: Point, /
+    ) -> Point: ...
+    @overload
+    def __and__(
+        self, other: MultiPoint, /
+    ) -> MultiPoint | Point: ...
+    @overload
+    def __and__(
+        self, other: GeometryArray[Point], /
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(
+        self, other: GeometryArray[MultiPoint], /
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __and__(
+        self, other: GeometryArray[Point | None], /
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(
+        self, other: GeometryArray[MultiPoint | None], /
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
     def __and__(self, other: Geometry, /) -> Geometry: ...
     @overload
     def __and__(
@@ -811,6 +835,18 @@ class Geometry:
         self, other: Geometry | GeometryArray[Geometry | None], /
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self&value."""
+    @overload
+    def __or__(
+        self, other: Point | MultiPoint, /
+    ) -> Geometry: ...
+    @overload
+    def __or__(
+        self, other: GeometryArray[Point | MultiPoint], /
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __or__(
+        self, other: GeometryArray[Point | MultiPoint | None], /
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
     def __or__(self, other: Geometry, /) -> Geometry: ...
     @overload
@@ -841,6 +877,18 @@ class Geometry:
         self, other: Geometry | GeometryArray[Geometry | None], /
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self-value."""
+    @overload
+    def __xor__(
+        self, other: Point | MultiPoint, /
+    ) -> Geometry: ...
+    @overload
+    def __xor__(
+        self, other: GeometryArray[Point | MultiPoint], /
+    ) -> GeometryArray[Geometry]: ...
+    @overload
+    def __xor__(
+        self, other: GeometryArray[Point | MultiPoint | None], /
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
     def __xor__(self, other: Geometry, /) -> Geometry: ...
     @overload
@@ -3109,7 +3157,7 @@ class Geometry:
         quadrant_segments: _IntScalar = 8,
         miter_limit: _FloatScalarInput = 5.0,
         unit: DistanceUnit | None = None,
-    ) -> LineString | MultiLineString:
+    ) -> LineString | MultiLineString | GeometryCollection:
         """Compute a line offset to one side of a linestring by ``distance`` (measured
         for the CRS).
 
@@ -3140,8 +3188,8 @@ class Geometry:
 
         Returns
         -------
-        LineString or MultiLineString
-            The raw offset curve.
+        LineString, MultiLineString, or GeometryCollection
+            The raw offset curve, of the input's kind.
 
 
         Raises
@@ -3411,6 +3459,15 @@ class Geometry:
         'POINT Z (1 2 0)'
         """
 
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: Literal[False] = False,
+    ) -> Self: ...
+    @overload
     def snap_to_grid(
         self,
         size: _FloatScalarInput | tuple[float, float] | Iterable[float],
@@ -4197,6 +4254,112 @@ class Point(Geometry):
         -------
         Point
         """
+    def boundary(
+        self,
+    ) -> GeometryCollection: ...
+    def buffer(
+        self,
+        distance: _FloatScalarInput,
+        *,
+        cap_style: CapStyle = 'round',
+        join_style: JoinStyle = 'round',
+        quadrant_segments: _IntScalar = 8,
+        miter_limit: _FloatScalarInput = 5.0,
+        side: BufferSide = 'both',
+        unit: DistanceUnit | None = None,
+    ) -> Polygon: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> Point: ...
+    def split_antimeridian(
+        self,
+    ) -> Point: ...
+    def clip_by_rect(
+        self,
+        minx: _FloatScalarInput,
+        miny: _FloatScalarInput,
+        maxx: _FloatScalarInput,
+        maxy: _FloatScalarInput,
+    ) -> Point: ...
+    def unique_points(
+        self,
+    ) -> MultiPoint: ...
+    def build_area(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    def envelope(
+        self,
+    ) -> Point | Polygon: ...
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> Point: ...
+    @overload
+    def __and__(self, other: Point, /) -> Point: ...
+    @overload
+    def __and__(self, other: MultiPoint, /) -> Point: ...
+    @overload
+    def __and__(self, other: GeometryArray[Point], /) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(self, other: GeometryArray[MultiPoint], /) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(self, other: GeometryArray[Point | None], /) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(self, other: GeometryArray[MultiPoint | None], /) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(self, other: Geometry, /) -> Point: ...
+    @overload
+    def __and__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Point | GeometryArray[Point | None]:
+        """Return self&value."""
+    @overload
+    def __sub__(self, other: Geometry, /) -> Point: ...
+    @overload
+    def __sub__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Point]: ...
+    @overload
+    def __sub__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Point | None]: ...
+    @overload
+    def __sub__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Point | GeometryArray[Point | None]:
+        """Return self-value."""
+    @overload
+    def __or__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __or__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __or__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    @overload
+    def __or__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __or__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    @overload
+    def __or__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __or__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+        """Return self|value."""
+    @overload
+    def __xor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __xor__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __xor__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    @overload
+    def __xor__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __xor__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    @overload
+    def __xor__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __xor__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+        """Return self^value."""
+
 
 @final
 class MultiPoint(Geometry):
@@ -4391,6 +4554,98 @@ class MultiPoint(Geometry):
         >>> multi.count(multi[0])
         1
         """
+    def boundary(
+        self,
+    ) -> GeometryCollection: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> MultiPoint: ...
+    def split_antimeridian(
+        self,
+    ) -> MultiPoint: ...
+    def clip_by_rect(
+        self,
+        minx: _FloatScalarInput,
+        miny: _FloatScalarInput,
+        maxx: _FloatScalarInput,
+        maxy: _FloatScalarInput,
+    ) -> MultiPoint | Point: ...
+    def unique_points(
+        self,
+    ) -> MultiPoint: ...
+    def build_area(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> MultiPoint: ...
+    @overload
+    def __and__(self, other: Point, /) -> Point: ...
+    @overload
+    def __and__(self, other: MultiPoint, /) -> MultiPoint | Point: ...
+    @overload
+    def __and__(self, other: GeometryArray[Point], /) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(self, other: GeometryArray[MultiPoint], /) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __and__(self, other: GeometryArray[Point | None], /) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(self, other: GeometryArray[MultiPoint | None], /) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __and__(self, other: Geometry, /) -> MultiPoint | Point: ...
+    @overload
+    def __and__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __and__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __and__(self, other: Geometry | GeometryArray[Geometry | None], /) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
+        """Return self&value."""
+    @overload
+    def __sub__(self, other: Geometry, /) -> MultiPoint | Point: ...
+    @overload
+    def __sub__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __sub__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __sub__(self, other: Geometry | GeometryArray[Geometry | None], /) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
+        """Return self-value."""
+    @overload
+    def __or__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __or__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __or__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    @overload
+    def __or__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __or__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    @overload
+    def __or__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __or__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+        """Return self|value."""
+    @overload
+    def __xor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
+    @overload
+    def __xor__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __xor__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    @overload
+    def __xor__(self, other: Geometry, /) -> Geometry: ...
+    @overload
+    def __xor__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    @overload
+    def __xor__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    @overload
+    def __xor__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+        """Return self^value."""
+
 
 @final
 class LineString(Geometry):
@@ -4500,6 +4755,52 @@ class LineString(Geometry):
         -------
         GeometryParts
         """
+    def boundary(
+        self,
+    ) -> MultiPoint: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> LineString | MultiLineString: ...
+    def split_antimeridian(
+        self,
+    ) -> LineString | MultiLineString: ...
+    def offset_curve(
+        self,
+        distance: _FloatScalarInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: _IntScalar = 8,
+        miter_limit: _FloatScalarInput = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> LineString: ...
+    def line_merge(
+        self,
+    ) -> LineString: ...
+    def unique_points(
+        self,
+    ) -> MultiPoint: ...
+    def build_area(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: Literal[False] = False,
+    ) -> LineString: ...
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> LineString | MultiLineString: ...
+
 @final
 class MultiLineString(Geometry):
     """A collection of linestrings.
@@ -4649,6 +4950,40 @@ class MultiLineString(Geometry):
         >>> multi.count(multi[0])
         1
         """
+    def boundary(
+        self,
+    ) -> MultiPoint: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> MultiLineString: ...
+    def split_antimeridian(
+        self,
+    ) -> MultiLineString: ...
+    def offset_curve(
+        self,
+        distance: _FloatScalarInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: _IntScalar = 8,
+        miter_limit: _FloatScalarInput = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> MultiLineString: ...
+    def unique_points(
+        self,
+    ) -> MultiPoint: ...
+    def build_area(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> MultiLineString: ...
+
 
 @final
 class Polygon(Geometry):
@@ -4770,6 +5105,40 @@ class Polygon(Geometry):
     @property
     def interiors(self) -> list[LineString]:
         """Interior rings (holes), each a closed ``LineString``."""
+    def boundary(
+        self,
+    ) -> LineString | MultiLineString: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> Polygon | MultiPolygon: ...
+    def split_antimeridian(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    def unique_points(
+        self,
+    ) -> MultiPoint: ...
+    def build_area(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: Literal[False] = False,
+    ) -> Polygon: ...
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> Polygon | MultiPolygon: ...
+
 
 @final
 class MultiPolygon(Geometry):
@@ -4920,6 +5289,40 @@ class MultiPolygon(Geometry):
         >>> multi.count(multi[0])
         1
         """
+    def boundary(
+        self,
+    ) -> LineString | MultiLineString: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> Polygon | MultiPolygon: ...
+    def split_antimeridian(
+        self,
+    ) -> MultiPolygon: ...
+    def unique_points(
+        self,
+    ) -> MultiPoint: ...
+    def build_area(
+        self,
+    ) -> Polygon | MultiPolygon: ...
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: Literal[False] = False,
+    ) -> MultiPolygon: ...
+    @overload
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> Polygon | MultiPolygon: ...
+
 
 @final
 class GeometryCollection(Geometry):
@@ -5070,6 +5473,34 @@ class GeometryCollection(Geometry):
         >>> multi.count(multi[0])
         1
         """
+    def boundary(
+        self,
+    ) -> GeometryCollection: ...
+    def repair(
+        self,
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryCollection: ...
+    def split_antimeridian(
+        self,
+    ) -> GeometryCollection: ...
+    def offset_curve(
+        self,
+        distance: _FloatScalarInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: _IntScalar = 8,
+        miter_limit: _FloatScalarInput = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryCollection: ...
+    def snap_to_grid(
+        self,
+        size: _FloatScalarInput | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool = False,
+    ) -> GeometryCollection: ...
+
 
 @final
 class GeometryPartsIterator(Generic[_GeometryT_co]):
@@ -5322,6 +5753,54 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """
     @overload
     def __and__(
+        self: GeometryArray[Point],
+        other: Geometry | GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[_GeometryT],
+        other: Point | GeometryArray[Point],
+        /,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[MultiPoint],
+        other: Geometry | GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[_GeometryT],
+        other: MultiPoint | GeometryArray[MultiPoint],
+        /,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[Point | None],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[_GeometryT | None],
+        other: Point | GeometryArray[Point | None],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[MultiPoint | None],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __and__(
+        self: GeometryArray[_GeometryT | None],
+        other: MultiPoint | GeometryArray[MultiPoint | None],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __and__(
         self: GeometryArray[_GeometryT],
         other: Geometry | GeometryArray[_GeometryOtherT],
         /,
@@ -5333,6 +5812,18 @@ class GeometryArray(Sequence[_GeometryT_co]):
         /,
     ) -> GeometryArray[Geometry | None]:
         """Return self&value."""
+    @overload
+    def __or__(
+        self: GeometryArray[Point | MultiPoint],
+        other: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+        /,
+    ) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __or__(
+        self: GeometryArray[Point | MultiPoint | None],
+        other: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+        /,
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
     @overload
     def __or__(
         self: GeometryArray[_GeometryT],
@@ -5348,6 +5839,30 @@ class GeometryArray(Sequence[_GeometryT_co]):
         """Return self|value."""
     @overload
     def __sub__(
+        self: GeometryArray[Point],
+        other: Geometry | GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def __sub__(
+        self: GeometryArray[MultiPoint],
+        other: Geometry | GeometryArray[_GeometryOtherT],
+        /,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def __sub__(
+        self: GeometryArray[Point | None],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def __sub__(
+        self: GeometryArray[MultiPoint | None],
+        other: Geometry | GeometryArray[_GeometryOtherT | None],
+        /,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
+    @overload
+    def __sub__(
         self: GeometryArray[_GeometryT],
         other: Geometry | GeometryArray[_GeometryOtherT],
         /,
@@ -5359,6 +5874,18 @@ class GeometryArray(Sequence[_GeometryT_co]):
         /,
     ) -> GeometryArray[Geometry | None]:
         """Return self-value."""
+    @overload
+    def __xor__(
+        self: GeometryArray[Point | MultiPoint],
+        other: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+        /,
+    ) -> GeometryArray[Point | MultiPoint]: ...
+    @overload
+    def __xor__(
+        self: GeometryArray[Point | MultiPoint | None],
+        other: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+        /,
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
     @overload
     def __xor__(
         self: GeometryArray[_GeometryT],
@@ -6772,6 +7299,30 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def boundary(
+        self: GeometryArray[Point | MultiPoint | GeometryCollection],
+    ) -> GeometryArray[GeometryCollection]: ...
+    @overload
+    def boundary(
+        self: GeometryArray[LineString | MultiLineString],
+    ) -> GeometryArray[MultiPoint]: ...
+    @overload
+    def boundary(
+        self: GeometryArray[Polygon | MultiPolygon],
+    ) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def boundary(
+        self: GeometryArray[Point | MultiPoint | GeometryCollection | None],
+    ) -> GeometryArray[GeometryCollection | None]: ...
+    @overload
+    def boundary(
+        self: GeometryArray[LineString | MultiLineString | None],
+    ) -> GeometryArray[MultiPoint | None]: ...
+    @overload
+    def boundary(
+        self: GeometryArray[Polygon | MultiPolygon | None],
+    ) -> GeometryArray[LineString | MultiLineString | None]: ...
+    @overload
+    def boundary(
         self: GeometryArray[Geometry],
     ) -> GeometryArray[
         MultiPoint | LineString | MultiLineString | GeometryCollection
@@ -6910,6 +7461,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def line_merge(
+        self: GeometryArray[LineString],
+    ) -> GeometryArray[LineString]: ...
+    @overload
+    def line_merge(
+        self: GeometryArray[LineString | None],
+    ) -> GeometryArray[LineString | None]: ...
+    @overload
+    def line_merge(
         self: GeometryArray[Geometry],
     ) -> GeometryArray[LineString | MultiLineString]: ...
     @overload
@@ -6966,6 +7525,38 @@ class GeometryArray(Sequence[_GeometryT_co]):
         True
         """
 
+    @overload
+    def clip_by_rect(
+        self: GeometryArray[Point],
+        minx: float,
+        miny: float,
+        maxx: float,
+        maxy: float,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def clip_by_rect(
+        self: GeometryArray[MultiPoint],
+        minx: float,
+        miny: float,
+        maxx: float,
+        maxy: float,
+    ) -> GeometryArray[MultiPoint | Point]: ...
+    @overload
+    def clip_by_rect(
+        self: GeometryArray[Point | None],
+        minx: float,
+        miny: float,
+        maxx: float,
+        maxy: float,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def clip_by_rect(
+        self: GeometryArray[MultiPoint | None],
+        minx: float,
+        miny: float,
+        maxx: float,
+        maxy: float,
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
     @overload
     def clip_by_rect(
         self: GeometryArray[Geometry],
@@ -7138,6 +7729,30 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def buffer(
+        self: GeometryArray[Point],
+        distance: FloatInput,
+        *,
+        cap_style: CapStyle = 'round',
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        side: BufferSide = 'both',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Polygon]: ...
+    @overload
+    def buffer(
+        self: GeometryArray[Point | None],
+        distance: FloatInput,
+        *,
+        cap_style: CapStyle = 'round',
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        side: BufferSide = 'both',
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[Polygon | None]: ...
+    @overload
+    def buffer(
         self: GeometryArray[Geometry],
         distance: float,
         *,
@@ -7255,6 +7870,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def unique_points(
+        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon],
+    ) -> GeometryArray[MultiPoint]: ...
+    @overload
+    def unique_points(
+        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon | None],
+    ) -> GeometryArray[MultiPoint | None]: ...
+    @overload
+    def unique_points(
         self: GeometryArray[Geometry],
     ) -> GeometryArray[MultiPoint | GeometryCollection]: ...
     @overload
@@ -7347,6 +7970,78 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'LINESTRING (0 0, 3 0)'
         """
 
+    @overload
+    def repair(
+        self: GeometryArray[Point],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def repair(
+        self: GeometryArray[MultiPoint],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[MultiPoint]: ...
+    @overload
+    def repair(
+        self: GeometryArray[MultiLineString],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[MultiLineString]: ...
+    @overload
+    def repair(
+        self: GeometryArray[GeometryCollection],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[GeometryCollection]: ...
+    @overload
+    def repair(
+        self: GeometryArray[LineString],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def repair(
+        self: GeometryArray[Polygon | MultiPolygon],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def repair(
+        self: GeometryArray[Point | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def repair(
+        self: GeometryArray[MultiPoint | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[MultiPoint | None]: ...
+    @overload
+    def repair(
+        self: GeometryArray[MultiLineString | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[MultiLineString | None]: ...
+    @overload
+    def repair(
+        self: GeometryArray[GeometryCollection | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[GeometryCollection | None]: ...
+    @overload
+    def repair(
+        self: GeometryArray[LineString | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[LineString | MultiLineString | None]: ...
+    @overload
+    def repair(
+        self: GeometryArray[Polygon | MultiPolygon | None],
+        *,
+        method: RepairMethod = 'linework',
+    ) -> GeometryArray[Polygon | MultiPolygon | None]: ...
     @overload
     def repair(
         self: GeometryArray[Geometry],
@@ -8195,6 +8890,62 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def split_antimeridian(
+        self: GeometryArray[Point],
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[MultiPoint],
+    ) -> GeometryArray[MultiPoint]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[MultiLineString],
+    ) -> GeometryArray[MultiLineString]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[MultiPolygon],
+    ) -> GeometryArray[MultiPolygon]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[GeometryCollection],
+    ) -> GeometryArray[GeometryCollection]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[LineString],
+    ) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[Polygon],
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[Point | None],
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[MultiPoint | None],
+    ) -> GeometryArray[MultiPoint | None]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[MultiLineString | None],
+    ) -> GeometryArray[MultiLineString | None]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[MultiPolygon | None],
+    ) -> GeometryArray[MultiPolygon | None]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[GeometryCollection | None],
+    ) -> GeometryArray[GeometryCollection | None]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[LineString | None],
+    ) -> GeometryArray[LineString | MultiLineString | None]: ...
+    @overload
+    def split_antimeridian(
+        self: GeometryArray[Polygon | None],
+    ) -> GeometryArray[Polygon | MultiPolygon | None]: ...
+    @overload
+    def split_antimeridian(
         self: GeometryArray[Geometry],
     ) -> GeometryArray[Geometry]: ...
     @overload
@@ -8239,6 +8990,66 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def offset_curve(
+        self: GeometryArray[LineString],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[LineString]: ...
+    @overload
+    def offset_curve(
+        self: GeometryArray[MultiLineString],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[MultiLineString]: ...
+    @overload
+    def offset_curve(
+        self: GeometryArray[GeometryCollection],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[GeometryCollection]: ...
+    @overload
+    def offset_curve(
+        self: GeometryArray[LineString | None],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[LineString | None]: ...
+    @overload
+    def offset_curve(
+        self: GeometryArray[MultiLineString | None],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[MultiLineString | None]: ...
+    @overload
+    def offset_curve(
+        self: GeometryArray[GeometryCollection | None],
+        distance: FloatInput,
+        *,
+        join_style: JoinStyle = 'round',
+        quadrant_segments: int = 8,
+        miter_limit: float = 5.0,
+        unit: DistanceUnit | None = None,
+    ) -> GeometryArray[GeometryCollection | None]: ...
+    @overload
+    def offset_curve(
         self: GeometryArray[Geometry],
         distance: FloatInput,
         *,
@@ -8246,7 +9057,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         quadrant_segments: int = 8,
         miter_limit: float = 5.0,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[LineString | MultiLineString]: ...
+    ) -> GeometryArray[LineString | MultiLineString | GeometryCollection]: ...
     @overload
     def offset_curve(
         self: GeometryArray[Geometry | None],
@@ -8256,7 +9067,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         quadrant_segments: int = 8,
         miter_limit: float = 5.0,
         unit: DistanceUnit | None = None,
-    ) -> GeometryArray[LineString | MultiLineString | None]:
+    ) -> GeometryArray[LineString | MultiLineString | GeometryCollection | None]:
         """Compute a line offset to one side of a linestring by ``distance`` (measured
         for the CRS).
 
@@ -8326,6 +9137,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'LINESTRING (2 2, 1 1, 0 0)'
         """
 
+    @overload
+    def envelope(
+        self: GeometryArray[Point],
+    ) -> GeometryArray[Point | Polygon]: ...
+    @overload
+    def envelope(
+        self: GeometryArray[Point | None],
+    ) -> GeometryArray[Point | Polygon | None]: ...
     @overload
     def envelope(
         self: GeometryArray[Geometry],
@@ -8612,6 +9431,118 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def snap_to_grid(
+        self: GeometryArray[_GeometryT],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: Literal[False] = False,
+    ) -> GeometryArray[_GeometryT]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[Point],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[Point]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[MultiPoint],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[MultiPoint]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[MultiLineString],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[MultiLineString]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[GeometryCollection],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[GeometryCollection]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[LineString],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[LineString | MultiLineString]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[Polygon | MultiPolygon],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[_GeometryT | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: Literal[False] = False,
+    ) -> GeometryArray[_GeometryT | None]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[Point | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[Point | None]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[MultiPoint | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[MultiPoint | None]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[MultiLineString | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[MultiLineString | None]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[GeometryCollection | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[GeometryCollection | None]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[LineString | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[LineString | MultiLineString | None]: ...
+    @overload
+    def snap_to_grid(
+        self: GeometryArray[Polygon | MultiPolygon | None],
+        size: float | tuple[float, float] | Iterable[float],
+        *,
+        origin: GridOrigin = (0.0, 0.0),
+        repair: bool,
+    ) -> GeometryArray[Polygon | MultiPolygon | None]: ...
+    @overload
+    def snap_to_grid(
         self: GeometryArray[Geometry],
         size: float | tuple[float, float] | Iterable[float],
         *,
@@ -8672,6 +9603,14 @@ class GeometryArray(Sequence[_GeometryT_co]):
         'LINESTRING (0 1, 2.5 1.5)'
         """
 
+    @overload
+    def build_area(
+        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon],
+    ) -> GeometryArray[Polygon | MultiPolygon]: ...
+    @overload
+    def build_area(
+        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon | None],
+    ) -> GeometryArray[Polygon | MultiPolygon | None]: ...
     @overload
     def build_area(
         self: GeometryArray[Geometry],
@@ -16350,6 +17289,106 @@ def join(
 
 @overload
 def intersection(
+    left: Point,
+    right: Geometry,
+) -> Point: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: Point,
+) -> Point: ...
+@overload
+def intersection(
+    left: MultiPoint,
+    right: Geometry,
+) -> MultiPoint | Point: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: MultiPoint,
+) -> MultiPoint | Point: ...
+@overload
+def intersection(
+    left: GeometryArray[Point],
+    right: Geometry | GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: Point,
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: GeometryArray[_GeometryT],
+    right: Point | GeometryArray[Point],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: GeometryArray[Point],
+) -> GeometryArray[Point]: ...
+@overload
+def intersection(
+    left: GeometryArray[MultiPoint],
+    right: Geometry | GeometryArray[_GeometryOtherT],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def intersection(
+    left: MultiPoint,
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def intersection(
+    left: GeometryArray[_GeometryT],
+    right: MultiPoint | GeometryArray[MultiPoint],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: GeometryArray[MultiPoint],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def intersection(
+    left: GeometryArray[Point | None],
+    right: Geometry | GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def intersection(
+    left: Point,
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def intersection(
+    left: GeometryArray[_GeometryT | None],
+    right: Point | GeometryArray[Point | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: GeometryArray[Point | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def intersection(
+    left: GeometryArray[MultiPoint | None],
+    right: Geometry | GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def intersection(
+    left: MultiPoint,
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def intersection(
+    left: GeometryArray[_GeometryT | None],
+    right: MultiPoint | GeometryArray[MultiPoint | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def intersection(
+    left: Geometry,
+    right: GeometryArray[MultiPoint | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def intersection(
     left: Geometry,
     right: Geometry,
 ) -> Geometry: ...
@@ -16420,6 +17459,31 @@ def intersection(
     'POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))'
     """
 
+@overload
+def union(
+    left: Point | MultiPoint,
+    right: Point | MultiPoint,
+) -> Point | MultiPoint: ...
+@overload
+def union(
+    left: GeometryArray[Point | MultiPoint],
+    right: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+) -> GeometryArray[Point | MultiPoint]: ...
+@overload
+def union(
+    left: Point | MultiPoint,
+    right: GeometryArray[Point | MultiPoint],
+) -> GeometryArray[Point | MultiPoint]: ...
+@overload
+def union(
+    left: GeometryArray[Point | MultiPoint | None],
+    right: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+) -> GeometryArray[Point | MultiPoint | None]: ...
+@overload
+def union(
+    left: Point | MultiPoint,
+    right: GeometryArray[Point | MultiPoint | None],
+) -> GeometryArray[Point | MultiPoint | None]: ...
 @overload
 def union(
     left: Geometry,
@@ -16497,6 +17561,56 @@ def union(
 
 @overload
 def difference(
+    left: Point,
+    right: Geometry,
+) -> Point: ...
+@overload
+def difference(
+    left: MultiPoint,
+    right: Geometry,
+) -> MultiPoint | Point: ...
+@overload
+def difference(
+    left: GeometryArray[Point],
+    right: Geometry | GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def difference(
+    left: Point,
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[Point]: ...
+@overload
+def difference(
+    left: GeometryArray[MultiPoint],
+    right: Geometry | GeometryArray[_GeometryOtherT],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def difference(
+    left: MultiPoint,
+    right: GeometryArray[_GeometryOtherT],
+) -> GeometryArray[MultiPoint | Point]: ...
+@overload
+def difference(
+    left: GeometryArray[Point | None],
+    right: Geometry | GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def difference(
+    left: Point,
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[Point | None]: ...
+@overload
+def difference(
+    left: GeometryArray[MultiPoint | None],
+    right: Geometry | GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def difference(
+    left: MultiPoint,
+    right: GeometryArray[_GeometryOtherT | None],
+) -> GeometryArray[MultiPoint | Point | None]: ...
+@overload
+def difference(
     left: Geometry,
     right: Geometry,
 ) -> Geometry: ...
@@ -16568,6 +17682,31 @@ def difference(
     'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))'
     """
 
+@overload
+def symmetric_difference(
+    left: Point | MultiPoint,
+    right: Point | MultiPoint,
+) -> Point | MultiPoint: ...
+@overload
+def symmetric_difference(
+    left: GeometryArray[Point | MultiPoint],
+    right: Point | MultiPoint | GeometryArray[Point | MultiPoint],
+) -> GeometryArray[Point | MultiPoint]: ...
+@overload
+def symmetric_difference(
+    left: Point | MultiPoint,
+    right: GeometryArray[Point | MultiPoint],
+) -> GeometryArray[Point | MultiPoint]: ...
+@overload
+def symmetric_difference(
+    left: GeometryArray[Point | MultiPoint | None],
+    right: Point | MultiPoint | GeometryArray[Point | MultiPoint | None],
+) -> GeometryArray[Point | MultiPoint | None]: ...
+@overload
+def symmetric_difference(
+    left: Point | MultiPoint,
+    right: GeometryArray[Point | MultiPoint | None],
+) -> GeometryArray[Point | MultiPoint | None]: ...
 @overload
 def symmetric_difference(
     left: Geometry,

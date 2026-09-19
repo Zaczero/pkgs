@@ -114,8 +114,8 @@ distance : float
 
 Returns
 -------
-LineString or MultiLineString
-    The raw offset curve.
+LineString, MultiLineString, or GeometryCollection
+    The raw offset curve, of the input's kind.
 
 ");
     array: (r"

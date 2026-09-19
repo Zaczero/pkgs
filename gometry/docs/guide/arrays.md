@@ -113,8 +113,9 @@ print("strided:", [g.x for g in arr[::2]])
 The container is **generic over its element type**: `gm.points(...)` and
 `gm.GeometryArray([pt, ...])` are typed `GeometryArray[Point]`, so a type checker knows
 `arr[0]` is a `Point` and `for g in arr` yields `Point`. Heterogeneous arrays widen to
-`GeometryArray[Geometry]`. Operations narrow too: `arr.buffer(...)` is a
-[`GeometryArray[Polygon | MultiPolygon]`][gometry.GeometryArray], `arr.area` is a `float64` ndarray while
+`GeometryArray[Geometry]`. Operations narrow too, as far as the element kind
+guarantees: this point array's `arr.buffer(...)` is a
+[`GeometryArray[Polygon]`][gometry.GeometryArray], `arr.area` is a `float64` ndarray while
 `geom.area` is `float`, and so on across the whole surface.
 
 The public classes and cross-grid protocols can be used directly in your own
