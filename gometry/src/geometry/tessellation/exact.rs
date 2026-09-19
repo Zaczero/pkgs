@@ -553,6 +553,15 @@ impl ExactDyadic {
         Self::try_combine_refs(left, right, false)
     }
 
+    /// The magnitude when it fits in the two inline limbs.
+    fn small_magnitude(&self) -> Option<u128> {
+        match *self.limbs.as_slice() {
+            [low] => Some(u128::from(low)),
+            [low, high] => Some(u128::from(low) | (u128::from(high) << 64)),
+            _ => None,
+        }
+    }
+
     /// A normalized value from a `u128` magnitude: trailing zero bits move
     /// into the exponent, leaving the odd lowest limb every value carries.
     fn from_u128(negative: bool, magnitude: u128, exponent: i64) -> Self {
@@ -851,6 +860,22 @@ impl ExactDyadic {
         if other.limbs.as_slice() == [1] && other.exponent == 0 {
             return other.try_clone().map(Self::abs);
         }
+        let exponent = self.exponent.min(other.exponent);
+        if let (Some(mut left), Some(mut right)) = (self.small_magnitude(), other.small_magnitude())
+        {
+            // Binary GCD: both magnitudes are odd, so no common power of two
+            // needs restoring.
+            loop {
+                if left > right {
+                    std::mem::swap(&mut left, &mut right);
+                }
+                right -= left;
+                if right == 0 {
+                    return Ok(Self::from_u128(false, left, exponent));
+                }
+                right >>= right.trailing_zeros();
+            }
+        }
         let mut left = Vec::new();
         try_reserve_vec(&mut left, self.limbs.len())?;
         left.extend_from_slice(&self.limbs);
@@ -865,7 +890,7 @@ impl ExactDyadic {
         let value = Self {
             negative: false,
             limbs: CompactLimbs::from_vec(left),
-            exponent: self.exponent.min(other.exponent),
+            exponent,
         };
         Ok(value)
     }
@@ -891,6 +916,25 @@ impl ExactDyadic {
                 .ok_or(ResourceError::SizeOverflow)?;
             return Ok(value);
         }
+        let exponent = self
+            .exponent
+            .checked_sub(divisor.exponent)
+            .ok_or(ResourceError::SizeOverflow)?;
+        if let (Some(dividend), Some(magnitude)) =
+            (self.small_magnitude(), divisor.small_magnitude())
+        {
+            if dividend % magnitude != 0 {
+                return Err(crate::geometry::GeometryErrorKind::Invalid(
+                    "exact dyadic quotient has a remainder".into(),
+                )
+                .into());
+            }
+            return Ok(Self::from_u128(
+                self.negative != divisor.negative,
+                dividend / magnitude,
+                exponent,
+            ));
+        }
         let (limbs, remainder) = Self::try_div_rem_unsigned(&self.limbs, &divisor.limbs)?;
         if !remainder.is_empty() {
             return Err(crate::geometry::GeometryErrorKind::Invalid(
@@ -901,10 +945,7 @@ impl ExactDyadic {
         let value = Self {
             negative: self.negative != divisor.negative,
             limbs: CompactLimbs::from_vec(limbs),
-            exponent: self
-                .exponent
-                .checked_sub(divisor.exponent)
-                .ok_or(ResourceError::SizeOverflow)?,
+            exponent,
         };
         Ok(value)
     }
@@ -3892,6 +3933,43 @@ mod tests {
             .product(&difference(c.y, a.y))
             .subtract(difference(b.y, a.y).product(&difference(c.x, a.x)))
             .sign()
+    }
+
+    #[test]
+    fn gcd_and_exact_quotient_agree_across_the_inline_and_heap_paths() {
+        // The largest prime below 2^64, so every product crosses into a second
+        // or third limb.
+        let prime = ExactDyadic::from_u128(false, 0xFFFF_FFFF_FFFF_FFC5, 0);
+        let small = |value: u128, exponent: i64| ExactDyadic::from_u128(false, value, exponent);
+        let left = prime.try_product(&small(3, 5)).unwrap();
+        let right = prime.try_product(&small(5, -3)).unwrap();
+        let gcd = left.try_gcd(&right).unwrap();
+        assert_eq!(
+            gcd.cmp(&prime.try_product(&small(1, -3)).unwrap()),
+            Ordering::Equal
+        );
+        assert_eq!(
+            left.try_exact_quotient(&gcd).unwrap().cmp(&small(3, 8)),
+            Ordering::Equal
+        );
+        // A three-limb operand takes the long-division path to the same gcd.
+        let wide = left.try_product(&prime).unwrap();
+        assert_eq!(wide.try_gcd(&right).unwrap().cmp(&gcd), Ordering::Equal);
+        assert_eq!(
+            wide.try_exact_quotient(&gcd)
+                .unwrap()
+                .cmp(&prime.try_product(&small(3, 8)).unwrap()),
+            Ordering::Equal
+        );
+        right.try_exact_quotient(&small(3, 0)).unwrap_err();
+        let negative = small(15, 0).neg();
+        assert_eq!(
+            negative
+                .try_exact_quotient(&small(5, 0))
+                .unwrap()
+                .cmp(&small(3, 0).neg()),
+            Ordering::Equal
+        );
     }
 
     #[test]

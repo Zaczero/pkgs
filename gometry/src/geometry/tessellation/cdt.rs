@@ -1211,7 +1211,9 @@ mod tests {
 
     #[test]
     fn source_piece_preparation_allocation_failures_are_retryable() {
-        let pts = points(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+        // An edge endpoint far below the other's scale widens the exact split
+        // point past the two inline limbs, onto the allocating path.
+        let pts = points(&[(1e-100, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
         let mesh = ConstrainedMesh::build(&pts, &[[0, 1], [1, 2], [2, 3], [3, 0]]).unwrap();
         let edge = mesh.mesh.edge_slot(0, 1).unwrap().unwrap();
         let xy = |site: usize| pts[site].xy();
