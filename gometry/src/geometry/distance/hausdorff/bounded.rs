@@ -530,6 +530,12 @@ struct Tightness {
 }
 
 impl Tightness {
+    /// Accepts any enclosure the binary64 evaluation can produce.
+    const ANY: Self = Self {
+        relative: f64::INFINITY,
+        absolute: f64::INFINITY,
+    };
+
     /// Squared-distance widths map to distance errors through `2 d`, so an
     /// absolute distance allowance scales with the root of the upper bound.
     fn admits(self, lower: f64, upper: f64) -> bool {
@@ -3202,6 +3208,28 @@ fn upper_is_below_lower(upper: &Rational, context: &SearchContext<'_>) -> Result
     Ok(upper_squared.try_cmp(lower)? != Ordering::Greater)
 }
 
+/// The exact scaled squared clearance of `point` when it could raise the
+/// search's lower bound, or `None` when a binary64 enclosure already proves
+/// it falls strictly short. A clearance that only ties still counts, so the
+/// first of equal clearances keeps winning.
+fn raising_clearance(
+    target: &PreparedSupport,
+    point: &ExactPoint,
+    context: &SearchContext<'_>,
+) -> Result<Option<Rational>> {
+    if target.contains_area(point)? {
+        return context.scaled_squared(&Rational::zero()).map(Some);
+    }
+    if let Some(lower) = &context.lower_squared {
+        let hint = target.index.nearest(target, point, Some(Tightness::ANY))?;
+        if context.scaled_squared(&hint.upper)?.try_cmp(lower)? == Ordering::Less {
+            return Ok(None);
+        }
+    }
+    let exact = target.index.nearest(target, point, None)?.lower;
+    context.scaled_squared(&exact).map(Some)
+}
+
 fn build_patch(
     patch: SourcePatch,
     source: &PreparedSupport,
@@ -3214,13 +3242,11 @@ fn build_patch(
     #[cfg(debug_assertions)]
     debug_assert!(patch.witness_is_valid(source, &witness)?);
 
-    let witness_squared = target.distance_squared(&witness)?;
-    let witness_squared = context.scaled_squared(&witness_squared)?;
     // Boundary patches are useful for the global enclosure, but they cannot
     // become a zero-clearance winner while a filled source has positive area.
-    let update_witness =
-        !(context.exact_upper && context.require_positive_witness && witness_squared.is_zero());
-    if update_witness {
+    if let Some(witness_squared) = raising_clearance(target, &witness, context)?
+        && !(context.exact_upper && context.require_positive_witness && witness_squared.is_zero())
+    {
         if context.exact_upper {
             context.update_lower_with_witness(witness_squared, &witness)?;
         } else {
@@ -3637,15 +3663,15 @@ fn symmetric_distance(
         for span in &source.spans {
             for parameter in [&span.t_lo, &span.t_hi] {
                 let point = span_point(span, parameter)?;
-                let squared = target.distance_squared(&point)?;
-                let squared = context.scaled_squared(&squared)?;
-                context.update_lower(squared)?;
+                if let Some(squared) = raising_clearance(target, &point, context)? {
+                    context.update_lower(squared)?;
+                }
             }
         }
         for point in &source.points {
-            let squared = target.distance_squared(point)?;
-            let squared = context.scaled_squared(&squared)?;
-            context.update_lower(squared)?;
+            if let Some(squared) = raising_clearance(target, point, context)? {
+                context.update_lower(squared)?;
+            }
         }
     }
     if context
