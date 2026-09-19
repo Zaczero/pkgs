@@ -753,26 +753,9 @@ impl BoundaryPlan {
         for walk in &self.walks {
             let (chords, rest) = remaining.split_at(walk.len());
             remaining = rest;
-            let mut xs = Vec::new();
-            let mut ys = Vec::new();
-            let coordinate_count = chords
-                .len()
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
-            try_reserve_vec(&mut xs, coordinate_count)?;
-            try_reserve_vec(&mut ys, coordinate_count)?;
-            for chord in chords {
-                try_push_vec(&mut xs, chord.start.x)?;
-                try_push_vec(&mut ys, chord.start.y)?;
-            }
-            try_push_vec(&mut xs, chords[0].start.x)?;
-            try_push_vec(&mut ys, chords[0].start.y)?;
-            canonicalize_closed_xy(&mut xs, &mut ys);
             try_push_vec(
                 &mut rings,
-                Some(Ring::from_closed(CoordSeq::try_from_vecs(
-                    xs, ys, None, None,
-                )?)),
+                Some(closed_ring(chords.iter().map(|chord| chord.start))?),
             )?;
         }
         let mut polygons = Vec::new();
@@ -1050,41 +1033,13 @@ impl BoundaryPlan {
         let mut holes = Vec::new();
         let mut polygons = Vec::new();
         for (index, walk) in self.walks.iter().enumerate() {
-            let departure = |chord: &PlannedChord| self.source_darts[chord.sources.start];
-            let mut minimum = 0;
-            for candidate in 1..walk.len() {
-                if partition.compare_nodes(
-                    NodeId(topology.owners[departure(&walk[candidate]) as usize]),
-                    NodeId(topology.owners[departure(&walk[minimum]) as usize]),
-                )? == Ordering::Less
-                {
-                    minimum = candidate;
-                }
-            }
-            let outgoing = departure(&walk[minimum]);
-            let prior = &walk[if minimum == 0 {
-                walk.len() - 1
-            } else {
-                minimum - 1
-            }];
-            let incoming = topology.twins[self.source_darts[prior.sources.end - 1] as usize];
-            let root = NodeId(topology.owners[outgoing as usize]);
-            let upper = |slot: u32| -> Result<bool> {
-                Ok(partition.compare_axis(
-                    NodeId(topology.targets[slot as usize]),
-                    root,
-                    Axis::Y,
-                )? != Ordering::Less)
-            };
-            let outgoing_upper = upper(outgoing)?;
-            let incoming_upper = upper(incoming)?;
-            // At the exact leftmost vertex both rays point right. The fan's
-            // angular cut is +x, so a lower outgoing ray precedes an upper one.
-            let is_shell = if outgoing_upper == incoming_upper {
-                outgoing < incoming
-            } else {
-                !outgoing_upper
-            };
+            let is_shell = walk_is_shell(
+                partition,
+                topology,
+                walk.len(),
+                |chord| self.source_darts[walk[chord].sources.start],
+                |chord| self.source_darts[walk[chord].sources.end - 1],
+            )?;
             // Each bounded occupied face has one outer cycle; its other
             // cycles bound holes, even when they touch that outer cycle.
             let host = walk[0].sides[0] as usize;
@@ -1312,6 +1267,120 @@ impl BoundaryPlan {
     }
 }
 
+/// Every bounded face of the arrangement as its own polygon, in face order.
+/// One plan that emits every span as its own chord certifies the rounded
+/// arrangement once; each face's rings then read those certified node
+/// coordinates instead of re-rounding the edges it shares with neighbors.
+/// Dangling edges inside a face bound nothing and are neither certified nor
+/// emitted.
+fn polygonize_faces(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    edges: &[u32],
+    global: &GlobalFaces,
+) -> Result<Vec<Polygon>> {
+    let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
+    let flags = |len: usize| -> Result<Vec<bool>> {
+        let mut flags = Vec::new();
+        try_reserve_vec(&mut flags, len)?;
+        flags.resize(len, false);
+        Ok(flags)
+    };
+    let mut spans = flags(partition.spans.len())?;
+    for (slot, &span) in edges.iter().enumerate() {
+        spans[span as usize] |= face_of(slot) != face_of(topology.twins[slot] as usize);
+    }
+    let lines = ArealCells {
+        faces: flags(global.count as usize)?,
+        spans,
+        nodes: flags(partition.node_count())?,
+    };
+    lines
+        .emission_plan(partition, topology, edges, global)?
+        .round_items(partition, topology)?;
+    let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other)?;
+    let mut shells = Vec::new();
+    try_reserve_vec(&mut shells, global.count as usize)?;
+    shells.resize(global.count as usize, None);
+    let mut polygons: Vec<(usize, Ring, Vec<Ring>)> = Vec::new();
+    let mut holes = Vec::new();
+    for walk in &walks {
+        let face = face_of(walk[0] as usize) as usize;
+        let ring = closed_ring(
+            walk.iter()
+                .map(|&slot| partition.node_xy(NodeId(topology.owners[slot as usize]))),
+        )?;
+        if walk_is_shell(
+            partition,
+            topology,
+            walk.len(),
+            |step| walk[step],
+            |step| walk[step],
+        )? {
+            debug_assert!(shells[face].is_none());
+            shells[face] = Some(polygons.len());
+            try_reserve_vec(&mut polygons, 1)?;
+            try_push_vec(&mut polygons, (face, ring, Vec::new()))?;
+        } else {
+            try_reserve_vec(&mut holes, 1)?;
+            try_push_vec(&mut holes, (face, ring))?;
+        }
+    }
+    for (face, hole) in holes {
+        let polygon = shells[face].expect("bounded face has a shell");
+        try_reserve_vec(&mut polygons[polygon].2, 1)?;
+        try_push_vec(&mut polygons[polygon].2, hole)?;
+    }
+    polygons.sort_unstable_by_key(|&(face, ..)| face);
+    let mut output = Vec::new();
+    try_reserve_vec(&mut output, polygons.len())?;
+    for (_, shell, holes) in polygons {
+        try_push_vec(&mut output, Polygon::new(shell, holes)?)?;
+    }
+    Ok(output)
+}
+
+/// Whether a closed boundary walk is the outer cycle of the face on its left,
+/// judged at its exact lexicographically least vertex. `first(i)` and
+/// `last(i)` are the first and last darts of the walk's `i`-th step.
+fn walk_is_shell(
+    partition: &ExactPartition<'_>,
+    topology: &IndexedTopology,
+    steps: usize,
+    first: impl Fn(usize) -> u32,
+    last: impl Fn(usize) -> u32,
+) -> Result<bool> {
+    let mut minimum = 0;
+    for candidate in 1..steps {
+        if partition.compare_nodes(
+            NodeId(topology.owners[first(candidate) as usize]),
+            NodeId(topology.owners[first(minimum) as usize]),
+        )? == Ordering::Less
+        {
+            minimum = candidate;
+        }
+    }
+    let outgoing = first(minimum);
+    let prior = if minimum == 0 { steps - 1 } else { minimum - 1 };
+    let incoming = topology.twins[last(prior) as usize];
+    let root = NodeId(topology.owners[outgoing as usize]);
+    let upper = |slot: u32| -> Result<bool> {
+        Ok(
+            partition.compare_axis(NodeId(topology.targets[slot as usize]), root, Axis::Y)?
+                != Ordering::Less,
+        )
+    };
+    let outgoing_upper = upper(outgoing)?;
+    let incoming_upper = upper(incoming)?;
+    // At the exact leftmost vertex both rays point right. The fan's angular
+    // cut is +x, so a lower outgoing ray precedes an upper one.
+    Ok(if outgoing_upper == incoming_upper {
+        outgoing < incoming
+    } else {
+        !outgoing_upper
+    })
+}
+
 fn canonicalize_closed_nodes(partition: &ExactPartition<'_>, nodes: &mut [NodeId]) -> Result<()> {
     let open = nodes.len().saturating_sub(1);
     if open == 0 {
@@ -1326,6 +1395,27 @@ fn canonicalize_closed_nodes(partition: &ExactPartition<'_>, nodes: &mut [NodeId
     nodes[..open].rotate_left(start);
     nodes[open] = nodes[0];
     Ok(())
+}
+
+/// A closed ring through `vertices`, rotated to start at its least vertex.
+fn closed_ring(vertices: impl ExactSizeIterator<Item = XY> + Clone) -> Result<Ring> {
+    let count = vertices
+        .len()
+        .checked_add(1)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut xs = Vec::new();
+    let mut ys = Vec::new();
+    try_reserve_vec(&mut xs, count)?;
+    try_reserve_vec(&mut ys, count)?;
+    let first = vertices.clone().next().expect("a ring has vertices");
+    for vertex in vertices.chain([first]) {
+        xs.push(vertex.x);
+        ys.push(vertex.y);
+    }
+    canonicalize_closed_xy(&mut xs, &mut ys);
+    Ok(Ring::from_closed(CoordSeq::try_from_vecs(
+        xs, ys, None, None,
+    )?))
 }
 
 fn canonicalize_closed_xy(xs: &mut [f64], ys: &mut [f64]) {
@@ -1411,7 +1501,8 @@ impl GlobalFaces {
             )
             .into());
         }
-        let mut walks = self.boundary_walks(topology, occupied)?;
+        let mut walks =
+            self.boundary_walks(topology, |face, other| occupied[face] && !occupied[other])?;
         let mut retained = Vec::new();
         try_reserve_vec(&mut retained, partition.spans.len())?;
         retained.resize(partition.spans.len(), false);
@@ -1573,10 +1664,14 @@ impl GlobalFaces {
         })
     }
 
+    /// Closed boundary walks over the darts whose global face `bounds` its
+    /// twin's face: `bounds(face, twin_face)`. Each walk stays within one
+    /// face, since the next dart clockwise from an incoming twin bounds the
+    /// same face on its left.
     fn boundary_walks(
         &self,
         topology: &IndexedTopology,
-        occupied: &[bool],
+        bounds: impl Fn(usize, usize) -> bool,
     ) -> Result<Vec<Vec<u32>>> {
         let mut selected = Vec::new();
         try_reserve_vec(&mut selected, topology.targets.len())?;
@@ -1584,8 +1679,10 @@ impl GlobalFaces {
             let other = topology.face_of[topology.twins[slot] as usize];
             try_push_vec(
                 &mut selected,
-                occupied[self.walk_faces[walk as usize] as usize]
-                    && !occupied[self.walk_faces[other as usize] as usize],
+                bounds(
+                    self.walk_faces[walk as usize] as usize,
+                    self.walk_faces[other as usize] as usize,
+                ),
             )?;
         }
         let mut visited = Vec::new();
@@ -3048,6 +3145,9 @@ impl ExactSourceInventory {
         partition.kept_nodes = KeptNodes::All;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
+        if !build_area {
+            return polygonize_faces(partition, &topology, &edges, &global);
+        }
         let mut cycles: Vec<Vec<Vec<NodeId>>> = Vec::new();
         try_reserve_vec(&mut cycles, global.count as usize)?;
         cycles.resize_with(global.count as usize, Vec::new);
@@ -3066,73 +3166,64 @@ impl ExactSourceInventory {
         try_reserve_vec(&mut samples, global.count as usize)?;
         samples.resize(global.count as usize, None);
         for face in 1..global.count as usize {
-            for cycle in &cycles[face] {
-                for &node in cycle {
-                    if samples[face].is_none_or(|prior| {
-                        partition
-                            .compare_nodes(node, prior)
-                            .is_ok_and(|o| o.is_lt())
-                    }) {
-                        samples[face] = Some(node);
+            for &node in cycles[face].iter().flatten() {
+                let earlier = match samples[face] {
+                    None => true,
+                    Some(prior) => partition.compare_nodes(node, prior)?.is_lt(),
+                };
+                if earlier {
+                    samples[face] = Some(node);
+                }
+            }
+        }
+        // A face's nesting depth counts the other faces whose cycles contain
+        // its sample. Rounding is monotone, so a cycle can contain the sample
+        // only if the sample's rounded coordinates lie within the rounded
+        // bounds of the cycle's nodes; samples sorted by x visit only those.
+        let mut by_x = Vec::new();
+        try_reserve_vec(&mut by_x, global.count as usize)?;
+        for (face, sample) in samples.iter().enumerate() {
+            if let Some(sample) = sample {
+                by_x.push((partition.node_xy(*sample), face));
+            }
+        }
+        by_x.sort_unstable_by(|left, right| left.0.x.total_cmp(&right.0.x));
+        let mut depths = Vec::new();
+        try_reserve_vec(&mut depths, global.count as usize)?;
+        depths.resize(global.count as usize, 0_u32);
+        for (other, other_cycles) in cycles.iter().enumerate().skip(1) {
+            let Some([min_x, min_y, max_x, max_y]) = other_cycles
+                .iter()
+                .flatten()
+                .map(|&node| partition.node_xy(node))
+                .map(|xy| [xy.x, xy.y, xy.x, xy.y])
+                .reduce(|[a, b, c, d], [x, y, z, w]| [a.min(x), b.min(y), c.max(z), d.max(w)])
+            else {
+                continue;
+            };
+            let first = by_x.partition_point(|(xy, _)| xy.x < min_x);
+            for &(xy, face) in &by_x[first..] {
+                if xy.x > max_x {
+                    break;
+                }
+                if face == other || xy.y < min_y || xy.y > max_y {
+                    continue;
+                }
+                let sample = samples[face].expect("sorted faces have samples");
+                for cycle in other_cycles {
+                    if cycle_contains_node(partition, cycle, sample)? {
+                        depths[face] += 1;
+                        break;
                     }
                 }
             }
         }
         let mut selected = Vec::new();
         try_reserve_vec(&mut selected, global.count as usize)?;
-        selected.resize(global.count as usize, false);
-        for face in 1..global.count as usize {
-            let Some(sample) = samples[face] else {
-                continue;
-            };
-            let mut depth = 0;
-            for (other, other_cycles) in cycles.iter().enumerate().skip(1) {
-                if other == face {
-                    continue;
-                }
-                let mut contained = false;
-                for cycle in other_cycles {
-                    let inside = cycle_contains_node(partition, cycle, sample)?;
-                    if inside {
-                        contained = true;
-                        break;
-                    }
-                }
-                if contained {
-                    depth += 1;
-                }
-            }
-            selected[face] = !build_area || depth % 2 == 0;
-        }
-        if !build_area {
-            let mut polygons = Vec::new();
-            try_reserve_vec(&mut polygons, global.count as usize)?;
-            for face in 1..global.count as usize {
-                if samples[face].is_none() {
-                    continue;
-                }
-                let mut faces = Vec::new();
-                try_reserve_vec(&mut faces, global.count as usize)?;
-                faces.resize(global.count as usize, false);
-                faces[face] = true;
-                let mut spans = Vec::new();
-                try_reserve_vec(&mut spans, partition.spans.len())?;
-                spans.resize(partition.spans.len(), false);
-                let mut nodes = Vec::new();
-                try_reserve_vec(&mut nodes, partition.node_count())?;
-                nodes.resize(partition.node_count(), false);
-                let cells = ArealCells {
-                    faces,
-                    spans,
-                    nodes,
-                };
-                let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-                let (_, _, mut parts) = plan.emit_xy_parts(partition, &topology)?;
-                try_reserve_vec(&mut polygons, parts.len())?;
-                polygons.append(&mut parts);
-            }
-            return Ok(polygons);
-        }
+        selected.extend(
+            (0..global.count as usize)
+                .map(|face| face != 0 && samples[face].is_some() && depths[face] % 2 == 0),
+        );
         let cells = ArealCells {
             faces: selected,
             spans: {
@@ -5010,17 +5101,21 @@ fn cycle_contains_node(
         let b = cycle[(index + 1) % cycle.len()];
         let y_a = partition.compare_axis(a, query, Axis::Y)?;
         let y_b = partition.compare_axis(b, query, Axis::Y)?;
-        let orientation = partition.orientation(a, b, query)?;
-        if orientation == ExactSign::Zero
-            && partition.compare_axis(query, a, Axis::X)? != Ordering::Less
-            && partition.compare_axis(query, b, Axis::X)? != Ordering::Greater
-            && partition.compare_axis(query, a, Axis::Y)? != Ordering::Less
-            && partition.compare_axis(query, b, Axis::Y)? != Ordering::Greater
-        {
-            return Ok(false);
-        }
         let a_is_below = y_a != Ordering::Greater;
         let b_is_below = y_b != Ordering::Greater;
+        // The orientation decides only an edge that straddles the ray or
+        // whose extent could hold the query.
+        let may_hold = y_a != Ordering::Greater
+            && y_b != Ordering::Less
+            && partition.compare_axis(query, a, Axis::X)? != Ordering::Less
+            && partition.compare_axis(query, b, Axis::X)? != Ordering::Greater;
+        if a_is_below == b_is_below && !may_hold {
+            continue;
+        }
+        let orientation = partition.orientation(a, b, query)?;
+        if may_hold && orientation == ExactSign::Zero {
+            return Ok(false);
+        }
         if a_is_below == b_is_below {
             continue;
         }
@@ -9503,7 +9598,9 @@ mod tests {
         assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
         assert_eq!(plan.walks.len(), 2);
         let walks = faces
-            .boundary_walks(&topology, &[false, true, true])
+            .boundary_walks(&topology, |face, other| {
+                [false, true, true][face] && ![false, true, true][other]
+            })
             .unwrap();
         assert_eq!(walks.len(), 2);
         let contact = partition.stored_node(XY::new(2.0, 2.0)).unwrap();
@@ -9518,7 +9615,8 @@ mod tests {
         }
         assert!(
             faces
-                .boundary_walks(&topology, &[false, false, false])
+                .boundary_walks(&topology, |face, other| [false, false, false][face]
+                    && ![false, false, false][other])
                 .unwrap()
                 .is_empty()
         );
@@ -9773,7 +9871,9 @@ mod tests {
         );
         assert_eq!(plan.walks.len(), 1);
         let walks = faces
-            .boundary_walks(&topology, &[false, true, true])
+            .boundary_walks(&topology, |face, other| {
+                [false, true, true][face] && ![false, true, true][other]
+            })
             .unwrap();
         assert_eq!(walks.len(), 1);
         let boundary: Vec<_> = walks[0]
