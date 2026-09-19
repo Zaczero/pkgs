@@ -227,6 +227,13 @@ impl FloatBox {
         }
     }
 
+    const fn meets(self, other: Self) -> bool {
+        self.min_x <= other.max_x
+            && other.min_x <= self.max_x
+            && self.min_y <= other.max_y
+            && other.min_y <= self.max_y
+    }
+
     const fn corners(self) -> [(f64, f64); 4] {
         [
             (self.min_x, self.min_y),
@@ -474,6 +481,9 @@ impl UnreducedRatio {
 struct BoundaryEdge {
     start: ExactPoint,
     end: ExactPoint,
+    /// Outward binary64 bounds, which a box must meet to hold a point of the
+    /// edge.
+    bounds: FloatBox,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -682,46 +692,65 @@ impl SupportIndex {
         Ok(())
     }
 
-    fn nominate(&self, point: &ExactPoint) -> Result<Vec<PrimitiveId>> {
-        let mut nominated = Vec::new();
-        try_reserve_vec(&mut nominated, NOMINATED_SITE_COUNT)?;
-        if let Some(root) = self.root {
-            self.nominate_node(root, point, &mut nominated)?;
-        }
-        Ok(nominated)
-    }
-
-    fn nominate_node(
-        &self,
-        node_index: usize,
-        point: &ExactPoint,
-
-        nominated: &mut Vec<PrimitiveId>,
-    ) -> Result<()> {
-        if nominated.len() >= NOMINATED_SITE_COUNT {
-            return Ok(());
-        }
-
-        let node = self.nodes[node_index];
-        if let (Some(left), Some(right)) = (node.left, node.right) {
-            let left_lower = aabb_lower_squared(point, self.nodes[left].bounds)?;
-            let right_lower = aabb_lower_squared(point, self.nodes[right].bounds)?;
-            let (first, second) = if left_lower.try_cmp(&right_lower)? == Ordering::Greater {
-                (right, left)
-            } else {
-                (left, right)
-            };
-            self.nominate_node(first, point, nominated)?;
-            self.nominate_node(second, point, nominated)?;
-        } else {
-            for order_index in &self.order[node.start..node.end] {
-                if nominated.len() >= NOMINATED_SITE_COUNT {
-                    break;
+    /// The primitives nearest `point`, ranked best-first by binary64
+    /// distance from its rounded position. Nomination only chooses which
+    /// exact sites bound a patch, so an approximate ranking costs tightness,
+    /// never soundness.
+    fn nominate(&self, support: &PreparedSupport, point: &ExactPoint) -> Result<Vec<PrimitiveId>> {
+        let mut nominated: Vec<(f64, PrimitiveId)> = Vec::new();
+        try_reserve_vec(&mut nominated, NOMINATED_SITE_COUNT + 1)?;
+        let Some(root) = self.root else {
+            return Ok(Vec::new());
+        };
+        let (x, y) = (point.x.round()?, point.y.round()?);
+        let query = FloatBox {
+            min_x: x,
+            max_x: x,
+            min_y: y,
+            max_y: y,
+        };
+        let mut frontier = BinaryHeap::new();
+        frontier.try_reserve(self.nodes.len())?;
+        let lower = |bounds| box_distance_lower(query, bounds).to_bits();
+        frontier.push(std::cmp::Reverse((lower(self.nodes[root].bounds), root)));
+        while let Some(std::cmp::Reverse((lower_bits, node_index))) = frontier.pop() {
+            if nominated.len() == NOMINATED_SITE_COUNT
+                && f64::from_bits(lower_bits) > nominated[NOMINATED_SITE_COUNT - 1].0
+            {
+                break;
+            }
+            let node = self.nodes[node_index];
+            if let (Some(left), Some(right)) = (node.left, node.right) {
+                for child in [left, right] {
+                    frontier.push(std::cmp::Reverse((lower(self.nodes[child].bounds), child)));
                 }
-                try_push_vec(&mut *nominated, self.items[*order_index].primitive)?;
+                continue;
+            }
+            for order_index in &self.order[node.start..node.end] {
+                let item = self.items[*order_index];
+                let squared = match item.primitive {
+                    PrimitiveId::Span(index) => {
+                        let source = support.spans[index].source;
+                        point_segment_squared_f64(XY::new(x, y), source.start, source.end)
+                    },
+                    PrimitiveId::Point(_) => box_distance_lower(query, item.bounds),
+                };
+                let squared = if squared.is_nan() {
+                    f64::INFINITY
+                } else {
+                    squared
+                };
+                let rank = nominated.partition_point(|&(other, _)| other <= squared);
+                if rank < NOMINATED_SITE_COUNT {
+                    nominated.insert(rank, (squared, item.primitive));
+                    nominated.truncate(NOMINATED_SITE_COUNT);
+                }
             }
         }
-        Ok(())
+        let mut primitives = Vec::new();
+        try_reserve_vec(&mut primitives, nominated.len())?;
+        primitives.extend(nominated.into_iter().map(|(_, primitive)| primitive));
+        Ok(primitives)
     }
 
     /// Whether no point of `bounds` can be a local maximum of the distance
@@ -1081,21 +1110,21 @@ impl PreparedSupport {
                     continue;
                 }
                 for index in 0..cycle.len() {
+                    let start = &cycle[index];
+                    let end = &cycle[(index + 1) % cycle.len()];
                     try_push_vec(&mut boundary_edges, BoundaryEdge {
-                        start: cycle[index].try_clone()?,
-                        end: cycle[(index + 1) % cycle.len()].try_clone()?,
+                        start: start.try_clone()?,
+                        end: end.try_clone()?,
+                        bounds: FloatBox::from_point(start)?.include(FloatBox::from_point(end)?),
                     })?;
                 }
             }
         }
 
-        let mut area_bounds: Option<FloatBox> = None;
-        for edge in &boundary_edges {
-            let edge_bounds =
-                FloatBox::from_point(&edge.start)?.include(FloatBox::from_point(&edge.end)?);
-            area_bounds =
-                Some(area_bounds.map_or(edge_bounds, |current| current.include(edge_bounds)));
-        }
+        let area_bounds = boundary_edges
+            .iter()
+            .map(|edge| edge.bounds)
+            .reduce(FloatBox::include);
 
         if spans.is_empty() && points.is_empty() && faces.is_empty() {
             return Err(crate::geometry::GeometryErrorKind::message(
@@ -1203,10 +1232,16 @@ impl PreparedSupport {
     }
 
     fn contains_area(&self, point: &ExactPoint) -> Result<bool> {
+        let point_bounds = FloatBox::from_point(point)?;
+        // `boundary_edges` lists each cycle of at least two points in order.
+        let mut edges = self.boundary_edges.as_slice();
         for face in &self.faces {
             let mut inside = false;
             for cycle in face {
-                match cycle_location(point, cycle)? {
+                let count = if cycle.len() < 2 { 0 } else { cycle.len() };
+                let (cycle_edges, rest) = edges.split_at(count);
+                edges = rest;
+                match cycle_location(point, point_bounds, cycle, cycle_edges)? {
                     CycleLocation::Boundary => return Ok(true),
                     CycleLocation::Crosses => inside = !inside,
                     CycleLocation::Clear => {},
@@ -1321,7 +1356,9 @@ impl PreparedSupport {
             }
         }
         for edge in &self.boundary_edges {
-            if let Some(point) = segment_box_intersection(edge, bounds)? {
+            if edge.bounds.meets(bounds)
+                && let Some(point) = segment_box_intersection(edge, bounds)?
+            {
                 return Ok(Some(point));
             }
         }
@@ -1667,6 +1704,19 @@ fn force_exact_sqrt_path(force: bool) -> ExactSqrtPathGuard {
     ExactSqrtPathGuard(FORCE_EXACT_SQRT.with(|forced| forced.replace(force)))
 }
 
+fn point_segment_squared_f64(point: XY, start: XY, end: XY) -> f64 {
+    let (dx, dy) = (end.x - start.x, end.y - start.y);
+    let (px, py) = (point.x - start.x, point.y - start.y);
+    let length = dx * dx + dy * dy;
+    let t = if length > 0.0 {
+        ((px * dx + py * dy) / length).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let (ex, ey) = (px - t * dx, py - t * dy);
+    ex * ex + ey * ey
+}
+
 fn box_distance_lower(left: FloatBox, right: FloatBox) -> f64 {
     let gaps = [
         right.min_x - left.max_x,
@@ -1684,29 +1734,6 @@ fn box_distance_lower(left: FloatBox, right: FloatBox) -> f64 {
     (x_squared + y_squared).next_down().max(0.0)
 }
 
-fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> {
-    let min_x = Rational::from_f64(bounds.min_x);
-    let max_x = Rational::from_f64(bounds.max_x);
-    let min_y = Rational::from_f64(bounds.min_y);
-    let max_y = Rational::from_f64(bounds.max_y);
-    let zero = Rational::zero();
-    let dx = if point.x.try_cmp(&min_x)? == Ordering::Less {
-        min_x.try_subtract(&point.x)?
-    } else if point.x.try_cmp(&max_x)? == Ordering::Greater {
-        point.x.try_subtract(&max_x)?
-    } else {
-        zero.try_clone()?
-    };
-    let dy = if point.y.try_cmp(&min_y)? == Ordering::Less {
-        min_y.try_subtract(&point.y)?
-    } else if point.y.try_cmp(&max_y)? == Ordering::Greater {
-        point.y.try_subtract(&max_y)?
-    } else {
-        zero
-    };
-    dx.try_square()?.try_add(&dy.try_square()?)
-}
-
 enum CycleLocation {
     Boundary,
     /// Off the cycle, with an odd number of crossings of the rightward ray.
@@ -1717,7 +1744,14 @@ enum CycleLocation {
 /// Locate a point against one cycle in a single pass. The exact cross product
 /// runs only for edges that straddle the rightward ray or whose extent holds
 /// the point; any other edge can neither contain the point nor cross the ray.
-fn cycle_location(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<CycleLocation> {
+/// `edges[i]` joins `cycle[i]` to its successor, and an edge whose outward
+/// bounds lie wholly above or below the point's needs no exact comparison.
+fn cycle_location(
+    point: &ExactPoint,
+    point_bounds: FloatBox,
+    cycle: &[ExactPoint],
+    edges: &[BoundaryEdge],
+) -> Result<CycleLocation> {
     if cycle.len() < 3 {
         return Ok(CycleLocation::Clear);
     }
@@ -1726,7 +1760,14 @@ fn cycle_location(point: &ExactPoint, cycle: &[ExactPoint]) -> Result<CycleLocat
     for index in 0..cycle.len() {
         let left = &cycle[(index + cycle.len() - 1) % cycle.len()];
         let right = &cycle[index];
-        let right_order = right.y.try_cmp(&point.y)?;
+        let edge = edges[(index + cycle.len() - 1) % cycle.len()].bounds;
+        let right_order = if edge.min_y > point_bounds.max_y {
+            Ordering::Greater
+        } else if edge.max_y < point_bounds.min_y {
+            Ordering::Less
+        } else {
+            right.y.try_cmp(&point.y)?
+        };
         let straddles = (left_order == Ordering::Greater) != (right_order == Ordering::Greater);
         let spans_y = left_order != right_order || left_order == Ordering::Equal;
         left_order = right_order;
@@ -2960,7 +3001,7 @@ fn patch_upper(
         sum_upper(&boundary_interval, &radius_interval)?
     };
 
-    let nominated = target.index.nominate(&center)?;
+    let nominated = target.index.nominate(target, &center)?;
     let site_squared = fixed_site_squared(patch, source, target, &nominated)?;
     if let Some(site_squared) = &site_squared {
         let squared = context.scaled_squared(site_squared)?;
@@ -4180,6 +4221,31 @@ mod tests {
                 .unwrap();
             assert_ne!(squared.try_cmp(&radius).unwrap(), Ordering::Greater);
         }
+    }
+
+    /// Exact squared distance from a point to a box, the oracle for the
+    /// binary64 box bound.
+    fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> {
+        let min_x = Rational::from_f64(bounds.min_x);
+        let max_x = Rational::from_f64(bounds.max_x);
+        let min_y = Rational::from_f64(bounds.min_y);
+        let max_y = Rational::from_f64(bounds.max_y);
+        let zero = Rational::zero();
+        let dx = if point.x.try_cmp(&min_x)? == Ordering::Less {
+            min_x.try_subtract(&point.x)?
+        } else if point.x.try_cmp(&max_x)? == Ordering::Greater {
+            point.x.try_subtract(&max_x)?
+        } else {
+            zero.try_clone()?
+        };
+        let dy = if point.y.try_cmp(&min_y)? == Ordering::Less {
+            min_y.try_subtract(&point.y)?
+        } else if point.y.try_cmp(&max_y)? == Ordering::Greater {
+            point.y.try_subtract(&max_y)?
+        } else {
+            zero
+        };
+        dx.try_square()?.try_add(&dy.try_square()?)
     }
 
     #[test]
