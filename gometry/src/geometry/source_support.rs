@@ -843,33 +843,6 @@ pub(crate) fn cartesian_polygon_views_location<'a, P: IntoIterator<Item = RingVi
     source.location(point)
 }
 
-/// Cartesian location for one packed polygon row.
-pub(crate) fn cartesian_polygon_row_point_location(
-    coords: &crate::geometry::CoordSeq,
-    ring_offsets: &[i32],
-    rings: Range<usize>,
-    point: Point,
-) -> Result<Loc> {
-    if rings.is_empty() || rings.start >= rings.end {
-        return Ok(Loc::Exterior);
-    }
-    let mut source = SourceSupport::new();
-    for ring in rings {
-        let start = ring_offsets[ring] as usize;
-        let end = ring_offsets[ring + 1] as usize;
-        let view = RingView {
-            xs: &coords.xs()[start..end],
-            ys: &coords.ys()[start..end],
-            kind: ring_kind_columns(&coords.xs()[start..end], &coords.ys()[start..end]),
-        };
-        try_reserve_vec(&mut source.rings, 1)?;
-        source.rings.push(view);
-    }
-    try_reserve_vec(&mut source.polygons, 1)?;
-    source.polygons.push(0..source.rings.len());
-    source.location(point)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

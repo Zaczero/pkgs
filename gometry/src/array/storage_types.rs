@@ -30,7 +30,7 @@ fn record_shape_iter_materialization() {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckedPhysicalRows {
+pub(crate) struct CheckedPhysicalRows {
     rows: SharedSlice<usize>,
 }
 
@@ -57,7 +57,7 @@ impl HeapSize for CheckedPhysicalRows {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct RowWindow {
+pub(crate) struct RowWindow {
     start: usize,
     len: usize,
 }
@@ -73,7 +73,7 @@ impl RowWindow {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub enum RowSelection {
+pub(crate) enum RowSelection {
     #[default]
     Identity,
     Window(RowWindow),
@@ -81,7 +81,7 @@ pub enum RowSelection {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum RowSelectionRef<'a> {
+pub(crate) enum RowSelectionRef<'a> {
     Identity,
     Window { start: usize, len: usize },
     Gather(&'a [usize]),
@@ -97,7 +97,7 @@ impl RowSelection {
         Ok(CheckedPhysicalRows::checked(map, physical_len)?.map(Self::Gather))
     }
 
-    pub fn as_deref(&self) -> RowSelectionRef<'_> {
+    pub(crate) fn as_deref(&self) -> RowSelectionRef<'_> {
         match self {
             Self::Identity => RowSelectionRef::Identity,
             Self::Window(window) => RowSelectionRef::Window {
@@ -108,11 +108,11 @@ impl RowSelection {
         }
     }
 
-    pub const fn is_identity(&self) -> bool {
+    pub(crate) const fn is_identity(&self) -> bool {
         matches!(self, Self::Identity)
     }
 
-    pub const fn reorders(&self) -> bool {
+    pub(crate) const fn reorders(&self) -> bool {
         !self.is_identity()
     }
 
@@ -179,7 +179,7 @@ impl RowSelectionRef<'_> {
 }
 
 #[derive(Clone, Debug)]
-pub enum GeometryArrayStorage {
+pub(crate) enum GeometryArrayStorage {
     /// Heterogeneous (or non-packable) rows owned as plain shapes.
     ///
     /// The array frame, missing mask, prepared-row cache, and frame-cache
@@ -197,7 +197,7 @@ pub enum GeometryArrayStorage {
 /// every operation that only makes sense on columns takes it, and the `Mixed`
 /// arms those operations used to bail on are gone with the case.
 #[derive(Clone, Debug)]
-pub enum PackedStorage {
+pub(crate) enum PackedStorage {
     Points {
         coords: Arc<CoordSeq>,
         row_map: RowSelection,
@@ -215,7 +215,7 @@ pub enum PackedStorage {
     },
 }
 
-pub enum PointRows<'a> {
+pub(crate) enum PointRows<'a> {
     Packed {
         coords: &'a CoordSeq,
         row_map: RowSelectionRef<'a>,
@@ -224,7 +224,7 @@ pub enum PointRows<'a> {
 }
 
 impl PointRows<'_> {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Packed { coords, row_map } => point_logical_len(coords, *row_map),
             Self::Gathered(points) => points.len(),
@@ -236,36 +236,24 @@ impl PointRows<'_> {
     /// -------
     /// numpy.ndarray
     ///     One result per input geometry.
-    pub fn is_empty(&self) -> bool {
+    pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub fn get(&self, index: usize) -> Point {
+    pub(crate) fn get(&self, index: usize) -> Point {
         match self {
             Self::Packed { coords, row_map } => coords.point_at(physical_row(*row_map, index)),
             Self::Gathered(points) => points[index],
         }
     }
 
-    pub fn first(&self) -> Option<Point> {
-        match self {
-            Self::Packed { .. } if self.is_empty() => None,
-            Self::Packed { .. } => Some(self.get(0)),
-            Self::Gathered(points) => points.first().copied(),
-        }
-    }
-
-    pub fn iter(&self) -> impl ExactSizeIterator<Item = Point> + '_ {
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = Point> + '_ {
         let len = self.len();
         (0..len).map(move |index| self.get(index))
     }
-
-    pub fn into_vec(self) -> Vec<Point> {
-        self.iter().collect()
-    }
 }
 
-pub enum LineRows<'a> {
+pub(crate) enum LineRows<'a> {
     Packed {
         coords: &'a CoordSeq,
         offsets: &'a [i32],
@@ -488,7 +476,7 @@ pub(crate) fn polygon_rings_range<'a>(
 }
 
 impl LineRows<'_> {
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Packed {
                 offsets, row_map, ..
@@ -497,11 +485,11 @@ impl LineRows<'_> {
         }
     }
 
-    pub const fn is_packed_pair(&self, other: &Self) -> bool {
+    pub(crate) const fn is_packed_pair(&self, other: &Self) -> bool {
         matches!((self, other), (Self::Packed { .. }, Self::Packed { .. }))
     }
 
-    pub fn row_xy(&self, index: usize) -> (&[f64], &[f64]) {
+    pub(crate) fn row_xy(&self, index: usize) -> (&[f64], &[f64]) {
         match self {
             Self::Packed {
                 coords,
@@ -521,7 +509,9 @@ impl LineRows<'_> {
         }
     }
 
-    pub const fn packed_column_view(&self) -> Option<crate::geometry::PackedLineColumnView<'_>> {
+    pub(crate) const fn packed_column_view(
+        &self,
+    ) -> Option<crate::geometry::PackedLineColumnView<'_>> {
         match self {
             Self::Packed {
                 coords,
@@ -694,7 +684,7 @@ impl ExactSizeIterator for PhysicalRowsIter<'_> {
     }
 }
 
-pub struct ShapesIter<'a> {
+pub(crate) struct ShapesIter<'a> {
     rows: PhysicalRowsIter<'a>,
 }
 
@@ -767,7 +757,7 @@ impl ExactSizeIterator for ShapesIter<'_> {
 // impl to other iterators without an independent exactness proof.
 unsafe impl std::iter::TrustedLen for ShapesIter<'_> {}
 
-pub struct RowsIter<'a> {
+pub(crate) struct RowsIter<'a> {
     rows: PhysicalRowsIter<'a>,
 }
 

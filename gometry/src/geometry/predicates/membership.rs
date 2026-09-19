@@ -1,8 +1,8 @@
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains,
-    Orientation, Point, PointKey, Polygon, Ring, ValidationIssue, XY, classify_ring_pair,
-    face_interior_point, for_each_overlapping_bounds_pair, orient_ring, orientation_xy,
-    ray_crossing_is_right, ring_probe_point, settle_touches, topology, visit_interacting_pairs,
+    Bounds, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains, Orientation,
+    Point, PointKey, Polygon, Ring, ValidationIssue, XY, classify_ring_pair, face_interior_point,
+    for_each_overlapping_bounds_pair, orient_ring, orientation_xy, ray_crossing_is_right,
+    ring_probe_point, settle_touches, topology, visit_interacting_pairs,
 };
 /// Where a probe point sits relative to one ring.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,25 +91,6 @@ pub(crate) fn ring_classify_point_columns(xs: &[f64], ys: &[f64], point: Point) 
     } else {
         RingClass::Exterior
     }
-}
-
-/// Point membership for one packed-polygon row (shell + hole ring window) over
-/// shared `SoA` columns — the column lane behind [`ShapeRow::Rings`] PIP.
-pub(in crate::geometry) fn polygon_row_point_membership<const BOUNDARY: bool>(
-    coords: &CoordSeq,
-    ring_offsets: &[i32],
-    rings: std::ops::Range<usize>,
-    point: Point,
-) -> crate::error::Result<bool> {
-    crate::geometry::cartesian_polygon_row_point_location(coords, ring_offsets, rings, point).map(
-        |location| {
-            if BOUNDARY {
-                location != crate::geometry::Loc::Exterior
-            } else {
-                location == crate::geometry::Loc::Interior
-            }
-        },
-    )
 }
 
 /// Exact resolution when the point lies within some edge's bbox: the original

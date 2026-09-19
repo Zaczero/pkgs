@@ -11,7 +11,6 @@ use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY}
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
     MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, SegmentMetric,
-    bounds_to_shape,
 };
 
 /// One-frame sidecar for state that depends on the coordinate frame rather
@@ -254,7 +253,7 @@ struct MetricPlan {
 /// it after the operation. Frame-keyed geodesic products remain in the
 /// caller-owned [`FrameDependentCaches`] sidecar because their interpretation
 /// depends on CRS, ellipsoid, and runtime generation.
-pub struct PreparedPlan {
+pub(crate) struct PreparedPlan {
     shape: Arc<ShapeData>,
     topology: OnceLock<Box<TopologyPlan>>,
     metric: OnceLock<Box<MetricPlan>>,
@@ -285,18 +284,6 @@ impl ShapeData {
 
     fn seed_bounds(&self, bounds: Option<Bounds>) {
         let _ = self.bounds.set(bounds);
-    }
-
-    /// Envelope (bounding-box polygon) built from the cached bounds, so a
-    /// prior `bounds`/`envelope` call makes this free. Inherent method that
-    /// shadows the `Deref`→[`Shape::envelope`], which would otherwise rescan
-    /// every coordinate on each call.
-    pub fn envelope(&self) -> crate::error::Result<Shape> {
-        // `envelope` produces boxes → `POLYGON EMPTY` for empty input (the
-        // output-type convention), matching `Shape::envelope`. A non-empty
-        // degenerate box still collapses via `bounds_to_shape`.
-        self.bounds()
-            .map_or_else(|| Ok(Shape::empty_polygon()), bounds_to_shape)
     }
 }
 

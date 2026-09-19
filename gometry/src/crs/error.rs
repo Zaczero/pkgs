@@ -187,18 +187,6 @@ impl CrsError {
         .into()
     }
 
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the factory accepts any message conversion; a named generic is not part of its error API"
-    )]
-    pub fn geodesic_units(crs: impl Into<Box<str>>, message: impl Into<Box<str>>) -> CrateError {
-        Self::GeodesicUnits {
-            crs: crs.into(),
-            message: message.into(),
-        }
-        .into()
-    }
-
     pub(crate) fn annotate_display(&mut self, definition: &str, display_name: &'static str) {
         match self {
             Self::Create {

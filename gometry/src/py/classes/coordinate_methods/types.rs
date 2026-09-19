@@ -31,7 +31,7 @@ impl PyCoordinates {
                 return ControlFlow::Break(Err(error));
             }
             match items.next() {
-                Some(Ok(item)) => match coordinate_tuple(py, coord.point, self.layout) {
+                Some(Ok(item)) => match coordinate_tuple(py, coord, self.layout) {
                     Ok(expected) => match expected.bind(py).eq(&item) {
                         Ok(true) => ControlFlow::Continue(()),
                         Ok(false) => ControlFlow::Break(Ok(false)),

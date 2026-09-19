@@ -98,8 +98,7 @@ mod segments;
 mod source_support;
 pub(crate) use source_support::{
     RingKind, RingView, cartesian_area_covers_point, cartesian_point_location,
-    cartesian_polygon_row_point_location, cartesian_polygon_views_location, edge_winding,
-    ring_kind_columns,
+    cartesian_polygon_views_location, edge_winding, ring_kind_columns,
 };
 mod tessellation;
 mod topology;
@@ -117,9 +116,9 @@ use access::{
 pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::{
-    SegmentPlacement, affine_about_origin_ordinate, densify_points_budgeted_with_placement,
-    rdp_keep, segmentize_points_budgeted, stable_affine_xy, stable_snap_ordinate,
-    verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep,
+    DEFAULT_MITER_LIMIT, SegmentPlacement, affine_about_origin_ordinate,
+    densify_points_budgeted_with_placement, rdp_keep, segmentize_points_budgeted, stable_affine_xy,
+    stable_snap_ordinate, verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep,
 };
 use constructive::{
     SnapReference, assemble_region_polygons, decimal_scale, orient_ring, quantize_to_scale,
@@ -239,15 +238,6 @@ pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
     }
 }
 
-/// Re-export seam: `pub(super)` kernel in the private `predicates` child.
-pub(crate) fn polygon_row_point_membership<const BOUNDARY: bool>(
-    coords: &CoordSeq,
-    ring_offsets: &[i32],
-    rings: std::ops::Range<usize>,
-    point: Point,
-) -> Result<bool> {
-    predicates::polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, rings, point)
-}
 pub(crate) use relate::{
     De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, graph_intersects_bounds,
     graph_relate_data, graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
@@ -892,10 +882,6 @@ impl Bounds {
         Self::new_raw(point.x, point.y, point.x, point.y)
     }
 
-    pub const fn from_xy(point: XY) -> Self {
-        Self::new_raw(point.x, point.y, point.x, point.y)
-    }
-
     pub fn from_xy_iter<I: IntoIterator<Item = XY>>(points: I) -> Self {
         let mut minx = f64::INFINITY;
         let mut miny = f64::INFINITY;
@@ -910,22 +896,8 @@ impl Bounds {
         Self::new_raw(minx, miny, maxx, maxy)
     }
 
-    pub fn from_points<I: IntoIterator<Item = Point>>(points: I) -> Self {
-        Self::from_xy_iter(points.into_iter().map(XY::from))
-    }
-
     pub const fn into_array(self) -> [f64; 4] {
         [self.minx(), self.miny(), self.maxx(), self.maxy()]
-    }
-
-    pub fn pad_by_span(self, factor: f64) -> Self {
-        let pad = (self.maxx() - self.minx()).max(self.maxy() - self.miny()) * factor;
-        Self::new_raw(
-            self.minx() - pad,
-            self.miny() - pad,
-            self.maxx() + pad,
-            self.maxy() + pad,
-        )
     }
 
     pub const fn corners(self) -> [[f64; 2]; 4] {

@@ -183,6 +183,7 @@ impl PyGeometryArray {
         clippy::impl_trait_in_params,
         reason = "the one-shot callback is deliberately existential; a named generic adds no API meaning"
     )]
+    #[cfg(test)]
     pub fn map_shapes_shared(
         &self,
         transform: impl Fn(&Shape) -> PyResult<Option<Shape>>,

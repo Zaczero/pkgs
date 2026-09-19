@@ -233,7 +233,7 @@ impl GeometryArrayStorage {
         Ok(output)
     }
 
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         match self {
             Self::Mixed(items) => items.len(),
             Self::Packed(PackedStorage::Points { coords, row_map }) => {
@@ -369,7 +369,7 @@ impl GeometryArrayStorage {
         )
     }
 
-    pub fn point_rows(&self) -> Option<PointRows<'_>> {
+    pub(crate) fn point_rows(&self) -> Option<PointRows<'_>> {
         match self {
             Self::Mixed(shapes) => shapes
                 .iter()
@@ -387,7 +387,7 @@ impl GeometryArrayStorage {
         }
     }
 
-    pub fn line_rows(&self) -> Option<LineRows<'_>> {
+    pub(crate) fn line_rows(&self) -> Option<LineRows<'_>> {
         match self {
             Self::Mixed(shapes) => shapes
                 .iter()
@@ -415,7 +415,7 @@ impl GeometryArrayStorage {
     /// Returns
     /// -------
     /// tuple or None
-    pub fn total_bounds(&self) -> Option<Bounds> {
+    pub(crate) fn total_bounds(&self) -> Option<Bounds> {
         if let Self::Packed(PackedStorage::Polygons {
             coords,
             ring_offsets,
@@ -575,11 +575,11 @@ impl GeometryArrayStorage {
         Ok(true)
     }
 
-    pub fn iter_shapes(&self) -> ShapesIter<'_> {
+    pub(crate) fn iter_shapes(&self) -> ShapesIter<'_> {
         ShapesIter::new(self)
     }
 
-    pub fn iter_rows(&self) -> RowsIter<'_> {
+    pub(crate) fn iter_rows(&self) -> RowsIter<'_> {
         RowsIter::new(self)
     }
 

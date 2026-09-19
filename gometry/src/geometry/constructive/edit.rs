@@ -28,6 +28,7 @@ impl CoordSeq {
         clippy::impl_trait_in_params,
         reason = "the one-pass coordinate callback is deliberately existential"
     )]
+    #[cfg(test)]
     pub fn map_xy(&self, mut op: impl FnMut(f64, f64) -> (f64, f64)) -> Result<Self> {
         // Pre-sized output columns written by index (no push branch), so the
         // per-pair arithmetic vectorizes.
@@ -50,22 +51,6 @@ impl CoordSeq {
             self.carried_zs()?,
             self.carried_ms()?,
         )
-    }
-
-    /// Fallible [`map_xy`](Self::map_xy) for transforms that can overflow:
-    /// the per-point finiteness validation is hoisted into one columnar pass
-    /// over the produced ordinates.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the one-pass coordinate callback is deliberately existential"
-    )]
-    pub fn try_map_xy(&self, op: impl FnMut(f64, f64) -> (f64, f64)) -> Result<Self> {
-        let mapped = self.map_xy(op)?;
-        if column_all_finite(mapped.xs()) && column_all_finite(mapped.ys()) {
-            Ok(mapped)
-        } else {
-            Err(GeometryErrorKind::NonFiniteCoordinate.into())
-        }
     }
 
     /// Affine transform of the XY columns — `x' = a*x + b*y + xoff`,
@@ -1237,6 +1222,7 @@ impl Shape {
 
     /// Planar `segmentize` — the CRS-free reading. CRS-aware callers resolve a
     /// [`SegmentPlacement`] first and use [`Self::segmentize_budgeted`].
+    #[cfg(test)]
     pub fn segmentize(&self, max_segment_length: f64) -> Result<Self> {
         let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
         let output =

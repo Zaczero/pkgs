@@ -13,7 +13,7 @@ use crate::geometry::types::{
 pub(crate) const MAX_NESTING: usize = 128;
 
 #[derive(Clone, Copy, Debug)]
-pub enum VoronoiBoundary<'a> {
+pub(crate) enum VoronoiBoundary<'a> {
     Padded,
     Envelope,
     Polygon(&'a Polygon),

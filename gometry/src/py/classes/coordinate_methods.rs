@@ -67,7 +67,7 @@ impl PyCoordinates {
                 for &axis in &order[..n] {
                     match crate::try_push(
                         &mut data,
-                        coordinate_ordinate(coord.point, axis).unwrap_or(missing),
+                        coordinate_ordinate(coord, axis).unwrap_or(missing),
                     ) {
                         Ok(()) => {},
                         Err(error) => return std::ops::ControlFlow::Break(error),
@@ -125,12 +125,10 @@ impl RowContainer for CoordinateCursor {
                 };
                 let result = self
                     .view
-                    .try_for_each_point(
-                        &mut |coord| match crate::try_push(&mut out, coord.point) {
-                            Ok(()) => std::ops::ControlFlow::Continue(()),
-                            Err(_) => std::ops::ControlFlow::Break(()),
-                        },
-                    );
+                    .try_for_each_point(&mut |coord| match crate::try_push(&mut out, coord) {
+                        Ok(()) => std::ops::ControlFlow::Continue(()),
+                        Err(_) => std::ops::ControlFlow::Break(()),
+                    });
                 if matches!(result, std::ops::ControlFlow::Break(())) {
                     None
                 } else {
@@ -145,7 +143,6 @@ impl RowContainer for CoordinateCursor {
             self.view
                 .point_at(row)
                 .expect("iterator index already range-checked")
-                .point
         };
         coordinate_tuple(py, point, self.layout)
     }

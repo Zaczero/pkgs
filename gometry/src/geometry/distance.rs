@@ -21,8 +21,8 @@ mod shape_impl;
 pub(crate) use distance_3d::distance_3d_brute_parts;
 pub(crate) use distance_3d::{Distance3dParts, distance_3d_with_parts};
 pub(crate) use frechet::{
-    FrechetDpScratch, discrete_frechet_distance, discrete_frechet_distance_with_scratch,
-    frechet_distance_line_columns, frechet_distance_line_columns_batch,
+    FrechetDpScratch, discrete_frechet_distance_with_scratch, frechet_distance_line_columns,
+    frechet_distance_line_columns_batch,
 };
 pub(crate) use geodesic_hausdorff_helpers::geodesic_directed_hausdorff_distance;
 #[cfg(test)]

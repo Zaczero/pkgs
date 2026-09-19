@@ -20,7 +20,7 @@ use crate::error::{Error, Result};
 use crate::geometry::CsrOffsetColumn;
 pub(crate) use crate::geometry::{
     CsrOffsetBuilder, PolygonLevel, RingLevel, line_is_ccw, line_is_closed, line_is_simple,
-    line_is_valid, polygon_is_valid, polygon_row_point_membership,
+    line_is_valid, polygon_is_valid,
 };
 pub(crate) use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;

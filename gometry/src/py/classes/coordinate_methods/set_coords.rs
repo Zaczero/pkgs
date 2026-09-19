@@ -189,19 +189,19 @@ fn replacement_from_coordinates_view(
         return Err(PyErr::from(error));
     }
     let result = coords.view.try_for_each_point(&mut |coord| {
-        if let Err(error) = crate::try_push_vec(&mut xs, coord.point.x) {
+        if let Err(error) = crate::try_push_vec(&mut xs, coord.x) {
             return std::ops::ControlFlow::Break(error);
         }
-        if let Err(error) = crate::try_push_vec(&mut ys, coord.point.y) {
+        if let Err(error) = crate::try_push_vec(&mut ys, coord.y) {
             return std::ops::ControlFlow::Break(error);
         }
         if let Some(out) = zs.as_mut()
-            && let Err(error) = crate::try_push_vec(out, coord.point.z().unwrap_or(f64::NAN))
+            && let Err(error) = crate::try_push_vec(out, coord.z().unwrap_or(f64::NAN))
         {
             return std::ops::ControlFlow::Break(error);
         }
         if let Some(out) = ms.as_mut()
-            && let Err(error) = crate::try_push_vec(out, coord.point.m().unwrap_or(f64::NAN))
+            && let Err(error) = crate::try_push_vec(out, coord.m().unwrap_or(f64::NAN))
         {
             return std::ops::ControlFlow::Break(error);
         }

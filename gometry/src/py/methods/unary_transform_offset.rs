@@ -3,6 +3,7 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::dispatch::{MetricOp, kernels};
+use crate::geometry::DEFAULT_MITER_LIMIT;
 use crate::py::errors::GeometryError;
 use crate::py::methods::unary_transform_methods::{
     Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, DefaultedF64Input,
@@ -18,7 +19,7 @@ use crate::py::vectors::Groups;
 impl PyGeometry {
     #[doc = doc_buffer!(scalar)]
     #[pyo3(
-        signature = (distance, *, cap_style = BufferCapStyle::Round, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = 5.0, side = BufferSide::Both, unit = None),
+        signature = (distance, *, cap_style = BufferCapStyle::Round, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = DEFAULT_MITER_LIMIT, side = BufferSide::Both, unit = None),
         text_signature = "($self, distance, *, cap_style='round', join_style='round', quadrant_segments=8, miter_limit=5.0, side='both', unit=None)"
     )]
     pub fn buffer(
@@ -60,7 +61,7 @@ impl PyGeometry {
 
     #[doc = doc_offset_curve!(scalar)]
     #[pyo3(
-        signature = (distance, *, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = 5.0, unit = None),
+        signature = (distance, *, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = DEFAULT_MITER_LIMIT, unit = None),
         text_signature = "($self, distance, *, join_style='round', quadrant_segments=8, miter_limit=5.0, unit=None)"
     )]
     pub fn offset_curve(
@@ -298,7 +299,7 @@ impl PyGeometry {
 impl PyGeometryArray {
     #[doc = doc_buffer!(array)]
     #[pyo3(
-        signature = (distance, *, cap_style = BufferCapStyle::Round, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = 5.0, side = BufferSide::Both, unit = None),
+        signature = (distance, *, cap_style = BufferCapStyle::Round, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = DEFAULT_MITER_LIMIT, side = BufferSide::Both, unit = None),
         text_signature = "($self, distance, *, cap_style='round', join_style='round', quadrant_segments=8, miter_limit=5.0, side='both', unit=None)"
     )]
     pub fn buffer(
@@ -345,7 +346,7 @@ impl PyGeometryArray {
 
     #[doc = doc_offset_curve!(array)]
     #[pyo3(
-        signature = (distance, *, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = 5.0, unit = None),
+        signature = (distance, *, join_style = BufferJoinStyle::Round, quadrant_segments = QUADRANT_SEGMENTS_DEFAULT_I64, miter_limit = DEFAULT_MITER_LIMIT, unit = None),
         text_signature = "($self, distance, *, join_style='round', quadrant_segments=8, miter_limit=5.0, unit=None)"
     )]
     pub fn offset_curve(

@@ -1,8 +1,11 @@
 use crate::error::Result;
+#[cfg(test)]
+use crate::geometry::{CompiledPattern, GeometryErrorKind, PreparedPlan};
 use crate::geometry::{
-    CompiledPattern, GeometryErrorKind, Loc, Point, PreparedPlan, Shape, cartesian_point_location,
-    graph_relate_shapes, point_equals_exact, points_equal_exact,
+    Loc, Point, Shape, cartesian_point_location, graph_relate_shapes, point_equals_exact,
+    points_equal_exact,
 };
+#[cfg(test)]
 use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
 
 impl Shape {
@@ -36,10 +39,12 @@ impl Shape {
 
     /// `contains` with no boundary contact: *other* lies in the interior of
     /// *self* and never touches its boundary (DE-9IM `T**FF*FF*`).
+    #[cfg(test)]
     pub fn contains_properly(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.is_contains_properly())
     }
 
+    #[cfg(test)]
     pub fn within(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.transpose().is_contains())
     }
@@ -48,10 +53,12 @@ impl Shape {
         Ok(graph_relate_shapes(self, other)?.is_covers())
     }
 
+    #[cfg(test)]
     pub fn covered_by(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.transpose().is_covers())
     }
 
+    #[cfg(test)]
     pub fn intersects(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.is_intersects())
     }
@@ -101,18 +108,17 @@ impl Shape {
         crate::geometry::cartesian_area_covers_point(self, point)
     }
 
+    #[cfg(test)]
     pub fn disjoint(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.is_disjoint())
     }
 
+    #[cfg(test)]
     pub fn touches(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.is_touches())
     }
 
-    pub fn crosses(&self, other: &Self) -> Result<bool> {
-        Ok(graph_relate_shapes(self, other)?.is_crosses_by_dimension())
-    }
-
+    #[cfg(test)]
     pub fn overlaps(&self, other: &Self) -> Result<bool> {
         Ok(graph_relate_shapes(self, other)?.is_overlaps_by_dimension())
     }
@@ -123,6 +129,7 @@ impl Shape {
 }
 
 impl Shape {
+    #[cfg(test)]
     pub fn relate_pattern(&self, other: &Self, pattern: &str) -> Result<bool> {
         let compiled =
             CompiledPattern::new(pattern).ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
@@ -135,6 +142,7 @@ impl Shape {
         topology_scalar_pattern(compiled, &pair)
     }
 
+    #[cfg(test)]
     fn invalid_de9im_pattern(pattern: &str) -> crate::error::Error {
         GeometryErrorKind::invalid_de9im_pattern(format!(
             "invalid DE-9IM pattern {pattern:?}; expected 9 characters of \
@@ -150,6 +158,7 @@ impl Shape {
     /// the structure must match and every paired ordinate must agree to
     /// `tolerance`. `tolerance == 0.0` is exact. CRS/epoch are ignored here —
     /// that is the job of `==`.
+    #[cfg(test)]
     pub fn equals_exact(
         &self,
         other: &Self,

@@ -226,6 +226,7 @@ impl Shape {
 
     /// Radius of the smallest circle enclosing the geometry. Empty input
     /// returns ``NaN``; a single distinct vertex returns ``0``.
+    #[cfg(test)]
     pub fn minimum_bounding_radius(&self) -> Result<f64> {
         if self.is_empty() {
             return Ok(f64::NAN);
@@ -293,15 +294,6 @@ impl Shape {
             },
             _ => Err(GeometryErrorKind::PolygonRequired.into()),
         }
-    }
-
-    /// Radius of the largest inscribed circle. For planar input it is a
-    /// downward-rounded clearance at one deterministic representable center;
-    /// the global inradius is enclosed within the requested absolute
-    /// tolerance. Empty input returns ``NaN``. Twin of
-    /// [`minimum_bounding_radius`](Self::minimum_bounding_radius).
-    pub fn maximum_inscribed_radius(&self, tolerance: Option<f64>) -> Result<f64> {
-        self.maximum_inscribed_radius_in_scale(tolerance, true, 1.0)
     }
 
     pub(crate) fn maximum_inscribed_radius_in_frame(

@@ -1,12 +1,13 @@
+#[cfg(test)]
+use crate::geometry::ShapeData;
 use crate::geometry::distance::{
     GeodesicSweepCapsAccum, Result, any_parts_within, collect_point_only_into,
-    discrete_frechet_distance, discrete_frechet_distance_with_scratch, ensure_geodesic_linework,
-    geodesic_cap_streaming, geodesic_directed_hausdorff_distance, geodesic_scratch,
-    min_parts_to_parts, squared_space_safe,
+    discrete_frechet_distance_with_scratch, ensure_geodesic_linework, geodesic_cap_streaming,
+    geodesic_directed_hausdorff_distance, geodesic_scratch, min_parts_to_parts, squared_space_safe,
 };
 use crate::geometry::{
-    DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework, Shape, ShapeData,
-    distance, finish_planar_squared_min, nearest_points,
+    DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework, Shape, distance,
+    finish_planar_squared_min, nearest_points,
 };
 impl Shape {
     /// Build this shape's [`DistanceParts`] (vertices, packed linework,
@@ -61,6 +62,7 @@ impl Shape {
         })
     }
 
+    #[cfg(test)]
     pub fn distance(&self, other: &Self) -> Result<f64> {
         crate::geometry::PreparedPlan::new(ShapeData::new(self.clone()))?.distance(
             &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone()))?,
@@ -145,6 +147,7 @@ impl Shape {
         Ok(forward.distance.max(reverse.distance))
     }
 
+    #[cfg(test)]
     pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
         crate::geometry::PreparedPlan::new(ShapeData::new(self.clone()))?.dwithin(
             &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone()))?,
@@ -177,26 +180,6 @@ impl Shape {
     /// operand is empty (the surfaces map it to `(POINT EMPTY, POINT EMPTY)`).
     pub fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
         nearest_points(self, other)
-    }
-
-    /// The shortest connecting line between two geometries — `nearest_points`
-    /// as a `LineString` (degenerate when the geometries touch), or
-    /// `LINESTRING EMPTY` when an operand is empty.
-    pub fn shortest_line(&self, other: &Self) -> Result<Self> {
-        crate::geometry::nearest_line(
-            self.nearest_points(other)?.as_ref(),
-            crate::geometry::common_axes(self, other),
-        )
-    }
-
-    pub fn frechet_distance(&self, other: &Self) -> Result<f64> {
-        if self.is_empty() || other.is_empty() {
-            return Ok(f64::INFINITY);
-        }
-        Ok(discrete_frechet_distance(
-            self.single_linework()?,
-            other.single_linework()?,
-        ))
     }
 
     pub(crate) fn frechet_distance_with_scratch(

@@ -242,7 +242,7 @@ pub(crate) fn get_coordinates(
             for &axis in order {
                 match crate::try_push(
                     &mut data,
-                    coordinate_ordinate(coord.point, axis).unwrap_or(f64::NAN),
+                    coordinate_ordinate(coord, axis).unwrap_or(f64::NAN),
                 ) {
                     Ok(()) => {},
                     Err(error) => return std::ops::ControlFlow::Break(error),

@@ -493,6 +493,7 @@ enum RawSimplify {
 }
 
 impl RawSimplify {
+    #[cfg(test)]
     fn into_shape(self, original: &Shape) -> Shape {
         match self {
             Self::Unchanged => original.clone(),
@@ -927,6 +928,7 @@ impl Shape {
         })
     }
 
+    #[cfg(test)]
     pub fn simplify_dp_raw(&self, tolerance: f64) -> Result<Self> {
         Ok(self.simplify_raw_dp(tolerance)?.into_shape(self))
     }
@@ -964,6 +966,7 @@ impl Shape {
         }
     }
 
+    #[cfg(test)]
     pub fn simplify_vw_raw(&self, tolerance: f64) -> Result<Self> {
         Ok(self.simplify_raw_vw(tolerance)?.into_shape(self))
     }

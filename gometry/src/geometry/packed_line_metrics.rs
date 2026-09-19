@@ -24,22 +24,18 @@ use crate::geometry::CoordSeq;
 
 /// Borrowed packed `Lines` CSR columns for batch similarity kernels.
 #[derive(Clone, Copy)]
-pub struct PackedLineColumnView<'a> {
+pub(crate) struct PackedLineColumnView<'a> {
     pub coords: &'a CoordSeq,
     pub offsets: &'a [i32],
     pub row_map: RowSelectionRef<'a>,
 }
 
 impl PackedLineColumnView<'_> {
-    pub const fn logical_len(&self) -> usize {
+    pub(crate) const fn logical_len(&self) -> usize {
         self.row_map.len(self.offsets.len().saturating_sub(1))
     }
 
-    pub const fn physical_row(&self, logical: usize) -> usize {
-        self.row_map.physical(logical)
-    }
-
-    pub fn row_xy(&self, logical: usize) -> (&[f64], &[f64]) {
+    pub(crate) fn row_xy(&self, logical: usize) -> (&[f64], &[f64]) {
         // Window endpoints from CSR; slice once so the coordinate reborrows
         // share one bounds-check pair (elision of the dual xs/ys path).
         let std::ops::Range { start, end } = self.row_map.csr_window(self.offsets, logical);

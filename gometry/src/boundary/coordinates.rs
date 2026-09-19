@@ -28,28 +28,6 @@ pub enum CoordinateAxis {
     M,
 }
 
-/// Stable provenance for a flattened coordinate — enough to reconstruct the
-/// source-row index for `Coordinates` and `get_coordinates` without changing
-/// order.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CoordinatePath {
-    /// Geometry row for array owners; `None` for a scalar geometry owner.
-    pub geometry: Option<usize>,
-    /// Top-level part index inside the owning geometry.
-    pub part: usize,
-    /// Ring index for polygonal coordinates: `0` exterior, `1..` interiors.
-    pub ring: Option<usize>,
-    /// Coordinate offset inside that part/ring run.
-    pub coord: usize,
-}
-
-/// A coordinate plus its path metadata.
-#[derive(Clone, Copy, Debug)]
-pub struct CoordinatePoint {
-    pub point: Point,
-    pub path: CoordinatePath,
-}
-
 /// A per-axis column resolved from a view: borrowed when the view is one
 /// contiguous run, materialized otherwise.
 pub enum CoordinateColumnRef<'a> {
@@ -108,10 +86,6 @@ impl CoordinateView {
         }
     }
 
-    pub const fn from_array(storage: Arc<GeometryArrayStorage>) -> Self {
-        Self::from_array_masked(storage, None)
-    }
-
     pub(crate) const fn from_array_masked(
         storage: Arc<GeometryArrayStorage>,
         missing: Option<ValidityMask>,
@@ -136,10 +110,10 @@ impl CoordinateView {
     /// method. Prefer [`try_for_each`] when the visitor may stop early.
     fn for_each<F>(&self, visit: &mut F)
     where
-        F: for<'x> FnMut(Option<usize>, usize, Option<usize>, CoordinateRun<'x>),
+        F: for<'x> FnMut(Option<usize>, CoordinateRun<'x>),
     {
-        let _: ControlFlow<()> = self.try_for_each(&mut |geometry, part, ring, run| {
-            visit(geometry, part, ring, run);
+        let _: ControlFlow<()> = self.try_for_each(&mut |geometry, run| {
+            visit(geometry, run);
             ControlFlow::Continue(())
         });
     }
@@ -147,7 +121,7 @@ impl CoordinateView {
     /// Breakable traversal: `ControlFlow::Break` stops at the current run.
     fn try_for_each<B, F>(&self, visit: &mut F) -> ControlFlow<B>
     where
-        F: for<'x> FnMut(Option<usize>, usize, Option<usize>, CoordinateRun<'x>) -> ControlFlow<B>,
+        F: for<'x> FnMut(Option<usize>, CoordinateRun<'x>) -> ControlFlow<B>,
     {
         match &self.owner {
             CoordinateOwner::Shape(shape) => try_walk(shape, None, visit),
@@ -172,8 +146,6 @@ impl CoordinateView {
                             let Some(present) = present else { continue };
                             visit(
                                 Some(row),
-                                0,
-                                None,
                                 CoordinateRun::Point(
                                     coords.point_at(crate::array::physical_row(map, present)),
                                 ),
@@ -187,8 +159,6 @@ impl CoordinateView {
                         }
                         visit(
                             Some(row),
-                            0,
-                            None,
                             CoordinateRun::Point(
                                 coords.point_at(crate::array::physical_row(map, row)),
                             ),
@@ -211,7 +181,7 @@ impl CoordinateView {
                         }
                         let window = map.csr_window(offsets.as_slice(), row);
                         let view = coords.view(CoordWindow::from_range(window, coords.len()));
-                        visit(Some(row), 0, None, CoordinateRun::Seq(&view))?;
+                        visit(Some(row), CoordinateRun::Seq(&view))?;
                     }
                     ControlFlow::Continue(())
                 },
@@ -231,13 +201,11 @@ impl CoordinateView {
                         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
-                        for (ring, physical_ring) in
-                            map.csr_window(polygon_offsets.as_slice(), row).enumerate()
-                        {
+                        for physical_ring in map.csr_window(polygon_offsets.as_slice(), row) {
                             let window = ring_offsets[physical_ring] as usize
                                 ..ring_offsets[physical_ring + 1] as usize;
                             let view = coords.view(CoordWindow::from_range(window, coords.len()));
-                            visit(Some(row), 0, Some(ring), CoordinateRun::Seq(&view))?;
+                            visit(Some(row), CoordinateRun::Seq(&view))?;
                         }
                     }
                     ControlFlow::Continue(())
@@ -333,7 +301,7 @@ impl CoordinateView {
                     // (an XY view is 16 B/coordinate, not `size_of::<Point>()`
                     // — the interchange struct's 40 B would overreport).
                     let mut bytes = 0_usize;
-                    self.for_each(&mut |_, _, _, run| {
+                    self.for_each(&mut |_, run| {
                         bytes += match run {
                             CoordinateRun::Seq(seq) => seq.axes().byte_width(seq.len()),
                             CoordinateRun::Point(point) => {
@@ -367,7 +335,7 @@ impl CoordinateView {
             CoordinateOwner::Shape(shape) => shape.shape().axes(),
             CoordinateOwner::Array { .. } => {
                 let mut axes = CoordinateAxes::XY;
-                self.for_each(&mut |_, _, _, run| match run {
+                self.for_each(&mut |_, run| match run {
                     CoordinateRun::Seq(seq) => axes = axes.union(seq.axes()),
                     CoordinateRun::Point(point) => {
                         axes = axes.union(CoordinateAxes::from_point(point));
@@ -477,15 +445,15 @@ impl CoordinateView {
         })
     }
 
-    /// Stream every flattened coordinate (with path metadata) without
-    /// materializing a `Vec<CoordinatePoint>` — the engine behind the list /
+    /// Stream every flattened coordinate without
+    /// materializing a `Vec<Point>` — the engine behind the list /
     /// numpy / row-index surfaces. Use [`collect_points`](Self::collect_points)
     /// only where random access is genuinely needed (slicing).
     #[expect(
         clippy::impl_trait_in_params,
         reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
     )]
-    pub fn for_each_point(&self, mut visit: impl FnMut(CoordinatePoint)) {
+    pub fn for_each_point(&self, mut visit: impl FnMut(Point)) {
         let _: ControlFlow<()> = self.try_for_each_point(&mut |coord| {
             visit(coord);
             ControlFlow::Continue(())
@@ -501,9 +469,9 @@ impl CoordinateView {
     )]
     pub fn try_for_each_point<B>(
         &self,
-        visit: &mut impl FnMut(CoordinatePoint) -> ControlFlow<B>,
+        visit: &mut impl FnMut(Point) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
-        self.try_for_each(&mut |geometry, part, ring, run| match run {
+        self.try_for_each(&mut |_, run| match run {
             CoordinateRun::Seq(seq) => {
                 // Length-exact column windows: loop bound IS each slice's len,
                 // so per-vertex access carries no bounds checks (elision).
@@ -514,37 +482,22 @@ impl CoordinateView {
                 let zs = seq.zs().map(|column| &column[..width]);
                 let ms = seq.ms().map(|column| &column[..width]);
                 for coord in 0..width {
-                    visit(CoordinatePoint {
-                        point: Point::new_raw_axes(
-                            xs[coord],
-                            ys[coord],
-                            ZOrdinate(zs.map(|column| column[coord])),
-                            MOrdinate(ms.map(|column| column[coord])),
-                        ),
-                        path: CoordinatePath {
-                            geometry,
-                            part,
-                            ring,
-                            coord,
-                        },
-                    })?;
+                    visit(Point::new_raw_axes(
+                        xs[coord],
+                        ys[coord],
+                        ZOrdinate(zs.map(|column| column[coord])),
+                        MOrdinate(ms.map(|column| column[coord])),
+                    ))?;
                 }
                 ControlFlow::Continue(())
             },
-            CoordinateRun::Point(point) => visit(CoordinatePoint {
-                point,
-                path: CoordinatePath {
-                    geometry,
-                    part,
-                    ring,
-                    coord: 0,
-                },
-            }),
+            CoordinateRun::Point(point) => visit(point),
         })
     }
 
-    /// Flattened coordinates with path metadata.
-    pub fn collect_points(&self) -> Vec<CoordinatePoint> {
+    /// Flattened coordinates.
+    #[cfg(test)]
+    pub fn collect_points(&self) -> Vec<Point> {
         let mut points = Vec::with_capacity(self.len());
         self.for_each_point(|coord| points.push(coord));
         points
@@ -552,6 +505,7 @@ impl CoordinateView {
 
     /// Per-coordinate geometry-row index (all `0` for a scalar geometry; the
     /// logical source row for an array owner). Backs `coords.row_index`.
+    #[cfg(test)]
     pub fn row_index(&self) -> crate::error::Result<Vec<usize>> {
         self.row_index_cast(|row| row)
     }
@@ -644,7 +598,7 @@ impl CoordinateView {
         crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
         indexes.resize(capacity, zero);
         let mut cursor = 0_usize;
-        self.for_each(&mut |geometry, _, _, run| {
+        self.for_each(&mut |geometry, run| {
             let len = match run {
                 CoordinateRun::Seq(seq) => seq.len(),
                 CoordinateRun::Point(_) => 1,
@@ -662,24 +616,16 @@ impl CoordinateView {
     /// Packed identity columns and single-sequence shapes resolve in O(1) (or
     /// O(log runs) via CSR binary search). General owners walk runs with early
     /// break so `coords[0]` never scans past the first hit.
-    pub fn point_at(&self, index: usize) -> Option<CoordinatePoint> {
+    pub fn point_at(&self, index: usize) -> Option<Point> {
         if let Some(point) = self.point_at_fast(index) {
             return Some(point);
         }
         let mut remaining = index;
-        let result = self.try_for_each(&mut |geometry, part, ring, run| match run {
+        let result = self.try_for_each(&mut |_, run| match run {
             CoordinateRun::Seq(seq) => {
                 let len = seq.len();
                 if remaining < len {
-                    ControlFlow::Break(CoordinatePoint {
-                        point: seq.point_at(remaining),
-                        path: CoordinatePath {
-                            geometry,
-                            part,
-                            ring,
-                            coord: remaining,
-                        },
-                    })
+                    ControlFlow::Break(seq.point_at(remaining))
                 } else {
                     remaining -= len;
                     ControlFlow::Continue(())
@@ -687,15 +633,7 @@ impl CoordinateView {
             },
             CoordinateRun::Point(point) => {
                 if remaining == 0 {
-                    ControlFlow::Break(CoordinatePoint {
-                        point,
-                        path: CoordinatePath {
-                            geometry,
-                            part,
-                            ring,
-                            coord: 0,
-                        },
-                    })
+                    ControlFlow::Break(point)
                 } else {
                     remaining -= 1;
                     ControlFlow::Continue(())
@@ -711,36 +649,12 @@ impl CoordinateView {
     /// Storage-shaped random access for packed identity / window / gather
     /// columns and single-run shapes. O(1) for points; O(log rows) for
     /// contiguous CSR; gather of lines/polys falls through to the run walker.
-    fn point_at_fast(&self, index: usize) -> Option<CoordinatePoint> {
+    fn point_at_fast(&self, index: usize) -> Option<Point> {
         match &self.owner {
             CoordinateOwner::Shape(shape) => match shape.shape() {
-                Shape::Point(point) if index == 0 => Some(CoordinatePoint {
-                    point: *point,
-                    path: CoordinatePath {
-                        geometry: None,
-                        part: 0,
-                        ring: None,
-                        coord: 0,
-                    },
-                }),
-                Shape::LineString(seq) if index < seq.len() => Some(CoordinatePoint {
-                    point: seq.point_at(index),
-                    path: CoordinatePath {
-                        geometry: None,
-                        part: 0,
-                        ring: None,
-                        coord: index,
-                    },
-                }),
-                Shape::MultiPoint(seq) if index < seq.len() => Some(CoordinatePoint {
-                    point: seq.point_at(index),
-                    path: CoordinatePath {
-                        geometry: None,
-                        part: 0,
-                        ring: None,
-                        coord: index,
-                    },
-                }),
+                Shape::Point(point) if index == 0 => Some(*point),
+                Shape::LineString(seq) if index < seq.len() => Some(seq.point_at(index)),
+                Shape::MultiPoint(seq) if index < seq.len() => Some(seq.point_at(index)),
                 _ => None,
             },
             CoordinateOwner::Array {
@@ -754,15 +668,7 @@ impl CoordinateView {
                         return None;
                     }
                     let physical = map.physical(index);
-                    Some(CoordinatePoint {
-                        point: coords.point_at(physical),
-                        path: CoordinatePath {
-                            geometry: Some(index),
-                            part: 0,
-                            ring: None,
-                            coord: 0,
-                        },
-                    })
+                    Some(coords.point_at(physical))
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Lines {
                     coords,
@@ -839,11 +745,11 @@ impl CoordinateView {
         // O(n log rows)).
         let mut right_visible = Vec::with_capacity(other.len());
         other.for_each_point(|coord| {
-            right_visible.push(visible_coordinate_bits(coord.point, other_layout));
+            right_visible.push(visible_coordinate_bits(coord, other_layout));
         });
         let mut idx = 0_usize;
         let equal = self.try_for_each_point(&mut |coord| {
-            let left = visible_coordinate_bits(coord.point, self_layout);
+            let left = visible_coordinate_bits(coord, self_layout);
             if right_visible.get(idx).copied() != Some(left) {
                 return ControlFlow::Break(false);
             }
@@ -887,8 +793,7 @@ impl CoordinateView {
         let mut out = Vec::new();
         crate::boundary::try_reserve_vec(&mut out, self.len())?;
         match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
-            &mut out,
-            coord.point.x,
+            &mut out, coord.x,
         ) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => ControlFlow::Break(error),
@@ -1270,8 +1175,7 @@ impl CoordinateView {
         let mut out = Vec::new();
         crate::boundary::try_reserve_vec(&mut out, self.len())?;
         match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
-            &mut out,
-            coord.point.y,
+            &mut out, coord.y,
         ) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => ControlFlow::Break(error),
@@ -1298,7 +1202,7 @@ impl CoordinateView {
         let mut any = false;
         let mut all_present = true;
         let result = self.try_for_each_point(&mut |coord| {
-            let (value, is_present) = project(coord.point).map_or_else(
+            let (value, is_present) = project(coord).map_or_else(
                 || {
                     all_present = false;
                     (0.0, false)
@@ -1331,171 +1235,77 @@ impl CoordinateView {
     }
 }
 
-/// O(log rows) flat-index lookup into packed line CSR under identity or a
-/// contiguous row window. Gather falls through (non-contiguous coord spans).
+/// O(1) flat-index lookup into packed line CSR under identity or a contiguous
+/// row window, whose coordinates are one contiguous span. Gather falls
+/// through (non-contiguous coord spans).
 fn packed_line_point_at(
     coords: &CoordSeq,
     offsets: &[i32],
     map: crate::array::RowSelectionRef<'_>,
     index: usize,
-) -> Option<CoordinatePoint> {
+) -> Option<Point> {
     if offsets.len() < 2 {
         return None;
     }
-    let (row_start, row_len, coord_base) = match map {
-        crate::array::RowSelectionRef::Identity => {
-            let total = offsets[offsets.len() - 1] as usize;
-            if index >= total {
-                return None;
-            }
-            (0_usize, offsets.len() - 1, 0_usize)
-        },
+    let span = match map {
+        crate::array::RowSelectionRef::Identity => 0..offsets[offsets.len() - 1] as usize,
         crate::array::RowSelectionRef::Window { start, len } => {
-            if len == 0 {
-                return None;
-            }
-            let coord_start = offsets[start] as usize;
-            let coord_end = offsets[start + len] as usize;
-            if index >= coord_end - coord_start {
-                return None;
-            }
-            (start, len, coord_start)
+            offsets[start] as usize..offsets[start + len] as usize
         },
         crate::array::RowSelectionRef::Gather(_) => return None,
     };
-    let physical_coord = coord_base + index;
-    // Binary-search the physical row whose CSR window contains the coord.
-    let physical_row = offsets[row_start..=row_start + row_len]
-        .partition_point(|&off| (off as usize) <= physical_coord)
-        .saturating_sub(1)
-        .min(row_len.saturating_sub(1))
-        + row_start;
-    let row_coord_start = offsets[physical_row] as usize;
-    let logical_row = physical_row - row_start;
-    Some(CoordinatePoint {
-        point: coords.point_at(physical_coord),
-        path: CoordinatePath {
-            geometry: Some(logical_row),
-            part: 0,
-            ring: None,
-            coord: physical_coord - row_coord_start,
-        },
-    })
+    (index < span.len()).then(|| coords.point_at(span.start + index))
 }
 
-/// O(log rings) flat-index lookup into packed polygon CSR under identity or a
-/// contiguous row window.
+/// O(1) flat-index lookup into packed polygon CSR under identity or a
+/// contiguous row window, whose coordinates are one contiguous span.
 fn packed_polygon_point_at(
     coords: &CoordSeq,
     rings: &[i32],
     polys: &[i32],
     map: crate::array::RowSelectionRef<'_>,
     index: usize,
-) -> Option<CoordinatePoint> {
+) -> Option<Point> {
     if rings.len() < 2 || polys.len() < 2 {
         return None;
     }
-    let (row_start, row_len, coord_base) = match map {
-        crate::array::RowSelectionRef::Identity => {
-            let total = rings[rings.len() - 1] as usize;
-            if index >= total {
-                return None;
-            }
-            (0_usize, polys.len() - 1, 0_usize)
-        },
+    let span = match map {
+        crate::array::RowSelectionRef::Identity => 0..rings[rings.len() - 1] as usize,
         crate::array::RowSelectionRef::Window { start, len } => {
-            if len == 0 {
-                return None;
-            }
-            let first_ring = polys[start] as usize;
-            let last_ring = polys[start + len] as usize;
-            let coord_start = rings[first_ring] as usize;
-            let coord_end = rings[last_ring] as usize;
-            if index >= coord_end - coord_start {
-                return None;
-            }
-            (start, len, coord_start)
+            rings[polys[start] as usize] as usize..rings[polys[start + len] as usize] as usize
         },
         crate::array::RowSelectionRef::Gather(_) => return None,
     };
-    let physical_coord = coord_base + index;
-    let ring = rings
-        .partition_point(|&off| (off as usize) <= physical_coord)
-        .saturating_sub(1)
-        .min(rings.len() - 2);
-    let ring_start = rings[ring] as usize;
-    // Restrict the polygon binary search to the selected row window.
-    let poly_lo = row_start;
-    let poly_hi = row_start + row_len;
-    let physical_row = polys[poly_lo..=poly_hi]
-        .partition_point(|&off| (off as usize) <= ring)
-        .saturating_sub(1)
-        .min(row_len.saturating_sub(1))
-        + poly_lo;
-    let row_ring0 = polys[physical_row] as usize;
-    let logical_row = physical_row - row_start;
-    Some(CoordinatePoint {
-        point: coords.point_at(physical_coord),
-        path: CoordinatePath {
-            geometry: Some(logical_row),
-            part: 0,
-            ring: Some(ring - row_ring0),
-            coord: physical_coord - ring_start,
-        },
-    })
+    (index < span.len()).then(|| coords.point_at(span.start + index))
 }
 
-/// Breakable shape walk — invoke `visit(geometry, part, ring, run)` for each
-/// contiguous sequence or scalar point of `shape` in canonical flatten order.
-/// Stops when `visit` returns `ControlFlow::Break`. `geometry` is the array
-/// row when the owner is a `GeometryArray`.
+/// Breakable shape walk — invoke `visit(geometry, run)` for each contiguous
+/// sequence or scalar point of `shape` in canonical flatten order. Stops when
+/// `visit` returns `ControlFlow::Break`. `geometry` is the array row when the
+/// owner is a `GeometryArray`.
 fn try_walk<B, F>(shape: &Shape, geometry: Option<usize>, visit: &mut F) -> ControlFlow<B>
 where
-    F: for<'x> FnMut(Option<usize>, usize, Option<usize>, CoordinateRun<'x>) -> ControlFlow<B>,
+    F: for<'x> FnMut(Option<usize>, CoordinateRun<'x>) -> ControlFlow<B>,
 {
     match shape {
-        Shape::Point(point) => visit(geometry, 0, None, CoordinateRun::Point(*point)),
-        Shape::MultiPoint(seq) => visit(geometry, 0, None, CoordinateRun::Seq(seq)),
-        Shape::LineString(seq) => visit(geometry, 0, None, CoordinateRun::Seq(seq)),
+        Shape::Point(point) => visit(geometry, CoordinateRun::Point(*point)),
+        Shape::MultiPoint(seq) => visit(geometry, CoordinateRun::Seq(seq)),
+        Shape::LineString(seq) => visit(geometry, CoordinateRun::Seq(seq)),
         Shape::MultiLineString(lines) => {
-            for (part, line) in lines.iter().enumerate() {
-                visit(geometry, part, None, CoordinateRun::Seq(line))?;
+            for line in lines.iter() {
+                visit(geometry, CoordinateRun::Seq(line))?;
             }
             ControlFlow::Continue(())
         },
         Shape::Polygon(polygon) => {
-            visit(
-                geometry,
-                0,
-                Some(0),
-                CoordinateRun::Seq(polygon.shell.coords()),
-            )?;
-            for (ring, hole) in polygon.holes.iter().enumerate() {
-                visit(
-                    geometry,
-                    0,
-                    Some(ring + 1),
-                    CoordinateRun::Seq(hole.coords()),
-                )?;
+            for ring in polygon.rings() {
+                visit(geometry, CoordinateRun::Seq(ring.coords()))?;
             }
             ControlFlow::Continue(())
         },
         Shape::MultiPolygon(polygons) => {
-            for (part, polygon) in polygons.iter().enumerate() {
-                visit(
-                    geometry,
-                    part,
-                    Some(0),
-                    CoordinateRun::Seq(polygon.shell.coords()),
-                )?;
-                for (ring, hole) in polygon.holes.iter().enumerate() {
-                    visit(
-                        geometry,
-                        part,
-                        Some(ring + 1),
-                        CoordinateRun::Seq(hole.coords()),
-                    )?;
-                }
+            for ring in polygons.iter().flat_map(|polygon| polygon.rings()) {
+                visit(geometry, CoordinateRun::Seq(ring.coords()))?;
             }
             ControlFlow::Continue(())
         },
@@ -1539,7 +1349,7 @@ mod tests {
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(Shape::Point(pt(1.0, 2.0)))));
         assert_eq!(view.len(), 1);
         assert!(view.single_seq().is_none());
-        assert_eq!(view.point_at(0).unwrap().point, pt(1.0, 2.0));
+        assert_eq!(view.point_at(0).unwrap(), pt(1.0, 2.0));
         assert!(view.point_at(1).is_none());
     }
 
@@ -1573,8 +1383,9 @@ mod tests {
         assert!(view.single_seq().is_none());
         let points = view.collect_points();
         assert_eq!(points.len(), view.len());
-        assert_eq!(points[0].path.ring, Some(0));
-        assert_eq!(points[points.len() - 1].path.ring, Some(1));
+        // Shell first, then the hole.
+        assert_eq!(points[3], pt(0.0, 4.0));
+        assert_eq!(points[5], pt(1.0, 1.0));
         // X column over the multipart polygon materializes (no single run).
         assert!(matches!(
             view.column(CoordinateAxis::X).unwrap(),
@@ -1614,13 +1425,13 @@ mod tests {
         let points = array.coordinate_view().collect_points();
 
         assert_eq!(points.len(), 15);
-        assert_eq!(points[0].path.geometry, Some(0));
-        assert_eq!(points[0].path.ring, Some(0));
-        assert_eq!(points[5].path.geometry, Some(0));
-        assert_eq!(points[5].path.ring, Some(1));
-        assert_eq!(points[10].path.geometry, Some(1));
-        assert_eq!(points[10].path.ring, Some(0));
-        assert_eq!(points[14].path.coord, 4);
+        assert_eq!(points[5], pt(1.0, 1.0));
+        assert_eq!(points[10], pt(10.0, 10.0));
+        assert_eq!(points[13], pt(10.0, 11.0));
+        assert_eq!(
+            array.coordinate_view().row_index_i64().unwrap(),
+            [[0; 10].as_slice(), &[1; 5]].concat()
+        );
 
         let gathered = PyGeometryArray::packed_polygons_mapped(
             coords,
@@ -1634,11 +1445,13 @@ mod tests {
         .unwrap();
         let gathered_points = gathered.coordinate_view().collect_points();
         assert_eq!(gathered_points.len(), 15);
-        assert_eq!(gathered_points[0].point, pt(10.0, 10.0));
-        assert_eq!(gathered_points[0].path.geometry, Some(0));
-        assert_eq!(gathered_points[5].point, pt(0.0, 0.0));
-        assert_eq!(gathered_points[5].path.geometry, Some(1));
-        assert_eq!(gathered_points[10].path.ring, Some(1));
+        assert_eq!(gathered_points[0], pt(10.0, 10.0));
+        assert_eq!(gathered_points[5], pt(0.0, 0.0));
+        assert_eq!(gathered_points[10], pt(1.0, 1.0));
+        assert_eq!(
+            gathered.coordinate_view().row_index_i64().unwrap(),
+            [[0; 5].as_slice(), &[1; 10]].concat()
+        );
 
         let masked = gathered
             .with_missing_mask(ValidityMask::from_vec(2, vec![true, false]).unwrap())
@@ -1647,13 +1460,9 @@ mod tests {
         let masked_points = masked_view.collect_points();
         assert_eq!(masked_view.len(), 10);
         assert_eq!(masked_points.len(), 10);
-        assert!(
-            masked_points
-                .iter()
-                .all(|point| point.path.geometry == Some(1))
-        );
-        assert_eq!(masked_points[0].path.ring, Some(0));
-        assert_eq!(masked_points[5].path.ring, Some(1));
+        assert_eq!(masked_view.row_index_i64().unwrap(), vec![1; 10]);
+        assert_eq!(masked_points[0], pt(0.0, 0.0));
+        assert_eq!(masked_points[5], pt(1.0, 1.0));
     }
 
     #[test]
@@ -1735,8 +1544,8 @@ mod tests {
         // Logical row 0 = physical 2 (2 verts); logical row 1 = physical 0 (2 verts).
         assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1]);
         let points = view.collect_points();
-        assert_eq!(points[0].point, pt(4.0, 0.0));
-        assert_eq!(points[2].point, pt(0.0, 0.0));
+        assert_eq!(points[0], pt(4.0, 0.0));
+        assert_eq!(points[2], pt(0.0, 0.0));
     }
 
     #[test]
@@ -1752,9 +1561,9 @@ mod tests {
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
         assert_eq!(view.len(), 3);
         let points = view.collect_points();
-        assert_eq!(points[0].point, pt(9.0, 9.0));
-        assert_eq!(points[1].point, pt(0.0, 0.0));
-        assert_eq!(points[2].point, pt(1.0, 1.0));
+        assert_eq!(points[0], pt(9.0, 9.0));
+        assert_eq!(points[1], pt(0.0, 0.0));
+        assert_eq!(points[2], pt(1.0, 1.0));
         assert_eq!(view.row_index().unwrap(), vec![0, 0, 0]);
     }
 

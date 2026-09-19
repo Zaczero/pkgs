@@ -74,11 +74,6 @@ pub(crate) fn frechet_distance_line_columns_batch(
     }
 }
 
-pub(crate) fn discrete_frechet_distance(left: &CoordSeq, right: &CoordSeq) -> f64 {
-    let mut scratch = FrechetDpScratch::default();
-    discrete_frechet_distance_with_scratch(left, right, &mut scratch)
-}
-
 pub(crate) fn discrete_frechet_distance_with_scratch(
     left: &CoordSeq,
     right: &CoordSeq,

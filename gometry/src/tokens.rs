@@ -107,12 +107,6 @@ macro_rules! token_enum {
     (@token [$vis:vis] [] {
         $($variant:ident = $token:literal),+ $(,)?
     }) => {
-        /// The canonical token spelling of this variant.
-        $vis fn token(self) -> &'static str {
-            match self {
-                $(Self::$variant => $token,)+
-            }
-        }
     };
 
     (@token [$vis:vis] [none] {

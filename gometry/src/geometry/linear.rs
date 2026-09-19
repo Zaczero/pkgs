@@ -9,15 +9,16 @@
 use super::line_index::try_boxed_slice;
 use super::linear_3d;
 use crate::error::Result;
+#[cfg(test)]
+use crate::geometry::LineIndex;
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, Distance3dParts, GeometryErrorKind, GeometryKind, HasM,
-    HasZ, LineIndex, LineSeq, MColumn, MultiLineString, Ordering, PlanarMetric, Point,
-    PreparedPlan, Segment, SegmentMetric, SegmentProjection, Shape, SharedSlice,
-    distance_3d_with_parts, interpolate_fraction, point_distance, point_segment_selection,
-    same_point, shape_axes_all_z, squared_norm_is_trustworthy,
+    HasZ, LineSeq, MColumn, MultiLineString, Ordering, PlanarMetric, Point, PreparedPlan, Segment,
+    SegmentMetric, SegmentProjection, Shape, SharedSlice, distance_3d_with_parts,
+    interpolate_fraction, point_distance, point_segment_selection, same_point, shape_axes_all_z,
+    squared_norm_is_trustworthy,
 };
 use crate::{Finite, HeapSize};
-
 /// Validated `(start, end)` pair for linear-referencing measure/distance bounds.
 ///
 /// Distance substringing validates finiteness here; the ordered-pair guard for
@@ -74,16 +75,7 @@ impl MeasureRange {
 }
 
 impl Shape {
-    pub fn line_interpolate_point(&self, distance: f64, normalized: bool) -> Result<Self> {
-        let distance = Finite::try_new("distance", distance)?.get();
-        let index = LineIndex::build(self, &PlanarMetric)?;
-        Ok(Self::Point(index.interpolate(
-            distance,
-            normalized,
-            &PlanarMetric,
-        )))
-    }
-
+    #[cfg(test)]
     pub fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
         let index = LineIndex::build(self, &PlanarMetric)?;
         index.locate_point(point, normalized, &PlanarMetric)
@@ -126,7 +118,7 @@ impl PreparedPlan {
     /// Cached-engine siblings of the `Shape` linear-referencing methods —
     /// the prefix index builds once per handle and serves every later call
     /// (shadowing the `Shape` versions via `Deref`, like distance/dwithin).
-    pub fn line_interpolate_point(&self, distance: f64, normalized: bool) -> Result<Shape> {
+    pub(crate) fn line_interpolate_point(&self, distance: f64, normalized: bool) -> Result<Shape> {
         let distance = Finite::try_new("distance", distance)?.get();
         Ok(Shape::Point(self.line_index()?.interpolate(
             distance,
@@ -140,7 +132,7 @@ impl PreparedPlan {
             .substring(range, normalized, &PlanarMetric)
     }
 
-    pub fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
+    pub(crate) fn line_locate_point(&self, point: Point, normalized: bool) -> Result<f64> {
         self.line_index()?
             .locate_point(point, normalized, &PlanarMetric)
     }
@@ -309,10 +301,12 @@ impl Shape {
 
     /// Point at measure `m` along this geometry's M ordinate. `m` is clamped to
     /// the `[m_first, m_last]` range.
+    #[cfg(test)]
     pub fn line_interpolate_point_m(&self, m: f64) -> Result<Self> {
         self.line_interpolate_point_m_with(m, &PlanarMetric)
     }
 
+    #[cfg(test)]
     pub(crate) fn line_interpolate_point_m_with<M: SegmentMetric>(
         &self,
         m: f64,
@@ -325,10 +319,12 @@ impl Shape {
 
     /// Interpolated M ordinate at the location on this geometry nearest
     /// `point`.
+    #[cfg(test)]
     pub fn line_locate_point_m(&self, point: Point) -> Result<f64> {
         self.line_locate_point_m_with(point, &PlanarMetric)
     }
 
+    #[cfg(test)]
     pub(crate) fn line_locate_point_m_with<M: SegmentMetric>(
         &self,
         point: Point,

@@ -504,6 +504,7 @@ impl CoordSeq {
 
     /// `Some` when `rows` is a non-empty strictly increasing run by `1` — the
     /// `take`/`filter` fast-path predicate for zero-copy `view`.
+    #[cfg(test)]
     pub(crate) fn contiguous_row_window(
         rows: &[usize],
         physical_len: usize,
@@ -521,6 +522,7 @@ impl CoordSeq {
 
     /// Gather selected rows — zero-copy `view` when `rows` is contiguous,
     /// column-wise `select` otherwise (scatter / reversed stride).
+    #[cfg(test)]
     pub fn select_rows(&self, rows: &[usize]) -> Result<Self> {
         Self::contiguous_row_window(rows, self.len()).map_or_else(
             || self.select(rows.iter().copied()),
@@ -600,6 +602,7 @@ impl CoordSeq {
 
     /// Concatenate two sequences of identical axes. `Ok(None)` means only an
     /// axes mismatch; allocation failure is returned as `Err`.
+    #[cfg(test)]
     pub fn concat(&self, other: &Self) -> Result<Option<Self>> {
         if self.axes() != other.axes() {
             return Ok(None);
@@ -711,6 +714,7 @@ impl CoordSeq {
         }
     }
 
+    #[cfg(test)]
     pub fn get(&self, index: usize) -> Option<Point> {
         (index < self.len()).then(|| self.point_at(index))
     }
@@ -925,6 +929,7 @@ impl<'a> IntoIterator for &'a CoordSeq {
 /// Each lane is reserved to exact length, filled with two `copy_from_slice`
 /// writes, and frozen once into an `Arc` (no builder, no double-init zero fill,
 /// no spare-capacity shrink on freeze).
+#[cfg(test)]
 pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<CoordSeq> {
     debug_assert_eq!(left.axes(), right.axes());
     let len = left.len() + right.len();
@@ -960,6 +965,7 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
 
 /// Two-slice join into mutable storage whose original capacity is retained by
 /// the final shared owner.
+#[cfg(test)]
 fn concat_f64_slices(left: &[f64], right: &[f64]) -> Result<Vec<f64>> {
     let mut values = Vec::new();
     crate::boundary::try_reserve_vec(&mut values, left.len() + right.len())?;

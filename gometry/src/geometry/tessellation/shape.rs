@@ -84,7 +84,8 @@ impl<'budget> BudgetedPackedTriangleSink<'budget> {
 }
 
 impl Shape {
-    pub fn delaunay_triangles(&self) -> Result<Vec<Self>> {
+    #[cfg(test)]
+    pub(crate) fn delaunay_triangles(&self) -> Result<Vec<Self>> {
         let mut budget = crate::geometry::ExpansionBudget::new("triangulate", "method");
         self.delaunay_triangles_budgeted(&mut budget)
     }
@@ -420,7 +421,8 @@ impl Shape {
         .unwrap_or_default())
     }
 
-    pub fn voronoi_polygons(
+    #[cfg(test)]
+    pub(crate) fn voronoi_polygons(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
@@ -453,7 +455,8 @@ impl Shape {
         crate::try_collect_vec(cells.into_iter().map(|polygon| Ok(Self::Polygon(polygon))))
     }
 
-    pub fn voronoi_edges(
+    #[cfg(test)]
+    pub(crate) fn voronoi_edges(
         &self,
         tolerance: f64,
         boundary: VoronoiBoundary<'_>,
@@ -462,6 +465,7 @@ impl Shape {
         self.voronoi_edges_budgeted(tolerance, boundary, &mut budget)
     }
 
+    #[cfg(test)]
     pub(crate) fn voronoi_edges_budgeted(
         &self,
         tolerance: f64,
@@ -558,10 +562,6 @@ impl Shape {
 
     pub fn polygonize(&self, strict: bool) -> Result<Vec<Self>> {
         Self::polygonize_all(&[self], strict)
-    }
-
-    pub fn polygonize_full(&self, strict: bool) -> Result<PolygonizeFull> {
-        Self::polygonize_full_all(&[self], strict)
     }
 
     /// Polygonize many shapes as one noding universe: every line part from

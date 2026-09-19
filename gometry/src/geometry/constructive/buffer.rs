@@ -1,10 +1,12 @@
 use std::num::NonZeroU32;
 
+#[cfg(test)]
+use crate::geometry::DEFAULT_MITER_LIMIT;
 use crate::geometry::constructive::{
-    DEFAULT_MITER_LIMIT, Result, WalkJoinRule, convex_buffer_budgeted,
-    degenerate_polygonal_as_linework, multipoint_loops, point_buffer, sided_strip_parts,
-    validate_buffer_style, winding_buffer_budgeted, winding_collection_budgeted,
-    winding_erosion_budgeted, winding_region, winding_stroke_budgeted,
+    Result, WalkJoinRule, convex_buffer_budgeted, degenerate_polygonal_as_linework,
+    multipoint_loops, point_buffer, sided_strip_parts, validate_buffer_style,
+    winding_buffer_budgeted, winding_collection_budgeted, winding_erosion_budgeted, winding_region,
+    winding_stroke_budgeted,
 };
 use crate::geometry::{
     Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CoordSeq, ExpansionBudget,
@@ -14,6 +16,7 @@ use crate::geometry::{
 use crate::{Finite, Positive};
 
 impl Shape {
+    #[cfg(test)]
     pub fn buffer(&self, distance: f64) -> Result<Self> {
         self.buffer_with_style(
             distance,

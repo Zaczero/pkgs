@@ -2726,6 +2726,7 @@ impl EmbeddedEdges {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn into_line_seqs(self) -> Result<Vec<LineSeq>> {
         match self.canonical() {
             Self::Packed { coords, offsets } => {

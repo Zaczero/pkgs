@@ -234,14 +234,6 @@ mod csr_offset_column_tests {
     }
 
     #[test]
-    fn csr_offset_rebase_concat_matches_checked_add() {
-        let prefix = &[0, 3, 7];
-        let tail = &[0, 2, 5];
-        let column = CsrOffsetColumn::<()>::rebase_concat(prefix, tail, 12).expect("rebase");
-        assert_eq!(column.shared_offsets().as_ref(), &[0, 3, 7, 9, 12]);
-    }
-
-    #[test]
     fn csr_offset_try_from_shared_i32_roundtrips_shared_offsets() {
         let column = CsrOffsetColumn::<()>::try_new(vec![0, 3, 7], 7).expect("valid");
         let arc = column.shared_offsets();
@@ -261,87 +253,6 @@ mod csr_offset_column_tests {
         assert!(matches!(
             error.kind(),
             ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
-        ));
-    }
-
-    #[test]
-    fn csr_offset_rebase_concat_polygon_ring_level() {
-        let left_rings = &[0, 4, 8];
-        let right_rings = &[0, 3];
-        let rings =
-            CsrOffsetColumn::<()>::rebase_concat(left_rings, right_rings, 11).expect("rings");
-        assert_eq!(rings.as_slice(), &[0, 4, 8, 11]);
-        let left_polygons = &[0, 2];
-        let right_polygons = &[0, 1];
-        let polygons = CsrOffsetColumn::<()>::rebase_concat(left_polygons, right_polygons, 3)
-            .expect("polygons");
-        assert_eq!(polygons.as_slice(), &[0, 2, 3]);
-    }
-
-    #[test]
-    fn csr_offset_rebase_concat_validated_matches_rebase_concat() {
-        let cases: &[(&[i32], &[i32], usize)] = &[
-            (&[0, 3, 7], &[0, 2, 5], 12),
-            (&[0, 4, 8], &[0, 3], 11),
-            (&[0, 2], &[0, 1], 3),
-        ];
-        for &(prefix, tail, end_cap) in cases {
-            let prefix = CsrOffsetColumn::<()>::try_new(
-                prefix.iter().map(|&offset| offset as usize).collect(),
-                end_cap,
-            )
-            .expect("valid prefix");
-            let tail = CsrOffsetColumn::<()>::try_new(
-                tail.iter().map(|&offset| offset as usize).collect(),
-                end_cap,
-            )
-            .expect("valid tail");
-            let trusted = CsrOffsetColumn::<()>::rebase_concat_validated(&prefix, &tail, end_cap)
-                .expect("trusted");
-            let checked =
-                CsrOffsetColumn::<()>::rebase_concat(prefix.as_slice(), tail.as_slice(), end_cap)
-                    .expect("checked");
-            assert_eq!(trusted.as_slice(), checked.as_slice());
-        }
-    }
-
-    /// Valid near-`i32::MAX` slices must reject a rebased end that cannot be
-    /// represented by the output offsets.
-    #[test]
-    fn csr_offset_rebase_concat_rejects_overflow() {
-        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 1], &[0, i32::MAX], usize::MAX)
-            .expect_err("rebased tail must exceed i32 capacity");
-        assert!(matches!(
-            err.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
-        ));
-    }
-
-    /// Negative raw offsets must error before rebase arithmetic.
-    #[test]
-    fn csr_offset_rebase_concat_rejects_negative_offsets() {
-        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 1], &[0, -1], usize::MAX)
-            .expect_err("negative tail offset must error");
-        assert!(matches!(
-            err.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
-        ));
-    }
-
-    /// Non-monotonic raw ends must error rather than produce a false CSR.
-    #[test]
-    fn csr_offset_rebase_concat_rejects_non_monotonic_offsets() {
-        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 5, 3], &[0], 100)
-            .expect_err("non-monotonic prefix must error");
-        assert!(matches!(
-            err.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
-        ));
-        let err = CsrOffsetColumn::<()>::rebase_concat(&[0, 5], &[0, 3, 1], 100)
-            .expect_err("non-monotonic tail must error");
-        assert!(matches!(
-            err.kind(),
-            crate::error::ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
         ));
     }
 }

@@ -147,13 +147,13 @@ impl CsrOffsetBuilder {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RingLevel;
+pub(crate) struct RingLevel;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PolygonLevel;
+pub(crate) struct PolygonLevel;
 
 /// Validated frozen CSR offset column for packed lineal / polygonal storage.
 #[derive(Clone, Debug)]
-pub struct CsrOffsetColumn<Level = ()> {
+pub(crate) struct CsrOffsetColumn<Level = ()> {
     offsets: SharedSlice<i32>,
     _level: PhantomData<Level>,
 }
@@ -173,16 +173,8 @@ impl<Level> crate::HeapSize for CsrOffsetColumn<Level> {
 }
 
 impl<Level> CsrOffsetColumn<Level> {
-    pub fn len(&self) -> usize {
-        self.offsets.len()
-    }
-
-    pub const fn is_empty(&self) -> bool {
-        self.offsets.is_empty()
-    }
-
     /// Borrow the validated `i32` CSR ends.
-    pub fn as_slice(&self) -> &[i32] {
+    pub(crate) fn as_slice(&self) -> &[i32] {
         &self.offsets
     }
     /// Single O(n) validation at freeze: monotonic, starts at 0, last <=
@@ -190,81 +182,11 @@ impl<Level> CsrOffsetColumn<Level> {
     ///
     /// `end_cap` is the maximum allowed value of the last CSR end: vertex
     /// count for line/`ring_offsets` columns, ring count for `polygon_offsets`.
-    pub fn try_new(ends: Vec<usize>, end_cap: usize) -> Result<Self> {
+    pub(crate) fn try_new(ends: Vec<usize>, end_cap: usize) -> Result<Self> {
         validate_csr_ends(&ends, end_cap)?;
         let offsets = offsets_from_ends(ends)?;
         Ok(Self {
             offsets,
-            _level: PhantomData,
-        })
-    }
-
-    /// Concatenate a validated prefix CSR column with a tail column, rebasing
-    /// tail ends (skipping its leading zero) by the prefix's last end — single
-    /// O(n) `usize` pass, one i32 conversion at freeze.
-    pub fn rebase_concat(prefix: &[i32], tail: &[i32], combined_vertex_cap: usize) -> Result<Self> {
-        // Raw slices are an admission boundary. Validate before converting any
-        // signed offset to usize so malformed negative or descending values
-        // cannot enter the rebase arithmetic.
-        validate_csr_offsets_i32(prefix, combined_vertex_cap)?;
-        validate_csr_offsets_i32(tail, combined_vertex_cap)?;
-        let base = *prefix
-            .last()
-            .ok_or(GeometryErrorKind::MalformedCsrOffsets)? as usize;
-        let mut ends = Vec::new();
-        crate::boundary::try_reserve_vec(&mut ends, prefix.len())?;
-        ends.extend(prefix.iter().map(|&offset| offset as usize));
-        for &offset in tail.iter().skip(1) {
-            crate::try_push_vec(
-                &mut ends,
-                base.checked_add(offset as usize)
-                    .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?,
-            )?;
-        }
-        Self::try_new(ends, combined_vertex_cap)
-    }
-
-    /// Fast-path concat of two already-validated CSR columns: one exact `i32`
-    /// allocation, prefix copy, and one rebase pass over the tail (skipping its
-    /// leading zero).
-    ///
-    /// Raw slices use [`Self::rebase_concat`], which owns their validation.
-    /// Carrying validated columns here makes descending and negative offsets
-    /// unrepresentable at the fast-path boundary.
-    pub fn rebase_concat_validated(prefix: &Self, tail: &Self, end_cap: usize) -> Result<Self> {
-        let prefix = prefix.as_slice();
-        let tail = tail.as_slice();
-        let base = *prefix
-            .last()
-            .ok_or(GeometryErrorKind::MalformedCsrOffsets)?;
-        if base < 0 || (base as usize) > end_cap {
-            return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-        }
-        let tail_rest = tail.get(1..).unwrap_or(&[]);
-        let len = prefix.len() + tail_rest.len();
-        // Fallible i32 materialization: checked_add per tail end so intermediate
-        // non-monotonic / overflowing values cannot hit `unchecked_add` UB.
-        let mut out = Vec::new();
-        crate::boundary::try_reserve_vec(&mut out, len)?;
-        for &offset in prefix {
-            crate::boundary::try_push_vec(&mut out, offset)?;
-        }
-        let mut prev = base;
-        for &offset in tail_rest {
-            let rebased = base
-                .checked_add(offset)
-                .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
-            if rebased < prev {
-                return Err(GeometryErrorKind::MalformedCsrOffsets.into());
-            }
-            if (rebased as usize) > end_cap {
-                return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
-            }
-            crate::boundary::try_push_vec(&mut out, rebased)?;
-            prev = rebased;
-        }
-        Ok(Self {
-            offsets: SharedSlice::try_from_vec(out)?,
             _level: PhantomData,
         })
     }
@@ -286,7 +208,7 @@ impl<Level> CsrOffsetColumn<Level> {
         })
     }
 
-    pub fn cast_level<Next>(self) -> CsrOffsetColumn<Next> {
+    pub(crate) fn cast_level<Next>(self) -> CsrOffsetColumn<Next> {
         CsrOffsetColumn {
             offsets: self.offsets,
             _level: PhantomData,

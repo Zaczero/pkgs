@@ -14,7 +14,7 @@ impl PreparedPlan {
     /// Planar distance with both sides' prepared state cached on the handle —
     /// shadowing [`Shape::distance`] (which builds throwaway parts) so any
     /// caller holding the handle gets amortized indexes automatically.
-    pub fn distance(&self, other: &Self) -> Result<f64> {
+    pub(crate) fn distance(&self, other: &Self) -> Result<f64> {
         // Same point-pair shortcut as `Shape::distance`: a pair of points
         // needs no parts machinery at all.
         if let (Shape::Point(a), Shape::Point(b)) = (self.shape(), other.shape()) {
@@ -59,7 +59,7 @@ impl PreparedPlan {
     }
 
     /// Planar `dwithin` on cached prepared state — see [`Self::distance`].
-    pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
+    pub(crate) fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
         if distance == f64::INFINITY {
             return Ok(!self.shape().is_empty() && !other.shape().is_empty());
         }
@@ -203,11 +203,10 @@ impl PreparedPlan {
     /// state — the packed point-array lane: parts resolve once and every
     /// probe's tree descent reuses one traversal stack (no per-row handle,
     /// no per-row allocation).
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
-    )]
-    pub fn distance_points(&self, probes: impl Iterator<Item = (f64, f64)>) -> Result<Vec<f64>> {
+    pub(crate) fn distance_points(
+        &self,
+        probes: impl Iterator<Item = (f64, f64)>,
+    ) -> Result<Vec<f64>> {
         let tester = self.point_tester()?;
         let parts = self.distance_parts()?;
         let parts_squared_safe = squared_space_safe(parts);
@@ -297,24 +296,9 @@ impl PreparedPlan {
         Ok(best)
     }
 
-    /// Planar `dwithin` from one point probe, on cached prepared state —
-    /// boundary-inclusive, area-interior aware (a point inside a polygon is
-    /// at distance 0 even though every ring edge is farther). See
-    /// [`Self::dwithin_points`] for the batch lane.
-    pub fn dwithin_point(&self, point: Point, distance: f64) -> Result<bool> {
-        if distance == f64::INFINITY {
-            return Ok(!self.shape().is_empty());
-        }
-        self.dwithin_point_with(point, distance, &mut Vec::new())
-    }
-
-    /// Per-row planar `dwithin` from an XY probe stream — the batch sibling
-    /// of [`Self::dwithin_point`], one shared traversal stack across rows.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the probe stream is consumed once and its concrete iterator type is not part of the API"
-    )]
-    pub fn dwithin_points(
+    /// Per-row planar `dwithin` from an XY probe stream, with one shared
+    /// traversal stack across rows.
+    pub(crate) fn dwithin_points(
         &self,
         probes: impl Iterator<Item = (f64, f64)>,
         distance: f64,
@@ -347,27 +331,6 @@ impl PreparedPlan {
             crate::try_push_vec(&mut matches, matched)?;
         }
         Ok(matches)
-    }
-
-    /// One probe's `dwithin` over a caller-provided (reused) traversal stack.
-    fn dwithin_point_with(
-        &self,
-        point: Point,
-        distance: f64,
-        stack: &mut Vec<u32>,
-    ) -> Result<bool> {
-        let tester = self.point_tester()?;
-        let parts = self.distance_parts()?;
-        Self::dwithin_point_with_resolved(
-            self.shape(),
-            point,
-            distance,
-            tester,
-            parts,
-            squared_space_safe(parts),
-            parts.bvh(),
-            stack,
-        )
     }
 
     fn dwithin_point_with_resolved(
@@ -522,7 +485,7 @@ impl PreparedPlan {
     /// Planar `intersects` on cached prepared state — the facet trees built
     /// by any earlier distance/dwithin call drive the crossing test, so
     /// repeated predicates on the same operands never rebuild an index.
-    pub fn intersects(&self, other: &Self) -> Result<bool> {
+    pub(crate) fn intersects(&self, other: &Self) -> Result<bool> {
         let (Some(left_bounds), Some(right_bounds)) = (self.bounds(), other.bounds()) else {
             return Ok(false);
         };

@@ -92,7 +92,7 @@ impl PyCoordinates {
                             return ControlFlow::Continue(());
                         }
                         next += stride;
-                        match self.tuple(py, coord.point) {
+                        match self.tuple(py, coord) {
                             Ok(tuple) => match crate::try_push(&mut tuples, tuple) {
                                 Ok(()) if tuples.len() == count => ControlFlow::Break(()),
                                 Ok(()) => ControlFlow::Continue(()),
@@ -120,8 +120,7 @@ impl PyCoordinates {
                 let point = self
                     .view
                     .point_at(index)
-                    .expect("index already range-checked")
-                    .point;
+                    .expect("index already range-checked");
                 self.tuple(py, point)
             },
         }
@@ -446,15 +445,13 @@ impl PyCoordinates {
     /// bool
     pub fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         use std::ops::ControlFlow;
-        let found = self
-            .view
-            .try_for_each_point(
-                &mut |coord| match self.visible_equals(py, coord.point, item) {
-                    Ok(true) => ControlFlow::Break(Ok(true)),
-                    Ok(false) => ControlFlow::Continue(()),
-                    Err(err) => ControlFlow::Break(Err(err)),
-                },
-            );
+        let found = self.view.try_for_each_point(&mut |coord| match self
+            .visible_equals(py, coord, item)
+        {
+            Ok(true) => ControlFlow::Break(Ok(true)),
+            Ok(false) => ControlFlow::Continue(()),
+            Err(err) => ControlFlow::Break(Err(err)),
+        });
         match found {
             ControlFlow::Break(result) => result,
             ControlFlow::Continue(()) => Ok(false),
@@ -507,7 +504,7 @@ impl PyCoordinates {
                 return ControlFlow::Break(Ok(None));
             }
             if position >= start {
-                match self.visible_equals(py, coord.point, value) {
+                match self.visible_equals(py, coord, value) {
                     Ok(true) => return ControlFlow::Break(Ok(Some(position))),
                     Ok(false) => {},
                     Err(err) => return ControlFlow::Break(Err(err)),
@@ -545,18 +542,16 @@ impl PyCoordinates {
         // Sequential run walk via the shared visible-equality abstraction —
         // membership / index / count cannot drift from iteration.
         let mut count = 0_usize;
-        let walk = self
-            .view
-            .try_for_each_point(
-                &mut |coord| match self.visible_equals(py, coord.point, value) {
-                    Ok(true) => {
-                        count += 1;
-                        std::ops::ControlFlow::Continue(())
-                    },
-                    Ok(false) => std::ops::ControlFlow::Continue(()),
-                    Err(err) => std::ops::ControlFlow::Break(err),
-                },
-            );
+        let walk = self.view.try_for_each_point(&mut |coord| match self
+            .visible_equals(py, coord, value)
+        {
+            Ok(true) => {
+                count += 1;
+                std::ops::ControlFlow::Continue(())
+            },
+            Ok(false) => std::ops::ControlFlow::Continue(()),
+            Err(err) => std::ops::ControlFlow::Break(err),
+        });
         match walk {
             std::ops::ControlFlow::Break(err) => Err(err),
             std::ops::ControlFlow::Continue(()) => Ok(count),

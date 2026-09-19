@@ -1,10 +1,8 @@
 use std::sync::Arc;
 
-use crate::array::{GeometryArrayStorage, polygon_row_point_membership, row_bounds};
+use crate::array::{GeometryArrayStorage, row_bounds};
 use crate::error::Result;
-use crate::geometry::{
-    Bounds, CoordSeq, CoordWindow, Dimension, LineSeq, Point, PreparedPlan, Shape,
-};
+use crate::geometry::{Bounds, CoordSeq, CoordWindow, LineSeq, Point, PreparedPlan, Shape};
 
 #[derive(Clone, Copy)]
 pub(crate) struct VertexWindow {
@@ -13,7 +11,7 @@ pub(crate) struct VertexWindow {
 }
 
 #[derive(Clone, Copy)]
-pub enum ShapeRow<'a> {
+pub(crate) enum ShapeRow<'a> {
     /// Persistent prepared handle (index boxed rows, scalar geometry).
     Handle(&'a Arc<PreparedPlan>),
     /// Array-owned mixed storage: plain shape; prepared state lives in the
@@ -46,11 +44,7 @@ impl<'a> ShapeRow<'a> {
         Shape::LineString(LineSeq::row_view(coords, window))
     }
 
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
-    )]
-    pub fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> crate::error::Result<R> {
+    pub(crate) fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> crate::error::Result<R> {
         match self {
             Self::Handle(handle) => Ok(f(handle.shape())),
             Self::Shape(shape) => Ok(f(shape)),
@@ -63,11 +57,7 @@ impl<'a> ShapeRow<'a> {
         }
     }
 
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "the callback is invoked once and never named or stored, so a generic identifier adds no meaning"
-    )]
-    pub fn try_with_shape<R, E>(self, f: impl FnOnce(&Shape) -> Result<R, E>) -> Result<R, E>
+    pub(crate) fn try_with_shape<R, E>(self, f: impl FnOnce(&Shape) -> Result<R, E>) -> Result<R, E>
     where
         E: From<crate::error::Error>,
     {
@@ -76,7 +66,7 @@ impl<'a> ShapeRow<'a> {
             .and_then(|result| result)
     }
 
-    pub fn quick_bounds(self) -> Option<Bounds> {
+    pub(crate) fn quick_bounds(self) -> Option<Bounds> {
         match self {
             Self::Handle(handle) => handle.bounds(),
             Self::Shape(shape) => shape.bounds(),
@@ -96,39 +86,6 @@ impl<'a> ShapeRow<'a> {
                 };
                 ShapeRow::Line(coords, window.start, window.end).quick_bounds()
             },
-        }
-    }
-    /// This row's topological dimension — `0` point, `1` curve, `2` areal.
-    pub fn topological_dimension(self) -> Dimension {
-        match self {
-            Self::Handle(handle) => handle.shape().topological_dimension(),
-            Self::Shape(shape) => shape.topological_dimension(),
-            Self::Point(_) => Dimension::Point,
-            Self::Line(..) => Dimension::Curve,
-            Self::Rings(..) => Dimension::Surface,
-        }
-    }
-
-    pub fn contains_point(self, point: Point) -> crate::error::Result<bool> {
-        self.point_membership::<false>(point)
-    }
-
-    pub fn covers_point(self, point: Point) -> crate::error::Result<bool> {
-        self.point_membership::<true>(point)
-    }
-
-    fn point_membership<const BOUNDARY: bool>(self, point: Point) -> crate::error::Result<bool> {
-        match self {
-            Self::Rings(coords, ring_offsets, start, end) => {
-                polygon_row_point_membership::<BOUNDARY>(coords, ring_offsets, start..end, point)
-            },
-            _ => self.try_with_shape(|shape| {
-                if BOUNDARY {
-                    shape.covers_point(point)
-                } else {
-                    shape.contains_point(point)
-                }
-            }),
         }
     }
 }

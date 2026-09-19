@@ -4,8 +4,8 @@ use crate::error::{ResourceError, Result};
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring,
-    Shape, line_length_3d,
+    HasM, HasZ, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Shape,
+    line_length_3d,
 };
 
 impl Shape {
@@ -447,23 +447,6 @@ impl Shape {
                 _,
             ) => (index == 0).then(|| self.clone()),
             Self::Empty(..) => None,
-        }
-    }
-
-    /// Visit every polygon ring (shells then holes, per polygon) as
-    /// borrowed columns; non-polygonal shapes have none.
-    #[expect(
-        clippy::impl_trait_in_params,
-        reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
-    )]
-    pub fn for_each_ring(&self, mut visit: impl FnMut(&Ring)) {
-        match self {
-            Self::Polygon(polygon) => polygon.rings().for_each(&mut visit),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .flat_map(Polygon::rings)
-                .for_each(&mut visit),
-            _ => {},
         }
     }
 

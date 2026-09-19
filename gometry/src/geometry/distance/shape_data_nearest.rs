@@ -15,7 +15,7 @@ impl PreparedPlan {
     /// mixes Z/M presence across chains (the packed columns cannot
     /// reconstruct faithful ordinates there). `None` only when an operand is
     /// empty (the surfaces map it to the output-type EMPTY sentinel).
-    pub fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
+    pub(crate) fn nearest_points(&self, other: &Self) -> Result<Option<(Point, Point)>> {
         // Disjoint boxes cannot intersect: the witness scans only run when
         // the bounds overlap (see `distance`). The pre-parts containment
         // probe answers the common area-overlap case before any staging.
