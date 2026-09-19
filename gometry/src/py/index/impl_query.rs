@@ -10,7 +10,8 @@ use crate::py::index::{
     PyGeometryArray, PyResult, PySpatialIndex, RowMatches, Shape, ShapeData, ShapeRow,
     bounds_envelope, crs, crs_label, epoch_label, global_geographic_candidate_envelope,
     index_envelopes, pair_distance_geodesic, pair_dwithin_geodesic, pair_dwithin_planar,
-    point_from_bounds, retain_row, sort_unique_row_ids, topology_scalar_pair,
+    point_from_bounds, retain_row, sort_unique_row_ids, topology_pair_after_gates,
+    topology_scalar_pair,
 };
 use crate::{CsrBuilder, try_push_vec};
 
@@ -25,7 +26,7 @@ fn geographic_keep(
     )? {
         return Ok(verdict);
     }
-    Ok(topology_scalar_pair(
+    Ok(topology_pair_after_gates(
         spec,
         &PreparedTopologyPair::Geographic {
             left: *query,
@@ -157,7 +158,7 @@ impl PySpatialIndex {
                                 return Ok(verdict);
                             }
                             let data = products.prepared(idx)?;
-                            Ok(topology_scalar_pair(
+                            Ok(topology_pair_after_gates(
                                 &spec,
                                 &PreparedTopologyPair::Cartesian {
                                     left: &query,
@@ -1005,7 +1006,7 @@ impl PySpatialIndex {
                             return Ok(verdict);
                         }
                         let data = products.prepared(idx)?;
-                        Ok(topology_scalar_pair(
+                        Ok(topology_pair_after_gates(
                             &spec,
                             &PreparedTopologyPair::Cartesian {
                                 left: &query_plan,
@@ -1151,7 +1152,7 @@ impl PySpatialIndex {
                     return Ok(verdict);
                 }
                 let data = products.prepared(idx)?;
-                Ok(topology_scalar_pair(
+                Ok(topology_pair_after_gates(
                     &spec,
                     &PreparedTopologyPair::Cartesian {
                         left: shape,
@@ -1340,7 +1341,7 @@ impl PySpatialIndex {
                                 return Ok(verdict);
                             }
                             let data = index_products.prepared(idx)?;
-                            Ok(topology_scalar_pair(
+                            Ok(topology_pair_after_gates(
                                 spec,
                                 &PreparedTopologyPair::Cartesian {
                                     left: &query,

@@ -121,7 +121,7 @@ pub(crate) use predicates::{
     contains_xy, covered_by, covers, crosses, disjoint, distance, distance_3d, dwithin, equals,
     equals_exact, equals_identical, frechet_distance, hausdorff_distance, intersects,
     intersects_xy, nearest_points, overlaps, relate, relate_pattern, scalar_vs_shapes,
-    shortest_line, topology_scalar_pair, touches, within,
+    shortest_line, topology_pair_after_gates, topology_scalar_pair, touches, within,
 };
 mod py;
 mod render;

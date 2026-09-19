@@ -368,14 +368,13 @@ impl PredicateSpec {
             Predicate::Disjoint => false,
             _ => return Ok(None),
         };
-        let rectangle = |operand: GateOperand<'_>, bounds: Bounds| {
-            operand.row.try_with_shape(|shape| {
-                Ok::<_, crate::error::Error>(crate::geometry::is_axis_aligned_rectangle(
-                    shape, bounds,
-                ))
-            })
-        };
-        Ok((rectangle(*left, left_bounds)? && rectangle(*right, right_bounds)?).then_some(meeting))
+        if left.rectangle == Some(false) || right.rectangle == Some(false) {
+            return Ok(None);
+        }
+        Ok(
+            (left.is_rectangle(left_bounds)? && right.is_rectangle(right_bounds)?)
+                .then_some(meeting),
+        )
     }
 }
 
@@ -392,6 +391,9 @@ pub(crate) struct GateOperand<'a> {
     kind: GeometryKind,
     bounds: Option<Bounds>,
     bounds_sound: bool,
+    /// Whether the operand is an axis-aligned rectangle, once settled for an
+    /// operand that stays fixed across a call.
+    rectangle: Option<bool>,
 }
 
 impl<'a> GateOperand<'a> {
@@ -405,6 +407,7 @@ impl<'a> GateOperand<'a> {
             kind,
             bounds,
             bounds_sound: true,
+            rectangle: None,
         }
     }
 
@@ -419,7 +422,31 @@ impl<'a> GateOperand<'a> {
             kind,
             bounds: plan.bounds(),
             bounds_sound: prepared.bounds_sound(),
+            rectangle: None,
         }
+    }
+
+    /// Gate facts of an operand every pair of a call shares, with its
+    /// rectangle fact settled once.
+    pub(crate) fn fixed(shape: &'a Shape, bounds: Option<Bounds>) -> Self {
+        let mut operand = Self::cartesian(ShapeRow::Shape(shape), bounds);
+        operand.rectangle = Some(
+            operand
+                .bounds
+                .is_some_and(|bounds| crate::geometry::is_axis_aligned_rectangle(shape, bounds)),
+        );
+        operand
+    }
+
+    fn is_rectangle(&self, bounds: Bounds) -> crate::error::Result<bool> {
+        if let Some(known) = self.rectangle {
+            return Ok(known);
+        }
+        if self.kind != GeometryKind::Polygon {
+            return Ok(false);
+        }
+        self.row
+            .try_with_shape(|shape| Ok(crate::geometry::is_axis_aligned_rectangle(shape, bounds)))
     }
 
     /// Whether this operand's coordinate box means what it says, so a caller
@@ -454,8 +481,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
     let mut row_operation = array.map(PyGeometryArray::row_operation);
     match domain {
         TopologyDomain::Cartesian => {
-            let scalar_operand =
-                GateOperand::cartesian(ShapeRow::Shape(scalar.shape()), scalar_bounds);
+            let scalar_operand = GateOperand::fixed(scalar.shape(), scalar_bounds);
             let gate = |index: usize, row: ShapeRow<'_>| -> crate::error::Result<Option<bool>> {
                 let row_operand = GateOperand::cartesian(
                     row,
@@ -534,7 +560,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                             right: scalar,
                         }
                     };
-                    topology_scalar_pair(spec, &operands)
+                    topology_pair_after_gates(spec, &operands)
                 };
                 try_push_vec(&mut results, evaluate().map_err(|error| (index, error))?)
                     .map_err(|error| (index, error))?;
@@ -671,6 +697,15 @@ pub(crate) fn topology_scalar_pair(
     {
         return Ok(verdict);
     }
+    topology_pair_after_gates(spec, operands)
+}
+
+/// The pair decision once a caller's pre-topology gates have declined: the
+/// exact location of a point operand, otherwise the relation matrix.
+pub(crate) fn topology_pair_after_gates(
+    spec: &PredicateSpec,
+    operands: &PreparedTopologyPair<'_>,
+) -> crate::error::Result<bool> {
     if let Some(verdict) = local_point_predicate(spec, operands)? {
         return Ok(verdict);
     }
