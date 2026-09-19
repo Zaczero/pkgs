@@ -1609,3 +1609,28 @@ fn earcut_holes_bridge_succeeds_for_a_1000_vertex_shell() {
 fn earcut_holes_bridge_succeeds_for_a_2000_vertex_shell() {
     assert_offset_hole_shell_bridges(2_000);
 }
+
+/// The closing edge crosses the second edge: the boundary constraints cross,
+/// which the constrained triangulation reports instead of walking forever.
+#[test]
+fn constrained_triangulation_rejects_crossing_boundaries() {
+    let shape = Shape::Polygon(polygon(
+        vec![
+            xy(2.290_624_926_619_315_3, 9.562_313_792_007_403),
+            xy(2.224_421_741_403_499, 9.329_885_065_819_159),
+            xy(3.747_956_967_035_721_6, 9.184_604_808_378_285),
+            xy(4.010_448_586_307_951, 9.297_996_312_041_94),
+            xy(3.967_995_534_117_932_3, 7.729_577_524_518_278),
+            xy(4.340_816_540_301_225, 6.815_248_837_539_205),
+            xy(2.290_624_926_619_315_3, 9.562_313_792_007_403),
+        ],
+        vec![],
+    ));
+    let mut budget = ExpansionBudget::new("test", "crossing boundaries");
+    let result =
+        shape.constrained_delaunay_vertices_budgeted(CdtRefinement::default(), &mut budget);
+    assert!(
+        matches!(&result, Err(error) if matches!(error.kind(), ErrorKind::Geometry(_))),
+        "{result:?}"
+    );
+}

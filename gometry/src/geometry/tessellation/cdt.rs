@@ -325,7 +325,6 @@ impl ConstrainedMesh {
         crate::try_reserve_vec(&mut crossing, self.mesh.triangle_count())?;
         let mut start = None;
         for slot in self.mesh.outgoing(u)? {
-            let t = slot / 3;
             let a = self.mesh.triangles[next_halfedge(slot)];
             let b = self.mesh.triangles[prev_halfedge(slot)];
             // Segment u->v exits triangle (u, a, b) through edge a->b when v
@@ -355,7 +354,6 @@ impl ConstrainedMesh {
             }
             if sa == ExactSign::Positive && sb == ExactSign::Negative {
                 start = Some(next_halfedge(slot)); // the edge a -> b
-                let _ = t;
                 break;
             }
         }
@@ -363,21 +361,34 @@ impl ConstrainedMesh {
             unreachable!("a segment between two mesh vertices leaves the start fan somewhere");
         };
         // March across triangles: `edge` is the crossed edge of the current
-        // triangle; enter its twin's triangle and find the next exit.
+        // triangle, running from its endpoint right of `u -> v` to the one on
+        // the left; enter its twin's triangle and find the next exit. A
+        // straight segment enters each triangle at most once.
         loop {
-            crate::try_push_vec(&mut crossing, edge)?;
+            if self.constrained[edge] {
+                return Err(GeometryErrorKind::triangulation(
+                    "constrained triangulation boundaries cross",
+                ));
+            }
             let twin = self.mesh.halfedges[edge];
-            debug_assert_ne!(
-                twin, EMPTY,
-                "a constraint inside the hull never reaches the hull"
-            );
+            if twin == EMPTY || crossing.len() == self.mesh.triangle_count() {
+                return Err(GeometryErrorKind::triangulation(
+                    "constraint walk left the triangulation",
+                ));
+            }
+            crate::try_push_vec(&mut crossing, edge)?;
             let apex = self.mesh.triangles[prev_halfedge(twin)];
             if apex == v {
                 break;
             }
             let pa = xy(apex);
             let s = exact::orient2d(pu, pv, pa);
-            if s == ExactSign::Zero && between(pu, pv, pa) {
+            if s == ExactSign::Zero {
+                if !between(pu, pv, pa) {
+                    return Err(GeometryErrorKind::triangulation(
+                        "constraint walk met a collinear vertex outside the constraint",
+                    ));
+                }
                 // Passes exactly through `apex`: constrain u->apex by flipping
                 // what we have so far, then continue from apex.
                 self.flip_until_clear(xy, u, apex, crossing)?;
@@ -390,11 +401,14 @@ impl ConstrainedMesh {
                 self.insert_constraint(xy, apex, v, source, split, hi)?;
                 return Ok(());
             }
+            // The twin runs left to right, so its next edge leaves the right
+            // endpoint and its previous edge enters the left one. An apex on
+            // the left makes the next edge the crossed one; on the right, the
+            // previous.
             edge = if s == ExactSign::Positive {
-                // apex is left of u->v: exit through edge (twin.next: apex-side)
-                prev_halfedge(twin)
-            } else {
                 next_halfedge(twin)
+            } else {
+                prev_halfedge(twin)
             };
         }
         self.flip_until_clear(xy, u, v, crossing)?;
@@ -447,7 +461,7 @@ impl ConstrainedMesh {
                 try_insert_front(&mut crossing, edge)?;
                 continue;
             }
-            let new_edge = self.mesh.flip(edge);
+            let new_edge = self.mesh.flip_carrying(edge, &mut self.constrained, false);
             let (na, nb) = (
                 self.mesh.triangles[new_edge],
                 self.mesh.triangles[next_halfedge(new_edge)],
@@ -1035,6 +1049,77 @@ mod tests {
         );
         let slot = mesh.mesh.edge_slot(0, 2).unwrap().unwrap();
         assert!(mesh.constrained[slot]);
+    }
+
+    /// The constraint flags mark exactly the constrained vertex pairs, on both
+    /// halves of each edge.
+    fn assert_flags_match(mesh: &ConstrainedMesh, edges: &[[usize; 2]]) {
+        for e in 0..mesh.mesh.halfedges.len() {
+            if !mesh.mesh.alive(e / 3) {
+                continue;
+            }
+            let pair = ordered(
+                mesh.mesh.triangles[e],
+                mesh.mesh.triangles[next_halfedge(e)],
+            );
+            let expected = edges.iter().any(|&[u, v]| ordered(u, v) == pair);
+            assert_eq!(mesh.constrained[e], expected, "slot {e} pair {pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_constraint_crossing_many_edges_becomes_an_edge() {
+        // Points alternate above and below the axis, so the Delaunay edges
+        // between them cross the constraint 0-1 many times.
+        let mut xy = vec![(0.0, 0.0), (12.0, 0.0)];
+        for step in 1..12 {
+            let side = if step % 2 == 0 { 1.0 } else { -1.0 };
+            xy.push((f64::from(step), side * (0.5 + 0.1 * f64::from(step % 3))));
+        }
+        let pts = points(&xy);
+        let mesh = ConstrainedMesh::build(&pts, &[[0, 1]]).unwrap();
+        assert_flags_match(&mesh, &[[0, 1]]);
+    }
+
+    #[test]
+    fn flips_carry_earlier_constraint_flags() {
+        let pts = points(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (2.0, 8.0),
+        ]);
+        let edges = [[0, 1], [1, 2], [2, 3], [3, 0], [0, 2]];
+        let mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
+        assert_flags_match(&mesh, &edges);
+    }
+
+    #[test]
+    fn crossing_constraints_are_an_error() {
+        let pts = points(&[
+            (0.0, 0.0),
+            (10.0, 10.0),
+            (10.0, 0.0),
+            (0.0, 10.0),
+            (5.0, 1.0),
+        ]);
+        let result = ConstrainedMesh::build_with_sources(
+            &pts,
+            &(0..pts.len()).collect::<Vec<_>>(),
+            &[[0, 1], [2, 3]]
+                .iter()
+                .enumerate()
+                .map(|(id, &[start_site, end_site])| SourceConstraint {
+                    id,
+                    start: pts[start_site],
+                    end: pts[end_site],
+                    start_site,
+                    end_site,
+                })
+                .collect::<Vec<_>>(),
+        );
+        assert!(result.is_err());
     }
 
     #[test]

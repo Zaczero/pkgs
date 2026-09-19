@@ -412,6 +412,28 @@ impl Mesh {
         3 * u + 1
     }
 
+    /// [`Self::flip`] that moves a per-halfedge side table with the four outer
+    /// edges it relocates; both halves of the new diagonal take `diagonal`.
+    pub(super) fn flip_carrying<T: Copy>(
+        &mut self,
+        e: usize,
+        side: &mut [T],
+        diagonal: T,
+    ) -> usize {
+        let f = self.halfedges[e];
+        let outer = [
+            side[next_halfedge(f)],
+            side[prev_halfedge(e)],
+            side[next_halfedge(e)],
+            side[prev_halfedge(f)],
+        ];
+        let new_edge = self.flip(e);
+        let (t, u) = (3 * (e / 3), 3 * (f / 3));
+        side[t..t + 3].copy_from_slice(&[outer[0], diagonal, outer[1]]);
+        side[u..u + 3].copy_from_slice(&[outer[2], diagonal, outer[3]]);
+        new_edge
+    }
+
     /// Walk from triangle `start` toward `p` by exact orientation. Every
     /// site the Delaunay driver inserts is interior to the seed hull, so the
     /// walk never reaches a hull edge.
