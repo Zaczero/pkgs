@@ -1,8 +1,9 @@
 //! Full-binary64 orientation sign.
 //!
-//! The fast filter first applies the standard determinant error bound, then
-//! rounds an outward interval for ambiguous lanes. Unresolved cases fall back
-//! to an exact sum of products of the original coordinates.
+//! One ladder serves every caller: Shewchuk's A-stage filter settles
+//! ordinary determinants, an identity tie settles axis-aligned collinearity,
+//! an outward interval settles most of the rest, and six exact products of
+//! the original coordinates decide what remains.
 
 use super::CCW_ERRBOUND_A;
 use crate::geometry::Orientation;
@@ -10,9 +11,12 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::tessellation::exact::Interval;
 
-/// Exact sign of the stored-binary64 orientation after the caller's fast path
-/// has declined. The outward interval proves ordinary cases; six exact raw
-/// coordinate products resolve its remaining full-range cases.
+/// Exact sign of the orientation of `c` relative to `a -> b` over the stored
+/// binary64 coordinates.
+#[expect(
+    clippy::float_cmp,
+    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
+)]
 pub(in crate::geometry) fn stored_orientation_sign(
     ax: f64,
     ay: f64,
@@ -21,6 +25,21 @@ pub(in crate::geometry) fn stored_orientation_sign(
     cx: f64,
     cy: f64,
 ) -> ExactSign {
+    // The minimum-normal term covers underflow; an overflowed or NaN
+    // determinant fails the comparison and continues down the ladder.
+    let left = (bx - ax) * (cy - ay);
+    let right = (by - ay) * (cx - ax);
+    let det = left - right;
+    if det.abs() > ((left.abs() + right.abs()) + f64::MIN_POSITIVE) * CCW_ERRBOUND_A {
+        return if det > 0.0 {
+            ExactSign::Positive
+        } else {
+            ExactSign::Negative
+        };
+    }
+    if (ax == bx && ax == cx) || (ay == by && ay == cy) {
+        return ExactSign::Zero;
+    }
     let exact = Interval::exact;
     let (bax, bay) = (exact(bx).sub(exact(ax)), exact(by).sub(exact(ay)));
     let (cax, cay) = (exact(cx).sub(exact(ax)), exact(cy).sub(exact(ay)));
@@ -46,33 +65,7 @@ pub(in crate::geometry) fn stored_orientation_sign(
     }
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "an exact predicate's degeneracy test: these operands are compared for identity, not proximity, and a tolerance would make the predicate inexact"
-)]
 pub(super) fn orientation_xy(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> Orientation {
-    // Certify ordinary finite coordinates with the first Shewchuk filter before
-    // constructing outward intervals. Overflow, underflow, and near-collinear
-    // cases continue through the complete binary64 path below.
-    let (bax, bay) = (bx - ax, by - ay);
-    let (cax, cay) = (cx - ax, cy - ay);
-    let left = bax * cay;
-    let right = bay * cax;
-    let det = left - right;
-    let magnitude = left.abs() + right.abs();
-    if det.is_finite()
-        && magnitude.is_finite()
-        && det.abs() > (magnitude + f64::MIN_POSITIVE) * CCW_ERRBOUND_A
-    {
-        return if det > 0.0 {
-            Orientation::CounterClockwise
-        } else {
-            Orientation::Clockwise
-        };
-    }
-    if (ax == bx && ax == cx) || (ay == by && ay == cy) {
-        return Orientation::Collinear;
-    }
     match stored_orientation_sign(ax, ay, bx, by, cx, cy) {
         ExactSign::Negative => Orientation::Clockwise,
         ExactSign::Zero => Orientation::Collinear,
