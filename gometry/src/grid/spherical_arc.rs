@@ -3547,7 +3547,10 @@ fn certified_vector_longitude(point: Vec3Bound) -> Option<Bound> {
     if !proposal.is_finite() {
         return None;
     }
-    for distance in [1_u16, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096] {
+    // d(atan2(y, x)) = (x dy - y dx) / (x^2 + y^2) sizes the first rung
+    // that could hold the enclosure; the sign tests below still decide.
+    let spread = (x.abs() * point.y.width() + y.abs() * point.x.width()) / (x * x + y * y);
+    for distance in ladder_distances(proposal, spread) {
         let (Some(lower), Some(upper)) = (
             adjacent_float(proposal, -1, distance),
             adjacent_float(proposal, 1, distance),
@@ -3637,7 +3640,8 @@ fn certified_vector_latitude(point: Vec3Bound) -> Option<Bound> {
     if !proposal.is_finite() {
         return None;
     }
-    for distance in [1_u16, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096] {
+    let spread = (h * point.z.width() + z.abs() * horizontal.width()) / (h * h + z * z);
+    for distance in ladder_distances(proposal, spread) {
         let (Some(lower), Some(upper)) = (
             adjacent_float(proposal, -1, distance),
             adjacent_float(proposal, 1, distance),
@@ -3703,6 +3707,23 @@ fn certified_vector_latitude(point: Vec3Bound) -> Option<Bound> {
         }
     }
     latitude_bisection_bracket(point, horizontal)
+}
+
+/// Distances, in floats around `proposal`, of the inverse ladder's rungs:
+/// powers of two from the first one at least the enclosure's estimated
+/// `spread` in radians, while a rung stays narrower than a quadrant.
+/// Narrower rungs could not hold the enclosure; wider ones are the bisection's
+/// job.
+fn ladder_distances(proposal: f64, spread: f64) -> impl Iterator<Item = u64> {
+    let ulp = ulp(proposal).unwrap_or(f64::INFINITY);
+    let needed = (spread / ulp).max(1.0);
+    let first = if needed < (1_u64 << 62) as f64 {
+        (needed.ceil() as u64).next_power_of_two()
+    } else {
+        u64::MAX
+    };
+    std::iter::successors(Some(first), |&rung| rung.checked_mul(2))
+        .take_while(move |&rung| (rung as f64) * ulp < std::f64::consts::FRAC_PI_2)
 }
 
 /// The specified inverse ladder starts at 1,2,...,64 neighbouring floats.
@@ -3781,7 +3802,7 @@ fn bisect_inverse_bracket(
     Bound::new(lower.lo, upper.hi)
 }
 
-fn adjacent_float(mut value: f64, direction: i8, count: u16) -> Option<f64> {
+fn adjacent_float(mut value: f64, direction: i8, count: u64) -> Option<f64> {
     const SIGN: u64 = 1_u64 << 63;
     if !value.is_finite() || count == 0 {
         return (count == 0).then_some(value);
@@ -3806,8 +3827,8 @@ fn adjacent_float(mut value: f64, direction: i8, count: u16) -> Option<f64> {
         bits | SIGN
     };
     let rank = match direction {
-        -1 => rank.checked_sub(u64::from(steps))?,
-        1 => rank.checked_add(u64::from(steps))?,
+        -1 => rank.checked_sub(steps)?,
+        1 => rank.checked_add(steps)?,
         _ => return None,
     };
     let bits = if rank & SIGN == 0 {
@@ -4027,9 +4048,6 @@ fn sin_cos_small(input: Bound) -> Option<(Ball, Ball)> {
     Some((Ball::new(sin, radius)?, Ball::new(cos, radius)?))
 }
 
-/// Bounded high-degree fallback for a wide, but still uniquely reduced,
-/// interval.  The next alternating term is included symmetrically, so this
-/// path remains a proof instead of a retry loop with a fitted tolerance.
 // Binary64 brackets of the large factorial denominators.  Writing the decimal
 // integers directly would quietly round them before division; the explicit
 // bits keep that fact visible.
@@ -4043,6 +4061,69 @@ const FACT_28: f64 = f64::from_bits(0x460E_C92D_D23D_6967);
 const FACT_29: f64 = f64::from_bits(0x465B_E651_8687_A785);
 const FACT_30: f64 = f64::from_bits(0x46AA_27EC_6E1F_2D0D);
 
+/// `k!` in binary64 for `k` in `2..=30`, each within half an ulp of the
+/// integer it denotes (exact through `18!`).
+const FACTORIALS: [f64; 29] = [
+    2.0,
+    6.0,
+    24.0,
+    120.0,
+    720.0,
+    5_040.0,
+    40_320.0,
+    362_880.0,
+    3_628_800.0,
+    39_916_800.0,
+    479_001_600.0,
+    6_227_020_800.0,
+    87_178_291_200.0,
+    1_307_674_368_000.0,
+    20_922_789_888_000.0,
+    355_687_428_096_000.0,
+    6_402_373_705_728_000.0,
+    121_645_100_408_832_000.0,
+    2_432_902_008_176_640_000.0,
+    51_090_942_171_709_440_000.0,
+    FACT_22,
+    FACT_23,
+    FACT_24,
+    FACT_25,
+    FACT_26,
+    FACT_27,
+    FACT_28,
+    FACT_29,
+    FACT_30,
+];
+
+/// Outward enclosures of `1/k!`: the neighbouring floats of the binary64
+/// `k!` enclose the integer, and each reciprocal is rounded outward.
+const RECIPROCAL_FACTORIALS: [Bound; 29] = {
+    let mut table = [Bound { lo: 0.0, hi: 0.0 }; 29];
+    let mut index = 0;
+    while index < FACTORIALS.len() {
+        let factorial = FACTORIALS[index];
+        table[index] = Bound {
+            lo: (1.0 / factorial.next_up()).next_down(),
+            hi: (1.0 / factorial.next_down()).next_up(),
+        };
+        index += 1;
+    }
+    table
+};
+
+/// `(-1)^(k/2) / k!` for the Taylor term of order `k`.
+fn taylor_coefficient(order: usize) -> Bound {
+    let value = RECIPROCAL_FACTORIALS[order - 2];
+    if (order / 2) % 2 == 1 {
+        value.neg()
+    } else {
+        value
+    }
+}
+
+/// Bounded high-degree fallback for a wide, but still uniquely reduced,
+/// interval.  The next alternating term is included symmetrically, so this
+/// path remains a proof instead of a retry loop with a fitted tolerance.
 fn sin_cos_fallback(input: Bound) -> Option<(Ball, Ball)> {
     // A uniquely chosen quadrant may still enclose an artificial +/-pi/4
     // reduction edge because every pi operation is outward.  The degree-27/28
@@ -4052,75 +4133,27 @@ fn sin_cos_fallback(input: Bound) -> Option<(Ball, Ball)> {
         return None;
     }
     let z = input.mul(input)?;
-    let sin = input.mul(alternating_horner(z, &[
-        (6.0, -1),
-        (120.0, 1),
-        (5_040.0, -1),
-        (362_880.0, 1),
-        (39_916_800.0, -1),
-        (6_227_020_800.0, 1),
-        (1_307_674_368_000.0, -1),
-        (355_687_428_096_000.0, 1),
-        (121_645_100_408_832_000.0, -1),
-        (51_090_942_171_709_440_000.0, 1),
-        (FACT_23, -1),
-        (FACT_25, 1),
-        (FACT_27, -1),
-    ])?)?;
-    let cos = alternating_horner(z, &[
-        (2.0, -1),
-        (24.0, 1),
-        (720.0, -1),
-        (40_320.0, 1),
-        (3_628_800.0, -1),
-        (479_001_600.0, 1),
-        (87_178_291_200.0, -1),
-        (20_922_789_888_000.0, 1),
-        (6_402_373_705_728_000.0, -1),
-        (2_432_902_008_176_640_000.0, 1),
-        (FACT_22, -1),
-        (FACT_24, 1),
-        (FACT_26, -1),
-        (FACT_28, 1),
-    ])?;
+    let sin = input.mul(alternating_horner(z, (3..28).step_by(2))?)?;
+    let cos = alternating_horner(z, (2..29).step_by(2))?;
     let absolute = input.abs();
-    let sin_remainder = integer_power_bound(absolute, 29)?.mul(reciprocal_factorial(FACT_29)?)?;
-    let cos_remainder = integer_power_bound(absolute, 30)?.mul(reciprocal_factorial(FACT_30)?)?;
+    let sin_remainder = integer_power_bound(absolute, 29)?.mul(RECIPROCAL_FACTORIALS[29 - 2])?;
+    let cos_remainder = integer_power_bound(absolute, 30)?.mul(RECIPROCAL_FACTORIALS[30 - 2])?;
     let sin = widen_symmetric(sin, sin_remainder)?;
     let cos = widen_symmetric(cos, cos_remainder)?;
     Some((Ball::from_bound(sin)?, Ball::from_bound(cos)?))
 }
 
-/// Horner evaluation of `1 + z*(s1/f1 + z*(s2/f2 + ...))`, with each
-/// factorial first enclosed as the exact integer it denotes.  This is the
-/// fallback's outward interval path, deliberately separate from B3's compact
-/// scalar-plus-radius fast filter.
-fn alternating_horner(z: Bound, terms: &[(f64, i8)]) -> Option<Bound> {
-    let (factorial, sign) = *terms.last()?;
-    let mut value = signed_reciprocal_factorial(factorial, sign)?;
-    for &(factorial, sign) in terms[..terms.len() - 1].iter().rev() {
-        value = signed_reciprocal_factorial(factorial, sign)?.add(z.mul(value)?)?;
+/// Horner evaluation of `1 + z*(c_a + z*(c_b + ...))` over the Taylor
+/// coefficients of the given orders. This is the fallback's outward interval
+/// path, deliberately separate from B3's compact scalar-plus-radius fast
+/// filter.
+fn alternating_horner(z: Bound, orders: impl DoubleEndedIterator<Item = usize>) -> Option<Bound> {
+    let mut orders = orders.rev();
+    let mut value = taylor_coefficient(orders.next()?);
+    for order in orders {
+        value = taylor_coefficient(order).add(z.mul(value)?)?;
     }
     Bound::exact(1.0)?.add(z.mul(value)?)
-}
-
-fn signed_reciprocal_factorial(factorial: f64, sign: i8) -> Option<Bound> {
-    let value = reciprocal_factorial(factorial)?;
-    match sign {
-        1 => Some(value),
-        -1 => Some(value.neg()),
-        _ => None,
-    }
-}
-
-fn reciprocal_factorial(factorial: f64) -> Option<Bound> {
-    if !factorial.is_finite() || factorial <= 0.0 {
-        return None;
-    }
-    // The neighbouring floats enclose the integer factorial even once it is
-    // no longer exactly representable as binary64.  Reciprocal division is
-    // then outward through Bound::div.
-    Bound::exact(1.0)?.div(Bound::new(factorial.next_down(), factorial.next_up())?)
 }
 
 fn integer_power_bound(mut base: Bound, mut exponent: u8) -> Option<Bound> {
