@@ -370,7 +370,7 @@ pub(crate) fn try_unary_packed_array(
             Some(array.quantize_unary_packed(py, *precision))
         },
         (Operation::ClipByRect, PackedUnary::ClipByRect { rect, domain }) => {
-            Some(array.clip_by_rect_unary_packed(py, *rect, false, *domain))
+            Some(array.clip_by_rect_unary_packed(py, *rect, *domain))
         },
         _ => None,
     }

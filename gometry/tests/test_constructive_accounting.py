@@ -106,6 +106,22 @@ def test_exact_clip_rounds_thin_crossing_zm_and_packed_missing_rows() -> None:
     assert result.is_missing.tolist() == [False, True]
 
 
+def test_packed_line_clip_matches_each_geometry_including_emptied_rows() -> None:
+    lines = [
+        [(0.2, 0.2), (0.8, 0.8)],
+        [(2.0, 2.0), (3.0, 3.0)],
+        [(-1.0, 0.5), (2.0, 0.5)],
+        [(0.5, 1.6), (1.6, 0.5)],
+        [(-1.0, 0.5), (0.5, 0.5), (0.5, 2.0), (0.7, 2.0), (0.7, 0.5), (2.0, 0.5)],
+    ]
+    expected = [repr(gm.LineString(line).clip_by_rect(0.0, 0.0, 1.0, 1.0)) for line in lines]
+    assert expected[1] == expected[3] == '<LINESTRING EMPTY>'
+    assert expected[4].startswith('<MULTILINESTRING')
+    for rows in (lines[:4], lines):
+        clipped = gm.line_strings(rows).clip_by_rect(0.0, 0.0, 1.0, 1.0)
+        assert [repr(row) for row in clipped] == expected[: len(rows)]
+
+
 def test_exact_clip_preserves_closed_boundaries_signed_zero_and_degenerate_rectangles() -> (
     None
 ):

@@ -576,7 +576,6 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         rect: Bounds,
-        drop: bool,
         domain: TopologyDomain,
     ) -> PyResult<Self> {
         if matches!(
@@ -596,9 +595,9 @@ impl PyGeometryArray {
         }
         self.map_shapes(|shape| {
             if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
-                Ok(shape.clip_by_rect_in_geographic_frame(rect, drop, shape.bounds(), frame)?)
+                Ok(shape.clip_by_rect_in_geographic_frame(rect, false, shape.bounds(), frame)?)
             } else {
-                Ok(shape.clip_by_rect(rect, drop)?)
+                Ok(shape.clip_by_rect(rect, false)?)
             }
         })
     }
