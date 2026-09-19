@@ -1173,13 +1173,9 @@ impl Shape {
     }
 
     /// Densify every segment chain by `fraction` (see `densify_points`) —
-    /// the re-segmentation behind continuous Hausdorff and the vertex
-    /// refinement behind discrete Fréchet. Caller validates `fraction` in `(0, 1]`.
-    pub fn densified(&self, fraction: f64) -> Result<Self> {
-        let mut budget = ExpansionBudget::new("densify", "fraction");
-        self.densified_budgeted(fraction, &mut budget)
-    }
-
+    /// the re-segmentation behind `segmentize(fraction=)` and the vertex
+    /// refinement behind discrete Fréchet. Caller validates `fraction` in
+    /// `(0, 1]` and names the budget after its public parameter.
     pub(crate) fn densified_budgeted(
         &self,
         fraction: f64,
@@ -1224,7 +1220,7 @@ impl Shape {
     /// [`SegmentPlacement`] first and use [`Self::segmentize_budgeted`].
     #[cfg(test)]
     pub fn segmentize(&self, max_segment_length: f64) -> Result<Self> {
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let output =
             self.segmentize_budgeted(max_segment_length, SegmentPlacement::Planar, &mut budget)?;
         crate::geometry::verify_planar_segmentize_shape(&output, max_segment_length)?;

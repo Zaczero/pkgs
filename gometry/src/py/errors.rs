@@ -166,7 +166,7 @@ pub(crate) fn crs_mismatch_error(
         ("right", Attr::OptionalStr(right)),
     ]);
     match index {
-        Some(index) => with_attrs(error, &[("index", Attr::Int(index as i64))]),
+        Some(index) => with_attrs(error, &[("index", Attr::Count(index))]),
         None => error,
     }
 }
@@ -185,7 +185,7 @@ pub(crate) fn epoch_mismatch_error(
         ("right", Attr::OptionalFloat(right)),
     ]);
     match index {
-        Some(index) => with_attrs(error, &[("index", Attr::Int(index as i64))]),
+        Some(index) => with_attrs(error, &[("index", Attr::Count(index))]),
         None => error,
     }
 }
@@ -210,10 +210,7 @@ pub(crate) fn invalid_geometry_issue(issue: &ValidationIssue, row: Option<usize>
             |row| format!("geometry {row} is invalid: {}", issue.detail),
         );
     let error = with_attrs(InvalidGeometryError::new_err(message), &[
-        (
-            "row",
-            Attr::OptionalInt(row.and_then(|value| i64::try_from(value).ok())),
-        ),
+        ("row", Attr::OptionalCount(row)),
         ("path", Attr::OptionalStr(issue.path.as_deref())),
         ("code", Attr::Str(issue.code)),
         ("detail", Attr::Str(&issue.detail)),
@@ -238,9 +235,11 @@ enum Attr<'a> {
     Str(&'a str),
     OptionalStr(Option<&'a str>),
     Int(i64),
+    /// A native count or index, carried exactly into the Python int.
+    Count(usize),
     Float(f64),
     OptionalFloat(Option<f64>),
-    OptionalInt(Option<i64>),
+    OptionalCount(Option<usize>),
 }
 
 /// Best-effort structured attributes on a fresh error: handlers read
@@ -256,7 +255,8 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
                 Attr::Int(i) => exception.setattr(*name, *i),
                 Attr::Float(f) => exception.setattr(*name, *f),
                 Attr::OptionalFloat(optional) => exception.setattr(*name, *optional),
-                Attr::OptionalInt(optional) => exception.setattr(*name, *optional),
+                Attr::Count(count) => exception.setattr(*name, *count),
+                Attr::OptionalCount(optional) => exception.setattr(*name, *optional),
             };
         }
     });
@@ -443,8 +443,8 @@ impl From<Error> for PyErr {
                 } => with_attrs(GeometryError::new_err(message), &[
                     ("operation", Attr::Str(operation)),
                     ("parameter", Attr::Str(parameter)),
-                    ("produced", Attr::Int(*produced as i64)),
-                    ("limit", Attr::Int(*limit as i64)),
+                    ("produced", Attr::Count(*produced)),
+                    ("limit", Attr::Count(*limit)),
                 ]),
                 // In-core projection failures → TransformError; an
                 // unsupported projected CRS is a CRS problem.
@@ -505,10 +505,7 @@ impl From<Error> for PyErr {
             // (`e.format` names which codec rejected it).
             ErrorKind::Io(error) => with_attrs(ParseError::new_err(message), &[
                 ("format", Attr::Str(error.format_label())),
-                (
-                    "position",
-                    Attr::OptionalInt(error.position().map(|value| value as i64)),
-                ),
+                ("position", Attr::OptionalCount(error.position())),
                 ("path", Attr::OptionalStr(error.path())),
             ]),
             ErrorKind::Frame(kind) => match kind {
@@ -538,7 +535,7 @@ impl From<Error> for PyErr {
                     ("field", Attr::Str("crs")),
                     ("left", Attr::OptionalStr(first.as_ref().map(Crs::as_str))),
                     ("right", Attr::OptionalStr(other.as_ref().map(Crs::as_str))),
-                    ("index", Attr::Int(*index as i64)),
+                    ("index", Attr::Count(*index)),
                 ]),
                 F::SharedEpoch {
                     index,
@@ -549,7 +546,7 @@ impl From<Error> for PyErr {
                     ("field", Attr::Str("epoch")),
                     ("left", Attr::OptionalFloat(*first)),
                     ("right", Attr::OptionalFloat(*other)),
-                    ("index", Attr::Int(*index as i64)),
+                    ("index", Attr::Count(*index)),
                 ]),
                 F::EmbeddedCrsConflict {
                     explicit, embedded, ..

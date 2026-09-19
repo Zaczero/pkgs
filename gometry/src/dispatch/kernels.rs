@@ -442,7 +442,7 @@ pub(crate) fn unary_segmentize(
     max_segment_length: &F64Param,
 ) -> Result<Shape> {
     let metric = ctx.metric.require_resolved(MetricOp::Segmentize)?;
-    let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "max_segment_length");
+    let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "max_length");
     let length = max_segment_length.get(ctx.lane.row());
     match metric {
         // A geographic CRS measures and places along the ellipsoid: the
@@ -482,14 +482,17 @@ pub(crate) fn unary_densify(
     match ctx.metric.require_resolved(MetricOp::Segmentize)? {
         ResolvedMetric::Geodesic(metric) => {
             crate::crs::ensure_geographic_domain_in_frame(metric.frame, data.shape())?;
-            let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
+            let mut budget = crate::geometry::ExpansionBudget::new("segmentize", "fraction");
             data.shape().densified_budgeted_with_placement(
                 fraction,
                 crate::geometry::SegmentPlacement::Geodesic(&metric.geodesic, metric.frame),
                 &mut budget,
             )
         },
-        ResolvedMetric::Planar { .. } => data.shape().densified(fraction),
+        ResolvedMetric::Planar { .. } => data.shape().densified_budgeted(
+            fraction,
+            &mut crate::geometry::ExpansionBudget::new("segmentize", "fraction"),
+        ),
     }
 }
 

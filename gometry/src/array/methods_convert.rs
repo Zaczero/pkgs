@@ -146,7 +146,7 @@ impl PyGeometryArray {
         let for_shapes = geodesic;
         let result = self.subdivide_unary_packed(
             "segmentize",
-            "max_segment_length",
+            "max_length",
             max_segment_length,
             |value| validate_max_segment_length(value).map(|_| ()),
             move |points, length, budget| {

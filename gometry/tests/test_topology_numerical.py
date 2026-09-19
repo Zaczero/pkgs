@@ -255,7 +255,7 @@ def test_planar_segmentize_rejects_unrepresentable_output_distinct_from_budget_e
     with pytest.raises(gm.GeometryError) as budget:
         line.segmentize(float.fromhex('0x0.0000000000001p-1022'))
     assert budget.value.operation == 'segmentize'
-    assert budget.value.parameter == 'max_segment_length'
+    assert budget.value.parameter == 'max_length'
     assert budget.value.produced > 16_000_000
 
 

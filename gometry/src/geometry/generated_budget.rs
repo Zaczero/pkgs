@@ -43,9 +43,7 @@ impl ExpansionBudget {
         left: usize,
         right: usize,
     ) -> Result<()> {
-        let produced = left
-            .checked_mul(right)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let produced = left.saturating_mul(right);
         if produced > PAIRWISE_WORK_LIMIT {
             return Err(GeometryErrorKind::GeneratedOutputTooLarge {
                 operation,
@@ -81,10 +79,8 @@ impl ExpansionBudget {
         left: usize,
         right: usize,
     ) -> Result<usize> {
-        let produced = left
-            .checked_mul(right)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        Self::check(operation, parameter, produced)
+        // A product past `usize` is past every limit.
+        Self::check(operation, parameter, left.saturating_mul(right))
     }
 
     pub(crate) fn add(&mut self, amount: usize) -> Result<usize> {
@@ -99,9 +95,7 @@ impl ExpansionBudget {
         Self::check(
             self.operation,
             self.parameter,
-            self.used
-                .checked_add(amount)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?,
+            self.used.saturating_add(amount),
         )
     }
 
@@ -126,22 +120,28 @@ mod tests {
     }
 
     #[test]
-    fn multiplication_overflow_is_structural() {
+    fn multiplication_overflow_saturates_into_the_budget_error() {
         let error = ExpansionBudget::product("test", "count", usize::MAX, 2).unwrap_err();
         assert!(matches!(
             error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+                produced: usize::MAX,
+                ..
+            })
         ));
     }
 
     #[test]
-    fn cumulative_addition_overflow_is_structural_not_generated_work() {
+    fn cumulative_addition_overflow_saturates_into_the_budget_error() {
         let mut budget = ExpansionBudget::new("test", "count");
         budget.add(GENERATED_ITEM_LIMIT).unwrap();
         let error = budget.check_additional(usize::MAX).unwrap_err();
         assert!(matches!(
             error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+                produced: usize::MAX,
+                ..
+            })
         ));
     }
 

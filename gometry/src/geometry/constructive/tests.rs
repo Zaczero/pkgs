@@ -1513,7 +1513,7 @@ mod subdivide_columns_tests {
             Some(vec![100.0, 300.0]),
         )
         .unwrap();
-        let mut budget = ExpansionBudget::new("densify", "fraction");
+        let mut budget = ExpansionBudget::new("segmentize", "fraction");
         let densified = densify_points_budgeted(&line, 0.25, &mut budget).unwrap();
         assert_eq!(densified.len(), 5);
         assert_eq!(densified.xs(), &[0.0, 1.0, 2.0, 3.0, 4.0]);
@@ -1531,7 +1531,7 @@ mod subdivide_columns_tests {
             Point::new(3.0, 0.0).unwrap(),
         ])
         .unwrap();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             1.0,
@@ -1550,7 +1550,7 @@ mod subdivide_columns_tests {
             Point::new(1e308, 0.0).unwrap(),
         ])
         .unwrap();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             1e308,
@@ -1572,7 +1572,7 @@ mod subdivide_columns_tests {
         ])
         .unwrap();
 
-        let mut unchanged_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut unchanged_budget = ExpansionBudget::new("segmentize", "max_length");
         let unchanged = segmentize_points_budgeted(
             &line,
             4.0,
@@ -1583,7 +1583,7 @@ mod subdivide_columns_tests {
         assert_eq!(unchanged.xs(), &[0.0, 4.0]);
         assert_eq!(unchanged_budget.used(), 0);
 
-        let mut split_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut split_budget = ExpansionBudget::new("segmentize", "max_length");
         let split = segmentize_points_budgeted(
             &line,
             2.0,
@@ -1600,7 +1600,7 @@ mod subdivide_columns_tests {
             Point::new(adjacent, 0.0).unwrap(),
         ])
         .unwrap();
-        let mut adjacent_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut adjacent_budget = ExpansionBudget::new("segmentize", "max_length");
         let exact = segmentize_points_budgeted(
             &adjacent_line,
             2.0_f64.powi(-52),
@@ -1642,7 +1642,7 @@ mod subdivide_columns_tests {
         )
         .unwrap();
         let geodesic = Geodesic::wgs84();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
@@ -1671,7 +1671,7 @@ mod subdivide_columns_tests {
         ])
         .unwrap();
         let geodesic = Geodesic::wgs84();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
@@ -1697,7 +1697,7 @@ mod subdivide_columns_tests {
         )
         .unwrap();
         let geodesic = Geodesic::wgs84();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             1_000_000.0,
@@ -1741,7 +1741,7 @@ mod subdivide_columns_tests {
         ])
         .unwrap();
         let geodesic = Geodesic::wgs84();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             11_000_000.0,
@@ -1762,7 +1762,7 @@ mod subdivide_columns_tests {
         ])
         .unwrap();
         let geodesic = Geodesic::wgs84();
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         let segmented = segmentize_points_budgeted(
             &line,
             2_000_000.0,
@@ -1783,7 +1783,7 @@ mod subdivide_columns_tests {
             Point::new(1.0, 0.0).unwrap(),
         ])
         .unwrap();
-        let mut segmentize_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut segmentize_budget = ExpansionBudget::new("segmentize", "max_length");
         let segmentize = segmentize_points_budgeted(
             &line,
             f64::MIN_POSITIVE,
@@ -1795,16 +1795,20 @@ mod subdivide_columns_tests {
             segmentize.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
                 operation: "segmentize",
-                parameter: "max_segment_length",
+                parameter: "max_length",
                 ..
             })
         ));
-        let mut densify_budget = ExpansionBudget::new("densify", "fraction");
+        let mut densify_budget = ExpansionBudget::new("segmentize", "fraction");
         let densify =
             densify_points_budgeted(&line, f64::MIN_POSITIVE, &mut densify_budget).unwrap_err();
         assert!(matches!(
             densify.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge {
+                operation: "segmentize",
+                parameter: "fraction",
+                ..
+            })
         ));
     }
 }
@@ -1923,7 +1927,7 @@ mod expansion_budget_threading_tests {
     fn segmentize_shares_the_callers_budget_across_parts_and_rings() {
         // One generated point per straight part: the first part lands exactly
         // on the cap and the second must observe that same exhausted owner.
-        let mut parts_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut parts_budget = ExpansionBudget::new("segmentize", "max_length");
         parts_budget.add(GENERATED_ITEM_LIMIT - 1).unwrap();
         Shape::multi_line_string(crate::geometry::CoordinateAxes::XY, vec![
             straight_line(),
@@ -1950,7 +1954,7 @@ mod expansion_budget_threading_tests {
             ])
             .unwrap()
         };
-        let mut rings_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut rings_budget = ExpansionBudget::new("segmentize", "max_length");
         rings_budget.add(GENERATED_ITEM_LIMIT - 12).unwrap();
         Shape::Polygon(Polygon::new(square(0.0, 1.0), vec![square(0.25, 0.75)]).unwrap())
             .segmentize_budgeted(

@@ -734,7 +734,18 @@ pub(crate) fn metric_frechet_densified_with_scratch(
         },
         Some(fraction) => {
             let (a, b) = match model {
-                crs::MetricModel::Planar { .. } => (a.densified(fraction)?, b.densified(fraction)?),
+                crs::MetricModel::Planar { .. } => {
+                    let densified = |shape: &Shape| {
+                        shape.densified_budgeted(
+                            fraction,
+                            &mut crate::geometry::ExpansionBudget::new(
+                                "frechet_distance",
+                                "densify",
+                            ),
+                        )
+                    };
+                    (densified(a)?, densified(b)?)
+                },
                 crs::MetricModel::Geodesic { crs, frame, state } => {
                     crs::ensure_geographic_domain_in_frame(*frame, a)?;
                     crs::ensure_geographic_domain_in_frame(*frame, b)?;
@@ -748,7 +759,8 @@ pub(crate) fn metric_frechet_densified_with_scratch(
                         |error| error,
                         |geodesic| Ok(*geodesic),
                     )?;
-                    let mut budget = crate::geometry::ExpansionBudget::new("densify", "fraction");
+                    let mut budget =
+                        crate::geometry::ExpansionBudget::new("frechet_distance", "densify");
                     (
                         a.densified_budgeted_with_placement(
                             fraction,

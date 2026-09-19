@@ -575,7 +575,9 @@ pub(crate) fn densify_points_budgeted_with_placement(
     placement: SegmentPlacement<'_>,
     budget: &mut ExpansionBudget,
 ) -> Result<CoordSeq> {
-    let steps = (1.0 / fraction).ceil() as usize;
+    // One segment's steps already past the budget stop here, before a
+    // saturated count (a subnormal `fraction`) reaches the step arithmetic.
+    let steps = budget.check_additional((1.0 / fraction).ceil() as usize)?;
     subdivide_columns(
         points,
         placement,
@@ -1329,7 +1331,7 @@ mod tests {
         let generated = count.generated(2).unwrap();
         assert_eq!(generated, GENERATED_ITEM_LIMIT);
 
-        let mut budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let mut budget = ExpansionBudget::new("segmentize", "max_length");
         budget.check_additional(generated).unwrap();
         budget.add(generated).unwrap();
         assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
@@ -1337,14 +1339,14 @@ mod tests {
         let mut count = SubdivisionCount { emitted: 0 };
         emit_subdivision(&[GENERATED_ITEM_LIMIT + 2], &mut count).unwrap();
         let generated = count.generated(2).unwrap();
-        let over_budget = ExpansionBudget::new("segmentize", "max_segment_length");
+        let over_budget = ExpansionBudget::new("segmentize", "max_length");
         let error = over_budget.check_additional(generated).unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(
                 crate::geometry::GeometryErrorKind::GeneratedOutputTooLarge {
                     operation: "segmentize",
-                    parameter: "max_segment_length",
+                    parameter: "max_length",
                     ..
                 }
             )

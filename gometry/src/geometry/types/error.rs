@@ -66,8 +66,10 @@ pub enum GeometryErrorKind {
         "interpolate_m would overwrite existing M ordinates; pass overwrite=True to replace them"
     )]
     MeasureOverwrite,
+    /// `produced` saturates at `usize::MAX` when the count itself overflows.
     #[error(
-        "{operation} would generate {produced} items, exceeding the limit of {limit}; reduce {parameter}"
+        "{operation} would generate {}, exceeding the limit of {limit}; reduce {parameter}",
+        generated_count(*produced)
     )]
     GeneratedOutputTooLarge {
         operation: &'static str,
@@ -270,5 +272,13 @@ impl GeometryErrorKind {
     )]
     pub fn pickle_payload(message: impl Into<Box<str>>) -> CrateError {
         Self::PicklePayload(message.into()).into()
+    }
+}
+
+fn generated_count(produced: usize) -> String {
+    if produced == usize::MAX {
+        "too many items to count".to_owned()
+    } else {
+        format!("{produced} items")
     }
 }
