@@ -2443,14 +2443,20 @@ impl ExactSourceInventory {
         let mut selected = Vec::new();
         try_reserve_vec(&mut selected, global.count as usize)?;
         selected.resize(global.count as usize, false);
-        partition.visit_face_windings(
+        let mut occupancy = PolygonOccupancy::new(&self.polygon_rings, self.ring_count, false)?;
+        partition.visit_face_windings_with_hook(
             &topology,
             &edges,
             &global,
             &winding_rings,
             self.ring_count,
-            |face, winding| {
-                selected[face as usize] = self.operand_occupied(winding, 0, false);
+            &mut occupancy,
+            |winding, ring, direction, occupancy| {
+                occupancy.cross(winding, ring, direction);
+                Ok(())
+            },
+            |face, _, occupancy| {
+                selected[face as usize] = occupancy.operand_occupied(0);
                 Ok(())
             },
         )?;
@@ -3875,17 +3881,30 @@ impl ExactSourceInventory {
         }
         point_shell_faces.sort_unstable_by_key(|(face, _)| *face);
         let mut point_shell_cursor = 0;
-        partition.visit_face_windings(
+        let mut occupancy = PolygonOccupancy::new(&self.polygon_rings, self.ring_count, odd)?;
+        partition.visit_face_windings_with_hook(
             topology,
             edges,
             global,
             winding_rings,
             self.ring_count,
-            |face, winding| {
+            &mut occupancy,
+            |winding, ring, direction, occupancy| {
+                occupancy.cross(winding, ring, direction);
+                Ok(())
+            },
+            |face, winding, occupancy| {
                 let face = face as usize;
                 for operand in 0..operands {
-                    facts.face_membership[face * operands + operand] =
-                        self.operand_occupied(winding, operand, odd);
+                    let occupied = occupancy.operand_occupied(operand);
+                    debug_assert_eq!(
+                        occupied,
+                        self.polygon_rings[operand]
+                            .iter()
+                            .any(|rings| rings_occupied(winding, rings.clone(), odd)),
+                        "tracked occupancy diverged from the ring windings"
+                    );
+                    facts.face_membership[face * operands + operand] = occupied;
                 }
                 while point_shell_cursor < point_shell_faces.len()
                     && point_shell_faces[point_shell_cursor].0 == face as u32
@@ -4363,12 +4382,6 @@ impl ExactSourceInventory {
         }
         Ok(winding_rings)
     }
-
-    fn operand_occupied(&self, winding: &[i64], operand: usize, odd: bool) -> bool {
-        self.polygon_rings[operand]
-            .iter()
-            .any(|rings| rings_occupied(winding, rings.clone(), odd))
-    }
 }
 
 pub(crate) fn occupied_cartesian_area(shape: &Shape) -> Result<f64> {
@@ -4813,6 +4826,90 @@ fn select_operation(operation: crate::geometry::OverlayOp, membership: &[bool]) 
 
 const fn ring_occupied(winding: i64, odd: bool) -> bool {
     if odd { winding % 2 != 0 } else { winding != 0 }
+}
+
+/// Which polygons the face walk currently stands in, kept up to date as it
+/// crosses one ring edge at a time: a polygon is occupied when its shell ring
+/// is filled and none of its holes is, and every operand counts its occupied
+/// polygons. A face then reads each operand in O(1) instead of rescanning
+/// every polygon.
+struct PolygonOccupancy {
+    odd: bool,
+    /// Owning polygon of each ring, and whether the ring is that polygon's shell.
+    ring_polygon: Vec<Option<(u32, bool)>>,
+    polygon_operand: Vec<u32>,
+    shell_filled: Vec<bool>,
+    filled_holes: Vec<u32>,
+    occupied: Vec<u32>,
+}
+
+impl PolygonOccupancy {
+    fn new(polygon_rings: &[Vec<Range<usize>>], ring_count: usize, odd: bool) -> Result<Self> {
+        let mut ring_polygon = Vec::new();
+        try_reserve_vec(&mut ring_polygon, ring_count)?;
+        ring_polygon.resize(ring_count, None);
+        let mut polygon_operand = Vec::new();
+        for (operand, polygons) in polygon_rings.iter().enumerate() {
+            for rings in polygons {
+                let polygon = u32::try_from(polygon_operand.len())
+                    .map_err(|_| ResourceError::SizeOverflow)?;
+                for ring in rings.clone() {
+                    ring_polygon[ring] = Some((polygon, ring == rings.start));
+                }
+                try_push_vec(&mut polygon_operand, operand as u32)?;
+            }
+        }
+        let polygons = polygon_operand.len();
+        let mut shell_filled = Vec::new();
+        try_reserve_vec(&mut shell_filled, polygons)?;
+        shell_filled.resize(polygons, false);
+        let mut filled_holes = Vec::new();
+        try_reserve_vec(&mut filled_holes, polygons)?;
+        filled_holes.resize(polygons, 0);
+        let mut occupied = Vec::new();
+        try_reserve_vec(&mut occupied, polygon_rings.len())?;
+        occupied.resize(polygon_rings.len(), 0);
+        Ok(Self {
+            odd,
+            ring_polygon,
+            polygon_operand,
+            shell_filled,
+            filled_holes,
+            occupied,
+        })
+    }
+
+    fn cross(&mut self, winding: &mut [i64], ring: u32, direction: i64) {
+        let ring = ring as usize;
+        let before = ring_occupied(winding[ring], self.odd);
+        winding[ring] += direction;
+        let after = ring_occupied(winding[ring], self.odd);
+        let Some((polygon, shell)) = self.ring_polygon[ring].filter(|_| before != after) else {
+            return;
+        };
+        let polygon = polygon as usize;
+        let was = self.shell_filled[polygon] && self.filled_holes[polygon] == 0;
+        if shell {
+            self.shell_filled[polygon] = after;
+        } else if after {
+            self.filled_holes[polygon] += 1;
+        } else {
+            self.filled_holes[polygon] -= 1;
+        }
+        let now = self.shell_filled[polygon] && self.filled_holes[polygon] == 0;
+        if was != now {
+            let count = &mut self.occupied[self.polygon_operand[polygon] as usize];
+            if now {
+                *count += 1;
+            } else {
+                *count -= 1;
+            }
+        }
+    }
+
+    fn operand_occupied(&self, operand: usize) -> bool {
+        self.occupied[operand] != 0
+    }
 }
 
 fn rings_occupied(winding: &[i64], mut rings: Range<usize>, odd: bool) -> bool {
