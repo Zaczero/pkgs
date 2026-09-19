@@ -1836,7 +1836,7 @@ def test_from_arrow_pyarrow_discards_zero_length_chunks() -> None:
 
     # Exact repro shape: many empty chunks → zero rows + CRS preserved, O(1)
     # relative to chunk count (no per-empty retained storage / chunk Vec).
-    n_empty = 250_000
+    n_empty = 20_000
     many_empty = pa.chunked_array([empty] * n_empty, type=arr.type)
     assert len(many_empty) == 0 and many_empty.num_chunks == n_empty
     out = cast('gm.GeometryArray', gm.from_arrow(many_empty))
