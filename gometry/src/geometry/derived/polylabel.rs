@@ -826,6 +826,11 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
         return representative_point(shape, bounds);
     };
+    // Without an interior no cell ever beats the boundary, and refinement
+    // would run to `tolerance` along the whole outline.
+    if !has_interior(shape) {
+        return representative_point(shape, bounds);
+    }
     let normalized_bounds = frame
         .shape
         .bounds()
@@ -1337,6 +1342,31 @@ fn build_inscribed_circle_once(
         Ring::try_from_closed(seq)?,
         Vec::new(),
     )?))
+}
+
+/// Whether some polygon ring spans an area: a shape whose rings all lie on
+/// lines has no interior point.
+fn has_interior(shape: &Shape) -> bool {
+    let ring_spans_area = |ring: &Ring| {
+        let mut points = ring.coords().iter_coords();
+        let Some(first) = points.next() else {
+            return false;
+        };
+        let mut points = points.skip_while(|point| point.xy() == first.xy());
+        let Some(second) = points.next() else {
+            return false;
+        };
+        points.any(|point| orientation(first, second, point) != Orientation::Collinear)
+    };
+    match shape {
+        Shape::Polygon(polygon) => polygon.rings().any(ring_spans_area),
+        Shape::MultiPolygon(polygons) => polygons
+            .iter()
+            .flat_map(Polygon::rings)
+            .any(ring_spans_area),
+        Shape::GeometryCollection(geometries) => geometries.iter().any(has_interior),
+        _ => false,
+    }
 }
 
 pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Result<Point> {

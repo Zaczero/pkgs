@@ -76,6 +76,11 @@ def test_affine_transforms_keep_mixed_axes_rows() -> None:
     ]
 
 
+def test_a_polygon_without_interior_labels_at_once() -> None:
+    collinear = W('POLYGON ((0 0, 1 1, 2 2, 0 0))')
+    assert collinear.polylabel(tolerance=5e-324).to_wkt() == 'POINT (1 1)'
+
+
 @pytest.mark.parametrize(
     ('call', 'parameter'),
     [
