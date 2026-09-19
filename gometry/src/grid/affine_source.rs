@@ -664,15 +664,46 @@ fn closed_segment_intersects<
     Ok(false)
 }
 
+/// Outward binary64 enclosure of an exact coordinate, for rejecting a
+/// candidate before any exact arithmetic. The limbs of a nonoverlapping
+/// expansion sum to within far less than `2^-40` of its value.
+fn outward_enclosure(value: &ExactExpansion) -> Option<(f64, f64)> {
+    const RELATIVE: f64 = 1.0 / (1_u64 << 40) as f64;
+    let estimate = value.checked_estimate()?;
+    let margin = estimate.abs() * RELATIVE + f64::MIN_POSITIVE;
+    Some((estimate - margin, estimate + margin))
+}
+
 fn exact_segment_touches_rectangle(
     start: &ExactPlanarPoint,
     end: &ExactPlanarPoint,
     longitude: Bound,
     latitude: Bound,
 ) -> ExactResult<bool> {
+    let enclosure = |a: &ExactExpansion, b: &ExactExpansion| {
+        let (a_lo, a_hi) = outward_enclosure(a)?;
+        let (b_lo, b_hi) = outward_enclosure(b)?;
+        Some((a_lo.min(b_lo), a_hi.max(b_hi)))
+    };
+    if let Some((south, north)) = enclosure(&start.latitude, &end.latitude)
+        && (north < latitude.lo || south > latitude.hi)
+    {
+        return Ok(false);
+    }
+    let longitudes = enclosure(&start.longitude, &end.longitude);
     let (first_turn, last_turn) =
         exact_longitude_copy_range(&start.longitude, &end.longitude, longitude)?;
     for turn in first_turn..=last_turn {
+        // The copy range is a conservative enumerator; a copy the segment's
+        // enclosure misses cannot touch it.
+        if let Some((west, east)) = longitudes {
+            let offset = FULL_TURN_DEGREES * turn as f64;
+            let (low, high) = (longitude.lo + offset, longitude.hi + offset);
+            let pad = low.abs().max(high.abs()) * f64::EPSILON;
+            if east < low - pad || west > high + pad {
+                continue;
+            }
+        }
         if with_exact_rectangle(longitude, latitude, turn, |rectangle| {
             for (first, second) in rectangle
                 .iter()
