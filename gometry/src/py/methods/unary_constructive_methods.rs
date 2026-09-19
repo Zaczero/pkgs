@@ -482,8 +482,7 @@ Raises
 GeometryError
     If the correctly rounded circle cannot be emitted as a finite, valid,
     source-enclosing polygon without changing its mathematical center or scalar
-    radius, or if the existing realization work budget is exhausted while
-    finding representable vertices.
+    radius.
 InvalidGeometryError
     If the bounding circle cannot be computed.
 

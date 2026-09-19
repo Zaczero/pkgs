@@ -634,6 +634,10 @@ fn tangent_circle_polygon(
 /// the existing operation-wide generated-work budget; the requested segment
 /// count never changes. The loop ends only when the next radius is
 /// non-finite or that declared resource bound is reached.
+/// Retries that inflate a circumscribed circle one ulp at a time before the
+/// inflation starts doubling.
+const ULP_INFLATION_RETRIES: u32 = 64;
+
 pub(crate) fn emit_minimum_bounding_circle(
     disk: &CertifiedDisk,
     quadrant_segments: NonZeroU32,
@@ -645,10 +649,13 @@ pub(crate) fn emit_minimum_bounding_circle(
         return Err(unrepresentable_minimum_circle());
     }
     // `tangent_circle_polygon` commits one complete fixed-size ring before
-    // allocating it. The operation's generated-item budget therefore bounds
-    // the number of retries by `GENERATED_ITEM_LIMIT / (4 * quadrants + 1)`;
-    // there is no separate retry-fuel cap.
+    // allocating it, and the operation's generated-item budget charges each
+    // retry. The first retries inflate the radius one ulp at a time; after
+    // that the inflation doubles, so a disk far below the coordinate spacing
+    // at its center reaches a representable ring in logarithmically many
+    // retries instead of exhausting the budget one ulp at a time.
     let mut candidate_radius = radius;
+    let mut retries = 0_u32;
     loop {
         let output =
             match tangent_circle_polygon(center, candidate_radius, quadrant_segments, budget) {
@@ -662,7 +669,12 @@ pub(crate) fn emit_minimum_bounding_circle(
             },
             Err(_) => {},
         }
-        let next = candidate_radius.next_up();
+        retries += 1;
+        let next = if retries < ULP_INFLATION_RETRIES {
+            candidate_radius.next_up()
+        } else {
+            (radius + 2.0 * (candidate_radius - radius)).max(candidate_radius.next_up())
+        };
         if !next.is_finite() {
             break;
         }
@@ -2492,8 +2504,9 @@ mod tests {
 
     #[test]
     fn minimum_circle_polygon_reports_the_realization_budget_for_a_collapsed_ring() {
-        // At 2^60 a radius step is 256 units, so no emitted ring certifies and
-        // every retry charges one more ring until the budget is spent.
+        // At 2^60 a radius step is 256 units, so the first retries cannot
+        // certify, and each charges one more ring. Three rings of headroom run
+        // out before the inflation reaches a representable ring.
         let points = [
             Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
             Point::new_raw_xy(2.0_f64.powi(60) + 1024.0, 2.0_f64.powi(60)),

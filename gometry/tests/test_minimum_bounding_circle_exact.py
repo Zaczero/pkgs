@@ -244,29 +244,7 @@ def test_zero_exact_radius_returns_the_source_point(name: str) -> None:
     assert (result.x, result.y) == (float(source[0]), float(source[1]))
 
 
-@pytest.mark.parametrize(
-    'name', ['adjacent-at-one', 'adjacent-at-2^60', 'translated-acute']
-)
-def test_planar_circle_reports_the_declared_realization_budget(name: str) -> None:
-    with pytest.raises(gm.GeometryError, match='reduce realization') as caught:
-        gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar')
-    assert caught.value.operation == 'minimum_bounding_circle'
-    assert caught.value.parameter == 'realization'
-    assert caught.value.produced == 16_000_010
-    assert caught.value.limit == 16_000_000
-
-
-def test_planar_circle_rejects_a_positive_radius_below_the_minimum_subnormal() -> None:
-    with pytest.raises(gm.GeometryError, match='contained geometry') as caught:
-        gm.MultiPoint(CASES['minsub-adjacent']).minimum_bounding_circle(unit='planar')
-    assert caught.value.operation == 'minimum_bounding_circle'
-
-
-def test_planar_circle_emits_a_minimum_subnormal_diameter() -> None:
-    points = CASES['minsub']
-    expected = exhaustive(points)
-    assert expected is not None
-    circle = gm.MultiPoint(points).minimum_bounding_circle(unit='planar')
+def assert_circumscribes(circle: gm.Geometry, expected: OracleCircle) -> None:
     assert circle.geometry_type == 'Polygon'
     vertices = [q((x, y)) for x, y in list(circle.coords)[:-1]]
     assert len(vertices) == 64
@@ -279,6 +257,34 @@ def test_planar_circle_emits_a_minimum_subnormal_diameter() -> None:
         and orientation(left, right, expected.center) ** 2
         >= expected.radius_squared * distance_squared(left, right)
         for left, right in zip(vertices, vertices[1:] + vertices[:1], strict=True)
+    )
+
+
+@pytest.mark.parametrize(
+    'name', ['adjacent-at-one', 'adjacent-at-2^60', 'translated-acute']
+)
+def test_planar_circle_inflates_a_disk_below_the_coordinate_spacing(name: str) -> None:
+    # A disk this far below the spacing of its center's coordinates has no
+    # circumscribed ring at its own radius; the realization inflates it until
+    # the rounded ring certifies, which a one-ulp search never reached.
+    expected = exhaustive(CASES[name])
+    assert expected is not None
+    circle = gm.MultiPoint(CASES[name]).minimum_bounding_circle(unit='planar')
+    assert_circumscribes(circle, expected)
+
+
+def test_planar_circle_rejects_a_positive_radius_below_the_minimum_subnormal() -> None:
+    with pytest.raises(gm.GeometryError, match='contained geometry') as caught:
+        gm.MultiPoint(CASES['minsub-adjacent']).minimum_bounding_circle(unit='planar')
+    assert caught.value.operation == 'minimum_bounding_circle'
+
+
+def test_planar_circle_emits_a_minimum_subnormal_diameter() -> None:
+    points = CASES['minsub']
+    expected = exhaustive(points)
+    assert expected is not None
+    assert_circumscribes(
+        gm.MultiPoint(points).minimum_bounding_circle(unit='planar'), expected
     )
 
 
