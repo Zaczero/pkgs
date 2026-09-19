@@ -913,6 +913,122 @@ def test_duality_rejects_a_narrowing_overload_outside_the_union(
     assert 'LeafArray[Leaf]' in errors[0]
 
 
+_KIND_STUB = '''\
+from typing import Generic, Literal, Self, TypeVar, final, overload
+
+_T_co = TypeVar('_T_co', covariant=True)
+_KindT = TypeVar('_KindT', bound=Base)
+
+class Base:
+    def hull(self) -> Base:
+        """Kind-changing."""
+    @overload
+    def snap(self, *, repair: Literal[False] = False) -> Self: ...
+    @overload
+    def snap(self, *, repair: bool = False) -> Base:
+        """Kind-keeping unless repaired."""
+
+@final
+class Dot(Base):
+    def hull(self) -> Disc: ...
+    @overload
+    def snap(self, *, repair: Literal[False] = False) -> Dot: ...
+    @overload
+    def snap(self, *, repair: bool = False) -> Dot | Disc: ...
+
+@final
+class Disc(Base): ...
+
+class BaseArray(Generic[_T_co]):
+    @overload
+    def hull(self: BaseArray[Dot]) -> BaseArray[Disc]: ...
+    @overload
+    def hull(self: BaseArray[Dot | None]) -> BaseArray[Disc | None]: ...
+    @overload
+    def hull(self) -> BaseArray[Base]:
+        """Kind-changing twin."""
+    @overload
+    def snap(
+        self: BaseArray[_KindT], *, repair: Literal[False] = False
+    ) -> BaseArray[_KindT]: ...
+    @overload
+    def snap(
+        self: BaseArray[_KindT | None], *, repair: Literal[False] = False
+    ) -> BaseArray[_KindT | None]: ...
+    @overload
+    def snap(self: BaseArray[Dot], *, repair: bool = False) -> BaseArray[Dot | Disc]: ...
+    @overload
+    def snap(
+        self: BaseArray[Dot | None], *, repair: bool = False
+    ) -> BaseArray[Dot | Disc | None]: ...
+    @overload
+    def snap(self, *, repair: bool = False) -> BaseArray[Base]:
+        """Kind-keeping twin."""
+'''
+
+
+def _kind_errors(tmp_path: Path, stub_text: str) -> list[str]:
+    cfg = make_config(
+        tmp_path,
+        stub_text=stub_text,
+        duality=DualityConfig(pairs=(('Base', 'BaseArray'),)),
+    )
+    return list(gate('duality').run(cfg).errors)
+
+
+def test_duality_accepts_leaf_overrides_and_their_array_kinds(tmp_path):
+    assert _kind_errors(tmp_path, _KIND_STUB) == []
+
+
+@pytest.mark.parametrize(
+    ('mutation', 'expect'),
+    [
+        (
+            (
+                'def hull(self: BaseArray[Dot]) -> BaseArray[Disc]: ...',
+                'def hull(self: BaseArray[Dot]) -> BaseArray[Base]: ...',
+            ),
+            'BaseArray[Dot] returns `Base` but the scalar kinds return `Disc`',
+        ),
+        (
+            (
+                '    @overload\n    def hull(self: BaseArray[Dot | None]) '
+                '-> BaseArray[Disc | None]: ...\n',
+                '',
+            ),
+            'Dot.hull narrows its return but BaseArray.hull has no overload for '
+            'BaseArray[Dot | None]',
+        ),
+        (
+            (
+                '-> BaseArray[Dot | Disc]: ...',
+                '-> BaseArray[Dot]: ...',
+            ),
+            'BaseArray[Dot] returns `Dot` but the scalar kinds return `Disc | Dot`',
+        ),
+        (
+            (
+                'def snap(self, *, repair: Literal[False] = False) -> Dot: ...',
+                'def snap(self, *, repair: Literal[True] = True) -> Dot: ...',
+            ),
+            'Dot.snap narrows its return but BaseArray.snap has no overload for '
+            'BaseArray[Dot]',
+        ),
+    ],
+    ids=[
+        'wrong-kind',
+        'missing-nullable-twin',
+        'overloaded-leaf-variant',
+        'uncovered-variant',
+    ],
+)
+def test_duality_rejects_kind_drift(tmp_path, mutation, expect):
+    old, new = mutation
+    assert _KIND_STUB.count(old) == 1
+    errors = _kind_errors(tmp_path, _KIND_STUB.replace(old, new))
+    assert any(expect in e for e in errors), errors
+
+
 def test_duality_exempt_rot_is_reported(tmp_path, pristine_stub, pristine_src):
     build = _duality(exempt={'absent': 'stale: no such method'})
     errors = gate('duality').run(build(tmp_path, pristine_stub, pristine_src)).errors

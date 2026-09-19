@@ -25,11 +25,11 @@ into the stub.
 
 | Gate | Activated by | What it catches |
 |------|--------------|-----------------|
-| `validity` | always-on | Illegal stub syntax, bare impl defs, bad overloads |
-| `structural` | always-on | Overload hygiene, `@final` vs runtime, signature coverage, `__match_args__` |
+| `validity` | always-on | Illegal stub syntax, bare impl defs, bad and shadowed overloads |
+| `structural` | always-on | Overload hygiene, `@final` vs runtime, signature coverage, `__match_args__`, `__all__` entries the stub never defines |
 | `text-signature` | always-on | Manual Rust `text_signature` vs the real `signature` |
 | `surface` | `surface` | Option-kwarg drift across dual API surfaces |
-| `duality` | `duality` | Scalar↔array return lies (`-> Self` on kind-changing ops) |
+| `duality` | `duality` | Scalar↔array return lies (`-> Self` on kind-changing ops); leaf-kind overrides and the array overloads for that kind disagreeing or missing |
 | `token-vocabulary` | `tokens` | `Literal` tokens vs runtime `token_enum!` |
 | `leaked-types` | always-on | Unregistered / unstubbed public pyclasses |
 | `rust-nullability` | always-on | `Option` getters/fields typed without `\| None` |
