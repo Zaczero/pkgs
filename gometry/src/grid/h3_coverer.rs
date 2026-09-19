@@ -19,8 +19,9 @@ use crate::grid::affine_source::{
 };
 use crate::grid::coverer::dissolved_polygonal_area;
 use crate::grid::spherical_arc::{
-    ArcContact, Bound, CertifiedH3DescendantCap, H3ArcSet, H3CellPlan, H3FanPlan, H3FanPointClass,
-    classify_h3_arc_contact, h3_bbox_positive_witnesses, h3_cell_plan,
+    AffineSourceArc, ArcContact, Bound, CertifiedH3DescendantCap, DegreeWindowResult, H3ArcSet,
+    H3CellPlan, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, h3_bbox_positive_witnesses,
+    h3_cell_plan,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 
@@ -565,7 +566,13 @@ pub(crate) fn classify_h3_overlap(
         return Ok(H3LeafClass::Boundary);
     };
     let fan = cell.fan();
-    classify_h3_overlap_parts(source, cell.cell(), arcs, &fan)
+    // The certified latitude band of the cell's boundary arcs; a source
+    // piece outside it cannot touch them.
+    let band = match cell.bbox() {
+        DegreeWindowResult::Windows(windows) => Some(windows.latitude),
+        DegreeWindowResult::Boundary => None,
+    };
+    classify_h3_overlap_parts(source, cell.cell(), arcs, &fan, band)
 }
 
 /// Relation body split from the plan accessor so the entry guard is directly
@@ -576,6 +583,7 @@ fn classify_h3_overlap_parts(
     cell: h3o::CellIndex,
     arcs: &H3ArcSet,
     fan: &H3FanPlan,
+    band: Option<Bound>,
 ) -> Result<H3LeafClass, H3CoverError> {
     if source.is_unknown() || !matches!(fan, H3FanPlan::Certified(_)) {
         return Ok(H3LeafClass::Boundary);
@@ -584,7 +592,8 @@ fn classify_h3_overlap_parts(
     let Some(authority) = source.authority_pieces() else {
         return Ok(H3LeafClass::Boundary);
     };
-    for piece in authority.filter(|piece| piece.is_polygon()) {
+    let in_band = |arc: AffineSourceArc| band.is_none_or(|band| arc.may_reach_latitudes(band));
+    for piece in authority.filter(|piece| piece.is_polygon() && in_band(piece.arc())) {
         if arcs
             .iter()
             .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None)
@@ -633,7 +642,7 @@ fn classify_h3_overlap_parts(
     let Some(authority) = source.authority_pieces() else {
         return Ok(H3LeafClass::Boundary);
     };
-    for piece in authority.filter(|piece| !piece.is_polygon()) {
+    for piece in authority.filter(|piece| !piece.is_polygon() && in_band(piece.arc())) {
         lower_contact |= arcs
             .iter()
             .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None);

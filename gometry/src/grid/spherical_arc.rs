@@ -2725,6 +2725,19 @@ impl AffineSourceArc {
         LongitudeSpan::ordered(lower, upper)
     }
 
+    /// Whether this piece can reach the closed latitude band, in degrees.
+    /// A piece whose certified latitudes miss the band cannot meet an arc
+    /// that lies inside it.
+    pub(crate) fn may_reach_latitudes(self, band: Bound) -> bool {
+        let Some(span) = self.latitude_span() else {
+            return true;
+        };
+        // Outward conversion: to_radians rounds once.
+        let south = band.lo.to_radians().next_down().next_down();
+        let north = band.hi.to_radians().next_up().next_up();
+        !(span.upper.hi < south || span.lower.lo > north)
+    }
+
     fn parameter_at_longitude(self, longitude: Bound) -> Option<Bound> {
         longitude.sub(self.map.lambda0)?.div(self.map.dlambda)
     }

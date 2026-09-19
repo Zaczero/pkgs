@@ -787,8 +787,14 @@ fn uncertified_fan_cannot_reach_an_empty_source_negative() {
     .unwrap();
     let plan = h3_cell_plan(cell, Resolution::Two);
     assert_eq!(
-        classify_h3_overlap_parts(&source, cell, plan.arcs().unwrap(), &H3FanPlan::Uncertain)
-            .expect("uncertainty is a source classification"),
+        classify_h3_overlap_parts(
+            &source,
+            cell,
+            plan.arcs().unwrap(),
+            &H3FanPlan::Uncertain,
+            None
+        )
+        .expect("uncertainty is a source classification"),
         H3LeafClass::Boundary,
         "an uncertified fan fails open before the source can establish Outside"
     );
