@@ -29,44 +29,25 @@ const SWEEP_MIN_ITEMS: usize = 6;
 const SWEEP_BAND_MIN: usize = 4096;
 const SWEEP_BAND_GRAIN: usize = 2048;
 
-/// Visit every unordered pair of inclusive-overlapping row bounds once, as
-/// `(lower ordinal, higher ordinal)`. Each box is its diagonal in its own chain,
-/// so the candidate sweep prunes nothing as within-run; its candidates are a
-/// superset, filtered here to the boxes that meet. Scratch growth is
-/// [`ResourceError`].
+/// [`for_each_overlapping_bounds_pair`] over rows that may lack bounds: a row
+/// without bounds meets nothing, and the visitor receives row ordinals.
 pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair(
     bounds: &[Option<Bounds>],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<()>,
 ) -> Result<ControlFlow<()>> {
     let mut ordinals = Vec::new();
-    let mut diagonals = Vec::new();
-    crate::try_reserve_vec(&mut ordinals, bounds.len())?;
-    crate::try_reserve_vec(&mut diagonals, bounds.len())?;
+    let mut present = Vec::new();
+    try_reserve_vec(&mut ordinals, bounds.len())?;
+    try_reserve_vec(&mut present, bounds.len())?;
     for (ordinal, bounds) in bounds.iter().enumerate() {
         if let Some(bounds) = bounds {
             ordinals.push(ordinal);
-            diagonals.push(Segment {
-                start: XY::new(bounds.minx(), bounds.miny()),
-                end: XY::new(bounds.maxx(), bounds.maxy()),
-            });
+            present.push(*bounds);
         }
     }
-    for_each_candidate_pair(
-        &diagonals,
-        |index| index as u32,
-        |left, right| {
-            let (a, b) = (diagonals[left], diagonals[right]);
-            if a.start.x > b.end.x
-                || b.start.x > a.end.x
-                || a.start.y > b.end.y
-                || b.start.y > a.end.y
-            {
-                return ControlFlow::Continue(());
-            }
-            let (left, right) = (ordinals[left], ordinals[right]);
-            visit(left.min(right), left.max(right))
-        },
-    )
+    for_each_overlapping_bounds_pair(&present, |left, right| {
+        visit(ordinals[left], ordinals[right])
+    })
 }
 
 /// One envelope in [`for_each_candidate_pair`]'s sweep order: extents along
