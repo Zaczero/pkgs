@@ -3639,48 +3639,6 @@ pub(in crate::geometry) fn outward_ratio_bounds(
     }
 }
 
-/// A sound binary64 enclosure of `numerator / denominator`, for pruning.
-///
-/// The quotient of the operands' leading 64 bits carries three roundings —
-/// each operand's conversion and the division, under `3.1 * 2^-53` relative
-/// — which four ulps each way cover while the quotient stays normal. A
-/// quotient near the subnormal or overflow range takes the tight exact
-/// bounds instead.
-pub(in crate::geometry) fn ratio_enclosure(
-    numerator: &ExactDyadic,
-    denominator: &ExactDyadic,
-) -> Result<(f64, f64)> {
-    if denominator.is_zero() {
-        return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
-    }
-    if numerator.is_zero() {
-        return Ok((0.0, 0.0));
-    }
-    let Some((significand, exponent)) = approximate_ratio_components(numerator, denominator)
-        .filter(|&(_, exponent)| (-1000..=1000).contains(&exponent))
-    else {
-        return outward_ratio_bounds(numerator, denominator);
-    };
-    let quotient = significand * 2.0_f64.powi(exponent as i32);
-    let widen = |mut value: f64, step: fn(f64) -> f64| {
-        for _ in 0..4 {
-            value = step(value);
-        }
-        value
-    };
-    let (lower, upper) = (
-        widen(quotient, f64::next_down),
-        widen(quotient, f64::next_up),
-    );
-    Ok(
-        if numerator.sign().quotient(denominator.sign()) == ExactSign::Negative {
-            (-upper, -lower)
-        } else {
-            (lower, upper)
-        },
-    )
-}
-
 /// Round `sqrt(numerator / denominator)` to nearest binary64, ties to even.
 ///
 /// The caller supplies exact nonnegative `numerator` and positive `denominator`.
@@ -4985,9 +4943,7 @@ mod tests {
     #[test]
     fn ratio_bounds_contain_adversarial_exact_ratios() {
         fn assert_contains(name: &str, numerator: &ExactDyadic, denominator: &ExactDyadic) {
-            for bounds in [outward_ratio_bounds, ratio_enclosure] {
-                assert_bounds_contain(name, numerator, denominator, bounds);
-            }
+            assert_bounds_contain(name, numerator, denominator, outward_ratio_bounds);
         }
 
         fn assert_bounds_contain(

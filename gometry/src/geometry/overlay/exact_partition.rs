@@ -5,7 +5,7 @@
 //! node carries its nearest-even binary64, certified in double-double for a
 //! crossing; a crossing's exact homogeneous point is built only when a
 //! comparison ties on the rounded coordinates, since rounding is monotone.
-//! Exact cyclic walks and visibility links define global faces; stored-ring
+//! Exact cyclic walks and leftward ray contacts define global faces; stored-ring
 //! winding selects cells and an emission plan. Emission checks rounded
 //! incidence, cyclic order, and global-face identity.
 //!
@@ -31,7 +31,7 @@ use crate::geometry::segments::{
     segment_envelopes_disjoint, stored_cross_sign, stored_orientation_sign, try_sort_by,
 };
 use crate::geometry::tessellation::exact::{
-    ExactDyadic, Interval, ratio_enclosure, round_ratio, try_compare_ratios,
+    ExactDyadic, Interval, round_ratio, try_compare_ratios,
 };
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, CoverageOverlapRule, De9im,
@@ -115,6 +115,8 @@ pub(in crate::geometry) struct PartitionMetrics {
     pub declined_crossings: usize,
     /// Crossings whose exact point a comparison had to build afterwards.
     pub exact_crossings: usize,
+    /// Orientation tests made by leftward ray sweeps.
+    pub ray_orientations: usize,
 }
 
 #[cfg(test)]
@@ -137,6 +139,7 @@ impl PartitionMetrics {
         published_rows: 0,
         declined_crossings: 0,
         exact_crossings: 0,
+        ray_orientations: 0,
     };
 }
 
@@ -541,12 +544,6 @@ impl ExactLineEmission {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum VisibilityHit {
-    Node(NodeId),
-    Span(u32),
-}
-
 struct GlobalFaces {
     walk_faces: Vec<u32>,
     component_hosts: Vec<u32>,
@@ -560,86 +557,6 @@ struct CellFacts {
     span_support: Vec<bool>,
     span_faces: Vec<[u32; 2]>,
     point_membership: Vec<bool>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct RoundedExtent {
-    x_lo: f64,
-    x_hi: f64,
-    y_lo: f64,
-    y_hi: f64,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct VisibilityEntry {
-    edge: u32,
-    extent: RoundedExtent,
-    prefix_y_hi: f64,
-}
-
-#[derive(Debug)]
-struct VisibilityIndex {
-    entries: Vec<VisibilityEntry>,
-}
-
-impl VisibilityIndex {
-    fn build(partition: &ExactPartition<'_>) -> Result<Self> {
-        let mut entries = Vec::new();
-        try_reserve_vec(&mut entries, partition.spans.len())?;
-        for (edge, span) in partition.spans.iter().enumerate() {
-            let (ax_lo, ax_hi) = partition.axis_bounds(span.start, Axis::X);
-            let (ay_lo, ay_hi) = partition.axis_bounds(span.start, Axis::Y);
-            let (bx_lo, bx_hi) = partition.axis_bounds(span.end, Axis::X);
-            let (by_lo, by_hi) = partition.axis_bounds(span.end, Axis::Y);
-            try_push_vec(&mut entries, VisibilityEntry {
-                edge: u32::try_from(edge).map_err(|_| ResourceError::SizeOverflow)?,
-                extent: RoundedExtent {
-                    x_lo: ax_lo.min(bx_lo),
-                    x_hi: ax_hi.max(bx_hi),
-                    y_lo: ay_lo.min(by_lo),
-                    y_hi: ay_hi.max(by_hi),
-                },
-                prefix_y_hi: f64::NEG_INFINITY,
-            })?;
-        }
-        entries.sort_unstable_by(|left, right| {
-            left.extent
-                .y_lo
-                .total_cmp(&right.extent.y_lo)
-                .then_with(|| left.edge.cmp(&right.edge))
-        });
-        let mut prefix_y_hi = f64::NEG_INFINITY;
-        for entry in &mut entries {
-            prefix_y_hi = prefix_y_hi.max(entry.extent.y_hi);
-            entry.prefix_y_hi = prefix_y_hi;
-        }
-        Ok(Self { entries })
-    }
-
-    fn candidate_range(&self, query_y_lo: f64, query_y_hi: f64) -> Range<usize> {
-        let mut low = 0;
-        let mut high = self.entries.len();
-        while low < high {
-            let middle = low + (high - low).div_ceil(2);
-            if self.entries[middle - 1].extent.y_lo <= query_y_hi {
-                low = middle;
-            } else {
-                high = middle - 1;
-            }
-        }
-        let end = low;
-        low = 0;
-        high = end;
-        while low < high {
-            let middle = low + (high - low) / 2;
-            if self.entries[middle].prefix_y_hi < query_y_lo {
-                low = middle + 1;
-            } else {
-                high = middle;
-            }
-        }
-        low..end
-    }
 }
 
 struct PlannedChord {
@@ -1239,20 +1156,24 @@ impl BoundaryPlan {
         }
         debug_assert_eq!(sides.len(), items.len());
         debug_assert_eq!(segments.len(), items.len());
-        let mut parents = Vec::new();
+        let node_count = partition.node_count();
+        // Every node at its emitted coordinate, as stored doubles.
         let mut coordinates = Vec::new();
-        try_reserve_vec(&mut parents, partition.node_count())?;
-        try_reserve_vec(&mut coordinates, partition.node_count())?;
-        for node in 0..partition.node_count() {
-            try_push_vec(
-                &mut parents,
-                u32::try_from(node).map_err(|_| ResourceError::SizeOverflow)?,
-            )?;
-        }
-        coordinates.resize(partition.node_count(), None);
+        try_reserve_vec(&mut coordinates, node_count)?;
+        coordinates.extend((0..node_count as u32).map(|node| partition.node_xy(NodeId(node))));
+        let mut incident_starts = Vec::new();
+        try_reserve_vec(&mut incident_starts, node_count + 1)?;
+        incident_starts.resize(node_count + 1, 0_u32);
+        let mut parents = Vec::new();
+        try_reserve_vec(&mut parents, node_count)?;
+        parents.extend(0..node_count as u32);
         for (&[start, end], segment) in items.iter().zip(segments) {
-            coordinates[start.0 as usize] = Some(segment.start);
-            coordinates[end.0 as usize] = Some(segment.end);
+            coordinates[start.0 as usize] = segment.start;
+            coordinates[end.0 as usize] = segment.end;
+            incident_starts[start.0 as usize + 1] += 1;
+            if end != start {
+                incident_starts[end.0 as usize + 1] += 1;
+            }
             let mut left = start.0;
             let mut right = end.0;
             while parents[left as usize] != left {
@@ -1265,36 +1186,59 @@ impl BoundaryPlan {
             }
             parents[left.max(right) as usize] = left.min(right);
         }
-        let mut roots = Vec::new();
-        try_reserve_vec(&mut roots, parents.len())?;
-        roots.resize(parents.len(), None);
-        for node in 0..parents.len() {
-            parents[node] = parents[parents[node] as usize];
-            let Some(point) = coordinates[node] else {
-                continue;
-            };
-            let root = &mut roots[parents[node] as usize];
-            if root.is_none_or(|(_, prior): (usize, XY)| {
-                point.x < prior.x || (point.x == prior.x && point.y < prior.y)
-            }) {
-                *root = Some((node, point));
+        for node in 0..node_count {
+            incident_starts[node + 1] += incident_starts[node];
+        }
+        let mut incident = Vec::new();
+        try_reserve_vec(&mut incident, incident_starts[node_count] as usize)?;
+        incident.resize(incident_starts[node_count] as usize, 0_u32);
+        {
+            let mut cursor = Vec::new();
+            try_reserve_vec(&mut cursor, node_count)?;
+            cursor.extend_from_slice(&incident_starts[..node_count]);
+            for (index, &[start, end]) in items.iter().enumerate() {
+                for node in [start, end].into_iter().take(1 + usize::from(end != start)) {
+                    incident[cursor[node.0 as usize] as usize] = index as u32;
+                    cursor[node.0 as usize] += 1;
+                }
             }
         }
-        let mut winding = Vec::new();
-        try_reserve_vec(&mut winding, self.face_quotient.len())?;
-        winding.resize(self.face_quotient.len(), 0_i64);
-        for (component, root) in roots.into_iter().enumerate() {
-            let Some((node, point)) = root else { continue };
+        // Each component's root is its lexicographically least emitted node.
+        let mut roots: Vec<Option<(usize, XY)>> = Vec::new();
+        try_reserve_vec(&mut roots, node_count)?;
+        roots.resize(node_count, None);
+        for node in 0..node_count {
+            if incident_starts[node] == incident_starts[node + 1] {
+                continue;
+            }
+            let mut root = node as u32;
+            while parents[root as usize] != root {
+                root = parents[root as usize];
+            }
+            let point = coordinates[node];
+            let entry = &mut roots[root as usize];
+            if entry.is_none_or(|(_, prior): (usize, XY)| {
+                point.x < prior.x || (point.x == prior.x && point.y < prior.y)
+            }) {
+                *entry = Some((node, point));
+            }
+        }
+        // The face each component's own plan puts around it: its root's
+        // exterior wedge, or the host of an isolated point.
+        let mut queries = Vec::new();
+        let mut exteriors = Vec::new();
+        for &(node, point) in roots.iter().flatten() {
             let mut exterior = None;
             let mut chosen = None;
             let mut has_upper = false;
-            for (index, &[start, end]) in items.iter().enumerate() {
+            let range = incident_starts[node] as usize..incident_starts[node + 1] as usize;
+            for &index in &incident[range] {
+                let index = index as usize;
+                let [start, end] = items[index];
                 let (target, target_point, face) = if start.0 as usize == node {
                     (end.0, segments[index].end, sides[index][0])
-                } else if end.0 as usize == node {
-                    (start.0, segments[index].start, sides[index][1])
                 } else {
-                    continue;
+                    (start.0, segments[index].start, sides[index][1])
                 };
                 if target as usize == node {
                     exterior = Some(face);
@@ -1315,36 +1259,33 @@ impl BoundaryPlan {
                     has_upper = upper;
                 }
             }
-            let exterior = exterior.expect("a component root has an incident emitted edge");
-            winding.fill(0);
-            // Other components supply closed face-boundary chains. Their winding
-            // identifies the host without a ray-intersection coordinate or noder.
-            for (index, &[start, _]) in items.iter().enumerate() {
-                if parents[start.0 as usize] as usize == component {
-                    continue;
-                }
-                let Segment { start, end } = segments[index];
-                let delta = if start.y <= point.y && point.y < end.y {
-                    i64::from(
-                        stored_orientation_sign(start.x, start.y, end.x, end.y, point.x, point.y)
-                            == ExactSign::Positive,
-                    )
-                } else if end.y <= point.y && point.y < start.y {
-                    -i64::from(
-                        stored_orientation_sign(start.x, start.y, end.x, end.y, point.x, point.y)
-                            == ExactSign::Negative,
-                    )
+            try_push_vec(&mut queries, node as u32)?;
+            try_push_vec(
+                &mut exteriors,
+                exterior.expect("a component root has an incident emitted edge"),
+            )?;
+        }
+        // The emitted embedding keeps the exact incidence and fans, so the
+        // face just east of the first chord a leftward ray from a root meets
+        // is the face holding that component.
+        let hits = shoot_left(
+            &EmittedPoints(&coordinates),
+            items.len(),
+            |index| [items[index][0].0, items[index][1].0],
+            &queries,
+        )?;
+        for ((&node, &exterior), hit) in queries.iter().zip(&exteriors).zip(hits) {
+            let host = hit.map_or(0, |chord| {
+                let chord = chord as usize;
+                let segment = segments[chord];
+                if segment.start.y < segment.end.y {
+                    sides[chord][1]
                 } else {
-                    0
-                };
-                winding[sides[index][0] as usize] += delta;
-                winding[sides[index][1] as usize] -= delta;
-            }
-            if winding.iter().enumerate().any(|(face, &value)| {
-                let expected = i64::from(face == exterior as usize) - i64::from(face == 0);
-                value != expected
-            }) {
-                return Err(GeometryErrorKind::ExactGlobalFace { node: node as u32 }.into());
+                    sides[chord][0]
+                }
+            });
+            if host != exterior {
+                return Err(GeometryErrorKind::ExactGlobalFace { node }.into());
             }
         }
         Ok(())
@@ -1747,9 +1688,6 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     bindings: Vec<u32>,
     protect_stored: bool,
     protect_all: bool,
-    /// Built on the first cross-component contact query; a connected
-    /// arrangement never needs it.
-    visibility: std::sync::OnceLock<VisibilityIndex>,
 }
 
 /// Fallible Cartesian source inventory shared by overlay, relation, clipping,
@@ -5227,10 +5165,6 @@ impl ExactPartition<'_> {
         self.points.compare_axis_to(node.0, axis, value)
     }
 
-    fn axis_bounds(&self, node: NodeId, axis: Axis) -> (f64, f64) {
-        self.points.axis_bounds(node.0, axis)
-    }
-
     fn orientation(&self, a: NodeId, b: NodeId, c: NodeId) -> Result<ExactSign> {
         self.points.orientation(a.0, b.0, c.0)
     }
@@ -5825,16 +5759,26 @@ impl ExactPartition<'_> {
         links.extend(0..size as u32);
         let mut component_hosts = Vec::new();
         try_reserve_vec(&mut component_hosts, minima.len())?;
-        // One component has no other component to contact: it lies in the
-        // unbounded face.
-        let connected = minima.len() == 1;
-        for root in minima {
-            let host = if connected {
-                0
-            } else {
-                self.first_left_contact(topology, root)?
-                    .map_or(0, |hit| self.contact_walk(topology, edges, hit) + 1)
-            };
+        // Each component's host is the face just east of the first span a
+        // leftward ray from its minimum meets. One component has no other
+        // component to meet: it lies in the unbounded face.
+        let hits = if minima.len() == 1 {
+            let mut none = Vec::new();
+            try_push_vec(&mut none, None)?;
+            none
+        } else {
+            let mut queries = Vec::new();
+            try_reserve_vec(&mut queries, minima.len())?;
+            queries.extend(minima.iter().map(|root| root.0));
+            shoot_left(
+                &self.points,
+                self.spans.len(),
+                |index| [self.spans[index].start.0, self.spans[index].end.0],
+                &queries,
+            )?
+        };
+        for (&root, hit) in minima.iter().zip(hits) {
+            let host = hit.map_or(0, |span| self.contact_walk(topology, edges, span) + 1);
             try_push_vec(&mut component_hosts, host)?;
             if let Some(exterior) = self.exterior_walk(topology, edges, root)? {
                 // Every link reaches a component with a strictly smaller
@@ -6019,114 +5963,21 @@ impl ExactPartition<'_> {
         Ok(())
     }
 
-    fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], hit: VisibilityHit) -> u32 {
-        let slot = match hit {
-            VisibilityHit::Node(node) => {
-                // A first leftward contact cannot have a departure toward the
-                // query: that atom would have supplied a closer contact.
-                topology.starts[node.0 as usize + 1] as usize - 1
-            },
-            VisibilityHit::Span(edge) => {
-                let span = self.spans[edge as usize];
-                let source = self.unique[span.unique as usize];
-                let origin = if source.end.y > source.start.y {
-                    span.end
-                } else {
-                    span.start
-                };
-                (topology.starts[origin.0 as usize] as usize
-                    ..topology.starts[origin.0 as usize + 1] as usize)
-                    .find(|&slot| edges[slot] == edge)
-                    .expect("contact atom has a departure slot")
-            },
+    /// The walk on the east side of `span`: the departure from its upper
+    /// endpoint keeps that side on its left.
+    fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], span: u32) -> u32 {
+        let atom = self.spans[span as usize];
+        let source = self.unique[atom.unique as usize];
+        let origin = if source.end.y > source.start.y {
+            atom.end
+        } else {
+            atom.start
         };
+        let slot = (topology.starts[origin.0 as usize] as usize
+            ..topology.starts[origin.0 as usize + 1] as usize)
+            .find(|&slot| edges[slot] == span)
+            .expect("contact atom has a departure slot");
         topology.face_of[slot]
-    }
-
-    fn first_left_contact(
-        &self,
-        topology: &IndexedTopology,
-        query: NodeId,
-    ) -> Result<Option<VisibilityHit>> {
-        let component = topology.component_of[query.0 as usize];
-        let query_exact = self.exact(query)?;
-        let [qx, qy, qw] = &*query_exact;
-        let (_, query_x_hi) = self.axis_bounds(query, Axis::X);
-        let (query_y_lo, query_y_hi) = self.axis_bounds(query, Axis::Y);
-        let mut nearest: Option<(ExactDyadic, ExactDyadic, f64, VisibilityHit)> = None;
-        let visibility = self
-            .visibility
-            .get_or_try_init(|| VisibilityIndex::build(self))?;
-        let candidate_range = visibility.candidate_range(query_y_lo, query_y_hi);
-        let mut candidates = Vec::new();
-        try_reserve_vec(&mut candidates, candidate_range.len())?;
-        candidates.extend_from_slice(&visibility.entries[candidate_range]);
-        // The exact path retained the first hit on an equal-x tie. Restore
-        // span order after the y-index walk so that tie handling is unchanged.
-        candidates.sort_unstable_by_key(|entry| entry.edge);
-        for entry in candidates {
-            let edge = entry.edge as usize;
-            let span = self.spans[edge];
-            if topology.component_of[span.start.0 as usize] == component {
-                continue;
-            }
-            if query_y_hi < entry.extent.y_lo || query_y_lo > entry.extent.y_hi {
-                continue;
-            }
-            // The exact path rejects every contact at or right of the query.
-            // A lower extent bound at or beyond the query's upper enclosure
-            // proves that rejection without entering exact arithmetic.
-            if entry.extent.x_lo >= query_x_hi {
-                continue;
-            }
-            // A leftward ray keeps the greatest hit below the query. An extent
-            // entirely to its left cannot improve that exact nearest contact.
-            if let Some((_, _, nearest_x_lo, _)) = &nearest
-                && entry.extent.x_hi < *nearest_x_lo
-            {
-                continue;
-            }
-            let a_side = self.compare_axis(span.start, query, Axis::Y)?;
-            let b_side = self.compare_axis(span.end, query, Axis::Y)?;
-            let node_hit = |node: NodeId| -> Result<(ExactDyadic, ExactDyadic, VisibilityHit)> {
-                let [x, _, w] = self.exact_owned(node)?;
-                Ok((x, w, VisibilityHit::Node(node)))
-            };
-            let (x, w, hit) = if a_side == Ordering::Equal && b_side == Ordering::Equal {
-                if self.compare_axis(span.start, span.end, Axis::X)? == Ordering::Greater {
-                    node_hit(span.start)?
-                } else {
-                    node_hit(span.end)?
-                }
-            } else if a_side == Ordering::Equal {
-                node_hit(span.start)?
-            } else if b_side == Ordering::Equal {
-                node_hit(span.end)?
-            } else if a_side == b_side {
-                continue;
-            } else {
-                let source = self.unique[span.unique as usize];
-                let sx = ExactDyadic::try_from_f64(source.start.x)?;
-                let sy = ExactDyadic::try_from_f64(source.start.y)?;
-                let dx = ExactDyadic::try_from_f64(source.end.x)?.try_subtract(sx.try_clone()?)?;
-                let dy = ExactDyadic::try_from_f64(source.end.y)?.try_subtract(sy.try_clone()?)?;
-                let w = dy.try_product(qw)?;
-                let height = qy.try_clone()?.try_subtract(sy.try_product(qw)?)?;
-                let x = sx.try_product(&w)?.try_add(dx.try_product(&height)?)?;
-                (x, w, VisibilityHit::Span(entry.edge))
-            };
-            if try_compare_ratios(&x, &w, qx, qw)? != Ordering::Less {
-                continue;
-            }
-            if let Some((nx, nw, ..)) = &nearest
-                && try_compare_ratios(&x, &w, nx, nw)? != Ordering::Greater
-            {
-                continue;
-            }
-            let nearest_x_lo = ratio_enclosure(&x, &w)?.0;
-            nearest = Some((x, w, nearest_x_lo, hit));
-        }
-        Ok(nearest.map(|(_, _, _, hit)| hit))
     }
 }
 
@@ -6229,28 +6080,6 @@ impl<'a> PointArena<'a> {
         }
     }
 
-    /// Order two points along one axis. Nearest-even rounding is monotone, so
-    /// rounded coordinates that differ order the exact points the same way;
-    /// only a tie that is not between two stored values reads exact points.
-    fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering> {
-        let (l, r) = (
-            axis.of(self.rounded[left as usize]),
-            axis.of(self.rounded[right as usize]),
-        );
-        if l < r {
-            return Ok(Ordering::Less);
-        }
-        if l > r {
-            return Ok(Ordering::Greater);
-        }
-        if left == right || (self.is_stored(left) && self.is_stored(right)) {
-            return Ok(Ordering::Equal);
-        }
-        let (left, right) = (self.exact(left)?, self.exact(right)?);
-        let index = axis.index();
-        try_compare_ratios(&left[index], &left[2], &right[index], &right[2])
-    }
-
     /// Order a point's coordinate against a binary64 value by the same rule.
     fn compare_axis_to(&self, index: u32, axis: Axis, value: f64) -> Result<Ordering> {
         let rounded = axis.of(self.rounded[index as usize]);
@@ -6285,93 +6114,20 @@ impl<'a> PointArena<'a> {
     }
 
     /// Order items whose points lie on `segment`'s carrier from its start to
-    /// its end, reporting each adjacent pair at one point to `equal`. The
-    /// rounded coordinate on the segment's major axis sorts; exact points
-    /// break only runs of equal rounded coordinates.
+    /// its end, reporting each adjacent pair at one point to `equal`.
     fn order_along<T: Copy>(
         &self,
         segment: Segment,
         items: &mut [T],
         point: impl Fn(T) -> u32,
-        mut equal: impl FnMut(T, T) -> Result<()>,
+        equal: impl FnMut(T, T) -> Result<()>,
     ) -> Result<()> {
         let (axis, increasing) = segment_axis(segment);
-        let key = |item: T| {
-            let value = axis.of(self.rounded[point(item) as usize]);
-            if value == 0.0 { 0.0 } else { value }
-        };
-        items.sort_unstable_by(|&left, &right| key(left).total_cmp(&key(right)));
-        let mut run = 0;
-        while run < items.len() {
-            let mut end = run + 1;
-            while end < items.len() && key(items[end]).total_cmp(&key(items[run])).is_eq() {
-                end += 1;
-            }
-            if end - run > 1 {
-                let tied = &mut items[run..end];
-                try_sort_by(tied, |&left, &right| {
-                    self.compare_axis(point(left), point(right), axis)
-                })?;
-                for pair in 1..tied.len() {
-                    if self.compare_axis(point(tied[pair - 1]), point(tied[pair]), axis)?
-                        == Ordering::Equal
-                    {
-                        equal(tied[pair - 1], tied[pair])?;
-                    }
-                }
-            }
-            run = end;
-        }
+        RayPoints::sort_by_axis(self, items, axis, point, equal)?;
         if !increasing {
             items.reverse();
         }
         Ok(())
-    }
-
-    /// The orientation of `c` against the directed line through `a` and `b`:
-    /// the stored predicate when all three are stored, otherwise an interval
-    /// filter over the certified bounds and the exact homogeneous determinant.
-    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
-        if self.is_stored(a) && self.is_stored(b) && self.is_stored(c) {
-            let [a, b, c] = [a, b, c].map(|index| self.rounded[index as usize]);
-            return Ok(stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y));
-        }
-        let interval = |index: u32, axis: Axis| {
-            let (lo, hi) = self.axis_bounds(index, axis);
-            Interval { lo, hi }
-        };
-        let (ax, ay) = (interval(a, Axis::X), interval(a, Axis::Y));
-        let determinant = interval(b, Axis::X)
-            .sub(ax)
-            .mul(interval(c, Axis::Y).sub(ay))
-            .sub(
-                interval(b, Axis::Y)
-                    .sub(ay)
-                    .mul(interval(c, Axis::X).sub(ax)),
-            );
-        if determinant.is_finite()
-            && let Some(sign) = determinant.sign()
-        {
-            return Ok(sign);
-        }
-        let [ax, ay, aw] = &*self.exact(a)?;
-        let [bx, by, bw] = &*self.exact(b)?;
-        let [cx, cy, cw] = &*self.exact(c)?;
-        let dx = bx.try_product(aw)?.try_subtract(ax.try_product(bw)?)?;
-        let dy = by.try_product(aw)?.try_subtract(ay.try_product(bw)?)?;
-        let cx_rel = cx.try_product(aw)?.try_subtract(ax.try_product(cw)?)?;
-        let cy_rel = cy.try_product(aw)?.try_subtract(ay.try_product(cw)?)?;
-        let sign = dx
-            .try_product(&cy_rel)?
-            .try_subtract(dy.try_product(&cx_rel)?)?
-            .sign();
-        // The determinant carries aw^2 bw cw, and aw^2 is positive.
-        let flipped = (bw.sign() == ExactSign::Negative) != (cw.sign() == ExactSign::Negative);
-        Ok(match (flipped, sign) {
-            (true, ExactSign::Negative) => ExactSign::Positive,
-            (true, ExactSign::Positive) => ExactSign::Negative,
-            (_, sign) => sign,
-        })
     }
 }
 
@@ -6441,6 +6197,296 @@ fn interpolate_ordinate(
     let left = den.try_clone()?.try_subtract(num.try_clone()?)?;
     let numerator = start.try_product(&left)?.try_add(end.try_product(num)?)?;
     Ok(Some(round_ratio(&numerator, den)?))
+}
+
+/// Points a leftward ray sweep reads: rounded coordinates, an order on each
+/// axis, and orientation.
+trait RayPoints {
+    fn rounded(&self, index: u32) -> XY;
+    fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering>;
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign>;
+
+    /// Sort items by their points' coordinate on `axis`, reporting each
+    /// adjacent pair at one coordinate to `equal`. The rounded coordinate
+    /// sorts; exact points break only runs of equal rounded coordinates.
+    fn sort_by_axis<T: Copy>(
+        &self,
+        items: &mut [T],
+        axis: Axis,
+        point: impl Fn(T) -> u32,
+        mut equal: impl FnMut(T, T) -> Result<()>,
+    ) -> Result<()> {
+        let key = |item: T| {
+            let value = axis.of(self.rounded(point(item)));
+            if value == 0.0 { 0.0 } else { value }
+        };
+        items.sort_unstable_by(|&left, &right| key(left).total_cmp(&key(right)));
+        let mut run = 0;
+        while run < items.len() {
+            let mut end = run + 1;
+            while end < items.len() && key(items[end]).total_cmp(&key(items[run])).is_eq() {
+                end += 1;
+            }
+            if end - run > 1 {
+                let tied = &mut items[run..end];
+                try_sort_by(tied, |&left, &right| {
+                    self.compare_axis(point(left), point(right), axis)
+                })?;
+                for pair in 1..tied.len() {
+                    if self.compare_axis(point(tied[pair - 1]), point(tied[pair]), axis)?
+                        == Ordering::Equal
+                    {
+                        equal(tied[pair - 1], tied[pair])?;
+                    }
+                }
+            }
+            run = end;
+        }
+        Ok(())
+    }
+}
+
+impl RayPoints for PointArena<'_> {
+    fn rounded(&self, index: u32) -> XY {
+        self.rounded[index as usize]
+    }
+
+    /// Order two points along one axis. Nearest-even rounding is monotone, so
+    /// rounded coordinates that differ order the exact points the same way;
+    /// only a tie that is not between two stored values reads exact points.
+    fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering> {
+        let (l, r) = (
+            axis.of(self.rounded[left as usize]),
+            axis.of(self.rounded[right as usize]),
+        );
+        if l < r {
+            return Ok(Ordering::Less);
+        }
+        if l > r {
+            return Ok(Ordering::Greater);
+        }
+        if left == right || (self.is_stored(left) && self.is_stored(right)) {
+            return Ok(Ordering::Equal);
+        }
+        let (left, right) = (self.exact(left)?, self.exact(right)?);
+        let index = axis.index();
+        try_compare_ratios(&left[index], &left[2], &right[index], &right[2])
+    }
+
+    /// The orientation of `c` against the directed line through `a` and `b`:
+    /// the stored predicate when all three are stored, otherwise an interval
+    /// filter over the certified bounds and the exact homogeneous determinant.
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        if self.is_stored(a) && self.is_stored(b) && self.is_stored(c) {
+            let [a, b, c] = [a, b, c].map(|index| self.rounded[index as usize]);
+            return Ok(stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y));
+        }
+        let interval = |index: u32, axis: Axis| {
+            let (lo, hi) = self.axis_bounds(index, axis);
+            Interval { lo, hi }
+        };
+        let (ax, ay) = (interval(a, Axis::X), interval(a, Axis::Y));
+        let determinant = interval(b, Axis::X)
+            .sub(ax)
+            .mul(interval(c, Axis::Y).sub(ay))
+            .sub(
+                interval(b, Axis::Y)
+                    .sub(ay)
+                    .mul(interval(c, Axis::X).sub(ax)),
+            );
+        if determinant.is_finite()
+            && let Some(sign) = determinant.sign()
+        {
+            return Ok(sign);
+        }
+        let [ax, ay, aw] = &*self.exact(a)?;
+        let [bx, by, bw] = &*self.exact(b)?;
+        let [cx, cy, cw] = &*self.exact(c)?;
+        let dx = bx.try_product(aw)?.try_subtract(ax.try_product(bw)?)?;
+        let dy = by.try_product(aw)?.try_subtract(ay.try_product(bw)?)?;
+        let cx_rel = cx.try_product(aw)?.try_subtract(ax.try_product(cw)?)?;
+        let cy_rel = cy.try_product(aw)?.try_subtract(ay.try_product(cw)?)?;
+        let sign = dx
+            .try_product(&cy_rel)?
+            .try_subtract(dy.try_product(&cx_rel)?)?
+            .sign();
+        // The determinant carries aw^2 bw cw, and aw^2 is positive.
+        let flipped = (bw.sign() == ExactSign::Negative) != (cw.sign() == ExactSign::Negative);
+        Ok(match (flipped, sign) {
+            (true, ExactSign::Negative) => ExactSign::Positive,
+            (true, ExactSign::Positive) => ExactSign::Negative,
+            (_, sign) => sign,
+        })
+    }
+}
+
+/// Emitted node coordinates, exact as the stored doubles they are.
+struct EmittedPoints<'p>(&'p [XY]);
+
+impl RayPoints for EmittedPoints<'_> {
+    fn rounded(&self, index: u32) -> XY {
+        self.0[index as usize]
+    }
+
+    fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering> {
+        let (left, right) = (
+            axis.of(self.0[left as usize]),
+            axis.of(self.0[right as usize]),
+        );
+        Ok(if left < right {
+            Ordering::Less
+        } else if left > right {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        })
+    }
+
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        let [a, b, c] = [a, b, c].map(|index| self.0[index as usize]);
+        Ok(stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y))
+    }
+}
+
+/// Leftward ray shooting for many queries in one sweep over y.
+///
+/// The ray from a query runs toward -x just above the query's height, so an
+/// edge whose lower endpoint lies at that height is crossed and one whose
+/// upper endpoint does is not; every hit is an edge, and the region just east
+/// of it holds the query. A ray passing just above a vertex therefore meets
+/// the faces its wedge toward +x belongs to, and a horizontal edge at the
+/// query's height is never crossed. Each query must be its component's
+/// lexicographic minimum, so its own edges never lie strictly left of it.
+/// Answers follow `queries`, as indices into `edges`.
+///
+/// The status holds the edges crossing the sweep line in x order: an edge
+/// enters at its lower endpoint and leaves at its upper one, placed and found
+/// by binary search on orientations, so the sweep costs O((n + q) log n)
+/// comparisons plus the status shifts.
+fn shoot_left(
+    points: &impl RayPoints,
+    edge_count: usize,
+    edge: impl Fn(usize) -> [u32; 2],
+    queries: &[u32],
+) -> Result<Vec<Option<u32>>> {
+    let mut order = Vec::new();
+    try_reserve_vec(&mut order, queries.len())?;
+    order.extend(0..queries.len());
+    points.sort_by_axis(&mut order, Axis::Y, |index| queries[index], |_, _| Ok(()))?;
+    // [lower, upper, edge] for the edges some ray crosses: a horizontal or
+    // zero-length edge never does, nor one no query height falls within.
+    let mut starts: Vec<[u32; 3]> = Vec::new();
+    for index in 0..edge_count {
+        let [a, b] = edge(index);
+        let (lower, upper) = match points.compare_axis(a, b, Axis::Y)? {
+            Ordering::Less => (a, b),
+            Ordering::Greater => (b, a),
+            Ordering::Equal => continue,
+        };
+        let first = first_not_left(&order, |query| {
+            Ok(points.compare_axis(queries[query], lower, Axis::Y)? == Ordering::Less)
+        })?;
+        if let Some(&query) = order.get(first)
+            && points.compare_axis(queries[query], upper, Axis::Y)? == Ordering::Less
+        {
+            let index = u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?;
+            try_push_vec(&mut starts, [lower, upper, index])?;
+        }
+    }
+    let mut ends = Vec::new();
+    try_reserve_vec(&mut ends, starts.len())?;
+    ends.extend_from_slice(&starts);
+    points.sort_by_axis(&mut starts, Axis::Y, |[lower, ..]| lower, |_, _| Ok(()))?;
+    points.sort_by_axis(&mut ends, Axis::Y, |[_, upper, _]| upper, |_, _| Ok(()))?;
+    let mut answers = Vec::new();
+    try_reserve_vec(&mut answers, queries.len())?;
+    answers.resize(queries.len(), None);
+
+    let orientation = |a, b, c| {
+        #[cfg(test)]
+        update_partition_metrics(|metrics| metrics.ray_orientations += 1);
+        points.orientation(a, b, c)
+    };
+    let negative = |a, b, c| -> Result<bool> { Ok(orientation(a, b, c)? == ExactSign::Negative) };
+    let positive = |a, b, c| -> Result<bool> { Ok(orientation(a, b, c)? == ExactSign::Positive) };
+    // Whether `edge` lies left of every point just above `point`'s height on
+    // the ray through it; for an edge starting at `point`, the fan order.
+    let left_above = |[lower, upper, _]: [u32; 3], [start, end, _]: [u32; 3]| -> Result<bool> {
+        if lower == start {
+            positive(start, end, upper)
+        } else {
+            negative(lower, upper, start)
+        }
+    };
+    // The same just below the height where `ending` leaves, among the edges
+    // converging on its upper endpoint by their lower directions.
+    let left_below = |[lower, upper, _]: [u32; 3], [start, end, _]: [u32; 3]| -> Result<bool> {
+        if upper == end {
+            positive(start, end, lower)
+        } else {
+            negative(lower, upper, end)
+        }
+    };
+    let mut status: Vec<[u32; 3]> = Vec::new();
+    try_reserve_vec(&mut status, starts.len())?;
+    let (mut next_start, mut next_end, mut next_query) = (0, 0, 0);
+    while next_query < order.len() {
+        let mut height = queries[order[next_query]];
+        if let Some(&[lower, ..]) = starts.get(next_start)
+            && points.compare_axis(lower, height, Axis::Y)? == Ordering::Less
+        {
+            height = lower;
+        }
+        if let Some(&[_, upper, _]) = ends.get(next_end)
+            && points.compare_axis(upper, height, Axis::Y)? == Ordering::Less
+        {
+            height = upper;
+        }
+        while let Some(&ending) = ends.get(next_end)
+            && points.compare_axis(ending[1], height, Axis::Y)? == Ordering::Equal
+        {
+            let index = first_not_left(&status, |edge| left_below(edge, ending))?;
+            if status.get(index).map(|edge| edge[2]) != Some(ending[2]) {
+                return Err(GeometryErrorKind::Invalid(
+                    "leftward ray sweep lost an edge from its status".into(),
+                )
+                .into());
+            }
+            status.remove(index);
+            next_end += 1;
+        }
+        while let Some(&starting) = starts.get(next_start)
+            && points.compare_axis(starting[0], height, Axis::Y)? == Ordering::Equal
+        {
+            let index = first_not_left(&status, |edge| left_above(edge, starting))?;
+            status.insert(index, starting);
+            next_start += 1;
+        }
+        while let Some(&query) = order.get(next_query)
+            && points.compare_axis(queries[query], height, Axis::Y)? == Ordering::Equal
+        {
+            let point = queries[query];
+            let index = first_not_left(&status, |[lower, upper, _]| negative(lower, upper, point))?;
+            answers[query] = index.checked_sub(1).map(|left| status[left][2]);
+            next_query += 1;
+        }
+    }
+    Ok(answers)
+}
+
+/// The first item that is not left of the probe, for items ordered so that
+/// `left` holds on a prefix.
+fn first_not_left<T: Copy>(items: &[T], mut left: impl FnMut(T) -> Result<bool>) -> Result<usize> {
+    let (mut low, mut high) = (0, items.len());
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if left(items[middle])? {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    Ok(low)
 }
 
 /// Construction handles: interned stored endpoints and crossings, unioned
@@ -6836,7 +6882,6 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         bindings,
         protect_stored: false,
         protect_all: false,
-        visibility: std::sync::OnceLock::new(),
     })
 }
 
@@ -7125,6 +7170,17 @@ mod tests {
             (0..self.node_count())
                 .find(|&node| self.stored_key(node) == Some(key))
                 .map(|node| NodeId(node as u32))
+        }
+
+        /// The span a leftward ray from `query` meets first, by the sweep.
+        fn left_contact(&self, query: NodeId) -> Option<u32> {
+            shoot_left(
+                &self.points,
+                self.spans.len(),
+                |index| [self.spans[index].start.0, self.spans[index].end.0],
+                &[query.0],
+            )
+            .unwrap()[0]
         }
 
         fn crossings(&self) -> Vec<NodeId> {
@@ -8758,12 +8814,7 @@ mod tests {
                 .unwrap(),
             None
         );
-        assert_eq!(
-            partition
-                .first_left_contact(&topology, NodeId(outer as u32))
-                .unwrap(),
-            None
-        );
+        assert_eq!(partition.left_contact(NodeId(outer as u32)), None);
         let wall_start = partition.stored_node(XY::new(0.0, 8.0)).unwrap();
         let wall = partition
             .spans
@@ -8775,13 +8826,11 @@ mod tests {
             .unwrap();
         for query in [inner, isolated] {
             assert_eq!(
-                partition
-                    .first_left_contact(&topology, NodeId(query as u32))
-                    .unwrap(),
-                Some(VisibilityHit::Span(wall as u32))
+                partition.left_contact(NodeId(query as u32)),
+                Some(wall as u32)
             );
         }
-        let host = partition.contact_walk(&topology, &edges, VisibilityHit::Span(wall as u32));
+        let host = partition.contact_walk(&topology, &edges, wall as u32);
         assert_ne!(host, outer_walk);
         let wall_slot = (topology.starts[outer] as usize..topology.starts[outer + 1] as usize)
             .find(|&slot| edges[slot] == wall as u32)
@@ -8824,24 +8873,79 @@ mod tests {
         assert_ne!(exterior, topology.face_of[topology.twins[slot] as usize]);
     }
 
+    /// Host faces for a shell with a grid of holes come from one sweep: four
+    /// times the holes costs about four times the orientation tests, not
+    /// sixteen.
     #[test]
-    fn visibility_keeps_horizontal_and_tangent_vertex_contacts() {
-        for segments in [
-            vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)],
-            vec![
-                seg(0.0, 2.0, 2.0, 0.0),
-                seg(2.0, 0.0, 3.0, 2.0),
-                seg(4.0, 0.0, 4.0, 0.0),
-            ],
+    fn hole_hosts_scale_with_the_hole_count() {
+        let orientations = |side: u32| {
+            let extent = 10.0 * f64::from(side) + 10.0;
+            let mut segments = vec![
+                seg(0.0, 0.0, extent, 0.0),
+                seg(extent, 0.0, extent, extent),
+                seg(extent, extent, 0.0, extent),
+                seg(0.0, extent, 0.0, 0.0),
+            ];
+            for row in 0..side {
+                for column in 0..side {
+                    let (x, y) = (10.0 * f64::from(column) + 5.0, 10.0 * f64::from(row) + 5.0);
+                    segments.extend([
+                        seg(x, y, x, y + 2.0),
+                        seg(x, y + 2.0, x + 2.0, y + 2.0),
+                        seg(x + 2.0, y + 2.0, x + 2.0, y),
+                        seg(x + 2.0, y, x, y),
+                    ]);
+                }
+            }
+            let case = run(&segments);
+            let partition = case.partition();
+            let (topology, edges) = partition.local_topology().unwrap();
+            reset_partition_builds();
+            let faces = partition.global_faces(&topology, &edges).unwrap();
+            assert_eq!(faces.count as usize, 2 + (side * side) as usize);
+            partition_metrics().ray_orientations
+        };
+        let (small, large) = (orientations(16), orientations(32));
+        assert!(large < 6 * small, "{small} -> {large}");
+    }
+
+    /// A ray just above a horizontal span or a vertex touching the query's
+    /// height passes over them: a point beside a horizontal span meets
+    /// nothing, and one beside a V meets the V's rising right side, whose
+    /// east face is the unbounded one either way.
+    #[test]
+    fn rays_pass_over_horizontal_spans_and_tangent_vertices() {
+        for (segments, contact) in [
+            (vec![seg(0.0, 0.0, 2.0, 0.0), seg(4.0, 0.0, 4.0, 0.0)], None),
+            (
+                vec![
+                    seg(0.0, 2.0, 2.0, 0.0),
+                    seg(2.0, 0.0, 3.0, 2.0),
+                    seg(4.0, 0.0, 4.0, 0.0),
+                ],
+                Some((XY::new(2.0, 0.0), XY::new(3.0, 2.0))),
+            ),
         ] {
             let case = run(&segments);
             let partition = case.partition();
-            let (topology, _) = partition.local_topology().unwrap();
+            let (topology, edges) = partition.local_topology().unwrap();
             let query = partition.stored_node(XY::new(4.0, 0.0)).unwrap();
-            let contact = partition.stored_node(XY::new(2.0, 0.0)).unwrap();
+            let expected = contact.map(|(start, end)| {
+                let (start, end) = (
+                    partition.stored_node(start).unwrap(),
+                    partition.stored_node(end).unwrap(),
+                );
+                partition
+                    .spans
+                    .iter()
+                    .position(|span| span.start == start && span.end == end)
+                    .unwrap() as u32
+            });
+            assert_eq!(partition.left_contact(query), expected);
+            let faces = partition.global_faces(&topology, &edges).unwrap();
             assert_eq!(
-                partition.first_left_contact(&topology, query).unwrap(),
-                Some(VisibilityHit::Node(contact))
+                faces.component_hosts[topology.component_of[query.0 as usize] as usize],
+                0
             );
         }
     }
@@ -8860,11 +8964,19 @@ mod tests {
         let partition = case.partition();
         let (topology, edges) = partition.local_topology().unwrap();
         let root = partition.stored_node(XY::new(4.0, 0.0)).unwrap();
-        let contact = partition.stored_node(XY::new(2.0, 0.0)).unwrap();
-        assert_eq!(
-            partition.first_left_contact(&topology, root).unwrap(),
-            Some(VisibilityHit::Node(contact))
+        let (valley, rim) = (
+            partition.stored_node(XY::new(2.0, 0.0)).unwrap(),
+            partition.stored_node(XY::new(3.0, 2.0)).unwrap(),
         );
+        let contact = partition
+            .spans
+            .iter()
+            .position(|span| {
+                (span.start == valley && span.end == rim)
+                    || (span.start == rim && span.end == valley)
+            })
+            .unwrap() as u32;
+        assert_eq!(partition.left_contact(root), Some(contact));
         let faces = partition.global_faces(&topology, &edges).unwrap();
         assert_eq!(faces.count, 3);
         assert_eq!(faces.component_hosts, [0, 0, 0]);
@@ -8873,7 +8985,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(faces.walk_faces[exterior as usize], 0);
-        let host = partition.contact_walk(&topology, &edges, VisibilityHit::Node(contact));
+        let host = partition.contact_walk(&topology, &edges, contact);
         assert_eq!(faces.walk_faces[host as usize], 0);
         let mut windings = Vec::new();
         partition
