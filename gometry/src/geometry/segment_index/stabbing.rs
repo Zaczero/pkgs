@@ -208,6 +208,10 @@ impl<T> YStabbingIndex<T> {
         self.items.get(index)
     }
 
+    pub(crate) fn items(&self) -> &[T] {
+        &self.items
+    }
+
     /// The Y walk, handing the caller each surviving item's index so a filter
     /// can run before the item itself is touched.
     fn for_each_at_y_indexed<B>(

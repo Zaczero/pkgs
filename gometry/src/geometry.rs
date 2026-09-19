@@ -100,7 +100,7 @@ mod segments;
 mod source_support;
 pub(crate) use source_support::{
     RingKind, RingView, cartesian_area_covers_point, cartesian_point_location,
-    cartesian_polygon_row_point_location, cartesian_ring_views_location, edge_winding,
+    cartesian_polygon_row_point_location, cartesian_polygon_views_location, edge_winding,
     ring_kind_columns,
 };
 mod tessellation;

@@ -482,10 +482,8 @@ impl PreparedPlan {
     /// a batch answers probes that avoid every ring edge; everything else
     /// takes the exact source scan, which never pays for building an index.
     pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
-        if let Some(Some(tester)) = self.topology()?.point_tester.get()
-            && let Some(location) = tester.location_off_boundary(point)
-        {
-            return Ok(location);
+        if let Some(Some(tester)) = self.topology()?.point_tester.get() {
+            return tester.location(point);
         }
         crate::geometry::cartesian_point_location(self.shape(), point)
     }

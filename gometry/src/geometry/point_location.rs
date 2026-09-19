@@ -19,7 +19,7 @@ use crate::error::Result;
 use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
 use crate::geometry::{
     Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingEdgeMembership, RingView, Shape,
-    SharedSlice, XY, cartesian_ring_views_location, edge_winding, ring_edge_membership,
+    SharedSlice, XY, cartesian_polygon_views_location, edge_winding, ring_edge_membership,
     ring_kind_columns, xy_bounds_columns,
 };
 
@@ -277,16 +277,14 @@ impl PolygonPointIndex {
                 hole_indices.push(index);
                 ControlFlow::Continue(())
             });
-        let mut holes = Vec::new();
-        crate::try_reserve_vec(&mut holes, hole_indices.len())?;
-        for index in hole_indices {
-            let hole = self
-                .holes
-                .get(index)
-                .expect("point index returned an invalid item index");
-            holes.push(hole.view());
-        }
-        let location = cartesian_ring_views_location(self.shell.view(), &holes, point)?;
+        let rings =
+            std::iter::once(self.shell.view()).chain(hole_indices.into_iter().map(|index| {
+                self.holes
+                    .get(index)
+                    .expect("point index returned an invalid item index")
+                    .view()
+            }));
+        let location = cartesian_polygon_views_location([rings], point)?;
         Ok(match location {
             crate::geometry::Loc::Interior => RingClass::Interior,
             crate::geometry::Loc::Boundary => RingClass::Boundary,
@@ -527,6 +525,44 @@ impl PointBatchTester {
         } else {
             Loc::Exterior
         })
+    }
+
+    /// Exact location of any probe. Off every edge the indexed windings
+    /// answer; on an edge the exact local star decides from the stored ring
+    /// views, so no ring is re-classified per probe. Only parts whose
+    /// envelope holds the probe contribute: every other part has zero winding
+    /// there and no incident edge.
+    pub(crate) fn location(&self, point: Point) -> Result<Loc> {
+        if let Some(location) = self.location_off_boundary(point) {
+            return Ok(location);
+        }
+        match self {
+            Self::Polygon { index } => Ok(match index.location(point)? {
+                RingClass::Interior => Loc::Interior,
+                RingClass::Boundary => Loc::Boundary,
+                RingClass::Exterior => Loc::Exterior,
+            }),
+            Self::MultiPolygon { parts } => {
+                let mut near = Vec::new();
+                let _: Option<()> = parts.for_each_at_point_index(point.x, point.y, |index| {
+                    near.push(index);
+                    ControlFlow::Continue(())
+                });
+                cartesian_polygon_views_location(
+                    near.into_iter().map(|index| {
+                        let part = parts
+                            .get(index)
+                            .expect("point index returned an invalid item");
+                        std::iter::once(part.shell.view())
+                            .chain(part.holes.items().iter().map(RingPointIndex::view))
+                    }),
+                    point,
+                )
+            },
+            Self::Generic(tester) => {
+                crate::geometry::cartesian_point_location(&tester.shape, point)
+            },
+        }
     }
 
     /// Strict membership — [`Shape::contains_point`] semantics.
@@ -998,8 +1034,8 @@ mod tests {
         }
     }
 
-    /// The indexed off-boundary answer must agree with the exact source scan
-    /// wherever it answers, and must defer on every edge contact.
+    /// The tester's location must agree with the exact source scan on every
+    /// probe; its indexed off-boundary answer defers on every edge contact.
     #[test]
     fn indexed_locations_agree_with_the_exact_scan() {
         use crate::geometry::Coordinates as _;
@@ -1012,6 +1048,8 @@ mod tests {
             "POLYGON ((0 0,4 4,4 0,0 4,0 0))",
             "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0)),((2 2,4 2,4 4,2 4,2 2)))",
             "MULTIPOLYGON (((0 0,4 0,4 4,0 4,0 0)),((1 1,3 1,3 3,1 3,1 1)))",
+            "MULTIPOLYGON (((0 0,2 0,2 4,0 4,0 0)),((2 0,4 0,4 4,2 4,2 0)))",
+            "MULTIPOLYGON (((0 0,2 0,2 2,0 2,0 0),(0.5 0.5,1 0.5,1 1,0.5 1,0.5 0.5)),((2 0,4 0,4 4,2 4,2 0)))",
         ] {
             let shape = crate::io::parse_wkt(wkt).unwrap();
             let tester = PointBatchTester::new(&shape).unwrap();
@@ -1019,6 +1057,7 @@ mod tests {
                 for step_y in -2..=18 {
                     let point = Point::new_raw_xy(f64::from(step_x) / 4.0, f64::from(step_y) / 4.0);
                     let exact = crate::geometry::cartesian_point_location(&shape, point).unwrap();
+                    assert_eq!(tester.location(point).unwrap(), exact, "{wkt} at {point:?}");
                     if let Some(location) = tester.location_off_boundary(point) {
                         assert_eq!(location, exact, "{wkt} at {point:?}");
                     } else {

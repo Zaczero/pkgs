@@ -824,21 +824,22 @@ pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> Result
     SourceSupport::from_shape(shape)?.area_covers(point)
 }
 
-pub(crate) fn cartesian_ring_views_location(
-    shell: RingView<'_>,
-    holes: &[RingView<'_>],
+/// Cartesian location over polygons given as ring views, shell first — the
+/// path of prepared point testers, which already hold each ring's kind.
+pub(crate) fn cartesian_polygon_views_location<'a, P: IntoIterator<Item = RingView<'a>>>(
+    polygons: impl IntoIterator<Item = P>,
     point: Point,
 ) -> Result<Loc> {
     let mut source = SourceSupport::new();
-    let ring_count = holes
-        .len()
-        .checked_add(1)
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    try_reserve_vec(&mut source.rings, ring_count)?;
-    source.rings.push(shell);
-    source.rings.extend(holes.iter().copied());
-    try_reserve_vec(&mut source.polygons, 1)?;
-    source.polygons.push(0..source.rings.len());
+    for rings in polygons {
+        let first = source.rings.len();
+        for ring in rings {
+            try_reserve_vec(&mut source.rings, 1)?;
+            source.rings.push(ring);
+        }
+        try_reserve_vec(&mut source.polygons, 1)?;
+        source.polygons.push(first..source.rings.len());
+    }
     source.location(point)
 }
 
