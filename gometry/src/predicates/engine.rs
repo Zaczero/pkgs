@@ -709,6 +709,11 @@ pub(crate) fn topology_pair_after_gates(
     if let Some(verdict) = local_point_predicate(spec, operands)? {
         return Ok(verdict);
     }
+    if let PreparedTopologyPair::Cartesian { left, right } = *operands
+        && matches!(spec.predicate, Predicate::Intersects | Predicate::Disjoint)
+    {
+        return Ok(left.intersects(right)? == (spec.predicate == Predicate::Intersects));
+    }
     Ok(predicate_matrix_value(spec, operands.relate()?))
 }
 
@@ -756,8 +761,8 @@ fn local_point_predicate(
 /// A DE-9IM pattern over a scalar pair, decided as early as the evidence
 /// allows: sound disjoint bounds settle every cell the bounds prove (a
 /// curve's boundary cells stay open, since whether a closed line has a
-/// boundary is a staging fact), then the direct engines answer the pattern
-/// three-valued, and only a pair they decline builds the matrix.
+/// boundary is a staging fact), and only a pair they leave open builds the
+/// matrix.
 pub(crate) fn topology_scalar_pattern(
     pattern: CompiledPattern,
     operands: &PreparedTopologyPair<'_>,

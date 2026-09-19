@@ -413,6 +413,58 @@ mod convex_tests {
     }
 
     #[test]
+    fn prepared_intersects_agrees_with_the_relate_matrix() {
+        // Representative probes plus boundary contact decide `intersects`
+        // without the matrix; holes, touching boundaries and nesting are
+        // where either half alone would answer wrongly.
+        let donut = "POLYGON ((0 0,10 0,10 10,0 10,0 0),(3 3,7 3,7 7,3 7,3 3))";
+        let pairs = [
+            (donut, "POLYGON ((4 4,6 4,6 6,4 6,4 4))"),
+            (donut, "POLYGON ((3 4,6 4,6 6,3 6,3 4))"),
+            (donut, "POLYGON ((2 4,6 4,6 6,2 6,2 4))"),
+            (donut, "POLYGON ((-1 -1,11 -1,11 11,-1 11,-1 -1))"),
+            (donut, "LINESTRING (4 5,6 5)"),
+            (donut, "LINESTRING (4 5,8 5)"),
+            (donut, "MULTIPOINT ((5 5),(20 20))"),
+            (donut, "MULTIPOINT ((5 5),(1 1))"),
+            ("POLYGON ((0 0,4 0,0 4,0 0))", "POLYGON ((4 0,8 0,8 4,4 0))"),
+            (
+                "POLYGON ((0 0,4 0,0 4,0 0))",
+                "POLYGON ((4.5 0,8 0,8 4,4.5 0))",
+            ),
+            (
+                "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((5 5,6 5,6 6,5 6,5 5)))",
+                "POLYGON ((5.5 5.5,9 5.5,9 9,5.5 9,5.5 5.5))",
+            ),
+            (
+                "MULTIPOLYGON (((0 0,1 0,1 1,0 1,0 0)),((5 5,6 5,6 6,5 6,5 5)))",
+                "LINESTRING (2 2,4 4)",
+            ),
+            ("LINESTRING (0 0,10 10)", "LINESTRING (0 10,10 0)"),
+            ("LINESTRING (0 0,10 10)", "LINESTRING (1 0,11 10)"),
+        ];
+        for (left, right) in pairs {
+            let left = crate::io::parse_wkt(left).unwrap();
+            let right = crate::io::parse_wkt(right).unwrap();
+            let expected = graph_relate_shapes(&left, &right).unwrap().is_intersects();
+            let (left, right) = (
+                PreparedPlan::transient(&left).unwrap(),
+                PreparedPlan::transient(&right).unwrap(),
+            );
+            assert_eq!(
+                left.intersects(&right).unwrap(),
+                expected,
+                "{left:?} {right:?}"
+            );
+            assert_eq!(
+                right.intersects(&left).unwrap(),
+                expected,
+                "{right:?} {left:?}"
+            );
+        }
+    }
+
+    #[test]
     fn linework_repair_cancels_retraced_occurrences_within_one_ring() {
         let retraced =
             crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,2 0,2 2,0 2,0 0))").unwrap();

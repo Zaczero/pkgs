@@ -51,19 +51,18 @@ pub(crate) fn area_overlap_probe(left: &Shape, right: &Shape) -> crate::error::R
     Ok(quick_area_overlap(left, right)?.is_some())
 }
 
-/// The isolated-point and segment-crossing halves of the parts oracle —
-/// for the distance/dwithin/nearest entry points whose representative
-/// probes already ran inside `quick_area_overlap` (re-running them per
-/// pair was measurable in batch metrics over overlapping operands).
+/// The isolated-point and segment-contact halves of the parts oracle, for
+/// entry points whose representative probes already ran inside
+/// `quick_area_overlap`. Ring edges are linework here, so with those probes
+/// negative, touching or crossing boundaries is the only way two valid
+/// operands meet. A ring edge that its own stored winding cancels (an
+/// invalid spur) still counts as contact.
 pub(crate) fn parts_boundary_contact(
     left: &Shape,
     left_parts: &DistanceParts,
     right: &Shape,
     right_parts: &DistanceParts,
 ) -> crate::error::Result<bool> {
-    if left.has_area_parts() || right.has_area_parts() {
-        return Ok(crate::geometry::graph_relate_shapes(left, right)?.is_intersects());
-    }
     for &point in &left_parts.point_only {
         if parts_covers_point(right, right_parts, point)? {
             return Ok(true);
