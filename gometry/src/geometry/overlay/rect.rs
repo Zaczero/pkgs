@@ -14,7 +14,7 @@ pub(crate) fn rect_polygon(rect: Bounds) -> crate::error::Result<Polygon> {
         try_push_vec(&mut shell, point)?;
     }
     Polygon::new(
-        Ring::from_closed(CoordSeq::try_from_points(&shell)?),
+        Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
         Vec::new(),
     )
 }

@@ -874,7 +874,7 @@ fn chart_ring(points: &[XY], shift: f64) -> crate::error::Result<Option<Ring>> {
     }
     let first = coords[0];
     try_push_vec(&mut coords, first)?;
-    Ok(Some(Ring::from_closed(CoordSeq::try_from_points(&coords)?)))
+    Ok(Ring::from_closed(CoordSeq::try_from_points(&coords)?))
 }
 
 fn area_polygons(graph: &TopologyGraph) -> Result<Vec<&AreaSupport>> {
@@ -1252,7 +1252,8 @@ mod tests {
                     Point::new_raw_xy(minx, miny),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap()
@@ -1269,7 +1270,8 @@ mod tests {
                     Point::new_raw_xy(3.0, 3.0),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
         ])
         .unwrap()
     }
@@ -1284,7 +1286,8 @@ mod tests {
                         .collect::<Vec<_>>(),
                 )
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap()
@@ -1300,7 +1303,7 @@ mod tests {
             .collect();
         points.push(points[0]);
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap()
@@ -1608,7 +1611,7 @@ mod tests {
         // `a` is the stored closing duplicate for the raw A-B-A ring.
         let two_unique = Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&[a, b, a, a]).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&[a, b, a, a]).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2356,7 +2359,8 @@ mod tests {
                         Point::new_raw_xy(170.0, 90.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2548,7 +2552,8 @@ mod tests {
                         Some(vec![5.0, 6.0, 7.0, 8.0, 5.0]),
                     )
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2647,7 +2652,8 @@ mod tests {
                             Point::new_raw_xy(0.0, 0.0),
                         ])
                         .unwrap(),
-                    ),
+                    )
+                    .unwrap(),
                     Vec::new(),
                 )
                 .unwrap(),
@@ -2662,7 +2668,8 @@ mod tests {
                             Point::new_raw_xy(0.0, 0.0),
                         ])
                         .unwrap(),
-                    ),
+                    )
+                    .unwrap(),
                     Vec::new(),
                 )
                 .unwrap(),

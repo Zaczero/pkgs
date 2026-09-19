@@ -281,7 +281,7 @@ mod tests {
             Point::new_raw_xy(minx, miny),
         ];
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap()
@@ -318,7 +318,7 @@ mod tests {
         points.push(points[0]);
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -380,7 +380,8 @@ mod tests {
                 Point::new_raw_xy(0.0, 0.0),
             ])
             .unwrap(),
-        );
+        )
+        .unwrap();
         let hole = Ring::from_closed(
             CoordSeq::try_from_points(&[
                 Point::new_raw_xy(1.0, 1.0),
@@ -390,7 +391,8 @@ mod tests {
                 Point::new_raw_xy(1.0, 1.0),
             ])
             .unwrap(),
-        );
+        )
+        .unwrap();
         let outer = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         let rows = [outer, rectangle(1.005, 1.005, 1.995, 1.995)];
         assert_allocation_prefixes(&rows, 0.0, 0.05);

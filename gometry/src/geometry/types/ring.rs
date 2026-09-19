@@ -102,23 +102,28 @@ impl Ring {
         Ok(true)
     }
 
-    /// Wrap a coordinate sequence that must already form a valid closed ring —
-    /// e.g. a coordinate-preserving transform of an existing `Ring`. Parsed
-    /// input uses [`Self::closed_coordseq`] so it can return a typed error.
-    ///
-    /// This transport constructor does not perform input admission or silently
-    /// append an endpoint. External and mutable-coordinate input must use
-    /// [`Self::closed_coordseq`], which owns closure validation and its typed
-    /// error.
-    pub(crate) fn from_closed(coords: CoordSeq) -> Self {
-        assert!(
-            coords.len() >= Self::MIN_VERTICES_CLOSED,
-            "closed Ring construction requires at least four coordinates"
-        );
-        Self(coords)
+    /// Wrap a closed coordinate sequence (first and last vertex equal), or
+    /// `None` when fewer than four coordinates remain — the case every
+    /// coordinate-dropping transform (snapping, repeated-point removal) must
+    /// decide. This transport constructor does not check closure or admit
+    /// external input; parsed input uses [`Self::closed_coordseq`], which owns
+    /// closure validation and its typed error.
+    pub(crate) fn from_closed(coords: CoordSeq) -> Option<Self> {
+        (coords.len() >= Self::MIN_VERTICES_CLOSED).then_some(Self(coords))
     }
 
-    /// The ring's coordinate columns.
+    /// [`Self::from_closed`] where a short ring is an error rather than a
+    /// collapse: constructed outlines and admitted storage rows.
+    pub(crate) fn try_from_closed(coords: CoordSeq) -> Result<Self> {
+        let len = coords.len();
+        Self::from_closed(coords).ok_or_else(|| GeometryErrorKind::RingTooShort(len).into())
+    }
+
+    /// The same ring traversed the other way.
+    pub(crate) fn reversed(&self) -> Result<Self> {
+        Ok(Self(self.0.reversed()?))
+    }
+
     pub const fn coords(&self) -> &CoordSeq {
         &self.0
     }

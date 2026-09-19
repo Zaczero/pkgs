@@ -624,7 +624,7 @@ fn tangent_circle_polygon(
     crate::try_push_vec(&mut points, first)?;
     let seq = CoordSeq::try_from_points(&points)?;
     Ok(Shape::Polygon(Polygon::new(
-        Ring::from_closed(seq),
+        Ring::try_from_closed(seq)?,
         Vec::new(),
     )?))
 }
@@ -1334,7 +1334,7 @@ fn build_inscribed_circle_once(
         ));
     }
     Ok(Shape::Polygon(Polygon::new(
-        Ring::from_closed(seq),
+        Ring::try_from_closed(seq)?,
         Vec::new(),
     )?))
 }
@@ -1563,7 +1563,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1594,7 +1595,7 @@ mod tests {
         points.push(points[0]);
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1614,7 +1615,7 @@ mod tests {
         points.push(points[0]);
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1683,7 +1684,8 @@ mod tests {
                         Point::new_raw_xy(-extent, -half_height),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1889,7 +1891,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1911,7 +1914,8 @@ mod tests {
                         Point::new_raw_xy(0.1, 0.1),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1939,7 +1943,8 @@ mod tests {
                         Point::new_raw_xy(-extent, -half_height),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1965,17 +1970,21 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
-                vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(4.5, 4.5),
-                        Point::new_raw_xy(5.5, 4.5),
-                        Point::new_raw_xy(5.5, 5.5),
-                        Point::new_raw_xy(4.5, 5.5),
-                        Point::new_raw_xy(4.5, 4.5),
-                    ])
+                )
+                .unwrap(),
+                vec![
+                    Ring::from_closed(
+                        CoordSeq::try_from_points(&[
+                            Point::new_raw_xy(4.5, 4.5),
+                            Point::new_raw_xy(5.5, 4.5),
+                            Point::new_raw_xy(5.5, 5.5),
+                            Point::new_raw_xy(4.5, 5.5),
+                            Point::new_raw_xy(4.5, 4.5),
+                        ])
+                        .unwrap(),
+                    )
                     .unwrap(),
-                )],
+                ],
             )
             .unwrap(),
         );
@@ -1997,17 +2006,21 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
-                vec![Ring::from_closed(
-                    crate::geometry::CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(48.0, 48.0),
-                        Point::new_raw_xy(52.0, 48.0),
-                        Point::new_raw_xy(52.0, 52.0),
-                        Point::new_raw_xy(48.0, 52.0),
-                        Point::new_raw_xy(48.0, 48.0),
-                    ])
+                )
+                .unwrap(),
+                vec![
+                    Ring::from_closed(
+                        crate::geometry::CoordSeq::try_from_points(&[
+                            Point::new_raw_xy(48.0, 48.0),
+                            Point::new_raw_xy(52.0, 48.0),
+                            Point::new_raw_xy(52.0, 52.0),
+                            Point::new_raw_xy(48.0, 52.0),
+                            Point::new_raw_xy(48.0, 48.0),
+                        ])
+                        .unwrap(),
+                    )
                     .unwrap(),
-                )],
+                ],
             )
             .unwrap(),
         );
@@ -2041,7 +2054,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2070,7 +2084,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2107,7 +2122,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 1.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2142,7 +2158,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2180,7 +2197,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2210,7 +2228,8 @@ mod tests {
                         Point::new_raw_xy(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2419,7 +2438,8 @@ mod tests {
         vertices[0] = Point::new_raw_xy(0.5, 0.0);
         let mutated = Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&vertices).expect("mutated ring")),
+                Ring::from_closed(CoordSeq::try_from_points(&vertices).expect("mutated ring"))
+                    .unwrap(),
                 Vec::new(),
             )
             .expect("polygon"),

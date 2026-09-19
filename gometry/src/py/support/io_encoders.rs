@@ -17,7 +17,7 @@ pub(crate) fn box_polygon(
     coords.try_push(Point::new(maxx, maxy))?;
     coords.try_push(Point::new(minx, maxy))?;
     coords.try_push(Point::new(minx, miny))?;
-    Polygon::new(Ring::from_closed(coords.finish()?), Vec::new())
+    Polygon::new(Ring::try_from_closed(coords.finish()?)?, Vec::new())
 }
 
 pub(crate) fn wrapped_box(

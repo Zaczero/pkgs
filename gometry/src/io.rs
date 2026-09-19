@@ -384,7 +384,7 @@ mod tests {
             point(0.0, 2.0, axes.has_z().then_some(1.0)),
             point(0.0, 0.0, axes.has_z().then_some(1.0)),
         ];
-        Ring::from_closed(CoordSeq::try_from_points(&points).unwrap())
+        Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap()
     }
 
     #[test]

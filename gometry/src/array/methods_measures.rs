@@ -772,7 +772,8 @@ mod geographic_masked_bounds_tests {
                             .collect::<Vec<_>>(),
                     )
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -889,7 +890,7 @@ mod concat_bulk_tests {
             Point::new_raw_xy(start, 0.0),
         ])
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(coords), Vec::new()).unwrap())
+        Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()).unwrap())
     }
 
     fn polygon_with_hole(start: f64) -> Shape {
@@ -910,7 +911,10 @@ mod concat_bulk_tests {
         ])
         .unwrap();
         Shape::Polygon(
-            Polygon::new(Ring::from_closed(shell), vec![Ring::from_closed(hole)]).unwrap(),
+            Polygon::new(Ring::from_closed(shell).unwrap(), vec![
+                Ring::from_closed(hole).unwrap(),
+            ])
+            .unwrap(),
         )
     }
 

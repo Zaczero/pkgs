@@ -456,7 +456,8 @@ fn polygon_with_hole_uses_bbox() {
             Point::new_raw_xy(-1.0, -1.0),
         ])
         .unwrap(),
-    );
+    )
+    .unwrap();
     let hole = Ring::from_closed(
         CoordSeq::try_from_points(&[
             Point::new_raw_xy(-0.2, -0.2),
@@ -466,7 +467,8 @@ fn polygon_with_hole_uses_bbox() {
             Point::new_raw_xy(-0.2, -0.2),
         ])
         .unwrap(),
-    );
+    )
+    .unwrap();
     let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
     let cell = bounding_cell(&shape).expect("cell");
     dense_edge_hilbert_ok(cell, -1.0, -1.0, 1.0, 1.0);

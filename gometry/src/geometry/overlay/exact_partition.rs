@@ -1413,9 +1413,7 @@ fn closed_ring(vertices: impl ExactSizeIterator<Item = XY> + Clone) -> Result<Ri
         ys.push(vertex.y);
     }
     canonicalize_closed_xy(&mut xs, &mut ys);
-    Ok(Ring::from_closed(CoordSeq::try_from_vecs(
-        xs, ys, None, None,
-    )?))
+    Ring::try_from_closed(CoordSeq::try_from_vecs(xs, ys, None, None)?)
 }
 
 fn canonicalize_closed_xy(xs: &mut [f64], ys: &mut [f64]) {
@@ -3006,7 +3004,7 @@ impl ExactSourceInventory {
                 }
                 try_push_vec(
                     &mut rings,
-                    Ring::from_closed(CoordSeq::try_from_points(&coordinates)?),
+                    Ring::try_from_closed(CoordSeq::try_from_points(&coordinates)?)?,
                 )?;
             }
             let mut ring_iter = rings.into_iter();
@@ -3646,7 +3644,7 @@ impl ExactSourceInventory {
                 }
                 try_push_vec(
                     &mut rings,
-                    Ring::from_closed(CoordSeq::try_from_points(&points)?),
+                    Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
                 )?;
             }
             let mut rings = rings.into_iter();

@@ -452,22 +452,23 @@ fn parse_polygon(value: &Value, path: &JsonPath<'_>) -> Result<Polygon> {
 
 fn parse_geojson_ring(value: &Value, path: &JsonPath<'_>) -> Result<Ring> {
     let points = parse_points(value, path)?;
-    if points.len() < Ring::MIN_VERTICES_CLOSED {
+    let Some(ring) = Ring::from_closed(points) else {
         return Err(IoError::geojson(format!(
             "Polygon ring requires at least {} coordinates",
             Ring::MIN_VERTICES_CLOSED
         ))
         .with_parse_path(&path.render()));
-    }
-    let first = points.point_at(0);
-    let last = points.point_at(points.len() - 1);
+    };
+    let coords = ring.coords();
+    let first = coords.point_at(0);
+    let last = coords.point_at(coords.len() - 1);
     // RFC 7946 §3.1.6: first and last position values must be identical on
     // every active ordinate (X/Y/Z/M), not just the planar XY pair.
     if !crate::geometry::same_active_position(first, last) {
         return Err(IoError::geojson("Polygon ring must be explicitly closed")
             .with_parse_path(&path.render()));
     }
-    Ok(Ring::from_closed(points))
+    Ok(ring)
 }
 
 fn parse_geojson_multipoint(value: &Value, path: &JsonPath<'_>) -> Result<MultiPoint> {

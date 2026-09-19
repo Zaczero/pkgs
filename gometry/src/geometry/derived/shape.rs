@@ -38,7 +38,7 @@ impl Shape {
             );
         }
         Ok(Self::Polygon(Polygon::new(
-            Ring::from_closed(minimum_area_rectangle(&open)?),
+            Ring::try_from_closed(minimum_area_rectangle(&open)?)?,
             Vec::new(),
         )?))
     }

@@ -34,7 +34,7 @@ fn periodic_latitude_ring(latitude: f64, reverse: bool) -> Ring {
         }
     }
     points.push(points[0]);
-    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap())
+    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap()
 }
 
 fn exhaustive_authority_point_class(
@@ -131,10 +131,12 @@ fn polygon_source(shell: &[Point], holes: Vec<Vec<Point>>) -> GeographicCoverage
     GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(shell).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(shell).unwrap()).unwrap(),
                 holes
                     .into_iter()
-                    .map(|hole| Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()))
+                    .map(|hole| {
+                        Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()).unwrap()
+                    })
                     .collect(),
             )
             .unwrap(),
@@ -707,7 +709,7 @@ fn geographic_coverage_source_keeps_checked_degree_two_rings_available() {
     ];
     let shape = Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap(),
@@ -749,7 +751,7 @@ fn geographic_coverage_source_fails_open_without_a_physical_pole_roof() {
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -830,7 +832,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -956,7 +958,7 @@ fn geographic_coverage_source_records_a_physical_south_finite_negative_winding_r
     let source = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -991,7 +993,8 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
             Point::new(-10.0, -10.0).unwrap(),
         ])
         .unwrap(),
-    );
+    )
+    .unwrap();
     let hole = Ring::from_closed(
         CoordSeq::try_from_points(&[
             Point::new(-2.0, -2.0).unwrap(),
@@ -1001,7 +1004,8 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
             Point::new(-2.0, -2.0).unwrap(),
         ])
         .unwrap(),
-    );
+    )
+    .unwrap();
     for (label, points) in [
         ("shell", [
             (-10.0, -10.0),
@@ -1231,7 +1235,7 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     let forward = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(north.as_ref()).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(north.as_ref()).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1265,7 +1269,7 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     let reverse = GeographicCoverageSource::new(
         &Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&reversed).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&reversed).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1306,7 +1310,8 @@ fn exact_axis_rectangle_precedes_the_global_unknown_veto_for_cap_windows() {
                     Point::new(-180.0, 70.0).unwrap(),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap(),
@@ -1362,7 +1367,8 @@ fn exact_axis_rectangle_requires_the_canonical_longitude_sheet() {
                         Point::new(west, -5.0).unwrap(),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1428,7 +1434,8 @@ fn subdivided_parallel_edges_remain_an_exact_full_longitude_rectangle() {
                     Point::new(-180.0, 70.0).unwrap(),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap(),
@@ -1455,7 +1462,7 @@ fn exact_axis_rectangle_requires_an_ordered_directed_boundary_walk() {
     let polygon = |points: Vec<Point>| {
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1627,7 +1634,8 @@ fn authority_edge_index_matches_polar_cap_interior() {
                         Point::new(-60.0, 70.0).unwrap(),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),

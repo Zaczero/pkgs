@@ -267,7 +267,7 @@ fn box_shape(west: f64, south: f64, east: f64, north: f64) -> Shape {
     ];
     Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap(),
@@ -291,8 +291,8 @@ fn polygon_with_hole() -> Shape {
     ];
     Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
-            vec![Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap())],
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+            vec![Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()).unwrap()],
         )
         .unwrap(),
     )
@@ -676,7 +676,7 @@ fn bowtie_polygon_keeps_both_filled_lobes_in_s2_cover() {
     ];
     let source = Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap(),
@@ -1247,7 +1247,7 @@ fn concave_source_excludes_notch() {
     ];
     let source = Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap(),

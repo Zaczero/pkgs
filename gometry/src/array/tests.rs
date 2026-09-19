@@ -237,7 +237,8 @@ mod linref_array_degrade_tests {
                     (1.0, 0.0),
                     (1.0, 1.0),
                     (0.0, 0.0),
-                ])),
+                ]))
+                .unwrap(),
                 vec![],
             )
             .unwrap(),

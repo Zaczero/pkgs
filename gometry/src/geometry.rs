@@ -687,12 +687,15 @@ impl Polygon {
     where
         E: From<crate::error::Error>,
     {
-        let shell = Ring::from_closed(transform(self.shell.coords())?);
+        let shell = Ring::try_from_closed(transform(self.shell.coords())?)?;
         let mut holes = Vec::new();
         crate::try_reserve_vec(&mut holes, self.holes.len()).map_err(E::from)?;
         for hole in self.holes.iter() {
-            crate::try_push_vec(&mut holes, Ring::from_closed(transform(hole.coords())?))
-                .map_err(E::from)?;
+            crate::try_push_vec(
+                &mut holes,
+                Ring::try_from_closed(transform(hole.coords())?)?,
+            )
+            .map_err(E::from)?;
         }
         let holes = SharedSlice::try_from_vec(holes).map_err(E::from)?;
         Ok(Self { shell, holes })
@@ -724,6 +727,30 @@ impl Polygon {
         self.map_ring_seqs(CoordSeq::reversed)
     }
 
+    /// Rebuild every ring through a transform that may collapse it: `None`
+    /// from the transform, or a closed ring shorter than four coordinates,
+    /// drops a hole and collapses the whole polygon (`None`) for the shell.
+    pub(crate) fn map_rings_collapsing(
+        &self,
+        mut transform: impl FnMut(&CoordSeq) -> Result<Option<CoordSeq>>,
+    ) -> Result<Option<Self>> {
+        let closed = |ring: Option<CoordSeq>| ring.and_then(Ring::from_closed);
+        let Some(shell) = closed(transform(self.shell.coords())?) else {
+            return Ok(None);
+        };
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, self.holes.len())?;
+        for hole in self.holes.iter() {
+            if let Some(hole) = closed(transform(hole.coords())?) {
+                crate::try_push_vec(&mut holes, hole)?;
+            }
+        }
+        Ok(Some(Self {
+            shell,
+            holes: SharedSlice::try_from_vec(holes)?,
+        }))
+    }
+
     /// Rebuild every ring through a columnar transform that preserves ring
     /// validity (closure and length) — no `AoS` `Vec<Point>` round-trip.
     pub(crate) fn map_ring_seqs(
@@ -752,15 +779,15 @@ impl Polygon {
         for hole in self.holes.iter() {
             crate::try_push_vec(
                 &mut holes,
-                Ring::from_closed(constructive::canonical_ring_seq(hole.coords(), true)?),
+                Ring::try_from_closed(constructive::canonical_ring_seq(hole.coords(), true)?)?,
             )?;
         }
         holes.sort_by(compare_point_slices);
         Self::new(
-            Ring::from_closed(constructive::canonical_ring_seq(
+            Ring::try_from_closed(constructive::canonical_ring_seq(
                 self.shell.coords(),
                 false,
-            )?),
+            )?)?,
             holes,
         )
     }
@@ -797,9 +824,10 @@ impl Polygon {
         })
     }
 
-    fn snap_to_reference(&self, reference: &SnapReference) -> Result<Self> {
-        self.map_ring_seqs(|ring| {
-            CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference)?)
+    /// Snap every ring onto the reference; `None` when the shell collapses.
+    fn snap_to_reference(&self, reference: &SnapReference) -> Result<Option<Self>> {
+        self.map_rings_collapsing(|ring| {
+            CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference)?).map(Some)
         })
     }
 

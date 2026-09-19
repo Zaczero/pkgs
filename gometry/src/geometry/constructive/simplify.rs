@@ -542,11 +542,11 @@ fn keep_ring(
     scratch: &mut KeepScratch,
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RingKeep> {
-    Ok(match kept_coords(ring.coords(), scratch, keep_mask)? {
-        None => RingKeep::Same,
-        Some(coords) if coords.len() < Ring::MIN_VERTICES_CLOSED => RingKeep::Drop,
-        Some(coords) => RingKeep::New(Ring::from_closed(coords)),
-    })
+    Ok(
+        kept_coords(ring.coords(), scratch, keep_mask)?.map_or(RingKeep::Same, |coords| {
+            Ring::from_closed(coords).map_or(RingKeep::Drop, RingKeep::New)
+        }),
+    )
 }
 
 enum PolygonKeep {
@@ -1108,6 +1108,7 @@ mod keep_identity_tests {
 
     fn closed_ring(xs: &[f64], ys: &[f64]) -> Ring {
         Ring::from_closed(CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap())
+            .unwrap()
     }
 
     fn square() -> Shape {
@@ -1560,6 +1561,7 @@ mod guarded_borrow_tests {
             )
             .unwrap(),
         )
+        .unwrap()
     }
 
     fn sliver_xyzm() -> Shape {
@@ -1767,7 +1769,7 @@ mod subdivision_tests {
     fn ring_shape(points: &[Point]) -> Shape {
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1913,8 +1915,9 @@ mod subdivision_tests {
             ]),
         )
         .unwrap();
-        let shape =
-            Shape::Polygon(Polygon::new(Ring::from_closed(coordinates), Vec::new()).unwrap());
+        let shape = Shape::Polygon(
+            Polygon::new(Ring::from_closed(coordinates).unwrap(), Vec::new()).unwrap(),
+        );
         let parts = shape.subdivide(8, false).unwrap();
         assert_eq!(parts.len(), 2);
         let source = all_points(&shape);

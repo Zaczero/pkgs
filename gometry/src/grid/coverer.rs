@@ -728,7 +728,7 @@ mod tests {
         ];
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -856,7 +856,8 @@ mod tests {
                     ),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap();
@@ -870,7 +871,8 @@ mod tests {
                     Point::new_raw_xy(1.0, 1.0),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap();
@@ -916,7 +918,7 @@ mod tests {
         ];
         let world = Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -978,7 +980,7 @@ mod tests {
         ];
         let poly = Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1050,7 +1052,8 @@ mod tests {
                         Point::new_raw_xy(-10.0, 80.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1094,7 +1097,8 @@ mod tests {
                         Point::new_raw_xy(-50.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1152,17 +1156,21 @@ mod tests {
                         Point::new_raw_xy(-45.0, -45.0),
                     ])
                     .unwrap(),
-                ),
-                vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-45.0, -45.0),
-                        Point::new_raw_xy(0.0, -45.0),
-                        Point::new_raw_xy(0.0, 0.0),
-                        Point::new_raw_xy(-45.0, 0.0),
-                        Point::new_raw_xy(-45.0, -45.0),
-                    ])
+                )
+                .unwrap(),
+                vec![
+                    Ring::from_closed(
+                        CoordSeq::try_from_points(&[
+                            Point::new_raw_xy(-45.0, -45.0),
+                            Point::new_raw_xy(0.0, -45.0),
+                            Point::new_raw_xy(0.0, 0.0),
+                            Point::new_raw_xy(-45.0, 0.0),
+                            Point::new_raw_xy(-45.0, -45.0),
+                        ])
+                        .unwrap(),
+                    )
                     .unwrap(),
-                )],
+                ],
             )
             .unwrap(),
         );
@@ -1210,7 +1218,8 @@ mod tests {
                         Point::new_raw_xy(170.0, 80.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -1269,7 +1278,8 @@ mod tests {
                         Point::new_raw_xy(179.0, -1.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),

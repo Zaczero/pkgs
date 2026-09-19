@@ -39,6 +39,34 @@ def test_an_empty_point_encodes_to_an_empty_polyline() -> None:
     assert W('POINT EMPTY', crs=4326).to_polyline() == ''
 
 
+def test_repeated_point_removal_drops_collapsed_holes_and_keeps_rings_closed() -> None:
+    # Both holes collapse below four coordinates at this tolerance.
+    polygon = W(
+        'POLYGON ((0 0, 10 0, 10 10, 0 0), (1 0.5, 2 0.5, 2 1, 1 0.5),'
+        ' (1 0.5, 2 1, 1.5 1.2, 1 0.5))'
+    )
+    assert polygon.remove_repeated_points(tolerance=0.5).to_wkt() == (
+        'POLYGON ((0 0, 10 0, 10 10, 0 0), (1 0.5, 2 1, 1.5 1.2, 1 0.5))'
+    )
+    # The vertex beside the closure gives way, so the ring stays closed.
+    near_closure = W('POLYGON ((0 0, 10 0, 10 10, 0.1 0.1, 0 0))')
+    cleaned = near_closure.remove_repeated_points(tolerance=0.5)
+    assert cleaned.to_wkt() == 'POLYGON ((0 0, 10 0, 10 10, 0 0))'
+    assert cleaned.is_valid
+    tiny = W('POLYGON ((0 0, 0.1 0, 0.1 0.1, 0 0))')
+    assert tiny.remove_repeated_points(tolerance=0.5).to_wkt() == 'POLYGON EMPTY'
+
+
+def test_snapping_collapses_rings_instead_of_failing() -> None:
+    reference = W('POINT (4 4)')
+    holed = W('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0), (4 4, 4.1 4, 4.1 4.1, 4 4))')
+    assert gm.snap(holed, reference, 0.5).to_wkt() == (
+        'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'
+    )
+    collapsed = W('POLYGON ((0 0, 0 0, 0 0, 0 0))')
+    assert gm.snap(collapsed, W('POINT (0 0)'), 0.5).to_wkt() == 'POLYGON EMPTY'
+
+
 def test_affine_transforms_keep_mixed_axes_rows() -> None:
     rows = gm.GeometryArray([W('POINT (1 2)'), W('POINT Z (1 2 3)')])
     assert rows.translate(1, 1).to_wkt() == ['POINT (2 3)', 'POINT Z (2 3 3)']

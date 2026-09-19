@@ -361,11 +361,13 @@ impl GeometryArrayStorage {
     ) -> crate::error::Result<Polygon> {
         let ring = |index: usize| {
             let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-            Ring::from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
+            Ring::try_from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
         };
         Polygon::new(
-            ring(rings.start),
-            (rings.start + 1..rings.end).map(ring).collect(),
+            ring(rings.start)?,
+            (rings.start + 1..rings.end)
+                .map(ring)
+                .collect::<crate::error::Result<_>>()?,
         )
     }
 

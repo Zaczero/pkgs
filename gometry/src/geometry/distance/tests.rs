@@ -217,7 +217,7 @@ pub(super) fn multipoint(points: Vec<Point>) -> Shape {
 pub(super) fn polygon(points: Vec<Point>) -> Shape {
     Shape::Polygon(
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap(),

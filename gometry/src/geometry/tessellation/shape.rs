@@ -111,7 +111,7 @@ impl Shape {
             crate::try_push_vec(
                 &mut shapes,
                 Self::Polygon(Polygon::new(
-                    Ring::from_closed(CoordSeq::try_from_points(ring)?),
+                    Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
                     Vec::new(),
                 )?),
             )?;

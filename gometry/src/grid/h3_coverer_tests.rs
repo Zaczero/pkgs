@@ -32,6 +32,7 @@ fn ring(west: f64, south: f64, east: f64, north: f64) -> Ring {
         ])
         .unwrap(),
     )
+    .unwrap()
 }
 
 fn polygon(west: f64, south: f64, east: f64, north: f64) -> Polygon {
@@ -50,7 +51,7 @@ fn latitude_ring(latitude: f64, reverse: bool) -> Ring {
         }
     }
     points.push(points[0]);
-    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap())
+    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap()
 }
 
 fn classify(shape: &Shape) -> H3LeafClass {
@@ -889,7 +890,8 @@ fn physical_vertical_signs_exclude_the_raw_seam_cell() {
                     Point::new(179.0, -5.0).unwrap(),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap(),

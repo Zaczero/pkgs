@@ -503,7 +503,7 @@ mod tests {
 
     fn polygon(points: &[Point]) -> Polygon {
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(points).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(points).unwrap()).unwrap(),
             vec![],
         )
         .expect("test polygon is valid")
@@ -528,6 +528,7 @@ mod tests {
             ])
             .unwrap(),
         )
+        .unwrap()
     }
 
     #[cfg(target_pointer_width = "64")]

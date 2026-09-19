@@ -142,7 +142,7 @@ pub(crate) fn convex_buffer_budgeted(
         close_xy_loop(&mut xs, &mut ys, budget)?;
         let seq = CoordSeq::from_owned_columns(xs, ys, None, None)?;
         return Ok(Some(Shape::Polygon(Polygon::new(
-            Ring::from_closed(seq),
+            Ring::try_from_closed(seq)?,
             Vec::new(),
         )?)));
     }
@@ -210,7 +210,10 @@ fn simple_erosion_polygon(
     if !line_is_simple(&ring)? {
         return Ok(None);
     }
-    Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())?))
+    Ok(Some(Polygon::new(
+        Ring::try_from_closed(ring)?,
+        Vec::new(),
+    )?))
 }
 
 /// General positive round-join polygonal buffer — the own winding-number
@@ -485,7 +488,10 @@ fn simple_stroke_polygon(
     if ring_winding(&ring).is_ccw()
         && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple()?
     {
-        Ok(Some(Polygon::new(Ring::from_closed(ring), Vec::new())?))
+        Ok(Some(Polygon::new(
+            Ring::try_from_closed(ring)?,
+            Vec::new(),
+        )?))
     } else {
         Ok(None)
     }
@@ -832,7 +838,7 @@ pub(crate) fn point_buffer(
     close_xy_loop(&mut xs, &mut ys, budget)?;
     let seq = CoordSeq::from_owned_columns(xs, ys, None, None)?;
     Ok(Some(Shape::Polygon(Polygon::new(
-        Ring::from_closed(seq),
+        Ring::try_from_closed(seq)?,
         Vec::new(),
     )?)))
 }

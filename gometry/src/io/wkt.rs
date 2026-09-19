@@ -136,11 +136,13 @@ mod tests {
                 xyz(0.0, 0.0),
             ])
             .unwrap(),
-        );
+        )
+        .unwrap();
         let late_xy_hole = Ring::from_closed(
             CoordSeq::try_from_points(&[xy(0.5, 0.5), xy(1.0, 0.5), xy(0.5, 1.0), xy(0.5, 0.5)])
                 .unwrap(),
-        );
+        )
+        .unwrap();
         let shape = Shape::Polygon(Polygon::new(shell, vec![late_xy_hole]).unwrap());
 
         let preview = to_wkt_preview(&shape, 1).expect("unvisited late ring is irrelevant");

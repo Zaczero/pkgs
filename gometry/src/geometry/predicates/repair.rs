@@ -180,7 +180,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
         try_push_vec(&mut points, first)?;
         try_push_vec(
             &mut result,
-            Ring::from_closed(CoordSeq::try_from_points(&points)?),
+            Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
         )?;
     }
     Ok(result)
@@ -252,10 +252,8 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
             break;
         }
     }
-    if points.len() < 3 {
-        return Ok(None);
+    if let Some(&first) = points.first() {
+        try_push_vec(&mut points, first)?;
     }
-    let first = points[0];
-    try_push_vec(&mut points, first)?;
-    Ok(Some(Ring::from_closed(CoordSeq::try_from_points(&points)?)))
+    Ok(Ring::from_closed(CoordSeq::try_from_points(&points)?))
 }

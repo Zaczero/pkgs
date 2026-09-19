@@ -533,6 +533,7 @@ mod winding_buffer_tests {
             )
             .unwrap(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -1379,7 +1380,8 @@ mod consecutive_dedup_tests {
             (2.0, 2.0),
             (0.0, 2.0),
             (0.0, 0.0),
-        ]));
+        ]))
+        .unwrap();
         let polygon = Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap());
         let cleaned = polygon.snap_to_grid((1.0, 1.0), (0.0, 0.0)).unwrap();
         let Shape::Polygon(polygon) = cleaned else {
@@ -1403,7 +1405,8 @@ mod consecutive_dedup_tests {
                 None,
             )
             .unwrap(),
-        );
+        )
+        .unwrap();
         let polygon = Shape::Polygon(Polygon::new(collapsed_ring, Vec::new()).unwrap());
 
         assert_eq!(polygon.unique_points().unwrap().axes(), CoordinateAxes::XYZ);
@@ -1456,7 +1459,8 @@ mod consecutive_dedup_tests {
                 Some([10.0, 20.0, 30.0, 10.0].into()),
             )
             .unwrap(),
-        );
+        )
+        .unwrap();
         let polygon = Shape::Polygon(Polygon::new(collapsed, Vec::new()).unwrap());
         assert_eq!(
             polygon.simplify_vw(0.0, false).unwrap(),
@@ -1474,7 +1478,8 @@ mod consecutive_dedup_tests {
                 None,
             )
             .unwrap(),
-        );
+        )
+        .unwrap();
         let hole = Ring::from_closed(
             CoordSeq::try_from_vecs(
                 [1.0, 1.0, 1.0, 1.0].into(),
@@ -1483,7 +1488,8 @@ mod consecutive_dedup_tests {
                 None,
             )
             .unwrap(),
-        );
+        )
+        .unwrap();
         let polygon = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
         let Shape::Polygon(out) = polygon.simplify_vw(0.0, false).unwrap() else {
             panic!("three-corner shell must remain a polygon");
@@ -1864,7 +1870,8 @@ mod expansion_budget_threading_tests {
                         Point::new(min_x, 0.0).unwrap(),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2016,7 +2023,8 @@ mod winding_allocation_tests {
                     Point::new_raw_xy(0.0, 0.0),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap()

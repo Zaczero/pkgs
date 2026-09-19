@@ -207,7 +207,7 @@ mod tests {
             Point::new_raw_xy(offset, 0.0),
         ];
         Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
             Vec::new(),
         )
         .unwrap()
@@ -258,7 +258,8 @@ mod tests {
                     Point::new_raw_xy(1.0, 1.0),
                 ])
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap();

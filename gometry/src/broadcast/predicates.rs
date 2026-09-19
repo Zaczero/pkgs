@@ -657,7 +657,8 @@ mod geographic_tests {
                         Point::new_raw_xy(170.0, 90.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),

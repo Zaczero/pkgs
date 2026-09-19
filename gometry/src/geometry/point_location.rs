@@ -465,7 +465,7 @@ mod tests {
 
     fn closed_ring(pts: &[(f64, f64)]) -> Ring {
         let xy: Vec<XY> = pts.iter().map(|&(x, y)| XY::new(x, y)).collect();
-        Ring::from_closed(CoordSeq::try_from_xy(&xy).unwrap())
+        Ring::from_closed(CoordSeq::try_from_xy(&xy).unwrap()).unwrap()
     }
 
     fn unit_square() -> Polygon {
@@ -706,7 +706,7 @@ mod tests {
         }
         pts.push(XY::new(0.0, 0.0));
         let poly = Polygon {
-            shell: Ring::from_closed(CoordSeq::try_from_xy(&pts).unwrap()),
+            shell: Ring::from_closed(CoordSeq::try_from_xy(&pts).unwrap()).unwrap(),
             holes: SharedSlice::empty(),
         };
         let shape = Shape::Polygon(poly);

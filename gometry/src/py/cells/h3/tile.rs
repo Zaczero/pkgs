@@ -477,7 +477,7 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> crate::error::Result<Shape> {
         shell.push(first);
     }
     Ok(Shape::Polygon(Polygon::new(
-        Ring::from_closed(CoordSeq::try_from_points(&shell)?),
+        Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
         Vec::new(),
     )?))
 }
@@ -549,7 +549,8 @@ mod edge_trace_tests {
                         Point::new_raw_xy(-1.0, -1.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .expect("test polygon is valid"),

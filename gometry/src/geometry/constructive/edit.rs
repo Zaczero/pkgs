@@ -5,15 +5,15 @@
 use crate::NonNegative;
 use crate::geometry::constructive::{
     Result, SegmentPlacement, decimal_scale, normalized_line, quantize_column_simd,
-    remove_repeated_line_points, remove_repeated_points, segmentize_points_budgeted,
-    snap_column_simd, split,
+    remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
+    segmentize_points_budgeted, snap_column_simd, split,
 };
 use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
     LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon,
-    ReduceSimd, Ring, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
+    ReduceSimd, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
     clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
     column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
     line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
@@ -1088,24 +1088,7 @@ impl Shape {
     pub fn remove_repeated_points(&self, tolerance: f64) -> Result<Self> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let remove_repeated_polygon = |polygon: &Polygon| -> Result<Option<Polygon>> {
-            let shell = remove_repeated_points(polygon.shell.coords(), tolerance)?;
-            if shell.len() < Ring::MIN_VERTICES_CLOSED {
-                return Ok(None);
-            }
-            let holes =
-                polygon
-                    .holes
-                    .iter()
-                    .map(|hole| {
-                        let hole = remove_repeated_points(hole.coords(), tolerance)?;
-                        Ok((hole.len() >= Ring::MIN_VERTICES_CLOSED)
-                            .then_some(Ring::from_closed(hole)))
-                    })
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .flatten()
-                    .collect();
-            Ok(Some(Polygon::new(Ring::from_closed(shell), holes)?))
+            polygon.map_rings_collapsing(|ring| remove_repeated_ring_points(ring, tolerance))
         };
         Ok(match self {
             Self::Point(point) => Self::Point(*point),

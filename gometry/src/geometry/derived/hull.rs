@@ -19,7 +19,7 @@ pub(crate) fn shape_from_open_hull(
             let mut ring = hull.to_vec();
             ring.push(ring[0]);
             Ok(Shape::Polygon(Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&ring)?),
+                Ring::try_from_closed(CoordSeq::try_from_points(&ring)?)?,
                 Vec::new(),
             )?))
         },
@@ -43,7 +43,7 @@ pub(crate) fn shape_from_selected_hull(
             let first = ring[0];
             ring.push(first);
             Ok(Shape::Polygon(Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&ring)?),
+                Ring::try_from_closed(CoordSeq::try_from_points(&ring)?)?,
                 Vec::new(),
             )?))
         },

@@ -188,15 +188,15 @@ fn join_components(shapes: &[Shape]) -> Result<Shape> {
             let mut holes = Vec::new();
             crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
             for hole in polygon.holes.iter() {
-                holes.push(crate::geometry::Ring::from_closed(restricted(
+                holes.push(crate::geometry::Ring::try_from_closed(restricted(
                     hole.coords(),
                     polygon_axes,
-                )?));
+                )?)?);
             }
-            let shell = crate::geometry::Ring::from_closed(restricted(
+            let shell = crate::geometry::Ring::try_from_closed(restricted(
                 polygon.shell.coords(),
                 polygon_axes,
-            )?);
+            )?)?;
             *polygon = crate::geometry::Polygon::new(shell, holes)?;
         }
     }
@@ -1034,7 +1034,7 @@ fn canonicalize_polygon(
         }
         spell_seam_vertices(&mut points, axis.period());
         let points: Vec<Point> = points.into_iter().map(|(point, _)| point).collect();
-        CoordSeq::try_from_points(&points).map(crate::geometry::Ring::from_closed)
+        crate::geometry::Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
     };
     let shell = canonicalize(&polygon.shell)?;
     let mut holes = Vec::new();

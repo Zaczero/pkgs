@@ -202,7 +202,7 @@ impl Cell {
         let mut shell = vertices.to_vec();
         shell.push(vertices[0]);
         Ok(Shape::Polygon(Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell)?),
+            Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
             Vec::new(),
         )?))
     }

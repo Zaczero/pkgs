@@ -999,7 +999,8 @@ mod tests {
                         Point::new_raw_xy(minx, miny),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .expect("test polygon is valid"),
@@ -1152,7 +1153,8 @@ mod tests {
                         Point::new_raw_xy(170.0, -10.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .expect("test polygon is valid"),

@@ -271,7 +271,7 @@ fn chart_ring(
             )?);
         }
     }
-    Ok(Ring::from_closed(CoordSeq::try_from_points(&points)?))
+    Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
 }
 
 fn chart_polygon(
@@ -413,7 +413,7 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         let points = collect_points(hole.coords());
         match split_ring_at_seam(&points) {
             SeamRing::Whole(spelled) if !ring_follows_seam(&points) => {
-                stationary_holes.push(Ring::from_closed(CoordSeq::try_from_points(&spelled)?));
+                stationary_holes.push(Ring::try_from_closed(CoordSeq::try_from_points(&spelled)?)?);
             },
             _ => crossing_holes.push(hole.clone()),
         }
@@ -435,7 +435,7 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
 
     let segments = match split_ring_at_seam(&collect_points(polygon.shell.coords())) {
         SeamRing::Whole(shell) => {
-            let shell = Ring::from_closed(CoordSeq::try_from_points(&shell)?);
+            let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
             return Ok(vec![Polygon::new(shell, stationary_holes)?]);
         },
         SeamRing::Pieces(pieces) => pieces,
@@ -538,14 +538,14 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         ];
         let hole = close_ring(shells.remove(0));
         return Ok(vec![Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&world)?),
-            vec![Ring::from_closed(CoordSeq::try_from_points(&hole)?)],
+            Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
+            vec![Ring::try_from_closed(CoordSeq::try_from_points(&hole)?)?],
         )?]);
     }
     let mut polygons = Vec::with_capacity(shells.len());
     for shell in shells {
         polygons.push(Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&close_ring(shell))?),
+            Ring::try_from_closed(CoordSeq::try_from_points(&close_ring(shell))?)?,
             Vec::new(),
         )?);
     }

@@ -3525,7 +3525,7 @@ pub(super) fn build_collinear_polygons(
         let first = vertices[0];
         budgeted_try_push(&mut vertices, first, budget)?;
         let strip = Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_xy(&vertices)?),
+            Ring::try_from_closed(CoordSeq::try_from_xy(&vertices)?)?,
             Vec::new(),
         )?;
         match clip.source {

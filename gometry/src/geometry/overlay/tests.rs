@@ -102,7 +102,8 @@ mod binary_areal_overlay_tests {
                         .collect::<Vec<_>>(),
                 )
                 .unwrap(),
-            ),
+            )
+            .unwrap(),
             Vec::new(),
         )
         .unwrap()
@@ -128,7 +129,7 @@ mod binary_areal_overlay_tests {
         points.push(points[0]);
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -156,7 +157,7 @@ mod binary_areal_overlay_tests {
         .unwrap();
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -177,7 +178,7 @@ mod binary_areal_overlay_tests {
         .unwrap();
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -218,7 +219,7 @@ mod binary_areal_overlay_tests {
             .unwrap();
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -239,7 +240,7 @@ mod binary_areal_overlay_tests {
         .unwrap();
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -804,16 +805,19 @@ mod binary_areal_overlay_tests {
                     (0.0, 0.0),
                 ])
                 .shell,
-                vec![Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new(4.0, 4.0).unwrap(),
-                        Point::new(6.0, 4.0).unwrap(),
-                        Point::new(6.0, 6.0).unwrap(),
-                        Point::new(4.0, 6.0).unwrap(),
-                        Point::new(4.0, 4.0).unwrap(),
-                    ])
+                vec![
+                    Ring::from_closed(
+                        CoordSeq::try_from_points(&[
+                            Point::new(4.0, 4.0).unwrap(),
+                            Point::new(6.0, 4.0).unwrap(),
+                            Point::new(6.0, 6.0).unwrap(),
+                            Point::new(4.0, 6.0).unwrap(),
+                            Point::new(4.0, 4.0).unwrap(),
+                        ])
+                        .unwrap(),
+                    )
                     .unwrap(),
-                )],
+                ],
             )
             .unwrap(),
         );
@@ -2208,7 +2212,7 @@ mod allocation_tests {
         ];
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2229,7 +2233,7 @@ mod allocation_tests {
         .unwrap();
         Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -2314,7 +2318,7 @@ mod allocation_tests {
             points.push(points[0]);
             Shape::Polygon(
                 Polygon::new(
-                    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()),
+                    Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
                     Vec::new(),
                 )
                 .unwrap(),

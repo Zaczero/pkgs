@@ -3820,7 +3820,8 @@ mod tests {
         let points: Vec<_> = vertices.iter().map(|&(x, y)| XY::new(x, y)).collect();
         Shape::Polygon(
             crate::geometry::Polygon::new(
-                crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()),
+                crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap())
+                    .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -4054,7 +4055,7 @@ mod tests {
         let hole = [(3.0, 3.0), (3.0, 6.0), (7.0, 3.0), (3.0, 3.0)];
         let ring = |points: &[(f64, f64)]| {
             let points: Vec<_> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
-            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap())
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()).unwrap()
         };
         let holed =
             Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), vec![ring(&hole)]).unwrap());
@@ -4945,7 +4946,7 @@ mod tests {
     #[test]
     fn filled_target_membership_and_holes_remain_selected() {
         let ring = |points: &[XY]| {
-            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap())
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap()).unwrap()
         };
         let shell = [
             XY::new(0.0, 0.0),
@@ -5120,7 +5121,7 @@ mod tests {
     #[test]
     fn boundary_clone_keeps_filled_source_separate_from_boundary_target() {
         let ring = |points: &[XY]| {
-            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap())
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap()).unwrap()
         };
         let shape = Shape::Polygon(
             crate::geometry::Polygon::new(
@@ -5158,7 +5159,7 @@ mod tests {
     #[test]
     fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
         let ring = |points: &[XY]| {
-            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap())
+            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap()).unwrap()
         };
         let shape = Shape::Polygon(
             crate::geometry::Polygon::new(
@@ -5737,7 +5738,8 @@ mod tests {
                 XY::new(0.0, 0.0),
             ])
             .unwrap(),
-        );
+        )
+        .unwrap();
         let shape =
             Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), vec![ring]).unwrap());
         distance(&shape, &shape, Some(1e-6), 1.0).unwrap_err();

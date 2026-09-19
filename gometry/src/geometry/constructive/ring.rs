@@ -64,7 +64,7 @@ pub(crate) fn orient_ring<C: Coordinates + ?Sized>(points: &C, clockwise: bool) 
 /// requested winding already matches.
 pub(in crate::geometry) fn oriented_ring(ring: &Ring, clockwise: bool) -> Result<Ring> {
     if ring_winding(ring).reverse_for_clockwise(clockwise) {
-        Ok(Ring::from_closed(ring.coords().reversed()?))
+        ring.reversed()
     } else {
         Ok(ring.clone())
     }

@@ -146,12 +146,12 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
 /// A small X/Y ring assembled straight into ordinate columns — no
 /// intermediate `Vec<Point>` per part.
 pub(crate) fn xy_ring<const N: usize>(points: [Point; N]) -> Result<Ring> {
-    Ok(Ring::from_closed(CoordSeq::try_from_vecs(
+    Ring::try_from_closed(CoordSeq::try_from_vecs(
         points.iter().map(|point| point.x).collect(),
         points.iter().map(|point| point.y).collect(),
         None,
         None,
-    )?))
+    )?)
 }
 
 /// The finite source vertex run, with only exact zero-length edges removed,
@@ -206,14 +206,9 @@ fn sided_strip_source(source: &OffsetSource, signed: f64) -> Result<Option<Polyg
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    if shell.len() < 4 {
-        Ok(None)
-    } else {
-        Ok(Some(Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell)?),
-            Vec::new(),
-        )?))
-    }
+    Ring::from_closed(CoordSeq::try_from_points(&shell)?)
+        .map(|shell| Polygon::new(shell, Vec::new()))
+        .transpose()
 }
 
 /// The planned offset curve with the buffer's join vocabulary: round

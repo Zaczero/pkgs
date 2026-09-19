@@ -24,7 +24,7 @@ fn drop_collinear_ring_vertices(polygon: &Polygon) -> crate::error::Result<Polyg
             try_push_vec(&mut vertices, point)?;
         }
         drop_collinear_vertices(vertices)
-            .and_then(|vertices| CoordSeq::try_from_points(&vertices).map(Ring::from_closed))
+            .and_then(|vertices| Ring::try_from_closed(CoordSeq::try_from_points(&vertices)?))
     };
     let shell = simplify(&polygon.shell)?;
     let mut holes = Vec::new();

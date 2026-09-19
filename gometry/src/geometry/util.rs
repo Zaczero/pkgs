@@ -90,7 +90,7 @@ pub(crate) fn geographic_bounds_to_shape(
     points.push(Point::new_raw_xy(bounds.minx(), bounds.maxy()));
     points.push(Point::new_raw_xy(bounds.minx(), bounds.miny()));
     Ok(Shape::Polygon(Polygon::new(
-        Ring::from_closed(CoordSeq::try_from_points(&points)?),
+        Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
         Vec::new(),
     )?))
 }

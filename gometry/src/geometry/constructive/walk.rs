@@ -725,7 +725,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
             AreaSign::Positive => {
                 let bounds = Bounds::from_xy_iter(ring.iter().copied());
                 shells.push((
-                    Ring::from_closed(CoordSeq::try_from_xy(&ring)?),
+                    Ring::try_from_closed(CoordSeq::try_from_xy(&ring)?)?,
                     magnitude.get(),
                     bounds,
                 ));
@@ -795,7 +795,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
             }
         }
         if let Some(owner) = owner {
-            assigned[owner].push(Ring::from_closed(CoordSeq::try_from_xy(&hole)?));
+            assigned[owner].push(Ring::try_from_closed(CoordSeq::try_from_xy(&hole)?)?);
         }
     }
     drop(shell_indexes);
@@ -917,7 +917,7 @@ mod tests {
         ];
         let shell_shape = Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()),
+                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -944,7 +944,7 @@ mod tests {
             XY::new(0.0, 6.0),
             XY::new(0.0, 0.0),
         ];
-        let ring = Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap());
+        let ring = Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap();
         let index = ShellCoverageIndex::new(&ring).unwrap();
         assert!(
             index
@@ -970,10 +970,8 @@ mod tests {
         let inner_hole = rectangle(3.0, 3.0, 7.0, 7.0, true);
         let holed_shell = Shape::Polygon(
             Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()),
-                vec![Ring::from_closed(
-                    CoordSeq::try_from_xy(&outer_hole).unwrap(),
-                )],
+                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
+                vec![Ring::from_closed(CoordSeq::try_from_xy(&outer_hole).unwrap()).unwrap()],
             )
             .unwrap(),
         );

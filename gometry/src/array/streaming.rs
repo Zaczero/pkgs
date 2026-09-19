@@ -886,12 +886,14 @@ impl StreamingPolygons {
             let ring = |index: usize| {
                 let start = ring_offsets[index] as usize;
                 let end = ring_offsets[index + 1] as usize;
-                Ring::from_closed(coords.view(CoordWindow::from_range(start..end, coords.len())))
+                Ring::try_from_closed(
+                    coords.view(CoordWindow::from_range(start..end, coords.len())),
+                )
             };
-            let shell = ring(rings.start);
+            let shell = ring(rings.start)?;
             let mut holes = Vec::new();
             for index in rings.start + 1..rings.end {
-                crate::try_push_vec(&mut holes, ring(index))?;
+                crate::try_push_vec(&mut holes, ring(index)?)?;
             }
             crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)?))?;
         }
@@ -945,12 +947,12 @@ fn polygon_shapes_from_parts(
         let ring = |index: usize| {
             let start = ring_offsets[index] as usize;
             let end = ring_offsets[index + 1] as usize;
-            Ring::from_closed(coords.view(CoordWindow::from_range(start..end, coords.len())))
+            Ring::try_from_closed(coords.view(CoordWindow::from_range(start..end, coords.len())))
         };
-        let shell = ring(rings.start);
+        let shell = ring(rings.start)?;
         let mut holes = Vec::new();
         for index in rings.start + 1..rings.end {
-            crate::try_push_vec(&mut holes, ring(index))?;
+            crate::try_push_vec(&mut holes, ring(index)?)?;
         }
         crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)?))?;
     }
@@ -983,7 +985,7 @@ mod demotion_tests {
             None,
         )
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(coords), Vec::new()).unwrap())
+        Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()).unwrap())
     }
 
     fn assert_demote_returns_resource_then_reuses(mut stream: StreamingShapes, reuse: &Shape) {

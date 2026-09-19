@@ -1232,9 +1232,9 @@ impl GraphBuilder {
             .fold(f64::NEG_INFINITY, f64::max);
         let summary = crate::geographic::RingSummary::try_new(
             self.frame,
-            &crate::geographic::GeographicRing::from_ring(&crate::geometry::Ring::from_closed(
+            &crate::geographic::GeographicRing::from_ring(&crate::geometry::Ring::try_from_closed(
                 ring.clone(),
-            )),
+            )?),
         )
         .expect("validated geographic ring has an exact summary");
         let full_turn = matches!(summary.turn, crate::geographic::RingTurn::Full(_));
@@ -2354,6 +2354,7 @@ mod tests {
             )
             .unwrap(),
         )
+        .unwrap()
     }
 
     fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon {

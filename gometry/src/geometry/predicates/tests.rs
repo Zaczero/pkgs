@@ -97,7 +97,8 @@ fn touching_diagonal_polygons_keep_their_de9im_matrix() {
                             .collect::<Vec<_>>(),
                     )
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -314,7 +315,8 @@ mod convex_tests {
                             p(minx, miny),
                         ])
                         .unwrap(),
-                    ),
+                    )
+                    .unwrap(),
                     Vec::new(),
                 )
                 .unwrap(),
@@ -338,7 +340,8 @@ mod convex_tests {
                         p(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -355,7 +358,8 @@ mod convex_tests {
                         p(5.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),
@@ -375,7 +379,8 @@ mod convex_tests {
                         p(0.0, 0.0),
                     ])
                     .unwrap(),
-                ),
+                )
+                .unwrap(),
                 Vec::new(),
             )
             .unwrap(),

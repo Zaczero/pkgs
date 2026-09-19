@@ -779,7 +779,7 @@ pub(crate) fn try_triangle_shape(a: Point, b: Point, c: Point) -> Result<Shape> 
     builder.push(c)?;
     builder.push(a)?;
     Ok(Shape::Polygon(Polygon::new(
-        Ring::from_closed(builder.finish()?),
+        Ring::try_from_closed(builder.finish()?)?,
         Vec::new(),
     )?))
 }

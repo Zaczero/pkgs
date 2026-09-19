@@ -357,6 +357,46 @@ pub(crate) fn remove_repeated_points(points: &CoordSeq, tolerance: f64) -> Resul
     points.select(keep.iter().copied())
 }
 
+/// Repeated-point removal on a closed ring: the closing vertex always stays,
+/// and a kept vertex within `tolerance` of it gives way, so the ring stays
+/// closed. `None` when fewer than four coordinates survive.
+pub(crate) fn remove_repeated_ring_points(
+    points: &CoordSeq,
+    tolerance: f64,
+) -> Result<Option<CoordSeq>> {
+    let (xs, ys) = (points.xs(), points.ys());
+    let Some(closing) = xs.len().checked_sub(1) else {
+        return Ok(None);
+    };
+    let mut keep: Vec<usize> = Vec::with_capacity(xs.len());
+    keep.push(0);
+    let (mut anchor_x, mut anchor_y) = (xs[0], ys[0]);
+    for index in 1..closing {
+        if !points_dwithin(
+            XY::new(anchor_x, anchor_y),
+            XY::new(xs[index], ys[index]),
+            tolerance,
+        ) {
+            keep.push(index);
+            (anchor_x, anchor_y) = (xs[index], ys[index]);
+        }
+    }
+    let close = XY::new(xs[closing], ys[closing]);
+    while let [_, .., last] = keep[..]
+        && points_dwithin(XY::new(xs[last], ys[last]), close, tolerance)
+    {
+        keep.pop();
+    }
+    keep.push(closing);
+    if keep.len() < Ring::MIN_VERTICES_CLOSED {
+        return Ok(None);
+    }
+    if keep.len() == xs.len() {
+        return Ok(Some(points.clone()));
+    }
+    points.select(keep.iter().copied()).map(Some)
+}
+
 pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> Result<CoordSeq> {
     let cleaned = remove_repeated_points(points, tolerance)?;
     if points.len() >= 2 && cleaned.len() == 1 {
@@ -1030,11 +1070,21 @@ impl Shape {
                     )?)?)
                 })?)
             },
-            Self::Polygon(polygon) => Self::Polygon(polygon.snap_to_reference(&engine)?),
+            Self::Polygon(polygon) => polygon.snap_to_reference(&engine)?.map_or_else(
+                || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
+                Self::Polygon,
+            ),
             Self::MultiPolygon(polygons) => {
-                Self::MultiPolygon(polygons.try_map_values(polygons.axes(), |polygon| {
-                    polygon.snap_to_reference(&engine)
-                })?)
+                let members = polygons
+                    .members()
+                    .map(|member| match member {
+                        MultiMember::Empty => Ok(MultiMember::Empty),
+                        MultiMember::Value(index) => Ok(polygons.as_slice()[index]
+                            .snap_to_reference(&engine)?
+                            .map_or(MultiMember::Empty, MultiMember::Value)),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.snap(reference, tolerance))?,
@@ -1230,13 +1280,7 @@ impl Shape {
                 crate::try_push_vec(&mut vertices, first)?;
             }
             // A ring needs three distinct vertices plus the closure.
-            if vertices.len() < 4 {
-                Ok(None)
-            } else {
-                Ok(Some(Ring::from_closed(CoordSeq::try_from_points(
-                    &vertices,
-                )?)))
-            }
+            Ok(Ring::from_closed(CoordSeq::try_from_points(&vertices)?))
         }
         Ok(match self {
             Self::LineString(points) => {

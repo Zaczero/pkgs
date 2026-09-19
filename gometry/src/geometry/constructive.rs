@@ -25,8 +25,9 @@ pub(crate) use simplify::{raw_offset_loop, rdp_keep, split, strict_cycle, valida
 pub(crate) use snap::densify_points_budgeted;
 pub(crate) use snap::{
     SegmentPlacement, SnapReference, densify_points_budgeted_with_placement,
-    remove_repeated_line_points, remove_repeated_points, segmentize_points_budgeted,
-    snap_ring_to_reference, verify_planar_segmentize_output, verify_planar_segmentize_shape,
+    remove_repeated_line_points, remove_repeated_points, remove_repeated_ring_points,
+    segmentize_points_budgeted, snap_ring_to_reference, verify_planar_segmentize_output,
+    verify_planar_segmentize_shape,
 };
 pub(crate) use walk::{
     WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop, emit_cap,

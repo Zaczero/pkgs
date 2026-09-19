@@ -754,14 +754,14 @@ fn rebuild_polygon(
     rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<Vec<Point>>,
 ) -> Result<Polygon> {
     Polygon::new(
-        Ring::from_closed(CoordSeq::try_from_points(&rebuild_ring(
+        Ring::try_from_closed(CoordSeq::try_from_points(&rebuild_ring(
             polygon.shell.coords(),
-        )?)?),
+        )?)?)?,
         polygon
             .holes
             .iter()
             .map(|hole| {
-                CoordSeq::try_from_points(&rebuild_ring(hole.coords())?).map(Ring::from_closed)
+                Ring::try_from_closed(CoordSeq::try_from_points(&rebuild_ring(hole.coords())?)?)
             })
             .collect::<Result<Vec<_>>>()?,
     )
