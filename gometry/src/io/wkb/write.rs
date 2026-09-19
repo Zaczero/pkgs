@@ -244,12 +244,12 @@ impl WkbBody<'_> {
     fn encoded_len(self, axes: CoordinateAxes) -> Result<usize> {
         match self {
             Self::Point(_) | Self::EmptyPoint => wkb_coords_len(1, axes),
-            Self::MultiPoint(points) => wkb_counted_body_len(points.len(), || {
+            Self::MultiPoint(points) => wkb_counted_body_len(points.member_count(), || {
                 let child = WKB_HEADER_BASE
                     .checked_add(wkb_coords_len(1, axes)?)
                     .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
                 points
-                    .len()
+                    .member_count()
                     .checked_mul(child)
                     .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
             }),
@@ -258,7 +258,7 @@ impl WkbBody<'_> {
                 .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize")),
             // Admitted homogeneous multipart members share the parent's axes,
             // so each child header and body is sized against that one layout.
-            Self::MultiLineString(lines) => wkb_counted_body_len(lines.len(), || {
+            Self::MultiLineString(lines) => wkb_counted_body_len(lines.member_count(), || {
                 lines.members().try_fold(0_usize, |total, member| {
                     let child = match member {
                         MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
@@ -277,7 +277,7 @@ impl WkbBody<'_> {
                 })
             }),
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
-            Self::MultiPolygon(polygons) => wkb_counted_body_len(polygons.len(), || {
+            Self::MultiPolygon(polygons) => wkb_counted_body_len(polygons.member_count(), || {
                 polygons.members().try_fold(0_usize, |total, member| {
                     let child = match member {
                         MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
@@ -313,7 +313,7 @@ impl WkbBody<'_> {
             // Every homogeneous-multipart member is written with the parent's
             // axes, and explicit empty members retain their count and position.
             Self::MultiPoint(points) => {
-                write_u32(out, points.len() as u32);
+                write_u32(out, points.member_count() as u32);
                 for member in points.members() {
                     write_wkb_header(out, GeometryKind::Point, axes, None);
                     match member {
@@ -330,7 +330,7 @@ impl WkbBody<'_> {
             },
             Self::LineString(line) => write_wkb_sequence(out, line, axes),
             Self::MultiLineString(lines) => {
-                write_u32(out, lines.len() as u32);
+                write_u32(out, lines.member_count() as u32);
                 for member in lines.members() {
                     write_wkb_header(out, GeometryKind::LineString, axes, None);
                     match member {
@@ -343,7 +343,7 @@ impl WkbBody<'_> {
             },
             Self::Polygon(polygon) => write_wkb_polygon(out, polygon, axes),
             Self::MultiPolygon(polygons) => {
-                write_u32(out, polygons.len() as u32);
+                write_u32(out, polygons.member_count() as u32);
                 for member in polygons.members() {
                     write_wkb_header(out, GeometryKind::Polygon, axes, None);
                     match member {

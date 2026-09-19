@@ -287,7 +287,7 @@ impl Shape {
             Self::MultiLineString(lines) => {
                 let mut measured = measured.into_iter();
                 let mut members = Vec::new();
-                crate::boundary::try_reserve_vec(&mut members, lines.len())?;
+                crate::boundary::try_reserve_vec(&mut members, lines.member_count())?;
                 for member in lines.members() {
                     let member = match member {
                         crate::geometry::MultiMember::Empty => {
@@ -798,7 +798,7 @@ mod measured_window_tests {
         let Shape::MultiLineString(lines) = output.unwrap() else {
             panic!("multipart output");
         };
-        assert_eq!(lines.len(), 4);
+        assert_eq!(lines.member_count(), 4);
         assert!(matches!(lines.members().next(), Some(MultiMember::Empty)));
         assert_eq!(lines.as_slice()[0].ms(), Some(&[10.0, 25.0][..]));
         assert_eq!(lines.as_slice()[1].ms(), Some(&[25.0, 40.0][..]));

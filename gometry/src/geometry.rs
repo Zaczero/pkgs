@@ -553,16 +553,13 @@ impl Shape {
     pub(crate) fn single_linework(&self) -> Result<&CoordSeq> {
         match self {
             Self::LineString(points) if !points.is_empty() => Ok(points),
-            Self::MultiLineString(lines)
-                if lines.len() == 1 && !lines.first().is_some_and(|line| line.is_empty()) =>
-            {
-                Ok(lines.first().expect("one line"))
-            },
             // The right kind with no content is a structural error, not a
             // kind error.
             Self::LineString(_) => Err(GeometryErrorKind::EmptyLinework.into()),
-            Self::MultiLineString(lines) if lines.len() == 1 => {
-                Err(GeometryErrorKind::EmptyLinework.into())
+            Self::MultiLineString(lines) => match &**lines {
+                [line] => Ok(line),
+                [] => Err(GeometryErrorKind::EmptyLinework.into()),
+                _ => Err(GeometryErrorKind::FrechetLineStringRequired.into()),
             },
             _ => Err(GeometryErrorKind::FrechetLineStringRequired.into()),
         }

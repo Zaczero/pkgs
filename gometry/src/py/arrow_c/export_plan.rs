@@ -664,7 +664,7 @@ fn plan_multilines(
             unreachable!()
         };
         line_count = line_count
-            .checked_add(i32::try_from(items.len()).map_err(|_| offset_error())?)
+            .checked_add(i32::try_from(items.member_count()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
         crate::boundary::try_push_vec(&mut geometry_offsets, line_count)
             .map_err(NativeArrowExportError::from)?;
@@ -756,7 +756,7 @@ fn plan_multipolygons(
             unreachable!()
         };
         polygon_count = polygon_count
-            .checked_add(i32::try_from(polygons.len()).map_err(|_| offset_error())?)
+            .checked_add(i32::try_from(polygons.member_count()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
         crate::boundary::try_push_vec(&mut multipolygon_offsets, polygon_count)
             .map_err(NativeArrowExportError::from)?;

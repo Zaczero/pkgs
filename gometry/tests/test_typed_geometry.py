@@ -388,3 +388,40 @@ def test_empty_overlay_is_dimension_typed() -> None:
     point_z = gm.from_wkt('POINT Z EMPTY')
     assert_empty(gm.intersection(point_z, m_empty), 'Point', 'XYZM')
     assert_empty(gm.union(point_z, m_empty), 'Polygon', 'XYZM')
+
+
+@pytest.mark.parametrize(
+    'wkt',
+    [
+        'MULTIPOLYGON (EMPTY)',
+        'MULTIPOLYGON (EMPTY, EMPTY)',
+        'MULTIPOLYGON (EMPTY, ((0 0, 2 0, 2 2, 0 2, 0 0)))',
+        'MULTIPOLYGON (((0 0, 2 0, 2 2, 0 2, 0 0)), EMPTY)',
+    ],
+)
+def test_empty_polygon_members_occupy_nothing(wkt: str) -> None:
+    shape = gm.from_wkt(wkt)
+    solid = not shape.is_empty
+    inside = gm.Point(1, 1)
+    assert gm.intersects(shape, inside) is solid
+    assert gm.covers(shape, inside) is solid
+    assert gm.within(inside, shape) is solid
+    assert gm.disjoint(inside, shape) is not solid
+    assert gm.from_wkb(shape.to_wkb()).to_wkt() == wkt
+    assert len(shape) == len(shape.parts) == wkt.count("EMPTY") + wkt.count("((")
+
+
+def test_empty_line_members_leave_a_single_frechet_line() -> None:
+    line = gm.LineString([(0, 0), (1, 1)])
+    assert gm.frechet_distance(gm.from_wkt('MULTILINESTRING (EMPTY)'), line) == float(
+        'inf'
+    )
+    padded = gm.from_wkt('MULTILINESTRING (EMPTY, (0 0, 1 1))')
+    assert gm.frechet_distance(padded, line) == 0.0
+
+
+def test_empty_point_members_carry_no_coordinates() -> None:
+    padded = gm.from_wkt('MULTIPOINT Z ((0 0 0), EMPTY)')
+    assert gm.distance_3d(padded, gm.from_wkt('POINT Z (0 0 2)')) == 2.0
+    assert gm.from_wkb(padded.to_wkb()).to_wkt() == 'MULTIPOINT Z ((0 0 0), EMPTY)'
+    assert len(padded) == len(padded.parts) == 2

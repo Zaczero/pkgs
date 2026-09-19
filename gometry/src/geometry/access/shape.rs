@@ -342,10 +342,14 @@ impl Shape {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
                 ShapePartsIter::Single(Some(self))
             },
-            Self::MultiPoint(points) => ShapePartsIter::MultiPoint(points, 0..points.len()),
-            Self::MultiLineString(lines) => ShapePartsIter::MultiLineString(lines, 0..lines.len()),
+            Self::MultiPoint(points) => {
+                ShapePartsIter::MultiPoint(points, 0..points.member_count())
+            },
+            Self::MultiLineString(lines) => {
+                ShapePartsIter::MultiLineString(lines, 0..lines.member_count())
+            },
             Self::MultiPolygon(polygons) => {
-                ShapePartsIter::MultiPolygon(polygons, 0..polygons.len())
+                ShapePartsIter::MultiPolygon(polygons, 0..polygons.member_count())
             },
             Self::GeometryCollection(geometries) => {
                 ShapePartsIter::GeometryCollection(geometries.iter())
@@ -383,9 +387,9 @@ impl Shape {
     pub fn part_count(&self) -> usize {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => 1,
-            Self::MultiPoint(points) => points.len(),
-            Self::MultiLineString(lines) => lines.len(),
-            Self::MultiPolygon(polygons) => polygons.len(),
+            Self::MultiPoint(points) => points.member_count(),
+            Self::MultiLineString(lines) => lines.member_count(),
+            Self::MultiPolygon(polygons) => polygons.member_count(),
             Self::GeometryCollection(geometries) => geometries.len(),
             Self::Empty(
                 GeometryKind::Point | GeometryKind::LineString | GeometryKind::Polygon,

@@ -1083,7 +1083,7 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, lines.len()).map_err(E::from)?;
+                crate::try_reserve_vec(&mut members, lines.member_count()).map_err(E::from)?;
                 for member in lines.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
@@ -1105,7 +1105,7 @@ impl Shape {
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
                 let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, polygons.len()).map_err(E::from)?;
+                crate::try_reserve_vec(&mut members, polygons.member_count()).map_err(E::from)?;
                 for member in polygons.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
@@ -1247,7 +1247,7 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, lines.len())?;
+                crate::try_reserve_vec(&mut members, lines.member_count())?;
                 for member in lines.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
@@ -1281,7 +1281,7 @@ impl Shape {
             },
             Self::MultiPolygon(polygons) => {
                 let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, polygons.len())?;
+                crate::try_reserve_vec(&mut members, polygons.member_count())?;
                 for member in polygons.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,

@@ -1335,7 +1335,7 @@ impl Shape {
                 values.sort_by(compare_points);
                 let mut values = values.into_iter();
                 let mut members = Vec::new();
-                crate::boundary::try_reserve_vec(&mut members, points.len())?;
+                crate::boundary::try_reserve_vec(&mut members, points.member_count())?;
                 for member in points.members() {
                     let mapped = match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
@@ -1361,7 +1361,7 @@ impl Shape {
                 values.sort_by(compare_point_slices);
                 let mut values = values.into_iter();
                 let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, lines.len())?;
+                crate::try_reserve_vec(&mut members, lines.member_count())?;
                 for member in lines.members() {
                     let mapped = match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
@@ -1387,7 +1387,7 @@ impl Shape {
                 values.sort_by(compare_polygons);
                 let mut values = values.into_iter();
                 let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, polygons.len())?;
+                crate::try_reserve_vec(&mut members, polygons.member_count())?;
                 for member in polygons.members() {
                     let mapped = match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,

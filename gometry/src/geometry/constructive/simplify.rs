@@ -617,7 +617,7 @@ fn try_prefix_line_members(
     end: usize,
 ) -> Result<Vec<MultiMember<LineSeq>>> {
     let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, lines.len())?;
+    crate::try_reserve_vec(&mut out, lines.member_count())?;
     for member in lines.members().take(end) {
         let item = match member {
             MultiMember::Empty => MultiMember::Empty,
@@ -681,7 +681,7 @@ fn try_prefix_polygon_members(
     end: usize,
 ) -> Result<Vec<MultiMember<Polygon>>> {
     let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, polygons.len())?;
+    crate::try_reserve_vec(&mut out, polygons.member_count())?;
     for member in polygons.members().take(end) {
         let item = match member {
             MultiMember::Empty => MultiMember::Empty,
@@ -1355,7 +1355,7 @@ mod keep_identity_tests {
         let Shape::MultiPolygon(out) = shape.simplify_dp_raw(1.0).unwrap() else {
             panic!("multipolygon remains");
         };
-        assert_eq!(out.len(), 2);
+        assert_eq!(out.member_count(), 2);
         assert_eq!(out.as_slice().len(), 1);
     }
 }

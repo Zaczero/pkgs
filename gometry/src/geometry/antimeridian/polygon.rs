@@ -51,7 +51,7 @@ impl Shape {
                 }
             },
             Self::MultiLineString(lines) => {
-                let mut split = Vec::with_capacity(lines.len());
+                let mut split = Vec::with_capacity(lines.member_count());
                 for member in lines.members() {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
@@ -82,7 +82,7 @@ impl Shape {
                 Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
             },
             Self::MultiPolygon(polygons) => {
-                let mut split = Vec::with_capacity(polygons.len());
+                let mut split = Vec::with_capacity(polygons.member_count());
                 for member in polygons.members() {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),
@@ -134,7 +134,7 @@ impl Shape {
                 Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
             },
             Self::MultiPolygon(polygons) => {
-                let mut split = Vec::with_capacity(polygons.len());
+                let mut split = Vec::with_capacity(polygons.member_count());
                 for member in polygons.members() {
                     match member {
                         MultiMember::Empty => split.push(MultiMember::Empty),

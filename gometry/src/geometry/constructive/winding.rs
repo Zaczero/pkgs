@@ -79,7 +79,7 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
         },
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::new();
-            crate::try_reserve_vec(&mut members, polygons.len())?;
+            crate::try_reserve_vec(&mut members, polygons.member_count())?;
             for member in polygons.members() {
                 let shape = match member {
                     crate::geometry::MultiMember::Empty => {

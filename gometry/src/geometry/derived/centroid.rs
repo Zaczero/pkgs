@@ -676,7 +676,7 @@ fn areal_centroid_summary(shape: &Shape) -> Option<(f64, f64, f64)> {
     match shape {
         Shape::Polygon(polygon) => areal_centroid_polygon(polygon),
         Shape::MultiPolygon(polygons) => {
-            if polygons.len() == 1 && !polygons.is_empty() {
+            if polygons.len() == 1 {
                 return areal_centroid_polygon(&polygons[0]);
             }
             let mut parts = Vec::with_capacity(polygons.len());

@@ -897,7 +897,9 @@ impl MultiPoint {
         self.members.has_empty_members()
     }
 
-    pub(crate) fn len(&self) -> usize {
+    /// Members including EMPTY ones, as `members()` yields them. The
+    /// coordinate sequence this type derefs to holds only stored points.
+    pub(crate) fn member_count(&self) -> usize {
         self.members.len(self.coords.len())
     }
 
@@ -1051,7 +1053,9 @@ impl crate::HeapSize for MultiPoint {
 macro_rules! impl_multipart_iteration {
     ($name:ident, $member:ty) => {
         impl $name {
-            pub(crate) fn len(&self) -> usize {
+            /// Members including EMPTY ones, as `members()` yields them. The
+            /// slice this type derefs to holds only the stored values.
+            pub(crate) fn member_count(&self) -> usize {
                 self.members.len(self.values.len())
             }
 
@@ -1088,10 +1092,6 @@ impl_multipart_iteration!(MultiLineString, LineSeq);
 impl_multipart_iteration!(MultiPolygon, Polygon);
 
 impl MultiLineString {
-    pub(crate) fn first(&self) -> Option<&LineSeq> {
-        self.iter().next()
-    }
-
     pub(crate) fn as_slice(&self) -> &[LineSeq] {
         &self.values
     }

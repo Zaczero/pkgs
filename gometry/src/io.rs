@@ -197,8 +197,8 @@ pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
 /// and one per member, ring, or nested geometry. `None` on overflow.
 pub(crate) fn text_structure_count(shape: &Shape) -> Option<usize> {
     match shape {
-        Shape::MultiPoint(points) => points.len().checked_add(1),
-        Shape::MultiLineString(lines) => lines.len().checked_add(1),
+        Shape::MultiPoint(points) => points.member_count().checked_add(1),
+        Shape::MultiLineString(lines) => lines.member_count().checked_add(1),
         Shape::Polygon(polygon) => polygon.holes.len().checked_add(1),
         Shape::MultiPolygon(polygons) => polygons.iter().try_fold(1_usize, |total, polygon| {
             total.checked_add(polygon.holes.len().checked_add(1)?)

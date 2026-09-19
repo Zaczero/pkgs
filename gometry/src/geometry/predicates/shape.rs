@@ -177,7 +177,7 @@ impl Shape {
             (Self::MultiPoint(multipoint_left), Self::MultiPoint(multipoint_right)) => {
                 (!Z || multipoint_left.axes().has_z() == multipoint_right.axes().has_z())
                     && (!M || multipoint_left.axes().has_m() == multipoint_right.axes().has_m())
-                    && multipoint_left.len() == multipoint_right.len()
+                    && multipoint_left.member_count() == multipoint_right.member_count()
                     && multipoint_left
                         .members()
                         .zip(multipoint_right.members())
@@ -205,7 +205,7 @@ impl Shape {
             (Self::MultiLineString(multiline_left), Self::MultiLineString(multiline_right)) => {
                 (!Z || multiline_left.axes().has_z() == multiline_right.axes().has_z())
                     && (!M || multiline_left.axes().has_m() == multiline_right.axes().has_m())
-                    && multiline_left.len() == multiline_right.len()
+                    && multiline_left.member_count() == multiline_right.member_count()
                     && multiline_left.members().zip(multiline_right.members()).all(
                         |(left_member, right_member)| match (left_member, right_member) {
                             (
@@ -230,7 +230,7 @@ impl Shape {
             (Self::MultiPolygon(multipolygon_left), Self::MultiPolygon(multipolygon_right)) => {
                 (!Z || multipolygon_left.axes().has_z() == multipolygon_right.axes().has_z())
                     && (!M || multipolygon_left.axes().has_m() == multipolygon_right.axes().has_m())
-                    && multipolygon_left.len() == multipolygon_right.len()
+                    && multipolygon_left.member_count() == multipolygon_right.member_count()
                     && multipolygon_left
                         .members()
                         .zip(multipolygon_right.members())

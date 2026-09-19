@@ -321,7 +321,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
     }
     let dissolved = Shape::union_all(shapes, crate::geometry::Strictness::Lenient)?;
     let shape = match dissolved {
-        Shape::MultiPolygon(polygons) if polygons.len() == 1 && !polygons.is_empty() => {
+        Shape::MultiPolygon(polygons) if polygons.len() == 1 => {
             Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
         },
         shape => shape,
