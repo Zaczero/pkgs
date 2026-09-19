@@ -603,12 +603,8 @@ impl Groups {
             let this = slf.borrow();
             let mut row_ids = crate::try_vec_with_capacity(this.values_window().len())?;
             for (logical_row, row) in (this.rows.start..this.rows.end).enumerate() {
-                let logical_row = i64::try_from(logical_row)
-                    .map_err(|_| PyOverflowError::new_err("row index does not fit in int64"))?;
                 let count = (this.offsets[row + 1] - this.offsets[row]) as usize;
-                for value in std::iter::repeat_n(logical_row, count) {
-                    crate::try_push(&mut row_ids, value)?;
-                }
+                row_ids.extend(std::iter::repeat_n(logical_row as i64, count));
             }
             row_ids
         };
