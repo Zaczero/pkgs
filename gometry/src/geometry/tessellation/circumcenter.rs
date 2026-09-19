@@ -34,7 +34,9 @@ pub(super) fn certified_circumcenter(a: XY, b: XY, c: XY) -> Option<CertifiedCen
     let admitted = [a.x, a.y, b.x, b.y, c.x, c.y]
         .into_iter()
         .all(inside_window)
-        && [ux, uy, vx, vy].into_iter().all(|d| inside_window(d.head()));
+        && [ux, uy, vx, vy]
+            .into_iter()
+            .all(|d| inside_window(d.head()));
     if !admitted {
         return None;
     }

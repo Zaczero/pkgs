@@ -4170,7 +4170,7 @@ mod tests {
     }
 
     fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
-        let mut edges: std::collections::BTreeMap<[PointKey; 2], Vec<[PointKey; 2]>> =
+        let mut edges: std::collections::BTreeMap<[PointKey; 2], Vec<[XY; 2]>> =
             std::collections::BTreeMap::new();
         for cell in cells {
             let Shape::Polygon(polygon) = cell else {
@@ -4178,13 +4178,14 @@ mod tests {
             };
             for index in 0..polygon.shell.len() - 1 {
                 let edge = [
-                    PointKey::new(polygon.shell.point_at(index).xy()),
-                    PointKey::new(polygon.shell.point_at(index + 1).xy()),
+                    polygon.shell.point_at(index).xy(),
+                    polygon.shell.point_at(index + 1).xy(),
                 ];
-                let key = if edge[0] <= edge[1] {
-                    edge
+                let keys = edge.map(PointKey::new);
+                let key = if keys[0] <= keys[1] {
+                    keys
                 } else {
-                    [edge[1], edge[0]]
+                    [keys[1], keys[0]]
                 };
                 edges.entry(key).or_default().push(edge);
             }
@@ -4193,8 +4194,7 @@ mod tests {
         for directions in edges.values() {
             match directions.as_slice() {
                 [edge] => {
-                    let a = edge[0].xy();
-                    let b = edge[1].xy();
+                    let [a, b] = *edge;
                     let (side, correctly_directed) = if a.y == bounds[2] && b.y == bounds[2] {
                         (0, a.x < b.x)
                     } else if a.x == bounds[1] && b.x == bounds[1] {
@@ -4215,8 +4215,16 @@ mod tests {
                     sides[side].push((lo, hi));
                 },
                 [first, second] => {
-                    assert_eq!(first[0], second[1], "internal edge directions disagree");
-                    assert_eq!(first[1], second[0], "internal edge directions disagree");
+                    assert_eq!(
+                        PointKey::new(first[0]),
+                        PointKey::new(second[1]),
+                        "internal edge directions disagree"
+                    );
+                    assert_eq!(
+                        PointKey::new(first[1]),
+                        PointKey::new(second[0]),
+                        "internal edge directions disagree"
+                    );
                 },
                 _ => panic!("edge has neither one nor two owners"),
             }

@@ -35,7 +35,7 @@ fn exact_chain(
     let mut points = Vec::new();
     crate::try_reserve_vec(&mut points, view.nodes.len())?;
     for &node in &view.nodes {
-        points.push(partition.node_xy(node)?);
+        points.push(partition.node_xy(node));
     }
     let mut chain_source_segments = Vec::new();
     for (source, segment) in source_segments.iter().enumerate() {

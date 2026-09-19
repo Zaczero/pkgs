@@ -2,6 +2,9 @@
 //! Orientation uses an outward interval and exact stored-dyadic fallback over
 //! the complete finite binary64 domain.
 
+use crate::error::Result;
+use crate::geometry::Ordering;
+use crate::geometry::exact_arith::bounded::{Bounded, inside_window};
 use crate::geometry::exact_arith::{
     dd_add, dd_mul, scale_shift_for_magnitude, two_product_exact, two_sum,
 };
@@ -9,13 +12,81 @@ pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
-use crate::geometry::tessellation::exact::Interval;
-use crate::geometry::Ordering;
+use crate::geometry::tessellation::exact::{ExactDyadic, Interval};
 
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
 use exact_orientation::orientation_xy as certified_orientation_xy;
 pub(in crate::geometry) use exact_orientation::{stored_cross_sign, stored_orientation_sign};
+
+/// The exact homogeneous crossing of the carriers of `a` and `b`,
+/// `[p d + r t, d]` for `p + r t / d` along `a`, with `r` and `s` the segment
+/// directions, `d = r x s` and `t = (q - p) x s`. `d` keeps its sign.
+pub(in crate::geometry) fn crossing_homogeneous(
+    a: Segment,
+    b: Segment,
+) -> Result<[ExactDyadic; 3]> {
+    let difference = |end: f64, start: f64| {
+        ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)
+    };
+    let (rx, ry) = (
+        difference(a.end.x, a.start.x)?,
+        difference(a.end.y, a.start.y)?,
+    );
+    let (sx, sy) = (
+        difference(b.end.x, b.start.x)?,
+        difference(b.end.y, b.start.y)?,
+    );
+    let (cx, cy) = (
+        difference(b.start.x, a.start.x)?,
+        difference(b.start.y, a.start.y)?,
+    );
+    let den = rx.try_product(&sy)?.try_subtract(ry.try_product(&sx)?)?;
+    let t = cx.try_product(&sy)?.try_subtract(cy.try_product(&sx)?)?;
+    let coordinate = |start: f64, direction: &ExactDyadic| -> Result<ExactDyadic> {
+        den.try_product(&ExactDyadic::try_from_f64(start)?)?
+            .try_add(t.try_product(direction)?)
+    };
+    Ok([
+        coordinate(a.start.x, &rx)?,
+        coordinate(a.start.y, &ry)?,
+        den.try_clone()?,
+    ])
+}
+
+/// The nearest-even rounding of the crossing of the carriers of `a` and `b`,
+/// certified in [`Bounded`] double-double arithmetic. `None` declines to
+/// [`crossing_homogeneous`]: a possible tie, a rounded coordinate that is zero
+/// or subnormal, a magnitude outside the certificate window, or carriers too
+/// close to parallel for the bound.
+pub(in crate::geometry) fn certified_crossing(a: Segment, b: Segment) -> Option<XY> {
+    let stored = [
+        a.start.x, a.start.y, a.end.x, a.end.y, b.start.x, b.start.y, b.end.x, b.end.y,
+    ];
+    if !stored.into_iter().all(inside_window) {
+        return None;
+    }
+    let rx = Bounded::exact_difference(a.end.x, a.start.x);
+    let ry = Bounded::exact_difference(a.end.y, a.start.y);
+    let sx = Bounded::exact_difference(b.end.x, b.start.x);
+    let sy = Bounded::exact_difference(b.end.y, b.start.y);
+    let cx = Bounded::exact_difference(b.start.x, a.start.x);
+    let cy = Bounded::exact_difference(b.start.y, a.start.y);
+    if ![rx, ry, sx, sy, cx, cy]
+        .into_iter()
+        .all(|value| inside_window(value.head()))
+    {
+        return None;
+    }
+    let den = rx.mul(sy)?.add(ry.mul(sx)?.neg());
+    let along = cx.mul(sy)?.add(cy.mul(sx)?.neg()).div(den)?;
+    let crossing_x = rx.mul(along)?.add(Bounded::exact(a.start.x));
+    let crossing_y = ry.mul(along)?.add(Bounded::exact(a.start.y));
+    Some(XY::new(
+        crossing_x.certified_rounding()?,
+        crossing_y.certified_rounding()?,
+    ))
+}
 
 pub(super) fn dd_cross(
     left_a: (f64, f64),

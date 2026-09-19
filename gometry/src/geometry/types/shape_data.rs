@@ -1544,12 +1544,6 @@ impl PointKey {
             y: canonical_f64_bits(point.y),
         }
     }
-
-    /// The keyed coordinate back as an `XY` (bit-exact; keys are built
-    /// from canonicalized coordinate bits).
-    pub(crate) const fn xy(self) -> XY {
-        XY::new(f64::from_bits(self.x), f64::from_bits(self.y))
-    }
 }
 
 pub(crate) fn ordered_edge(left: PointKey, right: PointKey) -> (PointKey, PointKey) {
