@@ -1524,6 +1524,24 @@ def test_join_packed_nonpoint_left_lanes_match_per_row_join() -> None:
     ) == pair_rows(gm.join(list(polygons), lines, predicate='dwithin', distance=0.25))
 
 
+def test_geodesic_pruning_keeps_points_at_exactly_the_threshold() -> None:
+    """A point at exactly its reported distance is within it, pruned or not.
+
+    On short meridional arcs at the equator the auxiliary-sphere bound is
+    tight and can round above the distance the backend reports.
+    """
+    query = gm.Point(0.0, 0.0, crs=4326)
+    for step in range(1, 400, 7):
+        point = gm.Point(0.0, step * 1e-13, crs=4326)
+        distance = gm.distance(query, point)
+        index = gm.SpatialIndex(gm.GeometryArray([point]))
+        assert gm.dwithin(query, point, distance)
+        assert index.query(query, predicate='dwithin', distance=distance).tolist() == [
+            0
+        ]
+        assert index.nearest(query, max_distance=distance).tolist() == [0]
+
+
 def test_geodesic_dwithin_window_covers_the_antimeridian_seam() -> None:
     query = gm.Point(-180.0, 0.0, crs=4326)
     entry = gm.Point(180.0, 0.0, crs=4326)

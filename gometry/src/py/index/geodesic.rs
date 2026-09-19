@@ -102,6 +102,11 @@ fn central_angle(beta1: Radians, beta2: Radians, delta_lon: Radians) -> Radians 
 pub(crate) struct GeodesicPruner {
     /// Semi-minor axis (meters): the auxiliary-sphere radius of the bound.
     minor_radius: f64,
+    /// The backend's distance accuracy (meters). The bound is tight on short
+    /// meridional arcs near the equator, where it can exceed the distance the
+    /// backend reports by rounding; every use keeps this much slack so a
+    /// threshold query never prunes a point it would accept.
+    backend_floor: f64,
     one_minus_f: f64,
     /// Query point on the auxiliary sphere (radians).
     beta: Radians,
@@ -131,6 +136,7 @@ impl GeodesicPruner {
         let one_minus_f = 1.0 - flattening;
         Some(Self {
             minor_radius: major * one_minus_f,
+            backend_floor: crate::geometry::GeodesicNumericalPolicy::new(major).backend_floor(),
             one_minus_f,
             beta: reduced_latitude(Degrees(point.y), one_minus_f),
             lon: Radians(point.x.to_radians()),
@@ -193,7 +199,7 @@ impl GeodesicPruner {
                     .min(self.to_meridian_arc(Degrees(lon_hi), beta_lo, beta_hi).0),
             )
         };
-        self.minor_radius * sigma.0
+        (self.minor_radius * sigma.0 - self.backend_floor).max(0.0)
     }
 
     /// The planar lon/lat window(s) guaranteed to contain every point within
@@ -202,7 +208,7 @@ impl GeodesicPruner {
     /// whole world (callers keep the global scan).
     pub(crate) fn dwithin_windows(&self, distance: f64) -> Option<DwithinWindows> {
         // s ≤ distance ⟹ σ ≤ distance / b (the bound, inverted).
-        let alpha = distance / self.minor_radius;
+        let alpha = (distance + self.backend_floor) / self.minor_radius;
         if alpha >= std::f64::consts::PI {
             return None;
         }
@@ -402,6 +408,8 @@ mod tests {
 #[derive(Debug)]
 pub(crate) struct GeodesicRowCaps {
     minor_radius: f64,
+    /// Slack for the backend's distance accuracy, as in [`GeodesicPruner`].
+    backend_floor: f64,
     one_minus_f: f64,
     /// `(β, λ radians)` anchor per row.
     anchors: Vec<(Radians, Radians)>,
@@ -448,6 +456,7 @@ impl GeodesicRowCaps {
         }
         Ok(Some(Self {
             minor_radius: major * one_minus_f,
+            backend_floor: crate::geometry::GeodesicNumericalPolicy::new(major).backend_floor(),
             one_minus_f,
             anchors,
             reaches,
@@ -484,7 +493,8 @@ impl GeodesicRowCaps {
         };
         let gap = Radians(gap.min(std::f64::consts::TAU - gap));
         let sigma = central_angle(query.0, beta, gap);
-        (self.minor_radius * sigma.0 - self.reaches[handle] - query_reach).max(0.0)
+        (self.minor_radius * sigma.0 - self.reaches[handle] - query_reach - self.backend_floor)
+            .max(0.0)
     }
 }
 
