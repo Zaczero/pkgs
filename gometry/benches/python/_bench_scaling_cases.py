@@ -46,7 +46,7 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
     import gometry as gm
     import shapely
 
-    point = int(operation.point)
+    point = operation.point
     spacing = 2.0
     index_count = 10_000
     origin_x, origin_y = 500_000.0, 5_200_000.0
@@ -76,6 +76,7 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
     tree = shapely.STRtree(boxes_sh)
 
     if operation.dimension == 'indexed-polygons':
+        point = int(point)
         index = gm.SpatialIndex(boxes_gm[:point])
         tree = shapely.STRtree(boxes_sh[:point])
         queries_gm = gm.GeometryArray([
@@ -140,6 +141,7 @@ def _candidate_case(operation: ScalingOperation) -> PublicCase:
             dtype=object,
         )
     elif operation.dimension == 'candidate-pairs-per-query':
+        point = int(point)
         query_gm = gm.box(
             origin_x - 0.5,
             origin_y - 0.5,
