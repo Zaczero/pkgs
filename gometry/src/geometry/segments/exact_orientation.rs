@@ -1,9 +1,9 @@
 //! Full-binary64 orientation sign.
 //!
 //! One ladder serves every caller: Shewchuk's A-stage filter settles
-//! ordinary determinants, an identity tie settles axis-aligned collinearity,
-//! an outward interval settles most of the rest, and six exact products of
-//! the original coordinates decide what remains.
+//! ordinary determinants, an identity tie settles axis-aligned collinearity
+//! and repeated points, an outward interval settles most of the rest, and six
+//! exact products of the original coordinates decide what remains.
 
 use super::CCW_ERRBOUND_A;
 use crate::geometry::exact_arith::ExactSign;
@@ -37,7 +37,12 @@ pub(in crate::geometry) fn stored_orientation_sign(
             ExactSign::Negative
         };
     }
-    if (ax == bx && ax == cx) || (ay == by && ay == cy) {
+    if (ax == bx && ax == cx)
+        || (ay == by && ay == cy)
+        || (cx == ax && cy == ay)
+        || (cx == bx && cy == by)
+        || (ax == bx && ay == by)
+    {
         return ExactSign::Zero;
     }
     let exact = Interval::exact;
