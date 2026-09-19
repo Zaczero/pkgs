@@ -1066,11 +1066,26 @@ impl ExactRational {
                 denominator: ExactDyadic::one(),
             });
         }
-        let (numerator, denominator) = if denominator.sign() == ExactSign::Negative {
+        let (mut numerator, mut denominator) = if denominator.sign() == ExactSign::Negative {
             (numerator.neg(), denominator.neg())
         } else {
             (numerator, denominator)
         };
+        // A power-of-two denominator shares only a power of two with the
+        // numerator, so reducing it is an exponent shift; this yields exactly
+        // what `try_gcd` would, including its unit-numerator shortcut.
+        if denominator.limbs.as_slice() == [1] {
+            let unit_numerator = numerator.limbs.as_slice() == [1] && numerator.exponent == 0;
+            if !unit_numerator && denominator.exponent != 0 {
+                let shift = numerator.exponent.min(denominator.exponent);
+                numerator.exponent -= shift;
+                denominator.exponent -= shift;
+            }
+            return Ok(Self {
+                numerator,
+                denominator,
+            });
+        }
         let common = numerator.try_gcd(&denominator)?;
         Ok(Self {
             numerator: numerator.try_exact_quotient(&common)?,
@@ -4000,6 +4015,45 @@ mod tests {
                 Ordering::Equal,
                 "{dividend:?} / {divisor:?}"
             );
+        }
+    }
+
+    #[test]
+    fn power_of_two_denominators_reduce_as_the_gcd_would() {
+        let small = |value: u128, exponent: i64| ExactDyadic::from_u128(false, value, exponent);
+        let prime = ExactDyadic::from_u128(false, 0xFFFF_FFFF_FFFF_FFC5, 0);
+        let numerators = [
+            small(1, 0),
+            small(1, -4),
+            small(3, 0),
+            small(3, 7),
+            small(3, -9),
+            small(5, 2).neg(),
+            prime
+                .try_product(&prime)
+                .unwrap()
+                .try_product(&small(1, -2))
+                .unwrap(),
+        ];
+        for numerator in &numerators {
+            for exponent in [-6, -1, 0, 1, 6] {
+                let denominator = small(1, exponent);
+                let common = numerator.try_gcd(&denominator).unwrap();
+                let expected = (
+                    numerator.try_exact_quotient(&common).unwrap(),
+                    denominator.try_exact_quotient(&common).unwrap(),
+                );
+                let reduced = ExactRational::new(
+                    numerator.try_clone().unwrap(),
+                    denominator.try_clone().unwrap(),
+                )
+                .unwrap();
+                assert_eq!(
+                    (reduced.numerator, reduced.denominator),
+                    expected,
+                    "{numerator:?} / 2^{exponent}"
+                );
+            }
         }
     }
 
