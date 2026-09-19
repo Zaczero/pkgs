@@ -27,7 +27,7 @@ use crate::geometry::segments::{
     stored_orientation_sign,
 };
 use crate::geometry::tessellation::exact::{
-    ExactDyadic, outward_ratio_bounds, round_ratio, try_compare_ratios,
+    ExactDyadic, ratio_enclosure, round_ratio, try_compare_ratios,
 };
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, CoverageOverlapRule, De9im,
@@ -564,10 +564,10 @@ impl VisibilityIndex {
         for (edge, span) in partition.spans.iter().enumerate() {
             let [ax, ay, aw] = partition.homogeneous(span.start);
             let [bx, by, bw] = partition.homogeneous(span.end);
-            let (ax_lo, ax_hi) = outward_ratio_bounds(ax, aw)?;
-            let (ay_lo, ay_hi) = outward_ratio_bounds(ay, aw)?;
-            let (bx_lo, bx_hi) = outward_ratio_bounds(bx, bw)?;
-            let (by_lo, by_hi) = outward_ratio_bounds(by, bw)?;
+            let (ax_lo, ax_hi) = ratio_enclosure(ax, aw)?;
+            let (ay_lo, ay_hi) = ratio_enclosure(ay, aw)?;
+            let (bx_lo, bx_hi) = ratio_enclosure(bx, bw)?;
+            let (by_lo, by_hi) = ratio_enclosure(by, bw)?;
             try_push_vec(&mut entries, VisibilityEntry {
                 edge: u32::try_from(edge).map_err(|_| ResourceError::SizeOverflow)?,
                 extent: RoundedExtent {
@@ -6038,8 +6038,8 @@ impl ExactPartition<'_> {
     ) -> Result<Option<VisibilityHit>> {
         let component = topology.component_of[query.0 as usize];
         let [qx, qy, qw] = self.homogeneous(query);
-        let (_, query_x_hi) = outward_ratio_bounds(qx, qw)?;
-        let (query_y_lo, query_y_hi) = outward_ratio_bounds(qy, qw)?;
+        let (_, query_x_hi) = ratio_enclosure(qx, qw)?;
+        let (query_y_lo, query_y_hi) = ratio_enclosure(qy, qw)?;
         let mut nearest: Option<(ExactDyadic, ExactDyadic, f64, VisibilityHit)> = None;
         let visibility = self
             .visibility
@@ -6124,7 +6124,7 @@ impl ExactPartition<'_> {
             {
                 continue;
             }
-            let nearest_x_lo = outward_ratio_bounds(&x, &w)?.0;
+            let nearest_x_lo = ratio_enclosure(&x, &w)?.0;
             nearest = Some((x, w, nearest_x_lo, hit));
         }
         Ok(nearest.map(|(_, _, _, hit)| hit))

@@ -3537,6 +3537,48 @@ pub(in crate::geometry) fn outward_ratio_bounds(
     }
 }
 
+/// A sound binary64 enclosure of `numerator / denominator`, for pruning.
+///
+/// The quotient of the operands' leading 64 bits carries three roundings —
+/// each operand's conversion and the division, under `3.1 * 2^-53` relative
+/// — which four ulps each way cover while the quotient stays normal. A
+/// quotient near the subnormal or overflow range takes the tight exact
+/// bounds instead.
+pub(in crate::geometry) fn ratio_enclosure(
+    numerator: &ExactDyadic,
+    denominator: &ExactDyadic,
+) -> Result<(f64, f64)> {
+    if denominator.is_zero() {
+        return Err(GeometryErrorKind::ExactRatioZeroDenominator.into());
+    }
+    if numerator.is_zero() {
+        return Ok((0.0, 0.0));
+    }
+    let Some((significand, exponent)) = approximate_ratio_components(numerator, denominator)
+        .filter(|&(_, exponent)| (-1000..=1000).contains(&exponent))
+    else {
+        return outward_ratio_bounds(numerator, denominator);
+    };
+    let quotient = significand * 2.0_f64.powi(exponent as i32);
+    let widen = |mut value: f64, step: fn(f64) -> f64| {
+        for _ in 0..4 {
+            value = step(value);
+        }
+        value
+    };
+    let (lower, upper) = (
+        widen(quotient, f64::next_down),
+        widen(quotient, f64::next_up),
+    );
+    Ok(
+        if numerator.sign().quotient(denominator.sign()) == ExactSign::Negative {
+            (-upper, -lower)
+        } else {
+            (lower, upper)
+        },
+    )
+}
+
 /// Round `sqrt(numerator / denominator)` to nearest binary64, ties to even.
 ///
 /// The caller supplies exact nonnegative `numerator` and positive `denominator`.
@@ -4732,9 +4774,20 @@ mod tests {
     }
 
     #[test]
-    fn outward_ratio_bounds_contain_adversarial_exact_ratios() {
+    fn ratio_bounds_contain_adversarial_exact_ratios() {
         fn assert_contains(name: &str, numerator: &ExactDyadic, denominator: &ExactDyadic) {
-            let (lower, upper) = outward_ratio_bounds(numerator, denominator).unwrap();
+            for bounds in [outward_ratio_bounds, ratio_enclosure] {
+                assert_bounds_contain(name, numerator, denominator, bounds);
+            }
+        }
+
+        fn assert_bounds_contain(
+            name: &str,
+            numerator: &ExactDyadic,
+            denominator: &ExactDyadic,
+            bounds: fn(&ExactDyadic, &ExactDyadic) -> Result<(f64, f64)>,
+        ) {
+            let (lower, upper) = bounds(numerator, denominator).unwrap();
             assert!(
                 lower <= upper,
                 "{name}: invalid interval [{lower:?}, {upper:?}]"
@@ -4785,7 +4838,33 @@ mod tests {
             ("below one midpoint", below_tie, one.clone()),
             ("above one midpoint", above_tie, one.clone()),
             ("minimum subnormal", minimum_subnormal, one.clone()),
-            ("below minimum subnormal", below_minimum_subnormal, one),
+            (
+                "below minimum subnormal",
+                below_minimum_subnormal,
+                one.clone(),
+            ),
+            (
+                "bits below the leading window",
+                ExactDyadic::from_parts(false, vec![u64::MAX, u64::MAX, u64::MAX, 1], -150),
+                ExactDyadic::from_parts(false, vec![1, 0, 3], 17),
+            ),
+            (
+                "negative multi-limb over multi-limb",
+                ExactDyadic::from_parts(true, vec![0x8000_0000_0000_0001, 7, 1], -64),
+                ExactDyadic::from_parts(false, vec![u64::MAX, 5], 3),
+            ),
+            (
+                "just under a power of two",
+                one.clone()
+                    .add(one.clone())
+                    .subtract(ExactDyadic::from_parts(false, vec![1], -120)),
+                one.clone(),
+            ),
+            (
+                "just above a power of two",
+                one.clone().add(ExactDyadic::from_parts(false, vec![1], -120)),
+                ExactDyadic::from_parts(false, vec![1, 1], -70),
+            ),
         ] {
             assert_contains(name, &numerator, &denominator);
         }
