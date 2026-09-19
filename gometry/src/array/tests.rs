@@ -23,9 +23,10 @@ mod csr_offset_tests {
 mod linref_array_degrade_tests {
     use crate::broadcast::{
         CollectRows as _, degrade_linref_float, degrade_linref_linestring, degrade_linref_point,
-        degrade_linref_point_between, is_degradable_line_row,
+        linref_error_degrades,
     };
     use crate::crs::MetricModel;
+    use crate::dispatch::Lane;
     use crate::error::ErrorKind;
     use crate::geometry::{
         CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, LineSeq, MeasureRange, Point,
@@ -74,21 +75,28 @@ mod linref_array_degrade_tests {
     }
 
     #[test]
-    fn is_degradable_line_row_recognizes_data_failures_only() {
+    fn empty_linework_degrades_everywhere_measure_defects_only_in_arrays() {
+        let empty = GeometryErrorKind::EmptyLinework.into();
+        assert!(linref_error_degrades(&empty, Lane::Scalar));
+        assert!(linref_error_degrades(&empty, Lane::Array(0)));
         for kind in [
-            GeometryErrorKind::EmptyLinework,
             GeometryErrorKind::MissingMeasure,
             GeometryErrorKind::NonMonotonicMeasure,
         ] {
-            assert!(is_degradable_line_row(&kind.into()));
+            let error = kind.into();
+            assert!(!linref_error_degrades(&error, Lane::Scalar));
+            assert!(linref_error_degrades(&error, Lane::Array(0)));
         }
-        assert!(!is_degradable_line_row(
-            &GeometryErrorKind::LineStringRequired.into()
-        ));
-        assert!(!is_degradable_line_row(&GeometryErrorKind::finite(
-            "distance",
-            f64::NAN
-        )));
+        for lane in [Lane::Scalar, Lane::Array(0)] {
+            assert!(!linref_error_degrades(
+                &GeometryErrorKind::LineStringRequired.into(),
+                lane
+            ));
+            assert!(!linref_error_degrades(
+                &GeometryErrorKind::finite("distance", f64::NAN),
+                lane
+            ));
+        }
     }
 
     #[test]
@@ -101,7 +109,12 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_float(line_locate_coordseq(&model, line, query, false)))
+            .map(|line| {
+                degrade_linref_float(
+                    line_locate_coordseq(&model, line, query, false),
+                    Lane::Array(0),
+                )
+            })
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!((results[0] - 5.0).abs() < 1e-12);
@@ -119,7 +132,7 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_float(line.line_locate_point_m(query)))
+            .map(|line| degrade_linref_float(line.line_locate_point_m(query), Lane::Array(0)))
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!((results[0] - 50.0).abs() < 1e-12);
@@ -138,7 +151,10 @@ mod linref_array_degrade_tests {
         let results = lines
             .iter()
             .map(|line| {
-                degrade_linref_point_between(line_interpolate_coordseq(&model, line, 4.0, false))
+                degrade_linref_point(
+                    line_interpolate_coordseq(&model, line, 4.0, false).map(Shape::Point),
+                    Lane::Array(0),
+                )
             })
             .collect_rows()
             .expect("degradable rows must not abort");
@@ -156,7 +172,7 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_point(line.line_interpolate_point_m(50.0)))
+            .map(|line| degrade_linref_point(line.line_interpolate_point_m(50.0), Lane::Array(0)))
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!(matches!(results[0], Shape::Point(p) if (p.x - 5.0).abs() < 1e-12));
@@ -176,7 +192,10 @@ mod linref_array_degrade_tests {
         let results = lines
             .iter()
             .map(|line| {
-                degrade_linref_linestring(line_substring_coordseq(&model, line, range, false))
+                degrade_linref_linestring(
+                    line_substring_coordseq(&model, line, range, false),
+                    Lane::Array(0),
+                )
             })
             .collect_rows()
             .expect("degradable rows must not abort");
@@ -197,7 +216,7 @@ mod linref_array_degrade_tests {
         ];
         let results = lines
             .iter()
-            .map(|line| degrade_linref_linestring(line.line_substring_m(range)))
+            .map(|line| degrade_linref_linestring(line.line_substring_m(range), Lane::Array(0)))
             .collect_rows()
             .expect("degradable rows must not abort");
         assert!(matches!(&results[0], Shape::LineString(seq) if !seq.is_empty()));
@@ -231,15 +250,15 @@ mod linref_array_degrade_tests {
             wrong_kind.kind(),
             ErrorKind::Geometry(GeometryErrorKind::LineStringRequired)
         ));
-        assert!(!is_degradable_line_row(&wrong_kind));
+        assert!(!linref_error_degrades(&wrong_kind, Lane::Array(0)));
 
         let out_of_order = MeasureRange::substring_measure(6.0, 2.0).expect_err("ordered");
-        assert!(!is_degradable_line_row(&out_of_order));
+        assert!(!linref_error_degrades(&out_of_order, Lane::Array(0)));
 
         let lines = [line_xy(&[(0.0, 0.0), (10.0, 0.0)]), polygon];
         let batch = lines
             .iter()
-            .map(|line| degrade_linref_float(line.line_locate_point(query, false)))
+            .map(|line| degrade_linref_float(line.line_locate_point(query, false), Lane::Array(0)))
             .collect_rows();
         assert!(batch.is_err(), "wrong-kind rows must abort the batch");
     }

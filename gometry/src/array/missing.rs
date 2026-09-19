@@ -675,10 +675,6 @@ pub(crate) fn union_many<'a>(
     )
 }
 
-pub(crate) fn is_missing_row(mask: Option<&ValidityMask>, row: usize) -> bool {
-    mask.is_some_and(|mask| mask.is_missing(row))
-}
-
 #[cfg(test)]
 mod tests {
     #[test]

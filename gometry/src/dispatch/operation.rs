@@ -63,9 +63,7 @@ pub(crate) enum MetricOp {
     Length,
     Length3d,
     LineInterpolate,
-    LineInterpolatePoints,
     LineLocate,
-    LineLocatePoint,
     LineSubstring,
     MaximumInscribedCircle,
     MaximumInscribedRadius,
@@ -106,9 +104,7 @@ impl MetricOp {
             Self::Length => "length",
             Self::Length3d => "length_3d",
             Self::LineInterpolate => "line_interpolate",
-            Self::LineInterpolatePoints => "line_interpolate_points",
             Self::LineLocate => "line_locate",
-            Self::LineLocatePoint => "line_locate_point",
             Self::LineSubstring => "line_substring",
             Self::MaximumInscribedCircle => "maximum_inscribed_circle",
             Self::MaximumInscribedRadius => "maximum_inscribed_radius",
@@ -137,14 +133,12 @@ impl MetricOp {
                 op: self,
                 unit: None,
             },
-            Self::LineInterpolate
-            | Self::LineInterpolatePoints
-            | Self::LineLocate
-            | Self::LineLocatePoint
-            | Self::LineSubstring => MetricResolver::LineMetric {
-                op: self,
-                unit: None,
-                normalized: false,
+            Self::LineInterpolate | Self::LineLocate | Self::LineSubstring => {
+                MetricResolver::LineMetric {
+                    op: self,
+                    unit: None,
+                    normalized: false,
+                }
             },
             _ => MetricResolver::Metric {
                 op: self,

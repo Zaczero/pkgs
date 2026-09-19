@@ -1,11 +1,9 @@
 use crate::array::{ArrayRow, ValidityMask};
-use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
-use crate::py::numpy::float64_array;
+use crate::geometry::GeometryKind;
 use crate::py::support::{
-    CollectRows as _, CoordinateAxes, DistanceUnit, Frame, Point, PointRows, Py, PyAny, PyGeometry,
-    PyGeometryArray, PyResult, PyTypeError, Python, Shape, geometry_type_err, line_locate_shape,
-    metric_nearest_points_resolved, resolve_line_metric, rows_err,
+    CollectRows as _, CoordinateAxes, Frame, Point, PyGeometry, PyGeometryArray, PyResult, Python,
+    Shape, metric_nearest_points_resolved, rows_err,
 };
 
 /// Build the `(left, right)` witness point columns from per-row nearest
@@ -39,50 +37,6 @@ pub(crate) fn nearest_point_columns_masked(
         PyGeometryArray::from_shapes(left, frame.clone())?.with_missing_mask(missing.clone())?,
         PyGeometryArray::from_shapes(right, frame)?.with_missing_mask(missing)?,
     ))
-}
-
-/// One fixed point against every array line: the frame is checked once, the
-/// metric model resolved once, and the locate loop runs detached on the rows'
-/// cached line indexes.
-pub(crate) fn geometry_array_line_locate_point_geometry(
-    py: Python<'_>,
-    left: &PyGeometryArray,
-    point: &PyGeometry,
-    normalized: bool,
-    unit: Option<DistanceUnit>,
-) -> PyResult<Py<PyAny>> {
-    Frame::compatible_parts(
-        left.crs_ref(),
-        left.epoch(),
-        point.crs_ref(),
-        point.epoch(),
-        MetricOp::LineLocatePoint.name(),
-    )?;
-    let query = require_locate_point(point, MetricOp::LineLocatePoint)?;
-    let model = resolve_line_metric(left.crs_str(), unit, normalized, MetricOp::LineLocatePoint)?;
-    let left = left.clone();
-    let result = py
-        .detach(move || {
-            let mut rows = left.row_operation();
-            rows.rows_with_missing(|| f64::NAN)
-                .map(|logical_row| {
-                    let ArrayRow::Present(row) = logical_row else {
-                        return Ok(f64::NAN);
-                    };
-                    let index = row.logical();
-                    let line = rows.prepared(row)?;
-                    crate::broadcast::degrade_linref_float(line_locate_shape(
-                        &model,
-                        &line,
-                        &*rows.frame_cache(index)?,
-                        query,
-                        normalized,
-                    ))
-                })
-                .collect_rows()
-        })
-        .map_err(crate::broadcast::rows_err)?;
-    float64_array(py, result)
 }
 
 pub(crate) fn fixed_geometry_array_nearest_points_admitted(
@@ -282,27 +236,13 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     Ok(array.scatter_present_result(present)?)
 }
 
-/// Extract the query `Point` for a linear-referencing locate, with the
-/// operation-tagged `TypeError` the scalar path raises.
-pub(crate) fn require_locate_point(point: &PyGeometry, operation: MetricOp) -> PyResult<Point> {
-    let operation = operation.name();
-    match point.shape.shape() {
+/// The query point of a linear-referencing locate. POINT EMPTY becomes the
+/// NaN point, the form an empty point takes in a point column, which locates
+/// nowhere.
+pub(crate) fn locate_query(shape: &Shape) -> crate::error::Result<Point> {
+    match shape {
         Shape::Point(query) => Ok(*query),
-        _ => Err(PyTypeError::new_err(format!(
-            "{operation} requires a Point"
-        ))),
+        Shape::Empty(GeometryKind::Point, _) => Ok(Point::new_raw_xy(f64::NAN, f64::NAN)),
+        _ => Err(crate::geometry::GeometryErrorKind::LocatePointRequired.into()),
     }
-}
-
-/// Extract one query `Point` per array row (the array form of
-/// [`require_locate_point`], same error).
-pub(crate) fn require_locate_points(
-    points: &PyGeometryArray,
-    operation: MetricOp,
-) -> PyResult<PointRows<'_>> {
-    let operation = operation.name();
-    points
-        .storage()
-        .point_rows()
-        .ok_or_else(|| geometry_type_err(format!("{operation} requires a Point")))
 }

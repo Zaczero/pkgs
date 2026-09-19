@@ -23,10 +23,10 @@ pub(crate) use binary_fast::{
     dispatch_dwithin_admitted, dispatch_frechet_distance, dispatch_hausdorff_distance,
     dispatch_overlay, dispatch_predicate,
 };
-pub(crate) use linref::{
-    line_interpolate_points_scalar, line_locate_point_input, line_locate_point_m_input,
+pub(crate) use linref::{line_interpolate_points_scalar, line_locate_input};
+pub(crate) use metric::{
+    CachelessRowContext, Lane, MetricResolver, MetricScratch, UnaryMeasureKernel,
 };
-pub(crate) use metric::{CachelessRowContext, MetricResolver, MetricScratch, UnaryMeasureKernel};
 pub(crate) use operation::{MetricOp, Operation};
 pub(crate) use packed::{PackedLinearReference, PackedUnary};
 pub(crate) use unary::{

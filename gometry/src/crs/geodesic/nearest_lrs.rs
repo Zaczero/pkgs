@@ -86,7 +86,9 @@ pub(crate) fn geodesic_line_locate(
     let distance_mode = distance_mode.into();
     let frame = geographic_metric_frame_at(crs, state)?;
     ensure_geographic_domain_in_frame(frame, shape)?;
-    ensure_geographic_lonlat_in_frame(frame, point.x, point.y)?;
+    if !point.x.is_nan() {
+        ensure_geographic_lonlat_in_frame(frame, point.x, point.y)?;
+    }
     let crs = normalize(crs)?;
     with_geodesic_at(&crs, state, |geodesic| {
         let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
@@ -174,7 +176,9 @@ pub(crate) fn geodesic_line_locate_coordseq(
 ) -> Result<f64> {
     let distance_mode = distance_mode.into();
     ensure_geographic_coordseq_in_frame(metric.frame(), line)?;
-    ensure_geographic_lonlat_in_frame(metric.frame(), query.x, query.y)?;
+    if !query.x.is_nan() {
+        ensure_geographic_lonlat_in_frame(metric.frame(), query.x, query.y)?;
+    }
     let index = LineIndex::build_coordseq(line, metric)?;
     index.locate_point(query, distance_mode.is_normalized(), metric)
 }

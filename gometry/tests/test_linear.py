@@ -7,6 +7,7 @@ import sys
 from typing import cast
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -291,13 +292,96 @@ def test_split_tolerance_governs_membership_and_dedup() -> None:
         gm.split(line, gm.Point(2, 0, crs=4326), tolerance=-1.0)
 
 
-def test_empty_linework_linear_referencing_returns_value_error_not_panic() -> None:
-    with pytest.raises(ValueError, match='non-empty linework'):
-        gm.LineString([]).line_interpolate(0)
-    with pytest.raises(ValueError, match='non-empty linework'):
-        gm.MultiLineString([]).line_substring(0, 1)
-    with pytest.raises(ValueError, match='non-empty linework'):
-        gm.MultiLineString([[]]).line_interpolate(0)
+EMPTY_LINEWORK = ('LINESTRING EMPTY', 'MULTILINESTRING EMPTY', 'MULTILINESTRING (EMPTY)')
+
+
+@pytest.mark.parametrize('wkt', EMPTY_LINEWORK)
+def test_empty_linework_answers_every_linear_reference(wkt: str) -> None:
+    empty = gm.from_wkt(wkt)
+    assert empty.line_interpolate(0.5, normalized=True).to_wkt() == 'POINT EMPTY'
+    assert empty.line_interpolate(3.0, basis='m').to_wkt() == 'POINT EMPTY'
+    assert empty.line_interpolate([0.1, 0.5]).to_wkt() == ['POINT EMPTY'] * 2
+    assert empty.line_interpolate(count=3).to_wkt() == ['POINT EMPTY'] * 3
+    assert math.isnan(empty.line_locate(gm.Point(1, 0)))
+    assert math.isnan(empty.line_locate(gm.Point(1, 0), basis='m'))
+    assert empty.line_substring(0.1, 0.9).to_wkt() == 'LINESTRING EMPTY'
+    assert empty.line_substring(1, 2, basis='m').to_wkt() == 'LINESTRING EMPTY'
+    measured = empty.interpolate_m(0.0, 1.0)
+    assert measured.is_empty
+    assert measured.has_m
+
+
+def test_empty_linework_rows_match_the_scalar_answers() -> None:
+    line = gm.LineString([(0, 0), (4, 0)])
+    rows = gm.GeometryArray([line, gm.from_wkt('LINESTRING EMPTY'), None])
+    assert rows.line_interpolate(0.5, normalized=True).to_wkt() == [
+        'POINT (2 0)',
+        'POINT EMPTY',
+        None,
+    ]
+    samples = rows.line_interpolate(count=2)
+    assert [group.to_wkt() for group in samples] == [
+        ['POINT (0 0)', 'POINT (4 0)'],
+        ['POINT EMPTY', 'POINT EMPTY'],
+        [],
+    ]
+    assert rows.interpolate_m(0.0, 1.0).to_wkt() == [
+        'LINESTRING M (0 0 0, 4 0 1)',
+        'LINESTRING M EMPTY',
+        None,
+    ]
+
+
+def test_measure_defects_raise_for_a_scalar_and_degrade_an_array_row() -> None:
+    unmeasured = gm.LineString([(0, 0), (4, 0)])
+    measured = gm.LineString([(0, 0), (4, 0)], m=[0, 10])
+    with pytest.raises(gm.InvalidGeometryError, match='M ordinate'):
+        unmeasured.line_locate(gm.Point(1, 0), basis='m')
+    located = gm.GeometryArray([measured, unmeasured]).line_locate(
+        gm.Point(1, 0), basis='m'
+    )
+    assert located[0] == pytest.approx(2.5)
+    assert math.isnan(located[1])
+
+
+def test_an_empty_query_point_locates_nowhere() -> None:
+    line = gm.LineString([(0, 0), (4, 0)])
+    measured = gm.LineString([(0, 0), (4, 0)], m=[0, 10])
+    empty = gm.from_wkt('POINT EMPTY')
+    assert math.isnan(line.line_locate(empty))
+    assert math.isnan(measured.line_locate(empty, basis='m'))
+    assert math.isnan(gm.GeometryArray([line]).line_locate(empty)[0])
+    geographic = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    assert math.isnan(geographic.line_locate(gm.from_wkt('POINT EMPTY', crs=4326)))
+    with pytest.raises(gm.GeometryTypeError, match='LineString'):
+        gm.Polygon([(0, 0), (1, 0), (1, 1)]).line_locate(empty)
+
+
+def test_query_rows_with_an_empty_point_locate_row_by_row() -> None:
+    line = gm.LineString([(0, 0), (4, 0)])
+    measured = gm.LineString([(0, 0), (4, 0)], m=[0, 10])
+    queries = gm.GeometryArray(
+        [gm.Point(1, 0), gm.from_wkt('POINT EMPTY'), gm.Point(2, 0), None]
+    )
+    expected = [1.0, math.nan, 2.0, math.nan]
+    np.testing.assert_array_equal(line.line_locate(queries), expected)
+    np.testing.assert_array_equal(
+        gm.GeometryArray([line] * 4).line_locate(queries), expected
+    )
+    np.testing.assert_array_equal(
+        gm.GeometryArray([measured] * 4).line_locate(queries, basis='m'),
+        [2.5, math.nan, 5.0, math.nan],
+    )
+    with pytest.raises(gm.GeometryTypeError, match='line_locate requires a Point'):
+        gm.GeometryArray([line]).line_locate(
+            gm.GeometryArray([gm.Polygon([(0, 0), (1, 0), (1, 1)])])
+        )
+
+
+def test_scalar_line_locate_rejects_a_query_in_another_crs() -> None:
+    line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    with pytest.raises(gm.CRSMismatchError):
+        line.line_locate(gm.Point(0.5, 0, crs=3857))
 
 
 def test_measured_lrs_and_distance_3d_have_free_and_array_forms() -> None:

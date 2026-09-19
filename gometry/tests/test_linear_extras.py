@@ -80,8 +80,6 @@ def test_interpolate_m_runs_continuously_across_parts() -> None:
         line.interpolate_m(5, 1)
     with pytest.raises(TypeError, match='LineString'):
         gm.box(0, 0, 1, 1).interpolate_m(0, 1)
-    with pytest.raises(gm.InvalidGeometryError, match='linework'):
-        gm.from_wkt('LINESTRING EMPTY').interpolate_m(0, 1)
     array = gm.GeometryArray([line]).interpolate_m(0, 100)
     assert gm.equals(array[0], measured)
     assert gm.equals(line.interpolate_m(0, 100), measured)

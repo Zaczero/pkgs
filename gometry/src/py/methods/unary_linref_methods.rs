@@ -21,7 +21,8 @@ fn reject_m_basis_distance_options(normalized: bool, unit: Option<DistanceUnit>)
 
 method_doc! {
     doc_line_interpolate;
-    pre: r"Interpolate point locations along linework.
+    pre: r"Interpolate point locations along linework. Empty linework yields
+``POINT EMPTY`` at every location.
 
 Parameters
 ----------
@@ -76,7 +77,8 @@ Raises
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If the linework is empty, or M values are missing or non-monotonic.
+    If M values are missing or non-monotonic; an array row degrades to an
+    empty result instead.
 GeometryError
     If input forms conflict, a value is non-finite, or a distance-only option
     is used with ``basis='m'``.
@@ -97,7 +99,8 @@ Examples
 
 method_doc! {
     doc_line_substring;
-    body: r"Return the portion of linework from ``start`` through ``end``.
+    body: r"Return the portion of linework from ``start`` through ``end``. Empty
+linework yields ``LINESTRING EMPTY``.
 
 Parameters
 ----------
@@ -139,7 +142,8 @@ Raises
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If the linework is empty, or M values are missing or non-monotonic.
+    If M values are missing or non-monotonic; an array row degrades to an
+    empty result instead.
 GeometryError
     If locations are non-finite or out of order, or a distance-only option is
     used with ``basis='m'``.
@@ -165,7 +169,7 @@ from ``start_m`` at the start to ``end_m`` at the end, continuously across
 multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
 follows the CRS like length — geodesic on a geographic CRS, planar
 otherwise (coordinates are never moved). Z is preserved; existing M requires
-``overwrite=True``.
+``overwrite=True``. Empty linework returns the same empty with an M axis.
 
 Parameters
 ----------";
@@ -206,7 +210,7 @@ Raises
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If the linework is empty, or carries M without ``overwrite``.
+    If the linework carries M without ``overwrite``.
 GeometryError
     If the measure range is invalid.
 
@@ -226,7 +230,8 @@ Examples
 
 method_doc! {
     doc_line_locate;
-    body: r"Locate the position on linework nearest ``geom``.
+    body: r"Locate the position on linework nearest ``geom``. Empty linework, or
+an empty query point, locates to ``nan``.
 
 Parameters
 ----------
@@ -270,7 +275,8 @@ CRSMismatchError
 GeometryTypeError
     If the geometry is not lineal.
 InvalidGeometryError
-    If linework is empty, or M values are missing or non-monotonic.
+    If M values are missing or non-monotonic; an array row degrades to
+    ``nan`` instead.
 GeometryError
     If a distance-only option is used with ``basis='m'``.
 
@@ -431,12 +437,12 @@ impl PyGeometry {
     ) -> PyResult<Py<PyAny>> {
         if basis == LineReferenceBasis::M {
             reject_m_basis_distance_options(normalized, unit)?;
-            return crate::dispatch::line_locate_point_m_input(py, GeometryInput::One(self), geom);
         }
-        crate::dispatch::line_locate_point_input(
+        crate::dispatch::line_locate_input(
             py,
             GeometryInput::One(self),
             geom,
+            basis,
             normalized,
             unit,
         )
@@ -652,12 +658,12 @@ impl PyGeometryArray {
     ) -> PyResult<Py<PyAny>> {
         if basis == LineReferenceBasis::M {
             reject_m_basis_distance_options(normalized, unit)?;
-            return crate::dispatch::line_locate_point_m_input(py, GeometryInput::Many(self), geom);
         }
-        crate::dispatch::line_locate_point_input(
+        crate::dispatch::line_locate_input(
             py,
             GeometryInput::Many(self),
             geom,
+            basis,
             normalized,
             unit,
         )

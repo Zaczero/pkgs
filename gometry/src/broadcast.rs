@@ -141,64 +141,60 @@ pub(crate) fn detach_collect_f64(
     float64_array(py, py.detach(f).map_err(rows_err)?)
 }
 
-/// True if `error` is a per-row line-data condition that the ARRAY linref ops
-/// degrade to a sentinel (empty line / missing or non-monotonic M) rather than
-/// aborting the batch. Wrong-kind and parameter errors are NOT degradable.
-pub(crate) fn is_degradable_line_row(error: &crate::error::Error) -> bool {
+/// Whether a linear-referencing error is instead answered with an empty point,
+/// an empty line, or NaN. Empty linework has no positions to reference, so
+/// every lane answers it. Missing or non-monotonic M is the caller's error for
+/// one geometry, but one row's data in an array, which must not abort the batch.
+/// Wrong-kind and parameter errors always raise.
+pub(crate) fn linref_error_degrades(
+    error: &crate::error::Error,
+    lane: crate::dispatch::Lane,
+) -> bool {
     use crate::geometry::GeometryErrorKind as G;
-    matches!(
-        error.kind(),
-        crate::error::ErrorKind::Geometry(
-            G::EmptyLinework | G::MissingMeasure | G::NonMonotonicMeasure
-        )
-    )
+    match error.kind() {
+        crate::error::ErrorKind::Geometry(G::EmptyLinework) => true,
+        crate::error::ErrorKind::Geometry(G::MissingMeasure | G::NonMonotonicMeasure) => {
+            lane.is_array()
+        },
+        _ => false,
+    }
 }
 
-pub(crate) fn degrade_linref_float(result: Result<f64>) -> Result<f64> {
-    result.or_else(|error| {
-        if is_degradable_line_row(&error) {
-            Ok(f64::NAN)
-        } else {
-            Err(error)
-        }
-    })
+fn degrade_linref<T>(
+    result: Result<T>,
+    lane: crate::dispatch::Lane,
+    empty: impl FnOnce() -> T,
+) -> Result<T> {
+    match result {
+        Err(error) if linref_error_degrades(&error, lane) => Ok(empty()),
+        result => result,
+    }
+}
+
+pub(crate) fn degrade_linref_float(
+    result: Result<f64>,
+    lane: crate::dispatch::Lane,
+) -> Result<f64> {
+    degrade_linref(result, lane, || f64::NAN)
 }
 
 pub(crate) fn degrade_linref_point(
     result: Result<crate::geometry::Shape>,
+    lane: crate::dispatch::Lane,
 ) -> Result<crate::geometry::Shape> {
-    result.or_else(|error| {
-        if is_degradable_line_row(&error) {
-            Ok(crate::geometry::Shape::empty_point())
-        } else {
-            Err(error)
-        }
-    })
+    degrade_linref(result, lane, crate::geometry::Shape::empty_point)
 }
 
 pub(crate) fn degrade_linref_linestring(
     result: Result<crate::geometry::Shape>,
+    lane: crate::dispatch::Lane,
 ) -> Result<crate::geometry::Shape> {
-    result.or_else(|error| {
-        if is_degradable_line_row(&error) {
-            Ok(crate::geometry::Shape::typed_empty(
-                crate::geometry::GeometryKind::LineString,
-                crate::geometry::CoordinateAxes::XY,
-            ))
-        } else {
-            Err(error)
-        }
+    degrade_linref(result, lane, || {
+        crate::geometry::Shape::typed_empty(
+            crate::geometry::GeometryKind::LineString,
+            crate::geometry::CoordinateAxes::XY,
+        )
     })
-}
-
-pub(crate) fn degrade_linref_point_between(
-    result: Result<crate::geometry::Point>,
-) -> Result<crate::geometry::Shape> {
-    match result {
-        Ok(point) => Ok(crate::geometry::Shape::Point(point)),
-        Err(error) if is_degradable_line_row(&error) => Ok(crate::geometry::Shape::empty_point()),
-        Err(error) => Err(error),
-    }
 }
 
 /// Value-returning binary broadcast whose `op` also receives the ROW INDEX —

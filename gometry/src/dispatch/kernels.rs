@@ -833,22 +833,6 @@ pub(crate) fn binary_distance_3d(
     Ok(scale_length(left.distance_3d(right)?, to_metre))
 }
 
-fn linref_point_lane(result: Result<Shape>, array_lane: bool) -> Result<Shape> {
-    if array_lane {
-        degrade_linref_point(result)
-    } else {
-        result
-    }
-}
-
-fn linref_linestring_lane(result: Result<Shape>, array_lane: bool) -> Result<Shape> {
-    if array_lane {
-        degrade_linref_linestring(result)
-    } else {
-        result
-    }
-}
-
 /// Overlay kernel shared by the spine-routed set-op free functions.
 pub(crate) fn binary_overlay(
     left: &PreparedPlan,
@@ -867,7 +851,7 @@ pub(crate) fn unary_line_interpolate_point(
     distance: &F64Param,
     normalized: bool,
 ) -> Result<Shape> {
-    linref_point_lane(
+    degrade_linref_point(
         line_interpolate_shape(
             ctx.model,
             data,
@@ -875,7 +859,7 @@ pub(crate) fn unary_line_interpolate_point(
             distance.get(ctx.op.lane.row()),
             normalized,
         ),
-        ctx.op.lane.is_array(),
+        ctx.op.lane,
     )
 }
 
@@ -891,9 +875,9 @@ pub(crate) fn unary_line_substring(
         start_distance.get(ctx.op.lane.row()),
         end_distance.get(ctx.op.lane.row()),
     )?;
-    linref_linestring_lane(
+    degrade_linref_linestring(
         line_substring_shape(ctx.model, data, ctx.cache, range, normalized),
-        ctx.op.lane.is_array(),
+        ctx.op.lane,
     )
 }
 
@@ -903,13 +887,13 @@ pub(crate) fn unary_line_interpolate_point_m(
     ctx: &CachelessRowContext<'_>,
     m: &F64Param,
 ) -> Result<Shape> {
-    linref_point_lane(
+    degrade_linref_point(
         line_interpolate_shape_m(
             ctx.metric.require_model(MetricOp::LineInterpolate)?,
             data,
             m.get(ctx.lane.row()),
         ),
-        ctx.lane.is_array(),
+        ctx.lane,
     )
 }
 
@@ -922,13 +906,13 @@ pub(crate) fn unary_line_substring_m(
 ) -> Result<Shape> {
     let range =
         MeasureRange::substring_measure(start_m.get(ctx.lane.row()), end_m.get(ctx.lane.row()))?;
-    linref_linestring_lane(
+    degrade_linref_linestring(
         line_substring_shape_m(
             ctx.metric.require_model(MetricOp::LineSubstring)?,
             data,
             range,
         ),
-        ctx.lane.is_array(),
+        ctx.lane,
     )
 }
 

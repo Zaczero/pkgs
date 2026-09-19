@@ -63,10 +63,6 @@ pub enum GeometryErrorKind {
     )]
     SubstringOrder(f64, f64),
     #[error(
-        "line_substring_m requires start_m <= end_m, got {0} and {1}; use reverse() for a reversed sub-line"
-    )]
-    SubstringMeasureOrder(f64, f64),
-    #[error(
         "interpolate_m would overwrite existing M ordinates; pass overwrite=True to replace them"
     )]
     MeasureOverwrite,
@@ -87,6 +83,8 @@ pub enum GeometryErrorKind {
     LineStringRequired,
     #[error("a LineString or MultiLineString is required")]
     LinealRequired,
+    #[error("line_locate requires a Point")]
+    LocatePointRequired,
     #[error("split requires a Point or MultiPoint splitter")]
     PointSplitterRequired,
     #[error("a Polygon or MultiPolygon is required")]

@@ -2,8 +2,8 @@ use crate::boundary::{FloatInput, input};
 use crate::dispatch::MetricOp;
 use crate::geometry::PreparedPlan;
 use crate::py::support::{
-    Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny,
-    PyGeometry, PyResult, Result, Shape, float_values, require_locate_point, resolve_metric,
+    Bound, CoordSeq, DistanceUnit, GeometryError, LineIndex, PlanarMetric, Point, PyAny, PyResult,
+    Result, Shape, float_values, resolve_metric,
 };
 
 pub(crate) fn line_interpolate_shape_m(
@@ -37,7 +37,9 @@ pub(crate) fn line_locate_shape_m(
         },
         crate::crs::MetricModel::Geodesic { crs, frame, state } => {
             crate::crs::ensure_geographic_domain_in_frame(*frame, line.shape())?;
-            crate::crs::ensure_geographic_lonlat_in_frame(*frame, query.x, query.y)?;
+            if !query.x.is_nan() {
+                crate::crs::ensure_geographic_lonlat_in_frame(*frame, query.x, query.y)?;
+            }
             crate::crs::with_ellipsoid_metric_at(crs, &[line.shape()], state, |metric| {
                 line.line_locate_point_m_with(query, metric)
             })
@@ -100,6 +102,23 @@ impl InterpolatePlan {
             Self::Distances(_, mode) => mode.is_normalized(),
         }
     }
+
+    const fn sample_count(&self) -> usize {
+        match self {
+            Self::Count(count) => *count,
+            Self::Distances(distances, _) => distances.len(),
+        }
+    }
+
+    /// The fraction of sample `index` in a `count`-sample linspace: both
+    /// endpoints from two samples up, the start alone for one.
+    fn count_fraction(index: usize, count: usize) -> f64 {
+        if count > 1 {
+            index as f64 / (count - 1) as f64
+        } else {
+            0.0
+        }
+    }
 }
 
 pub(crate) fn parse_interpolate_plan(
@@ -115,12 +134,12 @@ pub(crate) fn parse_interpolate_plan(
                 ));
             }
             let count = input::positive_int(
-                "line_interpolate_points",
+                "line_interpolate",
                 "count",
                 input::py_i64_required("count", count)?,
             )?;
             let count = usize::try_from(count).expect("count >= 1 fits usize");
-            crate::geometry::ExpansionBudget::check("line_interpolate_points", "count", count)?;
+            crate::geometry::ExpansionBudget::check("line_interpolate", "count", count)?;
             Ok(InterpolatePlan::Count(count))
         },
         (None, Some(distances)) => {
@@ -139,35 +158,36 @@ pub(crate) fn parse_interpolate_plan(
     }
 }
 
-/// Packed-line column kernel for `line_interpolate_points`: one
-/// [`LineIndex::build_coordseq`] per row, many samples — no `ShapeData`
-/// wrapper.
+/// Packed-line column kernel for many `line_interpolate` samples: one
+/// [`LineIndex::build_coordseq`] per row, no `ShapeData` wrapper. Empty
+/// linework answers every sample with an empty point.
 pub(crate) fn line_interpolate_points_coordseq(
     model: &crate::crs::MetricModel,
     line: &CoordSeq,
     plan: &InterpolatePlan,
-) -> Result<Vec<Point>, crate::error::Error> {
+) -> Result<Vec<Shape>, crate::error::Error> {
     let crate::crs::MetricModel::Planar { to_metre } = model else {
         unreachable!("packed column path is planar-only");
     };
-    let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
-    let sample_count = match plan {
-        InterpolatePlan::Count(count) => *count,
-        InterpolatePlan::Distances(distances, _) => distances.len(),
-    };
     let mut points = Vec::new();
-    crate::boundary::try_reserve_vec(&mut points, sample_count)?;
+    crate::boundary::try_reserve_vec(&mut points, plan.sample_count())?;
+    if line.is_empty() {
+        for _ in 0..plan.sample_count() {
+            crate::boundary::try_push_vec(&mut points, Shape::empty_point())?;
+        }
+        return Ok(points);
+    }
+    let index = LineIndex::build_coordseq(line, &PlanarMetric)?;
     match plan {
         InterpolatePlan::Count(count) => {
             for sample in 0..*count {
-                let fraction = if *count > 1 {
-                    sample as f64 / (*count - 1) as f64
-                } else {
-                    0.0
-                };
                 crate::boundary::try_push_vec(
                     &mut points,
-                    index.interpolate(fraction, true, &PlanarMetric),
+                    Shape::Point(index.interpolate(
+                        InterpolatePlan::count_fraction(sample, *count),
+                        true,
+                        &PlanarMetric,
+                    )),
                 )?;
             }
         },
@@ -175,11 +195,11 @@ pub(crate) fn line_interpolate_points_coordseq(
             for &distance in distances {
                 crate::boundary::try_push_vec(
                     &mut points,
-                    index.interpolate(
+                    Shape::Point(index.interpolate(
                         mode.planar_along(distance, to_metre.get()),
                         mode.is_normalized(),
                         &PlanarMetric,
-                    ),
+                    )),
                 )?;
             }
         },
@@ -187,40 +207,38 @@ pub(crate) fn line_interpolate_points_coordseq(
     Ok(points)
 }
 
-/// The `line_interpolate_points` row kernel: one cached-index line handle,
-/// many samples.
+/// The row kernel for many `line_interpolate` samples: one cached-index line
+/// handle, many samples.
 pub(crate) fn line_interpolate_points_shape(
     model: &crate::crs::MetricModel,
-    line: &PreparedPlan,
+    shape: &PreparedPlan,
     frame_cache: &crate::geometry::FrameDependentCaches,
     plan: &InterpolatePlan,
+    lane: crate::dispatch::Lane,
 ) -> Result<Vec<Shape>, crate::error::Error> {
-    let sample_count = match plan {
-        InterpolatePlan::Count(count) => *count,
-        InterpolatePlan::Distances(distances, _) => distances.len(),
-    };
     let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, sample_count)?;
+    crate::boundary::try_reserve_vec(&mut shapes, plan.sample_count())?;
+    let sample = |distance, mode| {
+        crate::broadcast::degrade_linref_point(
+            line_interpolate_shape_with_mode(model, shape, frame_cache, distance, mode),
+            lane,
+        )
+    };
     match plan {
         InterpolatePlan::Count(count) => {
             for index in 0..*count {
-                let fraction = if *count > 1 {
-                    index as f64 / (*count - 1) as f64
-                } else {
-                    0.0
-                };
                 crate::boundary::try_push_vec(
                     &mut shapes,
-                    line_interpolate_shape(model, line, frame_cache, fraction, true)?,
+                    sample(
+                        InterpolatePlan::count_fraction(index, *count),
+                        crate::crs::DistanceMode::of(true),
+                    )?,
                 )?;
             }
         },
         InterpolatePlan::Distances(distances, mode) => {
             for &distance in distances {
-                crate::boundary::try_push_vec(
-                    &mut shapes,
-                    line_interpolate_shape_with_mode(model, line, frame_cache, distance, *mode)?,
-                )?;
+                crate::boundary::try_push_vec(&mut shapes, sample(distance, *mode)?)?;
             }
         },
     }
@@ -298,26 +316,6 @@ pub(crate) fn line_substring_shape(
             )?
         },
     })
-}
-
-/// CRS-aware `line_locate_point`: returns meters (or a `[0, 1]` fraction) along
-/// the line for the projection of `point`, consistent with `length()`.
-pub(crate) fn crs_line_locate_point(
-    line: &PyGeometry,
-    point: &PyGeometry,
-    normalized: bool,
-    unit: Option<DistanceUnit>,
-) -> PyResult<f64> {
-    let query = require_locate_point(point, MetricOp::LineLocatePoint)?;
-    let model = resolve_line_metric(line.crs_str(), unit, normalized, MetricOp::LineLocatePoint)?;
-    let line_plan = line.plan_or_transient()?;
-    Ok(line_locate_shape(
-        &model,
-        &line_plan,
-        &*line.frame_cache()?,
-        query,
-        normalized,
-    )?)
 }
 
 /// Packed-line column kernel for `line_interpolate_point`: one

@@ -6,6 +6,7 @@
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.
 
+use super::line_index::try_boxed_slice;
 use super::linear_3d;
 use crate::error::Result;
 use crate::geometry::{
@@ -39,12 +40,12 @@ impl MeasureRange {
         Ok(Self { start, end })
     }
 
-    /// Raw measure bounds for `line_substring_m`.
+    /// Raw measure bounds for `line_substring(basis='m')`.
     pub(crate) fn substring_measure(start: f64, end: f64) -> Result<Self> {
         let start = Finite::try_new("start", start)?.get();
         let end = Finite::try_new("end", end)?.get();
         if start > end {
-            return Err(GeometryErrorKind::SubstringMeasureOrder(start, end).into());
+            return Err(GeometryErrorKind::SubstringOrder(start, end).into());
         }
         Ok(Self { start, end })
     }
@@ -204,7 +205,14 @@ impl Shape {
         let (start_m, end_m) = (range.start(), range.end());
         let parts = self.linework()?;
         if parts.iter().all(|part| part.is_empty()) {
-            return Err(GeometryErrorKind::EmptyLinework.into());
+            // Nothing to station: the result is the same empty, now measured
+            // like every non-empty result.
+            let kind = match self {
+                Self::MultiLineString(_) => GeometryKind::MultiLineString,
+                Self::Empty(kind, _) => *kind,
+                _ => GeometryKind::LineString,
+            };
+            return Ok(Self::Empty(kind, self.axes().union(CoordinateAxes::XYM)));
         }
         if !overwrite && self.has_m() {
             return Err(GeometryErrorKind::MeasureOverwrite.into());
@@ -410,42 +418,19 @@ pub(crate) struct MeasuredLineIndex {
 }
 
 impl MeasuredLineIndex {
-    fn try_boxed_parts<I>(mut parts: I, len: usize) -> Result<Box<[CoordSeq]>>
-    where
-        I: Iterator<Item = CoordSeq>,
-    {
-        // Build the final boxed table directly. A Vec followed by
-        // `into_boxed_slice` may perform an infallible shrink allocation after
-        // the fallible growth has succeeded, which would turn a recoverable
-        // cache-initialization failure into an abort.
-        let mut output =
-            Box::<[CoordSeq]>::try_new_uninit_slice(len).map_err(crate::error::Error::from)?;
-        for slot in &mut *output {
-            slot.write(
-                parts
-                    .next()
-                    .expect("measured part count matches allocation"),
-            );
-        }
-        // SAFETY: every slot was initialized by the exact-length iterator
-        // above, and no slot is observed before this conversion.
-        Ok(unsafe { output.assume_init() })
-    }
-
     pub(crate) fn build(shape: &Shape) -> Result<Self> {
         let parts = match shape {
-            Shape::LineString(line) => {
-                Self::try_boxed_parts(std::iter::once(line.as_coords().clone()), 1)?
-            },
-            Shape::MultiLineString(lines) => Self::try_boxed_parts(
-                lines.iter().map(|line| line.as_coords().clone()),
-                lines.len(),
-            )?,
+            Shape::LineString(line) => std::slice::from_ref(line),
+            Shape::MultiLineString(lines) => &**lines,
             Shape::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
                 return Err(MeasuredLineAdmission::Empty.into());
             },
             _ => return Err(MeasuredLineAdmission::NotLineal.into()),
         };
+        let mut owned = Vec::new();
+        crate::boundary::try_reserve_vec(&mut owned, parts.len())?;
+        owned.extend(parts.iter().map(|line| line.as_coords().clone()));
+        let parts = try_boxed_slice(owned)?;
         let mut first = None;
         let mut last = None;
         let mut previous: Option<Point> = None;
@@ -515,6 +500,9 @@ impl MeasuredLineIndex {
     }
 
     fn locate<M: SegmentMetric>(&self, point: Point, metric: &M) -> Result<f64> {
+        if point.x.is_nan() {
+            return Ok(f64::NAN);
+        }
         let mut best_distance = f64::INFINITY;
         let mut best_measure = self.first.m().unwrap_or(0.0);
         let mut segment_scratch = crate::geometry::GeodesicSegmentScratch::default();

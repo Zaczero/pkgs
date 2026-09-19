@@ -521,6 +521,10 @@ impl LineIndex {
         normalized: bool,
         metric: &M,
     ) -> Result<f64> {
+        // POINT EMPTY reaches a locate as the NaN point of a point column.
+        if probe.x.is_nan() {
+            return Ok(f64::NAN);
+        }
         if self.total == 0.0 {
             return Ok(0.0);
         }
@@ -654,7 +658,7 @@ impl HeapSize for LineIndex {
     }
 }
 
-fn try_boxed_slice<T>(mut values: Vec<T>) -> Result<Box<[T]>> {
+pub(crate) fn try_boxed_slice<T>(mut values: Vec<T>) -> Result<Box<[T]>> {
     if values.try_shrink_to_fit().is_err() {
         drop(values);
         return Err(crate::error::ResourceError::Allocation.into());

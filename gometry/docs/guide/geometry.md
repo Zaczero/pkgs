@@ -487,14 +487,15 @@ non-decreasing M. The extent accessors mirror the Z family:
 [`min_m`][gometry.Geometry.min_m] / [`max_m`][gometry.Geometry.max_m] summarize the measure span (`None` for a scalar, `nan` for an
 array element, when no vertex carries M).
 
-**Array degrade vs scalar raise.** On a `GeometryArray`, a per-row geometry-data
-failure (`EmptyLinework`, `MissingMeasure`, or `NonMonotonicMeasure`) degrades
-to `nan` (for `line_locate`) or a typed EMPTY geometry (for
-`line_interpolate` / `line_substring`) rather than aborting the batch. The
-    scalar forms of the same verbs still raise [`InvalidGeometryError`][gometry.InvalidGeometryError]. Wrong-kind
-    and parameter errors raise on both paths — only those three data conditions
-    degrade. `POINT EMPTY` / `LINESTRING EMPTY` rows in array LRS output represent
-    degraded failures, not input data.
+**Empty input and bad measures.** Empty linework has no positions, so every
+form answers it instead of raising: `line_locate` returns `nan`,
+`line_interpolate` returns `POINT EMPTY`, `line_substring` returns
+`LINESTRING EMPTY`, and `interpolate_m` returns the empty geometry with an M
+axis. A `POINT EMPTY` query locates to `nan`. Missing or non-monotonic M is
+different: a scalar call raises [`InvalidGeometryError`][gometry.InvalidGeometryError], because it asked for
+measures the geometry does not have, while a `GeometryArray` degrades that row
+the same way as an empty one rather than aborting the batch. Wrong-kind and
+parameter errors raise on both.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm

@@ -58,12 +58,15 @@ pub(crate) fn line_locate_point_on_lines(
                                 return Ok(f64::NAN);
                             }
                             let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
-                            degrade_linref_float(crs::geodesic_line_locate_coordseq(
-                                &line,
-                                queries.get(row),
-                                normalized,
-                                metric,
-                            ))
+                            degrade_linref_float(
+                                crs::geodesic_line_locate_coordseq(
+                                    &line,
+                                    queries.get(row),
+                                    normalized,
+                                    metric,
+                                ),
+                                crate::dispatch::Lane::Array(row),
+                            )
                         })
                         .collect_rows()
                 })
@@ -76,12 +79,10 @@ pub(crate) fn line_locate_point_on_lines(
                             return Ok(f64::NAN);
                         }
                         let line = GeometryArrayStorage::line_view(&coords, &offsets, map, row);
-                        degrade_linref_float(line_locate_coordseq(
-                            &model,
-                            &line,
-                            queries.get(row),
-                            normalized,
-                        ))
+                        degrade_linref_float(
+                            line_locate_coordseq(&model, &line, queries.get(row), normalized),
+                            crate::dispatch::Lane::Array(row),
+                        )
                     })
                     .collect_rows()
             },
@@ -107,12 +108,12 @@ pub(crate) fn line_interpolate_points_rows(
             }
             let counts = I64Param::parse(count, "count", array.len())?;
             counts.try_validate(|value| {
-                positive_int("line_interpolate_points", "count", value).map(|_| ())
+                positive_int("line_interpolate", "count", value).map(|_| ())
             })?;
             for row in 0..array.len() {
                 if !array.is_row_missing(row) {
                     crate::geometry::ExpansionBudget::check(
-                        "line_interpolate_points",
+                        "line_interpolate",
                         "count",
                         usize::try_from(counts.get(row)).expect("validated positive count"),
                     )?;
@@ -133,7 +134,7 @@ pub(crate) fn line_interpolate_points_rows(
         array.crs_str(),
         unit,
         plan.is_fractional(),
-        crate::dispatch::MetricOp::LineInterpolatePoints,
+        crate::dispatch::MetricOp::LineInterpolate,
     )?;
     if let GeometryArrayStorage::Packed(PackedStorage::Lines {
         coords,
@@ -165,9 +166,7 @@ pub(crate) fn line_interpolate_points_rows(
                             line_interpolate_points_coordseq(&model, &line, plan)
                         })
                         .map_err(|error| (row, error))?;
-                    builder
-                        .push_row(points.into_iter().map(Shape::Point))
-                        .map_err(|error| (row, error))?;
+                    builder.push_row(points).map_err(|error| (row, error))?;
                 }
                 Ok(builder)
             },
@@ -212,6 +211,7 @@ fn interpolate_mixed_row_groups(
                             &line,
                             &*rows.frame_cache(logical)?,
                             plan,
+                            crate::dispatch::Lane::Array(logical),
                         )
                     })
                     .map_err(|error| (logical, error))?;

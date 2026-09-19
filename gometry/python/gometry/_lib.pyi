@@ -1600,7 +1600,7 @@ class Geometry:
         multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
         follows the CRS like length — geodesic on a geographic CRS, planar
         otherwise (coordinates are never moved). Z is preserved; existing M requires
-        ``overwrite=True``.
+        ``overwrite=True``. Empty linework returns the same empty with an M axis.
 
         Parameters
         ----------
@@ -1626,7 +1626,7 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If the linework is empty, or carries M without ``overwrite``.
+            If the linework carries M without ``overwrite``.
         GeometryError
             If the measure range is invalid.
 
@@ -2032,7 +2032,8 @@ class Geometry:
         normalized: bool = False,
         unit: DistanceUnit | None = None,
     ) -> LineString | Point:
-        """Return the portion of linework from ``start`` through ``end``.
+        """Return the portion of linework from ``start`` through ``end``. Empty
+        linework yields ``LINESTRING EMPTY``.
 
         Parameters
         ----------
@@ -2064,7 +2065,8 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If the linework is empty, or M values are missing or non-monotonic.
+            If M values are missing or non-monotonic; an array row degrades to an
+            empty result instead.
         GeometryError
             If locations are non-finite or out of order, or a distance-only option is
             used with ``basis='m'``.
@@ -2344,7 +2346,8 @@ class Geometry:
         normalized: bool = False,
         unit: DistanceUnit | None = None,
     ) -> float | npt.NDArray[np.float64]:
-        """Locate the position on linework nearest ``geom``.
+        """Locate the position on linework nearest ``geom``. Empty linework, or
+        an empty query point, locates to ``nan``.
 
         Parameters
         ----------
@@ -2378,7 +2381,8 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If linework is empty, or M values are missing or non-monotonic.
+            If M values are missing or non-monotonic; an array row degrades to
+            ``nan`` instead.
         GeometryError
             If a distance-only option is used with ``basis='m'``.
 
@@ -2534,7 +2538,8 @@ class Geometry:
         normalized: Literal[False] = False,
         unit: None = None,
     ) -> Point:
-        """Interpolate point locations along linework.
+        """Interpolate point locations along linework. Empty linework yields
+        ``POINT EMPTY`` at every location.
 
         Parameters
         ----------
@@ -2572,7 +2577,8 @@ class Geometry:
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If the linework is empty, or M values are missing or non-monotonic.
+            If M values are missing or non-monotonic; an array row degrades to an
+            empty result instead.
         GeometryError
             If input forms conflict, a value is non-finite, or a distance-only option
             is used with ``basis='m'``.
@@ -6587,7 +6593,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         multipart linework (the PostGIS ``ST_AddMeasure`` shape). The stationing
         follows the CRS like length — geodesic on a geographic CRS, planar
         otherwise (coordinates are never moved). Z is preserved; existing M requires
-        ``overwrite=True``.
+        ``overwrite=True``. Empty linework returns the same empty with an M axis.
 
         Parameters
         ----------
@@ -6614,7 +6620,7 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If the linework is empty, or carries M without ``overwrite``.
+            If the linework carries M without ``overwrite``.
         GeometryError
             If the measure range is invalid.
 
@@ -7085,7 +7091,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         normalized: bool = False,
         unit: DistanceUnit | None = None,
     ) -> GeometryArray[LineString | Point | None]:
-        """Return the portion of linework from ``start`` through ``end``.
+        """Return the portion of linework from ``start`` through ``end``. Empty
+        linework yields ``LINESTRING EMPTY``.
 
         Parameters
         ----------
@@ -7117,7 +7124,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If the linework is empty, or M values are missing or non-monotonic.
+            If M values are missing or non-monotonic; an array row degrades to an
+            empty result instead.
         GeometryError
             If locations are non-finite or out of order, or a distance-only option is
             used with ``basis='m'``.
@@ -7421,7 +7429,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         normalized: bool = False,
         unit: DistanceUnit | None = None,
     ) -> npt.NDArray[np.float64]:
-        """Locate the position on linework nearest ``geom``.
+        """Locate the position on linework nearest ``geom``. Empty linework, or
+        an empty query point, locates to ``nan``.
 
         Parameters
         ----------
@@ -7455,7 +7464,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If linework is empty, or M values are missing or non-monotonic.
+            If M values are missing or non-monotonic; an array row degrades to
+            ``nan`` instead.
         GeometryError
             If a distance-only option is used with ``basis='m'``.
 
@@ -7623,7 +7633,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         normalized: Literal[False] = False,
         unit: None = None,
     ) -> GeometryArray[Point | None]:
-        """Interpolate point locations along linework.
+        """Interpolate point locations along linework. Empty linework yields
+        ``POINT EMPTY`` at every location.
 
         Parameters
         ----------
@@ -7662,7 +7673,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         GeometryTypeError
             If the geometry is not lineal.
         InvalidGeometryError
-            If the linework is empty, or M values are missing or non-monotonic.
+            If M values are missing or non-monotonic; an array row degrades to an
+            empty result instead.
         GeometryError
             If input forms conflict, a value is non-finite, or a distance-only option
             is used with ``basis='m'``.

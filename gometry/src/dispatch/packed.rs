@@ -5,9 +5,10 @@ use pyo3::prelude::*;
 use crate::array::{GeometryArrayStorage, PackedStorage, RowSelection, RowSelectionRef};
 use crate::boundary::input::OriginSpec;
 use crate::broadcast::{
-    CollectRows as _, degrade_linref_linestring, degrade_linref_point_between, rows_err,
+    CollectRows as _, degrade_linref_linestring, degrade_linref_point, rows_err,
 };
 use crate::crs::MetricModel;
+use crate::dispatch::Lane;
 use crate::dispatch::operation::{MetricOp, Operation};
 use crate::geometry::{
     Bounds, CoordSeq, CsrOffsetColumn, MeasureRange, Shape, SimplifyMethod, TopologyDomain,
@@ -486,7 +487,7 @@ fn linref_point_between_packed_inner(
                         normalized,
                         metric,
                     );
-                    degrade_linref_point_between(point)
+                    degrade_linref_point(point.map(Shape::Point), Lane::Array(row))
                 })
                 .collect_rows()
         })
@@ -494,12 +495,11 @@ fn linref_point_between_packed_inner(
         (0..len)
             .map(|row| {
                 let line = GeometryArrayStorage::line_view(coords, offsets, row_map, row);
-                degrade_linref_point_between(line_interpolate_coordseq(
-                    model,
-                    &line,
-                    distance.get(row),
-                    normalized,
-                ))
+                degrade_linref_point(
+                    line_interpolate_coordseq(model, &line, distance.get(row), normalized)
+                        .map(Shape::Point),
+                    Lane::Array(row),
+                )
             })
             .collect_rows()
     }
@@ -553,7 +553,7 @@ fn linref_substring_packed_inner(
                     let substring = crate::crs::geodesic_line_substring_coordseq(
                         &line, range, normalized, metric,
                     );
-                    degrade_linref_linestring(substring)
+                    degrade_linref_linestring(substring, Lane::Array(row))
                 })
                 .collect_rows()
         })
@@ -565,7 +565,10 @@ fn linref_substring_packed_inner(
                     start_distance.get(row),
                     end_distance.get(row),
                 )?;
-                degrade_linref_linestring(line_substring_coordseq(model, &line, range, normalized))
+                degrade_linref_linestring(
+                    line_substring_coordseq(model, &line, range, normalized),
+                    Lane::Array(row),
+                )
             })
             .collect_rows()
     }

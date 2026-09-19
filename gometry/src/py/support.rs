@@ -4,12 +4,12 @@ use crate::{
     AABB, Bound, Bounds, BufferCapStyle, BufferJoinStyle, BufferSide, CRSError, CollectRows,
     CoordSeq, CoordinateAxes, DistanceUnit, DwithinDistance, Frame, FromPyObject, GeometryError,
     GeometryErrorKind, GeometryInput, InvalidGeometryError, LineIndex, NonNegative, PlanarMetric,
-    Point, PointRows, Polygon, PolygonizeFull, Positive, Py, PyAny, PyAnyMethods, PyBool,
-    PyBoolMethods, PyDictMethods, PyErr, PyFloatMethods, PyGeometry, PyGeometryArray, PyInt,
-    PyListMethods, PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError,
-    PyTypeMethods, Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
+    Point, Polygon, PolygonizeFull, Positive, Py, PyAny, PyAnyMethods, PyBool, PyBoolMethods,
+    PyDictMethods, PyErr, PyFloatMethods, PyGeometry, PyGeometryArray, PyInt, PyListMethods,
+    PyOnceLock, PyResult, PyStringMethods, PyTuple, PyTupleMethods, PyTypeError, PyTypeMethods,
+    Python, RepairMethod, Result, Ring, Shape, SimplifyMethod, SmoothMethod, Value,
     VoronoiBoundary, classify_input, coerce_geometry, coordinate_epoch_option, exact_geometry,
-    finite_f64_required, float_values, float_values_at_most, float_values_exact, geometry_type_err,
+    finite_f64_required, float_values, float_values_at_most, float_values_exact,
     metric_nearest_points_resolved, non_negative_int, py_i64_bounded, py_i64_required, pyfunction,
     resolve_metric, rows_err, wgs84_crs,
 };
@@ -93,16 +93,14 @@ pub(crate) use geojson::{
 };
 pub(crate) use io_encoders::{box_polygon, wrapped_box};
 pub(crate) use linref::{
-    InterpolatePlan, crs_line_locate_point, line_interpolate_coordseq,
-    line_interpolate_points_coordseq, line_interpolate_points_shape, line_interpolate_shape,
-    line_interpolate_shape_m, line_locate_coordseq, line_locate_shape, line_locate_shape_m,
-    line_substring_coordseq, line_substring_shape, line_substring_shape_m, parse_interpolate_plan,
-    resolve_line_metric,
+    InterpolatePlan, line_interpolate_coordseq, line_interpolate_points_coordseq,
+    line_interpolate_points_shape, line_interpolate_shape, line_interpolate_shape_m,
+    line_locate_coordseq, line_locate_shape, line_locate_shape_m, line_substring_coordseq,
+    line_substring_shape, line_substring_shape_m, parse_interpolate_plan, resolve_line_metric,
 };
 pub(crate) use nearest::{
     fixed_geometry_array_nearest_points_admitted, fixed_geometry_array_shortest_line_geodesic,
-    geometry_array_line_locate_point_geometry, nearest_point_columns_masked, require_locate_point,
-    require_locate_points,
+    locate_query, nearest_point_columns_masked,
 };
 pub(crate) use tokens::{
     _token_vocabulary, LineReferenceBasis, NavigationPath, SpatialCurve, TriangulationMethod,
