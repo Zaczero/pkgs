@@ -11,7 +11,7 @@ use crate::geometry::derived::{
 };
 use crate::geometry::{
     DirectedOptimizationResult, GeometryErrorKind, LineSeq, Point, Polygon, Ring, Shape,
-    bounds_to_shape, carry_ordinates, directed_inradius_scaled, empty_geometry,
+    bounds_to_shape, carry_ordinates, directed_inradius_scaled,
 };
 use crate::{NonNegative, Positive};
 
@@ -114,7 +114,7 @@ impl Shape {
 
     pub fn convex_hull(&self) -> Result<Self> {
         if self.is_empty() {
-            return Ok(empty_geometry());
+            return Ok(Self::empty_polygon());
         }
         // Native monotone chain over first-seen XY vertices (robust
         // orientation turns, collinear vertices dropped). Degenerate hulls
@@ -126,7 +126,7 @@ impl Shape {
             .into_iter()
             .map(|index| points[index])
             .collect();
-        shape_from_selected_hull(&hull, empty_geometry)
+        shape_from_selected_hull(&hull, Self::empty_polygon)
     }
 
     pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {

@@ -3548,7 +3548,7 @@ class Geometry:
         'POLYGON ((0 0, 1 0, 1 1, 0 0))'
         """
 
-    def convex_hull(self) -> Point | LineString | Polygon | GeometryCollection:
+    def convex_hull(self) -> Point | LineString | Polygon:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
         ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M
@@ -8767,11 +8767,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
     @overload
     def convex_hull(
         self: GeometryArray[Geometry],
-    ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection]: ...
+    ) -> GeometryArray[Point | LineString | Polygon]: ...
     @overload
     def convex_hull(
         self: GeometryArray[Geometry | None],
-    ) -> GeometryArray[Point | LineString | Polygon | GeometryCollection | None]:
+    ) -> GeometryArray[Point | LineString | Polygon | None]:
         """Compute the convex hull of the geometry. Operates in planar lon/lat space and does NOT
         auto-split antimeridian-crossing geographic input; call
         ``split_antimeridian`` first. Hull vertices are copies of input vertices, so Z/M

@@ -163,9 +163,7 @@ def _check_fixed_output_nullability(
     )
     assert_type(
         values.convex_hull(),
-        gm.GeometryArray[
-            gm.Point | gm.LineString | gm.Polygon | gm.GeometryCollection | None
-        ],
+        gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | None],
     )
     assert_type(values.node(), gm.GeometryArray[gm.MultiLineString | None])
 
@@ -215,7 +213,7 @@ assert_type(POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
 assert_type(POINTS.centroid(), gm.GeometryArray[gm.Point])
 assert_type(
     POINTS.convex_hull(),
-    gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon | gm.GeometryCollection],
+    gm.GeometryArray[gm.Point | gm.LineString | gm.Polygon],
 )
 assert_type(POLYS.triangulate(method='earcut'), gm.Groups[gm.GeometryArray[gm.Polygon]])
 assert_type(

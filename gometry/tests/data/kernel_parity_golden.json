@@ -489,7 +489,7 @@
     },
     "convex_hull:empty_point": {
       "kind": "geometry",
-      "wkt": "GEOMETRYCOLLECTION EMPTY"
+      "wkt": "POLYGON EMPTY"
     },
     "convex_hull:geo_polygon": {
       "kind": "geometry",

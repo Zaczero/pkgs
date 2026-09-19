@@ -341,7 +341,7 @@ def test_empty_metrics_and_accessors() -> None:
     assert pe.centroid().to_wkt() == 'POINT EMPTY'
     assert pg.centroid().to_wkt() == 'POINT EMPTY'
     assert pe.buffer(1).to_wkt() == 'POLYGON EMPTY'
-    assert pg.convex_hull().to_wkt() == 'GEOMETRYCOLLECTION EMPTY'
+    assert pg.convex_hull().to_wkt() == 'POLYGON EMPTY'
 
 
 def test_empty_overlay_short_circuits() -> None:
