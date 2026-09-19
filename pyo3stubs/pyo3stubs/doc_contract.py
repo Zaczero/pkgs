@@ -73,9 +73,18 @@ def collect_errors(cfg: StubConfig) -> Findings:
                         f'{loc(path, carrier)}: {qualname}: runtime docstring '
                         f'missing or empty'
                     )
-            elif not name.startswith('__') and not _has_docstring(carrier):
-                # Stub-only override: the carrier def (last of the group) must
-                # hold hand-written prose.
+            elif (
+                not name.startswith('__')
+                and not _has_docstring(carrier)
+                and not (
+                    (inherited := getattr(cls, name, None)) is not None
+                    and doc_of(inherited)
+                )
+            ):
+                # Stub-only def: the carrier (last of the group) must hold
+                # hand-written prose. An override that narrows an inherited
+                # method's types is documented by the inherited docstring,
+                # which type checkers show for an override without its own.
                 missing.append(
                     f'{loc(path, carrier)}: {qualname}: stub override needs its '
                     f'own docstring'

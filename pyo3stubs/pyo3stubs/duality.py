@@ -7,6 +7,11 @@ TypeVar), the array method must return ``Self``; otherwise it must return
 ``ArrayClass[<union of scalar leaf returns>]`` (a scalar return of
 ``ArrayClass[X]`` — an expansion op — contributes ``X``).
 
+That union binds the catch-all array overload, the last of the group. An
+earlier overload narrows by element kind, so each of its elements must be a
+stub subclass of a union member, or an element TypeVar when the scalar
+method has a kind-preserving return.
+
 Activated by ``StubConfig.duality``; a reported no-op when unset.
 """
 
@@ -47,6 +52,32 @@ def _class_methods(
     return {}
 
 
+def _stub_bases(tree: ast.Module) -> dict[str, list[str]]:
+    return {
+        top.name: [ast.unparse(base) for base in top.bases]
+        for top in tree.body
+        if isinstance(top, ast.ClassDef)
+    }
+
+
+def _type_vars(tree: ast.Module) -> frozenset[str]:
+    return frozenset(
+        target.id
+        for top in tree.body
+        if isinstance(top, ast.Assign)
+        and isinstance(top.value, ast.Call)
+        and ast.unparse(top.value.func) == 'TypeVar'
+        for target in top.targets
+        if isinstance(target, ast.Name)
+    )
+
+
+def _is_subclass(name: str, ancestor: str, bases: dict[str, list[str]]) -> bool:
+    return name == ancestor or any(
+        _is_subclass(base, ancestor, bases) for base in bases.get(name, ())
+    )
+
+
 def _unwrap_array(atom: str, array_class: str) -> str | None:
     """``ArrayClass[X]`` -> ``X`` source; None when not that shape."""
     prefix = f'{array_class}['
@@ -65,6 +96,8 @@ def collect_errors(cfg: StubConfig) -> Findings:
     errors: list[str] = []
     used_exempt: set[str] = set()
     compared = 0
+    bases = _stub_bases(ctx.stub_ast)
+    type_vars = _type_vars(ctx.stub_ast)
     for scalar_class, array_class in conf.pairs:
         scalar_methods = _class_methods(ctx.stub_ast, scalar_class)
         array_methods = _class_methods(ctx.stub_ast, array_class)
@@ -95,9 +128,8 @@ def collect_errors(cfg: StubConfig) -> Findings:
             if not scalar_atom_sets:
                 continue
             scalar_atoms = frozenset().union(*scalar_atom_sets)
-            preserving = all(
-                atom == 'Self' or atom in conf.self_atoms for atom in scalar_atoms
-            )
+            kind_preserving = {'Self', *conf.self_atoms}
+            preserving = scalar_atoms <= kind_preserving
             if preserving:
                 expected_label = 'Self'
                 expected_atoms = frozenset({'Self'})
@@ -106,8 +138,13 @@ def collect_errors(cfg: StubConfig) -> Findings:
                 for atom in scalar_atoms:
                     inner = _unwrap_array(atom, array_class)
                     elements.update(e.strip() for e in (inner or atom).split('|'))
+                # `Self` is a subclass of the scalar class, so a wider member
+                # already covers it.
+                if any(_is_subclass(scalar_class, e, bases) for e in elements):
+                    elements -= kind_preserving
                 expected_label = f'{array_class}[{" | ".join(sorted(elements))}]'
                 expected_atoms = frozenset(elements)
+            catch_all = array_defs[-1]
             for node, atoms in array_returns:
                 if preserving:
                     actual_ok = atoms == {'Self'}
@@ -121,7 +158,14 @@ def collect_errors(cfg: StubConfig) -> Findings:
                             break
                         inners.update(e.strip() for e in inner.split('|'))
                     inners.discard('None')
-                    actual_ok = actual_ok and inners == expected_atoms
+                    if node is catch_all:
+                        actual_ok = actual_ok and inners == expected_atoms
+                    else:
+                        actual_ok = actual_ok and all(
+                            any(_is_subclass(e, x, bases) for x in expected_atoms)
+                            or (e in type_vars and bool(scalar_atoms & kind_preserving))
+                            for e in inners
+                        )
                 if not actual_ok:
                     scalar_label = ' | '.join(sorted(scalar_atoms))
                     errors.append(

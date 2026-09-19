@@ -466,6 +466,34 @@ def test_doc_contract_rejects_an_ellipsis_body_as_prose(tmp_path, pristine_stub)
     assert doc_contract(make_config(tmp_path, stub_text=documented)) == []
 
 
+def test_doc_contract_accepts_an_override_documented_by_inheritance(
+    tmp_path, pristine_stub, monkeypatch
+):
+    """A stub override that narrows an inherited method needs no prose.
+
+    At runtime the name resolves through the class hierarchy to the base
+    method and its docstring, which type checkers show for an override that
+    has none of its own. A def with no runtime counterpart still fires.
+    """
+    import fakepkg._lib as lib
+
+    class Base:
+        def narrowed(self) -> int:
+            """Documented where it is defined."""
+            return 0
+
+    monkeypatch.setattr(lib, 'Open', type('Open', (Base,), {'__doc__': lib.Open.__doc__}))
+    anchor = '    """A subclassable class (``#[pyclass(subclass)]`` analogue)."""'
+    mutated = seeded(pristine_stub, anchor, f'{anchor}\n    def narrowed(self) -> int: ...')
+    assert doc_contract(make_config(tmp_path, stub_text=mutated)) == []
+
+    monkeypatch.undo()
+    assert any(
+        'Open.narrowed: stub override needs its own docstring' in e
+        for e in doc_contract(make_config(tmp_path, stub_text=mutated))
+    )
+
+
 def test_text_signature_flags_param_drift(tmp_path, pristine_src):
     mutated = seeded(
         pristine_src,
@@ -789,6 +817,43 @@ def test_duality_none_ignore_still_rejects_wrong_kind(
     assert 'LeafArray.hull' in errors[0]
     assert 'LeafArray[Wide]' in errors[0]
     assert 'LeafArray[Leaf | None]' in errors[0]
+
+
+def _narrowed_hull(narrow: str) -> str:
+    """The duality stub with a kind-narrowing array overload before the catch-all."""
+    return _DUALITY_STUB.replace(
+        'from typing import Self, final',
+        'from typing import Self, final, overload',
+    ).replace(
+        'class Wide: ...',
+        'class Wide: ...\n\n@final\nclass Narrow(Wide): ...',
+    ).replace(
+        '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+        '    @overload\n'
+        f'    def hull(self: LeafArray[Leaf]) -> LeafArray[{narrow}]: ...\n'
+        '    @overload\n'
+        '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+    )
+
+
+def test_duality_admits_an_overload_narrowing_by_element_kind(
+    tmp_path, pristine_stub, pristine_src
+):
+    """An earlier overload may return a subclass of the scalar union."""
+    build = _duality(stub_text=_narrowed_hull('Narrow'))
+    assert (
+        gate('duality').run(build(tmp_path, pristine_stub, pristine_src)).errors == []
+    )
+
+
+def test_duality_rejects_a_narrowing_overload_outside_the_union(
+    tmp_path, pristine_stub, pristine_src
+):
+    """Narrowing is by subclass: an unrelated element still fires."""
+    build = _duality(stub_text=_narrowed_hull('Leaf'))
+    errors = gate('duality').run(build(tmp_path, pristine_stub, pristine_src)).errors
+    assert len(errors) == 1
+    assert 'LeafArray[Leaf]' in errors[0]
 
 
 def test_duality_exempt_rot_is_reported(tmp_path, pristine_stub, pristine_src):
