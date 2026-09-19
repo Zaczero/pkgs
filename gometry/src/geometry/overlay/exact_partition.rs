@@ -7082,6 +7082,26 @@ fn classify_pair(
     zero: &ExactDyadic,
     one: &ExactDyadic,
 ) -> Result<PairContact> {
+    // A shared endpoint lies on both segments, so the pair meets elsewhere
+    // only along a collinear overlap. Adjacent ring segments are most pairs,
+    // and their zero orientation is the one the floating filter cannot certify.
+    let shared = |point: XY| same_point(point, a.start) || same_point(point, a.end);
+    let unshared = match (shared(b.start), shared(b.end)) {
+        // Unique segments never repeat, so this is `a` itself.
+        (true, true) => return Ok(PairContact::None),
+        (true, false) => Some(b.end),
+        (false, true) => Some(b.start),
+        (false, false) => None,
+    };
+    if let Some(other) = unshared {
+        return if stored_orientation_sign(a.start.x, a.start.y, a.end.x, a.end.y, other.x, other.y)
+            == ExactSign::Zero
+        {
+            overlap_or_touch(a, b, zero, one)
+        } else {
+            Ok(PairContact::None)
+        };
+    }
     let o_b0 =
         stored_orientation_sign(a.start.x, a.start.y, a.end.x, a.end.y, b.start.x, b.start.y);
     let o_b1 = stored_orientation_sign(a.start.x, a.start.y, a.end.x, a.end.y, b.end.x, b.end.y);
