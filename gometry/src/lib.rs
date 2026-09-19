@@ -20,7 +20,8 @@
     portable_simd,
     slice_partition_dedup,
     trusted_len,
-    vec_fallible_shrink
+    vec_fallible_shrink,
+    vec_push_within_capacity
 )]
 
 mod boundary;

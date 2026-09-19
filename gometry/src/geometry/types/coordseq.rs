@@ -376,9 +376,8 @@ impl CoordSeq {
         let mut xs = Vec::new();
         let mut ys = Vec::new();
         crate::boundary::try_reserve_pair(&mut xs, &mut ys, points.len())?;
-        for point in points {
-            crate::boundary::try_push_pair(&mut xs, &mut ys, point.x, point.y)?;
-        }
+        xs.extend(points.iter().map(|point| point.x));
+        ys.extend(points.iter().map(|point| point.y));
         Self::try_from_vecs(xs, ys, None, None)
     }
 

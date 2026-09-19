@@ -116,7 +116,9 @@ pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
             return Err(ResourceError::Allocation.into());
         }
     }
-    vec.push(value);
+    // Capacity is ensured above; `push` would carry its own infallible growth
+    // path, and its size keeps this helper from inlining.
+    let _ = vec.push_within_capacity(value);
     Ok(())
 }
 
