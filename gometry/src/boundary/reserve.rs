@@ -110,15 +110,21 @@ pub(crate) fn try_reserve_vec<T>(vec: &mut Vec<T>, additional: usize) -> Result<
 /// retained vector are released before the allocation error is returned.
 pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
     if vec.len() == vec.capacity() {
-        let additional = vec.capacity().max(8);
-        if vec.try_reserve(additional).is_err() {
+        std::hint::cold_path();
+        if grow_for_push(vec).is_err() {
             drop(value);
-            *vec = Vec::new();
             return Err(ResourceError::Allocation.into());
         }
     }
     vec.push(value);
     Ok(())
+}
+
+/// Grow a full vector for the next push — double it, starting at 8 — and
+/// release its storage when the allocator refuses.
+fn grow_for_push<T>(vec: &mut Vec<T>) -> Result<(), ()> {
+    let additional = vec.capacity().max(8);
+    vec.try_reserve(additional).map_err(|_| *vec = Vec::new())
 }
 
 /// Reserve two parallel output columns as one fallible operation. If the
@@ -405,35 +411,20 @@ pub(crate) fn try_vec_with_capacity_hint<T>(capacity: usize) -> PyResult<Vec<T>>
     Ok(vec)
 }
 
-/// Probe whether `vec` needs a growth reservation; fallible, no Python error
-/// yet.
-///
-/// Returns `Err(())` on allocator failure. Callers that already hold retained
-/// untrusted output **must drop that output before** converting to
-/// a Python exception — materializing a Rust `PyErr` while the heap is
-/// exhausted aborts with `memory allocation of N bytes failed` instead of a
-/// catchable error.
-fn try_reserve_next_raw<T>(vec: &mut Vec<T>) -> Result<(), ()> {
-    if vec.len() == vec.capacity() {
-        // Double (or start at 8); fallible so capacity overflow is a clean error.
-        let additional = vec.capacity().max(8);
-        vec.try_reserve(additional).map_err(|_| ())?;
-    }
-    Ok(())
-}
-
 /// Fallibly push one element, growing capacity without trusting a bulk hint.
 ///
 /// On OOM the **item is dropped** with the vector contents before the native
 /// exception is raised, so Python error adoption has address-space headroom
 /// under `RLIMIT_AS`.
 pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
-    if try_reserve_next_raw(vec).is_err() {
-        drop(item);
-        // Drop the allocation before raising the native error; assignment does
-        // not request replacement storage when the heap is exhausted.
-        *vec = Vec::new();
-        return Err(native_memory_error());
+    if vec.len() == vec.capacity() {
+        std::hint::cold_path();
+        if grow_for_push(vec).is_err() {
+            // The item and the released storage are gone before the error is
+            // raised: materializing a `PyErr` needs heap headroom.
+            drop(item);
+            return Err(native_memory_error());
+        }
     }
     vec.push(item);
     Ok(())
@@ -686,12 +677,7 @@ pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyRes
             drop(out);
             return Err(native_memory_error());
         };
-        if try_reserve_next_raw(&mut out).is_err() {
-            drop(owned);
-            drop(out);
-            return Err(native_memory_error());
-        }
-        out.push(owned);
+        try_push(&mut out, owned)?;
     }
     Ok(out)
 }
@@ -891,8 +877,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
         index = index.saturating_add(1);
         // Reserve a slot for `T` before mapping so outer growth is fallible.
         // Free retained items before raising the native error (see invariant).
-        if try_reserve_next_raw(&mut out).is_err() {
-            drop(out);
+        if out.len() == out.capacity() && grow_for_push(&mut out).is_err() {
             return Err(native_memory_error());
         }
         match map(item) {
