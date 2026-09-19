@@ -53,6 +53,11 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
             '--no-color-output',
             '--soft-error-limit=-1',
             f'--cache-dir={cache_dir}',
+            # A shadowed overload is dead code, never a deliberate overlap, so
+            # a project disabling mypy's overlap codes does not silence it.
+            # pyright files both under one rule, which stubs routinely turn
+            # off for scalar-or-batch overlap, so this is the only detector.
+            '--enable-error-code=overload-cannot-match',
             *cfg.mypy_args,
         ]
         if cfg.mypy_config is not None:

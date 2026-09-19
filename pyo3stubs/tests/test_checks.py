@@ -441,6 +441,30 @@ def test_leak_scan_sees_every_parameter_kind(tmp_path, pristine_stub, signature)
     ), errors
 
 
+def test_validity_rejects_a_shadowed_overload_whatever_the_config(
+    tmp_path, pristine_stub
+):
+    """An overload an earlier one fully covers is dead, even where a project
+    disables mypy's overlap codes for deliberate scalar-or-batch overlap.
+    """
+    from pyo3stubs.oracle import collect_validity_errors
+
+    shadowed = seeded(
+        pristine_stub,
+        '@overload\ndef overloaded(value: int) -> int: ...',
+        '@overload\ndef overloaded(value: object) -> object: ...\n'
+        '@overload\ndef overloaded(value: int) -> int: ...',
+    )
+    config = tmp_path / 'mypy.ini'
+    config.write_text(
+        '[mypy]\ndisable_error_code = overload-overlap, overload-cannot-match\n'
+    )
+    errors = collect_validity_errors(
+        make_config(tmp_path, stub_text=shadowed, mypy_config=config)
+    )
+    assert any('will never be matched' in e for e in errors), errors
+
+
 def test_doc_contract_rejects_an_ellipsis_body_as_prose(tmp_path, pristine_stub):
     """`...` is not a docstring.
 
@@ -482,9 +506,13 @@ def test_doc_contract_accepts_an_override_documented_by_inheritance(
             """Documented where it is defined."""
             return 0
 
-    monkeypatch.setattr(lib, 'Open', type('Open', (Base,), {'__doc__': lib.Open.__doc__}))
+    monkeypatch.setattr(
+        lib, 'Open', type('Open', (Base,), {'__doc__': lib.Open.__doc__})
+    )
     anchor = '    """A subclassable class (``#[pyclass(subclass)]`` analogue)."""'
-    mutated = seeded(pristine_stub, anchor, f'{anchor}\n    def narrowed(self) -> int: ...')
+    mutated = seeded(
+        pristine_stub, anchor, f'{anchor}\n    def narrowed(self) -> int: ...'
+    )
     assert doc_contract(make_config(tmp_path, stub_text=mutated)) == []
 
     monkeypatch.undo()
@@ -821,18 +849,23 @@ def test_duality_none_ignore_still_rejects_wrong_kind(
 
 def _narrowed_hull(narrow: str) -> str:
     """The duality stub with a kind-narrowing array overload before the catch-all."""
-    return _DUALITY_STUB.replace(
-        'from typing import Self, final',
-        'from typing import Self, final, overload',
-    ).replace(
-        'class Wide: ...',
-        'class Wide: ...\n\n@final\nclass Narrow(Wide): ...',
-    ).replace(
-        '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
-        '    @overload\n'
-        f'    def hull(self: LeafArray[Leaf]) -> LeafArray[{narrow}]: ...\n'
-        '    @overload\n'
-        '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+    return (
+        _DUALITY_STUB
+        .replace(
+            'from typing import Self, final',
+            'from typing import Self, final, overload',
+        )
+        .replace(
+            'class Wide: ...',
+            'class Wide: ...\n\n@final\nclass Narrow(Wide): ...',
+        )
+        .replace(
+            '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+            '    @overload\n'
+            f'    def hull(self: LeafArray[Leaf]) -> LeafArray[{narrow}]: ...\n'
+            '    @overload\n'
+            '    def hull(self) -> LeafArray[Wide]:\n        """Kind-changing twin."""',
+        )
     )
 
 
