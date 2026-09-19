@@ -217,7 +217,11 @@ impl Shape {
             // point, including its stored signed-zero spelling.
             return Ok(Self::Point(disk.center()?));
         }
-        emit_minimum_bounding_circle(&disk, CIRCLE_QUADRANT_SEGMENTS)
+        emit_minimum_bounding_circle(
+            &disk,
+            CIRCLE_QUADRANT_SEGMENTS,
+            &mut crate::geometry::ExpansionBudget::new("minimum_bounding_circle", "realization"),
+        )
     }
 
     /// Radius of the smallest circle enclosing the geometry. Empty input

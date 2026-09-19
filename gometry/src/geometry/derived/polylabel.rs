@@ -637,6 +637,7 @@ fn tangent_circle_polygon(
 pub(crate) fn emit_minimum_bounding_circle(
     disk: &CertifiedDisk,
     quadrant_segments: NonZeroU32,
+    budget: &mut ExpansionBudget,
 ) -> Result<Shape> {
     let radius = disk.radius().map_err(circle_emission_error)?;
     let center = disk.center().map_err(circle_emission_error)?;
@@ -644,21 +645,16 @@ pub(crate) fn emit_minimum_bounding_circle(
         return Err(unrepresentable_minimum_circle());
     }
     // `tangent_circle_polygon` commits one complete fixed-size ring before
-    // allocating it. The existing generated-item budget therefore bounds the
-    // number of retries by `GENERATED_ITEM_LIMIT / (4 * quadrants + 1)`;
+    // allocating it. The operation's generated-item budget therefore bounds
+    // the number of retries by `GENERATED_ITEM_LIMIT / (4 * quadrants + 1)`;
     // there is no separate retry-fuel cap.
-    let mut budget = ExpansionBudget::new("minimum_bounding_circle", "realization");
     let mut candidate_radius = radius;
     loop {
-        let output = match tangent_circle_polygon(
-            center,
-            candidate_radius,
-            quadrant_segments,
-            &mut budget,
-        ) {
-            Ok(output) => output,
-            Err(error) => return Err(circle_emission_error(error)),
-        };
+        let output =
+            match tangent_circle_polygon(center, candidate_radius, quadrant_segments, budget) {
+                Ok(output) => output,
+                Err(error) => return Err(circle_emission_error(error)),
+            };
         match certify_minimum_circle_polygon(&output, disk, quadrant_segments) {
             Ok(()) => return Ok(output),
             Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
@@ -2296,13 +2292,21 @@ mod tests {
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
         let (_, allocations) = crate::test_support::allocation_count(|| {
-            emit_minimum_bounding_circle(&disk, NonZeroU32::new(16).expect("non-zero"))
-                .expect("finite circle polygon")
+            emit_minimum_bounding_circle(
+                &disk,
+                NonZeroU32::new(16).expect("non-zero"),
+                &mut realization_budget(),
+            )
+            .expect("finite circle polygon")
         });
         assert!(allocations > 0, "circle emission must allocate");
         for allowed in 0..allocations.min(16) {
             let error = crate::test_support::fail_allocations_after(allowed, || {
-                emit_minimum_bounding_circle(&disk, NonZeroU32::new(16).expect("non-zero"))
+                emit_minimum_bounding_circle(
+                    &disk,
+                    NonZeroU32::new(16).expect("non-zero"),
+                    &mut realization_budget(),
+                )
             })
             .expect_err("a rejected emission allocation must remain a native error");
             assert!(matches!(
@@ -2384,8 +2388,12 @@ mod tests {
         let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
-        let valid = emit_minimum_bounding_circle(&disk, NonZeroU32::new(16).expect("non-zero"))
-            .expect("valid ring");
+        let valid = emit_minimum_bounding_circle(
+            &disk,
+            NonZeroU32::new(16).expect("non-zero"),
+            &mut realization_budget(),
+        )
+        .expect("valid ring");
         let Shape::Polygon(polygon) = valid else {
             panic!("minimum circle must emit a polygon");
         };
@@ -2446,9 +2454,12 @@ mod tests {
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
         for quadrants in [1, 2, 16] {
-            let output =
-                emit_minimum_bounding_circle(&disk, NonZeroU32::new(quadrants).expect("non-zero"))
-                    .expect("representable tangent polygon");
+            let output = emit_minimum_bounding_circle(
+                &disk,
+                NonZeroU32::new(quadrants).expect("non-zero"),
+                &mut realization_budget(),
+            )
+            .expect("representable tangent polygon");
             let Shape::Polygon(polygon) = output else {
                 panic!("minimum circle must emit a polygon");
             };
@@ -2477,29 +2488,31 @@ mod tests {
             certify_minimum_circle_polygon(&candidate, &disk, quadrants).is_err(),
             "the rounded-down radius must expose an inward tangent edge"
         );
-        let emitted = emit_minimum_bounding_circle(&disk, quadrants).expect("outward radius retry");
+        let emitted = emit_minimum_bounding_circle(&disk, quadrants, &mut realization_budget())
+            .expect("outward radius retry");
         certify_minimum_circle_polygon(&emitted, &disk, quadrants)
             .expect("retry must publish a certified ring");
     }
 
     #[test]
     fn minimum_circle_polygon_reports_the_realization_budget_for_a_collapsed_ring() {
+        // At 2^60 a radius step is 256 units, so no emitted ring certifies and
+        // every retry charges one more ring until the budget is spent.
         let points = [
             Point::new_raw_xy(2.0_f64.powi(60), 2.0_f64.powi(60)),
             Point::new_raw_xy(2.0_f64.powi(60) + 1024.0, 2.0_f64.powi(60)),
             Point::new_raw_xy(2.0_f64.powi(60) + 256.0, 2.0_f64.powi(60) + 768.0),
         ];
-        let shape = Shape::MultiPoint(
-            crate::geometry::MultiPoint::try_new(
-                crate::geometry::CoordinateAxes::XY,
-                points
-                    .into_iter()
-                    .map(crate::geometry::MultiMember::Value)
-                    .collect(),
-            )
-            .unwrap(),
-        );
-        let error = shape.minimum_bounding_circle().unwrap_err();
+        let disk = smallest_enclosing_circle(&points)
+            .expect("three sites")
+            .certified_disk(&points)
+            .expect("exact disk");
+        let quadrants = NonZeroU32::new(16).expect("non-zero");
+        let mut budget = realization_budget();
+        budget
+            .add(crate::geometry::GENERATED_ITEM_LIMIT - 3 * (4 * 16 + 1))
+            .expect("headroom for three rings");
+        let error = emit_minimum_bounding_circle(&disk, quadrants, &mut budget).unwrap_err();
         assert!(matches!(
             error.kind(),
             ErrorKind::Geometry(
@@ -2510,6 +2523,10 @@ mod tests {
                 }
             )
         ));
+    }
+
+    fn realization_budget() -> ExpansionBudget {
+        ExpansionBudget::new("minimum_bounding_circle", "realization")
     }
 
     #[test]
