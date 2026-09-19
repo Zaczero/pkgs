@@ -229,7 +229,7 @@ def _assert_topological_partition(
         _assert_partition(cells, clip)
     else:
         assert all(cell.is_valid for cell in cells)
-        assert cells.coverage_is_valid()
+        assert gm.coverage_is_valid(cells)
         for left, right in combinations(cells, 2):
             assert gm.relate_pattern(left, right, 'F********'), gm.relate(left, right)
     assert len(cells) == len(active_sites)
@@ -460,7 +460,7 @@ def test_hole_and_l_clip_guards_use_full_topology_oracle() -> None:
     clip = gm.difference(gm.box(-20, -20, 20, 20), gm.box(-1, -1, 1, 1))
     cells = gm.MultiPoint([(-10, -10), (10, -10), (0, 10)]).voronoi_polygons(clip=clip)
     _partition(cells, clip)
-    assert cells.union_all().area == 1596.0
+    assert gm.union_all(cells).area == 1596.0
     assert not any(gm.covers(cell, gm.Point(0, 0)) for cell in cells)
 
     l_clip = gm.Polygon([
@@ -487,7 +487,7 @@ def test_convex_clip_accepts_topological_snap_partition(site_count: int) -> None
     cells = gm.MultiPoint(sites).voronoi_polygons(clip=clip)
 
     assert cells
-    assert cells.coverage_is_valid()
+    assert gm.coverage_is_valid(cells)
     assert all(cell.is_valid for cell in cells)
     site_coordinates = np.asarray(sites, dtype=np.float64)
     site_points = gm.points(site_coordinates[:, 0], site_coordinates[:, 1])

@@ -568,28 +568,6 @@ impl PyGeometryArray {
         }))
     }
 
-    /// Materialize a borrowed `&[&Shape]` view of every row once (`Cow` borrows
-    /// boxed storage, stack points for packed) and run `f` over it — the staging
-    /// the n-ary `*_all` kernels need, without restating the double-collect.
-    pub(crate) fn with_borrowed_shapes<R>(
-        &self,
-        f: impl FnOnce(&[&Shape]) -> Result<R>,
-    ) -> Result<R> {
-        // Aggregates SKIP missing rows (SQL/pandas semantics): stage only the
-        // present shapes. Dense arrays stage every row unchanged.
-        let mut rows = Vec::new();
-        crate::boundary::try_reserve_vec(&mut rows, self.len())?;
-        for row in self.present_shape_rows() {
-            let (_, shape) = row?;
-            crate::boundary::try_push_vec(&mut rows, shape)?;
-        }
-        let mut shapes = Vec::new();
-        crate::boundary::try_reserve_vec(&mut shapes, rows.len())?;
-        for shape in &rows {
-            crate::boundary::try_push_vec(&mut shapes, shape)?;
-        }
-        f(&shapes)
-    }
 }
 
 #[path = "map_shapes.rs"]

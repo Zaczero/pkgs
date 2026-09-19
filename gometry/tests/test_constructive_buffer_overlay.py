@@ -352,8 +352,8 @@ def test_overlay_keeps_line_vertices_whatever_else_shares_the_arrangement(
     line = gm.LineString([(0, 0), (2, 0), (5, 0)])
     operands = [line] if polygon is None else [line, polygon]
     for result in (
-        gm.GeometryArray(operands).union_all(),
-        gm.GeometryArray(operands).symmetric_difference_all(),
+        gm.union_all(gm.GeometryArray(operands)),
+        gm.symmetric_difference_all(gm.GeometryArray(operands)),
         gm.difference(line, polygon or gm.GeometryCollection([])),
     ):
         assert 'LINESTRING (0 0, 2 0, 5 0)' in str(result)

@@ -830,7 +830,7 @@ def test_sequence_types_use_iteration_as_the_only_list_materialization() -> None
 
 def test_union_all_accepts_geometry_array_and_matches_array_method() -> None:
     arr = gm.points([0.0, 1.0], [0.0, 1.0])
-    assert gm.union_all(arr) == arr.union_all()
+    assert gm.union_all(arr) == gm.union_all(arr)
     assert gm.union_all(arr).geometry_type == 'MultiPoint'
     with pytest.raises(TypeError, match='by'):
         arr.dissolve()
@@ -843,20 +843,20 @@ def test_nary_reductions_are_consistent_across_the_trio() -> None:
         gm.box(1, 1, 4, 4),
         gm.box(2, 2, 5, 5),
     ])
-    core = panes.intersection_all()
+    core = gm.intersection_all(panes)
     assert core == gm.intersection_all(panes)
-    odd = panes.symmetric_difference_all()
+    odd = gm.symmetric_difference_all(panes)
     assert odd == gm.symmetric_difference_all(panes)
     # Aggregates skip missing rows.
     masked = gm.GeometryArray([gm.box(0, 0, 3, 3), None, gm.box(1, 1, 4, 4)])
-    assert masked.intersection_all() == gm.intersection_all([
+    assert gm.intersection_all(masked) == gm.intersection_all([
         gm.box(0, 0, 3, 3),
         gm.box(1, 1, 4, 4),
     ])
 
 
 def test_geographic_array_nary_reductions_use_seam_topology() -> None:
-    """R15 C5: array aggregates share the free n-ary topology dispatch."""
+    """Collection reductions over a geographic array use seam topology."""
     left = gm.Polygon(
         [(170, 0), (-170, 0), (-170, 20), (170, 20), (170, 0)], crs='OGC:CRS84'
     )
@@ -865,23 +865,26 @@ def test_geographic_array_nary_reductions_use_seam_topology() -> None:
     )
     values = gm.GeometryArray([left, right]).set_epoch(2020.5)
 
-    for name in ('intersection_all', 'symmetric_difference_all'):
-        from_array = getattr(values, name)()
-        from_free = getattr(gm, name)(values)
-        # Both source polygons cross the antimeridian. The free route's split
-        # topology result is therefore a real independent expected path, not a
-        # same-frame planar coincidence.
-        assert gm.equals(from_array, from_free)
-        assert from_array.area == pytest.approx(from_free.area)
-        assert from_array.crs == from_free.crs == 'OGC:CRS84'
-        assert from_array.epoch == from_free.epoch == 2020.5
+    left, right = values
+    for name, binary in (
+        ('intersection_all', gm.intersection),
+        ('symmetric_difference_all', gm.symmetric_difference),
+    ):
+        reduced = getattr(gm, name)(values)
+        # Both source polygons cross the antimeridian, so the binary overlay is
+        # an independent seam-topology route to the same answer.
+        expected = binary(left, right)
+        assert gm.equals(reduced, expected)
+        assert reduced.area == pytest.approx(expected.area)
+        assert reduced.crs == 'OGC:CRS84'
+        assert reduced.epoch == 2020.5
 
-        # Aggregate conventions must retain their existing missing and
-        # one-row behaviour while using the same frame-aware dispatch.
+        # Missing rows are skipped and one row reduces to itself, through the
+        # same frame-aware dispatch.
         with_missing = gm.GeometryArray([left, None, right]).set_epoch(2020.5)
-        assert gm.equals(getattr(with_missing, name)(), from_free)
+        assert gm.equals(getattr(gm, name)(with_missing), expected)
         single = gm.GeometryArray([left]).set_epoch(2020.5)
-        assert gm.equals(getattr(single, name)(), getattr(gm, name)(single))
+        assert gm.equals(getattr(gm, name)(single), left)
 
 
 def test_bulk_free_functions_accept_raw_iterables_uniformly() -> None:

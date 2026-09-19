@@ -174,10 +174,10 @@ print(merged.to_wkt())
 
 ```
 
-For a [`GeometryArray`][gometry.GeometryArray], [`array.union_all()`][gometry.GeometryArray.union_all] performs whole-column aggregation.
-Grouped aggregation is a separate operation: [`array.dissolve(by=groups)`][gometry.GeometryArray.dissolve] returns
+[`gm.union_all`][gometry.union_all] takes a [`GeometryArray`][gometry.GeometryArray] or any iterable and aggregates it
+whole. Grouped aggregation is a separate operation: [`array.dissolve(by=groups)`][gometry.GeometryArray.dissolve] returns
 one geometry per first-seen group with the corresponding group keys. `dissolve`
-requires `by`; whole-column aggregation uses `union_all()`.
+requires `by`; whole-collection aggregation is `gm.union_all(array)`.
 
 [`intersection_all`][gometry.intersection_all] returns its typed empty directly
 when sound coordinate bounds prove inputs disjoint. In a geographic CRS, that

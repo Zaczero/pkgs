@@ -106,7 +106,7 @@ def test_geographic_overlay_uses_pole_equivalence_for_binary_and_aggregates() ->
     for result in (
         gm.intersection(left, right),
         gm.intersection_all([left, right]),
-        gm.GeometryArray([left, right]).intersection_all(),
+        gm.intersection_all(gm.GeometryArray([left, right])),
     ):
         assert result.geometry_type == 'Point'
         assert gm.equals(result, pole)

@@ -282,6 +282,16 @@ pub(crate) fn symmetric_difference(
 /// 'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
 #[pyfunction]
 pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Typed> {
+    // Packed points union to their multipoint without assembling a graph.
+    if let Some(array) = exact_geometry_array(values)
+        && let Some(multipoint) = array.packed_points_as_multipoint()?
+    {
+        let domain = crate::geometry::topology_domain(&array.frame)?;
+        let shape = py.detach(move || {
+            Shape::union_all_topo(&[multipoint], domain, crate::geometry::Strictness::Lenient)
+        })?;
+        return Ok(Typed(PyGeometry::with_frame(shape, array.frame.clone())?));
+    }
     apply_overlay_all(py, values, Shape::union_all_topo)
 }
 
@@ -768,7 +778,7 @@ pub(crate) fn coverage_simplify(
 /// >>> gm.coverage_is_valid(rows)
 /// False
 /// >>> cleaned = gm.coverage_clean(rows)
-/// >>> cleaned.coverage_is_valid()
+/// >>> gm.coverage_is_valid(cleaned)
 /// True
 #[pyfunction]
 #[pyo3(

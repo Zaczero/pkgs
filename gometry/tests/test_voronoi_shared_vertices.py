@@ -35,7 +35,7 @@ def _cells(source: gm.Geometry, clip: gm.Polygon, frontend: str) -> gm.GeometryA
 
 
 def _assert_partition(cells: gm.GeometryArray, clip: gm.Polygon) -> None:
-    union = cells.union_all()
+    union = gm.union_all(cells)
     assert gm.difference(clip, union).is_empty
     assert gm.difference(union, clip).is_empty
     assert gm.equals(union, clip)

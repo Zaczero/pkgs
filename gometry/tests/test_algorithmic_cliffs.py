@@ -65,8 +65,8 @@ def _multi_n_disjoint(n: int, spacing: float = 3.0) -> gm.MultiPolygon:
 def test_duplicate_parts_union_all_identity():
     """160 identical rings dissolve to one; bit-stable vs a single part."""
     poly = _ring32()
-    single = gm.GeometryArray([poly]).union_all()
-    multi = gm.GeometryArray([poly] * 160).union_all()
+    single = gm.union_all(gm.GeometryArray([poly]))
+    multi = gm.union_all(gm.GeometryArray([poly] * 160))
     assert gm.equals(single, multi)
     assert single.to_wkb() == multi.to_wkb()
 

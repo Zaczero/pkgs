@@ -670,7 +670,7 @@ def test_h3_to_polygon_dissolves_shared_edges() -> None:
     assert outline.geometry_type == 'Polygon'
     assert outline.crs == 'OGC:CRS84'
     assert outline.is_valid
-    union = coverage.polygon.union_all()
+    union = gm.union_all(coverage.polygon)
     assert (outline ^ union).area <= 1e-06 * outline.area
     assert gm.equals(coverage.compact().to_polygon(), outline)
     cells = list(coverage)

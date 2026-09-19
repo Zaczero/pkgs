@@ -437,30 +437,27 @@ RECIPROCAL_FAMILIES: tuple[ReciprocalFamily, ...] = (
     ),
     ReciprocalFamily(
         'coverage_valid_invalid',
-        frozenset({'coverage_is_valid', 'GeometryArray.coverage_is_valid'}),
-        frozenset({
-            'coverage_invalid_edges',
-            'GeometryArray.coverage_invalid_edges',
-        }),
-        'coverage validity dual (free + GeometryArray)',
+        frozenset({'coverage_is_valid'}),
+        frozenset({'coverage_invalid_edges'}),
+        'coverage validity dual',
     ),
     ReciprocalFamily(
         'coverage_valid_clean',
-        frozenset({'coverage_is_valid', 'GeometryArray.coverage_is_valid'}),
-        frozenset({'coverage_clean', 'GeometryArray.coverage_clean'}),
-        'coverage validity vs clean (free + GeometryArray)',
+        frozenset({'coverage_is_valid'}),
+        frozenset({'coverage_clean'}),
+        'coverage validity vs clean',
     ),
     ReciprocalFamily(
         'coverage_union_union_all',
-        frozenset({'coverage_union', 'GeometryArray.coverage_union'}),
-        frozenset({'union_all', 'GeometryArray.union_all'}),
-        'coverage_union vs union_all (free + GeometryArray dual)',
+        frozenset({'coverage_union'}),
+        frozenset({'union_all'}),
+        'coverage_union vs union_all',
     ),
     ReciprocalFamily(
         'simplify_coverage_simplify',
         frozenset({'Geometry.simplify', 'GeometryArray.simplify'}),
-        frozenset({'coverage_simplify', 'GeometryArray.coverage_simplify'}),
-        'geometry simplify vs coverage simplify (free + GeometryArray)',
+        frozenset({'coverage_simplify'}),
+        'geometry simplify vs coverage simplify',
     ),
 )
 

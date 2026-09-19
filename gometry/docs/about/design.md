@@ -59,6 +59,13 @@ that value, and the array has the same spelling: [`geom.buffer(distance)`][gomet
 [`arr.buffer(distance)`][gometry.GeometryArray.buffer], [`geom.to_crs(3857)`][gometry.Geometry.to_crs]. Binary relationships and overlays are
 free functions because neither operand owns the question: [`contains(a, b)`][gometry.contains],
 [`distance(a, b)`][gometry.distance], [`intersection(a, b)`][gometry.intersection].
+An operation over a whole collection is a free function that takes the
+collection, the way Python's `sum(iterable)` is: [`gm.union_all(values)`][gometry.union_all],
+[`gm.intersection_all`][gometry.intersection_all], [`gm.polygonize(values)`][gometry.polygonize], and the
+[`gm.coverage_*`][gometry.coverage_union] family accept a `GeometryArray` or any iterable of geometries.
+An array method is therefore always the row-wise mirror of the scalar method:
+[`arr.polygonize()`][gometry.GeometryArray.polygonize] polygonizes each row, while
+`gm.polygonize(arr)` pools every row's linework into one graph.
 
 I/O follows the same rule. If you already hold a geometry, serialize from it:
 [`geom.to_wkb()`][gometry.Geometry.to_wkb], [`geom.to_geojson()`][gometry.Geometry.to_geojson]. If bytes or text create a geometry, use a

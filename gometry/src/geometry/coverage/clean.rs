@@ -13,7 +13,7 @@ crate::tokens::token_enum! {
     /// How `coverage_clean` assigns a region covered by more than one row:
     /// to the candidate sharing the longest border with it, the largest or
     /// smallest candidate by area, or the lowest row index.
-    pub enum CoverageOverlapRule("coverage_clean overlaps", param = "overlap_rule") {
+    pub(crate) enum CoverageOverlapRule("coverage_clean overlaps", token = none, param = "overlap_rule") {
         LongestBorder = "longest_border",
         MaxArea = "max_area",
         MinArea = "min_area",

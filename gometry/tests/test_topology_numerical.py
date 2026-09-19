@@ -21,13 +21,13 @@ def test_coverage_signed_zero_shared_edge_valid_and_union() -> None:
     p1 = gm.from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))')
     p2 = gm.from_wkt('POLYGON ((-0 -0, 1 -0, 1 1, -0 1, -0 -0))')
     arr = gm.GeometryArray([p1, p2])
-    assert arr.coverage_is_valid() is False
+    assert gm.coverage_is_valid(arr) is False
     # Adjacent tiles with signed-zero on the shared edge stay valid and union to area 2.
     a = gm.from_wkt('POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))')
     b = gm.from_wkt('POLYGON ((1 -0, 2 0, 2 1, 1 1, 1 -0))')
     adj = gm.GeometryArray([a, b])
-    assert adj.coverage_is_valid() is True
-    u = adj.coverage_union()
+    assert gm.coverage_is_valid(adj) is True
+    u = gm.coverage_union(adj)
     assert not u.is_empty
     assert u.area == pytest.approx(2.0)
 
@@ -282,7 +282,7 @@ def test_union_all_splits_antimeridian_like_binary() -> None:
     other = gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)], crs=4326)
     binary = gm.union(cross, other)
     nary = gm.union_all([cross, other])
-    arr = gm.GeometryArray([cross, other]).union_all()
+    arr = gm.union_all(gm.GeometryArray([cross, other]))
     # Binary is the oracle for the geographic gate: result is multi with
     # split-normalized seam parts, not a single west>east planar box.
     assert binary.geometry_type != 'Polygon' or binary.bounds[0] <= binary.bounds[2]

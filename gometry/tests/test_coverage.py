@@ -19,20 +19,20 @@ def grid_rows() -> list[gm.Polygon]:
 
 def test_coverage_is_valid_verdicts() -> None:
     grid = gm.GeometryArray(grid_rows())
-    assert grid.coverage_is_valid()
-    assert all(g.is_empty for g in grid.coverage_invalid_edges())
+    assert gm.coverage_is_valid(grid)
+    assert all(g.is_empty for g in gm.coverage_invalid_edges(grid))
     overlap = gm.GeometryArray([gm.box(0, 0, 1.1, 1), gm.box(1, 0, 2, 1)])
-    assert not overlap.coverage_is_valid()
-    assert not any(g.is_empty for g in overlap.coverage_invalid_edges())
+    assert not gm.coverage_is_valid(overlap)
+    assert not any(g.is_empty for g in gm.coverage_invalid_edges(overlap))
     tjoin = gm.GeometryArray([
         gm.box(0, 0, 1, 2),
         gm.from_wkt('POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))'),
         gm.from_wkt('POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))'),
     ])
-    assert not tjoin.coverage_is_valid()
+    assert not gm.coverage_is_valid(tjoin)
     gap = gm.GeometryArray([gm.box(0, 0, 0.999, 1), gm.box(1, 0, 2, 1)])
-    assert gap.coverage_is_valid()
-    assert not gap.coverage_is_valid(gap_width=0.01)
+    assert gm.coverage_is_valid(gap)
+    assert not gm.coverage_is_valid(gap, gap_width=0.01)
     assert gm.coverage_is_valid(grid_rows())
     assert gm.coverage_is_valid(gm.box(0, 0, 1, 1))
     assert len(gm.coverage_invalid_edges(gm.box(0, 0, 1, 1))) == 1
@@ -47,7 +47,7 @@ def test_coverage_is_valid_verdicts() -> None:
     with pytest.raises(gm.GeometryTypeError, match='Polygon or MultiPolygon'):
         gm.coverage_is_valid([gm.Point(0, 0)])
     with pytest.raises(gm.GeometryError, match='gap_width'):
-        grid.coverage_is_valid(gap_width=-1)
+        gm.coverage_is_valid(grid, gap_width=-1)
 
 
 def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None:
@@ -57,21 +57,21 @@ def test_coverage_is_valid_keeps_subnormal_gap_width_in_distance_space() -> None
         gm.box(2.0 * scale, 0.0, 3.0 * scale, scale),
     ])
 
-    assert rows.coverage_is_valid()
-    assert not rows.coverage_is_valid(gap_width=1.1 * scale)
+    assert gm.coverage_is_valid(rows)
+    assert not gm.coverage_is_valid(rows, gap_width=1.1 * scale)
 
 
 def test_coverage_free_functions_accept_geometry_array() -> None:
     grid = gm.GeometryArray(grid_rows())
-    assert grid.coverage_is_valid()
-    assert grid.coverage_invalid_edges()[0].is_empty
-    assert grid.coverage_simplify(0.0).coverage_is_valid()
-    assert grid.coverage_clean(grid_size=0.0).coverage_is_valid()
-    assert grid.coverage_union().geometry_type == 'Polygon'
     assert gm.coverage_is_valid(grid)
     assert gm.coverage_invalid_edges(grid)[0].is_empty
-    assert gm.coverage_simplify(grid, 0.0).coverage_is_valid()
-    assert gm.coverage_clean(grid, grid_size=0.0).coverage_is_valid()
+    assert gm.coverage_is_valid(gm.coverage_simplify(grid, 0.0))
+    assert gm.coverage_is_valid(gm.coverage_clean(grid, grid_size=0.0))
+    assert gm.coverage_union(grid).geometry_type == 'Polygon'
+    assert gm.coverage_is_valid(grid)
+    assert gm.coverage_invalid_edges(grid)[0].is_empty
+    assert gm.coverage_is_valid(gm.coverage_simplify(grid, 0.0))
+    assert gm.coverage_is_valid(gm.coverage_clean(grid, grid_size=0.0))
     assert gm.coverage_union(grid).geometry_type == 'Polygon'
 
 
@@ -319,8 +319,8 @@ def test_three_polygons_sharing_one_edge_is_invalid() -> None:
         gm.box(1, 0, 2, 1),
         gm.box(1, 0, 1.5, 1),
     ])
-    assert not triple.coverage_is_valid()
-    assert not any(g.is_empty for g in triple.coverage_invalid_edges())
+    assert not gm.coverage_is_valid(triple)
+    assert not any(g.is_empty for g in gm.coverage_invalid_edges(triple))
 
 
 def test_coincident_rows_are_invalid_coverage() -> None:
@@ -329,9 +329,12 @@ def test_coincident_rows_are_invalid_coverage() -> None:
     # Equivalent presentation with a different ring start and orientation.
     second = gm.from_wkt('POLYGON ((1 1, 1 0, 0 0, 0 1, 1 1))')
     rows = gm.GeometryArray([first, second])
-    assert not rows.coverage_is_valid()
-    assert all(not edge.is_empty for edge in rows.coverage_invalid_edges())
-    for operation in (rows.coverage_union, lambda: rows.coverage_simplify(0.0)):
+    assert not gm.coverage_is_valid(rows)
+    assert all(not edge.is_empty for edge in gm.coverage_invalid_edges(rows))
+    for operation in (
+        lambda: gm.coverage_union(rows),
+        lambda: gm.coverage_simplify(rows, 0.0),
+    ):
         with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
             operation()
 
@@ -339,8 +342,8 @@ def test_coincident_rows_are_invalid_coverage() -> None:
 def test_check_and_do_coverage_operations_reject_invalid_input() -> None:
     overlap = gm.GeometryArray([gm.box(0, 0, 1.2, 1), gm.box(1, 0, 2, 1)])
     for operation in (
-        overlap.coverage_union,
-        lambda: overlap.coverage_simplify(0.1),
+        lambda: gm.coverage_union(overlap),
+        lambda: gm.coverage_simplify(overlap, 0.1),
         lambda: gm.coverage_union(list(overlap)),
         lambda: gm.coverage_simplify(list(overlap), 0.1),
     ):
@@ -368,8 +371,11 @@ def test_coverage_union_rejects_tjunction() -> None:
         gm.from_wkt('POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))'),
         gm.from_wkt('POLYGON ((1 1, 2 1, 2 2, 1 2, 1 1))'),
     ])
-    assert not tjoin.coverage_is_valid()
-    for operation in (tjoin.coverage_union, lambda: gm.coverage_union(list(tjoin))):
+    assert not gm.coverage_is_valid(tjoin)
+    for operation in (
+        lambda: gm.coverage_union(tjoin),
+        lambda: gm.coverage_union(list(tjoin)),
+    ):
         with pytest.raises(
             gm.InvalidGeometryError,
             match=r'valid polygonal coverage.*coverage_invalid_edges.*coverage_clean',
@@ -387,10 +393,10 @@ def test_coverage_union_rejects_gap_under_width() -> None:
     coverage_is_valid(gap_width=...).
     """
     gap = gm.GeometryArray([gm.box(0, 0, 0.999, 1), gm.box(1, 0, 2, 1)])
-    assert gap.coverage_is_valid()
-    assert not gap.coverage_is_valid(gap_width=0.01)
+    assert gm.coverage_is_valid(gap)
+    assert not gm.coverage_is_valid(gap, gap_width=0.01)
     # Exact-match union still accepts (two components); not a rejection class.
-    union = gap.coverage_union()
+    union = gm.coverage_union(gap)
     assert union.geometry_type == 'MultiPolygon'
     assert union.area == pytest.approx(0.999 + 1.0)
 
@@ -403,19 +409,19 @@ def test_coverage_simplify_preserves_topology() -> None:
         'POLYGON ((1 0, 2 0, 2 1, 1 1, 1.05 0.75, 0.95 0.5, 1.05 0.25, 1 0))'
     )
     arr = gm.GeometryArray([left, right], crs=3857)
-    assert arr.coverage_is_valid()
-    out = arr.coverage_simplify(0.5)
-    assert out.coverage_is_valid()
+    assert gm.coverage_is_valid(arr)
+    out = gm.coverage_simplify(arr, 0.5)
+    assert gm.coverage_is_valid(out)
     assert [g.to_wkt() for g in out] == [
         'POLYGON ((1 0, 1 1, 0 1, 0 0, 1 0))',
         'POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))',
     ]
     assert out.crs == 'EPSG:3857'
     assert sum(g.area for g in out) == pytest.approx(sum(g.area for g in arr), rel=0.1)
-    pinned = arr.coverage_simplify(0.5, simplify_boundary=False)
-    assert pinned.coverage_is_valid()
+    pinned = gm.coverage_simplify(arr, 0.5, simplify_boundary=False)
+    assert gm.coverage_is_valid(pinned)
     measured = gm.GeometryArray([g.set_z(1.0) for g in grid_rows()])
-    carried = measured.coverage_simplify(0.1)
+    carried = gm.coverage_simplify(measured, 0.1)
     assert all(g.has_z for g in carried)
     assert all(z == 1.0 for geom in carried for z in geom.coords.z)
 
@@ -436,7 +442,7 @@ def test_coverage_simplify_remains_valid_across_aggressive_tolerances() -> None:
     assert gm.coverage_is_valid(rows)
     for tolerance in (0.0, 0.01, 0.1, 0.5, 1.0, 1.1, 2.0, 10.0, 100.0):
         simplified = gm.coverage_simplify(rows, tolerance)
-        assert simplified.coverage_is_valid(), (
+        assert gm.coverage_is_valid(simplified), (
             tolerance,
             [geometry.to_wkt() for geometry in simplified],
         )
@@ -479,7 +485,7 @@ def test_coverage_simplify_matches_shapely_oracle() -> None:
 
 def test_coverage_clean_overlap_rules_and_gaps() -> None:
     overlap = gm.GeometryArray([gm.box(0, 0, 1.2, 1), gm.box(1, 0, 2, 1)])
-    assert not overlap.coverage_is_valid()
+    assert not gm.coverage_is_valid(overlap)
     expected: dict[str, list[float]] = {
         'longest_border': [1.2, 0.8],
         'max_area': [1.2, 0.8],
@@ -487,11 +493,12 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
         'min_index': [1.2, 0.8],
     }
     for rule, areas in expected.items():
-        out = overlap.coverage_clean(grid_size=0, overlap_rule=rule)
+        out = gm.coverage_clean(overlap, grid_size=0, overlap_rule=rule)
         assert [g.area for g in out] == pytest.approx(areas)
-        assert out.coverage_is_valid()
+        assert gm.coverage_is_valid(out)
     reversed_overlap = gm.GeometryArray(list(reversed(overlap)))
-    reversed_cleaned = reversed_overlap.coverage_clean(
+    reversed_cleaned = gm.coverage_clean(
+        reversed_overlap,
         grid_size=0,
         overlap_rule='longest_border',
     )
@@ -501,15 +508,15 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
     )
     inner = gm.box(1.005, 1.005, 1.995, 1.995)
     ring = gm.GeometryArray([outer, inner])
-    merged = ring.coverage_clean(grid_size=0, gap_width=0.05)
+    merged = gm.coverage_clean(ring, grid_size=0, gap_width=0.05)
     assert sum(g.area for g in merged) == pytest.approx(9.0)
-    assert merged.coverage_is_valid()
-    kept = ring.coverage_clean(grid_size=0)
+    assert gm.coverage_is_valid(merged)
+    kept = gm.coverage_clean(ring, grid_size=0)
     assert sum(g.area for g in kept) == pytest.approx(8.9801)
     near = gm.GeometryArray([gm.box(0, 0, 1.0000001, 1), gm.box(1, 0, 2, 1)])
-    assert not near.coverage_is_valid()
-    unchanged_default = near.coverage_clean()
-    assert unchanged_default.coverage_is_valid()
+    assert not gm.coverage_is_valid(near)
+    unchanged_default = gm.coverage_clean(near)
+    assert gm.coverage_is_valid(unchanged_default)
     coordinates = gm.get_coordinates(unchanged_default)
     assert sorted(set(coordinates[:, 0])) == [
         0.0,
@@ -517,14 +524,14 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
         1.0000001,
         2.0,
     ]
-    healed = near.coverage_clean(grid_size=1e-6)
-    assert healed.coverage_is_valid()
+    healed = gm.coverage_clean(near, grid_size=1e-6)
+    assert gm.coverage_is_valid(healed)
     grid = gm.GeometryArray(grid_rows())
-    identity = grid.coverage_clean(grid_size=0)
-    assert identity.coverage_is_valid()
+    identity = gm.coverage_clean(grid, grid_size=0)
+    assert gm.coverage_is_valid(identity)
     assert [g.area for g in identity] == pytest.approx([1.0] * 4)
     assert identity.to_wkb() == grid.to_wkb()
-    twice = identity.coverage_clean()
+    twice = gm.coverage_clean(identity)
     assert twice.to_wkb() == identity.to_wkb()
 
 
@@ -535,7 +542,7 @@ def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
         gm.box(0, 0, 1.2, 1).set_z(7.0).set_m(11.0),
         gm.box(1, 0, 2, 1).set_z(7.0).set_m(11.0),
     ])
-    out = rows.coverage_clean()
+    out = gm.coverage_clean(rows)
     assert all(geometry.coordinate_axes == 'XYZM' for geometry in out)
     assert all(z == 7.0 for geometry in out for z in geometry.coords.z)
     assert all(m == 11.0 for geometry in out for m in geometry.coords.m)
@@ -552,10 +559,12 @@ def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
         shared_bits.append({tuple(row) for row in selected.view(np.uint64)})
     assert shared_bits == [expected_bits, expected_bits]
 
-    mixed = gm.GeometryArray([
-        gm.box(0, 0, 1.2, 1).set_z(5.0),
-        gm.box(1, 0, 2, 1),
-    ]).coverage_clean()
+    mixed = gm.coverage_clean(
+        gm.GeometryArray([
+            gm.box(0, 0, 1.2, 1).set_z(5.0),
+            gm.box(1, 0, 2, 1),
+        ])
+    )
     assert [geometry.coordinate_axes for geometry in mixed] == ['XYZ', 'XY']
 
 
@@ -593,8 +602,8 @@ def test_coverage_clean_deterministic_jitter_corpus() -> None:
             i, j = divmod(index, 2)
             rows.append(gm.box(i, j, i + 1 + x_jitter, j + 1 + y_jitter))
         arr = gm.GeometryArray(rows)
-        out = arr.coverage_clean(grid_size=0)
-        assert out.coverage_is_valid()
+        out = gm.coverage_clean(arr, grid_size=0)
+        assert gm.coverage_is_valid(out)
         union_in = gm.union_all(list(arr)).area
         union_out = gm.union_all([g for g in out if not g.is_empty]).area
         assert union_out == pytest.approx(union_in, rel=1e-06)

@@ -5,8 +5,8 @@ use crate::array::packed_columns::XyColumns;
 use crate::array::{
     Bound, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _, PackedColumnError,
     PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr,
-    PyGeometry, PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _,
-    Python, Shape, SpatialCurve, Typed, bounds_values_from_columns_masked, crs, crs_label,
+    PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _, Python, Shape,
+    SpatialCurve, bounds_values_from_columns_masked, crs, crs_label,
     ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
     polygon_measure_masked, pymethods, reduce_lines_or_polygons, resolve_metric,
     segmented_planar_lengths, segmented_planar_lengths_3d,
@@ -275,107 +275,6 @@ impl PyGeometryArray {
     ) -> PyResult<Self> {
         let keys = self.curve_keys(level, bounds, curve.into())?;
         Ok(self.taken_by_keys(&keys)?)
-    }
-
-    /// Intersect all present geometries into one geometry.
-    ///
-    /// The region common to EVERY present row (missing rows are skipped, the
-    /// SQL/pandas aggregate convention). The array sibling of
-    /// `intersection_all`, which takes raw iterables.
-    ///
-    /// Returns
-    /// -------
-    /// Geometry
-    ///     A single geometry covered by every present row.
-    ///
-    /// Raises
-    /// ------
-    /// InvalidGeometryError
-    ///     If the array has no present rows or the overlay cannot be constructed.
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> panes = gm.GeometryArray([
-    /// ...     gm.box(0, 0, 3, 3), gm.box(1, 1, 4, 4), gm.box(2, 2, 5, 5),
-    /// ... ])
-    /// >>> panes.intersection_all().to_wkt()
-    /// 'POLYGON ((2 2, 3 2, 3 3, 2 3, 2 2))'
-    pub fn intersection_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        self.apply_overlay_all(py, Shape::intersection_all_topo)
-    }
-
-    /// Symmetric difference of all present geometries.
-    ///
-    /// The region covered by an ODD number of present rows (missing rows are
-    /// skipped). The array sibling of `symmetric_difference_all`, which takes
-    /// raw iterables.
-    ///
-    /// Returns
-    /// -------
-    /// Geometry
-    ///     A single geometry covered by an odd number of present rows.
-    ///
-    /// Raises
-    /// ------
-    /// InvalidGeometryError
-    ///     If the array has no present rows or the overlay cannot be constructed.
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> panes = gm.GeometryArray([
-    /// ...     gm.box(0, 0, 2, 2), gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3),
-    /// ... ])
-    /// >>> panes.symmetric_difference_all().to_wkt()  # the duplicate cancels
-    /// 'POLYGON ((1 1, 3 1, 3 3, 1 3, 1 1))'
-    pub fn symmetric_difference_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        self.apply_overlay_all(py, Shape::symmetric_difference_all_topo)
-    }
-
-    /// Union all present geometries into one geometry.
-    ///
-    /// Missing rows are skipped (the SQL/pandas aggregate convention).
-    ///
-    /// Returns
-    /// -------
-    /// Geometry
-    ///     A single geometry covering every present row.
-    ///
-    /// Raises
-    /// ------
-    /// InvalidGeometryError
-    ///     If the array has no present rows or the overlay cannot be constructed.
-    ///
-    /// See Also
-    /// --------
-    /// coverage_union : Faster dissolve for a valid polygonal coverage.
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> panes = gm.GeometryArray([gm.box(0, 0, 2, 2), gm.box(1, 1, 3, 3)])
-    /// >>> panes.union_all().to_wkt()
-    /// 'POLYGON ((0 0, 2 0, 2 1, 3 1, 3 3, 1 3, 1 2, 0 2, 0 0))'
-    pub fn union_all(&self, py: Python<'_>) -> PyResult<crate::Typed> {
-        let strictness = crate::geometry::Strictness::Lenient;
-        let shapes = if let Some(multipoint) = self.packed_points_as_multipoint()? {
-            let mut shapes = crate::try_vec_with_capacity(1)?;
-            shapes.push(multipoint);
-            shapes
-        } else {
-            self.with_borrowed_shapes(|borrowed| {
-                let mut shapes = Vec::new();
-                crate::boundary::try_reserve_vec(&mut shapes, borrowed.len())?;
-                for shape in borrowed {
-                    crate::boundary::try_push_vec(&mut shapes, (*shape).clone())?;
-                }
-                Ok(shapes)
-            })?
-        };
-        let domain = crate::geometry::topology_domain(&self.frame)?;
-        let shape = py.detach(move || Shape::union_all_topo(&shapes, domain, strictness))?;
-        Ok(Typed(PyGeometry::with_frame(shape, self.frame.clone())?))
     }
 
     /// Dissolve geometries into per-group unions.
@@ -840,31 +739,6 @@ impl PyGeometryArray {
     }
 }
 
-impl PyGeometryArray {
-    /// Shared all-input overlay over the PRESENT rows: the kernel
-    /// receives owned shapes (aggregates skip missing rows), detached from
-    /// the GIL like `dissolve`.
-    fn apply_overlay_all(
-        &self,
-        py: Python<'_>,
-        kernel: impl FnOnce(
-            &[Shape],
-            crate::geometry::TopologyDomain,
-            crate::geometry::Strictness,
-        ) -> crate::error::Result<Shape>
-        + Send,
-    ) -> PyResult<crate::Typed> {
-        let strictness = crate::geometry::Strictness::Lenient;
-        let shapes = self.present_shapes()?;
-        let domain = crate::geometry::topology_domain(&self.frame)?;
-        let shape = py.detach(move || kernel(&shapes, domain, strictness))?;
-        Ok(crate::Typed(PyGeometry::with_frame(
-            shape,
-            self.frame.clone(),
-        )?))
-    }
-}
-
 #[cfg(test)]
 mod geographic_masked_bounds_tests {
     use super::*;
@@ -955,22 +829,24 @@ mod geographic_masked_bounds_tests {
         )
         .unwrap();
 
-        Python::attach(|py| {
+        Python::attach(|_| {
             for _ in 0..8 {
                 for kernel in [
                     Shape::intersection_all_topo,
                     Shape::symmetric_difference_all_topo,
                 ] {
-                    let expected = present
-                        .apply_overlay_all(py, kernel)
-                        .expect("present aggregate succeeds");
-                    let actual = masked
-                        .apply_overlay_all(py, kernel)
-                        .expect("masked aggregate succeeds");
+                    let aggregate = |array: &PyGeometryArray| {
+                        let domain = crate::geometry::topology_domain(&array.frame).unwrap();
+                        kernel(
+                            &array.present_shapes().unwrap(),
+                            domain,
+                            crate::geometry::Strictness::Lenient,
+                        )
+                        .expect("aggregate succeeds")
+                    };
                     assert_eq!(
-                        crate::io::to_wkb(expected.0.shape.shape(), None, false)
-                            .expect("expected WKB"),
-                        crate::io::to_wkb(actual.0.shape.shape(), None, false).expect("actual WKB"),
+                        crate::io::to_wkb(&aggregate(&present), None, false).expect("expected WKB"),
+                        crate::io::to_wkb(&aggregate(&masked), None, false).expect("actual WKB"),
                     );
                 }
             }

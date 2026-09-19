@@ -570,7 +570,7 @@ def test_repeated_consecutive_vertices_are_removable_redundancy() -> None:
     # both presentations consistently rather than silently simplifying an
     # invalid coverage.
     with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
-        arr.coverage_simplify(0.1)
+        gm.coverage_simplify(arr, 0.1)
     with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
         gm.coverage_simplify([clean, other], 0.1)
     assert gm.from_wkt('LINESTRING (0 0, 1 1, 1 1, 2 0)').is_simple

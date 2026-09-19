@@ -190,7 +190,7 @@ def test_native_voronoi_polygon_clip_spans_the_requested_polygon() -> None:
     sites = gm.MultiPoint([(0.0, 0.0), (2.0, 0.0), (1.0, 2.0)])
     clip = gm.box(-10.0, -10.0, 10.0, 10.0)
     cells = sites.voronoi_polygons(clip=clip)
-    merged = gm.GeometryArray(cells).union_all()
+    merged = gm.union_all(gm.GeometryArray(cells))
     assert len(cells) == 3
     assert sum(cell.area for cell in cells) == clip.area == 400.0, (
         'native cells did not partition the requested polygon area'
@@ -758,7 +758,7 @@ def test_native_voronoi_affine_copies_partition_their_stored_envelope() -> None:
         # Unframing one cell boundary costs at most a few stored-coordinate
         # ULPs; this is far below a geometric gap/overlap.
         assert abs(exact_cells - exact_envelope) * 10**14 <= exact_envelope
-        merged = gm.GeometryArray(cells).union_all()
+        merged = gm.union_all(gm.GeometryArray(cells))
         assert gm.covers(merged, envelope) and gm.covers(envelope, merged)
 
 
@@ -938,7 +938,7 @@ def test_inert_constrained_max_area_never_refines_or_leaks(power: int) -> None:
     triangles = source.triangulate(method='constrained', max_area=2.0 * source.area)
     assert len(triangles) == 1
     assert _fraction_ring_area(triangles[0]) == _fraction_ring_area(source)
-    union = gm.GeometryArray(triangles).union_all()
+    union = gm.union_all(gm.GeometryArray(triangles))
     assert gm.covers(source, union)
     assert gm.covers(union, source)
 

@@ -34,7 +34,7 @@ def test_union_all_opposite_finite_extremes_is_order_independent() -> None:
     polygons, clip = _fixture(1e308)
     results = []
     for order in permutations(range(3)):
-        result = gm.GeometryArray([polygons[index] for index in order]).union_all()
+        result = gm.union_all(gm.GeometryArray([polygons[index] for index in order]))
         assert not result.is_empty
         assert result.bounds == clip.bounds
         assert gm.covers(result, clip)

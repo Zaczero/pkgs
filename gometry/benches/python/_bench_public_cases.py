@@ -1088,7 +1088,9 @@ def build_union_all() -> PublicCase:
     d = service_areas_1024()
 
     def gometry_call():
-        return d['gm'].union_all()
+        import gometry as gm
+
+        return gm.union_all(d['gm'])
 
     def competitor_call():
         import shapely
@@ -1115,7 +1117,9 @@ def build_coverage_union() -> PublicCase:
     d = parcels_10k()
 
     def gometry_call():
-        return d['gm'].coverage_union()
+        import gometry as gm
+
+        return gm.coverage_union(d['gm'])
 
     def competitor_call():
         import shapely

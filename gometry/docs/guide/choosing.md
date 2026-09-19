@@ -90,16 +90,16 @@ DGGS cell covers and polygonal coverages use different representations:
   array methods named `coverage_*`.
 
 If you are bucketing geometry into a global grid, you want those `*_cover`
-factories. If you are validating or simplifying a parcel fabric, build a
-  [`GeometryArray`][gometry.GeometryArray] and call the column-native methods —
-[`arr.coverage_is_valid()`][gometry.GeometryArray.coverage_is_valid], [`arr.coverage_simplify(tolerance)`][gometry.GeometryArray.coverage_simplify], and so on. The
-free `gm.coverage_*(values)` forms accept arrays and general iterables:
+factories. If you are validating or simplifying a parcel fabric, pass the rows
+to the `gm.coverage_*` functions —
+[`gm.coverage_is_valid(values)`][gometry.coverage_is_valid], [`gm.coverage_simplify(values, tolerance)`][gometry.coverage_simplify], and so on.
+They take a [`GeometryArray`][gometry.GeometryArray] or any iterable of geometries:
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
 
 grid = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(1, 0, 2, 1)])
-print("valid:", grid.coverage_is_valid())
+print("valid:", gm.coverage_is_valid(grid))
 print("same as free fn:", gm.coverage_is_valid(list(grid)))
 ```
 
@@ -118,15 +118,15 @@ input_rows = gm.GeometryArray([
     gm.box(0, 0, 2.1, 2),
     gm.box(2, 0, 4, 2),
 ])
-invalid_edges = input_rows.coverage_invalid_edges()
-cleaned = input_rows.coverage_clean(overlap_rule="longest_border")
+invalid_edges = gm.coverage_invalid_edges(input_rows)
+cleaned = gm.coverage_clean(input_rows, overlap_rule="longest_border")
 
 print(panels(
     [
         ("two parcel rows", {'source': input_rows}, "The two input parcels overlap along a narrow strip instead of forming a valid coverage."),
         ("invalid shared edges", {'source': input_rows, 'result': invalid_edges}, "Diagnostic edges mark the mismatched parcel border around the overlap."),
         ("cleaned parcel coverage", {'source': input_rows, 'result': [item for row in cleaned for item in with_vertices(row)]}, "Coverage cleaning aligns the shared border and leaves two non-overlapping parcel rows."),
-        ("coverage union", {'result': cleaned.coverage_union()}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
+        ("coverage union", {'result': gm.coverage_union(cleaned)}, "The cleaned parcels dissolve into one continuous polygon with no overlap or gap."),
     ],
     labels={'source': 'input parcels', 'result': 'what the call returns'},
 ))

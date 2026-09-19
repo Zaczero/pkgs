@@ -65,7 +65,7 @@ def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
     outputs = [
         gm.union(left, right),
         gm.union_all([left, right]),
-        gm.GeometryArray([left, right]).union_all(),
+        gm.union_all(gm.GeometryArray([left, right])),
     ]
     for output in outputs:
         assert len(gm.parts(output)) == 1
@@ -75,7 +75,7 @@ def test_overlay_quotients_longitude_aliases_without_rewriting_inputs() -> None:
     for output in [
         gm.symmetric_difference(left, right),
         gm.symmetric_difference_all([left, right]),
-        gm.GeometryArray([left, right]).symmetric_difference_all(),
+        gm.symmetric_difference_all(gm.GeometryArray([left, right])),
     ]:
         assert output.is_empty
     assert right.to_wkb() == spelling

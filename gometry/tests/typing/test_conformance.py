@@ -119,15 +119,15 @@ def _check_fixed_output_nullability(
         gm.GeometryArray[gm.MultiPoint | gm.GeometryCollection | None],
     )
     assert_type(
-        values.coverage_invalid_edges(),
+        gm.coverage_invalid_edges(values),
         gm.GeometryArray[gm.LineString | gm.MultiLineString | None],
     )
     assert_type(
-        values.coverage_simplify(0.1),
+        gm.coverage_simplify(values, 0.1),
         gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
     )
     assert_type(
-        values.coverage_clean(),
+        gm.coverage_clean(values),
         gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
     )
     assert_type(values.repair(), gm.GeometryArray[gm.Geometry | None])
@@ -768,7 +768,9 @@ assert_type(
     tuple[npt.NDArray[np.int64], gm.CellArray[gm.H3Cell]],
 )
 GRID = gm.GeometryArray([POLY, gm.box(2, 0, 4, 2)])
-assert_type(GRID.coverage_simplify(0.1), gm.GeometryArray[gm.Polygon | gm.MultiPolygon])
+assert_type(
+    gm.coverage_simplify(GRID, 0.1), gm.GeometryArray[gm.Polygon | gm.MultiPolygon]
+)
 assert_type(gm.coverage_is_valid([POLY]), bool)
 assert_type(gm.coverage_is_valid(POLY), bool)
 assert_type(gm.coverage_union(iter([POLY])), gm.Polygon | gm.MultiPolygon)
@@ -777,7 +779,7 @@ assert_type(gm.polygonize(POLY), gm.GeometryArray[gm.Polygon])
 assert_type(gm.coverage_union(GRID), gm.Polygon | gm.MultiPolygon)
 assert_type(gm.polygonize(GRID), gm.GeometryArray[gm.Polygon])
 assert_type(gm.union_all(GRID), gm.Geometry)
-assert_type(GRID.union_all(), gm.Geometry)
+assert_type(gm.union_all(GRID), gm.Geometry)
 assert_type(gm.to_feature_collection(POLY), sht.GeoJsonFeatureCollection)
 
 # Overload-narrowing coverage: one probe per @overload group that once shipped

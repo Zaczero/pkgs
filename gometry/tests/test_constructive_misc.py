@@ -438,7 +438,7 @@ def test_subdivide_bounds_complexity_and_covers_input() -> None:
     assert len(parts) > 1
     assert all(len(cast('gm.Polygon', part).exterior.coords) <= 64 for part in parts)
     assert parts.crs == 'EPSG:4326'
-    union = parts.union_all()
+    union = gm.union_all(parts)
     assert abs(union.area - ring.area) <= 1e-06 * ring.area
     assert len(gm.box(0, 0, 1, 1).subdivide()) == 1
     array = gm.GeometryArray([ring, gm.box(0, 0, 1, 1, crs=4326)])
@@ -490,7 +490,7 @@ def test_dissolve_unions_per_group_in_first_occurrence_order() -> None:
     with pytest.raises(gm.GeometryError, match='one key per geometry'):
         array.dissolve(by=['a', 'a'])
 
-    dissolved = array.union_all()
+    dissolved = gm.union_all(array)
     assert isinstance(dissolved, gm.Geometry)
     assert dissolved.area == pytest.approx(3.5)
 

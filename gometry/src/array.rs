@@ -347,7 +347,6 @@ mod masked;
 mod methods_buffer;
 mod methods_convert;
 mod methods_core;
-mod methods_coverage;
 mod methods_distance;
 mod methods_indexing;
 mod methods_interop;

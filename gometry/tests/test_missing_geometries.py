@@ -1133,31 +1133,31 @@ def test_masked_vs_dense_parity_sweep() -> None:
 
 def test_masked_coverage_methods_skip_and_scatter_missing() -> None:
     coverage = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(1, 0, 2, 1)])
-    assert coverage.coverage_is_valid()
-    invalid_edges = coverage.coverage_invalid_edges()
+    assert gm.coverage_is_valid(coverage)
+    invalid_edges = gm.coverage_invalid_edges(coverage)
     assert invalid_edges.is_missing.tolist() == [False, True, False]
     assert invalid_edges[1] is None
-    simplified = coverage.coverage_simplify(0.0)
+    simplified = gm.coverage_simplify(coverage, 0.0)
     assert simplified.is_missing.tolist() == [False, True, False]
-    cleaned = coverage.coverage_clean(grid_size=0.0)
+    cleaned = gm.coverage_clean(coverage, grid_size=0.0)
     assert cleaned.is_missing.tolist() == [False, True, False]
-    method_cleaned = coverage.coverage_clean(grid_size=0.0)
+    method_cleaned = gm.coverage_clean(coverage, grid_size=0.0)
     assert method_cleaned.is_missing.tolist() == [False, True, False]
-    assert coverage.coverage_union().geometry_type == 'Polygon'
+    assert gm.coverage_union(coverage).geometry_type == 'Polygon'
     with pytest.raises(gm.InvalidGeometryError):
-        gm.GeometryArray([None, None]).coverage_union()
+        gm.coverage_union(gm.GeometryArray([None, None]))
 
 
 def test_free_coverage_functions_preserve_missing_iterable_rows() -> None:
     values = [gm.box(0, 0, 1, 1), None, gm.box(1, 0, 2, 1)]
     array = gm.GeometryArray(values)
 
-    assert gm.coverage_is_valid(values) == array.coverage_is_valid()
-    assert gm.coverage_union(values) == array.coverage_union()
+    assert gm.coverage_is_valid(values) == gm.coverage_is_valid(array)
+    assert gm.coverage_union(values) == gm.coverage_union(array)
     for free, method in (
-        (gm.coverage_invalid_edges(values), array.coverage_invalid_edges()),
-        (gm.coverage_simplify(values, 0.0), array.coverage_simplify(0.0)),
-        (gm.coverage_clean(values), array.coverage_clean()),
+        (gm.coverage_invalid_edges(values), gm.coverage_invalid_edges(array)),
+        (gm.coverage_simplify(values, 0.0), gm.coverage_simplify(array, 0.0)),
+        (gm.coverage_clean(values), gm.coverage_clean(array)),
     ):
         assert free.is_missing.tolist() == [False, True, False]
         assert free.to_wkt() == method.to_wkt()

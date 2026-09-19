@@ -114,5 +114,5 @@ def test_zero_distance_constructive_ops_preserve_original_coordinates() -> None:
 def test_coverage_simplify_zero_preserves_ring_presentation() -> None:
     left = gm.Polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0), (0.0, 0.0)])
     right = gm.Polygon([(2.0, 0.0), (2.0, 1.0), (1.0, 1.0), (1.0, 0.0), (2.0, 0.0)])
-    out = gm.GeometryArray([left, right]).coverage_simplify(0.0)
+    out = gm.coverage_simplify(gm.GeometryArray([left, right]), 0.0)
     assert [geom.to_wkb() for geom in out] == [left.to_wkb(), right.to_wkb()]

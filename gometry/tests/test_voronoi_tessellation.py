@@ -12,7 +12,7 @@ import pytest
 
 
 def _partition(cells: gm.GeometryArray, clip: gm.Geometry) -> None:
-    union = cells.union_all()
+    union = gm.union_all(cells)
     assert gm.difference(clip, union).is_empty
     assert gm.difference(union, clip).is_empty
     assert gm.equals(union, clip)
@@ -119,7 +119,7 @@ def test_uniform_scale_voronoi_partition_has_no_arrangement_gap(exponent: int) -
     sites = [(0, 0), (side, 0), (side, side), (0, side), (side / 2, side / 2)]
     envelope = gm.box(0, 0, side, side)
     cells = gm.MultiPoint(sites).voronoi_polygons(clip='envelope')
-    merged = cells.union_all()
+    merged = gm.union_all(cells)
     assert gm.covers(merged, envelope)
     assert gm.covers(envelope, merged)
     assert gm.difference(envelope, merged).is_empty
