@@ -147,8 +147,8 @@ impl PyGeometryArray {
 
     /// Budgeted detached map for constructive operations whose generated work
     /// is shared by every present row, including mixed storage and missing
-    /// masks.  The caller owns the operation-wide budget; nested Shape paths
-    /// receive that same mutable counter.
+    /// masks. Each row gets its own budget: it bounds what a parameter makes
+    /// of one geometry, and the array's length is the caller's business.
     pub(crate) fn map_shapes_detached_indexed_budgeted(
         &self,
         py: Python<'_>,
@@ -160,8 +160,10 @@ impl PyGeometryArray {
         let array = self.clone();
         let shapes = py
             .detach(move || {
-                let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-                try_map_shape_rows(&array, |shape, row| transform(shape, row, &mut budget))
+                try_map_shape_rows(&array, |shape, row| {
+                    let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
+                    transform(shape, row, &mut budget)
+                })
             })
             .map_err(rows_err)?;
         let result = Self::from_shapes(shapes, self.frame.clone())?;

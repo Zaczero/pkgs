@@ -424,13 +424,14 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let builder = py
             .detach(move || {
-                let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut builder = crate::CsrBuilder::<Shape>::new();
                 for logical_row in array.row_operation().rows_with_missing(Vec::new) {
                     let (row, values) = match logical_row {
                         ArrayRow::Missing { logical, value } => (logical, value),
                         ArrayRow::Present(row) => {
                             let logical = row.logical();
+                            let mut budget =
+                                crate::geometry::ExpansionBudget::new(operation, parameter);
                             let values = row
                                 .row()
                                 .try_with_shape(|shape| transform(logical, shape, &mut budget))
@@ -446,9 +447,9 @@ impl PyGeometryArray {
         Groups::from_geometry_builder(frame, builder)
     }
 
-    /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`].  The
-    /// same array-wide budget is charged by the triangle vertex emitter before
-    /// its columns are appended.
+    /// Packed triangle analogue of [`flat_map_shapes_groups_budgeted`]: the
+    /// triangle vertex emitter charges each row's budget before its columns
+    /// are appended.
     pub(crate) fn flat_map_packed_triangles_groups_budgeted(
         &self,
         py: Python<'_>,
@@ -465,13 +466,14 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let builder = py
             .detach(move || {
-                let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
                 let mut builder = crate::CsrBuilder::<Point>::new();
                 for logical_row in array.row_operation().rows_with_missing(Vec::new) {
                     let (row, values) = match logical_row {
                         ArrayRow::Missing { logical, value } => (logical, value),
                         ArrayRow::Present(row) => {
                             let logical = row.logical();
+                            let mut budget =
+                                crate::geometry::ExpansionBudget::new(operation, parameter);
                             let values = row
                                 .row()
                                 .try_with_shape(|shape| transform(logical, shape, &mut budget))

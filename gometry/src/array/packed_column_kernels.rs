@@ -58,20 +58,14 @@ pub(crate) fn buffer_point_columns(
     })?;
     let point_rows = points.rows();
     let present_rows = point_rows.present_count();
-    let total = crate::geometry::ExpansionBudget::product(
-        "buffer",
-        "quadrant_segments",
-        present_rows,
-        vertices_per_row,
-    )
-    .map_err(batch_err)?;
-    let mut budget = crate::geometry::ExpansionBudget::new("buffer", "quadrant_segments");
-    budget.add(total).map_err(batch_err)?;
+    let total = present_rows
+        .checked_mul(vertices_per_row)
+        .ok_or_else(|| batch_err(crate::error::ResourceError::SizeOverflow.into()))?;
 
     let mut unit_x = Vec::new();
     let mut unit_y = Vec::new();
-    unit_x.reserve(steps);
-    unit_y.reserve(steps);
+    crate::boundary::try_reserve_vec(&mut unit_x, steps).map_err(batch_err)?;
+    crate::boundary::try_reserve_vec(&mut unit_y, steps).map_err(batch_err)?;
     let (sin_step, cos_step) = (std::f64::consts::TAU / steps as f64).sin_cos();
     let (mut sin_theta, mut cos_theta) = (0.0_f64, 1.0_f64);
     for step in 0..steps {
@@ -91,8 +85,8 @@ pub(crate) fn buffer_point_columns(
     } = points.physical_xy();
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    xs.reserve(total);
-    ys.reserve(total);
+    crate::boundary::try_reserve_vec(&mut xs, total).map_err(batch_err)?;
+    crate::boundary::try_reserve_vec(&mut ys, total).map_err(batch_err)?;
     let mut ring_offsets = CsrOffsetBuilder::new();
     let mut polygon_offsets = CsrOffsetBuilder::new();
     let mut ring_count = 0_usize;
@@ -1126,13 +1120,13 @@ pub(crate) fn subdivide_line_columns(
     let rows = columns.rows();
     let selected_len = crate::array::packed_lines_coord_len(columns.offsets(), columns.selection());
     let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
-    let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
     for row in 0..rows {
         if columns.is_missing(row) {
             builder.close_row()?;
             continue;
         }
         let window = columns.row_window(row);
+        let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
         builder.push_subdivided(coords, window, &subdivide, &mut budget)?;
     }
     let cap = builder.vertex_len();
@@ -1157,7 +1151,6 @@ pub(crate) fn subdivide_polygon_columns(
         columns.selection(),
     );
     let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
-    let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows())?;
     let mut output_rings = 0;
     for row in 0..columns.rows() {
@@ -1165,6 +1158,7 @@ pub(crate) fn subdivide_polygon_columns(
             polygon_builder.push_end(output_rings, i32::MAX as usize)?;
             continue;
         }
+        let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
         for ring in columns.polygon_rings(row) {
             let ring_window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
             builder.push_subdivided(coords, ring_window, &subdivide, &mut budget)?;

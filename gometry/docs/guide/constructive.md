@@ -296,9 +296,10 @@ exceeds the requested distance and preserves every original vertex. When
 binary64 rounding would otherwise break that guarantee, it emits additional
 vertices so the result still satisfies the maximum. `fraction=` has no unit
 and cannot be combined with `unit=`. A request that would generate more than
-**16,000,000** output items is refused with a
+**16,000,000** output items from one geometry is refused with a
 [`GeometryError`][gometry.GeometryError] whose message names the operation,
-produced count, limit, and controlling parameter:
+produced count, limit, and controlling parameter. The limit bounds what a
+parameter makes of each geometry; an array's length is not charged against it:
 
 ```python exec="on" html="true"
 from _figures import panels, with_vertices

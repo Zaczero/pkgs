@@ -505,14 +505,18 @@ impl PyGeometryArray {
         count
             .try_validate(|value| non_negative_int("sample_points", "count", value).map(|_| ()))?;
         let seed = I64Param::parse(seed, "seed", len)?;
-        let mut budget = crate::geometry::ExpansionBudget::new("sample_points", "count");
+        let mut total = 0_usize;
         for (row, missing) in (0..len).map(|row| (row, self.is_row_missing(row))) {
             if !missing {
-                budget.add(usize::try_from(count.get(row)).expect("validated non-negative"))?;
+                let count = usize::try_from(count.get(row)).expect("validated non-negative");
+                crate::geometry::ExpansionBudget::check("sample_points", "count", count)?;
+                total = total
+                    .checked_add(count)
+                    .ok_or_else(|| Error::from(crate::error::ResourceError::SizeOverflow))?;
             }
         }
         let built = (|| -> Result<crate::CsrBuilder<Shape>, (Error, Option<usize>)> {
-            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(budget.used(), len)
+            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(total, len)
                 .map_err(|error| (error, None))?;
             for logical_row in self.row_operation().rows_with_missing(|| ()) {
                 let (row, values) = match logical_row {
@@ -590,8 +594,6 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let packed = py
             .detach(move || {
-                let mut budget =
-                    crate::geometry::ExpansionBudget::new("voronoi_edges", "sites/clip topology");
                 let mut columns = Vec::new();
                 let mut group_offsets = vec![0_i64];
                 for logical_row in array.row_operation().rows_with_missing(|| ()) {
@@ -605,7 +607,10 @@ impl PyGeometryArray {
                                     shape.voronoi_edge_column_budgeted(
                                         tolerance,
                                         boundary.as_borrowed(),
-                                        &mut budget,
+                                        &mut crate::geometry::ExpansionBudget::new(
+                                            "voronoi_edges",
+                                            "sites/clip topology",
+                                        ),
                                     )
                                 })
                                 .map_err(|error| (logical, error))?;
@@ -802,17 +807,13 @@ fn array_equals_exact_row_tolerance<const Z: bool, const M: bool>(
 }
 
 #[cfg(test)]
-mod voronoi_budget_tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
+mod generation_budget_tests {
     use super::*;
     use crate::Point;
 
     #[test]
-    fn voronoi_array_budget_is_cumulative_across_rows() {
+    fn each_row_gets_its_own_generation_budget() {
         crate::test_support::initialize_python();
-        let visits = Arc::new(AtomicUsize::new(0));
-        let observed = Arc::clone(&visits);
         let array = PyGeometryArray::from_shapes(
             vec![
                 Shape::Point(Point::new_raw_xy(0.0, 0.0)),
@@ -821,19 +822,21 @@ mod voronoi_budget_tests {
             Frame::new(None, None).unwrap(),
         )
         .unwrap();
-        let result = Python::attach(|py| {
-            array.flat_map_shapes_groups_budgeted(
-                py,
-                "voronoi_polygons",
-                "sites/clip topology",
-                move |_, _, budget| {
-                    observed.fetch_add(1, Ordering::Relaxed);
-                    budget.add(crate::geometry::GENERATED_ITEM_LIMIT / 2 + 1)?;
-                    Ok(Vec::new())
-                },
-            )
-        });
-        assert!(result.is_err());
-        assert_eq!(visits.load(Ordering::Relaxed), 2);
+        let charge = |amount: usize| {
+            Python::attach(|py| {
+                array.flat_map_shapes_groups_budgeted(
+                    py,
+                    "voronoi_polygons",
+                    "sites/clip topology",
+                    move |_, _, budget| {
+                        budget.add(amount)?;
+                        Ok(Vec::new())
+                    },
+                )
+            })
+        };
+        // Together the rows exceed the limit; each stays within it.
+        charge(crate::geometry::GENERATED_ITEM_LIMIT / 2 + 1).unwrap();
+        assert!(charge(crate::geometry::GENERATED_ITEM_LIMIT + 1).is_err());
     }
 }

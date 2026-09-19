@@ -194,19 +194,18 @@ def test_noncollinear_tiny_catmull_rom_keeps_its_nonzero_knots() -> None:
         ('heterogeneous', [gm.Point(0.0, 0.0)]),
     ],
 )
-def test_segmentize_shares_one_budget_across_packed_missing_and_mixed_rows(
+def test_segmentize_bounds_each_row_on_every_storage_lane(
     suffix: str, tail: list[gm.Geometry | None]
 ) -> None:
-    """Every storage lane reaches the one operation-wide subdivision budget."""
-    values = gm.GeometryArray(
-        [gm.LineString([(0.0, 0.0), (1.0, 0.0)]) for _ in range(2)] + tail
-    )
-    # Both lines independently create 8,000,001 vertices (under the cap); the
-    # second pushes the one shared operation budget to 16,000,002. `missing`
-    # forces the mask-aware fallback and `heterogeneous` forces mixed storage,
-    # the two lanes that previously constructed a fresh scalar budget per row.
+    """Every storage lane refuses a row its parameter amplifies past the cap.
+
+    The budget belongs to one geometry: the array's length is the caller's
+    business, so rows do not share it. `missing` forces the mask-aware lane and
+    `heterogeneous` forces mixed storage.
+    """
+    values = gm.GeometryArray([gm.LineString([(0.0, 0.0), (1.0, 0.0)]), *tail])
     with pytest.raises(ValueError, match=r'16,000,000|16000000|generated'):
-        values.segmentize(1.0 / 8_000_002.0)
+        values.segmentize(1.0 / 16_000_002.0)
 
 
 def _arc_heavy_line() -> gm.Geometry:

@@ -109,12 +109,13 @@ pub(crate) fn line_interpolate_points_rows(
             counts.try_validate(|value| {
                 positive_int("line_interpolate_points", "count", value).map(|_| ())
             })?;
-            let mut budget =
-                crate::geometry::ExpansionBudget::new("line_interpolate_points", "count");
             for row in 0..array.len() {
                 if !array.is_row_missing(row) {
-                    budget
-                        .add(usize::try_from(counts.get(row)).expect("validated positive count"))?;
+                    crate::geometry::ExpansionBudget::check(
+                        "line_interpolate_points",
+                        "count",
+                        usize::try_from(counts.get(row)).expect("validated positive count"),
+                    )?;
                 }
             }
             RowInterpolatePlan::Counts(counts)

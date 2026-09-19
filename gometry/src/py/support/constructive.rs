@@ -140,10 +140,13 @@ fn voronoi_outputs<T: Send>(
     let boundary = owned_voronoi_boundary(py, clip, frame, operation)?;
     let shapes = shapes.collect::<Vec<_>>();
     Ok(py.detach(move || {
-        let mut budget = crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
         shapes
             .iter()
-            .map(|shape| kernel(shape, tolerance, boundary.as_borrowed(), &mut budget))
+            .map(|shape| {
+                let mut budget =
+                    crate::geometry::ExpansionBudget::new(operation, "sites/clip topology");
+                kernel(shape, tolerance, boundary.as_borrowed(), &mut budget)
+            })
             .collect::<Result<Vec<T>>>()
     })?)
 }

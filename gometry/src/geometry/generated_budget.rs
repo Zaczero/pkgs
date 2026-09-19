@@ -105,6 +105,7 @@ impl ExpansionBudget {
         )
     }
 
+    #[cfg(test)]
     pub(crate) const fn used(&self) -> usize {
         self.used
     }

@@ -399,7 +399,6 @@ pub(crate) fn unary_array_shapes_budgeted(
             },
         };
         py.detach(move || {
-            let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
             let mut rows = array.row_operation();
             rows.rows_with_missing(Shape::empty_point)
                 .map(|row| {
@@ -415,6 +414,7 @@ pub(crate) fn unary_array_shapes_budgeted(
                         lane: Lane::Array(row),
                     };
                     let data = rows.prepared_at(row, shape_row)?;
+                    let mut budget = crate::geometry::ExpansionBudget::new(op.name(), parameter);
                     kernel(&data, &ctx, &mut budget)
                 })
                 .collect_rows()
