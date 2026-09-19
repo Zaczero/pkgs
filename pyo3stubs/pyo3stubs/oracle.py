@@ -21,15 +21,15 @@ Both run the interpreter's own installed mypy, so results match what a user's
 
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from pyo3stubs.config import StubConfig
 
 
@@ -41,9 +41,25 @@ def _stub_root(cfg: StubConfig) -> Path:
     return cfg.stub_path.parents[len(cfg.module.split('.')) - 1]
 
 
+def _mypy_cache_dir(cfg: StubConfig) -> Path:
+    """A persistent mypy cache per stub, outside the project tree.
+
+    mypy keys each cache entry on the source's hash, its own version and the
+    options, so reuse is exact; a warm run re-analyses only what changed
+    (about half a second against eighteen cold for gometry's stub). stubtest
+    cannot share it: it needs full semantic trees, which it builds with
+    incremental mode off.
+    """
+    root = Path(os.environ.get('XDG_CACHE_HOME') or Path.home() / '.cache')
+    key = hashlib.sha256(str(cfg.stub_path.resolve()).encode()).hexdigest()[:16]
+    return root / 'pyo3stubs' / key / 'mypy'
+
+
 def collect_validity_errors(cfg: StubConfig) -> list[str]:
     """Type-check the stub file with mypy; any diagnostic is an error."""
-    with TemporaryDirectory() as cache_dir:
+    cache_dir = _mypy_cache_dir(cfg)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory() as cwd:
         command = [
             sys.executable,
             '-m',
@@ -64,7 +80,7 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
             command += ['--config-file', str(cfg.mypy_config)]
         result = subprocess.run(
             command,
-            cwd=cache_dir,  # neutral cwd is part of the gate contract
+            cwd=cwd,  # neutral cwd is part of the gate contract
             capture_output=True,
             text=True,
             check=False,
