@@ -21,6 +21,7 @@ struct fields, enum variants). Function bodies are not descended into.
 from __future__ import annotations
 
 import re
+import threading
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import TYPE_CHECKING
@@ -36,7 +37,20 @@ if TYPE_CHECKING:
 
     from pyo3stubs.config import StubConfig
 
-_PARSER = Parser(Language(tree_sitter_rust.language()))
+_LANGUAGE = Language(tree_sitter_rust.language())
+#: One parser per thread: a tree-sitter parser is mutable state, and
+#: ``run_all`` runs the Rust-reading gates concurrently.
+_THREAD = threading.local()
+#: The first gate to need the crate parses it; the others wait and reuse it.
+_PARSE_LOCK = threading.Lock()
+
+
+def _parser() -> Parser:
+    parser: Parser | None = getattr(_THREAD, 'parser', None)
+    if parser is None:
+        parser = _THREAD.parser = Parser(_LANGUAGE)
+    return parser
+
 
 #: Nodes whose children are items in declaration order.
 _CONTAINERS = frozenset({
@@ -142,7 +156,7 @@ def token_params(source: str) -> tuple[tuple[str, str], ...]:
     """
     body = source.encode()
     prefix = b'_!'
-    node = _outermost(_PARSER.parse(prefix + body).root_node, 'token_tree')
+    node = _outermost(_parser().parse(prefix + body).root_node, 'token_tree')
     if node is None:
         return ()
     offset = len(prefix)
@@ -371,7 +385,7 @@ def _macro_body_items(node: Node) -> tuple[Item, ...]:
     # Pad with the lines that precede the body so every recovered item reports
     # its real line in the file rather than an offset into the macro.
     inner = '\n' * tree.start_point[0] + _text(tree)[1:-1]
-    return _items(_PARSER.parse(inner.encode()).root_node)
+    return _items(_parser().parse(inner.encode()).root_node)
 
 
 def _item(node: Node, attrs: tuple[Attr, ...], doc: str) -> Item:
@@ -431,7 +445,7 @@ def _items(container: Node) -> tuple[Item, ...]:
 
 
 def _parse_file(path: Path, src_root: Path) -> RustSource:
-    tree = _PARSER.parse(path.read_bytes())
+    tree = _parser().parse(path.read_bytes())
     return RustSource(
         rel=path.relative_to(src_root).as_posix(),
         label=path.relative_to(src_root.parent).as_posix(),
@@ -439,8 +453,15 @@ def _parse_file(path: Path, src_root: Path) -> RustSource:
     )
 
 
-@lru_cache(maxsize=8)
 def _parsed(
+    src_root: Path, stamp: tuple[tuple[Path, int, int], ...]
+) -> tuple[RustSource, ...]:
+    with _PARSE_LOCK:
+        return _parsed_once(src_root, stamp)
+
+
+@lru_cache(maxsize=8)
+def _parsed_once(
     src_root: Path, stamp: tuple[tuple[Path, int, int], ...]
 ) -> tuple[RustSource, ...]:
     return tuple(_parse_file(path, src_root) for path, _, _ in stamp)

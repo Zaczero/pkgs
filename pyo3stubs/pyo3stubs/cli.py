@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import sys
+import time
 import uuid
 from pathlib import Path
 
@@ -41,12 +42,18 @@ def load_config(path: str | Path) -> StubConfig:
     return cfg
 
 
-def _report(result: Result, config_path: str) -> int:
-    """Print one gate's outcome; 1 when it found violations."""
+def _report(result: Result, config_path: str, *, timed: bool = False) -> int:
+    """Print one gate's outcome; 1 when it found violations.
+
+    A gate's time is shown only when it ran alone: under ``check-all`` the
+    gates run together and wait on each other's imports, so a fast gate can
+    read seconds.
+    """
+    line = f'{result.line} [{result.elapsed:.1f}s]' if timed else result.line
     if result.status is not Status.VIOLATIONS:
-        print(result.line)
+        print(line)
         return 0
-    sys.stderr.write(f'{result.line}\n')
+    sys.stderr.write(f'{line}\n')
     for error in result.errors:
         sys.stderr.write(f'  {error}\n')
     remedy = result.gate.remedy.replace('<shim>', config_path)
@@ -146,11 +153,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == 'gen-docs':
         return _gen_docs(cfg, args.config)
     if args.command == 'check-all':
+        started = time.perf_counter()
         status = 0
         for result in run_all(cfg):
             status |= _report(result, args.config)
+        print(f'check-all: {len(GATES)} gates in {time.perf_counter() - started:.1f}s')
         return status
-    return _report(gate(args.command).run(cfg), args.config)
+    return _report(gate(args.command).run(cfg), args.config, timed=True)
 
 
 if __name__ == '__main__':

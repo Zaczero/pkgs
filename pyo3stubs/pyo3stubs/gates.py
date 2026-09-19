@@ -18,9 +18,12 @@ other eleven still run — and the exit status is still non-zero.
 
 from __future__ import annotations
 
+import dataclasses
 import platform
+import time
 import traceback
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from enum import Enum
 from importlib import import_module
@@ -105,6 +108,11 @@ class Gate:
         blocked = self.blocked_by(cfg)
         if blocked is not None:
             return Result(self, blocked, [], None)
+        started = time.perf_counter()
+        result = self._outcome(cfg)
+        return dataclasses.replace(result, elapsed=time.perf_counter() - started)
+
+    def _outcome(self, cfg: StubConfig) -> Result:
         try:
             errors = self.collect(cfg)
         except Exception as exc:
@@ -136,6 +144,8 @@ class Result:
     errors: list[str]
     #: Subjects the gate inspected; None where counting does not apply.
     examined: int | None = None
+    #: Wall seconds the gate ran; zero when it did not run.
+    elapsed: float = 0.0
 
     @property
     def line(self) -> str:
@@ -305,5 +315,12 @@ def gate(name: str) -> Gate:
 
 
 def run_all(cfg: StubConfig) -> tuple[Result, ...]:
-    """Run every gate in registry order."""
-    return tuple(entry.run(cfg) for entry in GATES)
+    """Every gate against ``cfg``, concurrently, reported in ``GATES`` order.
+
+    The mypy-backed gates spend their time in subprocesses and the rest in
+    short Python passes, so running them together costs about the slowest
+    gate rather than the sum. Each gate builds its own context, so none
+    shares mutable state with another.
+    """
+    with ThreadPoolExecutor(max_workers=len(GATES)) as pool:
+        return tuple(pool.map(lambda entry: entry.run(cfg), GATES))
