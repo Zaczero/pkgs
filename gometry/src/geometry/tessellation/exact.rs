@@ -3113,6 +3113,19 @@ pub(in crate::geometry) fn try_compare_ratios(
     bn: &ExactDyadic,
     bd: &ExactDyadic,
 ) -> Result<Ordering> {
+    if let Some(order) = ratio_order_filter(an, ad, bn, bd) {
+        return Ok(order);
+    }
+    exact_ratio_order(an, ad, bn, bd)
+}
+
+/// The order of `an / ad` and `bn / bd` from two exact cross products.
+fn exact_ratio_order(
+    an: &ExactDyadic,
+    ad: &ExactDyadic,
+    bn: &ExactDyadic,
+    bd: &ExactDyadic,
+) -> Result<Ordering> {
     let left = an.try_product(bd)?;
     let right = bn.try_product(ad)?;
     let mut order = left.cmp(&right);
@@ -3120,6 +3133,49 @@ pub(in crate::geometry) fn try_compare_ratios(
         order = order.reverse();
     }
     Ok(order)
+}
+
+/// Relative separation two approximate ratio magnitudes need before their
+/// order is certain: each carries under `3.1 * 2^-53` from its leading-bit
+/// quotient, and the comparison rounds once more.
+const RATIO_ORDER_TOLERANCE: f64 = 8.0 * (f64::EPSILON / 2.0);
+
+/// The order of two exact ratios wherever signs or leading bits settle it;
+/// `None` leaves near ties, equal ratios included, to the exact products.
+fn ratio_order_filter(
+    an: &ExactDyadic,
+    ad: &ExactDyadic,
+    bn: &ExactDyadic,
+    bd: &ExactDyadic,
+) -> Option<Ordering> {
+    if ad.is_zero() || bd.is_zero() {
+        return None;
+    }
+    let left_sign = an.sign().quotient(ad.sign());
+    let right_sign = bn.sign().quotient(bd.sign());
+    if left_sign != right_sign || left_sign == ExactSign::Zero {
+        return Some(left_sign.as_i8().cmp(&right_sign.as_i8()));
+    }
+    let (left, left_exponent) = approximate_ratio_components(an, ad)?;
+    let (right, right_exponent) = approximate_ratio_components(bn, bd)?;
+    let magnitude = match left_exponent.checked_sub(right_exponent)? {
+        shift @ -1..=1 => {
+            let left = left * 2.0_f64.powi(shift as i32);
+            if left > right * (1.0 + RATIO_ORDER_TOLERANCE) {
+                Ordering::Greater
+            } else if left < right * (1.0 - RATIO_ORDER_TOLERANCE) {
+                Ordering::Less
+            } else {
+                return None;
+            }
+        },
+        shift => shift.cmp(&0),
+    };
+    Some(if left_sign == ExactSign::Negative {
+        magnitude.reverse()
+    } else {
+        magnitude
+    })
 }
 
 const SQUARED_DISTANCE_ERRBOUND: f64 = 128.0 * f64::EPSILON;
@@ -4774,6 +4830,63 @@ mod tests {
     }
 
     #[test]
+    fn filtered_ratio_order_matches_the_exact_products() {
+        type Ratio = (ExactDyadic, ExactDyadic);
+        let value = |x: f64| ExactDyadic::from_f64(x);
+        let tail = |exponent| ExactDyadic::from_parts(false, vec![1], exponent);
+        let near_one = value(1.0).add(tail(-100));
+        let under_two = value(2.0).subtract(tail(-60));
+        let cases: [(Ratio, Ratio, bool); 12] = [
+            ((value(1.0), value(3.0)), (value(2.0), value(6.0)), false),
+            ((value(-1.0), value(3.0)), (value(1.0), value(-3.0)), false),
+            (
+                (value(1.0), value(1.0)),
+                (value(1.0_f64.next_up()), value(1.0)),
+                false,
+            ),
+            ((near_one, value(1.0)), (value(1.0), value(1.0)), false),
+            ((under_two, value(1.0)), (value(1.0), value(0.5)), false),
+            ((value(1.0), value(3.0)), (value(1.0), value(2.0)), true),
+            (
+                (value(2.0_f64.powi(1000)), value(1.0)),
+                (value(2.0_f64.powi(-1000)), value(1.0)),
+                true,
+            ),
+            ((value(-5.0), value(2.0)), (value(3.0), value(7.0)), true),
+            (
+                (ExactDyadic::zero(), value(-4.0)),
+                (value(-1.0), value(9.0)),
+                true,
+            ),
+            (
+                (ExactDyadic::zero(), value(3.0)),
+                (ExactDyadic::zero(), value(-8.0)),
+                true,
+            ),
+            ((value(-7.0), value(-2.0)), (value(3.0), value(1.0)), true),
+            ((value(-3.0), value(1.0)), (value(-7.0), value(2.0)), true),
+        ];
+        for ((an, ad), (bn, bd), decided) in cases {
+            let exact = exact_ratio_order(&an, &ad, &bn, &bd).unwrap();
+            let filtered = ratio_order_filter(&an, &ad, &bn, &bd);
+            assert!(
+                filtered.is_none_or(|order| order == exact),
+                "{an:?}/{ad:?} vs {bn:?}/{bd:?}"
+            );
+            assert_eq!(
+                filtered.is_some(),
+                decided,
+                "{an:?}/{ad:?} vs {bn:?}/{bd:?}"
+            );
+            assert_eq!(try_compare_ratios(&an, &ad, &bn, &bd).unwrap(), exact);
+            assert_eq!(
+                try_compare_ratios(&bn, &bd, &an, &ad).unwrap(),
+                exact.reverse()
+            );
+        }
+    }
+
+    #[test]
     fn ratio_bounds_contain_adversarial_exact_ratios() {
         fn assert_contains(name: &str, numerator: &ExactDyadic, denominator: &ExactDyadic) {
             for bounds in [outward_ratio_bounds, ratio_enclosure] {
@@ -4862,7 +4975,7 @@ mod tests {
             ),
             (
                 "just above a power of two",
-                one.clone().add(ExactDyadic::from_parts(false, vec![1], -120)),
+                one.add(ExactDyadic::from_parts(false, vec![1], -120)),
                 ExactDyadic::from_parts(false, vec![1, 1], -70),
             ),
         ] {
