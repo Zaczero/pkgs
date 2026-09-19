@@ -39,11 +39,11 @@ pub(crate) struct ExactRationalArea {
 }
 
 impl ExactRationalArea {
-    pub(in crate::geometry) fn new() -> Result<Self> {
-        Ok(Self {
-            numerator: ExactDyadic::try_from_f64(0.0)?,
-            denominator: ExactDyadic::try_from_f64(1.0)?,
-        })
+    pub(in crate::geometry) fn new() -> Self {
+        Self {
+            numerator: ExactDyadic::from_f64(0.0),
+            denominator: ExactDyadic::from_f64(1.0),
+        }
     }
 
     pub(in crate::geometry) fn add_fraction(
@@ -97,9 +97,7 @@ impl ExactRationalArea {
 
     pub(in crate::geometry) fn round_abs_half(&self) -> Result<f64> {
         let numerator = self.numerator.try_clone()?.abs();
-        let denominator = self
-            .denominator
-            .try_product(&ExactDyadic::try_from_f64(2.0)?)?;
+        let denominator = self.denominator.try_product(&ExactDyadic::from_f64(2.0))?;
         match round_ratio(&numerator, &denominator) {
             Ok(value) => Ok(value),
             Err(error)
@@ -966,8 +964,8 @@ mod tests {
 
     #[test]
     fn rational_area_accumulator_rounds_selected_fraction_once() {
-        let exact = |value| ExactDyadic::try_from_f64(value).expect("finite dyadic");
-        let mut area = ExactRationalArea::new().expect("one denominator");
+        let exact = |value| ExactDyadic::from_f64(value);
+        let mut area = ExactRationalArea::new();
         area.add_homogeneous_cross(&[exact(0.0), exact(0.0), exact(1.0)], &[
             exact(1.0),
             exact(0.0),
@@ -988,7 +986,7 @@ mod tests {
         .expect("third edge");
         assert_eq!(area.round_abs_half().expect("rounded area"), 0.5);
 
-        let mut rational = ExactRationalArea::new().expect("one denominator");
+        let mut rational = ExactRationalArea::new();
         rational
             .add_fraction(exact(1.0), exact(3.0))
             .expect("third");

@@ -1,13 +1,12 @@
-#![expect(
-    clippy::option_if_let_else,
-    clippy::unwrap_used,
-    reason = "the compact deterministic selector maintains the option invariant in the adjacent match"
-)]
-
 use crate::error::Result;
 use crate::geometry::tessellation::{CertifiedDelaunay, EMPTY, Site, exact};
+use crate::{try_push_vec, try_reserve_vec};
 
-pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
+/// The sites that survive snapping at `radius`: a site within the radius of
+/// an earlier survivor joins it, any other site survives. The sites arrive
+/// sorted by x, so survivors are appended in x order and a site's candidates
+/// are the survivors whose x lies within the radius, found by binary search.
+pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
     let ordered = |value: f64| {
         let bits = value.to_bits();
         if bits >> 63 == 0 {
@@ -16,36 +15,24 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Vec<Site> {
             !bits
         }
     };
-    let mut by_x: std::collections::BTreeMap<u64, Vec<Site>> = std::collections::BTreeMap::new();
-    let mut snapped = Vec::with_capacity(sites.len());
+    let mut survivors: Vec<Site> = Vec::new();
     for site in sites {
         let point = site.point.xy();
-        let mut best: Option<Site> = None;
-        let min_x = ordered(point.x - radius);
-        let max_x = ordered(point.x + radius);
-        for entries in by_x.range(min_x..=max_x) {
-            for &existing in entries.1 {
-                let comparison = best.map(|closest| {
-                    exact::squared_distance_cmp(point, existing.point.xy(), closest.point.xy())
-                });
-                if exact::distance_within(existing.point.xy(), point, radius)
-                    && comparison.is_none_or(|order| {
-                        order.is_lt() || (order.is_eq() && existing.id < best.unwrap().id)
-                    })
-                {
-                    best = Some(existing);
-                }
+        let (min_x, max_x) = (ordered(point.x - radius), ordered(point.x + radius));
+        let start = survivors.partition_point(|survivor| ordered(survivor.point.x) < min_x);
+        let end = survivors.partition_point(|survivor| ordered(survivor.point.x) <= max_x);
+        let mut snapped = false;
+        for survivor in &survivors[start..end] {
+            if exact::distance_within(survivor.point.xy(), point, radius)? {
+                snapped = true;
+                break;
             }
         }
-        let representative = if let Some(existing) = best {
-            existing
-        } else {
-            by_x.entry(ordered(point.x)).or_default().push(*site);
-            *site
-        };
-        snapped.push(representative);
+        if !snapped {
+            try_push_vec(&mut survivors, *site)?;
+        }
     }
-    snapped
+    Ok(survivors)
 }
 
 /// The certified Delaunay complex with triangulation-only diagonals removed.
@@ -86,7 +73,9 @@ pub(super) fn delaunay_complex(
     sites: &[Site],
 ) -> Result<DelaunayComplex> {
     let triangles = mesh.triangles();
-    let mut parents: Vec<_> = (0..triangles.len()).collect();
+    let mut parents = Vec::new();
+    try_reserve_vec(&mut parents, triangles.len())?;
+    parents.extend(0..triangles.len());
     for (edge, &reverse) in mesh.halfedges().iter().enumerate() {
         if reverse == EMPTY || edge > reverse {
             continue;
@@ -108,8 +97,11 @@ pub(super) fn delaunay_complex(
     // component's id never reaches the output: rings start at their rounded
     // lexicographic minimum and edges sort canonically. Any face of the fan
     // defines the exact circumcenter, since all of them are cocircular.
-    let mut component_of_root = vec![usize::MAX; triangles.len()];
+    let mut component_of_root = Vec::new();
+    try_reserve_vec(&mut component_of_root, triangles.len())?;
+    component_of_root.resize(triangles.len(), usize::MAX);
     let mut centers = Vec::new();
+    try_reserve_vec(&mut centers, triangles.len())?;
     for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
         if component_of_root[root] == usize::MAX {

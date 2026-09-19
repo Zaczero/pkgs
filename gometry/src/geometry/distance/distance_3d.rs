@@ -543,11 +543,10 @@ mod bound_tests {
         } else if b_min > a_max {
             (b_min, a_max)
         } else {
-            return ExactDyadic::try_from_f64(0.0).expect("exact zero");
+            return ExactDyadic::from_f64(0.0);
         };
-        ExactDyadic::try_from_f64(pair.0)
-            .expect("finite upper endpoint")
-            .try_subtract(ExactDyadic::try_from_f64(pair.1).expect("finite lower endpoint"))
+        ExactDyadic::from_f64(pair.0)
+            .try_subtract(ExactDyadic::from_f64(pair.1))
             .expect("exact endpoint difference")
     }
 
@@ -557,21 +556,18 @@ mod bound_tests {
             exact_gap(a[1], a[4], b[1], b[4]),
             exact_gap(a[2], a[5], b[2], b[5]),
         ];
-        let mut squared = ExactDyadic::try_from_f64(0.0).expect("exact zero");
+        let mut squared = ExactDyadic::from_f64(0.0);
         for gap in &gaps {
             squared = squared
                 .try_add(gap.try_product(gap).expect("exact gap square"))
                 .expect("exact squared sum");
         }
-        let rounded = round_sqrt_ratio(
-            &squared,
-            &ExactDyadic::try_from_f64(1.0).expect("exact one"),
-        )
-        .expect("exact AABB root");
+        let rounded =
+            round_sqrt_ratio(&squared, &ExactDyadic::from_f64(1.0)).expect("exact AABB root");
         if rounded.is_infinite() {
             return f64::MAX;
         }
-        let rounded_exact = ExactDyadic::try_from_f64(rounded).expect("finite rounded root");
+        let rounded_exact = ExactDyadic::from_f64(rounded);
         let rounded_squared = rounded_exact
             .try_product(&rounded_exact)
             .expect("rounded root square");

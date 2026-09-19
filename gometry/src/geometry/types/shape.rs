@@ -160,21 +160,6 @@ impl Shape {
     }
 }
 
-fn try_mapped_vec<T, E>(
-    capacity: usize,
-    items: impl IntoIterator<Item = std::result::Result<T, E>>,
-) -> std::result::Result<Vec<T>, E>
-where
-    E: From<crate::error::Error>,
-{
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, capacity).map_err(E::from)?;
-    for item in items {
-        crate::try_push_vec(&mut out, item?).map_err(E::from)?;
-    }
-    Ok(out)
-}
-
 /// Coordinate sequence carried by lineal shapes. A `LineSeq` always has at
 /// least two vertices, so an empty or one-vertex `LineString` is
 /// unrepresentable. Empty line members use [`MultiMember::Empty`] and
@@ -235,7 +220,7 @@ impl LineSeq {
     where
         E: From<crate::error::Error>,
     {
-        let points = try_mapped_vec(self.len(), self.iter().map(map))?;
+        let points = crate::try_collect_vec(self.iter().map(map))?;
         Ok(Self(CoordSeq::try_from_points(&points).map_err(E::from)?))
     }
 }
@@ -389,7 +374,7 @@ impl GeometryCollection {
         E: From<crate::error::Error>,
         F: FnMut(&Shape) -> std::result::Result<Shape, E>,
     {
-        let members = try_mapped_vec(self.members.len(), self.members.iter().map(&mut map))?;
+        let members = crate::try_collect_vec(self.members.iter().map(&mut map))?;
         Self::from_members(
             NonEmptyVec::try_from_vec(members).map_err(E::from)?,
             self.depth.get() as usize,
@@ -403,7 +388,7 @@ impl GeometryCollection {
         F: FnMut(Shape) -> std::result::Result<Shape, E>,
     {
         let limit = self.depth.get() as usize;
-        let members = try_mapped_vec(self.members.len(), self.members.into_iter().map(&mut map))?;
+        let members = crate::try_collect_vec(self.members.into_iter().map(&mut map))?;
         Self::from_members(NonEmptyVec::try_from_vec(members).map_err(E::from)?, limit)
             .map_err(E::from)
     }
@@ -784,8 +769,7 @@ macro_rules! impl_multipart {
                 E: From<crate::error::Error>,
             {
                 if matches!(self.members, MultipartMembers::Dense) {
-                    let values =
-                        try_mapped_vec(self.values.len(), self.values.iter().map(&mut map))?;
+                    let values = crate::try_collect_vec(self.values.iter().map(&mut map))?;
                     assert!(
                         values.iter().all(|value| shape_member_axes(value) == axes),
                         "homogeneous nonempty multipart payload"
@@ -796,15 +780,10 @@ macro_rules! impl_multipart {
                         members: MultipartMembers::Dense,
                     });
                 }
-                let members = try_mapped_vec(
-                    self.len(),
-                    self.members().map(|member| match member {
-                        MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => {
-                            map(&self.values[index]).map(MultiMember::Value)
-                        },
-                    }),
-                )?;
+                let members = crate::try_collect_vec(self.members().map(|member| match member {
+                    MultiMember::Empty => Ok(MultiMember::Empty),
+                    MultiMember::Value(index) => map(&self.values[index]).map(MultiMember::Value),
+                }))?;
                 Self::from_values(axes, members).map_err(E::from)
             }
 
@@ -998,21 +977,16 @@ impl MultiPoint {
         E: From<crate::error::Error>,
     {
         if matches!(self.members, MultipartMembers::Dense) {
-            let points = try_mapped_vec(self.coords.len(), self.points().map(&mut map))?;
+            let points = crate::try_collect_vec(self.points().map(&mut map))?;
             return Ok(Self {
                 coords: CoordSeq::try_from_points(&points).map_err(E::from)?,
                 members: MultipartMembers::Dense,
             });
         }
-        let members = try_mapped_vec(
-            self.len(),
-            self.members().map(|member| match member {
-                MultiMember::Empty => Ok(MultiMember::Empty),
-                MultiMember::Value(index) => {
-                    map(self.coords.point_at(index)).map(MultiMember::Value)
-                },
-            }),
-        )?;
+        let members = crate::try_collect_vec(self.members().map(|member| match member {
+            MultiMember::Empty => Ok(MultiMember::Empty),
+            MultiMember::Value(index) => map(self.coords.point_at(index)).map(MultiMember::Value),
+        }))?;
         let axes = members
             .iter()
             .find_map(|member| match member {

@@ -12,7 +12,7 @@
 
 use std::cmp::Reverse;
 
-pub(crate) use rstar::{AABB, RTreeObject};
+pub(crate) use rstar::AABB;
 
 pub(crate) use crate::collections::{HashMap, HashMapExt};
 use crate::error::Result;

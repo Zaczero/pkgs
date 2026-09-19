@@ -262,13 +262,14 @@ mod tests {
                 SideAxis::FixedY => (XY::new(-1.0e9, value), XY::new(1.0e9, value)),
             };
             let hit = exact::line_intersection(
-                &exact::ExactLine::perpendicular_bisector(a, b),
+                &exact::ExactLine::perpendicular_bisector(a, b).unwrap(),
                 &exact::ExactLine::through_points(
                     &exact::ExactPoint::from_xy(side.0),
                     &exact::ExactPoint::from_xy(side.1),
                 )
                 .unwrap(),
             )
+            .unwrap()
             .round_nearest_even()
             .unwrap();
             let expected = match axis {

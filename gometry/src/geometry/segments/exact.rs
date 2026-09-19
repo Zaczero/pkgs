@@ -24,7 +24,7 @@ pub(in crate::geometry) fn crossing_homogeneous(
     b: Segment,
 ) -> Result<[ExactDyadic; 3]> {
     let difference = |end: f64, start: f64| {
-        ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)
+        ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start))
     };
     let (rx, ry) = (
         difference(a.end.x, a.start.x)?,
@@ -41,7 +41,7 @@ pub(in crate::geometry) fn crossing_homogeneous(
     let den = rx.try_product(&sy)?.try_subtract(ry.try_product(&sx)?)?;
     let t = cx.try_product(&sy)?.try_subtract(cy.try_product(&sx)?)?;
     let coordinate = |start: f64, direction: &ExactDyadic| -> Result<ExactDyadic> {
-        den.try_product(&ExactDyadic::try_from_f64(start)?)?
+        den.try_product(&ExactDyadic::from_f64(start))?
             .try_add(t.try_product(direction)?)
     };
     Ok([
@@ -619,7 +619,9 @@ mod tests {
             .mul(DdInterval::exact(right))
             .expect("normal product");
         let (lower, upper) = value.outward_bounds();
-        let exact = ExactDyadic::from_f64(left).product(&ExactDyadic::from_f64(right));
+        let exact = ExactDyadic::from_f64(left)
+            .try_product(&ExactDyadic::from_f64(right))
+            .unwrap();
         assert_ne!(exact.cmp(&ExactDyadic::from_f64(lower)), Ordering::Less);
         assert_ne!(exact.cmp(&ExactDyadic::from_f64(upper)), Ordering::Greater);
     }

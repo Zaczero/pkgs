@@ -10,11 +10,13 @@
     reason = "exact predicates favor uniform fallible expressions over lint-driven local rewrites"
 )]
 
+use std::cell::OnceCell;
 use std::cmp::Ordering;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
-use crate::error::ResourceError;
+use crate::error::{Error, ErrorKind, ResourceError};
 #[cfg(test)]
 use crate::geometry::GENERATED_ITEM_LIMIT;
 use crate::geometry::exact_arith::ExactSign;
@@ -52,6 +54,16 @@ impl ExactSign {
             (Self::Zero, _) | (_, Self::Zero) => Self::Zero,
             (Self::Negative, Self::Positive) | (Self::Positive, Self::Negative) => Self::Negative,
             (Self::Negative, Self::Negative) | (Self::Positive, Self::Positive) => Self::Positive,
+        }
+    }
+
+    /// The sign read through a homogeneous weight: a negative weight
+    /// reverses it, and a zero weight leaves it as computed.
+    const fn weighted_by(self, weight: Self) -> Self {
+        match (self, weight) {
+            (Self::Negative, Self::Negative) => Self::Positive,
+            (Self::Positive, Self::Negative) => Self::Negative,
+            (sign, _) => sign,
         }
     }
 }
@@ -114,17 +126,6 @@ impl CompactLimbs {
         Self::Inline {
             limbs: [value; INLINE_DYADIC_LIMBS],
             len: 1,
-        }
-    }
-
-    fn with_capacity(required: usize) -> Self {
-        if required <= INLINE_DYADIC_LIMBS {
-            Self::Inline {
-                limbs: [0; INLINE_DYADIC_LIMBS],
-                len: 0,
-            }
-        } else {
-            Self::Heap(Vec::with_capacity(required))
         }
     }
 
@@ -255,36 +256,15 @@ impl DerefMut for CompactLimbs {
 pub(super) struct ExactLine([ExactDyadic; 3]);
 
 impl ExactLine {
-    pub(super) fn perpendicular_bisector(a: XY, b: XY) -> Self {
+    pub(super) fn perpendicular_bisector(a: XY, b: XY) -> Result<Self> {
         let ax = ExactDyadic::from_f64(a.x);
         let ay = ExactDyadic::from_f64(a.y);
         let bx = ExactDyadic::from_f64(b.x);
         let by = ExactDyadic::from_f64(b.y);
-        Self([
-            bx.clone()
-                .subtract(ax.clone())
-                .product(&ExactDyadic::from_f64(2.0)),
-            by.clone()
-                .subtract(ay.clone())
-                .product(&ExactDyadic::from_f64(2.0)),
-            ax.square()
-                .add(ay.square())
-                .subtract(bx.square().add(by.square())),
-        ])
-    }
-
-    pub(super) fn try_perpendicular_bisector(a: XY, b: XY) -> Result<Self> {
-        let ax = ExactDyadic::from_f64(a.x);
-        let ay = ExactDyadic::from_f64(a.y);
-        let bx = ExactDyadic::from_f64(b.x);
-        let by = ExactDyadic::from_f64(b.y);
+        let two = ExactDyadic::from_f64(2.0);
         Ok(Self([
-            bx.clone()
-                .try_subtract(ax.clone())?
-                .try_product(&ExactDyadic::from_f64(2.0))?,
-            by.clone()
-                .try_subtract(ay.clone())?
-                .try_product(&ExactDyadic::from_f64(2.0))?,
+            ExactDyadic::try_subtract_refs(&bx, &ax)?.try_product(&two)?,
+            ExactDyadic::try_subtract_refs(&by, &ay)?.try_product(&two)?,
             ax.try_product(&ax)?
                 .try_add(ay.try_product(&ay)?)?
                 .try_subtract(bx.try_product(&bx)?.try_add(by.try_product(&by)?)?)?,
@@ -292,15 +272,19 @@ impl ExactLine {
     }
 
     pub(super) fn through_points(a: &ExactPoint, b: &ExactPoint) -> Result<Self> {
-        if !a.is_finite() || !b.is_finite() || a.same_position(b) {
+        if !a.is_finite() || !b.is_finite() || a.same_position(b)? {
             return Err(GeometryErrorKind::voronoi(
                 "exact support line requires two distinct finite points",
             ));
         }
+        let (a, b) = (a.coords()?, b.coords()?);
         Ok(Self([
-            a.y().product(b.w()).subtract(b.y().product(a.w())),
-            b.x().product(a.w()).subtract(a.x().product(b.w())),
-            a.x().product(b.y()).subtract(b.x().product(a.y())),
+            a.y.try_product(&b.w)?
+                .try_subtract(b.y.try_product(&a.w)?)?,
+            b.x.try_product(&a.w)?
+                .try_subtract(a.x.try_product(&b.w)?)?,
+            a.x.try_product(&b.y)?
+                .try_subtract(b.x.try_product(&a.y)?)?,
         ]))
     }
 }
@@ -502,19 +486,6 @@ impl ExactDyadic {
         debug_assert_eq!(borrow, 0);
     }
 
-    fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> CompactLimbs {
-        let length = left.len.max(right.len);
-        let mut result = CompactLimbs::with_capacity(length + 1);
-        Self::write_sum_aligned(left, right, &mut result);
-        result
-    }
-
-    fn subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> CompactLimbs {
-        let mut result = CompactLimbs::with_capacity(larger.len);
-        Self::write_diff_aligned(larger, smaller, &mut result);
-        result
-    }
-
     fn try_add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Result<CompactLimbs> {
         let length = left.len.max(right.len);
         if length <= INLINE_DYADIC_LIMBS {
@@ -560,34 +531,6 @@ impl ExactDyadic {
             }
         }
         Ordering::Equal
-    }
-
-    pub(in crate::geometry) fn add(self, other: Self) -> Self {
-        if self.is_zero() {
-            return other;
-        }
-        if other.is_zero() {
-            return self;
-        }
-        let exponent = self.exponent.min(other.exponent);
-        let left = Aligned::new(&self.limbs, (self.exponent - exponent) as usize);
-        let right = Aligned::new(&other.limbs, (other.exponent - exponent) as usize);
-        let (negative, limbs) = if self.negative == other.negative {
-            (self.negative, Self::add_aligned(left, right))
-        } else {
-            match Self::compare_aligned(left, right) {
-                Ordering::Greater => (self.negative, Self::subtract_aligned(left, right)),
-                Ordering::Less => (other.negative, Self::subtract_aligned(right, left)),
-                Ordering::Equal => return Self::zero(),
-            }
-        };
-        let mut result = Self {
-            negative,
-            limbs,
-            exponent,
-        };
-        result.trim();
-        result
     }
 
     pub(in crate::geometry) fn try_add(self, other: Self) -> Result<Self> {
@@ -706,10 +649,6 @@ impl ExactDyadic {
         Self::try_combine_refs(&self, &other, true)
     }
 
-    pub(in crate::geometry) fn subtract(self, other: Self) -> Self {
-        self.add(other.neg())
-    }
-
     /// Compare `self` with `other * 2^shift` by magnitude without constructing
     /// the scalar product. The ratio-rounding residual uses this for the exact
     /// power-of-two gap between adjacent binary64 values.
@@ -753,26 +692,6 @@ impl ExactDyadic {
             }
             out.push(carry as u64);
         }
-    }
-
-    pub(in crate::geometry) fn product(&self, other: &Self) -> Self {
-        if self.is_zero() || other.is_zero() {
-            return Self::zero();
-        }
-        let (short, long) = if self.limbs.len() <= other.limbs.len() {
-            (&self.limbs, &other.limbs)
-        } else {
-            (&other.limbs, &self.limbs)
-        };
-        let mut limbs = CompactLimbs::with_capacity(short.len() + long.len());
-        Self::write_product(short, long, &mut limbs);
-        let mut result = Self {
-            negative: self.negative != other.negative,
-            limbs,
-            exponent: self.exponent + other.exponent,
-        };
-        result.trim();
-        result
     }
 
     pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
@@ -990,30 +909,6 @@ impl ExactDyadic {
         Ok(value)
     }
 
-    pub(in crate::geometry) fn try_from_f64(value: f64) -> Result<Self> {
-        debug_assert!(value.is_finite());
-        if value == 0.0 {
-            return Ok(Self::zero());
-        }
-        let bits = value.to_bits();
-        let fraction = bits & ((1_u64 << 52) - 1);
-        let encoded_exponent = ((bits >> 52) & 0x7FF) as i64;
-        let (significand, exponent) = if encoded_exponent == 0 {
-            (fraction, -1074)
-        } else {
-            ((1_u64 << 52) | fraction, encoded_exponent - 1023 - 52)
-        };
-        let mut limbs = CompactLimbs::try_with_capacity(1)?;
-        limbs.push(significand);
-        let mut value = Self {
-            negative: bits >> 63 != 0,
-            limbs,
-            exponent,
-        };
-        value.trim();
-        Ok(value)
-    }
-
     pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
         let value = Self {
             negative: self.negative,
@@ -1021,10 +916,6 @@ impl ExactDyadic {
             exponent: self.exponent,
         };
         Ok(value)
-    }
-
-    pub(in crate::geometry) fn square(&self) -> Self {
-        self.product(self)
     }
 
     pub(in crate::geometry) fn cmp(&self, other: &Self) -> Ordering {
@@ -1056,12 +947,36 @@ impl ExactDyadic {
     }
 }
 
-fn difference(left: f64, right: f64) -> ExactDyadic {
-    ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
+/// Panicking exact arithmetic for building test expectations.
+#[cfg(test)]
+pub(in crate::geometry) trait ExactOracle: Sized {
+    fn add(self, other: Self) -> Self;
+    fn subtract(self, other: Self) -> Self;
+    fn product(&self, other: &Self) -> Self;
+    fn square(&self) -> Self;
+}
+
+#[cfg(test)]
+impl ExactOracle for ExactDyadic {
+    fn add(self, other: Self) -> Self {
+        self.try_add(other).unwrap()
+    }
+
+    fn subtract(self, other: Self) -> Self {
+        self.try_subtract(other).unwrap()
+    }
+
+    fn product(&self, other: &Self) -> Self {
+        self.try_product(other).unwrap()
+    }
+
+    fn square(&self) -> Self {
+        self.try_product(self).unwrap()
+    }
 }
 
 fn try_difference(left: f64, right: f64) -> Result<ExactDyadic> {
-    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
+    ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
 }
 
 /// An exact ratio of dyadics.
@@ -1118,8 +1033,8 @@ impl ExactRational {
         }
     }
 
-    pub(in crate::geometry) fn from_f64(value: f64) -> Result<Self> {
-        Ok(Self::from_dyadic(ExactDyadic::try_from_f64(value)?))
+    pub(in crate::geometry) fn from_f64(value: f64) -> Self {
+        Self::from_dyadic(ExactDyadic::from_f64(value))
     }
 
     pub(in crate::geometry) fn from_dyadic(value: ExactDyadic) -> Self {
@@ -1440,7 +1355,7 @@ fn incircle_lattice(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     Some(sign_of_i128(alift * bcdet + blift * cadet + clift * abdet))
 }
 
-pub(super) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {
+pub(in crate::geometry) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {
     if let Some(sign) = orient2d_float(a, b, c) {
         debug_assert_eq!(
             sign,
@@ -1501,63 +1416,6 @@ fn incircle_filtered(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     determinant.sign()
 }
 
-#[cfg(test)]
-pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
-    if let Some(sign) = incircle_float(a, b, c, d) {
-        debug_assert_eq!(
-            sign,
-            incircle_dyadic(a, b, c, d),
-            "float-filtered incircle disagrees"
-        );
-        return sign;
-    }
-    if let Some(sign) = incircle_lattice(a, b, c, d) {
-        debug_assert_eq!(
-            sign,
-            incircle_dyadic(a, b, c, d),
-            "lattice incircle disagrees"
-        );
-        return sign;
-    }
-    if let Some(sign) = incircle_filtered(a, b, c, d) {
-        if VERIFY_INTERVALS {
-            assert_eq!(
-                sign,
-                incircle_dyadic(a, b, c, d),
-                "filtered incircle disagrees"
-            );
-        }
-        return sign;
-    }
-    incircle_dyadic(a, b, c, d)
-}
-
-fn try_orient2d_dyadic(a: XY, b: XY, c: XY) -> Result<ExactSign> {
-    let bax = try_difference(b.x, a.x)?;
-    let bay = try_difference(b.y, a.y)?;
-    let cax = try_difference(c.x, a.x)?;
-    let cay = try_difference(c.y, a.y)?;
-    Ok(bax
-        .try_product(&cay)?
-        .try_subtract(bay.try_product(&cax)?)?
-        .sign())
-}
-
-/// Fallible exact orientation for a stored-binary64 triple.
-///
-/// The ordinary filters are allocation-free.  A full dyadic fallback keeps the
-/// same exact sign contract while allowing the owned arbitrary-precision
-/// storage to report an allocation failure rather than panicking.
-pub(in crate::geometry) fn try_orient2d(a: XY, b: XY, c: XY) -> Result<ExactSign> {
-    if let Some(sign) = orient2d_float(a, b, c) {
-        return Ok(sign);
-    }
-    if let Some(sign) = orient2d_lattice(a, b, c) {
-        return Ok(sign);
-    }
-    try_orient2d_dyadic(a, b, c)
-}
-
 fn same_xy(left: XY, right: XY) -> bool {
     crate::geometry::canonical_f64_bits(left.x) == crate::geometry::canonical_f64_bits(right.x)
         && crate::geometry::canonical_f64_bits(left.y)
@@ -1602,11 +1460,11 @@ pub(in crate::geometry) fn try_circle_contains(support: &[XY], point: XY) -> Res
             Ok(dot.sign() != ExactSign::Positive)
         },
         [a, b, c] => {
-            let orientation = try_orient2d(*a, *b, *c)?;
+            let orientation = orient2d(*a, *b, *c);
             if orientation == ExactSign::Zero {
                 return Ok(false);
             }
-            let determinant = try_incircle(*a, *b, *c, point)?;
+            let determinant = incircle(*a, *b, *c, point)?;
             Ok(match orientation {
                 ExactSign::Positive => determinant != ExactSign::Negative,
                 ExactSign::Negative => determinant != ExactSign::Positive,
@@ -1643,38 +1501,22 @@ struct ExactSupportCircle {
 }
 
 fn try_exact_point(point: XY) -> Result<ExactPoint> {
-    Ok(ExactPoint::homogeneous(
-        ExactDyadic::try_from_f64(point.x)?,
-        ExactDyadic::try_from_f64(point.y)?,
+    ExactPoint::homogeneous(
+        ExactDyadic::from_f64(point.x),
+        ExactDyadic::from_f64(point.y),
         ExactDyadic::one(),
-    ))
-}
-
-fn try_circumcenter_exact(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
-    if try_orient2d(a, b, c)? == ExactSign::Zero {
-        return Err(GeometryErrorKind::voronoi(
-            "cannot construct a circumcenter for collinear sites",
-        ));
-    }
-    let first = ExactLine::try_perpendicular_bisector(a, b)?;
-    let second = ExactLine::try_perpendicular_bisector(a, c)?;
-    try_line_intersection(&first, &second)
+    )
 }
 
 fn try_radius_squared(center: &ExactPoint, point: XY) -> Result<(ExactDyadic, ExactDyadic)> {
-    let px = ExactDyadic::try_from_f64(point.x)?;
-    let py = ExactDyadic::try_from_f64(point.y)?;
-    let dx = center
-        .x()
-        .try_clone()?
-        .try_subtract(px.try_product(center.w())?)?;
-    let dy = center
-        .y()
-        .try_clone()?
-        .try_subtract(py.try_product(center.w())?)?;
+    let px = ExactDyadic::from_f64(point.x);
+    let py = ExactDyadic::from_f64(point.y);
+    let center = center.coords()?;
+    let dx = ExactDyadic::try_subtract_refs(&center.x, &px.try_product(&center.w)?)?;
+    let dy = ExactDyadic::try_subtract_refs(&center.y, &py.try_product(&center.w)?)?;
     Ok((
         dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)?,
-        center.w().try_product(center.w())?,
+        center.w.try_product(&center.w)?,
     ))
 }
 
@@ -1689,15 +1531,15 @@ fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
             })
         },
         [a, b] => {
-            let ax = ExactDyadic::try_from_f64(a.x)?;
-            let ay = ExactDyadic::try_from_f64(a.y)?;
-            let bx = ExactDyadic::try_from_f64(b.x)?;
-            let by = ExactDyadic::try_from_f64(b.y)?;
+            let ax = ExactDyadic::from_f64(a.x);
+            let ay = ExactDyadic::from_f64(a.y);
+            let bx = ExactDyadic::from_f64(b.x);
+            let by = ExactDyadic::from_f64(b.y);
             let center = ExactPoint::homogeneous(
                 ax.try_clone()?.try_add(bx.try_clone()?)?,
                 ay.try_clone()?.try_add(by.try_clone()?)?,
-                ExactDyadic::try_from_f64(2.0)?,
-            );
+                ExactDyadic::from_f64(2.0),
+            )?;
             let (radius_numerator, radius_denominator) = try_radius_squared(&center, *a)?;
             Ok(ExactSupportCircle {
                 center,
@@ -1706,7 +1548,7 @@ fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
             })
         },
         [a, b, c] => {
-            let center = try_circumcenter_exact(*a, *b, *c)?;
+            let center = circumcenter(*a, *b, *c)?;
             let (radius_numerator, radius_denominator) = try_radius_squared(&center, *a)?;
             Ok(ExactSupportCircle {
                 center,
@@ -1737,34 +1579,30 @@ pub(in crate::geometry) fn try_support_circle_components(
     ExactDyadic,
 )> {
     let circle = try_support_circle(support)?;
+    let center = circle.center.coords()?;
     Ok((
-        circle.center.x().try_clone()?,
-        circle.center.y().try_clone()?,
-        circle.center.w().try_clone()?,
+        center.x.try_clone()?,
+        center.y.try_clone()?,
+        center.w.try_clone()?,
         circle.radius_numerator,
         circle.radius_denominator,
     ))
 }
 
 fn try_orient_source_center(a: XY, b: XY, center: &ExactPoint) -> Result<ExactSign> {
-    let ax = ExactDyadic::try_from_f64(a.x)?;
-    let ay = ExactDyadic::try_from_f64(a.y)?;
-    let bx = ExactDyadic::try_from_f64(b.x)?;
-    let by = ExactDyadic::try_from_f64(b.y)?;
+    let ax = ExactDyadic::from_f64(a.x);
+    let ay = ExactDyadic::from_f64(a.y);
+    let bx = ExactDyadic::from_f64(b.x);
+    let by = ExactDyadic::from_f64(b.y);
     let edge_x = bx.try_subtract(ax.try_clone()?)?;
     let edge_y = by.try_subtract(ay.try_clone()?)?;
-    let center_x = center
-        .x()
-        .try_clone()?
-        .try_subtract(ax.try_product(center.w())?)?;
-    let center_y = center
-        .y()
-        .try_clone()?
-        .try_subtract(ay.try_product(center.w())?)?;
+    let center = center.coords()?;
+    let center_x = ExactDyadic::try_subtract_refs(&center.x, &ax.try_product(&center.w)?)?;
+    let center_y = ExactDyadic::try_subtract_refs(&center.y, &ay.try_product(&center.w)?)?;
     let determinant = edge_x
         .try_product(&center_y)?
         .try_subtract(edge_y.try_product(&center_x)?)?;
-    Ok(determinant.sign().quotient(center.w().sign()))
+    Ok(determinant.sign().quotient(center.w.sign()))
 }
 
 /// Independently certify a support candidate against all original points.
@@ -1798,7 +1636,7 @@ pub(in crate::geometry) fn try_certify_support(
             })
         },
         [a, b, c] => {
-            let orientation = try_orient2d(*a, *b, *c)?;
+            let orientation = orient2d(*a, *b, *c);
             if orientation == ExactSign::Zero {
                 return Ok(false);
             }
@@ -1811,7 +1649,7 @@ pub(in crate::geometry) fn try_certify_support(
             if !contained {
                 return Ok(false);
             }
-            let center = try_circumcenter_exact(*a, *b, *c)?;
+            let center = circumcenter(*a, *b, *c)?;
             for (left, right) in [(*a, *b), (*b, *c), (*c, *a)] {
                 let edge_orientation = try_orient_source_center(left, right, &center)?;
                 let inside = match orientation {
@@ -1842,7 +1680,7 @@ pub(in crate::geometry) fn round_support_circle(support: &[XY]) -> Result<(XY, f
     Ok((center, radius, circle.radius_numerator.is_zero()))
 }
 
-pub(super) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+pub(super) fn incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     if let Some(sign) = incircle_float(a, b, c, d) {
         return Ok(sign);
     }
@@ -1852,28 +1690,10 @@ pub(super) fn try_incircle(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     if let Some(sign) = incircle_filtered(a, b, c, d) {
         return Ok(sign);
     }
-    try_incircle_dyadic(a, b, c, d)
+    incircle_dyadic(a, b, c, d)
 }
 
-#[cfg(test)]
-fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> ExactSign {
-    let (adx, ady) = (difference(a.x, d.x), difference(a.y, d.y));
-    let (bdx, bdy) = (difference(b.x, d.x), difference(b.y, d.y));
-    let (cdx, cdy) = (difference(c.x, d.x), difference(c.y, d.y));
-    let alift = adx.square().add(ady.square());
-    let blift = bdx.square().add(bdy.square());
-    let clift = cdx.square().add(cdy.square());
-    let bcdet = bdx.product(&cdy).subtract(cdx.product(&bdy));
-    let cadet = cdx.product(&ady).subtract(adx.product(&cdy));
-    let abdet = adx.product(&bdy).subtract(bdx.product(&ady));
-    alift
-        .product(&bcdet)
-        .add(blift.product(&cadet))
-        .add(clift.product(&abdet))
-        .sign()
-}
-
-fn try_incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
+fn incircle_dyadic(a: XY, b: XY, c: XY, d: XY) -> Result<ExactSign> {
     let (adx, ady) = (try_difference(a.x, d.x)?, try_difference(a.y, d.y)?);
     let (bdx, bdy) = (try_difference(b.x, d.x)?, try_difference(b.y, d.y)?);
     let (cdx, cdy) = (try_difference(c.x, d.x)?, try_difference(c.y, d.y)?);
@@ -2121,20 +1941,21 @@ struct Homogeneous {
 
 /// Where a point's exact coordinates come from. A certified circumcenter
 /// carries its sites and its certified nearest-even rounding, and builds the
-/// dyadic coordinates only for a comparison its bounds cannot decide.
+/// dyadic coordinates only for a comparison its bounds cannot decide. Exact
+/// coordinates are shared, so cloning a point never allocates.
 #[derive(Clone, Debug)]
 enum Coords {
-    Exact(Homogeneous),
+    Exact(Rc<Homogeneous>),
     /// A stored binary64 point: exact as it stands, its dyadic form built
     /// only for a comparison the exact interval cannot decide.
     Double {
         xy: XY,
-        exact: std::cell::OnceCell<Box<Homogeneous>>,
+        exact: OnceCell<Rc<Homogeneous>>,
     },
     Certified {
         recipe: Recipe,
         rounded: XY,
-        exact: std::cell::OnceCell<Box<Homogeneous>>,
+        exact: OnceCell<Rc<Homogeneous>>,
     },
 }
 
@@ -2188,16 +2009,16 @@ impl Recipe {
 impl ExactPoint {
     /// The ONLY constructor. Every homogeneous triple gets its certified
     /// interval here, so a point can never exist without its filter bound.
-    fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Self {
+    fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Result<Self> {
         let bounds = [ratio_interval(&x, &w), ratio_interval(&y, &w)];
         if VERIFY_INTERVALS {
             verify_interval(&x, &w, bounds[0]);
             verify_interval(&y, &w, bounds[1]);
         }
-        Self {
-            coords: Coords::Exact(Homogeneous { x, y, w }),
+        Ok(Self {
+            coords: Coords::Exact(Rc::try_new(Homogeneous { x, y, w })?),
             bounds,
-        }
+        })
     }
 
     /// A circumcenter whose nearest-even rounding is certified: the exact
@@ -2211,7 +2032,7 @@ impl ExactPoint {
             coords: Coords::Certified {
                 recipe: Recipe::Circumcenter(sites),
                 rounded: center.rounded,
-                exact: std::cell::OnceCell::new(),
+                exact: OnceCell::new(),
             },
             bounds: [
                 Interval {
@@ -2226,34 +2047,34 @@ impl ExactPoint {
         }
     }
 
-    fn coords(&self) -> &Homogeneous {
-        match &self.coords {
+    fn coords(&self) -> Result<&Homogeneous> {
+        let coords = match &self.coords {
             Coords::Exact(coords) => coords,
-            Coords::Double { xy, exact } => exact.get_or_init(|| {
-                Box::new(Homogeneous {
+            Coords::Double { xy, exact } => exact.get_or_try_init(|| {
+                Ok::<_, Error>(Rc::try_new(Homogeneous {
                     x: ExactDyadic::from_f64(xy.x),
                     y: ExactDyadic::from_f64(xy.y),
                     w: ExactDyadic::one(),
-                })
-            }),
-            Coords::Certified { recipe, exact, .. } => exact.get_or_init(|| {
+                })?)
+            })?,
+            Coords::Certified { recipe, exact, .. } => exact.get_or_try_init(|| {
                 let coords = match *recipe {
                     Recipe::Circumcenter(sites) => intersection_homogeneous(
-                        &ExactLine::perpendicular_bisector(sites[0], sites[1]),
-                        &ExactLine::perpendicular_bisector(sites[0], sites[2]),
-                    ),
+                        &ExactLine::perpendicular_bisector(sites[0], sites[1])?,
+                        &ExactLine::perpendicular_bisector(sites[0], sites[2])?,
+                    )?,
                     Recipe::BisectorHit { sites, side } => intersection_homogeneous(
-                        &ExactLine::perpendicular_bisector(sites[0], sites[1]),
+                        &ExactLine::perpendicular_bisector(sites[0], sites[1])?,
                         &ExactLine::through_points(
                             &Self::from_xy(side[0]),
                             &Self::from_xy(side[1]),
-                        )
-                        .expect("a frame side has two distinct corners"),
-                    ),
+                        )?,
+                    )?,
                 };
-                Box::new(coords)
-            }),
-        }
+                Ok::<_, Error>(Rc::try_new(coords)?)
+            })?,
+        };
+        Ok(coords)
     }
 
     /// The stored double behind a point made from one, `None` for any other
@@ -2306,22 +2127,22 @@ impl ExactPoint {
             coords: Coords::Certified {
                 recipe: Recipe::BisectorHit { sites, side },
                 rounded,
-                exact: std::cell::OnceCell::new(),
+                exact: OnceCell::new(),
             },
             bounds,
         })
     }
 
-    pub(super) fn x(&self) -> &ExactDyadic {
-        &self.coords().x
+    pub(super) fn x(&self) -> Result<&ExactDyadic> {
+        Ok(&self.coords()?.x)
     }
 
-    pub(super) fn y(&self) -> &ExactDyadic {
-        &self.coords().y
+    pub(super) fn y(&self) -> Result<&ExactDyadic> {
+        Ok(&self.coords()?.y)
     }
 
-    pub(super) fn w(&self) -> &ExactDyadic {
-        &self.coords().w
+    pub(super) fn w(&self) -> Result<&ExactDyadic> {
+        Ok(&self.coords()?.w)
     }
 }
 
@@ -2341,7 +2162,8 @@ fn verify_interval(numerator: &ExactDyadic, denominator: &ExactDyadic, bounds: I
                 &one,
                 numerator,
                 denominator
-            ) != Ordering::Greater,
+            )
+            .is_ok_and(|order| order != Ordering::Greater),
             "interval lower bound {} exceeds the exact value",
             bounds.lo
         );
@@ -2353,7 +2175,8 @@ fn verify_interval(numerator: &ExactDyadic, denominator: &ExactDyadic, bounds: I
                 &one,
                 numerator,
                 denominator
-            ) != Ordering::Less,
+            )
+            .is_ok_and(|order| order != Ordering::Less),
             "interval upper bound {} is below the exact value",
             bounds.hi
         );
@@ -2365,28 +2188,31 @@ impl ExactPoint {
         Self {
             coords: Coords::Double {
                 xy: point,
-                exact: std::cell::OnceCell::new(),
+                exact: OnceCell::new(),
             },
             bounds: [Interval::exact(point.x), Interval::exact(point.y)],
         }
     }
 
-    pub(super) fn compare_lex(&self, other: &Self) -> Ordering {
-        self.compare_x(other).then_with(|| self.compare_y(other))
+    pub(super) fn compare_lex(&self, other: &Self) -> Result<Ordering> {
+        Ok(match self.compare_x(other)? {
+            Ordering::Equal => self.compare_y(other)?,
+            order => order,
+        })
     }
 
-    pub(super) fn same_position(&self, other: &Self) -> bool {
+    pub(super) fn same_position(&self, other: &Self) -> Result<bool> {
         if let (Coords::Certified { recipe: left, .. }, Coords::Certified { recipe: right, .. }) =
             (&self.coords, &other.coords)
             && left.same_construction(right)
         {
             // One construction reached from two cells: the same exact point,
             // without materialising either side.
-            return true;
+            return Ok(true);
         }
-        !self.separated_from(other)
-            && self.compare_x(other).is_eq()
-            && self.compare_y(other).is_eq()
+        Ok(!self.separated_from(other)
+            && self.compare_x(other)?.is_eq()
+            && self.compare_y(other)?.is_eq())
     }
 
     /// Whether the point is finite (nonzero weight). A certified circumcenter
@@ -2398,27 +2224,35 @@ impl ExactPoint {
         }
     }
 
-    pub(super) fn midpoint(&self, other: &Self) -> Self {
-        let denominator = self
-            .w()
-            .product(other.w())
-            .product(&ExactDyadic::from_f64(2.0));
+    pub(super) fn midpoint(&self, other: &Self) -> Result<Self> {
+        let (left, right) = (self.coords()?, other.coords()?);
+        let denominator = left
+            .w
+            .try_product(&right.w)?
+            .try_product(&ExactDyadic::from_f64(2.0))?;
         Self::homogeneous(
-            self.x().product(other.w()).add(other.x().product(self.w())),
-            self.y().product(other.w()).add(other.y().product(self.w())),
+            left.x
+                .try_product(&right.w)?
+                .try_add(right.x.try_product(&left.w)?)?,
+            left.y
+                .try_product(&right.w)?
+                .try_add(right.y.try_product(&left.w)?)?,
             denominator,
         )
     }
-    pub(super) fn compare_x(&self, other: &Self) -> Ordering {
-        self.bounds[0]
-            .compare(other.bounds[0])
-            .unwrap_or_else(|| compare_ratios(self.x(), self.w(), other.x(), other.w()))
+
+    pub(super) fn compare_x(&self, other: &Self) -> Result<Ordering> {
+        if let Some(order) = self.bounds[0].compare(other.bounds[0]) {
+            return Ok(order);
+        }
+        compare_ratios(self.x()?, self.w()?, other.x()?, other.w()?)
     }
 
-    pub(super) fn compare_y(&self, other: &Self) -> Ordering {
-        self.bounds[1]
-            .compare(other.bounds[1])
-            .unwrap_or_else(|| compare_ratios(self.y(), self.w(), other.y(), other.w()))
+    pub(super) fn compare_y(&self, other: &Self) -> Result<Ordering> {
+        if let Some(order) = self.bounds[1].compare(other.bounds[1]) {
+            return Ok(order);
+        }
+        compare_ratios(self.y()?, self.w()?, other.y()?, other.w()?)
     }
 
     /// The certified outward bounds on `x` and `y`.
@@ -2460,20 +2294,40 @@ impl ExactPoint {
             return Err(GeometryErrorKind::voronoi("exact vertex lies at infinity"));
         }
         Ok(XY::new(
-            round_ratio(self.x(), self.w())?,
-            round_ratio(self.y(), self.w())?,
+            round_ratio(self.x()?, self.w()?)?,
+            round_ratio(self.y()?, self.w()?)?,
         ))
+    }
+
+    /// The nearest-even rounding, or `None` when the point lies at infinity
+    /// or rounds outside the finite binary64 range.
+    pub(super) fn finite_rounding(&self) -> Result<Option<XY>> {
+        if !self.is_finite() {
+            return Ok(None);
+        }
+        match self.round_nearest_even() {
+            Ok(point) => Ok(Some(point)),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(GeometryErrorKind::ExactCoordinateOutOfRange)
+                ) =>
+            {
+                Ok(None)
+            },
+            Err(error) => Err(error),
+        }
     }
 }
 
-fn on_segment(a: &ExactPoint, b: &ExactPoint, point: &ExactPoint) -> bool {
+fn on_segment(a: &ExactPoint, b: &ExactPoint, point: &ExactPoint) -> Result<bool> {
     let between = |pa: Ordering, pb: Ordering| {
         (pa != Ordering::Less && pb != Ordering::Greater)
             || (pb != Ordering::Less && pa != Ordering::Greater)
     };
-    orient_points(a, b, point) == ExactSign::Zero
-        && between(point.compare_x(a), point.compare_x(b))
-        && between(point.compare_y(a), point.compare_y(b))
+    Ok(orient_points(a, b, point)? == ExactSign::Zero
+        && between(point.compare_x(a)?, point.compare_x(b)?)
+        && between(point.compare_y(a)?, point.compare_y(b)?))
 }
 
 pub(super) fn compare_along(
@@ -2481,17 +2335,16 @@ pub(super) fn compare_along(
     end: &ExactPoint,
     left: &ExactPoint,
     right: &ExactPoint,
-) -> Ordering {
-    let (axis_order, direction) = if start.compare_x(end).is_ne() {
-        (left.compare_x(right), start.compare_x(end))
-    } else {
-        (left.compare_y(right), start.compare_y(end))
+) -> Result<Ordering> {
+    let (axis_order, direction) = match start.compare_x(end)? {
+        Ordering::Equal => (left.compare_y(right)?, start.compare_y(end)?),
+        direction => (left.compare_x(right)?, direction),
     };
-    if direction.is_gt() {
+    Ok(if direction.is_gt() {
         axis_order.reverse()
     } else {
         axis_order
-    }
+    })
 }
 
 pub(super) fn segment_intersection(
@@ -2499,63 +2352,61 @@ pub(super) fn segment_intersection(
     a1: &ExactPoint,
     b0: &ExactPoint,
     b1: &ExactPoint,
-) -> SegmentIntersection {
+) -> Result<SegmentIntersection> {
     // A homogeneous intersection of parallel support lines has `w == 0`.
     // It is not a point on either finite segment; admitting it as a degenerate
     // segment endpoint can place an event beyond both stored endpoints.
     if !a0.is_finite() || !a1.is_finite() || !b0.is_finite() || !b1.is_finite() {
-        return SegmentIntersection::None;
+        return Ok(SegmentIntersection::None);
     }
     let [o0, o1, o2, o3] = [
-        orient_points(a0, a1, b0),
-        orient_points(a0, a1, b1),
-        orient_points(b0, b1, a0),
-        orient_points(b0, b1, a1),
+        orient_points(a0, a1, b0)?,
+        orient_points(a0, a1, b1)?,
+        orient_points(b0, b1, a0)?,
+        orient_points(b0, b1, a1)?,
     ];
     if [o0, o1, o2, o3].iter().all(|sign| *sign == ExactSign::Zero) {
-        let (b_start, b_end) = if compare_along(a0, a1, b0, b1).is_gt() {
+        let (b_start, b_end) = if compare_along(a0, a1, b0, b1)?.is_gt() {
             (b1, b0)
         } else {
             (b0, b1)
         };
-        let start = if compare_along(a0, a1, a0, b_start).is_gt() {
+        let start = if compare_along(a0, a1, a0, b_start)?.is_gt() {
             a0
         } else {
             b_start
         };
-        let end = if compare_along(a0, a1, a1, b_end).is_lt() {
+        let end = if compare_along(a0, a1, a1, b_end)?.is_lt() {
             a1
         } else {
             b_end
         };
-        return match compare_along(a0, a1, start, end) {
+        return Ok(match compare_along(a0, a1, start, end)? {
             Ordering::Greater => SegmentIntersection::None,
             Ordering::Equal => SegmentIntersection::Point(start.clone()),
             Ordering::Less => SegmentIntersection::Overlap {
                 start: start.clone(),
                 end: end.clone(),
             },
-        };
+        });
     }
-    if o0 == ExactSign::Zero && on_segment(a0, a1, b0) {
-        return SegmentIntersection::Point(b0.clone());
-    }
-    if o1 == ExactSign::Zero && on_segment(a0, a1, b1) {
-        return SegmentIntersection::Point(b1.clone());
-    }
-    if o2 == ExactSign::Zero && on_segment(b0, b1, a0) {
-        return SegmentIntersection::Point(a0.clone());
-    }
-    if o3 == ExactSign::Zero && on_segment(b0, b1, a1) {
-        return SegmentIntersection::Point(a1.clone());
+    for (zero, (from, to, point)) in [
+        (o0, (a0, a1, b0)),
+        (o1, (a0, a1, b1)),
+        (o2, (b0, b1, a0)),
+        (o3, (b0, b1, a1)),
+    ] {
+        if zero == ExactSign::Zero && on_segment(from, to, point)? {
+            return Ok(SegmentIntersection::Point(point.clone()));
+        }
     }
     if o0.as_i8() * o1.as_i8() < 0 && o2.as_i8() * o3.as_i8() < 0 {
-        return SegmentIntersection::Point(line_intersection(
-            &ExactLine::through_points(a0, a1).expect("distinct segment"),
-            &ExactLine::through_points(b0, b1).expect("distinct segment"),
-        ));
+        return Ok(SegmentIntersection::Point(line_intersection(
+            &ExactLine::through_points(a0, a1)?,
+            &ExactLine::through_points(b0, b1)?,
+        )?));
     }
-    SegmentIntersection::None
+    Ok(SegmentIntersection::None)
 }
 
 pub(super) fn angle_ccw_cmp(
@@ -2563,35 +2414,25 @@ pub(super) fn angle_ccw_cmp(
     left: &ExactPoint,
     right: &ExactPoint,
 ) -> Result<Ordering> {
-    let half = |target: &ExactPoint| {
+    let half = |target: &ExactPoint| -> Result<bool> {
+        let (target, center) = (target.coords()?, origin.coords()?);
         let dy = target
-            .y()
-            .product(origin.w())
-            .subtract(origin.y().product(target.w()));
+            .y
+            .try_product(&center.w)?
+            .try_subtract(center.y.try_product(&target.w)?)?;
         let dx = target
-            .x()
-            .product(origin.w())
-            .subtract(origin.x().product(target.w()));
-        let denominator_sign = target.w().sign().as_i8() * origin.w().sign().as_i8();
-        let signed = |value: &ExactDyadic| {
-            let sign = value.sign();
-            if denominator_sign < 0 {
-                match sign {
-                    ExactSign::Negative => ExactSign::Positive,
-                    ExactSign::Positive => ExactSign::Negative,
-                    ExactSign::Zero => ExactSign::Zero,
-                }
-            } else {
-                sign
-            }
-        };
-        signed(&dy) == ExactSign::Positive
-            || (signed(&dy) == ExactSign::Zero && signed(&dx) != ExactSign::Negative)
+            .x
+            .try_product(&center.w)?
+            .try_subtract(center.x.try_product(&target.w)?)?;
+        let weight = target.w.sign().quotient(center.w.sign());
+        let signed = |value: &ExactDyadic| value.sign().weighted_by(weight);
+        Ok(signed(&dy) == ExactSign::Positive
+            || (signed(&dy) == ExactSign::Zero && signed(&dx) != ExactSign::Negative))
     };
-    match (half(left), half(right)) {
+    match (half(left)?, half(right)?) {
         (true, false) => Ok(Ordering::Less),
         (false, true) => Ok(Ordering::Greater),
-        _ => match orient_points(origin, left, right) {
+        _ => match orient_points(origin, left, right)? {
             ExactSign::Positive => Ok(Ordering::Less),
             ExactSign::Negative => Ok(Ordering::Greater),
             ExactSign::Zero => Err(GeometryErrorKind::voronoi(
@@ -2650,42 +2491,42 @@ pub(super) fn cycle_orientation(open_cycle: &[ExactPoint]) -> Result<ExactSign> 
 
 fn cycle_orientation_exact(open_cycle: &[ExactPoint]) -> Result<ExactSign> {
     let mut numerator = ExactDyadic::zero();
-    let mut denominator = ExactDyadic::one();
+    let mut denominator = ExactDyadic::from_f64(1.0);
     for index in 0..open_cycle.len() {
-        let left = &open_cycle[index];
-        let right = &open_cycle[(index + 1) % open_cycle.len()];
+        let left = open_cycle[index].coords()?;
+        let right = open_cycle[(index + 1) % open_cycle.len()].coords()?;
         let term_n = left
-            .x()
-            .product(right.y())
-            .subtract(left.y().product(right.x()));
-        let term_d = left.w().product(right.w());
-        numerator = numerator.product(&term_d).add(term_n.product(&denominator));
-        denominator = denominator.product(&term_d);
+            .x
+            .try_product(&right.y)?
+            .try_subtract(left.y.try_product(&right.x)?)?;
+        let term_d = left.w.try_product(&right.w)?;
+        numerator = numerator
+            .try_product(&term_d)?
+            .try_add(term_n.try_product(&denominator)?)?;
+        denominator = denominator.try_product(&term_d)?;
     }
     match numerator.sign() {
         ExactSign::Zero => {
             Err(GeometryErrorKind::voronoi("exact cycle has zero orientation").into())
         },
-        sign if denominator.sign() == ExactSign::Negative => Ok(match sign {
-            ExactSign::Negative => ExactSign::Positive,
-            ExactSign::Positive => ExactSign::Negative,
-            ExactSign::Zero => unreachable!(),
-        }),
-        sign => Ok(sign),
+        sign => Ok(sign.weighted_by(denominator.sign())),
     }
 }
 
-pub(super) fn point_in_cycle(open_cycle: &[ExactPoint], point: &ExactPoint) -> PointInCycle {
+pub(super) fn point_in_cycle(
+    open_cycle: &[ExactPoint],
+    point: &ExactPoint,
+) -> Result<PointInCycle> {
     let mut winding = 0_i32;
     for index in 0..open_cycle.len() {
         let start = &open_cycle[index];
         let end = &open_cycle[(index + 1) % open_cycle.len()];
-        if on_segment(start, end, point) {
-            return PointInCycle::Boundary;
+        if on_segment(start, end, point)? {
+            return Ok(PointInCycle::Boundary);
         }
-        let sy = start.compare_y(point);
-        let ey = end.compare_y(point);
-        let orientation = orient_points(start, end, point);
+        let sy = start.compare_y(point)?;
+        let ey = end.compare_y(point)?;
+        let orientation = orient_points(start, end, point)?;
         if sy != Ordering::Greater && ey == Ordering::Greater && orientation == ExactSign::Positive
         {
             winding += 1;
@@ -2696,11 +2537,11 @@ pub(super) fn point_in_cycle(open_cycle: &[ExactPoint], point: &ExactPoint) -> P
             winding -= 1;
         }
     }
-    if winding == 0 {
+    Ok(if winding == 0 {
         PointInCycle::Outside
     } else {
         PointInCycle::Inside
-    }
+    })
 }
 
 /// Filter for "which stored site is nearer this exact point".
@@ -2731,27 +2572,31 @@ fn squared_distance_cmp_point_filtered(
     }
 }
 
-pub(super) fn squared_distance_cmp_point(origin: &ExactPoint, left: XY, right: XY) -> Ordering {
+pub(super) fn squared_distance_cmp_point(
+    origin: &ExactPoint,
+    left: XY,
+    right: XY,
+) -> Result<Ordering> {
     if let Some(order) = squared_distance_cmp_point_filtered(origin, left, right) {
-        if VERIFY_INTERVALS {
-            assert_eq!(
-                order,
-                squared_distance_cmp_point_exact(origin, left, right),
-                "filtered squared-distance comparison disagrees"
-            );
+        if VERIFY_INTERVALS && order != squared_distance_cmp_point_exact(origin, left, right)? {
+            return Err(GeometryErrorKind::voronoi(
+                "filtered squared-distance comparison disagrees",
+            ));
         }
-        return order;
+        return Ok(order);
     }
     squared_distance_cmp_point_exact(origin, left, right)
 }
 
-fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) -> Ordering {
+fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) -> Result<Ordering> {
     debug_assert!(origin.is_finite());
-    match signed_line_product(&ExactLine::perpendicular_bisector(left, right), origin) {
-        ExactSign::Negative => Ordering::Less,
-        ExactSign::Zero => Ordering::Equal,
-        ExactSign::Positive => Ordering::Greater,
-    }
+    Ok(
+        match signed_line_product(&ExactLine::perpendicular_bisector(left, right)?, origin)? {
+            ExactSign::Negative => Ordering::Less,
+            ExactSign::Zero => Ordering::Equal,
+            ExactSign::Positive => Ordering::Greater,
+        },
+    )
 }
 
 /// A private frame whose four corners are stored binary64 (`w == 1`).
@@ -2768,7 +2613,7 @@ fn squared_distance_cmp_point_exact(origin: &ExactPoint, left: XY, right: XY) ->
 )]
 pub(super) fn enclosing_frame_binary64<'a>(
     points: impl Iterator<Item = &'a ExactPoint> + Clone,
-) -> Option<[ExactPoint; 4]> {
+) -> Result<Option<[ExactPoint; 4]>> {
     // Seeding only. A wrong estimate costs extra certified widening rounds,
     // never a wrong frame.
     let approx = |numerator: &ExactDyadic, denominator: &ExactDyadic| -> Option<f64> {
@@ -2780,18 +2625,24 @@ pub(super) fn enclosing_frame_binary64<'a>(
     let mut hi = [f64::NEG_INFINITY; 2];
     for point in points.clone() {
         if !point.is_finite() {
-            return None;
+            return Ok(None);
         }
         // The certified bounds are the estimate whenever they are finite; the
         // exact quotient is read only for a point whose bounds are not.
         let coordinates = if point.bounds[0].is_finite() && point.bounds[1].is_finite() {
             [point.bounds[0].hi, point.bounds[1].hi]
         } else {
-            [approx(point.x(), point.w())?, approx(point.y(), point.w())?]
+            let Some(x) = approx(point.x()?, point.w()?) else {
+                return Ok(None);
+            };
+            let Some(y) = approx(point.y()?, point.w()?) else {
+                return Ok(None);
+            };
+            [x, y]
         };
         for axis in 0..2 {
             if !coordinates[axis].is_finite() {
-                return None;
+                return Ok(None);
             }
             lo[axis] = lo[axis].min(coordinates[axis]);
             hi[axis] = hi[axis].max(coordinates[axis]);
@@ -2799,7 +2650,7 @@ pub(super) fn enclosing_frame_binary64<'a>(
     }
     let span = (hi[0] - lo[0]).max(hi[1] - lo[1]).max(1.0);
     if !span.is_finite() {
-        return None;
+        return Ok(None);
     }
     let mut box_lo = [lo[0] - span, lo[1] - span];
     let mut box_hi = [hi[0] + span, hi[1] + span];
@@ -2809,7 +2660,7 @@ pub(super) fn enclosing_frame_binary64<'a>(
     for _ in 0..64 {
         for axis in 0..2 {
             if !box_lo[axis].is_finite() || !box_hi[axis].is_finite() {
-                return None;
+                return Ok(None);
             }
         }
         let low = ExactPoint::from_xy(XY::new(box_lo[0], box_lo[1]));
@@ -2818,9 +2669,9 @@ pub(super) fn enclosing_frame_binary64<'a>(
         for point in points.clone() {
             for axis in 0..2 {
                 let (below, above) = if axis == 0 {
-                    (point.compare_x(&low), point.compare_x(&high))
+                    (point.compare_x(&low)?, point.compare_x(&high)?)
                 } else {
-                    (point.compare_y(&low), point.compare_y(&high))
+                    (point.compare_y(&low)?, point.compare_y(&high)?)
                 };
                 if !below.is_gt() {
                     box_lo[axis] = box_lo[axis].next_down();
@@ -2833,48 +2684,36 @@ pub(super) fn enclosing_frame_binary64<'a>(
             }
         }
         if !widened {
-            return Some([
+            return Ok(Some([
                 ExactPoint::from_xy(XY::new(box_lo[0], box_lo[1])),
                 ExactPoint::from_xy(XY::new(box_hi[0], box_lo[1])),
                 ExactPoint::from_xy(XY::new(box_hi[0], box_hi[1])),
                 ExactPoint::from_xy(XY::new(box_lo[0], box_hi[1])),
-            ]);
+            ]));
         }
     }
-    None
+    Ok(None)
 }
 
 pub(super) fn enclosing_frame(points: &[ExactPoint]) -> Result<[ExactPoint; 4]> {
-    let first = points
-        .first()
-        .ok_or_else(|| GeometryErrorKind::voronoi("empty exact frame input"))?;
-    let (mut min_x, mut max_x, mut min_y, mut max_y) =
-        (first.clone(), first.clone(), first.clone(), first.clone());
-    for point in &points[1..] {
-        if point.compare_x(&min_x).is_lt() {
-            min_x = point.clone();
-        }
-        if point.compare_x(&max_x).is_gt() {
-            max_x = point.clone();
-        }
-        if point.compare_y(&min_y).is_lt() {
-            min_y = point.clone();
-        }
-        if point.compare_y(&max_y).is_gt() {
-            max_y = point.clone();
-        }
-    }
+    let [min_x, max_x, min_y, max_y] = extreme_points(points)?;
+    let (min_x, max_x, min_y, max_y) = (
+        min_x.coords()?,
+        max_x.coords()?,
+        min_y.coords()?,
+        max_y.coords()?,
+    );
     let span_x_n = max_x
-        .x()
-        .product(min_x.w())
-        .subtract(min_x.x().product(max_x.w()));
-    let span_x_d = max_x.w().product(min_x.w());
+        .x
+        .try_product(&min_x.w)?
+        .try_subtract(min_x.x.try_product(&max_x.w)?)?;
+    let span_x_d = max_x.w.try_product(&min_x.w)?;
     let span_y_n = max_y
-        .y()
-        .product(min_y.w())
-        .subtract(min_y.y().product(max_y.w()));
-    let span_y_d = max_y.w().product(min_y.w());
-    let (pad_n, pad_d) = if compare_ratios(&span_x_n, &span_x_d, &span_y_n, &span_y_d).is_gt() {
+        .y
+        .try_product(&min_y.w)?
+        .try_subtract(min_y.y.try_product(&max_y.w)?)?;
+    let span_y_d = max_y.w.try_product(&min_y.w)?;
+    let (pad_n, pad_d) = if compare_ratios(&span_x_n, &span_x_d, &span_y_n, &span_y_d)?.is_gt() {
         (span_x_n, span_x_d)
     } else {
         (span_y_n, span_y_d)
@@ -2882,76 +2721,82 @@ pub(super) fn enclosing_frame(points: &[ExactPoint]) -> Result<[ExactPoint; 4]> 
     if pad_n.is_zero() {
         return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
     }
-    let coordinate = |base_n: &ExactDyadic, base_d: &ExactDyadic, add: bool| {
-        ExactPoint::homogeneous(
-            if add {
-                base_n.product(&pad_d).add(pad_n.product(base_d))
-            } else {
-                base_n.product(&pad_d).subtract(pad_n.product(base_d))
-            },
-            ExactDyadic::zero(),
-            base_d.product(&pad_d),
-        )
+    let coordinate = |base_n: &ExactDyadic, base_d: &ExactDyadic, add: bool| -> Result<_> {
+        let base = base_n.try_product(&pad_d)?;
+        let pad = pad_n.try_product(base_d)?;
+        let numerator = if add {
+            base.try_add(pad)?
+        } else {
+            base.try_subtract(pad)?
+        };
+        Ok((numerator, base_d.try_product(&pad_d)?))
     };
-    let lx = coordinate(min_x.x(), min_x.w(), false);
-    let ux = coordinate(max_x.x(), max_x.w(), true);
-    let ly = coordinate(min_y.y(), min_y.w(), false);
-    let uy = coordinate(max_y.y(), max_y.w(), true);
-    let make = |x: &ExactPoint, y: &ExactPoint| {
-        ExactPoint::homogeneous(
-            x.x().product(y.w()),
-            y.x().product(x.w()),
-            x.w().product(y.w()),
-        )
-    };
+    let lx = coordinate(&min_x.x, &min_x.w, false)?;
+    let ux = coordinate(&max_x.x, &max_x.w, true)?;
+    let ly = coordinate(&min_y.y, &min_y.w, false)?;
+    let uy = coordinate(&max_y.y, &max_y.w, true)?;
     Ok([
-        make(&lx, &ly),
-        make(&ux, &ly),
-        make(&ux, &uy),
-        make(&lx, &uy),
+        corner((&lx.0, &lx.1), (&ly.0, &ly.1))?,
+        corner((&ux.0, &ux.1), (&ly.0, &ly.1))?,
+        corner((&ux.0, &ux.1), (&uy.0, &uy.1))?,
+        corner((&lx.0, &lx.1), (&uy.0, &uy.1))?,
     ])
 }
 
-/// Tight axis-aligned bounds of exact points: no pad, no enclosing super-frame.
-pub(super) fn axis_aligned_bounds<'a, I>(points: I) -> Result<[ExactPoint; 4]>
-where
-    I: IntoIterator<Item = &'a ExactPoint>,
-{
+/// The exact points attaining the minimum and maximum x, then y.
+fn extreme_points<'a>(
+    points: impl IntoIterator<Item = &'a ExactPoint>,
+) -> Result<[&'a ExactPoint; 4]> {
     let mut points = points.into_iter();
     let first = points
         .next()
         .ok_or_else(|| GeometryErrorKind::voronoi("empty exact frame input"))?;
-    let (mut min_x, mut max_x, mut min_y, mut max_y) =
-        (first.clone(), first.clone(), first.clone(), first.clone());
+    let mut extremes = [first; 4];
     for point in points {
-        if point.compare_x(&min_x).is_lt() {
-            min_x = point.clone();
+        if point.compare_x(extremes[0])?.is_lt() {
+            extremes[0] = point;
         }
-        if point.compare_x(&max_x).is_gt() {
-            max_x = point.clone();
+        if point.compare_x(extremes[1])?.is_gt() {
+            extremes[1] = point;
         }
-        if point.compare_y(&min_y).is_lt() {
-            min_y = point.clone();
+        if point.compare_y(extremes[2])?.is_lt() {
+            extremes[2] = point;
         }
-        if point.compare_y(&max_y).is_gt() {
-            max_y = point.clone();
+        if point.compare_y(extremes[3])?.is_gt() {
+            extremes[3] = point;
         }
     }
-    if min_x.compare_x(&max_x).is_eq() || min_y.compare_y(&max_y).is_eq() {
+    Ok(extremes)
+}
+
+/// The point at x = `x.0 / x.1` and y = `y.0 / y.1`.
+fn corner(x: (&ExactDyadic, &ExactDyadic), y: (&ExactDyadic, &ExactDyadic)) -> Result<ExactPoint> {
+    ExactPoint::homogeneous(
+        x.0.try_product(y.1)?,
+        y.0.try_product(x.1)?,
+        x.1.try_product(y.1)?,
+    )
+}
+
+/// Tight axis-aligned bounds of exact points: no pad, no enclosing super-frame.
+pub(super) fn axis_aligned_bounds<'a>(
+    points: impl IntoIterator<Item = &'a ExactPoint>,
+) -> Result<[ExactPoint; 4]> {
+    let [min_x, max_x, min_y, max_y] = extreme_points(points)?;
+    if min_x.compare_x(max_x)?.is_eq() || min_y.compare_y(max_y)?.is_eq() {
         return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
     }
-    let corner = |x: &ExactPoint, y: &ExactPoint| {
-        ExactPoint::homogeneous(
-            x.x().product(y.w()),
-            y.y().product(x.w()),
-            x.w().product(y.w()),
-        )
-    };
+    let (min_x, max_x, min_y, max_y) = (
+        min_x.coords()?,
+        max_x.coords()?,
+        min_y.coords()?,
+        max_y.coords()?,
+    );
     Ok([
-        corner(&min_x, &min_y),
-        corner(&max_x, &min_y),
-        corner(&max_x, &max_y),
-        corner(&min_x, &max_y),
+        corner((&min_x.x, &min_x.w), (&min_y.y, &min_y.w))?,
+        corner((&max_x.x, &max_x.w), (&min_y.y, &min_y.w))?,
+        corner((&max_x.x, &max_x.w), (&max_y.y, &max_y.w))?,
+        corner((&min_x.x, &min_x.w), (&max_y.y, &max_y.w))?,
     ])
 }
 
@@ -2971,8 +2816,8 @@ pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[Ex
         // OUTWARD to a double: the padded rectangle is a convenience frame
         // and a double-valued one keeps every clip side representable, so the
         // cells partition exactly the rectangle they report.
-        let span_x = ExactDyadic::from_f64(max_x).subtract(ExactDyadic::from_f64(min_x));
-        let span_y = ExactDyadic::from_f64(max_y).subtract(ExactDyadic::from_f64(min_y));
+        let span_x = try_difference(max_x, min_x)?;
+        let span_y = try_difference(max_y, min_y)?;
         let span = if span_x.cmp(&span_y).is_gt() {
             span_x
         } else {
@@ -2981,14 +2826,15 @@ pub(super) fn rectangular_boundary(points: &[Point], padded: bool) -> Result<[Ex
         if span.is_zero() {
             return Err(GeometryErrorKind::voronoi("exact frame input has zero span").into());
         }
-        let half = span.product(&ExactDyadic::from_f64(0.5));
+        let half = span.try_product(&ExactDyadic::from_f64(0.5))?;
         let outward = |base: f64, add: bool| -> Result<f64> {
+            let base = ExactDyadic::from_f64(base);
             let exact = if add {
-                ExactDyadic::from_f64(base).add(half.clone())
+                ExactDyadic::try_add_refs(&base, &half)?
             } else {
-                ExactDyadic::from_f64(base).subtract(half.clone())
+                ExactDyadic::try_subtract_refs(&base, &half)?
             };
-            let rounded = round_ratio(&exact, &ExactDyadic::from_f64(1.0))?;
+            let rounded = round_ratio(&exact, &ExactDyadic::one())?;
             let overshoot = ExactDyadic::from_f64(rounded).cmp(&exact);
             Ok(match (add, overshoot) {
                 (true, Ordering::Less) => rounded.next_up(),
@@ -3050,110 +2896,67 @@ fn orient_points_filtered(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> Opt
     determinant.sign()
 }
 
-pub(super) fn orient_points(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> ExactSign {
+pub(super) fn orient_points(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> Result<ExactSign> {
     if let Some(sign) = orient_points_filtered(a, b, c) {
-        if VERIFY_INTERVALS {
-            assert_eq!(
-                sign,
-                orient_points_exact(a, b, c),
-                "filtered orientation disagrees"
-            );
+        if VERIFY_INTERVALS && sign != orient_points_exact(a, b, c)? {
+            return Err(GeometryErrorKind::voronoi("filtered orientation disagrees"));
         }
-        return sign;
+        return Ok(sign);
     }
     orient_points_exact(a, b, c)
 }
 
-fn orient_points_exact(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> ExactSign {
-    let bax = b.x().product(a.w()).subtract(a.x().product(b.w()));
-    let bay = b.y().product(a.w()).subtract(a.y().product(b.w()));
-    let cax = c.x().product(a.w()).subtract(a.x().product(c.w()));
-    let cay = c.y().product(a.w()).subtract(a.y().product(c.w()));
-    let mut sign = bax.product(&cay).subtract(bay.product(&cax)).sign();
+fn orient_points_exact(a: &ExactPoint, b: &ExactPoint, c: &ExactPoint) -> Result<ExactSign> {
+    let (a, b, c) = (a.coords()?, b.coords()?, c.coords()?);
+    let displacement = |to: &ExactDyadic, from: &ExactDyadic, to_w: &ExactDyadic| {
+        to.try_product(&a.w)?.try_subtract(from.try_product(to_w)?)
+    };
+    let bax = displacement(&b.x, &a.x, &b.w)?;
+    let bay = displacement(&b.y, &a.y, &b.w)?;
+    let cax = displacement(&c.x, &a.x, &c.w)?;
+    let cay = displacement(&c.y, &a.y, &c.w)?;
+    let sign = bax
+        .try_product(&cay)?
+        .try_subtract(bay.try_product(&cax)?)?
+        .sign();
     // Both displacement numerators carry one factor of `a.w`; it is
     // squared in the determinant and therefore cannot affect the sign.
-    let denominator_sign = b.w().sign().as_i8() * c.w().sign().as_i8();
-    if denominator_sign < 0 {
-        sign = match sign {
-            ExactSign::Negative => ExactSign::Positive,
-            ExactSign::Zero => ExactSign::Zero,
-            ExactSign::Positive => ExactSign::Negative,
-        };
-    }
-    sign
+    Ok(sign.weighted_by(b.w.sign().quotient(c.w.sign())))
 }
 
 /// Cross product of two exact homogeneous lines as raw coordinates. The result
 /// is not normalized: signed products and ratio comparison operate directly on
 /// it.
-fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Homogeneous {
-    let a = &a.0;
-    let b = &b.0;
-    Homogeneous {
-        x: a[1].product(&b[2]).subtract(a[2].product(&b[1])),
-        y: a[2].product(&b[0]).subtract(a[0].product(&b[2])),
-        w: a[0].product(&b[1]).subtract(a[1].product(&b[0])),
-    }
-}
-
-fn try_intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous> {
-    let a = &a.0;
-    let b = &b.0;
+fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous> {
+    let cross = |i: usize, j: usize| {
+        a.0[i]
+            .try_product(&b.0[j])?
+            .try_subtract(a.0[j].try_product(&b.0[i])?)
+    };
     Ok(Homogeneous {
-        x: a[1]
-            .try_product(&b[2])?
-            .try_subtract(a[2].try_product(&b[1])?)?,
-        y: a[2]
-            .try_product(&b[0])?
-            .try_subtract(a[0].try_product(&b[2])?)?,
-        w: a[0]
-            .try_product(&b[1])?
-            .try_subtract(a[1].try_product(&b[0])?)?,
+        x: cross(1, 2)?,
+        y: cross(2, 0)?,
+        w: cross(0, 1)?,
     })
 }
 
 /// Cross product of two exact homogeneous lines, with certified bounds.
-pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> ExactPoint {
-    let Homogeneous { x, y, w } = intersection_homogeneous(a, b);
+pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
+    let Homogeneous { x, y, w } = intersection_homogeneous(a, b)?;
     ExactPoint::homogeneous(x, y, w)
 }
 
-fn try_line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
-    let Homogeneous { x, y, w } = try_intersection_homogeneous(a, b)?;
-    Ok(ExactPoint::homogeneous(x, y, w))
-}
-
-pub(super) fn signed_line_product(line: &ExactLine, point: &ExactPoint) -> ExactSign {
+pub(super) fn signed_line_product(line: &ExactLine, point: &ExactPoint) -> Result<ExactSign> {
+    let point = point.coords()?;
     let sign = line.0[0]
-        .product(point.x())
-        .add(line.0[1].product(point.y()))
-        .add(line.0[2].product(point.w()))
+        .try_product(&point.x)?
+        .try_add(line.0[1].try_product(&point.y)?)?
+        .try_add(line.0[2].try_product(&point.w)?)?
         .sign();
-    if point.w().sign() == ExactSign::Negative {
-        match sign {
-            ExactSign::Negative => ExactSign::Positive,
-            ExactSign::Positive => ExactSign::Negative,
-            ExactSign::Zero => ExactSign::Zero,
-        }
-    } else {
-        sign
-    }
+    Ok(sign.weighted_by(point.w.sign()))
 }
 
 pub(in crate::geometry) fn compare_ratios(
-    an: &ExactDyadic,
-    ad: &ExactDyadic,
-    bn: &ExactDyadic,
-    bd: &ExactDyadic,
-) -> Ordering {
-    let mut order = an.product(bd).cmp(&bn.product(ad));
-    if ad.sign().as_i8() * bd.sign().as_i8() < 0 {
-        order = order.reverse();
-    }
-    order
-}
-
-pub(in crate::geometry) fn try_compare_ratios(
     an: &ExactDyadic,
     ad: &ExactDyadic,
     bn: &ExactDyadic,
@@ -3230,55 +3033,10 @@ fn normal_or_zero(value: f64) -> bool {
     value == 0.0 || value.is_normal()
 }
 
-/// Certifies a squared-distance comparison only while every floating operation
-/// stays finite and either normal or exact zero. The error bound covers the two
-/// rounded subtractions, squares, sums, and final subtraction.
-fn squared_distance_cmp_filtered(origin: XY, left: XY, right: XY) -> Option<Ordering> {
-    let squared = |point: XY| {
-        let dx = point.x - origin.x;
-        let dy = point.y - origin.y;
-        let x_squared = dx * dx;
-        let y_squared = dy * dy;
-        let sum = x_squared + y_squared;
-        (normal_or_zero(dx)
-            && normal_or_zero(dy)
-            && normal_or_zero(x_squared)
-            && normal_or_zero(y_squared)
-            && normal_or_zero(sum))
-        .then_some(sum)
-    };
-    let left = squared(left)?;
-    let right = squared(right)?;
-    let difference = left - right;
-    let magnitude = left + right;
-    if !(normal_or_zero(difference) && normal_or_zero(magnitude)) {
-        return None;
-    }
-    let bound = (magnitude * SQUARED_DISTANCE_ERRBOUND).next_up();
-    (difference.abs() > bound).then(|| difference.total_cmp(&0.0))
-}
-
-pub(super) fn squared_distance_cmp(origin: XY, left: XY, right: XY) -> Ordering {
-    if let Some(order) = squared_distance_cmp_filtered(origin, left, right) {
-        if VERIFY_INTERVALS {
-            assert_eq!(
-                order,
-                squared_distance_cmp_exact(origin, left, right),
-                "filtered squared-distance comparison disagrees"
-            );
-        }
-        return order;
-    }
-    squared_distance_cmp_exact(origin, left, right)
-}
-
-fn squared_distance_cmp_exact(origin: XY, left: XY, right: XY) -> Ordering {
-    let squared = |point: XY| {
-        let dx = difference(point.x, origin.x);
-        let dy = difference(point.y, origin.y);
-        dx.square().add(dy.square())
-    };
-    squared(left).cmp(&squared(right))
+fn squared_distance(origin: XY, point: XY) -> Result<ExactDyadic> {
+    let dx = try_difference(point.x, origin.x)?;
+    let dy = try_difference(point.y, origin.y)?;
+    dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)
 }
 
 fn distance_within_filtered(origin: XY, point: XY, radius: f64) -> Option<bool> {
@@ -3315,27 +3073,21 @@ fn distance_within_filtered(origin: XY, point: XY, radius: f64) -> Option<bool> 
     }
 }
 
-pub(super) fn distance_within(origin: XY, point: XY, radius: f64) -> bool {
+pub(super) fn distance_within(origin: XY, point: XY, radius: f64) -> Result<bool> {
     if let Some(within) = distance_within_filtered(origin, point, radius) {
-        if VERIFY_INTERVALS {
-            assert_eq!(
-                within,
-                distance_within_exact(origin, point, radius),
-                "filtered distance inclusion disagrees"
-            );
+        if VERIFY_INTERVALS && within != distance_within_exact(origin, point, radius)? {
+            return Err(GeometryErrorKind::voronoi(
+                "filtered distance inclusion disagrees",
+            ));
         }
-        return within;
+        return Ok(within);
     }
     distance_within_exact(origin, point, radius)
 }
 
-fn distance_within_exact(origin: XY, point: XY, radius: f64) -> bool {
-    let dx = difference(point.x, origin.x);
-    let dy = difference(point.y, origin.y);
-    dx.square()
-        .add(dy.square())
-        .cmp(&ExactDyadic::from_f64(radius).square())
-        == Ordering::Less
+fn distance_within_exact(origin: XY, point: XY, radius: f64) -> Result<bool> {
+    let radius = ExactDyadic::from_f64(radius);
+    Ok(squared_distance(origin, point)?.cmp(&radius.try_product(&radius)?) == Ordering::Less)
 }
 
 pub(super) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
@@ -3347,24 +3099,10 @@ pub(super) fn circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
     if let Some(center) = super::circumcenter::certified_circumcenter(a, b, c) {
         return Ok(ExactPoint::certified_circumcenter([a, b, c], &center));
     }
-    Ok(line_intersection(
-        &ExactLine::perpendicular_bisector(a, b),
-        &ExactLine::perpendicular_bisector(a, c),
-    ))
-}
-
-pub(super) fn try_circumcenter(a: XY, b: XY, c: XY) -> Result<ExactPoint> {
-    if orient2d(a, b, c) == ExactSign::Zero {
-        return Err(GeometryErrorKind::voronoi(
-            "cannot construct a circumcenter for collinear sites",
-        ));
-    }
-    if let Some(center) = super::circumcenter::certified_circumcenter(a, b, c) {
-        return Ok(ExactPoint::certified_circumcenter([a, b, c], &center));
-    }
-    let first = ExactLine::try_perpendicular_bisector(a, b)?;
-    let second = ExactLine::try_perpendicular_bisector(a, c)?;
-    try_line_intersection(&first, &second)
+    line_intersection(
+        &ExactLine::perpendicular_bisector(a, b)?,
+        &ExactLine::perpendicular_bisector(a, c)?,
+    )
 }
 
 fn approximate_ratio_components(
@@ -3443,7 +3181,7 @@ fn exact_ratio_bracket(
         } else {
             magnitude
         };
-        let product = ExactDyadic::try_from_f64(candidate)?.try_product(denominator)?;
+        let product = ExactDyadic::from_f64(candidate).try_product(denominator)?;
         let order = product.cmp(numerator);
         Ok((
             if numerator.negative {
@@ -3500,10 +3238,10 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    let max = ExactDyadic::try_from_f64(f64::MAX)?.try_product(&denominator)?;
+    let max = ExactDyadic::from_f64(f64::MAX).try_product(&denominator)?;
     if numerator.cmp(&max) == Ordering::Greater {
-        let overflow_midpoint = ExactDyadic::try_from_f64(f64::MAX)?
-            .try_add(ExactDyadic::try_from_f64(2.0_f64.powi(970))?)?
+        let overflow_midpoint = ExactDyadic::from_f64(f64::MAX)
+            .try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))?
             .try_product(&denominator)?;
         if numerator.cmp(&overflow_midpoint) == Ordering::Less {
             return Ok(if sign == ExactSign::Negative {
@@ -3518,7 +3256,7 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     let mut high = f64::MAX.to_bits();
     while low < high {
         let mid = low + (high - low).div_ceil(2);
-        let product = ExactDyadic::try_from_f64(f64::from_bits(mid))?.try_product(&denominator)?;
+        let product = ExactDyadic::from_f64(f64::from_bits(mid)).try_product(&denominator)?;
         if product.cmp(&numerator) == Ordering::Greater {
             high = mid - 1;
         } else {
@@ -3531,9 +3269,9 @@ fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Res
     } else {
         let upper = f64::from_bits(low + 1);
         // Compare 2*n/d with lower+upper. Equality is the rounding tie.
-        let twice_numerator = numerator.try_product(&ExactDyadic::try_from_f64(2.0)?)?;
-        let midpoint_scaled = ExactDyadic::try_from_f64(lower)?
-            .try_add(ExactDyadic::try_from_f64(upper)?)?
+        let twice_numerator = numerator.try_product(&ExactDyadic::from_f64(2.0))?;
+        let midpoint_scaled = ExactDyadic::from_f64(lower)
+            .try_add(ExactDyadic::from_f64(upper))?
             .try_product(&denominator)?;
         match twice_numerator.cmp(&midpoint_scaled) {
             Ordering::Less => lower,
@@ -3601,9 +3339,9 @@ pub(in crate::geometry) fn round_ratio(
             if let Some(order) = residual.cmp_magnitude_scaled(denominator, spacing_exponent - 1) {
                 order
             } else {
-                let spacing = ExactDyadic::try_from_f64(upper - lower)?;
+                let spacing = ExactDyadic::from_f64(upper - lower);
                 let scaled_spacing = spacing.try_product(denominator)?;
-                let twice_residual = residual.try_product(&ExactDyadic::try_from_f64(2.0)?)?;
+                let twice_residual = residual.try_product(&ExactDyadic::from_f64(2.0))?;
                 twice_residual.cmp_magnitude(&scaled_spacing)
             };
         let rounded = match midpoint_order {
@@ -3631,8 +3369,8 @@ pub(in crate::geometry) fn outward_ratio_bounds(
     denominator: &ExactDyadic,
 ) -> Result<(f64, f64)> {
     let rounded = round_ratio(numerator, denominator)?;
-    let rounded_exact = ExactDyadic::try_from_f64(rounded)?;
-    match try_compare_ratios(numerator, denominator, &rounded_exact, &ExactDyadic::one())? {
+    let rounded_exact = ExactDyadic::from_f64(rounded);
+    match compare_ratios(numerator, denominator, &rounded_exact, &ExactDyadic::one())? {
         Ordering::Less => Ok((rounded.next_down(), rounded)),
         Ordering::Equal => Ok((rounded, rounded)),
         Ordering::Greater => Ok((rounded, rounded.next_up())),
@@ -3651,8 +3389,8 @@ pub(in crate::geometry) fn round_sqrt_ratio(
     if numerator.is_zero() {
         return Ok(0.0);
     }
-    let max = ExactDyadic::try_from_f64(f64::MAX)?;
-    let overflow_midpoint = max.try_add(ExactDyadic::try_from_f64(2.0_f64.powi(970))?)?;
+    let max = ExactDyadic::from_f64(f64::MAX);
+    let overflow_midpoint = max.try_add(ExactDyadic::from_f64(2.0_f64.powi(970)))?;
     let overflow_squared = overflow_midpoint
         .try_product(&overflow_midpoint)?
         .try_product(denominator)?;
@@ -3676,11 +3414,11 @@ pub(in crate::geometry) fn round_sqrt_ratio(
             // Compare the exact squared ratio with the square of the
             // midpoint without rounding the midpoint itself.
             let midpoint_sum =
-                ExactDyadic::try_from_f64(lower)?.try_add(ExactDyadic::try_from_f64(upper)?)?;
+                ExactDyadic::from_f64(lower).try_add(ExactDyadic::from_f64(upper))?;
             let midpoint_squared = midpoint_sum
                 .try_product(&midpoint_sum)?
                 .try_product(denominator)?;
-            let four_numerator = numerator.try_product(&ExactDyadic::try_from_f64(4.0)?)?;
+            let four_numerator = numerator.try_product(&ExactDyadic::from_f64(4.0))?;
             return Ok(match four_numerator.cmp(&midpoint_squared) {
                 Ordering::Less => lower,
                 Ordering::Greater => upper,
@@ -3704,7 +3442,7 @@ fn exact_sqrt_ratio_bracket(
 ) -> Result<Option<(u64, u64)>> {
     let max_bits = f64::MAX.to_bits();
     let compare = |bits: u64| -> Result<Ordering> {
-        let candidate = ExactDyadic::try_from_f64(f64::from_bits(bits))?;
+        let candidate = ExactDyadic::from_f64(f64::from_bits(bits));
         let square = candidate
             .try_product(&candidate)?
             .try_product(denominator)?;
@@ -3773,7 +3511,7 @@ fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -
     let mut high = f64::MAX.to_bits();
     while low < high {
         let mid = low + (high - low).div_ceil(2);
-        let candidate = ExactDyadic::try_from_f64(f64::from_bits(mid))?;
+        let candidate = ExactDyadic::from_f64(f64::from_bits(mid));
         let square = candidate
             .try_product(&candidate)?
             .try_product(denominator)?;
@@ -3788,12 +3526,11 @@ fn round_sqrt_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -
     }
     let lower = f64::from_bits(low);
     let upper = f64::from_bits(low + 1);
-    let midpoint_sum =
-        ExactDyadic::try_from_f64(lower)?.try_add(ExactDyadic::try_from_f64(upper)?)?;
+    let midpoint_sum = ExactDyadic::from_f64(lower).try_add(ExactDyadic::from_f64(upper))?;
     let midpoint_squared = midpoint_sum
         .try_product(&midpoint_sum)?
         .try_product(denominator)?;
-    let four_numerator = numerator.try_product(&ExactDyadic::try_from_f64(4.0)?)?;
+    let four_numerator = numerator.try_product(&ExactDyadic::from_f64(4.0))?;
     Ok(match four_numerator.cmp(&midpoint_squared) {
         Ordering::Less => lower,
         Ordering::Greater => upper,
@@ -3813,25 +3550,25 @@ mod sqrt_ratio_tests {
 
     #[test]
     fn rounds_tie_to_even_without_squared_rounding() {
-        let lower = ExactDyadic::try_from_f64(1.0).expect("finite one");
-        let upper = ExactDyadic::try_from_f64(1.0_f64.next_up()).expect("finite successor");
+        let lower = ExactDyadic::from_f64(1.0);
+        let upper = ExactDyadic::from_f64(1.0_f64.next_up());
         let midpoint = lower
             .try_add(upper)
             .expect("midpoint sum")
-            .try_product(&ExactDyadic::try_from_f64(0.5).expect("finite half"))
+            .try_product(&ExactDyadic::from_f64(0.5))
             .expect("midpoint");
         let squared = midpoint.try_product(&midpoint).expect("squared midpoint");
         assert_eq!(
-            round_sqrt_ratio(&squared, &ExactDyadic::try_from_f64(1.0).unwrap()).unwrap(),
+            round_sqrt_ratio(&squared, &ExactDyadic::from_f64(1.0)).unwrap(),
             1.0
         );
     }
 
     #[test]
     fn handles_non_dyadic_distance() {
-        let squared = ExactDyadic::try_from_f64(2.0).expect("finite two");
+        let squared = ExactDyadic::from_f64(2.0);
         assert_eq!(
-            round_sqrt_ratio(&squared, &ExactDyadic::try_from_f64(1.0).unwrap()).unwrap(),
+            round_sqrt_ratio(&squared, &ExactDyadic::from_f64(1.0)).unwrap(),
             2.0_f64.sqrt()
         );
     }
@@ -3839,8 +3576,8 @@ mod sqrt_ratio_tests {
     #[test]
     fn min_subnormal_sqrt_ratio_uses_an_adjacent_bracket() {
         let u = f64::from_bits(1);
-        let exact_u = ExactDyadic::try_from_f64(u).expect("minimum subnormal");
-        let two = ExactDyadic::try_from_f64(2.0).expect("exact two");
+        let exact_u = ExactDyadic::from_f64(u);
+        let two = ExactDyadic::from_f64(2.0);
         let two_u = exact_u.try_product(&two).expect("two minimum subnormals");
         let squared = two_u
             .try_product(&two_u)
@@ -3870,24 +3607,24 @@ mod sqrt_ratio_tests {
 
     #[test]
     fn accepting_the_nonadjacent_min_subnormal_bracket_would_change_the_result() {
-        let u = ExactDyadic::try_from_f64(f64::from_bits(1)).expect("minimum subnormal");
+        let u = ExactDyadic::from_f64(f64::from_bits(1));
         let bad_lower = u.clone();
         let bad_upper = u
-            .try_product(&ExactDyadic::try_from_f64(3.0).expect("exact three"))
+            .try_product(&ExactDyadic::from_f64(3.0))
             .expect("three minimum subnormals");
         let exact_squared = u
             .try_product(&u)
             .expect("squared minimum subnormal")
-            .try_product(&ExactDyadic::try_from_f64(5.0).expect("exact five"))
+            .try_product(&ExactDyadic::from_f64(5.0))
             .expect("sqrt five squared ratio");
         let midpoint = bad_lower
             .try_add(bad_upper)
             .expect("nonadjacent bracket sum")
-            .try_product(&ExactDyadic::try_from_f64(0.5).expect("exact half"))
+            .try_product(&ExactDyadic::from_f64(0.5))
             .expect("nonadjacent bracket midpoint");
         assert_eq!(
             exact_squared
-                .try_product(&ExactDyadic::try_from_f64(4.0).expect("exact four"))
+                .try_product(&ExactDyadic::from_f64(4.0))
                 .expect("scaled exact ratio")
                 .cmp(
                     &midpoint
@@ -3916,7 +3653,7 @@ mod sqrt_ratio_tests {
             0
         );
         let square = |value: f64| {
-            let value = ExactDyadic::try_from_f64(value).expect("finite boundary value");
+            let value = ExactDyadic::from_f64(value);
             value.try_product(&value).expect("boundary square")
         };
         let assert_bracket = |name: &str, numerator: &ExactDyadic, proposal: f64| {
@@ -3930,7 +3667,7 @@ mod sqrt_ratio_tests {
                     "{name}: non-singleton endpoints must be adjacent"
                 );
             }
-            let lower_value = ExactDyadic::try_from_f64(f64::from_bits(lower)).unwrap();
+            let lower_value = ExactDyadic::from_f64(f64::from_bits(lower));
             let lower_squared = lower_value
                 .try_product(&lower_value)
                 .unwrap()
@@ -3941,7 +3678,7 @@ mod sqrt_ratio_tests {
                 Ordering::Greater,
                 "{name}: lower endpoint is above the root"
             );
-            let upper_value = ExactDyadic::try_from_f64(f64::from_bits(upper)).unwrap();
+            let upper_value = ExactDyadic::from_f64(f64::from_bits(upper));
             let upper_squared = upper_value
                 .try_product(&upper_value)
                 .unwrap()
@@ -4106,8 +3843,8 @@ mod sqrt_ratio_tests {
             (f64::MAX, 1.0),
             (f64::MAX, 3.0),
         ] {
-            let numerator = ExactDyadic::try_from_f64(numerator).unwrap();
-            let denominator = ExactDyadic::try_from_f64(denominator).unwrap();
+            let numerator = ExactDyadic::from_f64(numerator);
+            let denominator = ExactDyadic::from_f64(denominator);
             assert_eq!(
                 round_sqrt_ratio(&numerator, &denominator)
                     .unwrap()
@@ -4121,7 +3858,7 @@ mod sqrt_ratio_tests {
 
     #[test]
     fn proposed_sqrt_bracket_preserves_allocation_failure_reporting() {
-        let numerator = ExactDyadic::try_from_f64(3.0).unwrap();
+        let numerator = ExactDyadic::from_f64(3.0);
         let denominator = ExactDyadic::one();
         let (_, allocations) =
             crate::test_support::allocation_count(|| round_sqrt_ratio(&numerator, &denominator));
@@ -4167,7 +3904,7 @@ mod tests {
             let inside = XY::new(scale * 0.25, scale * 0.25);
             assert_eq!(super::orient2d(origin, east, north), ExactSign::Positive);
             assert_eq!(
-                super::incircle(origin, east, north, inside),
+                super::incircle(origin, east, north, inside).unwrap(),
                 ExactSign::Positive
             );
             if let Some(sign) = super::orient2d_float(origin, east, north) {
@@ -4215,11 +3952,11 @@ mod tests {
             XY::new(-3.0 * scale, 4.0 * scale),
         ];
         let [a, b, c, d] = points;
-        assert_eq!(super::incircle_dyadic(a, b, c, d), ExactSign::Zero);
+        assert_eq!(super::incircle_dyadic(a, b, c, d).unwrap(), ExactSign::Zero);
         if let Some(sign) = super::incircle_float(a, b, c, d) {
             assert_eq!(sign, ExactSign::Zero, "scale exponent {exponent}");
         }
-        assert_eq!(super::incircle(a, b, c, d), ExactSign::Zero);
+        assert_eq!(super::incircle(a, b, c, d).unwrap(), ExactSign::Zero);
     }
 
     #[test]
@@ -4241,11 +3978,11 @@ mod tests {
                 XY::new(scale, scale),
                 XY::new(0.0, scale),
             ];
-            assert_eq!(super::incircle_dyadic(a, b, c, d), ExactSign::Zero);
+            assert_eq!(super::incircle_dyadic(a, b, c, d).unwrap(), ExactSign::Zero);
             if let Some(sign) = super::incircle_float(a, b, c, d) {
                 assert_eq!(sign, ExactSign::Zero, "scale {scale:?}");
             }
-            assert_eq!(super::incircle(a, b, c, d), ExactSign::Zero);
+            assert_eq!(super::incircle(a, b, c, d).unwrap(), ExactSign::Zero);
         }
     }
 
@@ -4411,12 +4148,12 @@ mod tests {
         ];
         for &(name, a, b, c, d, expected) in &incircle_cases {
             assert_eq!(
-                super::incircle_dyadic(a, b, c, d),
+                super::incircle_dyadic(a, b, c, d).unwrap(),
                 expected,
                 "{name}: dyadic"
             );
             assert_eq!(
-                super::incircle(a, b, c, d),
+                super::incircle(a, b, c, d).unwrap(),
                 expected,
                 "{name}: complete predicate"
             );
@@ -4445,7 +4182,8 @@ mod tests {
                 XY::new(0.0, 1e308),
                 XY::new(1e308, 0.0),
                 XY::new(0.0, 0.0)
-            ),
+            )
+            .unwrap(),
             ExactSign::Negative
         );
     }
@@ -4567,8 +4305,8 @@ mod tests {
         use crate::test_support::allocation_count;
 
         let (_, allocations) = allocation_count(|| {
-            let left = ExactDyadic::try_from_f64(3.0).unwrap();
-            let right = ExactDyadic::try_from_f64(5.0).unwrap();
+            let left = ExactDyadic::from_f64(3.0);
+            let right = ExactDyadic::from_f64(5.0);
             let sum = left.try_add(right).unwrap();
             sum.try_product(&ExactDyadic::one()).unwrap()
         });
@@ -4721,10 +4459,7 @@ mod tests {
             crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactRatioZeroDenominator)
         ));
 
-        let error = ExactRational::from_f64(-1.0)
-            .unwrap()
-            .round_sqrt()
-            .unwrap_err();
+        let error = ExactRational::from_f64(-1.0).round_sqrt().unwrap_err();
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(GeometryErrorKind::Invalid(_))
@@ -4932,11 +4667,8 @@ mod tests {
                 decided,
                 "{an:?}/{ad:?} vs {bn:?}/{bd:?}"
             );
-            assert_eq!(try_compare_ratios(&an, &ad, &bn, &bd).unwrap(), exact);
-            assert_eq!(
-                try_compare_ratios(&bn, &bd, &an, &ad).unwrap(),
-                exact.reverse()
-            );
+            assert_eq!(compare_ratios(&an, &ad, &bn, &bd).unwrap(), exact);
+            assert_eq!(compare_ratios(&bn, &bd, &an, &ad).unwrap(), exact.reverse());
         }
     }
 
@@ -4961,12 +4693,12 @@ mod tests {
             let lower_exact = ExactDyadic::from_f64(lower);
             let upper_exact = ExactDyadic::from_f64(upper);
             assert_ne!(
-                try_compare_ratios(numerator, denominator, &lower_exact, &one).unwrap(),
+                compare_ratios(numerator, denominator, &lower_exact, &one).unwrap(),
                 Ordering::Less,
                 "{name}: ratio below lower bound"
             );
             assert_ne!(
-                try_compare_ratios(numerator, denominator, &upper_exact, &one).unwrap(),
+                compare_ratios(numerator, denominator, &upper_exact, &one).unwrap(),
                 Ordering::Greater,
                 "{name}: ratio above upper bound"
             );
@@ -5229,9 +4961,11 @@ mod tests {
         )
         .unwrap();
         let forward = line_intersection(&x_axis, &vertical)
+            .unwrap()
             .round_nearest_even()
             .unwrap();
         let reversed = line_intersection(&vertical, &x_axis)
+            .unwrap()
             .round_nearest_even()
             .unwrap();
         assert_eq!(
@@ -5265,20 +4999,22 @@ mod tests {
         let center = circumcenter(XY::new(0.0, 0.0), XY::new(4.0, 0.0), XY::new(0.0, 2.0)).unwrap();
         assert_eq!(
             compare_ratios(
-                center.x(),
-                center.w(),
+                center.x().unwrap(),
+                center.w().unwrap(),
                 &ExactDyadic::from_f64(2.0),
                 &ExactDyadic::one(),
-            ),
+            )
+            .unwrap(),
             Ordering::Equal,
         );
         assert_eq!(
             compare_ratios(
-                center.y(),
-                center.w(),
+                center.y().unwrap(),
+                center.w().unwrap(),
                 &ExactDyadic::from_f64(1.0),
                 &ExactDyadic::one(),
-            ),
+            )
+            .unwrap(),
             Ordering::Equal,
         );
 
@@ -5292,20 +5028,22 @@ mod tests {
             };
         assert_eq!(
             compare_ratios(
-                hit.x(),
-                hit.w(),
+                hit.x().unwrap(),
+                hit.w().unwrap(),
                 &ExactDyadic::from_f64(-1.0),
                 &ExactDyadic::one(),
-            ),
+            )
+            .unwrap(),
             Ordering::Equal,
         );
         assert_eq!(
             compare_ratios(
-                hit.y(),
-                hit.w(),
+                hit.y().unwrap(),
+                hit.w().unwrap(),
                 &ExactDyadic::from_f64(7.0),
                 &ExactDyadic::one(),
-            ),
+            )
+            .unwrap(),
             Ordering::Equal,
         );
     }
@@ -5314,13 +5052,15 @@ mod tests {
     fn distinct_exact_vertices_can_collide_after_rounding() {
         let one = ExactDyadic::one();
         let base =
-            ExactPoint::homogeneous(ExactDyadic::from_f64(1.0), ExactDyadic::zero(), one.clone());
+            ExactPoint::homogeneous(ExactDyadic::from_f64(1.0), ExactDyadic::zero(), one.clone())
+                .unwrap();
         let shifted = ExactPoint::homogeneous(
             ExactDyadic::from_f64(1.0).add(ExactDyadic::from_parts(false, vec![1], -1074)),
             ExactDyadic::zero(),
             one,
-        );
-        assert_ne!(base.x(), shifted.x());
+        )
+        .unwrap();
+        assert_ne!(base.x().unwrap(), shifted.x().unwrap());
         assert_eq!(
             base.round_nearest_even().unwrap(),
             shifted.round_nearest_even().unwrap()
@@ -5335,24 +5075,24 @@ mod tests {
             ExactDyadic::zero(),
             ExactDyadic::from_f64(-0.5),
         ]);
-        let intersection = line_intersection(&x_axis, &vertical);
+        let intersection = line_intersection(&x_axis, &vertical).unwrap();
         assert_eq!(
             intersection.round_nearest_even().unwrap(),
             XY::new(0.5, 0.0)
         );
         assert_eq!(
-            signed_line_product(&vertical, &intersection),
+            signed_line_product(&vertical, &intersection).unwrap(),
             ExactSign::Zero
         );
-        let reversed = line_intersection(&vertical, &x_axis);
+        let reversed = line_intersection(&vertical, &x_axis).unwrap();
         let above = ExactLine::through_points(
             &ExactPoint::from_xy(XY::new(0.0, 1.0)),
             &ExactPoint::from_xy(XY::new(1.0, 1.0)),
         )
         .unwrap();
         assert_eq!(
-            signed_line_product(&above, &intersection),
-            signed_line_product(&above, &reversed)
+            signed_line_product(&above, &intersection).unwrap(),
+            signed_line_product(&above, &reversed).unwrap()
         );
         assert_eq!(
             compare_ratios(
@@ -5360,7 +5100,8 @@ mod tests {
                 &ExactDyadic::from_f64(3.0),
                 &ExactDyadic::one(),
                 &ExactDyadic::from_f64(2.0),
-            ),
+            )
+            .unwrap(),
             Ordering::Less
         );
     }
@@ -5369,7 +5110,8 @@ mod tests {
     fn squared_distance_cmp_point_exact_returns_tie_on_site_bisector() {
         let origin = ExactPoint::from_xy(XY::new(1.0, 3.0));
         assert_eq!(
-            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(2.0, 0.0))
+                .unwrap(),
             Ordering::Equal
         );
     }
@@ -5380,9 +5122,11 @@ mod tests {
             ExactDyadic::from_f64(-1.0),
             ExactDyadic::from_f64(-1.0),
             ExactDyadic::from_f64(-1.0),
-        );
+        )
+        .unwrap();
         assert_eq!(
-            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(3.0, 0.0)),
+            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(3.0, 0.0))
+                .unwrap(),
             Ordering::Less
         );
     }
@@ -5395,7 +5139,8 @@ mod tests {
                 &origin,
                 XY::new(f64::MAX, 0.0),
                 XY::new(f64::from_bits(1), 0.0),
-            ),
+            )
+            .unwrap(),
             Ordering::Greater
         );
     }
@@ -5408,7 +5153,8 @@ mod tests {
                 &origin,
                 XY::new(f64::from_bits(1), 0.0),
                 XY::new(0.0, 0.0),
-            ),
+            )
+            .unwrap(),
             Ordering::Greater
         );
     }
@@ -5417,9 +5163,10 @@ mod tests {
     fn squared_distance_cmp_point_exact_orders_midpoint_origin() {
         let first = ExactPoint::from_xy(XY::new(-4.0, 2.0));
         let second = ExactPoint::from_xy(XY::new(6.0, 4.0));
-        let origin = first.midpoint(&second);
+        let origin = first.midpoint(&second).unwrap();
         assert_eq!(
-            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(4.0, 0.0)),
+            squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(4.0, 0.0))
+                .unwrap(),
             Ordering::Less
         );
     }
@@ -5433,17 +5180,17 @@ mod tests {
                 &point(f64::MAX, 0.0),
                 &point(0.0, -f64::from_bits(1)),
                 &point(0.0, f64::from_bits(1)),
-            ),
-            SegmentIntersection::Point(hit) if hit.same_position(&point(0.0, 0.0))
+            ).unwrap(),
+            SegmentIntersection::Point(hit) if hit.same_position(&point(0.0, 0.0)).unwrap()
         ));
         assert!(matches!(
-            segment_intersection(&point(0.0, 0.0), &point(2.0, 0.0), &point(2.0, 0.0), &point(3.0, 1.0)),
-            SegmentIntersection::Point(hit) if hit.same_position(&point(2.0, 0.0))
+            segment_intersection(&point(0.0, 0.0), &point(2.0, 0.0), &point(2.0, 0.0), &point(3.0, 1.0)).unwrap(),
+            SegmentIntersection::Point(hit) if hit.same_position(&point(2.0, 0.0)).unwrap()
         ));
         assert!(matches!(
-            segment_intersection(&point(0.0, 0.0), &point(3.0, 0.0), &point(1.0, 0.0), &point(2.0, 0.0)),
+            segment_intersection(&point(0.0, 0.0), &point(3.0, 0.0), &point(1.0, 0.0), &point(2.0, 0.0)).unwrap(),
             SegmentIntersection::Overlap { start, end }
-                if start.same_position(&point(1.0, 0.0)) && end.same_position(&point(2.0, 0.0))
+                if start.same_position(&point(1.0, 0.0)).unwrap() && end.same_position(&point(2.0, 0.0)).unwrap()
         ));
         for (b0, b1) in [((1.0, 0.0), (2.0, 0.0)), ((2.0, 0.0), (1.0, 0.0))] {
             assert!(matches!(
@@ -5452,10 +5199,10 @@ mod tests {
                     &point(3.0, 0.0),
                     &point(b0.0, b0.1),
                     &point(b1.0, b1.1),
-                ),
+                ).unwrap(),
                 SegmentIntersection::Overlap { start, end }
-                    if start.same_position(&point(1.0, 0.0))
-                        && end.same_position(&point(2.0, 0.0))
+                    if start.same_position(&point(1.0, 0.0)).unwrap()
+                        && end.same_position(&point(2.0, 0.0)).unwrap()
             ));
         }
     }
@@ -5470,15 +5217,15 @@ mod tests {
         ];
         assert_eq!(cycle_orientation(&ring).unwrap(), ExactSign::Positive);
         assert_eq!(
-            point_in_cycle(&ring, &ExactPoint::from_xy(XY::new(1.0, 1.0))),
+            point_in_cycle(&ring, &ExactPoint::from_xy(XY::new(1.0, 1.0))).unwrap(),
             PointInCycle::Inside
         );
         assert_eq!(
-            point_in_cycle(&ring, &ExactPoint::from_xy(XY::new(2.0, 1.0))),
+            point_in_cycle(&ring, &ExactPoint::from_xy(XY::new(2.0, 1.0))).unwrap(),
             PointInCycle::Boundary
         );
         assert_eq!(
-            point_in_cycle(&ring, &ExactPoint::from_xy(XY::new(3.0, 1.0))),
+            point_in_cycle(&ring, &ExactPoint::from_xy(XY::new(3.0, 1.0))).unwrap(),
             PointInCycle::Outside
         );
     }
@@ -5556,7 +5303,7 @@ mod tests {
             .expect("ordinary incircle should hit the interval filter");
         assert_eq!(
             filtered,
-            incircle_dyadic(ordinary[0], ordinary[1], ordinary[2], ordinary[3])
+            incircle_dyadic(ordinary[0], ordinary[1], ordinary[2], ordinary[3]).unwrap()
         );
     }
 
@@ -5567,19 +5314,21 @@ mod tests {
             ExactPoint::from_xy(XY::new(3.0, 4.0)),
             ExactPoint::from_xy(XY::new(1.0, 2.0)),
         ];
-        let frame = enclosing_frame_binary64(points.iter()).expect("ordinary frame");
+        let frame = enclosing_frame_binary64(points.iter())
+            .unwrap()
+            .expect("ordinary frame");
         for point in &points {
-            assert!(point.compare_x(&frame[0]).is_gt());
-            assert!(point.compare_y(&frame[0]).is_gt());
-            assert!(point.compare_x(&frame[2]).is_lt());
-            assert!(point.compare_y(&frame[2]).is_lt());
+            assert!(point.compare_x(&frame[0]).unwrap().is_gt());
+            assert!(point.compare_y(&frame[0]).unwrap().is_gt());
+            assert!(point.compare_x(&frame[2]).unwrap().is_lt());
+            assert!(point.compare_y(&frame[2]).unwrap().is_lt());
         }
 
         let extremes = [
             ExactPoint::from_xy(XY::new(-f64::MAX, 0.0)),
             ExactPoint::from_xy(XY::new(f64::MAX, 1.0)),
         ];
-        assert!(enclosing_frame_binary64(extremes.iter()).is_none());
+        assert!(enclosing_frame_binary64(extremes.iter()).unwrap().is_none());
         enclosing_frame(&extremes).expect("exact fallback frame");
     }
 

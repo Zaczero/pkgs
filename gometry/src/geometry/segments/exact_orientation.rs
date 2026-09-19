@@ -111,14 +111,25 @@ mod tests {
     use crate::geometry::tessellation::exact::ExactDyadic;
 
     fn dyadic_difference(left: f64, right: f64) -> ExactDyadic {
-        ExactDyadic::from_f64(left).subtract(ExactDyadic::from_f64(right))
+        ExactDyadic::from_f64(left)
+            .try_subtract(ExactDyadic::from_f64(right))
+            .unwrap()
+    }
+
+    fn dyadic_cross_sign(left: &[ExactDyadic; 2], right: &[ExactDyadic; 2]) -> ExactSign {
+        left[0]
+            .try_product(&right[1])
+            .unwrap()
+            .try_subtract(left[1].try_product(&right[0]).unwrap())
+            .unwrap()
+            .sign()
     }
 
     fn dyadic_product_sign(ax: f64, ay: f64, bx: f64, by: f64, cx: f64, cy: f64) -> ExactSign {
-        dyadic_difference(bx, ax)
-            .product(&dyadic_difference(cy, ay))
-            .subtract(dyadic_difference(by, ay).product(&dyadic_difference(cx, ax)))
-            .sign()
+        dyadic_cross_sign(&[dyadic_difference(bx, ax), dyadic_difference(by, ay)], &[
+            dyadic_difference(cx, ax),
+            dyadic_difference(cy, ay),
+        ])
     }
 
     #[test]
@@ -146,10 +157,10 @@ mod tests {
             (xy(0.0, 0.0), xy(-1.0, 3.0), xy(2.0, 2.0), xy(5.0, -1.0)),
         ];
         for (a, b, c, d) in cases {
-            let expected = dyadic_difference(b.x, a.x)
-                .product(&dyadic_difference(d.y, c.y))
-                .subtract(dyadic_difference(b.y, a.y).product(&dyadic_difference(d.x, c.x)))
-                .sign();
+            let expected = dyadic_cross_sign(
+                &[dyadic_difference(b.x, a.x), dyadic_difference(b.y, a.y)],
+                &[dyadic_difference(d.x, c.x), dyadic_difference(d.y, c.y)],
+            );
             assert_eq!(
                 stored_cross_sign(a, b, c, d),
                 expected,

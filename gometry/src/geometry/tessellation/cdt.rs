@@ -991,19 +991,7 @@ pub(super) fn triangle_min_angle_degrees(a: XY, b: XY, c: XY) -> f64 {
 /// the deliberate midpoint choice for that numerical case. Every other error
 /// remains an error, including resource failures and mesh invariants.
 fn circumcenter(a: XY, b: XY, c: XY) -> Result<Option<XY>> {
-    let center = exact::try_circumcenter(a, b, c)?;
-    match center.round_nearest_even() {
-        Ok(center) => Ok(Some(center)),
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::Geometry(GeometryErrorKind::ExactCoordinateOutOfRange)
-            ) =>
-        {
-            Ok(None)
-        },
-        Err(error) => Err(error),
-    }
+    exact::circumcenter(a, b, c)?.finite_rounding()
 }
 
 fn longest_edge_midpoint(a: XY, b: XY, c: XY) -> XY {

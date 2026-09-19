@@ -227,8 +227,10 @@ pub(in crate::geometry) fn polygon_rings_issue(
     // point per hole decides each relation. Shell containment is O(H);
     // hole–hole nesting visits only OVERLAPPING bounds pairs via the shared
     // sweep (never all-pairs compares of provably disjoint holes).
-    let mut hole_bounds: Vec<Bounds> = Vec::with_capacity(polygon.holes.len());
-    let mut probes: Vec<Point> = Vec::with_capacity(polygon.holes.len());
+    let mut hole_bounds: Vec<Bounds> = Vec::new();
+    let mut probes: Vec<Point> = Vec::new();
+    crate::try_reserve_vec(&mut hole_bounds, polygon.holes.len())?;
+    crate::try_reserve_vec(&mut probes, polygon.holes.len())?;
     for (index, hole) in polygon.holes.iter().enumerate() {
         let probe = ring_probe_point(hole.coords(), polygon.shell.coords());
         if ring_classify_point(polygon.shell.coords(), probe) != RingClass::Interior {

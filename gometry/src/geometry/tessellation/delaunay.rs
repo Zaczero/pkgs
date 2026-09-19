@@ -209,8 +209,9 @@ impl CertifiedDelaunay {
         &self.topology.hull
     }
 
-    pub(super) fn primal_edges(&self) -> Vec<CertifiedPrimalEdge> {
+    pub(super) fn primal_edges(&self) -> Result<Vec<CertifiedPrimalEdge>> {
         let mut edges = Vec::new();
+        crate::try_reserve_vec(&mut edges, self.topology.halfedges.len())?;
         for (slot, &reverse) in self.topology.halfedges.iter().enumerate() {
             if reverse != EMPTY && slot > reverse {
                 continue;
@@ -240,7 +241,7 @@ impl CertifiedDelaunay {
                 opposite,
             } => (sites, 1, [face, usize::MAX], opposite),
         });
-        edges
+        Ok(edges)
     }
 
     pub(super) fn collinear_order(&self) -> Option<&[usize]> {

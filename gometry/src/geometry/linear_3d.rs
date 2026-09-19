@@ -12,12 +12,8 @@ struct ExactSquaredDistance {
     denominator: ExactDyadic,
 }
 
-fn exact_point(point: [f64; 3]) -> Result<[ExactDyadic; 3]> {
-    Ok([
-        ExactDyadic::try_from_f64(point[0])?,
-        ExactDyadic::try_from_f64(point[1])?,
-        ExactDyadic::try_from_f64(point[2])?,
-    ])
+fn exact_point(point: [f64; 3]) -> [ExactDyadic; 3] {
+    point.map(ExactDyadic::from_f64)
 }
 
 fn exact_sub(left: &[ExactDyadic; 3], right: &[ExactDyadic; 3]) -> Result<[ExactDyadic; 3]> {
@@ -49,7 +45,7 @@ fn exact_point_pair_squared(
     let difference = exact_sub(left, right)?;
     Ok(ExactSquaredDistance {
         numerator: exact_squared_sum(&difference)?,
-        denominator: ExactDyadic::try_from_f64(1.0)?,
+        denominator: ExactDyadic::from_f64(1.0),
     })
 }
 
@@ -61,7 +57,7 @@ fn exact_point_segment_squared(
     let direction = exact_sub(end, start)?;
     let offset = exact_sub(point, start)?;
     let denominator = exact_dot(&direction, &direction)?;
-    let zero = ExactDyadic::try_from_f64(0.0)?;
+    let zero = ExactDyadic::from_f64(0.0);
     if denominator.is_zero() {
         return exact_point_pair_squared(point, start);
     }
@@ -131,16 +127,16 @@ fn exact_segment_squared(
     p2: [f64; 3],
     q2: [f64; 3],
 ) -> Result<ExactSquaredDistance> {
-    let p1 = exact_point(p1)?;
-    let q1 = exact_point(q1)?;
-    let p2 = exact_point(p2)?;
-    let q2 = exact_point(q2)?;
+    let p1 = exact_point(p1);
+    let q1 = exact_point(q1);
+    let p2 = exact_point(p2);
+    let q2 = exact_point(q2);
     let d1 = exact_sub(&q1, &p1)?;
     let d2 = exact_sub(&q2, &p2)?;
     let r = exact_sub(&p1, &p2)?;
     let a = exact_dot(&d1, &d1)?;
     let e = exact_dot(&d2, &d2)?;
-    let zero = ExactDyadic::try_from_f64(0.0)?;
+    let zero = ExactDyadic::from_f64(0.0);
     if a.is_zero() && e.is_zero() {
         return exact_point_pair_squared(&p1, &p2);
     }

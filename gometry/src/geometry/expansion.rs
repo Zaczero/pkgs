@@ -205,7 +205,7 @@ mod tests {
             .iter()
             .copied()
             .fold(ExactDyadic::from_f64(0.0), |sum, limb| {
-                sum.add(ExactDyadic::from_f64(limb))
+                sum.try_add(ExactDyadic::from_f64(limb)).unwrap()
             })
     }
 

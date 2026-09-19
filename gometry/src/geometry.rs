@@ -126,8 +126,8 @@ use constructive::{
     snap_ring_to_reference, winding_region,
 };
 pub(crate) use coverage::{
-    CoverageOverlapRule, HashMapExt, RTreeObject, coverage_clean, coverage_invalid_edges,
-    coverage_is_valid, coverage_simplify, coverage_union_topo,
+    CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
+    coverage_simplify, coverage_union_topo,
 };
 pub(in crate::geometry) use coverage::{TopologyGuard, simplify_chain_guarded, triangle_area};
 pub(crate) use distance::{
@@ -260,7 +260,6 @@ pub(in crate::geometry) use segment_index::{
     single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
-pub(in crate::geometry) use segments::try_sort_by;
 use segments::{
     CCW_ERRBOUND_A, Contact, ON_SEGMENT_EPSILON, SegmentProjection, SquaredDistanceKey,
     interpolate_segment_point, nearest_points, orientation_xy, point_pair_distance_key,
@@ -283,6 +282,7 @@ pub(crate) use segments::{clip_segment, point_segment_distance, point_segment_se
 pub(crate) use segments::{
     interpolate_f64, interpolate_fraction, interpolate_subdivision_ordinate,
 };
+pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};
 use tessellation::{delaunay_triangulation, point_in_ccw_triangle};
 pub(in crate::geometry) use types::GeodesicPartsKey;

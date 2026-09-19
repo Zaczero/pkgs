@@ -122,6 +122,23 @@ pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
     Ok(())
 }
 
+/// Collect fallible items into fallibly grown storage: the iterator's lower
+/// size bound is reserved up front, and the first error ends the collection.
+pub(crate) fn try_collect_vec<T, E>(
+    items: impl IntoIterator<Item = std::result::Result<T, E>>,
+) -> std::result::Result<Vec<T>, E>
+where
+    E: From<crate::error::Error>,
+{
+    let items = items.into_iter();
+    let mut out = Vec::new();
+    try_reserve_vec(&mut out, items.size_hint().0).map_err(E::from)?;
+    for item in items {
+        try_push_vec(&mut out, item?).map_err(E::from)?;
+    }
+    Ok(out)
+}
+
 /// Grow a full vector for the next push — double it, starting at 8 — and
 /// release its storage when the allocator refuses.
 fn grow_for_push<T>(vec: &mut Vec<T>) -> Result<(), ()> {

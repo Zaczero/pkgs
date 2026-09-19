@@ -6,7 +6,7 @@ use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::facet_bvh::Facet;
 use crate::geometry::tessellation::exact::{
-    self, ExactDyadic, ExactRational as Rational, try_compare_ratios,
+    self, ExactDyadic, ExactRational as Rational, compare_ratios,
 };
 use crate::geometry::{
     AxisFrame, BVH_MIN_INDEXED_SEGMENTS, Bounds, CoordSeq, CoordSeqBuilder, Coordinates as _,
@@ -193,7 +193,7 @@ impl CertifiedDisk {
     /// scale. Scaling the squared-radius numerator first avoids the
     /// rounded-native-radius-then-scale double rounding route.
     pub(crate) fn radius_in_scale(&self, to_metre: f64) -> Result<f64> {
-        let scale = ExactDyadic::try_from_f64(to_metre)?;
+        let scale = ExactDyadic::from_f64(to_metre);
         let scaled_numerator = self
             .radius_squared_numerator
             .try_product(&scale)?
@@ -203,8 +203,8 @@ impl CertifiedDisk {
 
     /// Whether a binary64 vertex is strictly outside this exact disk.
     fn vertex_is_strictly_outside(&self, point: XY) -> Result<bool> {
-        let point_x = ExactDyadic::try_from_f64(point.x)?;
-        let point_y = ExactDyadic::try_from_f64(point.y)?;
+        let point_x = ExactDyadic::from_f64(point.x);
+        let point_y = ExactDyadic::from_f64(point.y);
         let dx = self
             .center_x
             .try_clone()?
@@ -233,8 +233,8 @@ impl CertifiedDisk {
     fn ccw_edge_encloses(&self, left: XY, right: XY) -> Result<bool> {
         let edge_x = exact_difference(right.x, left.x)?;
         let edge_y = exact_difference(right.y, left.y)?;
-        let left_x = ExactDyadic::try_from_f64(left.x)?;
-        let left_y = ExactDyadic::try_from_f64(left.y)?;
+        let left_x = ExactDyadic::from_f64(left.x);
+        let left_y = ExactDyadic::from_f64(left.y);
         let center_offset_x = self
             .center_x
             .try_clone()?
@@ -352,7 +352,7 @@ fn solve_enclosing_circle_order(
                 let a = order[i];
                 let b = order[j];
                 let c = order[k];
-                circle = if exact::try_orient2d(points[a].xy(), points[b].xy(), points[c].xy())?
+                circle = if exact::orient2d(points[a].xy(), points[b].xy(), points[c].xy())
                     == ExactSign::Zero
                 {
                     work.count_collinear_fallback();
@@ -506,7 +506,7 @@ fn certify_minimum_circle_polygon(
         let previous = open[(index + open.len() - 1) % open.len()];
         let current = open[index];
         let next = open[(index + 1) % open.len()];
-        let turn = exact::try_orient2d(previous, current, next).map_err(circle_emission_error)?;
+        let turn = exact::orient2d(previous, current, next);
         if turn == ExactSign::Zero {
             return Err(unrepresentable_minimum_circle());
         }
@@ -885,11 +885,11 @@ pub(crate) fn scale_aware_default_tolerance(shape: &Shape) -> Result<f64> {
 type ExactRatio = (ExactDyadic, ExactDyadic);
 
 fn compare_exact_ratios(left: &ExactRatio, right: &ExactRatio) -> Result<Ordering> {
-    try_compare_ratios(&left.0, &left.1, &right.0, &right.1)
+    compare_ratios(&left.0, &left.1, &right.0, &right.1)
 }
 
 fn exact_difference(left: f64, right: f64) -> Result<ExactDyadic> {
-    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
+    ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
 }
 
 fn exact_squared_sum(left: &ExactDyadic, right: &ExactDyadic) -> Result<ExactDyadic> {
@@ -899,10 +899,7 @@ fn exact_squared_sum(left: &ExactDyadic, right: &ExactDyadic) -> Result<ExactDya
 fn exact_point_pair_squared(left: XY, right: XY) -> Result<ExactRatio> {
     let dx = exact_difference(left.x, right.x)?;
     let dy = exact_difference(left.y, right.y)?;
-    Ok((
-        exact_squared_sum(&dx, &dy)?,
-        ExactDyadic::try_from_f64(1.0)?,
-    ))
+    Ok((exact_squared_sum(&dx, &dy)?, ExactDyadic::from_f64(1.0)))
 }
 
 fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactRatio> {
@@ -912,7 +909,7 @@ fn exact_point_segment_squared(point: Point, segment: Segment) -> Result<ExactRa
     let qx = exact_difference(point.x, segment.start.x)?;
     let qy = exact_difference(point.y, segment.start.y)?;
     let denominator = dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)?;
-    let zero = ExactDyadic::try_from_f64(0.0)?;
+    let zero = ExactDyadic::from_f64(0.0);
     if denominator.is_zero() {
         return exact_point_pair_squared(point, segment.start);
     }
@@ -1038,8 +1035,8 @@ fn segment_enters_candidate(
     candidate: &[Point],
     counter_clockwise: bool,
 ) -> Result<bool> {
-    let zero = ExactDyadic::try_from_f64(0.0)?;
-    let one = ExactDyadic::try_from_f64(1.0)?;
+    let zero = ExactDyadic::from_f64(0.0);
+    let one = ExactDyadic::from_f64(1.0);
     let lower_bound = (zero.try_clone()?, one.try_clone()?);
     let upper_bound = (one.try_clone()?, one);
     let mut lower = lower_bound;
@@ -2369,10 +2366,9 @@ mod tests {
         assert!(
             open.iter().enumerate().all(|(index, &left)| {
                 let right = open[(index + 1) % open.len()];
-                source.iter().all(|point| {
-                    exact::try_orient2d(left, right, point.xy()).expect("source-side predicate")
-                        != ExactSign::Negative
-                })
+                source
+                    .iter()
+                    .all(|point| exact::orient2d(left, right, point.xy()) != ExactSign::Negative)
             }),
             "the old source-point-only check accepts this ring"
         );
@@ -2419,7 +2415,7 @@ mod tests {
         let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
         let circle = smallest_enclosing_circle(&source).expect("diameter support");
         let disk = circle.certified_disk(&source).expect("exact disk");
-        let two = ExactDyadic::try_from_f64(2.0).expect("exact two");
+        let two = ExactDyadic::from_f64(2.0);
         let equivalent = CertifiedDisk {
             center_x: disk.center_x.try_clone().expect("center x"),
             center_y: disk.center_y.try_clone().expect("center y"),

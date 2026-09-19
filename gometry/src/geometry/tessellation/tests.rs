@@ -17,14 +17,14 @@ fn exact_segment_rejects_projective_point_at_infinity() {
         &super::exact::ExactPoint::from_xy(XY::new(1.0, 1.0)),
     )
     .expect("distinct segment");
-    let infinity = super::exact::line_intersection(&horizontal, &parallel);
+    let infinity = super::exact::line_intersection(&horizontal, &parallel).unwrap();
     let start = super::exact::ExactPoint::from_xy(XY::new(0.0, 0.0));
     let end = super::exact::ExactPoint::from_xy(XY::new(1.0, 0.0));
 
     assert!(!infinity.is_finite());
     assert!(matches!(
         super::exact::segment_intersection(&start, &end, &infinity, &infinity),
-        super::exact::SegmentIntersection::None
+        Ok(super::exact::SegmentIntersection::None)
     ));
 }
 use crate::error::{ErrorKind, ResourceError};
@@ -37,8 +37,8 @@ use crate::geometry::tessellation::earcut::{
 use crate::geometry::{
     CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq, MOrdinate, MultiMember, MultiPolygon, Point,
-    Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision, orientation,
-    ring_contains_interior,
+    Polygon, Ring, Shape, Strictness, VoronoiBoundary, ZOrdinate, open_point_cycle_decision,
+    orientation, ring_contains_interior,
 };
 use crate::test_support::{allocation_count, fail_allocations_after};
 
@@ -72,10 +72,10 @@ fn canonical_voronoi_sites_normalize_zero_and_globally_deduplicate_snaps() {
         xy(0.18, 0.0),
         xy(1.0, 0.0),
     ];
-    let restored = canonical_voronoi_sites(input.clone(), 0.1);
+    let restored = canonical_voronoi_sites(input.clone(), 0.1).unwrap();
     let mut reversed = input;
     reversed.reverse();
-    let mutated_order = canonical_voronoi_sites(reversed, 0.1);
+    let mutated_order = canonical_voronoi_sites(reversed, 0.1).unwrap();
     let signature = |sites: &[super::Site]| {
         sites
             .iter()
@@ -89,35 +89,6 @@ fn canonical_voronoi_sites_normalize_zero_and_globally_deduplicate_snaps() {
         restored.iter().map(|site| site.id).collect::<Vec<_>>(),
         vec![0, 1, 2, 3]
     );
-
-    let historical = |points: Vec<Point>| {
-        let sites = points
-            .into_iter()
-            .enumerate()
-            .map(|(id, point)| super::Site { id, point })
-            .collect::<Vec<_>>();
-        let mut seen = std::collections::HashSet::new();
-        super::snap_sites(&sites, 0.1)
-            .into_iter()
-            .filter(|site| seen.insert(crate::geometry::PointKey::new(site.point)))
-            .map(|site| (site.point.x.to_bits(), site.point.y.to_bits()))
-            .collect::<Vec<_>>()
-    };
-    let historical_forward = historical(vec![
-        xy(0.0, 0.0),
-        xy(0.09, 0.0),
-        xy(0.18, 0.0),
-        xy(0.0, 1.0),
-        xy(1.0, 0.0),
-    ]);
-    let historical_reverse = historical(vec![
-        xy(1.0, 0.0),
-        xy(0.0, 1.0),
-        xy(0.18, 0.0),
-        xy(0.09, 0.0),
-        xy(0.0, 0.0),
-    ]);
-    assert_ne!(historical_forward, historical_reverse);
 }
 
 #[test]
@@ -136,9 +107,10 @@ fn exact_snap_does_not_use_a_rounded_axis_rejection() {
         (sites[0].point.y - sites[1].point.y).abs().to_bits(),
         1e20_f64.to_bits()
     );
-    let snapped = super::snap_sites(&sites, 1e20);
-    assert_eq!(snapped[0].id, 0);
-    assert_eq!(snapped[1].id, 0);
+    let survivors = super::snap_sites(&sites, 1e20).unwrap();
+    assert_eq!(survivors.iter().map(|site| site.id).collect::<Vec<_>>(), [
+        0
+    ]);
 }
 
 #[test]
@@ -224,6 +196,90 @@ fn unconstrained_delaunay_allocation_prefixes_are_resource_errors_and_retryable(
         );
     }
     fail_allocations_after(allocations + 8, || source.delaunay_triangles()).unwrap();
+}
+
+/// Every allocation prefix of `operation` fails with the allocation error, and
+/// an allocator with room to spare reproduces the unconstrained result. One
+/// warm-up call first fills the thread's scratch pools, so the counted call is
+/// the costliest a later call can be.
+fn assert_allocation_prefixes_recover<T: PartialEq + std::fmt::Debug>(
+    operation: impl Fn() -> crate::error::Result<T>,
+) {
+    operation().unwrap();
+    let (expected, allocations) = allocation_count(&operation);
+    let expected = expected.unwrap();
+    assert!(allocations > 0);
+    for allowed in 0..allocations {
+        let result = fail_allocations_after(allowed, &operation);
+        assert!(
+            matches!(
+                &result,
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        ErrorKind::Resource(ResourceError::Allocation)
+                    )
+            ),
+            "prefix {allowed} of {allocations}: {result:?}"
+        );
+    }
+    assert_eq!(
+        fail_allocations_after(allocations + 8, &operation).unwrap(),
+        expected
+    );
+}
+
+fn voronoi_sites(points: &[Point]) -> Shape {
+    Shape::MultiPoint(CoordSeq::try_from_points(points).unwrap().into())
+}
+
+#[test]
+fn dual_voronoi_allocation_prefixes_are_resource_errors_and_retryable() {
+    let sites = voronoi_sites(&[
+        xy(0.0, 0.0),
+        xy(4.0, 0.0),
+        xy(4.0, 4.0),
+        xy(0.0, 4.0),
+        xy(2.0, 2.0),
+        xy(5.0, 2.5),
+    ]);
+    for boundary in [VoronoiBoundary::Envelope, VoronoiBoundary::Padded] {
+        assert_allocation_prefixes_recover(|| sites.voronoi_polygons(0.0, boundary));
+        assert_allocation_prefixes_recover(|| sites.voronoi_edges(0.0, boundary));
+    }
+    assert_allocation_prefixes_recover(|| sites.voronoi_polygons(0.6, VoronoiBoundary::Envelope));
+}
+
+/// The polygon clip runs the exact subdivision; a holed clip reaches hole
+/// normalization and ring nesting, and edges reach chain publication.
+#[test]
+fn clipped_voronoi_cell_allocation_prefixes_are_resource_errors_and_retryable() {
+    let sites = voronoi_sites(&[xy(0.0, 0.0), xy(4.0, 0.0), xy(1.0, 3.0)]);
+    let clip = polygon(
+        vec![xy(-1.0, -1.0), xy(5.0, -1.0), xy(5.0, 4.0), xy(-1.0, 4.0)],
+        vec![vec![xy(1.5, 0.5), xy(1.5, 1.0), xy(2.0, 1.0), xy(2.0, 0.5)]],
+    );
+    assert_allocation_prefixes_recover(|| {
+        sites.voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
+    });
+}
+
+#[test]
+fn clipped_voronoi_edge_allocation_prefixes_are_resource_errors_and_retryable() {
+    let sites = voronoi_sites(&[xy(0.0, 0.0), xy(4.0, 0.0), xy(1.0, 3.0)]);
+    let clip = polygon(
+        vec![xy(-1.0, -1.0), xy(5.0, -1.0), xy(5.0, 4.0), xy(-1.0, 4.0)],
+        vec![],
+    );
+    assert_allocation_prefixes_recover(|| {
+        sites.voronoi_edges(0.0, VoronoiBoundary::Polygon(&clip))
+    });
+}
+
+#[test]
+fn collinear_voronoi_allocation_prefixes_are_resource_errors_and_retryable() {
+    let sites = voronoi_sites(&[xy(0.0, 0.0), xy(1.0, 1.0), xy(3.0, 3.0)]);
+    assert_allocation_prefixes_recover(|| sites.voronoi_edges(0.0, VoronoiBoundary::Padded));
 }
 
 fn polygon(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {

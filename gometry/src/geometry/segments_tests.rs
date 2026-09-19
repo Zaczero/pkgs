@@ -2,7 +2,7 @@ use crate::geometry::segments::{
     ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority,
     clip_segment_liang_barsky, compare_along_segment, segment_nearest_points,
 };
-use crate::geometry::tessellation::exact::{ExactDyadic, try_compare_ratios};
+use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::*;
 
 #[test]
@@ -871,7 +871,7 @@ fn assert_projection_ratio(
         super::SegmentProjection::CertifiedInterior(certified) => {
             let exact = certified.exact().unwrap();
             assert_eq!(
-                try_compare_ratios(
+                compare_ratios(
                     &exact.numerator,
                     &exact.denominator,
                     &expected_numerator,
@@ -883,7 +883,7 @@ fn assert_projection_ratio(
         },
         super::SegmentProjection::ExactInterior(exact) => {
             assert_eq!(
-                try_compare_ratios(
+                compare_ratios(
                     &exact.numerator,
                     &exact.denominator,
                     &expected_numerator,
@@ -1015,7 +1015,7 @@ fn exact_clamp_classification_wins_around_one_plus_two_to_the_minus_fifty_four()
         .try_add(ExactDyadic::from_f64(2.0_f64.powi(-54)))
         .unwrap();
     assert_eq!(
-        try_compare_ratios(
+        compare_ratios(
             &terms.numerator,
             &terms.denominator,
             &expected_numerator,
@@ -1373,4 +1373,33 @@ mod exact_projection_allocation_tests {
         let point = XY::new(1e200 + 0.5, 1.0);
         prefix_sweep(0, || segment_projection(point, segment).map(|_| ()));
     }
+}
+
+#[test]
+fn fallible_sort_is_stable_and_matches_the_standard_sort() {
+    for len in (0..=70).chain([255, 256, 257, 1000]) {
+        let items: Vec<(u32, usize)> = (0..len)
+            .map(|index| ((index as u32).wrapping_mul(2_654_435_761) % 7, index))
+            .collect();
+        let mut expected = items.clone();
+        expected.sort_by_key(|item| item.0);
+        let mut sorted = items;
+        try_sort_by(&mut sorted, |left, right| Ok(left.0.cmp(&right.0))).unwrap();
+        assert_eq!(sorted, expected, "length {len}");
+    }
+}
+
+#[test]
+fn fallible_sort_stops_at_the_first_comparison_error() {
+    let mut items: Vec<u32> = (0..100).rev().collect();
+    let mut comparisons = 0;
+    let result = try_sort_by(&mut items, |left, right| {
+        comparisons += 1;
+        if comparisons == 40 {
+            return Err(GeometryErrorKind::voronoi("stop"));
+        }
+        Ok(left.cmp(right))
+    });
+    assert!(result.is_err());
+    assert_eq!(comparisons, 40);
 }

@@ -1,5 +1,3 @@
-use ahash::HashSetExt as _;
-
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
@@ -10,8 +8,8 @@ use crate::geometry::tessellation::{
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
-    GeometryErrorKind, GeometryKind, HashSet, Point, PointKey, Polygon, PolygonizeFull, Ring,
-    Segment, Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
+    GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, PolygonizeFull, Ring, Segment,
+    Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
 };
 use crate::{NonNegative, try_push_vec, try_reserve_vec};
 
@@ -445,12 +443,11 @@ impl Shape {
                 "input points are collinear; Voronoi cells cannot be computed",
             ));
         }
-        Ok(
+        crate::try_collect_vec(
             voronoi_dcel::build(&canonical, boundary, budget, true, &mesh)?
                 .into_polygons()
                 .into_iter()
-                .map(Self::Polygon)
-                .collect(),
+                .map(|polygon| Ok(Self::Polygon(polygon))),
         )
     }
 
@@ -469,12 +466,12 @@ impl Shape {
         boundary: VoronoiBoundary<'_>,
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<Self>> {
-        Ok(self
-            .voronoi_edges_raw(tolerance, boundary, budget)?
-            .into_line_seqs()?
-            .into_iter()
-            .map(Self::LineString)
-            .collect())
+        crate::try_collect_vec(
+            self.voronoi_edges_raw(tolerance, boundary, budget)?
+                .into_line_seqs()?
+                .into_iter()
+                .map(|line| Ok(Self::LineString(line))),
+        )
     }
 
     /// The edges as one packed line column: what an array result stores, so
@@ -666,14 +663,15 @@ impl Shape {
 }
 
 impl Shape {
-    fn voronoi_sites(&self, tolerance: f64) -> Vec<Site> {
-        let mut points = Vec::with_capacity(self.coord_count());
+    fn voronoi_sites(&self, tolerance: f64) -> Result<Vec<Site>> {
+        let mut points = Vec::new();
+        try_reserve_vec(&mut points, self.coord_count())?;
         self.for_each_point(|point| points.push(point.to_xy()));
         canonical_voronoi_sites(points, tolerance)
     }
 
     fn prepare_voronoi(&self, tolerance: f64) -> Result<(Vec<Site>, Option<CertifiedDelaunay>)> {
-        let sites = self.voronoi_sites(tolerance);
+        let sites = self.voronoi_sites(tolerance)?;
         let mesh = if sites.len() >= 2 {
             Some(certified_delaunay(&sites)?)
         } else {
@@ -683,10 +681,10 @@ impl Shape {
     }
 }
 
-/// Snap once at the public boundary, then remove coincident representatives.
-/// The downstream tessellators always receive a true site set, never the
-/// duplicate aliases that snapping intentionally creates.
-pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) -> Vec<Site> {
+/// Canonical sites: signed zeros normalized, coincident points merged, and
+/// snapping applied once at the public boundary, so the tessellators always
+/// receive a true site set in x order with dense ids.
+pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) -> Result<Vec<Site>> {
     for point in &mut points {
         point.x += 0.0;
         point.y += 0.0;
@@ -697,19 +695,20 @@ pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) ->
             .then_with(|| left.y.total_cmp(&right.y))
     });
     points.dedup_by(|left, right| PointKey::new(*left) == PointKey::new(*right));
-    let sites: Vec<_> = points
-        .into_iter()
-        .enumerate()
-        .map(|(id, point)| Site { id, point })
-        .collect();
+    let mut sites = Vec::new();
+    try_reserve_vec(&mut sites, points.len())?;
+    sites.extend(
+        points
+            .into_iter()
+            .enumerate()
+            .map(|(id, point)| Site { id, point }),
+    );
     if tolerance == 0.0 {
-        return sites;
+        return Ok(sites);
     }
-    let mut snapped = snap_sites(&sites, tolerance);
-    let mut seen = HashSet::with_capacity(snapped.len());
-    snapped.retain(|site| seen.insert(PointKey::new(site.point)));
-    for (id, site) in snapped.iter_mut().enumerate() {
+    let mut survivors = snap_sites(&sites, tolerance)?;
+    for (id, site) in survivors.iter_mut().enumerate() {
         site.id = id;
     }
-    snapped
+    Ok(survivors)
 }

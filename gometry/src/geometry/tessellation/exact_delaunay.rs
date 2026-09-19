@@ -345,7 +345,7 @@ impl Mesh {
             }
             let [a, b, c] = self.triangle(e / 3);
             let d = self.triangles[prev_halfedge(f)];
-            if exact::try_incircle(xy(a), xy(b), xy(c), xy(d))? != ExactSign::Positive {
+            if exact::incircle(xy(a), xy(b), xy(c), xy(d))? != ExactSign::Positive {
                 continue;
             }
             let g = self.flip(e);
@@ -576,7 +576,7 @@ impl Mesh {
                     continue;
                 }
                 let [a, b, c] = self.triangle(n);
-                if exact::try_incircle(xy(a), xy(b), xy(c), p)? == ExactSign::Positive {
+                if exact::incircle(xy(a), xy(b), xy(c), p)? == ExactSign::Positive {
                     self.stamp[n] = epoch;
                     crate::try_push_vec(&mut stack, n)?;
                 }
@@ -786,7 +786,7 @@ impl Mesh {
             let t = e / 3;
             let [a, b, c] = [triangles[3 * t], triangles[3 * t + 1], triangles[3 * t + 2]];
             let opposite = triangles[prev_halfedge(twin)];
-            if exact::try_incircle(xy(a), xy(b), xy(c), xy(opposite))? == ExactSign::Zero {
+            if exact::incircle(xy(a), xy(b), xy(c), xy(opposite))? == ExactSign::Zero {
                 cocircular[e] = true;
                 cocircular[twin] = true;
             }
@@ -862,7 +862,7 @@ mod tests {
                 "triangle {t} is counter-clockwise"
             );
             let opposite = mesh.triangles[prev_halfedge(twin)];
-            let sign = exact::incircle(xy(a), xy(b), xy(c), xy(opposite));
+            let sign = exact::incircle(xy(a), xy(b), xy(c), xy(opposite)).unwrap();
             assert_ne!(
                 sign,
                 ExactSign::Positive,

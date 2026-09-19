@@ -13,7 +13,7 @@
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::{ExactSign, two_sum};
 use crate::geometry::tessellation::exact::{
-    ExactDyadic, round_ratio, round_sqrt_ratio, try_compare_ratios,
+    ExactDyadic, compare_ratios, round_ratio, round_sqrt_ratio,
 };
 use crate::geometry::{
     Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, XY, ZOrdinate,
@@ -31,7 +31,7 @@ pub(in crate::geometry) use exact::{
 use exact::{certified_projection, dd_interpolate};
 
 fn projection_difference(left: f64, right: f64) -> Result<ExactDyadic> {
-    ExactDyadic::try_from_f64(left)?.try_subtract(ExactDyadic::try_from_f64(right)?)
+    ExactDyadic::from_f64(left).try_subtract(ExactDyadic::from_f64(right))
 }
 
 /// Rounded source expression with an outward error radius. The radius covers
@@ -148,14 +148,14 @@ impl CertifiedSegmentProjection {
 
 impl ExactSegmentProjection {
     fn interpolate(&self, start: f64, end: f64) -> Result<f64> {
-        let numerator = ExactDyadic::try_from_f64(start)?
+        let numerator = ExactDyadic::from_f64(start)
             .try_product(&self.denominator)?
             .try_add(projection_difference(end, start)?.try_product(&self.numerator)?)?;
         round_ratio(&numerator, &self.denominator)
     }
 
     fn scale(&self, value: f64) -> Result<f64> {
-        let numerator = ExactDyadic::try_from_f64(value)?.try_product(&self.numerator)?;
+        let numerator = ExactDyadic::from_f64(value).try_product(&self.numerator)?;
         round_ratio(&numerator, &self.denominator)
     }
 
@@ -254,7 +254,7 @@ impl SegmentProjection {
             _ => {
                 let (left_numerator, left_denominator) = self.exact_ratio()?;
                 let (right_numerator, right_denominator) = other.exact_ratio()?;
-                try_compare_ratios(
+                compare_ratios(
                     &left_numerator,
                     &left_denominator,
                     &right_numerator,
@@ -343,23 +343,90 @@ impl SegmentProjection {
     }
 }
 
+/// Stable sort by a fallible comparison; the first error ends it. Runs of
+/// `RUN` items sort by insertion in place. Longer inputs merge those runs as
+/// a permutation through two fallibly reserved index buffers, then apply it
+/// in place, so no item is cloned and nothing allocates infallibly.
 pub(in crate::geometry) fn try_sort_by<T>(
     items: &mut [T],
     mut compare: impl FnMut(&T, &T) -> Result<Ordering>,
 ) -> Result<()> {
-    for i in 1..items.len() {
-        let mut j = i;
-        while j > 0 {
-            match compare(&items[j - 1], &items[j])? {
-                Ordering::Greater => {
-                    items.swap(j - 1, j);
-                    j -= 1;
-                },
-                _ => break,
+    const RUN: usize = 16;
+    for run in items.chunks_mut(RUN) {
+        for index in 1..run.len() {
+            let mut cursor = index;
+            while cursor > 0 && compare(&run[cursor - 1], &run[cursor])? == Ordering::Greater {
+                run.swap(cursor - 1, cursor);
+                cursor -= 1;
             }
         }
     }
+    let len = items.len();
+    if len <= RUN {
+        return Ok(());
+    }
+    let mut order = Vec::new();
+    let mut merged = Vec::new();
+    crate::try_reserve_vec(&mut order, len)?;
+    crate::try_reserve_vec(&mut merged, len)?;
+    order.extend(0..len);
+    merged.resize(len, 0);
+    let mut width = RUN;
+    while width < len {
+        for start in (0..len).step_by(2 * width) {
+            let middle = (start + width).min(len);
+            let end = (start + 2 * width).min(len);
+            let (mut left, mut right) = (start, middle);
+            for slot in &mut merged[start..end] {
+                // Only a strictly smaller right item overtakes: ties keep
+                // their input order.
+                let take_right = left == middle
+                    || (right < end
+                        && compare(&items[order[left]], &items[order[right]])?
+                            == Ordering::Greater);
+                *slot = if take_right {
+                    right += 1;
+                    order[right - 1]
+                } else {
+                    left += 1;
+                    order[left - 1]
+                };
+            }
+        }
+        std::mem::swap(&mut order, &mut merged);
+        width *= 2;
+    }
+    // Position `k` takes the item at `order[k]`; each cycle is walked once.
+    for start in 0..len {
+        let mut current = start;
+        while order[current] != current {
+            let source = order[current];
+            order[current] = current;
+            if source == start {
+                break;
+            }
+            items.swap(current, source);
+            current = source;
+        }
+    }
     Ok(())
+}
+
+/// `Vec::dedup_by` with a fallible sameness test of `(later, earlier)`; the
+/// first error ends it.
+pub(in crate::geometry) fn try_dedup_by<T>(
+    items: &mut Vec<T>,
+    mut same: impl FnMut(&T, &T) -> Result<bool>,
+) -> Result<()> {
+    let mut failure = None;
+    items.dedup_by(|later, earlier| {
+        failure.is_none()
+            && same(later, earlier).unwrap_or_else(|error| {
+                failure = Some(error);
+                false
+            })
+    });
+    failure.map_or(Ok(()), Err)
 }
 
 pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Point, Point)>> {
@@ -658,8 +725,8 @@ fn clip_segment_exact(start: XY, end: XY, rect: Bounds) -> Result<Option<(XY, XY
         (corners[3], corners[0]),
     ];
     let segment = Segment { start, end };
-    let zero = ExactDyadic::try_from_f64(0.0)?;
-    let one = ExactDyadic::try_from_f64(1.0)?;
+    let zero = ExactDyadic::from_f64(0.0);
+    let one = ExactDyadic::from_f64(1.0);
     let mut hits: [Option<ClipHit>; 6] = [const { None }; 6];
     let mut n_hits = 0_usize;
     let point_in = |p: XY| {
@@ -780,10 +847,10 @@ impl SegmentParameter {
             (Self::Start, Self::Start) | (Self::End, Self::End) => Ok(Ordering::Equal),
             (Self::Start, Self::End) => Ok(Ordering::Less),
             (Self::End, Self::Start) => Ok(Ordering::Greater),
-            (Self::Start, Self::Ratio { num, den }) => try_compare_ratios(zero, one, num, den),
-            (Self::End, Self::Ratio { num, den }) => try_compare_ratios(one, one, num, den),
-            (Self::Ratio { num, den }, Self::Start) => try_compare_ratios(num, den, zero, one),
-            (Self::Ratio { num, den }, Self::End) => try_compare_ratios(num, den, one, one),
+            (Self::Start, Self::Ratio { num, den }) => compare_ratios(zero, one, num, den),
+            (Self::End, Self::Ratio { num, den }) => compare_ratios(one, one, num, den),
+            (Self::Ratio { num, den }, Self::Start) => compare_ratios(num, den, zero, one),
+            (Self::Ratio { num, den }, Self::End) => compare_ratios(num, den, one, one),
             (
                 Self::Ratio {
                     num: left_num,
@@ -793,7 +860,7 @@ impl SegmentParameter {
                     num: right_num,
                     den: right_den,
                 },
-            ) => try_compare_ratios(left_num, left_den, right_num, right_den),
+            ) => compare_ratios(left_num, left_den, right_num, right_den),
         }
     }
 }
@@ -824,10 +891,8 @@ fn clip_segment_parameter(segment: Segment, point: XY) -> Result<SegmentParamete
     } else {
         (point.y, segment.start.y, segment.end.y)
     };
-    let numerator =
-        ExactDyadic::try_from_f64(point)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
-    let denominator =
-        ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let numerator = ExactDyadic::from_f64(point).try_subtract(ExactDyadic::from_f64(start))?;
+    let denominator = ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start))?;
     Ok(SegmentParameter::Ratio {
         num: numerator,
         den: denominator,
@@ -844,14 +909,14 @@ fn clip_segment_edge_cross_exact(
             || same_topological_coordinate(edge_start.y, edge_end.y),
         "rectangle edge must be axis aligned"
     );
-    let start_x = ExactDyadic::try_from_f64(segment.start.x)?;
-    let end_x = ExactDyadic::try_from_f64(segment.end.x)?;
-    let start_y = ExactDyadic::try_from_f64(segment.start.y)?;
-    let end_y = ExactDyadic::try_from_f64(segment.end.y)?;
+    let start_x = ExactDyadic::from_f64(segment.start.x);
+    let end_x = ExactDyadic::from_f64(segment.end.x);
+    let start_y = ExactDyadic::from_f64(segment.start.y);
+    let end_y = ExactDyadic::from_f64(segment.end.y);
     let delta_x = end_x.try_subtract(start_x.try_clone()?)?;
     let delta_y = end_y.try_subtract(start_y.try_clone()?)?;
     if same_topological_coordinate(edge_start.x, edge_end.x) {
-        let edge_x = ExactDyadic::try_from_f64(edge_start.x)?;
+        let edge_x = ExactDyadic::from_f64(edge_start.x);
         let offset = edge_x.try_subtract(start_x)?;
         let numerator = start_y
             .try_product(&delta_x)?
@@ -865,7 +930,7 @@ fn clip_segment_edge_cross_exact(
             point: XY::new(edge_start.x, free),
         })
     } else {
-        let edge_y = ExactDyadic::try_from_f64(edge_start.y)?;
+        let edge_y = ExactDyadic::from_f64(edge_start.y);
         let offset = edge_y.try_subtract(start_y)?;
         let numerator = start_x
             .try_product(&delta_y)?
@@ -1478,12 +1543,12 @@ impl ExactSquaredDistance {
         let dy = projection_difference(left.y, right.y)?;
         Ok(Self {
             numerator: dx.try_product(&dx)?.try_add(dy.try_product(&dy)?)?,
-            denominator: ExactDyadic::try_from_f64(1.0)?,
+            denominator: ExactDyadic::from_f64(1.0),
         })
     }
 
     fn cmp(&self, other: &Self) -> Result<Ordering> {
-        try_compare_ratios(
+        compare_ratios(
             &self.numerator,
             &self.denominator,
             &other.numerator,
@@ -1917,13 +1982,13 @@ impl SquaredDistanceKey {
             return true;
         }
         let exact = self.witness.squared().unwrap();
-        let denominator = ExactDyadic::try_from_f64(1.0).unwrap();
+        let denominator = ExactDyadic::from_f64(1.0);
         let lo = ExactSquaredDistance {
-            numerator: ExactDyadic::try_from_f64(self.filter.lo).unwrap(),
+            numerator: ExactDyadic::from_f64(self.filter.lo),
             denominator: denominator.try_clone().unwrap(),
         };
         let hi = ExactSquaredDistance {
-            numerator: ExactDyadic::try_from_f64(self.filter.hi).unwrap(),
+            numerator: ExactDyadic::from_f64(self.filter.hi),
             denominator,
         };
         !lo.cmp(&exact).unwrap().is_gt() && !hi.cmp(&exact).unwrap().is_lt()
@@ -2151,10 +2216,8 @@ pub(crate) fn interpolate_fraction(start: f64, end: f64, target: f64) -> Result<
     if numerator.is_finite() && denominator.is_finite() {
         return Ok(numerator / denominator);
     }
-    let numerator =
-        ExactDyadic::try_from_f64(target)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
-    let denominator =
-        ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)?;
+    let numerator = ExactDyadic::from_f64(target).try_subtract(ExactDyadic::from_f64(start))?;
+    let denominator = ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start))?;
     round_ratio(&numerator, &denominator)
 }
 

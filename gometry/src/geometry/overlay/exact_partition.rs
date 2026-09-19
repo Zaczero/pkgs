@@ -30,9 +30,7 @@ use crate::geometry::segments::{
     crossing_homogeneous, crossing_point, point_in_segment_envelope, point_on_segment,
     segment_envelopes_disjoint, stored_cross_sign, stored_orientation_sign, try_sort_by,
 };
-use crate::geometry::tessellation::exact::{
-    ExactDyadic, Interval, round_ratio, try_compare_ratios,
-};
+use crate::geometry::tessellation::exact::{ExactDyadic, Interval, compare_ratios, round_ratio};
 use crate::geometry::{
     Bounds, Contact, CoordSeq, CoordinateAxes, Coordinates as _, CoverageOverlapRule, De9im,
     Dimension, ExactRationalArea, ExpansionBudget, GeometryErrorKind, GeometryKind, HashMap,
@@ -1464,9 +1462,8 @@ impl GlobalFaces {
             };
             let a = source(left);
             let b = source(right);
-            let difference = |end, start| {
-                ExactDyadic::try_from_f64(end)?.try_subtract(ExactDyadic::try_from_f64(start)?)
-            };
+            let difference =
+                |end, start| ExactDyadic::from_f64(end).try_subtract(ExactDyadic::from_f64(start));
             let ax = difference(a.end.x, a.start.x)?;
             let ay = difference(a.end.y, a.start.y)?;
             let bx = difference(b.end.x, b.start.x)?;
@@ -2391,7 +2388,7 @@ impl ExactSourceInventory {
                 Ok(())
             },
         )?;
-        let mut area = crate::geometry::ExactRationalArea::new()?;
+        let mut area = crate::geometry::ExactRationalArea::new();
         for walk in 0..topology.face_starts.len().saturating_sub(1) {
             if !selected[global.walk_faces[walk] as usize] {
                 continue;
@@ -3445,7 +3442,7 @@ impl ExactSourceInventory {
         border_lengths.fill(0.0);
         let start = face_starts[face] as usize;
         let end = face_starts[face + 1] as usize;
-        let mut area = measure_area.then(ExactRationalArea::new).transpose()?;
+        let mut area = measure_area.then(ExactRationalArea::new);
         let mut perimeter = 0.0;
         for &slot in &face_slots[start..end] {
             let slot = slot as usize;
@@ -6065,9 +6062,9 @@ impl<'a> PointArena<'a> {
             NodeRecipe::Stored => {
                 let point = self.rounded[index as usize];
                 Ok(Cow::Owned([
-                    ExactDyadic::try_from_f64(point.x)?,
-                    ExactDyadic::try_from_f64(point.y)?,
-                    ExactDyadic::try_from_f64(1.0)?,
+                    ExactDyadic::from_f64(point.x),
+                    ExactDyadic::from_f64(point.y),
+                    ExactDyadic::from_f64(1.0),
                 ]))
             },
             NodeRecipe::Crossing { segments, exact } => {
@@ -6098,11 +6095,11 @@ impl<'a> PointArena<'a> {
         }
         let point = self.exact(index)?;
         let axis = axis.index();
-        try_compare_ratios(
+        compare_ratios(
             &point[axis],
             &point[2],
-            &ExactDyadic::try_from_f64(value)?,
-            &ExactDyadic::try_from_f64(1.0)?,
+            &ExactDyadic::from_f64(value),
+            &ExactDyadic::from_f64(1.0),
         )
     }
 
@@ -6145,8 +6142,8 @@ fn parameter_along(segment: Segment, point: &[ExactDyadic; 3]) -> Result<[ExactD
     } else {
         (x, segment.start.x, segment.end.x)
     };
-    let start = ExactDyadic::try_from_f64(start)?;
-    let direction = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
+    let start = ExactDyadic::from_f64(start);
+    let direction = ExactDyadic::from_f64(end).try_subtract(start.try_clone()?)?;
     Ok([
         coordinate
             .try_clone()?
@@ -6196,8 +6193,8 @@ fn interpolate_ordinate(
     if num == den {
         return Ok(Some(end));
     }
-    let start = ExactDyadic::try_from_f64(start)?;
-    let end = ExactDyadic::try_from_f64(end)?;
+    let start = ExactDyadic::from_f64(start);
+    let end = ExactDyadic::from_f64(end);
     let left = den.try_clone()?.try_subtract(num.try_clone()?)?;
     let numerator = start.try_product(&left)?.try_add(end.try_product(num)?)?;
     Ok(Some(round_ratio(&numerator, den)?))
@@ -6274,7 +6271,7 @@ impl RayPoints for PointArena<'_> {
         }
         let (left, right) = (self.exact(left)?, self.exact(right)?);
         let index = axis.index();
-        try_compare_ratios(&left[index], &left[2], &right[index], &right[2])
+        compare_ratios(&left[index], &left[2], &right[index], &right[2])
     }
 
     /// The orientation of `c` against the directed line through `a` and `b`:
@@ -7398,11 +7395,10 @@ mod tests {
                 .unwrap();
             node
         };
-        let first = push(ExactDyadic::try_from_f64(1.0).unwrap());
+        let first = push(ExactDyadic::from_f64(1.0));
         let second = push(
-            ExactDyadic::try_from_f64(1.0)
-                .unwrap()
-                .try_add(ExactDyadic::try_from_f64(2.0_f64.powi(-54)).unwrap())
+            ExactDyadic::from_f64(1.0)
+                .try_add(ExactDyadic::from_f64(2.0_f64.powi(-54)))
                 .unwrap(),
         );
         assert_eq!(
@@ -7907,7 +7903,7 @@ mod tests {
     }
 
     fn dyadic(value: f64) -> ExactDyadic {
-        ExactDyadic::try_from_f64(value).unwrap()
+        ExactDyadic::from_f64(value)
     }
 
     fn ratio_matches(
@@ -7916,7 +7912,7 @@ mod tests {
         num: f64,
         den: f64,
     ) -> bool {
-        try_compare_ratios(actual_num, actual_den, &dyadic(num), &dyadic(den)).unwrap()
+        compare_ratios(actual_num, actual_den, &dyadic(num), &dyadic(den)).unwrap()
             == Ordering::Equal
     }
 
@@ -8458,14 +8454,8 @@ mod tests {
     ) {
         let point = partition.exact(node).unwrap();
         let [px, py, pw] = &*point;
-        assert_eq!(
-            try_compare_ratios(px, pw, x[0], x[1]).unwrap(),
-            Ordering::Equal
-        );
-        assert_eq!(
-            try_compare_ratios(py, pw, y[0], y[1]).unwrap(),
-            Ordering::Equal
-        );
+        assert_eq!(compare_ratios(px, pw, x[0], x[1]).unwrap(), Ordering::Equal);
+        assert_eq!(compare_ratios(py, pw, y[0], y[1]).unwrap(), Ordering::Equal);
     }
 
     fn constructed_count(partition: &ExactPartition) -> usize {
@@ -8544,10 +8534,10 @@ mod tests {
         assert_eq!(partition.node_count(), 5);
         assert_eq!(partition.spans.len(), 4);
         assert_eq!(constructed_count(&partition), 1);
-        let q_num = ExactDyadic::try_from_f64(1.0).unwrap();
-        let two = ExactDyadic::try_from_f64(2.0).unwrap();
+        let q_num = ExactDyadic::from_f64(1.0);
+        let two = ExactDyadic::from_f64(2.0);
         let p54 = {
-            let mut p = ExactDyadic::try_from_f64(1.0).unwrap();
+            let mut p = ExactDyadic::from_f64(1.0);
             for _ in 0..54 {
                 p = p.try_product(&two).unwrap();
             }
@@ -8713,18 +8703,15 @@ mod tests {
             for (&edge, &expected) in edges[row].iter().zip(&departures) {
                 assert_eq!(edge as usize, expected);
             }
-            let four = ExactDyadic::try_from_f64(4.0).unwrap();
-            let three = ExactDyadic::try_from_f64(3.0).unwrap();
-            let zero = ExactDyadic::try_from_f64(0.0).unwrap();
-            let one = ExactDyadic::try_from_f64(1.0).unwrap();
+            let four = ExactDyadic::from_f64(4.0);
+            let three = ExactDyadic::from_f64(3.0);
+            let zero = ExactDyadic::from_f64(0.0);
+            let one = ExactDyadic::from_f64(1.0);
             assert_eq!(
-                try_compare_ratios(x, w, &four, &three).unwrap(),
+                compare_ratios(x, w, &four, &three).unwrap(),
                 Ordering::Equal
             );
-            assert_eq!(
-                try_compare_ratios(y, w, &zero, &one).unwrap(),
-                Ordering::Equal
-            );
+            assert_eq!(compare_ratios(y, w, &zero, &one).unwrap(), Ordering::Equal);
             let left = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
             let right = partition.stored_node(XY::new(3.0, 0.0)).unwrap();
             assert_eq!(
@@ -10083,19 +10070,6 @@ mod tests {
         assert_eq!(partition.node_count(), 64_000);
         assert_eq!(partition.spans.len(), 32_000);
         assert_eq!(constructed_count(&partition), 0);
-    }
-
-    #[test]
-    fn try_add_matches_infallible_add_on_minsub() {
-        let a = ExactDyadic::try_from_f64(1.0).unwrap();
-        let b = ExactDyadic::try_from_f64(f64::from_bits(1)).unwrap();
-        let fallible = a
-            .try_clone()
-            .unwrap()
-            .try_subtract(b.try_clone().unwrap())
-            .unwrap();
-        let infail = ExactDyadic::from_f64(1.0).subtract(ExactDyadic::from_f64(f64::from_bits(1)));
-        assert_eq!(fallible, infail);
     }
 
     #[test]
