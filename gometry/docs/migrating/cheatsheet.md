@@ -162,7 +162,7 @@ Conventions: `import gometry as gm`; `geom` is a gometry geometry; and
 | `tree.query(g, predicate=...)` | [`idx.query(g, predicate=...)`][gometry.SpatialIndex.query] | |
 | `tree.nearest(g)` | [`idx.nearest(g, unit=...)`][gometry.SpatialIndex.nearest] | |
 | `tree.query_nearest(g, exclusive=True)` | `idx.nearest(g, exclusive=True)` | skip self-matches |
-| `prepare(g)` + predicate | `gm.<predicate>(g.prepare(), geom)` or `idx.query(g, predicate=...)` | The prepared geometry may be either operand. |
+| `prepare(g)` + predicate | `gm.<predicate>(g, geom)` or `idx.query(g, predicate=...)` | A geometry indexes itself once it is probed repeatedly. |
 
 ## pyproj
 

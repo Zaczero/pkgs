@@ -40,14 +40,13 @@ def _shapes_and_probes():
 def test_prepared_xy_interior_matches_scalar_oracle(predicate, name, geometry, probe):
     """A certified interior cell must preserve the exact scalar verdict."""
     del name
-    prepared = geometry.prepare()
     x, y = probe
     scalar = bool(getattr(gm, predicate[:-3])(geometry, gm.Point(x, y)))
 
     for count in (9_999, 10_000):
         xs = np.full(count, x)
         ys = np.full(count, y)
-        result = getattr(gm, predicate)(prepared, xs, ys)
+        result = getattr(gm, predicate)(geometry, xs, ys)
         np.testing.assert_array_equal(result, np.full(count, scalar))
 
 
@@ -56,15 +55,14 @@ def test_prepared_xy_interior_matches_scalar_oracle(predicate, name, geometry, p
 def test_prepared_xy_gate_is_batching_invariant(predicate, name, geometry, probe):
     """Crossing the gate cannot change results relative to below-gate batches."""
     del name
-    prepared = geometry.prepare()
     x, y = probe
 
     for count, half in ((9_998, 4_999), (10_000, 5_000)):
         xs = np.full(count, x)
         ys = np.full(count, y)
-        whole = getattr(gm, predicate)(prepared, xs, ys)
+        whole = getattr(gm, predicate)(geometry, xs, ys)
         split = np.concatenate([
-            getattr(gm, predicate)(prepared, xs[:half], ys[:half]),
-            getattr(gm, predicate)(prepared, xs[half:], ys[half:]),
+            getattr(gm, predicate)(geometry, xs[:half], ys[:half]),
+            getattr(gm, predicate)(geometry, xs[half:], ys[half:]),
         ])
         np.testing.assert_array_equal(whole, split)

@@ -1091,13 +1091,12 @@ def test_spatial_index_handles_crossing_geographic() -> None:
 
 def test_prepared_geometry_handles_crossing_geographic() -> None:
     poly = _crossing_band_polygon()
-    pg = poly.prepare()
-    assert gm.contains(pg, gm.Point(175, 45, crs=4326)) is True
-    assert gm.contains(pg, gm.Point(0, 45, crs=4326)) is False
+    assert gm.contains(poly, gm.Point(175, 45, crs=4326)) is True
+    assert gm.contains(poly, gm.Point(0, 45, crs=4326)) is False
     probes = gm.GeometryArray(
         [gm.Point(175, 45, crs=4326), gm.Point(0, 45, crs=4326)], crs=4326
     )
-    assert [bool(x) for x in gm.contains(pg, probes)] == [True, False]
+    assert [bool(x) for x in gm.contains(poly, probes)] == [True, False]
 
 
 def test_spatial_index_handles_pole_enclosing_geographic() -> None:
@@ -1168,21 +1167,19 @@ def test_vertex_at_pole_predicates_are_consistent() -> None:
 
 def test_xy_predicates_match_full_topology_at_poles() -> None:
     cap = gm.Polygon(_latitude_ring(80), crs=4326)
-    prepared = cap.prepare()
     for longitude in (0.0, 180.0, -180.0):
         pole = gm.Point(longitude, 90, crs=4326)
         assert gm.contains_xy(cap, longitude, 90) == gm.contains(cap, pole) is True
         assert gm.intersects_xy(cap, longitude, 90) == gm.intersects(cap, pole) is True
-        assert gm.contains_xy(prepared, longitude, 90) is True
-        assert gm.intersects_xy(prepared, longitude, 90) is True
+        assert gm.contains_xy(cap, longitude, 90) is True
+        assert gm.intersects_xy(cap, longitude, 90) is True
 
     boundary = gm.Polygon([(-10, 80), (10, 80), (0, 90)], crs=4326)
-    boundary_prepared = boundary.prepare()
     for longitude in (0.0, 180.0, -180.0):
         assert gm.contains_xy(boundary, longitude, 90) is False
         assert gm.intersects_xy(boundary, longitude, 90) is True
-        assert gm.contains_xy(boundary_prepared, longitude, 90) is False
-        assert gm.intersects_xy(boundary_prepared, longitude, 90) is True
+        assert gm.contains_xy(boundary, longitude, 90) is False
+        assert gm.intersects_xy(boundary, longitude, 90) is True
 
 
 def test_polar_prepared_and_free_point_batches_keep_original_topology() -> None:
@@ -1193,10 +1190,9 @@ def test_polar_prepared_and_free_point_batches_keep_original_topology() -> None:
     )
     for evaluate in (gm.contains, gm.intersects, gm.covers):
         np.testing.assert_array_equal(evaluate(cap, probes), [True, True, False])
-    prepared = cap.prepare()
     for name in ('contains', 'intersects', 'covers'):
         np.testing.assert_array_equal(
-            getattr(gm, name)(prepared, probes), [True, True, False]
+            getattr(gm, name)(cap, probes), [True, True, False]
         )
 
 

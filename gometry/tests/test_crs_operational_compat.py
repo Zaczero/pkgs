@@ -48,9 +48,7 @@ def test_crs84_4326_predicates_metrics_overlay_lrs_prepared() -> None:
     pt = gm.Point(0.5, 0.5, crs='OGC:CRS84')
     # LRS across axis-order aliases must not raise CRSMismatchError.
     assert 0.0 < line.line_locate(pt, normalized=True) < 1.0
-
-    prepared = poly_a.prepare()
-    assert gm.contains(prepared, gm.Point(1, 1, crs='OGC:CRS84')) is True
+    assert gm.contains(poly_a, gm.Point(1, 1, crs='OGC:CRS84')) is True
 
 
 def test_crs84h_4979_operational() -> None:

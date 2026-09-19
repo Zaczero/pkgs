@@ -421,7 +421,7 @@ def test_public_scalar_boundaries_raise_geometry_errors_not_overflow() -> None:
             'x must be finite',
         ),
         (
-            lambda: gm.contains_xy(geom.prepare(), huge, 0),
+            lambda: gm.contains_xy(geom, huge, 0),
             gm.InvalidGeometryError,
             'x must be finite',
         ),
@@ -679,7 +679,6 @@ def test_public_all_exports_every_curated_facade_symbol() -> None:
         'Point',
         'Polygon',
         'PolygonizeResult',
-        'PreparedGeometry',
         'S2Cell',
         'SpatialIndex',
         'Tile',

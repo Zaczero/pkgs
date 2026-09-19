@@ -9,8 +9,8 @@ use crate::py::classes::geometry_methods::{
 use crate::py::crs::drain_accuracy_warning;
 use crate::py::replace::{ReplacePresence, reject_unknown_kwargs, replace_crs, replace_epoch};
 use crate::{
-    GeometryTransformFrame, PyCrs, PyPreparedGeometry, TransformOptionArgs,
-    coordinate_epoch_option, crs, crs_arc, parse_crs,
+    GeometryTransformFrame, PyCrs, TransformOptionArgs, coordinate_epoch_option, crs, crs_arc,
+    parse_crs,
 };
 
 #[pymethods]
@@ -45,26 +45,6 @@ impl PyGeometry {
             &self.shape,
             source,
         )?)))
-    }
-
-    /// Create a `PreparedGeometry` predicate operand in O(1).
-    /// The relevant spatial product is built lazily on first use.
-    ///
-    /// Returns
-    /// -------
-    /// PreparedGeometry
-    ///
-    /// Examples
-    /// --------
-    /// >>> import gometry as gm
-    /// >>> prep = gm.box(0, 0, 2, 2).prepare()
-    /// >>> gm.contains(prep, gm.Point(1, 1))
-    /// True
-    pub fn prepare(&self) -> PyResult<PyPreparedGeometry> {
-        self.plan_or_transient()?;
-        Ok(PyPreparedGeometry {
-            geometry: self.clone(),
-        })
     }
 
     /// Attach or relabel the CRS *without* moving coordinates.

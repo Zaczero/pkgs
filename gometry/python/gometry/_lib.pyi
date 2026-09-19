@@ -166,7 +166,6 @@ _GroupValuesT_co = TypeVar(
     '_GroupValuesT_co',
     covariant=True,
 )
-_PredicateOperand: TypeAlias = Geometry | PreparedGeometry
 
 __version__: Final[str]
 
@@ -205,7 +204,6 @@ __all__ = [
     'ParseError',
     'Point',
     'Polygon',
-    'PreparedGeometry',
     'S2Cell',
     'SpatialIndex',
     'SpatialIndexIterator',
@@ -1357,21 +1355,6 @@ class Geometry:
         CRSError
             If the CRS is projected (a geographic CRS or CRS-free lon/lat is
             required).
-        """
-    def prepare(self) -> PreparedGeometry:
-        """Create a `PreparedGeometry` predicate operand in O(1).
-        The relevant spatial product is built lazily on first use.
-
-        Returns
-        -------
-        PreparedGeometry
-
-        Examples
-        --------
-        >>> import gometry as gm
-        >>> prep = gm.box(0, 0, 2, 2).prepare()
-        >>> gm.contains(prep, gm.Point(1, 1))
-        True
         """
     def __replace__(
         self, *, crs: CrsInput | None = ..., epoch: float | None = ...
@@ -9642,45 +9625,6 @@ class SpatialIndexIterator(Iterator[int]):
     def __sizeof__(self) -> int: ...
 
 @final
-class PreparedGeometry:
-    """A geometry handle that opts repeated predicate tests into prepared kernels.
-
-    Returned by ``geom.prepare()``. The handle is usable on either side of
-    free predicate functions. The relevant spatial product is built lazily
-    on first use. The handle shares ownership of the source geometry.
-    """
-    def __new__(cls, _nonconstructible: Never, /) -> Self: ...
-    @property
-    def geometry(self) -> Geometry:
-        """Source geometry retained by this prepared handle.
-
-        Returns
-        -------
-        Geometry
-            The original typed geometry, sharing its immutable coordinate payload.
-        """
-    def __bool__(self) -> bool:
-        """False when the source geometry is empty; True otherwise."""
-    def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the wrapper plus the source geometry's
-        retained native cost (the source ``ShapeData`` Arc, prepared-plan
-        products, and frame caches already built on this handle). Calling
-        this does not build new caches.
-        """
-    def __copy__(self) -> Self: ...
-    def __deepcopy__(self, memo: object) -> Self: ...
-    def __reduce__(
-        self,
-    ) -> tuple[Callable[[Geometry], PreparedGeometry], tuple[Geometry]]:
-        """Pickles as the source geometry plus a re-`prepare()` on load: the
-        cached indexes are transient state, rebuilt cheaply on first use in
-        the new process (`multiprocessing`/`dask` round-trips just work).
-        """
-    def __eq__(self, other: object, /) -> bool: ...
-    def __hash__(self) -> int: ...
-    def __repr__(self) -> str: ...
-
-@final
 class SpatialIndex(Mapping[int, Geometry]):
     """A packed STR-tree over geometries sharing one CRS/epoch frame.
 
@@ -15220,20 +15164,20 @@ def from_polyline(
     """
 
 @overload
-def contains(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def contains(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def contains(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right``.
 
@@ -15275,20 +15219,20 @@ def contains(
     """
 
 @overload
-def contains_properly(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def contains_properly(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def contains_properly(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_properly(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` contains ``right`` with no boundary contact.
 
@@ -15326,20 +15270,20 @@ def contains_properly(
     """
 
 @overload
-def within(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def within(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def within(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def within(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` lies within ``right``; inverse of ``contains``.
 
@@ -15375,20 +15319,20 @@ def within(
     """
 
 @overload
-def covers(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def covers(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def covers(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covers(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` covers ``right``: every point of ``right`` lies in
     ``left``.
@@ -15426,20 +15370,20 @@ def covers(
     """
 
 @overload
-def covered_by(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def covered_by(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def covered_by(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def covered_by(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` is covered by ``right``; inverse of ``covers``.
 
@@ -15475,18 +15419,16 @@ def covered_by(
     """
 
 @overload
-def contains_xy(
-    geom: _PredicateOperand, x: _FloatScalarInput, y: _FloatScalarInput
-) -> bool: ...
+def contains_xy(geom: Geometry, x: _FloatScalarInput, y: _FloatScalarInput) -> bool: ...
 @overload
 def contains_xy(
-    geom: _PredicateOperand,
+    geom: Geometry,
     x: _FloatColumn1D,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_xy(
-    geom: _PredicateOperand,
+    geom: Geometry,
     x: FloatInput,
     y: _FloatColumn1D,
 ) -> npt.NDArray[np.bool_]: ...
@@ -15498,7 +15440,7 @@ def contains_xy(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def contains_xy(
-    geom: _PredicateOperand | GeometryArray[Geometry | None],
+    geom: Geometry | GeometryArray[Geometry | None],
     x: FloatInput,
     y: FloatInput,
 ) -> bool | npt.NDArray[np.bool_]:
@@ -15532,17 +15474,17 @@ def contains_xy(
 
 @overload
 def intersects_xy(
-    geom: _PredicateOperand, x: _FloatScalarInput, y: _FloatScalarInput
+    geom: Geometry, x: _FloatScalarInput, y: _FloatScalarInput
 ) -> bool: ...
 @overload
 def intersects_xy(
-    geom: _PredicateOperand,
+    geom: Geometry,
     x: _FloatColumn1D,
     y: FloatInput,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects_xy(
-    geom: _PredicateOperand,
+    geom: Geometry,
     x: FloatInput,
     y: _FloatColumn1D,
 ) -> npt.NDArray[np.bool_]: ...
@@ -15554,7 +15496,7 @@ def intersects_xy(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects_xy(
-    geom: _PredicateOperand | GeometryArray[Geometry | None],
+    geom: Geometry | GeometryArray[Geometry | None],
     x: FloatInput,
     y: FloatInput,
 ) -> bool | npt.NDArray[np.bool_]:
@@ -15590,20 +15532,20 @@ def intersects_xy(
     """
 
 @overload
-def intersects(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def intersects(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def intersects(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def intersects(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share any point.
 
@@ -15638,20 +15580,20 @@ def intersects(
     """
 
 @overload
-def disjoint(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def disjoint(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def disjoint(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def disjoint(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` share no point; negation of
     ``intersects``.
@@ -15687,20 +15629,20 @@ def disjoint(
     """
 
 @overload
-def touches(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def touches(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def touches(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def touches(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` touch only at boundaries.
 
@@ -15731,20 +15673,20 @@ def touches(
     """
 
 @overload
-def crosses(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def crosses(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def crosses(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def crosses(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` cross (interiors meet with lower
     dimension).
@@ -15778,20 +15720,20 @@ def crosses(
     """
 
 @overload
-def overlaps(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def overlaps(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def overlaps(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def overlaps(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` overlap (same dimension, partial
     interior overlap).
@@ -15823,20 +15765,18 @@ def overlaps(
     """
 
 @overload
-def relate(left: _PredicateOperand, right: _PredicateOperand) -> str: ...
+def relate(left: Geometry, right: Geometry) -> str: ...
 @overload
 def relate(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> list[str]: ...
 @overload
-def relate(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
-) -> list[str]: ...
+def relate(left: Geometry, right: GeometryArray[Geometry | None]) -> list[str]: ...
 @overload
 def relate(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> str | list[str]:
     """Compute the DE-9IM intersection matrix string for ``left`` and
     ``right``.
@@ -15868,25 +15808,23 @@ def relate(
     """
 
 @overload
-def relate_pattern(
-    left: _PredicateOperand, right: _PredicateOperand, pattern: str
-) -> bool: ...
+def relate_pattern(left: Geometry, right: Geometry, pattern: str) -> bool: ...
 @overload
 def relate_pattern(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: _PredicateOperand,
+    left: Geometry,
     right: GeometryArray[Geometry | None],
     pattern: str,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def relate_pattern(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     pattern: str,
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether two geometries' DE-9IM matrix matches a pattern.
@@ -15922,20 +15860,20 @@ def relate_pattern(
     """
 
 @overload
-def equals(left: _PredicateOperand, right: _PredicateOperand) -> bool: ...
+def equals(left: Geometry, right: Geometry) -> bool: ...
 @overload
 def equals(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: _PredicateOperand, right: GeometryArray[Geometry | None]
+    left: Geometry, right: GeometryArray[Geometry | None]
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
 ) -> bool | npt.NDArray[np.bool_]:
     """Test whether ``left`` and ``right`` are spatially equal.
 
@@ -16014,8 +15952,8 @@ def equals_identical(
 
 @overload
 def equals_exact(
-    left: _PredicateOperand,
-    right: _PredicateOperand,
+    left: Geometry,
+    right: Geometry,
     tolerance: float = 0.0,
     *,
     include_z: bool = True,
@@ -16024,7 +15962,7 @@ def equals_exact(
 @overload
 def equals_exact(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -16032,7 +15970,7 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: _PredicateOperand,
+    left: Geometry,
     right: GeometryArray[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
@@ -16041,8 +15979,8 @@ def equals_exact(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def equals_exact(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     tolerance: FloatInput = 0.0,
     *,
     include_z: bool = True,
@@ -16710,8 +16648,8 @@ def split(
 
 @overload
 def dwithin(
-    left: _PredicateOperand,
-    right: _PredicateOperand,
+    left: Geometry,
+    right: Geometry,
     distance: float,
     *,
     unit: DistanceUnit | None = None,
@@ -16719,14 +16657,14 @@ def dwithin(
 @overload
 def dwithin(
     left: GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: _PredicateOperand,
+    left: Geometry,
     right: GeometryArray[Geometry | None],
     distance: FloatInput,
     *,
@@ -16734,8 +16672,8 @@ def dwithin(
 ) -> npt.NDArray[np.bool_]: ...
 @overload
 def dwithin(
-    left: _PredicateOperand | GeometryArray[Geometry | None],
-    right: _PredicateOperand | GeometryArray[Geometry | None],
+    left: Geometry | GeometryArray[Geometry | None],
+    right: Geometry | GeometryArray[Geometry | None],
     distance: FloatInput,
     *,
     unit: DistanceUnit | None = None,

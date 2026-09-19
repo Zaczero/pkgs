@@ -100,7 +100,6 @@ if TYPE_CHECKING:
     gm.Coordinates()  # type: ignore[call-arg]
     gm.GeometryParts()  # type: ignore[call-arg]
     gm.Groups()  # type: ignore[call-arg]
-    gm.PreparedGeometry()  # type: ignore[call-arg]
     gm.ValidationReport()  # type: ignore[call-arg]
 
     gm.SpatialIndex(POINTS).query(POINTS).__getitem__(index=0)  # type: ignore[call-overload]

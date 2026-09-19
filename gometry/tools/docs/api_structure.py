@@ -318,8 +318,8 @@ PAGES: tuple[Page, ...] = (
     Page(
         'spatial-index',
         'Spatial index',
-        'Bulk spatial indexing and prepared geometry for repeated relationship queries.',
-        (section('SpatialIndex', 'PreparedGeometry'),),
+        'Bulk spatial indexing for repeated relationship queries.',
+        (section('SpatialIndex'),),
         (('Spatial indexing & joins', '../guide/indexing.md'),),
     ),
     Page(

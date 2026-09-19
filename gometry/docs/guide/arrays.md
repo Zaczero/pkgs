@@ -451,36 +451,12 @@ print("rows evaluated:", len(vectorized_result))
 
 ```
 
-### Prepare geometry for repeated predicates
+### Repeated predicates on one geometry
 
-When you test **one** geometry against **many** others with the same predicate, build a
-[`PreparedGeometry`][gometry.PreparedGeometry] once with
-[`geom.prepare()`][gometry.Geometry.prepare]. The prepared object keeps
-[`geometry`][gometry.PreparedGeometry.geometry] as a handle back to the source.
-It is false when that source geometry is empty and true otherwise, so preparing
-a geometry preserves its truth value.
-It precomputes
-an edge index so each subsequent predicate reuses prepared geometry state instead of
-re-analysing the geometry from scratch.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-boundary = gm.box(20.0, 51.0, 22.0, 53.0, crs=4326)
-probes = gm.points([21.0, 40.0], [52.0, 10.0], crs=4326)
-
-prepared = boundary.prepare()
-print(gm.contains(prepared, probes).tolist())
-
-```
-
-[`PreparedGeometry`][gometry.PreparedGeometry] is an operand for the free predicate
-family and [`contains_xy`][gometry.contains_xy]; pass it as either argument to `gm.*` (including XY
-predicates), never as a method receiver. These functions accept a single geometry or
-an array (returning `bool` or a `bool_` ndarray mask) and reuse one cached prepared
-spatial/segment index. Prepare when the
-*same* complex geometry is tested against many others; for two arrays, prefer the
-vectorized predicates or a [join](indexing.md).
+When you test **one** geometry against **many** others, call the predicate
+directly. A geometry probed repeatedly builds an edge index after its first few
+probes and keeps it, so later calls, scalar or vectorized, reuse it. For two
+arrays, prefer the vectorized predicates or a [join](indexing.md).
 
 ### Index or join for many-to-many work
 

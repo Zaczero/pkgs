@@ -281,23 +281,6 @@ def test_bool_is_not_empty() -> None:
     assert gm.Polygon([(0, 0), (2, 2), (0, 2), (2, 0), (0, 0)])
 
 
-def test_prepared_bool_preserves_source_emptiness_through_copies() -> None:
-    for geometry in (
-        gm.Point(0, 0),
-        gm.from_wkt('POINT EMPTY'),
-        gm.from_wkt('POLYGON EMPTY'),
-    ):
-        prepared = geometry.prepare()
-        for reconstructed in (
-            prepared,
-            copy.copy(prepared),
-            copy.deepcopy(prepared),
-            pickle.loads(pickle.dumps(prepared)),
-        ):
-            assert bool(reconstructed) is bool(geometry)
-            assert bool(reconstructed) is bool(reconstructed.geometry)
-
-
 def test_geometry_array_value_equality_and_hash() -> None:
     pts = [gm.Point(0, 0), gm.Point(1, 1)]
     left, right = (gm.GeometryArray(pts, crs=4326), gm.GeometryArray(pts, crs=4326))
@@ -820,11 +803,6 @@ def test_engine_copy_and_pickle_contracts() -> None:
         assert clone[1].to_wkt() == geom.centroid().to_wkt()
         with pytest.raises(KeyError):
             clone[0]
-    prepared = geom.prepare()
-    assert copy.copy(prepared) is prepared
-    assert copy.deepcopy(prepared) is prepared
-    clone = pickle.loads(pickle.dumps(prepared))
-    assert gm.contains(clone, gm.Point(0.5, 0.5, crs=4326))
 
 
 def test_coordinates_pickle_copy_and_deepcopy_are_type_stable() -> None:
@@ -873,12 +851,8 @@ def test_scalar_geometry_sizeof_counts_retained_state_without_forcing_caches() -
         warm = geom.__sizeof__()
         assert warm >= cold_a
 
-    # Prepared path may install additional products on the shared handle.
-    prepared_poly = poly.prepare()
-    assert prepared_poly.__sizeof__() >= poly.__sizeof__()
-    # Second prepare-side sizeof must not force further growth by itself.
-    again = prepared_poly.__sizeof__()
-    assert again == prepared_poly.__sizeof__()
+    # Reading the size must not build products by itself.
+    assert poly.__sizeof__() == poly.__sizeof__()
 
 
 def test_container_sizeof_scales_with_members_parts_and_holes() -> None:
@@ -1023,17 +997,15 @@ def test_remaining_heap_retaining_types_report_sizeof_and_nbytes() -> None:
     assert sys.getsizeof(large_index) > sys.getsizeof(small_index)
     assert sys.getsizeof(large_index) > polygons.nbytes
 
-    prepared_poly = _regular_polygon(0.0, 0.0, vertices=256)
-    prepared = prepared_poly.prepare()
-    cold_size = sys.getsizeof(prepared)
-    assert cold_size > prepared_poly.nbytes
-    gm.contains_xy(prepared, [0.0, 2.0], [0.0, 2.0])
-    assert sys.getsizeof(prepared) >= cold_size
+    probed = _regular_polygon(0.0, 0.0, vertices=256)
+    cold_size = sys.getsizeof(probed)
+    assert cold_size > probed.nbytes
+    gm.contains_xy(probed, [0.0, 2.0], [0.0, 2.0])
+    assert sys.getsizeof(probed) >= cold_size
     line = gm.LineString([(float(i), 0.0) for i in range(128)])
-    prepared_line = line.prepare()
-    line_cold_size = sys.getsizeof(prepared_line)
-    prepared_line.geometry.line_interpolate(12.5)
-    assert sys.getsizeof(prepared_line) > line_cold_size
+    line_cold_size = sys.getsizeof(line)
+    line.line_interpolate(12.5)
+    assert sys.getsizeof(line) > line_cold_size
 
     area = gm.box(13.2, 52.4, 13.6, 52.6, crs=4326)
     coverages = (

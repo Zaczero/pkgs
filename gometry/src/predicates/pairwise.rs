@@ -624,16 +624,6 @@ pub(crate) fn dwithin(
     distance: &Bound<'_, PyAny>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    // `py` is already held here; re-attaching would only pay for a token
-    // this call was handed.
-    if let Ok(prepared) = left.cast::<crate::PyPreparedGeometry>() {
-        let geometry = prepared.get().as_geometry().into_pyobject(py)?;
-        return dwithin(py, geometry.as_any(), right, distance, unit);
-    }
-    if let Ok(prepared) = right.cast::<crate::PyPreparedGeometry>() {
-        let geometry = prepared.get().as_geometry().into_pyobject(py)?;
-        return dwithin(py, left, geometry.as_any(), distance, unit);
-    }
     let left_array = exact_geometry_array(left);
     let right_array = exact_geometry_array(right);
     // The per-element distance lane needs an array operand (its result is one

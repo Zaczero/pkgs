@@ -137,7 +137,7 @@ def test_predicate_batch_length_agrees_scalar_15_16() -> None:
             assert bool(fn(scalar, rows[0])) == scalars[0]
 
 
-def test_prepared_predicate_matches_free_across_batch_threshold() -> None:
+def test_seam_predicate_holds_across_batch_threshold() -> None:
     poly = gm.Polygon(
         [(-170.0, 0.0), (170.0, 0.0), (170.0, 10.0), (-170.0, 10.0)],
         crs=4326,
@@ -164,10 +164,7 @@ def test_prepared_predicate_matches_free_across_batch_threshold() -> None:
             -175.0,
         )
     ]
-    prep = poly.prepare()
     for n in (1, 15, 16):
         arr = gm.GeometryArray(pts[:n])
         free = [bool(v) for v in gm.contains(poly, arr)]
-        prepared = [bool(v) for v in gm.contains(prep, arr)]
-        assert free == prepared
         assert free[0] is True  # ±180 / interior seam membership

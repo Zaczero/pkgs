@@ -1,4 +1,4 @@
-"""R5-L1 P0 algorithmic cliffs: noding dedup, validity bounds sweep, prepared XY.
+"""R5-L1 P0 algorithmic cliffs: noding dedup, validity bounds sweep, indexed XY.
 
 These are behavior + structural regressions for the three P0s from the
 round-5 blind-spot audit — not timing gates (host-sensitive). Absolute ms
@@ -158,7 +158,7 @@ def test_validity_verdicts_unchanged_on_corpus():
         assert repaired is not None
 
 
-# --- P0-C: prepared XY always uses tester ---
+# --- P0-C: XY batches always use the tester ---
 
 
 def _big_polygon(n_edge: int = 5000) -> gm.Polygon:
@@ -168,10 +168,10 @@ def _big_polygon(n_edge: int = 5000) -> gm.Polygon:
     return gm.Polygon(coords)
 
 
-# Frozen probe corpus shared by the prepared/free parity checks. Keeping the
+# Frozen probe corpus shared by the batch/scalar parity checks. Keeping the
 # coordinates explicit prevents a seeded generator from becoming a second,
 # unreviewed test input source.
-_PREPARED_PROBES = np.array(
+_XY_PROBES = np.array(
     [
         (-1.4, -1.3),
         (-1.0, -1.3),
@@ -242,67 +242,35 @@ _PREPARED_PROBES = np.array(
 )
 
 # EdgeYIndex leaves its linear plan above 32 edges. This is the smallest even
-# regular ring that keeps the prepared indexed-plan path without benchmark
+# regular ring that keeps the indexed-plan path without benchmark
 # scale coordinate work.
 _INDEXED_POLYGON_EDGES = 34
 
 
-def test_prepared_contains_xy_matches_free_at_every_probe_count():
-    """Prepared receiver uses its tester at every count: results match free.
+def test_contains_xy_batches_match_scalar_scans_at_every_probe_count():
+    """Batches of every size use the indexed plan; each answer matches a scan.
 
-    Pre-fix cliff discarded the prepared tester below 64 probes. The indexed
-    34-edge shape keeps the production plan while making the result agreement
-    observable without a clock at 1/2/3/4 probes. Wall-clock scale lives in
-    ``benches/cases/case_prepared_contains_xy_scale.py``.
+    A fresh polygon per scalar probe keeps the scalar side on the source scan,
+    so the batch tester is compared against an independent path. The indexed
+    34-edge shape keeps the production plan at 1/2/3/4 probes. Wall-clock
+    scale lives in ``benches/cases/case_prepared_contains_xy_scale.py``.
     """
     big = _big_polygon(_INDEXED_POLYGON_EDGES)
-    prep = big.prepare()
-
-    for n in (1, 2, 3, 4):
-        xs, ys = _PREPARED_PROBES[:n].T
-        np.testing.assert_array_equal(
-            gm.contains_xy(prep, xs, ys),
-            gm.contains_xy(big, xs, ys),
-            err_msg=f'contains_xy mismatch at n={n}',
-        )
-        np.testing.assert_array_equal(
-            gm.intersects_xy(prep, xs, ys),
-            gm.intersects_xy(big, xs, ys),
-            err_msg=f'intersects_xy mismatch at n={n}',
-        )
-
-
-def test_prepared_and_free_contains_xy_results_match():
-    big = _big_polygon(_INDEXED_POLYGON_EDGES)
-    prep = big.prepare()
-    xs, ys = _PREPARED_PROBES.T
-    np.testing.assert_array_equal(
-        gm.contains_xy(prep, xs, ys), gm.contains_xy(big, xs, ys)
-    )
-    np.testing.assert_array_equal(
-        gm.intersects_xy(prep, xs, ys), gm.intersects_xy(big, xs, ys)
-    )
-    # Scalar too
-    assert gm.contains_xy(prep, 0.0, 0.0) == gm.contains_xy(big, 0.0, 0.0)
-    assert gm.intersects_xy(prep, 2.0, 2.0) == gm.intersects_xy(big, 2.0, 2.0)
-
-
-def test_free_fn_contains_xy_agrees_across_threshold():
-    """Free contains_xy is correct on both sides of the four-probe crossover.
-
-    The timing shape lives in ``benches/cases/case_prepared_contains_xy_scale.py``.
-    Here only result agreement with prepared (and across the threshold).
-    """
-    big = _big_polygon(_INDEXED_POLYGON_EDGES)
-    prep = big.prepare()
-    xs64, ys64 = _PREPARED_PROBES.T
-    xs3, ys3 = xs64[:3], ys64[:3]
-    xs4, ys4 = xs64[:4], ys64[:4]
-    free3 = gm.contains_xy(big, xs3, ys3)
-    free4 = gm.contains_xy(big, xs4, ys4)
-    np.testing.assert_array_equal(free3, gm.contains_xy(prep, xs3, ys3))
-    np.testing.assert_array_equal(free4, gm.contains_xy(prep, xs4, ys4))
-    np.testing.assert_array_equal(free3, free4[:3])
+    for n in (1, 2, 3, 4, len(_XY_PROBES)):
+        xs, ys = _XY_PROBES[:n].T
+        for batch, scalar in (
+            (gm.contains_xy, gm.contains),
+            (gm.intersects_xy, gm.intersects),
+        ):
+            expected = [
+                scalar(
+                    _big_polygon(_INDEXED_POLYGON_EDGES), gm.Point(float(x), float(y))
+                )
+                for x, y in zip(xs, ys, strict=True)
+            ]
+            np.testing.assert_array_equal(
+                batch(big, xs, ys), expected, err_msg=f'n={n}'
+            )
 
 
 def test_frechet_densify_refuses_an_unreachable_dp() -> None:

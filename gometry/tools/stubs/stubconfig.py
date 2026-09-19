@@ -39,7 +39,6 @@ EXTRA_IGNORED_TYPE_NAMES = frozenset({'_GeometryT', '_GeometryT_co', '_CellT'})
 SURFACES = (
     ('Geometry', gm.Geometry),
     ('GeometryArray', gm.GeometryArray),
-    ('PreparedGeometry', gm.PreparedGeometry),
     ('gometry', gm),
 )
 

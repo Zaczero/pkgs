@@ -124,10 +124,9 @@ def test_pairwise_pole_longitude_neighbours_bypass_planar_bounds_gates() -> None
                 ):
                     predicate = getattr(gm, name)
                     assert bools(predicate(poles, caps)) == [bool(predicate(pole, cap))]
-                prepared = pole.prepare()
                 for name in ('intersects', 'covers', 'disjoint'):
                     expected = bool(getattr(gm, name)(pole, cap))
-                    assert bools(getattr(gm, name)(prepared, caps)) == [expected]
+                    assert bools(getattr(gm, name)(pole, caps)) == [expected]
 
 
 def test_scalar_polar_cap_packed_and_prepared_predicates_use_pole_topology() -> None:
@@ -138,7 +137,6 @@ def test_scalar_polar_cap_packed_and_prepared_predicates_use_pole_topology() -> 
             [(-10.0, near), (10.0, near), (10.0, latitude), (-10.0, latitude)],
             crs=4326,
         )
-        prepared = cap.prepare()
         for pole_latitude in (
             math.nextafter(latitude, 0.0),
             latitude,
@@ -150,7 +148,7 @@ def test_scalar_polar_cap_packed_and_prepared_predicates_use_pole_topology() -> 
                 for name in ('covers', 'intersects', 'touches', 'disjoint'):
                     expected = bool(getattr(gm, name)(cap, pole))
                     assert bools(getattr(gm, name)(cap, packed)) == [expected]
-                    assert bools(getattr(gm, name)(prepared, packed)) == [expected]
+                    assert bools(getattr(gm, name)(cap, packed)) == [expected]
 
 
 def test_pole_longitude_neighbours_reach_every_spatial_index_route() -> None:

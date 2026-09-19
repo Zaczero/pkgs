@@ -298,7 +298,7 @@ def _precondition_prepared_hit_rate() -> None:
     import gometry as gm
 
     data = prepared_polygon_and_probes()
-    mask = gm.contains_xy(data['gm_prep'], data['xs'], data['ys'])
+    mask = gm.contains_xy(data['gm_poly'], data['xs'], data['ys'])
     rate = float(np.asarray(mask).mean())
     if not (0.40 <= rate <= 0.60):
         raise OracleMismatch(
@@ -819,14 +819,14 @@ def build_points() -> PublicCase:
 
 def build_contains_xy() -> PublicCase:
     data = prepared_polygon_and_probes()
-    gm_prep = data['gm_prep']
+    polygon = data['gm_poly']
     sh_poly = data['sh_poly']
     xs, ys = data['xs'], data['ys']
 
     def gometry_call():
         import gometry as gm
 
-        return gm.contains_xy(gm_prep, xs, ys)
+        return gm.contains_xy(polygon, xs, ys)
 
     def competitor_call():
         import shapely

@@ -69,17 +69,8 @@ print(panels(
 
 Binary predicates are free functions: [`gm.contains(left, right)`][gometry.contains]. The same
 spelling handles scalar and array combinations; [`covers`][gometry.covers] is also
-available as a free function. A [`PreparedGeometry`][gometry.PreparedGeometry]
-is an operand to these functions when repeated probing is needed.
-
-```python exec="on" source="block" result="text"
-import gometry as gm
-
-region = gm.box(0, 0, 10, 10)
-prepared = region.prepare()
-print("prepared contains:", gm.contains(prepared, gm.Point(5, 5)))
-
-```
+available as a free function. Repeated probing needs no preparation step: a
+geometry builds its point index after its first few probes and keeps it.
 
 ## Vectorization
 

@@ -1,9 +1,8 @@
 """bench_ab case: prepared contains_xy probe-count scaling shape.
 
-Prints the median wall-clock of prepared contains_xy at the measured
-plan-aware crossover on a large polygon. The retained prepared operand uses
-its hierarchical tester when the selected plan is eligible; timing claims
-belong here, not in pytest.
+Prints the median wall-clock of contains_xy at the measured plan-aware
+crossover on a large polygon, after warm-up calls have left the polygon's
+hierarchical tester built; timing claims belong here, not in pytest.
 """
 
 from __future__ import annotations
@@ -27,7 +26,7 @@ def _big_polygon(n_edge: int = 10_000) -> gm.Polygon:
 
 def _median_prepared(n: int, *, warm: int = 3, reps: int = 11) -> float:
     big = _big_polygon()
-    prep = big.prepare()
+    prep = big
     rng = np.random.default_rng(0)
     xs = rng.uniform(-1.5, 1.5, n)
     ys = rng.uniform(-1.5, 1.5, n)
@@ -61,7 +60,7 @@ def main() -> None:
 
 
 def validate_case() -> None:
-    polygon = gm.box(-1.0, -1.0, 1.0, 1.0).prepare()
+    polygon = gm.box(-1.0, -1.0, 1.0, 1.0)
     result = gm.contains_xy(polygon, np.asarray([0.0]), np.asarray([0.0]))
     assert result.shape == (1,) and bool(result[0])
     emit_validation(

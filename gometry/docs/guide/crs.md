@@ -801,7 +801,7 @@ longitude axis. It is ±180° for EPSG:4326, ±200 grads for EPSG:4807, and ±π
 a radian frame with Greenwich as its prime meridian. gometry's **topology** ops —
 predicates, relate, overlay,
 [`clip_by_rect`][gometry.Geometry.clip_by_rect], centroid, [`point_on_surface`][gometry.Geometry.point_on_surface], bounds, distance/[`dwithin`][gometry.dwithin], the
-spatial index, [`PreparedGeometry`][gometry.PreparedGeometry], and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
+spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 [`validate`][gometry.Geometry.validate], [`require`][gometry.require], [`self_intersections`][gometry.Geometry.self_intersections], [`repair`][gometry.Geometry.repair], and
 [`snap_to_grid(..., repair=True)`][gometry.Geometry.snap_to_grid]) — **auto-split-normalize**
 seam-crossing input at their chokepoints. A seam split is coordinate-planar:

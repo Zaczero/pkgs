@@ -37,7 +37,6 @@ _STUB_LOCAL = (
     '_IntInput',
     '_IntScalar',
     '_IntScalarInput',
-    '_PredicateOperand',
     '_WktOutputDimension',
 )
 _ERROR_CLASSES = (

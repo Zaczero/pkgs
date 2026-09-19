@@ -44,11 +44,6 @@ def test_index_and_prepared_geometry_reveal_held_geometry_frame() -> None:
     assert gm.SpatialIndex().crs is None
     assert gm.SpatialIndex().epoch is None
 
-    prepared = geometry.prepare()
-    assert isinstance(prepared.geometry, gm.Polygon)
-    assert prepared.geometry is not geometry
-    assert prepared.geometry == geometry
-
     indexed = index.get(0)
     assert indexed is not None
     cold_size = indexed.__sizeof__()
@@ -714,11 +709,10 @@ def test_geometry_array_prepared_contains_and_index() -> None:
     np.testing.assert_array_equal(
         gm.equals(gm.Point(0, 0, crs=4326), values), [True, False, False, False]
     )
-    prepared = polygon.prepare()
     np.testing.assert_array_equal(
-        gm.contains(prepared, values), [True, False, True, False]
+        gm.contains(polygon, values), [True, False, True, False]
     )
-    assert gm.contains_xy(prepared, 0, 0)
+    assert gm.contains_xy(polygon, 0, 0)
     family = (
         'contains',
         'intersects',
@@ -740,27 +734,26 @@ def test_geometry_array_prepared_contains_and_index() -> None:
     ]
     for predicate in family:
         np.testing.assert_array_equal(
-            getattr(gm, predicate)(prepared, values),
+            getattr(gm, predicate)(polygon, values),
             [getattr(gm, predicate)(polygon, item) for item in list(values)],
             err_msg=predicate,
         )
         np.testing.assert_array_equal(
-            getattr(gm, predicate)(values, prepared),
+            getattr(gm, predicate)(values, polygon),
             [getattr(gm, predicate)(item, polygon) for item in list(values)],
-            err_msg=f'{predicate} right-prepared',
+            err_msg=f'{predicate} right',
         )
         for probe in probes:
-            assert getattr(gm, predicate)(prepared, probe) == getattr(gm, predicate)(
+            assert getattr(gm, predicate)(polygon, probe) == getattr(gm, predicate)(
                 polygon, probe
             ), (predicate, (probe).to_wkt())
     assert gm.dwithin(
-        prepared, gm.Point(2, 0, crs=4326), 1.5, unit='planar'
+        polygon, gm.Point(2, 0, crs=4326), 1.5, unit='planar'
     ) == gm.dwithin(polygon, gm.Point(2, 0, crs=4326), 1.5, unit='planar')
     np.testing.assert_array_equal(
-        gm.dwithin(prepared, values, 0.0, unit='planar'),
+        gm.dwithin(polygon, values, 0.0, unit='planar'),
         [gm.dwithin(polygon, item, 0.0, unit='planar') for item in list(values)],
     )
-    assert repr(prepared) == '<PreparedGeometry geometry_type=Polygon>'
     assert ids(gm.SpatialIndex(values).query(polygon, predicate='contains')) == [0, 2]
     assert ids(gm.SpatialIndex(values).query(polygon, predicate='covers')) == [0, 2, 3]
     assert (

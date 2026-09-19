@@ -3,7 +3,6 @@
 //! relate broadcasts and coordinate-input broadcasts. The generic value cores
 //! live in the parent `broadcast`.
 
-use pyo3::IntoPyObject as _;
 use pyo3::types::PyAny;
 
 use crate::array::{ArrayRow, PackedStorage, ValidityMask, missing};
@@ -17,10 +16,10 @@ use crate::broadcast::{
 };
 use crate::error::Result;
 use crate::geometry::{PreparedPlan, TopologyDomain};
+use crate::predicates::engine;
 use crate::predicates::engine::{
     GateOperand, Predicate, PreparedTopologyPair, row_kind_empty, topology_scalar_pair,
 };
-use crate::predicates::{PyPreparedGeometry, engine};
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
 
@@ -31,50 +30,6 @@ pub(crate) fn bool_array_mask_missing(
 ) -> PyResult<Py<PyAny>> {
     mask_missing(&mut values, missing, false);
     bool_array(py, values)
-}
-
-/// Present prepared operands as their underlying geometries to a broadcast
-/// implementation. The owned Python values keep the temporary unwrapped
-/// operands alive for the duration of the callback.
-pub(crate) fn with_prepared_operands(
-    py: Python<'_>,
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    operation: impl for<'a> FnOnce(&Bound<'a, PyAny>, &Bound<'a, PyAny>) -> PyResult<Py<PyAny>>,
-) -> PyResult<Py<PyAny>> {
-    let left_prepared = left.cast::<PyPreparedGeometry>().ok();
-    let right_prepared = right.cast::<PyPreparedGeometry>().ok();
-    let left_geometry = match left_prepared {
-        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
-        None => None,
-    };
-    let right_geometry = match right_prepared {
-        Some(prepared) => Some(prepared.get().as_geometry().into_pyobject(py)?),
-        None => None,
-    };
-    let left = left_geometry
-        .as_ref()
-        .map_or(left, |geometry| geometry.as_any());
-    let right = right_geometry
-        .as_ref()
-        .map_or(right, |geometry| geometry.as_any());
-    operation(left, right)
-}
-
-/// Broadcast one named predicate over `Geometry`/`GeometryArray` operands,
-/// returning bool or ndarray.
-///
-/// All operand shapes route through the graph-matrix projection and shared
-/// batch engine ([`scalar_vs_shapes`]).
-pub(crate) fn predicate_broadcast(
-    py: Python<'_>,
-    left: &Bound<'_, PyAny>,
-    right: &Bound<'_, PyAny>,
-    predicate: Predicate,
-) -> PyResult<Py<PyAny>> {
-    with_prepared_operands(py, left, right, |left, right| {
-        crate::dispatch::dispatch_predicate(py, left, right, predicate)
-    })
 }
 
 /// One fixed `scalar` operand against every element of `array`.
@@ -447,9 +402,7 @@ pub(crate) fn relate_string_broadcast(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    with_prepared_operands(py, left, right, |left, right| {
-        topology_broadcast(py, left, right, "relate", |pair| relate_plan_pair(&pair))
-    })
+    topology_broadcast(py, left, right, "relate", |pair| relate_plan_pair(&pair))
 }
 
 fn invalid_de9im_pattern_err(pattern: &str) -> PyErr {
@@ -468,12 +421,10 @@ pub(crate) fn relate_pattern_broadcast(
     right: &Bound<'_, PyAny>,
     pattern: &str,
 ) -> PyResult<Py<PyAny>> {
-    with_prepared_operands(py, left, right, |left, right| {
-        let compiled = crate::geometry::CompiledPattern::new(pattern)
-            .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
-        topology_broadcast(py, left, right, "relate_pattern", move |operands| {
-            engine::topology_scalar_pattern(compiled, &operands)
-        })
+    let compiled = crate::geometry::CompiledPattern::new(pattern)
+        .ok_or_else(|| invalid_de9im_pattern_err(pattern))?;
+    topology_broadcast(py, left, right, "relate_pattern", move |operands| {
+        engine::topology_scalar_pattern(compiled, &operands)
     })
 }
 
@@ -487,10 +438,6 @@ pub(crate) fn xy_predicate(
     y: &Bound<'_, PyAny>,
     inclusive: bool,
 ) -> PyResult<Py<PyAny>> {
-    if let Ok(prepared) = geometry.cast::<PyPreparedGeometry>() {
-        let geometry = prepared.get().as_geometry();
-        return xy_predicate_geometry(py, &geometry, x, y, inclusive);
-    }
     let input = classify_input(geometry).ok_or_else(|| expected_geometry_or_array_for(geometry))?;
     let receiver_len = match input {
         GeometryInput::One(_) => None,
@@ -523,23 +470,6 @@ pub(crate) fn xy_predicate(
             xy_predicate_array_values(py, array, x.values, y.values, inclusive)
         },
     }
-}
-
-/// Scalar-geometry entry used by both the public free functions and prepared
-/// geometry methods. Keeping coordinate parsing/broadcasting here avoids
-/// manufacturing a temporary Python geometry merely to re-enter dispatch.
-pub(crate) fn xy_predicate_geometry(
-    py: Python<'_>,
-    geometry: &PyGeometry,
-    x: &Bound<'_, PyAny>,
-    y: &Bound<'_, PyAny>,
-    inclusive: bool,
-) -> PyResult<Py<PyAny>> {
-    let x_hint = coordinate_sequence_len_hint(x, "x")?;
-    let y_hint = coordinate_sequence_len_hint(y, "y")?;
-    let x = coordinate_input_with_expected(py, x, "x", y_hint, &|| "x must be finite".into())?;
-    let y = coordinate_input_with_expected(py, y, "y", x_hint, &|| "y must be finite".into())?;
-    xy_predicate_geometry_inputs(py, geometry, x, y, inclusive)
 }
 
 fn xy_predicate_geometry_inputs(

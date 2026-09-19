@@ -7,17 +7,17 @@ description: Decision tables for the operations that look alike — which predic
 Each operation has one public name, while some families hold several genuinely
 different tools.
 
-## Repeated predicates: prepare, index, or graph components?
+## Repeated predicates: index or graph components?
 
 | You have | You want | Reach for |
 | --- | --- | --- |
-| **one** geometry probed by many candidates | the same predicate, many times | [`geom.prepare()`][gometry.Geometry.prepare] — builds the segment index once, every later call reuses it |
+| **one** geometry probed by many candidates | the same predicate, many times | the predicate itself — the geometry indexes itself after its first few probes and every later call reuses it |
 | **many** geometries queried by arbitrary probes | candidate retrieval + exact predicate | [`gm.SpatialIndex(values)`][gometry.SpatialIndex] then [`query(..., predicate=...)`][gometry.SpatialIndex.query] |
 | two whole collections matched row-to-row | a relational join | [`gm.join`][gometry.join] (inner/left semantics, any predicate) |
 | one collection grouped by mutual relationships | connected components under a geometric predicate | build a pair graph with [`gm.join`][gometry.join] / [`SpatialIndex.self_join`][gometry.SpatialIndex.self_join], then run a graph connected-components algorithm (networkx / scipy.sparse); reserve coordinate clustering ([NumPy handoff](../ecosystem/numpy.md#handing-off-to-scipy-and-scikit-learn)) for point features only |
 | a cheap pre-group before exact work | bounding-box candidates only | [`SpatialIndex.candidates`][gometry.SpatialIndex.candidates] |
 
-[`prepare()`][gometry.Geometry.prepare] is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
+A geometry's own index is per-geometry state; [`SpatialIndex(values)`][gometry.SpatialIndex]
 is per-collection state (there is no free `gm.index`). For one polygon against one
 large array, [`gm.contains(polygon, arr)`][gometry.contains] uses the prepared path.
 

@@ -147,8 +147,8 @@ def test_predicates_cannot_claim_equality_when_difference_has_a_lineal_gap() -> 
     ])
 
     assert not gm.difference(line, gapped).is_empty
-    assert gm.equals(line.prepare(), gapped) is False
-    assert gm.equals(gapped.prepare(), line) is False
+    assert gm.equals(line, gapped) is False
+    assert gm.equals(gapped, line) is False
     assert gm.contains(gapped, line) is False
     assert gm.within(line, gapped) is False
     assert gm.covers(gapped, line) is False
@@ -165,8 +165,8 @@ def test_overlap_residue_reaches_scalar_array_prepared_and_index_predicates() ->
     left = gm.LineString([(0.0, 0.0), (2.0**999, 0.0)])
     right = gm.LineString([(2.0**-77, 0.0), (2.0**1009, 0.0)])
 
-    assert gm.overlaps(left.prepare(), right) is True
-    assert gm.overlaps(right.prepare(), left) is True
+    assert gm.overlaps(left, right) is True
+    assert gm.overlaps(right, left) is True
     assert list(gm.overlaps(gm.GeometryArray([left]), right)) == [True]
     assert list(gm.overlaps(left, gm.GeometryArray([right]))) == [True]
     assert gm.overlaps(left, right) is True
@@ -181,7 +181,7 @@ def test_mixed_residue_reaches_scalar_array_prepared_and_index_predicates() -> N
     line = gm.LineString([(0.0, 0.0), (length, 0.0)])
     area = gm.box(offset, -1.0, length, 1.0)
 
-    assert gm.covers(area.prepare(), line) is False
+    assert gm.covers(area, line) is False
     assert gm.covered_by(line, area) is False
     assert list(gm.covers(gm.GeometryArray([area]), line)) == [False]
     assert list(gm.covered_by(gm.GeometryArray([line]), area)) == [False]

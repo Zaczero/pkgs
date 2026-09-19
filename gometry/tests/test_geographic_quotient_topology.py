@@ -20,7 +20,7 @@ def test_quotient_seam_membership_reaches_every_topology_consumer() -> None:
 
     assert gm.intersects(source, point)
     assert gm.intersects(point, source)
-    assert gm.intersects(source.prepare(), point)
+    assert gm.intersects(source, point)
     assert gm.intersects(gm.GeometryArray([source, source]), point).tolist() == [
         True,
         True,

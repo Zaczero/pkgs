@@ -1,7 +1,7 @@
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::{Predicate, predicate_broadcast, xy_predicate};
+use crate::{Predicate, xy_predicate};
 /// Test whether ``left`` contains ``right``.
 ///
 /// Returns ``True`` if no points of ``right`` lie outside ``left`` and at least
@@ -45,7 +45,7 @@ pub(crate) fn contains(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Contains)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Contains)
 }
 
 /// Test whether ``left`` contains ``right`` with no boundary contact.
@@ -87,7 +87,7 @@ pub(crate) fn contains_properly(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::ContainsProperly)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::ContainsProperly)
 }
 
 /// Test whether ``left`` lies within ``right``; inverse of ``contains``.
@@ -127,7 +127,7 @@ pub(crate) fn within(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Within)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Within)
 }
 
 /// Test whether ``left`` covers ``right``: every point of ``right`` lies in
@@ -169,7 +169,7 @@ pub(crate) fn covers(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Covers)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Covers)
 }
 
 /// Test whether ``left`` is covered by ``right``; inverse of ``covers``.
@@ -209,7 +209,7 @@ pub(crate) fn covered_by(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::CoveredBy)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::CoveredBy)
 }
 
 /// Test whether a geometry contains each ``(x, y)`` point (vectorized).
@@ -323,7 +323,7 @@ pub(crate) fn intersects(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Intersects)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Intersects)
 }
 
 /// Test whether ``left`` and ``right`` share no point; negation of
@@ -363,7 +363,7 @@ pub(crate) fn disjoint(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Disjoint)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Disjoint)
 }
 
 /// Test whether ``left`` and ``right`` touch only at boundaries.
@@ -398,7 +398,7 @@ pub(crate) fn touches(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Touches)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Touches)
 }
 
 /// Test whether ``left`` and ``right`` cross (interiors meet with lower
@@ -436,7 +436,7 @@ pub(crate) fn crosses(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Crosses)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Crosses)
 }
 
 /// Test whether ``left`` and ``right`` overlap (same dimension, partial
@@ -472,5 +472,5 @@ pub(crate) fn overlaps(
     left: &Bound<'_, PyAny>,
     right: &Bound<'_, PyAny>,
 ) -> PyResult<Py<PyAny>> {
-    predicate_broadcast(py, left, right, Predicate::Overlaps)
+    crate::dispatch::dispatch_predicate(py, left, right, Predicate::Overlaps)
 }

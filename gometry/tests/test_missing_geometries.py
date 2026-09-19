@@ -357,8 +357,6 @@ def test_prepared_predicates_mask_missing_rows_like_free_functions() -> None:
         None,
         gm.Point(2.0, 2.0),
     ])
-    prepared = probe.prepare()
-
     for name in (
         'contains',
         'intersects',
@@ -371,12 +369,12 @@ def test_prepared_predicates_mask_missing_rows_like_free_functions() -> None:
         'equals',
         'disjoint',
     ):
-        prepared_values = getattr(gm, name)(prepared, masked)
+        prepared_values = getattr(gm, name)(probe, masked)
         free_values = getattr(gm, name)(probe, masked)
         np.testing.assert_array_equal(prepared_values, free_values, err_msg=name)
         assert prepared_values[1] == np.False_
 
-    prepared_dwithin = gm.dwithin(prepared, masked, 0.25)
+    prepared_dwithin = gm.dwithin(probe, masked, 0.25)
     free_dwithin = gm.dwithin(probe, masked, 0.25)
     np.testing.assert_array_equal(prepared_dwithin, free_dwithin)
     assert free_dwithin.tolist() == [True, False, False]

@@ -188,7 +188,7 @@ _OP_EXTRAS: dict[str, frozenset[str]] = {
     'symmetric_difference': frozenset({'InvalidGeometryError'}),
     'to_geojson': frozenset({'CRSError', 'InvalidGeometryError'}),
 }
-_OP_SURFACES = ('', 'Geometry', 'GeometryArray', 'PreparedGeometry')
+_OP_SURFACES = ('', 'Geometry', 'GeometryArray')
 
 
 def required_raises(

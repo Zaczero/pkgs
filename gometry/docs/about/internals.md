@@ -63,8 +63,8 @@ per-API parallelism guarantee. On a [free-threaded build](compatibility.md#runti
 the same public API is used without separate thread-specific entry points.
 
 Immutable geometries, arrays, cells, CRS values, and grouped containers can be
-shared after construction. [`PreparedGeometry`][gometry.PreparedGeometry] retains immutable source state
-and can be queried from multiple threads. [`SpatialIndex`][gometry.SpatialIndex] supports concurrent
+shared after construction, including the indexes a geometry builds for itself
+when it is probed repeatedly. [`SpatialIndex`][gometry.SpatialIndex] supports concurrent
 query-only use; callers should serialize writes and queries that must observe a
 particular write boundary.
 

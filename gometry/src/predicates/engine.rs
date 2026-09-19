@@ -1,7 +1,7 @@
 //! The one source of truth for boolean spatial predicates.
 //!
 //! Every surface that evaluates a named predicate — free functions, `Geometry`
-//! and `GeometryArray` methods, `PreparedGeometry`, the spatial index refine
+//! and `GeometryArray` methods, the spatial index refine
 //! loop, and `join` — reads its facts from [`Predicate::spec`] and projects the
 //! complete matrix produced by the domain's topology relation owner. Batch and
 //! scalar surfaces therefore cannot drift in predicate semantics.
@@ -463,7 +463,7 @@ impl<'a> GateOperand<'a> {
 /// `scalar_is_left` names the operand order: `true` evaluates
 /// `scalar OP element`, `false` evaluates `element OP scalar`. This is the
 /// single batch engine behind the free functions, the array methods,
-/// `PreparedGeometry`, and the spatial-index refine loop. Rows come straight
+/// and the spatial-index refine loop. Rows come straight
 /// off the storage: `Mixed` rows keep their persistent handles (prepared
 /// state accumulates), packed point rows never synthesize one.
 pub(crate) fn scalar_vs_shapes<'a>(

@@ -33,7 +33,6 @@ def _shared_fixtures() -> dict[str, Any]:
     outside = gm.Point(5, 5)
     values = [poly, line, gm.Point(-1, -1), outside]
     idx = gm.SpatialIndex(values)
-    prepared = poly.prepare()
     arr = gm.GeometryArray(values)
     wgs = gm.box(-1, -1, 1, 1, crs=4326)
     wgs_point = gm.Point(0.1, 0.1, crs=4326)
@@ -47,7 +46,6 @@ def _shared_fixtures() -> dict[str, Any]:
         'outside': outside,
         'values': values,
         'idx': idx,
-        'prepared': prepared,
         'arr': arr,
         'wgs': wgs,
         'wgs_point': wgs_point,
@@ -57,8 +55,8 @@ def _shared_fixtures() -> dict[str, Any]:
         'hausdorff': gm.hausdorff_distance(poly, line, max_error=1e-12),
         'distance': gm.distance(poly, probe),
         'idx_hits': idx.query(probe).tolist(),
-        'prepared_contains': gm.contains(prepared, hole),
-        'prepared_intersects': gm.intersects(prepared, line),
+        'poly_contains': gm.contains(poly, hole),
+        'poly_intersects': gm.intersects(poly, line),
         'covers_expected': covers_expected,
         'to_crs': wgs.to_crs(merc),
         'arr_areas': arr.area.tolist(),
@@ -80,15 +78,14 @@ def _worker(
         probe = fixtures['probe']
         outside = fixtures['outside']
         idx = fixtures['idx']
-        prepared = fixtures['prepared']
         arr = fixtures['arr']
         wgs = fixtures['wgs']
         wgs_point = fixtures['wgs_point']
         merc = fixtures['merc']
 
-        assert gm.contains(prepared, hole) == fixtures['prepared_contains']
-        assert gm.intersects(prepared, line) == fixtures['prepared_intersects']
-        assert gm.disjoint(prepared, outside)
+        assert gm.contains(poly, hole) == fixtures['poly_contains']
+        assert gm.intersects(poly, line) == fixtures['poly_intersects']
+        assert gm.disjoint(poly, outside)
         assert idx.query(probe).tolist() == fixtures['idx_hits']
         assert idx.candidates(probe).tolist() == fixtures['idx_hits']
         assert gm.distance(poly, probe) == fixtures['distance']
@@ -143,12 +140,12 @@ def test_free_threading_stress() -> None:
     assert gil in (True, False)
 
 
-def test_prepared_geometry_is_sendable() -> None:
-    prepared = gm.box(0, 0, 1, 1).prepare()
+def test_geometry_is_sendable() -> None:
+    polygon = gm.box(0, 0, 1, 1)
     holder: list[Any] = []
 
     def capture() -> None:
-        holder.append(prepared)
+        holder.append(polygon)
 
     thread = threading.Thread(target=capture)
     thread.start()

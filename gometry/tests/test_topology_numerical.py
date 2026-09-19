@@ -97,8 +97,8 @@ def test_exact_aggregate_faces_reach_every_de9im_consumer() -> None:
 
     assert gm.relate(areas, probe) == expected
     assert gm.relate(probe, areas) == 'FF0FFF212'
-    assert gm.relate(areas.prepare(), probe) == expected
-    assert gm.relate(probe.prepare(), areas) == 'FF0FFF212'
+    assert gm.relate(areas, probe) == expected
+    assert gm.relate(probe, areas) == 'FF0FFF212'
     assert gm.relate(gm.GeometryArray([areas]), probe) == [expected]
     assert gm.relate(areas, gm.GeometryArray([probe])) == [expected]
     assert gm.relate_pattern(areas, probe, 'FF*FF****')
@@ -125,9 +125,9 @@ def test_geographic_aggregate_contacts_keep_pre_quotient_locations() -> None:
         (pinch, gm.Point(0.0, 0.0, crs=4326), 'FF20F1FF2'),
     ]:
         assert gm.relate(geometry, point) == expected
-        assert gm.relate(geometry.prepare(), point) == expected
+        assert gm.relate(geometry, point) == expected
         assert gm.intersects(geometry, point) is True
-        assert gm.intersects(geometry.prepare(), point) is True
+        assert gm.intersects(geometry, point) is True
 
 
 def test_voronoi_edges_honors_clip() -> None:

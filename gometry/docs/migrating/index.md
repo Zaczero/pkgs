@@ -82,16 +82,14 @@ default — a geographic CRS measures geodesically (meters), a projected CRS in 
     print("projected area (m²):", round(area.to_crs(area.estimate_local_crs()).area))
     ```
 
-### STRtree → SpatialIndex (+ PreparedGeometry)
+### STRtree and prepare → SpatialIndex
 
-Shapely already refines when you pass `predicate=` to `STRtree.query`. gometry
-exposes **two acceleration paths**:
-
-- [`SpatialIndex`][gometry.SpatialIndex] — many geometries, query/join/nearest
-  with explicit `candidates` vs `query(..., predicate=...)`, plus frame checks,
-  missing-row semantics, and geodesic nearest lanes.
-- [`geom.prepare()`][gometry.Geometry.prepare] — one geometry tested many times
-  (cached segment index); still a separate object, not folded into the index.
+Shapely already refines when you pass `predicate=` to `STRtree.query`.
+[`SpatialIndex`][gometry.SpatialIndex] covers many geometries, with query, join,
+and nearest, explicit `candidates` vs `query(..., predicate=...)`, frame checks,
+missing-row semantics, and geodesic nearest lanes. There is no `prepare`: a
+geometry probed repeatedly indexes itself after its first few probes, so a plain
+loop of predicate calls gets the prepared speed.
 
 === "Shapely"
 
@@ -119,8 +117,7 @@ exposes **two acceleration paths**:
     idx = gm.SpatialIndex(pts)
     print("candidates:", idx.candidates(area).tolist())
     print("refined:", idx.query(area, predicate="contains").tolist())
-    prep = area.prepare()
-    print("prepared contains first point:", gm.contains(prep, pts[0]))
+    print("contains first point:", gm.contains(area, pts[0]))
     ```
 
 Build through the geometry classes
@@ -306,8 +303,8 @@ frame and row-identity checks:
   than silently comparing across datums.
 - **Missing-row semantics** — sparse/right-missing handles preserve row identity
   instead of dropping identity in the result.
-- **Prepared caches** on boxed rows, plus a separate [`geom.prepare()`][gometry.Geometry.prepare] for the
-  one-geometry-many-tests shape.
+- **Prepared caches** on every geometry, built once it is probed repeatedly;
+  there is no separate `prepare` step.
 - **Geodesic nearest / dwithin lanes** when the index frame is geographic
   (`unit=` selects CRS-natural meters vs planar).
 

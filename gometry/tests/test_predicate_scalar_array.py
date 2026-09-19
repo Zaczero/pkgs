@@ -178,14 +178,13 @@ def test_every_predicate_spelling_agrees_across_dispatch_strategies() -> None:
         'overlaps',
         'equals',
     ]
-    prepared = scalar.prepare()
     for batch in (base, base * 2):
         values = gm.GeometryArray(batch)
         for name in predicates:
             free = getattr(gm, name)
             expected = [free(scalar, item) for item in batch]
             assert bools(free(scalar, values)) == expected, name
-            assert bools(free(prepared, values)) == expected, name
+            assert bools(free(scalar, values)) == expected, name
             reversed_expected = [free(item, scalar) for item in batch]
             assert bools(free(values, scalar)) == reversed_expected, name
-            assert bools(free(values, prepared)) == reversed_expected, name
+            assert bools(free(values, scalar)) == reversed_expected, name

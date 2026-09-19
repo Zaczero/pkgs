@@ -12,9 +12,9 @@ Grid cover factories return a [`CellArray`][gometry.CellArray] for scalar geomet
 `CellArray` for geometry arrays; coverage objects and interior/boundary partitions
 are not public API.
 Exact geometry membership uses top-level predicates such as
-[`gm.contains(source, probe)`][gometry.contains]. Prepared geometries are operands accepted on
-either side of top-level predicates and XY predicates; plan- and probe-aware
-selection never builds a tester for linear shapes. Numeric-id arrays expose
+[`gm.contains(source, probe)`][gometry.contains]. A geometry probed repeatedly builds its point
+tester after a few probes, with no separate prepare step, and linear shapes never
+build one. Numeric-id arrays expose
 [`to_numpy()`][gometry.CellArray.to_numpy] and `__array__`, not `values`. CRS metadata collections are
 properties, bulk constructors and operations use `values` for their input
 column, and `__geo_interface__` raises when M or coordinate epoch cannot be
@@ -150,8 +150,7 @@ Python *protocol* integrations are not aliases — `a & b`, `str(geom)`,
 `format(geom, '.2f')`, `bool(geom)`, and `match` patterns are the language's
 own spellings, adopted where the ecosystem already agrees on the meaning — the
 operators, WKT `str`, format specs, and emptiness truthiness are established
-Python-geometry conventions. A prepared geometry preserves its source geometry's
-emptiness truth value. Sugar that would *hide* a choice is rejected because
+Python-geometry conventions. Sugar that would *hide* a choice is rejected because
 the wire or operation semantics would be implicit: no `bytes(geom)` (which WKB flavor? the CRS would vanish
 silently — say [`to_wkb(...)`][gometry.Geometry.to_wkb]), no `round(geom, n)` ([`quantize`][gometry.Geometry.quantize] is coordinate
 quantization, not numeric rounding), no cell-set operator aliases (cell-set vs

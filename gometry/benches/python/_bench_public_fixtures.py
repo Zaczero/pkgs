@@ -517,10 +517,8 @@ def prepared_polygon_and_probes():
             ys[i] = cy - half + 12_000.0 * v
         sh_poly = shapely.Polygon(ext, holes)
         shapely.prepare(sh_poly)
-        gm_prep = gm_poly.prepare()
         return {
             'gm_poly': gm_poly,
-            'gm_prep': gm_prep,
             'sh_poly': sh_poly,
             'xs': xs,
             'ys': ys,

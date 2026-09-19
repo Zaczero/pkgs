@@ -69,11 +69,11 @@ def test_reciprocal_axis_identical_linework_has_no_exterior_residue(
         elif frontend == 'hausdorff':
             assert gm.hausdorff_distance(left, right, max_error=1e-12) == 0.0
         elif frontend == 'equals_prepared':
-            assert gm.equals(left.prepare(), right)
+            assert gm.equals(left, right)
         elif frontend == 'covers_prepared':
-            assert gm.covers(left.prepare(), right)
+            assert gm.covers(left, right)
         elif frontend == 'within_prepared':
-            assert gm.within(left.prepare(), right)
+            assert gm.within(left, right)
         elif frontend.startswith('packed_'):
             operation = getattr(gm, frontend.removeprefix('packed_'))
             assert operation(gm.GeometryArray([left]), right).tolist() == [True]

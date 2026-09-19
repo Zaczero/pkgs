@@ -235,6 +235,7 @@ struct TopologyPlan {
     simplicity: OnceLock<bool>,
     antimeridian_crossing: OnceLock<bool>,
     point_tester: OnceLock<Option<Box<PointBatchTester>>>,
+    point_scans: std::sync::atomic::AtomicU32,
 }
 
 /// Shape-derived metric products shared by persistent and transient plans.
@@ -478,18 +479,28 @@ impl PreparedPlan {
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
-    /// Exact Cartesian location of `point`. A point tester already built for
-    /// a batch answers probes that avoid every ring edge; everything else
-    /// takes the exact source scan, which never pays for building an index.
+    /// Exact Cartesian location of `point`. Early probes scan the source;
+    /// the indexed tester costs about three scans to build, so it is built
+    /// once this plan has paid that much, and a repeated operand ends up
+    /// indexed at no more than twice the cost of knowing in advance.
     pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
-        if let Some(Some(tester)) = self.topology()?.point_tester.get() {
+        const SCANS_BEFORE_INDEXING: u32 = 3;
+        let topology = self.topology()?;
+        if let Some(Some(tester)) = topology.point_tester.get() {
+            return tester.location(point);
+        }
+        if topology
+            .point_scans
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            >= SCANS_BEFORE_INDEXING
+            && let Some(tester) = self.point_tester()?
+        {
             return tester.location(point);
         }
         crate::geometry::cartesian_point_location(self.shape(), point)
     }
 
     /// The indexed point tester of a polygonal shape, built on first use.
-    /// Build it for a batch of probes; a single probe is cheaper as a scan.
     pub(crate) fn point_tester(&self) -> Result<Option<&PointBatchTester>> {
         Ok(self
             .topology()?

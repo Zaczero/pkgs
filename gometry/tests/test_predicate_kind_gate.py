@@ -199,9 +199,8 @@ def test_surfaces_share_point_area_constant_false() -> None:
     assert bools(gm.crosses(poly, pts)) == [False, False]
 
     # PreparedGeometry (shares scalar_vs_shapes)
-    prepared = poly.prepare()
-    assert gm.crosses(prepared, pt) is False
-    assert bools(gm.crosses(prepared, pts)) == [False, False]
+    assert gm.crosses(poly, pt) is False
+    assert bools(gm.crosses(poly, pts)) == [False, False]
 
     # Spatial index refine
     idx = gm.SpatialIndex(pts)

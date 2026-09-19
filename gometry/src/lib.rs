@@ -97,7 +97,7 @@ use broadcast::{
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
     metric_nearest_points_resolved, metric_shortest_line_resolved, multipoint_splitter_from_array,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
-    parse_wkb_geometry, predicate_broadcast, push_ring_shapes, py_bool, relate_pattern_broadcast,
+    parse_wkb_geometry, push_ring_shapes, py_bool, relate_pattern_broadcast,
     relate_string_broadcast, require_point, resolve_metric, rows_err, xy_predicate,
 };
 mod dispatch;
@@ -121,11 +121,11 @@ use py::functions::{
 mod grid;
 mod predicates;
 pub(crate) use predicates::{
-    _unpickle_prepared, IndexEnvelope, Predicate, PyPreparedGeometry, contains, contains_properly,
-    contains_xy, covered_by, covers, crosses, disjoint, distance, distance_3d, dwithin, equals,
-    equals_exact, equals_identical, frechet_distance, hausdorff_distance, intersects,
-    intersects_xy, nearest_points, overlaps, relate, relate_pattern, scalar_vs_shapes,
-    shortest_line, topology_pair_after_gates, topology_scalar_pair, touches, within,
+    IndexEnvelope, Predicate, contains, contains_properly, contains_xy, covered_by, covers,
+    crosses, disjoint, distance, distance_3d, dwithin, equals, equals_exact, equals_identical,
+    frechet_distance, hausdorff_distance, intersects, intersects_xy, nearest_points, overlaps,
+    relate, relate_pattern, scalar_vs_shapes, shortest_line, topology_pair_after_gates,
+    topology_scalar_pair, touches, within,
 };
 mod py;
 mod render;
@@ -190,7 +190,7 @@ use crate::py::numpy::float64_array;
 
 // `gil_used = false`: free-threaded CPython is supported — every `#[pyclass]`
 // is Send+Sync (lazy caches use OnceLock/Mutex/atomic; scratch pools are
-// thread_local). PreparedGeometry no longer opts out of cross-thread sharing.
+// thread_local).
 #[pymodule(gil_used = false)]
 #[pyo3(name = "_lib")]
 fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -239,7 +239,6 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         PyGeometryPartsIter,
         PyGeometryArray,
         array::PyGeometryArrayIter,
-        PyPreparedGeometry,
         PyCoordinates,
         PyCoordinatesIter,
         PyValidationReport,
@@ -269,7 +268,7 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         // Pickle payload rebuilders (private; see the `__reduce__` impls).
         _unpickle_geometry, _unpickle_geometry_array, _unpickle_point_array, _unpickle_line_array,
         _unpickle_polygon_array,
-        _unpickle_prepared, _unpickle_validation_report,
+        _unpickle_validation_report,
         // Token vocabularies for the stub-parity gate (private).
         _token_vocabulary,
     );
