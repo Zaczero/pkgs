@@ -3650,14 +3650,31 @@ pub(crate) fn distance(
         return Ok(0.0);
     }
     let target = PreparedSupport::from_shape(right, &mut context.budget)?;
-    symmetric_distance(&source, &target, &mut context, || left.equals(right))
+    symmetric_distance(
+        &source,
+        &target,
+        &mut context,
+        || left.equals(right),
+        |forward| {
+            if forward {
+                right.covers(left)
+            } else {
+                left.covers(right)
+            }
+        },
+    )
 }
 
+/// `covered(forward)` reports whether the direction's target covers its
+/// source (`forward` is left into right). It is asked only when every seeded
+/// clearance is zero, where a covered direction would otherwise refine a
+/// zero plateau along the shared boundary that no positive bound prunes.
 fn symmetric_distance(
     source: &PreparedSupport,
     target: &PreparedSupport,
     context: &mut SearchContext<'_>,
     equal_support: impl FnOnce() -> Result<bool>,
+    mut covered: impl FnMut(bool) -> Result<bool>,
 ) -> Result<f64> {
     for (source, target) in [(source, target), (target, source)] {
         for span in &source.spans {
@@ -3682,8 +3699,23 @@ fn symmetric_distance(
     {
         return Ok(0.0);
     }
-    let forward = run_direction(source, target, context)?;
-    let backward = run_direction(target, source, context)?;
+    let seeded_zero = context
+        .lower_squared
+        .as_ref()
+        .is_some_and(Rational::is_zero);
+    let mut direction = |forward: bool, context: &mut SearchContext<'_>| {
+        if seeded_zero && covered(forward)? {
+            return Ok(Rational::from_f64(0.0));
+        }
+        let (source, target) = if forward {
+            (source, target)
+        } else {
+            (target, source)
+        };
+        run_direction(source, target, context)
+    };
+    let forward = direction(true, context)?;
+    let backward = direction(false, context)?;
     let upper = if forward.try_cmp(&backward)? == Ordering::Greater {
         forward
     } else {
@@ -3733,19 +3765,27 @@ fn line_columns_with_accuracy(
     }
     let source = PreparedSupport::from_line_columns(left_xs, left_ys)?;
     let target = PreparedSupport::from_line_columns(right_xs, right_ys)?;
-    symmetric_distance(&source, &target, &mut context, || {
-        let line = |xs: &[f64], ys: &[f64]| -> Result<Shape> {
-            let mut points = Vec::new();
-            try_reserve_vec(&mut points, xs.len())?;
-            for (&x, &y) in xs.iter().zip(ys) {
-                try_push_vec(&mut points, XY::new(x, y))?;
-            }
-            Ok(Shape::LineString(LineSeq::try_new(CoordSeq::try_from_xy(
-                &points,
-            )?)?))
-        };
-        line(left_xs, left_ys)?.equals(&line(right_xs, right_ys)?)
-    })
+    symmetric_distance(
+        &source,
+        &target,
+        &mut context,
+        || {
+            let line = |xs: &[f64], ys: &[f64]| -> Result<Shape> {
+                let mut points = Vec::new();
+                try_reserve_vec(&mut points, xs.len())?;
+                for (&x, &y) in xs.iter().zip(ys) {
+                    try_push_vec(&mut points, XY::new(x, y))?;
+                }
+                Ok(Shape::LineString(LineSeq::try_new(CoordSeq::try_from_xy(
+                    &points,
+                )?)?))
+            };
+            line(left_xs, left_ys)?.equals(&line(right_xs, right_ys)?)
+        },
+        // Linework has no interior plateau: a covered direction seeds its
+        // zero from the other direction's positive clearances.
+        |_| Ok(false),
+    )
 }
 
 pub(crate) fn line_columns_batch(
