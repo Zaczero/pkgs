@@ -47,14 +47,12 @@ fn main() {
         .unwrap_or_default();
     validate_release_identity(&target, &profile_family, &opt_level, debug_assertions);
 
-    println!("cargo:rerun-if-changed=../Cargo.toml");
-    println!("cargo:rerun-if-changed=../Cargo.lock");
+    // Exactly the digested inputs: Cargo's own fingerprints already rebuild
+    // on dependency and profile changes, so watching the workspace lock only
+    // re-ran this script whenever a sibling package touched it.
     println!("cargo:rerun-if-changed=rust-toolchain.toml");
-    println!("cargo:rerun-if-changed=../.cargo/config.toml");
-    println!("cargo:rerun-if-changed=../pyproject.toml");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=pyproject.toml");
     println!("cargo:rerun-if-changed=src");
     println!("cargo:rerun-if-changed=native");
     for variable in RELEASE_ENV_VARS {
