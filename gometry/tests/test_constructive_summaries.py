@@ -170,8 +170,7 @@ def test_constructive_summary_geometries_are_rust_backed() -> None:
     )
     assert len(gm.MultiPoint([(0, 0), (1, 0)]).triangulate(method='delaunay')) == 0
     assert len(gm.Point(0, 0).voronoi_polygons()) == 0
-    with pytest.raises(ValueError, match='collinear'):
-        gm.MultiPoint([(0, 0), (1, 0), (2, 0)]).voronoi_polygons()
+    assert len(gm.MultiPoint([(0, 0), (1, 0), (2, 0)]).voronoi_polygons()) == 3
     with pytest.raises(ValueError, match='unknown Voronoi clip'):
         triangulation_points.voronoi_polygons(clip='bad')
     with pytest.raises(TypeError, match='clip geometry must be a Polygon'):

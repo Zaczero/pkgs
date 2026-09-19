@@ -3441,6 +3441,132 @@ fn rounded_segment_covered_by_clip(
     Ok(true)
 }
 
+/// Voronoi cells of collinear sites: the strips between consecutive
+/// perpendicular bisectors. Each strip is cut from the clip frame by at most
+/// two exact half-planes and rounded once; neighbouring cells round the same
+/// exact bisector crossings, so they share their vertices. A polygon clip then
+/// intersects each strip with the polygon.
+pub(super) fn build_collinear_polygons(
+    sites: &[Site],
+    boundary: VoronoiBoundary<'_>,
+    budget: &mut ExpansionBudget,
+    mesh: &CertifiedDelaunay,
+) -> Result<Vec<Polygon>> {
+    let order = mesh
+        .collinear_order()
+        .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
+    if matches!(boundary, VoronoiBoundary::Envelope) {
+        let first = sites[0].point;
+        if sites.iter().all(|site| site.point.x == first.x)
+            || sites.iter().all(|site| site.point.y == first.y)
+        {
+            return Ok(Vec::new());
+        }
+    }
+    let clip = normalize_clip(sites, boundary, budget)?;
+    let frame = match clip.source {
+        None => clip.rings[0].clone(),
+        Some(polygon) => {
+            let extent = |values: &[f64]| {
+                values
+                    .iter()
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &value| {
+                        (low.min(value), high.max(value))
+                    })
+            };
+            let (min_x, max_x) = extent(polygon.shell.xs());
+            let (min_y, max_y) = extent(polygon.shell.ys());
+            [
+                (min_x, min_y),
+                (max_x, min_y),
+                (max_x, max_y),
+                (min_x, max_y),
+            ]
+            .map(|(x, y)| exact::ExactPoint::from_xy(XY::new(x, y)))
+            .to_vec()
+        },
+    };
+    let mut cells = Vec::new();
+    for (position, &site) in order.iter().enumerate() {
+        let here = sites[site].point.xy();
+        let mut ring = frame.clone();
+        let neighbours = [
+            position.checked_sub(1),
+            (position + 1 < order.len()).then_some(position + 1),
+        ];
+        for neighbour in neighbours.into_iter().flatten() {
+            let line =
+                exact::ExactLine::perpendicular_bisector(here, sites[order[neighbour]].point.xy())?;
+            let keep = exact::signed_line_product(&line, &exact::ExactPoint::from_xy(here))?;
+            ring = clip_to_half_plane(&ring, &line, keep, budget)?;
+        }
+        let mut vertices: Vec<XY> = Vec::new();
+        for point in &ring {
+            let rounded = point.round_nearest_even()?;
+            if vertices.last() != Some(&rounded) {
+                budgeted_try_push(&mut vertices, rounded, budget)?;
+            }
+        }
+        while vertices.len() > 1 && vertices.first() == vertices.last() {
+            vertices.pop();
+        }
+        if vertices.len() < 3 {
+            continue;
+        }
+        // Start at the least vertex, as every other emitted cell does.
+        let least = (0..vertices.len())
+            .min_by(|&left, &right| {
+                let (left, right) = (vertices[left], vertices[right]);
+                left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
+            })
+            .unwrap_or(0);
+        vertices.rotate_left(least);
+        let first = vertices[0];
+        budgeted_try_push(&mut vertices, first, budget)?;
+        let strip = Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_xy(&vertices)?),
+            Vec::new(),
+        )?;
+        match clip.source {
+            None => budgeted_try_push(&mut cells, strip, budget)?,
+            Some(polygon) => {
+                let clipped = Shape::Polygon(strip)
+                    .intersection(&Shape::Polygon(polygon.clone()), Strictness::Strict)?;
+                for part in clipped.parts() {
+                    if let Shape::Polygon(part) = part {
+                        budgeted_try_push(&mut cells, part, budget)?;
+                    }
+                }
+            },
+        }
+    }
+    Ok(cells)
+}
+
+/// The part of a convex ring on the `keep` side of `line`, closed.
+fn clip_to_half_plane(
+    ring: &[exact::ExactPoint],
+    line: &exact::ExactLine,
+    keep: ExactSign,
+    budget: &mut ExpansionBudget,
+) -> Result<Vec<exact::ExactPoint>> {
+    let mut kept = Vec::new();
+    for index in 0..ring.len() {
+        let start = &ring[index];
+        let end = &ring[(index + 1) % ring.len()];
+        let start_side = exact::signed_line_product(line, start)?;
+        let end_side = exact::signed_line_product(line, end)?;
+        if start_side == keep || start_side == ExactSign::Zero {
+            budgeted_try_push(&mut kept, start.clone(), budget)?;
+        }
+        if start_side != ExactSign::Zero && end_side != ExactSign::Zero && start_side != end_side {
+            let support = exact::ExactLine::through_points(start, end)?;
+            budgeted_try_push(&mut kept, exact::line_intersection(line, &support)?, budget)?;
+        }
+    }
+    Ok(kept)
+}
+
 pub(super) fn build_collinear_edges(
     sites: &[Site],
     boundary: VoronoiBoundary<'_>,

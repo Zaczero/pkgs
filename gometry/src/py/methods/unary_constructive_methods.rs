@@ -1073,7 +1073,10 @@ method_doc! {
     doc_voronoi_polygons;
     body: r"Voronoi diagram polygons of the geometry's vertices. Operates in planar
 lon/lat space and does NOT auto-split antimeridian-crossing geographic
-input; call ``split_antimeridian`` first.
+input; call ``split_antimeridian`` first. Collinear vertices divide the clip
+region into strips at their perpendicular bisectors, and a lone vertex owns
+the whole clip polygon; the padded and envelope frames of a lone vertex, or
+the envelope of a horizontal or vertical row, bound no cells.
 
 Parameters
 ----------

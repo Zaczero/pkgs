@@ -699,9 +699,10 @@ def test_reciprocal_voronoi_polygon_clip_and_unsnapped_tolerance_share_metric_pa
     """Equivalent clip syntax and a no-op tolerance cannot change Voronoi cells.
 
     The envelope equality and pair-distance proof are independent of the
-    tessellator. Point has one unique site and therefore correctly produces no
-    cells; the representative polygon reaches the same five-site result in
-    scalar, packed, and one-member-wrapper form.
+    tessellator. A lone Point site owns the whole explicit clip polygon, its
+    degenerate envelope clips to nothing, and it has no bisector edges; the
+    representative polygon reaches the same five-site result in scalar,
+    packed, and one-member-wrapper form.
     """
     # Exponent 40 keeps an 1e80 axis ratio and the exact certified fallback
     # while avoiding the needless 1e154 magnitude of the original corpus.
@@ -721,23 +722,26 @@ def test_reciprocal_voronoi_polygon_clip_and_unsnapped_tolerance_share_metric_pa
     # reciprocal tessellation tests. This representative retains the explicit
     # polygon clip, a unique-site empty result, and the scalar/packed wrapper.
     for source in (gm.Point(*points[0]), polygon):
-        expected = 0 if isinstance(source, gm.Point) else 5
+        lone = isinstance(source, gm.Point)
         for carrier in (source, gm.GeometryCollection([source])):
             for kwargs in (
                 {'clip': clip},
                 {'clip': 'envelope', 'tolerance': tolerance},
             ):
+                cells = 5
+                if lone:
+                    cells = 1 if kwargs['clip'] is clip else 0
                 for result in (
                     carrier.voronoi_polygons(**kwargs),
                     gm.GeometryArray([carrier]).voronoi_polygons(**kwargs)[0],
                 ):
-                    assert len(result) == expected
+                    assert len(result) == cells
                 for result in (
                     carrier.voronoi_edges(**kwargs),
                     gm.GeometryArray([carrier]).voronoi_edges(**kwargs)[0],
                 ):
-                    assert len(result) == (0 if expected == 0 else 4)
-                    if expected:
+                    assert len(result) == (0 if lone else 4)
+                    if not lone:
                         _assert_voronoi_edges_are_source_bisectors(result, points)
 
 

@@ -435,20 +435,21 @@ impl Shape {
         budget: &mut ExpansionBudget,
     ) -> Result<Vec<Self>> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
-        let (canonical, Some(mesh)) = self.prepare_voronoi(tolerance)? else {
-            return Ok(Vec::new());
+        let (canonical, mesh) = self.prepare_voronoi(tolerance)?;
+        let Some(mesh) = mesh else {
+            // A lone site's cell is the whole clip region; the envelope and
+            // padded frames of one point have no area.
+            return Ok(match (canonical.len(), boundary) {
+                (1, VoronoiBoundary::Polygon(polygon)) => vec![Self::Polygon(polygon.clone())],
+                _ => Vec::new(),
+            });
         };
-        if mesh.collinear_order().is_some() {
-            return Err(GeometryErrorKind::voronoi(
-                "input points are collinear; Voronoi cells cannot be computed",
-            ));
-        }
-        crate::try_collect_vec(
-            voronoi_dcel::build(&canonical, boundary, budget, true, &mesh)?
-                .into_polygons()
-                .into_iter()
-                .map(|polygon| Ok(Self::Polygon(polygon))),
-        )
+        let cells = if mesh.collinear_order().is_some() {
+            voronoi_dcel::build_collinear_polygons(&canonical, boundary, budget, &mesh)?
+        } else {
+            voronoi_dcel::build(&canonical, boundary, budget, true, &mesh)?.into_polygons()
+        };
+        crate::try_collect_vec(cells.into_iter().map(|polygon| Ok(Self::Polygon(polygon))))
     }
 
     pub fn voronoi_edges(

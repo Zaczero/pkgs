@@ -125,3 +125,69 @@ def test_uniform_scale_voronoi_partition_has_no_arrangement_gap(exponent: int) -
     assert gm.difference(envelope, merged).is_empty
     for left, right in combinations(cells, 2):
         assert gm.relate_pattern(left, right, 'F********')
+
+
+@pytest.mark.parametrize(
+    ('sites', 'expected'),
+    [
+        (
+            'MULTIPOINT ((0 0), (4 0))',
+            [
+                'POLYGON ((-2 -2, 2 -2, 2 2, -2 2, -2 -2))',
+                'POLYGON ((2 -2, 6 -2, 6 2, 2 2, 2 -2))',
+            ],
+        ),
+        (
+            'MULTIPOINT ((0 0), (1 0), (5 0))',
+            [
+                'POLYGON ((-2.5 -2.5, 0.5 -2.5, 0.5 2.5, -2.5 2.5, -2.5 -2.5))',
+                'POLYGON ((0.5 -2.5, 3 -2.5, 3 2.5, 0.5 2.5, 0.5 -2.5))',
+                'POLYGON ((3 -2.5, 7.5 -2.5, 7.5 2.5, 3 2.5, 3 -2.5))',
+            ],
+        ),
+        (
+            'LINESTRING (0 0, 3 4)',
+            [
+                'POLYGON ((-2 -2, 5 -2, 5 -0.625, -2 4.625, -2 -2))',
+                'POLYGON ((-2 4.625, 5 -0.625, 5 6, -2 6, -2 4.625))',
+            ],
+        ),
+    ],
+)
+def test_collinear_sites_split_the_frame_at_their_bisectors(
+    sites: str, expected: list[str]
+) -> None:
+    # The cells are the strips between consecutive perpendicular bisectors
+    # (x = 2; x = 0.5 and x = 3; the line 3x + 4y = 12.5), cut from the padded
+    # frame of half the larger span.
+    cells = gm.from_wkt(sites).voronoi_polygons()
+    assert cells.to_wkt() == expected
+    frame = gm.union_all(cells)
+    assert frame.area == sum(cell.area for cell in cells)
+    assert gm.equals(frame, frame.envelope())
+    for site in gm.from_wkt(sites).unique_points().parts:
+        assert sum(gm.covers(cell, site) for cell in cells) == 1
+
+
+def test_collinear_sites_follow_the_envelope_and_polygon_clips() -> None:
+    diagonal = gm.MultiPoint([(0, 0), (4, 2)])
+    assert diagonal.voronoi_polygons(clip='envelope').to_wkt() == [
+        'POLYGON ((0 0, 2.5 0, 1.5 2, 0 2, 0 0))',
+        'POLYGON ((1.5 2, 2.5 0, 4 0, 4 2, 1.5 2))',
+    ]
+    # A horizontal site row has a flat envelope, which bounds no area.
+    assert len(gm.MultiPoint([(0, 0), (4, 0)]).voronoi_polygons(clip='envelope')) == 0
+    holed = gm.from_wkt(
+        'POLYGON ((-2 -2, 6 -2, 6 2, -2 2, -2 -2), (1.5 -1, 2.5 -1, 2.5 1, 1.5 1, 1.5 -1))'
+    )
+    cells = gm.MultiPoint([(0, 0), (4, 0)]).voronoi_polygons(clip=holed)
+    assert [cell.area for cell in cells] == [15.0, 15.0]
+    assert gm.equals(gm.union_all(cells), holed)
+
+
+def test_a_lone_site_owns_the_whole_clip_polygon() -> None:
+    clip = gm.box(0, 0, 3, 3)
+    assert gm.Point(1, 1).voronoi_polygons(clip=clip).to_wkt() == [clip.to_wkt()]
+    # The padded and envelope frames of one point have no area.
+    assert len(gm.Point(1, 1).voronoi_polygons()) == 0
+    assert len(gm.Point(1, 1).voronoi_polygons(clip='envelope')) == 0
