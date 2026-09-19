@@ -236,7 +236,9 @@ def test_h3_bbox_covers_the_source_envelope() -> None:
         (gm.LineString([(-10.0, -40.0), (10.0, -40.0)], crs=4326), 2),
         (gm.Polygon([(0, -2), (4, 2), (2, 4), (-2, 0), (0, -2)], crs=4326), 3),
     ):
-        bbox = {cell.token for cell in gm.h3_cover(source, resolution, cell_rule='bbox')}
+        bbox = {
+            cell.token for cell in gm.h3_cover(source, resolution, cell_rule='bbox')
+        }
         envelope = {
             cell.token
             for cell in gm.h3_cover(source.envelope(), resolution, cell_rule='overlap')
@@ -725,14 +727,18 @@ def _expected_h3_rule_ids(source: gm.Geometry, resolution: int) -> dict[str, set
         # The contract itself: bbox is the overlap cover of the envelope windows.
         'bbox': {
             int(cell)
-            for cell in gm.h3_cover(_envelope_windows(source), resolution, cell_rule='overlap')
+            for cell in gm.h3_cover(
+                _envelope_windows(source), resolution, cell_rule='overlap'
+            )
         },
     }
 
 
 def _envelope_windows(source: gm.Geometry) -> gm.Geometry:
     """The windows of the bbox rule: each part's envelope after the seam split."""
-    return gm.GeometryCollection([part.envelope() for part in source.split_antimeridian().parts])
+    return gm.GeometryCollection([
+        part.envelope() for part in source.split_antimeridian().parts
+    ])
 
 
 def _actual_h3_rule_ids(
@@ -1295,7 +1301,9 @@ def test_h3_multipart_global_uncertainty_keeps_independent_component_caps() -> N
     middle_ids = {cell.token for cell in gm.h3_cover(middle, 2, cell_rule='bbox')}
     combined_ids = {cell.token for cell in gm.h3_cover(multipart, 2, cell_rule='bbox')}
     assert len(polar_ids) == 202
-    assert middle_ids == {cell.token for cell in gm.h3_cover(middle, 2, cell_rule='overlap')}
+    assert middle_ids == {
+        cell.token for cell in gm.h3_cover(middle, 2, cell_rule='overlap')
+    }
     assert polar_ids.isdisjoint(middle_ids)
     assert combined_ids == polar_ids | middle_ids
 

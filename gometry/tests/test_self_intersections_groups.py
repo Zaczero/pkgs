@@ -45,4 +45,6 @@ def test_self_intersections_round_a_crossing_to_nearest_even() -> None:
     x = 1.0 + sys.float_info.epsilon
     lines = gm.MultiLineString([[(0.0, 0.0), (2.0, 3.0)], [(x, 0.0), (x, 3.0)]])
     points = lines.self_intersections()
-    assert [(point.x, point.y) for point in points] == [(x, 1.5 + 2.0 * sys.float_info.epsilon)]
+    assert [(point.x, point.y) for point in points] == [
+        (x, 1.5 + 2.0 * sys.float_info.epsilon)
+    ]

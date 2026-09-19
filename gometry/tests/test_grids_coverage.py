@@ -471,9 +471,9 @@ def test_bbox_rule_covers_the_envelope_windows_on_every_grid(
     grid: str, source: gm.Geometry
 ) -> None:
     cover = _COVERS[grid]
-    windows = gm.GeometryCollection(
-        [part.envelope() for part in source.split_antimeridian().parts]
-    )
+    windows = gm.GeometryCollection([
+        part.envelope() for part in source.split_antimeridian().parts
+    ])
     bbox = set(cover(source, 'bbox').to_numpy().tolist())
     assert bbox == set(cover(windows, 'overlap').to_numpy().tolist())
     assert set(cover(source, 'overlap').to_numpy().tolist()) <= bbox

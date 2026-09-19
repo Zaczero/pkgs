@@ -114,7 +114,9 @@ def test_packed_line_clip_matches_each_geometry_including_emptied_rows() -> None
         [(0.5, 1.6), (1.6, 0.5)],
         [(-1.0, 0.5), (0.5, 0.5), (0.5, 2.0), (0.7, 2.0), (0.7, 0.5), (2.0, 0.5)],
     ]
-    expected = [repr(gm.LineString(line).clip_by_rect(0.0, 0.0, 1.0, 1.0)) for line in lines]
+    expected = [
+        repr(gm.LineString(line).clip_by_rect(0.0, 0.0, 1.0, 1.0)) for line in lines
+    ]
     assert expected[1] == expected[3] == '<LINESTRING EMPTY>'
     assert expected[4].startswith('<MULTILINESTRING')
     for rows in (lines[:4], lines):
