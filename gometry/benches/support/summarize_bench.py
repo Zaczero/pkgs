@@ -823,72 +823,55 @@ def _run_environment(payload: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(metadata, dict):
         metadata = {}
     packages = metadata.get('packages')
-    package_versions = {
-        name: info.get('version')
+    versions = {
+        info.get('display_name') or name: info['version']
         for name, info in (packages.items() if isinstance(packages, dict) else ())
-        if isinstance(info, dict) and info.get('version')
+        if isinstance(info, dict) and info.get('version') and name != 'gometry'
     }
+    python = metadata.get('python_version', metadata.get('python'))
     return {
-        'cpu': metadata.get('selected_cpu', payload.get('selected_cpu')),
-        'cpu_source': metadata.get(
-            'selected_cpu_source', payload.get('selected_cpu_source')
-        ),
         'cpu_model': metadata.get('cpu_model'),
         'kernel': metadata.get('kernel'),
-        'python': metadata.get('python_version', metadata.get('python')),
+        'python': python.split()[0] if isinstance(python, str) else None,
         'git_commit': metadata.get('git_commit'),
-        'gometry_version': package_versions.get('gometry'),
         'geos_version': metadata.get('geos_version'),
         'proj_version': metadata.get('proj_version'),
-        'package_versions': package_versions,
+        'package_versions': versions,
     }
 
 
 def render(
     rows: list[OpRow],
     *,
-    markdown: bool,
     publishable: bool,
     environment: dict[str, Any] | None = None,
 ) -> list[str]:
-    del markdown
     lines: list[str] = []
     if not publishable:
         lines.extend((f'> **{SMOKE_BANNER}**', ''))
     if environment is not None and any(environment.values()):
-        package_versions = environment.get('package_versions') or {}
-        package_text = ', '.join(
-            f'{name} {package_versions[name]}' for name in sorted(package_versions)
-        )
+        commit = environment.get('git_commit') or 'unknown'
         lines.extend((
             '## Run environment',
             '',
-            f'CPU `{environment.get("cpu_model") or "unknown CPU"}` on core '
-            f'`{environment.get("cpu") if environment.get("cpu") is not None else "unknown"}`; '
-            f'Linux kernel `{environment.get("kernel") or "unknown"}`; '
-            f'Python `{environment.get("python") or "unknown"}`; '
-            f'gometry `{environment.get("gometry_version") or "unknown"}` at commit '
-            f'`{environment.get("git_commit") or "unknown"}`.',
+            f'Measured on {environment.get("cpu_model") or "an unknown CPU"} with Linux '
+            f'{environment.get("kernel") or "unknown"} and CPython '
+            f'{environment.get("python") or "unknown"}, at commit `{commit[:8]}`.',
         ))
-        if package_text:
-            lines.append(f'Core/comparator evidence: packages {package_text}.')
-        if environment.get('geos_version') or environment.get('proj_version'):
-            lines.append(
-                'Native engines '
-                + '; '.join(
-                    value
-                    for value in (
-                        f'GEOS {environment["geos_version"]}'
-                        if environment.get('geos_version')
-                        else '',
-                        f'PROJ {environment["proj_version"]}'
-                        if environment.get('proj_version')
-                        else '',
-                    )
-                    if value
-                )
-                + '.'
+        versions = [
+            f'{name} {version}'
+            for name, version in sorted(
+                (environment.get('package_versions') or {}).items(),
+                key=lambda item: item[0].lower(),
             )
+        ]
+        versions += [
+            f'{engine} {environment[key]}'
+            for engine, key in (('GEOS', 'geos_version'), ('PROJ', 'proj_version'))
+            if environment.get(key)
+        ]
+        if versions:
+            lines.append(f'Versions: {", ".join(versions)}.')
         lines.append('')
     by_domain: dict[str, list[OpRow]] = {}
     for row in rows:
@@ -926,13 +909,11 @@ def summarize_payload(
     stats: dict[str, BenchStats],
     *,
     equivalence_margin: float = PRACTICAL_EQUIVALENCE_MARGIN,
-    markdown: bool = True,
 ) -> list[str]:
     operations = _parse_public_operations(payload.get('public_operations'))
     rows = _build_rows(operations, stats, equivalence_margin=equivalence_margin)
     return render(
         rows,
-        markdown=markdown,
         publishable=bool(payload.get('publishable')),
         environment=_run_environment(payload),
     )
@@ -943,7 +924,6 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         'results', help='one bench.py run manifest JSON or its directory'
     )
-    parser.add_argument('--format', choices=['table', 'md'], default='table')
     parser.add_argument(
         '--equivalence-margin',
         type=float,
@@ -961,7 +941,6 @@ def main(argv: list[str] | None = None) -> None:
                 payload,
                 stats,
                 equivalence_margin=args.equivalence_margin,
-                markdown=args.format == 'md',
             )
         )
     )

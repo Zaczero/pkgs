@@ -628,10 +628,10 @@ def test_publication_writes_only_the_deterministic_summary(tmp_path: Path) -> No
     assert sorted(path.name for path in current.iterdir()) == ['summary.md']
     summary_md = first.decode('utf-8')
     assert '## Run environment' in summary_md
-    assert 'CPU `test` on core `1`' in summary_md
-    assert 'Python `3.14 test build`' in summary_md
-    assert 'gometry `1`' in summary_md
-    assert 'GEOS 3.13.0; PROJ 9.5.0' in summary_md
+    assert 'Measured on test with Linux' in summary_md
+    assert 'CPython 3.14, at commit `deadbeef`.' in summary_md
+    assert 'Versions:' in summary_md and 'GEOS 3.13.0, PROJ 9.5.0.' in summary_md
+    assert 'core' not in summary_md.split('###')[0]
     assert '<table>' not in summary_md
     assert '#### union_all: n-ary overlay input count' in summary_md
 

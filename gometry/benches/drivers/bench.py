@@ -894,9 +894,7 @@ def _render_publication(
         expected_blocks=sampling['measured_blocks'],
         expected_leads=tuple(sampling['lead_orders']),
     )
-    lines = render(
-        rows, markdown=True, publishable=True, environment=_run_environment(result)
-    )
+    lines = render(rows, publishable=True, environment=_run_environment(result))
     return '\n'.join(lines) + '\n'
 
 
