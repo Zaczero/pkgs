@@ -1125,6 +1125,32 @@ def _h3_family() -> tuple[object, ...]:
     return cell, vertices, edges, vertices[0], edges[0]
 
 
+@pytest.mark.parametrize(
+    'index', range(5), ids=['cell', 'vertices', 'edges', 'vertex', 'edge']
+)
+def test_h3_family_value_protocols(index: int) -> None:
+    value = _h3_family()[index]
+    other = _h3_family()[index]
+    assert value == other
+    assert hash(value) == hash(other)
+    assert bool(value)
+    assert pickle.loads(pickle.dumps(value)) == value
+    assert copy.copy(value) == value
+    assert copy.deepcopy(value) == value
+    assert sys.getsizeof(value) >= value.nbytes > 0
+    assert repr(value).startswith('<H3')
+
+
+def test_h3_vertices_and_edges_as_sequences() -> None:
+    cell, vertices, edges, vertex, edge = _h3_family()
+    assert len(vertices) == len(edges) == 6
+    assert vertices.index(vertices[1]) == 1
+    assert int(vertex) == vertex.__index__()
+    assert edge.reverse().reverse() == edge
+    assert list(edges.reverse()) == [each.reverse() for each in edges]
+    assert vertices.point.to_wkt() == [each.point.to_wkt() for each in vertices]
+
+
 def test_cell_membership_answers_like_a_list() -> None:
     cell, vertices, edges, vertex, edge = _h3_family()
     s2 = gm.S2Cell(gm.Point(10, 50, crs=4326), level=10)
@@ -1146,3 +1172,37 @@ def test_cell_membership_answers_like_a_list() -> None:
         assert member in array
         with pytest.raises(RuntimeError, match='boom'):
             RaisingIndex() in array  # noqa: B015
+
+
+def test_untested_accessors_report_their_values() -> None:
+    points = gm.MultiPoint([(0, 0), (1, 1)])
+    assert repr(points.parts) == '<GeometryParts len=2>'
+    assert gm.Point(1, 1) in points.parts
+    assert gm.Point(5, 5) not in points.parts
+    assert [part.to_wkt() for part in reversed(points)] == ['POINT (1 1)', 'POINT (0 0)']
+    groups = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(0, 0, 2, 2)]).sample_points(
+        [1, 2], seed=1
+    )
+    assert [len(group) for group in reversed(groups)] == [2, 1]
+    assert repr(gm.LineString([(0, 0), (1, 1)]).coords) == '<Coordinates XY len=2>'
+    index = gm.SpatialIndex(gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)]))
+    assert repr(index) == '<SpatialIndex len=2>'
+    assert list(index) == [0, 1]
+    radii = gm.GeometryArray([gm.box(0, 0, 2, 2), None]).maximum_inscribed_radius()
+    assert radii[0] == 1.0
+    assert math.isnan(radii[1])
+    assert repr(gm.CRS(4326)) == 'CRS("EPSG:4326")'
+    assert gm.CRS(4326).area_of_use == {
+        'west': -180.0,
+        'south': -90.0,
+        'east': 180.0,
+        'north': 90.0,
+        'name': 'World.',
+    }
+    report = gm.from_wkt('POLYGON ((0 0, 1 1, 1 0, 0 1, 0 0))').validate()
+    assert repr(report).startswith('<ValidationReport invalid')
+    assert sys.getsizeof(report) > 0
+    # Morton interleaves x into the even bits and y into the odd ones:
+    # x = 0b100, y = 0b010 gives 0b11000.
+    tile = gm.Tile(gm.Point(10, 50, crs=4326), zoom=3)
+    assert (tile.x, tile.y, tile.morton) == (4, 2, 24)
