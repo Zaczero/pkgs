@@ -942,3 +942,19 @@ def test_cells_reject_crs_kwarg() -> None:
         gm.H3Cell(0, 0, resolution=5, crs=4326)  # type: ignore[call-arg]
     with pytest.raises(TypeError, match='crs'):
         gm.S2Cell(0, 0, level=5, crs=4326)  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize(
+    ('builder', 'keyword', 'cls'),
+    [
+        (gm.h3_cells, 'resolution', 'H3Cell'),
+        (gm.s2_cells, 'level', 'S2Cell'),
+        (gm.geohash_cells, 'precision', 'GeohashCell'),
+        (gm.tile_cells, 'zoom', 'Tile'),
+    ],
+)
+def test_plural_builders_point_a_single_point_to_the_cell_class(
+    builder: object, keyword: str, cls: str
+) -> None:
+    with pytest.raises(gm.GeometryError, match=rf'use {cls}\(point, {keyword}=\.\.\.\)'):
+        builder(gm.Point(10, 50, crs=4326), **{keyword: 3})  # type: ignore[operator]

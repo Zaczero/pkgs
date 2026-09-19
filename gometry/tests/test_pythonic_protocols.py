@@ -1117,3 +1117,32 @@ def test_linestring_and_nearestpoints_structural_match() -> None:
             assert len(left) == len(right) == 2
         case _:
             pytest.fail('(left, right) tuple did not match')
+
+
+def _h3_family() -> tuple[object, ...]:
+    cell = gm.H3Cell(gm.Point(10, 50, crs=4326), resolution=7)
+    vertices, edges = cell.vertices, cell.edges
+    return cell, vertices, edges, vertices[0], edges[0]
+
+
+def test_cell_membership_answers_like_a_list() -> None:
+    cell, vertices, edges, vertex, edge = _h3_family()
+    s2 = gm.S2Cell(gm.Point(10, 50, crs=4326), level=10)
+
+    class RaisingIndex:
+        def __index__(self) -> int:
+            raise RuntimeError('boom')
+
+    arrays = (gm.CellArray([cell]), vertices, edges, gm.CellArray([s2]))
+    members = (cell, vertex, edge, s2)
+    for array, member in zip(arrays, members, strict=True):
+        for foreign in (cell, vertex, edge, s2, 5, 'x', True, None):
+            if foreign is member:
+                continue
+            assert foreign not in array
+            assert array.count(foreign) == 0
+            with pytest.raises(ValueError, match='not in array'):
+                array.index(foreign)
+        assert member in array
+        with pytest.raises(RuntimeError, match='boom'):
+            RaisingIndex() in array  # noqa: B015

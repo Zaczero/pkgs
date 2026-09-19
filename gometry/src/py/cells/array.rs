@@ -8,7 +8,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::{PyResult, Python, pyclass};
 use pyo3::types::{
     PyAny, PyBytes, PyBytesMethods as _, PyList, PyListMethods as _, PyString, PyTuple, PyType,
@@ -27,7 +27,7 @@ use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::{TILE_MAX_ZOOM, Tile};
 use crate::py::cells::grid_kind::{
-    collect_ids, collect_inferred_ids, grid_kind_from_type, is_custom_index_provider,
+    collect_ids, collect_inferred_ids, grid_kind_from_type, membership_id,
 };
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
@@ -843,11 +843,9 @@ impl PyCellArray {
             let array = self.clone();
             return Ok(py.detach(move || (0..array.len()).any(|row| array.is_row_missing(row))));
         }
-        let custom_index = is_custom_index_provider(item);
-        let needle = match self.kind().id_from_value(item) {
-            Ok(needle) => needle,
-            Err(error) if custom_index => return Err(error),
-            Err(_) => return Ok(false),
+        let kind = self.kind();
+        let Some(needle) = membership_id(item, |item| kind.id_from_value(item))? else {
+            return Ok(false);
         };
         let array = self.clone();
         Ok(py.detach(move || {
@@ -940,21 +938,15 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
         let needle = if value.is_none() {
             None
         } else {
-            let custom_index = is_custom_index_provider(value);
-            Some(self.kind().id_from_value(value).map_err(|error| {
-                if (error.is_instance_of::<GeometryError>(value.py())
-                    || error.is_instance_of::<PyTypeError>(value.py()))
-                    && !custom_index
-                {
-                    let value = value
-                        .repr()
-                        .and_then(|repr| repr.extract::<String>())
-                        .unwrap_or_else(|_| "value".to_owned());
-                    PyValueError::new_err(format!("{value} is not in array"))
-                } else {
-                    error
-                }
-            })?)
+            let kind = self.kind();
+            let Some(needle) = membership_id(value, |value| kind.id_from_value(value))? else {
+                let value = value
+                    .repr()
+                    .and_then(|repr| repr.extract::<String>())
+                    .unwrap_or_else(|_| "value".to_owned());
+                return Err(PyValueError::new_err(format!("{value} is not in array")));
+            };
+            Some(needle)
         };
         let len = self.len();
         let clamp = |bound: i64| -> usize {
@@ -997,11 +989,9 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
         if value.is_none() {
             return Ok((0..self.len()).filter(|&row| self.is_row_missing(row)).count());
         }
-        let custom_index = is_custom_index_provider(value);
-        let needle = match self.kind().id_from_value(value) {
-            Ok(needle) => needle,
-            Err(error) if custom_index => return Err(error),
-            Err(_) => return Ok(0),
+        let kind = self.kind();
+        let Some(needle) = membership_id(value, |value| kind.id_from_value(value))? else {
+            return Ok(0);
         };
         Ok((0..self.len())
             .filter(|&row| !self.is_row_missing(row) && self.id_at(row) == needle)

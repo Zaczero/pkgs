@@ -278,6 +278,12 @@ where
     C: CellArrayId + Send,
     D: Send,
 {
+    if values.cast::<crate::PyGeometry>().is_ok() {
+        return Err(GeometryError::new_err(format!(
+            "cells expects a GeometryArray of Point or coordinate columns; use \
+             {class_name}(point, {depth_kw}=...) for a single cell"
+        )));
+    }
     if let Some(array) = exact_geometry_array(values) {
         if lat.is_some() {
             return Err(PyTypeError::new_err(

@@ -202,6 +202,33 @@ pub(super) fn is_custom_index_provider(value: &Bound<'_, PyAny>) -> bool {
         && crate::py_index_check(value)
 }
 
+/// The id a membership query (`in`, `index`, `count`) names, or `None` when
+/// it names no element of this kind. Such a query answers "absent" for a
+/// value of the wrong kind or an invalid id, as a list does; only a failure
+/// of the value's own `__index__`, or one that is not a rejection at all
+/// (such as `MemoryError`), is the caller's to see.
+pub(super) fn membership_id<T>(
+    value: &Bound<'_, PyAny>,
+    parse: impl FnOnce(&Bound<'_, PyAny>) -> PyResult<T>,
+) -> PyResult<Option<T>> {
+    if value.cast_exact::<PyBool>().is_ok() {
+        return Ok(None);
+    }
+    if is_custom_index_provider(value) {
+        crate::py_index_object("value", value)?;
+    }
+    match parse(value) {
+        Ok(id) => Ok(Some(id)),
+        Err(error)
+            if error.is_instance_of::<pyo3::exceptions::PyValueError>(value.py())
+                || error.is_instance_of::<PyTypeError>(value.py()) =>
+        {
+            Ok(None)
+        },
+        Err(error) => Err(error),
+    }
+}
+
 macro_rules! id_from_object {
     (
         $function:ident {
