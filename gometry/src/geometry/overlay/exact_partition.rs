@@ -27,8 +27,8 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::build_certified_overlay_shape;
 use crate::geometry::overlay::noding::{SegmentProvenance, SegmentSource};
 use crate::geometry::segments::{
-    SegmentParameter, certified_crossing, crossing_homogeneous, point_in_segment_envelope,
-    point_on_segment, segment_envelopes_disjoint, stored_cross_sign, stored_orientation_sign,
+    certified_crossing, crossing_homogeneous, point_in_segment_envelope, point_on_segment,
+    segment_envelopes_disjoint, stored_cross_sign, stored_orientation_sign, try_sort_by,
 };
 use crate::geometry::tessellation::exact::{
     ExactDyadic, Interval, ratio_enclosure, round_ratio, try_compare_ratios,
@@ -391,8 +391,8 @@ impl ArealSources {
         cells.faces.resize(global.count as usize, false);
         try_reserve_vec(&mut cells.spans, partition.spans.len())?;
         cells.spans.resize(partition.spans.len(), false);
-        try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
-        cells.nodes.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut cells.nodes, partition.node_count())?;
+        cells.nodes.resize(partition.node_count(), false);
         partition.visit_face_windings(
             topology,
             edges,
@@ -1241,15 +1241,15 @@ impl BoundaryPlan {
         debug_assert_eq!(segments.len(), items.len());
         let mut parents = Vec::new();
         let mut coordinates = Vec::new();
-        try_reserve_vec(&mut parents, partition.recipes.len())?;
-        try_reserve_vec(&mut coordinates, partition.recipes.len())?;
-        for node in 0..partition.recipes.len() {
+        try_reserve_vec(&mut parents, partition.node_count())?;
+        try_reserve_vec(&mut coordinates, partition.node_count())?;
+        for node in 0..partition.node_count() {
             try_push_vec(
                 &mut parents,
                 u32::try_from(node).map_err(|_| ResourceError::SizeOverflow)?,
             )?;
         }
-        coordinates.resize(partition.recipes.len(), None);
+        coordinates.resize(partition.node_count(), None);
         for (&[start, end], segment) in items.iter().zip(segments) {
             coordinates[start.0 as usize] = Some(segment.start);
             coordinates[end.0 as usize] = Some(segment.end);
@@ -1461,7 +1461,7 @@ impl GlobalFaces {
         extra_protected: Option<&[bool]>,
     ) -> Result<BoundaryPlan> {
         if let Some(extra_protected) = extra_protected
-            && extra_protected.len() != partition.recipes.len()
+            && extra_protected.len() != partition.node_count()
         {
             return Err(GeometryErrorKind::Invalid(
                 "exact overlay protection does not match node count".into(),
@@ -1482,13 +1482,11 @@ impl GlobalFaces {
         }
         let face_quotient = self.quotient(topology, edges, &retained)?;
         let mut protected = Vec::new();
-        try_reserve_vec(&mut protected, partition.recipes.len())?;
-        protected.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut protected, partition.node_count())?;
+        protected.resize(partition.node_count(), false);
         if partition.protect_stored {
-            for (node, recipe) in partition.recipes.iter().enumerate() {
-                if partition.protect_all || matches!(recipe, NodeRecipe::Stored) {
-                    protected[node] = true;
-                }
+            for (node, protect) in protected.iter_mut().enumerate() {
+                *protect = partition.protect_all || partition.is_stored(NodeId(node as u32));
             }
         }
         if let Some(extra_protected) = extra_protected {
@@ -1734,12 +1732,10 @@ impl GlobalFaces {
 #[derive(Debug)]
 pub(in crate::geometry) struct ExactPartition<'a> {
     unique: &'a [Segment],
-    pub recipes: Vec<NodeRecipe>,
-    /// Each node's nearest-even binary64: the first source spelling of a
-    /// stored node (`PointKey` canonicalizes signed zero for identity;
-    /// emission must not do the same to an endpoint that was already present
-    /// in the input), and the certified or exactly rounded crossing otherwise.
-    rounded: Vec<XY>,
+    /// Every node's point, indexed by `NodeId`. A stored node keeps its first
+    /// source spelling: `PointKey` canonicalizes signed zero for identity, and
+    /// emission must not do the same to an endpoint already in the input.
+    points: PointArena<'a>,
     pub spans: Vec<ExactSpan>,
     pub provenance: SegmentProvenance,
     pub isolated: Vec<NodeId>,
@@ -1747,7 +1743,8 @@ pub(in crate::geometry) struct ExactPartition<'a> {
     pub point_nodes: Vec<NodeId>,
     pub point_sources: Vec<(NodeId, u32)>,
     binding_starts: Vec<u32>,
-    bindings: Vec<NodeOnUnique>,
+    /// The unique segments through each node, by `binding_starts`.
+    bindings: Vec<u32>,
     protect_stored: bool,
     protect_all: bool,
     /// Built on the first cross-component contact query; a connected
@@ -1989,7 +1986,7 @@ impl ExactSourceInventory {
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.canonical_spans = partition.spans.len();
-            metrics.canonical_nodes = partition.recipes.len();
+            metrics.canonical_nodes = partition.node_count();
         });
         partition.protect_stored = self.polygon_rings.iter().all(Vec::is_empty);
         partition.protect_all = partition.protect_stored;
@@ -2053,24 +2050,6 @@ impl ExactSourceInventory {
                 *selected = cell;
             }
         }
-        let parameter = |unique: u32, homogeneous: &[ExactDyadic; 3]| -> Result<[ExactDyadic; 2]> {
-            let source = partition.unique[unique as usize];
-            let [x, y, w] = homogeneous;
-            let (coordinate, start, end) =
-                if same_topological_coordinate(source.start.x, source.end.x) {
-                    (y, source.start.y, source.end.y)
-                } else {
-                    (x, source.start.x, source.end.x)
-                };
-            let start = ExactDyadic::try_from_f64(start)?;
-            let direction = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
-            Ok([
-                coordinate
-                    .try_clone()?
-                    .try_subtract(start.try_product(w)?)?,
-                w.try_product(&direction)?,
-            ])
-        };
         let mut spans = Vec::new();
         let mut boundary_spans = with_boundary.then(Vec::new);
         try_reserve_vec(
@@ -2084,8 +2063,8 @@ impl ExactSourceInventory {
             )?;
         }
         let mut covered = Vec::new();
-        try_reserve_vec(&mut covered, partition.recipes.len())?;
-        covered.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut covered, partition.node_count())?;
+        covered.resize(partition.node_count(), false);
         for (index, &selected) in cells.spans.iter().enumerate() {
             if !selected {
                 continue;
@@ -2093,8 +2072,9 @@ impl ExactSourceInventory {
             let span = partition.spans[index];
             let start = partition.exact_owned(span.start)?;
             let end = partition.exact_owned(span.end)?;
-            let start_parameter = parameter(span.unique, &start)?;
-            let end_parameter = parameter(span.unique, &end)?;
+            let source = partition.unique[span.unique as usize];
+            let start_parameter = parameter_along(source, &start)?;
+            let end_parameter = parameter_along(source, &end)?;
             covered[span.start.0 as usize] = true;
             covered[span.end.0 as usize] = true;
             try_push_vec(&mut spans, ExactMetricSpan {
@@ -2159,11 +2139,7 @@ impl ExactSourceInventory {
         })
     }
 
-    fn node_bindings<'a>(
-        &self,
-        node: NodeId,
-        partition: &'a ExactPartition<'_>,
-    ) -> &'a [NodeOnUnique] {
+    fn node_bindings<'a>(&self, node: NodeId, partition: &'a ExactPartition<'_>) -> &'a [u32] {
         let index = node.0 as usize;
         let start = partition.binding_starts[index] as usize;
         let end = partition.binding_starts[index + 1] as usize;
@@ -2182,26 +2158,28 @@ impl ExactSourceInventory {
         }
         let mut z = AxisValue::default();
         let mut m = AxisValue::default();
-        for binding in self.node_bindings(node, partition) {
-            let owners = self.provenance.owners(binding.unique as usize);
-            for &(source, reversed) in owners {
-                let source = source as usize;
-                let points = self.source_points.get(source).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact partition ordinate binding references an unknown source".into(),
-                    )
-                })?;
-                let parameter = if reversed {
-                    binding.parameter.reverse()?
-                } else {
-                    binding.parameter.clone()
-                };
-                let [start, end] = *points;
-                if axes.has_z() {
-                    z.observe(interpolate_ordinate(start.z(), end.z(), &parameter)?);
-                }
-                if axes.has_m() {
-                    m.observe(interpolate_ordinate(start.m(), end.m(), &parameter)?);
+        let bindings = self.node_bindings(node, partition);
+        if !bindings.is_empty() {
+            let point = partition.exact(node)?;
+            for &unique in bindings {
+                // The parameter from the unique segment's start, and from its
+                // end for a source stored in reverse.
+                let [num, den] = parameter_along(partition.unique[unique as usize], &point)?;
+                let from_end = den.try_clone()?.try_subtract(num.try_clone()?)?;
+                for &(source, reversed) in self.provenance.owners(unique as usize) {
+                    let points = self.source_points.get(source as usize).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "exact partition ordinate binding references an unknown source".into(),
+                        )
+                    })?;
+                    let along = if reversed { &from_end } else { &num };
+                    let [start, end] = *points;
+                    if axes.has_z() {
+                        z.observe(interpolate_ordinate(start.z(), end.z(), along, &den)?);
+                    }
+                    if axes.has_m() {
+                        m.observe(interpolate_ordinate(start.m(), end.m(), along, &den)?);
+                    }
                 }
             }
         }
@@ -2259,12 +2237,12 @@ impl ExactSourceInventory {
             return Ok(None);
         }
         let mut protected = Vec::new();
-        try_reserve_vec(&mut protected, partition.recipes.len())?;
-        protected.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut protected, partition.node_count())?;
+        protected.resize(partition.node_count(), false);
         for (node, range) in partition.binding_starts.windows(2).enumerate() {
-            for binding in &partition.bindings[range[0] as usize..range[1] as usize] {
+            for &unique in &partition.bindings[range[0] as usize..range[1] as usize] {
                 let mut source_has_ordinate = false;
-                for &(source, _) in self.provenance.owners(binding.unique as usize) {
+                for &(source, _) in self.provenance.owners(unique as usize) {
                     let points = self.source_points.get(source as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "exact partition ordinate binding references an unknown source".into(),
@@ -2394,8 +2372,8 @@ impl ExactSourceInventory {
         }
 
         let mut degree = Vec::new();
-        try_reserve_vec(&mut degree, partition.recipes.len())?;
-        degree.resize(partition.recipes.len(), 0_usize);
+        try_reserve_vec(&mut degree, partition.node_count())?;
+        degree.resize(partition.node_count(), 0_usize);
         for span in &partition.spans {
             degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
             degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
@@ -2663,8 +2641,8 @@ impl ExactSourceInventory {
         }
 
         let mut seen = Vec::new();
-        try_reserve_vec(&mut seen, partition.recipes.len())?;
-        seen.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut seen, partition.node_count())?;
+        seen.resize(partition.node_count(), false);
         let mut nodes = Vec::new();
         for plan in &plans {
             for [start, end] in plan.incident_items(&topology)? {
@@ -2679,8 +2657,8 @@ impl ExactSourceInventory {
         let rounded_nodes = partition.round_nodes(&nodes)?;
         ExactPartition::check_node_injectivity(&nodes, &rounded_nodes)?;
         let mut coordinates = Vec::new();
-        try_reserve_vec(&mut coordinates, partition.recipes.len())?;
-        coordinates.resize(partition.recipes.len(), None);
+        try_reserve_vec(&mut coordinates, partition.node_count())?;
+        coordinates.resize(partition.node_count(), None);
         for (&node, &coordinate) in nodes.iter().zip(&rounded_nodes) {
             coordinates[node.0 as usize] = Some(coordinate);
         }
@@ -2702,8 +2680,8 @@ impl ExactSourceInventory {
         let mut output_nodes = Vec::new();
         try_reserve_vec(&mut output_nodes, nodes.len())?;
         let mut output_seen = Vec::new();
-        try_reserve_vec(&mut output_seen, partition.recipes.len())?;
-        output_seen.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut output_seen, partition.node_count())?;
+        output_seen.resize(partition.node_count(), false);
         for parts in &node_parts {
             for &(node, point) in &parts.rounded {
                 rounded.entry(node).or_insert(point);
@@ -2757,8 +2735,8 @@ impl ExactSourceInventory {
         }
 
         let mut seen = Vec::new();
-        try_reserve_vec(&mut seen, partition.recipes.len())?;
-        seen.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut seen, partition.node_count())?;
+        seen.resize(partition.node_count(), false);
         let mut nodes = Vec::new();
         for spans in &selected {
             for (index, &is_selected) in spans.iter().enumerate() {
@@ -3022,8 +3000,8 @@ impl ExactSourceInventory {
         }
         try_reserve_vec(&mut cells.spans, partition.spans.len())?;
         cells.spans.resize(partition.spans.len(), false);
-        try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
-        cells.nodes.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut cells.nodes, partition.node_count())?;
+        cells.nodes.resize(partition.node_count(), false);
         for span in 0..partition.spans.len() {
             cells.spans[span] = facts.span_support[span * operands + source_operand]
                 && facts.span_support[span * operands + clip_operand];
@@ -3034,7 +3012,7 @@ impl ExactSourceInventory {
             }
         }
 
-        for node in 0..partition.recipes.len() {
+        for node in 0..partition.node_count() {
             let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
             let memberships = |operand: usize| {
                 let face_membership = if range.is_empty() {
@@ -3173,8 +3151,8 @@ impl ExactSourceInventory {
                 try_reserve_vec(&mut spans, partition.spans.len())?;
                 spans.resize(partition.spans.len(), false);
                 let mut nodes = Vec::new();
-                try_reserve_vec(&mut nodes, partition.recipes.len())?;
-                nodes.resize(partition.recipes.len(), false);
+                try_reserve_vec(&mut nodes, partition.node_count())?;
+                nodes.resize(partition.node_count(), false);
                 let cells = ArealCells {
                     faces,
                     spans,
@@ -3197,8 +3175,8 @@ impl ExactSourceInventory {
             },
             nodes: {
                 let mut values = Vec::new();
-                try_reserve_vec(&mut values, partition.recipes.len())?;
-                values.resize(partition.recipes.len(), false);
+                try_reserve_vec(&mut values, partition.node_count())?;
+                values.resize(partition.node_count(), false);
                 values
             },
         };
@@ -3428,8 +3406,8 @@ impl ExactSourceInventory {
             }
             try_reserve_vec(&mut cells.spans, partition.spans.len())?;
             cells.spans.resize(partition.spans.len(), false);
-            try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
-            cells.nodes.resize(partition.recipes.len(), false);
+            try_reserve_vec(&mut cells.nodes, partition.node_count())?;
+            cells.nodes.resize(partition.node_count(), false);
             let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
             let parts =
                 plan.emit_node_parts_with_shared_rounding(partition, &topology, &rounded)?;
@@ -3732,8 +3710,8 @@ impl ExactSourceInventory {
             },
             nodes: {
                 let mut values = Vec::new();
-                try_reserve_vec(&mut values, partition.recipes.len())?;
-                values.resize(partition.recipes.len(), false);
+                try_reserve_vec(&mut values, partition.node_count())?;
+                values.resize(partition.node_count(), false);
                 values
             },
         };
@@ -3769,7 +3747,7 @@ impl ExactSourceInventory {
                 matrix.set_at_least(left, right, Dimension::Curve);
             }
         }
-        for node in 0..partition.recipes.len() {
+        for node in 0..partition.node_count() {
             let left = self.node_location_from_facts(
                 0,
                 NodeId(node as u32),
@@ -3837,8 +3815,7 @@ impl ExactSourceInventory {
         try_reserve_vec(&mut facts.span_support, span_cells)?;
         facts.span_support.resize(span_cells, false);
         let node_cells = partition
-            .recipes
-            .len()
+            .node_count()
             .checked_mul(operands)
             .ok_or(ResourceError::SizeOverflow)?;
         try_reserve_vec(&mut facts.point_membership, node_cells)?;
@@ -4167,8 +4144,7 @@ impl ExactSourceInventory {
     fn node_source_flags(&self, partition: &ExactPartition<'_>) -> Result<Vec<bool>> {
         let operands = self.operand_count();
         let cells = partition
-            .recipes
-            .len()
+            .node_count()
             .checked_mul(operands)
             .ok_or(ResourceError::SizeOverflow)?;
         let mut line_boundaries = Vec::new();
@@ -4177,9 +4153,9 @@ impl ExactSourceInventory {
 
         let mut stored = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
         stored
-            .try_reserve(partition.recipes.len())
+            .try_reserve(partition.node_count())
             .map_err(crate::error::Error::from)?;
-        for index in 0..partition.recipes.len() {
+        for index in 0..partition.node_count() {
             if let Some(key) = partition.stored_key(index) {
                 stored.insert(key, index as u32);
             }
@@ -4328,8 +4304,8 @@ impl ExactSourceInventory {
         cells.faces.resize(global.count as usize, false);
         try_reserve_vec(&mut cells.spans, partition.spans.len())?;
         cells.spans.resize(partition.spans.len(), false);
-        try_reserve_vec(&mut cells.nodes, partition.recipes.len())?;
-        cells.nodes.resize(partition.recipes.len(), false);
+        try_reserve_vec(&mut cells.nodes, partition.node_count())?;
+        cells.nodes.resize(partition.node_count(), false);
         for face in 0..global.count as usize {
             cells.faces[face] = select_operation(
                 operation,
@@ -4338,8 +4314,7 @@ impl ExactSourceInventory {
         }
 
         let node_cells = partition
-            .recipes
-            .len()
+            .node_count()
             .checked_mul(operands)
             .ok_or(ResourceError::SizeOverflow)?;
         let mut node_membership = Vec::new();
@@ -4372,7 +4347,7 @@ impl ExactSourceInventory {
                     facts.face_membership[host * operands + operand];
             }
         }
-        for node in 0..partition.recipes.len() {
+        for node in 0..partition.node_count() {
             let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
             if range.is_empty() {
                 continue;
@@ -4385,7 +4360,7 @@ impl ExactSourceInventory {
                 node_membership[node * operands + operand] |= any;
             }
         }
-        for node in 0..partition.recipes.len() {
+        for node in 0..partition.node_count() {
             let membership = &node_membership[node * operands..][..operands];
             cells.nodes[node] |= select_operation(operation, membership);
         }
@@ -5214,50 +5189,27 @@ fn try_clone_point(point: &[ExactDyadic; 3]) -> Result<[ExactDyadic; 3]> {
 }
 
 impl ExactPartition<'_> {
+    pub(in crate::geometry) const fn node_count(&self) -> usize {
+        self.points.len()
+    }
+
     /// A node's nearest-even binary64 point.
     pub(in crate::geometry) fn node_xy(&self, node: NodeId) -> XY {
-        self.rounded[node.0 as usize]
+        self.points.rounded[node.0 as usize]
     }
 
     fn is_stored(&self, node: NodeId) -> bool {
-        matches!(self.recipes[node.0 as usize], NodeRecipe::Stored)
+        self.points.is_stored(node.0)
     }
 
     fn stored_key(&self, node: usize) -> Option<PointKey> {
-        matches!(self.recipes[node], NodeRecipe::Stored).then(|| PointKey::new(self.rounded[node]))
-    }
-
-    pub(in crate::geometry) fn stored_node(&self, point: XY) -> Option<NodeId> {
-        let key = PointKey::new(point);
-        (0..self.recipes.len())
-            .find(|&node| self.stored_key(node) == Some(key))
-            .map(|node| NodeId(node as u32))
+        self.points.stored_key(node as u32)
     }
 
     /// A node's exact homogeneous point: built in place for a stored node,
     /// constructed once and kept for a crossing.
     pub(in crate::geometry) fn exact(&self, node: NodeId) -> Result<Cow<'_, [ExactDyadic; 3]>> {
-        match &self.recipes[node.0 as usize] {
-            NodeRecipe::Stored => {
-                let point = self.rounded[node.0 as usize];
-                Ok(Cow::Owned([
-                    ExactDyadic::try_from_f64(point.x)?,
-                    ExactDyadic::try_from_f64(point.y)?,
-                    ExactDyadic::try_from_f64(1.0)?,
-                ]))
-            },
-            NodeRecipe::Crossing { segments, exact } => {
-                let point = exact.get_or_try_init(|| -> Result<_> {
-                    #[cfg(test)]
-                    update_partition_metrics(|metrics| metrics.exact_crossings += 1);
-                    Ok(Box::try_new(crossing_homogeneous(
-                        self.unique[segments[0] as usize],
-                        self.unique[segments[1] as usize],
-                    )?)?)
-                })?;
-                Ok(Cow::Borrowed(&**point))
-            },
-        }
+        self.points.exact(node.0)
     }
 
     fn exact_owned(&self, node: NodeId) -> Result<[ExactDyadic; 3]> {
@@ -5267,105 +5219,20 @@ impl ExactPartition<'_> {
         }
     }
 
-    /// Order two nodes along one axis. Nearest-even rounding is monotone, so
-    /// rounded coordinates that differ order the exact points the same way;
-    /// only a tie that is not between two stored values reads exact points.
     fn compare_axis(&self, left: NodeId, right: NodeId, axis: Axis) -> Result<Ordering> {
-        let (l, r) = (
-            axis.of(self.rounded[left.0 as usize]),
-            axis.of(self.rounded[right.0 as usize]),
-        );
-        if l < r {
-            return Ok(Ordering::Less);
-        }
-        if l > r {
-            return Ok(Ordering::Greater);
-        }
-        if left == right || (self.is_stored(left) && self.is_stored(right)) {
-            return Ok(Ordering::Equal);
-        }
-        let (left, right) = (self.exact(left)?, self.exact(right)?);
-        let index = axis.index();
-        try_compare_ratios(&left[index], &left[2], &right[index], &right[2])
+        self.points.compare_axis(left.0, right.0, axis)
     }
 
-    /// Order a node's coordinate against a binary64 value by the same rule.
     fn compare_axis_to(&self, node: NodeId, axis: Axis, value: f64) -> Result<Ordering> {
-        let rounded = axis.of(self.rounded[node.0 as usize]);
-        if rounded < value {
-            return Ok(Ordering::Less);
-        }
-        if rounded > value {
-            return Ok(Ordering::Greater);
-        }
-        if self.is_stored(node) {
-            return Ok(Ordering::Equal);
-        }
-        let point = self.exact(node)?;
-        let index = axis.index();
-        try_compare_ratios(
-            &point[index],
-            &point[2],
-            &ExactDyadic::try_from_f64(value)?,
-            &ExactDyadic::try_from_f64(1.0)?,
-        )
+        self.points.compare_axis_to(node.0, axis, value)
     }
 
-    /// Certified outward bounds on a node's coordinate: the stored value, or
-    /// the neighbours of a crossing's nearest-even rounding.
     fn axis_bounds(&self, node: NodeId, axis: Axis) -> (f64, f64) {
-        let rounded = axis.of(self.rounded[node.0 as usize]);
-        if self.is_stored(node) {
-            (rounded, rounded)
-        } else {
-            (rounded.next_down(), rounded.next_up())
-        }
+        self.points.axis_bounds(node.0, axis)
     }
 
-    /// The orientation of `c` against the directed line through `a` and `b`:
-    /// the stored predicate when all three are stored, otherwise an interval
-    /// filter over the certified bounds and the exact homogeneous determinant.
     fn orientation(&self, a: NodeId, b: NodeId, c: NodeId) -> Result<ExactSign> {
-        if self.is_stored(a) && self.is_stored(b) && self.is_stored(c) {
-            let [a, b, c] = [a, b, c].map(|node| self.rounded[node.0 as usize]);
-            return Ok(stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y));
-        }
-        let interval = |node: NodeId, axis: Axis| {
-            let (lo, hi) = self.axis_bounds(node, axis);
-            Interval { lo, hi }
-        };
-        let (ax, ay) = (interval(a, Axis::X), interval(a, Axis::Y));
-        let determinant = interval(b, Axis::X)
-            .sub(ax)
-            .mul(interval(c, Axis::Y).sub(ay))
-            .sub(
-                interval(b, Axis::Y)
-                    .sub(ay)
-                    .mul(interval(c, Axis::X).sub(ax)),
-            );
-        if determinant.is_finite()
-            && let Some(sign) = determinant.sign()
-        {
-            return Ok(sign);
-        }
-        let [ax, ay, aw] = &*self.exact(a)?;
-        let [bx, by, bw] = &*self.exact(b)?;
-        let [cx, cy, cw] = &*self.exact(c)?;
-        let dx = bx.try_product(aw)?.try_subtract(ax.try_product(bw)?)?;
-        let dy = by.try_product(aw)?.try_subtract(ay.try_product(bw)?)?;
-        let cx_rel = cx.try_product(aw)?.try_subtract(ax.try_product(cw)?)?;
-        let cy_rel = cy.try_product(aw)?.try_subtract(ay.try_product(cw)?)?;
-        let sign = dx
-            .try_product(&cy_rel)?
-            .try_subtract(dy.try_product(&cx_rel)?)?
-            .sign();
-        // The determinant carries aw^2 bw cw, and aw^2 is positive.
-        let flipped = (bw.sign() == ExactSign::Negative) != (cw.sign() == ExactSign::Negative);
-        Ok(match (flipped, sign) {
-            (true, ExactSign::Negative) => ExactSign::Positive,
-            (true, ExactSign::Positive) => ExactSign::Negative,
-            (_, sign) => sign,
-        })
+        self.points.orientation(a.0, b.0, c.0)
     }
 
     /// Return each source segment's exact atomic span run in source direction.
@@ -5396,43 +5263,40 @@ impl ExactPartition<'_> {
             if views[source].len() < 2 {
                 continue;
             }
-            let start = self.stored_node(segment.start).ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "exact partition source endpoint has no stored node".into(),
-                )
-            })?;
-            let end = self.stored_node(segment.end).ok_or_else(|| {
-                GeometryErrorKind::Invalid(
-                    "exact partition source endpoint has no stored node".into(),
-                )
-            })?;
-            let mut remaining = std::mem::take(&mut views[source]);
-            let mut ordered = Vec::new();
-            try_reserve_vec(&mut ordered, remaining.len())?;
-            let mut current = start;
-            while !remaining.is_empty() {
-                let index = remaining.iter().position(|&(span, reversed)| {
-                    let span = self.spans[span as usize];
-                    if reversed {
-                        span.end == current
-                    } else {
-                        span.start == current
-                    }
-                });
-                let Some(index) = index else {
-                    return Err(GeometryErrorKind::Invalid(
-                        "exact partition source atoms are not a contiguous run".into(),
+            // Each atom's entry is its node nearest the source start; ordered
+            // along the source, every exit is the next atom's entry.
+            let entry = |(span, reversed): (u32, bool)| {
+                let span = self.spans[span as usize];
+                if reversed { span.end.0 } else { span.start.0 }
+            };
+            let exit = |(span, reversed): (u32, bool)| {
+                let span = self.spans[span as usize];
+                if reversed { span.start } else { span.end }
+            };
+            let mut ordered = std::mem::take(&mut views[source]);
+            self.points
+                .order_along(*segment, &mut ordered, entry, |_, _| {
+                    Err(GeometryErrorKind::Invalid(
+                        "exact partition source atoms share an entry node".into(),
                     )
-                    .into());
-                };
-                let (span_id, reversed) = remaining.swap_remove(index);
-                let span = self.spans[span_id as usize];
-                current = if reversed { span.start } else { span.end };
-                try_push_vec(&mut ordered, (span_id, reversed))?;
-            }
-            if current != end {
+                    .into())
+                })?;
+            let first = NodeId(entry(ordered[0]));
+            let last = exit(ordered[ordered.len() - 1]);
+            if self.stored_key(first.0 as usize) != Some(PointKey::new(segment.start))
+                || self.stored_key(last.0 as usize) != Some(PointKey::new(segment.end))
+            {
                 return Err(GeometryErrorKind::Invalid(
                     "exact partition source atoms do not reach their endpoint".into(),
+                )
+                .into());
+            }
+            if ordered
+                .windows(2)
+                .any(|pair| exit(pair[0]).0 != entry(pair[1]))
+            {
+                return Err(GeometryErrorKind::Invalid(
+                    "exact partition source atoms are not a contiguous run".into(),
                 )
                 .into());
             }
@@ -5478,8 +5342,8 @@ impl ExactPartition<'_> {
         }
 
         let mut node_pin = Vec::new();
-        try_reserve_vec(&mut node_pin, self.recipes.len())?;
-        node_pin.resize(self.recipes.len(), false);
+        try_reserve_vec(&mut node_pin, self.node_count())?;
+        node_pin.resize(self.node_count(), false);
         for (node, range) in topology.starts.windows(2).enumerate() {
             let slots = range[0] as usize..range[1] as usize;
             node_pin[node] = slots.len() != 2
@@ -5825,7 +5689,7 @@ impl ExactPartition<'_> {
     }
 
     pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
-        let vertices = self.recipes.len();
+        let vertices = self.node_count();
         let slots = self
             .spans
             .len()
@@ -6266,32 +6130,277 @@ impl ExactPartition<'_> {
     }
 }
 
-#[derive(Clone, Debug)]
-struct NodeOnUnique {
-    unique: u32,
-    parameter: SegmentParameter,
+/// Stored endpoints and segment crossings: each point's nearest-even binary64
+/// and, for a crossing, its exact homogeneous point built on first demand.
+/// Construction handles and the partition nodes they compact into share this
+/// one owner of the rounding-order rule.
+#[derive(Debug)]
+struct PointArena<'a> {
+    unique: &'a [Segment],
+    recipes: Vec<NodeRecipe>,
+    rounded: Vec<XY>,
 }
 
-impl SegmentParameter {
-    fn reverse(&self) -> Result<Self> {
-        Ok(match self {
-            Self::Start => Self::End,
-            Self::End => Self::Start,
-            Self::Ratio { num, den } => Self::Ratio {
-                num: den.try_clone()?.try_subtract(num.try_clone()?)?,
-                den: den.try_clone()?,
-            },
+impl<'a> PointArena<'a> {
+    fn with_capacity(unique: &'a [Segment], capacity: usize) -> Result<Self> {
+        let mut recipes = Vec::new();
+        let mut rounded = Vec::new();
+        try_reserve_vec(&mut recipes, capacity)?;
+        try_reserve_vec(&mut rounded, capacity)?;
+        Ok(Self {
+            unique,
+            recipes,
+            rounded,
         })
     }
 
-    fn is_open_unit(&self, zero: &ExactDyadic, one: &ExactDyadic) -> Result<bool> {
-        match self {
-            Self::Start | Self::End => Ok(false),
-            Self::Ratio { num, den } => Ok(try_compare_ratios(num, den, zero, one)?
-                == Ordering::Greater
-                && try_compare_ratios(num, den, one, one)? == Ordering::Less),
+    const fn len(&self) -> usize {
+        self.recipes.len()
+    }
+
+    fn push(&mut self, recipe: NodeRecipe, rounded: XY) -> Result<u32> {
+        let index = u32::try_from(self.recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
+        try_push_vec(&mut self.recipes, recipe)?;
+        try_push_vec(&mut self.rounded, rounded)?;
+        Ok(index)
+    }
+
+    /// A stored endpoint, keeping the source spelling of signed zero.
+    fn push_stored(&mut self, point: XY) -> Result<u32> {
+        self.push(NodeRecipe::Stored, point)
+    }
+
+    /// The crossing of two unique segments' carriers, lower index first,
+    /// rounded by the double-double certificate or, when it declines, by the
+    /// exact construction it then keeps.
+    fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
+        let (first, second) = (
+            self.unique[segments[0] as usize],
+            self.unique[segments[1] as usize],
+        );
+        let exact = std::cell::OnceCell::new();
+        let point = if let Some(point) = certified_crossing(first, second) {
+            point
+        } else {
+            #[cfg(test)]
+            update_partition_metrics(|metrics| metrics.declined_crossings += 1);
+            let [x, y, w] = crossing_homogeneous(first, second)?;
+            let point = XY::new(round_ratio(&x, &w)?, round_ratio(&y, &w)?);
+            let _ = exact.set(Box::try_new([x, y, w])?);
+            point
+        };
+        let unsigned = |value: f64| if value == 0.0 { 0.0 } else { value };
+        self.push(
+            NodeRecipe::Crossing { segments, exact },
+            XY::new(unsigned(point.x), unsigned(point.y)),
+        )
+    }
+
+    /// Move an entry out, leaving a stored placeholder behind.
+    fn take(&mut self, index: u32) -> (NodeRecipe, XY) {
+        (
+            mem::replace(&mut self.recipes[index as usize], NodeRecipe::Stored),
+            self.rounded[index as usize],
+        )
+    }
+
+    fn is_stored(&self, index: u32) -> bool {
+        matches!(self.recipes[index as usize], NodeRecipe::Stored)
+    }
+
+    fn stored_key(&self, index: u32) -> Option<PointKey> {
+        self.is_stored(index)
+            .then(|| PointKey::new(self.rounded[index as usize]))
+    }
+
+    fn exact(&self, index: u32) -> Result<Cow<'_, [ExactDyadic; 3]>> {
+        match &self.recipes[index as usize] {
+            NodeRecipe::Stored => {
+                let point = self.rounded[index as usize];
+                Ok(Cow::Owned([
+                    ExactDyadic::try_from_f64(point.x)?,
+                    ExactDyadic::try_from_f64(point.y)?,
+                    ExactDyadic::try_from_f64(1.0)?,
+                ]))
+            },
+            NodeRecipe::Crossing { segments, exact } => {
+                let point = exact.get_or_try_init(|| -> Result<_> {
+                    #[cfg(test)]
+                    update_partition_metrics(|metrics| metrics.exact_crossings += 1);
+                    Ok(Box::try_new(crossing_homogeneous(
+                        self.unique[segments[0] as usize],
+                        self.unique[segments[1] as usize],
+                    )?)?)
+                })?;
+                Ok(Cow::Borrowed(&**point))
+            },
         }
     }
+
+    /// Order two points along one axis. Nearest-even rounding is monotone, so
+    /// rounded coordinates that differ order the exact points the same way;
+    /// only a tie that is not between two stored values reads exact points.
+    fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering> {
+        let (l, r) = (
+            axis.of(self.rounded[left as usize]),
+            axis.of(self.rounded[right as usize]),
+        );
+        if l < r {
+            return Ok(Ordering::Less);
+        }
+        if l > r {
+            return Ok(Ordering::Greater);
+        }
+        if left == right || (self.is_stored(left) && self.is_stored(right)) {
+            return Ok(Ordering::Equal);
+        }
+        let (left, right) = (self.exact(left)?, self.exact(right)?);
+        let index = axis.index();
+        try_compare_ratios(&left[index], &left[2], &right[index], &right[2])
+    }
+
+    /// Order a point's coordinate against a binary64 value by the same rule.
+    fn compare_axis_to(&self, index: u32, axis: Axis, value: f64) -> Result<Ordering> {
+        let rounded = axis.of(self.rounded[index as usize]);
+        if rounded < value {
+            return Ok(Ordering::Less);
+        }
+        if rounded > value {
+            return Ok(Ordering::Greater);
+        }
+        if self.is_stored(index) {
+            return Ok(Ordering::Equal);
+        }
+        let point = self.exact(index)?;
+        let axis = axis.index();
+        try_compare_ratios(
+            &point[axis],
+            &point[2],
+            &ExactDyadic::try_from_f64(value)?,
+            &ExactDyadic::try_from_f64(1.0)?,
+        )
+    }
+
+    /// Certified outward bounds on a coordinate: the stored value, or the
+    /// neighbours of a crossing's nearest-even rounding.
+    fn axis_bounds(&self, index: u32, axis: Axis) -> (f64, f64) {
+        let rounded = axis.of(self.rounded[index as usize]);
+        if self.is_stored(index) {
+            (rounded, rounded)
+        } else {
+            (rounded.next_down(), rounded.next_up())
+        }
+    }
+
+    /// Order items whose points lie on `segment`'s carrier from its start to
+    /// its end, reporting each adjacent pair at one point to `equal`. The
+    /// rounded coordinate on the segment's major axis sorts; exact points
+    /// break only runs of equal rounded coordinates.
+    fn order_along<T: Copy>(
+        &self,
+        segment: Segment,
+        items: &mut [T],
+        point: impl Fn(T) -> u32,
+        mut equal: impl FnMut(T, T) -> Result<()>,
+    ) -> Result<()> {
+        let (axis, increasing) = segment_axis(segment);
+        let key = |item: T| {
+            let value = axis.of(self.rounded[point(item) as usize]);
+            if value == 0.0 { 0.0 } else { value }
+        };
+        items.sort_unstable_by(|&left, &right| key(left).total_cmp(&key(right)));
+        let mut run = 0;
+        while run < items.len() {
+            let mut end = run + 1;
+            while end < items.len() && key(items[end]).total_cmp(&key(items[run])).is_eq() {
+                end += 1;
+            }
+            if end - run > 1 {
+                let tied = &mut items[run..end];
+                try_sort_by(tied, |&left, &right| {
+                    self.compare_axis(point(left), point(right), axis)
+                })?;
+                for pair in 1..tied.len() {
+                    if self.compare_axis(point(tied[pair - 1]), point(tied[pair]), axis)?
+                        == Ordering::Equal
+                    {
+                        equal(tied[pair - 1], tied[pair])?;
+                    }
+                }
+            }
+            run = end;
+        }
+        if !increasing {
+            items.reverse();
+        }
+        Ok(())
+    }
+
+    /// The orientation of `c` against the directed line through `a` and `b`:
+    /// the stored predicate when all three are stored, otherwise an interval
+    /// filter over the certified bounds and the exact homogeneous determinant.
+    fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
+        if self.is_stored(a) && self.is_stored(b) && self.is_stored(c) {
+            let [a, b, c] = [a, b, c].map(|index| self.rounded[index as usize]);
+            return Ok(stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y));
+        }
+        let interval = |index: u32, axis: Axis| {
+            let (lo, hi) = self.axis_bounds(index, axis);
+            Interval { lo, hi }
+        };
+        let (ax, ay) = (interval(a, Axis::X), interval(a, Axis::Y));
+        let determinant = interval(b, Axis::X)
+            .sub(ax)
+            .mul(interval(c, Axis::Y).sub(ay))
+            .sub(
+                interval(b, Axis::Y)
+                    .sub(ay)
+                    .mul(interval(c, Axis::X).sub(ax)),
+            );
+        if determinant.is_finite()
+            && let Some(sign) = determinant.sign()
+        {
+            return Ok(sign);
+        }
+        let [ax, ay, aw] = &*self.exact(a)?;
+        let [bx, by, bw] = &*self.exact(b)?;
+        let [cx, cy, cw] = &*self.exact(c)?;
+        let dx = bx.try_product(aw)?.try_subtract(ax.try_product(bw)?)?;
+        let dy = by.try_product(aw)?.try_subtract(ay.try_product(bw)?)?;
+        let cx_rel = cx.try_product(aw)?.try_subtract(ax.try_product(cw)?)?;
+        let cy_rel = cy.try_product(aw)?.try_subtract(ay.try_product(cw)?)?;
+        let sign = dx
+            .try_product(&cy_rel)?
+            .try_subtract(dy.try_product(&cx_rel)?)?
+            .sign();
+        // The determinant carries aw^2 bw cw, and aw^2 is positive.
+        let flipped = (bw.sign() == ExactSign::Negative) != (cw.sign() == ExactSign::Negative);
+        Ok(match (flipped, sign) {
+            (true, ExactSign::Negative) => ExactSign::Positive,
+            (true, ExactSign::Positive) => ExactSign::Negative,
+            (_, sign) => sign,
+        })
+    }
+}
+
+/// The exact parameter of `node` along `segment`'s carrier, as `[num, den]`
+/// with `node = start + (num / den) (end - start)`, read on x unless the
+/// segment is vertical.
+fn parameter_along(segment: Segment, point: &[ExactDyadic; 3]) -> Result<[ExactDyadic; 2]> {
+    let [x, y, w] = point;
+    let (coordinate, start, end) = if same_topological_coordinate(segment.start.x, segment.end.x) {
+        (y, segment.start.y, segment.end.y)
+    } else {
+        (x, segment.start.x, segment.end.x)
+    };
+    let start = ExactDyadic::try_from_f64(start)?;
+    let direction = ExactDyadic::try_from_f64(end)?.try_subtract(start.try_clone()?)?;
+    Ok([
+        coordinate
+            .try_clone()?
+            .try_subtract(start.try_product(w)?)?,
+        w.try_product(&direction)?,
+    ])
 }
 
 #[derive(Clone, Copy, Default)]
@@ -6317,57 +6426,46 @@ impl AxisValue {
     }
 }
 
+/// The ordinate at parameter `num / den` along a source from `start` to
+/// `end`, rounded once. A source endpoint keeps its stored spelling, signed
+/// zero included.
 fn interpolate_ordinate(
     start: Option<f64>,
     end: Option<f64>,
-    parameter: &SegmentParameter,
+    num: &ExactDyadic,
+    den: &ExactDyadic,
 ) -> Result<Option<f64>> {
     let (Some(start), Some(end)) = (start, end) else {
         return Ok(None);
     };
-    Ok(match parameter {
-        SegmentParameter::Start => Some(start),
-        SegmentParameter::End => Some(end),
-        SegmentParameter::Ratio { num, den } => {
-            if start.to_bits() == end.to_bits() {
-                Some(start)
-            } else {
-                let start = ExactDyadic::try_from_f64(start)?;
-                let end = ExactDyadic::try_from_f64(end)?;
-                let left = den.try_clone()?.try_subtract(num.try_clone()?)?;
-                let numerator = start.try_product(&left)?.try_add(end.try_product(num)?)?;
-                Some(round_ratio(&numerator, den)?)
-            }
-        },
-    })
+    if start.to_bits() == end.to_bits() || num.is_zero() {
+        return Ok(Some(start));
+    }
+    if num == den {
+        return Ok(Some(end));
+    }
+    let start = ExactDyadic::try_from_f64(start)?;
+    let end = ExactDyadic::try_from_f64(end)?;
+    let left = den.try_clone()?.try_subtract(num.try_clone()?)?;
+    let numerator = start.try_product(&left)?.try_add(end.try_product(num)?)?;
+    Ok(Some(round_ratio(&numerator, den)?))
 }
 
-struct SourceCut {
-    param: SegmentParameter,
-    handle: u32,
-}
-
-#[derive(Clone, Copy)]
-enum HandleKind {
-    /// A stored endpoint: its canonical key, and the first source spelling
-    /// the key canonicalized (signed zero included).
-    Stored { key: PointKey, point: XY },
-    /// The crossing of two unique segments' carriers, lower index first.
-    Crossing { segments: [u32; 2] },
-}
-
-struct Forest {
+/// Construction handles: interned stored endpoints and crossings, unioned
+/// where they denote one point.
+struct Forest<'a> {
     parent: Vec<u32>,
-    kind: Vec<HandleKind>,
+    points: PointArena<'a>,
 }
 
-impl Forest {
-    fn with_capacity(capacity: usize) -> Result<Self> {
+impl<'a> Forest<'a> {
+    fn with_capacity(unique: &'a [Segment], capacity: usize) -> Result<Self> {
         let mut parent = Vec::new();
-        let mut kind = Vec::new();
         try_reserve_vec(&mut parent, capacity)?;
-        try_reserve_vec(&mut kind, capacity)?;
-        Ok(Self { parent, kind })
+        Ok(Self {
+            parent,
+            points: PointArena::with_capacity(unique, capacity)?,
+        })
     }
 
     fn find(&mut self, mut node: u32) -> u32 {
@@ -6378,51 +6476,80 @@ impl Forest {
         node
     }
 
-    fn push(&mut self, kind: HandleKind) -> Result<u32> {
-        let id = u32::try_from(self.parent.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut self.parent, 1)?;
-        try_reserve_vec(&mut self.kind, 1)?;
-        try_push_vec(&mut self.parent, id)?;
-        try_push_vec(&mut self.kind, kind)?;
-        Ok(id)
+    fn adopt(&mut self, handle: u32) -> Result<u32> {
+        debug_assert_eq!(handle as usize, self.parent.len());
+        try_push_vec(&mut self.parent, handle)?;
+        Ok(handle)
     }
 
+    fn push_stored(&mut self, point: XY) -> Result<u32> {
+        let handle = self.points.push_stored(point)?;
+        self.adopt(handle)
+    }
+
+    fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
+        let handle = self.points.push_crossing(segments)?;
+        self.adopt(handle)
+    }
+
+    /// Join two handles denoting one point. A stored root wins, and between
+    /// crossings the lower segment pair, so a node's recipe is deterministic.
     fn union(&mut self, a: u32, b: u32) -> Result<()> {
         let a = self.find(a);
         let b = self.find(b);
         if a == b {
             return Ok(());
         }
-        match (&self.kind[a as usize], &self.kind[b as usize]) {
-            (HandleKind::Stored { key: left, .. }, HandleKind::Stored { key: right, .. })
-                if left != right =>
-            {
-                Err(GeometryErrorKind::Invalid(
+        let (keep, merge) = match (
+            &self.points.recipes[a as usize],
+            &self.points.recipes[b as usize],
+        ) {
+            (NodeRecipe::Stored, NodeRecipe::Stored) => {
+                return Err(GeometryErrorKind::Invalid(
                     "exact partition unioned distinct stored points".into(),
                 )
-                .into())
+                .into());
             },
+            (NodeRecipe::Stored, NodeRecipe::Crossing { .. }) => (a, b),
+            (NodeRecipe::Crossing { .. }, NodeRecipe::Stored) => (b, a),
             (
-                HandleKind::Stored { .. },
-                HandleKind::Stored { .. } | HandleKind::Crossing { .. },
+                NodeRecipe::Crossing { segments: left, .. },
+                NodeRecipe::Crossing {
+                    segments: right, ..
+                },
             ) => {
-                self.parent[b as usize] = a;
-                Ok(())
-            },
-            (HandleKind::Crossing { .. }, HandleKind::Stored { .. }) => {
-                self.parent[a as usize] = b;
-                Ok(())
-            },
-            (HandleKind::Crossing { segments: left }, HandleKind::Crossing { segments: right }) => {
                 if right < left {
-                    self.parent[a as usize] = b;
+                    (b, a)
                 } else {
-                    self.parent[b as usize] = a;
+                    (a, b)
                 }
-                Ok(())
             },
-        }
+        };
+        self.parent[merge as usize] = keep;
+        Ok(())
     }
+}
+
+/// The axis on which a segment's direction is largest, so it orders points
+/// on its carrier, and whether the segment runs toward increasing values.
+fn segment_axis(segment: Segment) -> (Axis, bool) {
+    let (dx, dy) = (
+        segment.end.x - segment.start.x,
+        segment.end.y - segment.start.y,
+    );
+    if dx.abs() >= dy.abs() {
+        (Axis::X, dx > 0.0)
+    } else {
+        (Axis::Y, dy > 0.0)
+    }
+}
+
+/// Whether `point`, on the carrier of the nondegenerate `segment`, lies
+/// strictly between its endpoints.
+fn strictly_inside(segment: Segment, point: XY) -> bool {
+    let (axis, _) = segment_axis(segment);
+    let (start, end, value) = (axis.of(segment.start), axis.of(segment.end), axis.of(point));
+    start.min(end) < value && value < start.max(end)
 }
 
 pub(in crate::geometry) fn partition_unique_segments<'a>(
@@ -6432,9 +6559,6 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     budget: &mut ExpansionBudget,
 ) -> Result<ExactPartition<'a>> {
     debug_assert_eq!(provenance.len(), unique.len());
-    let zero = ExactDyadic::try_from_f64(0.0)?;
-    let one = ExactDyadic::try_from_f64(1.0)?;
-
     let endpoint_capacity = unique
         .len()
         .checked_mul(2)
@@ -6445,7 +6569,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     endpoint_of
         .try_reserve(endpoint_capacity)
         .map_err(crate::error::Error::from)?;
-    let mut forest = Forest::with_capacity(endpoint_capacity)?;
+    let mut forest = Forest::with_capacity(unique, endpoint_capacity)?;
 
     let intern_stored =
         |point: XY, endpoint_of: &mut HashMap<PointKey, u32>, forest: &mut Forest| -> Result<u32> {
@@ -6453,7 +6577,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             if let Some(&id) = endpoint_of.get(&key) {
                 return Ok(id);
             }
-            let id = forest.push(HandleKind::Stored { key, point })?;
+            let id = forest.push_stored(point)?;
             endpoint_of.insert(key, id);
             Ok(id)
         };
@@ -6471,11 +6595,6 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             &mut end_handle,
             intern_stored(segment.end, &mut endpoint_of, &mut forest)?,
         )?;
-    }
-    let mut cuts: Vec<Vec<SourceCut>> = Vec::new();
-    try_reserve_vec(&mut cuts, unique.len())?;
-    for _ in 0..unique.len() {
-        try_push_vec(&mut cuts, Vec::new())?;
     }
 
     let pool_capacity = unique
@@ -6507,27 +6626,30 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     update_partition_metrics(|metrics| {
         metrics.candidate_pool_items = pool.len();
     });
-    let unique_len = unique.len();
+
+    // Interior contacts as (unique, handle): a crossing, a stored point
+    // touching a segment's interior, or an overlap end.
+    let mut contacts: Vec<(u32, u32)> = Vec::new();
+    let handles = EndpointHandles {
+        start: &start_handle,
+        end: &end_handle,
+        extra: &extra_handles,
+    };
     let mut pair_error = None;
     #[cfg(test)]
     let candidate_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::CandidatePairs);
-    match for_each_candidate_pair(&pool, single_chain, |left, right| {
+    if for_each_candidate_pair(&pool, single_chain, |left, right| {
         #[cfg(test)]
         record_candidate_pair();
         match visit_pool_pair(
             unique,
-            unique_len,
+            &pool,
             left,
             right,
-            &start_handle,
-            &end_handle,
-            &extra_handles,
-            &pool,
-            &mut cuts,
+            &handles,
+            &mut contacts,
             &mut forest,
-            &zero,
-            &one,
         ) {
             Ok(()) => ControlFlow::Continue(()),
             Err(error) => {
@@ -6535,162 +6657,140 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
                 ControlFlow::Break(())
             },
         }
-    })? {
-        ControlFlow::Break(()) => {
-            if let Some(error) = pair_error {
-                return Err(error);
-            }
-        },
-        ControlFlow::Continue(()) => {},
+    })?
+    .is_break()
+        && let Some(error) = pair_error
+    {
+        return Err(error);
     }
     #[cfg(test)]
     drop(candidate_phase);
     #[cfg(test)]
     update_partition_metrics(|metrics| {
-        metrics.source_cut_entries = cuts.iter().map(Vec::len).sum();
+        metrics.source_cut_entries = contacts.len();
     });
 
-    let mut order: Vec<Vec<u32>> = Vec::new();
-    try_reserve_vec(&mut order, unique.len())?;
-    for source in 0..unique.len() {
-        if !same_point(unique[source].start, unique[source].end) {
-            push_contact_cut(
-                &mut cuts[source],
-                SegmentParameter::Start,
-                start_handle[source],
-            )?;
-            push_contact_cut(&mut cuts[source], SegmentParameter::End, end_handle[source])?;
+    // Group contacts by segment (counting placement), then order each group
+    // along its segment: by rounded coordinate first, and exactly only within
+    // a run of equal rounded coordinates, whose equal points are one node.
+    let mut contact_starts = Vec::new();
+    try_reserve_vec(&mut contact_starts, unique.len() + 1)?;
+    contact_starts.resize(unique.len() + 1, 0_u32);
+    for &(segment, _) in &contacts {
+        contact_starts[segment as usize + 1] += 1;
+    }
+    for index in 0..unique.len() {
+        contact_starts[index + 1] += contact_starts[index];
+    }
+    let mut along = Vec::new();
+    try_reserve_vec(&mut along, contacts.len())?;
+    along.resize(contacts.len(), 0_u32);
+    {
+        let mut cursor = Vec::new();
+        try_reserve_vec(&mut cursor, unique.len())?;
+        cursor.extend_from_slice(&contact_starts[..unique.len()]);
+        for &(segment, handle) in &contacts {
+            along[cursor[segment as usize] as usize] = handle;
+            cursor[segment as usize] += 1;
         }
-        try_push_vec(
-            &mut order,
-            try_sort_indices(cuts[source].len(), |left, right| {
-                cuts[source][left as usize].param.cmp(
-                    &cuts[source][right as usize].param,
-                    &zero,
-                    &one,
-                )
-            })?,
-        )?;
-        union_equal_params(&cuts[source], &order[source], &mut forest, &zero, &one)?;
+    }
+    drop(contacts);
+    let mut equal_pairs: Vec<(u32, u32)> = Vec::new();
+    for (index, &segment) in unique.iter().enumerate() {
+        let group = &mut along[contact_starts[index] as usize..contact_starts[index + 1] as usize];
+        if group.len() > 1 {
+            forest.points.order_along(
+                segment,
+                group,
+                |handle| handle,
+                |left, right| try_push_vec(&mut equal_pairs, (left, right)),
+            )?;
+        }
+    }
+    for (left, right) in equal_pairs {
+        forest.union(left, right)?;
     }
 
+    // Compact roots into nodes, moving each root's point out of the forest.
     let mut compact_of: Vec<Option<u32>> = Vec::new();
     try_reserve_vec(&mut compact_of, forest.parent.len())?;
     compact_of.resize(forest.parent.len(), None);
-    let mut recipes: Vec<NodeRecipe> = Vec::new();
-    let mut rounded: Vec<XY> = Vec::new();
-    for handle in 0..forest.parent.len() {
-        let root = forest.find(handle as u32);
+    let mut points = PointArena::with_capacity(unique, 0)?;
+    for handle in 0..forest.parent.len() as u32 {
+        let root = forest.find(handle);
         if compact_of[root as usize].is_some() {
             continue;
         }
-        let id = u32::try_from(recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        match forest.kind[root as usize] {
-            HandleKind::Stored { point, .. } => {
-                try_push_vec(&mut recipes, NodeRecipe::Stored)?;
-                try_push_vec(&mut rounded, point)?;
-            },
-            HandleKind::Crossing { segments } => {
-                budget.add(1)?;
-                let (first, second) = (unique[segments[0] as usize], unique[segments[1] as usize]);
-                let exact = std::cell::OnceCell::new();
-                let point = if let Some(point) = certified_crossing(first, second) {
-                    point
-                } else {
-                    #[cfg(test)]
-                    update_partition_metrics(|metrics| metrics.declined_crossings += 1);
-                    let [x, y, w] = crossing_homogeneous(first, second)?;
-                    let point = XY::new(round_ratio(&x, &w)?, round_ratio(&y, &w)?);
-                    let _ = exact.set(Box::try_new([x, y, w])?);
-                    point
-                };
-                let unsigned = |value: f64| if value == 0.0 { 0.0 } else { value };
-                try_push_vec(&mut recipes, NodeRecipe::Crossing { segments, exact })?;
-                try_push_vec(&mut rounded, XY::new(unsigned(point.x), unsigned(point.y)))?;
-            },
+        let (recipe, rounded) = forest.points.take(root);
+        if matches!(recipe, NodeRecipe::Crossing { .. }) {
+            budget.add(1)?;
         }
-        compact_of[root as usize] = Some(id);
+        compact_of[root as usize] = Some(points.push(recipe, rounded)?);
     }
     for handle in 0..forest.parent.len() {
         let root = forest.find(handle as u32);
         compact_of[handle] = compact_of[root as usize];
     }
+    let node_of = |handle: u32| -> Result<u32> {
+        compact_of[handle as usize].ok_or_else(|| {
+            GeometryErrorKind::Invalid("partition handle was not compacted".into()).into()
+        })
+    };
 
-    // Bindings grouped by node. Cuts are visited in ascending unique order,
-    // so a counting placement leaves each node's bindings in that order too,
-    // and a node met again on the same unique is a repeat to skip.
-    let mut binding_nodes: Vec<(u32, u32, &SegmentParameter)> = Vec::new();
+    // Walk every segment from its start through its ordered contacts to its
+    // end: consecutive distinct nodes are its atoms, and every node met is
+    // bound to it once. Segments are visited in ascending order, so a
+    // counting placement keeps each node's bindings in that order.
+    let node_count = points.len();
     let mut last_unique = Vec::new();
-    try_reserve_vec(&mut last_unique, recipes.len())?;
-    last_unique.resize(recipes.len(), u32::MAX);
+    try_reserve_vec(&mut last_unique, node_count)?;
+    last_unique.resize(node_count, u32::MAX);
+    let mut binding_nodes: Vec<(u32, u32)> = Vec::new();
     let mut binding_starts = Vec::new();
-    let start_count = recipes
-        .len()
-        .checked_add(1)
-        .ok_or(ResourceError::SizeOverflow)?;
-    try_reserve_vec(&mut binding_starts, start_count)?;
-    binding_starts.resize(start_count, 0_u32);
-    for (unique_index, source_cuts) in cuts.iter().enumerate() {
-        let unique_index = u32::try_from(unique_index).map_err(|_| ResourceError::SizeOverflow)?;
-        for cut in source_cuts {
-            let root = forest.find(cut.handle);
-            let node = compact_of[root as usize].ok_or_else(|| {
-                GeometryErrorKind::Invalid("partition binding was not compacted".into())
-            })?;
-            if last_unique[node as usize] == unique_index {
-                continue;
+    try_reserve_vec(&mut binding_starts, node_count + 1)?;
+    binding_starts.resize(node_count + 1, 0_u32);
+    let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
+    for (index, segment) in unique.iter().enumerate() {
+        // A zero-length segment is an isolated point, bound as a point source.
+        if same_point(segment.start, segment.end) {
+            continue;
+        }
+        let source = index as u32;
+        let group = &along[contact_starts[index] as usize..contact_starts[index + 1] as usize];
+        let walk = std::iter::once(start_handle[index])
+            .chain(group.iter().copied())
+            .chain(std::iter::once(end_handle[index]));
+        let mut previous: Option<u32> = None;
+        for handle in walk {
+            let node = node_of(handle)?;
+            if last_unique[node as usize] != source {
+                last_unique[node as usize] = source;
+                binding_starts[node as usize + 1] += 1;
+                try_push_vec(&mut binding_nodes, (node, source))?;
             }
-            last_unique[node as usize] = unique_index;
-            binding_starts[node as usize + 1] += 1;
-            try_push_vec(&mut binding_nodes, (node, unique_index, &cut.param))?;
+            if let Some(start) = previous
+                && start != node
+            {
+                try_push_vec(&mut intervals, (source, start, node))?;
+            }
+            previous = Some(node);
         }
     }
-    for node in 0..recipes.len() {
+    for node in 0..node_count {
         binding_starts[node + 1] = binding_starts[node + 1]
             .checked_add(binding_starts[node])
             .ok_or(ResourceError::SizeOverflow)?;
     }
-    let mut placement = Vec::new();
-    try_reserve_vec(&mut placement, binding_nodes.len())?;
-    placement.resize(binding_nodes.len(), 0_u32);
-    let mut cursor = Vec::new();
-    try_reserve_vec(&mut cursor, binding_starts.len())?;
-    cursor.extend_from_slice(&binding_starts);
-    for (index, &(node, ..)) in binding_nodes.iter().enumerate() {
-        placement[cursor[node as usize] as usize] = index as u32;
-        cursor[node as usize] += 1;
-    }
     let mut bindings = Vec::new();
     try_reserve_vec(&mut bindings, binding_nodes.len())?;
-    for index in placement {
-        let (_, unique, parameter) = binding_nodes[index as usize];
-        bindings.push(NodeOnUnique {
-            unique,
-            parameter: parameter.clone(),
-        });
-    }
-
-    let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
-    for source in 0..unique.len() {
-        if same_point(unique[source].start, unique[source].end) {
-            continue;
-        }
-        let mut prev: Option<u32> = None;
-        for &index in &order[source] {
-            let handle = forest.find(cuts[source][index as usize].handle);
-            let id = compact_of[handle as usize].ok_or_else(|| {
-                GeometryErrorKind::Invalid("partition handle was not compacted".into())
-            })?;
-            if prev == Some(id) {
-                continue;
-            }
-            if let Some(start) = prev
-                && start != id
-            {
-                try_reserve_vec(&mut intervals, 1)?;
-                try_push_vec(&mut intervals, (source as u32, start, id))?;
-            }
-            prev = Some(id);
+    bindings.resize(binding_nodes.len(), 0_u32);
+    {
+        let mut cursor = Vec::new();
+        try_reserve_vec(&mut cursor, node_count)?;
+        cursor.extend_from_slice(&binding_starts[..node_count]);
+        for &(node, source) in &binding_nodes {
+            bindings[cursor[node as usize] as usize] = source;
+            cursor[node as usize] += 1;
         }
     }
 
@@ -6703,8 +6803,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, baseline, budget)?;
 
     let mut degree: Vec<u32> = Vec::new();
-    try_reserve_vec(&mut degree, recipes.len())?;
-    degree.resize(recipes.len(), 0);
+    try_reserve_vec(&mut degree, node_count)?;
+    degree.resize(node_count, 0);
     for span in &spans {
         degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
         degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
@@ -6712,7 +6812,6 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let mut isolated_nodes = Vec::new();
     for (index, &count) in degree.iter().enumerate() {
         if count == 0 {
-            try_reserve_vec(&mut isolated_nodes, 1)?;
             try_push_vec(&mut isolated_nodes, NodeId(index as u32))?;
         }
     }
@@ -6720,27 +6819,22 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let mut point_nodes = Vec::new();
     try_reserve_vec(&mut point_nodes, point_handles.len())?;
     for handle in point_handles {
-        let node = compact_of[handle as usize].ok_or_else(|| {
-            GeometryErrorKind::Invalid("point source handle was not compacted".into())
-        })?;
-        try_push_vec(&mut point_nodes, NodeId(node))?;
+        try_push_vec(&mut point_nodes, NodeId(node_of(handle)?))?;
     }
 
     let mut point_sources = Vec::new();
     for (source, segment) in unique.iter().enumerate() {
         if same_point(segment.start, segment.end) {
-            let node =
-                NodeId(compact_of[start_handle[source] as usize].expect("compacted endpoint"));
+            let node = NodeId(node_of(start_handle[source])?);
             let owners = provenance.owners(source);
             try_reserve_vec(&mut point_sources, owners.len())?;
             point_sources.extend(owners.iter().map(|&(ordinal, _)| (node, ordinal)));
         }
     }
 
-    let partition = ExactPartition {
+    Ok(ExactPartition {
         unique,
-        recipes,
-        rounded,
+        points,
         spans,
         provenance: atom_provenance,
         isolated: isolated_nodes,
@@ -6751,28 +6845,62 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         protect_stored: false,
         protect_all: false,
         visibility: std::sync::OnceLock::new(),
-    };
-    Ok(partition)
+    })
 }
 
-fn push_contact_cut(cuts: &mut Vec<SourceCut>, param: SegmentParameter, handle: u32) -> Result<()> {
-    try_reserve_vec(cuts, 1)?;
-    try_push_vec(cuts, SourceCut { param, handle })?;
-    Ok(())
+/// The stored handles a pair visit can cut with: each unique segment's
+/// endpoints, and the isolated points pooled after the segments.
+struct EndpointHandles<'h> {
+    start: &'h [u32],
+    end: &'h [u32],
+    extra: &'h [u32],
 }
 
+fn visit_pool_pair(
+    unique: &[Segment],
+    pool: &[Segment],
+    left: usize,
+    right: usize,
+    handles: &EndpointHandles<'_>,
+    contacts: &mut Vec<(u32, u32)>,
+    forest: &mut Forest<'_>,
+) -> Result<()> {
+    let count = unique.len();
+    match (left < count, right < count) {
+        (true, true) => classify_pair_into(unique, left, right, handles, contacts, forest),
+        (true, false) => push_point_on_source(
+            unique[left],
+            left,
+            pool[right].start,
+            handles.extra[right - count],
+            contacts,
+        ),
+        (false, true) => push_point_on_source(
+            unique[right],
+            right,
+            pool[left].start,
+            handles.extra[left - count],
+            contacts,
+        ),
+        (false, false) => Ok(()),
+    }
+}
+
+fn push_contact(contacts: &mut Vec<(u32, u32)>, segment: usize, handle: u32) -> Result<()> {
+    let segment = u32::try_from(segment).map_err(|_| ResourceError::SizeOverflow)?;
+    try_push_vec(contacts, (segment, handle))
+}
+
+/// A stored point exactly on a segment's carrier and strictly between its
+/// endpoints cuts that segment.
 fn push_point_on_source(
     segment: Segment,
+    index: usize,
     point: XY,
     handle: u32,
-    cuts: &mut Vec<SourceCut>,
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
+    contacts: &mut Vec<(u32, u32)>,
 ) -> Result<()> {
-    if same_point(segment.start, segment.end) {
-        return Ok(());
-    }
-    if !point_in_segment_envelope(point, segment) {
+    if same_point(segment.start, segment.end) || !point_in_segment_envelope(point, segment) {
         return Ok(());
     }
     let side = stored_orientation_sign(
@@ -6783,107 +6911,54 @@ fn push_point_on_source(
         point.x,
         point.y,
     );
-    if side != ExactSign::Zero {
-        return Ok(());
-    }
-    let param = param_on_segment(segment, point)?;
-    if param.is_open_unit(zero, one)? {
-        push_contact_cut(cuts, param, handle)?;
+    if side == ExactSign::Zero && strictly_inside(segment, point) {
+        push_contact(contacts, index, handle)?;
     }
     Ok(())
 }
 
-const fn pair_index(which: u32, left: usize, right: usize) -> usize {
-    if which == 0 { left } else { right }
-}
-
-const fn endpoint_handle(
-    source: usize,
-    at_start: bool,
-    start_handle: &[u32],
-    end_handle: &[u32],
-) -> u32 {
-    if at_start {
-        start_handle[source]
-    } else {
-        end_handle[source]
-    }
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "pair visit needs the unique pool, endpoint handles, and cut sinks together"
-)]
-fn visit_pool_pair(
-    unique: &[Segment],
-    unique_len: usize,
-    left: usize,
-    right: usize,
-    start_handle: &[u32],
-    end_handle: &[u32],
-    extra_handles: &[u32],
-    pool: &[Segment],
-    cuts: &mut [Vec<SourceCut>],
-    forest: &mut Forest,
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
+/// Cut two collinear segments at every endpoint of one strictly inside the
+/// other.
+fn push_overlap(
+    [a, b]: [Segment; 2],
+    [left, right]: [usize; 2],
+    handles: &EndpointHandles<'_>,
+    contacts: &mut Vec<(u32, u32)>,
 ) -> Result<()> {
-    match (left < unique_len, right < unique_len) {
-        (true, true) => classify_pair_into(
-            unique,
-            left,
-            right,
-            start_handle,
-            end_handle,
-            cuts,
-            forest,
-            zero,
-            one,
-        ),
-        (true, false) => {
-            let handle = extra_handles[right - unique_len];
-            push_point_on_source(
-                unique[left],
-                pool[right].start,
-                handle,
-                &mut cuts[left],
-                zero,
-                one,
-            )
-        },
-        (false, true) => {
-            let handle = extra_handles[left - unique_len];
-            push_point_on_source(
-                unique[right],
-                pool[left].start,
-                handle,
-                &mut cuts[right],
-                zero,
-                one,
-            )
-        },
-        (false, false) => Ok(()),
+    #[cfg(test)]
+    let before = contacts.len();
+    for (host, host_index, guest, guest_index) in [(a, left, b, right), (b, right, a, left)] {
+        for (point, handle) in [
+            (guest.start, handles.start[guest_index]),
+            (guest.end, handles.end[guest_index]),
+        ] {
+            if strictly_inside(host, point) {
+                push_contact(contacts, host_index, handle)?;
+            }
+        }
     }
+    #[cfg(test)]
+    if contacts.len() > before {
+        record_overlap(contacts.len() - before);
+    }
+    Ok(())
 }
 
 fn classify_pair_into(
     unique: &[Segment],
     left: usize,
     right: usize,
-    start_handle: &[u32],
-    end_handle: &[u32],
-    cuts: &mut [Vec<SourceCut>],
-    forest: &mut Forest,
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
+    handles: &EndpointHandles<'_>,
+    contacts: &mut Vec<(u32, u32)>,
+    forest: &mut Forest<'_>,
 ) -> Result<()> {
     let a = unique[left];
     let b = unique[right];
     if same_point(a.start, a.end) {
-        return push_point_on_source(b, a.start, start_handle[left], &mut cuts[right], zero, one);
+        return push_point_on_source(b, right, a.start, handles.start[left], contacts);
     }
     if same_point(b.start, b.end) {
-        return push_point_on_source(a, b.start, start_handle[right], &mut cuts[left], zero, one);
+        return push_point_on_source(a, left, b.start, handles.start[right], contacts);
     }
     if segment_envelopes_disjoint(a, b) {
         return Ok(());
@@ -6892,72 +6967,82 @@ fn classify_pair_into(
     let _contact_phase = crate::test_support::allocation_phase(
         crate::test_support::AllocationPhase::OverlapContacts,
     );
-    let contact = classify_pair(a, b, zero, one)?;
-    match contact {
-        PairContact::None => Ok(()),
-        PairContact::Touch {
-            source,
-            handle_source,
-            at_start,
-            param,
-        } => {
-            let source = pair_index(source, left, right);
-            let handle_source = pair_index(handle_source, left, right);
-            let handle = endpoint_handle(handle_source, at_start, start_handle, end_handle);
-            push_contact_cut(&mut cuts[source], param, handle)
-        },
-        PairContact::Overlap { cuts: overlap } => {
-            #[cfg(test)]
-            record_overlap(overlap.len());
-            for cut in overlap {
-                let source = pair_index(cut.source, left, right);
-                let handle_source = pair_index(cut.handle_source, left, right);
-                let handle = endpoint_handle(handle_source, cut.at_start, start_handle, end_handle);
-                push_contact_cut(&mut cuts[source], cut.param, handle)?;
-            }
-            Ok(())
-        },
-        PairContact::Cross { t, u } => {
-            let unique_index = left.min(right);
-            let unique = u32::try_from(unique_index).map_err(|_| ResourceError::SizeOverflow)?;
-            let (first_param, second, second_param) = if unique_index == left {
-                (t, right, u)
-            } else {
-                (u, left, t)
-            };
-            let second_index = u32::try_from(second).map_err(|_| ResourceError::SizeOverflow)?;
-            let handle = forest.push(HandleKind::Crossing {
-                segments: [unique, second_index],
-            })?;
-            push_contact_cut(&mut cuts[unique_index], first_param, handle)?;
-            push_contact_cut(&mut cuts[second], second_param, handle)
-        },
-    }
-}
-
-fn union_equal_params(
-    cuts: &[SourceCut],
-    order: &[u32],
-    forest: &mut Forest,
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
-) -> Result<()> {
-    let mut index = 0;
-    while index < order.len() {
-        let mut end = index + 1;
-        while end < order.len()
-            && cuts[order[end] as usize]
-                .param
-                .cmp(&cuts[order[index] as usize].param, zero, one)?
-                == Ordering::Equal
-        {
-            forest.union(
-                cuts[order[index] as usize].handle,
-                cuts[order[end] as usize].handle,
-            )?;
-            end += 1;
+    let orient = |segment: Segment, point: XY| {
+        stored_orientation_sign(
+            segment.start.x,
+            segment.start.y,
+            segment.end.x,
+            segment.end.y,
+            point.x,
+            point.y,
+        )
+    };
+    // A shared endpoint lies on both segments, so the pair meets elsewhere
+    // only along a collinear overlap. Adjacent ring segments are most pairs,
+    // and their zero orientation is the one the floating filter cannot certify.
+    let shared = |point: XY| same_point(point, a.start) || same_point(point, a.end);
+    let unshared = match (shared(b.start), shared(b.end)) {
+        // Unique segments never repeat, so this is `a` itself.
+        (true, true) => return Ok(()),
+        (true, false) => Some(b.end),
+        (false, true) => Some(b.start),
+        (false, false) => None,
+    };
+    if let Some(other) = unshared {
+        if orient(a, other) == ExactSign::Zero {
+            return push_overlap([a, b], [left, right], handles, contacts);
         }
-        index = end;
+        return Ok(());
+    }
+    let (o_b0, o_b1) = (orient(a, b.start), orient(a, b.end));
+    if o_b0 == ExactSign::Zero && o_b1 == ExactSign::Zero {
+        return push_overlap([a, b], [left, right], handles, contacts);
+    }
+    // One endpoint on the other carrier: a touch when it lies strictly
+    // inside, otherwise the segments do not meet.
+    for (zero, host, index, point, handle) in [
+        (
+            o_b0 == ExactSign::Zero,
+            a,
+            left,
+            b.start,
+            handles.start[right],
+        ),
+        (o_b1 == ExactSign::Zero, a, left, b.end, handles.end[right]),
+    ] {
+        if zero {
+            if strictly_inside(host, point) {
+                push_contact(contacts, index, handle)?;
+            }
+            return Ok(());
+        }
+    }
+    let (o_a0, o_a1) = (orient(b, a.start), orient(b, a.end));
+    for (zero, host, index, point, handle) in [
+        (
+            o_a0 == ExactSign::Zero,
+            b,
+            right,
+            a.start,
+            handles.start[left],
+        ),
+        (o_a1 == ExactSign::Zero, b, right, a.end, handles.end[left]),
+    ] {
+        if zero {
+            if strictly_inside(host, point) {
+                push_contact(contacts, index, handle)?;
+            }
+            return Ok(());
+        }
+    }
+    // Strictly opposite sides on both carriers: a proper crossing, interior
+    // to both segments.
+    if o_b0 != o_b1 && o_a0 != o_a1 {
+        let segment = |index: usize| u32::try_from(index).map_err(|_| ResourceError::SizeOverflow);
+        let handle =
+            forest.push_crossing([segment(left.min(right))?, segment(left.max(right))?])?;
+        push_contact(contacts, left, handle)?;
+        push_contact(contacts, right, handle)?;
     }
     Ok(())
 }
@@ -7038,290 +7123,26 @@ fn aggregate_atoms(
     Ok((spans, SegmentProvenance::from_csr(offsets, entries)))
 }
 
-fn try_sort_indices(
-    n: usize,
-    mut compare: impl FnMut(u32, u32) -> Result<Ordering>,
-) -> Result<Vec<u32>> {
-    let count = u32::try_from(n).map_err(|_| ResourceError::SizeOverflow)?;
-    let mut src = Vec::new();
-    try_reserve_vec(&mut src, n)?;
-    src.extend(0..count);
-    if n < 2 {
-        return Ok(src);
-    }
-    let mut dst = Vec::new();
-    try_reserve_vec(&mut dst, n)?;
-    dst.resize(n, 0);
-    let mut width = 1;
-    while width < n {
-        let mut start = 0;
-        while start < n {
-            let mid = start.saturating_add(width).min(n);
-            let end = mid.saturating_add(width).min(n);
-            merge_indices(&src, &mut dst, start, mid, end, &mut compare)?;
-            start = end;
-        }
-        mem::swap(&mut src, &mut dst);
-        width = width.saturating_mul(2);
-    }
-    Ok(src)
-}
-
-fn merge_indices(
-    src: &[u32],
-    dst: &mut [u32],
-    start: usize,
-    mid: usize,
-    end: usize,
-    compare: &mut impl FnMut(u32, u32) -> Result<Ordering>,
-) -> Result<()> {
-    let mut left = start;
-    let mut right = mid;
-    let mut out = start;
-    while left < mid && right < end {
-        let order = compare(src[left], src[right])?;
-        if order.is_le() {
-            dst[out] = src[left];
-            left += 1;
-        } else {
-            dst[out] = src[right];
-            right += 1;
-        }
-        out += 1;
-    }
-    while left < mid {
-        dst[out] = src[left];
-        left += 1;
-        out += 1;
-    }
-    while right < end {
-        dst[out] = src[right];
-        right += 1;
-        out += 1;
-    }
-    Ok(())
-}
-
-enum PairContact {
-    None,
-    Touch {
-        source: u32,
-        handle_source: u32,
-        at_start: bool,
-        param: SegmentParameter,
-    },
-    Overlap {
-        cuts: Vec<OverlapCut>,
-    },
-    Cross {
-        t: SegmentParameter,
-        u: SegmentParameter,
-    },
-}
-
-struct OverlapCut {
-    source: u32,
-    handle_source: u32,
-    at_start: bool,
-    param: SegmentParameter,
-}
-
-fn classify_pair(
-    a: Segment,
-    b: Segment,
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
-) -> Result<PairContact> {
-    // A shared endpoint lies on both segments, so the pair meets elsewhere
-    // only along a collinear overlap. Adjacent ring segments are most pairs,
-    // and their zero orientation is the one the floating filter cannot certify.
-    let shared = |point: XY| same_point(point, a.start) || same_point(point, a.end);
-    let unshared = match (shared(b.start), shared(b.end)) {
-        // Unique segments never repeat, so this is `a` itself.
-        (true, true) => return Ok(PairContact::None),
-        (true, false) => Some(b.end),
-        (false, true) => Some(b.start),
-        (false, false) => None,
-    };
-    if let Some(other) = unshared {
-        return if stored_orientation_sign(a.start.x, a.start.y, a.end.x, a.end.y, other.x, other.y)
-            == ExactSign::Zero
-        {
-            overlap_or_touch(a, b, zero, one)
-        } else {
-            Ok(PairContact::None)
-        };
-    }
-    let o_b0 =
-        stored_orientation_sign(a.start.x, a.start.y, a.end.x, a.end.y, b.start.x, b.start.y);
-    let o_b1 = stored_orientation_sign(a.start.x, a.start.y, a.end.x, a.end.y, b.end.x, b.end.y);
-    let o_a0 =
-        stored_orientation_sign(b.start.x, b.start.y, b.end.x, b.end.y, a.start.x, a.start.y);
-    let o_a1 = stored_orientation_sign(b.start.x, b.start.y, b.end.x, b.end.y, a.end.x, a.end.y);
-    if o_b0 == ExactSign::Zero && o_b1 == ExactSign::Zero {
-        return overlap_or_touch(a, b, zero, one);
-    }
-    if o_b0 == ExactSign::Zero {
-        let param = param_on_segment(a, b.start)?;
-        if param.is_open_unit(zero, one)? {
-            return Ok(PairContact::Touch {
-                source: 0,
-                handle_source: 1,
-                at_start: true,
-                param,
-            });
-        }
-        return Ok(PairContact::None);
-    }
-    if o_b1 == ExactSign::Zero {
-        let param = param_on_segment(a, b.end)?;
-        if param.is_open_unit(zero, one)? {
-            return Ok(PairContact::Touch {
-                source: 0,
-                handle_source: 1,
-                at_start: false,
-                param,
-            });
-        }
-        return Ok(PairContact::None);
-    }
-    if o_a0 == ExactSign::Zero {
-        let param = param_on_segment(b, a.start)?;
-        if param.is_open_unit(zero, one)? {
-            return Ok(PairContact::Touch {
-                source: 1,
-                handle_source: 0,
-                at_start: true,
-                param,
-            });
-        }
-        return Ok(PairContact::None);
-    }
-    if o_a1 == ExactSign::Zero {
-        let param = param_on_segment(b, a.end)?;
-        if param.is_open_unit(zero, one)? {
-            return Ok(PairContact::Touch {
-                source: 1,
-                handle_source: 0,
-                at_start: false,
-                param,
-            });
-        }
-        return Ok(PairContact::None);
-    }
-    let straddle_b = matches!(
-        (o_b0, o_b1),
-        (ExactSign::Negative, ExactSign::Positive) | (ExactSign::Positive, ExactSign::Negative)
-    );
-    let straddle_a = matches!(
-        (o_a0, o_a1),
-        (ExactSign::Negative, ExactSign::Positive) | (ExactSign::Positive, ExactSign::Negative)
-    );
-    if straddle_a && straddle_b {
-        let (t, u) = crossing_params(a, b)?;
-        if t.is_open_unit(zero, one)? && u.is_open_unit(zero, one)? {
-            return Ok(PairContact::Cross { t, u });
-        }
-    }
-    Ok(PairContact::None)
-}
-
-fn overlap_or_touch(
-    a: Segment,
-    b: Segment,
-    zero: &ExactDyadic,
-    one: &ExactDyadic,
-) -> Result<PairContact> {
-    let t0 = param_on_segment(a, b.start)?;
-    let t1 = param_on_segment(a, b.end)?;
-    let u0 = param_on_segment(b, a.start)?;
-    let u1 = param_on_segment(b, a.end)?;
-    let mut cuts = Vec::new();
-    if t0.is_open_unit(zero, one)? {
-        try_reserve_vec(&mut cuts, 1)?;
-        cuts.push(OverlapCut {
-            source: 0,
-            handle_source: 1,
-            at_start: true,
-            param: t0,
-        });
-    }
-    if t1.is_open_unit(zero, one)? {
-        try_reserve_vec(&mut cuts, 1)?;
-        cuts.push(OverlapCut {
-            source: 0,
-            handle_source: 1,
-            at_start: false,
-            param: t1,
-        });
-    }
-    if u0.is_open_unit(zero, one)? {
-        try_reserve_vec(&mut cuts, 1)?;
-        cuts.push(OverlapCut {
-            source: 1,
-            handle_source: 0,
-            at_start: true,
-            param: u0,
-        });
-    }
-    if u1.is_open_unit(zero, one)? {
-        try_reserve_vec(&mut cuts, 1)?;
-        cuts.push(OverlapCut {
-            source: 1,
-            handle_source: 0,
-            at_start: false,
-            param: u1,
-        });
-    }
-    if cuts.is_empty() {
-        return Ok(PairContact::None);
-    }
-    Ok(PairContact::Overlap { cuts })
-}
-
-fn param_on_segment(segment: Segment, point: XY) -> Result<SegmentParameter> {
-    let dx = ExactDyadic::try_from_f64(segment.end.x)?
-        .try_subtract(ExactDyadic::try_from_f64(segment.start.x)?)?;
-    let dy = ExactDyadic::try_from_f64(segment.end.y)?
-        .try_subtract(ExactDyadic::try_from_f64(segment.start.y)?)?;
-    if dx.cmp_magnitude(&dy).is_ge() {
-        let num = ExactDyadic::try_from_f64(point.x)?
-            .try_subtract(ExactDyadic::try_from_f64(segment.start.x)?)?;
-        Ok(SegmentParameter::Ratio { num, den: dx })
-    } else {
-        let num = ExactDyadic::try_from_f64(point.y)?
-            .try_subtract(ExactDyadic::try_from_f64(segment.start.y)?)?;
-        Ok(SegmentParameter::Ratio { num, den: dy })
-    }
-}
-
-fn crossing_params(a: Segment, b: Segment) -> Result<(SegmentParameter, SegmentParameter)> {
-    let rx =
-        ExactDyadic::try_from_f64(a.end.x)?.try_subtract(ExactDyadic::try_from_f64(a.start.x)?)?;
-    let ry =
-        ExactDyadic::try_from_f64(a.end.y)?.try_subtract(ExactDyadic::try_from_f64(a.start.y)?)?;
-    let sx =
-        ExactDyadic::try_from_f64(b.end.x)?.try_subtract(ExactDyadic::try_from_f64(b.start.x)?)?;
-    let sy =
-        ExactDyadic::try_from_f64(b.end.y)?.try_subtract(ExactDyadic::try_from_f64(b.start.y)?)?;
-    let cx = ExactDyadic::try_from_f64(b.start.x)?
-        .try_subtract(ExactDyadic::try_from_f64(a.start.x)?)?;
-    let cy = ExactDyadic::try_from_f64(b.start.y)?
-        .try_subtract(ExactDyadic::try_from_f64(a.start.y)?)?;
-    let den = rx.try_product(&sy)?.try_subtract(ry.try_product(&sx)?)?;
-    let t_num = cx.try_product(&sy)?.try_subtract(cy.try_product(&sx)?)?;
-    let u_num = cx.try_product(&ry)?.try_subtract(cy.try_product(&rx)?)?;
-    Ok((
-        SegmentParameter::Ratio {
-            num: t_num,
-            den: den.try_clone()?,
-        },
-        SegmentParameter::Ratio { num: u_num, den },
-    ))
-}
-
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    impl ExactPartition<'_> {
+        fn stored_node(&self, point: XY) -> Option<NodeId> {
+            let key = PointKey::new(point);
+            (0..self.node_count())
+                .find(|&node| self.stored_key(node) == Some(key))
+                .map(|node| NodeId(node as u32))
+        }
+
+        fn crossings(&self) -> Vec<NodeId> {
+            (0..self.node_count() as u32)
+                .map(NodeId)
+                .filter(|&node| !self.is_stored(node))
+                .collect()
+        }
+    }
+
     use std::fmt::Write as _;
 
     #[test]
@@ -7438,13 +7259,7 @@ mod tests {
         ]);
         let partition = case.partition();
         let start = partition.stored_node(XY::new(0.0, 0.0)).unwrap();
-        let crossing = NodeId(
-            partition
-                .recipes
-                .iter()
-                .position(|recipe| matches!(recipe, NodeRecipe::Crossing { .. }))
-                .unwrap() as u32,
-        );
+        let crossing = partition.crossings()[0];
         let isolated = partition.point_nodes[0];
         assert!(partition.isolated.contains(&isolated));
         assert!(partition.spans.iter().any(|span| {
@@ -7463,7 +7278,7 @@ mod tests {
         let mut cells = ArealCells {
             faces: vec![false; faces.count as usize],
             spans: vec![false; partition.spans.len()],
-            nodes: vec![false; partition.recipes.len()],
+            nodes: vec![false; partition.node_count()],
         };
         for (index, span) in partition.spans.iter().enumerate() {
             cells.spans[index] = (span.start == start && span.end == crossing)
@@ -7515,15 +7330,20 @@ mod tests {
         let mut partition = case.partition();
         // A node at exact (x, 0), as a crossing whose exact point is known.
         let mut push = |x: ExactDyadic| {
-            let node = NodeId(partition.recipes.len() as u32);
+            let node = NodeId(partition.node_count() as u32);
             let rounded = round_ratio(&x, &dyadic(1.0)).unwrap();
             let exact = std::cell::OnceCell::new();
             exact.set(Box::new([x, dyadic(0.0), dyadic(1.0)])).unwrap();
-            partition.recipes.push(NodeRecipe::Crossing {
-                segments: [0, 0],
-                exact,
-            });
-            partition.rounded.push(XY::new(rounded, 0.0));
+            partition
+                .points
+                .push(
+                    NodeRecipe::Crossing {
+                        segments: [0, 0],
+                        exact,
+                    },
+                    XY::new(rounded, 0.0),
+                )
+                .unwrap();
             node
         };
         let first = push(ExactDyadic::try_from_f64(1.0).unwrap());
@@ -7553,13 +7373,7 @@ mod tests {
     fn selected_nodes_round_in_requested_order() {
         let case = run(&[seg(0.0, 0.0, 3.0, 1.0), seg(1.0, -1.0, 1.0, 1.0)]);
         let partition = case.partition();
-        let crossing = NodeId(
-            partition
-                .recipes
-                .iter()
-                .position(|recipe| matches!(recipe, NodeRecipe::Crossing { .. }))
-                .unwrap() as u32,
-        );
+        let crossing = partition.crossings()[0];
         let endpoint = partition.stored_node(XY::new(3.0, 1.0)).unwrap();
         let rounded = partition
             .round_nodes(&[endpoint, crossing, endpoint])
@@ -7935,7 +7749,6 @@ mod tests {
     }
 
     use super::super::noding::dedup_undirected_segments_sourced;
-    use super::*;
     use crate::geometry::generated_budget::PAIRWISE_WORK_LIMIT;
 
     /// One shared operand must select exactly the cells separate operands do.
@@ -8554,7 +8367,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(budget.used(), GENERATED_ITEM_LIMIT);
-            assert!(!partition.recipes.is_empty());
+            assert!(partition.node_count() > 0);
             if growth > 0 {
                 let mut short = ExpansionBudget::new("exact_partition", "items");
                 short.add(GENERATED_ITEM_LIMIT - growth + 1).unwrap();
@@ -8578,7 +8391,7 @@ mod tests {
 
     fn crossing_node(partition: &ExactPartition<'_>) -> NodeId {
         let mut crossings =
-            (0..partition.recipes.len() as u32).filter(|&node| !partition.is_stored(NodeId(node)));
+            (0..partition.node_count() as u32).filter(|&node| !partition.is_stored(NodeId(node)));
         let node = crossings.next().expect("expected a crossing node");
         assert_eq!(crossings.next(), None, "expected one crossing node");
         NodeId(node)
@@ -8604,15 +8417,11 @@ mod tests {
     }
 
     fn constructed_count(partition: &ExactPartition) -> usize {
-        partition
-            .recipes
-            .iter()
-            .filter(|recipe| matches!(recipe, NodeRecipe::Crossing { .. }))
-            .count()
+        partition.crossings().len()
     }
 
     fn component_count(partition: &ExactPartition) -> usize {
-        let n = partition.recipes.len();
+        let n = partition.node_count();
         if n == 0 {
             return 0;
         }
@@ -8646,7 +8455,7 @@ mod tests {
         let mut budget = ExpansionBudget::new("exact_partition", "items");
         let (unique, provenance) = dedup_undirected_segments_sourced(Vec::<Segment>::new());
         let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
-        assert_eq!(partition.recipes.len(), 0);
+        assert_eq!(partition.node_count(), 0);
     }
 
     #[test]
@@ -8659,7 +8468,7 @@ mod tests {
         ]);
         let partition = case.partition();
         assert_eq!(partition.unique.len(), 3);
-        assert_eq!(partition.recipes.len(), 7);
+        assert_eq!(partition.node_count(), 7);
         assert_eq!(partition.spans.len(), 5);
         assert_eq!(constructed_count(&partition), 1);
         assert_eq!(component_count(&partition), 2);
@@ -8680,7 +8489,7 @@ mod tests {
         let nd = 1.0_f64.next_down();
         let case = run(&[seg(0.0, 0.0, 1.0, 1.0), seg(1.0, nd, 0.0, 2.0)]);
         let partition = case.partition();
-        assert_eq!(partition.recipes.len(), 5);
+        assert_eq!(partition.node_count(), 5);
         assert_eq!(partition.spans.len(), 4);
         assert_eq!(constructed_count(&partition), 1);
         let q_num = ExactDyadic::try_from_f64(1.0).unwrap();
@@ -8809,13 +8618,7 @@ mod tests {
             }
             let case = run(&sources);
             let partition = case.partition();
-            let constructed: Vec<_> = partition
-                .recipes
-                .iter()
-                .enumerate()
-                .filter(|(_, recipe)| matches!(recipe, NodeRecipe::Crossing { .. }))
-                .map(|(index, _)| NodeId(index as u32))
-                .collect();
+            let constructed: Vec<_> = partition.crossings().into_iter().collect();
             assert_eq!(constructed.len(), 1);
             let crossing = constructed[0];
             let departures: Vec<_> = [
@@ -9338,7 +9141,7 @@ mod tests {
         let cells = ArealCells {
             faces: (0..faces.count).map(|face| face != 0).collect(),
             spans: vec![true; partition.spans.len()],
-            nodes: vec![true; partition.recipes.len()],
+            nodes: vec![true; partition.node_count()],
         };
         let plan = cells
             .emission_plan(&partition, &topology, &edges, &faces)
@@ -9379,7 +9182,7 @@ mod tests {
         let cells = ArealCells {
             faces: vec![false; faces.count as usize],
             spans: vec![true; partition.spans.len()],
-            nodes: vec![true; partition.recipes.len()],
+            nodes: vec![true; partition.node_count()],
         };
         let plan = cells
             .emission_plan(&partition, &topology, &edges, &faces)
@@ -9424,7 +9227,7 @@ mod tests {
             let cells = ArealCells {
                 faces: vec![false; faces.count as usize],
                 spans: vec![true; partition.spans.len()],
-                nodes: vec![true; partition.recipes.len()],
+                nodes: vec![true; partition.node_count()],
             };
             let plan = cells
                 .emission_plan(&partition, &topology, &edges, &faces)
@@ -9726,7 +9529,7 @@ mod tests {
         let mut cells = ArealCells {
             faces: vec![false; faces.count as usize],
             spans: vec![true; partition.spans.len()],
-            nodes: vec![false; partition.recipes.len()],
+            nodes: vec![false; partition.node_count()],
         };
         for (index, span) in partition.spans.iter().enumerate() {
             if span.start == point || span.end == point {
@@ -9945,7 +9748,7 @@ mod tests {
         let b = seg(min_sub, -f64::MAX, f64::MAX, f64::MAX);
         let case = run(&[a, b]);
         let partition = case.partition();
-        assert_eq!(partition.recipes.len(), 5);
+        assert_eq!(partition.node_count(), 5);
         assert_eq!(partition.spans.len(), 4);
         assert_eq!(constructed_count(&partition), 1);
         for point in [a.start, a.end, b.start, b.end] {
@@ -9968,7 +9771,7 @@ mod tests {
         let partition =
             partition_unique_segments(&unique, &provenance, &[XY::new(1.0, 0.0)], &mut budget)
                 .unwrap();
-        assert_eq!(partition.recipes.len(), 3);
+        assert_eq!(partition.node_count(), 3);
         assert_eq!(partition.spans.len(), 2);
         assert!(partition.isolated.is_empty());
         let mid = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
@@ -9990,7 +9793,7 @@ mod tests {
         let partition =
             partition_unique_segments(&unique, &provenance, &[XY::new(1.0, 1.0)], &mut budget)
                 .unwrap();
-        assert_eq!(partition.recipes.len(), 5);
+        assert_eq!(partition.node_count(), 5);
         assert_eq!(partition.spans.len(), 4);
         assert_eq!(constructed_count(&partition), 0);
         assert!(partition.isolated.is_empty());
@@ -10005,7 +9808,7 @@ mod tests {
             seg(0.0, 1.0, 2.0, -1.0),
         ]);
         let partition = case.partition();
-        assert_eq!(partition.recipes.len(), 6);
+        assert_eq!(partition.node_count(), 6);
         assert_eq!(partition.spans.len(), 5);
         assert_eq!(constructed_count(&partition), 0);
         let junction = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
@@ -10057,7 +9860,7 @@ mod tests {
         let partition = case.partition();
         let (topology, edges) = partition.local_topology().unwrap();
         partition.global_faces(&topology, &edges).unwrap();
-        let crossings = (0..partition.recipes.len() as u32)
+        let crossings = (0..partition.node_count() as u32)
             .filter(|&node| !partition.is_stored(NodeId(node)))
             .count();
         assert!(crossings >= 2);
@@ -10092,7 +9895,7 @@ mod tests {
             seg(0.0, 1.0, 2.0, -1.0 / 3.0),
         ]);
         let partition = case.partition();
-        let crossings: Vec<NodeId> = (0..partition.recipes.len() as u32)
+        let crossings: Vec<NodeId> = (0..partition.node_count() as u32)
             .map(NodeId)
             .filter(|&node| !partition.is_stored(node))
             .collect();
@@ -10146,7 +9949,7 @@ mod tests {
         assert_eq!(constructed_count(&partition), 4);
         let (zero, one) = (dyadic(0.0), dyadic(1.0));
         let mut found = Vec::new();
-        for node in 0..partition.recipes.len() as u32 {
+        for node in 0..partition.node_count() as u32 {
             let node = NodeId(node);
             if partition.is_stored(node) {
                 continue;
@@ -10169,7 +9972,7 @@ mod tests {
         }
         let case = run(&segments);
         let partition = case.partition();
-        assert_eq!(partition.recipes.len(), 64_000);
+        assert_eq!(partition.node_count(), 64_000);
         assert_eq!(partition.spans.len(), 32_000);
         assert_eq!(constructed_count(&partition), 0);
     }
