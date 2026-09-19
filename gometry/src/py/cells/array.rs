@@ -123,14 +123,10 @@ trait CellArrayGrid: GridCell {
     }
     fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
         let mut cells = crate::try_vec_with_capacity(ids.len())?;
-        for id in ids {
-            crate::try_push(&mut cells, Self::from_validated_id(id))?;
-        }
+        cells.extend(ids.into_iter().map(Self::from_validated_id));
         let cells = Self::compact_cells(cells, floor)?;
         let mut ids = crate::try_vec_with_capacity(cells.len())?;
-        for cell in cells {
-            crate::try_push(&mut ids, Self::hash_key(cell))?;
-        }
+        ids.extend(cells.into_iter().map(Self::hash_key));
         Ok(ids)
     }
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {

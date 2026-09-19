@@ -67,18 +67,23 @@ fn normalize_with_floor<C: HierarchicalCell>(
             continue;
         }
         crate::boundary::try_push_vec(&mut out, cell)?;
-        // Merge complete sibling groups (cascading upward).
+        // Merge complete sibling groups (cascading upward). `out` is sorted,
+        // distinct, and free of containment, so `count` cells one level below
+        // `parent` and inside its range are exactly its children.
         while let Some(parent) = out.last().and_then(|&last| last.parent()) {
             if parent.depth() < floor {
                 break;
             }
-            let siblings = parent.children();
-            let count = siblings.len();
+            let count = parent.child_count();
             if out.len() < count {
                 break;
             }
+            let child_depth = parent.depth() + 1;
             let tail = &out[out.len() - count..];
-            if !tail.iter().zip(siblings).all(|(&a, b)| a == b) {
+            if !tail
+                .iter()
+                .all(|&cell| cell.depth() == child_depth && parent.contains(cell))
+            {
                 break;
             }
             out.truncate(out.len() - count);
