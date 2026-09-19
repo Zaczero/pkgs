@@ -10,13 +10,13 @@ use crate::grid::affine_source::{
 };
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{CoverRule, Coverer, Covering};
-use crate::py::cells::coverage_ops::{GridCoverError, coverage_factory_shapes};
+use crate::py::cells::coverage_ops::{GridCoverError, coverage_factory_shapes, envelope_windows};
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
     _unpickle_s2_cell, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
     s2_union,
 };
-use crate::py::cells::s2::parse::{S2LevelBudget, bounds_query_shape};
+use crate::py::cells::s2::parse::S2LevelBudget;
 use crate::py::cells::{Bound, CellRule, PyGeometry, PyModule, PyModuleMethods as _, PyResult};
 
 impl From<S2ComponentCoverError> for GridCoverError {
@@ -451,23 +451,7 @@ pub(crate) fn build_coverage(
 ) -> Result<Vec<CellId>, GridCoverError> {
     let cover_shape = coverage_factory_shapes(geometry, "S2")?;
     let (tagged, bbox_visible) = if cell_rule == CellRule::Bbox {
-        // Cover each non-wrapped lon/lat window separately and deduplicate.
-        // A multipolygon / multipartite seam band has full-world merged bounds
-        // (-180..180) even when each part is a narrow half — covering that
-        // merged envelope floods the equator with unrelated cells.
-        // Eliminate semantically redundant *source* components before turning
-        // them into longitude windows.  Windows are implementation pieces of
-        // one bounds request, not source supports themselves: applying
-        // `covers` after the split can incorrectly discard distinct polar
-        // pieces (and changes a one-member MultiPolygon's result).
-        let source_components =
-            canonical_s2_components(&cover_shape).map_err(GridCoverError::from)?;
-        let mut windows = Vec::new();
-        for component in &source_components {
-            for window in bbox_cover_windows(component)? {
-                crate::try_push_vec(&mut windows, window)?;
-            }
-        }
+        let windows = envelope_windows(&cover_shape)?;
         let mut cells = Vec::new();
         for (cell, _) in cover_s2_shapes(
             windows,
@@ -502,51 +486,6 @@ pub(crate) fn build_coverage(
 
     let cells = membership_from_tagged(tagged, cell_rule, bbox_visible)?;
     Ok(cells)
-}
-
-/// Non-wrapped lon/lat envelopes for the bbox cover rule.
-///
-/// Every canonical atomic component contributes its own windows, so bbox
-/// follows the same aggregate-decomposition owner as the other S2 rules. A
-/// single envelope with west > east (geographic wrap convention) splits into
-/// two boxes at ±180. Ordinary ordered bounds stay one window.
-fn bbox_cover_windows(shape: &Shape) -> Result<Vec<Shape>, GridCoverError> {
-    let mut windows = Vec::new();
-    visit_grid_cover_components(shape, &mut |component| {
-        push_bounds_windows(component.bounds(), &mut windows)
-    })?;
-    if windows.is_empty() {
-        Err(GridCoverError::Empty("S2"))
-    } else {
-        Ok(windows)
-    }
-}
-
-fn push_bounds_windows(
-    bounds: Option<crate::geometry::Bounds>,
-    out: &mut Vec<Shape>,
-) -> Result<(), GridCoverError> {
-    let Some(bounds) = bounds else {
-        return Ok(());
-    };
-    let west = bounds.minx();
-    let south = bounds.miny();
-    let east = bounds.maxx();
-    let north = bounds.maxy();
-    if west > east {
-        // Antimeridian wrap: cover [west, 180] and [-180, east] separately.
-        crate::try_push_vec(
-            out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north))?,
-        )?;
-        crate::try_push_vec(
-            out,
-            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north))?,
-        )?;
-    } else {
-        crate::try_push_vec(out, bounds_query_shape(bounds)?)?;
-    }
-    Ok(())
 }
 
 /// Register the S2 classes, flat functions, and pickle rebuilder.

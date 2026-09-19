@@ -448,3 +448,32 @@ def test_tile_cover_still_rejects_nonpolar_mercator_overflow(
     source = gm.box(*bounds, **kwargs)
     with pytest.raises(gm.InvalidGeometryError, match='square Web Mercator tile grid'):
         gm.tile_cover(source, zoom=4)
+
+
+_COVERS = {
+    'h3': lambda source, rule: gm.h3_cover(source, 5, cell_rule=rule),
+    's2': lambda source, rule: gm.s2_cover(source, 9, cell_rule=rule),
+    'geohash': lambda source, rule: gm.geohash_cover(source, 4, cell_rule=rule),
+    'tile': lambda source, rule: gm.tile_cover(source, zoom=8, cell_rule=rule),
+}
+
+
+@pytest.mark.parametrize('grid', sorted(_COVERS))
+@pytest.mark.parametrize(
+    'source',
+    [
+        gm.Polygon([(0, -2), (4, 2), (2, 4), (-2, 0), (0, -2)], crs=4326),
+        gm.Polygon([(179, -5), (-179, -5), (-179, 5), (179, 5), (179, -5)], crs=4326),
+    ],
+    ids=['rotated', 'seam'],
+)
+def test_bbox_rule_covers_the_envelope_windows_on_every_grid(
+    grid: str, source: gm.Geometry
+) -> None:
+    cover = _COVERS[grid]
+    windows = gm.GeometryCollection(
+        [part.envelope() for part in source.split_antimeridian().parts]
+    )
+    bbox = set(cover(source, 'bbox').to_numpy().tolist())
+    assert bbox == set(cover(windows, 'overlap').to_numpy().tolist())
+    assert set(cover(source, 'overlap').to_numpy().tolist()) <= bbox

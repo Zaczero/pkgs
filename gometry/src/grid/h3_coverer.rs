@@ -27,7 +27,6 @@ use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum H3TraversalRule {
     Within,
-    Bbox,
     Overlap,
 }
 
@@ -376,9 +375,6 @@ pub(crate) fn h3_cover(
             RectClass::Boundary if depth == plan.target => match rule {
                 H3TraversalRule::Within => {
                     emit_within_leaf(source, plan, cell, max_cells, &mut covered)?;
-                },
-                H3TraversalRule::Bbox => {
-                    emit_bbox_leaf(source, cell, max_cells, &mut covered)?;
                 },
                 H3TraversalRule::Overlap => {
                     emit_overlap_leaf(source, plan, cell, max_cells, &mut covered)?;

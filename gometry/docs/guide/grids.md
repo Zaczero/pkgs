@@ -236,7 +236,7 @@ complete-coverage superset used for candidate keys.
 | `"within"` | the cell lies **entirely inside** the geometry | a *subset* — cells the area fully owns |
 | `"center"` | the cell's **center** falls inside the geometry | h3-py-style polygon-to-cell selection; boundary cells may be omitted |
 | `"overlap"` (default) | the cell **intersects** the geometry at any point (interior or boundary) | a *superset* — safe join/prefilter keys, never misses a true hit |
-| `"bbox"` | the cell's **bounding box** overlaps the geometry | loosest candidate rule (for geohash & tiles a cell *is* its bbox, so same as `"overlap"`) |
+| `"bbox"` | the cell meets the geometry's **envelope** (one window per part, split at the antimeridian) | loosest and fastest candidate rule: no shape test decides it |
 
 ```python exec="on" source="block" result="text" session="grid-rules"
 import gometry as gm
@@ -254,9 +254,7 @@ for rule in ("within", "center", "overlap", "bbox"):
     elif rule == 'overlap':
         assert all(gm.intersects(area, cell.polygon) for cell in cov)
     elif rule == 'bbox':
-        assert all(
-            gm.intersects(area.envelope(), cell.polygon.envelope()) for cell in cov
-        )
+        assert all(gm.intersects(area.envelope(), cell.polygon) for cell in cov)
     print(f"{rule:>8}: {len(cov):>3} cells")
 
 ```
@@ -289,7 +287,7 @@ print(panels(
 
 The rotated rectangle has a much wider envelope than its area, so each panel
 adds cells for a distinct reason: the cell is inside the shape, its center is
-inside, the cell intersects the shape, or its bounding box reaches the envelope.
+inside, the cell intersects the shape, or the cell reaches the envelope.
 
 The returned cell set depends on `cell_rule`; exact geometry predicates still use
 the source geometry.

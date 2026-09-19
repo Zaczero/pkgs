@@ -1,6 +1,5 @@
 use pyo3::{PyAny, PyResult};
 
-use crate::geometry::{LineSeq, Point, Shape};
 use crate::grid::s2::cellid::S2Level;
 use crate::grid::s2::projection::MAX_LEVEL as S2_MAX_LEVEL;
 use crate::py::cells;
@@ -109,29 +108,5 @@ pub(crate) fn parse_optional_s2_level(value: Option<&Bound<'_, PyAny>>) -> PyRes
         None => Ok(None),
         Some(value) if value.is_none() => Ok(None),
         Some(value) => parse_s2_level(value).map(Some),
-    }
-}
-
-pub(crate) fn bounds_query_shape(bounds: crate::geometry::Bounds) -> crate::error::Result<Shape> {
-    // Exact identity on purpose: only literally-degenerate bounds collapse
-    // to lower-dimensional query shapes; near-degenerate boxes stay boxes.
-    #[expect(clippy::float_cmp, reason = "exact degenerate-bounds dispatch")]
-    if bounds.minx() == bounds.maxx() && bounds.miny() == bounds.maxy() {
-        Ok(Shape::Point(Point::new_raw_xy(
-            bounds.minx(),
-            bounds.miny(),
-        )))
-    } else if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
-        Ok(Shape::LineString(LineSeq::segment(
-            Point::new_raw_xy(bounds.minx(), bounds.miny()),
-            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
-        )?))
-    } else {
-        Ok(Shape::Polygon(crate::box_polygon(
-            bounds.minx(),
-            bounds.miny(),
-            bounds.maxx(),
-            bounds.maxy(),
-        )?))
     }
 }

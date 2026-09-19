@@ -440,14 +440,14 @@ fn h3_root_stack_allocation_failure_retries_without_partial_output() {
     )
     .unwrap();
     let plan = H3CoverPlan::new(Resolution::Zero);
-    let expected = h3_cover(&source, &plan, H3TraversalRule::Bbox, None).unwrap();
+    let expected = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
 
     let error = crate::test_support::fail_allocations_after(0, || {
-        h3_cover(&source, &plan, H3TraversalRule::Bbox, None)
+        h3_cover(&source, &plan, H3TraversalRule::Overlap, None)
     })
     .unwrap_err();
     assert_h3_allocation_error(error);
-    let retry = h3_cover(&source, &plan, H3TraversalRule::Bbox, None).unwrap();
+    let retry = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
     assert_eq!(retry, expected);
 }
 
@@ -836,57 +836,6 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
 }
 
 #[test]
-fn root_descent_nominates_the_two_ring_logical_bbox_owner() {
-    let source = GeographicCoverageSource::new(
-        &Shape::Point(Point::new(-170.0, 74.0).unwrap()),
-        SphericalGridTarget::H3(Resolution::Zero),
-    )
-    .unwrap();
-    let covered = h3_cover(
-        &source,
-        &H3CoverPlan::new(Resolution::Zero),
-        H3TraversalRule::Bbox,
-        None,
-    )
-    .unwrap();
-    let owner = CellIndex::try_from(0x0800_1FFF_FFFF_FFFF_u64).unwrap();
-    assert!(
-        covered.iter().any(|entry| entry.cell == owner),
-        "122-root bbox descent retains 8001 beyond the point owner's one-ring nomination"
-    );
-}
-
-#[test]
-fn certified_bbox_descent_selects_the_polar_nine() {
-    let source = GeographicCoverageSource::new(
-        &Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_points(&[
-                    Point::new(-90.0, 85.0).unwrap(),
-                    Point::new(90.0, 85.0).unwrap(),
-                ])
-                .unwrap(),
-            )
-            .expect("line coordinate sequence must contain at least two vertices"),
-        ),
-        SphericalGridTarget::H3(Resolution::Two),
-    )
-    .unwrap();
-    let covered = h3_cover(
-        &source,
-        &H3CoverPlan::new(Resolution::Two),
-        H3TraversalRule::Bbox,
-        None,
-    )
-    .unwrap();
-    assert_eq!(
-        covered.len(),
-        9,
-        "the exact logical bbox, not a padded candidate ring, selects the polar nine"
-    );
-}
-
-#[test]
 fn ordered_overlap_relation_retains_the_polar_arc_extremum_owner() {
     let source = GeographicCoverageSource::new(
         &Shape::LineString(
@@ -922,7 +871,7 @@ fn ordered_overlap_relation_retains_the_polar_arc_extremum_owner() {
 }
 
 #[test]
-fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
+fn physical_vertical_signs_exclude_the_raw_seam_cell() {
     let source = Shape::Polygon(
         Polygon::new(
             Ring::from_closed(
@@ -944,11 +893,8 @@ fn physical_vertical_signs_exclude_the_raw_seam_bbox_only_cell() {
     let plan = H3CoverPlan::new(Resolution::Two);
     let seam_cell = CellIndex::try_from(0x0827_FB7F_FFFF_FFFF_u64).unwrap();
     let overlap = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
-    let bbox = h3_cover(&source, &plan, H3TraversalRule::Bbox, None).unwrap();
     assert_eq!(overlap.len(), 9);
     assert!(!overlap.iter().any(|entry| entry.cell == seam_cell));
-    assert_eq!(bbox.len(), 10);
-    assert!(bbox.iter().any(|entry| entry.cell == seam_cell));
 }
 
 #[test]
@@ -1234,7 +1180,7 @@ fn every_depth_cap_certificate_reaches_the_north_cap_bulk_stream() {
     let covered = h3_cover(
         &source,
         &H3CoverPlan::new(Resolution::Three),
-        H3TraversalRule::Bbox,
+        H3TraversalRule::Overlap,
         None,
     )
     .unwrap();
@@ -1248,28 +1194,6 @@ fn every_depth_cap_certificate_reaches_the_north_cap_bulk_stream() {
         256,
         "strictly contained caps stream their descendants instead of invoking target cell plans"
     );
-}
-
-#[test]
-fn unknown_overlap_leaves_reuse_the_certified_bbox_dispatch() {
-    // A tighter polar cap than the 70-degree fixture: it still classifies as
-    // unknown (asserted below, which is the property that routes this into
-    // the dispatch) with far fewer boundary cells to certify.
-    let source = GeographicCoverageSource::new(
-        &Shape::Polygon(polygon(-180.0, 85.0, 180.0, 90.0)),
-        SphericalGridTarget::H3(Resolution::Three),
-    )
-    .unwrap();
-    assert!(
-        source.is_unknown(),
-        "the north-cap fixture enters the dispatch"
-    );
-    let plan = H3CoverPlan::new(Resolution::Three);
-
-    let bbox = h3_cover(&source, &plan, H3TraversalRule::Bbox, None).unwrap();
-    let overlap = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
-
-    assert_eq!(overlap, bbox, "unknown overlap leaves are bbox-equivalent");
 }
 
 #[test]

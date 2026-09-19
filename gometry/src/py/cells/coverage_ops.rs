@@ -7,7 +7,7 @@ use crate::geographic::{
     GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
 };
 use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
-use crate::grid::affine_source::normalize_grid_source;
+use crate::grid::affine_source::{normalize_grid_source, visit_grid_cover_components};
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer::{self, RectCoverRule};
 use crate::grid::{CoverBudgetExceeded, CoverError};
@@ -564,6 +564,16 @@ pub(crate) fn build_rect_coverage_ids<S>(
 where
     S: RectCoverSpec,
 {
+    if cell_rule == CellRule::Bbox {
+        let (windows, window_shape) = envelope_window_geometry(membership, cover_shape)?;
+        return build_rect_coverage_ids::<S>(
+            &windows,
+            &window_shape,
+            depth,
+            CellRule::Overlap,
+            max_cells,
+        );
+    }
     let authority = membership.shape.as_ref();
     let authority_plan = membership.plan_or_transient()?;
     let authority_cache = membership.frame_cache()?;
@@ -572,9 +582,10 @@ where
         unreachable!("normalized coverage geometry has a geographic frame")
     };
     let rule = match cell_rule {
-        CellRule::Overlap | CellRule::Bbox => RectCoverRule::Overlap,
+        CellRule::Overlap => RectCoverRule::Overlap,
         CellRule::Within => RectCoverRule::Within,
         CellRule::Center => RectCoverRule::Center,
+        CellRule::Bbox => unreachable!("bbox covers its envelope windows under overlap"),
     };
     let covered = coverer::cover(
         authority,
@@ -649,6 +660,79 @@ pub(crate) fn coverage_factory_shapes(
     // a projected source may become antimeridian-crossing only after this
     // conversion.
     cover_working_shape(&geometry.frame, shape)
+}
+
+/// The lon/lat windows `cell_rule='bbox'` covers: the envelope of every
+/// atomic component of the admitted working shape, split in two where it
+/// wraps the antimeridian. One merged envelope would flood the ground between
+/// distant parts, and the band behind a seam split, with unrelated cells.
+pub(crate) fn envelope_windows(cover_shape: &Shape) -> Result<Vec<Shape>, GridCoverError> {
+    let mut windows = Vec::new();
+    visit_grid_cover_components(cover_shape, &mut |component| {
+        push_bounds_windows(component.bounds(), &mut windows)
+    })?;
+    Ok(windows)
+}
+
+/// [`envelope_windows`] as one admitted geometry in `membership`'s frame, so a
+/// grid answers `'bbox'` by covering it under `'overlap'`.
+pub(crate) fn envelope_window_geometry(
+    membership: &PyGeometry,
+    cover_shape: &Shape,
+) -> Result<(PyGeometry, Shape), GridCoverError> {
+    let windows = Shape::geometry_collection(envelope_windows(cover_shape)?)?;
+    let geometry = PyGeometry::with_frame(
+        crate::ShapeData::new(windows.clone()),
+        membership.frame.clone(),
+    )?;
+    Ok((geometry, windows))
+}
+
+fn push_bounds_windows(
+    bounds: Option<crate::geometry::Bounds>,
+    out: &mut Vec<Shape>,
+) -> Result<(), GridCoverError> {
+    let Some(bounds) = bounds else {
+        return Ok(());
+    };
+    let (west, south, east, north) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
+    if west > east {
+        crate::try_push_vec(
+            out,
+            bounds_query_shape(crate::geometry::Bounds::new_raw(west, south, 180.0, north))?,
+        )?;
+        crate::try_push_vec(
+            out,
+            bounds_query_shape(crate::geometry::Bounds::new_raw(-180.0, south, east, north))?,
+        )?;
+    } else {
+        crate::try_push_vec(out, bounds_query_shape(bounds)?)?;
+    }
+    Ok(())
+}
+
+fn bounds_query_shape(bounds: crate::geometry::Bounds) -> crate::error::Result<Shape> {
+    // Exact identity on purpose: only literally-degenerate bounds collapse
+    // to lower-dimensional query shapes; near-degenerate boxes stay boxes.
+    #[expect(clippy::float_cmp, reason = "exact degenerate-bounds dispatch")]
+    if bounds.minx() == bounds.maxx() && bounds.miny() == bounds.maxy() {
+        Ok(Shape::Point(Point::new_raw_xy(
+            bounds.minx(),
+            bounds.miny(),
+        )))
+    } else if bounds.minx() == bounds.maxx() || bounds.miny() == bounds.maxy() {
+        Ok(Shape::LineString(LineSeq::segment(
+            Point::new_raw_xy(bounds.minx(), bounds.miny()),
+            Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
+        )?))
+    } else {
+        Ok(Shape::Polygon(crate::box_polygon(
+            bounds.minx(),
+            bounds.miny(),
+            bounds.maxx(),
+            bounds.maxy(),
+        )?))
+    }
 }
 
 /// Build a `CellArray` from source cell ids through the public factory path.

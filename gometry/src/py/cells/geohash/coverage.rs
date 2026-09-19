@@ -48,9 +48,9 @@ pub(super) fn geohash_cell_array(
 /// cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
 ///     Which cells to materialize. ``'within'`` selects cells entirely inside;
 ///     ``'center'`` selects cells whose center is inside; ``'overlap'``
-///     selects every cell touching the geometry; and ``'bbox'`` selects cells
-///     whose bounding box overlaps. For geohash cells, ``'bbox'`` and
-///     ``'overlap'`` are equivalent. The rule never affects exact predicates.
+///     selects every cell touching the geometry; and ``'bbox'`` selects every
+///     cell meeting the geometry's envelope (one window per part, split at the
+///     antimeridian). The rule never affects exact predicates.
 ///
 /// max_cells : int or None, default 1000000
 ///     Hard cap on returned cells and retained result allocation. Discarded

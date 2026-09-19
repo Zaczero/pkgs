@@ -228,46 +228,20 @@ def test_h3_cover_line_endpoint_owners_named_regressions() -> None:
     assert '8001fffffffffff' in polar_tokens
 
 
-def test_h3_bbox_certified_root_descent_and_native_arc_corpus() -> None:
-    """BBox uses all-root certified windows, never an owner-ring padding rule."""
-    point = gm.Point(-170.0, 74.0, crs=4326)
-    point_bbox = {
-        cell.token for cell in gm.h3_cover(point, resolution=0, cell_rule='bbox')
-    }
-    assert point_bbox == {
-        '8001fffffffffff',
-        '8003fffffffffff',
-        '8005fffffffffff',
-        '800dfffffffffff',
-    }
-    assert gm.contains(point, point)
-
-    polar = gm.LineString([(-90.0, 85.0), (90.0, 85.0)], crs=4326)
-    polar_bbox = {
-        cell.token for cell in gm.h3_cover(polar, resolution=2, cell_rule='bbox')
-    }
-    assert polar_bbox == {
-        '820047fffffffff',
-        '82004ffffffffff',
-        '820057fffffffff',
-        '82005ffffffffff',
-        '8200c7fffffffff',
-        '8200e7fffffffff',
-        '82030ffffffffff',
-        '82032ffffffffff',
-        '820377fffffffff',
-    }
-    polar_overlap = {
-        cell.token for cell in gm.h3_cover(polar, resolution=2, cell_rule='overlap')
-    }
-    assert polar_overlap == polar_bbox
-    assert '820377fffffffff' in polar_overlap
-
-    endpoint = gm.LineString([(-10.0, -40.0), (10.0, -40.0)], crs=4326)
-    endpoint_bbox = {
-        cell.token for cell in gm.h3_cover(endpoint, resolution=2, cell_rule='bbox')
-    }
-    assert '82d10ffffffffff' in endpoint_bbox
+def test_h3_bbox_covers_the_source_envelope() -> None:
+    """BBox is the overlap cover of the source envelope, points and lines too."""
+    for source, resolution in (
+        (gm.Point(-170.0, 74.0, crs=4326), 0),
+        (gm.LineString([(-90.0, 85.0), (90.0, 85.0)], crs=4326), 2),
+        (gm.LineString([(-10.0, -40.0), (10.0, -40.0)], crs=4326), 2),
+        (gm.Polygon([(0, -2), (4, 2), (2, 4), (-2, 0), (0, -2)], crs=4326), 3),
+    ):
+        bbox = {cell.token for cell in gm.h3_cover(source, resolution, cell_rule='bbox')}
+        envelope = {
+            cell.token
+            for cell in gm.h3_cover(source.envelope(), resolution, cell_rule='overlap')
+        }
+        assert bbox == envelope
 
 
 def test_h3_cover_collinear_vertex_is_invariant_for_every_visible_rule() -> None:
@@ -730,50 +704,6 @@ def test_h3_to_polygon_expands_mixed_resolutions_without_fixed_budget() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _reference_bboxes(universe: gm.CellArray) -> gm.GeometryArray:
-    """Independent geographic cell bboxes — not the production helper.
-
-    Polar cells (cover POINT(0, ±90)) use a full-longitude box extended to the
-    pole. Otherwise the complementary minimum circular longitude interval is
-    split at the antimeridian when needed.
-    """
-    north_pole = gm.Point(0.0, 90.0, crs=4326)
-    south_pole = gm.Point(0.0, -90.0, crs=4326)
-    boxes: list[gm.Geometry] = []
-    for cell in universe:
-        poly = cell.polygon
-        if gm.covers(poly, north_pole) or gm.covers(poly, south_pole):
-            lats = [coord[1] for coord in poly.exterior.coords]
-            south, north = min(lats), max(lats)
-            if gm.covers(poly, north_pole):
-                north = 90.0
-            if gm.covers(poly, south_pole):
-                south = -90.0
-            boxes.append(gm.box(-180.0, south, 180.0, north, crs=4326))
-            continue
-
-        coordinates = poly.exterior.coords[:-1]
-        longitudes = [coord[0] for coord in coordinates]
-        latitudes = [coord[1] for coord in coordinates]
-        if not longitudes:
-            boxes.append(poly.bounds)  # type: ignore[arg-type]
-            continue
-        ordered = sorted(longitudes)
-        gaps = [right - left for left, right in pairwise(ordered)]
-        gaps.append(ordered[0] + 360.0 - ordered[-1])
-        largest_gap = max(range(len(gaps)), key=gaps.__getitem__)
-        if largest_gap == len(ordered) - 1:
-            west, east = ordered[0], ordered[-1]
-        else:
-            west, east = ordered[largest_gap + 1], ordered[largest_gap]
-        south, north = min(latitudes), max(latitudes)
-        if west <= east:
-            boxes.append(gm.box(west, south, east, north, crs=4326))
-        else:
-            boxes.append(gm.box(west, south, east, north, crs=4326, wrap='split'))
-    return gm.GeometryArray(boxes, crs=4326)
-
-
 def _expected_h3_rule_ids(source: gm.Geometry, resolution: int) -> dict[str, set[int]]:
     """Finite-universe targets for rules with planar point/box semantics."""
     universe = gm.h3_base_cells().uncompact(resolution)
@@ -792,14 +722,17 @@ def _expected_h3_rule_ids(source: gm.Geometry, resolution: int) -> dict[str, set
             for index, included in enumerate(gm.covers(source, universe.center))
             if included
         },
+        # The contract itself: bbox is the overlap cover of the envelope windows.
         'bbox': {
-            ids[index]
-            for index, included in enumerate(
-                gm.intersects(source, _reference_bboxes(universe))
-            )
-            if included
+            int(cell)
+            for cell in gm.h3_cover(_envelope_windows(source), resolution, cell_rule='overlap')
         },
     }
+
+
+def _envelope_windows(source: gm.Geometry) -> gm.Geometry:
+    """The windows of the bbox rule: each part's envelope after the seam split."""
+    return gm.GeometryCollection([part.envelope() for part in source.split_antimeridian().parts])
 
 
 def _actual_h3_rule_ids(
@@ -1219,7 +1152,7 @@ def test_h3_cover_source_gate_counterexample_barrier_gate() -> None:
     """box(0,60,60,88) r2: the outline reaches the polar cell."""
     source = gm.box(0.0, 60.0, 60.0, 88.0, crs=4326)
     actual = _assert_h3_cover_universe_equal(
-        source, 2, expected_counts=(104, 56, 77, 105)
+        source, 2, expected_counts=(104, 56, 77, 104)
     )
     assert {
         gm.H3Cell(value).token for value in actual['within']
@@ -1352,10 +1285,8 @@ def test_h3_cover_multipart_polar_plus_midlatitude() -> None:
 def test_h3_multipart_global_uncertainty_keeps_independent_component_caps() -> None:
     """A polar component must not poison a disjoint rectangular sibling's cap.
 
-    This is a finite analytic union: each component is covered independently
-    from its exact source, then the multipart cover is required to be exactly
-    that union. The frozen r2 universe is 202 polar cells plus 19 middle
-    cells, with no overlap.
+    Each component is covered independently from its exact source, and the
+    multipart cover must be exactly that disjoint union.
     """
     polar = gm.box(-180.0, 70.0, 180.0, 90.0, crs=4326)
     middle = gm.box(10.0, 0.0, 18.0, 8.0, crs=4326)
@@ -1364,20 +1295,21 @@ def test_h3_multipart_global_uncertainty_keeps_independent_component_caps() -> N
     middle_ids = {cell.token for cell in gm.h3_cover(middle, 2, cell_rule='bbox')}
     combined_ids = {cell.token for cell in gm.h3_cover(multipart, 2, cell_rule='bbox')}
     assert len(polar_ids) == 202
-    assert len(middle_ids) == 19
+    assert middle_ids == {cell.token for cell in gm.h3_cover(middle, 2, cell_rule='overlap')}
     assert polar_ids.isdisjoint(middle_ids)
     assert combined_ids == polar_ids | middle_ids
 
 
 def test_h3_multipart_cap_charges_the_incremental_union() -> None:
-    """Multipart r2 bbox has an exact 202 + 19 disjoint-cell union."""
+    """The cap counts the multipart union, not either component alone."""
     polar = gm.box(-180.0, 70.0, 180.0, 90.0, crs=4326)
     middle = gm.box(10.0, 0.0, 18.0, 8.0, crs=4326)
     multipart = gm.MultiPolygon([polar, middle], crs=4326)
+    total = len(gm.h3_cover(multipart, 2, cell_rule='bbox', max_cells=None))
+    assert total > len(gm.h3_cover(polar, 2, cell_rule='bbox'))
     with pytest.raises(gm.GeometryError, match='max_cells'):
-        gm.h3_cover(multipart, 2, cell_rule='bbox', max_cells=220)
-    coverage = gm.h3_cover(multipart, 2, cell_rule='bbox', max_cells=221)
-    assert len(coverage) == 221
+        gm.h3_cover(multipart, 2, cell_rule='bbox', max_cells=total - 1)
+    assert len(gm.h3_cover(multipart, 2, cell_rule='bbox', max_cells=total)) == total
 
 
 def test_h3_cover_pentagon_neighborhood() -> None:

@@ -340,7 +340,8 @@ impl GridDissolver for S2Dissolver {
 ///     cells whose center is inside — unique assignment, balanced point
 ///     binning. ``'overlap'``: every cell touching the geometry — a
 ///     complete-coverage superset, the safe default for candidate keys.
-///     ``'bbox'``: cells whose bounding box overlaps — loosest and fastest.
+///     ``'bbox'``: every cell meeting the geometry's envelope, one window per
+///     part and split at the antimeridian — loosest and fastest.
 ///     The rule never affects the exact predicates.
 ///
 /// max_cells : int or None, default 1000000

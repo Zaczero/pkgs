@@ -19897,9 +19897,9 @@ def geohash_cover(
     cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
         Which cells to materialize. ``'within'`` selects cells entirely inside;
         ``'center'`` selects cells whose center is inside; ``'overlap'``
-        selects every cell touching the geometry; and ``'bbox'`` selects cells
-        whose bounding box overlaps. For geohash cells, ``'bbox'`` and
-        ``'overlap'`` are equivalent. The rule never affects exact predicates.
+        selects every cell touching the geometry; and ``'bbox'`` selects every
+        cell meeting the geometry's envelope (one window per part, split at the
+        antimeridian). The rule never affects exact predicates.
 
     max_cells : int or None, default 1000000
         Hard cap on returned cells and retained result allocation. Discarded
@@ -20164,9 +20164,9 @@ def tile_cover(
     cell_rule : {'within', 'center', 'overlap', 'bbox'}, default 'overlap'
         Which cells to materialize. ``'within'`` selects cells entirely inside;
         ``'center'`` selects cells whose center is inside; ``'overlap'``
-        selects every cell touching the geometry; and ``'bbox'`` selects cells
-        whose bounding box overlaps. For tiles, ``'bbox'`` and ``'overlap'``
-        are equivalent. The rule never affects exact predicates.
+        selects every cell touching the geometry; and ``'bbox'`` selects every
+        cell meeting the geometry's envelope (one window per part, split at the
+        antimeridian). The rule never affects exact predicates.
 
     max_cells : int or None, default 1000000
         Hard cap on returned cells and retained result allocation. Discarded
@@ -20725,7 +20725,8 @@ def h3_cover(
         cells whose center is inside — unique assignment, balanced point
         binning. ``'overlap'``: every cell touching the geometry — a
         complete-coverage superset, the safe default for candidate keys.
-        ``'bbox'``: cells whose bounding box overlaps — loosest and fastest.
+        ``'bbox'``: every cell meeting the geometry's envelope, one window per
+        part and split at the antimeridian — loosest and fastest.
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000
@@ -21063,7 +21064,8 @@ def s2_cover(
         cells whose center is inside — unique assignment, balanced point
         binning. ``'overlap'``: every cell touching the geometry — a
         complete-coverage superset, the safe default for candidate keys.
-        ``'bbox'``: cells whose bounding box overlaps — loosest and fastest.
+        ``'bbox'``: every cell meeting the geometry's envelope, one window per
+        part and split at the antimeridian — loosest and fastest.
         The rule never affects the exact predicates.
 
     max_cells : int or None, default 1000000

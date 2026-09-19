@@ -99,9 +99,8 @@ crate::tokens::token_enum! {
         Within = "within",
         /// The cell OVERLAPS the geometry at all — complete coverage, overshoots.
         Overlap = "overlap",
-        /// The cell's bounding box overlaps the geometry — loosest and fastest.
-        /// For rectangular grids (geohash, tiles) a cell IS its bbox, so this
-        /// coincides with `overlap`.
+        /// The cell meets the geometry's ENVELOPE — one window per part, split
+        /// at the antimeridian. Loosest and fastest: no shape test decides it.
         Bbox = "bbox",
     }
 }
