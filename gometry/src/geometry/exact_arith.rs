@@ -2,15 +2,13 @@
 //! `two_sum`, `two_product`, and the `dd_*` kernels every exact predicate and
 //! expansion builds on, and for [`bounded`] certificates.
 //!
-//! The product is Dekker splitting with power-of-two rescaling, exact on every
-//! finite, non-underflowing binary64 product including mixed-exponent operands
-//! that would overflow the splitter. It is chosen over fused multiply-add
-//! because `mul_add` is a libm call on the x86-64-v2 baseline. The two agree
-//! bit for bit whenever the residual cannot underflow, which is every head of
-//! magnitude at least 2^-969; below that the split may round the residual to
-//! the subnormal grid, at most one subnormal ulp off. Exact expansion and
-//! certificate callers use [`two_product_exact`], which declines a product
-//! unless its residual is representable by the returned binary64 pair.
+//! Products take their residual from a fused multiply-add. At the x86-64-v2
+//! baseline `mul_add` is a libm call, but glibc dispatches it to the hardware
+//! FMA instruction where the CPU has one, and call plus instruction retire
+//! fewer instructions than a Dekker split with the rescaling its splitter
+//! needs at large magnitudes. [`two_product_exact`] declines a product whose
+//! residual might not be representable; [`two_product`] serves filtered
+//! predicates, whose error bound covers a rounded subnormal residual.
 
 pub(crate) mod bounded;
 pub(crate) mod product_sum;
@@ -40,10 +38,6 @@ pub(crate) fn fast_two_sum(left: f64, right: f64) -> (f64, f64) {
     (sum, right - (sum - left))
 }
 
-pub(crate) const SPLITTER: f64 = 134_217_729.0;
-
-pub(crate) const MAX_SPLITTABLE: f64 = f64::MAX / SPLITTER;
-
 pub(crate) const MAX_CROSS_COORD_EXPONENT: i32 = 480;
 
 pub(crate) const MIN_CROSS_COORD_EXPONENT: i32 = -400;
@@ -52,49 +46,15 @@ pub(crate) const MIN_CROSS_COORD_EXPONENT: i32 = -400;
 /// binary64 subnormal grid in its residual.
 const MIN_EXACT_PRODUCT_EXPONENT: i32 = -969;
 
-/// Error-free product without FMA for finite, non-underflowing binary64
-/// products, including mixed-exponent operands that overflow the splitter.
+/// Error-free product for finite, non-underflowing binary64 products: the
+/// fused residual. Below the non-underflowing range the residual is rounded
+/// to the subnormal grid, within half a subnormal ulp.
 pub(crate) fn two_product(lhs: f64, rhs: f64) -> (f64, f64) {
     let head = lhs * rhs;
     if !head.is_finite() || head == 0.0 {
         return (head, 0.0);
     }
-    if lhs.abs() <= MAX_SPLITTABLE && rhs.abs() <= MAX_SPLITTABLE {
-        return two_product_safe(lhs, rhs, head);
-    }
-
-    // Normalize each factor independently so an ordinary mixed-exponent
-    // product such as 2^1000 * 2^-1000 cannot overflow Dekker's splitter.
-    let lhs_shift = scale_shift_for_magnitude(lhs.abs());
-    let rhs_shift = scale_shift_for_magnitude(rhs.abs());
-    let total_shift = lhs_shift + rhs_shift;
-    let scaled_lhs = lhs * exact_power_of_two(lhs_shift);
-    let scaled_rhs = rhs * exact_power_of_two(rhs_shift);
-    let scaled_head = scaled_lhs * scaled_rhs;
-    let (_, scaled_tail) = two_product_safe(scaled_lhs, scaled_rhs, scaled_head);
-    let head_in_scaled_frame = head * exact_power_of_two(total_shift);
-    let (delta, delta_tail) = two_sum(scaled_head, -head_in_scaled_frame);
-    let error_in_scaled_frame = delta + (delta_tail + scaled_tail);
-    (
-        head,
-        error_in_scaled_frame * exact_power_of_two(-total_shift),
-    )
-}
-
-pub(crate) fn two_product_safe(lhs: f64, rhs: f64, head: f64) -> (f64, f64) {
-    let (lhs_hi, lhs_lo) = split(lhs);
-    let (rhs_hi, rhs_lo) = split(rhs);
-    let error_1 = head - lhs_hi * rhs_hi;
-    let error_2 = error_1 - lhs_lo * rhs_hi;
-    let error_3 = error_2 - lhs_hi * rhs_lo;
-    (head, lhs_lo * rhs_lo - error_3)
-}
-
-pub(crate) fn split(value: f64) -> (f64, f64) {
-    let scaled = SPLITTER * value;
-    let large = scaled - value;
-    let high = scaled - large;
-    (high, value - high)
+    (head, lhs.mul_add(rhs, -head))
 }
 
 pub(crate) fn dd_mul(lhs: (f64, f64), rhs: (f64, f64)) -> (f64, f64) {
@@ -154,10 +114,6 @@ pub(crate) fn exact_power_of_two(shift: i16) -> f64 {
 /// head, a subnormal head, or a nonzero product that rounds to zero may have a
 /// residual below the binary64 grid and is declined rather than silently
 /// returning a false expansion. Exact zero products are admitted separately.
-/// The `mul_add` here is a libm call on the x86-64-v2 baseline, but glibc
-/// dispatches it to the hardware FMA instruction where the CPU has one, which
-/// retires fewer instructions than the Dekker split; filtered predicates,
-/// whose error bound covers their residual rounding, take [`two_product`].
 pub(crate) fn two_product_exact(left: f64, right: f64) -> Option<(f64, f64)> {
     let product = left * right;
     if !product.is_finite() {
@@ -195,11 +151,10 @@ pub(crate) fn checked_dd_mul(left: (f64, f64), right: (f64, f64)) -> Option<(f64
 mod tests {
     use super::*;
 
-    /// The Dekker product matches the fused residual when the residual is
-    /// representable normally. The underflow row records the documented
-    /// one-subnormal-ulp tolerance instead of pinning Dekker's spelling.
+    /// Known residuals, including magnitudes a splitter would overflow and a
+    /// residual rounded to the subnormal grid.
     #[test]
-    fn dekker_product_matches_known_fused_residuals() {
+    fn product_matches_known_fused_residuals() {
         let cases = [
             (
                 "safe nonzero residual",
@@ -207,7 +162,6 @@ mod tests {
                 0x3FF4_CCCC_CCCC_CCCD,
                 0x3FF6_E147_AE14_7AE2,
                 0x3C54_7AE1_47AE_1480,
-                false,
             ),
             (
                 "rescaled nonzero residual",
@@ -215,7 +169,6 @@ mod tests {
                 0x3FB9_9999_9999_999A,
                 0x7FB9_9999_9999_9999,
                 0x7C49_9999_9999_9998,
-                false,
             ),
             (
                 "rescaled exact power",
@@ -223,7 +176,6 @@ mod tests {
                 0x0170_0000_0000_0000,
                 0x3FF0_0000_0000_0000,
                 0x0000_0000_0000_0000,
-                false,
             ),
             (
                 "underflow residual",
@@ -231,27 +183,13 @@ mod tests {
                 0x9FC0_6EE1_DBDA_1774,
                 0x8052_EB12_A8DA_CDFD,
                 0x0000_0000_0000_0002,
-                true,
             ),
         ];
-        for &(name, lhs_bits, rhs_bits, expected_head, expected_fused_tail, underflow) in &cases {
+        for &(name, lhs_bits, rhs_bits, expected_head, expected_tail) in &cases {
             let (lhs, rhs) = (f64::from_bits(lhs_bits), f64::from_bits(rhs_bits));
             let (head, tail) = two_product(lhs, rhs);
             assert_eq!(head.to_bits(), expected_head, "{name}: head");
-            let fused_tail = lhs.mul_add(rhs, -head);
-            assert_eq!(
-                fused_tail.to_bits(),
-                expected_fused_tail,
-                "{name}: fused tail"
-            );
-            if underflow {
-                assert!(
-                    (tail - fused_tail).abs() <= f64::from_bits(1),
-                    "{name}: Dekker residual exceeds one subnormal ulp"
-                );
-            } else {
-                assert_eq!(tail.to_bits(), expected_fused_tail, "{name}: Dekker tail");
-            }
+            assert_eq!(tail.to_bits(), expected_tail, "{name}: tail");
         }
     }
 

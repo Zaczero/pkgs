@@ -1,80 +1,21 @@
-//! Certified orientation and unfused double-double arithmetic for segments.
+//! Certified orientation and double-double arithmetic for segments.
 //! Orientation uses an outward interval and exact stored-dyadic fallback over
 //! the complete finite binary64 domain.
 
-use crate::geometry::exact_arith::{SPLITTER, dd_add, dd_mul, scale_shift_for_magnitude, two_sum};
+use crate::geometry::exact_arith::{
+    dd_add, dd_mul, scale_shift_for_magnitude, two_product_exact, two_sum,
+};
 pub(super) use crate::geometry::exact_arith::{dd_diff, exact_power_of_two};
 use crate::geometry::segments::{
     Orientation, Segment, XY, interpolate_f64, interpolate_segment_point,
 };
 use crate::geometry::tessellation::exact::Interval;
-use crate::geometry::{Ordering, same_topological_coordinate};
+use crate::geometry::Ordering;
 
 #[path = "exact_orientation.rs"]
 mod exact_orientation;
 use exact_orientation::orientation_xy as certified_orientation_xy;
 pub(in crate::geometry) use exact_orientation::{stored_cross_sign, stored_orientation_sign};
-
-// Dekker's split constant for binary64: 2^ceil(53 / 2) + 1.
-
-/// Dekker product with an explicit representability certificate for every
-/// intermediate that the error-free-transform proof depends on. A subnormal
-/// intermediate is not rejected for its magnitude; it is rejected because its
-/// exact rounding residual may itself be below binary64 and therefore cannot
-/// be carried by the returned tail.
-fn two_product_certified(lhs: f64, rhs: f64) -> Option<(f64, f64)> {
-    if !lhs.is_normal() || !rhs.is_normal() {
-        return None;
-    }
-    let head = lhs * rhs;
-    if !head.is_normal() {
-        return None;
-    }
-    // Multiplication by an exact power of two only shifts the exponent. A
-    // normal result therefore has no rounding tail and needs none of
-    // Dekker's split intermediates.
-    if normal_power_of_two(lhs) || normal_power_of_two(rhs) {
-        return Some((head, 0.0));
-    }
-    let (lhs_hi, lhs_lo) = split_certified(lhs)?;
-    let (rhs_hi, rhs_lo) = split_certified(rhs)?;
-    let high_high = certified_product(lhs_hi, rhs_hi)?;
-    let error_1 = certified_difference(head, high_high)?;
-    let low_high = certified_product(lhs_lo, rhs_hi)?;
-    let error_2 = certified_difference(error_1, low_high)?;
-    let high_low = certified_product(lhs_hi, rhs_lo)?;
-    let error_3 = certified_difference(error_2, high_low)?;
-    let low_low = certified_product(lhs_lo, rhs_lo)?;
-    let tail = certified_difference(low_low, error_3)?;
-    Some((head, tail))
-}
-
-const fn normal_power_of_two(value: f64) -> bool {
-    let bits = value.to_bits() & 0x7FFF_FFFF_FFFF_FFFF;
-    let exponent = bits >> 52;
-    exponent != 0 && exponent != 0x7FF && bits & ((1_u64 << 52) - 1) == 0
-}
-
-fn split_certified(value: f64) -> Option<(f64, f64)> {
-    let scaled = SPLITTER * value;
-    if !scaled.is_normal() {
-        return None;
-    }
-    let large = certified_difference(scaled, value)?;
-    let high = certified_difference(scaled, large)?;
-    let low = certified_difference(value, high)?;
-    Some((high, low))
-}
-
-fn certified_product(left: f64, right: f64) -> Option<f64> {
-    let product = left * right;
-    (product.is_normal() || binary_zero(left) || binary_zero(right)).then_some(product)
-}
-
-fn certified_difference(left: f64, right: f64) -> Option<f64> {
-    let difference = left - right;
-    (difference.is_normal() || same_topological_coordinate(left, right)).then_some(difference)
-}
 
 pub(super) fn dd_cross(
     left_a: (f64, f64),
@@ -183,9 +124,10 @@ impl DdInterval {
     }
 
     /// Outward enclosure of the exact product of the two represented values.
-    /// The high-high product uses Dekker's error-free transform only when its
-    /// result is normal (or algebraically zero); every cross term, including
-    /// low-low, is then accumulated through the shared outward interval.
+    /// The high-high product is error-free only when its residual is
+    /// representable (or the product is algebraically zero); every cross term,
+    /// including low-low, is then accumulated through the shared outward
+    /// interval.
     pub(in crate::geometry) fn mul(self, other: Self) -> Option<Self> {
         let head_is_zero = binary_zero(self.head) || binary_zero(other.head);
         let high_product = self.head * other.head;
@@ -198,7 +140,7 @@ impl DdInterval {
         let (head, product_tail) = if head_is_zero {
             (high_product, 0.0)
         } else {
-            two_product_certified(self.head, other.head)?
+            two_product_exact(self.head, other.head)?
         };
         let mut tail = Interval::exact(product_tail);
         tail = interval_add_nonzero(
@@ -225,7 +167,7 @@ impl DdInterval {
         let (head, product_tail) = if head_is_zero {
             (high_product, 0.0)
         } else {
-            two_product_certified(self.head, self.head)?
+            two_product_exact(self.head, self.head)?
         };
         let doubled_head = self.head * 2.0;
         if !doubled_head.is_finite() {
