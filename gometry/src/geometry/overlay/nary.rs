@@ -156,7 +156,15 @@ fn exact_cartesian_overlay(
         ordered.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
     }
     let inputs = ordered.as_slice();
-    let inventory = ExactSourceInventory::from_shapes(inputs)?;
+    let union = if operation == OverlayOp::Union {
+        ExactSourceInventory::from_polygonal_union(inputs)?
+    } else {
+        None
+    };
+    let inventory = match union {
+        Some(inventory) => inventory,
+        None => ExactSourceInventory::from_shapes(inputs)?,
+    };
     let mut budget = crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
     let partition = inventory.partition(&mut budget)?;
     let declared_axes = overlay_declared_axes(inputs, operation);

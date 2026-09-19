@@ -1763,6 +1763,30 @@ impl ExactSourceInventory {
             let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
             staged.append_shape(shape, operand)?;
         }
+        Self::from_staged(staged)
+    }
+
+    /// Stage polygonal inputs as one operand for their union, or `None` when
+    /// an input is not polygonal. Union selects a cell any operand occupies,
+    /// and a polygonal operand is the union of its polygons, so the selection
+    /// is unchanged while each per-operand cell fact keeps one entry instead
+    /// of one per input. Line inputs keep their own operands: line boundary
+    /// counts are per operand.
+    pub(in crate::geometry) fn from_polygonal_union(shapes: &[&Shape]) -> Result<Option<Self>> {
+        if !shapes
+            .iter()
+            .all(|shape| matches!(shape, Shape::Polygon(_) | Shape::MultiPolygon(_)))
+        {
+            return Ok(None);
+        }
+        let mut staged = StagedExactSources::new(1)?;
+        for shape in shapes {
+            staged.append_shape(shape, 0)?;
+        }
+        Self::from_staged(staged).map(Some)
+    }
+
+    fn from_staged(staged: StagedExactSources) -> Result<Self> {
         let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
         Ok(Self {
             source_segments: staged.segments,
@@ -7705,6 +7729,50 @@ mod tests {
     use super::super::noding::dedup_undirected_segments_sourced;
     use super::*;
     use crate::geometry::generated_budget::PAIRWISE_WORK_LIMIT;
+
+    /// One shared operand must select exactly the cells separate operands do.
+    #[test]
+    fn polygonal_union_as_one_operand_matches_separate_operands() {
+        let shapes: Vec<Shape> = [
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))",
+            "POLYGON ((0 0,4 0,4 4,0 4,0 0),(1 1,3 1,3 3,1 3,1 1))",
+            "POLYGON ((2 2,6 2,6 6,2 6,2 2))",
+            "POLYGON ((4 0,8 0,8 2,4 2,4 0))",
+            "POLYGON ((1.5 1.5,2.5 1.5,2.5 2.5,1.5 2.5,1.5 1.5))",
+            "MULTIPOLYGON (((10 10,11 10,11 11,10 11,10 10)),((11 11,12 11,12 12,11 12,11 11)))",
+            "POLYGON ((0 0,1 -1,2 0,1 1,0 0))",
+        ]
+        .iter()
+        .map(|wkt| crate::io::parse_wkt(wkt).unwrap())
+        .collect();
+        let union = |inventory: ExactSourceInventory, inputs: &[&Shape]| {
+            let mut budget = ExpansionBudget::new("union", "exact partition");
+            let partition = inventory.partition(&mut budget).unwrap();
+            let axes =
+                super::super::overlay_declared_axes(inputs, crate::geometry::OverlayOp::Union);
+            inventory
+                .overlay_shape(&partition, crate::geometry::OverlayOp::Union, axes, true)
+                .unwrap()
+        };
+        for count in 2..=shapes.len() {
+            let inputs: Vec<&Shape> = shapes[..count].iter().collect();
+            let shared = ExactSourceInventory::from_polygonal_union(&inputs)
+                .unwrap()
+                .expect("polygonal inputs share one operand");
+            let separate = ExactSourceInventory::from_shapes(&inputs).unwrap();
+            assert_eq!(
+                union(shared, &inputs),
+                union(separate, &inputs),
+                "{count} inputs"
+            );
+        }
+        let line = crate::io::parse_wkt("LINESTRING (0 0,1 1)").unwrap();
+        assert!(
+            ExactSourceInventory::from_polygonal_union(&[&shapes[0], &line])
+                .unwrap()
+                .is_none()
+        );
+    }
 
     fn seg(x0: f64, y0: f64, x1: f64, y1: f64) -> Segment {
         Segment {
