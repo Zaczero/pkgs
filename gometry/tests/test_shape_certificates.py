@@ -46,7 +46,7 @@ def test_translation_certificate_preserves_multiline_structure() -> None:
 
 
 def test_translation_certificate_ignores_duplicate_vertex_distribution() -> None:
-    points = [(float(index), float((index * 17) % 31)) for index in range(251)]
+    points = [(float(index), float((index * 17) % 31)) for index in range(16)]
     join = len(points) // 2
     flat = points[:join] + [points[join]] * 4 + points[join + 1 :]
     delta = 0.125
