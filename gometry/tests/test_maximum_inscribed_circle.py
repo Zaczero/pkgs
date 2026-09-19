@@ -163,3 +163,13 @@ def test_maximum_inscribed_circle_omitted_and_explicit_tolerances_are_certified(
     expected = 4.0 - 2.0 * math.sqrt(2.0)
     assert expected - 1e-3 <= explicit <= expected
     assert expected - 0.01 <= omitted <= expected
+
+
+def test_maximum_inscribed_circle_rejects_a_disk_below_the_coordinate_spacing() -> None:
+    # An inradius of about 2,000 where coordinates are spaced 256 apart has
+    # no representable contained 64-gon. Shrinking one ulp of the radius per
+    # retry once exhausted the generated-item budget before saying so.
+    base = 2.0**60
+    source = gm.Polygon([(base, base), (base + 2.0**20, base), (base, base + 2.0**12)])
+    with pytest.raises(gm.GeometryError, match='contained geometry'):
+        source.maximum_inscribed_circle()

@@ -634,9 +634,23 @@ fn tangent_circle_polygon(
 /// the existing operation-wide generated-work budget; the requested segment
 /// count never changes. The loop ends only when the next radius is
 /// non-finite or that declared resource bound is reached.
-/// Retries that inflate a circumscribed circle one ulp at a time before the
-/// inflation starts doubling.
-const ULP_INFLATION_RETRIES: u32 = 64;
+/// Retries that move a realized circle's radius one ulp at a time before the
+/// adjustment starts doubling.
+const ULP_REALIZATION_RETRIES: u32 = 64;
+
+/// The next radius to try when realizing a circle of `exact` radius as a ring
+/// failed at `candidate`: outward for a circumscribed ring, inward for an
+/// inscribed one. The first retries move one ulp; after that the offset from
+/// `exact` doubles, so a circle far below the coordinate spacing at its center
+/// reaches a representable ring in logarithmically many retries.
+fn next_realization_radius(exact: f64, candidate: f64, retries: u32, outward: bool) -> f64 {
+    match (outward, retries < ULP_REALIZATION_RETRIES) {
+        (true, true) => candidate.next_up(),
+        (false, true) => candidate.next_down(),
+        (true, false) => (exact + 2.0 * (candidate - exact)).max(candidate.next_up()),
+        (false, false) => (exact - 2.0 * (exact - candidate)).min(candidate.next_down()),
+    }
+}
 
 pub(crate) fn emit_minimum_bounding_circle(
     disk: &CertifiedDisk,
@@ -650,10 +664,7 @@ pub(crate) fn emit_minimum_bounding_circle(
     }
     // `tangent_circle_polygon` commits one complete fixed-size ring before
     // allocating it, and the operation's generated-item budget charges each
-    // retry. The first retries inflate the radius one ulp at a time; after
-    // that the inflation doubles, so a disk far below the coordinate spacing
-    // at its center reaches a representable ring in logarithmically many
-    // retries instead of exhausting the budget one ulp at a time.
+    // retry.
     let mut candidate_radius = radius;
     let mut retries = 0_u32;
     loop {
@@ -670,11 +681,7 @@ pub(crate) fn emit_minimum_bounding_circle(
             Err(_) => {},
         }
         retries += 1;
-        let next = if retries < ULP_INFLATION_RETRIES {
-            candidate_radius.next_up()
-        } else {
-            (radius + 2.0 * (candidate_radius - radius)).max(candidate_radius.next_up())
-        };
+        let next = next_realization_radius(radius, candidate_radius, retries, true);
         if !next.is_finite() {
             break;
         }
@@ -1232,6 +1239,7 @@ pub(crate) fn build_inscribed_circle(
         ));
     }
     let mut candidate_radius = radius;
+    let mut retries = 0_u32;
     loop {
         budget.add(vertices)?;
         let attempt = build_inscribed_circle_once(
@@ -1255,7 +1263,8 @@ pub(crate) fn build_inscribed_circle(
                         )
                     ) =>
             {
-                let next = candidate_radius.next_down();
+                retries += 1;
+                let next = next_realization_radius(radius, candidate_radius, retries, false);
                 if !(next > 0.0 && next.is_finite()) {
                     return Err(error);
                 }
