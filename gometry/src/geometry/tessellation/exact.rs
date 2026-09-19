@@ -734,13 +734,6 @@ impl ExactDyadic {
         Ok(result)
     }
 
-    fn unsigned_bit_length(limbs: &[u64]) -> usize {
-        let Some(&high) = limbs.last() else {
-            return 0;
-        };
-        limbs.len().saturating_sub(1) * 64 + (64 - high.leading_zeros() as usize)
-    }
-
     fn compare_unsigned(left: &[u64], right: &[u64]) -> Ordering {
         let left_len = left.len();
         let right_len = right.len();
@@ -757,89 +750,114 @@ impl ExactDyadic {
         Ordering::Equal
     }
 
-    fn subtract_unsigned_in_place(left: &mut [u64], right: &[u64]) {
-        let mut borrow = false;
-        for (index, value) in left.iter_mut().enumerate() {
-            let (difference, first_borrow) =
-                value.overflowing_sub(right.get(index).copied().unwrap_or(0));
-            let (difference, second_borrow) = difference.overflowing_sub(u64::from(borrow));
-            *value = difference;
-            borrow = first_borrow || second_borrow;
-        }
-        debug_assert!(!borrow);
-    }
-
-    fn shifted_unsigned(limbs: &[u64], shift: usize) -> Result<Vec<u64>> {
-        if limbs.is_empty() {
-            return Ok(Vec::new());
-        }
-        let words = shift / 64;
-        let bits = shift % 64;
-        let length = limbs
-            .len()
-            .checked_add(words)
-            .and_then(|length| length.checked_add(usize::from(bits != 0)))
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut shifted = Vec::new();
-        try_reserve_vec(&mut shifted, length)?;
-        shifted.resize(length, 0);
-        for (index, &limb) in limbs.iter().enumerate() {
-            let target = index + words;
-            shifted[target] |= limb << bits;
-            if bits != 0 {
-                shifted[target + 1] |= limb >> (64 - bits);
-            }
-        }
-        while shifted.last() == Some(&0) {
-            shifted.pop();
-        }
-        Ok(shifted)
-    }
-
-    /// Divide two non-negative integers represented by little-endian limbs.
-    ///
-    /// The quotient is only needed for exact rational reduction, so this uses
-    /// shift/subtract long division instead of introducing a second arbitrary
-    /// precision dependency. Every result vector is fallibly reserved.
+    /// Quotient and remainder of trimmed magnitudes, one 64-bit digit at a
+    /// time (Knuth, Algorithm D): the divisor is normalized so its top bit is
+    /// set, which keeps every estimated digit at most two above the true one.
     fn try_div_rem_unsigned(dividend: &[u64], divisor: &[u64]) -> Result<(Vec<u64>, Vec<u64>)> {
-        debug_assert!(!divisor.is_empty());
-        if dividend.is_empty() {
-            return Ok((Vec::new(), Vec::new()));
+        debug_assert!(divisor.last().is_some_and(|&high| high != 0));
+        let copy = |limbs: &[u64]| -> Result<Vec<u64>> {
+            let mut out = Vec::new();
+            try_reserve_vec(&mut out, limbs.len())?;
+            out.extend_from_slice(limbs);
+            Ok(out)
+        };
+        if Self::compare_unsigned(dividend, divisor) == Ordering::Less {
+            return Ok((Vec::new(), copy(dividend)?));
         }
-        let dividend_bits = Self::unsigned_bit_length(dividend);
-        let divisor_bits = Self::unsigned_bit_length(divisor);
-        if dividend_bits < divisor_bits {
-            let mut remainder = Vec::new();
-            try_reserve_vec(&mut remainder, dividend.len())?;
-            remainder.extend_from_slice(dividend);
-            return Ok((Vec::new(), remainder));
+        let trim = |limbs: &mut Vec<u64>| {
+            while limbs.last() == Some(&0) {
+                limbs.pop();
+            }
+        };
+        if let [digit] = *divisor {
+            let digit = u128::from(digit);
+            let mut quotient = copy(dividend)?;
+            let mut remainder = 0_u128;
+            for limb in quotient.iter_mut().rev() {
+                let value = (remainder << 64) | u128::from(*limb);
+                *limb = (value / digit) as u64;
+                remainder = value % digit;
+            }
+            trim(&mut quotient);
+            let remainder = if remainder == 0 {
+                Vec::new()
+            } else {
+                copy(&[remainder as u64])?
+            };
+            return Ok((quotient, remainder));
         }
-        let quotient_bits = dividend_bits - divisor_bits + 1;
-        let quotient_len = quotient_bits.div_ceil(64);
+        let n = divisor.len();
+        let m = dividend.len();
+        let shift = divisor[n - 1].leading_zeros();
+        let shifted = |limbs: &[u64], extra: usize| -> Result<Vec<u64>> {
+            let mut out = Vec::new();
+            try_reserve_vec(&mut out, limbs.len() + extra)?;
+            let mut carry = 0_u64;
+            for &limb in limbs {
+                out.push((limb << shift) | carry);
+                carry = if shift == 0 { 0 } else { limb >> (64 - shift) };
+            }
+            if extra > 0 {
+                out.push(carry);
+            }
+            Ok(out)
+        };
+        let v = shifted(divisor, 0)?;
+        let mut u = shifted(dividend, 1)?;
         let mut quotient = Vec::new();
-        try_reserve_vec(&mut quotient, quotient_len)?;
-        quotient.resize(quotient_len, 0);
-        let mut remainder = Vec::new();
-        try_reserve_vec(&mut remainder, dividend.len())?;
-        remainder.extend_from_slice(dividend);
-        while Self::compare_unsigned(&remainder, divisor) != Ordering::Less {
-            let remainder_bits = Self::unsigned_bit_length(&remainder);
-            let mut shift = remainder_bits - divisor_bits;
-            let mut shifted = Self::shifted_unsigned(divisor, shift)?;
-            if Self::compare_unsigned(&remainder, &shifted) == Ordering::Less {
-                shift -= 1;
-                shifted = Self::shifted_unsigned(divisor, shift)?;
+        try_reserve_vec(&mut quotient, m - n + 1)?;
+        quotient.resize(m - n + 1, 0);
+        let (top, next) = (u128::from(v[n - 1]), u128::from(v[n - 2]));
+        for j in (0..=m - n).rev() {
+            let numerator = (u128::from(u[j + n]) << 64) | u128::from(u[j + n - 1]);
+            let mut estimate = numerator / top;
+            let mut rest = numerator % top;
+            while estimate > u128::from(u64::MAX)
+                || estimate * next > ((rest << 64) | u128::from(u[j + n - 2]))
+            {
+                estimate -= 1;
+                rest += top;
+                if rest > u128::from(u64::MAX) {
+                    break;
+                }
             }
-            Self::subtract_unsigned_in_place(&mut remainder, &shifted);
-            while remainder.last() == Some(&0) {
-                remainder.pop();
+            // Multiply and subtract; a negative result means the estimate was
+            // one too large, and one addback of the divisor corrects it.
+            let mut borrow = 0_i128;
+            for i in 0..n {
+                let product = estimate * u128::from(v[i]);
+                let difference = i128::from(u[i + j]) - borrow - i128::from(product as u64);
+                u[i + j] = difference as u64;
+                borrow = (product >> 64) as i128 - (difference >> 64);
             }
-            quotient[shift / 64] |= 1_u64 << (shift % 64);
+            let difference = i128::from(u[j + n]) - borrow;
+            u[j + n] = difference as u64;
+            quotient[j] = estimate as u64;
+            if difference < 0 {
+                quotient[j] -= 1;
+                let mut carry = 0_u128;
+                for i in 0..n {
+                    let sum = u128::from(u[i + j]) + u128::from(v[i]) + carry;
+                    u[i + j] = sum as u64;
+                    carry = sum >> 64;
+                }
+                u[j + n] = u[j + n].wrapping_add(carry as u64);
+            }
         }
-        while quotient.last() == Some(&0) {
-            quotient.pop();
+        trim(&mut quotient);
+        u.truncate(n);
+        if shift != 0 {
+            for i in 0..n {
+                let high = if i + 1 < n {
+                    u[i + 1] << (64 - shift)
+                } else {
+                    0
+                };
+                u[i] = (u[i] >> shift) | high;
+            }
         }
-        Ok((quotient, remainder))
+        trim(&mut u);
+        Ok((quotient, u))
     }
 
     /// Greatest common divisor in the exact dyadic domain.
@@ -3933,6 +3951,56 @@ mod tests {
             .product(&difference(c.y, a.y))
             .subtract(difference(b.y, a.y).product(&difference(c.x, a.x)))
             .sign()
+    }
+
+    #[test]
+    fn long_division_reconstructs_the_dividend() {
+        const TOP: u64 = 1 << 63;
+        let value = |limbs: &[u64]| {
+            let mut value = ExactDyadic {
+                negative: false,
+                limbs: CompactLimbs::from_vec(limbs.to_vec()),
+                exponent: 0,
+            };
+            value.trim();
+            value
+        };
+        let cases: [(&[u64], &[u64]); 9] = [
+            // One-digit divisor.
+            (&[u64::MAX, u64::MAX, 7], &[3]),
+            // Divisor already normalized: no shift.
+            (&[5, 0, TOP | 9], &[1, TOP]),
+            // The first digit estimate overshoots; one addback corrects it.
+            (&[0, 0, TOP, TOP - 1], &[1, 0, TOP]),
+            // An estimate two too large, which only the second-digit test fixes.
+            (&[u64::MAX - 1, 0, TOP - 1, 1], &[u64::MAX, TOP + 1]),
+            // Estimates at the digit boundary.
+            (&[u64::MAX, u64::MAX, u64::MAX, u64::MAX], &[u64::MAX, 1]),
+            (&[0, 0, 0, 1], &[1, 1]),
+            (&[3, 0, 0, 0, 0x1234], &[u64::MAX, u64::MAX, 0x10]),
+            // Equal magnitudes and a dividend below the divisor.
+            (&[9, 8, 7], &[9, 8, 7]),
+            (&[1, 2], &[1, 2, 3]),
+        ];
+        for (dividend, divisor) in cases {
+            let (quotient, remainder) =
+                ExactDyadic::try_div_rem_unsigned(dividend, divisor).unwrap();
+            assert_eq!(
+                ExactDyadic::compare_unsigned(&remainder, divisor),
+                Ordering::Less,
+                "{dividend:?} / {divisor:?}"
+            );
+            let rebuilt = value(&quotient)
+                .try_product(&value(divisor))
+                .unwrap()
+                .try_add(value(&remainder))
+                .unwrap();
+            assert_eq!(
+                rebuilt.cmp(&value(dividend)),
+                Ordering::Equal,
+                "{dividend:?} / {divisor:?}"
+            );
+        }
     }
 
     #[test]
