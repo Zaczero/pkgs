@@ -467,13 +467,74 @@ impl UnreducedRatio {
             .cmp(&other.numerator.try_product(&self.denominator)?))
     }
 
-    fn outward_upper(&self) -> Result<f64> {
-        exact::outward_ratio_bounds(&self.numerator, &self.denominator).map(|(_, upper)| upper)
-    }
-
     #[cfg(test)]
     fn try_cmp_rational(&self, other: &Rational) -> Result<Ordering> {
         Self::from_rational(other).and_then(|other| self.try_cmp(&other))
+    }
+}
+
+/// Rigorous bounds on a squared distance, with `upper` also rounded upward
+/// to binary64 for pruning.
+struct SquaredBounds {
+    lower: Rational,
+    upper: Rational,
+    upper_f64: f64,
+}
+
+impl SquaredBounds {
+    fn exact(value: Rational) -> Result<Self> {
+        let upper_f64 = nonnegative_upper_bound(&value)?;
+        Ok(Self {
+            lower: value.try_clone()?,
+            upper: value,
+            upper_f64,
+        })
+    }
+
+    fn enclosing(lower: f64, upper: f64) -> Self {
+        Self {
+            lower: Rational::from_f64(lower),
+            upper: Rational::from_f64(upper),
+            upper_f64: upper,
+        }
+    }
+
+    /// Bounds on the smaller of two squared distances.
+    fn min(self, other: Self) -> Result<Self> {
+        let lower = if other.lower.try_cmp(&self.lower)? == Ordering::Less {
+            other.lower
+        } else {
+            self.lower
+        };
+        let (upper, upper_f64) = if other.upper.try_cmp(&self.upper)? == Ordering::Less {
+            (other.upper, other.upper_f64)
+        } else {
+            (self.upper, self.upper_f64)
+        };
+        Ok(Self {
+            lower,
+            upper,
+            upper_f64,
+        })
+    }
+}
+
+/// How wide a binary64 enclosure of a squared source distance may be before
+/// its evaluation falls back to exact arithmetic: a fraction of the answer's
+/// error budget, relative or absolute, so interval bounds never keep the
+/// certificate from closing.
+#[derive(Clone, Copy)]
+struct Tightness {
+    relative: f64,
+    absolute: f64,
+}
+
+impl Tightness {
+    /// Squared-distance widths map to distance errors through `2 d`, so an
+    /// absolute distance allowance scales with the root of the upper bound.
+    fn admits(self, lower: f64, upper: f64) -> bool {
+        let width = upper - lower;
+        width <= self.relative * upper || width <= self.absolute * upper.sqrt()
     }
 }
 
@@ -612,84 +673,74 @@ impl SupportIndex {
             })
     }
 
-    fn nearest(&self, support: &PreparedSupport, point: &ExactPoint) -> Result<UnreducedRatio> {
+    /// Bounds on the squared distance from `point` to the nearest primitive.
+    /// With `tightness`, primitives may be bounded in double-double
+    /// intervals; without it every evaluation is exact and both bounds equal
+    /// the exact distance.
+    fn nearest(
+        &self,
+        support: &PreparedSupport,
+        point: &ExactPoint,
+        tightness: Option<Tightness>,
+    ) -> Result<SquaredBounds> {
         let Some(root) = self.root else {
             return Err(crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
             ));
         };
-        let mut best = None;
         let point_bounds = FloatBox::from_point(point)?;
-        let mut best_upper = f64::INFINITY;
-        self.nearest_node(
-            root,
-            support,
-            point,
-            point_bounds,
-            &mut best,
-            &mut best_upper,
-        )?;
+        let mut best: Option<SquaredBounds> = None;
+        let mut stack = Vec::new();
+        try_push_vec(&mut stack, root)?;
+        while let Some(node_index) = stack.pop() {
+            let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
+            let node = self.nodes[node_index];
+            if box_distance_lower(point_bounds, node.bounds) > best_upper {
+                continue;
+            }
+            if let (Some(left), Some(right)) = (node.left, node.right) {
+                // Pop the nearer child first.
+                let left_lower = box_distance_lower(point_bounds, self.nodes[left].bounds);
+                let right_lower = box_distance_lower(point_bounds, self.nodes[right].bounds);
+                let (first, second) = if left_lower <= right_lower {
+                    (left, right)
+                } else {
+                    (right, left)
+                };
+                try_push_vec(&mut stack, second)?;
+                try_push_vec(&mut stack, first)?;
+                continue;
+            }
+            for order_index in &self.order[node.start..node.end] {
+                let item = self.items[*order_index];
+                let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
+                if box_distance_lower(point_bounds, item.bounds) > best_upper {
+                    continue;
+                }
+                if line_filter_enabled()
+                    && let PrimitiveId::Span(index) = item.primitive
+                    && supporting_line_lower_squared(point_bounds, &support.spans[index])
+                        > best_upper
+                {
+                    continue;
+                }
+                let bounds = support.primitive_squared_bounds(
+                    item.primitive,
+                    point,
+                    point_bounds,
+                    tightness,
+                )?;
+                best = Some(match best {
+                    None => bounds,
+                    Some(current) => current.min(bounds)?,
+                });
+            }
+        }
         best.ok_or_else(|| {
             crate::geometry::GeometryErrorKind::message(
                 "hausdorff_distance requires non-empty support",
             )
         })
-    }
-
-    fn nearest_node(
-        &self,
-        node_index: usize,
-        support: &PreparedSupport,
-        point: &ExactPoint,
-        point_bounds: FloatBox,
-
-        best: &mut Option<UnreducedRatio>,
-        best_upper: &mut f64,
-    ) -> Result<()> {
-        let node = self.nodes[node_index];
-        if box_distance_lower(point_bounds, node.bounds) > *best_upper {
-            return Ok(());
-        }
-        if let (Some(left), Some(right)) = (node.left, node.right) {
-            let (first, second) = {
-                let left_lower = box_distance_lower(point_bounds, self.nodes[left].bounds);
-                let right_lower = box_distance_lower(point_bounds, self.nodes[right].bounds);
-                if left_lower <= right_lower {
-                    (left, right)
-                } else {
-                    (right, left)
-                }
-            };
-            self.nearest_node(first, support, point, point_bounds, best, best_upper)?;
-            self.nearest_node(second, support, point, point_bounds, best, best_upper)?;
-            return Ok(());
-        }
-
-        for order_index in &self.order[node.start..node.end] {
-            let item = self.items[*order_index];
-
-            if box_distance_lower(point_bounds, item.bounds) > *best_upper {
-                continue;
-            }
-
-            if line_filter_enabled()
-                && let PrimitiveId::Span(index) = item.primitive
-                && supporting_line_lower_squared(point_bounds, &support.spans[index]) > *best_upper
-            {
-                continue;
-            }
-
-            let distance = support.primitive_distance_squared(item.primitive, point)?;
-            let replace = match best {
-                None => true,
-                Some(current) => distance.try_cmp(current)? == Ordering::Less,
-            };
-            if replace {
-                *best_upper = nonnegative_pair_upper_bound(&distance)?;
-                *best = Some(distance);
-            }
-        }
-        Ok(())
     }
 
     /// The primitives nearest `point`, ranked best-first by binary64
@@ -1261,7 +1312,7 @@ impl PreparedSupport {
         if self.index.root.is_none() {
             return Ok(false);
         }
-        Ok(self.index.nearest(self, point)?.is_zero())
+        Ok(self.index.nearest(self, point, None)?.lower.is_zero())
     }
 
     pub(in crate::geometry) fn candidate_is_contained(
@@ -1386,12 +1437,29 @@ impl PreparedSupport {
 
     fn distance_squared(&self, point: &ExactPoint) -> Result<Rational> {
         if self.contains_area(point)? {
-            Ok(Rational::zero())
-        } else {
-            self.index
-                .nearest(self, point)
-                .and_then(|distance| distance.to_rational())
+            return Ok(Rational::zero());
         }
+        Ok(self.index.nearest(self, point, None)?.lower)
+    }
+
+    fn primitive_squared_bounds(
+        &self,
+        primitive: PrimitiveId,
+        point: &ExactPoint,
+        point_bounds: FloatBox,
+        tightness: Option<Tightness>,
+    ) -> Result<SquaredBounds> {
+        if let (Some(tightness), PrimitiveId::Span(index)) = (tightness, primitive)
+            && let Some((lower, upper)) =
+                point_span_squared_bounds(point_bounds, &self.spans[index])
+            && tightness.admits(lower, upper)
+        {
+            return Ok(SquaredBounds::enclosing(lower, upper));
+        }
+        SquaredBounds::exact(
+            self.primitive_distance_squared(primitive, point)?
+                .to_rational()?,
+        )
     }
 }
 
@@ -1531,6 +1599,78 @@ fn point_span_distance_squared(point: &ExactPoint, span: &SupportSpan) -> Result
     dx.try_square()?.try_add(&dy.try_square()?)
 }
 
+/// Double-double bounds on the squared distance from any point of
+/// `point_bounds` to a span covering its whole source segment. The dot and
+/// cross products with the segment direction are affine in the point, so the
+/// box corners bound them; a box straddling the segment's end normals, a
+/// partial span, or a non-finite stage declines to the exact evaluation.
+fn point_span_squared_bounds(point_bounds: FloatBox, span: &SupportSpan) -> Option<(f64, f64)> {
+    if !(span.t_lo.is_zero() && span.t_hi.is_one()) {
+        return None;
+    }
+    let (start, end) = (span.source.start, span.source.end);
+    let dx = DdInterval::difference(end.x, start.x)?;
+    let dy = DdInterval::difference(end.y, start.y)?;
+    let (norm_lower, norm_upper) = dx.square()?.add(dy.square()?)?.outward_bounds();
+    if !(norm_lower > 0.0 && norm_upper.is_finite()) {
+        return None;
+    }
+    let (mut dot_lower, mut dot_upper) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut cross_lower, mut cross_upper) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (x, y) in point_bounds.corners() {
+        let px = DdInterval::difference(x, start.x)?;
+        let py = DdInterval::difference(y, start.y)?;
+        let (low, high) = dx.mul(px)?.add(dy.mul(py)?)?.outward_bounds();
+        dot_lower = dot_lower.min(low);
+        dot_upper = dot_upper.max(high);
+        let (low, high) = dx.mul(py)?.sub(dy.mul(px)?)?.outward_bounds();
+        cross_lower = cross_lower.min(low);
+        cross_upper = cross_upper.max(high);
+    }
+    if !(dot_lower.is_finite() && dot_upper.is_finite()) {
+        return None;
+    }
+    let endpoint = |target: XY| -> Option<(f64, f64)> {
+        let mut upper: f64 = 0.0;
+        for (x, y) in point_bounds.corners() {
+            let px = DdInterval::difference(x, target.x)?;
+            let py = DdInterval::difference(y, target.y)?;
+            upper = upper.max(px.square()?.add(py.square()?)?.outward_bounds().1);
+        }
+        let target = FloatBox {
+            min_x: target.x,
+            max_x: target.x,
+            min_y: target.y,
+            max_y: target.y,
+        };
+        upper
+            .is_finite()
+            .then(|| (box_distance_lower(point_bounds, target), upper))
+    };
+    if dot_upper <= 0.0 {
+        return endpoint(start);
+    }
+    if dot_lower >= norm_upper {
+        return endpoint(end);
+    }
+    if !(dot_lower >= 0.0 && dot_upper <= norm_lower && cross_lower.is_finite()) {
+        return None;
+    }
+    let cross_squared_lower = if cross_lower > 0.0 {
+        (cross_lower * cross_lower).next_down()
+    } else if cross_upper < 0.0 {
+        (cross_upper * cross_upper).next_down()
+    } else {
+        0.0
+    };
+    let cross_squared_upper = (cross_lower * cross_lower)
+        .max(cross_upper * cross_upper)
+        .next_up();
+    let lower = (cross_squared_lower / norm_upper).next_down().max(0.0);
+    let upper = (cross_squared_upper / norm_lower).next_up();
+    upper.is_finite().then_some((lower, upper))
+}
+
 /// Return a finite lower bound for the distance from an enclosed point to a
 /// span's infinite carrier. The cross product is affine in the point, so its
 /// extrema over the point enclosure occur at the four corners. Every
@@ -1613,19 +1753,6 @@ fn nonnegative_upper_bound(value: &Rational) -> Result<f64> {
         Ok(f64::INFINITY)
     } else {
         Ok(value.outward_bounds()?.1)
-    }
-}
-
-fn nonnegative_pair_upper_bound(value: &UnreducedRatio) -> Result<f64> {
-    let maximum = ExactDyadic::from_f64(f64::MAX);
-    if value
-        .numerator
-        .cmp(&maximum.try_product(&value.denominator)?)
-        == Ordering::Greater
-    {
-        Ok(f64::INFINITY)
-    } else {
-        value.outward_upper()
     }
 }
 
@@ -2754,6 +2881,33 @@ impl<'a> SearchContext<'a> {
     fn scaled_squared(&self, squared: &Rational) -> Result<Rational> {
         squared.try_product(&self.accuracy.scale_squared)
     }
+
+    /// A thirty-second of the answer's error budget, in source units, bounds
+    /// how loosely a squared distance may be enclosed. A budget that does not
+    /// round to a finite binary64 allows no slack, so evaluation stays exact.
+    fn tightness(&self) -> Tightness {
+        const SHARE: f64 = 1.0 / 32.0;
+        let finite = |value: Result<f64>| value.ok().filter(|value| value.is_finite());
+        let absolute = |budget: Result<f64>| Tightness {
+            relative: 0.0,
+            absolute: finite(budget).unwrap_or(0.0) * SHARE,
+        };
+        if self.exact_upper {
+            return absolute(
+                self.output_tolerance
+                    .try_quotient(&self.output_scale)
+                    .and_then(|budget| budget.round()),
+            );
+        }
+        match &self.accuracy.error {
+            ErrorBound::Relative(relative) => Tightness {
+                relative: finite(relative.round()).unwrap_or(0.0) * SHARE,
+                absolute: 0.0,
+            },
+            ErrorBound::Absolute(error) => absolute(Ok(error.round().unwrap_or(0.0)
+                / finite(self.accuracy.scale_squared.round_sqrt()).unwrap_or(f64::INFINITY))),
+        }
+    }
 }
 
 fn sqrt_upper(squared: &Rational, context: &SearchContext<'_>) -> Result<SqrtInterval> {
@@ -2798,15 +2952,17 @@ fn fixed_site_squared(
     source: &PreparedSupport,
     target: &PreparedSupport,
     nominated: &[PrimitiveId],
+    tightness: Tightness,
 ) -> Result<Option<Rational>> {
     let corners = patch.corners(source)?;
     let mut best = None;
     for &primitive in nominated {
         let mut site_upper = None;
         for corner in &corners {
+            let bounds = FloatBox::from_point(corner)?;
             let squared = target
-                .primitive_distance_squared(primitive, corner)?
-                .to_rational()?;
+                .primitive_squared_bounds(primitive, corner, bounds, Some(tightness))?
+                .upper;
             max_rational(&mut site_upper, squared)?;
         }
         min_rational(&mut best, site_upper.expect("fixed site has corners"))?;
@@ -2989,9 +3145,9 @@ fn patch_upper(
     let (center, radius_squared) = patch.center_and_radius_squared(source)?;
     let radius_squared = context.scaled_squared(&radius_squared)?;
     let radius_interval = sqrt_upper(&radius_squared, context)?;
-    let boundary_squared = target.index.nearest(target, &center)?.to_rational()?;
-    let boundary_squared = context.scaled_squared(&boundary_squared)?;
-    let boundary_interval = sqrt_upper(&boundary_squared, context)?;
+    let boundary = target
+        .index
+        .nearest(target, &center, Some(context.tightness()))?;
     let mut best = if target.contains_area(&center)? {
         // The segment from the center to any patch point crosses the target
         // boundary no nearer than the center's depth, so the point is within
@@ -2999,7 +3155,8 @@ fn patch_upper(
         radius_interval
             .upper_rational()?
             .map_or(Ok(None), |radius| {
-                let depth = Rational::from_dyadic(boundary_interval.lower.try_clone()?);
+                let depth = sqrt_upper(&context.scaled_squared(&boundary.lower)?, context)?;
+                let depth = Rational::from_dyadic(depth.lower);
                 if radius.try_cmp(&depth)? == Ordering::Greater {
                     radius.try_subtract(&depth).map(Some)
                 } else {
@@ -3007,11 +3164,12 @@ fn patch_upper(
                 }
             })?
     } else {
-        sum_upper(&boundary_interval, &radius_interval)?
+        let boundary = sqrt_upper(&context.scaled_squared(&boundary.upper)?, context)?;
+        sum_upper(&boundary, &radius_interval)?
     };
 
     let nominated = target.index.nominate(target, &center)?;
-    let site_squared = fixed_site_squared(patch, source, target, &nominated)?;
+    let site_squared = fixed_site_squared(patch, source, target, &nominated, context.tightness())?;
     if let Some(site_squared) = &site_squared {
         let squared = context.scaled_squared(site_squared)?;
         let fixed = sqrt_upper(&squared, context)?.upper_rational()?;
@@ -4570,6 +4728,90 @@ mod tests {
         );
         assert_eq!(without_filter_evaluations, 2);
         assert_eq!(with_filter_evaluations, 1);
+    }
+
+    #[test]
+    fn interval_span_bounds_enclose_the_exact_distance_over_the_point_box() {
+        // Every regime: beyond either end, over the interior, straddling an
+        // end normal, near-contact, and wide point boxes. A bound that fails
+        // to enclose would let the solver prune the true maximum.
+        let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+        let mut next = move || {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 11) as f64 / (1_u64 << 53) as f64 - 0.5
+        };
+        let mut checked = 0;
+        for scale in [1e-6, 1.0, 1e6] {
+            for _ in 0..2_000 {
+                let (ax, ay, bx, by) = (
+                    next() * scale,
+                    next() * scale,
+                    next() * scale,
+                    next() * scale,
+                );
+                let support = PreparedSupport::from_line_columns(&[ax, bx], &[ay, by]).unwrap();
+                let (px, py) = (next() * 3.0 * scale, next() * 3.0 * scale);
+                let width = [0.0, 1e-12 * scale, 1e-3 * scale][checked % 3];
+                let bounds = FloatBox {
+                    min_x: px,
+                    max_x: px + width,
+                    min_y: py,
+                    max_y: py + width,
+                };
+                let Some((lower, upper)) = point_span_squared_bounds(bounds, &support.spans[0])
+                else {
+                    continue;
+                };
+                for (x, y) in bounds.corners() {
+                    let exact = support
+                        .primitive_distance_squared(
+                            PrimitiveId::Span(0),
+                            &ExactPoint::from_xy(XY::new(x, y)),
+                        )
+                        .unwrap()
+                        .to_rational()
+                        .unwrap();
+                    assert_ne!(
+                        Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+                        Ordering::Greater
+                    );
+                    assert_ne!(
+                        Rational::from_f64(upper).try_cmp(&exact).unwrap(),
+                        Ordering::Less
+                    );
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked > 5_000, "{checked}");
+
+        // An exactly representable cross product whose square is not: round
+        // to nearest lands below the exact squared distance, so only the
+        // outward step keeps the upper bound above it, over the interior
+        // and past an end.
+        let support = PreparedSupport::from_line_columns(&[0.0, 1.0], &[0.0, 0.0]).unwrap();
+        let offset = 1.0 + f64::EPSILON;
+        for (x, y) in [(0.5, offset), (-offset, offset)] {
+            let point = ExactPoint::from_xy(XY::new(x, y));
+            let (lower, upper) =
+                point_span_squared_bounds(FloatBox::from_point(&point).unwrap(), &support.spans[0])
+                    .expect("a decided regime");
+            let exact = support
+                .primitive_distance_squared(PrimitiveId::Span(0), &point)
+                .unwrap()
+                .to_rational()
+                .unwrap();
+            assert_ne!(
+                Rational::from_f64(lower).try_cmp(&exact).unwrap(),
+                Ordering::Greater
+            );
+            assert_ne!(
+                Rational::from_f64(upper).try_cmp(&exact).unwrap(),
+                Ordering::Less
+            );
+        }
     }
 
     #[test]

@@ -1125,6 +1125,10 @@ impl ExactRational {
         self.numerator.is_zero()
     }
 
+    pub(in crate::geometry) fn is_one(&self) -> bool {
+        self.numerator.is_one() && self.denominator.is_one()
+    }
+
     pub(in crate::geometry) fn sign(&self) -> ExactSign {
         self.numerator.sign()
     }
