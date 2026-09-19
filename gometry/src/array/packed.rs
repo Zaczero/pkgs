@@ -1,11 +1,11 @@
 use std::sync::Arc;
 
 use crate::array::{
-    ArrayRows, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn, ElementBounds,
-    Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow, LogicalRows,
-    OriginSpec, PackedColumns, PackedStorage, Point, PointColumnBuilder, PolygonLevel, Py, PyAny,
-    PyErr, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection, RowSelectionRef,
-    Shape, StorageLayout, TotalBoundsCache, ValidityMask,
+    ArrayRows, Bounds, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn,
+    ElementBounds, Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow,
+    LogicalRows, OriginSpec, PackedColumns, PackedStorage, Point, PointColumnBuilder, PolygonLevel,
+    Py, PyAny, PyErr, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection,
+    RowSelectionRef, Shape, StorageLayout, TotalBoundsCache, ValidityMask,
     packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
     row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
 };
@@ -191,27 +191,53 @@ impl PyGeometryArray {
     /// failed initialization leaves the cache unpublished for a later retry.
     pub(crate) fn try_element_bounds(&self) -> crate::error::Result<Option<ElementBounds>> {
         let bounds = self.bounds_cache.get_or_try_init(|| {
-            if self.is_compact_nullable() {
-                let mut values = Vec::new();
-                crate::boundary::try_reserve_vec(&mut values, self.len())?;
-                for row in self.row_operation().rows_with_missing(|| ()) {
-                    let value = match row {
-                        crate::array::ArrayRow::Missing { .. } => None,
-                        crate::array::ArrayRow::Present(row) => row.row().quick_bounds(),
-                    };
-                    crate::boundary::try_push_vec(&mut values, value)?;
-                }
-                Ok(Some(
-                    Arc::try_new(values).map_err(crate::error::Error::from)?,
-                ))
-            } else {
-                self.storage()
-                    .per_element_bounds()?
-                    .map(|values| Arc::try_new(values).map_err(crate::error::Error::from))
-                    .transpose()
-            }
+            let mut values = Vec::new();
+            crate::boundary::try_reserve_vec(&mut values, self.len())?;
+            let columnar = self.try_for_each_element_bounds(|bounds| {
+                crate::boundary::try_push_vec(&mut values, bounds)
+            })?;
+            columnar
+                .then(|| Arc::try_new(values).map_err(crate::error::Error::from))
+                .transpose()
         })?;
         Ok(bounds.clone())
+    }
+
+    /// Visit each logical row's planar bounds in row order, straight off the
+    /// packed columns: `None` for a missing or empty row. Mixed storage has
+    /// no columnar fold; it visits nothing and returns `false`.
+    pub(crate) fn try_for_each_element_bounds<E>(
+        &self,
+        mut visit: impl FnMut(Option<Bounds>) -> std::result::Result<(), E>,
+    ) -> std::result::Result<bool, E> {
+        let storage = self.storage();
+        let Some(mask) = self.missing() else {
+            return storage.try_for_each_element_bounds(visit);
+        };
+        let mut logical = 0;
+        if storage.len() == mask.len() {
+            // One stored window per logical row; the mask decides missing rows.
+            return storage.try_for_each_element_bounds(|bounds| {
+                let missing = mask.is_missing(logical);
+                logical += 1;
+                visit(bounds.filter(|_| !missing))
+            });
+        }
+        // Present-only payload: the mask places each stored row.
+        let columnar = storage.try_for_each_element_bounds(|bounds| {
+            while mask.is_missing(logical) {
+                visit(None)?;
+                logical += 1;
+            }
+            logical += 1;
+            visit(bounds)
+        })?;
+        if columnar {
+            for _ in logical..mask.len() {
+                visit(None)?;
+            }
+        }
+        Ok(columnar)
     }
 
     /// Whether a scalar geometry shares this array's frame (CRS + epoch) —

@@ -687,11 +687,11 @@ impl PySpatialIndex {
             // One frame check + one metric resolution for the whole array;
             // rows answer from their window bounds and append into one CSR
             // values column — no per-row PyGeometry, ShapeData, or second
-            // id-buffer copy. Packed element bounds are hoisted once so each
-            // row reuses the cache instead of re-scanning shells.
+            // id-buffer copy.
             let plan = PreparedIndexQuery::for_array(self, array, None, distance, unit)?;
-            // Pure envelope candidates (no distance, not geographic): never
-            // enter row prep / with_shape — bounds cache is the whole answer.
+            // Pure envelope candidates (no distance, not geographic): the
+            // element bounds are the whole answer, streamed straight off the
+            // packed columns; mixed storage takes the row loop below.
             let domain = self.domain()?;
             let envelope_only =
                 matches!(plan, PreparedIndexQuery::Candidates) && !domain.is_geographic();
@@ -700,6 +700,27 @@ impl PySpatialIndex {
             let row_count = array.len();
             let mut builder =
                 CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
+            if envelope_only {
+                // Missing and empty rows carry no bounds and get an empty group.
+                let mut append = |bounds: Option<crate::Bounds>| -> PyResult<()> {
+                    if let Some(bounds) = bounds {
+                        self.envelope_candidates_append(bounds, builder.values_mut())?;
+                    }
+                    let end = builder.len();
+                    builder.push_end(end).map_err(pyo3::PyErr::from)
+                };
+                let visited = match array.existing_element_bounds() {
+                    Some(bounds) => {
+                        bounds.iter().try_for_each(|&bounds| append(bounds))?;
+                        true
+                    },
+                    None => array.try_for_each_element_bounds(&mut append)?,
+                };
+                if visited {
+                    let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+                    return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
+                }
+            }
             let (predicate, distance, metric) = plan.candidate_parts();
             let rows = array.row_operation();
             for logical_row in rows.rows_with_missing(|| ()) {
@@ -709,11 +730,12 @@ impl PySpatialIndex {
                     let ids = builder.values_mut();
                     let seeded = rows.bounds_seed(row_index);
                     if envelope_only {
-                        let bounds = match seeded {
+                        if let Some(bounds) = match seeded {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),
                             crate::array::BoundsSeed::Value(bounds) => bounds,
-                        };
-                        self.candidate_ids_core_append(bounds, None, None, None, None, None, ids)?;
+                        } {
+                            self.envelope_candidates_append(bounds, ids)?;
+                        }
                     } else if geographic_envelopes {
                         if let Some(bounds) = match seeded {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),

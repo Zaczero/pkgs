@@ -1408,6 +1408,56 @@ def test_candidates_accepts_geometry_arrays() -> None:
     assert ids(idx.query(queries)) == [[0], []]
 
 
+_UNIT_BOXES = gm.GeometryArray([gm.box(2 * i, 0, 2 * i + 1, 1) for i in range(4)])
+
+
+def _query_rows(layout: str) -> tuple[gm.GeometryArray, list[list[int]]]:
+    # An empty row makes the array's storage mixed, so only 'mixed' has one.
+    if layout == 'lines':
+        return gm.GeometryArray([
+            gm.LineString([(0.5, 0.5), (4.5, 0.5)]),
+            None,
+            gm.LineString([(6.5, 2), (6.5, 3)]),
+        ]), [[0, 1, 2], [], []]
+    if layout == 'mixed':
+        return gm.GeometryArray([
+            gm.Point(2.5, 0.5),
+            gm.box(0, 0, 0.5, 0.5),
+            gm.LineString([(1.5, -1), (1.5, 2)]),
+            None,
+            gm.from_wkt('POLYGON EMPTY'),
+        ]), [[1], [0], [], [], []]
+    if layout == 'points':
+        points = gm.GeometryArray([gm.Point(0.5, 0.5), None, gm.Point(6, 1)])
+        return points, [[0], [], [3]]
+    if layout == 'dense':
+        return gm.GeometryArray([
+            gm.box(0.5, 0.5, 2.5, 0.8),
+            gm.box(10, 10, 11, 11),
+            gm.box(4.5, 0, 6.5, 1),
+        ]), [[0, 1], [], [2, 3]]
+    queries = gm.GeometryArray([
+        gm.box(0.5, 0.5, 2.5, 0.8),
+        None,
+        gm.box(10, 10, 11, 11),
+        gm.box(4.5, 0, 6.5, 1),
+    ])
+    expected = [[0, 1], [], [], [2, 3]]
+    if layout == 'reversed':
+        return queries[::-1], expected[::-1]
+    if layout == 'indexed':
+        gm.SpatialIndex(queries)
+    return queries, expected
+
+
+@pytest.mark.parametrize(
+    'layout', ['polygons', 'dense', 'lines', 'mixed', 'points', 'reversed', 'indexed']
+)
+def test_array_candidates_are_each_rows_envelope_matches(layout: str) -> None:
+    queries, expected = _query_rows(layout)
+    assert match_rows(gm.SpatialIndex(_UNIT_BOXES).candidates(queries)) == expected
+
+
 def test_self_join_refines_each_unordered_pair_once_with_exact_results() -> None:
     boxes = gm.GeometryArray([
         gm.box(0, 0, 2, 2),

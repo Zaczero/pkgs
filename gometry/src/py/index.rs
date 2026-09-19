@@ -590,9 +590,8 @@ impl IndexRows {
         self.live_count
     }
     fn len(&self) -> usize {
-        let len = self.packed.as_ref().map_or(0, |packed| packed.source.len()) + self.boxed.len();
-        debug_assert_eq!(len, self.live.len());
-        len
+        debug_assert_eq!(self.packed_len() + self.boxed.len(), self.live.len());
+        self.live.len()
     }
 
     fn packed_len(&self) -> usize {

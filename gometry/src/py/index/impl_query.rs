@@ -85,6 +85,19 @@ impl PySpatialIndex {
         Ok(())
     }
 
+    /// Append the handles whose envelopes meet `bounds`, ascending and unique
+    /// — the whole answer for a planar envelope query.
+    pub(crate) fn envelope_candidates_append(
+        &self,
+        bounds: Bounds,
+        out: &mut Vec<usize>,
+    ) -> PyResult<()> {
+        let start = out.len();
+        self.collect_intersecting(&bounds_envelope(bounds), out)?;
+        self.finish_candidates(out, start);
+        Ok(())
+    }
+
     /// Order the handles appended after `start` ascending, one per row — the
     /// form every candidate producer hands on. Retaining refinement keeps it.
     fn finish_candidates(&self, out: &mut Vec<usize>, start: usize) {
@@ -654,8 +667,7 @@ impl PySpatialIndex {
             self.collect_intersecting(&query_envelope, out)?;
             return Ok(());
         }
-        let query_envelope = bounds_envelope(query_bounds);
-        self.collect_intersecting(&query_envelope, out)?;
+        self.collect_intersecting(&bounds_envelope(query_bounds), out)?;
         Ok(())
     }
 

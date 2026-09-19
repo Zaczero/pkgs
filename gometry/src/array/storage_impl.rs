@@ -514,7 +514,13 @@ impl GeometryArrayStorage {
         }
     }
 
-    pub(crate) fn per_element_bounds(&self) -> Result<Option<Vec<Option<Bounds>>>> {
+    /// Visit each stored row's planar bounds in row order, straight off the
+    /// packed columns: `None` for an empty row or a non-finite point. Mixed
+    /// storage visits nothing and returns `false`.
+    pub(crate) fn try_for_each_element_bounds<E>(
+        &self,
+        mut visit: impl FnMut(Option<Bounds>) -> std::result::Result<(), E>,
+    ) -> std::result::Result<bool, E> {
         let window_bounds = |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| {
             row_bounds(column_window(xs, &range), column_window(ys, &range))
         };
@@ -526,14 +532,13 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
-                Self::try_map_polygon_rows(
-                    ring_offsets,
-                    polygon_offsets.as_slice(),
-                    row_map.as_deref(),
-                    true,
-                    |window| Ok(window.and_then(|vertices| window_bounds(xs, ys, vertices))),
-                )
-                .map(Some)
+                let map = row_map.as_deref();
+                for logical in 0..polygon_logical_len(polygon_offsets.as_slice(), map) {
+                    let rings = polygon_rings_range(polygon_offsets.as_slice(), map, logical);
+                    let vertices =
+                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+                    visit(window_bounds(xs, ys, vertices))?;
+                }
             },
             Self::Packed(PackedStorage::Lines {
                 coords,
@@ -541,37 +546,33 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
-                Self::try_map_line_rows(offsets.as_slice(), row_map.as_deref(), |window| {
-                    Ok(window_bounds(xs, ys, window))
-                })
-                .map(Some)
+                let map = row_map.as_deref();
+                for logical in 0..line_logical_len(offsets.as_slice(), map) {
+                    visit(window_bounds(
+                        xs,
+                        ys,
+                        map.csr_window(offsets.as_slice(), logical),
+                    ))?;
+                }
             },
-            // A point's envelope is the degenerate box at its coordinate —
-            // read straight off the packed columns (no per-row scan). This
+            // A point's envelope is the degenerate box at its coordinate. This
             // lets the metric broadcasts' box-separation refuter settle
             // far-apart pairs against a point array without materializing the
-            // other operand. Non-finite (empty point) → `None`, so the refuter
-            // defers it to the exact per-pair path.
+            // other operand; a non-finite (empty) point defers to the exact
+            // per-pair path.
             Self::Packed(PackedStorage::Points { coords, row_map }) => {
                 let map = row_map.as_deref();
-                let len = point_logical_len(coords, map);
-                let mut output = Vec::new();
-                crate::boundary::try_reserve_vec(&mut output, len)?;
-                for logical in 0..len {
+                for logical in 0..point_logical_len(coords, map) {
                     let point = coords.point_at(physical_row(map, logical));
-                    crate::boundary::try_push_vec(
-                        &mut output,
+                    visit(
                         (point.x.is_finite() && point.y.is_finite())
                             .then_some(Bounds::from_point(point)),
                     )?;
                 }
-                Ok(Some(output))
             },
-            // Mixed has no columnar fold; the unary bounds kernel walks
-            // shapes (and the prepared-row cache must not seed `None` as
-            // "known empty" when this returns None — see prepared_row).
-            Self::Mixed(_) => Ok(None),
+            Self::Mixed(_) => return Ok(false),
         }
+        Ok(true)
     }
 
     pub fn iter_shapes(&self) -> ShapesIter<'_> {
