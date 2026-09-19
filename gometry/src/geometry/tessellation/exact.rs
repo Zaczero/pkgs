@@ -610,6 +610,29 @@ impl ExactDyadic {
         Self::try_combine_refs(left, right, false)
     }
 
+    /// A normalized value from a `u128` magnitude: trailing zero bits move
+    /// into the exponent, leaving the odd lowest limb every value carries.
+    fn from_u128(negative: bool, magnitude: u128, exponent: i64) -> Self {
+        if magnitude == 0 {
+            return Self::zero();
+        }
+        let zeros = magnitude.trailing_zeros();
+        let magnitude = magnitude >> zeros;
+        let (low, high) = (magnitude as u64, (magnitude >> 64) as u64);
+        Self {
+            negative,
+            limbs: if high == 0 {
+                CompactLimbs::single(low)
+            } else {
+                CompactLimbs::Inline {
+                    limbs: [low, high],
+                    len: 2,
+                }
+            },
+            exponent: exponent + i64::from(zeros),
+        }
+    }
+
     fn try_combine_refs(left: &Self, right: &Self, negate_right: bool) -> Result<Self> {
         debug_assert!(!left.is_zero() && !right.is_zero());
         let exponent = left.exponent.min(right.exponent);
@@ -619,6 +642,22 @@ impl ExactDyadic {
             usize::try_from(left.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
         let right_shift =
             usize::try_from(right.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
+        // One limb each, aligned within 63 bits: both magnitudes stay below
+        // 2^127, so their sum or difference is exact in u128.
+        if let ([left_limb], [right_limb]) = (left.limbs.as_slice(), right.limbs.as_slice())
+            && left_shift < 64
+            && right_shift < 64
+        {
+            let left_value = u128::from(*left_limb) << left_shift;
+            let right_value = u128::from(*right_limb) << right_shift;
+            return Ok(if left_negative == right_negative {
+                Self::from_u128(left_negative, left_value + right_value, exponent)
+            } else if left_value >= right_value {
+                Self::from_u128(left_negative, left_value - right_value, exponent)
+            } else {
+                Self::from_u128(right_negative, right_value - left_value, exponent)
+            });
+        }
         let left = Aligned::new(&left.limbs, left_shift);
         let right = Aligned::new(&right.limbs, right_shift);
         let (negative, limbs) = if left_negative == right_negative {
@@ -739,6 +778,13 @@ impl ExactDyadic {
     pub(in crate::geometry) fn try_product(&self, other: &Self) -> Result<Self> {
         if self.is_zero() || other.is_zero() {
             return Ok(Self::zero());
+        }
+        if let ([left], [right]) = (self.limbs.as_slice(), other.limbs.as_slice()) {
+            return Ok(Self::from_u128(
+                self.negative != other.negative,
+                u128::from(*left) * u128::from(*right),
+                self.exponent + other.exponent,
+            ));
         }
         let (short, long) = if self.limbs.len() <= other.limbs.len() {
             (&self.limbs, &other.limbs)
@@ -4827,6 +4873,56 @@ mod tests {
         let two = ExactDyadic::from_f64(2.0);
         assert_eq!(round_ratio(&half, &two).unwrap(), 0.5);
         assert_eq!(round_ratio(&half.neg(), &two).unwrap(), -0.5);
+    }
+
+    #[test]
+    fn single_limb_fast_paths_match_the_general_kernels() {
+        let values = [
+            0.1,
+            -0.3,
+            1.0,
+            -1.0,
+            1.5e300,
+            -2.0e-300,
+            3.0,
+            12345.678,
+            -0.000_123,
+            f64::from_bits(1),
+            2.0_f64.powi(62),
+            -(2.0_f64.powi(63)) - 2048.0,
+        ];
+        for &left in &values {
+            for &right in &values {
+                let (l, r) = (ExactDyadic::from_f64(left), ExactDyadic::from_f64(right));
+                assert_eq!(
+                    l.try_product(&r).unwrap(),
+                    l.product(&r),
+                    "{left} * {right}"
+                );
+                assert_eq!(
+                    l.clone().try_add(r.clone()).unwrap(),
+                    l.clone().add(r.clone()),
+                    "{left} + {right}"
+                );
+                assert_eq!(
+                    l.cmp(&r),
+                    left.partial_cmp(&right).unwrap(),
+                    "{left} <> {right}"
+                );
+                let (lp, rp) = (l.product(&l), r.product(&l).product(&r));
+                let difference = lp.clone().subtract(rp.clone()).sign();
+                assert_eq!(
+                    lp.cmp(&rp),
+                    difference.as_i8().cmp(&0),
+                    "{left}^2 <> {left}{right}^2"
+                );
+                assert_eq!(
+                    l.clone().try_subtract(r.clone()).unwrap(),
+                    l.subtract(r),
+                    "{left} - {right}"
+                );
+            }
+        }
     }
 
     #[test]
