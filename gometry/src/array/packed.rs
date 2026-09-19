@@ -1058,9 +1058,10 @@ impl PyGeometryArray {
             return Ok(Some(self.clone()));
         }
         let matrix = *matrix;
-        let axes = self
-            .uniform_axes()?
-            .expect("packed storage has uniform axes");
+        let GeometryArrayStorage::Packed(packed) = self.storage() else {
+            return Ok(None);
+        };
+        let axes = packed.axes();
         self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
             let [a, b, d, e, xoff, yoff] = matrix;
             let (mapped_x, mapped_y) =

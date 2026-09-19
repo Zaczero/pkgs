@@ -365,11 +365,10 @@ impl PyGeometryArray {
         {
             return Ok(self.clone());
         }
-        if !self.is_compact_nullable() && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
+        if !self.is_compact_nullable()
+            && let GeometryArrayStorage::Packed(packed) = self.storage()
         {
-            let input_axes = self
-                .uniform_axes()?
-                .expect("packed storage has uniform axes");
+            let input_axes = packed.axes();
             let output_axes = ordinate.output_axes(input_axes, value);
             if let Some(mapped) = self.map_packed_points_detached(
                 py,

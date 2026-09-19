@@ -1426,19 +1426,13 @@ impl PyGeometryArray {
     where
         R: Send,
     {
-        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+        let Some(columns) =
+            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
+        else {
             return Ok(None);
-        }
-        let storage = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
-        let point_layout = self.point_row_layout();
+        };
         let result = py
-            .detach(move || {
-                let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
-                        .expect("not mixed");
-                kernel(columns)
-            })
+            .detach(move || kernel(columns))
             .map_err(packed_columns_err)?;
         Ok(Some(result))
     }
@@ -1485,19 +1479,13 @@ impl PyGeometryArray {
         output_axes: CoordinateAxes,
         map: impl Fn(Point) -> crate::error::Result<Point> + Send,
     ) -> PyResult<Option<Self>> {
-        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+        let Some(columns) =
+            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
+        else {
             return Ok(None);
-        }
-        let storage = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
-        let point_layout = self.point_row_layout();
+        };
         let output = py
-            .detach(move || {
-                let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
-                        .expect("not mixed");
-                map_selected_points(columns, output_axes, map)
-            })
+            .detach(move || map_selected_points(columns, output_axes, map))
             .map_err(packed_columns_err)?;
         Ok(Some(
             self.assemble_packed_result(output, output_frame)
@@ -1511,19 +1499,13 @@ impl PyGeometryArray {
         output_frame: Frame,
         transformer: crate::crs::TransformPlan,
     ) -> PyResult<Option<Self>> {
-        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+        let Some(columns) =
+            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
+        else {
             return Ok(None);
-        }
-        let storage = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
-        let point_layout = self.point_row_layout();
+        };
         let output = py
-            .detach(move || {
-                let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
-                        .expect("not mixed");
-                map_selected_to_crs(columns, &transformer)
-            })
+            .detach(move || map_selected_to_crs(columns, &transformer))
             .map_err(packed_columns_err)?;
         Ok(Some(
             self.assemble_packed_result(output, output_frame)
@@ -1537,23 +1519,19 @@ impl PyGeometryArray {
         output_frame: Frame,
         replacement: CoordinateReplacement,
     ) -> PyResult<Option<Self>> {
-        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+        let Some(columns) =
+            resolve_packed_columns(self.storage(), self.missing(), self.point_row_layout())
+        else {
             return Ok(None);
-        }
-        let storage = Arc::clone(self.storage_arc());
-        let missing = self.missing().cloned();
-        let point_layout = self.point_row_layout();
+        };
         let output = py
             .detach(move || -> PackedColumnResult<PackedColumnOutput> {
-                let columns =
-                    resolve_packed_columns(storage.as_ref(), missing.as_ref(), point_layout)
-                        .expect("not mixed");
                 let mut replacement_index = 0;
                 let output = replace_packed_columns_dispatch(
                     columns,
                     &replacement,
                     &mut replacement_index,
-                    missing.as_ref(),
+                    self.missing(),
                 )?;
                 if replacement_index != replacement.len {
                     return Err(PackedColumnError::Batch(
@@ -1582,33 +1560,18 @@ impl PyGeometryArray {
     where
         R: Send,
     {
-        if matches!(left.storage(), GeometryArrayStorage::Mixed(_))
-            || matches!(right.storage(), GeometryArrayStorage::Mixed(_))
-        {
+        let Some(left_columns) =
+            resolve_packed_columns(left.storage(), left.missing(), left.point_row_layout())
+        else {
             return Ok(None);
-        }
-        let left_storage = Arc::clone(left.storage_arc());
-        let right_storage = Arc::clone(right.storage_arc());
-        let left_missing = left.missing().cloned();
-        let right_missing = right.missing().cloned();
-        let left_point_layout = left.point_row_layout();
-        let right_point_layout = right.point_row_layout();
+        };
+        let Some(right_columns) =
+            resolve_packed_columns(right.storage(), right.missing(), right.point_row_layout())
+        else {
+            return Ok(None);
+        };
         let result = py
-            .detach(move || {
-                let left_columns = resolve_packed_columns(
-                    left_storage.as_ref(),
-                    left_missing.as_ref(),
-                    left_point_layout,
-                )
-                .expect("not mixed");
-                let right_columns = resolve_packed_columns(
-                    right_storage.as_ref(),
-                    right_missing.as_ref(),
-                    right_point_layout,
-                )
-                .expect("not mixed");
-                kernel(left_columns, right_columns)
-            })
+            .detach(move || kernel(left_columns, right_columns))
             .map_err(packed_columns_err)?;
         Ok(Some(result))
     }
