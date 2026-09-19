@@ -293,6 +293,19 @@ def test_geodesic_buffer_uses_local_projection_and_preserves_crs() -> None:
         point.buffer(math.inf)
 
 
+@pytest.mark.parametrize('longitude', [3.0, 0.1, 5.9, 179.99, 180.0, -179.99])
+def test_geodesic_buffer_does_not_depend_on_the_utm_zone_position(
+    longitude: float,
+) -> None:
+    # A point beside a zone edge fits that zone while its buffer reaches past
+    # the zone's scale-error band; the frame follows the result instead. The
+    # 0.1% linear scale-error promise bounds the area to 0.2%.
+    buffered = gm.Point(longitude, 0, crs=4326).buffer(200_000)
+    central = gm.Point(3.0, 0, crs=4326).buffer(200_000)
+    assert buffered.geometry_type == 'Polygon'
+    assert buffered.area == pytest.approx(central.area, rel=2e-3)
+
+
 def test_large_polar_buffer_uses_concise_local_crs_diagnostic() -> None:
     with pytest.raises(gm.TransformError) as excinfo:
         gm.Point(0.0, 89.9999, crs=4326).buffer(50_000_000)

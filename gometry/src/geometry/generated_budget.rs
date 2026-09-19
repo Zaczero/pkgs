@@ -19,6 +19,7 @@ pub(crate) const GENERATED_ITEM_LIMIT: usize = 16_000_000;
 pub(crate) const PAIRWISE_WORK_LIMIT: usize = 1_000_000_000;
 
 /// Checked cumulative counter used before allocation or iterative expansion.
+#[derive(Clone)]
 pub(crate) struct ExpansionBudget {
     operation: &'static str,
     parameter: &'static str,

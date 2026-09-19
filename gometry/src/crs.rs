@@ -120,7 +120,8 @@ use introspect::{
     split_authority, sub_crs_infos, validate_min_confidence,
 };
 pub(crate) use local::{
-    LOCAL_SCALE_ERROR_LIMIT, estimate_local_crs, estimate_local_crs_at, local_crs_fits_at,
+    LOCAL_SCALE_ERROR_LIMIT, LocalCrsDefinition, estimate_local_crs, estimate_local_crs_at,
+    local_crs_fits_at,
 };
 pub(crate) use operations::{operations_info_with_state, roundtrip_errors};
 pub(crate) use options_impls::c_option_ptrs;

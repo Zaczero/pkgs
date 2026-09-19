@@ -54,20 +54,17 @@ impl LocalCrsDefinition {
 /// longitude/latitude would turn a convenience method into a relabeling trap.
 pub(crate) fn estimate_local_crs(shape: &Shape, source_crs: &str) -> Result<String> {
     let state = crate::crs::runtime_state_snapshot()?;
-    Ok(estimate_local_crs_at(shape, source_crs, &state)?.definition)
+    Ok(estimate_local_crs_at(&[shape], source_crs, &state)?.definition)
 }
 
+/// One conformal metric CRS for all coordinates of `shapes` together.
 pub(crate) fn estimate_local_crs_at(
-    shape: &Shape,
+    shapes: &[&Shape],
     source_crs: &str,
     state: &RuntimeState,
 ) -> Result<LocalCrsDefinition> {
-    let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
-        Cow::Borrowed(shape)
-    } else {
-        Cow::Owned(transform_at(shape, source_crs, "EPSG:4326", state)?)
-    };
-    let extent = LocalExtent::from_shape(&lonlat)?.ok_or(CrsError::EmptyGeometry)?;
+    let extent =
+        LocalExtent::from_shapes(shapes, source_crs, state)?.ok_or(CrsError::EmptyGeometry)?;
 
     let pole = if extent.latitude >= 0.0 {
         Pole::North
@@ -115,12 +112,7 @@ pub(crate) fn local_crs_fits_at(
     candidate: &str,
     state: &RuntimeState,
 ) -> Result<bool> {
-    let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
-        Cow::Borrowed(shape)
-    } else {
-        Cow::Owned(transform_at(shape, source_crs, "EPSG:4326", state)?)
-    };
-    let Some(extent) = LocalExtent::from_shape(&lonlat)? else {
+    let Some(extent) = LocalExtent::from_shapes(&[shape], source_crs, state)? else {
         return Ok(true);
     };
     candidate_fits(candidate, &extent.samples, state)
@@ -134,11 +126,22 @@ struct LocalExtent {
 }
 
 impl LocalExtent {
-    fn from_shape(shape: &Shape) -> Result<Option<Self>> {
-        let mut points = Vec::with_capacity(shape.coord_count());
-        shape.for_each_point(|point| {
-            points.push((normalize_longitude(point.x), point.y));
-        });
+    fn from_shapes(
+        shapes: &[&Shape],
+        source_crs: &str,
+        state: &RuntimeState,
+    ) -> Result<Option<Self>> {
+        let mut points = Vec::with_capacity(shapes.iter().map(|shape| shape.coord_count()).sum());
+        for &shape in shapes {
+            let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
+                Cow::Borrowed(shape)
+            } else {
+                Cow::Owned(transform_at(shape, source_crs, "EPSG:4326", state)?)
+            };
+            lonlat.for_each_point(|point| {
+                points.push((normalize_longitude(point.x), point.y));
+            });
+        }
         if points.is_empty() {
             return Ok(None);
         }

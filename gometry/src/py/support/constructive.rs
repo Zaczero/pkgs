@@ -259,14 +259,18 @@ pub(crate) fn metric_constructive_shape_budgeted(
     shape: &Shape,
     distance: f64,
     budget: &mut crate::geometry::ExpansionBudget,
-    kernel: impl FnOnce(&Shape, f64, &mut crate::geometry::ExpansionBudget) -> Result<Shape>,
+    mut kernel: impl FnMut(&Shape, f64, &mut crate::geometry::ExpansionBudget) -> Result<Shape>,
 ) -> Result<Shape> {
     match model {
         crate::crs::MetricModel::Planar { to_metre } => {
             kernel(shape, distance / to_metre.get(), budget)
         },
         crate::crs::MetricModel::Geodesic { state, .. } => {
+            // A run in a refitted frame replaces the first one, so it starts
+            // from the caller's budget rather than from the first run's charge.
+            let start = budget.clone();
             geodesic_local_shape(shape, crs, true, state, |shape| {
+                *budget = start.clone();
                 kernel(shape, distance, budget)
             })
         },
@@ -391,7 +395,7 @@ pub(crate) fn geodesic_by_identity(
     }
     let original = shape.points_vec()?;
     let source = crs.unwrap_or("EPSG:4326");
-    let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
+    let local = crate::crs::estimate_local_crs_at(&[shape], source, state)?;
     let projected = crate::crs::transform_at(shape, source, &local.definition, state)
         .map_err(|error| local.annotate_error(error))?;
     if projected.coord_count() != original.len() {
@@ -529,28 +533,47 @@ fn geodesic_local_shape(
     crs: Option<&str>,
     checked: bool,
     state: &crate::crs::RuntimeState,
-    op: impl FnOnce(&Shape) -> Result<Shape>,
+    mut op: impl FnMut(&Shape) -> Result<Shape>,
 ) -> Result<Shape> {
     if shape.is_empty() {
         return op(shape);
     }
     let source = crs.unwrap_or("EPSG:4326");
-    let local = crate::crs::estimate_local_crs_at(shape, source, state)?;
-    let projected = crate::crs::transform_at(shape, source, &local.definition, state)
-        .map_err(|error| local.annotate_error(error))?;
-    let result = op(&projected)?;
-    let restored = crate::crs::transform_at(&result, &local.definition, source, state)
-        .map_err(|error| local.annotate_error(error))?;
+    let mut run_in = |local: &crate::crs::LocalCrsDefinition| -> Result<Shape> {
+        let projected = crate::crs::transform_at(shape, source, &local.definition, state)
+            .map_err(|error| local.annotate_error(error))?;
+        let result = op(&projected)?;
+        crate::crs::transform_at(&result, &local.definition, source, state)
+            .map_err(|error| local.annotate_error(error))
+    };
+    let local = crate::crs::estimate_local_crs_at(&[shape], source, state)?;
+    let restored = run_in(&local)?;
     // Distance-driven ops (buffer/offset/densify) demand metric accuracy, so
     // they reject a result that exceeds the local projection's linear
     // scale-error budget. The minimum bounding *circle* is an intentionally
     // approximate bounding primitive (like bounds/centroid) that must remain
     // usable at city-to-continental scale, so it skips the fit check.
-    if checked && !crate::crs::local_crs_fits_at(&restored, source, &local.definition, state)? {
-        return Err(crate::crs::CrsError::invalid(format!(
+    if !checked || crate::crs::local_crs_fits_at(&restored, source, &local.definition, state)? {
+        return Ok(restored);
+    }
+    // The frame was fitted to the input, and an operation's reach (a buffer
+    // distance) carries the result past it: a point beside a UTM zone edge
+    // fits that zone while its buffer does not. Fit one frame to the input
+    // and the result together, since the operation measures between them,
+    // and run once more there.
+    let exceeded = || {
+        crate::crs::CrsError::invalid(format!(
             "constructive result exceeds the {:.1}% linear scale-error limit in one local projection; use a smaller distance, split the geometry, or choose a projected CRS explicitly",
             crate::crs::LOCAL_SCALE_ERROR_LIMIT * 100.0
-        )));
+        ))
+    };
+    let refit = crate::crs::estimate_local_crs_at(&[shape, &restored], source, state)
+        .map_err(|error| crate::crs::preserve_resource_error(error, |_| exceeded()))?;
+    if refit.definition != local.definition {
+        let restored = run_in(&refit)?;
+        if crate::crs::local_crs_fits_at(&restored, source, &refit.definition, state)? {
+            return Ok(restored);
+        }
     }
-    Ok(restored)
+    Err(exceeded())
 }
