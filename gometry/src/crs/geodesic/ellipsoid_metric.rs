@@ -1,21 +1,19 @@
 use geographiclib_rs::Geodesic;
 
-use crate::crs::geodesic::lower_bound::exact_auxiliary_sphere_bound;
 use crate::crs::geodesic::segment::{
     PreparedSegment, geodesic_curvature_domain, geodesic_segment_contact, longitude_difference,
     spherical_meridional_branch_parameters,
 };
 use crate::crs::geodesic::{
-    DirectGeodesic, IntersectSolver, InverseGeodesic as _, LowerBoundKernel,
-    cached_lower_bound_kernel, checked_geodesic_segment, geodesic_point_segment_query,
-    geodesic_unit_vector, interpolate_optional_ordinate,
+    DirectGeodesic, IntersectSolver, InverseGeodesic as _, checked_geodesic_segment,
+    geodesic_point_segment_query, geodesic_unit_vector,
 };
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
     GeodesicMetric, GeodesicNumericalPolicy, GeodesicPreparedSegment, GeodesicSegment,
     GeodesicSegmentDerivative, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, MOrdinate, Point,
-    SegmentContact, SegmentPairWitness, XY, ZOrdinate,
+    SegmentContact, SegmentPairWitness, XY, ZOrdinate, interpolate_optional_ordinate,
 };
 
 pub(crate) fn inverse_distance(
@@ -75,12 +73,6 @@ pub(crate) struct EllipsoidMetric<'a> {
     runtime_generation: u64,
     policy: GeodesicNumericalPolicy,
     normalized: std::cell::OnceCell<Geodesic>,
-    /// Lazily built AND per-thread cached: the lower-bound tabulation is ~150
-    /// µs of trig and is read ONLY by the foot-finding pruner
-    /// ([`Self::point_distance_lower_bound`]). Point-to-point and other
-    /// non-pruning paths never touch it; repeated foot-finding on one ellipsoid
-    /// reuses the cached kernel (a cheap `Rc` clone) instead of rebuilding it.
-    lower_bound: std::cell::OnceCell<std::rc::Rc<LowerBoundKernel>>,
     intersection: std::cell::OnceCell<IntersectSolver>,
 }
 
@@ -150,7 +142,6 @@ impl<'a> EllipsoidMetric<'a> {
             runtime_generation,
             policy: GeodesicNumericalPolicy::new(geodesic.a),
             normalized: std::cell::OnceCell::new(),
-            lower_bound: std::cell::OnceCell::new(),
             intersection: std::cell::OnceCell::new(),
         }
     }
@@ -404,23 +395,16 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     }
 
     fn point_distance_lower_bound(&self, a: Point, b: Point) -> crate::error::Result<f64> {
-        let kernel = self
-            .lower_bound
-            .get_or_try_init(|| cached_lower_bound_kernel(self.normalized()))?;
-        let first = self.to_geodesic_point(a);
-        let second = self.to_geodesic_point(b);
-        let exact = exact_auxiliary_sphere_bound(self.geodesic, first, second);
-        if matches!(&**kernel, LowerBoundKernel::ExactOblate) {
-            return Ok(exact);
-        }
-        let bound = kernel
-            .bound(self.normalized(), first, second)
-            .mul_add(self.geodesic.a, 0.0);
-        Ok(if bound > 0.0 && bound.is_finite() {
-            bound.next_down().min(exact)
-        } else {
-            bound.max(0.0).min(exact)
-        })
+        let bound = auxiliary_sphere_bound(
+            self.geodesic,
+            self.to_geodesic_point(a),
+            self.to_geodesic_point(b),
+        );
+        // The bound is tight only for short meridional arcs near the equator,
+        // where its binary64 rounding is nanometres. Stepping down by the
+        // backend floor keeps it below the distance the backend reports
+        // there, so a threshold query cannot prune a point it would accept.
+        Ok((bound - self.policy.backend_floor()).max(0.0))
     }
 
     fn geodesic_curvature_domain(&self) -> Option<(f64, f64, f64)> {
@@ -571,6 +555,39 @@ fn scale_minimum(
             .max((distance - evaluation_error - policy.minimum_gap()).max(0.0)),
         evaluation_error,
     })
+}
+
+/// Karney's auxiliary-sphere lower bound on the geodesic distance: the
+/// semi-minor axis times the central angle between the reduced latitudes,
+/// taken with the raw longitude gap, which never exceeds the auxiliary one.
+/// Zero outside the oblate domain `0 <= f < 1`, where the bound is unproven.
+fn auxiliary_sphere_bound(geodesic: &Geodesic, a: Point, b: Point) -> f64 {
+    if geodesic.f < 0.0 || geodesic.f >= 1.0 {
+        return 0.0;
+    }
+    // This is a degree/Greenwich kernel. Collapse periodic aliases before
+    // deriving the longitude gap; otherwise 0 and 360 degrees could produce
+    // a positive lower bound for two coincident points.
+    let axis = GeographicFrame::crs84().longitude();
+    let a_lon = axis
+        .canonicalize(a.x)
+        .expect("finite lower-bound longitude")
+        .get();
+    let b_lon = axis
+        .canonicalize(b.x)
+        .expect("finite lower-bound longitude")
+        .get();
+    let one_minus_f = 1.0 - geodesic.f;
+    let reduced = |lat_degrees: f64| {
+        f64::atan(one_minus_f * lat_degrees.to_radians().tan())
+            .clamp(-std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2)
+    };
+    let (beta1, beta2) = (reduced(a.y), reduced(b.y));
+    let sin_lat = ((beta2 - beta1) / 2.0).sin();
+    let sin_lon = ((b_lon - a_lon).to_radians() / 2.0).sin();
+    // Plain ops: scalar `mul_add` is a libm call below x86-64-v3.
+    let h = (sin_lon * sin_lon * beta1.cos() * beta2.cos() + sin_lat * sin_lat).clamp(0.0, 1.0);
+    geodesic.a * one_minus_f * 2.0 * h.sqrt().asin()
 }
 
 fn auxiliary_unit(point: XY) -> [f64; 3] {

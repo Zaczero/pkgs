@@ -16,7 +16,7 @@ use crate::geometry::{
     GeodesicInnerInterval, GeodesicMinimum, GeodesicNumericalPolicy, GeodesicSegment,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentScratch, GeodesicWitnessNeed, MOrdinate, Point, SegmentContact,
-    SegmentPairWitness, ZOrdinate,
+    SegmentPairWitness, ZOrdinate, interpolate_optional_ordinate,
 };
 
 const POINT_SEGMENT_BOUND_ROUNDING_ULPS: f64 = 128.0;
@@ -1594,17 +1594,6 @@ fn same_geodesic_longitude(left: f64, right: f64) -> bool {
 fn can_subdivide(left: f64, right: f64) -> bool {
     let middle = f64::midpoint(left, right);
     middle > left && middle < right
-}
-
-fn interpolate_optional_ordinate(
-    start: Option<f64>,
-    end: Option<f64>,
-    fraction: f64,
-) -> Option<f64> {
-    match (start, end) {
-        (Some(start), Some(end)) => Some(start + (end - start) * fraction),
-        _ => None,
-    }
 }
 
 pub(crate) struct IntersectSolver {

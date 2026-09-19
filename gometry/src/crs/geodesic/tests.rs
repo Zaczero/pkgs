@@ -4,9 +4,6 @@ use super::distance::{
     geodesic_frechet_dp, geodesic_frechet_dp_with_scratch, geodesic_point_distances,
     geodesic_point_pair_distances, geodesic_point_pair_dwithin,
 };
-use super::lower_bound::{
-    LowerBoundKernel, clear_cached_lower_bound_kernel, exact_auxiliary_sphere_bound,
-};
 use super::segment::{cached_geodesic_line, geodesic_point_segment_query};
 use super::{
     EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, GEODESIC_LINE_CACHE, geodesic_counters,
@@ -1153,76 +1150,38 @@ fn geodesic_lrs_index_rejects_nonunique_shortest_endpoints() {
 }
 
 #[test]
-fn tabulated_lower_bound_never_exceeds_exact_auxiliary_bound_dense_sweep() {
-    let cases = [
-        ("wgs84", Geodesic::wgs84(), 0.005),
-        ("k_0_9", Geodesic::new(6_378_137.0, 0.1), 0.1),
-    ];
-    let mut latitudes = (-360..=360)
-        .map(|index| f64::from(index) * 0.25)
-        .collect::<Vec<_>>();
-    latitudes.extend([
-        -90.0,
-        -89.999_999,
-        -89.999,
-        -45.000_001,
-        -0.000_001,
-        0.0,
-        0.000_001,
-        45.000_001,
-        89.999,
-        89.999_999,
-        90.0,
-    ]);
-    latitudes.sort_by(f64::total_cmp);
-    latitudes.dedup_by(|left, right| left.to_bits() == right.to_bits());
-    let deltas = [0.0, 1e-9, 1e-6, 0.1, 45.0, 179.999_999, 360.0, 720.0];
-    let offsets = [0, 1, 2, 5, 17, 73, latitudes.len() / 2];
-
-    for (name, geodesic, max_allowed_loss) in cases {
-        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        let Ok(LowerBoundKernel::Tabulated(_)) = LowerBoundKernel::for_geodesic(&geodesic) else {
-            panic!("{name} should use the tabulated lower-bound kernel");
-        };
-        let mut max_loss = 0.0_f64;
-        for (left_index, &lat1) in latitudes.iter().enumerate() {
-            for offset in offsets {
-                let lat2 = latitudes[(left_index + offset) % latitudes.len()];
-                for delta_lon in deltas {
-                    let a = p(-123.456_789, lat1);
-                    let b = p(-123.456_789 + delta_lon, lat2);
-                    let tabulated = metric
-                        .point_distance_lower_bound(a, b)
-                        .expect("tabulated lower-bound query");
-                    let exact = exact_auxiliary_sphere_bound(&geodesic, a, b);
-                    assert!(
-                        tabulated <= exact,
-                        "{name}: tabulated {tabulated} exceeded exact {exact} for lat {lat1}/{lat2} dlon {delta_lon}"
-                    );
-                    max_loss = max_loss.max(exact - tabulated);
-                }
-            }
-        }
-        assert!(
-            max_loss < max_allowed_loss,
-            "{name}: max lower-bound loss {max_loss} >= {max_allowed_loss}"
-        );
-    }
-}
-
-#[test]
-fn non_tabulated_flattening_uses_exact_oblate_lane() {
-    let high_flattening = Geodesic::new(6_378_137.0, 0.2);
-    let exact_metric = EllipsoidMetric::for_crs84_geometry_test(&high_flattening);
-    let a = p(-12.0, -45.0);
-    let b = p(78.0, 41.0);
-    assert_eq!(
-        exact_metric
+fn lower_bound_stays_below_backend_distance() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let check = |a: Point, b: Point| {
+        let bound = metric
             .point_distance_lower_bound(a, b)
-            .expect("exact oblate lower-bound query")
-            .to_bits(),
-        exact_auxiliary_sphere_bound(&high_flattening, a, b).to_bits()
-    );
+            .expect("lower-bound query");
+        let distance = metric.segment_length(a, b);
+        assert!(bound <= distance, "{a:?} {b:?}: {bound} > {distance}");
+    };
+    // Short meridional arcs across the equator are where the auxiliary-sphere
+    // bound is tight to first order.
+    for lon in [-180.0, -30.0, 0.0, 45.0, 179.5] {
+        for exponent in -12..=1 {
+            let half = 10.0_f64.powi(exponent);
+            check(p(lon, -half), p(lon, half));
+            check(p(lon, 0.0), p(lon, half));
+            check(p(lon, -0.3 * half), p(lon, half));
+        }
+    }
+    let mut state = 0x9E37_79B9_7F4A_7C15_u64;
+    let mut next = move || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1_u64 << 53) as f64
+    };
+    for _ in 0..2_000 {
+        let a = p(next() * 360.0 - 180.0, next() * 180.0 - 90.0);
+        let b = p(next() * 360.0 - 180.0, next() * 180.0 - 90.0);
+        check(a, b);
+    }
 }
 
 #[test]
@@ -1253,7 +1212,7 @@ fn disabled_lower_bound_is_zero_across_latitudes() {
     clippy::needless_borrows_for_generic_args,
     reason = "the test retries one real line-index query across every allocator prefix"
 )]
-fn lower_bound_cache_allocation_failures_retry_without_publication() -> Result<()> {
+fn geodesic_line_index_allocation_failures_are_retryable() -> Result<()> {
     use crate::test_support::{allocation_count, fail_allocations_after};
 
     let shape = line(&[
@@ -1265,7 +1224,6 @@ fn lower_bound_cache_allocation_failures_retry_without_publication() -> Result<(
     ]);
     let probe = p(0.0, 2.0);
     let run = || {
-        clear_cached_lower_bound_kernel();
         let geodesic = Geodesic::new(6_378_137.0, 0.005);
         let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
         let index = LineIndex::build(&shape, &metric)?;
@@ -1273,58 +1231,17 @@ fn lower_bound_cache_allocation_failures_retry_without_publication() -> Result<(
     };
     let expected = run()?;
     let (_, allocations) = allocation_count(&run);
-    assert!(
-        allocations > 0,
-        "line-index lower-bound route did not allocate"
-    );
+    assert!(allocations > 0, "geodesic line index did not allocate");
     for allowed in 0..allocations {
         let result = fail_allocations_after(allowed, &run);
         let error = result
             .err()
-            .unwrap_or_else(|| panic!("lower-bound prefix {allowed} unexpectedly succeeded"));
+            .unwrap_or_else(|| panic!("line-index prefix {allowed} unexpectedly succeeded"));
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Allocation)
         ));
-        assert_eq!(run()?, expected, "lower-bound retry at {allowed}");
-    }
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test retries lower-bound cache construction across every allocator prefix"
-)]
-fn lower_bound_cache_does_not_publish_a_failed_kernel() -> Result<()> {
-    use super::lower_bound::cached_lower_bound_kernel;
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let geodesic = Geodesic::new(6_378_137.0, 0.005);
-    let run = || {
-        clear_cached_lower_bound_kernel();
-        cached_lower_bound_kernel(&geodesic)
-    };
-    let expected = run()?;
-    assert!(matches!(&*expected, LowerBoundKernel::Tabulated(_)));
-    let (_, allocations) = allocation_count(&run);
-    assert!(allocations > 0, "lower-bound cache did not allocate");
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, &run);
-        let error = result
-            .err()
-            .unwrap_or_else(|| panic!("kernel prefix {allowed} unexpectedly succeeded"));
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        let (retry, retry_allocations) = allocation_count(|| cached_lower_bound_kernel(&geodesic));
-        assert!(retry.is_ok(), "kernel retry after prefix {allowed} failed");
-        assert!(
-            retry_allocations > 0,
-            "failed kernel prefix {allowed} was published"
-        );
+        assert_eq!(run()?, expected, "line-index retry at {allowed}");
     }
     Ok(())
 }

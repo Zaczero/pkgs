@@ -39,7 +39,7 @@ use crate::crs::cache::{
 };
 use crate::crs::error::CrsError;
 use crate::crs::geodesic::ensure_geographic_lonlat;
-use crate::crs::local::normalize_longitude;
+use crate::crs::local::{bearing_from_azimuth, normalize_longitude};
 use crate::error::Result;
 
 #[derive(Clone, Copy)]
@@ -420,13 +420,7 @@ pub(crate) fn rhumb_bearing_crs_at(
         let azimuth = lambda12.atan2(dpsi).to_degrees();
         finite(azimuth, RhumbCalculation::Bearing)
     })?;
-    // atan2 degrees land in (-180, 180]; the branch normalize is
-    // bit-identical to `rem_euclid(360)` there without the `fmod`.
-    Ok(if azimuth < 0.0 {
-        azimuth + 360.0
-    } else {
-        azimuth
-    })
+    Ok(bearing_from_azimuth(azimuth))
 }
 
 #[cfg(test)]

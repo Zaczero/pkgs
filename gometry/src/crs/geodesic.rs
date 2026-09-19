@@ -5,12 +5,12 @@
 //! `super`.
 
 pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
-use geographiclib_rs::{Geodesic, GeodesicLine, geodesic_capability as caps};
+use geographiclib_rs::{GeodesicLine, geodesic_capability as caps};
 
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::crs::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError, CrsInfo,
-    GeodesicDirectInfo, Point, ensure_thread_caches_current, lru_resolve, normalize,
+    GeodesicDirectInfo, ensure_thread_caches_current, lru_resolve, normalize,
 };
 use crate::error::Result;
 use crate::geometry::GeodesicNumericalPolicy;
@@ -24,8 +24,6 @@ const GEODESIC_LINE_CAPS: u64 = caps::LATITUDE
 const GEODESIC_LINE_OUTMASK: u64 =
     caps::LATITUDE | caps::LONGITUDE | caps::AZIMUTH | caps::REDUCEDLENGTH | caps::GEODESICSCALE;
 const GEODESIC_LINE_CACHE_CAPACITY: usize = 4096;
-const REDUCED_LAT_TABLE_CELLS: usize = 8192;
-const REDUCED_LAT_MIN_ONE_MINUS_F: f64 = 0.9;
 // Compatibility name for existing native tests. The numerical values live in
 // `GeodesicNumericalPolicy`, which is shared by distance, threshold, and
 // Hausdorff completion.
@@ -175,7 +173,6 @@ mod cache;
 mod distance;
 mod domain;
 mod ellipsoid_metric;
-mod lower_bound;
 mod measure;
 mod metric_model;
 mod nearest_lrs;
@@ -203,8 +200,6 @@ pub(crate) use domain::{
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,
 };
-pub(crate) use lower_bound::interpolate_optional_ordinate;
-use lower_bound::{LowerBoundKernel, cached_lower_bound_kernel};
 #[cfg(test)]
 pub(crate) use measure::with_ellipsoid_metric;
 pub(crate) use measure::{

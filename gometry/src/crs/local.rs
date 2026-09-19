@@ -491,6 +491,17 @@ fn wgs84_utm_crs(zone: UtmZone, pole: Pole) -> String {
     format!("EPSG:{}", base + u32::from(zone.get()))
 }
 
+/// Clockwise bearing in `[0, 360)` from an azimuth in `(-180, 180]`, the range
+/// `atan2` and geographiclib produce. There the branch is bit-identical to
+/// `rem_euclid(360)` without the `fmod`.
+pub(super) fn bearing_from_azimuth(azimuth: f64) -> f64 {
+    if azimuth < 0.0 {
+        azimuth + 360.0
+    } else {
+        azimuth
+    }
+}
+
 pub(super) fn normalize_longitude(longitude: f64) -> f64 {
     let shifted = longitude + 180.0;
     let normalized = if (0.0..360.0).contains(&shifted) {

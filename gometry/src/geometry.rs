@@ -280,7 +280,8 @@ pub(crate) use segments::{clip_segment, point_segment_distance, point_segment_se
 /// Convex lerp shared with the broadcast fallback lanes (see
 /// `broadcast::metrics::points`), so packed and fallback agree at the extremes.
 pub(crate) use segments::{
-    interpolate_f64, interpolate_fraction, interpolate_subdivision_ordinate,
+    interpolate_f64, interpolate_fraction, interpolate_optional_ordinate,
+    interpolate_subdivision_ordinate,
 };
 pub(in crate::geometry) use segments::{try_dedup_by, try_sort_by};
 pub(crate) use tessellation::{CdtRefinement, row_sample_seed};

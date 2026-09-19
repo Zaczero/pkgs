@@ -2179,6 +2179,16 @@ pub(crate) fn interpolate_f64(start: f64, end: f64, fraction: f64) -> f64 {
     (start * scale * (1.0 - fraction) + end * scale * fraction) / scale
 }
 
+/// [`interpolate_f64`] for an optional Z or M ordinate, present only when both
+/// endpoints carry it.
+pub(crate) fn interpolate_optional_ordinate(
+    start: Option<f64>,
+    end: Option<f64>,
+    fraction: f64,
+) -> Option<f64> {
+    Some(interpolate_f64(start?, end?, fraction))
+}
+
 /// Interpolation for emitted subdivision ordinates. The error-free two-sum
 /// difference identifies the common case where one FMA avoids an extra
 /// product/add rounding; an existing double-double path handles an inexact

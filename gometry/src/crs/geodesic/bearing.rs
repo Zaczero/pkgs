@@ -5,6 +5,7 @@ use crate::crs::geodesic::{
     CrsError, DirectGeodesic as _, Result, ensure_geographic_lonlat, inverse_azimuths,
     inverse_distance_azimuths, with_geodesic_at,
 };
+use crate::crs::local::bearing_from_azimuth;
 
 pub(crate) fn geodesic_for_crs_at(crs: &str, state: &RuntimeState) -> Result<Geodesic> {
     with_geodesic_at(crs, state, |geodesic| Ok(*geodesic))
@@ -45,15 +46,7 @@ pub(crate) fn geodesic_bearing(
     ensure_geographic_lonlat(lon1, lat1)?;
     ensure_geographic_lonlat(lon2, lat2)?;
     let (azimuth, _) = inverse_azimuths(geodesic, lon1, lat1, lon2, lat2);
-    // geographiclib azimuths land in (-180, 180]; the branch normalize
-    // is bit-identical to `rem_euclid(360)` there without the `fmod`.
-    finite(azimuth, GeodesicCalculation::Bearing).map(|azimuth| {
-        if azimuth < 0.0 {
-            azimuth + 360.0
-        } else {
-            azimuth
-        }
-    })
+    finite(azimuth, GeodesicCalculation::Bearing).map(bearing_from_azimuth)
 }
 
 /// Destination lon/lat from a point along `azimuth` for `meters` (direct

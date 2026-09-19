@@ -264,12 +264,12 @@ fn interpolate_point_on_geodesic(
     let point = Point::new_axes(
         x,
         y,
-        ZOrdinate(crate::crs::interpolate_optional_ordinate(
+        ZOrdinate(crate::geometry::interpolate_optional_ordinate(
             from.z(),
             to.z(),
             ratio,
         )),
-        MOrdinate(crate::crs::interpolate_optional_ordinate(
+        MOrdinate(crate::geometry::interpolate_optional_ordinate(
             from.m(),
             to.m(),
             ratio,
@@ -391,12 +391,12 @@ fn rhumb_interpolate_point(
         Point::new_axes(
             x,
             y,
-            ZOrdinate(crate::crs::interpolate_optional_ordinate(
+            ZOrdinate(crate::geometry::interpolate_optional_ordinate(
                 from.z(),
                 to.z(),
                 ratio,
             )),
-            MOrdinate(crate::crs::interpolate_optional_ordinate(
+            MOrdinate(crate::geometry::interpolate_optional_ordinate(
                 from.m(),
                 to.m(),
                 ratio,
