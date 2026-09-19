@@ -165,140 +165,68 @@ def test_pickle_empty_packed_selection_and_permutation() -> None:
     assert pickle.loads(pickle.dumps(sub)).to_wkt() == sub.to_wkt()
 
 
-def test_pickle_malformed_mask_and_ring_payloads_rejected() -> None:
-    # Bad mask bytes (value 2) at the untrusted mixed unpickler boundary.
-    with pytest.raises(gm.GeometryError, match=r'mask|malformed') as excinfo:
-        _lib._unpickle_geometry_array([b'\x01', b'\x01'], None, None, bytes([2, 0]))
-    assert type(excinfo.value) is gm.GeometryError
-    assert str(excinfo.value) == 'malformed mixed-array pickle missing mask'
-
-    # A one-vertex line is a packed CSR contract failure, not a geometry
-    # validity result from a successfully admitted line.
-    with pytest.raises(gm.GeometryError, match='line-array pickle offsets') as excinfo:
-        _lib._unpickle_line_array(
-            struct.pack('<4d', 0.0, 1.0, 2.0, 3.0),
-            struct.pack('<4d', 0.0, 1.0, 2.0, 3.0),
+def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
+    """Packed rows are read through asserting constructors; corrupt payloads
+    must fail at unpickle with a GeometryError instead.
+    """
+    doubles = lambda *values: struct.pack(f'<{len(values)}d', *values)
+    offsets = lambda *values: struct.pack(f'<{len(values)}i', *values)
+    square_xs = doubles(0.0, 1.0, 1.0, 0.0)
+    square_ys = doubles(0.0, 0.0, 1.0, 0.0)
+    rejected = {
+        'mixed mask length': lambda: _lib._unpickle_geometry_array(
+            [gm.Point(0, 0).to_wkb()], None, None, bytes([0, 0])
+        ),
+        'one-vertex line': lambda: _lib._unpickle_packed_array(
+            square_xs, square_ys, None, None, (offsets(0, 1, 4),), None, None, None
+        ),
+        'short ring': lambda: _lib._unpickle_packed_array(
+            doubles(0.0, 1.0),
+            doubles(0.0, 0.0),
             None,
             None,
-            struct.pack('<3i', 0, 1, 4),
-            None,
-            None,
-            None,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError
-    assert str(excinfo.value) == 'line-array pickle offsets are not a valid line CSR'
-
-    poly_offsets = struct.pack('<2i', 0, 1)
-
-    # Too short: 2 coords — below MIN_VERTICES_OPEN (still reject).
-    xs2 = struct.pack('<2d', 0.0, 1.0)
-    ys2 = struct.pack('<2d', 0.0, 0.0)
-    with pytest.raises(gm.GeometryError, match=r'ring|closed|short|three') as excinfo:
-        _lib._unpickle_polygon_array(
-            xs2,
-            ys2,
-            None,
-            None,
-            struct.pack('<2i', 0, 2),
-            poly_offsets,
+            (offsets(0, 2), offsets(0, 1)),
             None,
             None,
             None,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError
-
-    # Open 3-corner and open 4-vertex rings silent-close (A1 = WKT/WKB policy).
-    xs3 = struct.pack('<3d', 0.0, 1.0, 0.0)
-    ys3 = struct.pack('<3d', 0.0, 0.0, 1.0)
-    open3 = _lib._unpickle_polygon_array(
-        xs3,
-        ys3,
-        None,
-        None,
-        struct.pack('<2i', 0, 3),
-        poly_offsets,
-        None,
-        None,
-        None,
-        None,
-    )
-    assert open3.to_wkt() == ['POLYGON ((0 0, 1 0, 0 1, 0 0))']
-
-    xs4 = struct.pack('<4d', 0.0, 1.0, 1.0, 0.5)
-    ys4 = struct.pack('<4d', 0.0, 0.0, 1.0, 1.0)
-    open4 = _lib._unpickle_polygon_array(
-        xs4,
-        ys4,
-        None,
-        None,
-        struct.pack('<2i', 0, 4),
-        poly_offsets,
-        None,
-        None,
-        None,
-        None,
-    )
-    assert open4.to_wkt() == ['POLYGON ((0 0, 1 0, 1 1, 0.5 1, 0 0))']
-
-    # Invalid CSR endpoint past coordinates.
-    xs_ok = struct.pack('<4d', 0.0, 1.0, 1.0, 0.0)
-    ys_ok = struct.pack('<4d', 0.0, 0.0, 1.0, 0.0)
-    bad_ring = struct.pack('<2i', 0, 99)
-    with pytest.raises(gm.GeometryError, match=r'CSR|offset|ring') as excinfo:
-        _lib._unpickle_polygon_array(
-            xs_ok, ys_ok, None, None, bad_ring, poly_offsets, None, None, None, None
-        )
-    assert type(excinfo.value) is gm.GeometryError
-    assert str(excinfo.value) == 'polygon-array pickle ring offsets are not a valid CSR'
-
-    # Empty-ring payload: zero coords, ring window [0,0].
-    empty_xs = b''
-    empty_ys = b''
-    empty_ring = struct.pack('<2i', 0, 0)
-    empty_poly = struct.pack('<2i', 0, 1)
-    with pytest.raises(gm.GeometryError, match=r'ring|short|four') as excinfo:
-        _lib._unpickle_polygon_array(
-            empty_xs,
-            empty_ys,
+        ),
+        'open ring': lambda: _lib._unpickle_packed_array(
+            doubles(0.0, 1.0, 1.0, 0.5),
+            doubles(0.0, 0.0, 1.0, 1.0),
             None,
             None,
-            empty_ring,
-            empty_poly,
+            (offsets(0, 4), offsets(0, 1)),
             None,
             None,
             None,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError
-
-    # No-shell polygon: ring_offsets=[0], polygon_offsets=[0,0] (panicked
-    # in polygon_view before the shell cardinality gate).
-    no_shell_ring = struct.pack('<i', 0)
-    no_shell_poly = struct.pack('<2i', 0, 0)
-    with pytest.raises(gm.GeometryError, match=r'shell|ring|CSR') as excinfo:
-        _lib._unpickle_polygon_array(
-            empty_xs,
-            empty_ys,
+        ),
+        'ring past columns': lambda: _lib._unpickle_packed_array(
+            square_xs,
+            square_ys,
             None,
             None,
-            no_shell_ring,
-            no_shell_poly,
+            (offsets(0, 99), offsets(0, 1)),
             None,
             None,
             None,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError
+        ),
+        'empty ring': lambda: _lib._unpickle_packed_array(
+            b'', b'', None, None, (offsets(0, 0), offsets(0, 1)), None, None, None
+        ),
+        'no-shell polygon': lambda: _lib._unpickle_packed_array(
+            b'', b'', None, None, (offsets(0), offsets(0, 0)), None, None, None
+        ),
+    }
+    for name, unpickle in rejected.items():
+        with pytest.raises(gm.GeometryError) as excinfo:
+            unpickle()
+        assert type(excinfo.value).__name__ != 'PanicException', name
 
     # Zero-row packed polygon remains valid: [0]/[0] offsets, empty columns.
-    zero_ring = struct.pack('<i', 0)
-    zero_poly = struct.pack('<i', 0)
-    empty_arr = _lib._unpickle_polygon_array(
-        empty_xs, empty_ys, None, None, zero_ring, zero_poly, None, None, None, None
+    empty = _lib._unpickle_packed_array(
+        b'', b'', None, None, (offsets(0), offsets(0)), None, None, None
     )
-    assert len(empty_arr) == 0
+    assert len(empty) == 0
 
 
 def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
@@ -318,28 +246,26 @@ def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
 
     # Z closes in XY but not Z (1 != 2) — the audit repro.
     with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
-        _lib._unpickle_polygon_array(
-            xs, ys, f([1.0, 1.0, 1.0, 2.0]), None, ring, poly, None, None, None, None
+        _lib._unpickle_packed_array(
+            xs, ys, f([1.0, 1.0, 1.0, 2.0]), None, (ring, poly), None, None, None
         )
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # M-only unclosed (first M != last M).
     with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
-        _lib._unpickle_polygon_array(
-            xs, ys, None, f([1.0, 1.0, 1.0, 2.0]), ring, poly, None, None, None, None
+        _lib._unpickle_packed_array(
+            xs, ys, None, f([1.0, 1.0, 1.0, 2.0]), (ring, poly), None, None, None
         )
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # ZM unclosed on both extra ordinates.
     with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
-        _lib._unpickle_polygon_array(
+        _lib._unpickle_packed_array(
             xs,
             ys,
             f([1.0, 1.0, 1.0, 2.0]),
             f([3.0, 3.0, 3.0, 4.0]),
-            ring,
-            poly,
-            None,
+            (ring, poly),
             None,
             None,
             None,
@@ -348,8 +274,8 @@ def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
 
     # Genuinely closed 3D ring still unpickles into packed storage.
     zs_closed = f([1.0, 1.0, 1.0, 1.0])
-    ok_z = _lib._unpickle_polygon_array(
-        xs, ys, zs_closed, None, ring, poly, None, None, None, None
+    ok_z = _lib._unpickle_packed_array(
+        xs, ys, zs_closed, None, (ring, poly), None, None, None
     )
     assert len(ok_z) == 1
     assert list(ok_z[0].exterior.coords.z) == [1.0, 1.0, 1.0, 1.0]
@@ -357,8 +283,8 @@ def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
     assert list(restored_z[0].exterior.coords.z) == [1.0, 1.0, 1.0, 1.0]
 
     # Native 2D closed ring still accepts.
-    ok_2d = _lib._unpickle_polygon_array(
-        xs, ys, None, None, ring, poly, None, None, None, None
+    ok_2d = _lib._unpickle_packed_array(
+        xs, ys, None, None, (ring, poly), None, None, None
     )
     assert len(ok_2d) == 1
     assert ok_2d[0].to_wkt().startswith('POLYGON')
@@ -436,8 +362,10 @@ def _nullable_packed_linestring_arrow() -> gm.GeometryArray:
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
     arr = gm.from_arrow(batch)
-    # Prove packed (not Mixed): drop_missing densifies to the line unpickler.
-    assert arr.drop_missing().__reduce_ex__(5)[0].__name__ == '_unpickle_line_array'
+    # Prove packed (not Mixed): drop_missing densifies to packed lines.
+    callable_, args = arr.drop_missing().__reduce_ex__(5)
+    assert callable_.__name__ == '_unpickle_packed_array'
+    assert len(args[4]) == 1
     return arr
 
 
@@ -482,7 +410,9 @@ def _nullable_packed_polygon_arrow() -> gm.GeometryArray:
     )
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
     arr = gm.from_arrow(batch)
-    assert arr.drop_missing().__reduce_ex__(5)[0].__name__ == '_unpickle_polygon_array'
+    callable_, args = arr.drop_missing().__reduce_ex__(5)
+    assert callable_.__name__ == '_unpickle_packed_array'
+    assert len(args[4]) == 2
     return arr
 
 
@@ -625,22 +555,6 @@ def test_bulk_missing_rows_do_not_panic_streaming_line_or_polygon(loader) -> Non
     ] == ['LineString', None, 'Point']
 
 
-def test_pickle_crafted_masked_row_map_nan_payload_rejected() -> None:
-    """A logical mask applied to physical rows must not admit orphan NaNs.
-    Packed-point lane no longer accepts a missing mask; non-finite columns
-    are rejected by from_owned_columns.
-    """
-    import math
-
-    xs = struct.pack('<2d', math.nan, 1.0)
-    ys = struct.pack('<2d', math.nan, 1.0)
-    row_map = struct.pack('<2Q', 1, 0)
-    with pytest.raises(
-        (gm.InvalidGeometryError, gm.GeometryError), match=r'finite|coordinate'
-    ):
-        _lib._unpickle_point_array(xs, ys, None, None, None, None, row_map, None)
-
-
 def test_pickle_malformed_wkb_polygon_stays_mixed_not_packed() -> None:
     """The mixed WKB unpickler must not opportunistically pack.
 
@@ -662,53 +576,8 @@ def test_pickle_malformed_wkb_polygon_stays_mixed_not_packed() -> None:
     assert restored[0].is_valid
 
 
-def test_d06_mixed_pickle_rejects_srid_plus_crs_free_rows() -> None:
-    """D06: mixed unpickle must not stamp an EWKB SRID onto CRS-free rows.
-
-    Bulk ``from_wkb`` rejects an SRID-tagged row mixed with a plain WKB row
-    when no explicit ``crs=`` is given. The pickle reconstructor must reuse
-    the same ``SridFrameAdmission`` path — never silently assign the SRID frame
-    to plain rows.
-    """
-    ewkb = struct.pack('<BII2d', 1, 0x20000001, 4326, 1.0, 2.0)  # POINT SRID=4326
-    plain = struct.pack('<BI2d', 1, 1, 3.0, 4.0)  # POINT no SRID
-
-    with pytest.raises(gm.CRSMismatchError) as bulk_exc:
-        gm.from_wkb([ewkb, plain])
-    assert type(bulk_exc.value).__name__ != 'PanicException'
-
-    with pytest.raises(gm.CRSMismatchError) as pickle_exc:
-        _lib._unpickle_geometry_array([ewkb, plain], None, None, None)
-    assert type(pickle_exc.value).__name__ != 'PanicException'
-
-    # Payload crs= provides the frame for plain rows (normal pickle path).
-    framed = _lib._unpickle_geometry_array([plain, plain], 'EPSG:4326', None, None)
-    assert framed.crs is not None
-    assert framed.crs.to_authority() == ('EPSG', '4326')
-    assert framed.to_wkt() == ['POINT (3 4)', 'POINT (3 4)']
-
-    # Real array pickle round-trip still restores exactly (plain WKB + frame).
-    arr = gm.GeometryArray([gm.Point(1, 2, crs=4326), gm.Point(3, 4, crs=4326)])
-    restored = pickle.loads(pickle.dumps(arr))
-    assert restored.crs == arr.crs
-    assert restored.to_wkt() == arr.to_wkt()
-    assert restored.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
-
-    # Masked CRS-free placeholder next to an EWKB row still admits (mask skip).
-    masked = _lib._unpickle_geometry_array([ewkb, plain], None, None, bytes([0, 1]))
-    assert masked.crs is not None
-    assert masked.crs.to_authority() == ('EPSG', '4326')
-    assert masked.is_missing[1]
-
-
-def test_r16_mixed_unpickle_epoch_after_ewkb_crs() -> None:
-    """R16: mixed unpickle discovers EWKB CRS before validating epoch.
-
-    Exact audit repro: ``from_wkb([ewkb], epoch=2020.0)`` accepts while
-    ``_unpickle_geometry_array([ewkb], None, 2020.0, None)`` previously raised
-    ``CRSError: coordinate epoch requires a CRS`` because epoch ran before the
-    embedded-SRID scan.
-    """
+def test_r16_from_wkb_epoch_after_ewkb_crs() -> None:
+    """R16: ``from_wkb`` discovers the EWKB CRS before validating epoch."""
     w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
 
     from_wkb = gm.from_wkb([w], epoch=2020.0)
@@ -724,26 +593,15 @@ def test_r16_mixed_unpickle_epoch_after_ewkb_crs() -> None:
     ):
         gm.from_wkb([static], epoch=2020.0)
 
-    unpickled = _lib._unpickle_geometry_array([w], None, 2020.0, None)
-    assert unpickled.crs is not None
-    assert unpickled.crs.to_authority() == ('EPSG', '4326')
-    assert unpickled.epoch == 2020.0
-    assert [str(value) for value in unpickled] == ['POINT (1 2)']
-
-    # Honest pickle round-trip still works with CRS+epoch on the array frame.
+    # Pickle round-trip still works with CRS+epoch on the array frame.
     framed = gm.GeometryArray([gm.Point(1, 2, crs=4326)], epoch=2020.0)
     restored = pickle.loads(pickle.dumps(framed))
     assert restored.crs == framed.crs
     assert restored.epoch == 2020.0
     assert [str(value) for value in restored] == ['POINT (1 2)']
 
-    # Epoch without any CRS (payload or EWKB) still errors.
+    # Epoch without any CRS still errors.
     plain = gm.Point(1, 2).to_wkb()  # no SRID
-    with pytest.raises(
-        gm.CRSError,
-        match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',
-    ):
-        _lib._unpickle_geometry_array([plain], None, 2020.0, None)
     with pytest.raises(
         gm.CRSError,
         match=r'^a coordinate epoch requires a CRS; attach one with crs= \(or set_crs\(\.\.\.\)\) before tagging an epoch$',

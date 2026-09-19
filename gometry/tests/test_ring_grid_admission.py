@@ -128,59 +128,20 @@ def _try_wkb(coords: list[tuple[float, ...]]) -> tuple[str, Any]:
         return 'ok', g
 
 
-def _try_pickle(coords: list[tuple[float, ...]]) -> tuple[str, Any]:
-    """Pickle pack admission for a single-ring polygon column."""
-    xs = [c[0] for c in coords]
-    ys = [c[1] for c in coords]
-    zs = [c[2] for c in coords] if len(coords[0]) >= 3 else None
-    ms = [c[3] for c in coords] if len(coords[0]) >= 4 else None
-    # For 3-tuples that are XYZ (not XYM): Z only.
-    if len(coords[0]) == 3:
-        ms = None
-
-    def pack_f(vals: list[float] | None) -> bytes | None:
-        if vals is None:
-            return None
-        return b''.join(struct.pack('<d', v) for v in vals)
-
-    def pack_i(vals: list[int]) -> bytes:
-        return b''.join(struct.pack('<i', v) for v in vals)
-
-    n = len(coords)
-    try:
-        arr = gm._lib._unpickle_polygon_array(  # type: ignore[attr-defined]
-            pack_f(xs),
-            pack_f(ys),
-            pack_f(zs),
-            pack_f(ms),
-            pack_i([0, n]),
-            pack_i([0, 1]),
-            None,
-            None,
-            None,
-            None,
-        )
-    except Exception as exc:
-        return type(exc).__name__, exc
-    else:
-        return 'ok', arr[0]
-
-
 @pytest.mark.parametrize('name,coords,expected_wkt', _ring_payloads())
 def test_r15i_ring_admission_matrix_four_ingresses(
     name: str,
     coords: list[tuple[float, ...]],
     expected_wkt: str | None,
 ) -> None:
-    """Constructor, WKT, WKB, pickle agree on accept/reject + normalized form."""
+    """Constructor, WKT, WKB agree on accept/reject + normalized form."""
     results = {
         'ctor': _try_construct(coords),
         'wkt': _try_wkt(coords),
         'wkb': _try_wkb(coords),
-        'pickle': _try_pickle(coords),
     }
     accepts = {k: (v[0] == 'ok') for k, v in results.items()}
-    # All four must accept, or all four must reject.
+    # All must accept, or all must reject.
     assert len(set(accepts.values())) == 1, (
         f'{name}: ingress disagreement { {k: (results[k][0], str(results[k][1])[:80]) for k in results} }'
     )

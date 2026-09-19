@@ -13,6 +13,6 @@ pub(crate) use feature::{to_feature, to_feature_collection};
 pub(crate) use from::{from_wkb, from_wkt};
 pub(crate) use geojson::{from_features, from_geojson};
 pub(crate) use pickle::{
-    _unpickle_geometry, _unpickle_geometry_array, _unpickle_line_array, _unpickle_point_array,
-    _unpickle_polygon_array, reduce_geometry, reduce_geometry_array,
+    _unpickle_geometry, _unpickle_geometry_array, _unpickle_packed_array, reduce_geometry,
+    reduce_geometry_array,
 };

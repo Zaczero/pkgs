@@ -2,13 +2,13 @@ use std::sync::Arc;
 
 use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
-    GeometryArrayStorage, PackedStorage, PointRowLayout, RowSelection, RowSelectionRef,
+    CheckedRingWindow, GeometryArrayStorage, PackedStorage, PointRowLayout, RowSelectionRef,
     ValidityMask,
 };
-use crate::py::wire_crs::{SridFrameAdmission, guard_embedded_crs_conflict};
+use crate::geometry::{CsrOffsetColumn, SharedSlice};
 use crate::{CoordSeq, Crs, Frame, PyGeometry, PyGeometryArray, ShapeData, Typed};
 
 type EncodedPointColumns = (Vec<u8>, Vec<u8>, Option<Vec<u8>>, Option<Vec<u8>>);
@@ -90,37 +90,6 @@ fn rebased_i32_offsets_le_bytes(
     Ok(out)
 }
 
-/// Resolve a CRS string arriving from a pickle payload through the same
-/// PROJ-backed parser public constructors use. Rejects `"NOT_A_CRS"` at unpickle
-/// rather than deferring failure to a later CRS operation.
-fn deserialized_crs(crs: Option<String>) -> crate::error::Result<Option<Crs>> {
-    match crs {
-        None => Ok(None),
-        Some(text) => {
-            let definition = crate::crs::definition(&text).map_err(|err| {
-                crate::crs::CrsError::message(format!(
-                    "invalid CRS in geometry pickle payload: {err}"
-                ))
-            })?;
-            Ok(Some(definition))
-        },
-    }
-}
-
-fn deserialized_epoch(epoch: Option<f64>, crs: Option<&str>) -> crate::error::Result<Option<f64>> {
-    let epoch = match epoch {
-        None => None,
-        Some(value) if value.is_finite() => Some(if value == 0.0 { 0.0 } else { value }),
-        Some(_) => {
-            return Err(pickle_error(
-                "coordinate epoch must be a finite decimal year",
-            ));
-        },
-    };
-    let crs = crs.map(Crs::from);
-    Frame::new(crs, epoch).map(|_| epoch)
-}
-
 fn snapshot_bytes(bytes: &[u8]) -> PyResult<Vec<u8>> {
     let mut snapshot = Vec::new();
     crate::boundary::try_reserve_vec(&mut snapshot, bytes.len()).map_err(PyErr::from)?;
@@ -132,15 +101,18 @@ fn snapshot_optional_bytes(bytes: Option<&[u8]>) -> PyResult<Option<Vec<u8>>> {
     bytes.map(snapshot_bytes).transpose()
 }
 
+/// The frame a reducer wrote. Unpickling already runs arbitrary code, so a
+/// forged frame is not a boundary this reader defends.
+fn pickled_frame(crs: Option<String>, epoch: Option<f64>) -> crate::error::Result<Frame> {
+    Frame::new(crs.map(Crs::from), epoch)
+}
+
 #[expect(
     clippy::used_underscore_items,
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
-/// Rebuild a pickled `Geometry` (internal; see ``Geometry.__reduce__``).
-///
-/// Frame strings are resolved through PROJ. Embedded EWKB SRIDs reuse the
-/// public `from_wkb` reconciliation (conflict with the payload CRS is rejected;
-/// an embedded SRID is kept when the payload CRS is absent).
+/// Rebuild a pickled `Geometry` from WKB (internal; see
+/// ``Geometry.__reduce__``).
 #[pyfunction]
 pub(crate) fn _unpickle_geometry(
     py: Python<'_>,
@@ -150,7 +122,12 @@ pub(crate) fn _unpickle_geometry(
 ) -> PyResult<Typed> {
     let wkb = snapshot_bytes(wkb)?;
     let geometry = py
-        .detach(move || unpickle_geometry_detached(&wkb, crs, epoch))
+        .detach(move || {
+            PyGeometry::with_frame(
+                crate::io::parse_wkb(&wkb)?.shape,
+                pickled_frame(crs, epoch)?,
+            )
+        })
         .map_err(PyErr::from)?;
     Ok(Typed(geometry))
 }
@@ -159,14 +136,11 @@ pub(crate) fn _unpickle_geometry(
     clippy::used_underscore_items,
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
-/// Rebuild a pickled mixed-storage `GeometryArray` (internal; see
-/// ``GeometryArray.__reduce__``).
+/// Rebuild a pickled mixed-storage `GeometryArray` from WKB rows (internal;
+/// see ``GeometryArray.__reduce__``).
 ///
 /// Always builds Mixed storage: WKB intentionally preserves malformed rings
 /// for `validate()`, and must never enter trusted packed columns.
-///
-/// Frame strings are resolved; per-row EWKB SRIDs reconcile against the
-/// array frame (same rules as bulk `from_wkb`).
 #[pyfunction]
 pub(crate) fn _unpickle_geometry_array(
     py: Python<'_>,
@@ -187,283 +161,77 @@ pub(crate) fn _unpickle_geometry_array(
     clippy::used_underscore_items,
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
-/// Rebuild a pickled packed-point `GeometryArray` from raw f64 columns
-/// (internal; see ``GeometryArray.__reduce__``).
+/// Rebuild a pickled packed `GeometryArray` from little-endian `f64` columns
+/// and the `i32` CSR offset levels of its kind: none for points, one for
+/// lines, ring then polygon offsets for polygons (internal; see
+/// ``GeometryArray.__reduce__``).
 ///
-/// Packed-point payloads carry only finite present rows; an optional missing
-/// mask restores their original logical row positions.
+/// The payload carries only present rows; an optional missing mask restores
+/// their logical positions.
 #[pyfunction]
-#[pyo3(signature = (xs, ys, zs, ms, crs, epoch, row_map, missing))]
-pub(crate) fn _unpickle_point_array(
+pub(crate) fn _unpickle_packed_array(
     py: Python<'_>,
     xs: &[u8],
     ys: &[u8],
     zs: Option<&[u8]>,
     ms: Option<&[u8]>,
+    offsets: &Bound<'_, PyTuple>,
     crs: Option<String>,
     epoch: Option<f64>,
-    row_map: Option<&[u8]>,
     missing: Option<&[u8]>,
 ) -> PyResult<PyGeometryArray> {
-    let xs = snapshot_bytes(xs)?;
-    let ys = snapshot_bytes(ys)?;
-    let zs = snapshot_optional_bytes(zs)?;
-    let ms = snapshot_optional_bytes(ms)?;
-    let row_map = snapshot_optional_bytes(row_map)?;
+    let level = |index: usize| -> PyResult<Vec<u8>> {
+        snapshot_bytes(offsets.get_item(index)?.cast::<PyBytes>()?.as_bytes())
+    };
+    let levels = match offsets.len() {
+        0 => OffsetLevels::Points,
+        1 => OffsetLevels::Lines(level(0)?),
+        2 => OffsetLevels::Polygons {
+            rings: level(0)?,
+            polygons: level(1)?,
+        },
+        _ => return Err(pickle_error("packed pickle has at most two offset levels").into()),
+    };
+    let columns = (
+        snapshot_bytes(xs)?,
+        snapshot_bytes(ys)?,
+        snapshot_optional_bytes(zs)?,
+        snapshot_optional_bytes(ms)?,
+    );
     let missing = snapshot_optional_bytes(missing)?;
-    py.detach(move || unpickle_point_array_detached(xs, ys, zs, ms, crs, epoch, row_map, missing))
+    py.detach(move || unpickle_packed_array_detached(columns, levels, crs, epoch, missing))
         .map_err(PyErr::from)
 }
 
-#[expect(
-    clippy::used_underscore_items,
-    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
-)]
-/// Rebuild a pickled packed-line `GeometryArray` from raw f64 columns plus
-/// little-endian `i32` CSR offsets (internal; see
-/// ``GeometryArray.__reduce__``).
-#[pyfunction]
-pub(crate) fn _unpickle_line_array(
-    py: Python<'_>,
-    xs: &[u8],
-    ys: &[u8],
-    zs: Option<&[u8]>,
-    ms: Option<&[u8]>,
-    offsets: &[u8],
-    crs: Option<String>,
-    epoch: Option<f64>,
-    row_map: Option<&[u8]>,
-    missing: Option<&[u8]>,
-) -> PyResult<PyGeometryArray> {
-    let xs = snapshot_bytes(xs)?;
-    let ys = snapshot_bytes(ys)?;
-    let zs = snapshot_optional_bytes(zs)?;
-    let ms = snapshot_optional_bytes(ms)?;
-    let offsets = snapshot_bytes(offsets)?;
-    let row_map = snapshot_optional_bytes(row_map)?;
-    let missing = snapshot_optional_bytes(missing)?;
-    py.detach(move || {
-        unpickle_line_array_detached(xs, ys, zs, ms, offsets, crs, epoch, row_map, missing)
-    })
-    .map_err(PyErr::from)
+/// The CSR offset levels of one packed geometry kind.
+enum OffsetLevels {
+    Points,
+    Lines(Vec<u8>),
+    Polygons { rings: Vec<u8>, polygons: Vec<u8> },
 }
 
-#[expect(
-    clippy::used_underscore_items,
-    reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
-)]
-/// Rebuild a pickled packed-polygon `GeometryArray` from raw f64 columns plus
-/// little-endian `i32` two-level CSR offsets (internal; see
-/// ``GeometryArray.__reduce__``).
-#[pyfunction]
-pub(crate) fn _unpickle_polygon_array(
-    py: Python<'_>,
-    xs: &[u8],
-    ys: &[u8],
-    zs: Option<&[u8]>,
-    ms: Option<&[u8]>,
-    ring_offsets: &[u8],
-    polygon_offsets: &[u8],
-    crs: Option<String>,
-    epoch: Option<f64>,
-    row_map: Option<&[u8]>,
-    missing: Option<&[u8]>,
-) -> PyResult<PyGeometryArray> {
-    let xs = snapshot_bytes(xs)?;
-    let ys = snapshot_bytes(ys)?;
-    let zs = snapshot_optional_bytes(zs)?;
-    let ms = snapshot_optional_bytes(ms)?;
-    let ring_offsets = snapshot_bytes(ring_offsets)?;
-    let polygon_offsets = snapshot_bytes(polygon_offsets)?;
-    let row_map = snapshot_optional_bytes(row_map)?;
-    let missing = snapshot_optional_bytes(missing)?;
-    py.detach(move || {
-        unpickle_polygon_array_detached(
-            xs,
-            ys,
-            zs,
-            ms,
-            ring_offsets,
-            polygon_offsets,
-            crs,
-            epoch,
-            row_map,
-            missing,
-        )
-    })
-    .map_err(PyErr::from)
+/// Decode a missing mask; any nonzero byte marks a missing row.
+fn pickled_missing_mask(bytes: &[u8]) -> crate::error::Result<Option<ValidityMask>> {
+    let mut missing = Vec::new();
+    crate::boundary::try_reserve_vec(&mut missing, bytes.len())?;
+    missing.extend(bytes.iter().map(|&byte| byte != 0));
+    ValidityMask::from_vec(bytes.len(), missing)
 }
 
-/// Untrusted pickle ring boundary — same policy as WKT/WKB
-/// ([`crate::io::admit_closed_ring`]):
-/// silent-close XY-open rings (≥3 corners), reject Z/M-open and too-short.
-/// When any ring is open the coordinate columns and ring CSR are rebuilt so
-/// packed storage still holds closed rings only.
-fn admit_pickled_polygon_rings(
-    seq: crate::geometry::CoordSeq,
-    ring_offsets: crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
-) -> crate::error::Result<(
-    crate::geometry::CoordSeq,
-    crate::geometry::CsrOffsetColumn<crate::geometry::RingLevel>,
-)> {
-    use crate::geometry::CoordSeqBuilder;
-
-    let mut windows = Vec::new();
-    crate::boundary::try_reserve_vec(&mut windows, ring_offsets.len().saturating_sub(1))?;
-    for [start, end] in ring_offsets.array_windows::<2>() {
-        crate::boundary::try_push_vec(&mut windows, (*start as usize, *end as usize))?;
-    }
-
-    // Fast path: every ring already fully closed on active ordinates and long
-    // enough — no rebuild (the common gometry-written pickle case).
-    let already_closed = windows
-        .iter()
-        .all(|&(start, end)| crate::array::CheckedRingWindow::checked(&seq, start..end).is_ok());
-    if already_closed {
-        return Ok((seq, ring_offsets));
-    }
-
-    // Rebuild through the shared admitter (silent-close / reject).
-    let coord_capacity = seq
-        .len()
-        .checked_add(windows.len())
-        .ok_or_else(|| pickle_error("polygon-array pickle coordinate count overflows usize"))?;
-    let mut builder = CoordSeqBuilder::try_with_capacity(seq.axes(), coord_capacity)?;
-    let offset_capacity = windows
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| pickle_error("polygon-array pickle offset count overflows usize"))?;
-    let mut new_offsets = Vec::new();
-    crate::boundary::try_reserve_vec(&mut new_offsets, offset_capacity)?;
-    crate::boundary::try_push_vec(&mut new_offsets, 0)?;
-    for (start, end) in windows {
-        let n = end - start;
-        let ring_capacity = n
-            .checked_add(1)
-            .ok_or_else(|| pickle_error("polygon-array pickle ring size overflows usize"))?;
-        let mut ring_builder = CoordSeqBuilder::try_with_capacity(seq.axes(), ring_capacity)?;
-        for index in start..end {
-            ring_builder.push_at(&seq, index)?;
-        }
-        let ring_seq = ring_builder.finish()?;
-        let admitted = crate::io::admit_closed_ring(ring_seq)
-            .map_err(|error| pickle_error(error.to_string()))?;
-        let coords = admitted.coords();
-        for index in 0..coords.len() {
-            builder.push_at(coords, index)?;
-        }
-        let next = i32::try_from(builder.len())
-            .map_err(|_| pickle_error("polygon-array pickle exceeds the offset domain"))?;
-        crate::boundary::try_push_vec(&mut new_offsets, next)?;
-    }
-    let seq = builder.finish()?;
-    let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
-        crate::geometry::SharedSlice::try_from_vec(new_offsets)?,
-        seq.len(),
-    )
-    .map_err(|_| pickle_error("polygon-array pickle ring offsets are not a valid CSR"))?;
-    Ok((seq, ring_offsets))
-}
-
-/// Every polygon CSR window must cover at least one ring (`end > start`).
-/// Zero-row arrays keep `[0]` / `[0]` (no windows) as the only empty case.
-fn validate_pickled_polygon_shells(
-    polygon_offsets: &crate::geometry::CsrOffsetColumn<crate::geometry::PolygonLevel>,
-) -> crate::error::Result<()> {
-    for [start, end] in polygon_offsets.array_windows::<2>() {
-        if end <= start {
-            return Err(pickle_error(
-                "polygon-array pickle polygon has no shell ring",
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Decode an optional little-endian `u64` logical-row map from a pickle
-/// payload. Empty bytes are a valid empty gather (zero logical rows).
-fn pickled_usize_row_map(
-    bytes: Option<&[u8]>,
-    physical_rows: usize,
-    label: &str,
-) -> crate::error::Result<RowSelection> {
-    let Some(bytes) = bytes else {
-        return Ok(RowSelection::Identity);
-    };
-    if !bytes.len().is_multiple_of(size_of::<u64>()) {
-        return Err(pickle_error(format!("malformed {label} pickle row_map")));
-    }
-    let mut map = Vec::new();
-    crate::boundary::try_reserve_vec(&mut map, bytes.len() / size_of::<u64>())?;
-    for chunk in bytes.as_chunks::<8>().0 {
-        let value = u64::from_le_bytes(*chunk);
-        let value = usize::try_from(value)
-            .map_err(|_| pickle_error(format!("{label} pickle row_map index out of range")))?;
-        crate::boundary::try_push_vec(&mut map, value)?;
-    }
-    RowSelection::gather_checked_native(map, physical_rows)?.ok_or_else(|| {
-        pickle_error(format!(
-            "{label} pickle row_map references a nonexistent physical row"
-        ))
-    })
-}
-
-/// Decode little-endian `i32` CSR offsets from a packed-array pickle payload.
-fn pickled_i32_csr_offsets(bytes: &[u8], label: &str) -> crate::error::Result<Vec<i32>> {
-    if !bytes.len().is_multiple_of(size_of::<i32>()) || bytes.len() < size_of::<i32>() {
-        return Err(pickle_error(format!("malformed {label} pickle offsets")));
-    }
+/// Decode little-endian `i32` CSR offsets through the owning validator, which
+/// keeps every row window inside `end_cap`.
+fn pickled_csr_offsets<Level>(
+    bytes: &[u8],
+    end_cap: usize,
+) -> crate::error::Result<CsrOffsetColumn<Level>> {
+    let chunks = bytes.as_chunks::<4>().0;
     let mut offsets = Vec::new();
-    crate::boundary::try_reserve_vec(&mut offsets, bytes.len() / size_of::<i32>())?;
-    for chunk in bytes.as_chunks::<4>().0 {
-        crate::boundary::try_push_vec(&mut offsets, i32::from_le_bytes(*chunk))?;
-    }
-    Ok(offsets)
+    crate::boundary::try_reserve_vec(&mut offsets, chunks.len())?;
+    offsets.extend(chunks.iter().map(|chunk| i32::from_le_bytes(*chunk)));
+    CsrOffsetColumn::try_from_shared_i32(SharedSlice::try_from_vec(offsets)?, end_cap)
 }
 
-fn pickled_missing_mask(
-    len: usize,
-    missing: Option<&[u8]>,
-    label: &str,
-    present_count: Option<usize>,
-) -> crate::error::Result<Option<ValidityMask>> {
-    let Some(bytes) = missing else {
-        return Ok(None);
-    };
-    if bytes.len() != len {
-        return Err(pickle_error(format!(
-            "malformed {label} pickle missing mask"
-        )));
-    }
-    // Untrusted boundary: only exact 0/1 bytes are valid mask entries.
-    if bytes.iter().any(|&byte| byte > 1) {
-        return Err(pickle_error(format!(
-            "malformed {label} pickle missing mask"
-        )));
-    }
-    let mut values = Vec::new();
-    crate::boundary::try_reserve_vec(&mut values, len)?;
-    for &byte in bytes {
-        crate::boundary::try_push_vec(&mut values, byte != 0)?;
-    }
-    let mask = ValidityMask::from_vec(len, values)?;
-    let decoded_present_count = mask.as_ref().map_or(len, ValidityMask::present_count);
-    if present_count.is_some_and(|present_count| decoded_present_count != present_count) {
-        return Err(pickle_error(format!(
-            "malformed {label} pickle missing mask"
-        )));
-    }
-    Ok(mask)
-}
-
-/// Decode the shared column payload of the packed-array picklers.
-/// Every physical ordinate must be finite — the reducer never emits orphan
-/// NaN placeholders on packed lanes.
-///
-/// Columns fill exact final `Arc`s (no `Vec` intermediate). Element count is
-/// **derived from each column's byte length** (`len / 8`), never from a
-/// separate trusted `size_hint` — same class of fix as the WKB exact-Arc
-/// decoder. Validation messages and reconstruction semantics are unchanged.
+/// Decode the little-endian `f64` columns of a packed payload.
 fn pickled_coordseq(
     xs: &[u8],
     ys: &[u8],
@@ -471,28 +239,17 @@ fn pickled_coordseq(
     ms: Option<&[u8]>,
 ) -> crate::error::Result<CoordSeq> {
     let column = |bytes: &[u8]| -> crate::error::Result<Vec<f64>> {
-        if !bytes.len().is_multiple_of(size_of::<f64>()) {
-            unreachable!("column lengths are validated before allocation");
-        }
-        // Proven count from the byte span (not a caller-supplied length).
         let chunks = bytes.as_chunks::<8>().0;
-        let len = chunks.len();
         let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, len)?;
-        for chunk in chunks {
-            crate::boundary::try_push_vec(&mut values, f64::from_le_bytes(*chunk))?;
-        }
+        crate::boundary::try_reserve_vec(&mut values, chunks.len())?;
+        values.extend(chunks.iter().map(|chunk| f64::from_le_bytes(*chunk)));
         Ok(values)
     };
-    for bytes in [Some(xs), Some(ys), zs, ms].into_iter().flatten() {
-        if !bytes.len().is_multiple_of(size_of::<f64>()) {
-            return Err(pickle_error("malformed packed-array pickle column"));
-        }
-    }
     let xs = column(xs)?;
     let ys = column(ys)?;
     let zs = zs.map(column).transpose()?;
     let ms = ms.map(column).transpose()?;
+    // `from_owned_columns` leaves equal column lengths to its caller.
     if xs.len() != ys.len()
         || zs.as_ref().is_some_and(|column| column.len() != xs.len())
         || ms.as_ref().is_some_and(|column| column.len() != xs.len())
@@ -500,6 +257,86 @@ fn pickled_coordseq(
         return Err(pickle_error("packed-array pickle columns differ in length"));
     }
     CoordSeq::from_owned_columns(xs, ys, zs, ms)
+}
+
+fn unpickle_geometry_array_detached(
+    rows: Vec<Vec<u8>>,
+    crs: Option<String>,
+    epoch: Option<f64>,
+    missing: Option<Vec<u8>>,
+) -> crate::error::Result<PyGeometryArray> {
+    let mask = match missing {
+        Some(bytes) if bytes.len() != rows.len() => {
+            return Err(pickle_error(
+                "mixed-array pickle missing mask length differs from its rows",
+            ));
+        },
+        Some(bytes) => pickled_missing_mask(&bytes)?,
+        None => None,
+    };
+    let mut shapes = Vec::new();
+    crate::boundary::try_reserve_vec(&mut shapes, rows.len())?;
+    for (row, wkb) in rows.iter().enumerate() {
+        let shape = if mask.as_ref().is_some_and(|mask| mask.is_missing(row)) {
+            PyGeometryArray::missing_placeholder()
+        } else {
+            crate::io::parse_wkb(wkb)?.shape
+        };
+        crate::boundary::try_push_vec(&mut shapes, shape)?;
+    }
+    PyGeometryArray::mixed_shapes(shapes, pickled_frame(crs, epoch)?)?.with_missing_mask(mask)
+}
+
+/// Packed rows are read through constructors that assert their shape, so
+/// the structural checks here stop a panic on a corrupt payload.
+fn unpickle_packed_array_detached(
+    (xs, ys, zs, ms): EncodedPointColumns,
+    levels: OffsetLevels,
+    crs: Option<String>,
+    epoch: Option<f64>,
+    missing: Option<Vec<u8>>,
+) -> crate::error::Result<PyGeometryArray> {
+    let seq = pickled_coordseq(&xs, &ys, zs.as_deref(), ms.as_deref())?;
+    let frame = pickled_frame(crs, epoch)?;
+    let present = match levels {
+        OffsetLevels::Points => PyGeometryArray::packed_points(seq, frame)?,
+        OffsetLevels::Lines(offsets) => {
+            let offsets = pickled_csr_offsets(&offsets, seq.len())?;
+            if offsets
+                .array_windows::<2>()
+                .any(|[start, end]| end - start == 1)
+            {
+                return Err(pickle_error("line-array pickle row has a single vertex"));
+            }
+            PyGeometryArray::packed_lines(seq, offsets, frame)?
+        },
+        OffsetLevels::Polygons { rings, polygons } => {
+            let rings = pickled_csr_offsets(&rings, seq.len())?;
+            for [start, end] in rings.array_windows::<2>() {
+                CheckedRingWindow::checked(&seq, *start as usize..*end as usize)
+                    .map_err(|error| pickle_error(format!("polygon-array pickle {error}")))?;
+            }
+            let polygons = pickled_csr_offsets(&polygons, rings.len() - 1)?;
+            if polygons
+                .array_windows::<2>()
+                .any(|[start, end]| end <= start)
+            {
+                return Err(pickle_error(
+                    "polygon-array pickle polygon has no shell ring",
+                ));
+            }
+            PyGeometryArray::packed_polygons(seq, rings, polygons, frame)?
+        },
+    };
+    match missing
+        .as_deref()
+        .map(pickled_missing_mask)
+        .transpose()?
+        .flatten()
+    {
+        Some(mask) => PyGeometryArray::scatter_present_rows(&present, mask),
+        None => Ok(present),
+    }
 }
 
 struct GeometryPicklePayload {
@@ -520,46 +357,21 @@ fn geometry_pickle_payload_detached(
     })
 }
 
-enum ArrayPicklePayload {
-    Mixed {
-        rows: Vec<Vec<u8>>,
-        crs: Option<String>,
-        epoch: Option<f64>,
-        missing: Option<Vec<u8>>,
+/// A `GeometryArray.__reduce__` row payload: WKB rows for mixed storage, or
+/// typed columns and offsets for packed storage.
+enum PickleRows {
+    Mixed(Vec<Vec<u8>>),
+    Packed {
+        columns: EncodedPointColumns,
+        levels: OffsetLevels,
     },
-    Points {
-        xs: Vec<u8>,
-        ys: Vec<u8>,
-        zs: Option<Vec<u8>>,
-        ms: Option<Vec<u8>>,
-        crs: Option<String>,
-        epoch: Option<f64>,
-        row_map: Option<Vec<u8>>,
-        missing: Option<Vec<u8>>,
-    },
-    Lines {
-        xs: Vec<u8>,
-        ys: Vec<u8>,
-        zs: Option<Vec<u8>>,
-        ms: Option<Vec<u8>>,
-        offsets: Vec<u8>,
-        crs: Option<String>,
-        epoch: Option<f64>,
-        row_map: Option<Vec<u8>>,
-        missing: Option<Vec<u8>>,
-    },
-    Polygons {
-        xs: Vec<u8>,
-        ys: Vec<u8>,
-        zs: Option<Vec<u8>>,
-        ms: Option<Vec<u8>>,
-        ring_offsets: Vec<u8>,
-        polygon_offsets: Vec<u8>,
-        crs: Option<String>,
-        epoch: Option<f64>,
-        row_map: Option<Vec<u8>>,
-        missing: Option<Vec<u8>>,
-    },
+}
+
+struct ArrayPicklePayload {
+    rows: PickleRows,
+    crs: Option<String>,
+    epoch: Option<f64>,
+    missing: Option<Vec<u8>>,
 }
 
 /// Detached payload planning for `Geometry.__reduce__`.
@@ -596,93 +408,63 @@ pub(crate) fn reduce_geometry_array(
     let crs = array.crs_str().map(str::to_owned);
     let epoch = array.epoch();
     let payload = py
-        .detach(move || {
-            array_pickle_payload_detached(
-                storage.as_ref(),
-                missing.as_ref(),
-                point_layout,
+        .detach(move || -> crate::error::Result<ArrayPicklePayload> {
+            Ok(ArrayPicklePayload {
+                rows: pickle_rows(storage.as_ref(), missing.as_ref(), point_layout)?,
                 crs,
                 epoch,
-            )
+                missing: missing.as_ref().map(try_missing_bytes).transpose()?,
+            })
         })
         .map_err(PyErr::from)?;
     materialize_array_pickle_payload(py, payload)
 }
 
-fn array_pickle_payload_detached(
+/// Packed payloads hold finite present rows only; storage with a nonfinite
+/// present ordinate falls back to WKB rows.
+fn pickle_rows(
     storage: &GeometryArrayStorage,
     missing: Option<&ValidityMask>,
     point_layout: PointRowLayout,
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> crate::error::Result<ArrayPicklePayload> {
-    let missing_bytes = missing.map(try_missing_bytes).transpose()?;
+) -> crate::error::Result<PickleRows> {
+    let mixed = || -> crate::error::Result<PickleRows> {
+        Ok(PickleRows::Mixed(wkb_rows_for_mask(
+            storage,
+            missing,
+            point_layout,
+        )?))
+    };
     match (storage, missing) {
-        (GeometryArrayStorage::Mixed(_), missing) => Ok(ArrayPicklePayload::Mixed {
-            rows: wkb_rows_for_mask(storage, missing, point_layout)?,
-            crs,
-            epoch,
-            missing: missing_bytes,
-        }),
+        (GeometryArrayStorage::Mixed(_), _) => mixed(),
         (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), None) => {
             let selection = row_map.as_deref();
-            if points_are_finite(coords, selection) {
-                let (xs, ys, zs, ms) = encode_points_selection(coords, selection)?;
-                Ok(ArrayPicklePayload::Points {
-                    xs,
-                    ys,
-                    zs,
-                    ms,
-                    crs,
-                    epoch,
-                    row_map: None,
-                    missing: None,
-                })
-            } else {
-                Ok(ArrayPicklePayload::Mixed {
-                    rows: wkb_rows_for_mask(storage, None, point_layout)?,
-                    crs,
-                    epoch,
-                    missing: None,
-                })
+            if !points_are_finite(coords, selection) {
+                return mixed();
             }
+            Ok(PickleRows::Packed {
+                columns: encode_points_selection(coords, selection)?,
+                levels: OffsetLevels::Points,
+            })
         },
         (GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }), Some(mask)) => {
             let selection = row_map.as_deref();
             let row_aligned =
                 !point_layout.is_compact() && mask.len() == selection.len(coords.len());
-            let encoded = if row_aligned {
+            let columns = if row_aligned {
                 let indices = selected_storage_indices(selection, coords.len(), Some(mask))?;
                 if !points_are_finite(coords, RowSelectionRef::Gather(&indices)) {
-                    return Ok(ArrayPicklePayload::Mixed {
-                        rows: wkb_rows_for_mask(storage, Some(mask), point_layout)?,
-                        crs,
-                        epoch,
-                        missing: missing_bytes,
-                    });
+                    return mixed();
                 }
                 encode_points(coords, &indices)?
             } else {
                 if !points_are_finite(coords, selection) {
-                    return Ok(ArrayPicklePayload::Mixed {
-                        rows: wkb_rows_for_mask(storage, Some(mask), point_layout)?,
-                        crs,
-                        epoch,
-                        missing: missing_bytes,
-                    });
+                    return mixed();
                 }
                 encode_points_selection(coords, selection)?
             };
-            let (xs, ys, zs, ms) = encoded;
-            Ok(ArrayPicklePayload::Points {
-                xs,
-                ys,
-                zs,
-                ms,
-                crs,
-                epoch,
-                row_map: None,
-                missing: missing_bytes,
+            Ok(PickleRows::Packed {
+                columns,
+                levels: OffsetLevels::Points,
             })
         },
         (
@@ -694,30 +476,16 @@ fn array_pickle_payload_detached(
             mask,
         ) => {
             let windows = selected_line_windows(offsets, row_map.as_deref(), mask)?;
-            if columns_are_finite(coords, &windows) {
-                let (xs, ys, zs, ms) = encode_windows(coords, &windows)?;
-                Ok(ArrayPicklePayload::Lines {
-                    xs,
-                    ys,
-                    zs,
-                    ms,
-                    offsets: rebased_i32_offsets_le_bytes(
-                        windows.iter().map(std::ops::Range::len),
-                        windows.len(),
-                    )?,
-                    crs,
-                    epoch,
-                    row_map: None,
-                    missing: missing_bytes,
-                })
-            } else {
-                Ok(ArrayPicklePayload::Mixed {
-                    rows: wkb_rows_for_mask(storage, mask, point_layout)?,
-                    crs,
-                    epoch,
-                    missing: missing_bytes,
-                })
+            if !columns_are_finite(coords, &windows) {
+                return mixed();
             }
+            Ok(PickleRows::Packed {
+                columns: encode_windows(coords, &windows)?,
+                levels: OffsetLevels::Lines(rebased_i32_offsets_le_bytes(
+                    windows.iter().map(std::ops::Range::len),
+                    windows.len(),
+                )?),
+            })
         },
         (
             GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -747,34 +515,22 @@ fn array_pickle_payload_detached(
                     )?;
                 }
             }
-            if columns_are_finite(coords, &windows) {
-                let (xs, ys, zs, ms) = encode_windows(coords, &windows)?;
-                Ok(ArrayPicklePayload::Polygons {
-                    xs,
-                    ys,
-                    zs,
-                    ms,
-                    ring_offsets: rebased_i32_offsets_le_bytes(
+            if !columns_are_finite(coords, &windows) {
+                return mixed();
+            }
+            Ok(PickleRows::Packed {
+                columns: encode_windows(coords, &windows)?,
+                levels: OffsetLevels::Polygons {
+                    rings: rebased_i32_offsets_le_bytes(
                         windows.iter().map(std::ops::Range::len),
                         windows.len(),
                     )?,
-                    polygon_offsets: rebased_i32_offsets_le_bytes(
+                    polygons: rebased_i32_offsets_le_bytes(
                         polygon_ring_counts.into_iter(),
                         rows.len(),
                     )?,
-                    crs,
-                    epoch,
-                    row_map: None,
-                    missing: missing_bytes,
-                })
-            } else {
-                Ok(ArrayPicklePayload::Mixed {
-                    rows: wkb_rows_for_mask(storage, mask, point_layout)?,
-                    crs,
-                    epoch,
-                    missing: missing_bytes,
-                })
-            }
+                },
+            })
         },
     }
 }
@@ -958,312 +714,53 @@ fn materialize_array_pickle_payload(
     py: Python<'_>,
     payload: ArrayPicklePayload,
 ) -> PyResult<(Py<PyAny>, Py<PyAny>)> {
-    let (name, args) = match payload {
-        ArrayPicklePayload::Mixed {
-            rows,
-            crs,
-            epoch,
-            missing,
-        } => {
+    let ArrayPicklePayload {
+        rows,
+        crs,
+        epoch,
+        missing,
+    } = payload;
+    let bytes = |bytes: &[u8]| PyBytes::new(py, bytes);
+    let missing = missing.as_deref().map(bytes);
+    let (name, args) = match rows {
+        PickleRows::Mixed(rows) => {
             let mut py_rows = Vec::new();
             crate::boundary::try_reserve_vec(&mut py_rows, rows.len()).map_err(PyErr::from)?;
             for row in rows {
-                crate::boundary::try_push_vec(&mut py_rows, PyBytes::new(py, &row))
-                    .map_err(PyErr::from)?;
+                crate::boundary::try_push_vec(&mut py_rows, bytes(&row)).map_err(PyErr::from)?;
             }
             (
                 "_unpickle_geometry_array",
-                (py_rows, crs.as_deref(), epoch, py_bytes_opt(py, missing)).into_py_any(py)?,
+                (py_rows, crs.as_deref(), epoch, missing).into_py_any(py)?,
             )
         },
-        ArrayPicklePayload::Points {
-            xs,
-            ys,
-            zs,
-            ms,
-            crs,
-            epoch,
-            row_map,
-            missing,
-        } => (
-            "_unpickle_point_array",
+        PickleRows::Packed {
+            columns: (xs, ys, zs, ms),
+            levels,
+        } => {
+            let offsets = match &levels {
+                OffsetLevels::Points => PyTuple::empty(py),
+                OffsetLevels::Lines(offsets) => PyTuple::new(py, [bytes(offsets)])?,
+                OffsetLevels::Polygons { rings, polygons } => {
+                    PyTuple::new(py, [bytes(rings), bytes(polygons)])?
+                },
+            };
             (
-                PyBytes::new(py, &xs),
-                PyBytes::new(py, &ys),
-                py_bytes_opt(py, zs),
-                py_bytes_opt(py, ms),
-                crs.as_deref(),
-                epoch,
-                py_bytes_opt(py, row_map),
-                py_bytes_opt(py, missing),
+                "_unpickle_packed_array",
+                (
+                    bytes(&xs),
+                    bytes(&ys),
+                    zs.as_deref().map(bytes),
+                    ms.as_deref().map(bytes),
+                    offsets,
+                    crs.as_deref(),
+                    epoch,
+                    missing,
+                )
+                    .into_py_any(py)?,
             )
-                .into_py_any(py)?,
-        ),
-        ArrayPicklePayload::Lines {
-            xs,
-            ys,
-            zs,
-            ms,
-            offsets,
-            crs,
-            epoch,
-            row_map,
-            missing,
-        } => (
-            "_unpickle_line_array",
-            (
-                PyBytes::new(py, &xs),
-                PyBytes::new(py, &ys),
-                py_bytes_opt(py, zs),
-                py_bytes_opt(py, ms),
-                PyBytes::new(py, &offsets),
-                crs.as_deref(),
-                epoch,
-                py_bytes_opt(py, row_map),
-                py_bytes_opt(py, missing),
-            )
-                .into_py_any(py)?,
-        ),
-        ArrayPicklePayload::Polygons {
-            xs,
-            ys,
-            zs,
-            ms,
-            ring_offsets,
-            polygon_offsets,
-            crs,
-            epoch,
-            row_map,
-            missing,
-        } => (
-            "_unpickle_polygon_array",
-            (
-                PyBytes::new(py, &xs),
-                PyBytes::new(py, &ys),
-                py_bytes_opt(py, zs),
-                py_bytes_opt(py, ms),
-                PyBytes::new(py, &ring_offsets),
-                PyBytes::new(py, &polygon_offsets),
-                crs.as_deref(),
-                epoch,
-                py_bytes_opt(py, row_map),
-                py_bytes_opt(py, missing),
-            )
-                .into_py_any(py)?,
-        ),
+        },
     };
     let callable = crate::gometry_lib_module(py)?.getattr(name)?.unbind();
     Ok((callable, args))
-}
-
-#[expect(
-    clippy::single_option_map,
-    reason = "this boundary owns optional bytes before constructing a Python object"
-)]
-fn py_bytes_opt(py: Python<'_>, bytes: Option<Vec<u8>>) -> Option<Bound<'_, PyBytes>> {
-    bytes.map(|bytes| PyBytes::new(py, &bytes))
-}
-
-fn unpickle_geometry_detached(
-    wkb: &[u8],
-    crs: Option<String>,
-    epoch: Option<f64>,
-) -> crate::error::Result<PyGeometry> {
-    let parsed = crate::io::parse_wkb(wkb)?;
-    let embedded = crate::io::crs_from_optional_srid(parsed.srid)?;
-    let fallback = deserialized_crs(crs)?;
-    guard_embedded_crs_conflict(embedded.as_deref(), fallback.as_deref(), "EWKB SRID")?;
-    let crs = embedded.or(fallback);
-    let epoch = deserialized_epoch(epoch, crs.as_deref())?;
-    PyGeometry::with_frame(parsed.shape, Frame::new(crs, epoch)?)
-}
-
-fn unpickle_geometry_array_detached(
-    rows: Vec<Vec<u8>>,
-    crs: Option<String>,
-    epoch: Option<f64>,
-    missing: Option<Vec<u8>>,
-) -> crate::error::Result<PyGeometryArray> {
-    let fallback = deserialized_crs(crs)?;
-    let mask = pickled_missing_mask(rows.len(), missing.as_deref(), "mixed-array", None)?;
-    let mut parsed_rows = Vec::new();
-    crate::boundary::try_reserve_vec(&mut parsed_rows, rows.len())?;
-    let mut frame_admit = SridFrameAdmission::new(fallback, None);
-    for (row, wkb) in rows.iter().enumerate() {
-        if mask.as_ref().is_some_and(|mask| mask.is_missing(row)) {
-            crate::boundary::try_push_vec(&mut parsed_rows, None)?;
-            continue;
-        }
-        let parsed = crate::io::parse_wkb(wkb)?;
-        frame_admit.admit_srid(parsed.srid, row, "geometry array pickle", "EWKB SRID")?;
-        crate::boundary::try_push_vec(&mut parsed_rows, Some(parsed.shape))?;
-    }
-    let shared = frame_admit.finish()?;
-    let epoch = deserialized_epoch(epoch, shared.as_deref())?;
-    let frame = Frame::new(shared, epoch)?;
-    let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, parsed_rows.len())?;
-    for parsed in parsed_rows {
-        crate::boundary::try_push_vec(
-            &mut shapes,
-            parsed.unwrap_or_else(PyGeometryArray::missing_placeholder),
-        )?;
-    }
-    PyGeometryArray::mixed_shapes(shapes, frame)?.with_missing_mask(mask)
-}
-
-fn unpickle_point_array_detached(
-    xs: Vec<u8>,
-    ys: Vec<u8>,
-    zs: Option<Vec<u8>>,
-    ms: Option<Vec<u8>>,
-    crs: Option<String>,
-    epoch: Option<f64>,
-    row_map: Option<Vec<u8>>,
-    missing: Option<Vec<u8>>,
-) -> crate::error::Result<PyGeometryArray> {
-    let seq = pickled_coordseq(&xs, &ys, zs.as_deref(), ms.as_deref())?;
-    let crs = deserialized_crs(crs)?;
-    let epoch = deserialized_epoch(epoch, crs.as_deref())?;
-    let frame = Frame::new(crs, epoch)?;
-    let physical_rows = seq.len();
-    let row_map = pickled_usize_row_map(row_map.as_deref(), physical_rows, "point-array")?;
-    let present = PyGeometryArray::packed_points_mapped(seq, frame, row_map)?;
-    let present_count = present.len();
-    let mask_len = missing.as_ref().map_or(present_count, Vec::len);
-    if let Some(mask) = pickled_missing_mask(
-        mask_len,
-        missing.as_deref(),
-        "point-array",
-        Some(present_count),
-    )? {
-        Ok(PyGeometryArray::scatter_present_rows(&present, mask)?)
-    } else {
-        Ok(present)
-    }
-}
-
-fn unpickle_line_array_detached(
-    xs: Vec<u8>,
-    ys: Vec<u8>,
-    zs: Option<Vec<u8>>,
-    ms: Option<Vec<u8>>,
-    offsets: Vec<u8>,
-    crs: Option<String>,
-    epoch: Option<f64>,
-    row_map: Option<Vec<u8>>,
-    missing: Option<Vec<u8>>,
-) -> crate::error::Result<PyGeometryArray> {
-    let seq = pickled_coordseq(&xs, &ys, zs.as_deref(), ms.as_deref())?;
-    let offsets = pickled_i32_csr_offsets(&offsets, "line-array")?;
-    let total = i32::try_from(seq.len())
-        .map_err(|_| pickle_error("line-array pickle exceeds the offset domain"))?;
-    let valid_csr = offsets[0] == 0
-        && *offsets.last().expect("non-empty offsets") == total
-        && offsets.is_sorted()
-        && offsets
-            .array_windows::<2>()
-            .all(|[left, right]| right - left != 1);
-    if !valid_csr {
-        return Err(pickle_error(
-            "line-array pickle offsets are not a valid line CSR",
-        ));
-    }
-    let crs = deserialized_crs(crs)?;
-    let epoch = deserialized_epoch(epoch, crs.as_deref())?;
-    let frame = Frame::new(crs, epoch)?;
-    let offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
-        crate::geometry::SharedSlice::try_from_vec(offsets)?,
-        seq.len(),
-    )
-    .map_err(|_| pickle_error("line-array pickle offsets are not a valid line CSR"))?;
-    let physical_rows = offsets.len().saturating_sub(1);
-    let row_map = pickled_usize_row_map(row_map.as_deref(), physical_rows, "line-array")?;
-    let present = PyGeometryArray::packed_lines_mapped(seq, offsets, frame, row_map)?;
-    let present_count = present.len();
-    let mask_len = missing.as_ref().map_or(present_count, Vec::len);
-    if let Some(mask) = pickled_missing_mask(
-        mask_len,
-        missing.as_deref(),
-        "line-array",
-        Some(present_count),
-    )? {
-        Ok(PyGeometryArray::scatter_present_rows(&present, mask)?)
-    } else {
-        Ok(present)
-    }
-}
-
-fn unpickle_polygon_array_detached(
-    xs: Vec<u8>,
-    ys: Vec<u8>,
-    zs: Option<Vec<u8>>,
-    ms: Option<Vec<u8>>,
-    ring_offsets: Vec<u8>,
-    polygon_offsets: Vec<u8>,
-    crs: Option<String>,
-    epoch: Option<f64>,
-    row_map: Option<Vec<u8>>,
-    missing: Option<Vec<u8>>,
-) -> crate::error::Result<PyGeometryArray> {
-    let seq = pickled_coordseq(&xs, &ys, zs.as_deref(), ms.as_deref())?;
-    let ring_offsets = pickled_i32_csr_offsets(&ring_offsets, "polygon-array ring")?;
-    let total = i32::try_from(seq.len())
-        .map_err(|_| pickle_error("polygon-array pickle exceeds the offset domain"))?;
-    let valid_ring_csr = ring_offsets[0] == 0
-        && *ring_offsets.last().expect("non-empty offsets") == total
-        && ring_offsets.is_sorted();
-    if !valid_ring_csr {
-        return Err(pickle_error(
-            "polygon-array pickle ring offsets are not a valid CSR",
-        ));
-    }
-    let ring_offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
-        crate::geometry::SharedSlice::try_from_vec(ring_offsets)?,
-        seq.len(),
-    )
-    .map_err(|_| pickle_error("polygon-array pickle ring offsets are not a valid CSR"))?;
-    let ring_count = ring_offsets.len().saturating_sub(1);
-    let polygon_offsets = pickled_i32_csr_offsets(&polygon_offsets, "polygon-array polygon")?;
-    let ring_count_i32 = i32::try_from(ring_count)
-        .map_err(|_| pickle_error("polygon-array pickle exceeds the offset domain"))?;
-    let valid_polygon_csr = polygon_offsets[0] == 0
-        && *polygon_offsets.last().expect("non-empty offsets") == ring_count_i32
-        && polygon_offsets.is_sorted();
-    if !valid_polygon_csr {
-        return Err(pickle_error(
-            "polygon-array pickle polygon offsets are not a valid CSR",
-        ));
-    }
-    let polygon_offsets = crate::geometry::CsrOffsetColumn::try_from_shared_i32(
-        crate::geometry::SharedSlice::try_from_vec(polygon_offsets)?,
-        ring_count,
-    )
-    .map_err(|_| pickle_error("polygon-array pickle polygon offsets are not a valid CSR"))?;
-    let (seq, ring_offsets) = admit_pickled_polygon_rings(seq, ring_offsets)?;
-    validate_pickled_polygon_shells(&polygon_offsets)?;
-    let crs = deserialized_crs(crs)?;
-    let epoch = deserialized_epoch(epoch, crs.as_deref())?;
-    let frame = Frame::new(crs, epoch)?;
-    let physical_rows = polygon_offsets.len().saturating_sub(1);
-    let row_map = pickled_usize_row_map(row_map.as_deref(), physical_rows, "polygon-array")?;
-    let present = PyGeometryArray::packed_polygons_mapped(
-        seq,
-        ring_offsets,
-        polygon_offsets,
-        frame,
-        row_map,
-    )?;
-    let present_count = present.len();
-    let mask_len = missing.as_ref().map_or(present_count, Vec::len);
-    if let Some(mask) = pickled_missing_mask(
-        mask_len,
-        missing.as_deref(),
-        "polygon-array",
-        Some(present_count),
-    )? {
-        Ok(PyGeometryArray::scatter_present_rows(&present, mask)?)
-    } else {
-        Ok(present)
-    }
 }

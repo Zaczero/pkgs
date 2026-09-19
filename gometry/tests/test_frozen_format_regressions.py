@@ -40,7 +40,7 @@ def test_masked_packed_pickle_uses_typed_columns() -> None:
     cases = (
         (
             gm.GeometryArray([gm.Point(0, 0), None, gm.Point(1, 1)]),
-            'point',
+            0,
             'point',
         ),
         (
@@ -49,7 +49,7 @@ def test_masked_packed_pickle_uses_typed_columns() -> None:
                 None,
                 gm.LineString([(2, 2), (3, 3)]),
             ]),
-            'line',
+            1,
             'linestring',
         ),
         (
@@ -58,13 +58,14 @@ def test_masked_packed_pickle_uses_typed_columns() -> None:
                 None,
                 gm.box(0, 0, 1, 1),
             ]),
-            'polygon',
+            2,
             'polygon',
         ),
     )
-    for values, reducer_kind, arrow_kind in cases:
+    for values, offset_levels, arrow_kind in cases:
         callable_, args = values.__reduce_ex__(5)
-        assert callable_.__name__ == f'_unpickle_{reducer_kind}_array'
+        assert callable_.__name__ == '_unpickle_packed_array'
+        assert len(args[4]) == offset_levels
         assert args[-1] == b'\x00\x01\x00'
         restored = pickle.loads(pickle.dumps(values))
         assert restored.is_missing.tolist() == values.is_missing.tolist()

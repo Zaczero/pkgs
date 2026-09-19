@@ -78,31 +78,6 @@ def test_a1_active_ordinate_unclosed_rings_reject_on_wkt_and_wkb() -> None:
         gm.from_wkb(body)
 
 
-def test_a1_pickle_silent_closes_xy_open_rings_like_wkt() -> None:
-    """Pickle polygon unpickle uses admit_closed_ring (silent-close open rings)."""
-    import pickle
-
-    # Build a closed triangle, pickle, then craft an open 3-corner payload via
-    # the private unpickler (same columns without the closing vertex).
-    closed = gm.GeometryArray([gm.from_wkt('POLYGON((0 0, 1 0, 0 1, 0 0))')])
-    # Round-trip still works for already-closed rings.
-    restored = pickle.loads(pickle.dumps(closed))
-    assert restored.to_wkt() == closed.to_wkt()
-
-    # Hand-build open 3-corner columns matching the pickle layout.
-    from gometry import _lib
-
-    xs = struct.pack('<3d', 0.0, 1.0, 0.0)
-    ys = struct.pack('<3d', 0.0, 0.0, 1.0)
-    ring = struct.pack('<2i', 0, 3)
-    poly = struct.pack('<2i', 0, 1)
-    arr = _lib._unpickle_polygon_array(
-        xs, ys, None, None, ring, poly, None, None, None, None
-    )
-    assert arr.to_wkt() == ['POLYGON ((0 0, 1 0, 0 1, 0 0))']
-    assert bool(arr.is_valid[0])
-
-
 # ---------------------------------------------------------------------------
 # A3 — no fabricated Z/M on write of mixed-axis multiparts
 # ---------------------------------------------------------------------------
@@ -450,8 +425,10 @@ def test_d2_hole_polygons_with_missing_stay_packed() -> None:
         ],
     }
     arr = gm.from_geojson(fc)
-    # Packed polygon unpickler — not the mixed WKB path.
-    assert arr.__reduce__()[0].__name__ == '_unpickle_polygon_array'
+    # Packed polygon payload — not the mixed WKB path.
+    callable_, args = arr.__reduce__()
+    assert callable_.__name__ == '_unpickle_packed_array'
+    assert len(args[4]) == 2
     assert arr.to_wkt()[1] is None
     assert arr.is_missing.tolist() == [False, True, False]
 

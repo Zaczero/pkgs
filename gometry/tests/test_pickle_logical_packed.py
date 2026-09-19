@@ -5,7 +5,6 @@ import struct
 
 import gometry as gm
 import pytest
-from gometry import _lib
 
 GEOMETRIES = {
     'point': 'POINT {tag}({coords})',
@@ -27,7 +26,9 @@ def _packed_rows(kind: str, axes: str, count: int = 4) -> gm.GeometryArray:
         tag=tag, coords=coords, coords2=coords2, coords3=coords3
     )
     rows = gm.from_wkt([text] * count)
-    assert rows.__reduce_ex__(5)[0].__name__ == f'_unpickle_{kind}_array'
+    callable_, args = rows.__reduce_ex__(5)
+    assert callable_.__name__ == '_unpickle_packed_array'
+    assert len(args[4]) == {'point': 0, 'line': 1, 'polygon': 2}[kind]
     return rows
 
 
@@ -46,8 +47,6 @@ def test_new_packed_pickles_store_logical_rows_without_row_map(
     ]
 
     for selected in selections:
-        _, args = selected.__reduce_ex__(5)
-        assert args[-2] is None
         restored = pickle.loads(pickle.dumps(selected, protocol=5))
         assert restored.to_wkt(output_dimension=4) == selected.to_wkt(
             output_dimension=4
@@ -100,7 +99,6 @@ def test_new_packed_payload_omits_unselected_parent_coordinates(
 
     assert struct.pack('<d', 1234567.25) not in coordinate_payload
     assert selected.to_wkt() == [selected_wkt]
-    assert args[-2] is None
 
 
 @pytest.mark.parametrize(
@@ -120,7 +118,6 @@ def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
 ) -> None:
     values = gm.GeometryArray(rows, crs=4326).set_epoch(2020.0)
     _, args = values.__reduce_ex__(5)
-    assert args[-2] is None
     assert args[-1] == b'\x00\x01\x00'
     restored = pickle.loads(pickle.dumps(values, protocol=5))
     assert restored.to_wkt(drop_epoch=True) == values.to_wkt(drop_epoch=True)
@@ -150,94 +147,3 @@ def test_all_missing_compact_pickle_preserves_declared_native_kind(
         restored.to_arrow().type.extension_name == values.to_arrow().type.extension_name
     )
     assert restored.coordinate_axes == values.coordinate_axes
-
-
-def test_old_row_map_payloads_remain_readable_and_validated() -> None:
-    doubles = lambda values: struct.pack(f'<{len(values)}d', *values)
-    offsets = lambda values: struct.pack(f'<{len(values)}i', *values)
-    row_map = struct.pack('<2Q', 2, 0)
-
-    point = _lib._unpickle_point_array(
-        doubles([1, 2, 3]), doubles([11, 12, 13]), None, None, None, None, row_map, None
-    )
-    line = _lib._unpickle_line_array(
-        doubles([0, 1, 2, 3, 4, 5]),
-        doubles([10, 11, 12, 13, 14, 15]),
-        None,
-        None,
-        offsets([0, 2, 4, 6]),
-        None,
-        None,
-        row_map,
-        None,
-    )
-    polygon = _lib._unpickle_polygon_array(
-        doubles([0, 1, 0, 0, 2, 3, 2, 2, 4, 5, 4, 4]),
-        doubles([0, 0, 1, 0, 2, 2, 3, 2, 4, 4, 5, 4]),
-        None,
-        None,
-        offsets([0, 4, 8, 12]),
-        offsets([0, 1, 2, 3]),
-        None,
-        None,
-        row_map,
-        None,
-    )
-
-    assert point.to_wkt() == ['POINT (3 13)', 'POINT (1 11)']
-    assert line.to_wkt() == ['LINESTRING (4 14, 5 15)', 'LINESTRING (0 10, 1 11)']
-    assert polygon.to_wkt() == [
-        'POLYGON ((4 4, 5 4, 4 5, 4 4))',
-        'POLYGON ((0 0, 1 0, 0 1, 0 0))',
-    ]
-
-    invalid = struct.pack('<Q', 3)
-    with pytest.raises(
-        gm.GeometryError, match='row_map references a nonexistent physical row'
-    ) as excinfo:
-        _lib._unpickle_point_array(
-            doubles([1, 2, 3]),
-            doubles([11, 12, 13]),
-            None,
-            None,
-            None,
-            None,
-            invalid,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError
-    assert (
-        str(excinfo.value)
-        == 'point-array pickle row_map references a nonexistent physical row'
-    )
-    with pytest.raises(
-        gm.GeometryError, match='row_map references a nonexistent physical row'
-    ) as excinfo:
-        _lib._unpickle_line_array(
-            doubles([0, 1, 2, 3, 4, 5]),
-            doubles([10, 11, 12, 13, 14, 15]),
-            None,
-            None,
-            offsets([0, 2, 4, 6]),
-            None,
-            None,
-            invalid,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError
-    with pytest.raises(
-        gm.GeometryError, match='row_map references a nonexistent physical row'
-    ) as excinfo:
-        _lib._unpickle_polygon_array(
-            doubles([0, 1, 0, 0, 2, 3, 2, 2, 4, 5, 4, 4]),
-            doubles([0, 0, 1, 0, 2, 2, 3, 2, 4, 4, 5, 4]),
-            None,
-            None,
-            offsets([0, 4, 8, 12]),
-            offsets([0, 1, 2, 3]),
-            None,
-            None,
-            invalid,
-            None,
-        )
-    assert type(excinfo.value) is gm.GeometryError

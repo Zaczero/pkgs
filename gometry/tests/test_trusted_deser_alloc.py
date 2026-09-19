@@ -176,46 +176,11 @@ def test_d02_positive_dense_multilinestring_imports(pyarrow_or_skip):
 # ---------------------------------------------------------------------------
 
 
-def test_d25_ewkb_srid_conflict_rejected():
-    # Exact audit repro: embedded 4326 + payload EPSG:3857 must not overwrite.
-    w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
-    with pytest.raises(gm.CRSMismatchError) as excinfo:
-        _lib._unpickle_geometry(w, 'EPSG:3857', None)
-    assert '3857' in str(excinfo.value)
-    assert '4326' in str(excinfo.value)
-
-
-def test_d25_ewkb_srid_kept_when_frame_absent():
-    # Exact audit repro: array unpickle with absent frame keeps embedded 4326.
-    w = gm.Point(1, 2, crs=4326).to_wkb(include_srid=True)
-    g = _lib._unpickle_geometry_array([w], None, None, None)
-    assert g[0].crs is not None
-    assert '4326' in str(g[0].crs)
-    # Scalar path is consistent: no silent discard either.
-    scalar = _lib._unpickle_geometry(w, None, None)
-    assert scalar.crs is not None
-    assert '4326' in str(scalar.crs)
-
-
-def test_d25_invalid_frame_rejected_at_unpickle():
-    # Exact audit repro: "NOT_A_CRS" fails AT unpickle (typed CRSError).
-    with pytest.raises(gm.CRSError) as excinfo:
-        _lib._unpickle_geometry(gm.Point(1, 2).to_wkb(), 'NOT_A_CRS', None)
-    assert type(excinfo.value) is gm.CRSError
-
-
-def test_d25_pickle_error_classes_remain_distinct():
-    # WKB syntax remains a ParseError; pickle-owned validation remains the
-    # generic GeometryError used by the pre-detachment boundary.
+def test_d25_pickle_wkb_errors_stay_parse_errors():
     with pytest.raises(gm.ParseError) as wkb_exc:
         _lib._unpickle_geometry(b'\x01', None, None)
     assert type(wkb_exc.value) is gm.ParseError
     assert wkb_exc.value.format == 'wkb'
-
-    with pytest.raises(gm.GeometryError) as epoch_exc:
-        _lib._unpickle_geometry(gm.Point(1, 2).to_wkb(), None, float('inf'))
-    assert type(epoch_exc.value) is gm.GeometryError
-    assert str(epoch_exc.value) == 'coordinate epoch must be a finite decimal year'
 
 
 def test_d25_positive_geometry_pickle_roundtrip():

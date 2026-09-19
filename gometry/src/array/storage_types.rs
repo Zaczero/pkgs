@@ -35,6 +35,7 @@ pub struct CheckedPhysicalRows {
 }
 
 impl CheckedPhysicalRows {
+    #[cfg(test)]
     fn checked(rows: Vec<usize>, physical_len: usize) -> crate::error::Result<Option<Self>> {
         if rows.iter().any(|&physical| physical >= physical_len) {
             return Ok(None);
@@ -87,8 +88,8 @@ pub enum RowSelectionRef<'a> {
 }
 
 impl RowSelection {
-    /// Admit a physical row map while leaving error classification to its
-    /// serialized-input owner.
+    /// A gather over `map`, or `None` when a row lies outside `physical_len`.
+    #[cfg(test)]
     pub(crate) fn gather_checked_native(
         map: Vec<usize>,
         physical_len: usize,
