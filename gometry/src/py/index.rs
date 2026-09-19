@@ -22,7 +22,7 @@ use rstar::AABB;
 use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
-use crate::collections::sort_row_ids;
+use crate::collections::sort_unique_row_ids;
 use crate::geometry::{Bounds, Point, Shape, ShapeData};
 use crate::py::errors::{GeometryError, native_memory_error, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};

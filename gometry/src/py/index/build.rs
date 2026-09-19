@@ -643,9 +643,7 @@ mod ownership_tests {
             let total_rows = owned_entries.len();
             let tree = StaticStrTree::build(owned_entries, total_rows)?;
             let mut matches = Vec::new();
-            tree.each_intersecting(&[1, 1], &query, |index| {
-                crate::try_push_vec(&mut matches, index)
-            })?;
+            tree.append_intersecting(&[1, 1], &query, &mut matches)?;
             Ok(matches)
         };
 

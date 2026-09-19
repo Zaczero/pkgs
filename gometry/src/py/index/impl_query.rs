@@ -10,7 +10,7 @@ use crate::py::index::{
     PyGeometryArray, PyResult, PySpatialIndex, RowMatches, Shape, ShapeData, ShapeRow,
     bounds_envelope, crs, crs_label, epoch_label, global_geographic_candidate_envelope,
     index_envelopes, pair_distance_geodesic, pair_dwithin_geodesic, pair_dwithin_planar,
-    point_from_bounds, retain_row, sort_row_ids, topology_scalar_pair,
+    point_from_bounds, retain_row, sort_unique_row_ids, topology_scalar_pair,
 };
 use crate::{CsrBuilder, try_push_vec};
 
@@ -63,12 +63,9 @@ impl PySpatialIndex {
         query: &AABB<[f64; 2]>,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
-        let start = out.len();
-        self.bulk
-            .each_intersecting(&self.rows.live, query, |idx| try_push_vec(out, idx))?;
+        self.bulk.append_intersecting(&self.rows.live, query, out)?;
         self.overflow
-            .each_intersecting(&self.rows.live, query, |idx| try_push_vec(out, idx))?;
-        dedup_row_ids(out, start);
+            .append_intersecting(&self.rows.live, query, out)?;
         Ok(())
     }
 
@@ -80,17 +77,17 @@ impl PySpatialIndex {
         max_distance_2: f64,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
-        let start = out.len();
         self.bulk
-            .each_within_distance_2(&self.rows.live, point, max_distance_2, |idx| {
-                try_push_vec(out, idx)
-            })?;
+            .append_within_distance_2(&self.rows.live, point, max_distance_2, out)?;
         self.overflow
-            .each_within_distance_2(&self.rows.live, point, max_distance_2, |idx| {
-                try_push_vec(out, idx)
-            })?;
-        dedup_row_ids(out, start);
+            .append_within_distance_2(&self.rows.live, point, max_distance_2, out)?;
         Ok(())
+    }
+
+    /// Order the handles appended after `start` ascending, one per row — the
+    /// form every candidate producer hands on. Retaining refinement keeps it.
+    fn finish_candidates(&self, out: &mut Vec<usize>, start: usize) {
+        sort_unique_row_ids(out, start, self.rows.len());
     }
 
     /// Walk every unordered live pair `(i, j)` with `i < j` whose geometries
@@ -578,7 +575,7 @@ impl PySpatialIndex {
             distance_model,
             out,
         )?;
-        dedup_row_ids(out, start);
+        self.finish_candidates(out, start);
         Ok(())
     }
 
@@ -680,7 +677,6 @@ impl PySpatialIndex {
             if let Some(bounds) = query_plan.bounds() {
                 self.collect_shape_candidates(query_plan.shape(), bounds, &mut ids)?;
             }
-            sort_row_ids(&mut ids, self.rows.len());
             return Ok(ids);
         }
         let (predicate, distance, metric) = plan.candidate_parts();
@@ -693,7 +689,6 @@ impl PySpatialIndex {
             metric,
             &mut ids,
         )?;
-        sort_row_ids(&mut ids, self.rows.len());
         Ok(ids)
     }
 
@@ -747,7 +742,6 @@ impl PySpatialIndex {
             let data = products.prepared(idx)?;
             pair_dwithin_planar(to_metre.get(), &data, &query, distance.get()).map_err(Into::into)
         })?;
-        sort_row_ids(&mut matches[row_start..], self.rows.len());
         Ok(())
     }
 
@@ -791,7 +785,6 @@ impl PySpatialIndex {
             )
             .map_err(Into::into)
         })?;
-        sort_row_ids(&mut matches[row_start..], self.rows.len());
         Ok(())
     }
 
@@ -978,7 +971,7 @@ impl PySpatialIndex {
         for envelope in cover.windows(policy) {
             self.collect_intersecting(envelope, out)?;
         }
-        dedup_row_ids(out, start);
+        self.finish_candidates(out, start);
         Ok(())
     }
 
@@ -1072,7 +1065,6 @@ impl PySpatialIndex {
                 unreachable!("exact refinement is called only with a predicate plan")
             },
         }
-        sort_row_ids(&mut matches, self.rows.len());
         Ok(matches)
     }
 
@@ -1330,7 +1322,7 @@ impl PySpatialIndex {
                     self.collect_point_candidates(point, builder.values_mut())?;
                 },
             }
-            dedup_row_ids(builder.values_mut(), row_start);
+            self.finish_candidates(builder.values_mut(), row_start);
             let ids = builder.values_mut();
             match (&spec, model, predicate) {
                 (Some(spec), ..) => {
@@ -1448,7 +1440,7 @@ impl PySpatialIndex {
                     try_push_vec(builder.values_mut(), entry.idx)?;
                 }
             }
-            dedup_row_ids(builder.values_mut(), row_start);
+            self.finish_candidates(builder.values_mut(), row_start);
             refine(row, &query, builder.values_mut(), row_start, &mut products)?;
             let end = builder.len();
             builder.push_end(end).map_err(pyo3::PyErr::from)?;
@@ -1463,18 +1455,6 @@ impl PySpatialIndex {
 const fn candidate_policy(spec: &PredicateSpec) -> IndexEnvelope {
     spec.index_envelope
         .expect("the index rejects a predicate it cannot accelerate")
-}
-
-fn dedup_row_ids(ids: &mut Vec<usize>, start: usize) {
-    ids[start..].sort_unstable();
-    let mut write = start;
-    for read in start..ids.len() {
-        if write == start || ids[read] != ids[write - 1] {
-            ids[write] = ids[read];
-            write += 1;
-        }
-    }
-    ids.truncate(write);
 }
 
 #[cfg(test)]

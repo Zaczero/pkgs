@@ -110,6 +110,9 @@ impl StaticStrTree {
         if entry_count == 0 {
             return Ok(tree);
         }
+        if u32::try_from(entry_count).is_err() {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        }
         // Sort-tile-recursive: x-sort globally, slice into ~sqrt(leaves)
         // vertical strips, y-sort each strip; consecutive NODE_CAP runs
         // become leaves and every upper level re-chunks the one below
@@ -212,93 +215,97 @@ impl StaticStrTree {
         &self.entries[node.children.start as usize..node.children.end as usize]
     }
 
-    /// Live handles whose envelope intersects `query`.
-    pub(super) fn each_intersecting(
+    /// Append the live handles whose envelope intersects `query`.
+    pub(super) fn append_intersecting(
         &self,
         live: &[u8],
         query: &AABB<[f64; 2]>,
-        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+        out: &mut Vec<usize>,
     ) -> crate::error::Result<()> {
         self.descend(
-            live,
             |envelope| intersects(envelope, query),
-            |entry| {
-                if intersects(&entry.envelope, query) {
-                    visit(entry.idx)?;
-                }
-                Ok(())
+            |entries| {
+                append_live(entries, live, out, |entry| {
+                    intersects(&entry.envelope, query)
+                })
             },
         )
     }
 
-    /// Live handles whose envelope lies within squared distance
-    /// `max_distance_2` of `point` (rstar `locate_within_distance`
-    /// semantics: the entry's envelope distance decides).
-    pub(super) fn each_within_distance_2(
+    /// Append the live handles whose envelope lies within squared distance
+    /// `max_distance_2` of `point` (rstar `locate_within_distance` semantics:
+    /// the entry's envelope distance decides).
+    pub(super) fn append_within_distance_2(
         &self,
         live: &[u8],
         point: [f64; 2],
         max_distance_2: f64,
-        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+        out: &mut Vec<usize>,
     ) -> crate::error::Result<()> {
         self.descend(
-            live,
             |envelope| distance_2(envelope, &point) <= max_distance_2,
-            |entry| {
-                if distance_2(&entry.envelope, &point) <= max_distance_2 {
-                    visit(entry.idx)?;
-                }
-                Ok(())
+            |entries| {
+                append_live(entries, live, out, |entry| {
+                    distance_2(&entry.envelope, &point) <= max_distance_2
+                })
             },
         )
     }
 
-    /// Explicit-stack descent: `enter` prunes nodes, `leaf` sees every live
-    /// entry of surviving leaves.
-    ///
-    /// The traversal stack is a recycled thread-local: a BATCHED query (`join`,
-    /// `query(array)`, the spatial-join refine loop) runs this thousands of
-    /// times back-to-back, so a fresh `Vec` per descent is measurable waste
-    /// (~560 instr/query). Descents never nest (the `leaf` visitor only records
-    /// ids), so one buffer per thread serves every call.
+    /// Depth-first descent: `enter` prunes nodes and `leaf` receives the
+    /// entries of every surviving leaf. The `u32` child ranges bound the
+    /// height, so the recursion is at most a handful of frames deep.
     fn descend(
         &self,
-        live: &[u8],
         enter: impl Fn(&AABB<[f64; 2]>) -> bool,
-        mut leaf: impl FnMut(&IndexEntry) -> crate::error::Result<()>,
+        mut leaf: impl FnMut(&[IndexEntry]) -> crate::error::Result<()>,
     ) -> crate::error::Result<()> {
-        thread_local! {
-            static STACK: std::cell::RefCell<Vec<(usize, u32)>> =
-                const { std::cell::RefCell::new(Vec::new()) };
+        let level = self.root_level();
+        for root in self.roots() {
+            if enter(&root.envelope) {
+                self.visit(level, root, &enter, &mut leaf)?;
+            }
         }
-        STACK.with_borrow_mut(|stack| {
-            stack.clear();
-            let root_level = self.root_level();
-            crate::try_reserve_vec(stack, self.roots().len())?;
-            for node in 0..self.roots().len() as u32 {
-                if enter(&self.node(root_level, node).envelope) {
-                    crate::try_push_vec(stack, (root_level, node))?;
-                }
-            }
-            while let Some((level, index)) = stack.pop() {
-                let node = self.node(level, index);
-                if level == 0 {
-                    for entry in self.leaf_entries(node) {
-                        if live[entry.idx] != 0 {
-                            leaf(entry)?;
-                        }
-                    }
-                    continue;
-                }
-                for child in node.children.clone() {
-                    if enter(&self.node(level - 1, child).envelope) {
-                        crate::try_push_vec(stack, (level - 1, child))?;
-                    }
-                }
-            }
-            Ok(())
-        })
+        Ok(())
     }
+
+    fn visit(
+        &self,
+        level: usize,
+        node: &StrNode,
+        enter: &impl Fn(&AABB<[f64; 2]>) -> bool,
+        leaf: &mut impl FnMut(&[IndexEntry]) -> crate::error::Result<()>,
+    ) -> crate::error::Result<()> {
+        if level == 0 {
+            return leaf(self.leaf_entries(node));
+        }
+        let children =
+            &self.levels[level - 1][node.children.start as usize..node.children.end as usize];
+        for child in children {
+            if enter(&child.envelope) {
+                self.visit(level - 1, child, enter, leaf)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Append the handle of each live entry of one leaf that `keep` accepts. A
+/// leaf holds at most [`NODE_CAP`] entries, so one fallible reservation
+/// covers the whole leaf and the pushes stay in capacity.
+fn append_live(
+    entries: &[IndexEntry],
+    live: &[u8],
+    out: &mut Vec<usize>,
+    keep: impl Fn(&IndexEntry) -> bool,
+) -> crate::error::Result<()> {
+    crate::try_reserve_vec(out, entries.len())?;
+    for entry in entries {
+        if live[entry.idx] != 0 && keep(entry) {
+            out.push(entry.idx);
+        }
+    }
+    Ok(())
 }
 
 fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
@@ -470,27 +477,27 @@ impl StaticStrForest {
             .flat_map(move |run| run.live_entries(live))
     }
 
-    pub(super) fn each_intersecting(
+    pub(super) fn append_intersecting(
         &self,
         live: &[u8],
         query: &AABB<[f64; 2]>,
-        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+        out: &mut Vec<usize>,
     ) -> crate::error::Result<()> {
         for run in self.runs.iter().filter_map(Option::as_ref) {
-            run.each_intersecting(live, query, &mut visit)?;
+            run.append_intersecting(live, query, out)?;
         }
         Ok(())
     }
 
-    pub(super) fn each_within_distance_2(
+    pub(super) fn append_within_distance_2(
         &self,
         live: &[u8],
         point: [f64; 2],
         max_distance_2: f64,
-        mut visit: impl FnMut(usize) -> crate::error::Result<()>,
+        out: &mut Vec<usize>,
     ) -> crate::error::Result<()> {
         for run in self.runs.iter().filter_map(Option::as_ref) {
-            run.each_within_distance_2(live, point, max_distance_2, &mut visit)?;
+            run.append_within_distance_2(live, point, max_distance_2, out)?;
         }
         Ok(())
     }
@@ -778,11 +785,7 @@ mod tests {
                 AABB::from_point([73.0, 131.0]),
             ] {
                 let mut hits = Vec::new();
-                tree.each_intersecting(&live, &query, |idx| {
-                    hits.push(idx);
-                    Ok(())
-                })
-                .unwrap();
+                tree.append_intersecting(&live, &query, &mut hits).unwrap();
                 assert_eq!(
                     sorted(hits),
                     brute(&entries, &removed, |entry| entry
@@ -793,11 +796,8 @@ mod tests {
             let point = [120.0, 90.0];
             for radius_2 in [0.0, 100.0, 10_000.0] {
                 let mut near = Vec::new();
-                tree.each_within_distance_2(&live, point, radius_2, |idx| {
-                    near.push(idx);
-                    Ok(())
-                })
-                .unwrap();
+                tree.append_within_distance_2(&live, point, radius_2, &mut near)
+                    .unwrap();
                 assert_eq!(
                     sorted(near),
                     brute(&entries, &removed, |entry| entry
@@ -818,13 +818,10 @@ mod tests {
 
         let tree = StaticStrTree::build(vec![positive, negative], 2).expect("tree");
         let mut negative_hits = Vec::new();
-        tree.each_intersecting(
+        tree.append_intersecting(
             &[1, 1],
             &AABB::from_corners([-1.0e308, -1.0e308], [-9.0e307, -9.0e307]),
-            |idx| {
-                negative_hits.push(idx);
-                Ok(())
-            },
+            &mut negative_hits,
         )
         .unwrap();
         assert_eq!(negative_hits, [0]);
@@ -937,10 +934,7 @@ mod tests {
         for query in intersects_queries {
             let mut actual = Vec::new();
             forest
-                .each_intersecting(&live, &query, |handle| {
-                    actual.push(handle);
-                    Ok(())
-                })
+                .append_intersecting(&live, &query, &mut actual)
                 .expect("forest intersection traversal");
             actual.sort_unstable();
             let mut expected: Vec<_> = entries
@@ -955,10 +949,7 @@ mod tests {
         for (point, radius_2) in [([2.0, 0.0], 4.0), ([29.0, 0.0], 1.0), ([100.0, 0.0], 1.0)] {
             let mut actual = Vec::new();
             forest
-                .each_within_distance_2(&live, point, radius_2, |handle| {
-                    actual.push(handle);
-                    Ok(())
-                })
+                .append_within_distance_2(&live, point, radius_2, &mut actual)
                 .expect("forest distance traversal");
             actual.sort_unstable();
             let mut expected: Vec<_> = entries

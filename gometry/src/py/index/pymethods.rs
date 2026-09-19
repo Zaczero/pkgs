@@ -3,7 +3,6 @@ use pyo3::types::PyBool;
 use pyo3::{IntoPyObjectExt as _, PyErr};
 
 use super::impl_nearest::NearestVisited;
-use crate::collections::RowIdSortScratch;
 use crate::py::crs::PyCrs;
 use crate::py::index::{
     BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexPredicate,
@@ -701,14 +700,12 @@ impl PySpatialIndex {
             let row_count = array.len();
             let mut builder =
                 CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
-            let mut sort_scratch = RowIdSortScratch::default();
             let (predicate, distance, metric) = plan.candidate_parts();
             let rows = array.row_operation();
             for logical_row in rows.rows_with_missing(|| ()) {
                 if let crate::array::ArrayRow::Present(row) = logical_row {
                     let row_index = row.logical();
                     let row = row.row();
-                    let row_start = builder.len();
                     let ids = builder.values_mut();
                     let seeded = rows.bounds_seed(row_index);
                     if envelope_only {
@@ -738,7 +735,6 @@ impl PySpatialIndex {
                             ids,
                         )?;
                     }
-                    sort_scratch.sort(&mut ids[row_start..], self.rows.len());
                 }
                 let end = builder.len();
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;

@@ -134,54 +134,39 @@ impl UnionFind {
     }
 }
 
-/// Sort unique row indices in `0..universe` in ascending order.
+/// Sort the row ids in `ids[start..]` ascending and keep one of each.
 ///
-/// Uses a bitmap pass when the id set is dense enough (`O(universe/64 + n)`),
-/// otherwise falls back to `sort_unstable`.
-pub(crate) fn sort_row_ids(ids: &mut [usize], universe: usize) {
-    RowIdSortScratch::default().sort(ids, universe);
-}
-
-/// Reusable bitmap storage for sorting many row-id slices from one batch.
-///
-/// The bitmap is only useful for dense slices; sparse slices continue to use
-/// the in-place comparison sort without allocating. The index query path keeps
-/// one scratch value for its whole CSR batch so dense rows do not allocate a
-/// fresh universe-sized bitmap.
-#[derive(Default)]
-pub(crate) struct RowIdSortScratch {
-    bitmap: Vec<u64>,
-}
-
-impl RowIdSortScratch {
-    pub(crate) fn sort(&mut self, ids: &mut [usize], universe: usize) {
-        if ids.len().saturating_mul(256) < universe {
-            ids.sort_unstable();
-            return;
+/// A tail holding at least one id per 256 of `universe` goes through a bitmap
+/// in `O(universe / 64 + n)`, which also drops repeats; a sparser one is
+/// sorted by comparison.
+pub(crate) fn sort_unique_row_ids(ids: &mut Vec<usize>, start: usize, universe: usize) {
+    let tail = &mut ids[start..];
+    if tail.len() < 2 {
+        return;
+    }
+    let unique = if tail.len().saturating_mul(256) < universe {
+        tail.sort_unstable();
+        tail.partition_dedup().0.len()
+    } else {
+        let mut bitmap = vec![0_u64; universe.div_ceil(64)];
+        for &id in tail.iter() {
+            bitmap[id / 64] |= 1 << (id % 64);
         }
-        self.bitmap.resize(universe.div_ceil(64), 0);
-        for &id in ids.iter() {
-            self.bitmap[id / 64] |= 1 << (id % 64);
-        }
-        // Ids are unique, so the bitmap pass writes back exactly `ids.len()`
-        // values — sorting works in place on any slice (CSR row windows too).
         let mut write = 0;
-        for (word_index, slot) in self.bitmap.iter_mut().enumerate() {
-            let mut word = *slot;
-            *slot = 0;
+        for (word_index, mut word) in bitmap.into_iter().enumerate() {
             while word != 0 {
-                ids[write] = word_index * 64 + word.trailing_zeros() as usize;
+                tail[write] = word_index * 64 + word.trailing_zeros() as usize;
                 write += 1;
                 word &= word - 1;
             }
         }
-        debug_assert_eq!(write, ids.len());
-    }
+        write
+    };
+    ids.truncate(start + unique);
 }
 
 #[cfg(test)]
 mod row_id_sort_tests {
-    use super::RowIdSortScratch;
 
     #[test]
     fn cold_collection_hash_state_needs_no_rust_heap_allocation() {
@@ -245,14 +230,13 @@ mod row_id_sort_tests {
     }
 
     #[test]
-    fn reusable_sort_matches_ascending_order_for_sparse_and_dense_rows() {
-        let mut scratch = RowIdSortScratch::default();
-        let mut sparse = [9, 1, 7, 3];
-        scratch.sort(&mut sparse, 10_000);
-        assert_eq!(sparse, [1, 3, 7, 9]);
+    fn row_id_tails_sort_and_drop_repeats_on_both_paths() {
+        let mut sparse = vec![42, 9, 1, 7, 9, 3, 1];
+        super::sort_unique_row_ids(&mut sparse, 1, 10_000);
+        assert_eq!(sparse, [42, 1, 3, 7, 9]);
 
-        let mut dense = [511, 4, 255, 1023, 64, 65, 0];
-        scratch.sort(&mut dense, 1024);
+        let mut dense = vec![511, 4, 255, 1023, 64, 4, 65, 0, 511];
+        super::sort_unique_row_ids(&mut dense, 0, 1024);
         assert_eq!(dense, [0, 4, 64, 65, 255, 511, 1023]);
     }
 }
