@@ -8,11 +8,13 @@ use crate::array::{
 };
 use crate::geometry::Bounds3D;
 
-pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Bounds {
-    debug_assert!(!xs.is_empty());
+/// Planar bounds of one row's contiguous vertex columns; `None` when empty.
+pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
     debug_assert_eq!(xs.len(), ys.len());
-    let [minx, miny, maxx, maxy] = crate::geometry::xy_bounds_columns(xs, ys);
-    Bounds::new_raw(minx, miny, maxx, maxy)
+    (!xs.is_empty()).then(|| {
+        let [minx, miny, maxx, maxy] = crate::geometry::xy_bounds_columns(xs, ys);
+        Bounds::new_raw(minx, miny, maxx, maxy)
+    })
 }
 
 /// Borrow a CSR column window without `Range::clone()` — `std::ops::Range` is
@@ -130,14 +132,8 @@ pub(crate) fn packed_line_bounds_center_pivot(
     ys: &[f64],
     window: std::ops::Range<usize>,
 ) -> (f64, f64) {
-    if window.is_empty() {
-        return (0.0, 0.0);
-    }
-    let bounds = row_bounds(column_window(xs, &window), column_window(ys, &window));
-    (
-        f64::midpoint(bounds.minx(), bounds.maxx()),
-        f64::midpoint(bounds.miny(), bounds.maxy()),
-    )
+    row_bounds(column_window(xs, &window), column_window(ys, &window))
+        .map_or((0.0, 0.0), bounds_center)
 }
 
 /// Per-row pivot for packed-polygon affine ops — matches
@@ -175,12 +171,12 @@ pub(crate) fn packed_polygon_bounds_center_pivot(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
 ) -> (f64, f64) {
-    let start = ring_offsets[rings.start] as usize;
-    let end = ring_offsets[rings.end] as usize;
-    if start >= end {
-        return (0.0, 0.0);
-    }
-    let bounds = row_bounds(&xs[start..end], &ys[start..end]);
+    let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+    row_bounds(column_window(xs, &vertices), column_window(ys, &vertices))
+        .map_or((0.0, 0.0), bounds_center)
+}
+
+const fn bounds_center(bounds: Bounds) -> (f64, f64) {
     (
         f64::midpoint(bounds.minx(), bounds.maxx()),
         f64::midpoint(bounds.miny(), bounds.maxy()),
@@ -188,11 +184,10 @@ pub(crate) fn packed_polygon_bounds_center_pivot(
 }
 
 pub(crate) fn row_bounds_values(xs: &[f64], ys: &[f64], range: std::ops::Range<usize>) -> [f64; 4] {
-    if range.is_empty() {
-        return [f64::NAN; 4];
-    }
-    let bounds = row_bounds(column_window(xs, &range), column_window(ys, &range));
-    [bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy()]
+    row_bounds(column_window(xs, &range), column_window(ys, &range))
+        .map_or([f64::NAN; 4], |bounds| {
+            [bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy()]
+        })
 }
 
 /// Per-row `(min, max)` from a contiguous Z/M ordinate window — the kernel

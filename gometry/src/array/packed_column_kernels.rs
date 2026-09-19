@@ -21,8 +21,8 @@ use crate::array::storage_helpers::{
 use crate::array::{
     Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
     PackedColumnOutput, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
-    column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds_3d,
-    row_bounds_values,
+    column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
+    row_bounds_3d, row_bounds_values,
 };
 use crate::geometry::{
     CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, XY, ZOrdinate, clip_segment,
@@ -184,11 +184,10 @@ pub(crate) fn clip_lines_packed_xy(
         }
         let window = line_columns.row_window(row);
         let (start, end) = (window.start, window.end);
-        let row_bounds = row_bounds_values(xs, ys, window.clone());
-        if row_bounds[0].is_nan() {
+        let Some(bounds) = row_bounds(column_window(xs, &window), column_window(ys, &window))
+        else {
             return Ok(None);
-        }
-        let bounds = Bounds::new_raw(row_bounds[0], row_bounds[1], row_bounds[2], row_bounds[3]);
+        };
         if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
             let shape = Shape::LineString(LineSeq::row_view(
                 coords,
@@ -1090,9 +1089,7 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
                 continue;
             }
             let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-            let (minx, maxx) = crate::geometry::column_minmax(&xs[vertices.clone()])?;
-            let (miny, maxy) = crate::geometry::column_minmax(&ys[vertices])?;
-            let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
+            let bounds = row_bounds(column_window(xs, &vertices), column_window(ys, &vertices))?;
             match &mut total {
                 Some(current) => current.include_bounds(bounds),
                 None => total = Some(bounds),
@@ -1107,13 +1104,10 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
         .into_iter()
         .flatten()
     {
-        let Some((minx, maxx)) = crate::geometry::column_minmax(&xs[window.clone()]) else {
+        let Some(bounds) = row_bounds(column_window(xs, &window), column_window(ys, &window))
+        else {
             continue;
         };
-        let Some((miny, maxy)) = crate::geometry::column_minmax(&ys[window]) else {
-            continue;
-        };
-        let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
         match &mut total {
             Some(current) => current.include_bounds(bounds),
             None => total = Some(bounds),

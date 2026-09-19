@@ -1,19 +1,14 @@
 #![expect(
-    clippy::similar_names,
-    reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
-)]
-#![expect(
     clippy::needless_pass_by_value,
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
 use crate::array::packed_columns::XyColumns;
 use crate::array::{
-    Arc, Bounds, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage,
-    GeometryKind, PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point,
-    PointColumnBuilder, PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel,
-    RowSelection, Shape, StorageLayout, column_window, packed_centroid_xy, packed_surface_point,
-    row_bounds_values,
+    Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
+    PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point, PointColumnBuilder,
+    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
+    StorageLayout, column_window, packed_centroid_xy, packed_surface_point, row_bounds,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
@@ -286,12 +281,10 @@ impl PyGeometryArray {
                     ))
                 },
                 |_, xs, ys, ring_offsets, rings, _, crossings| {
-                    let row_bounds = (!rings.is_empty()).then(|| {
-                        let vertices =
-                            ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                        let [minx, miny, maxx, maxy] = row_bounds_values(xs, ys, vertices);
-                        Bounds::new_raw(minx, miny, maxx, maxy)
-                    });
+                    let vertices =
+                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
+                    let row_bounds =
+                        row_bounds(column_window(xs, &vertices), column_window(ys, &vertices));
                     packed_surface_point(crate::geometry::point_on_surface_polygon_row_columns(
                         xs,
                         ys,

@@ -87,7 +87,7 @@ impl<'a> ShapeRow<'a> {
                     &coords.xs()[window.start..window.end],
                     &coords.ys()[window.start..window.end],
                 );
-                (!xs.is_empty()).then(|| row_bounds(xs, ys))
+                row_bounds(xs, ys)
             },
             Self::Rings(coords, ring_offsets, start, end) => {
                 let window = VertexWindow {

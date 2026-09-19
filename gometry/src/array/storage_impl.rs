@@ -7,7 +7,7 @@ use crate::array::{
     Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PackedStorage, PointRows,
     Polygon, Ring, RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window,
     line_logical_len, packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
-    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range,
+    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
 };
 use crate::error::Result;
 use crate::geometry::CoordWindow;
@@ -431,9 +431,10 @@ impl GeometryArrayStorage {
                     continue;
                 }
                 let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                let (minx, maxx) = crate::geometry::column_minmax(&coords.xs()[vertices.clone()])?;
-                let (miny, maxy) = crate::geometry::column_minmax(&coords.ys()[vertices])?;
-                let bounds = Bounds::new_raw(minx, miny, maxx, maxy);
+                let bounds = row_bounds(
+                    column_window(coords.xs(), &vertices),
+                    column_window(coords.ys(), &vertices),
+                )?;
                 match &mut total {
                     Some(current) => current.include_bounds(bounds),
                     None => total = Some(bounds),
@@ -514,15 +515,9 @@ impl GeometryArrayStorage {
     }
 
     pub(crate) fn per_element_bounds(&self) -> Result<Option<Vec<Option<Bounds>>>> {
-        let row_bounds =
-            |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| -> Option<Bounds> {
-                if range.is_empty() {
-                    return None;
-                }
-                let (minx, maxx) = crate::geometry::column_minmax(column_window(xs, &range))?;
-                let (miny, maxy) = crate::geometry::column_minmax(column_window(ys, &range))?;
-                Some(Bounds::new_raw(minx, miny, maxx, maxy))
-            };
+        let window_bounds = |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| {
+            row_bounds(column_window(xs, &range), column_window(ys, &range))
+        };
         match self {
             Self::Packed(PackedStorage::Polygons {
                 coords,
@@ -536,7 +531,7 @@ impl GeometryArrayStorage {
                     polygon_offsets.as_slice(),
                     row_map.as_deref(),
                     true,
-                    |window| Ok(window.and_then(|vertices| row_bounds(xs, ys, vertices))),
+                    |window| Ok(window.and_then(|vertices| window_bounds(xs, ys, vertices))),
                 )
                 .map(Some)
             },
@@ -547,7 +542,7 @@ impl GeometryArrayStorage {
             }) => {
                 let (xs, ys) = (coords.xs(), coords.ys());
                 Self::try_map_line_rows(offsets.as_slice(), row_map.as_deref(), |window| {
-                    Ok(row_bounds(xs, ys, window))
+                    Ok(window_bounds(xs, ys, window))
                 })
                 .map(Some)
             },
