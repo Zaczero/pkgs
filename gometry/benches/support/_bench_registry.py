@@ -347,6 +347,16 @@ _BASE_RELEASE_OPERATIONS: tuple[ReleaseOperation, ...] = (
     ),
     _op(
         'Geometry',
+        'intersects pairwise polygons',
+        '1k irregular polygon pairs',
+        ('intersects',),
+        'gometry.intersects/pairwise_1k_irregular_polygons',
+        'shapely.intersects/pairwise_1k_irregular_polygons',
+        'Shapely',
+        ('batched',),
+    ),
+    _op(
+        'Geometry',
         'union_all service areas',
         '1024 service areas',
         ('union_all',),

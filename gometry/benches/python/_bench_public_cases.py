@@ -1084,6 +1084,24 @@ def build_intersection() -> PublicCase:
     )
 
 
+def build_intersects_pairs() -> PublicCase:
+    d = intersection_pairs_1k()
+
+    def gometry_call():
+        import gometry as gm
+
+        return gm.intersects(d['gm_a'], d['gm_b'])
+
+    def competitor_call():
+        import shapely
+
+        return shapely.intersects(d['sh_a'], d['sh_b'])
+
+    _reg('gometry.intersects/pairwise_1k_irregular_polygons', gometry_call)
+    _reg('shapely.intersects/pairwise_1k_irregular_polygons', competitor_call)
+    return _case(gometry_call, competitor_call, exact_mask, kind='exact_mask')
+
+
 def build_union_all() -> PublicCase:
     d = service_areas_1024()
 
@@ -1861,6 +1879,7 @@ BUILDERS: dict[str, Callable[[], PublicCase]] = {
     'gometry.simplify.dp/10k_roads_100k_vertices': build_simplify,
     'gometry.buffer/10k_projected_points': build_buffer,
     'gometry.intersection/pairwise_1k_irregular_polygons': build_intersection,
+    'gometry.intersects/pairwise_1k_irregular_polygons': build_intersects_pairs,
     'gometry.union_all/1024_service_areas': build_union_all,
     'gometry.coverage_union/10k_edge_matched_parcels': build_coverage_union,
     'gometry.is_valid/10k_mixed_polygons_20pct_invalid': build_is_valid,

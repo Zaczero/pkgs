@@ -41,12 +41,12 @@ EXPECTED_PAIR_WORKER = 'bench_paired.py'
 
 
 def test_release_operation_counts_and_five_domains() -> None:
-    assert len(RELEASE_OPERATIONS) == 37
-    assert sum(len(op.rows) for op in RELEASE_OPERATIONS) == 74
+    assert len(RELEASE_OPERATIONS) == 38
+    assert sum(len(op.rows) for op in RELEASE_OPERATIONS) == 76
     assert all(op.paired and op.competitor for op in RELEASE_OPERATIONS)
     assert [
         sum(op.domain == domain for op in RELEASE_OPERATIONS) for domain in DOMAIN_ORDER
-    ] == [7, 15, 6, 4, 5]
+    ] == [7, 16, 6, 4, 5]
     assert len(DOMAIN_ORDER) == 5
     assert all('Real-world' not in op.domain for op in RELEASE_OPERATIONS)
 
@@ -92,7 +92,7 @@ def test_manifest_serialization_retains_canonical_endpoints() -> None:
         RELEASE_OPERATIONS,
         {'competitors': RELEASE.rows('competitors')},
     )
-    assert len(records) == 37
+    assert len(records) == 38
     assert records[0]['canonical_symbols'] == ['from_wkb']
     assert all(record['canonical_symbols'] for record in records)
     endpoint = next(
