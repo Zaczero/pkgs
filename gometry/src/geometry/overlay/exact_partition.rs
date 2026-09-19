@@ -117,6 +117,9 @@ pub(in crate::geometry) struct PartitionMetrics {
     pub exact_crossings: usize,
     /// Orientation tests made by leftward ray sweeps.
     pub ray_orientations: usize,
+    /// Emissions whose items all end at stored nodes, so rounding moved
+    /// nothing and the emission checks had nothing to find.
+    pub unmoved_emissions: usize,
 }
 
 #[cfg(test)]
@@ -140,6 +143,7 @@ impl PartitionMetrics {
         declined_crossings: 0,
         exact_crossings: 0,
         ray_orientations: 0,
+        unmoved_emissions: 0,
     };
 }
 
@@ -898,26 +902,24 @@ impl BoundaryPlan {
         self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, true)
     }
 
+    /// A row's parts from nodes rounded once for every row, whose
+    /// injectivity the caller certified across the whole coverage.
     fn emit_node_parts_with_shared_rounding(
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
-        rounded: &HashMap<NodeId, XY>,
     ) -> Result<NodeParts> {
         let items = self.incident_items(topology)?;
         let mut rounded_segments = Vec::new();
         try_reserve_vec(&mut rounded_segments, items.len())?;
-        for &[start, end] in &items {
-            let start = *rounded.get(&start).ok_or_else(|| {
-                GeometryErrorKind::Invalid("exact coverage output lost a rounded node".into())
-            })?;
-            let end = *rounded.get(&end).ok_or_else(|| {
-                GeometryErrorKind::Invalid("exact coverage output lost a rounded node".into())
-            })?;
-            try_push_vec(&mut rounded_segments, Segment { start, end })?;
+        rounded_segments.extend(items.iter().map(|&[start, end]| Segment {
+            start: partition.node_xy(start),
+            end: partition.node_xy(end),
+        }));
+        if partition.rounding_moves(&items) {
+            self.check_emitted_fans(topology, &rounded_segments)?;
+            self.check_global_faces(partition, &items, &rounded_segments)?;
         }
-        self.check_emitted_fans(topology, &rounded_segments)?;
-        self.check_global_faces(partition, &items, &rounded_segments)?;
         self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, false)
     }
 
@@ -1129,8 +1131,10 @@ impl BoundaryPlan {
     ) -> Result<Vec<Segment>> {
         let items = self.incident_items(topology)?;
         let segments = partition.round_incident_items(&items)?;
-        self.check_emitted_fans(topology, &segments)?;
-        self.check_global_faces(partition, &items, &segments)?;
+        if partition.rounding_moves(&items) {
+            self.check_emitted_fans(topology, &segments)?;
+            self.check_global_faces(partition, &items, &segments)?;
+        }
         Ok(segments)
     }
 
@@ -2203,7 +2207,7 @@ impl ExactSourceInventory {
         &self,
         partition: &ExactPartition<'_>,
         nodes: &[NodeId],
-        rounded: &HashMap<NodeId, XY>,
+        rounded: impl Fn(NodeId) -> Result<XY>,
         declared_axes: crate::geometry::CoordinateAxes,
     ) -> Result<HashMap<NodeId, Point>> {
         let mut by_node =
@@ -2215,14 +2219,7 @@ impl ExactSourceInventory {
             if by_node.contains_key(&node) {
                 continue;
             }
-            let point = self.resolve_node_point(
-                partition,
-                node,
-                *rounded.get(&node).ok_or_else(|| {
-                    GeometryErrorKind::Invalid("exact overlay output lost rounded XY".into())
-                })?,
-                declared_axes,
-            )?;
+            let point = self.resolve_node_point(partition, node, rounded(node)?, declared_axes)?;
             by_node.insert(node, point);
         }
         Ok(by_node)
@@ -2260,25 +2257,21 @@ impl ExactSourceInventory {
         if items.is_empty() {
             return Shape::multi_line_string(declared_axes, Vec::new());
         }
-        let rounded_segments = partition.round_incident_items(&items)?;
+        // Certifies the rounded chords; the points below read the same rounding.
+        partition.round_incident_items(&items)?;
         let mut nodes = Vec::new();
         let node_capacity = items
             .len()
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
         try_reserve_vec(&mut nodes, node_capacity)?;
-        let mut rounded =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        rounded
-            .try_reserve(node_capacity)
-            .map_err(crate::error::Error::from)?;
-        for (&[start, end], segment) in items.iter().zip(&rounded_segments) {
-            try_push_vec(&mut nodes, start)?;
-            try_push_vec(&mut nodes, end)?;
-            rounded.entry(start).or_insert(segment.start);
-            rounded.entry(end).or_insert(segment.end);
-        }
-        let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
+        nodes.extend(items.iter().flatten().copied());
+        let by_node = self.resolve_node_points(
+            partition,
+            &nodes,
+            |node| Ok(partition.node_xy(node)),
+            declared_axes,
+        )?;
         let axes = bucket_axes(&nodes, &by_node, declared_axes, strict, "node")?;
         let mut lines = Vec::new();
         try_reserve_vec(&mut lines, items.len())?;
@@ -2505,7 +2498,16 @@ impl ExactSourceInventory {
         for &(node, point) in &parts.rounded {
             rounded.entry(node).or_insert(point);
         }
-        let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &nodes,
+            |node| {
+                rounded.get(&node).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("exact overlay output lost rounded XY".into()).into()
+                })
+            },
+            declared_axes,
+        )?;
         self.node_parts_to_shape_resolved(parts, &by_node, declared_axes, strict, operation.name())
     }
 
@@ -2629,8 +2631,16 @@ impl ExactSourceInventory {
                 }
             }
         }
-        let by_node =
-            self.resolve_node_points(partition, &output_nodes, &rounded, declared_axes)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &output_nodes,
+            |node| {
+                rounded.get(&node).copied().ok_or_else(|| {
+                    GeometryErrorKind::Invalid("exact overlay output lost rounded XY".into()).into()
+                })
+            },
+            declared_axes,
+        )?;
         let mut parts = node_parts.into_iter();
         let first = self.node_parts_to_shape_resolved(
             parts
@@ -2690,17 +2700,13 @@ impl ExactSourceInventory {
                 }
             }
         }
-        let rounded_nodes = partition.round_nodes(&nodes)?;
-        ExactPartition::check_node_injectivity(&nodes, &rounded_nodes)?;
-        let mut rounded =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        rounded
-            .try_reserve(nodes.len())
-            .map_err(crate::error::Error::from)?;
-        for (&node, &coordinate) in nodes.iter().zip(&rounded_nodes) {
-            rounded.insert(node, coordinate);
-        }
-        let by_node = self.resolve_node_points(partition, &nodes, &rounded, declared_axes)?;
+        ExactPartition::check_node_injectivity(&nodes, &partition.round_nodes(&nodes)?)?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &nodes,
+            |node| Ok(partition.node_xy(node)),
+            declared_axes,
+        )?;
         let views = partition.source_span_views(&self.source_segments)?;
         let ranges = source_line_ranges(source_shape)?;
         let mut outputs = Vec::new();
@@ -3317,18 +3323,16 @@ impl ExactSourceInventory {
         update_partition_metrics(|metrics| {
             metrics.publication_nodes = output_nodes.len();
         });
-        let rounded_coordinates = partition.round_nodes(&output_nodes)?;
-        ExactPartition::check_node_injectivity(&output_nodes, &rounded_coordinates)?;
-        let mut rounded =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        rounded
-            .try_reserve(output_nodes.len())
-            .map_err(crate::error::Error::from)?;
-        for (&node, &coordinate) in output_nodes.iter().zip(&rounded_coordinates) {
-            rounded.insert(node, coordinate);
-        }
-        let by_node =
-            self.resolve_node_points(partition, &output_nodes, &rounded, declared_axes)?;
+        ExactPartition::check_node_injectivity(
+            &output_nodes,
+            &partition.round_nodes(&output_nodes)?,
+        )?;
+        let by_node = self.resolve_node_points(
+            partition,
+            &output_nodes,
+            |node| Ok(partition.node_xy(node)),
+            declared_axes,
+        )?;
 
         let mut outputs = Vec::new();
         try_reserve_vec(&mut outputs, row_count)?;
@@ -3347,8 +3351,7 @@ impl ExactSourceInventory {
             try_reserve_vec(&mut cells.nodes, partition.node_count())?;
             cells.nodes.resize(partition.node_count(), false);
             let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
-            let parts =
-                plan.emit_node_parts_with_shared_rounding(partition, &topology, &rounded)?;
+            let parts = plan.emit_node_parts_with_shared_rounding(partition, &topology)?;
             try_push_vec(
                 &mut outputs,
                 self.coverage_shape_from_node_parts(parts, &by_node, declared_axes)?,
@@ -5402,37 +5405,38 @@ impl ExactPartition<'_> {
         Ok(())
     }
 
+    /// Whether rounding moves any of `items`: only crossings round, so
+    /// items between stored nodes keep the exact geometry whose injectivity,
+    /// incidence, fans and faces the partition already established.
+    fn rounding_moves(&self, items: &[[NodeId; 2]]) -> bool {
+        let moved = items.iter().flatten().any(|&node| !self.is_stored(node));
+        #[cfg(test)]
+        if !moved {
+            update_partition_metrics(|metrics| metrics.unmoved_emissions += 1);
+        }
+        moved
+    }
+
     fn round_incident_items(&self, items: &[[NodeId; 2]]) -> Result<Vec<Segment>> {
+        let mut segments = Vec::new();
+        try_reserve_vec(&mut segments, items.len())?;
+        segments.extend(items.iter().map(|&[start, end]| Segment {
+            start: self.node_xy(start),
+            end: self.node_xy(end),
+        }));
+        if !self.rounding_moves(items) {
+            return Ok(segments);
+        }
+        let mut seen = Vec::new();
+        try_reserve_vec(&mut seen, self.node_count())?;
+        seen.resize(self.node_count(), false);
         let mut nodes = Vec::new();
-        let node_capacity = items
-            .len()
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut nodes, node_capacity)?;
-        let mut indices =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        indices
-            .try_reserve(node_capacity)
-            .map_err(|_| ResourceError::Allocation)?;
-        for item in items {
-            for &node in item {
-                if indices.contains_key(&node) {
-                    continue;
-                }
-                indices.insert(node, nodes.len());
+        for &node in items.iter().flatten() {
+            if !mem::replace(&mut seen[node.0 as usize], true) {
                 try_push_vec(&mut nodes, node)?;
             }
         }
-        let coordinates = self.round_nodes(&nodes)?;
-        Self::check_node_injectivity(&nodes, &coordinates)?;
-        let mut segments = Vec::new();
-        try_reserve_vec(&mut segments, items.len())?;
-        for &[start, end] in items {
-            try_push_vec(&mut segments, Segment {
-                start: coordinates[indices[&start]],
-                end: coordinates[indices[&end]],
-            })?;
-        }
+        Self::check_node_injectivity(&nodes, &self.round_nodes(&nodes)?)?;
         // A repeated node represents a live isolated point, not a new cut.
         let mut contact = None;
         let _ = for_each_candidate_pair(&segments, single_chain, |left, right| {
@@ -5484,7 +5488,9 @@ impl ExactPartition<'_> {
             debug_assert!(start != u32::MAX && end != u32::MAX);
             try_push_vec(&mut darts, [start, end])?;
         }
-        Self::check_emitted_fans(&topology, &darts, &segments)?;
+        if self.rounding_moves(&items) {
+            Self::check_emitted_fans(&topology, &darts, &segments)?;
+        }
 
         let mut offsets = Vec::new();
         let offset_capacity = self
@@ -5519,28 +5525,26 @@ impl ExactPartition<'_> {
         segments: &[Segment],
     ) -> Result<()> {
         debug_assert_eq!(darts.len(), segments.len());
-        let departure_capacity = darts
-            .len()
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut departures =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        departures
-            .try_reserve(departure_capacity)
-            .map_err(|_| ResourceError::Allocation)?;
+        // Emitted departures by topology slot.
+        let mut departures: Vec<Option<(XY, XY)>> = Vec::new();
+        try_reserve_vec(&mut departures, topology.targets.len())?;
+        departures.resize(topology.targets.len(), None);
         for (&[start, end], segment) in darts.iter().zip(segments) {
-            let prior_start = departures.insert(start, (segment.start, segment.end));
-            let prior_end = departures.insert(end, (segment.end, segment.start));
-            debug_assert!(prior_start.is_none() && prior_end.is_none());
+            debug_assert!(
+                departures[start as usize].is_none() && departures[end as usize].is_none()
+            );
+            departures[start as usize] = Some((segment.start, segment.end));
+            departures[end as usize] = Some((segment.end, segment.start));
         }
         for (node, range) in topology.starts.windows(2).enumerate() {
             let mut first = None;
             let mut previous = None;
             let mut descents = 0;
             let mut count = 0;
-            for slot in range[0] as usize..range[1] as usize {
-                let target = slot as u32;
-                let Some((origin, point)) = departures.remove(&target) else {
+            for (target, departure) in
+                (range[0]..range[1]).zip(&mut departures[range[0] as usize..range[1] as usize])
+            {
+                let Some((origin, point)) = departure.take() else {
                     continue;
                 };
                 let current = (target, point);
@@ -5570,7 +5574,7 @@ impl ExactPartition<'_> {
             }
         }
         debug_assert!(
-            departures.is_empty(),
+            departures.iter().all(Option::is_none),
             "emitted chords must retain exact dart identities"
         );
         Ok(())

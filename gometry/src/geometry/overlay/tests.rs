@@ -2188,6 +2188,30 @@ mod binary_areal_overlay_tests {
         }
     }
 
+    /// Emission checks run where rounding moved a crossing, and nested
+    /// operands, whose emitted nodes are all stored, skip them.
+    #[test]
+    fn emission_checks_run_only_where_rounding_moved_a_crossing() {
+        use crate::geometry::overlay::exact_partition::{
+            partition_metrics, reset_partition_builds,
+        };
+        let outer = square(0.0, 0.0, 4.0, 4.0);
+        for (right, moved) in [
+            (square(1.0, 1.0, 2.0, 2.0), false),
+            (regular_polygon(4.0, 4.0, 1.5, 7), true),
+        ] {
+            reset_partition_builds();
+            overlay_all(
+                &[&outer, &right],
+                crate::geometry::TopologyDomain::Cartesian,
+                OverlayOp::Intersection,
+                Strictness::Strict,
+            )
+            .unwrap();
+            assert_eq!(partition_metrics().unmoved_emissions == 0, moved);
+        }
+    }
+
     #[test]
     fn disjoint_ordinate_axes_match_forced_graph_wkb() {
         let inputs = [
