@@ -199,6 +199,14 @@ GATES: tuple[Gate, ...] = (
         requires_cpython=True,
     ),
     Gate(
+        name='pyright',
+        collect=_collector('pyo3stubs.oracle', 'collect_pyright_errors'),
+        summary='the stub type-checks under pyright',
+        success='pyright OK: stub is clean',
+        remedy="fix the stub until pyright is clean, under the project's own "
+        '[tool.pyright] settings',
+    ),
+    Gate(
         name='structural',
         collect=_collector('pyo3stubs.structural'),
         summary='overload hygiene, finality, signature coverage, __match_args__',

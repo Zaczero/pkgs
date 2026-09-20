@@ -151,6 +151,14 @@ CASES: dict[str, Case] = {
         seeded=_stub(_DOCUMENTED, 'def documented(a: Undeclared) -> str:'),
         expect='Undeclared',
     ),
+    'pyright': Case(
+        clean=_default,
+        seeded=_stub(
+            "__all__ = ['Open', 'Sealed', 'documented', 'overloaded']",
+            "__all__ = ['Open', 'Sealed', 'documented', 'overloaded', 'gone']",
+        ),
+        expect='is not present in module',
+    ),
     'structural': Case(
         clean=_default,
         seeded=_stub(

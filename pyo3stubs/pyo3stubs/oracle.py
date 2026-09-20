@@ -8,6 +8,12 @@ Two independent battle-tested detectors replace the former homegrown
   (PEP 484), undecorated duplicate defs (the silent dead-overload class —
   pyright applies last-def-wins without complaint), inconsistent overloads,
   unresolvable annotations.
+* **pyright** — the other checker most consumers type against. It reports what
+  mypy does not (an ``__all__`` entry with no definition, for one), under the
+  project's own ``[tool.pyright]`` settings. It cannot replace ``validity``: a
+  stub that turns off ``reportOverlappingOverload`` for deliberate
+  scalar-or-batch overlap also turns off pyright's dead-overload detection,
+  which mypy files under a separate code.
 * **stubtest** — ``mypy.stubtest`` imports the compiled module and compares it
   against the stub: missing/extra members, signature names/kinds/defaults
   (by value, not repr), classmethod/staticmethod/property mismatches, variables
@@ -22,6 +28,7 @@ Both run the interpreter's own installed mypy, so results match what a user's
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -64,7 +71,7 @@ def collect_validity_errors(cfg: StubConfig) -> list[str]:
             sys.executable,
             '-m',
             'mypy',
-            *(str(path) for path in (cfg.mypy_targets or (cfg.stub_path,))),
+            *(str(path) for path in (cfg.typecheck_targets or (cfg.stub_path,))),
             '--no-error-summary',
             '--no-color-output',
             '--soft-error-limit=-1',
@@ -123,3 +130,71 @@ def collect_stubtest_errors(cfg: StubConfig) -> list[str]:
         return []
     output = (result.stdout + result.stderr).strip()
     return [line for line in output.splitlines() if line.strip()]
+
+
+def _pyright_project(cfg: StubConfig) -> Path:
+    """The directory whose pyright settings apply to the stub.
+
+    The nearest ancestor holding a ``pyrightconfig.json`` or a ``pyproject.toml``
+    with a ``[tool.pyright]`` table, so the gate reads the same settings the
+    developer's editor does, wherever it was invoked from.
+    """
+    for directory in cfg.stub_path.resolve().parents:
+        if (directory / 'pyrightconfig.json').is_file():
+            return directory
+        project = directory / 'pyproject.toml'
+        if project.is_file() and '[tool.pyright]' in project.read_text(
+            encoding='utf-8'
+        ):
+            return directory
+    return cfg.stub_path.resolve().parent
+
+
+def collect_pyright_errors(cfg: StubConfig) -> list[str]:
+    """Check the stub with pyright; every error and warning is a violation.
+
+    Information-level output is advice, not a defect, so it is dropped. The
+    interpreter running the gates supplies the environment, which keeps the
+    result independent of whatever ``venvPath`` the project config names.
+    """
+    targets = cfg.typecheck_targets or (cfg.stub_path,)
+    project = _pyright_project(cfg)
+    result = subprocess.run(
+        [
+            sys.executable,
+            '-m',
+            'pyright',
+            '--outputjson',
+            '--pythonpath',
+            sys.executable,
+            '--project',
+            str(project),
+            *(str(path) for path in targets),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=project,
+        env={**os.environ, 'PYTHONPATH': ''},
+    )
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        output = (result.stderr or result.stdout).strip()
+        message = (
+            f'pyright could not run: {output}'
+            if output
+            else 'pyright produced no report'
+        )
+        raise RuntimeError(message) from None
+    return [
+        '{file}:{line}: {severity}: {message}{rule}'.format(
+            file=item['file'],
+            line=item['range']['start']['line'] + 1,
+            severity=item['severity'],
+            message=item['message'].replace('\n', ' '),
+            rule=f' ({item["rule"]})' if item.get('rule') else '',
+        )
+        for item in report.get('generalDiagnostics', ())
+        if item['severity'] in ('error', 'warning')
+    ]

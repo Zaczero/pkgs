@@ -26,6 +26,7 @@ into the stub.
 | Gate | Activated by | What it catches |
 |------|--------------|-----------------|
 | `validity` | always-on | Illegal stub syntax, bare impl defs, bad and shadowed overloads |
+| `pyright` | always-on | Whatever pyright sees that mypy does not (an `__all__` entry with no definition, for one), under the project's own `[tool.pyright]` |
 | `structural` | always-on | Overload hygiene, `@final` vs runtime, signature coverage, `__match_args__`, `__all__` entries the stub never defines |
 | `text-signature` | always-on | Manual Rust `text_signature` vs the real `signature` |
 | `surface` | `surface` | Option-kwarg drift across dual API surfaces |
@@ -39,7 +40,15 @@ into the stub.
 | `stubtest` | always-on | Members, params, defaults, properties vs runtime |
 
 `validity` and `stubtest` are backed by mypy, which does not run on PyPy; they
-report themselves *skipped* there rather than passing.
+report themselves *skipped* there rather than passing. `pyright` runs
+everywhere: its wrapper is pure Python and the checker itself is Node.
+
+**Both checkers, because neither sees everything.** pyright reports an
+`__all__` entry that names nothing and other diagnostics mypy has no code for.
+mypy catches a dead overload — one an earlier variant fully covers — that
+pyright files under `reportOverlappingOverload`, the rule a stub turns off when
+its scalar and batch overloads overlap on purpose; `validity` therefore enables
+mypy's separate `overload-cannot-match` whatever the project's config says.
 
 **A gate reports what it examined.** A clean run reads `text-signature:
 matches signature attributes (99 text_signature attributes)`, and a gate that

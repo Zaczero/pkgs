@@ -8,6 +8,9 @@ requires-python = ">=3.11"
 dependencies = [
   "libcst; platform_python_implementation == 'CPython'",
   "mypy>=1.15; platform_python_implementation == 'CPython'",
+  # pyright runs on every interpreter: the wrapper is pure Python and the
+  # checker itself is Node. It reports what mypy does not, and vice versa.
+  "pyright>=1.1.400",
   "tree-sitter>=0.25; platform_python_implementation == 'CPython'",
   "tree-sitter-rust>=0.24; platform_python_implementation == 'CPython'",
 ]
