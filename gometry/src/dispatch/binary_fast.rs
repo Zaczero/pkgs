@@ -12,7 +12,7 @@ use crate::dispatch::binary::{
 use crate::dispatch::kernels;
 use crate::dispatch::metric::GeodesicBinaryRow;
 use crate::dispatch::operation::{MetricOp, Operation};
-use crate::geometry::{GeometryKind, PreparedPlan};
+use crate::geometry::{GeometryKind, PreparedPlan, TopologyDomain};
 use crate::predicates::engine;
 use crate::predicates::engine::Predicate;
 use crate::{DistanceUnit, DwithinDistance, Frame, OverlayOp};
@@ -114,27 +114,40 @@ pub(crate) fn dispatch_predicate(
     let admission = super::binary::admit_binary(left, right, operation.name())?;
     if let (GeometryInput::One(left), GeometryInput::One(right)) = (admission.left, admission.right)
     {
+        let spec = predicate.spec();
+        // The kind gate reads the operand kinds alone, so it answers before a
+        // prepared plan or a frame product is resolved.
+        if let Some(verdict) = spec.predicate.kind_gate(
+            GeometryKind::of(left.shape.shape()),
+            GeometryKind::of(right.shape.shape()),
+        ) {
+            return Ok(crate::broadcast::py_bool(py, verdict));
+        }
         let left_plan = left.plan_or_transient()?;
         let right_plan = right.plan_or_transient()?;
-        let left_cache = left.frame_cache()?;
-        let right_cache = right.frame_cache()?;
-        let domain = admission.domain;
-        let spec = predicate.spec();
+        // Only geographic topology reads frame products; resolving them for a
+        // planar pair allocates a row-product chunk per operand that the
+        // Cartesian arm never looks at.
+        let geographic = match admission.domain {
+            TopologyDomain::Cartesian => None,
+            TopologyDomain::Geographic(frame) => {
+                Some((frame, left.frame_cache()?, right.frame_cache()?))
+            },
+        };
         let value = py.detach(move || {
-            if let Some(verdict) = spec.predicate.kind_gate(
-                GeometryKind::of(left_plan.shape()),
-                GeometryKind::of(right_plan.shape()),
-            ) {
-                return Ok(verdict);
-            }
-            crate::predicates::engine::PreparedTopologyPair::try_for_domain(
-                &left_plan,
-                &left_cache,
-                &right_plan,
-                &right_cache,
-                domain,
-            )
-            .and_then(|operands| engine::topology_scalar_pair(&spec, &operands))
+            let operands = match &geographic {
+                None => engine::PreparedTopologyPair::cartesian(&left_plan, &right_plan),
+                Some((frame, left_cache, right_cache)) => {
+                    engine::PreparedTopologyPair::try_geographic(
+                        &left_plan,
+                        left_cache,
+                        &right_plan,
+                        right_cache,
+                        *frame,
+                    )?
+                },
+            };
+            engine::topology_scalar_pair(&spec, &operands)
         })?;
         return Ok(crate::broadcast::py_bool(py, value));
     }

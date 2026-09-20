@@ -52,6 +52,13 @@ impl<'a> PreparedTopologyPair<'a> {
         }
     }
 
+    /// The planar pair. Cartesian topology reads no frame products, so this
+    /// constructor takes none — resolving them would allocate a row-product
+    /// chunk per operand for this arm to ignore.
+    pub(crate) const fn cartesian(left: &'a PreparedPlan, right: &'a PreparedPlan) -> Self {
+        Self::Cartesian { left, right }
+    }
+
     pub(crate) fn try_geographic(
         left: &'a PreparedPlan,
         left_cache: &'a crate::geometry::FrameDependentCaches,
@@ -598,13 +605,25 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         |operation| operation.prepared_at(index, row),
                     )
                     .map_err(|error| (index, error))?;
-                let transient_cache = crate::geometry::FrameDependentCaches::default();
                 let row_cache = row_operation
                     .as_mut()
                     .map(|operation| operation.frame_cache(index))
                     .transpose()
                     .map_err(|error| (index, error))?;
-                let element_cache = row_cache.as_deref().unwrap_or(&transient_cache);
+                // An array-backed row already owns its frame products; only a
+                // row without them pays for a transient set, which has to
+                // outlive the branch that builds it.
+                let transient_cache;
+                #[expect(
+                    clippy::option_if_let_else,
+                    reason = "map_or_else cannot initialize the binding the borrow outlives"
+                )]
+                let element_cache = if let Some(cache) = row_cache.as_deref() {
+                    cache
+                } else {
+                    transient_cache = crate::geometry::FrameDependentCaches::default();
+                    &transient_cache
+                };
                 let element_prepared = GeographicPrepared::try_new(&element, element_cache, frame)
                     .map_err(|error| (index, error))?;
                 let prepared = *scalar_prepared

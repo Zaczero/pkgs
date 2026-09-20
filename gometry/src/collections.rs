@@ -11,14 +11,47 @@
 //! canonicalized f64 bit-words). Identity hashing (`nohash-hasher`) is
 //! structurally impossible for a two-word key; `ahash` is the correct choice
 //! for `PointKey`, `(PointKey, PointKey)`, tuple, `TypeId`, and other
-//! multi-word struct keys. `nohash` would only apply to a single-integer key
-//! (none exists today; H3 `CellIndex` is a foreign `NonZero` wrapper without an
-//! `IsEnabled` impl).
+//! multi-word struct keys. [`IndexHasher`] covers the other shape: one dense
+//! integer the crate produced itself, such as a row-product chunk index. Those
+//! keys need spreading, not strength, so it multiplies rather than hashing — a
+//! `RandomState` SipHash of the index cost about a tenth of a scalar predicate
+//! call. H3 `CellIndex` stays on `ahash`: it is a foreign `NonZero` wrapper.
 
-use std::hash::{BuildHasher as _, Hash};
+use std::hash::{BuildHasher as _, BuildHasherDefault, Hash, Hasher};
 use std::sync::{LazyLock, OnceLock};
 
 pub(crate) use ahash::{HashMap, HashMapExt, HashSet, HashSetExt};
+
+/// Hasher for a dense integer key the crate produced itself.
+///
+/// One odd-constant multiply spreads the index across the table's control
+/// bytes. Deliberately not collision-resistant: a key an outside caller can
+/// choose belongs in an `ahash` map instead.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct IndexHasher(u64);
+
+/// Golden-ratio odd constant; the multiply carries low bits into the high ones
+/// the table reads for its control byte.
+const INDEX_HASH_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
+
+impl Hasher for IndexHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(INDEX_HASH_MULTIPLIER);
+        }
+    }
+
+    fn write_usize(&mut self, value: usize) {
+        self.0 = (value as u64).wrapping_mul(INDEX_HASH_MULTIPLIER);
+    }
+}
+
+/// [`std::collections::HashMap`] keyed by a crate-produced integer.
+pub(crate) type IndexMap<K, V> = std::collections::HashMap<K, V, BuildHasherDefault<IndexHasher>>;
 
 static COLLECTION_HASH_STATE: OnceLock<ahash::RandomState> = OnceLock::new();
 

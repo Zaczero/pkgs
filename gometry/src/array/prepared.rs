@@ -2,7 +2,6 @@
 
 #[cfg(test)]
 use std::cell::Cell;
-use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -101,14 +100,14 @@ impl HeapSize for RowProductChunk {
 #[derive(Debug)]
 pub(crate) struct RowProductOwner {
     physical_len: usize,
-    chunks: Mutex<HashMap<usize, Arc<RowProductChunk>>>,
+    chunks: Mutex<crate::collections::IndexMap<usize, Arc<RowProductChunk>>>,
 }
 
 impl RowProductOwner {
     fn new(physical_len: usize) -> Self {
         Self {
             physical_len,
-            chunks: Mutex::new(HashMap::new()),
+            chunks: Mutex::new(crate::collections::IndexMap::default()),
         }
     }
 
@@ -726,11 +725,12 @@ impl PyGeometryArray {
             packed @ (ShapeRow::Line(..) | ShapeRow::Rings(..))
                 if packed_row_persistent(packed) =>
             {
-                let bounds = self.row_bounds_seed(index);
                 let (chunk, offset) = products.cell(index)?;
                 if let Some(plan) = chunk.cells[offset].prepared.get() {
                     return Ok(PreparedRow::Owned(Arc::clone(plan)));
                 }
+                // Seeded only for the row being built: a warm row returns above.
+                let bounds = self.row_bounds_seed(index);
                 let transient = PreparedRow::transient_with_seed(packed, bounds)?;
                 let handle = chunk.cells[offset]
                     .prepared
