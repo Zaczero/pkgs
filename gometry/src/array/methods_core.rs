@@ -992,16 +992,23 @@ impl PyGeometryArray {
         }
         let domain = crate::geometry::topology_domain(&self.frame).ok();
         if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
-            let shapes = self
-                .present_shape_rows()
-                .collect::<crate::error::Result<Vec<_>>>()?;
-            if shapes
-                .iter()
-                .any(|(_, shape)| crate::geometry::crosses_antimeridian_in_frame(shape, frame))
-            {
+            // Only a crossing row needs the shapes; scan for one first so the
+            // ordinary case leaves the columnar fold below its inputs.
+            let mut crossing = false;
+            for row in self.present_shape_rows() {
+                if crate::geometry::crosses_antimeridian_in_frame(&row?.1, frame) {
+                    crossing = true;
+                    break;
+                }
+            }
+            if crossing {
+                let shapes = self
+                    .present_shape_rows()
+                    .map(|row| row.map(|(_, shape)| shape))
+                    .collect::<crate::error::Result<Vec<_>>>()?;
                 return Ok(
                     crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                        shapes.into_iter().map(|(_, shape)| shape),
+                        shapes,
                         frame,
                     )
                     .map(Bounds::into_tuple),
