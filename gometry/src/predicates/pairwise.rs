@@ -87,7 +87,6 @@ pub(crate) fn shortest_line(
                         geometry.shape.shape(),
                         *frame,
                     )
-                    && !array.has_missing()
                 {
                     let result = fixed_geometry_array_shortest_line_geodesic(
                         py, geometry, array, true, crs, *frame, state,
@@ -104,9 +103,7 @@ pub(crate) fn shortest_line(
                 )
             },
             (GeometryInput::Many(array), GeometryInput::One(geometry)) => {
-                if let crs::MetricModel::Geodesic { crs, frame, state } = &model
-                    && !array.has_missing()
-                {
+                if let crs::MetricModel::Geodesic { crs, frame, state } = &model {
                     let result = fixed_geometry_array_shortest_line_geodesic(
                         py, geometry, array, false, crs, *frame, state,
                     )?;

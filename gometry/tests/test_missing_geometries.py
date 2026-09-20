@@ -1032,6 +1032,25 @@ def test_geographic_masked_nearest_and_shortest_line_skip_placeholders() -> None
     assert shortest[1] is None
 
 
+def test_geographic_masked_shortest_line_matches_the_dense_answer() -> None:
+    """A null row must not change the answer at the rows around it.
+
+    Nullable geographic arrays take the same fixed-operand geodesic lane as
+    dense ones, so the present rows have to agree with the dense result
+    element for element.
+    """
+    present = [gm.Point(0.0, 0.0, crs=4326), gm.Point(2.0, 2.0, crs=4326)]
+    probe = gm.Point(1.0, 1.0, crs=4326)
+    masked = gm.shortest_line(gm.GeometryArray([present[0], None, present[1]]), probe)
+    dense = gm.shortest_line(gm.GeometryArray(present), probe)
+
+    assert masked.is_missing.tolist() == [False, True, False]
+    assert [masked[0].to_wkt(), masked[2].to_wkt()] == [
+        dense[0].to_wkt(),
+        dense[1].to_wkt(),
+    ]
+
+
 def test_geographic_shortest_line_error_note_uses_logical_row_after_missing() -> None:
     rows = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs=4326),
