@@ -21,12 +21,12 @@ pub(crate) const EXPANSION_LIMBS: usize = 64;
 /// error. Keeping the two cases distinct is what prevents a refused expansion
 /// buffer from silently publishing a partial cover.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ExactFailure {
+pub(crate) enum ExactFailure {
     Arithmetic,
     Allocation,
 }
 
-pub(super) type ExactResult<T> = std::result::Result<T, ExactFailure>;
+pub(crate) type ExactResult<T> = std::result::Result<T, ExactFailure>;
 
 pub(super) fn exact<T>(value: Option<T>) -> ExactResult<T> {
     value.ok_or(ExactFailure::Arithmetic)
@@ -358,7 +358,7 @@ impl PartialEq for ExactExpansion {
 /// absent here: an outward enclosure may evaluate an arc, but cannot identify
 /// which parent split produced that arc.
 #[derive(Debug, PartialEq)]
-pub(super) struct ExactRatio {
+pub(crate) struct ExactRatio {
     pub(super) numerator: ExactExpansion,
     pub(super) denominator: ExactExpansion,
 }
