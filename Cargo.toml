@@ -61,6 +61,7 @@ absolute_paths = "warn"
 allow_attributes = "warn"
 allow_attributes_without_reason = "warn"
 arbitrary_source_item_ordering = "warn"
+as_pointer_underscore = "warn"
 assertions_on_result_states = "warn"
 clone_on_ref_ptr = "warn"
 dbg_macro = "warn"
@@ -80,6 +81,7 @@ iter_over_hash_type = "warn"
 lossy_float_literal = "warn"
 map_with_unused_argument_over_ranges = "warn"
 mem_forget = "warn"
+mixed_read_write_in_expression = "warn"
 mutex_atomic = "warn"
 mutex_integer = "warn"
 non_zero_suggestions = "warn"
@@ -120,11 +122,34 @@ used_underscore_items = "warn"
 verbose_file_reads = "warn"
 
 [workspace.lints.rust]
+closure_returning_async_block = "warn"
+deprecated_in_future = "warn"
+deref_into_dyn_supertrait = "warn"
+explicit_outlives_requirements = "warn"
+# A panic unwinding into PROJ, libtiff or the PyO3 boundary is undefined behaviour.
+ffi_unwind_calls = "warn"
+# Edition 2024 moved when temporaries and guards drop, and the change is silent.
+if_let_rescope = "warn"
+impl_trait_overcaptures = "warn"
+impl_trait_redundant_captures = "warn"
+macro_use_extern_crate = "warn"
+meta_variable_misuse = "warn"
+missing_copy_implementations = "warn"
+missing_unsafe_on_extern = "warn"
+redundant_lifetimes = "warn"
+single_use_lifetimes = "warn"
+# The other half of the edition 2024 drop-timing change.
+tail_expr_drop_order = "warn"
+unit_bindings = "warn"
 # Crates are unpublished (only the Python wheels ship), so the narrowest accurate
 # visibility is the goal: an item not reachable from the crate's real public API
 # should be `pub(crate)`, not `pub`. This drives that narrowing; pair with the
 # clippy `redundant_pub_crate = "allow"` above (the two are inverses).
 unreachable_pub = "warn"
+unsafe_attr_outside_unsafe = "warn"
+unused_crate_dependencies = "warn"
+unused_import_braces = "warn"
+unused_lifetimes = "warn"
 
 [profile.dev]
 debug = "line-tables-only"
