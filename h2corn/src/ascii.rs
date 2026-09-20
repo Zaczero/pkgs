@@ -1,5 +1,18 @@
 pub(crate) const INVALID_VALUE: u8 = u8::MAX;
 
+/// `memchr` reads its setup cost back over a long haystack and not over a short
+/// one, where a plain scan is already at the byte. Header field lists and
+/// request paths are usually short, so both callers pick per input.
+pub(crate) fn find_byte(needle: u8, haystack: &[u8]) -> Option<usize> {
+    const SCAN_LIMIT: usize = 16;
+
+    if haystack.len() <= SCAN_LIMIT {
+        haystack.iter().position(|&byte| byte == needle)
+    } else {
+        memchr::memchr(needle, haystack)
+    }
+}
+
 pub(crate) const HEADER_NAME_VALID: u8 = 1;
 pub(crate) const HEADER_NAME_UPPER: u8 = 2;
 

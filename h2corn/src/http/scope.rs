@@ -3,7 +3,6 @@ mod forwarded;
 use std::borrow::Cow;
 
 use http::Method;
-use memchr::memchr;
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
@@ -23,32 +22,20 @@ use crate::runtime::RequestContext;
 
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
-    let first_escape = if bytes.len() <= 16 {
-        let mut index = 0;
-        while index < bytes.len() && bytes[index] != b'%' {
-            index += 1;
-        }
-        if index == bytes.len() {
-            return Cow::Borrowed(raw_path);
-        }
-        index
-    } else {
-        let Some(index) = memchr(b'%', bytes) else {
-            return Cow::Borrowed(raw_path);
-        };
-        index
+    let Some(first_escape) = ascii::find_byte(b'%', bytes) else {
+        return Cow::Borrowed(raw_path);
     };
 
     let mut out = None::<Vec<u8>>;
     let mut index = first_escape;
     let mut copied = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            let high = ascii::HEX_VALUE[usize::from(bytes[index + 1])];
-            let low = ascii::HEX_VALUE[usize::from(bytes[index + 2])];
+    while let Some(tail) = bytes.get(index..).filter(|tail| !tail.is_empty()) {
+        if let [b'%', high_digit, low_digit, ..] = *tail {
+            let high = ascii::HEX_VALUE[usize::from(high_digit)];
+            let low = ascii::HEX_VALUE[usize::from(low_digit)];
             if high != ascii::INVALID_VALUE && low != ascii::INVALID_VALUE {
                 let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
-                out.extend_from_slice(&bytes[copied..index]);
+                out.extend_from_slice(bytes.get(copied..index).unwrap_or_default());
                 out.push((high << 4) | low);
                 index += 3;
                 copied = index;
@@ -60,7 +47,7 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let Some(mut out) = out else {
         return Cow::Borrowed(raw_path);
     };
-    out.extend_from_slice(&bytes[copied..]);
+    out.extend_from_slice(bytes.get(copied..).unwrap_or_default());
 
     String::from_utf8(out).map_or_else(|_| Cow::Borrowed(raw_path), Cow::Owned)
 }

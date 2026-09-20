@@ -396,12 +396,8 @@ pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut rest = Some(value);
     iter::from_fn(move || {
         let current = rest?;
-        let comma = if current.len() <= 16 {
-            current.iter().position(|&byte| byte == b',')
-        } else {
-            memchr(b',', current)
-        };
-        if let Some((head, [b',', tail @ ..])) = comma.and_then(|at| current.split_at_checked(at))
+        if let Some((head, [b',', tail @ ..])) =
+            crate::ascii::find_byte(b',', current).and_then(|at| current.split_at_checked(at))
         {
             rest = Some(tail);
             Some(head)
