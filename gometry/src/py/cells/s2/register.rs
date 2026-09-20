@@ -3,10 +3,9 @@ use std::collections::BTreeMap;
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::error::ResourceError;
-use crate::geometry::{Coordinates as _, Shape};
+use crate::geometry::{Component, Coordinates as _, Shape};
 use crate::grid::affine_source::{
     GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
-    CoverComponent, visit_grid_cover_components,
 };
 use crate::grid::s2::cellid::CellId;
 use crate::grid::s2::coverer::{CoverRule, Coverer, Covering};
@@ -84,7 +83,7 @@ fn cover_s2_component(
 /// the component ordering or the share of an adaptive target.  The key is the
 /// full XY topology that reaches the grid (Z/M are deliberately absent): it is
 /// an in-process ordering key, never a serialized geometry identity.
-fn s2_component_key(component: CoverComponent<'_>) -> Result<Vec<u64>, S2ComponentCoverError> {
+fn s2_component_key(component: Component<'_>) -> Result<Vec<u64>, S2ComponentCoverError> {
     fn append_points(
         key: &mut Vec<u64>,
         points: impl IntoIterator<Item = crate::geometry::Point>,
@@ -99,20 +98,20 @@ fn s2_component_key(component: CoverComponent<'_>) -> Result<Vec<u64>, S2Compone
     }
     let mut key = Vec::new();
     match component {
-        CoverComponent::Point(point) => {
+        Component::Point(point) => {
             crate::try_push_vec(&mut key, 0).map_err(|_| S2ComponentCoverError::Allocation)?;
             crate::try_push_vec(&mut key, point.x.to_bits())
                 .map_err(|_| S2ComponentCoverError::Allocation)?;
             crate::try_push_vec(&mut key, point.y.to_bits())
                 .map_err(|_| S2ComponentCoverError::Allocation)?;
         },
-        CoverComponent::LineString(line) => {
+        Component::LineString(line) => {
             crate::try_push_vec(&mut key, 1).map_err(|_| S2ComponentCoverError::Allocation)?;
             crate::try_push_vec(&mut key, line.len() as u64)
                 .map_err(|_| S2ComponentCoverError::Allocation)?;
             append_points(&mut key, line.iter())?;
         },
-        CoverComponent::Polygon(polygon) => {
+        Component::Polygon(polygon) => {
             crate::try_push_vec(&mut key, 2).map_err(|_| S2ComponentCoverError::Allocation)?;
             crate::try_push_vec(&mut key, polygon.holes.len() as u64)
                 .map_err(|_| S2ComponentCoverError::Allocation)?;
@@ -165,7 +164,7 @@ fn bounds_contain(outer: crate::geometry::Bounds, inner: crate::geometry::Bounds
 /// No grid proxy is allowed to establish that negative decision.
 fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCoverError> {
     let mut components = Vec::new();
-    visit_grid_cover_components(source, &mut |component| {
+    source.try_for_each_component(&mut |component| {
         crate::try_push_vec(
             &mut components,
             (s2_component_key(component)?, component.to_shape()),

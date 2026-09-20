@@ -7,7 +7,7 @@ use crate::geographic::{
     GeographicDiagnostic, GeographicFrame, GeographicViewError, ScalarGeographicView,
 };
 use crate::geometry::{CoordSeq, LineSeq, Shape, TopologyDomain};
-use crate::grid::affine_source::{normalize_grid_source, visit_grid_cover_components};
+use crate::grid::affine_source::normalize_grid_source;
 use crate::grid::cell::{HierarchicalCell, RectGridCell};
 use crate::grid::coverer::{self, RectCoverRule};
 use crate::grid::{CoverBudgetExceeded, CoverError};
@@ -656,7 +656,7 @@ pub(crate) fn envelope_windows(
     cover_shape: &Shape,
 ) -> Result<Vec<crate::geometry::Bounds>, GridCoverError> {
     let mut windows = Vec::new();
-    visit_grid_cover_components(cover_shape, &mut |component| {
+    cover_shape.try_for_each_component(&mut |component| {
         let Some(bounds) = component.to_shape().bounds() else {
             return Ok(());
         };

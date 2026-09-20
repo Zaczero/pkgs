@@ -15,7 +15,6 @@ use crate::collections::HashMap;
 use crate::geometry::Shape;
 use crate::grid::affine_source::{
     GeographicCoverageSource, GridDegreePoint, GridPointClass, RectClass, SphericalGridTarget,
-    visit_grid_cover_components,
 };
 use crate::grid::coverer::dissolved_polygonal_area;
 use crate::grid::spherical_arc::{
@@ -326,7 +325,7 @@ pub(crate) fn h3_cover_shape(
         return h3_cover(&source, plan, rule, max_cells);
     }
     let mut merged = H3CoverAccumulator::default();
-    visit_grid_cover_components(shape, &mut |component| {
+    shape.try_for_each_component(&mut |component| {
         let source = GeographicCoverageSource::from_validated(
             &component.to_shape(),
             SphericalGridTarget::H3(plan.target),

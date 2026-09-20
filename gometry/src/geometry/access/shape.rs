@@ -8,6 +8,29 @@ use crate::geometry::{
     Shape, line_length_3d,
 };
 
+/// One atomic part of a shape: a point, a line, or a polygon.
+///
+/// Multiparts and collections are syntax over these, so an operation that
+/// treats a one-member `MultiPolygon` and a bare `Polygon` differently is
+/// wrong by construction. Polygon rings stay together: shell and holes are one
+/// part, not three.
+#[derive(Clone, Copy)]
+pub(crate) enum Component<'a> {
+    Point(Point),
+    LineString(&'a LineSeq),
+    Polygon(&'a Polygon),
+}
+
+impl Component<'_> {
+    pub(crate) fn to_shape(self) -> Shape {
+        match self {
+            Self::Point(point) => Shape::Point(point),
+            Self::LineString(line) => Shape::LineString(line.clone()),
+            Self::Polygon(polygon) => Shape::Polygon(polygon.clone()),
+        }
+    }
+}
+
 /// A lineal operand, empties included. Operations over lines match it
 /// exhaustively, so none can route a typed empty into its kind error.
 pub(crate) enum Lineal<'a> {
@@ -824,6 +847,43 @@ const fn merge_ord_extremes(acc: &mut Option<(f64, f64)>, chunk: Option<(f64, f6
 /// First vertex of the first non-empty line piece, if any.
 pub(crate) fn linework_first_point(lines: &[&CoordSeq]) -> Option<Point> {
     lines.iter().find_map(|line| line.first())
+}
+
+impl Shape {
+    /// Visit every atomic [`Component`], recursing through collections and
+    /// skipping empties.
+    pub(crate) fn try_for_each_component<'a, E>(
+        &'a self,
+        visit: &mut impl FnMut(Component<'a>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        match self {
+            Self::Point(point) => visit(Component::Point(*point))?,
+            Self::LineString(line) => visit(Component::LineString(line))?,
+            Self::Polygon(polygon) => visit(Component::Polygon(polygon))?,
+            Self::MultiPoint(points) => {
+                for point in points {
+                    visit(Component::Point(point))?;
+                }
+            },
+            Self::MultiLineString(lines) => {
+                for line in lines {
+                    visit(Component::LineString(line))?;
+                }
+            },
+            Self::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    visit(Component::Polygon(polygon))?;
+                }
+            },
+            Self::GeometryCollection(parts) => {
+                for part in parts {
+                    part.try_for_each_component(visit)?;
+                }
+            },
+            Self::Empty(..) => {},
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

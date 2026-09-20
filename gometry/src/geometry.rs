@@ -24,12 +24,12 @@ mod area;
 pub(crate) mod exact_arith;
 pub(crate) mod expansion;
 pub(crate) use access::{
-    Lineal, PointSet, Polygonal, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, canonicalize_zero,
-    centroid_ring_sums, column_all_finite, column_mean2, column_minmax, line_length_3d_columns,
-    line_length_columns, pair_map4_guarded_f64, pair_select_mask, shape_axes_all_z,
-    simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all, simd_mask_any,
-    simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64,
-    xy_bounds_columns,
+    Component, Lineal, PointSet, Polygonal, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd,
+    canonicalize_zero, centroid_ring_sums, column_all_finite, column_mean2, column_minmax,
+    line_length_3d_columns, line_length_columns, pair_map4_guarded_f64, pair_select_mask,
+    shape_axes_all_z, simd_argmin_f64, simd_indexed_map_f64, simd_map_f64, simd_mask_all,
+    simd_mask_any, simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask,
+    try_simd_map_f64, xy_bounds_columns,
 };
 pub(crate) use area::{
     AreaSign, ExactRationalArea, RingWinding, closed_columns_winding, cmp_area_keys_then_closed,

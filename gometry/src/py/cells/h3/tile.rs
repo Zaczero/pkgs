@@ -1,6 +1,7 @@
 use crate::collections::{HashSet, HashSetExt as _};
-use crate::geometry::{CoordSeq, GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape};
-use crate::grid::affine_source::{CoverComponent, visit_grid_cover_components};
+use crate::geometry::{
+    Component, CoordSeq, GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape,
+};
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
 use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 use crate::py::cells::h3::{CellIndex, LatLng, Resolution, TiledCell, h3_latlng};
@@ -66,7 +67,7 @@ pub(super) fn h3_tile(
     // center flood invent a container-specific path: each
     // component is traversed independently against the shared authority, then
     // the shared map performs the sole deduplicated global budget check.
-    visit_grid_cover_components(shape, &mut |component| {
+    shape.try_for_each_component(&mut |component| {
         h3_tile_shape(component, &authority, resolution, max_cells, &mut coverage)
     })?;
     let mut cells = Vec::new();
@@ -85,18 +86,20 @@ pub(super) fn h3_tile(
 /// Accumulate one atomic center-rule H3 source into `coverage`. Aggregate shapes were
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
 pub(super) fn h3_tile_shape(
-    component: CoverComponent<'_>,
+    component: Component<'_>,
     authority: &GeographicPrepared<'_>,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
 ) -> Result<(), H3TileError> {
     match component {
-        CoverComponent::Polygon(polygon) => {
+        Component::Polygon(polygon) => {
             h3_tile_polygon(polygon, authority, resolution, max_cells, coverage)?;
         },
-        CoverComponent::Point(point) => h3_tile_point(point, authority, resolution, max_cells, coverage)?,
-        CoverComponent::LineString(coords) => {
+        Component::Point(point) => {
+            h3_tile_point(point, authority, resolution, max_cells, coverage)?;
+        },
+        Component::LineString(coords) => {
             h3_tile_line(authority, coords, resolution, max_cells, coverage)?;
         },
     }

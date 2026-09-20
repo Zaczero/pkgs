@@ -4540,44 +4540,22 @@ impl StagedExactSources {
     }
 
     fn append_shape(&mut self, shape: &Shape, operand: u32) -> Result<()> {
-        match shape {
-            Shape::Point(point) => {
-                try_reserve_vec(&mut self.isolated, 1)?;
-                try_reserve_vec(&mut self.isolated_points, 1)?;
-                try_reserve_vec(&mut self.isolated_operands, 1)?;
-                try_push_vec(&mut self.isolated, point.xy())?;
-                try_push_vec(&mut self.isolated_points, *point)?;
-                try_push_vec(&mut self.isolated_operands, operand)?;
-            },
-            Shape::MultiPoint(points) => {
-                for point in points.points() {
-                    try_reserve_vec(&mut self.isolated, 1)?;
-                    try_reserve_vec(&mut self.isolated_points, 1)?;
-                    try_reserve_vec(&mut self.isolated_operands, 1)?;
-                    try_push_vec(&mut self.isolated, point.xy())?;
-                    try_push_vec(&mut self.isolated_points, point)?;
-                    try_push_vec(&mut self.isolated_operands, operand)?;
-                }
-            },
-            Shape::LineString(line) => self.append_line(line, operand)?,
-            Shape::MultiLineString(lines) => {
-                for line in lines.iter() {
-                    self.append_line(line, operand)?;
-                }
-            },
-            Shape::Polygon(polygon) => self.append_polygon(polygon, operand)?,
-            Shape::MultiPolygon(polygons) => {
-                for polygon in polygons.iter() {
-                    self.append_polygon(polygon, operand)?;
-                }
-            },
-            Shape::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    self.append_shape(geometry, operand)?;
-                }
-            },
-            Shape::Empty(..) => {},
-        }
+        shape.try_for_each_component(&mut |component| match component {
+            crate::geometry::Component::Point(point) => self.append_isolated_point(point, operand),
+            crate::geometry::Component::LineString(line) => self.append_line(line, operand),
+            crate::geometry::Component::Polygon(polygon) => self.append_polygon(polygon, operand),
+        })
+    }
+
+    /// One point with no segment to carry it: the three isolated columns move
+    /// together, so they reserve together.
+    fn append_isolated_point(&mut self, point: Point, operand: u32) -> Result<()> {
+        try_reserve_vec(&mut self.isolated, 1)?;
+        try_reserve_vec(&mut self.isolated_points, 1)?;
+        try_reserve_vec(&mut self.isolated_operands, 1)?;
+        try_push_vec(&mut self.isolated, point.xy())?;
+        try_push_vec(&mut self.isolated_points, point)?;
+        try_push_vec(&mut self.isolated_operands, operand)?;
         Ok(())
     }
 

@@ -545,33 +545,18 @@ fn append_overlay_parts(
     lines: &mut Vec<CoordSeq>,
     polygons: &mut Vec<crate::geometry::Polygon>,
 ) -> Result<()> {
-    match shape {
-        Shape::Point(point) => try_push_vec(points, *point)?,
-        Shape::MultiPoint(multi) => {
-            for point in multi {
-                try_push_vec(points, point)?;
-            }
-        },
-        Shape::LineString(line) => try_push_vec(lines, line.as_coords().clone())?,
-        Shape::MultiLineString(multi) => {
-            for line in multi.iter() {
+    shape.try_for_each_component(&mut |component| {
+        match component {
+            crate::geometry::Component::Point(point) => try_push_vec(points, point)?,
+            crate::geometry::Component::LineString(line) => {
                 try_push_vec(lines, line.as_coords().clone())?;
-            }
-        },
-        Shape::Polygon(polygon) => try_push_vec(polygons, polygon.clone())?,
-        Shape::MultiPolygon(multi) => {
-            for polygon in multi.iter() {
+            },
+            crate::geometry::Component::Polygon(polygon) => {
                 try_push_vec(polygons, polygon.clone())?;
-            }
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                append_overlay_parts(geometry, points, lines, polygons)?;
-            }
-        },
-        Shape::Empty(..) => {},
-    }
-    Ok(())
+            },
+        }
+        Ok(())
+    })
 }
 
 #[expect(

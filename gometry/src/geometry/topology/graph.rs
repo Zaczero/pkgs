@@ -980,35 +980,18 @@ impl GraphBuilder {
     }
 
     fn collect(&mut self, shape: &Shape, source_row: u32) -> crate::error::Result<()> {
-        match shape {
-            Shape::Empty(..) => {},
-            Shape::Point(point) => {
-                self.push_source_point(*point);
-            },
-            Shape::MultiPoint(points) => {
-                for point in points.points() {
-                    self.push_source_point(point);
-                }
-            },
-            Shape::LineString(line) => self.collect_line(line, source_row),
-            Shape::MultiLineString(lines) => {
-                for line in lines {
+        shape.try_for_each_component(&mut |component| {
+            match component {
+                crate::geometry::Component::Point(point) => self.push_source_point(point),
+                crate::geometry::Component::LineString(line) => {
                     self.collect_line(line, source_row);
-                }
-            },
-            Shape::Polygon(polygon) => self.collect_polygon(polygon, source_row)?,
-            Shape::MultiPolygon(polygons) => {
-                for polygon in polygons {
+                },
+                crate::geometry::Component::Polygon(polygon) => {
                     self.collect_polygon(polygon, source_row)?;
-                }
-            },
-            Shape::GeometryCollection(parts) => {
-                for part in parts {
-                    self.collect(part, source_row)?;
-                }
-            },
-        }
-        Ok(())
+                },
+            }
+            Ok(())
+        })
     }
 
     const fn component(&mut self) -> u32 {
