@@ -24,7 +24,10 @@ const INITIAL_STATE: [u32; 5] = [
     0x1032_5476,
     0xC3D2_E1F0,
 ];
-#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation bounds-checks these writes when the table is built"
+)]
 const FIRST_BLOCK_TEMPLATE: [u32; 16] = {
     let mut block = [0; 16];
     let mut index = 0;

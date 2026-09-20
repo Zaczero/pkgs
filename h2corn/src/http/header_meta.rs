@@ -75,8 +75,6 @@ impl ProxyHeaderSlots {
     }
 }
 
-
-
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ParsedWebSocketKey {
     #[default]

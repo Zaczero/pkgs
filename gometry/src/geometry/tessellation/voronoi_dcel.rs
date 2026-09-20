@@ -2549,7 +2549,10 @@ fn assemble_separator_group(
         incidence.extend([(left, slot, right), (right, slot, left)]);
     }
     incidence.sort_unstable();
-    if incidence.array_windows::<3>().any(|[first, _, third]| first.0 == third.0) {
+    if incidence
+        .array_windows::<3>()
+        .any(|[first, _, third]| first.0 == third.0)
+    {
         return Err(voronoi_error("Voronoi separator branches"));
     }
     let mut used = Vec::new();

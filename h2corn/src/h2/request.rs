@@ -348,10 +348,12 @@ impl RequestHeadBuilder {
                     let index = merge.index;
                     let mut joined = match merge.joined {
                         Some(joined) => joined,
-                        None => self.regular_headers.get(index).map_or_else(
-                            BytesMut::new,
-                            |(_, value)| BytesMut::from(value.as_bytes()),
-                        ),
+                        None => self
+                            .regular_headers
+                            .get(index)
+                            .map_or_else(BytesMut::new, |(_, value)| {
+                                BytesMut::from(value.as_bytes())
+                            }),
                     };
                     joined.extend_from_slice(COOKIE_LINE_SEPARATOR);
                     joined.extend_from_slice(value_bytes);

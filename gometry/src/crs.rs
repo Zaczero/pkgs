@@ -59,14 +59,14 @@ use cache::{
     CRS_GEODESIC_CACHE_CAPACITY, CRS_IN_CORE_DESCRIPTOR_CACHE,
     CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY,
     CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CRS_SEARCH_CACHE,
-    CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, GEODESIC_LINE_CACHE,
-    GEODESIC_LINE_CACHE_CAPACITY, CachedAuthorityObjects,
+    CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedAuthorityObjects,
     CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
     CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
     CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
-    NON_DEPRECATED_CACHE, NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation,
-    ensure_thread_caches_current, record_transform_engine, with_proj_diagnostic_pipeline_at,
-    with_proj_operation_at, with_proj_pipeline_at, with_proj_pipeline_indexed_at,
+    GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, NON_DEPRECATED_CACHE,
+    NON_DEPRECATED_CACHE_CAPACITY, begin_transform_observation, ensure_thread_caches_current,
+    record_transform_engine, with_proj_diagnostic_pipeline_at, with_proj_operation_at,
+    with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
 pub(crate) use cache::{cache_info, lru_resolve};
 pub(crate) use catalog::{
@@ -84,8 +84,8 @@ pub(crate) use geodesic::geodesic_counters;
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
-    DistanceMode, EllipsoidMetric, GeodesicLineKey, EllipsoidShape, GeodesicCalculation, GeodesicMetric,
-    MetricModel, ResolvedMetric, ellipsoid_shape_at, ensure_3d_metric,
+    DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation, GeodesicLineKey,
+    GeodesicMetric, MetricModel, ResolvedMetric, ellipsoid_shape_at, ensure_3d_metric,
     ensure_geographic_columns_in_frame, ensure_geographic_domain_in_frame,
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, finite, geodesic_bearing,
     geodesic_cross_track_crs_at, geodesic_cross_track_radius_crs_at,

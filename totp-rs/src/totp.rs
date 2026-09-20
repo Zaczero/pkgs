@@ -16,8 +16,7 @@ fn dynamic_truncate(digest: &[u8]) -> u32 {
         return 0;
     };
     let offset = usize::from(last & 0x0F);
-    let Some(&[high, second, third, low]) =
-        digest.get(offset..).and_then(<[u8]>::first_chunk::<4>)
+    let Some(&[high, second, third, low]) = digest.get(offset..).and_then(<[u8]>::first_chunk::<4>)
     else {
         return 0;
     };

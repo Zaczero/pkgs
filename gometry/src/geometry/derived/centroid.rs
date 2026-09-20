@@ -4,9 +4,9 @@ use std::simd::{Select as _, StdFloat as _};
 
 use crate::geometry::exact_arith::product_sum::ExactCentroidSums;
 use crate::geometry::{
-    AxisFrame, Component, Coordinates as _, Point, Polygon, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring,
-    Shape, XY, axis_pow2_scale, canonicalize_zero, centroid_ring_sums, closed_columns_winding,
-    column_mean2, point_distance, scaled_residual, simd_reduce_f64,
+    AxisFrame, Component, Coordinates as _, Point, Polygon, REDUCE_LANES, REDUCE_SIMD_MIN,
+    ReduceSimd, Ring, Shape, XY, axis_pow2_scale, canonicalize_zero, centroid_ring_sums,
+    closed_columns_winding, column_mean2, point_distance, scaled_residual, simd_reduce_f64,
 };
 fn accumulate_ring_centroid(
     xs: &[f64],

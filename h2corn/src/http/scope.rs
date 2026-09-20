@@ -20,7 +20,10 @@ use crate::http::types::{
 use crate::python::{py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
 
-#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index cannot leave a 256-entry table"
+)]
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
     let Some(first_escape) = ascii::find_byte(b'%', bytes) else {
@@ -344,7 +347,10 @@ fn known_header_name_to_python(py: Python<'_>, name: KnownRequestHeaderName) -> 
             KnownRequestHeaderName::ALL.map(|known| PyBytes::new(py, known.as_bytes()).unbind())
         })
         .get(name as usize)
-        .map_or_else(|| PyBytes::new(py, name.as_bytes()), |bytes| bytes.bind(py).clone())
+        .map_or_else(
+            || PyBytes::new(py, name.as_bytes()),
+            |bytes| bytes.bind(py).clone(),
+        )
 }
 
 fn scheme_to_python<'py>(py: Python<'py>, scheme: &str) -> Bound<'py, PyString> {

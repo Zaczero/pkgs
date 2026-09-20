@@ -751,7 +751,10 @@ fn write_access_log_line(
     );
 }
 
-#[expect(clippy::indexing_slicing, reason = "a nibble indexes the 16-byte hex table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a nibble indexes the 16-byte hex table"
+)]
 fn append_escaped_client_host(out: &mut ClientLabelBuf, host: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 

@@ -72,7 +72,10 @@ use crate::http::header::{
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::header_value::header_value_is_valid;
 
-#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index cannot leave a 256-entry table"
+)]
 const fn request_header_name_bytes_are_valid(name: &[u8]) -> bool {
     let mut index = 0;
     while index < name.len() {

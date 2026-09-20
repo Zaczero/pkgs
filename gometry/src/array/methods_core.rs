@@ -1007,11 +1007,8 @@ impl PyGeometryArray {
                     .map(|row| row.map(|(_, shape)| shape))
                     .collect::<crate::error::Result<Vec<_>>>()?;
                 return Ok(
-                    crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(
-                        shapes,
-                        frame,
-                    )
-                    .map(Bounds::into_tuple),
+                    crate::geometry::geographic_crossing_bounds_for_shapes_in_frame(shapes, frame)
+                        .map(Bounds::into_tuple),
                 );
             }
         }

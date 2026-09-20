@@ -4,14 +4,12 @@
 )]
 use geographiclib_rs::{Geodesic, GeodesicLine, InverseGeodesic as _, geodesic_capability as caps};
 
-use crate::crs::{
-    CrsError, GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineKey,
-};
 #[cfg(test)]
 use crate::crs::geodesic::geodesic_counters;
 use crate::crs::geodesic::{
     GEODESIC_BACKEND_RELATIVE_FLOOR, GEODESIC_LINE_CAPS, GEODESIC_LINE_OUTMASK, inverse_distance,
 };
+use crate::crs::{CrsError, GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineKey};
 use crate::error::Result;
 use crate::geometry::{
     GeodesicInnerInterval, GeodesicMinimum, GeodesicNumericalPolicy, GeodesicSegment,

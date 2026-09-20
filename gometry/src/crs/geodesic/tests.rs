@@ -5,11 +5,9 @@ use super::distance::{
     geodesic_point_pair_distances, geodesic_point_pair_dwithin,
 };
 use super::segment::{cached_geodesic_line, geodesic_point_segment_query};
+use super::{EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, geodesic_counters};
 use crate::crs::GEODESIC_LINE_CACHE;
 use crate::crs::cache::clear_thread_caches;
-use super::{
-    EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, geodesic_counters,
-};
 use crate::error::{ErrorKind, ResourceError, Result};
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{

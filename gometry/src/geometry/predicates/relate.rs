@@ -2,8 +2,8 @@ use std::ops::ControlFlow;
 
 use crate::HeapSize;
 use crate::geometry::{
-    Bounds, Component, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape, XY,
-    candidate_pairs_over_staged_runs, same_point, sign_of,
+    Bounds, Component, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment,
+    Shape, XY, candidate_pairs_over_staged_runs, same_point, sign_of,
 };
 /// Flat XY linework staged for the candidate kernel: one segment column,
 /// a parallel chain-id column (the kernel's run-break identities), and

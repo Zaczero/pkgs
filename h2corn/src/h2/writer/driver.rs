@@ -358,8 +358,9 @@ where
         }
 
         for index in 0..drained.len() {
-            while let Some(mut queued_batch) =
-                drained.get_mut(index).and_then(|stream| stream.1.pop_front())
+            while let Some(mut queued_batch) = drained
+                .get_mut(index)
+                .and_then(|stream| stream.1.pop_front())
             {
                 while let Some(command) = queued_batch.commands.pop_front() {
                     if self.process_command(command).await? {

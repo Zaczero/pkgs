@@ -1023,7 +1023,8 @@ fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError
     else {
         return Http1Error::InvalidRequestLine.err();
     };
-    let method = parse_request_method(method_bytes).map_err(|_| Http1Error::InvalidRequestMethod)?;
+    let method =
+        parse_request_method(method_bytes).map_err(|_| Http1Error::InvalidRequestMethod)?;
     Ok((method, target, version))
 }
 
@@ -1128,7 +1129,10 @@ fn raw_absolute_form_target_is_valid(method: &Method, target: &[u8]) -> bool {
     clippy::too_many_lines,
     reason = "the grammar stays auditable when token, quoted-string, and BWS states share one cursor"
 )]
-#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index cannot leave a 256-entry table"
+)]
 fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
     let mut value = 0_usize;
     let mut index = 0;

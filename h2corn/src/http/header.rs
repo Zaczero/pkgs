@@ -641,7 +641,10 @@ pub(crate) const fn configured_response_field_is_forbidden(name: &[u8]) -> bool 
         || name.eq_ignore_ascii_case(b"trailer")
 }
 
-#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index cannot leave a 256-entry table"
+)]
 fn percent_escapes_are_valid(value: &[u8]) -> bool {
     let mut rest = value;
     while let Some(index) = memchr(b'%', rest) {
@@ -780,7 +783,10 @@ fn format_http_date(unix_seconds: u64) -> Bytes {
     Bytes::copy_from_slice(&value)
 }
 
-#[expect(clippy::indexing_slicing, reason = "rem_euclid(7) and a month in 1..=12 stay inside their own tables")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "rem_euclid(7) and a month in 1..=12 stay inside their own tables"
+)]
 fn write_http_date(out: &mut [u8; 29], unix_seconds: u64) {
     let days = (unix_seconds / SECONDS_PER_DAY) as i64;
     let seconds_of_day = (unix_seconds % SECONDS_PER_DAY) as usize;
@@ -942,7 +948,10 @@ pub(crate) fn apply_default_response_headers(headers: &mut ResponseHeaders, conf
     apply_default_response_headers_with_scan(headers, &mut scan, config);
 }
 
-#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index cannot leave a 256-entry table"
+)]
 pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     if name.is_empty() {
         return None;
@@ -959,7 +968,10 @@ pub(crate) fn request_header_name_needs_lowercase(name: &[u8]) -> Option<bool> {
     Some(needs_lowercase)
 }
 
-#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "a u8 index cannot leave a 256-entry table"
+)]
 pub(crate) fn lowercase_header_name_is_valid(name: &[u8]) -> bool {
     if name.is_empty() {
         return false;

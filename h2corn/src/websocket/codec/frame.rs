@@ -24,7 +24,9 @@ pub(crate) struct EncodedFrameHeader {
 
 impl EncodedFrameHeader {
     pub(crate) fn as_slice(&self) -> &[u8] {
-        self.bytes.get(..usize::from(self.len)).unwrap_or(&self.bytes)
+        self.bytes
+            .get(..usize::from(self.len))
+            .unwrap_or(&self.bytes)
     }
 }
 
@@ -260,7 +262,10 @@ mod tests {
         };
         assert_eq!(first, wire::FIN | opcode::CLOSE);
         assert_eq!(second, (2 + MAX_CLOSE_REASON_LEN) as u8);
-        assert_eq!([code_high, code_low], close_code::NORMAL.get().to_be_bytes());
+        assert_eq!(
+            [code_high, code_low],
+            close_code::NORMAL.get().to_be_bytes()
+        );
         assert_eq!(&frame[4..], reason.as_bytes());
     }
 

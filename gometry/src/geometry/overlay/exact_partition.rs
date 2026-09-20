@@ -7721,7 +7721,9 @@ mod tests {
                 sources.ring_count,
                 |_, winding| {
                     labels.push((
-                        *winding.first_chunk::<3>().expect("three rings are labelled"),
+                        *winding
+                            .first_chunk::<3>()
+                            .expect("three rings are labelled"),
                         sources.occupied(winding, false),
                     ));
                     Ok(())

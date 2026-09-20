@@ -20,7 +20,8 @@ use crate::crs::{
 use crate::error::Result;
 use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
 use crate::geometry::{
-    CoordRun, CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate, types,
+    CoordRun, CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate,
+    types,
 };
 
 pub(crate) type TransformedBounds = (f64, f64, f64, f64);
@@ -1103,9 +1104,7 @@ enum OutputBatch {
 fn source_batch(source: CoordRun<'_>) -> OutputBatch {
     match source {
         CoordRun::Point(point) => point.z().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
-        CoordRun::Seq(seq) => {
-            seq.zs().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz)
-        },
+        CoordRun::Seq(seq) => seq.zs().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
     }
 }
 

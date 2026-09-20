@@ -308,10 +308,7 @@ mod run_collapse_dispatch {
                     x: from.0,
                     y: from.1,
                 },
-                end: XY {
-                    x: to.0,
-                    y: to.1,
-                },
+                end: XY { x: to.0, y: to.1 },
             });
         }
     }

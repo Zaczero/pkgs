@@ -4,8 +4,8 @@
 //! cache (`with_geodesic`) reaches its thread-local storage in the parent via
 //! `super`.
 
-pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
 use geographiclib_rs::geodesic_capability as caps;
+pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
 
 use crate::crs::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError, CrsInfo,

@@ -1,4 +1,7 @@
-#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation bounds-checks these writes when the table is built"
+)]
 const DIGIT_PAIRS: [[u8; 2]; 100] = {
     let mut out = [[0; 2]; 100];
     let mut value = 0;

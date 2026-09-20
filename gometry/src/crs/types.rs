@@ -9,9 +9,9 @@
 use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
-use pyo3::{IntoPyObject, IntoPyObjectRef};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
+use pyo3::{IntoPyObject, IntoPyObjectRef};
 use smol_str::SmolStr;
 
 use crate::crs::Confidence;

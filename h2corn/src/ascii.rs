@@ -32,7 +32,10 @@ pub(crate) fn find_byte(needle: u8, haystack: &[u8]) -> Option<usize> {
     }
 }
 
-#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation bounds-checks these writes when the table is built"
+)]
 const fn fill_linear_range(
     mut table: [u8; 256],
     first_byte: u8,
@@ -47,7 +50,10 @@ const fn fill_linear_range(
     table
 }
 
-#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation bounds-checks these writes when the table is built"
+)]
 const fn fill_constant_range(
     mut table: [u8; 256],
     first_byte: u8,
@@ -62,7 +68,10 @@ const fn fill_constant_range(
     table
 }
 
-#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation bounds-checks these writes when the table is built"
+)]
 const fn fill_bytes<const N: usize>(mut table: [u8; 256], bytes: &[u8; N], value: u8) -> [u8; 256] {
     let mut index = 0;
     while index < bytes.len() {
@@ -72,7 +81,10 @@ const fn fill_bytes<const N: usize>(mut table: [u8; 256], bytes: &[u8; N], value
     table
 }
 
-#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation bounds-checks these writes when the table is built"
+)]
 const fn base64_value_table(char_62: u8, char_63: u8) -> [u8; 256] {
     let table = [INVALID_VALUE; 256];
     let table = fill_linear_range(table, b'A', b'Z', 0);

@@ -904,10 +904,12 @@ impl Shape {
 
     /// [`Self::try_for_each_component`] for a visitor that cannot fail.
     pub(crate) fn for_each_component<'a>(&'a self, visit: &mut impl FnMut(Component<'a>)) {
-        match self.try_for_each_component(&mut |component| -> Result<(), std::convert::Infallible> {
-            visit(component);
-            Ok(())
-        }) {
+        match self.try_for_each_component(
+            &mut |component| -> Result<(), std::convert::Infallible> {
+                visit(component);
+                Ok(())
+            },
+        ) {
             Ok(()) => {},
             Err(never) => match never {},
         }

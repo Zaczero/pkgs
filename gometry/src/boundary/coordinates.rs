@@ -151,9 +151,7 @@ impl CoordinateView {
                         }
                         visit(
                             Some(row),
-                            CoordRun::Point(
-                                coords.point_at(crate::array::physical_row(map, row)),
-                            ),
+                            CoordRun::Point(coords.point_at(crate::array::physical_row(map, row))),
                         )?;
                     }
                     ControlFlow::Continue(())

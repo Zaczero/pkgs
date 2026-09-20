@@ -10,13 +10,12 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::{
-    Arc, Bound, Bounds, CoordinateAxes, CoordinateInput, F64Param, Frame,
-    GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
-    Point, PreparedPlan, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError,
-    Python, Shape, ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
-    coordinate_input_with_expected, coordinate_sequence_len_hint, crs, crs_arc, float64_array,
-    is_mapping_like, is_one_byte_buffer, parse_geojson_geometry_value, point_distance,
-    scalar_vs_shapes,
+    Arc, Bound, Bounds, CoordinateAxes, CoordinateInput, F64Param, Frame, GeoJsonDecodeContext,
+    GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind, Point, PreparedPlan, Py,
+    PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError, Python, Shape, ShapeData,
+    broadcast_coordinate_input, coerce_geojson_geometry_value, coordinate_input_with_expected,
+    coordinate_sequence_len_hint, crs, crs_arc, float64_array, is_mapping_like, is_one_byte_buffer,
+    parse_geojson_geometry_value, point_distance, scalar_vs_shapes,
 };
 mod element;
 pub(crate) use element::BulkElement;
@@ -42,9 +41,8 @@ pub(crate) use metrics::{
 };
 mod predicates;
 pub(crate) use predicates::{
-    bool_array_mask_missing, ensure_same_len, splitter_points_from_array,
-    predicate_pairwise_arrays, predicate_scalar_vs_array, relate_pattern_broadcast,
-    relate_string_broadcast, xy_predicate,
+    bool_array_mask_missing, ensure_same_len, predicate_pairwise_arrays, predicate_scalar_vs_array,
+    relate_pattern_broadcast, relate_string_broadcast, splitter_points_from_array, xy_predicate,
 };
 
 /// The single engine behind the binary value-returning broadcast families
