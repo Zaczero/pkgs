@@ -15,7 +15,10 @@ MARKDOWN_TARGET = re.compile(r'(!?\[[^\]]*\]\()([^)]+)(\))')
 HTML_TARGET = re.compile(r'(<[a-zA-Z][^>]*?\s(?:src|href)\s*=\s*)(["\'])([^"\']*)\2')
 # A fenced block shows markup rather than using it. Rewriting a path inside one
 # corrupts the example it exists to document.
-CODE_FENCE = re.compile(r'^(?P<fence>```+|~~~+)[^\n]*$.*?(?:^(?P=fence)[^\n]*$|\Z)', re.MULTILINE | re.DOTALL)
+CODE_FENCE = re.compile(
+    r'^(?P<fence>```+|~~~+)[^\n]*$.*?(?:^(?P=fence)[^\n]*$|\Z)',
+    re.MULTILINE | re.DOTALL,
+)
 
 
 def absolutize(target: str, base: str) -> str:
@@ -24,8 +27,12 @@ def absolutize(target: str, base: str) -> str:
 
 def render(text: str, base: str) -> str:
     def rewrite(chunk: str) -> str:
-        chunk = MARKDOWN_TARGET.sub(lambda m: f'{m[1]}{absolutize(m[2], base)}{m[3]}', chunk)
-        return HTML_TARGET.sub(lambda m: f'{m[1]}{m[2]}{absolutize(m[3], base)}{m[2]}', chunk)
+        chunk = MARKDOWN_TARGET.sub(
+            lambda m: f'{m[1]}{absolutize(m[2], base)}{m[3]}', chunk
+        )
+        return HTML_TARGET.sub(
+            lambda m: f'{m[1]}{m[2]}{absolutize(m[3], base)}{m[2]}', chunk
+        )
 
     rendered = []
     position = 0

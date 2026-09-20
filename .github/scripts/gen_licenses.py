@@ -375,7 +375,9 @@ def _validate_native_digest(
         or len(expected) != hashlib.sha256().digest_size * 2
         or any(character not in '0123456789abcdef' for character in expected)
     ):
-        raise _native_error(package, component, f'{field} must be a lowercase SHA-256 digest')
+        raise _native_error(
+            package, component, f'{field} must be a lowercase SHA-256 digest'
+        )
     actual = hashlib.sha256(payload).hexdigest()
     if actual != expected:
         raise _native_error(
@@ -452,7 +454,9 @@ def _cargo_notice_text(
         with lock_path.open('rb') as stream:
             lock = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as error:
-        raise _native_error(package, component, f'could not read {lock_path}: {error}') from error
+        raise _native_error(
+            package, component, f'could not read {lock_path}: {error}'
+        ) from error
     locked = [
         entry
         for entry in lock.get('package', [])
@@ -498,7 +502,9 @@ def _cargo_notice_text(
         try:
             cargo_metadata = json.loads(result.stdout)
         except json.JSONDecodeError as error:
-            raise _native_error(package, component, f'invalid cargo metadata: {error}') from error
+            raise _native_error(
+                package, component, f'invalid cargo metadata: {error}'
+            ) from error
     packages = [
         entry
         for entry in cargo_metadata.get('packages', [])
@@ -516,7 +522,8 @@ def _cargo_notice_text(
     resolved = packages[0]
     node_id = f'{CARGO_REGISTRY_SOURCE}#{cargo_package}@{cargo_version}'
     nodes = [
-        node for node in (cargo_metadata.get('resolve') or {}).get('nodes', [])
+        node
+        for node in (cargo_metadata.get('resolve') or {}).get('nodes', [])
         if node.get('id') == node_id
     ]
     if len(nodes) != 1:
@@ -539,7 +546,9 @@ def _cargo_notice_text(
     package_root = Path(resolved['manifest_path']).resolve().parent
     source_path = (package_root / cargo_source).resolve()
     if package_root not in source_path.parents:
-        raise _native_error(package, component, 'cargo-source must be relative to its package')
+        raise _native_error(
+            package, component, 'cargo-source must be relative to its package'
+        )
     try:
         text = source_path.read_text(encoding='utf-8')
     except (OSError, UnicodeDecodeError) as error:
@@ -587,9 +596,10 @@ def _native_notice_texts(package: str) -> list[tuple[dict, str]]:
             component.get('notice'),
             component.get('notice-file'),
         )
-        cargo_mode = component.get('cargo-package') is not None or component.get(
-            'cargo-source'
-        ) is not None
+        cargo_mode = (
+            component.get('cargo-package') is not None
+            or component.get('cargo-source') is not None
+        )
         archive_mode = archive is not None or notice is not None
         file_mode = notice_file is not None
         if sum((archive_mode, file_mode, cargo_mode)) != 1:
@@ -605,7 +615,9 @@ def _native_notice_texts(package: str) -> list[tuple[dict, str]]:
                 archive_path = (ROOT / package / archive).resolve()
                 package_root = (ROOT / package).resolve()
                 if package_root not in archive_path.parents:
-                    raise _native_error(package, name, 'archive must be relative to package root')
+                    raise _native_error(
+                        package, name, 'archive must be relative to package root'
+                    )
                 _validate_native_digest(
                     package,
                     name,
