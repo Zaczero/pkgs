@@ -139,7 +139,10 @@ pub(crate) fn build_tls_config(
     let cert_chain = load_certificates(&material.certificate, "certfile")?;
     // The leaf is what this server presents as its identity; anything after it
     // in the file is the chain to a root the client already trusts.
-    let server_certificate = certificate_der_to_pem(cert_chain[0].as_ref())?;
+    let Some(leaf) = cert_chain.first() else {
+        return Err(no_certificates("certfile"));
+    };
+    let server_certificate = certificate_der_to_pem(leaf.as_ref())?;
     let key = load_private_key(&material.private_key)?;
     let provider = Arc::new(default_provider());
     let builder = RustlsServerConfig::builder_with_provider(Arc::clone(&provider))
@@ -183,15 +186,19 @@ pub(crate) fn build_tls_config(
     })
 }
 
+fn no_certificates(setting: &str) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        format!("{setting} contains no certificates"),
+    )
+}
+
 fn load_certificates(pem: &[u8], setting: &str) -> io::Result<Vec<CertificateDer<'static>>> {
     let certs = CertificateDer::pem_slice_iter(pem)
         .collect::<Result<Vec<_>, _>>()
         .map_err(pem_io_error)?;
     if certs.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{setting} contains no certificates"),
-        ));
+        return Err(no_certificates(setting));
     }
     Ok(certs)
 }

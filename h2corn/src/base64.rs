@@ -11,10 +11,12 @@ use crate::ascii::{BASE64_VALUE, BASE64URL_VALUE, INVALID_VALUE};
 const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 /// Whether a byte is in the standard alphabet, padding excluded.
+#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
 pub(crate) const fn is_base64(byte: u8) -> bool {
     BASE64_VALUE[byte as usize] != INVALID_VALUE
 }
 
+#[expect(clippy::indexing_slicing, reason = "each operand is masked to six bits, which the 64-entry alphabet covers")]
 pub(crate) const fn encode_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     [
         TABLE[(b0 >> 2) as usize],
@@ -24,6 +26,7 @@ pub(crate) const fn encode_triplet(b0: u8, b1: u8, b2: u8) -> [u8; 4] {
     ]
 }
 
+#[expect(clippy::indexing_slicing, reason = "each operand is masked to six bits, which the 64-entry alphabet covers")]
 pub(crate) const fn encode_remainder(b0: u8, b1: u8) -> [u8; 4] {
     [
         TABLE[(b0 >> 2) as usize],
@@ -34,6 +37,7 @@ pub(crate) const fn encode_remainder(b0: u8, b1: u8) -> [u8; 4] {
 }
 
 /// Decode unpadded URL-safe base64. `Err(())` means the input was not that.
+#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
 pub(crate) fn decode_url(src: &[u8]) -> Result<Vec<u8>, ()> {
     let mut out = Vec::with_capacity((src.len() * 3) / 4 + 3);
     let mut block = [0_u8; 4];

@@ -36,6 +36,7 @@ const BYTE_UNITS: [(u64, &str); 5] = [
     (1 << 30, "gib"),
     (1 << 40, "tib"),
 ];
+
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
     if AutoStream::choice(&io::stderr()) == ColorChoice::Never {
         AccessLogMode::Plain
@@ -46,6 +47,25 @@ static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
 
 /// How long graceful shutdown waits for queued access-log lines to be written.
 const LOG_FLUSH_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Decimal places for a scaled figure. An enum rather than a count keeps the
+/// formatting match exhaustive, so no arm has to stand in for the impossible.
+#[derive(Clone, Copy)]
+enum Decimals {
+    None,
+    One,
+    Two,
+}
+
+impl Decimals {
+    const fn factor(self) -> u64 {
+        match self {
+            Self::None => 1,
+            Self::One => 10,
+            Self::Two => 100,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum AccessLogMode {
@@ -731,6 +751,7 @@ fn write_access_log_line(
     );
 }
 
+#[expect(clippy::indexing_slicing, reason = "a nibble indexes the 16-byte hex table")]
 fn append_escaped_client_host(out: &mut ClientLabelBuf, host: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
@@ -924,25 +945,6 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str
         }
     }
     out.write_str(unit)
-}
-
-/// Decimal places for a scaled figure. An enum rather than a count keeps the
-/// formatting match exhaustive, so no arm has to stand in for the impossible.
-#[derive(Clone, Copy)]
-enum Decimals {
-    None,
-    One,
-    Two,
-}
-
-impl Decimals {
-    const fn factor(self) -> u64 {
-        match self {
-            Self::None => 1,
-            Self::One => 10,
-            Self::Two => 100,
-        }
-    }
 }
 
 fn write_integer<T: Integer>(out: &mut impl fmt::Write, value: T) -> fmt::Result {

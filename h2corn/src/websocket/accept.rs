@@ -24,6 +24,7 @@ const INITIAL_STATE: [u32; 5] = [
     0x1032_5476,
     0xC3D2_E1F0,
 ];
+#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
 const FIRST_BLOCK_TEMPLATE: [u32; 16] = {
     let mut block = [0; 16];
     let mut index = 0;
@@ -219,7 +220,7 @@ macro_rules! sha1_compress {
     };
 }
 
-pub(crate) fn websocket_accept(key: &WebSocketKey) -> [u8; LEN] {
+pub(crate) const fn websocket_accept(key: &WebSocketKey) -> [u8; LEN] {
     let mut h0 = INITIAL_STATE[0];
     let mut h1 = INITIAL_STATE[1];
     let mut h2 = INITIAL_STATE[2];

@@ -394,10 +394,9 @@ impl RequestHeadBuilder {
             index,
             joined: Some(joined),
         }) = self.cookie.take()
+            && let Some((_, value)) = self.regular_headers.get_mut(index)
         {
-            if let Some((_, value)) = self.regular_headers.get_mut(index) {
-                *value = RequestHeaderValue::from_h2_validated(joined.freeze());
-            }
+            *value = RequestHeaderValue::from_h2_validated(joined.freeze());
         }
     }
 

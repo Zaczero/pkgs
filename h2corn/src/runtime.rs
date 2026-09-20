@@ -52,12 +52,14 @@ impl AppRuntime {
     }
 
     /// The caller's loop: lifespan, shutdown trigger, server-done future.
+    #[expect(clippy::indexing_slicing, reason = "a runtime is constructed with at least one shard")]
     pub(crate) fn main_shard(&self) -> Shard {
         Arc::clone(&self.shards[0])
     }
 
     /// Round-robin shard pick; every Python object of one request binds to
     /// the picked shard so the request runs entirely on one loop.
+    #[expect(clippy::indexing_slicing, reason = "the modulo bounds the pick by the shard count")]
     pub(crate) fn pick_shard(&self) -> Shard {
         match self.shards.as_ref() {
             [single] => Arc::clone(single),

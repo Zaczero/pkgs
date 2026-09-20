@@ -20,6 +20,7 @@ use crate::http::types::{
 use crate::python::{py_dict, py_match_cached_bytes, py_match_cached_string};
 use crate::runtime::RequestContext;
 
+#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
 fn decode_path(raw_path: &str) -> Cow<'_, str> {
     let bytes = raw_path.as_bytes();
     let Some(first_escape) = ascii::find_byte(b'%', bytes) else {

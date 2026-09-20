@@ -72,6 +72,7 @@ use crate::http::header::{
 use crate::http::header_meta::RequestHeaderMeta;
 use crate::http::header_value::header_value_is_valid;
 
+#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
 const fn request_header_name_bytes_are_valid(name: &[u8]) -> bool {
     let mut index = 0;
     while index < name.len() {
@@ -1211,28 +1212,28 @@ pub(crate) fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod
     // and the bytes read under it are one compile-checked fact rather than a
     // `len()` arm and an `expect()` that restates it.
     let known = match *value {
-        [a, b, c] => match u32::from_le_bytes([a, b, c, 0]) {
+        [w0, w1, w2] => match u32::from_le_bytes([w0, w1, w2, 0]) {
             0x00_54_45_47 => Some(Method::GET),
             0x00_54_55_50 => Some(Method::PUT),
             _ => None,
         },
-        [a, b, c, d] => match u32::from_le_bytes([a, b, c, d]) {
+        [w0, w1, w2, w3] => match u32::from_le_bytes([w0, w1, w2, w3]) {
             0x44_41_45_48 => Some(Method::HEAD),
             0x54_53_4F_50 => Some(Method::POST),
             _ => None,
         },
-        [a, b, c, d, e] => match (u32::from_le_bytes([a, b, c, d]), e) {
+        [w0, w1, w2, w3, t0] => match (u32::from_le_bytes([w0, w1, w2, w3]), t0) {
             (0x43_54_41_50, b'H') => Some(Method::PATCH),
             (0x43_41_52_54, b'E') => Some(Method::TRACE),
             _ => None,
         },
-        [a, b, c, d, e, f] => match (u32::from_le_bytes([a, b, c, d]), e, f) {
+        [w0, w1, w2, w3, t0, t1] => match (u32::from_le_bytes([w0, w1, w2, w3]), t0, t1) {
             (0x45_4C_45_44, b'T', b'E') => Some(Method::DELETE),
             _ => None,
         },
-        [a, b, c, d, e, f, g] => match (
-            u32::from_le_bytes([a, b, c, d]),
-            u32::from_le_bytes([e, f, g, 0]),
+        [w0, w1, w2, w3, t0, t1, t2] => match (
+            u32::from_le_bytes([w0, w1, w2, w3]),
+            u32::from_le_bytes([t0, t1, t2, 0]),
         ) {
             (0x4E_4E_4F_43, 0x00_54_43_45) => Some(Method::CONNECT),
             (0x49_54_50_4F, 0x00_53_4E_4F) => Some(Method::OPTIONS),

@@ -76,10 +76,10 @@ fn parse_frame_len(
     match second & wire::PAYLOAD_LEN_MASK {
         encoded_len @ 0..=125 => Ok(Some((2, usize::from(encoded_len)))),
         wire::PAYLOAD_LEN_U16_MARKER => {
-            let Some(&[_, _, ref extended @ ..]) = buffer.first_chunk::<4>() else {
+            let Some([_, _, extended @ ..]) = buffer.first_chunk::<4>().copied() else {
                 return Ok(None);
             };
-            let payload_len = usize::from(u16::from_be_bytes(*extended));
+            let payload_len = usize::from(u16::from_be_bytes(extended));
             if payload_len <= wire::INLINE_PAYLOAD_LEN_MAX {
                 return Err(WebSocketProtocolError::NonCanonical16BitLengthEncoding);
             }
@@ -88,12 +88,13 @@ fn parse_frame_len(
         // `& PAYLOAD_LEN_MASK` caps the marker at 127, so the remaining
         // pattern is exactly `PAYLOAD_LEN_U64_MARKER`.
         _ => {
-            let Some(&[_, _, ref extended @ ..]) =
-                buffer.first_chunk::<{ wire::FRAME_HEADER_MAX_LEN }>()
+            let Some([_, _, extended @ ..]) = buffer
+                .first_chunk::<{ wire::FRAME_HEADER_MAX_LEN }>()
+                .copied()
             else {
                 return Ok(None);
             };
-            let raw = u64::from_be_bytes(*extended);
+            let raw = u64::from_be_bytes(extended);
             if raw >> 63 != 0 {
                 return Err(WebSocketProtocolError::ReservedHighBitIn64BitLengthEncoding);
             }

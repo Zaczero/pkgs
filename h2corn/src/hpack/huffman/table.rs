@@ -5134,6 +5134,7 @@ pub(super) const DECODE_TABLE: [[u32; 16]; 256] = [
     ],
 ];
 
+#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
 const fn pack_encode_table(source: &[(usize, u64); 257]) -> [u64; 257] {
     let mut packed = [0; 257];
     let mut index = 0;

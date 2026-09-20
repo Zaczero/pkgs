@@ -29,6 +29,7 @@ impl DecodeEntry {
     }
 }
 
+#[expect(clippy::indexing_slicing, reason = "a nibble indexes a 16-entry row, and the reserve above leaves one byte per decoded symbol")]
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
     let mut maybe_eos = true;
@@ -86,6 +87,7 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
     Ok(buf.split())
 }
 
+#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
 pub(crate) fn encoded_len(src: &[u8]) -> usize {
     let mut bit_len = 0_usize;
     for &byte in src {
@@ -99,6 +101,7 @@ pub(crate) fn encode(src: &[u8], dst: &mut BytesMut) {
     encode_with_len(src, encoded_len(src), dst);
 }
 
+#[expect(clippy::indexing_slicing, reason = "a u8 index cannot leave a 256-entry table")]
 pub(crate) fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
     dst.reserve(encoded_len);
 

@@ -1,18 +1,5 @@
 pub(crate) const INVALID_VALUE: u8 = u8::MAX;
 
-/// `memchr` reads its setup cost back over a long haystack and not over a short
-/// one, where a plain scan is already at the byte. Header field lists and
-/// request paths are usually short, so both callers pick per input.
-pub(crate) fn find_byte(needle: u8, haystack: &[u8]) -> Option<usize> {
-    const SCAN_LIMIT: usize = 16;
-
-    if haystack.len() <= SCAN_LIMIT {
-        haystack.iter().position(|&byte| byte == needle)
-    } else {
-        memchr::memchr(needle, haystack)
-    }
-}
-
 pub(crate) const HEADER_NAME_VALID: u8 = 1;
 pub(crate) const HEADER_NAME_UPPER: u8 = 2;
 
@@ -32,6 +19,20 @@ pub(crate) const HEADER_NAME_FLAGS: [u8; 256] = {
     fill_bytes(table, b"!#$%&'*+-.^_`|~", HEADER_NAME_VALID)
 };
 
+/// `memchr` reads its setup cost back over a long haystack and not over a short
+/// one, where a plain scan is already at the byte. Header field lists and
+/// request paths are usually short, so both callers pick per input.
+pub(crate) fn find_byte(needle: u8, haystack: &[u8]) -> Option<usize> {
+    const SCAN_LIMIT: usize = 16;
+
+    if haystack.len() <= SCAN_LIMIT {
+        haystack.iter().position(|&byte| byte == needle)
+    } else {
+        memchr::memchr(needle, haystack)
+    }
+}
+
+#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
 const fn fill_linear_range(
     mut table: [u8; 256],
     first_byte: u8,
@@ -46,6 +47,7 @@ const fn fill_linear_range(
     table
 }
 
+#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
 const fn fill_constant_range(
     mut table: [u8; 256],
     first_byte: u8,
@@ -60,6 +62,7 @@ const fn fill_constant_range(
     table
 }
 
+#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
 const fn fill_bytes<const N: usize>(mut table: [u8; 256], bytes: &[u8; N], value: u8) -> [u8; 256] {
     let mut index = 0;
     while index < bytes.len() {
@@ -69,6 +72,7 @@ const fn fill_bytes<const N: usize>(mut table: [u8; 256], bytes: &[u8; N], value
     table
 }
 
+#[expect(clippy::indexing_slicing, reason = "const evaluation bounds-checks these writes when the table is built")]
 const fn base64_value_table(char_62: u8, char_63: u8) -> [u8; 256] {
     let table = [INVALID_VALUE; 256];
     let table = fill_linear_range(table, b'A', b'Z', 0);

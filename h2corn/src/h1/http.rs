@@ -684,6 +684,7 @@ fn append_decimal_usize(dst: &mut ResponseBuf, value: usize) {
     dst.extend_from_slice(buf.format(value).as_bytes());
 }
 
+#[expect(clippy::indexing_slicing, reason = "a usize is at most 16 hex digits, so the 18-byte buffer cannot underflow")]
 fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {
     let mut cursor = buf.len();
     buf[cursor - 1] = b'\n';
