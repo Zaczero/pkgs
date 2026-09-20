@@ -73,6 +73,13 @@ version = "0.3.25"
 [build-dependencies.tar]
 version = "0.4.40"
 
+# gometry-libtiff-sys is consumed through its `links` build metadata
+# (DEP_TIFF_INCLUDE / DEP_TIFF_LIBRARY in build.rs), which cargo's unused
+# dependency analysis does not see.
+[lints.cargo.unused_dependencies]
+level = "allow"
+priority = 0
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
 priority = 0
