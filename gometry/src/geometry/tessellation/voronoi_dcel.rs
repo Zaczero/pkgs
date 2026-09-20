@@ -466,8 +466,8 @@ fn validate_exact_cycles(
             exact::angle_ccw_cmp(&touch.point, left, right).map_err(|_| exact_cycle_error())
         };
         try_sort_by(&mut rays, |left, right| angle(left.1, right.1))?;
-        for pair in rays.windows(2) {
-            angle(pair[0].1, pair[1].1)?;
+        for [left, right] in rays.array_windows::<2>() {
+            angle(left.1, right.1)?;
         }
         if rays.len() > 1 {
             angle(rays.last().unwrap().1, rays[0].1)?;
@@ -1398,8 +1398,8 @@ fn emit_atom_windows(
             "exact primitive event order lost an endpoint",
         ));
     }
-    for pair in events.windows(2) {
-        if exact::compare_along(start, end, &pair[0], &pair[1])? != Ordering::Less {
+    for [left, right] in events.array_windows::<2>() {
+        if exact::compare_along(start, end, left, right)? != Ordering::Less {
             return Err(voronoi_error(
                 "exact primitive has unordered duplicate events",
             ));
@@ -1407,8 +1407,8 @@ fn emit_atom_windows(
         budgeted_try_push(
             seeds,
             AtomSeed {
-                start: pair[0].clone(),
-                end: pair[1].clone(),
+                start: left.clone(),
+                end: right.clone(),
                 frame_delta,
                 clip_delta,
                 owner,
@@ -1889,7 +1889,7 @@ fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Result<()> {
         return Err(voronoi_error("one exact boundary face has no label"));
     }
     for edge in &subdivision.edges {
-        if edge.clip_sources.windows(2).any(|pair| pair[0] >= pair[1])
+        if edge.clip_sources.array_windows::<2>().any(|[a, b]| a >= b)
             || (edge.forward.clip_delta != 0 && edge.clip_sources.is_empty())
         {
             return Err(voronoi_error(
@@ -2181,7 +2181,7 @@ fn split_boundary_face(
     try_reserve_vec(&mut distinct, walk.len())?;
     distinct.extend(walk.iter().map(|&slot| owner(slot)));
     distinct.sort_unstable();
-    if distinct.windows(2).all(|pair| pair[0] != pair[1]) {
+    if distinct.array_windows::<2>().all(|[a, b]| a != b) {
         let mut vertices = Vec::new();
         let mut edges = Vec::new();
         try_reserve_vec(&mut vertices, walk.len() + 1)?;
@@ -2408,7 +2408,7 @@ fn assemble_owner_parts(
                 .chain(holes.iter().flat_map(|hole| hole.edges.iter())),
         );
         edge_ids.sort_unstable();
-        if edge_ids.windows(2).any(|pair| pair[0] == pair[1]) {
+        if edge_ids.array_windows::<2>().any(|[a, b]| a == b) {
             return Err(voronoi_error(
                 "exact face shell and holes share an atomic edge",
             ));
@@ -2549,7 +2549,7 @@ fn assemble_separator_group(
         incidence.extend([(left, slot, right), (right, slot, left)]);
     }
     incidence.sort_unstable();
-    if incidence.windows(3).any(|run| run[0].0 == run[2].0) {
+    if incidence.array_windows::<3>().any(|[first, _, third]| first.0 == third.0) {
         return Err(voronoi_error("Voronoi separator branches"));
     }
     let mut used = Vec::new();
@@ -2731,8 +2731,8 @@ impl EmbeddedEdges {
         match self.canonical() {
             Self::Packed { coords, offsets } => {
                 let ends = offsets.as_slice();
-                try_collect_vec(ends.windows(2).map(|line| {
-                    let range = line[0] as usize..line[1] as usize;
+                try_collect_vec(ends.array_windows::<2>().map(|&[start, end]| {
+                    let range = start as usize..end as usize;
                     LineSeq::try_new(CoordSeq::try_from_vecs(
                         copied(&coords.xs()[range.clone()])?,
                         copied(&coords.ys()[range])?,
@@ -2845,8 +2845,8 @@ fn sort_fan(
     try_reserve_vec(order, incident.len())?;
     order.extend_from_slice(incident);
     try_sort_by(order, |&left, &right| compare(left, right))?;
-    for pair in order.windows(2) {
-        compare(pair[0], pair[1])?;
+    for &[left, right] in order.array_windows::<2>() {
+        compare(left, right)?;
     }
     if order.len() > 1 {
         compare(*order.last().unwrap(), order[0])?;
@@ -2933,7 +2933,7 @@ fn embed(
     try_reserve_vec(&mut keys, points.len())?;
     keys.extend(points.iter().map(|&point| PointKey::new(point)));
     keys.sort_unstable();
-    if keys.windows(2).any(|pair| pair[0] == pair[1]) {
+    if keys.array_windows::<2>().any(|[a, b]| a == b) {
         return Err(embedding_failure());
     }
     let embedded_point = |vertex: VertexId| -> Result<XY> {
@@ -3431,11 +3431,11 @@ fn rounded_segment_covered_by_clip(
         }
     }
     sort_unique_along(&start, &end, events)?;
-    for pair in events.windows(2) {
-        if exact::compare_along(&start, &end, &pair[0], &pair[1])? != Ordering::Less {
+    for [left, right] in events.array_windows::<2>() {
+        if exact::compare_along(&start, &end, left, right)? != Ordering::Less {
             continue;
         }
-        if !point_covered_by_clip(&pair[0].midpoint(&pair[1])?, exact_rings)? {
+        if !point_covered_by_clip(&left.midpoint(right)?, exact_rings)? {
             return Ok(false);
         }
     }
@@ -3595,10 +3595,10 @@ pub(super) fn build_collinear_edges(
     let clip_segments = clip.rings.iter().map(Vec::len).sum::<usize>();
     budget.add(order.len().saturating_sub(1).saturating_mul(clip_segments))?;
     let mut exact_chains = Vec::new();
-    for pair in order.windows(2) {
+    for &[left, right] in order.array_windows::<2>() {
         let line = exact::ExactLine::perpendicular_bisector(
-            sites[pair[0]].point.xy(),
-            sites[pair[1]].point.xy(),
+            sites[left].point.xy(),
+            sites[right].point.xy(),
         )?;
         let mut events = Vec::new();
         for ring in &clip.rings {
@@ -3628,20 +3628,20 @@ pub(super) fn build_collinear_edges(
         try_sort_by(&mut events, exact::ExactPoint::compare_lex)?;
         try_dedup_by(&mut events, exact::ExactPoint::same_position)?;
         let mut current: Vec<exact::ExactPoint> = Vec::new();
-        for interval in events.windows(2) {
+        for [from, to] in events.array_windows::<2>() {
             budget.add(clip_segments)?;
-            if interval[0].same_position(&interval[1])? {
+            if from.same_position(to)? {
                 continue;
             }
-            if point_covered_by_clip(&interval[0].midpoint(&interval[1])?, &clip.rings)? {
+            if point_covered_by_clip(&from.midpoint(to)?, &clip.rings)? {
                 if current.is_empty() {
-                    budgeted_try_push(&mut current, interval[0].clone(), budget)?;
+                    budgeted_try_push(&mut current, from.clone(), budget)?;
                 }
-                budgeted_try_push(&mut current, interval[1].clone(), budget)?;
+                budgeted_try_push(&mut current, to.clone(), budget)?;
             } else if current.len() >= 2 {
                 budgeted_try_push(
                     &mut exact_chains,
-                    ([pair[0], pair[1]], std::mem::take(&mut current)),
+                    ([left, right], std::mem::take(&mut current)),
                     budget,
                 )?;
             } else {
@@ -3649,7 +3649,7 @@ pub(super) fn build_collinear_edges(
             }
         }
         if current.len() >= 2 {
-            budgeted_try_push(&mut exact_chains, ([pair[0], pair[1]], current), budget)?;
+            budgeted_try_push(&mut exact_chains, ([left, right], current), budget)?;
         }
     }
     let separator_points = exact_chains
@@ -3734,10 +3734,10 @@ pub(super) fn build_collinear_edges(
         for point in &chain {
             chain_vertices.push(vertex_id(point)?);
         }
-        for pair in chain_vertices.windows(2) {
+        for &[left, right] in chain_vertices.array_windows::<2>() {
             chain_edges.push(EdgeId(edges.len() as u32));
             try_push_vec(&mut edges, AtomicEdge {
-                endpoints: [pair[0], pair[1]],
+                endpoints: [left, right],
                 forward: Transition {
                     frame_delta: 0,
                     clip_delta: 0,
@@ -3840,14 +3840,14 @@ pub(super) fn build_collinear_edges(
         clip_segments.saturating_mul(2).saturating_add(2),
     )?;
     let output_segments = ends
-        .windows(2)
-        .map(|line| line[1].saturating_sub(line[0]).saturating_sub(1) as usize)
+        .array_windows::<2>()
+        .map(|&[start, end]| end.saturating_sub(start).saturating_sub(1) as usize)
         .sum::<usize>();
     budget.add(output_segments.saturating_mul(clip_segments))?;
-    for line in ends.windows(2) {
+    for &[start, end] in ends.array_windows::<2>() {
         let edge = LineSeq::row_view(
             coords,
-            CoordWindow::from_range(line[0] as usize..line[1] as usize, coords.len()),
+            CoordWindow::from_range(start as usize..end as usize, coords.len()),
         );
         budget.add(edge.len())?;
         for segment in line_segments(&edge) {

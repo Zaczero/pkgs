@@ -1022,7 +1022,7 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
             (-2.0, -2.0),
         ]),
     ] {
-        for (ordinal, edge) in points.windows(2).enumerate() {
+        for (ordinal, edge) in points.array_windows::<2>().enumerate() {
             let edge = symbolic_edge(edge, LiftKind::Shortest);
             let mut pieces = Vec::new();
             edge.selection_pieces(&mut pieces)

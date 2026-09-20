@@ -571,7 +571,7 @@ mod edge_trace_tests {
                 .expect("center cover repeat"),
         );
         assert!(first.len() >= 2);
-        assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(first.array_windows::<2>().all(|[a, b]| a < b));
         assert_eq!(first, second);
     }
 }

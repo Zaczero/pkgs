@@ -317,8 +317,8 @@ mod tests {
         assert!(
             expanded
                 .as_slice()
-                .windows(2)
-                .all(|pair| pair[0].range_min() < pair[1].range_min())
+                .array_windows::<2>()
+                .all(|[a, b]| a.range_min() < b.range_min())
         );
     }
 

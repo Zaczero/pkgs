@@ -359,7 +359,7 @@ mod tests {
         let children: Vec<_> = cell.parent_at(4).children().collect();
         assert_eq!(children.len(), 32);
         assert!(children.iter().any(|child| child.token() == "ww8p1"));
-        assert!(children.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(children.array_windows::<2>().all(|[a, b]| a < b));
         // Known neighbor table for "ww8p" (east = ww8r? verified via grid
         // math): the 8-neighborhood is distinct, same precision, adjacent.
         let neighbors = Geohash::parse("u09t").unwrap().neighbors().unwrap();

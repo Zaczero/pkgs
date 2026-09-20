@@ -96,8 +96,8 @@ fn ring_signed_area(ring: &Value) -> f64 {
             (a[0].as_f64().unwrap(), a[1].as_f64().unwrap())
         })
         .collect();
-    pts.windows(2)
-        .map(|w| w[0].0 * w[1].1 - w[1].0 * w[0].1)
+    pts.array_windows::<2>()
+        .map(|[a, b]| a.0 * b.1 - b.0 * a.1)
         .sum::<f64>()
         / 2.0
 }

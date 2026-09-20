@@ -253,19 +253,19 @@ fn geographic_index_envelopes(
     }
     let mut edge_error = None;
     shape.for_each_segment_chain(|chain| {
-        for pair in chain.xs().windows(2) {
+        for &[left, right] in chain.xs().array_windows::<2>() {
             if edge_error.is_some() {
                 break;
             }
             let delta = frame
                 .longitude()
-                .shortest_edge(pair[0], pair[1])
+                .shortest_edge(left, right)
                 .expect("the geographic view admitted every chain coordinate")
                 .delta(frame.longitude());
             let (start, sweep) = if delta.is_sign_negative() {
-                (pair[1], -delta)
+                (right, -delta)
             } else {
-                (pair[0], delta)
+                (left, delta)
             };
             let interval = CircularInterval::try_arc(frame.longitude(), start, sweep)
                 .expect("a shortest edge is a valid circular arc");

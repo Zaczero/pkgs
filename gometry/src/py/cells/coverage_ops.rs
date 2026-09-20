@@ -29,7 +29,7 @@ pub(crate) struct SortedCells<C>(Vec<C>);
 
 impl<C: Ord> SortedCells<C> {
     pub(crate) fn new(mut cells: Vec<C>) -> Self {
-        if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
+        if !cells.array_windows::<2>().all(|[a, b]| a < b) {
             cells.sort_unstable();
             cells.dedup();
         }
@@ -40,7 +40,7 @@ impl<C: Ord> SortedCells<C> {
         // Producers use this fast path only after proving strict order, but
         // keep the boundary total so a future producer cannot ship an invalid
         // SortedCells value in release builds.
-        if !cells.windows(2).all(|pair| pair[0] < pair[1]) {
+        if !cells.array_windows::<2>().all(|[a, b]| a < b) {
             return Self::new(cells);
         }
         Self(cells)

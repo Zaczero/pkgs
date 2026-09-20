@@ -2238,8 +2238,8 @@ impl ExactSourceInventory {
         let mut protected = Vec::new();
         try_reserve_vec(&mut protected, partition.node_count())?;
         protected.resize(partition.node_count(), false);
-        for (node, range) in partition.binding_starts.windows(2).enumerate() {
-            for &unique in &partition.bindings[range[0] as usize..range[1] as usize] {
+        for (node, &[start, end]) in partition.binding_starts.array_windows::<2>().enumerate() {
+            for &unique in &partition.bindings[start as usize..end as usize] {
                 let mut source_has_ordinate = false;
                 for &(source, _) in self.provenance.owners(unique as usize) {
                     let points = self.source_points.get(source as usize).ok_or_else(|| {
@@ -5260,8 +5260,8 @@ impl ExactPartition<'_> {
                 .into());
             }
             if ordered
-                .windows(2)
-                .any(|pair| exit(pair[0]).0 != entry(pair[1]))
+                .array_windows::<2>()
+                .any(|&[left, right]| exit(left).0 != entry(right))
             {
                 return Err(GeometryErrorKind::Invalid(
                     "exact partition source atoms are not a contiguous run".into(),
@@ -5312,8 +5312,8 @@ impl ExactPartition<'_> {
         let mut node_pin = Vec::new();
         try_reserve_vec(&mut node_pin, self.node_count())?;
         node_pin.resize(self.node_count(), false);
-        for (node, range) in topology.starts.windows(2).enumerate() {
-            let slots = range[0] as usize..range[1] as usize;
+        for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
+            let slots = start as usize..end as usize;
             node_pin[node] = slots.len() != 2
                 || shared_by_span[edge_of_slot[slots.start] as usize]
                     != shared_by_span[edge_of_slot[slots.start + 1] as usize];
@@ -5567,13 +5567,13 @@ impl ExactPartition<'_> {
             departures[start as usize] = Some((segment.start, segment.end));
             departures[end as usize] = Some((segment.end, segment.start));
         }
-        for (node, range) in topology.starts.windows(2).enumerate() {
+        for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
             let mut first = None;
             let mut previous = None;
             let mut descents = 0;
             let mut count = 0;
             for (target, departure) in
-                (range[0]..range[1]).zip(&mut departures[range[0] as usize..range[1] as usize])
+                (start..end).zip(&mut departures[start as usize..end as usize])
             {
                 let Some((origin, point)) = departure.take() else {
                     continue;
@@ -8812,8 +8812,8 @@ mod tests {
         assert_eq!(topology.starts[isolated], topology.starts[isolated + 1]);
         let mut lengths: Vec<_> = topology
             .face_starts
-            .windows(2)
-            .map(|window| window[1] - window[0])
+            .array_windows::<2>()
+            .map(|[start, end]| end - start)
             .collect();
         lengths.sort_unstable();
         assert_eq!(lengths, [3, 3, 4, 6]);

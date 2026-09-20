@@ -1205,7 +1205,7 @@ fn fixed_level_box_covering_is_complete_and_exact() {
     let interior = covering.interior();
     assert!(!outer.is_empty());
     assert!(!interior.is_empty());
-    assert!(outer.windows(2).all(|pair| pair[0] < pair[1]));
+    assert!(outer.array_windows::<2>().all(|[a, b]| a < b));
     // Completeness: sampled interior points classify into outer cells.
     for i in 0..=20 {
         for j in 0..=20 {

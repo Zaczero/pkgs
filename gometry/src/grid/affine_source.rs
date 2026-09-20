@@ -3402,10 +3402,10 @@ impl SymbolicAffineEdge {
     fn selection_pieces(&self, output: &mut Vec<SelectionAffinePiece>) -> ExactResult<()> {
         let start_point = ExactPlanarPoint::from_lifted(self.start)?;
         let end_point = ExactPlanarPoint::from_lifted(self.end)?;
-        for parameters in self.parameters.windows(2) {
+        for [start_parameter, end_parameter] in self.parameters.array_windows::<2>() {
             let Some(piece) = self.selection_piece(
-                parameters[0].try_clone()?,
-                parameters[1].try_clone()?,
+                start_parameter.try_clone()?,
+                end_parameter.try_clone()?,
                 &start_point,
                 &end_point,
             )?
@@ -3424,9 +3424,9 @@ impl SymbolicAffineEdge {
     fn authority_pieces(&self, output: &mut Vec<AuthorityAffinePiece>) -> ExactResult<()> {
         let start_point = ExactPlanarPoint::from_lifted(self.start)?;
         let end_point = ExactPlanarPoint::from_lifted(self.end)?;
-        for parameters in self.parameters.windows(2) {
-            let start = parameters[0].try_clone()?;
-            let end = parameters[1].try_clone()?;
+        for [start_parameter, end_parameter] in self.parameters.array_windows::<2>() {
+            let start = start_parameter.try_clone()?;
+            let end = end_parameter.try_clone()?;
             let midpoint = self.midpoint(&start.ratio, &end.ratio)?;
             let latitude =
                 self.coordinate_at(&midpoint, start_point.latitude(), end_point.latitude())?;

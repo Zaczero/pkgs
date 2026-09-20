@@ -385,20 +385,20 @@ fn connected_chord_bridge_dfs_undo_keeps_south_body() {
         XY::new(2.0, 4.0),
     ];
     let mut raw: Vec<(Segment, [i32; 2])> = Vec::new();
-    for window in shell.windows(2) {
+    for &[from, to] in shell.array_windows::<2>() {
         raw.push((
             Segment {
-                start: window[0],
-                end: window[1],
+                start: from,
+                end: to,
             },
             [1, 0],
         ));
     }
-    for window in hole.windows(2) {
+    for &[from, to] in hole.array_windows::<2>() {
         raw.push((
             Segment {
-                start: window[0],
-                end: window[1],
+                start: from,
+                end: to,
             },
             [0, 1],
         ));
@@ -497,8 +497,7 @@ fn ring_occupied(shell: &[XY], hole: &[XY], point: XY) -> bool {
 
 fn winding_of(ring: &[XY], point: XY) -> i32 {
     let mut winding = 0;
-    for window in ring.windows(2) {
-        let (start, end) = (window[0], window[1]);
+    for &[start, end] in ring.array_windows::<2>() {
         if (start.y > point.y) != (end.y > point.y)
             && crate::geometry::ray_crossing_is_right(
                 start.x, start.y, end.x, end.y, point.x, point.y,

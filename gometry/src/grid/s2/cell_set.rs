@@ -178,7 +178,7 @@ mod tests {
         let base = cell(13.4, 52.5, 10);
         let expanded = uncompact(&[base], 12).expect("within allocator");
         assert_eq!(expanded.as_slice().len(), 16);
-        assert!(expanded.as_slice().windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(expanded.as_slice().array_windows::<2>().all(|[a, b]| a < b));
         assert!(
             expanded
                 .as_slice()

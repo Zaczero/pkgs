@@ -90,7 +90,7 @@ mod sweep_characterization {
     /// checked in place. Sorting makes a repeat visit an adjacent duplicate.
     fn sorted_unique(mut seen: Vec<u64>) -> Vec<u64> {
         seen.sort_unstable();
-        let duplicate = seen.windows(2).find(|pair| pair[0] == pair[1]);
+        let duplicate = seen.array_windows::<2>().find(|[a, b]| a == b);
         assert!(
             duplicate.is_none(),
             "pair {:?} visited more than once",
@@ -229,7 +229,7 @@ mod indexed_bounds_characterization {
         indexed.sort_unstable();
         expected.sort_unstable();
         assert_eq!(indexed, expected);
-        assert_eq!(indexed.windows(2).find(|pair| pair[0] == pair[1]), None);
+        assert_eq!(indexed.array_windows::<2>().find(|[a, b]| a == b), None);
     }
 
     #[test]
@@ -302,15 +302,15 @@ mod run_collapse_dispatch {
     use crate::geometry::segment_index::sweep::monotone_runs;
 
     fn chain_of(points: &[(f64, f64)], pool: &mut Vec<Segment>) {
-        for pair in points.windows(2) {
+        for &[from, to] in points.array_windows::<2>() {
             pool.push(Segment {
                 start: XY {
-                    x: pair[0].0,
-                    y: pair[0].1,
+                    x: from.0,
+                    y: from.1,
                 },
                 end: XY {
-                    x: pair[1].0,
-                    y: pair[1].1,
+                    x: to.0,
+                    y: to.1,
                 },
             });
         }
