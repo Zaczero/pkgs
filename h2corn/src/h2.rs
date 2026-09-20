@@ -1962,10 +1962,10 @@ fn parse_data_payload(payload: Bytes, flags: FrameFlags) -> Result<(Bytes, bool)
     let mut start = 0;
     let mut end = payload.len();
     if flags.contains(FrameFlags::PADDED) {
-        if payload.is_empty() {
+        let Some((&padding, _)) = payload.split_first() else {
             return H2Error::DataPaddedMissingPadding.err();
-        }
-        let pad_len = usize::from(payload[0]);
+        };
+        let pad_len = usize::from(padding);
         start += 1;
         if pad_len > end.saturating_sub(start) {
             return H2Error::DataPaddingExceedsPayload.err();

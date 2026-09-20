@@ -729,16 +729,19 @@ fn append_escaped_client_host(out: &mut ClientLabelBuf, host: &str) {
     const HEX: &[u8; 16] = b"0123456789abcdef";
 
     let mut rest = host.as_bytes();
-    while let Some(index) = rest.iter().position(u8::is_ascii_control) {
-        out.extend_from_slice(&rest[..index]);
-        let control = rest[index];
+    while let Some((plain, [control, tail @ ..])) = rest
+        .iter()
+        .position(u8::is_ascii_control)
+        .and_then(|at| rest.split_at_checked(at))
+    {
+        out.extend_from_slice(plain);
         out.extend_from_slice(&[
             b'\\',
             b'x',
             HEX[usize::from(control >> 4)],
             HEX[usize::from(control & 15)],
         ]);
-        rest = &rest[index + 1..];
+        rest = tail;
     }
     out.extend_from_slice(rest);
 }

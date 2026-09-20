@@ -45,10 +45,10 @@ impl ClientIdentity {
     pub(crate) fn from_certificates(
         certificates: &[CertificateDer<'_>],
     ) -> io::Result<Option<Self>> {
-        if certificates.is_empty() {
+        let Some(leaf_der) = certificates.first() else {
             return Ok(None);
-        }
-        let leaf = Certificate::from_der(certificates[0].as_ref()).map_err(tls_io_error)?;
+        };
+        let leaf = Certificate::from_der(leaf_der.as_ref()).map_err(tls_io_error)?;
         // Fields are crate-private in x509-cert 0.3; accessors expose the same
         // `Name` whose `Display` is RFC 4514 via `RdnSequence`.
         let subject = leaf

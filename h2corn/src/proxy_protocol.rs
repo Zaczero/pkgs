@@ -397,9 +397,13 @@ fn parse_proxy_v1(line: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
         if current.is_empty() {
             return None;
         }
-        if let Some(index) = current.iter().position(|&byte| byte == b' ') {
-            *line = &current[index + 1..];
-            Some(&current[..index])
+        if let Some((part, [b' ', tail @ ..])) = current
+            .iter()
+            .position(|&byte| byte == b' ')
+            .and_then(|at| current.split_at_checked(at))
+        {
+            *line = tail;
+            Some(part)
         } else {
             *line = &[];
             Some(current)
