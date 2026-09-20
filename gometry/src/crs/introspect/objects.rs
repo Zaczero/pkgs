@@ -134,7 +134,7 @@ pub(crate) fn operation_info_from_pj(
 pub(crate) fn exported_owned_crs(
     context: &ProjContext,
     object: Option<OwnedPj>,
-    crs: String,
+    crs: &str,
     format: &'static str,
 ) -> Result<String> {
     let Some(object) = object else {

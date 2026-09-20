@@ -106,7 +106,7 @@ pub(crate) fn identify_with_state(
     state: &RuntimeState,
 ) -> Result<Vec<IdentifyCandidate>> {
     let normalized = normalize(value)?;
-    ProjObject::new_with_state(&normalized, state)?.identify(authority, normalized)
+    ProjObject::new_with_state(&normalized, state)?.identify(authority, &normalized)
 }
 
 pub(crate) fn to_authority(
@@ -166,7 +166,7 @@ pub(crate) fn authority_matches_with_state(
             },
             || {
                 let candidates = ProjObject::new_with_state(&normalized, state)?
-                    .identify(authority.as_deref(), normalized.clone())?;
+                    .identify(authority.as_deref(), &normalized)?;
                 let items: Vec<_> = candidates
                     .into_iter()
                     .filter(|candidate| {

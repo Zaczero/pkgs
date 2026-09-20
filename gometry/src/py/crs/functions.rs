@@ -345,7 +345,7 @@ pub(crate) fn crs_units<'py>(
 /// >>> gm.crs_proj_operations()[0]['id']
 /// 'adams_hemi'
 #[pyfunction]
-pub(crate) fn crs_proj_operations() -> Vec<crs::ProjOperationCatalogInfo> {
+pub(crate) fn crs_proj_operations() -> &'static [crs::ProjOperationCatalogInfo] {
     crs::proj_operations()
 }
 
@@ -362,7 +362,7 @@ pub(crate) fn crs_proj_operations() -> Vec<crs::ProjOperationCatalogInfo> {
 /// >>> gm.crs_ellipsoids()[0]['id']
 /// 'MERIT'
 #[pyfunction]
-pub(crate) fn crs_ellipsoids() -> Vec<crs::EllipsoidCatalogInfo> {
+pub(crate) fn crs_ellipsoids() -> &'static [crs::EllipsoidCatalogInfo] {
     crs::ellipsoids()
 }
 
@@ -379,6 +379,6 @@ pub(crate) fn crs_ellipsoids() -> Vec<crs::EllipsoidCatalogInfo> {
 /// >>> gm.crs_prime_meridians()[0]['id']
 /// 'greenwich'
 #[pyfunction]
-pub(crate) fn crs_prime_meridians() -> Vec<crs::PrimeMeridianCatalogInfo> {
+pub(crate) fn crs_prime_meridians() -> &'static [crs::PrimeMeridianCatalogInfo] {
     crs::prime_meridians()
 }

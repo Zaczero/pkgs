@@ -245,7 +245,7 @@ impl ProjObject {
 
     pub(super) fn to_wkt_with_options(
         &self,
-        crs: String,
+        crs: &str,
         version: proj_sys::PJ_WKT_TYPE,
         options: &CrsWktOptions,
     ) -> Result<String> {
@@ -265,7 +265,7 @@ impl ProjObject {
             .ok_or_else(|| CrsError::export(crs, "WKT", proj_context_error_message(&self.context)))
     }
 
-    pub(super) fn to_projjson(&self, crs: String, options: &CrsProjJsonOptions) -> Result<String> {
+    pub(super) fn to_projjson(&self, crs: &str, options: &CrsProjJsonOptions) -> Result<String> {
         let c_options = options.to_c_options()?;
         let option_ptrs = c_option_ptrs(&c_options);
         // SAFETY: DOC-H. Same proof as WKT export.
@@ -283,7 +283,7 @@ impl ProjObject {
 
     pub(super) fn to_proj_string(
         &self,
-        crs: String,
+        crs: &str,
         version: proj_sys::PJ_PROJ_STRING_TYPE,
         options: &CrsProjOptions,
     ) -> Result<String> {
@@ -349,7 +349,7 @@ impl ProjObject {
     pub(super) fn identify(
         &self,
         authority: Option<&str>,
-        crs: String,
+        crs: &str,
     ) -> Result<Vec<IdentifyCandidate>> {
         let authority = authority.map(cstring).transpose()?;
         let mut confidence = ptr::null_mut();
@@ -411,7 +411,7 @@ impl ProjObject {
         Ok(candidates)
     }
 
-    pub(super) fn to_2d(&self, crs: String, name: Option<&str>) -> Result<String> {
+    pub(super) fn to_2d(&self, crs: &str, name: Option<&str>) -> Result<String> {
         let name = optional_c_string(name)?;
         let name_ptr = name.as_ref().map_or(ptr::null(), |value| value.as_ptr());
         // SAFETY: DOC-H. Typed receiver; name_ptr null or live CString; returns
@@ -424,7 +424,7 @@ impl ProjObject {
         exported_owned_crs(&self.context, object, crs, "2D CRS")
     }
 
-    pub(super) fn to_3d(&self, crs: String, name: Option<&str>) -> Result<String> {
+    pub(super) fn to_3d(&self, crs: &str, name: Option<&str>) -> Result<String> {
         let name = optional_c_string(name)?;
         let name_ptr = name.as_ref().map_or(ptr::null(), |value| value.as_ptr());
         // SAFETY: DOC-H. Same proof as demotion.

@@ -8,10 +8,8 @@ use crate::crs::{
 };
 use crate::error::Result;
 
-pub(crate) fn proj_operations() -> Vec<ProjOperationCatalogInfo> {
-    PROJ_OPERATION_CATALOG
-        .get_or_init(proj_operations_uncached)
-        .clone()
+pub(crate) fn proj_operations() -> &'static [ProjOperationCatalogInfo] {
+    PROJ_OPERATION_CATALOG.get_or_init(proj_operations_uncached)
 }
 
 fn proj_operations_uncached() -> Vec<ProjOperationCatalogInfo> {
@@ -39,8 +37,8 @@ fn proj_operations_uncached() -> Vec<ProjOperationCatalogInfo> {
     items
 }
 
-pub(crate) fn ellipsoids() -> Vec<EllipsoidCatalogInfo> {
-    ELLIPSOID_CATALOG.get_or_init(ellipsoids_uncached).clone()
+pub(crate) fn ellipsoids() -> &'static [EllipsoidCatalogInfo] {
+    ELLIPSOID_CATALOG.get_or_init(ellipsoids_uncached)
 }
 
 fn ellipsoids_uncached() -> Vec<EllipsoidCatalogInfo> {
@@ -66,10 +64,8 @@ fn ellipsoids_uncached() -> Vec<EllipsoidCatalogInfo> {
     items
 }
 
-pub(crate) fn prime_meridians() -> Vec<PrimeMeridianCatalogInfo> {
-    PRIME_MERIDIAN_CATALOG
-        .get_or_init(prime_meridians_uncached)
-        .clone()
+pub(crate) fn prime_meridians() -> &'static [PrimeMeridianCatalogInfo] {
+    PRIME_MERIDIAN_CATALOG.get_or_init(prime_meridians_uncached)
 }
 
 fn prime_meridians_uncached() -> Vec<PrimeMeridianCatalogInfo> {
@@ -204,7 +200,7 @@ fn wkt_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
         unreachable!("WKT cache key");
     };
     ProjObject::new_with_state(&key.definition, state)?.to_wkt_with_options(
-        key.definition.to_string(),
+        &key.definition,
         version.to_proj(),
         options,
     )
@@ -214,8 +210,7 @@ fn projjson_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::ProjJson { options } = &key.kind else {
         unreachable!("PROJJSON export cache key has PROJJSON options")
     };
-    ProjObject::new_with_state(&key.definition, state)?
-        .to_projjson(key.definition.to_string(), options)
+    ProjObject::new_with_state(&key.definition, state)?.to_projjson(&key.definition, options)
 }
 
 fn proj_string_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
@@ -223,7 +218,7 @@ fn proj_string_export(key: &CrsExportKey, state: &RuntimeState) -> Result<String
         unreachable!("PROJ string cache key");
     };
     ProjObject::new_with_state(&key.definition, state)?.to_proj_string(
-        key.definition.to_string(),
+        &key.definition,
         version.to_proj(),
         options,
     )
@@ -233,16 +228,14 @@ pub(crate) fn crs_to_2d_export_at(key: &CrsExportKey, state: &RuntimeState) -> R
     let CrsExportKind::To2d { name } = &key.kind else {
         unreachable!("2D CRS cache key");
     };
-    ProjObject::new_with_state(&key.definition, state)?
-        .to_2d(key.definition.to_string(), name.as_deref())
+    ProjObject::new_with_state(&key.definition, state)?.to_2d(&key.definition, name.as_deref())
 }
 
 pub(crate) fn crs_to_3d_export_at(key: &CrsExportKey, state: &RuntimeState) -> Result<String> {
     let CrsExportKind::To3d { name } = &key.kind else {
         unreachable!("3D CRS cache key");
     };
-    ProjObject::new_with_state(&key.definition, state)?
-        .to_3d(key.definition.to_string(), name.as_deref())
+    ProjObject::new_with_state(&key.definition, state)?.to_3d(&key.definition, name.as_deref())
 }
 
 pub(crate) fn same(left: &str, right: &str, comparison: CrsComparison) -> Result<bool> {

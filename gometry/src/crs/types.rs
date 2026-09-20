@@ -9,7 +9,7 @@
 use std::borrow::Cow;
 use std::num::NonZeroUsize;
 
-use pyo3::IntoPyObject;
+use pyo3::{IntoPyObject, IntoPyObjectRef};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use smol_str::SmolStr;
@@ -628,13 +628,13 @@ pub(crate) struct UnitInfo {
     pub proj_short_name: Option<String>,
 }
 
-#[derive(Debug, Clone, IntoPyObject)]
+#[derive(Debug, Clone, IntoPyObject, IntoPyObjectRef)]
 pub(crate) struct ProjOperationCatalogInfo {
     pub id: String,
     pub description: Option<String>,
 }
 
-#[derive(Debug, Clone, IntoPyObject)]
+#[derive(Debug, Clone, IntoPyObject, IntoPyObjectRef)]
 pub(crate) struct EllipsoidCatalogInfo {
     pub id: String,
     pub semi_major: Option<String>,
@@ -642,7 +642,7 @@ pub(crate) struct EllipsoidCatalogInfo {
     pub name: Option<String>,
 }
 
-#[derive(Debug, Clone, IntoPyObject)]
+#[derive(Debug, Clone, IntoPyObject, IntoPyObjectRef)]
 pub(crate) struct PrimeMeridianCatalogInfo {
     pub id: String,
     pub definition: Option<String>,
