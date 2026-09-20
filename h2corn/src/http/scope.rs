@@ -338,13 +338,12 @@ fn header_name_to_python<'py>(
 
 fn known_header_name_to_python(py: Python<'_>, name: KnownRequestHeaderName) -> Bound<'_, PyBytes> {
     static CACHED: PyOnceLock<[Py<PyBytes>; KnownRequestHeaderName::COUNT]> = PyOnceLock::new();
-    CACHED.get_or_init(py, || {
-        std::array::from_fn(|index| {
-            PyBytes::new(py, KnownRequestHeaderName::ALL[index].as_bytes()).unbind()
+    CACHED
+        .get_or_init(py, || {
+            KnownRequestHeaderName::ALL.map(|known| PyBytes::new(py, known.as_bytes()).unbind())
         })
-    })[name as usize]
-        .bind(py)
-        .clone()
+        .get(name as usize)
+        .map_or_else(|| PyBytes::new(py, name.as_bytes()), |bytes| bytes.bind(py).clone())
 }
 
 fn scheme_to_python<'py>(py: Python<'py>, scheme: &str) -> Bound<'py, PyString> {

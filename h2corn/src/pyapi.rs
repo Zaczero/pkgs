@@ -649,7 +649,9 @@ async fn start_secondary_lifespans(
             Ok((_, outcome)) => outcomes.push(outcome),
             Err(err) => {
                 let index = secondary_loop_index(&task_indices, &err);
-                outcomes.push((index, Arc::clone(&shards[index + 1]), None, Err(err.into())));
+                if let Some(shard) = shards.get(index + 1) {
+                    outcomes.push((index, Arc::clone(shard), None, Err(err.into())));
+                }
             },
         }
     }

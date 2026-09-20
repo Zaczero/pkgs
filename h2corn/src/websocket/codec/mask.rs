@@ -34,8 +34,8 @@ fn apply_u32_mask_phase(payload: &mut [u8], key: MaskKey, phase: usize) -> usize
 
     let suffix_phase = (phase + payload_len - suffix.len()) & 3;
     let suffix_mask = key.word(suffix_phase).to_ne_bytes();
-    for (index, byte) in suffix.iter_mut().enumerate() {
-        *byte ^= suffix_mask[index];
+    for (byte, mask_byte) in suffix.iter_mut().zip(suffix_mask) {
+        *byte ^= mask_byte;
     }
     (phase + payload_len) & 3
 }
@@ -44,8 +44,8 @@ pub(super) fn apply_websocket_mask_phase(payload: &mut [u8], key: MaskKey, phase
     let payload_len = payload.len();
     if payload_len < 4 {
         let mask = key.word(phase).to_ne_bytes();
-        for (index, byte) in payload.iter_mut().enumerate() {
-            *byte ^= mask[index];
+        for (byte, mask_byte) in payload.iter_mut().zip(mask) {
+            *byte ^= mask_byte;
         }
         return (phase + payload_len) & 3;
     }

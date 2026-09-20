@@ -43,7 +43,9 @@ pub(crate) fn decode_url(src: &[u8]) -> Result<Vec<u8>, ()> {
         if value == INVALID_VALUE {
             return Err(());
         }
-        block[used] = value;
+        if let Some(slot) = block.get_mut(used) {
+            *slot = value;
+        }
         used += 1;
         if used == 4 {
             out.push((block[0] << 2) | (block[1] >> 4));

@@ -518,7 +518,7 @@ fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
         return ProxyError::UnsupportedProxyV2Transport.err();
     }
 
-    let payload = &frame[size_of::<ProxyV2Header>()..];
+    let payload = frame.get(PROXY_V2_HEADER_LEN..).unwrap_or_default();
     match family {
         0x1 => {
             let (addrs, _) = Ref::<_, ProxyV2Ipv4Addrs>::from_prefix(payload)

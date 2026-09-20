@@ -585,12 +585,15 @@ pub(super) fn parse_header_block_fragment(
     let padded = header.flags.contains(h2_frame::FrameFlags::PADDED);
     let priority = header.flags.contains(h2_frame::FrameFlags::PRIORITY);
 
-    if padded {
-        if payload_bytes.is_empty() {
+    let pad_len = if padded {
+        let Some(&pad_len) = payload_bytes.first() else {
             return H2Error::HeadersPaddedMissingPadLength.err();
-        }
+        };
         payload_offset += 1;
-    }
+        usize::from(pad_len)
+    } else {
+        0
+    };
 
     if priority {
         if payload_bytes.len() < payload_offset + 5 {
@@ -599,11 +602,6 @@ pub(super) fn parse_header_block_fragment(
         payload_offset += 5;
     }
 
-    let pad_len = if padded {
-        usize::from(payload_bytes[0])
-    } else {
-        0
-    };
     if payload_bytes.len() < payload_offset + pad_len {
         return H2Error::HeadersPaddingExceedsPayload.err();
     }
