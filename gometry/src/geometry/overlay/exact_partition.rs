@@ -1897,28 +1897,7 @@ impl ExactSourceInventory {
         for polygon in right {
             staged.append_polygon(polygon.as_ref(), 1)?;
         }
-        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
-        Ok(Self {
-            source_segments: staged.segments,
-            unique,
-            provenance,
-            source_operands: staged.source_operands,
-            source_rings: staged.source_rings,
-            source_ring_kinds: staged.source_ring_kinds,
-            ring_kinds: staged.ring_kinds,
-            ring_polygons: staged.ring_polygons,
-            ring_holes: staged.ring_holes,
-            polygon_count: staged.polygon_count,
-            polygon_operands: staged.polygon_operands,
-            polygon_ring_ranges: staged.polygon_ring_ranges,
-            source_points: staged.source_points,
-            polygon_rings: staged.polygon_rings,
-            ring_count: staged.ring_count,
-            isolated: staged.isolated,
-            isolated_points: staged.isolated_points,
-            isolated_operands: staged.isolated_operands,
-            line_boundaries: staged.line_boundaries,
-        })
+        Self::from_staged(staged)
     }
 
     pub(in crate::geometry) fn from_segments(segments: &[Segment]) -> Result<Self> {
@@ -1932,28 +1911,7 @@ impl ExactSourceInventory {
                 None,
             )?;
         }
-        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
-        Ok(Self {
-            source_segments: staged.segments,
-            unique,
-            provenance,
-            source_operands: staged.source_operands,
-            source_rings: staged.source_rings,
-            source_ring_kinds: staged.source_ring_kinds,
-            ring_kinds: staged.ring_kinds,
-            ring_polygons: staged.ring_polygons,
-            ring_holes: staged.ring_holes,
-            polygon_count: staged.polygon_count,
-            polygon_operands: staged.polygon_operands,
-            polygon_ring_ranges: staged.polygon_ring_ranges,
-            source_points: staged.source_points,
-            polygon_rings: staged.polygon_rings,
-            ring_count: staged.ring_count,
-            isolated: staged.isolated,
-            isolated_points: staged.isolated_points,
-            isolated_operands: staged.isolated_operands,
-            line_boundaries: staged.line_boundaries,
-        })
+        Self::from_staged(staged)
     }
 
     pub(in crate::geometry) fn from_raw_loops(loops: &[(Vec<f64>, Vec<f64>)]) -> Result<Self> {
@@ -1995,28 +1953,7 @@ impl ExactSourceInventory {
                 )?;
             }
         }
-        let (unique, provenance) = dedup_exact_segments(&staged.segments)?;
-        Ok(Self {
-            source_segments: staged.segments,
-            unique,
-            provenance,
-            source_operands: staged.source_operands,
-            source_rings: staged.source_rings,
-            source_ring_kinds: staged.source_ring_kinds,
-            ring_kinds: staged.ring_kinds,
-            ring_polygons: staged.ring_polygons,
-            ring_holes: staged.ring_holes,
-            polygon_count: staged.polygon_count,
-            polygon_operands: staged.polygon_operands,
-            polygon_ring_ranges: staged.polygon_ring_ranges,
-            source_points: staged.source_points,
-            polygon_rings: staged.polygon_rings,
-            ring_count: staged.ring_count,
-            isolated: staged.isolated,
-            isolated_points: staged.isolated_points,
-            isolated_operands: staged.isolated_operands,
-            line_boundaries: staged.line_boundaries,
-        })
+        Self::from_staged(staged)
     }
 
     pub(in crate::geometry) fn partition(

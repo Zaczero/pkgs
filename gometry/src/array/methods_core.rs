@@ -635,6 +635,7 @@ impl PyGeometryArray {
         use std::collections::BTreeSet;
 
         let mut labels = BTreeSet::new();
+        let mut kinds: BTreeSet<(&'static str, &'static str)> = BTreeSet::new();
         let present = |row: usize| !self.is_row_missing(row);
         match self.uniform_axes()? {
             Some(axes) => {
@@ -656,10 +657,13 @@ impl PyGeometryArray {
                         }
                     },
                     GeometryArrayStorage::Mixed(_) => {
+                        // Keyed by the two static strings, not formatted per
+                        // row: a million rows collapse to at most a dozen
+                        // labels, so only the survivors are built.
                         for (row, shape) in self.storage().iter_shapes().enumerate() {
                             let shape = shape.map_err(PyErr::from)?;
                             if present(row) {
-                                labels.insert(format!("{}{tag}", shape.geometry_type()));
+                                kinds.insert((shape.geometry_type(), tag));
                             }
                         }
                     },
@@ -669,15 +673,12 @@ impl PyGeometryArray {
                 for (row, shape) in self.storage().iter_shapes().enumerate() {
                     let shape = shape.map_err(PyErr::from)?;
                     if present(row) {
-                        labels.insert(format!(
-                            "{}{}",
-                            shape.geometry_type(),
-                            shape.axes().wkt_tag()
-                        ));
+                        kinds.insert((shape.geometry_type(), shape.axes().wkt_tag()));
                     }
                 }
             },
         }
+        labels.extend(kinds.into_iter().map(|(kind, tag)| format!("{kind}{tag}")));
         let label_count = labels.len();
         try_collect_values(labels, label_count)
     }

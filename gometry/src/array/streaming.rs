@@ -892,6 +892,7 @@ impl StreamingPolygons {
             };
             let shell = ring(rings.start)?;
             let mut holes = Vec::new();
+            crate::boundary::try_reserve_vec(&mut holes, rings.len() - 1)?;
             for index in rings.start + 1..rings.end {
                 crate::try_push_vec(&mut holes, ring(index)?)?;
             }

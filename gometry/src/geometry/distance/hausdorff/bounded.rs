@@ -3070,6 +3070,13 @@ fn parallel_strip_upper(
         corners.len()
     };
     let mut best = None;
+    // One probe buffer pair for the whole sweep: every parallel span pair
+    // holds the same `probe_count` values, and the pair loop is quadratic in
+    // the span count, so allocating per pair allocated quadratically.
+    let mut left_values = Vec::new();
+    let mut right_values = Vec::new();
+    try_reserve_vec(&mut left_values, probe_count)?;
+    try_reserve_vec(&mut right_values, probe_count)?;
     for (left_offset, &left_index) in span_indices.iter().enumerate() {
         for &right_index in &span_indices[(left_offset + 1)..] {
             let left = &target.spans[left_index];
@@ -3078,10 +3085,8 @@ fn parallel_strip_upper(
                 continue;
             }
             let separation = carrier_line_value(left, &right.start)?;
-            let mut left_values = Vec::new();
-            let mut right_values = Vec::new();
-            try_reserve_vec(&mut left_values, probe_count)?;
-            try_reserve_vec(&mut right_values, probe_count)?;
+            left_values.clear();
+            right_values.clear();
             let mut valid = true;
             if area_probe {
                 for face in &source.faces {

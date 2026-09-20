@@ -149,19 +149,8 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
                     crate::try_push(&mut polygons, polygon)?;
                 }
             },
-            Shape::GeometryCollection(parts) => {
-                for part in parts {
-                    match part {
-                        Shape::Polygon(polygon) => crate::try_push(&mut polygons, polygon)?,
-                        Shape::MultiPolygon(multi) => {
-                            for polygon in multi {
-                                crate::try_push(&mut polygons, polygon)?;
-                            }
-                        },
-                        _ => {},
-                    }
-                }
-            },
+            // A cell boundary split at the antimeridian is polygonal; nothing
+            // else reaches here, and an empty result is the error below.
             _ => {},
         }
     }

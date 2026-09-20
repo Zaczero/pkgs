@@ -133,6 +133,11 @@ pub(in crate::geometry) fn face_interior_point(face: &[XY]) -> XY {
 pub(crate) struct MinimumClearanceWitness {
     pub(crate) plan: [VertexProvenance; 2],
     pub(crate) distance_squared: f64,
+    /// The vertices the plan indexes. Emitting the witness pair needs them,
+    /// and the scan above already transposed the geometry to build them, so
+    /// the witness carries them rather than letting each caller transpose it
+    /// a second time.
+    pub(crate) points: Vec<Point>,
 }
 
 pub(crate) fn minimum_clearance_witness(
@@ -143,18 +148,25 @@ pub(crate) fn minimum_clearance_witness(
         return Ok(None);
     }
     let segments = indexed_segments(shape)?;
-    if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
-        minimum_clearance_witness_indexed(&points, &segments)
+    let witness = if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
+        minimum_clearance_witness_indexed(&points, &segments)?
     } else {
-        minimum_clearance_witness_brute(&points, &segments)
-    }
+        minimum_clearance_witness_brute(&points, &segments)?
+    };
+    Ok(
+        witness.map(|(plan, distance_squared)| MinimumClearanceWitness {
+            plan,
+            distance_squared,
+            points,
+        }),
+    )
 }
 
 /// Indexed nearest-query path (large multipoints / dense linework).
 fn minimum_clearance_witness_indexed(
     points: &[Point],
     segments: &[IndexedSegment],
-) -> crate::error::Result<Option<MinimumClearanceWitness>> {
+) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
     let first_point_index_by_xy = first_point_index_by_xy(points)?;
     let vertex_index = PointSetIndex::build(points.iter().copied())?;
     let mut witness = None;
@@ -168,13 +180,13 @@ fn minimum_clearance_witness_indexed(
         {
             clearance_squared = distance_squared;
             let other_index = first_point_index_by_xy[&PointKey::new(other)];
-            witness = Some(MinimumClearanceWitness {
-                plan: [
+            witness = Some((
+                [
                     VertexProvenance::Input(point_index),
                     VertexProvenance::Input(other_index),
                 ],
                 distance_squared,
-            });
+            ));
         }
     }
     let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy))?;
@@ -196,8 +208,8 @@ fn minimum_clearance_witness_indexed(
         {
             clearance_squared = distance_squared;
             let segment = segments[seg_i];
-            witness = Some(MinimumClearanceWitness {
-                plan: [
+            witness = Some((
+                [
                     VertexProvenance::Input(point_index),
                     VertexProvenance::OnSegment {
                         i: segment.start,
@@ -206,7 +218,7 @@ fn minimum_clearance_witness_indexed(
                     },
                 ],
                 distance_squared,
-            });
+            ));
         }
     }
     Ok(witness)
@@ -216,7 +228,7 @@ fn minimum_clearance_witness_indexed(
 fn minimum_clearance_witness_brute(
     points: &[Point],
     segments: &[IndexedSegment],
-) -> crate::error::Result<Option<MinimumClearanceWitness>> {
+) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
     let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
     for (left_index, left) in points.iter().enumerate() {
@@ -236,13 +248,13 @@ fn minimum_clearance_witness_brute(
                 continue;
             };
             clearance_squared = distance_squared;
-            witness = Some(MinimumClearanceWitness {
-                plan: [
+            witness = Some((
+                [
                     VertexProvenance::Input(left_index),
                     VertexProvenance::Input(left_index + 1 + offset),
                 ],
                 distance_squared,
-            });
+            ));
         }
     }
     for (point_index, point) in points.iter().enumerate() {
@@ -259,8 +271,8 @@ fn minimum_clearance_witness_brute(
                 continue;
             };
             clearance_squared = distance_squared;
-            witness = Some(MinimumClearanceWitness {
-                plan: [
+            witness = Some((
+                [
                     VertexProvenance::Input(point_index),
                     VertexProvenance::OnSegment {
                         i: segment.start,
@@ -269,7 +281,7 @@ fn minimum_clearance_witness_brute(
                     },
                 ],
                 distance_squared,
-            });
+            ));
         }
     }
     Ok(witness)

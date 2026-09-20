@@ -139,7 +139,9 @@ pub(crate) fn geodesic_ordered_rows_into(
         let bound = match metric.point_distance_lower_bound(vertex, caps.anchor) {
             Ok(bound) => (bound - caps.global_reach).max(0.0),
             Err(error) => {
-                *rows = Vec::new();
+                // Clear, not replace: `rows` is the caller's scratch buffer
+                // and a fresh Vec would drop the capacity it reserved.
+                rows.clear();
                 return Err(error);
             },
         };

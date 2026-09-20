@@ -109,8 +109,7 @@ impl Shape {
                 if witness.distance_squared.is_normal() {
                     witness.distance_squared.sqrt()
                 } else if witness.distance_squared >= 0.0 && witness.distance_squared.is_finite() {
-                    let points = self.points_vec()?;
-                    let emitted = emit_from_original(&points, &witness.plan)?;
+                    let emitted = emit_from_original(&witness.points, &witness.plan)?;
                     let [a, b] = emitted.as_slice() else {
                         return Ok(0.0);
                     };
@@ -136,8 +135,7 @@ impl Shape {
                 CoordinateAxes::XY,
             )),
             Some(witness) => {
-                let points = self.points_vec()?;
-                let emitted = emit_from_original(&points, &witness.plan)?;
+                let emitted = emit_from_original(&witness.points, &witness.plan)?;
                 let [a, b] = emitted.as_slice() else {
                     unreachable!("minimum_clearance witness plan has two vertices");
                 };
