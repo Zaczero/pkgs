@@ -1203,36 +1203,32 @@ fn slice_range(owner: &Bytes, slice: &[u8]) -> Option<(u32, u32)> {
 }
 
 pub(crate) fn parse_request_method(value: &[u8]) -> Result<Method, InvalidMethod> {
-    let known = match value.len() {
-        3 => match u32::from_le_bytes([value[0], value[1], value[2], 0]) {
+    // Slice patterns bind the prefix the word comparison needs, so the length
+    // and the bytes read under it are one compile-checked fact rather than a
+    // `len()` arm and an `expect()` that restates it.
+    let known = match *value {
+        [a, b, c] => match u32::from_le_bytes([a, b, c, 0]) {
             0x00_54_45_47 => Some(Method::GET),
             0x00_54_55_50 => Some(Method::PUT),
             _ => None,
         },
-        4 => match u32::from_le_bytes(value.try_into().expect("length is four")) {
+        [a, b, c, d] => match u32::from_le_bytes([a, b, c, d]) {
             0x44_41_45_48 => Some(Method::HEAD),
             0x54_53_4F_50 => Some(Method::POST),
             _ => None,
         },
-        5 => match (
-            u32::from_le_bytes(value[..4].try_into().expect("prefix is four bytes")),
-            value[4],
-        ) {
+        [a, b, c, d, e] => match (u32::from_le_bytes([a, b, c, d]), e) {
             (0x43_54_41_50, b'H') => Some(Method::PATCH),
             (0x43_41_52_54, b'E') => Some(Method::TRACE),
             _ => None,
         },
-        6 => match (
-            u32::from_le_bytes(value[..4].try_into().expect("prefix is four bytes")),
-            value[4],
-            value[5],
-        ) {
+        [a, b, c, d, e, f] => match (u32::from_le_bytes([a, b, c, d]), e, f) {
             (0x45_4C_45_44, b'T', b'E') => Some(Method::DELETE),
             _ => None,
         },
-        7 => match (
-            u32::from_le_bytes(value[..4].try_into().expect("prefix is four bytes")),
-            u32::from_le_bytes([value[4], value[5], value[6], 0]),
+        [a, b, c, d, e, f, g] => match (
+            u32::from_le_bytes([a, b, c, d]),
+            u32::from_le_bytes([e, f, g, 0]),
         ) {
             (0x4E_4E_4F_43, 0x00_54_43_45) => Some(Method::CONNECT),
             (0x49_54_50_4F, 0x00_53_4E_4F) => Some(Method::OPTIONS),
