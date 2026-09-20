@@ -196,7 +196,7 @@ impl FileStreamer {
             // neither depends on holding an exclusive handle.
             let offset = self.cursor.file_offset;
             self.read = PathReadState::Reading(spawn_blocking(move || {
-                let read = read_at(&file, &mut buffer[..read_len], offset);
+                let read = read_at(&file, buffer.get_mut(..read_len).unwrap_or_default(), offset);
                 PathReadResult { file, buffer, read }
             }));
         }
@@ -231,7 +231,9 @@ impl FileStreamer {
         match &self.read {
             PathReadState::Ready { buffer, .. } => buffer
                 .as_deref()
-                .map_or(&[], |buffer| &buffer[self.cursor.buffered.clone()]),
+                .map_or(&[], |buffer| {
+                    buffer.get(self.cursor.buffered.clone()).unwrap_or_default()
+                }),
             PathReadState::Reading(_) | PathReadState::Failed => &[],
         }
     }

@@ -110,8 +110,9 @@ impl WebSocketCodec {
         let prefix_len = self.segmented.len().min(wire::CLIENT_FRAME_PREFIX_MAX_LEN);
         let mut prefix = [0_u8; wire::CLIENT_FRAME_PREFIX_MAX_LEN];
         self.segmented
-            .peek_prefix(prefix_len, &mut prefix[..prefix_len]);
-        let Some(header) = parse_frame_header::<M>(&prefix[..prefix_len])? else {
+            .peek_prefix(prefix_len, prefix.get_mut(..prefix_len).unwrap_or_default());
+        let Some(header) = parse_frame_header::<M>(prefix.get(..prefix_len).unwrap_or_default())?
+        else {
             return Ok(());
         };
         self.validate_frame_header_state(&header, max_message_size)?;
@@ -120,9 +121,12 @@ impl WebSocketCodec {
         if self.segmented.len() < mask_end {
             return Ok(());
         }
-        let mask = *prefix[header.header_len..mask_end]
-            .first_chunk::<{ wire::CLIENT_MASK_LEN }>()
-            .expect("segmented websocket mask is buffered");
+        let Some(&mask) = prefix
+            .get(header.header_len..)
+            .and_then(<[u8]>::first_chunk::<{ wire::CLIENT_MASK_LEN }>)
+        else {
+            return Ok(());
+        };
         self.segmented.skip(mask_end);
 
         if header.opcode == opcode::TEXT || header.opcode == opcode::BINARY {

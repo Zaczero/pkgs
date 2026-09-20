@@ -190,7 +190,10 @@ impl Decoder {
         if buffer.capacity() == 0 {
             buffer.reserve(HUFFMAN_ARENA_CAPACITY);
         }
-        let decoded = huffman::decode(&buf.chunk()[..len], buffer)?;
+        let Some(encoded) = buf.chunk().get(..len) else {
+            return Err(DecoderError::NeedMore(NeedMore::StringUnderflow));
+        };
+        let decoded = huffman::decode(encoded, buffer)?;
         buf.advance(len);
         Ok(decoded.freeze())
     }

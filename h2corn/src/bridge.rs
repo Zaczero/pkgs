@@ -1068,8 +1068,8 @@ fn parse_header_iterable(
             let field = field.map_err(|_| {
                 field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
             })?;
-            if field_count < fields.len() {
-                fields[field_count] = Some(field);
+            if let Some(slot) = fields.get_mut(field_count) {
+                *slot = Some(field);
             }
             if field_count < 3 {
                 field_count += 1;

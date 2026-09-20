@@ -539,7 +539,7 @@ fn collect_data_frames<'a, W>(
             let end_stream = may_end && pos + chunk == segment.len();
             batch.push(
                 data_frame_header(chunk_len, end_stream, stream_id),
-                &segment[pos..pos + chunk],
+                segment.get(pos..pos + chunk).unwrap_or_default(),
             );
             batch.total += chunk;
             pos += chunk;
@@ -662,7 +662,10 @@ where
     let mut payload_index = 0;
     for (header, payload_count) in headers.iter().zip(payload_counts) {
         slices.push(io::IoSlice::new(header));
-        for payload in &payloads[payload_index..payload_index + usize::from(*payload_count)] {
+        let span = payloads
+            .get(payload_index..payload_index + usize::from(*payload_count))
+            .unwrap_or_default();
+        for payload in span {
             slices.push(io::IoSlice::new(payload));
         }
         payload_index += usize::from(*payload_count);
