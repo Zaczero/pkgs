@@ -255,9 +255,12 @@ mod tests {
         encode_close_frame_into(close_code::NORMAL, &reason, &mut frame).unwrap();
 
         assert_eq!(frame.len(), 4 + MAX_CLOSE_REASON_LEN);
-        assert_eq!(frame[0], wire::FIN | opcode::CLOSE);
-        assert_eq!(frame[1], (2 + MAX_CLOSE_REASON_LEN) as u8);
-        assert_eq!(&frame[2..4], &close_code::NORMAL.get().to_be_bytes());
+        let Some(&[first, second, code_high, code_low]) = frame.first_chunk::<4>() else {
+            panic!("a close frame carries two header bytes and a two-byte code");
+        };
+        assert_eq!(first, wire::FIN | opcode::CLOSE);
+        assert_eq!(second, (2 + MAX_CLOSE_REASON_LEN) as u8);
+        assert_eq!([code_high, code_low], close_code::NORMAL.get().to_be_bytes());
         assert_eq!(&frame[4..], reason.as_bytes());
     }
 

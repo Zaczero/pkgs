@@ -81,6 +81,8 @@ iter_over_hash_type = "warn"
 lossy_float_literal = "warn"
 map_with_unused_argument_over_ranges = "warn"
 mem_forget = "warn"
+# The assert it asks for also removes the bounds checks that follow it.
+missing_asserts_for_indexing = "warn"
 mixed_read_write_in_expression = "warn"
 mutex_atomic = "warn"
 mutex_integer = "warn"

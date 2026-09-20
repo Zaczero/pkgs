@@ -203,7 +203,7 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     for vertex in bytes.chunks_exact(stride) {
         let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
         let Some(&[x_bytes, y_bytes]) = ordinates.first_chunk::<2>() else {
-            return Err(IoError::wkb("coordinate run is shorter than its declared stride").into());
+            return Err(IoError::wkb("coordinate run is shorter than its declared stride"));
         };
         crate::boundary::try_push_vec(&mut xs, decode(x_bytes))?;
         crate::boundary::try_push_vec(&mut ys, decode(y_bytes))?;

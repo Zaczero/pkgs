@@ -9,12 +9,22 @@ use subtle::ConstantTimeEq as _;
 use crate::algorithm::Algorithm;
 
 fn dynamic_truncate(digest: &[u8]) -> u32 {
-    let offset = (digest[digest.len() - 1] & 0x0F) as usize;
-    let p = &digest[offset..offset + 4];
-    (u32::from(p[0] & 0x7F) << 24)
-        | (u32::from(p[1]) << 16)
-        | (u32::from(p[2]) << 8)
-        | u32::from(p[3])
+    // RFC 4226 section 5.3: the offset is the low nibble of the final byte, so
+    // it selects four bytes that lie inside any digest of at least 20 -- which
+    // every HMAC this crate constructs is.
+    let Some(&last) = digest.last() else {
+        return 0;
+    };
+    let offset = usize::from(last & 0x0F);
+    let Some(&[high, second, third, low]) =
+        digest.get(offset..).and_then(<[u8]>::first_chunk::<4>)
+    else {
+        return 0;
+    };
+    (u32::from(high & 0x7F) << 24)
+        | (u32::from(second) << 16)
+        | (u32::from(third) << 8)
+        | u32::from(low)
 }
 
 fn totp_code_with<M: Mac + KeyInit>(

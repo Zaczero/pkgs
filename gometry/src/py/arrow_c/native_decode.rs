@@ -685,10 +685,17 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
         let start = row
             .checked_mul(16)
             .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow binary-view row overflows"))?;
-        let view = views.get(start..start + 16).ok_or_else(|| {
-            NativeArrowDecodeError::geoarrow("Arrow binary-view buffer is shorter than declared")
-        })?;
-        let length = view.first_chunk::<4>().map_or(0, |bytes| i32::from_le_bytes(*bytes));
+        // The Arrow binary-view descriptor is a fixed 16-byte record; taking it
+        // as an array lets every field below be a constant read of a known size.
+        let view = views
+            .get(start..)
+            .and_then(<[u8]>::first_chunk::<16>)
+            .ok_or_else(|| {
+                NativeArrowDecodeError::geoarrow(
+                    "Arrow binary-view buffer is shorter than declared",
+                )
+            })?;
+        let length = i32::from_le_bytes([view[0], view[1], view[2], view[3]]);
         let length = usize::try_from(length).map_err(|_| {
             NativeArrowDecodeError::geoarrow("Arrow binary-view length is negative")
         })?;
@@ -697,11 +704,11 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
                 NativeArrowDecodeError::geoarrow("Arrow binary-view inline value is truncated")
             })?
         } else {
-            let buffer_index = i32::from_le_bytes(view[8..12].try_into().expect("buffer index"));
+            let buffer_index = i32::from_le_bytes([view[8], view[9], view[10], view[11]]);
             let buffer_index = usize::try_from(buffer_index).map_err(|_| {
                 NativeArrowDecodeError::geoarrow("Arrow binary-view buffer index is negative")
             })?;
-            let byte_offset = i32::from_le_bytes(view[12..16].try_into().expect("byte offset"));
+            let byte_offset = i32::from_le_bytes([view[12], view[13], view[14], view[15]]);
             let byte_offset = usize::try_from(byte_offset).map_err(|_| {
                 NativeArrowDecodeError::geoarrow("Arrow binary-view byte offset is negative")
             })?;

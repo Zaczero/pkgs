@@ -1444,8 +1444,14 @@ mod tests {
     fn h1_known_names_skip_generic_validation_without_relaxing_unknown_names() {
         let head = Bytes::from_static(b"HOST: example.com\r\nX-Demo: value\r\n");
         let mut headers = H1RequestHeaders::new(head.clone());
-        headers.push(&head[..4], &head[6..17]).unwrap();
-        headers.push(&head[19..25], &head[27..32]).unwrap();
+        // Borrowed views into the same buffer, which is what the zero-copy
+        // header list is here to accept.
+        headers
+            .push(head.get(..4).unwrap(), head.get(6..17).unwrap())
+            .unwrap();
+        headers
+            .push(head.get(19..25).unwrap(), head.get(27..32).unwrap())
+            .unwrap();
 
         let headers = RequestHeaders::from_h1(headers);
         assert_eq!(

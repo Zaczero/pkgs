@@ -10063,7 +10063,8 @@ mod tests {
             let partition = case.partition();
             assert_eq!(partition_metrics().declined_crossings, 1);
             let crossing = crossing_node(&partition);
-            let [x, y, w] = crossing_homogeneous(partition.unique[0], partition.unique[1]).unwrap();
+            let [first_unique, second_unique] = partition.unique.first_chunk::<2>().unwrap();
+            let [x, y, w] = crossing_homogeneous(*first_unique, *second_unique).unwrap();
             assert_eq!(
                 partition.node_xy(crossing),
                 XY::new(round_ratio(&x, &w).unwrap(), round_ratio(&y, &w).unwrap())

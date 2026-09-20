@@ -61,7 +61,10 @@ pub(crate) fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, Bl
         });
     }
 
-    let Some(size_flag) = base83::decode_byte(bytes[0]) else {
+    let Some(&[size_byte, max_value_byte]) = bytes.first_chunk::<2>() else {
+        return Err(BlurhashError::BlurhashMalformed { index: 0 });
+    };
+    let Some(size_flag) = base83::decode_byte(size_byte) else {
         return Err(BlurhashError::BlurhashMalformed { index: 0 });
     };
     let size_flag = size_flag as usize;
@@ -77,7 +80,7 @@ pub(crate) fn decode_layout(bytes: &[u8], punch: f32) -> Result<DecodeLayout, Bl
         });
     }
 
-    let Some(quantised_max_value) = base83::decode_byte(bytes[1]) else {
+    let Some(quantised_max_value) = base83::decode_byte(max_value_byte) else {
         return Err(BlurhashError::BlurhashMalformed { index: 1 });
     };
     let quantised_max_value = f32::from(quantised_max_value);
