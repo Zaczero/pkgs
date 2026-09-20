@@ -362,10 +362,12 @@ fn csv_delimiters(value: &str) -> impl Iterator<Item = usize> + '_ {
                 index += 1;
                 continue;
             }
-            let offset = memchr3(b'\\', b'"', b',', &bytes[index..])?;
+            let tail = bytes.get(index..)?;
+            let offset = memchr3(b'\\', b'"', b',', tail)?;
+            let &delimiter = tail.get(offset)?;
             let current = index + offset;
             index = current + 1;
-            match bytes[current] {
+            match delimiter {
                 b'\\' if in_quotes => escaped = true,
                 b'"' => in_quotes = !in_quotes,
                 b',' if !in_quotes => return Some(current),
@@ -642,15 +644,15 @@ pub(crate) const fn configured_response_field_is_forbidden(name: &[u8]) -> bool 
 fn percent_escapes_are_valid(value: &[u8]) -> bool {
     let mut rest = value;
     while let Some(index) = memchr(b'%', rest) {
-        let Some(hex) = rest.get(index + 1..index + 3) else {
+        let Some(&[high, low]) = rest.get(index + 1..).and_then(<[u8]>::first_chunk::<2>) else {
             return false;
         };
-        if ascii::HEX_VALUE[usize::from(hex[0])] == ascii::INVALID_VALUE
-            || ascii::HEX_VALUE[usize::from(hex[1])] == ascii::INVALID_VALUE
+        if ascii::HEX_VALUE[usize::from(high)] == ascii::INVALID_VALUE
+            || ascii::HEX_VALUE[usize::from(low)] == ascii::INVALID_VALUE
         {
             return false;
         }
-        rest = &rest[index + 3..];
+        rest = rest.get(index + 3..).unwrap_or_default();
     }
     true
 }

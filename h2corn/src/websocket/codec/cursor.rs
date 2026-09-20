@@ -40,7 +40,13 @@ impl<const N: usize> SegmentCursor<N> {
             let start = if index == 0 { self.offset } else { 0 };
             let remaining = len - copied;
             let chunk_len = min(segment.len() - start, remaining);
-            out[copied..copied + chunk_len].copy_from_slice(&segment[start..start + chunk_len]);
+            let (Some(destination), Some(source)) = (
+                out.get_mut(copied..copied + chunk_len),
+                segment.get(start..start + chunk_len),
+            ) else {
+                return;
+            };
+            destination.copy_from_slice(source);
             copied += chunk_len;
             if copied == len {
                 return;
@@ -117,11 +123,15 @@ impl<const N: usize> SegmentCursor<N> {
                 .segments
                 .front()
                 .expect("segmented websocket input remains available while draining");
-            let available = &front[self.offset..];
+            let available = front.get(self.offset..).unwrap_or_default();
             let take = min(available.len(), remaining);
             let start = out.len();
-            out.extend_from_slice(&available[..take]);
-            phase = apply_websocket_mask_phase(&mut out[start..start + take], key, phase);
+            out.extend_from_slice(available.get(..take).unwrap_or_default());
+            phase = apply_websocket_mask_phase(
+                out.get_mut(start..start + take).unwrap_or_default(),
+                key,
+                phase,
+            );
             remaining -= take;
             if take == available.len() {
                 self.segments.pop_front();
