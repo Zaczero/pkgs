@@ -124,14 +124,15 @@ pub(crate) fn to_authority_with_state(
     min_confidence: Confidence,
     state: &RuntimeState,
 ) -> Result<Option<(String, String)>> {
-    Ok(
-        authority_matches_with_state(value, authority, min_confidence, state)?
-            .into_iter()
-            .find_map(|candidate| match (candidate.authority, candidate.code) {
-                (Some(authority), Some(code)) => Some((authority, code)),
-                _ => None,
-            }),
-    )
+    with_authority_matches(value, authority, min_confidence, state, |items| {
+        items.iter().find_map(|candidate| {
+            candidate
+                .authority
+                .as_ref()
+                .zip(candidate.code.as_ref())
+                .map(|(authority, code)| (authority.clone(), code.clone()))
+        })
+    })
 }
 
 #[cfg(test)]
@@ -141,15 +142,18 @@ pub(crate) fn authority_matches(
     min_confidence: Confidence,
 ) -> Result<Vec<IdentifyCandidate>> {
     let state = runtime_state_snapshot()?;
-    authority_matches_with_state(value, authority, min_confidence, &state)
+    with_authority_matches(value, authority, min_confidence, &state, <[_]>::to_vec)
 }
 
-pub(crate) fn authority_matches_with_state(
+/// Resolve the cached identify candidates and read them in place: a caller
+/// that wants one field pays for that field, not for a copy of the row set.
+fn with_authority_matches<R>(
     value: &str,
     authority: Option<&str>,
     min_confidence: Confidence,
     state: &RuntimeState,
-) -> Result<Vec<IdentifyCandidate>> {
+    read: impl FnOnce(&[IdentifyCandidate]) -> R,
+) -> Result<R> {
     validate_min_confidence(min_confidence);
     ensure_thread_caches_current(state);
     let normalized = normalize(value)?;
@@ -183,7 +187,7 @@ pub(crate) fn authority_matches_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.clone())
+        Ok(read(&cache[index].items))
     })
 }
 
