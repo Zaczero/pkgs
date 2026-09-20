@@ -8,9 +8,10 @@
 
 use std::cmp::Ordering;
 
+use super::Axis;
+use super::construction::PointArena;
 #[cfg(test)]
 use super::metrics::update as update_partition_metrics;
-use super::{Axis, PointArena};
 use crate::error::ResourceError;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
