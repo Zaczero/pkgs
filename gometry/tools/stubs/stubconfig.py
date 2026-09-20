@@ -62,7 +62,7 @@ def config() -> StubConfig:
         mypy_config=ROOT / 'pyproject.toml',
         # Pin cwd and paths so adapter classification cannot depend on the
         # gate process's import path; validity deliberately covers the facade.
-        mypy_targets=(ROOT / 'python' / 'gometry',),
+        typecheck_targets=(ROOT / 'python' / 'gometry',),
         extra_ignored_type_names=EXTRA_IGNORED_TYPE_NAMES,
         macro_exports=(GEOMETRY_LEAF,),
         # Array method returns are DERIVED from the scalar contract.

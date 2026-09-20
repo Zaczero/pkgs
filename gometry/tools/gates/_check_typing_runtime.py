@@ -319,17 +319,17 @@ def collect_errors() -> list[str]:
 
     _check_overload_witnesses(errors)
 
-    # Shared conformance, Pyright-primary precision, negatives, and the whole
-    # shipped package run in one Pyright process; shared conformance and
-    # negatives run in one Mypy process. The checkers dominate gate runtime.
-    # Full-project Pyright stays locked at zero errors.
+    # Shared conformance, Pyright-primary precision, and negatives run in one
+    # Pyright process; shared conformance and negatives run in one Mypy
+    # process. The checkers dominate gate runtime. The shipped package is
+    # pyo3stubs' `pyright` gate, which holds it at zero under the same
+    # [tool.pyright] settings; running it here too only pays twice.
     _check_pyright(
         errors,
-        'pyright (conformance + precision + negatives + python/gometry)',
+        'pyright (conformance + precision + negatives)',
         str(_CONFORMANCE),
         str(_PYRIGHT_PRECISION),
         str(_NEGATIVES),
-        str(_ROOT / 'python' / 'gometry'),
     )
     _check_mypy(
         errors,
