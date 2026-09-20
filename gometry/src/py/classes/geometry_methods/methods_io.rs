@@ -50,6 +50,7 @@ impl PyGeometry {
     #[pyo3(signature = (*, precision = 5, drop_epoch = false))]
     pub fn to_polyline(
         &self,
+        py: Python<'_>,
         #[pyo3(from_py_with = crate::strict_i32)] precision: i32,
         drop_epoch: bool,
     ) -> PyResult<String> {
@@ -59,7 +60,7 @@ impl PyGeometry {
             "to_polyline",
         )?;
         let factor = polyline::polyline_precision_factor(precision)?;
-        polyline::polyline_of(self, factor)
+        py.detach(|| polyline::polyline_of(self, factor))
     }
 
     /// Export the geometry as a `GeoArrow` array.

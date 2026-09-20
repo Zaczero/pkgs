@@ -93,6 +93,7 @@ pub(crate) fn crs_non_deprecated(
 #[pyfunction]
 #[pyo3(signature = (name, *, authority = None, kind = None, approximate = false, limit = 20))]
 pub(crate) fn crs_search(
+    py: Python<'_>,
     name: &str,
     authority: Option<String>,
     kind: Option<String>,
@@ -100,7 +101,7 @@ pub(crate) fn crs_search(
     #[pyo3(from_py_with = crate::strict_i64)] limit: i64,
 ) -> PyResult<Vec<crs::AuthorityObjectInfo>> {
     let limit = crs_search_limit(limit)?;
-    Ok(crs::search(name, &crs::CrsSearchOptions {
+    let options = crs::CrsSearchOptions {
         authority,
         kind: kind
             .as_deref()
@@ -108,7 +109,10 @@ pub(crate) fn crs_search(
             .transpose()?,
         approximate,
         limit,
-    })?)
+    };
+    // A catalog scan over PROJ's database, detached like every other bulk
+    // PROJ call.
+    Ok(py.detach(|| crs::search(name, &options))?)
 }
 
 pub(crate) fn crs_search_limit(limit: i64) -> PyResult<NonZeroUsize> {

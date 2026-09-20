@@ -19,7 +19,7 @@ use crate::{
 
 fn geocode_array_codes(
     array: &PyGeometryArray,
-    operation: impl Fn(f64, f64) -> PyResult<String>,
+    operation: impl Fn(f64, f64) -> PyResult<String> + Send,
 ) -> PyResult<Vec<Option<String>>> {
     let points = match lonlat_points(array) {
         Ok(points) => points,
@@ -48,7 +48,7 @@ fn geocode_encode_broadcast(
     py: Python<'_>,
     value: &Bound<'_, PyAny>,
     lat: Option<&Bound<'_, PyAny>>,
-    operation: impl Fn(f64, f64) -> PyResult<String> + Copy,
+    operation: impl Fn(f64, f64) -> PyResult<String> + Copy + Send,
 ) -> PyResult<Py<PyAny>> {
     use pyo3::IntoPyObjectExt as _;
 
@@ -68,7 +68,9 @@ fn geocode_encode_broadcast(
                 "lat must not be provided when the first argument is a geometry array",
             ));
         }
-        return geocode_array_codes(array, operation)?.into_py_any(py);
+        return py
+            .detach(move || geocode_array_codes(array, operation))?
+            .into_py_any(py);
     }
 
     let lat = lat.ok_or_else(|| {

@@ -1445,7 +1445,7 @@ mod compact_nullable_tests {
         assert_eq!(missing::count_valid_bytes(), 0);
 
         missing::reset_count_valid_bytes();
-        array.validate_impl().unwrap();
+        pyo3::Python::attach(|py| array.validate_impl(py)).unwrap();
         assert_eq!(missing::count_valid_bytes(), 0);
     }
 

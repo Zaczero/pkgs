@@ -49,8 +49,8 @@ pub(crate) fn drain_accuracy_warning(
 /// >>> gm.crs_grid('null')['available']
 /// True
 #[pyfunction]
-pub(crate) fn crs_grid(name: &str) -> PyResult<crs::GridDatabaseInfo> {
-    Ok(crs::grid_info(name)?)
+pub(crate) fn crs_grid(py: Python<'_>, name: &str) -> PyResult<crs::GridDatabaseInfo> {
+    Ok(py.detach(|| crs::grid_info(name))?)
 }
 
 /// The selected coordinate operation between two CRS.
@@ -88,6 +88,7 @@ pub(crate) fn crs_operation<'py>(
 /// -------
 /// dict
 pub(crate) fn crs_operation_at(
+    py: Python<'_>,
     source: &Bound<'_, PyAny>,
     target: &Bound<'_, PyAny>,
     x: &Bound<'_, PyAny>,
@@ -115,9 +116,9 @@ pub(crate) fn crs_operation_at(
         (None, Some(t)) => crate::Zt::T(t),
         (Some(z), Some(t)) => crate::Zt::Zt { z, t },
     };
-    Ok(crs::operation_info_at(
-        &source, &target, x, y, zt, &options,
-    )?)
+    // PROJ's operation selection is a database search: run it detached, like
+    // the bulk transform paths in this file.
+    Ok(py.detach(|| crs::operation_info_at(&source, &target, x, y, zt, &options))?)
 }
 
 /// Candidate coordinate operations between two CRS.

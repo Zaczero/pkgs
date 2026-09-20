@@ -152,7 +152,7 @@ pub(crate) fn join_indexed(
     distance: Option<NonNegative>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<Py<PyAny>> {
-    let (left, right) = join_pair_columns(queries, index, predicate_op, distance, unit)?;
+    let (left, right) = join_pair_columns(py, queries, index, predicate_op, distance, unit)?;
     (int64_array(py, left)?, int64_array(py, right)?).into_py_any(py)
 }
 
@@ -164,14 +164,31 @@ pub(crate) fn join_indexed(
 /// per-point envelope lookups refined with the shared relation matrix — no
 /// per-row `PyGeometry` materialization.
 pub(crate) fn join_pair_columns(
+    py: Python<'_>,
     left: &Bound<'_, PyAny>,
     index: &PySpatialIndex,
     predicate: IndexPredicate,
     distance: Option<NonNegative>,
     unit: Option<DistanceUnit>,
 ) -> PyResult<(Vec<i64>, Vec<i64>)> {
-    if let Some(array) = exact_geometry_array(left)
-        && !array.is_compact_nullable()
+    // Matching is the native work `SpatialIndex.query` already detaches; only
+    // pulling the operands out of Python needs the interpreter.
+    if let Some(array) = exact_geometry_array(left) {
+        return py.detach(|| join_array_pairs(array, index, predicate, distance, unit));
+    }
+    let left_items = geometry_items(left)?;
+    py.detach(|| join_item_pairs(&left_items, index, predicate, distance, unit))
+}
+
+/// Join an extracted geometry array against the index.
+fn join_array_pairs(
+    array: &crate::PyGeometryArray,
+    index: &PySpatialIndex,
+    predicate: IndexPredicate,
+    distance: Option<NonNegative>,
+    unit: Option<DistanceUnit>,
+) -> PyResult<(Vec<i64>, Vec<i64>)> {
+    if !array.is_compact_nullable()
         && let Some(points) = array.storage().point_rows()
     {
         let matches = index.point_rows_matches(
@@ -192,7 +209,7 @@ pub(crate) fn join_pair_columns(
         }
         return Ok((left_ids, right_ids));
     }
-    if let Some(array) = exact_geometry_array(left) {
+    {
         // Row lane for line/mixed left arrays: one frame check (and one
         // metric resolution for dwithin); rows feed the shared cores with
         // no Vec<PyGeometry> staging.
@@ -276,9 +293,18 @@ pub(crate) fn join_pair_columns(
                 }
             },
         }
-        return Ok((left_ids, right_ids));
+        Ok((left_ids, right_ids))
     }
-    let left_items = geometry_items(left)?;
+}
+
+/// Join a sequence of extracted geometries against the index.
+fn join_item_pairs(
+    left_items: &[crate::PyGeometry],
+    index: &PySpatialIndex,
+    predicate: IndexPredicate,
+    distance: Option<NonNegative>,
+    unit: Option<DistanceUnit>,
+) -> PyResult<(Vec<i64>, Vec<i64>)> {
     let mut left_ids = Vec::new();
     let mut right_ids = Vec::new();
     for (left_idx, geometry) in left_items.iter().enumerate() {

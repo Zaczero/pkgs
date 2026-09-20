@@ -221,24 +221,30 @@ impl PyGeometryArray {
         })
     }
 
-    pub(crate) fn validate_impl(&self) -> PyResult<Vec<Option<PyValidationReport>>> {
+    pub(crate) fn validate_impl(
+        &self,
+        py: Python<'_>,
+    ) -> PyResult<Vec<Option<PyValidationReport>>> {
         let domain = geometry::topology_domain(&self.frame)?;
-        let mut reports = Vec::new();
-        crate::boundary::try_reserve_vec(&mut reports, self.len())?;
-        let mut rows = self.row_operation();
-        for row in rows.rows_with_missing(|| ()) {
-            let report = match row {
-                ArrayRow::Missing { .. } => None,
-                ArrayRow::Present(row) => {
-                    let geometry = rows.geometry(row).map_err(PyErr::from)?;
-                    let plan = geometry.plan_or_transient()?;
-                    let issue = crate::geometry::validate_data_in_frame(&plan, domain)?;
-                    Some(PyValidationReport { geometry, issue })
-                },
-            };
-            crate::try_push_vec(&mut reports, report)?;
-        }
-        Ok(reports)
+        // Validating every row is the same native work `repair` detaches.
+        py.detach(|| {
+            let mut reports = Vec::new();
+            crate::boundary::try_reserve_vec(&mut reports, self.len())?;
+            let mut rows = self.row_operation();
+            for row in rows.rows_with_missing(|| ()) {
+                let report = match row {
+                    ArrayRow::Missing { .. } => None,
+                    ArrayRow::Present(row) => {
+                        let geometry = rows.geometry(row).map_err(PyErr::from)?;
+                        let plan = geometry.plan_or_transient()?;
+                        let issue = crate::geometry::validate_data_in_frame(&plan, domain)?;
+                        Some(PyValidationReport { geometry, issue })
+                    },
+                };
+                crate::try_push_vec(&mut reports, report)?;
+            }
+            Ok(reports)
+        })
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Self> {

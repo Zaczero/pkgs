@@ -183,7 +183,7 @@ impl PyGeometryArray {
     ) -> PyResult<Py<PyAny>> {
         errors::require_epoch_drop(self.epoch(), drop_epoch, "to_polyline")?;
         let factor = polyline::polyline_precision_factor(precision)?;
-        let rows = polyline::present_polylines_of(self, factor)?;
+        let rows = py.detach(|| polyline::present_polylines_of(self, factor))?;
         self.masked_present_row_list(py, rows)
     }
 }

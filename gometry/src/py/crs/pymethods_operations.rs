@@ -106,6 +106,7 @@ impl PyCrs {
         // Spatially-selected result is deliberately not Python-dict-cached
         // (answer depends on coordinates).
         let info = crs_operation_at(
+            py,
             slf.as_any(),
             target,
             &x,

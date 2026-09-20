@@ -906,8 +906,7 @@ impl PyGeometryArray {
     /// bool
     pub fn __contains__(&self, py: Python<'_>, item: &Bound<'_, PyAny>) -> PyResult<bool> {
         if item.is_none() {
-            let array = self.clone();
-            return Ok(py.detach(move || array.has_missing()));
+            return Ok(self.has_missing());
         }
         let Some(geom) = exact_geometry(item) else {
             return Ok(false);
