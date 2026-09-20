@@ -8,7 +8,7 @@ use pyo3::types::PyAny;
 use crate::array::{ArrayRow, PackedStorage, ValidityMask, missing};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
-    Bound, CollectRows as _, CoordSeq, CoordinateAxes, CoordinateInput, GeometryArrayStorage,
+    Bound, CollectRows as _, CoordinateInput, GeometryArrayStorage,
     GeometryErrorKind, GeometryInput, Point, PredicateSpec, Py, PyErr, PyGeometry, PyGeometryArray,
     PyResult, Python, Shape, ShapeData, broadcast_coordinate_input, classify_input,
     coordinate_input_with_expected, coordinate_sequence_len_hint, expected_geometry_or_array_for,
@@ -171,59 +171,49 @@ pub(crate) fn predicate_pairwise_arrays(
     )
 }
 
-pub(crate) fn multipoint_splitter_from_array(splitters: &PyGeometryArray) -> Result<Shape> {
-    // Packed point arrays are already a uniform-axis column — clone it directly
-    // rather than gathering every row and repacking through
-    // `CoordSeq::from_points`.
+/// The split locations carried by a splitter array, in row order.
+///
+/// Packed point storage with a slot per logical row is already a coordinate
+/// column, so its present rows are read straight out of it; compact nullable
+/// and mixed storage visit rows instead.
+pub(crate) fn splitter_points_from_array(splitters: &PyGeometryArray) -> Result<Vec<Point>> {
+    let mut points = Vec::new();
     if let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
         splitters.storage()
+        // Compact nullable storage has no column slot for a missing row, so
+        // its rows are reached through the row operation below, not by index.
+        && !splitters.is_compact_nullable()
     {
-        if splitters.is_compact_nullable() {
-            let points = splitters
-                .row_operation()
-                .present_rows()
-                .map(|row| match row.row() {
-                    crate::array::ShapeRow::Point(point) => point.to_xy(),
-                    _ => unreachable!("compact point storage yields point rows"),
-                })
-                .collect::<Vec<_>>();
-            return Ok(Shape::multi_point(
-                coords.axes(),
-                CoordSeq::try_from_points(&points)?,
-            ));
-        }
-        if row_map.is_identity() && !splitters.has_missing() {
-            return Ok(Shape::multi_point(coords.axes(), coords.as_ref().clone()));
-        }
         let map = row_map.as_deref();
-        let points: Vec<_> = (0..crate::array::point_logical_len(coords, map))
-            .filter(|&logical| !splitters.is_row_missing(logical))
-            .map(|logical| coords.point_at(crate::array::physical_row(map, logical)))
-            .collect();
-        return Ok(Shape::multi_point(
-            coords.axes(),
-            CoordSeq::try_from_points(&points)?,
-        ));
+        let logical_len = crate::array::point_logical_len(coords, map);
+        crate::try_reserve_vec(&mut points, logical_len)?;
+        points.extend(
+            (0..logical_len)
+                .filter(|&logical| !splitters.is_row_missing(logical))
+                .map(|logical| coords.point_at(crate::array::physical_row(map, logical))),
+        );
+        return Ok(points);
     }
-    let mut points = Vec::new();
     for row in splitters.row_operation().present_rows() {
+        // A compact nullable point column still yields point rows directly.
+        if let crate::array::ShapeRow::Point(point) = row.row() {
+            crate::try_push_vec(&mut points, point)?;
+            continue;
+        }
         row.row().try_with_shape(|shape| {
             match shape
                 .point_set()
                 .ok_or(GeometryErrorKind::PointSplitterRequired)?
             {
-                PointSet::Point(point) => points.push(point.to_xy()),
-                PointSet::MultiPoint(items) => points.extend(items.iter().map(Point::to_xy)),
+                PointSet::Point(point) => points.push(point),
+                PointSet::MultiPoint(items) => points.extend(items.iter()),
                 // An empty point set contributes no split locations.
                 PointSet::Empty => {},
             }
             Ok::<_, crate::error::Error>(())
         })?;
     }
-    Ok(Shape::multi_point(
-        CoordinateAxes::XY,
-        CoordSeq::try_from_points(&points)?,
-    ))
+    Ok(points)
 }
 
 pub(crate) fn ensure_same_len(left: usize, right: usize) -> PyResult<()> {

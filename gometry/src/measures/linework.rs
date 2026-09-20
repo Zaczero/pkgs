@@ -3,7 +3,7 @@ use pyo3::types::PyAny;
 
 use crate::{
     Frame, PyGeometry, PyGeometryArray, broadcast2_geometry, exact_geometry, exact_geometry_array,
-    expected_geometry_or_array, multipoint_splitter_from_array,
+    expected_geometry_or_array, splitter_points_from_array,
 };
 
 /// Shared paths between two lineal geometries.
@@ -96,11 +96,11 @@ pub(crate) fn split(
                 splitters.epoch(),
                 "split",
             )?;
-            let splitter_shape = multipoint_splitter_from_array(splitters)?;
+            let splitter_points = splitter_points_from_array(splitters)?;
             return PyGeometry::split_shape_detached(
                 py,
                 std::sync::Arc::clone(&geometry.shape),
-                splitter_shape,
+                splitter_points,
                 geometry.frame.clone(),
                 tolerance,
             );

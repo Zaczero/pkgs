@@ -242,11 +242,11 @@ impl PyGeometry {
     pub(crate) fn split_shape_detached(
         py: Python<'_>,
         shape: Arc<crate::geometry::ShapeData>,
-        splitter: Shape,
+        splitters: Vec<crate::geometry::Point>,
         frame: Frame,
         tolerance: f64,
     ) -> PyResult<PyGeometryArray> {
-        let shapes = py.detach(move || shape.split(&splitter, tolerance))?;
+        let shapes = py.detach(move || shape.split_at_points(&splitters, tolerance))?;
         Ok(PyGeometryArray::from_shapes(shapes, frame)?)
     }
 
@@ -277,7 +277,7 @@ impl PyGeometry {
         Self::split_shape_detached(
             py,
             Arc::clone(&self.shape),
-            splitter.shape.shape().clone(),
+            splitter.shape.shape().splitter_points()?,
             self.frame.clone(),
             tolerance,
         )

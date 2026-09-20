@@ -551,7 +551,7 @@ impl Shape {
         }
     }
 
-    fn splitter_points(&self) -> Result<Vec<Point>> {
+    pub(crate) fn splitter_points(&self) -> Result<Vec<Point>> {
         match self
             .point_set()
             .ok_or(GeometryErrorKind::PointSplitterRequired)?

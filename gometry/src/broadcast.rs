@@ -10,7 +10,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
 use crate::{
-    Arc, Bound, Bounds, CoordSeq, CoordinateAxes, CoordinateInput, F64Param, Frame,
+    Arc, Bound, Bounds, CoordinateAxes, CoordinateInput, F64Param, Frame,
     GeoJsonDecodeContext, GeometryArrayStorage, GeometryError, GeometryErrorKind, GeometryKind,
     Point, PreparedPlan, Py, PyBool, PyErr, PyGeometry, PyGeometryArray, PyResult, PyTypeError,
     Python, Shape, ShapeData, broadcast_coordinate_input, coerce_geojson_geometry_value,
@@ -42,7 +42,7 @@ pub(crate) use metrics::{
 };
 mod predicates;
 pub(crate) use predicates::{
-    bool_array_mask_missing, ensure_same_len, multipoint_splitter_from_array,
+    bool_array_mask_missing, ensure_same_len, splitter_points_from_array,
     predicate_pairwise_arrays, predicate_scalar_vs_array, relate_pattern_broadcast,
     relate_string_broadcast, xy_predicate,
 };

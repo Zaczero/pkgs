@@ -89,7 +89,11 @@ impl Shape {
     /// (a point splits only when it lies exactly on the linework) and
     /// identity deduplication (two cuts collapse only at bit-identical offsets).
     pub fn split(&self, splitter: &Self, tolerance: f64) -> Result<Vec<Self>> {
-        let splitters = splitter.splitter_points()?;
+        self.split_at_points(&splitter.splitter_points()?, tolerance)
+    }
+
+    /// [`Self::split`] against split locations the caller already holds.
+    pub(crate) fn split_at_points(&self, splitters: &[Point], tolerance: f64) -> Result<Vec<Self>> {
         let mut pieces = Vec::new();
         let lines = match self.lineal().ok_or(GeometryErrorKind::LinealRequired)? {
             Lineal::LineString(line) => std::slice::from_ref(line),
@@ -98,7 +102,7 @@ impl Shape {
             Lineal::Empty => &[],
         };
         for line in lines {
-            for part in split_line_by_points(line, splitters.as_slice(), tolerance)? {
+            for part in split_line_by_points(line, splitters, tolerance)? {
                 pieces.push(Self::LineString(LineSeq::from_proven(
                     CoordSeq::try_from_points(&part)?,
                 )));

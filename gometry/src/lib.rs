@@ -96,7 +96,7 @@ use broadcast::{
     classify_input, classify_required, coerce_geometry, ensure_same_len, exact_geometry,
     exact_geometry_array, expected_geometry_or_array, lonlat_points, lonlat_shape,
     metric_maximum_inscribed_radius, metric_minimum_clearance, metric_minimum_clearance_line,
-    metric_nearest_points_resolved, metric_shortest_line_resolved, multipoint_splitter_from_array,
+    metric_nearest_points_resolved, metric_shortest_line_resolved, splitter_points_from_array,
     pair_distance_geodesic, pair_distance_planar, pair_dwithin_geodesic, pair_dwithin_planar,
     parse_wkb_geometry, py_bool, relate_pattern_broadcast, relate_string_broadcast, resolve_metric,
     rows_err, xy_predicate,
