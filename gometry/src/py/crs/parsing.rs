@@ -315,8 +315,7 @@ pub(super) fn cf_grid_mapping_to_proj(
     let (semi_major, inverse_flattening, ellipsoid) = cf_ellipsoid(dict)?;
     let prime_meridian = dict_f64(dict, "longitude_of_prime_meridian")?
         .filter(|value| *value != 0.0)
-        .map(|value| format!(" +pm={value}"))
-        .unwrap_or_default();
+        .map_or_default(|value| format!(" +pm={value}"));
     let base = format!("{ellipsoid}{prime_meridian}");
 
     if grid_mapping == "latitude_longitude" {
@@ -349,9 +348,7 @@ pub(super) fn cf_grid_mapping_to_proj(
         )),
         "lambert_conformal_conic" => {
             let (lat_1, lat_2) = cf_standard_parallels(dict)?;
-            let lat_2 = lat_2
-                .map(|value| format!(" +lat_2={value}"))
-                .unwrap_or_default();
+            let lat_2 = lat_2.map_or_default(|value| format!(" +lat_2={value}"));
             Ok(format!(
                 "+proj=lcc +lat_0={} +lon_0={} +lat_1={lat_1}{lat_2} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
                 dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(lat_1),
@@ -385,12 +382,8 @@ fn cf_mercator_proj(
             "CF CRS dictionary mercator cannot combine standard_parallel and scale_factor_at_projection_origin",
         ));
     }
-    let scale = scale
-        .map(|value| format!(" +k_0={value}"))
-        .unwrap_or_default();
-    let lat_ts = lat_ts
-        .map(|value| format!(" +lat_ts={value}"))
-        .unwrap_or_default();
+    let scale = scale.map_or_default(|value| format!(" +k_0={value}"));
+    let lat_ts = lat_ts.map_or_default(|value| format!(" +lat_ts={value}"));
     Ok(format!(
         "+proj=merc +lat_0={} +lon_0={}{scale}{lat_ts} +x_0={false_easting} +y_0={false_northing} {base} +units={units} +type=crs",
         dict_f64(dict, "latitude_of_projection_origin")?.unwrap_or(0.0),

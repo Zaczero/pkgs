@@ -35,16 +35,15 @@ fn main() {
         env::var("CARGO_CFG_DEBUG_ASSERTIONS").is_ok_and(|value| !value.is_empty());
     let target = env::var("TARGET").unwrap_or_else(|_| "unknown".to_owned());
     let target_arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_else(|_| "unknown".to_owned());
-    let target_features = env::var("CARGO_CFG_TARGET_FEATURE")
-        .map(|value| {
-            let mut features: Vec<_> = value
-                .split(',')
-                .filter(|feature| !feature.is_empty())
-                .collect();
-            features.sort_unstable();
-            features.join(",")
-        })
-        .unwrap_or_default();
+    let target_features = {
+        let value = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+        let mut features: Vec<_> = value
+            .split(',')
+            .filter(|feature| !feature.is_empty())
+            .collect();
+        features.sort_unstable();
+        features.join(",")
+    };
     validate_release_identity(&target, &profile_family, &opt_level, debug_assertions);
 
     // Exactly the digested inputs: Cargo's own fingerprints already rebuild

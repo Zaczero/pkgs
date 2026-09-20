@@ -32,8 +32,7 @@ pub(crate) fn expected_tokens(tokens: &[&str]) -> String {
 /// suggestions from this one site without short nonsense matching freely.
 pub(crate) fn unknown_token_message(concept: &str, value: &str, tokens: &[&str]) -> String {
     let suggestion = closest_token(value, tokens)
-        .map(|token| format!("did you mean '{token}'? "))
-        .unwrap_or_default();
+        .map_or_default(|token| format!("did you mean '{token}'? "));
     format!(
         "unknown {concept} {value:?}; {suggestion}expected {}",
         expected_tokens(tokens)
