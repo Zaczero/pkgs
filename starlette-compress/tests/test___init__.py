@@ -1309,8 +1309,6 @@ def test_legacy_zstd_large_message_bounded_and_pledged():
 @pytest.mark.skipif(sys.version_info >= (3, 14), reason='legacy zstd only pre-3.14')
 def test_legacy_zstd_sse_mismatched_content_length_roundtrip():
     """C2 regression: SSE with mismatched Content-Length must not raise ZstdError."""
-    import zstandard as zstd_mod
-
     events = [b'data: one\n\n', b'data: two\n\n', b'data: three\n\n']
     # Deliberately wrong Content-Length (would pledge wrong size to chunker pre-fix)
     wrong_cl = b'999999'
