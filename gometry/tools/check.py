@@ -30,7 +30,19 @@ CHECKS: tuple[tuple[str, ...], ...] = (
     ('tools/gates/_check_doctest_types.py',),
     ('tools/gates/_check_examples.py',),
     ('tools/docs/check_nav.py',),
-    ('cargo', 'clippy', '--all-targets', '--locked', '-p', 'gometry'),
+    # `-D warnings` because clippy exits 0 on warnings, and a lint gate that
+    # cannot fail lets findings accumulate silently.
+    (
+        'cargo',
+        'clippy',
+        '--all-targets',
+        '--locked',
+        '-p',
+        'gometry',
+        '--',
+        '-D',
+        'warnings',
+    ),
 )
 
 
