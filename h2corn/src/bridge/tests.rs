@@ -1,4 +1,3 @@
-
 use std::ffi::CString;
 use std::future::pending;
 use std::num::NonZeroU32;
