@@ -27,9 +27,15 @@ const MAX_IPV4_CLIENT: &str = "255.255.255.255:65535";
 const MAX_IPV6_CLIENT: &str = "[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535";
 const ACCESS_LOG_LINE_CAPACITY: usize = 128;
 const IPV4_CLIENT_WIDTH: usize = MAX_IPV4_CLIENT.len() - 2;
-const DECIMAL_FACTORS: [u64; 3] = power_table(10);
-const BYTE_SCALES: [u64; 5] = power_table(1024);
-const BYTE_UNITS: [&str; 5] = ["b", "kib", "mib", "gib", "tib"];
+/// Each unit with the scale it divides by. One table rather than two keeps a
+/// suffix from drifting away from the magnitude it names.
+const BYTE_UNITS: [(u64, &str); 5] = [
+    (1, "b"),
+    (1 << 10, "kib"),
+    (1 << 20, "mib"),
+    (1 << 30, "gib"),
+    (1 << 40, "tib"),
+];
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
     if AutoStream::choice(&io::stderr()) == ColorChoice::Never {
         AccessLogMode::Plain
@@ -861,27 +867,18 @@ fn write_duration_to(out: &mut impl fmt::Write, duration: Duration) -> fmt::Resu
     write_scaled_to(out, millis, 1_000, "s")
 }
 
-const fn power_table<const N: usize>(base: u64) -> [u64; N] {
-    let mut table = [1; N];
-    let mut index = 1;
-    while index < table.len() {
-        table[index] = table[index - 1] * base;
-        index += 1;
-    }
-    table
-}
-
 fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
     if bytes < 1024 {
         write_integer(out, bytes)?;
         return out.write_char('b');
     }
 
-    let mut unit = 0;
-    while unit + 1 < BYTE_SCALES.len() && bytes >= BYTE_SCALES[unit + 1] {
-        unit += 1;
-    }
-    write_scaled_to(out, bytes, BYTE_SCALES[unit], BYTE_UNITS[unit])
+    let (scale, unit) = BYTE_UNITS
+        .into_iter()
+        .take_while(|(scale, _)| bytes >= *scale)
+        .last()
+        .unwrap_or((1, "b"));
+    write_scaled_to(out, bytes, scale, unit)
 }
 
 /// Write `value / scale` with two, one or no decimal places.
@@ -894,27 +891,29 @@ fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
 /// is one tebibyte -- about 1.1e15, comfortably inside `u64`.
 fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str) -> fmt::Result {
     let whole = value / scale;
-    let precision: usize = if whole >= 100 {
-        0
+    let decimals = if whole >= 100 {
+        Decimals::None
     } else if whole >= 10 {
-        1
+        Decimals::One
     } else {
-        2
+        Decimals::Two
     };
 
-    let factor = DECIMAL_FACTORS[precision];
+    let factor = decimals.factor();
     let scaled = (value * factor + (scale / 2)) / scale;
     let integer = scaled / factor;
     let fractional = scaled % factor;
 
     write_integer(out, integer)?;
-    if precision != 0 && fractional != 0 {
+    if fractional != 0 {
         out.write_char('.')?;
-        match precision {
-            1 => {
+        match decimals {
+            // `factor` is one, so `fractional` is zero and this arm is dead.
+            Decimals::None => {},
+            Decimals::One => {
                 out.write_char(char::from(b'0' + fractional as u8))?;
             },
-            2 => {
+            Decimals::Two => {
                 let tens = (fractional / 10) as u8;
                 let ones = (fractional % 10) as u8;
                 out.write_char(char::from(b'0' + tens))?;
@@ -922,12 +921,28 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str
                     out.write_char(char::from(b'0' + ones))?;
                 }
             },
-            _ => {
-                unreachable!("precision is derived from the unit threshold")
-            },
         }
     }
     out.write_str(unit)
+}
+
+/// Decimal places for a scaled figure. An enum rather than a count keeps the
+/// formatting match exhaustive, so no arm has to stand in for the impossible.
+#[derive(Clone, Copy)]
+enum Decimals {
+    None,
+    One,
+    Two,
+}
+
+impl Decimals {
+    const fn factor(self) -> u64 {
+        match self {
+            Self::None => 1,
+            Self::One => 10,
+            Self::Two => 100,
+        }
+    }
 }
 
 fn write_integer<T: Integer>(out: &mut impl fmt::Write, value: T) -> fmt::Result {
