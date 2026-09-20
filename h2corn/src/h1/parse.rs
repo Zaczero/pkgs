@@ -64,7 +64,7 @@ impl<'a> BufferedTerminatorFinder<'a> {
 
     fn find(&mut self, buffer: &[u8]) -> Option<usize> {
         let start = self.search_start.min(buffer.len());
-        if let Some(offset) = self.finder.find(&buffer[start..]) {
+        if let Some(offset) = buffer.get(start..).and_then(|tail| self.finder.find(tail)) {
             return Some(start + offset);
         }
         self.search_start = buffer.len().saturating_sub(self.overlap);
@@ -884,7 +884,10 @@ where
             return Http1Error::ChunkedBodyClosed.err();
         }
     };
-    let size = parse_chunk_size(&buffer[..line_end])?;
+    let Some(line) = buffer.get(..line_end) else {
+        return Http1Error::InvalidChunkSize.err();
+    };
+    let size = parse_chunk_size(line)?;
     buffer.advance(line_end + LINE_TERMINATOR.len());
     Ok(size)
 }
@@ -910,7 +913,7 @@ where
             return Http1Error::ChunkClosed.err();
         }
     }
-    if &buffer[..2] != b"\r\n" {
+    if buffer.first_chunk::<2>() != Some(b"\r\n") {
         return Http1Error::ChunkMissingCrlf.err();
     }
     buffer.advance(2);
@@ -952,7 +955,7 @@ fn trim_ows(value: &[u8]) -> &[u8] {
         .iter()
         .rposition(|byte| !matches!(byte, b' ' | b'\t'))
         .map_or(start, |index| index + 1);
-    &value[start..end]
+    value.get(start..end).unwrap_or_default()
 }
 
 async fn drain_chunked_trailers<R>(
@@ -1000,7 +1003,10 @@ where
         if limits.max_fields.is_some_and(|limit| fields > limit) {
             return Http1Error::TooManyTrailerFields.err();
         }
-        validate_trailer_line(&buffer[..end], limits)?;
+        let Some(line) = buffer.get(..end) else {
+            return Http1Error::MalformedHeaderLine.err();
+        };
+        validate_trailer_line(line, limits)?;
         buffer.advance(line_len);
         line_search.reset();
     }
