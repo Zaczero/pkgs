@@ -15,7 +15,7 @@ MARKDOWN_TARGET = re.compile(r'(!?\[[^\]]*\]\()([^)]+)(\))')
 HTML_TARGET = re.compile(r'(<[a-zA-Z][^>]*?\s(?:src|href)\s*=\s*)(["\'])([^"\']*)\2')
 # A fenced block shows markup rather than using it. Rewriting a path inside one
 # corrupts the example it exists to document.
-CODE_FENCE = re.compile(r'^(?P<fence>```+|~~~+)[^\n]*$.*?(?:^(?P=fence)[^\n]*$|\Z)', re.M | re.S)
+CODE_FENCE = re.compile(r'^(?P<fence>```+|~~~+)[^\n]*$.*?(?:^(?P=fence)[^\n]*$|\Z)', re.MULTILINE | re.DOTALL)
 
 
 def absolutize(target: str, base: str) -> str:
