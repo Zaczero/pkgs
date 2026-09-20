@@ -24,19 +24,16 @@ pub(crate) struct EncodedFrameHeader {
 
 impl EncodedFrameHeader {
     pub(crate) fn as_slice(&self) -> &[u8] {
-        &self.bytes[..usize::from(self.len)]
+        self.bytes.get(..usize::from(self.len)).unwrap_or(&self.bytes)
     }
 }
 
 pub(super) fn parse_frame_header<M: PerMessageDeflateMode>(
     buffer: &[u8],
 ) -> Result<Option<ParsedFrameHeader>, WebSocketProtocolError> {
-    if buffer.len() < 2 {
+    let Some(&[first, second]) = buffer.first_chunk::<2>() else {
         return Ok(None);
-    }
-
-    let first = buffer[0];
-    let second = buffer[1];
+    };
     let fin = first & wire::FIN != 0;
     let compressed = first & wire::RSV1 != 0;
     if first & wire::RSV23 != 0 {
@@ -79,14 +76,10 @@ fn parse_frame_len(
     match second & wire::PAYLOAD_LEN_MASK {
         encoded_len @ 0..=125 => Ok(Some((2, usize::from(encoded_len)))),
         wire::PAYLOAD_LEN_U16_MARKER => {
-            if buffer.len() < 4 {
+            let Some(&[_, _, ref extended @ ..]) = buffer.first_chunk::<4>() else {
                 return Ok(None);
-            }
-            let payload_len = usize::from(u16::from_be_bytes(
-                *buffer[2..]
-                    .first_chunk::<2>()
-                    .expect("extended payload length is buffered"),
-            ));
+            };
+            let payload_len = usize::from(u16::from_be_bytes(*extended));
             if payload_len <= wire::INLINE_PAYLOAD_LEN_MAX {
                 return Err(WebSocketProtocolError::NonCanonical16BitLengthEncoding);
             }
@@ -95,14 +88,12 @@ fn parse_frame_len(
         // `& PAYLOAD_LEN_MASK` caps the marker at 127, so the remaining
         // pattern is exactly `PAYLOAD_LEN_U64_MARKER`.
         _ => {
-            if buffer.len() < wire::FRAME_HEADER_MAX_LEN {
+            let Some(&[_, _, ref extended @ ..]) =
+                buffer.first_chunk::<{ wire::FRAME_HEADER_MAX_LEN }>()
+            else {
                 return Ok(None);
-            }
-            let raw = u64::from_be_bytes(
-                *buffer[2..]
-                    .first_chunk::<8>()
-                    .expect("extended payload length is buffered"),
-            );
+            };
+            let raw = u64::from_be_bytes(*extended);
             if raw >> 63 != 0 {
                 return Err(WebSocketProtocolError::ReservedHighBitIn64BitLengthEncoding);
             }

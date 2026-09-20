@@ -5,7 +5,7 @@ use std::str;
 use std::sync::Arc;
 
 use atoi_simd::parse_pos;
-use memchr::memchr;
+use memchr::memmem;
 use tokio::io::AsyncRead;
 use zerocopy::byteorder::network_endian::U16;
 use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout, Ref, Unaligned};
@@ -474,15 +474,7 @@ fn parse_proxy_v1(line: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {
 }
 
 fn find_crlf(buffer: &[u8]) -> Option<usize> {
-    let mut start = 0;
-    while let Some(offset) = memchr(b'\n', &buffer[start..]) {
-        let index = start + offset;
-        if index > 0 && buffer[index - 1] == b'\r' {
-            return Some(index - 1);
-        }
-        start = index + 1;
-    }
-    None
+    memmem::find(buffer, b"\r\n")
 }
 
 fn parse_proxy_v2(frame: &[u8]) -> Result<Option<ProxyInfo>, H2CornError> {

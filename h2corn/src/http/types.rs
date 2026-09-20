@@ -888,7 +888,9 @@ impl H1RequestHeaders {
                 } else {
                     self.head.as_ref()
                 };
-                let bytes = &source[field.name_start as usize..field.name_end as usize];
+                let bytes = source
+                    .get(field.name_start as usize..field.name_end as usize)
+                    .unwrap_or_default();
                 // SAFETY: HTTP header-name validation restricts names to ASCII,
                 // and optional normalization only lowercases those ASCII bytes.
                 RequestHeaderNameRef::Other(unsafe { str::from_utf8_unchecked(bytes) })
@@ -902,7 +904,9 @@ impl H1RequestHeaders {
         };
         RequestHeaderRef {
             name,
-            value: &value_source[field.value_start as usize..field.value_end as usize],
+            value: value_source
+                .get(field.value_start as usize..field.value_end as usize)
+                .unwrap_or_default(),
         }
     }
 }
