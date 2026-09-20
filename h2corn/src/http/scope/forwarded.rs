@@ -27,8 +27,9 @@ impl ScopeHost<'_> {
             Self::Ip(ip) => {
                 let mut text = IpText::default();
                 write!(text, "{ip}").expect("an IP address fits in its fixed display buffer");
+                let written = text.bytes.get(..text.len).unwrap_or_default();
                 // SAFETY: `fmt::Write` appended only UTF-8 input from `IpAddr::fmt`.
-                f(unsafe { std::str::from_utf8_unchecked(&text.bytes[..text.len]) })
+                f(unsafe { std::str::from_utf8_unchecked(written) })
             },
         }
     }
@@ -51,10 +52,10 @@ impl Default for IpText {
 impl Write for IpText {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         let end = self.len + value.len();
-        if end > self.bytes.len() {
+        let Some(destination) = self.bytes.get_mut(self.len..end) else {
             return Err(fmt::Error);
-        }
-        self.bytes[self.len..end].copy_from_slice(value.as_bytes());
+        };
+        destination.copy_from_slice(value.as_bytes());
         self.len = end;
         Ok(())
     }

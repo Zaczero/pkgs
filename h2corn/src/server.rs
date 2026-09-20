@@ -121,7 +121,7 @@ impl AsyncRead for PrefixedIo {
     ) -> Poll<io::Result<()>> {
         if let Some(prefix) = self.prefix.as_mut() {
             let len = buf.remaining().min(prefix.len());
-            buf.put_slice(&prefix[..len]);
+            buf.put_slice(prefix.get(..len).unwrap_or_default());
             prefix.advance(len);
             if prefix.is_empty() {
                 self.prefix = None;
@@ -556,7 +556,10 @@ async fn accept_one(
     poll_fn(|cx| {
         for offset in 0..listeners.len() {
             let index = (start_index + offset) % listeners.len();
-            match listeners[index].poll_accept_item(cx) {
+            let Some(listener) = listeners.get(index) else {
+                continue;
+            };
+            match listener.poll_accept_item(cx) {
                 Poll::Ready(Ok(connection)) => {
                     return Poll::Ready(Ok(((index + 1) % listeners.len(), connection)));
                 },
