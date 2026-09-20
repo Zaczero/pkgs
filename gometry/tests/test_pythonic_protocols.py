@@ -1142,7 +1142,7 @@ def test_h3_family_value_protocols(index: int) -> None:
 
 
 def test_h3_vertices_and_edges_as_sequences() -> None:
-    cell, vertices, edges, vertex, edge = _h3_family()
+    _, vertices, edges, vertex, edge = _h3_family()
     assert len(vertices) == len(edges) == 6
     assert vertices.index(vertices[1]) == 1
     assert int(vertex) == vertex.__index__()

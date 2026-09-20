@@ -620,7 +620,7 @@ def _empty() -> gm.Geometry:
 @pytest.mark.parametrize(
     ('call', 'expected'),
     [
-        (lambda a, b: gm.bearing(a, b), 'nan'),
+        (gm.bearing, 'nan'),
         (lambda a, b: gm.bearing(a, b, path='rhumb'), 'nan'),
         (gm.rhumb_distance, 'inf'),
         (lambda a, b: gm.cross_track_distance(a, b, gm.Point(2, 0, crs=4326)), 'nan'),
