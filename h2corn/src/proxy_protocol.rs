@@ -16,6 +16,7 @@ use crate::h2_frame::{BufferedConnectionReader, CONNECTION_PREFACE};
 
 const PROXY_V1_MAX_LEN: usize = 107;
 const HTTP2_PREFACE_LEAD: &[u8] = b"PRI * HTTP/2.0";
+const PROXY_V2_HEADER_LEN: usize = size_of::<ProxyV2Header>();
 const PROXY_V2_SIG: [u8; 12] = [
     0x0D, 0x0A, 0x0D, 0x0A, 0x00, 0x0D, 0x0A, 0x51, 0x55, 0x49, 0x54, 0x0A,
 ];
@@ -279,18 +280,17 @@ where
         return ProxyError::ExpectedProxyV2HeaderBeforeHttp2Preface.err();
     }
 
-    if !reader.read_at_least(size_of::<ProxyV2Header>()).await? {
+    let Some(header_bytes) = reader.read_chunk::<PROXY_V2_HEADER_LEN>().await? else {
         return ProxyError::ClosedWhileReadingProxyV2Header.err();
-    }
-    let header =
-        Ref::<_, ProxyV2Header>::from_bytes(&reader.buffered()[..size_of::<ProxyV2Header>()])
-            .map_err(|_| ProxyError::InvalidProxyV2Header)?;
+    };
+    let header = Ref::<_, ProxyV2Header>::from_bytes(header_bytes.as_slice())
+        .map_err(|_| ProxyError::InvalidProxyV2Header)?;
     let payload_len = usize::from(header.payload_len.get());
-    let total_len = size_of::<ProxyV2Header>() + payload_len;
-    if !reader.read_at_least(total_len).await? {
+    let total_len = PROXY_V2_HEADER_LEN + payload_len;
+    let Some(frame) = reader.read_prefix(total_len).await? else {
         return ProxyError::ClosedWhileReadingProxyV2Header.err();
-    }
-    let proxy = parse_proxy_v2(&reader.buffered()[..total_len])?;
+    };
+    let proxy = parse_proxy_v2(frame)?;
     reader.consume(total_len);
     Ok(proxy)
 }
@@ -314,7 +314,10 @@ where
             if line_len > PROXY_V1_MAX_LEN {
                 return ProxyError::ProxyV1HeaderTooLong.err();
             }
-            let proxy = parse_proxy_v1(&reader.buffered()[..line_len])?;
+            let Some(line) = reader.buffered().get(..line_len) else {
+                return ProxyError::InvalidProxyV1Header.err();
+            };
+            let proxy = parse_proxy_v1(line)?;
             reader.consume(line_len);
             return Ok(proxy);
         }
@@ -349,10 +352,10 @@ pub(crate) async fn read_h2_preface<R>(
 where
     R: AsyncRead + Unpin,
 {
-    if !reader.read_at_least(CONNECTION_PREFACE.len()).await? {
+    let Some(preface) = reader.read_prefix(CONNECTION_PREFACE.len()).await? else {
         return ProxyError::ClosedBeforeHttp2Preface.err();
-    }
-    if &reader.buffered()[..CONNECTION_PREFACE.len()] != CONNECTION_PREFACE {
+    };
+    if preface != CONNECTION_PREFACE {
         return ProxyError::InvalidHttp2Preface.err();
     }
     reader.consume(CONNECTION_PREFACE.len());
@@ -365,17 +368,16 @@ async fn detect_protocol<R>(
 where
     R: AsyncRead + Unpin,
 {
-    if !reader.read_at_least(1).await? {
+    let Some([first]) = reader.read_chunk::<1>().await? else {
         return ProxyError::ClosedBeforeAnyRequestBytes.err();
-    }
-    if reader.buffered()[0] != CONNECTION_PREFACE[0] {
+    };
+    if *first != CONNECTION_PREFACE[0] {
         return Ok(DetectedProtocol::Http1);
     }
-    let need = CONNECTION_PREFACE.len();
-    if !reader.read_at_least(need).await? {
+    let Some(lead) = reader.read_prefix(CONNECTION_PREFACE.len()).await? else {
         return ProxyError::ClosedBeforeProtocolDetection.err();
-    }
-    if &reader.buffered()[..need] == CONNECTION_PREFACE {
+    };
+    if lead == CONNECTION_PREFACE {
         read_h2_preface(reader).await?;
         Ok(DetectedProtocol::Http2)
     } else if reader.buffered().starts_with(HTTP2_PREFACE_LEAD) {

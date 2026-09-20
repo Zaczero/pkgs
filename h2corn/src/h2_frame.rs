@@ -546,6 +546,27 @@ where
         Ok(true)
     }
 
+    /// Buffers `N` bytes and hands back exactly those, so the length the read
+    /// guaranteed and the bytes it covers arrive as one value. `None` means the
+    /// peer closed before `N` bytes arrived.
+    pub(crate) async fn read_chunk<const N: usize>(
+        &mut self,
+    ) -> Result<Option<&[u8; N]>, H2CornError> {
+        if !self.read_at_least(N).await? {
+            return Ok(None);
+        }
+        Ok(self.buffer.as_ref().first_chunk::<N>())
+    }
+
+    /// The runtime-length sibling of [`Self::read_chunk`], for a prefix whose
+    /// size is only known once an earlier field has been decoded.
+    pub(crate) async fn read_prefix(&mut self, len: usize) -> Result<Option<&[u8]>, H2CornError> {
+        if !self.read_at_least(len).await? {
+            return Ok(None);
+        }
+        Ok(self.buffer.get(..len))
+    }
+
     pub(crate) async fn read_more_capped(&mut self, max_bytes: usize) -> Result<bool, H2CornError> {
         debug_assert!(max_bytes != 0);
         self.buffer.reserve(max_bytes);
@@ -571,15 +592,11 @@ where
         max_frame_size: usize,
     ) -> Result<Option<FrameRead>, FrameReadError> {
         self.discard_rejected_payload().await?;
-        if !self.read_at_least(FRAME_HEADER_LEN).await? {
+        let Some(header) = self.read_chunk::<FRAME_HEADER_LEN>().await? else {
             if self.buffer.is_empty() {
                 return Ok(None);
             }
             return Err(H2CornError::from(H2Error::FrameHeaderClosed).into());
-        }
-
-        let Some(header) = self.buffer.as_ref().first_chunk::<FRAME_HEADER_LEN>() else {
-            unreachable!("frame header is buffered")
         };
         let payload_len = decode_u24([header[0], header[1], header[2]]);
         let stream_id = StreamId::new(
