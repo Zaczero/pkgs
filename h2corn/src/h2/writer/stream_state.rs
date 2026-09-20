@@ -382,18 +382,26 @@ impl PendingChunk {
     pub(super) fn remaining_slices(&self, additional_offset: usize, len: usize) -> (&[u8], &[u8]) {
         let offset = self.offset + additional_offset;
         match &self.data {
-            PendingChunkData::Plain(bytes) => (&bytes.as_ref()[offset..offset + len], &[]),
+            PendingChunkData::Plain(bytes) => (
+                bytes.as_ref().get(offset..offset + len).unwrap_or_default(),
+                &[],
+            ),
             PendingChunkData::WebSocket(data) => {
                 let header = data.header();
                 if offset >= header.len() {
                     let payload_offset = offset - header.len();
-                    return (&data.payload()[payload_offset..payload_offset + len], &[]);
+                    return (
+                        data.payload()
+                            .get(payload_offset..payload_offset + len)
+                            .unwrap_or_default(),
+                        &[],
+                    );
                 }
                 let header_len = len.min(header.len() - offset);
                 let payload_len = len - header_len;
                 (
-                    &header[offset..offset + header_len],
-                    &data.payload()[..payload_len],
+                    header.get(offset..offset + header_len).unwrap_or_default(),
+                    data.payload().get(..payload_len).unwrap_or_default(),
                 )
             },
         }

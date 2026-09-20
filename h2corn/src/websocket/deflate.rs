@@ -82,7 +82,9 @@ impl MessageDeflater {
         loop {
             let before = self.compressor.total_out();
             let status = self.compressor.compress_uninit(
-                &payload[self.compressor.total_in() as usize..],
+                payload
+                    .get(self.compressor.total_in() as usize..)
+                    .unwrap_or_default(),
                 self.out.spare_capacity_mut(),
                 FlushCompress::Sync,
             )?;
@@ -178,7 +180,7 @@ impl MessageInflater {
                 return Err(WebSocketProtocolError::MessageTooLarge);
             }
             let consumed = (self.decoder.total_in() - consumed_before) as usize;
-            *input = &input[consumed..];
+            *input = input.get(consumed..).unwrap_or_default();
             if input.is_empty() || status == Status::StreamEnd {
                 return Ok(status);
             }
@@ -409,7 +411,7 @@ fn quoted_window_bits_are_valid(value: &[u8]) -> bool {
         *slot = byte;
         length += 1;
     }
-    window_bits_are_valid(&unescaped[..length])
+    window_bits_are_valid(unescaped.get(..length).unwrap_or_default())
 }
 
 const fn window_bits_are_valid(value: &[u8]) -> bool {
@@ -447,7 +449,7 @@ fn read_token<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
     {
         *index += 1;
     }
-    (*index > start).then(|| &value[start..*index])
+    value.get(start..*index).filter(|token| !token.is_empty())
 }
 
 fn read_quoted_string<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
@@ -456,7 +458,7 @@ fn read_quoted_string<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]
     while let Some(&byte) = value.get(*index) {
         *index += 1;
         match byte {
-            b'\"' => return Some(&value[start + 1..*index - 1]),
+            b'\"' => return value.get(start + 1..*index - 1),
             b'\\' => {
                 let escaped = *value.get(*index)?;
                 if escaped.is_ascii_control() || escaped == 0x7F {
@@ -498,7 +500,7 @@ fn inflate_window(
         return spare;
     };
     let window = spare.len().min(overrun_budget(written, limit));
-    &mut spare[..window]
+    spare.get_mut(..window).unwrap_or_default()
 }
 
 fn decompressed_capacity(payload_len: usize, max_message_size: Option<usize>) -> usize {
