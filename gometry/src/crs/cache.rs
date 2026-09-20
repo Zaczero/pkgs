@@ -5,11 +5,12 @@
 
 use smol_str::SmolStr;
 
+use crate::collections::{HashMap, HashMapExt as _};
 use crate::crs::{
     AuthorityObjectInfo, CacheBucketInfo, CacheInfo, CelestialBodyInfo, Confidence, CrsCatalogInfo,
     CrsCatalogOptions, CrsComparison, CrsError, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsSearchOptions, CrsWktOptions, Geodesic, IdentifyCandidate, OperationInfo, ProjObject,
-    ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
+    GeodesicLine, GeodesicLineKey, ProjPipeline, ProjStringVersion, RefCell, RuntimeState, TransformExecution, TransformFailure,
     TransformOptions, UnitInfo, WktVersion, preserve_resource_error, runtime,
     runtime_state_snapshot,
 };
@@ -257,6 +258,43 @@ macro_rules! crs_cache {
             rest: [ $($rest)* ]
         }
     };
+    (
+        @expand
+        thread_local: { $($thread_local:tt)* }
+        capacities: { $($capacities:tt)* }
+        clear: { $($clear:tt)* }
+        buckets: [ $($buckets:tt)* ]
+        rest: [
+            map $name:ident, $cap_name:ident, $key:ty => $ty:ty, $capacity:literal, $label:literal;
+            $($rest:tt)*
+        ]
+    ) => {
+        crs_cache! {
+            @expand
+            thread_local: {
+                $($thread_local)*
+                pub static $name: RefCell<HashMap<$key, $ty>> =
+                    RefCell::new(HashMap::new());
+            }
+            capacities: {
+                $($capacities)*
+                pub(crate) const $cap_name: usize = $capacity;
+            }
+            clear: {
+                $($clear)*
+                $name.with(|cache| cache.borrow_mut().clear());
+            }
+            buckets: [
+                $($buckets)*
+                CacheBucketInfo {
+                    name: $label,
+                    entries: $name.with(|cache| cache.borrow().len()),
+                    capacity: $cap_name,
+                },
+            ]
+            rest: [ $($rest)* ]
+        }
+    };
     ( $( $decl:tt )+ ) => {
         crs_cache! {
             @expand
@@ -287,6 +325,7 @@ crs_cache! {
     internal CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, 256;
     internal CRS_IN_CORE_DESCRIPTOR_CACHE, CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, super::in_core::CachedInCoreDescriptor, 256;
     reported CRS_EXPORT_CACHE, CRS_EXPORT_CACHE_CAPACITY, CachedCrsExport, 32, "crs_export";
+    map GEODESIC_LINE_CACHE, GEODESIC_LINE_CACHE_CAPACITY, GeodesicLineKey => GeodesicLine, 4096, "geodesic_line";
 }
 
 pub(super) fn ensure_thread_caches_current(state: &RuntimeState) {

@@ -18,7 +18,7 @@ use std::os::raw::c_char;
 use std::ptr;
 use std::sync::{OnceLock, RwLock};
 
-use geographiclib_rs::Geodesic;
+use geographiclib_rs::{Geodesic, GeodesicLine};
 
 use crate::geometry::{CoordSeq, GeometryErrorKind, Point, Shape};
 
@@ -59,7 +59,8 @@ use cache::{
     CRS_GEODESIC_CACHE_CAPACITY, CRS_IN_CORE_DESCRIPTOR_CACHE,
     CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY, CRS_INFO_CACHE, CRS_INFO_CACHE_CAPACITY,
     CRS_OPERATIONS_CACHE, CRS_OPERATIONS_CACHE_CAPACITY, CRS_SEARCH_CACHE,
-    CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, CachedAuthorityObjects,
+    CRS_SEARCH_CACHE_CAPACITY, CRS_UNITS_CACHE, CRS_UNITS_CACHE_CAPACITY, GEODESIC_LINE_CACHE,
+    GEODESIC_LINE_CACHE_CAPACITY, CachedAuthorityObjects,
     CachedCelestialBodies, CachedCrsAuthorityMatches, CachedCrsCatalog, CachedCrsComparison,
     CachedCrsExport, CachedCrsInfo, CachedCrsOperations, CachedCrsSearch, CachedGeodesicObject,
     CachedProjectionFactorsObject, CachedUnits, CrsComparisonKey, CrsExportKey, CrsExportKind,
@@ -83,7 +84,7 @@ pub(crate) use geodesic::geodesic_counters;
 #[cfg(test)]
 pub(crate) use geodesic::with_ellipsoid_metric;
 pub(crate) use geodesic::{
-    DistanceMode, EllipsoidMetric, EllipsoidShape, GeodesicCalculation, GeodesicMetric,
+    DistanceMode, EllipsoidMetric, GeodesicLineKey, EllipsoidShape, GeodesicCalculation, GeodesicMetric,
     MetricModel, ResolvedMetric, ellipsoid_shape_at, ensure_3d_metric,
     ensure_geographic_columns_in_frame, ensure_geographic_domain_in_frame,
     ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, finite, geodesic_bearing,

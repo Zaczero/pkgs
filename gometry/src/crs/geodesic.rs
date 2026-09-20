@@ -5,9 +5,8 @@
 //! `super`.
 
 pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
-use geographiclib_rs::{GeodesicLine, geodesic_capability as caps};
+use geographiclib_rs::geodesic_capability as caps;
 
-use crate::collections::{HashMap, HashMapExt as _};
 use crate::crs::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError, CrsInfo,
     GeodesicDirectInfo, ensure_thread_caches_current, lru_resolve, normalize,
@@ -23,7 +22,6 @@ const GEODESIC_LINE_CAPS: u64 = caps::LATITUDE
     | caps::DISTANCE_IN;
 const GEODESIC_LINE_OUTMASK: u64 =
     caps::LATITUDE | caps::LONGITUDE | caps::AZIMUTH | caps::REDUCEDLENGTH | caps::GEODESICSCALE;
-const GEODESIC_LINE_CACHE_CAPACITY: usize = 4096;
 // Compatibility name for existing native tests. The numerical values live in
 // `GeodesicNumericalPolicy`, which is shared by distance, threshold, and
 // Hausdorff completion.
@@ -154,18 +152,13 @@ macro_rules! count_line_cache_miss {
 }
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
-struct GeodesicLineKey {
+pub(crate) struct GeodesicLineKey {
     semi_major_bits: u64,
     flattening_bits: u64,
     start_lon_bits: u64,
     start_lat_bits: u64,
     azimuth_bits: u64,
     caps: u64,
-}
-
-thread_local! {
-    static GEODESIC_LINE_CACHE: std::cell::RefCell<HashMap<GeodesicLineKey, GeodesicLine>> =
-        std::cell::RefCell::new(HashMap::new());
 }
 
 mod bearing;

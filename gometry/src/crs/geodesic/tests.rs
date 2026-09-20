@@ -5,8 +5,10 @@ use super::distance::{
     geodesic_point_pair_distances, geodesic_point_pair_dwithin,
 };
 use super::segment::{cached_geodesic_line, geodesic_point_segment_query};
+use crate::crs::GEODESIC_LINE_CACHE;
+use crate::crs::cache::clear_thread_caches;
 use super::{
-    EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, GEODESIC_LINE_CACHE, geodesic_counters,
+    EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, geodesic_counters,
 };
 use crate::error::{ErrorKind, ResourceError, Result};
 use crate::geographic::{AngularFactor, GeographicFrame};
@@ -287,6 +289,21 @@ fn geodesic_line_cache_reuses_directed_segment_lines() {
     assert_eq!(after_second.line_cache_misses, 1);
     assert_eq!(after_second.line_cache_hits, 1);
     GEODESIC_LINE_CACHE.with(|cache| assert_eq!(cache.borrow().len(), 1));
+}
+
+#[test]
+fn clearing_the_crs_caches_empties_the_geodesic_line_cache() {
+    let geodesic = Geodesic::wgs84();
+    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
+    let segment = metric
+        .make_segment(p(-1.0, 0.0), p(1.0, 1.0))
+        .expect("unique test segment");
+    raw_minimum(&geodesic, p(0.0, 1.0), segment, f64::INFINITY);
+    assert!(GEODESIC_LINE_CACHE.with(|cache| !cache.borrow().is_empty()));
+
+    clear_thread_caches();
+
+    assert!(GEODESIC_LINE_CACHE.with(|cache| cache.borrow().is_empty()));
 }
 
 #[test]

@@ -153,6 +153,7 @@ def test_crs_cache_info_reports_current_thread_cache_state() -> None:
         'crs_factors',
         'crs_geodesic',
         'crs_export',
+        'geodesic_line',
     }
 
     assert gm.CRS(4326).info['name'] == 'WGS 84'
