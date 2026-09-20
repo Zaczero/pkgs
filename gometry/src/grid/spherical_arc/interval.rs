@@ -1,4 +1,8 @@
-//! Certified interval arithmetic on the sphere.\n//!\n//! Every bound here encloses its true value: an operation that cannot prove\n//! an enclosure returns `None` rather than a number, so a caller never\n//! mistakes a rounded answer for a certified one.
+//! Certified interval arithmetic on the sphere.
+//!
+//! Every bound here encloses its true value: an operation that cannot prove
+//! an enclosure returns `None` rather than a number, so a caller never
+//! mistakes a rounded answer for a certified one.
 
 use super::{Midpoint as _, down, finite_minmax, outward_half_width, ulp, up, upward_sum};
 

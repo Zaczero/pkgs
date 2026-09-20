@@ -1,4 +1,8 @@
-//! Certified bounds for the H3 lattice.\n//!\n//! A cell's descendants fit inside a spherical cap whose radius follows from\n//! the lattice profile at that resolution. These routines certify that radius\n//! rather than sampling it, so a cap test can refuse a cell outright.
+//! Certified bounds for the H3 lattice.
+//!
+//! A cell's descendants fit inside a spherical cap whose radius follows from
+//! the lattice profile at that resolution. These routines certify that radius
+//! rather than sampling it, so a cap test can refuse a cell outright.
 
 use super::{
     Bound, CapLatticeProfile, HALF_PI_HI, HALF_PI_LO, Hex2Int, LongitudeSpan, PI_HI, PI_LO,
