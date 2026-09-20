@@ -797,17 +797,11 @@ class Geometry:
         and holds no Python references, so there is nothing to copy.
         """
     @overload
-    def __and__(
-        self, other: Point, /
-    ) -> Point: ...
+    def __and__(self, other: Point, /) -> Point: ...
     @overload
-    def __and__(
-        self, other: MultiPoint, /
-    ) -> MultiPoint | Point: ...
+    def __and__(self, other: MultiPoint, /) -> MultiPoint | Point: ...
     @overload
-    def __and__(
-        self, other: GeometryArray[Point], /
-    ) -> GeometryArray[Point]: ...
+    def __and__(self, other: GeometryArray[Point], /) -> GeometryArray[Point]: ...
     @overload
     def __and__(
         self, other: GeometryArray[MultiPoint], /
@@ -836,9 +830,7 @@ class Geometry:
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self&value."""
     @overload
-    def __or__(
-        self, other: Point | MultiPoint, /
-    ) -> Geometry: ...
+    def __or__(self, other: Point | MultiPoint, /) -> Geometry: ...
     @overload
     def __or__(
         self, other: GeometryArray[Point | MultiPoint], /
@@ -878,9 +870,7 @@ class Geometry:
     ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self-value."""
     @overload
-    def __xor__(
-        self, other: Point | MultiPoint, /
-    ) -> Geometry: ...
+    def __xor__(self, other: Point | MultiPoint, /) -> Geometry: ...
     @overload
     def __xor__(
         self, other: GeometryArray[Point | MultiPoint], /
@@ -4308,58 +4298,89 @@ class Point(Geometry):
     @overload
     def __and__(self, other: GeometryArray[MultiPoint], /) -> GeometryArray[Point]: ...
     @overload
-    def __and__(self, other: GeometryArray[Point | None], /) -> GeometryArray[Point | None]: ...
+    def __and__(
+        self, other: GeometryArray[Point | None], /
+    ) -> GeometryArray[Point | None]: ...
     @overload
-    def __and__(self, other: GeometryArray[MultiPoint | None], /) -> GeometryArray[Point | None]: ...
+    def __and__(
+        self, other: GeometryArray[MultiPoint | None], /
+    ) -> GeometryArray[Point | None]: ...
     @overload
     def __and__(self, other: Geometry, /) -> Point: ...
     @overload
     def __and__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Point]: ...
     @overload
-    def __and__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Point | None]: ...
+    def __and__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Point | None]: ...
     @overload
-    def __and__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Point | GeometryArray[Point | None]:
+    def __and__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> Point | GeometryArray[Point | None]:
         """Return self&value."""
     @overload
     def __sub__(self, other: Geometry, /) -> Point: ...
     @overload
     def __sub__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Point]: ...
     @overload
-    def __sub__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Point | None]: ...
+    def __sub__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Point | None]: ...
     @overload
-    def __sub__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Point | GeometryArray[Point | None]:
+    def __sub__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> Point | GeometryArray[Point | None]:
         """Return self-value."""
     @overload
     def __or__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
     @overload
-    def __or__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    def __or__(
+        self, other: GeometryArray[Point | MultiPoint], /
+    ) -> GeometryArray[Point | MultiPoint]: ...
     @overload
-    def __or__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    def __or__(
+        self, other: GeometryArray[Point | MultiPoint | None], /
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
     @overload
     def __or__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __or__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    def __or__(
+        self, other: GeometryArray[_GeometryT], /
+    ) -> GeometryArray[Geometry]: ...
     @overload
-    def __or__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    def __or__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
-    def __or__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+    def __or__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self|value."""
     @overload
     def __xor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
     @overload
-    def __xor__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    def __xor__(
+        self, other: GeometryArray[Point | MultiPoint], /
+    ) -> GeometryArray[Point | MultiPoint]: ...
     @overload
-    def __xor__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    def __xor__(
+        self, other: GeometryArray[Point | MultiPoint | None], /
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
     @overload
     def __xor__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __xor__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    def __xor__(
+        self, other: GeometryArray[_GeometryT], /
+    ) -> GeometryArray[Geometry]: ...
     @overload
-    def __xor__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    def __xor__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
-    def __xor__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+    def __xor__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self^value."""
-
 
 @final
 class MultiPoint(Geometry):
@@ -4592,60 +4613,97 @@ class MultiPoint(Geometry):
     @overload
     def __and__(self, other: GeometryArray[Point], /) -> GeometryArray[Point]: ...
     @overload
-    def __and__(self, other: GeometryArray[MultiPoint], /) -> GeometryArray[MultiPoint | Point]: ...
+    def __and__(
+        self, other: GeometryArray[MultiPoint], /
+    ) -> GeometryArray[MultiPoint | Point]: ...
     @overload
-    def __and__(self, other: GeometryArray[Point | None], /) -> GeometryArray[Point | None]: ...
+    def __and__(
+        self, other: GeometryArray[Point | None], /
+    ) -> GeometryArray[Point | None]: ...
     @overload
-    def __and__(self, other: GeometryArray[MultiPoint | None], /) -> GeometryArray[MultiPoint | Point | None]: ...
+    def __and__(
+        self, other: GeometryArray[MultiPoint | None], /
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
     @overload
     def __and__(self, other: Geometry, /) -> MultiPoint | Point: ...
     @overload
-    def __and__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[MultiPoint | Point]: ...
+    def __and__(
+        self, other: GeometryArray[_GeometryT], /
+    ) -> GeometryArray[MultiPoint | Point]: ...
     @overload
-    def __and__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[MultiPoint | Point | None]: ...
+    def __and__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
     @overload
-    def __and__(self, other: Geometry | GeometryArray[Geometry | None], /) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
+    def __and__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
         """Return self&value."""
     @overload
     def __sub__(self, other: Geometry, /) -> MultiPoint | Point: ...
     @overload
-    def __sub__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[MultiPoint | Point]: ...
+    def __sub__(
+        self, other: GeometryArray[_GeometryT], /
+    ) -> GeometryArray[MultiPoint | Point]: ...
     @overload
-    def __sub__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[MultiPoint | Point | None]: ...
+    def __sub__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[MultiPoint | Point | None]: ...
     @overload
-    def __sub__(self, other: Geometry | GeometryArray[Geometry | None], /) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
+    def __sub__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> MultiPoint | Point | GeometryArray[MultiPoint | Point | None]:
         """Return self-value."""
     @overload
     def __or__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
     @overload
-    def __or__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    def __or__(
+        self, other: GeometryArray[Point | MultiPoint], /
+    ) -> GeometryArray[Point | MultiPoint]: ...
     @overload
-    def __or__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    def __or__(
+        self, other: GeometryArray[Point | MultiPoint | None], /
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
     @overload
     def __or__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __or__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    def __or__(
+        self, other: GeometryArray[_GeometryT], /
+    ) -> GeometryArray[Geometry]: ...
     @overload
-    def __or__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    def __or__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
-    def __or__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+    def __or__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self|value."""
     @overload
     def __xor__(self, other: Point | MultiPoint, /) -> Point | MultiPoint: ...
     @overload
-    def __xor__(self, other: GeometryArray[Point | MultiPoint], /) -> GeometryArray[Point | MultiPoint]: ...
+    def __xor__(
+        self, other: GeometryArray[Point | MultiPoint], /
+    ) -> GeometryArray[Point | MultiPoint]: ...
     @overload
-    def __xor__(self, other: GeometryArray[Point | MultiPoint | None], /) -> GeometryArray[Point | MultiPoint | None]: ...
+    def __xor__(
+        self, other: GeometryArray[Point | MultiPoint | None], /
+    ) -> GeometryArray[Point | MultiPoint | None]: ...
     @overload
     def __xor__(self, other: Geometry, /) -> Geometry: ...
     @overload
-    def __xor__(self, other: GeometryArray[_GeometryT], /) -> GeometryArray[Geometry]: ...
+    def __xor__(
+        self, other: GeometryArray[_GeometryT], /
+    ) -> GeometryArray[Geometry]: ...
     @overload
-    def __xor__(self, other: GeometryArray[_GeometryT | None], /) -> GeometryArray[Geometry | None]: ...
+    def __xor__(
+        self, other: GeometryArray[_GeometryT | None], /
+    ) -> GeometryArray[Geometry | None]: ...
     @overload
-    def __xor__(self, other: Geometry | GeometryArray[Geometry | None], /) -> Geometry | GeometryArray[Geometry | None]:
+    def __xor__(
+        self, other: Geometry | GeometryArray[Geometry | None], /
+    ) -> Geometry | GeometryArray[Geometry | None]:
         """Return self^value."""
-
 
 @final
 class LineString(Geometry):
@@ -4984,7 +5042,6 @@ class MultiLineString(Geometry):
         repair: bool = False,
     ) -> MultiLineString: ...
 
-
 @final
 class Polygon(Geometry):
     """A single polygon (an exterior ring with optional holes).
@@ -5138,7 +5195,6 @@ class Polygon(Geometry):
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
     ) -> Polygon | MultiPolygon: ...
-
 
 @final
 class MultiPolygon(Geometry):
@@ -5323,7 +5379,6 @@ class MultiPolygon(Geometry):
         repair: bool = False,
     ) -> Polygon | MultiPolygon: ...
 
-
 @final
 class GeometryCollection(Geometry):
     """A heterogeneous collection of geometries.
@@ -5500,7 +5555,6 @@ class GeometryCollection(Geometry):
         origin: GridOrigin = (0.0, 0.0),
         repair: bool = False,
     ) -> GeometryCollection: ...
-
 
 @final
 class GeometryPartsIterator(Generic[_GeometryT_co]):
@@ -7870,11 +7924,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def unique_points(
-        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon],
+        self: GeometryArray[
+            Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon
+        ],
     ) -> GeometryArray[MultiPoint]: ...
     @overload
     def unique_points(
-        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon | None],
+        self: GeometryArray[
+            Point
+            | MultiPoint
+            | LineString
+            | MultiLineString
+            | Polygon
+            | MultiPolygon
+            | None
+        ],
     ) -> GeometryArray[MultiPoint | None]: ...
     @overload
     def unique_points(
@@ -9605,11 +9669,21 @@ class GeometryArray(Sequence[_GeometryT_co]):
 
     @overload
     def build_area(
-        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon],
+        self: GeometryArray[
+            Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon
+        ],
     ) -> GeometryArray[Polygon | MultiPolygon]: ...
     @overload
     def build_area(
-        self: GeometryArray[Point | MultiPoint | LineString | MultiLineString | Polygon | MultiPolygon | None],
+        self: GeometryArray[
+            Point
+            | MultiPoint
+            | LineString
+            | MultiLineString
+            | Polygon
+            | MultiPolygon
+            | None
+        ],
     ) -> GeometryArray[Polygon | MultiPolygon | None]: ...
     @overload
     def build_area(

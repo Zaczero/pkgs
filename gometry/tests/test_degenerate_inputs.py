@@ -96,7 +96,10 @@ def test_hausdorff_of_a_covered_filled_operand_terminates() -> None:
 @pytest.mark.parametrize(
     ('call', 'parameter'),
     [
-        (lambda: gm.LineString([(0, 0), (1, 1)]).segmentize(fraction=5e-324), 'fraction'),
+        (
+            lambda: gm.LineString([(0, 0), (1, 1)]).segmentize(fraction=5e-324),
+            'fraction',
+        ),
         (lambda: gm.LineString([(0, 0), (1, 1)]).segmentize(5e-324), 'max_length'),
         (
             lambda: gm.frechet_distance(

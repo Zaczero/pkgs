@@ -660,7 +660,12 @@ def test_destination_from_an_empty_point_is_empty(path: str) -> None:
 
 def test_cardinal_destinations_are_exact() -> None:
     planar = gm.Point(0, 0).destination([0, 90, 180, 270], 1)
-    assert planar.to_wkt() == ['POINT (0 1)', 'POINT (1 0)', 'POINT (0 -1)', 'POINT (-1 0)']
+    assert planar.to_wkt() == [
+        'POINT (0 1)',
+        'POINT (1 0)',
+        'POINT (0 -1)',
+        'POINT (-1 0)',
+    ]
     east = gm.Point(10, 50, crs=4326).destination(90, 1000, path='rhumb')
     assert east.y == 50.0
     north = gm.Point(10, 50, crs=4326).destination(0, 1000, path='rhumb')

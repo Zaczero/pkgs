@@ -292,7 +292,11 @@ def test_split_tolerance_governs_membership_and_dedup() -> None:
         gm.split(line, gm.Point(2, 0, crs=4326), tolerance=-1.0)
 
 
-EMPTY_LINEWORK = ('LINESTRING EMPTY', 'MULTILINESTRING EMPTY', 'MULTILINESTRING (EMPTY)')
+EMPTY_LINEWORK = (
+    'LINESTRING EMPTY',
+    'MULTILINESTRING EMPTY',
+    'MULTILINESTRING (EMPTY)',
+)
 
 
 @pytest.mark.parametrize('wkt', EMPTY_LINEWORK)
@@ -360,9 +364,12 @@ def test_an_empty_query_point_locates_nowhere() -> None:
 def test_query_rows_with_an_empty_point_locate_row_by_row() -> None:
     line = gm.LineString([(0, 0), (4, 0)])
     measured = gm.LineString([(0, 0), (4, 0)], m=[0, 10])
-    queries = gm.GeometryArray(
-        [gm.Point(1, 0), gm.from_wkt('POINT EMPTY'), gm.Point(2, 0), None]
-    )
+    queries = gm.GeometryArray([
+        gm.Point(1, 0),
+        gm.from_wkt('POINT EMPTY'),
+        gm.Point(2, 0),
+        None,
+    ])
     expected = [1.0, math.nan, 2.0, math.nan]
     np.testing.assert_array_equal(line.line_locate(queries), expected)
     np.testing.assert_array_equal(

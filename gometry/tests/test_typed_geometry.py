@@ -408,7 +408,7 @@ def test_empty_polygon_members_occupy_nothing(wkt: str) -> None:
     assert gm.within(inside, shape) is solid
     assert gm.disjoint(inside, shape) is not solid
     assert gm.from_wkb(shape.to_wkb()).to_wkt() == wkt
-    assert len(shape) == len(shape.parts) == wkt.count("EMPTY") + wkt.count("((")
+    assert len(shape) == len(shape.parts) == wkt.count('EMPTY') + wkt.count('((')
 
 
 def test_empty_line_members_leave_a_single_frechet_line() -> None:

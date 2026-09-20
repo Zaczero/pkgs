@@ -56,16 +56,12 @@ def _check_buffer_input_precision(
         nullable.buffer(1.0),
         gm.GeometryArray[gm.Polygon | None],
     )
-    assert_type(
-        dense.buffer(numpy_scalar), gm.GeometryArray[gm.Polygon]
-    )
+    assert_type(dense.buffer(numpy_scalar), gm.GeometryArray[gm.Polygon])
     assert_type(
         nullable.buffer(numpy_scalar),
         gm.GeometryArray[gm.Polygon | None],
     )
-    assert_type(
-        dense.buffer(scalar_array), gm.GeometryArray[gm.Polygon]
-    )
+    assert_type(dense.buffer(scalar_array), gm.GeometryArray[gm.Polygon])
     assert_type(
         nullable.buffer(scalar_array),
         gm.GeometryArray[gm.Polygon | None],
@@ -234,9 +230,7 @@ def _check_kind_narrowing(
     assert_type(nullable_points.buffer(1.0), gm.GeometryArray[gm.Polygon | None])
     assert_type(points.repair(), gm.GeometryArray[gm.Point])
     assert_type(nullable_points.repair(), gm.GeometryArray[gm.Point | None])
-    assert_type(
-        lines.repair(), gm.GeometryArray[gm.LineString | gm.MultiLineString]
-    )
+    assert_type(lines.repair(), gm.GeometryArray[gm.LineString | gm.MultiLineString])
     assert_type(
         nullable_polygons.repair(),
         gm.GeometryArray[gm.Polygon | gm.MultiPolygon | None],
@@ -807,9 +801,7 @@ assert_type(NULLABLE_POINTS[[True, False]], gm.GeometryArray[gm.Point | None])
 nullable_iter = next(iter(NULLABLE_POINTS))
 assert_type(nullable_iter, gm.Point | None)
 assert_type(NULLABLE_POINTS.centroid(), gm.GeometryArray[gm.Point | None])
-assert_type(
-    NULLABLE_POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | None]
-)
+assert_type(NULLABLE_POINTS.buffer(1.0), gm.GeometryArray[gm.Polygon | None])
 assert_type(NULLABLE_POINTS.simplify(0.1), gm.GeometryArray[gm.Point | None])
 assert_type(NULLABLE_POINTS.drop_missing(), gm.GeometryArray[gm.Point])
 assert_type(NULLABLE_POINTS.fill_missing(POINT), gm.GeometryArray[gm.Point])

@@ -956,5 +956,7 @@ def test_cells_reject_crs_kwarg() -> None:
 def test_plural_builders_point_a_single_point_to_the_cell_class(
     builder: object, keyword: str, cls: str
 ) -> None:
-    with pytest.raises(gm.GeometryError, match=rf'use {cls}\(point, {keyword}=\.\.\.\)'):
+    with pytest.raises(
+        gm.GeometryError, match=rf'use {cls}\(point, {keyword}=\.\.\.\)'
+    ):
         builder(gm.Point(10, 50, crs=4326), **{keyword: 3})  # type: ignore[operator]

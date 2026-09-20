@@ -1179,7 +1179,10 @@ def test_untested_accessors_report_their_values() -> None:
     assert repr(points.parts) == '<GeometryParts len=2>'
     assert gm.Point(1, 1) in points.parts
     assert gm.Point(5, 5) not in points.parts
-    assert [part.to_wkt() for part in reversed(points)] == ['POINT (1 1)', 'POINT (0 0)']
+    assert [part.to_wkt() for part in reversed(points)] == [
+        'POINT (1 1)',
+        'POINT (0 0)',
+    ]
     groups = gm.GeometryArray([gm.box(0, 0, 1, 1), gm.box(0, 0, 2, 2)]).sample_points(
         [1, 2], seed=1
     )
