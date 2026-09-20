@@ -36,6 +36,8 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING
 
+from pyo3stubs.report import Findings
+
 if TYPE_CHECKING:
     from pyo3stubs.config import StubConfig
 
@@ -150,7 +152,7 @@ def _pyright_project(cfg: StubConfig) -> Path:
     return cfg.stub_path.resolve().parent
 
 
-def collect_pyright_errors(cfg: StubConfig) -> list[str]:
+def collect_pyright_errors(cfg: StubConfig) -> Findings:
     """Check the stub with pyright; every error and warning is a violation.
 
     Information-level output is advice, not a defect, so it is dropped. The
@@ -187,7 +189,7 @@ def collect_pyright_errors(cfg: StubConfig) -> list[str]:
             else 'pyright produced no report'
         )
         raise RuntimeError(message) from None
-    return [
+    errors = [
         '{file}:{line}: {severity}: {message}{rule}'.format(
             file=item['file'],
             line=item['range']['start']['line'] + 1,
@@ -198,3 +200,4 @@ def collect_pyright_errors(cfg: StubConfig) -> list[str]:
         for item in report.get('generalDiagnostics', ())
         if item['severity'] in ('error', 'warning')
     ]
+    return Findings(errors, examined=report.get('summary', {}).get('filesAnalyzed'))

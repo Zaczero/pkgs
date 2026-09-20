@@ -1101,6 +1101,7 @@ def test_every_countable_gate_names_its_subject():
     named = {entry.name for entry in GATES if entry.subject}
     assert named == {
         'doc-structure',
+        'pyright',
         'structural',
         'text-signature',
         'surface',

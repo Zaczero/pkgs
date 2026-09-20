@@ -3,7 +3,8 @@
 Four gates over the stub AST + live runtime:
 
 * **overload hygiene** — in a same-name multi-def group every def must carry
-  ``@overload`` and the last real variant carries the shared docstring.
+  ``@overload``, and the variants must agree on parameter names, kinds, order
+  and defaults (``gen-docs-sync`` owns where the shared docstring sits).
   An undecorated def in a group is the silent dead-overload class: pyright
   applies last-def-wins without a diagnostic, so the narrowing simply vanishes
   (this exact corruption shipped once — 22 dead defs from a stray codemod).

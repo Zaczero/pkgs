@@ -205,6 +205,7 @@ GATES: tuple[Gate, ...] = (
         success='pyright OK: stub is clean',
         remedy="fix the stub until pyright is clean, under the project's own "
         '[tool.pyright] settings',
+        subject='checked file',
     ),
     Gate(
         name='structural',
