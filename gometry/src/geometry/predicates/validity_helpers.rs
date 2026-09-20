@@ -3,7 +3,7 @@ use ahash::HashMapExt as _;
 
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
-    CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,
+    Component, CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,
     SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, VertexProvenance, XY, point_distance,
     point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
     same_point, segment_projection, squared_norm_is_trustworthy, try_point_distance_squared,
@@ -372,46 +372,20 @@ fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> 
         Ok(())
     }
 
-    fn walk(
-        shape: &Shape,
-        cursor: &mut usize,
-        out: &mut Vec<IndexedSegment>,
-    ) -> crate::error::Result<()> {
-        match shape {
-            Shape::Point(_) => *cursor += 1,
-            Shape::MultiPoint(points) => *cursor += points.coord_count(),
-            Shape::LineString(points) => line_segments_with_indices(points, cursor, out)?,
-            Shape::MultiLineString(lines) => {
-                for line in lines {
-                    line_segments_with_indices(line, cursor, out)?;
-                }
-            },
-            Shape::Polygon(polygon) => {
-                for ring in polygon.rings() {
-                    line_segments_with_indices(ring, cursor, out)?;
-                }
-            },
-            Shape::MultiPolygon(polygons) => {
-                for polygon in polygons {
-                    for ring in polygon.rings() {
-                        line_segments_with_indices(ring, cursor, out)?;
-                    }
-                }
-            },
-            Shape::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    walk(geometry, cursor, out)?;
-                }
-            },
-            Shape::Empty(..) => {},
-        }
-        Ok(())
-    }
-
     let mut out = Vec::new();
     crate::try_reserve_vec(&mut out, shape.segment_count())?;
     let mut cursor = 0;
-    walk(shape, &mut cursor, &mut out)?;
+    shape.try_for_each_component(&mut |component| match component {
+        // A puntal member owns one coordinate index and no segment.
+        Component::Point(_) => {
+            cursor += 1;
+            Ok(())
+        },
+        Component::LineString(line) => line_segments_with_indices(line, &mut cursor, &mut out),
+        Component::Polygon(polygon) => polygon
+            .rings()
+            .try_for_each(|ring| line_segments_with_indices(ring, &mut cursor, &mut out)),
+    })?;
     Ok(out)
 }
 

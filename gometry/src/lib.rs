@@ -20,6 +20,7 @@
     portable_simd,
     slice_partition_dedup,
     trusted_len,
+    try_trait_v2,
     vec_fallible_shrink,
     vec_push_within_capacity
 )]

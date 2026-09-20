@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use crate::HeapSize;
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape, XY,
+    Bounds, Component, CoordSeq, Coordinates as _, IndexedSegment, MonotoneRun, Point, Segment, Shape, XY,
     candidate_pairs_over_staged_runs, same_point, sign_of,
 };
 /// Flat XY linework staged for the candidate kernel: one segment column,
@@ -164,35 +164,20 @@ impl LineworkChains {
     /// per part, so the adjacency rules read across exactly like
     /// `is_simple`'s (contact between distinct parts always offends).
     pub(crate) fn push_shape(&mut self, shape: &Shape) -> crate::error::Result<()> {
-        match shape {
-            Shape::LineString(points) => {
-                let _ = self.push_line(points)?;
-            },
-            Shape::MultiLineString(lines) => {
-                for line in lines {
-                    let _ = self.push_line(line)?;
-                }
-            },
-            Shape::Polygon(polygon) => {
-                for ring in polygon.rings() {
-                    let _ = self.push_line(ring)?;
-                }
-            },
-            Shape::MultiPolygon(polygons) => {
-                for polygon in polygons {
+        shape.try_for_each_component(&mut |component| {
+            match component {
+                Component::LineString(points) => {
+                    let _ = self.push_line(points)?;
+                },
+                Component::Polygon(polygon) => {
                     for ring in polygon.rings() {
                         let _ = self.push_line(ring)?;
                     }
-                }
-            },
-            Shape::GeometryCollection(geometries) => {
-                for geometry in geometries {
-                    self.push_shape(geometry)?;
-                }
-            },
-            Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => {},
-        }
-        Ok(())
+                },
+                Component::Point(_) => {},
+            }
+            Ok(())
+        })
     }
 
     /// The semantic per-segment view, composed on demand.

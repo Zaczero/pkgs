@@ -20,7 +20,7 @@ use crate::crs::{
 use crate::error::Result;
 use crate::geographic::{CircularInterval, GeographicError, GeographicFrame, Latitude};
 use crate::geometry::{
-    CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate, types,
+    CoordRun, CoordWindow, LineSeq, MColumn, MOrdinate, SharedSlice, TopologyDomain, ZOrdinate, types,
 };
 
 pub(crate) type TransformedBounds = (f64, f64, f64, f64);
@@ -1099,76 +1099,33 @@ enum OutputBatch {
     Xyz,
 }
 
-#[derive(Clone, Copy)]
-enum OutputCoordSource<'a> {
-    Point(&'a Point),
-    Sequence(&'a CoordSeq),
-}
-
-impl OutputCoordSource<'_> {
-    fn batch(self) -> OutputBatch {
-        match self {
-            Self::Point(point) => point.z().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
-            Self::Sequence(seq) => seq.zs().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
-        }
-    }
-
-    fn len(self) -> usize {
-        match self {
-            Self::Point(..) => 1,
-            Self::Sequence(seq) => seq.len(),
-        }
-    }
-
-    fn carried_ms(self) -> Result<Option<MColumn>> {
-        match self {
-            Self::Point(point) => point
-                .m()
-                .map(|m| {
-                    SharedSlice::try_from_vec(vec![m])
-                        .map(|owner| MColumn::Local { owner, offset: 0 })
-                })
-                .transpose(),
-            Self::Sequence(seq) => seq.carried_ms(),
-        }
+/// The [`OutputBatch`] a run needs: XYZ when it carries Z, XY otherwise.
+fn source_batch(source: CoordRun<'_>) -> OutputBatch {
+    match source {
+        CoordRun::Point(point) => point.z().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz),
+        CoordRun::Seq(seq) => {
+            seq.zs().map_or(OutputBatch::Xy, |_| OutputBatch::Xyz)
+        },
     }
 }
 
-/// Visit every coordinate sequence in the same order used by reconstruction.
-/// MultiPoint is one sequence even when its member map contains empty points.
-fn visit_shape_sequences(
-    shape: &Shape,
-    visitor: &mut impl FnMut(OutputCoordSource<'_>) -> Result<()>,
-) -> Result<()> {
-    match shape {
-        Shape::Point(point) => visitor(OutputCoordSource::Point(point))?,
-        Shape::MultiPoint(points) => visitor(OutputCoordSource::Sequence(points))?,
-        Shape::LineString(points) => visitor(OutputCoordSource::Sequence(points))?,
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                visitor(OutputCoordSource::Sequence(line))?;
-            }
-        },
-        Shape::Polygon(polygon) => {
-            for ring in polygon.rings() {
-                visitor(OutputCoordSource::Sequence(ring))?;
-            }
-        },
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                for ring in polygon.rings() {
-                    visitor(OutputCoordSource::Sequence(ring))?;
-                }
-            }
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                visit_shape_sequences(geometry, visitor)?;
-            }
-        },
-        Shape::Empty(..) => {},
+fn source_len(source: CoordRun<'_>) -> usize {
+    match source {
+        CoordRun::Point(..) => 1,
+        CoordRun::Seq(seq) => seq.len(),
     }
-    Ok(())
+}
+
+fn source_carried_ms(source: CoordRun<'_>) -> Result<Option<MColumn>> {
+    match source {
+        CoordRun::Point(point) => point
+            .m()
+            .map(|m| {
+                SharedSlice::try_from_vec(vec![m]).map(|owner| MColumn::Local { owner, offset: 0 })
+            })
+            .transpose(),
+        CoordRun::Seq(seq) => seq.carried_ms(),
+    }
 }
 
 #[derive(Default)]
@@ -1179,12 +1136,12 @@ struct OutputCounts {
 }
 
 impl OutputCounts {
-    fn add(&mut self, source: OutputCoordSource<'_>) -> Result<()> {
+    fn add(&mut self, source: CoordRun<'_>) -> Result<()> {
         self.sequences = self.sequences.checked_add(1).ok_or_else(|| {
             GeometryErrorKind::message("transform sequence count overflows usize")
         })?;
-        let vertices = source.len();
-        let total = match source.batch() {
+        let vertices = source_len(source);
+        let total = match source_batch(source) {
             OutputBatch::Xy => &mut self.xy_vertices,
             OutputBatch::Xyz => &mut self.xyz_vertices,
         };
@@ -1226,10 +1183,10 @@ impl OutputColumns {
         Ok(Self { xs, ys, zs })
     }
 
-    fn append(&mut self, source: OutputCoordSource<'_>) -> Range<usize> {
+    fn append(&mut self, source: CoordRun<'_>) -> Range<usize> {
         let start = self.xs.len();
         match source {
-            OutputCoordSource::Point(point) => {
+            CoordRun::Point(point) => {
                 debug_assert_eq!(self.zs.is_some(), point.z().is_some());
                 self.xs.push(point.x);
                 self.ys.push(point.y);
@@ -1237,7 +1194,7 @@ impl OutputColumns {
                     zs.push(point.z().expect("XYZ output source carries Z"));
                 }
             },
-            OutputCoordSource::Sequence(seq) => {
+            CoordRun::Seq(seq) => {
                 debug_assert_eq!(self.zs.is_some(), seq.zs().is_some());
                 self.xs.extend_from_slice(seq.xs());
                 self.ys.extend_from_slice(seq.ys());
@@ -1267,7 +1224,7 @@ impl TransformOutputPlan {
     pub(crate) fn try_new(shapes: &[&Shape]) -> Result<Self> {
         let mut counts = OutputCounts::default();
         for shape in shapes {
-            visit_shape_sequences(shape, &mut |source| counts.add(source))?;
+            shape.for_each_coord_run(&mut |source| counts.add(source))?;
         }
         types::ensure_coordseq_vertex_capacity(counts.xy_vertices)?;
         types::ensure_coordseq_vertex_capacity(counts.xyz_vertices)?;
@@ -1278,13 +1235,13 @@ impl TransformOutputPlan {
         };
         crate::try_reserve_vec(&mut plan.sequences, counts.sequences)?;
         for (shape_index, shape) in shapes.iter().enumerate() {
-            visit_shape_sequences(shape, &mut |source| plan.push_source(source, shape_index))?;
+            shape.for_each_coord_run(&mut |source| plan.push_source(source, shape_index))?;
         }
         Ok(plan)
     }
 
-    fn push_source(&mut self, source: OutputCoordSource<'_>, shape: usize) -> Result<()> {
-        let batch = source.batch();
+    fn push_source(&mut self, source: CoordRun<'_>, shape: usize) -> Result<()> {
+        let batch = source_batch(source);
         let range = match batch {
             OutputBatch::Xy => self.xy.append(source),
             OutputBatch::Xyz => self.xyz.append(source),
@@ -1293,7 +1250,7 @@ impl TransformOutputPlan {
             batch,
             range,
             shape,
-            ms: source.carried_ms()?,
+            ms: source_carried_ms(source)?,
         })
     }
 

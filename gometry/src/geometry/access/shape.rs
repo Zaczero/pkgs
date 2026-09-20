@@ -31,6 +31,18 @@ impl Component<'_> {
     }
 }
 
+/// One contiguous coordinate run of a shape, in flatten order.
+///
+/// A `MultiPoint` is a single run rather than one run per member, because
+/// that is how flattening, reconstruction and the coordinate views all treat
+/// it. A walk that has to tell puntal members from linework wants
+/// [`Component`] instead.
+#[derive(Clone, Copy)]
+pub(crate) enum CoordRun<'a> {
+    Point(Point),
+    Seq(&'a CoordSeq),
+}
+
 /// A lineal operand, empties included. Operations over lines match it
 /// exhaustively, so none can route a typed empty into its kind error.
 pub(crate) enum Lineal<'a> {
@@ -852,6 +864,55 @@ pub(crate) fn linework_first_point(lines: &[&CoordSeq]) -> Option<Point> {
 impl Shape {
     /// Visit every atomic [`Component`], recursing through collections and
     /// skipping empties.
+    /// Visit every [`CoordRun`] of this shape in flatten order, recursing
+    /// through collections and skipping the empty variants.
+    ///
+    /// The visitor's return type carries the break: `Result` stops at the
+    /// first error, `ControlFlow` at the first `Break`.
+    pub(crate) fn for_each_coord_run<'a, R: std::ops::Try<Output = ()>>(
+        &'a self,
+        visit: &mut impl FnMut(CoordRun<'a>) -> R,
+    ) -> R {
+        match self {
+            Self::Point(point) => visit(CoordRun::Point(*point))?,
+            Self::MultiPoint(points) => visit(CoordRun::Seq(points))?,
+            Self::LineString(line) => visit(CoordRun::Seq(line))?,
+            Self::MultiLineString(lines) => {
+                for line in lines {
+                    visit(CoordRun::Seq(line))?;
+                }
+            },
+            Self::Polygon(polygon) => {
+                for ring in polygon.rings() {
+                    visit(CoordRun::Seq(ring.coords()))?;
+                }
+            },
+            Self::MultiPolygon(polygons) => {
+                for ring in polygons.iter().flat_map(Polygon::rings) {
+                    visit(CoordRun::Seq(ring.coords()))?;
+                }
+            },
+            Self::GeometryCollection(parts) => {
+                for part in parts {
+                    part.for_each_coord_run(visit)?;
+                }
+            },
+            Self::Empty(..) => {},
+        }
+        R::from_output(())
+    }
+
+    /// [`Self::try_for_each_component`] for a visitor that cannot fail.
+    pub(crate) fn for_each_component<'a>(&'a self, visit: &mut impl FnMut(Component<'a>)) {
+        match self.try_for_each_component(&mut |component| -> Result<(), std::convert::Infallible> {
+            visit(component);
+            Ok(())
+        }) {
+            Ok(()) => {},
+            Err(never) => match never {},
+        }
+    }
+
     pub(crate) fn try_for_each_component<'a, E>(
         &'a self,
         visit: &mut impl FnMut(Component<'a>) -> Result<(), E>,

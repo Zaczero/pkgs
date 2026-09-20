@@ -4,7 +4,7 @@ use std::simd::{Select as _, StdFloat as _};
 
 use crate::geometry::exact_arith::product_sum::ExactCentroidSums;
 use crate::geometry::{
-    AxisFrame, Coordinates as _, Point, Polygon, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring,
+    AxisFrame, Component, Coordinates as _, Point, Polygon, REDUCE_LANES, REDUCE_SIMD_MIN, ReduceSimd, Ring,
     Shape, XY, axis_pow2_scale, canonicalize_zero, centroid_ring_sums, closed_columns_winding,
     column_mean2, point_distance, scaled_residual, simd_reduce_f64,
 };
@@ -642,7 +642,7 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
 
 fn visit_areal_polygons(shape: &Shape, visit: &mut dyn FnMut(&Polygon)) {
     let _: Result<(), std::convert::Infallible> = shape.try_for_each_component(&mut |component| {
-        if let crate::geometry::Component::Polygon(polygon) = component {
+        if let Component::Polygon(polygon) = component {
             visit(polygon);
         }
         Ok(())
@@ -840,26 +840,11 @@ fn polygon_rings(polygon: &Polygon, visit: &mut impl FnMut(&Ring, bool)) {
 /// traversal. Shells precede holes within each polygon, preserving the
 /// traversal order used by the fallback float stream.
 fn for_each_lineal(shape: &Shape, visit: &mut (impl FnMut(&[f64], &[f64]) + ?Sized)) {
-    match shape {
-        Shape::LineString(seq) => visit(seq.xs(), seq.ys()),
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                visit(line.xs(), line.ys());
-            }
-        },
-        Shape::Polygon(polygon) => polygon_ring_columns(polygon, visit),
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                polygon_ring_columns(polygon, visit);
-            }
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                for_each_lineal(geometry, visit);
-            }
-        },
-        _ => {},
-    }
+    shape.for_each_component(&mut |component| match component {
+        Component::LineString(seq) => visit(seq.xs(), seq.ys()),
+        Component::Polygon(polygon) => polygon_ring_columns(polygon, visit),
+        Component::Point(_) => {},
+    });
 }
 
 fn polygon_ring_columns(polygon: &Polygon, visit: &mut (impl FnMut(&[f64], &[f64]) + ?Sized)) {
@@ -877,28 +862,19 @@ fn polygon_ring_columns(polygon: &Polygon, visit: &mut (impl FnMut(&[f64], &[f64
 /// `MultiPoint` vertex, plus the first vertex of each non-empty lineal run
 /// (its zero-length-chain anchor).
 fn for_each_fallback_point(shape: &Shape, visit: &mut impl FnMut(f64, f64)) {
-    match shape {
-        Shape::Point(point) => visit(point.x, point.y),
-        Shape::MultiPoint(seq) => {
-            for (&x, &y) in std::iter::zip(seq.xs(), seq.ys()) {
-                visit(x, y);
-            }
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geometry in geometries {
-                for_each_fallback_point(geometry, visit);
-            }
-        },
+    shape.for_each_component(&mut |component| match component {
+        Component::Point(point) => visit(point.x, point.y),
         // Lineal runs (lines + polygon rings): only reached when total length
         // is zero, so each non-empty run anchors its first vertex.
-        Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Polygon(_)
-        | Shape::MultiPolygon(_) => for_each_lineal(shape, &mut |xs, ys| {
-            if let Some((&x, &y)) = xs.first().zip(ys.first()) {
-                visit(x, y);
-            }
-        }),
-        Shape::Empty(..) => {},
+        Component::LineString(seq) => anchor_vertex(seq.xs(), seq.ys(), visit),
+        Component::Polygon(polygon) => {
+            polygon_ring_columns(polygon, &mut |xs, ys| anchor_vertex(xs, ys, visit));
+        },
+    });
+}
+
+fn anchor_vertex(xs: &[f64], ys: &[f64], visit: &mut impl FnMut(f64, f64)) {
+    if let Some((&x, &y)) = xs.first().zip(ys.first()) {
+        visit(x, y);
     }
 }

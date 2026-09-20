@@ -16,7 +16,7 @@ use std::sync::Arc;
 use crate::GeometryArrayStorage;
 use crate::array::{PackedStorage, RowSelectionRef, ValidityMask};
 use crate::geometry::{
-    CoordSeq, CoordWindow, CoordinateAxes, MOrdinate, Point, Shape, ShapeData, ZOrdinate,
+    CoordRun, CoordSeq, CoordWindow, CoordinateAxes, MOrdinate, Point, Shape, ShapeData, ZOrdinate,
 };
 
 /// One ordinate in a coordinate layout.
@@ -40,14 +40,6 @@ pub enum CoordinateColumnRef<'a> {
     Nullable(Vec<Option<f64>>),
     /// No coordinate in the view carries this ordinate.
     Missing,
-}
-
-/// One flattened coordinate run. A run is either a contiguous coordinate
-/// sequence or one scalar point; never both and never neither.
-#[derive(Clone, Copy)]
-enum CoordinateRun<'a> {
-    Seq(&'a CoordSeq),
-    Point(Point),
 }
 
 /// Owner handle for a coordinate view. Both variants are immutable and cheap to
@@ -110,7 +102,7 @@ impl CoordinateView {
     /// method. Prefer [`try_for_each`] when the visitor may stop early.
     fn for_each<F>(&self, visit: &mut F)
     where
-        F: for<'x> FnMut(Option<usize>, CoordinateRun<'x>),
+        F: for<'x> FnMut(Option<usize>, CoordRun<'x>),
     {
         let _: ControlFlow<()> = self.try_for_each(&mut |geometry, run| {
             visit(geometry, run);
@@ -121,17 +113,17 @@ impl CoordinateView {
     /// Breakable traversal: `ControlFlow::Break` stops at the current run.
     fn try_for_each<B, F>(&self, visit: &mut F) -> ControlFlow<B>
     where
-        F: for<'x> FnMut(Option<usize>, CoordinateRun<'x>) -> ControlFlow<B>,
+        F: for<'x> FnMut(Option<usize>, CoordRun<'x>) -> ControlFlow<B>,
     {
         match &self.owner {
-            CoordinateOwner::Shape(shape) => try_walk(shape, None, visit),
+            CoordinateOwner::Shape(shape) => shape.for_each_coord_run(&mut |run| visit(None, run)),
             CoordinateOwner::Array { storage, missing } => match storage.as_ref() {
                 GeometryArrayStorage::Mixed(shapes) => {
                     for (row, shape) in shapes.iter().enumerate() {
                         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             continue;
                         }
-                        try_walk(shape, Some(row), visit)?;
+                        shape.for_each_coord_run(&mut |run| visit(Some(row), run))?;
                     }
                     ControlFlow::Continue(())
                 },
@@ -146,7 +138,7 @@ impl CoordinateView {
                             let Some(present) = present else { continue };
                             visit(
                                 Some(row),
-                                CoordinateRun::Point(
+                                CoordRun::Point(
                                     coords.point_at(crate::array::physical_row(map, present)),
                                 ),
                             )?;
@@ -159,7 +151,7 @@ impl CoordinateView {
                         }
                         visit(
                             Some(row),
-                            CoordinateRun::Point(
+                            CoordRun::Point(
                                 coords.point_at(crate::array::physical_row(map, row)),
                             ),
                         )?;
@@ -181,7 +173,7 @@ impl CoordinateView {
                         }
                         let window = map.csr_window(offsets.as_slice(), row);
                         let view = coords.view(CoordWindow::from_range(window, coords.len()));
-                        visit(Some(row), CoordinateRun::Seq(&view))?;
+                        visit(Some(row), CoordRun::Seq(&view))?;
                     }
                     ControlFlow::Continue(())
                 },
@@ -205,7 +197,7 @@ impl CoordinateView {
                             let window = ring_offsets[physical_ring] as usize
                                 ..ring_offsets[physical_ring + 1] as usize;
                             let view = coords.view(CoordWindow::from_range(window, coords.len()));
-                            visit(Some(row), CoordinateRun::Seq(&view))?;
+                            visit(Some(row), CoordRun::Seq(&view))?;
                         }
                     }
                     ControlFlow::Continue(())
@@ -303,8 +295,8 @@ impl CoordinateView {
                     let mut bytes = 0_usize;
                     self.for_each(&mut |_, run| {
                         bytes += match run {
-                            CoordinateRun::Seq(seq) => seq.axes().byte_width(seq.len()),
-                            CoordinateRun::Point(point) => {
+                            CoordRun::Seq(seq) => seq.axes().byte_width(seq.len()),
+                            CoordRun::Point(point) => {
                                 CoordinateAxes::from_point(point).byte_width(1)
                             },
                         };
@@ -336,8 +328,8 @@ impl CoordinateView {
             CoordinateOwner::Array { .. } => {
                 let mut axes = CoordinateAxes::XY;
                 self.for_each(&mut |_, run| match run {
-                    CoordinateRun::Seq(seq) => axes = axes.union(seq.axes()),
-                    CoordinateRun::Point(point) => {
+                    CoordRun::Seq(seq) => axes = axes.union(seq.axes()),
+                    CoordRun::Point(point) => {
                         axes = axes.union(CoordinateAxes::from_point(point));
                     },
                 });
@@ -472,7 +464,7 @@ impl CoordinateView {
         visit: &mut impl FnMut(Point) -> ControlFlow<B>,
     ) -> ControlFlow<B> {
         self.try_for_each(&mut |_, run| match run {
-            CoordinateRun::Seq(seq) => {
+            CoordRun::Seq(seq) => {
                 // Length-exact column windows: loop bound IS each slice's len,
                 // so per-vertex access carries no bounds checks (elision).
                 let xs = seq.xs();
@@ -491,7 +483,7 @@ impl CoordinateView {
                 }
                 ControlFlow::Continue(())
             },
-            CoordinateRun::Point(point) => visit(point),
+            CoordRun::Point(point) => visit(point),
         })
     }
 
@@ -600,8 +592,8 @@ impl CoordinateView {
         let mut cursor = 0_usize;
         self.for_each(&mut |geometry, run| {
             let len = match run {
-                CoordinateRun::Seq(seq) => seq.len(),
-                CoordinateRun::Point(_) => 1,
+                CoordRun::Seq(seq) => seq.len(),
+                CoordRun::Point(_) => 1,
             };
             let id = cast(geometry.unwrap_or(0));
             indexes[cursor..cursor + len].fill(id);
@@ -622,7 +614,7 @@ impl CoordinateView {
         }
         let mut remaining = index;
         let result = self.try_for_each(&mut |_, run| match run {
-            CoordinateRun::Seq(seq) => {
+            CoordRun::Seq(seq) => {
                 let len = seq.len();
                 if remaining < len {
                     ControlFlow::Break(seq.point_at(remaining))
@@ -631,7 +623,7 @@ impl CoordinateView {
                     ControlFlow::Continue(())
                 }
             },
-            CoordinateRun::Point(point) => {
+            CoordRun::Point(point) => {
                 if remaining == 0 {
                     ControlFlow::Break(point)
                 } else {
@@ -1277,46 +1269,6 @@ fn packed_polygon_point_at(
         crate::array::RowSelectionRef::Gather(_) => return None,
     };
     (index < span.len()).then(|| coords.point_at(span.start + index))
-}
-
-/// Breakable shape walk — invoke `visit(geometry, run)` for each contiguous
-/// sequence or scalar point of `shape` in canonical flatten order. Stops when
-/// `visit` returns `ControlFlow::Break`. `geometry` is the array row when the
-/// owner is a `GeometryArray`.
-fn try_walk<B, F>(shape: &Shape, geometry: Option<usize>, visit: &mut F) -> ControlFlow<B>
-where
-    F: for<'x> FnMut(Option<usize>, CoordinateRun<'x>) -> ControlFlow<B>,
-{
-    match shape {
-        Shape::Point(point) => visit(geometry, CoordinateRun::Point(*point)),
-        Shape::MultiPoint(seq) => visit(geometry, CoordinateRun::Seq(seq)),
-        Shape::LineString(seq) => visit(geometry, CoordinateRun::Seq(seq)),
-        Shape::MultiLineString(lines) => {
-            for line in lines.iter() {
-                visit(geometry, CoordinateRun::Seq(line))?;
-            }
-            ControlFlow::Continue(())
-        },
-        Shape::Polygon(polygon) => {
-            for ring in polygon.rings() {
-                visit(geometry, CoordinateRun::Seq(ring.coords()))?;
-            }
-            ControlFlow::Continue(())
-        },
-        Shape::MultiPolygon(polygons) => {
-            for ring in polygons.iter().flat_map(|polygon| polygon.rings()) {
-                visit(geometry, CoordinateRun::Seq(ring.coords()))?;
-            }
-            ControlFlow::Continue(())
-        },
-        Shape::GeometryCollection(geometries) => {
-            for geom in geometries {
-                try_walk(geom, geometry, visit)?;
-            }
-            ControlFlow::Continue(())
-        },
-        Shape::Empty(..) => ControlFlow::Continue(()),
-    }
 }
 
 #[cfg(test)]
