@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::arbitrary_source_item_ordering,
     reason = "the generated known-name table follows its compile-time grammar checker"
 )]

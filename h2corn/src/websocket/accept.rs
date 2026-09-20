@@ -6,7 +6,7 @@
 //! keeping it there forced a module-wide ordering suppression so the generated
 //! macros could sit beside their call site.
 
-#![allow(
+#![expect(
     clippy::arbitrary_source_item_ordering,
     reason = "the generated SHA-1 macros stay next to their compression call site"
 )]

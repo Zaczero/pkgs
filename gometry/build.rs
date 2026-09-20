@@ -1,4 +1,4 @@
-#![allow(
+#![expect(
     clippy::panic,
     reason = "a build script reports a missing input by panicking"
 )]
