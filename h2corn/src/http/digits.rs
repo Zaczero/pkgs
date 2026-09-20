@@ -1,18 +1,17 @@
-const DIGIT_PAIRS: [u8; 200] = {
-    let mut out = [0; 200];
+const DIGIT_PAIRS: [[u8; 2]; 100] = {
+    let mut out = [[0; 2]; 100];
     let mut value = 0;
     while value < 100 {
-        out[value * 2] = b'0' + (value / 10) as u8;
-        out[value * 2 + 1] = b'0' + (value % 10) as u8;
+        out[value] = [b'0' + (value / 10) as u8, b'0' + (value % 10) as u8];
         value += 1;
     }
     out
 };
 
 pub(crate) fn two_digit_bytes(value: usize) -> [u8; 2] {
-    debug_assert!(value < 100);
-    let offset = value * 2;
-    [DIGIT_PAIRS[offset], DIGIT_PAIRS[offset + 1]]
+    // Every caller reduces modulo 100 first; a stray value formats as "00"
+    // rather than taking a panic into a response-header path.
+    DIGIT_PAIRS.get(value).copied().unwrap_or(*b"00")
 }
 
 pub(crate) fn three_digit_bytes(value: u16) -> [u8; 3] {

@@ -285,17 +285,19 @@ pub(crate) fn websocket_accept(key: &WebSocketKey) -> [u8; LEN] {
         state3.wrapping_add(h3),
         state4.wrapping_add(h4),
     ];
+    // SHA-1's 20 bytes encode as six full base64 quantums plus a two-byte
+    // remainder, so the group count is fixed by the digest, not by the input.
+    let groups: [[u8; 4]; LEN / 4] = [
+        base64::encode_triplet((w0 >> 24) as u8, (w0 >> 16) as u8, (w0 >> 8) as u8),
+        base64::encode_triplet(w0 as u8, (w1 >> 24) as u8, (w1 >> 16) as u8),
+        base64::encode_triplet((w1 >> 8) as u8, w1 as u8, (w2 >> 24) as u8),
+        base64::encode_triplet((w2 >> 16) as u8, (w2 >> 8) as u8, w2 as u8),
+        base64::encode_triplet((w3 >> 24) as u8, (w3 >> 16) as u8, (w3 >> 8) as u8),
+        base64::encode_triplet(w3 as u8, (w4 >> 24) as u8, (w4 >> 16) as u8),
+        base64::encode_remainder((w4 >> 8) as u8, w4 as u8),
+    ];
     let mut out = [0_u8; LEN];
-    let (out_groups, out_remainder) = out.as_chunks_mut::<4>();
-    debug_assert!(out_remainder.is_empty());
-    out_groups[0] = base64::encode_triplet((w0 >> 24) as u8, (w0 >> 16) as u8, (w0 >> 8) as u8);
-    out_groups[1] = base64::encode_triplet(w0 as u8, (w1 >> 24) as u8, (w1 >> 16) as u8);
-    out_groups[2] = base64::encode_triplet((w1 >> 8) as u8, w1 as u8, (w2 >> 24) as u8);
-    out_groups[3] = base64::encode_triplet((w2 >> 16) as u8, (w2 >> 8) as u8, w2 as u8);
-    out_groups[4] = base64::encode_triplet((w3 >> 24) as u8, (w3 >> 16) as u8, (w3 >> 8) as u8);
-    out_groups[5] = base64::encode_triplet(w3 as u8, (w4 >> 24) as u8, (w4 >> 16) as u8);
-    out_groups[6] = base64::encode_remainder((w4 >> 8) as u8, w4 as u8);
-
+    out.copy_from_slice(groups.as_flattened());
     out
 }
 
