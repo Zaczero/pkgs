@@ -128,7 +128,7 @@ reported, so a disabled check can never read as a passing one.
 ## CLI
 
 ```bash
-pyo3stubs check-all --config tools/stubconfig.py   # every gate, in order
+pyo3stubs check-all --config tools/stubconfig.py   # every gate, reported in order
 pyo3stubs rust-nullability --config …              # one gate by name
 pyo3stubs gen-docs --config …                      # inject runtime docstrings
 pyo3stubs --help                                   # what each gate proves
@@ -138,6 +138,13 @@ Exit status is 1 when any gate reported a violation and 0 otherwise; a skipped,
 disabled, or inactive gate is reported and does not affect the status. A gate
 that crashes reports the crash as its own violation, with the raising frame, and
 the remaining gates still run.
+
+`check-all` runs the gates concurrently and prints one total, so a run costs
+about its slowest gate — `stubtest`, which rebuilds from scratch because it
+needs full semantic trees. A single gate by name prints its own time instead:
+under `check-all` the gates wait on each other's imports, and a millisecond
+gate can read seconds. `validity` keeps a mypy cache per stub under
+`$XDG_CACHE_HOME/pyo3stubs`, so it re-analyses only what changed.
 
 ## Operator loop
 
