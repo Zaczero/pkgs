@@ -107,19 +107,25 @@ pub(crate) fn try_reserve_vec<T>(vec: &mut Vec<T>, additional: usize) -> Result<
 }
 
 /// Fallibly append one value to Rust-owned output storage. The value and the
-/// retained vector are released before the allocation error is returned.
-pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
+/// retained vector are released before the allocation error is returned, so
+/// the caller has address-space headroom to build one.
+fn try_push_with<T, E>(vec: &mut Vec<T>, value: T, on_oom: impl FnOnce() -> E) -> Result<(), E> {
     if vec.len() == vec.capacity() {
         std::hint::cold_path();
         if grow_for_push(vec).is_err() {
             drop(value);
-            return Err(ResourceError::Allocation.into());
+            return Err(on_oom());
         }
     }
     // Capacity is ensured above; `push` would carry its own infallible growth
     // path, and its size keeps this helper from inlining.
     let _ = vec.push_within_capacity(value);
     Ok(())
+}
+
+/// [`try_push_with`] reporting the crate's allocation error.
+pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
+    try_push_with(vec, value, || ResourceError::Allocation.into())
 }
 
 /// Collect fallible items into fallibly grown storage: the iterator's lower
@@ -410,17 +416,7 @@ pub(crate) fn try_vec_with_capacity_hint<T>(capacity: usize) -> PyResult<Vec<T>>
 /// exception is raised, so Python error adoption has address-space headroom
 /// under `RLIMIT_AS`.
 pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
-    if vec.len() == vec.capacity() {
-        std::hint::cold_path();
-        if grow_for_push(vec).is_err() {
-            // The item and the released storage are gone before the error is
-            // raised: materializing a `PyErr` needs heap headroom.
-            drop(item);
-            return Err(native_memory_error());
-        }
-    }
-    vec.push(item);
-    Ok(())
+    try_push_with(vec, item, native_memory_error)
 }
 
 /// Fallibly copy a UTF-8 slice into an owned [`String`].
