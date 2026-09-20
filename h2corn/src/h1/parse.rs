@@ -230,11 +230,11 @@ impl HeaderParseState {
     }
 
     fn push_header(&mut self, line: &[u8]) -> Result<(), H2CornError> {
-        let Some(colon) = memchr(b':', line) else {
+        let Some((name, [b':', raw_value @ ..])) =
+            memchr(b':', line).and_then(|at| line.split_at_checked(at))
+        else {
             return Http1Error::MalformedHeaderLine.err();
         };
-        let name = &line[..colon];
-        let raw_value = &line[colon + 1..];
         let value = trim_ows(raw_value);
         let known_name = self.headers.push(name, value).map_err(|()| {
             if request_header_name_needs_lowercase(name).is_none() {
@@ -924,17 +924,18 @@ fn validate_trailer_line(line: &[u8], limits: FieldLimits) -> Result<(), H2CornE
     {
         return Http1Error::TrailerFieldTooLarge.err();
     }
-    let Some(colon) = memchr(b':', line) else {
+    let Some((name, [b':', raw_value @ ..])) =
+        memchr(b':', line).and_then(|at| line.split_at_checked(at))
+    else {
         return Http1Error::MalformedHeaderLine.err();
     };
-    let name = &line[..colon];
     if request_header_name_needs_lowercase(name).is_none() {
         return Http1Error::InvalidHeaderName.err();
     }
     if trailer_field_name_is_forbidden(name) {
         return Http1Error::MalformedHeaderLine.err();
     }
-    if !header_value_is_valid(&line[colon + 1..]) {
+    if !header_value_is_valid(raw_value) {
         return Http1Error::InvalidHeaderValue.err();
     }
     Ok(())
@@ -1006,21 +1007,18 @@ where
 }
 
 fn parse_request_line(line: &[u8]) -> Result<(Method, &[u8], &[u8]), H2CornError> {
-    let Some(first_space) = memchr(b' ', line) else {
-        return Http1Error::InvalidRequestLine.err();
-    };
-    let Some(second_space) =
-        memchr(b' ', &line[first_space + 1..]).map(|offset| first_space + 1 + offset)
+    let Some((method_bytes, [b' ', after_method @ ..])) =
+        memchr(b' ', line).and_then(|at| line.split_at_checked(at))
     else {
         return Http1Error::InvalidRequestLine.err();
     };
-    let method =
-        parse_request_method(&line[..first_space]).map_err(|_| Http1Error::InvalidRequestMethod)?;
-    Ok((
-        method,
-        &line[first_space + 1..second_space],
-        &line[second_space + 1..],
-    ))
+    let Some((target, [b' ', version @ ..])) =
+        memchr(b' ', after_method).and_then(|at| after_method.split_at_checked(at))
+    else {
+        return Http1Error::InvalidRequestLine.err();
+    };
+    let method = parse_request_method(method_bytes).map_err(|_| Http1Error::InvalidRequestMethod)?;
+    Ok((method, target, version))
 }
 
 fn parse_request_target<'a>(
@@ -1100,10 +1098,12 @@ fn parse_request_target<'a>(
 /// This intentionally precedes `Uri` parsing: `Uri` has no fragment field and
 /// therefore cannot report a `#fragment` that appeared on the wire.
 fn raw_absolute_form_target_is_valid(method: &Method, target: &[u8]) -> bool {
-    let Some(scheme_end) = memchr(b':', target) else {
+    let Some((scheme, [b':', after_scheme @ ..])) =
+        memchr(b':', target).and_then(|at| target.split_at_checked(at))
+    else {
         return false;
     };
-    let Some(after_authority) = target[scheme_end + 1..].strip_prefix(b"//") else {
+    let Some(after_authority) = after_scheme.strip_prefix(b"//") else {
         return false;
     };
     let authority_end = after_authority
@@ -1113,7 +1113,7 @@ fn raw_absolute_form_target_is_valid(method: &Method, target: &[u8]) -> bool {
     let (authority, path_and_query) = after_authority.split_at(authority_end);
 
     !target.contains(&b'#')
-        && request_scheme_is_valid(&target[..scheme_end])
+        && request_scheme_is_valid(scheme)
         && request_authority_is_valid(authority)
         && (path_and_query.is_empty() || request_path_is_valid(method, path_and_query))
 }
