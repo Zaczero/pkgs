@@ -401,9 +401,10 @@ pub(crate) fn split_commas_bytes(value: &[u8]) -> impl Iterator<Item = &[u8]> {
         } else {
             memchr(b',', current)
         };
-        if let Some(index) = comma {
-            rest = Some(&current[index + 1..]);
-            Some(&current[..index])
+        if let Some((head, [b',', tail @ ..])) = comma.and_then(|at| current.split_at_checked(at))
+        {
+            rest = Some(tail);
+            Some(head)
         } else {
             rest = None;
             Some(current)
@@ -503,8 +504,9 @@ pub(crate) fn request_authority_is_valid(value: &[u8]) -> bool {
         let Some(close) = rest.iter().position(|byte| *byte == b']') else {
             return false;
         };
-        let host = &rest[..close];
-        let suffix = &rest[close + 1..];
+        let Some((host, [b']', suffix @ ..])) = rest.split_at_checked(close) else {
+            return false;
+        };
         if host.is_empty() || host.contains(&b'[') || host.contains(&b']') {
             return false;
         }
@@ -520,11 +522,15 @@ pub(crate) fn request_authority_is_valid(value: &[u8]) -> bool {
     }
     match memchr(b':', value) {
         None => true,
-        Some(colon) if memchr(b':', &value[colon + 1..]).is_none() => {
-            let (host, port) = (&value[..colon], &value[colon + 1..]);
-            !host.is_empty() && !port.is_empty() && port.iter().all(u8::is_ascii_digit)
+        Some(colon) => {
+            let Some((host, [b':', port @ ..])) = value.split_at_checked(colon) else {
+                return false;
+            };
+            memchr(b':', port).is_none()
+                && !host.is_empty()
+                && !port.is_empty()
+                && port.iter().all(u8::is_ascii_digit)
         },
-        Some(_) => false,
     }
 }
 
@@ -985,11 +991,12 @@ fn forwarded_ows_trim(value: &str) -> &str {
 }
 
 fn forwarded_obfuscated(value: &str) -> bool {
-    value.len() > 1
-        && value.as_bytes()[0] == b'_'
-        && value.as_bytes()[1..]
-            .iter()
-            .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    value.as_bytes().strip_prefix(b"_").is_some_and(|rest| {
+        !rest.is_empty()
+            && rest
+                .iter()
+                .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    })
 }
 
 fn forwarded_port(value: &str) -> bool {
@@ -1042,9 +1049,9 @@ fn forwarded_reg_name(value: &str) -> bool {
     !bytes.is_empty()
         && bytes.iter().enumerate().all(|(index, &byte)| {
             if byte == b'%' {
-                return index + 2 < bytes.len()
-                    && bytes[index + 1].is_ascii_hexdigit()
-                    && bytes[index + 2].is_ascii_hexdigit();
+                return bytes
+                    .get(index + 1..=index + 2)
+                    .is_some_and(|pair| pair.iter().all(u8::is_ascii_hexdigit));
             }
             byte.is_ascii_alphanumeric()
                 || matches!(byte, b'-' | b'.' | b'_' | b'~')
