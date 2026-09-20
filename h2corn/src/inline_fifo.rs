@@ -73,7 +73,7 @@ impl<T, const N: usize> InlineFifo<T, N> {
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &T> {
-        self.items[self.front..].iter().map(|item| {
+        self.items.get(self.front..).unwrap_or_default().iter().map(|item| {
             // SAFETY: the sliced live range is exactly the initialized range.
             unsafe { item.assume_init_ref() }
         })

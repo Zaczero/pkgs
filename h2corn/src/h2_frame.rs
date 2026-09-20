@@ -849,7 +849,7 @@ pub(crate) fn append_goaway(
     error_code: ErrorCode,
     debug: &[u8],
 ) {
-    let debug = &debug[..debug.len().min(MAX_GOAWAY_DEBUG_LEN)];
+    let debug = debug.get(..MAX_GOAWAY_DEBUG_LEN).unwrap_or(debug);
     let payload_len =
         const { FramePayloadLen::constant(GOAWAY_FIXED_PAYLOAD_LEN + MAX_GOAWAY_DEBUG_LEN) }
             .min_usize(GOAWAY_FIXED_PAYLOAD_LEN + debug.len());

@@ -245,7 +245,7 @@ impl RustFuture {
             let before = callbacks.len();
             let mut index = 0;
             callbacks.retain(|_| {
-                let retain = index >= snapshot.len() || snapshot[index].1;
+                let retain = snapshot.get(index).is_none_or(|entry| entry.1);
                 index += 1;
                 retain
             });

@@ -337,10 +337,9 @@ pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(Proxy
 
 fn websocket_key_is_syntactically_valid(value: &[u8]) -> bool {
     value.len() == WEBSOCKET_KEY_LEN
-        && value[WEBSOCKET_KEY_LEN - 2..] == *b"=="
-        && value[..WEBSOCKET_KEY_LEN - 2]
-            .iter()
-            .all(|byte| base64::is_base64(*byte))
+        && value
+            .strip_suffix(b"==")
+            .is_some_and(|head| head.iter().all(|byte| base64::is_base64(*byte)))
 }
 
 /// Parse one `Sec-WebSocket-Protocol` field value into `out`.

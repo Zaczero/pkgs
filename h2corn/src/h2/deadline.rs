@@ -71,13 +71,11 @@ where
     }
 
     pub(super) fn pop_expired(&mut self, now: Instant) -> Option<(K, Instant)> {
-        let index = self
+        let (index, &entry) = self
             .entries
             .iter()
             .enumerate()
-            .min_by_key(|(_, entry)| (entry.at, entry.generation, entry.key))
-            .map(|(index, _)| index)?;
-        let entry = self.entries[index];
+            .min_by_key(|(_, entry)| (entry.at, entry.generation, entry.key))?;
         if entry.at > now {
             return None;
         }

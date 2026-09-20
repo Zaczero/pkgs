@@ -25,7 +25,7 @@ impl<E> DynamicBuffer<E> {
     }
 
     pub(super) fn live(&self) -> &[(E, usize)] {
-        &self.entries[self.start..]
+        self.entries.get(self.start..).unwrap_or_default()
     }
 
     /// Returns the entry at `offset` slots back from the most recent insertion,
