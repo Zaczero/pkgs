@@ -358,16 +358,20 @@ where
         }
 
         for index in 0..drained.len() {
-            while let Some(mut queued_batch) = drained[index].1.pop_front() {
+            while let Some(mut queued_batch) =
+                drained.get_mut(index).and_then(|stream| stream.1.pop_front())
+            {
                 while let Some(command) = queued_batch.commands.pop_front() {
                     if self.process_command(command).await? {
-                        if !queued_batch.commands.is_empty() {
+                        if !queued_batch.commands.is_empty()
+                            && let Some(stream) = drained.get_mut(index)
+                        {
                             let mut remainder = QueuedStreamCommands::new();
                             remainder.push_back(queued_batch);
-                            while let Some(queued_batch) = drained[index].1.pop_front() {
+                            while let Some(queued_batch) = stream.1.pop_front() {
                                 remainder.push_back(queued_batch);
                             }
-                            drained[index].1 = remainder;
+                            stream.1 = remainder;
                         }
                         let remainder = drained.split_off(index);
                         self.ingress.restore_drained(remainder).await;

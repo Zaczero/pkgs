@@ -348,7 +348,10 @@ impl RequestHeadBuilder {
                     let index = merge.index;
                     let mut joined = match merge.joined {
                         Some(joined) => joined,
-                        None => BytesMut::from(self.regular_headers[index].1.as_bytes()),
+                        None => self.regular_headers.get(index).map_or_else(
+                            BytesMut::new,
+                            |(_, value)| BytesMut::from(value.as_bytes()),
+                        ),
                     };
                     joined.extend_from_slice(COOKIE_LINE_SEPARATOR);
                     joined.extend_from_slice(value_bytes);
@@ -392,7 +395,9 @@ impl RequestHeadBuilder {
             joined: Some(joined),
         }) = self.cookie.take()
         {
-            self.regular_headers[index].1 = RequestHeaderValue::from_h2_validated(joined.freeze());
+            if let Some((_, value)) = self.regular_headers.get_mut(index) {
+                *value = RequestHeaderValue::from_h2_validated(joined.freeze());
+            }
         }
     }
 
