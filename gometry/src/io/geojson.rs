@@ -376,9 +376,12 @@ fn parse_point(value: &Value, path: &JsonPath<'_>) -> Result<Point> {
                 .map_err(|error| error.with_parse_path(&path.index(2).render()))
         })
         .transpose()?;
-    let x = json_number(&pair[0], "x coordinate must be numeric")
+    let Some([raw_x, raw_y]) = pair.first_chunk::<2>() else {
+        return Err(IoError::geojson("coordinate requires x and y").with_parse_path(&path.render()));
+    };
+    let x = json_number(raw_x, "x coordinate must be numeric")
         .map_err(|error| error.with_parse_path(&path.index(0).render()))?;
-    let y = json_number(&pair[1], "y coordinate must be numeric")
+    let y = json_number(raw_y, "y coordinate must be numeric")
         .map_err(|error| error.with_parse_path(&path.index(1).render()))?;
     // RFC 7946 §4 fixes GeoJSON coordinates to the WGS84 lon/lat domain: a
     // parsed document claiming a position outside it is malformed, not planar

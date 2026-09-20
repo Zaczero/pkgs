@@ -74,8 +74,9 @@ pub(crate) fn interleave_coordseq_ordered(
     let ms = seq.ms();
     if dims == 2
         && order.len() == 2
-        && order[0] == CoordinateAxis::X
-        && order[1] == CoordinateAxis::Y
+        && let Some([first, second]) = order.first_chunk::<2>()
+        && *first == CoordinateAxis::X
+        && *second == CoordinateAxis::Y
     {
         for i in 0..rows {
             let base = i * 2;

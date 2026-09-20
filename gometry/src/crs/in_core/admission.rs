@@ -288,12 +288,13 @@ fn projected_axis_scale(info: &CrsInfo) -> Option<AxisScale> {
     {
         return None;
     }
-    let factor = axes[0].unit_conversion_factor;
+    let [first_axis, second_axis] = axes.first_chunk::<2>()?;
+    let factor = first_axis.unit_conversion_factor;
     #[expect(
         clippy::float_cmp,
         reason = "both axes must declare the exact same metadata conversion factor"
     )]
-    if axes[1].unit_conversion_factor != factor {
+    if second_axis.unit_conversion_factor != factor {
         return None;
     }
     // PROJ reports the length-unit-to-metre factor here, just as geographic

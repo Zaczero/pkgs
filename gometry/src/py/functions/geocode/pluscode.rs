@@ -165,7 +165,7 @@ pub(super) fn olc_is_full(code: &str) -> bool {
         return false;
     }
     let bytes = code.as_bytes();
-    let Some(first_lat) = olc_value(bytes[0]) else {
+    let Some(first_lat) = bytes.first().copied().and_then(olc_value) else {
         return false;
     };
     if first_lat * 20 >= 180 {

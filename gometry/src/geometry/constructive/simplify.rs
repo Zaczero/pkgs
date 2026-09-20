@@ -1219,9 +1219,11 @@ mod keep_identity_tests {
         let Shape::Polygon(out) = polygon.simplify_dp_raw(0.5).unwrap() else {
             panic!("shell remains a polygon");
         };
-        assert_eq!(out.holes.len(), 2);
-        assert_eq!(out.holes[0].xs().as_ptr(), a_ptr);
-        assert_eq!(out.holes[1].xs().as_ptr(), b_ptr);
+        let [kept_a, kept_b] = out.holes.as_slice() else {
+            panic!("both 1x1 holes survive the simplification");
+        };
+        assert_eq!(kept_a.xs().as_ptr(), a_ptr);
+        assert_eq!(kept_b.xs().as_ptr(), b_ptr);
     }
 
     #[test]

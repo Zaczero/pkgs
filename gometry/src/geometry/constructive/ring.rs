@@ -687,8 +687,11 @@ mod vw_frame_tests {
             panic!("opposite-sign extreme coordinates require a VW frame");
         };
         assert!(fxs.iter().chain(fys).all(|value| value.is_finite()));
-        assert_eq!(fxs[0].to_bits(), 0.0_f64.to_bits());
-        assert!(fxs[2] > fxs[1] && fxs[1] > fxs[0]);
+        let Some([first, second, third]) = fxs.first_chunk::<3>() else {
+            panic!("the frame keeps one column per input coordinate");
+        };
+        assert_eq!(first.to_bits(), 0.0_f64.to_bits());
+        assert!(third > second && second > first);
     }
 
     #[test]

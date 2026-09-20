@@ -603,9 +603,9 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     if buffer.dimensions() != 2 {
         return Ok(None);
     }
-    let shape = buffer.shape();
-    let n = shape[0];
-    let d = shape[1];
+    let Some(&[n, d]) = buffer.shape().first_chunk::<2>() else {
+        return Ok(None);
+    };
     if !(2..=4).contains(&d) {
         return Ok(None);
     }
@@ -620,9 +620,9 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     if buffer.suboffsets().is_some() {
         return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
     }
-    let strides = buffer.strides();
-    let row_stride = strides[0];
-    let col_stride = strides[1];
+    let Some(&[row_stride, col_stride]) = buffer.strides().first_chunk::<2>() else {
+        return Ok(None);
+    };
     let item = std::mem::size_of::<f64>() as isize;
     if row_stride % item != 0 || col_stride % item != 0 {
         return Ok(None);

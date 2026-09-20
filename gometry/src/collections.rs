@@ -90,12 +90,15 @@ fn collection_hash_state_with(
     state.get_or_try_init(|| {
         let mut bytes = [0_u8; 32];
         fill(&mut bytes).map_err(|_| crate::error::ResourceError::Entropy)?;
-        let words = bytes.as_chunks::<8>().0;
+        let Some(&[first, second, third, fourth]) = bytes.as_chunks::<8>().0.first_chunk::<4>()
+        else {
+            return Err(crate::error::ResourceError::Entropy.into());
+        };
         Ok(ahash::RandomState::with_seeds(
-            u64::from_ne_bytes(words[0]),
-            u64::from_ne_bytes(words[1]),
-            u64::from_ne_bytes(words[2]),
-            u64::from_ne_bytes(words[3]),
+            u64::from_ne_bytes(first),
+            u64::from_ne_bytes(second),
+            u64::from_ne_bytes(third),
+            u64::from_ne_bytes(fourth),
         ))
     })
 }

@@ -7515,7 +7515,7 @@ mod tests {
                 sources.ring_count,
                 |_, winding| {
                     labels.push((
-                        [winding[0], winding[1], winding[2], winding[3]],
+                        *winding.first_chunk::<4>().expect("four rings are labelled"),
                         sources.occupied(winding, false),
                     ));
                     Ok(())
@@ -7721,7 +7721,7 @@ mod tests {
                 sources.ring_count,
                 |_, winding| {
                     labels.push((
-                        [winding[0], winding[1], winding[2]],
+                        *winding.first_chunk::<3>().expect("three rings are labelled"),
                         sources.occupied(winding, false),
                     ));
                     Ok(())
@@ -9020,7 +9020,7 @@ mod tests {
                 &[Some(0), Some(0), Some(0), Some(1), Some(1), Some(1), None],
                 2,
                 |_, winding| {
-                    windings.push([winding[0], winding[1]]);
+                    windings.push(*winding.first_chunk::<2>().expect("two rings are labelled"));
                     Ok(())
                 },
             )
@@ -9066,7 +9066,7 @@ mod tests {
                 ],
                 2,
                 |_, winding| {
-                    windings.push([winding[0], winding[1]]);
+                    windings.push(*winding.first_chunk::<2>().expect("two rings are labelled"));
                     Ok(())
                 },
             )

@@ -202,13 +202,20 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     }
     for vertex in bytes.chunks_exact(stride) {
         let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
-        crate::boundary::try_push_vec(&mut xs, decode(ordinates[0]))?;
-        crate::boundary::try_push_vec(&mut ys, decode(ordinates[1]))?;
-        if let Some(column) = &mut zs {
-            crate::boundary::try_push_vec(column, decode(ordinates[2]))?;
+        let Some(&[x_bytes, y_bytes]) = ordinates.first_chunk::<2>() else {
+            return Err(IoError::wkb("coordinate run is shorter than its declared stride").into());
+        };
+        crate::boundary::try_push_vec(&mut xs, decode(x_bytes))?;
+        crate::boundary::try_push_vec(&mut ys, decode(y_bytes))?;
+        if let Some(column) = &mut zs
+            && let Some(&z_bytes) = ordinates.get(2)
+        {
+            crate::boundary::try_push_vec(column, decode(z_bytes))?;
         }
-        if let Some(column) = &mut ms {
-            crate::boundary::try_push_vec(column, decode(ordinates[2 + usize::from(Z)]))?;
+        if let Some(column) = &mut ms
+            && let Some(&m_bytes) = ordinates.get(2 + usize::from(Z))
+        {
+            crate::boundary::try_push_vec(column, decode(m_bytes))?;
         }
     }
     if !column_all_finite(&xs)

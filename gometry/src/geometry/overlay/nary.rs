@@ -1040,8 +1040,7 @@ fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {
     // The probe is accepted only after an exact ring classification confirms
     // that it is on the represented side; a finite point on the wrong side
     // would silently answer membership for a neighboring face.
-    let start = ring[0];
-    let end = ring[1];
+    let [start, end] = *ring.first_chunk::<2>()?;
     let coordinate_scale = start
         .x
         .abs()

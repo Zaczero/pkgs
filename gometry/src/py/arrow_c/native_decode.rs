@@ -688,7 +688,7 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
         let view = views.get(start..start + 16).ok_or_else(|| {
             NativeArrowDecodeError::geoarrow("Arrow binary-view buffer is shorter than declared")
         })?;
-        let length = i32::from_le_bytes(view[0..4].try_into().expect("descriptor length"));
+        let length = view.first_chunk::<4>().map_or(0, |bytes| i32::from_le_bytes(*bytes));
         let length = usize::try_from(length).map_err(|_| {
             NativeArrowDecodeError::geoarrow("Arrow binary-view length is negative")
         })?;
