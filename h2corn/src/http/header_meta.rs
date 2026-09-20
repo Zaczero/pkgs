@@ -57,38 +57,6 @@ impl ProxyHeaderKind {
     }
 }
 
-/// Classify standard forwarding names and the underscore spellings accepted by
-/// the HTTP field-name grammar. Underscore names are never consumable facts;
-/// they are only recognized so proxy-header mode can remove them.
-pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(ProxyHeaderKind, bool)> {
-    match name {
-        RequestHeaderNameRef::Known(KnownRequestHeaderName::Forwarded) => {
-            Some((ProxyHeaderKind::Forwarded, true))
-        },
-        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedFor) => {
-            Some((ProxyHeaderKind::For, true))
-        },
-        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedProto) => {
-            Some((ProxyHeaderKind::Proto, true))
-        },
-        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedHost) => {
-            Some((ProxyHeaderKind::Host, true))
-        },
-        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedPort) => {
-            Some((ProxyHeaderKind::Port, true))
-        },
-        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedPrefix) => {
-            Some((ProxyHeaderKind::Prefix, true))
-        },
-        RequestHeaderNameRef::Other("x_forwarded_for") => Some((ProxyHeaderKind::For, false)),
-        RequestHeaderNameRef::Other("x_forwarded_proto") => Some((ProxyHeaderKind::Proto, false)),
-        RequestHeaderNameRef::Other("x_forwarded_host") => Some((ProxyHeaderKind::Host, false)),
-        RequestHeaderNameRef::Other("x_forwarded_port") => Some((ProxyHeaderKind::Port, false)),
-        RequestHeaderNameRef::Other("x_forwarded_prefix") => Some((ProxyHeaderKind::Prefix, false)),
-        _ => None,
-    }
-}
-
 impl ProxyHeaderSlots {
     pub(crate) const fn index(slot: Option<NonZeroU32>) -> Option<usize> {
         match slot {
@@ -106,6 +74,8 @@ impl ProxyHeaderSlots {
             && self.x_forwarded_prefix.is_none()
     }
 }
+
+
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) enum ParsedWebSocketKey {
@@ -330,6 +300,38 @@ impl RequestHeaderMeta {
             },
             _ => {},
         }
+    }
+}
+
+/// Classify standard forwarding names and the underscore spellings accepted by
+/// the HTTP field-name grammar. Underscore names are never consumable facts;
+/// they are only recognized so proxy-header mode can remove them.
+pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(ProxyHeaderKind, bool)> {
+    match name {
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::Forwarded) => {
+            Some((ProxyHeaderKind::Forwarded, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedFor) => {
+            Some((ProxyHeaderKind::For, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedProto) => {
+            Some((ProxyHeaderKind::Proto, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedHost) => {
+            Some((ProxyHeaderKind::Host, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedPort) => {
+            Some((ProxyHeaderKind::Port, true))
+        },
+        RequestHeaderNameRef::Known(KnownRequestHeaderName::XForwardedPrefix) => {
+            Some((ProxyHeaderKind::Prefix, true))
+        },
+        RequestHeaderNameRef::Other("x_forwarded_for") => Some((ProxyHeaderKind::For, false)),
+        RequestHeaderNameRef::Other("x_forwarded_proto") => Some((ProxyHeaderKind::Proto, false)),
+        RequestHeaderNameRef::Other("x_forwarded_host") => Some((ProxyHeaderKind::Host, false)),
+        RequestHeaderNameRef::Other("x_forwarded_port") => Some((ProxyHeaderKind::Port, false)),
+        RequestHeaderNameRef::Other("x_forwarded_prefix") => Some((ProxyHeaderKind::Prefix, false)),
+        _ => None,
     }
 }
 

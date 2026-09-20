@@ -297,7 +297,7 @@ pub(crate) fn headers_to_python<'py>(
                 && let Some((kind, canonical)) = proxy_header_kind(header.name())
                 && (!canonical
                     || !consumed_fields.contains(kind.field())
-                    || !proxy_headers.is_some_and(|slots| kind.index(slots) == Some(index)))
+                    || proxy_headers.is_none_or(|slots| kind.index(slots) != Some(index)))
             {
                 return None;
             }
