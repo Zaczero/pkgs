@@ -6,7 +6,7 @@ use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyInt, PyString, PyType};
+use pyo3::types::{PyBool, PyInt, PyList, PyString, PyTuple, PyType};
 
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
@@ -418,7 +418,7 @@ where
             "cell array ids buffer length is invalid",
         ));
     }
-    let mut out = crate::try_vec_with_capacity(bytes.len() / width)?;
+    let mut out = Vec::with_capacity(bytes.len() / width);
     for chunk in bytes.chunks_exact(width) {
         // SAFETY: dtype matched by extract; tobytes is native-endian for T.
         let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
@@ -474,30 +474,36 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
 
 pub(super) struct CollectedCellIds {
     pub(super) ids: Vec<u64>,
-    pub(super) missing: Option<Vec<bool>>,
+    pub(super) missing: Option<crate::array::ValidityMask>,
 }
 
-fn append_cell_row(
+fn cell_id_buffer(values: &Bound<'_, PyAny>) -> Vec<u64> {
+    let capacity = values
+        .cast::<PyList>()
+        .map(|values| values.len())
+        .or_else(|_| values.cast::<PyTuple>().map(|values| values.len()))
+        .unwrap_or_default();
+    Vec::with_capacity(capacity)
+}
+
+pub(super) fn append_cell_row(
     ids: &mut Vec<u64>,
     missing: &mut Option<Vec<bool>>,
     id: u64,
     is_missing: bool,
-) -> PyResult<()> {
+) {
     let previous_len = ids.len();
-    crate::try_push(ids, id)?;
+    ids.push(id);
     match missing {
-        Some(missing) => crate::try_push(missing, is_missing)?,
+        Some(mask) => mask.push(is_missing),
         None if is_missing => {
-            let mut mask = Vec::new();
-            for _ in 0..previous_len {
-                crate::try_push(&mut mask, false)?;
-            }
-            crate::try_push(&mut mask, true)?;
+            let mut mask = Vec::with_capacity(ids.capacity());
+            mask.resize(previous_len, false);
+            mask.push(true);
             *missing = Some(mask);
         },
         None => {},
     }
-    Ok(())
 }
 
 fn collect_ids_from_iter<'py>(
@@ -506,11 +512,11 @@ fn collect_ids_from_iter<'py>(
     kind: GridKind,
     mismatch: impl Fn(GridKind) -> PyErr,
 ) -> PyResult<CollectedCellIds> {
-    let mut ids = Vec::new();
+    let mut ids = cell_id_buffer(values);
     let mut missing = None;
     crate::collect_py_iter_from_iter(values, iter, |item| {
         if item.is_none() {
-            append_cell_row(&mut ids, &mut missing, 0, true)?;
+            append_cell_row(&mut ids, &mut missing, 0, true);
         } else {
             if let Some(item_kind) = grid_kind_from_cell(&item)
                 && item_kind != kind
@@ -518,10 +524,14 @@ fn collect_ids_from_iter<'py>(
                 return Err(mismatch(item_kind));
             }
             let id = kind.id_from_value(&item)?;
-            append_cell_row(&mut ids, &mut missing, id, false)?;
+            append_cell_row(&mut ids, &mut missing, id, false);
         }
         Ok::<_, PyErr>(())
     })?;
+    let missing = missing
+        .map(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing))
+        .transpose()?
+        .flatten();
     Ok(CollectedCellIds { ids, missing })
 }
 
@@ -529,24 +539,24 @@ fn collect_inferred_from_iter<'py>(
     values: &Bound<'py, PyAny>,
     iter: Bound<'py, pyo3::types::PyIterator>,
 ) -> PyResult<(GridKind, CollectedCellIds)> {
-    let mut ids = Vec::new();
+    let mut ids = cell_id_buffer(values);
     let mut missing = None;
     let mut kind: Option<GridKind> = None;
     let mut pending = Vec::new();
     crate::collect_py_iter_from_iter(values, iter, |item| {
         if item.is_none() {
-            append_cell_row(&mut ids, &mut missing, 0, true)?;
+            append_cell_row(&mut ids, &mut missing, 0, true);
             return Ok::<_, PyErr>(());
         }
         let Some(item_kind) = grid_kind_from_cell(&item) else {
             let Some(kind) = kind else {
                 let index = ids.len();
-                append_cell_row(&mut ids, &mut missing, 0, false)?;
-                crate::try_push(&mut pending, (index, item))?;
+                append_cell_row(&mut ids, &mut missing, 0, false);
+                pending.push((index, item));
                 return Ok::<_, PyErr>(());
             };
             let id = kind.id_from_value(&item)?;
-            append_cell_row(&mut ids, &mut missing, id, false)?;
+            append_cell_row(&mut ids, &mut missing, id, false);
             return Ok::<_, PyErr>(());
         };
         if let Some(kind) = kind
@@ -565,7 +575,7 @@ fn collect_inferred_from_iter<'py>(
             }
         }
         let id = item_kind.id_from_value(&item)?;
-        append_cell_row(&mut ids, &mut missing, id, false)?;
+        append_cell_row(&mut ids, &mut missing, id, false);
         Ok::<_, PyErr>(())
     })?;
     let kind = kind.ok_or_else(|| {
@@ -580,6 +590,10 @@ fn collect_inferred_from_iter<'py>(
         }
     })?;
     debug_assert!(pending.is_empty());
+    let missing = missing
+        .map(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing))
+        .transpose()?
+        .flatten();
     Ok((kind, CollectedCellIds { ids, missing }))
 }
 
@@ -634,10 +648,9 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
             ));
         }
         let count = buffer.item_count();
-        let mut values = crate::try_vec_with_capacity(count)?;
+        let mut values = vec![0; count];
         // Copy via the buffer API into a fallibly reserved Vec; normalize
         // non-native endian (e.g. NumPy `>u8`) so ids are not silently corrupted.
-        values.resize(count, 0);
         crate::buffer_copy_to_slice_u64(ids.py(), &buffer, &mut values)?;
         for &id in &values {
             kind.validate_id(id)?;

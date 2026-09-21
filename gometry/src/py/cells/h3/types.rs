@@ -36,14 +36,11 @@ pub(crate) struct PyH3Cell {
 crate::heapless!(CellIndex, PyH3Cell);
 
 pub(super) fn h3_cell_array(cells: impl IntoIterator<Item = CellIndex>) -> PyResult<PyCellArray> {
-    let mut cells = crate::try_collect_results(cells.into_iter().map(Ok::<_, pyo3::PyErr>))?;
+    let mut cells: Vec<_> = cells.into_iter().collect();
     cells.sort_unstable_by_key(|cell| u64::from(*cell));
     cells.dedup_by_key(|cell| u64::from(*cell));
-    let mut ids = crate::try_vec_with_capacity(cells.len())?;
-    for cell in cells {
-        crate::try_push(&mut ids, u64::from(cell))?;
-    }
-    Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
+    let ids = cells.into_iter().map(u64::from).collect();
+    Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
 }
 
 /// A canonical H3 topological vertex.

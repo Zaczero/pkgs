@@ -20,19 +20,11 @@ use crate::py::cells::h3::{
     h3_edge_index, h3_vertex_index, validate_h3_index_ids,
 };
 use crate::py::cells::{FactorizationError, GridKind, Point, PyCellArray, Shape};
-use crate::py::errors;
 use crate::py::numpy::float64_array;
 use crate::py::row::{RowContainer, RowGetItemContainer, RowIterState, array_getitem};
 
-fn try_hex_token(id: u64) -> PyResult<String> {
-    use std::fmt::Write as _;
-    let mut token = String::new();
-    if token.try_reserve(16).is_err() {
-        drop(token);
-        return Err(errors::native_memory_error());
-    }
-    write!(&mut token, "{id:x}").expect("writing into a reserved string cannot fail");
-    Ok(token)
+fn hex_token(id: u64) -> String {
+    format!("{id:x}")
 }
 
 /// An immutable array of H3 topological vertex ids.
@@ -211,7 +203,7 @@ macro_rules! h3_index_array_common {
                 let mut rows = Vec::new();
                 let mut i = start;
                 while (step > 0 && i < stop) || (step < 0 && i > stop) {
-                    crate::try_push_vec(&mut rows, i as usize)?;
+                    rows.push(i as usize);
                     i += step;
                 }
                 self.select_logical_rows(rows)
@@ -225,25 +217,16 @@ macro_rules! h3_index_array_common {
                 }
             }
 
-            fn logical_ids_vec(&self) -> PyResult<Vec<u64>> {
-                let mut ids = crate::try_vec_with_capacity(self.len())?;
-                for logical in 0..self.len() {
-                    crate::try_push(&mut ids, self.id_at(logical))?;
-                }
-                Ok(ids)
+            fn logical_ids_vec(&self) -> Vec<u64> {
+                (0..self.len()).map(|logical| self.id_at(logical)).collect()
             }
 
             fn value_count_entries(
                 &self,
             ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-                let mut slot_of: HashMap<u64, usize> = HashMap::new();
-                if slot_of.try_reserve(self.len()).is_err() {
-                    return Err(FactorizationError::Native(
-                        crate::error::ResourceError::Allocation.into(),
-                    ));
-                }
-                let mut uniques = Vec::new();
-                let mut counts = Vec::new();
+                let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
+                let mut uniques = Vec::with_capacity(self.len());
+                let mut counts = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     let id = self.id_at(row);
                     let slot = match slot_of.entry(id) {
@@ -251,8 +234,8 @@ macro_rules! h3_index_array_common {
                         Entry::Vacant(entry) => {
                             let slot = uniques.len();
                             entry.insert(slot);
-                            crate::try_push_vec(&mut uniques, id)?;
-                            crate::try_push_vec(&mut counts, 0_i64)?;
+                            uniques.push(id);
+                            counts.push(0_i64);
                             slot
                         },
                     };
@@ -267,15 +250,9 @@ macro_rules! h3_index_array_common {
             fn factorize_entries(
                 &self,
             ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-                let mut slot_of: HashMap<u64, usize> = HashMap::new();
-                if slot_of.try_reserve(self.len()).is_err() {
-                    return Err(FactorizationError::Native(
-                        crate::error::ResourceError::Allocation.into(),
-                    ));
-                }
-                let mut uniques = Vec::new();
-                let mut codes = Vec::new();
-                crate::try_reserve_vec(&mut codes, self.len())?;
+                let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
+                let mut uniques = Vec::with_capacity(self.len());
+                let mut codes = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     let id = self.id_at(row);
                     let slot = match slot_of.entry(id) {
@@ -283,14 +260,14 @@ macro_rules! h3_index_array_common {
                         Entry::Vacant(entry) => {
                             let slot = uniques.len();
                             entry.insert(slot);
-                            crate::try_push_vec(&mut uniques, id)?;
+                            uniques.push(id);
                             slot
                         },
                     };
                     let Ok(code) = i64::try_from(slot) else {
                         return Err(FactorizationError::CodeOverflow);
                     };
-                    crate::try_push_vec(&mut codes, code)?;
+                    codes.push(code);
                 }
                 Ok((uniques, codes))
             }
@@ -541,26 +518,17 @@ macro_rules! h3_index_array_common {
 fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let result = (|| -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
                     let (uniques, counts) = self.value_count_entries()?;
-                    let mut order = Vec::new();
-                    crate::try_reserve_vec(&mut order, uniques.len())?;
-                    for slot in 0..uniques.len() {
-                        crate::try_push_vec(&mut order, slot)?;
-                    }
+                    let mut order: Vec<_> = (0..uniques.len()).collect();
                     order.sort_unstable_by(|&left, &right| {
                         counts[right]
                             .cmp(&counts[left])
                             .then_with(|| left.cmp(&right))
                     });
-                    let mut sorted_uniques = Vec::new();
-                    let mut sorted_counts = Vec::new();
-                    crate::try_reserve_pair(&mut sorted_uniques, &mut sorted_counts, order.len())?;
+                    let mut sorted_uniques = Vec::with_capacity(order.len());
+                    let mut sorted_counts = Vec::with_capacity(order.len());
                     for &slot in &order {
-                        crate::try_push_pair(
-                            &mut sorted_uniques,
-                            &mut sorted_counts,
-                            uniques[slot],
-                            counts[slot],
-                        )?;
+                        sorted_uniques.push(uniques[slot]);
+                        sorted_counts.push(counts[slot]);
                     }
                     Ok((sorted_uniques, sorted_counts))
                 })();
@@ -637,7 +605,7 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let callable = crate::gometry_lib_module(py)?
                     .getattr(pyo3::intern!(py, $unpickle))?
                     .unbind();
-                Ok((callable, (self.logical_ids_vec()?,)))
+                Ok((callable, (self.logical_ids_vec(),)))
             }
 
             fn __repr__(&self) -> String {
@@ -652,9 +620,9 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
             #[getter]
             fn token(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 use pyo3::IntoPyObjectExt;
-                let mut tokens = crate::try_vec_with_capacity(self.len())?;
-                for id in self.logical_ids_vec()? {
-                    crate::try_push(&mut tokens, try_hex_token(id)?)?;
+                let mut tokens = Vec::with_capacity(self.len());
+                for id in self.logical_ids_vec() {
+                    tokens.push(hex_token(id));
                 }
                 tokens.into_py_any(py)
             }
@@ -684,7 +652,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     // the array base.
                     return unsafe { crate::py::numpy::uint64_slice_array(owner, values) };
                 }
-                crate::py::numpy::uint64_array(owner.py(), borrowed.logical_ids_vec()?)
+                crate::py::numpy::uint64_array(owner.py(), borrowed.logical_ids_vec())
             }
 
             /// NumPy array protocol.
@@ -727,15 +695,14 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                         }
                         let values = {
                             let borrowed = slf.borrow();
-                            let mut values = crate::try_vec_with_capacity(borrowed.len())?;
+                            let mut values = Vec::with_capacity(borrowed.len());
                             for row in 0..borrowed.len() {
-                                crate::try_push(
-                                    &mut values,
+                                values.push(
                                     borrowed
                                         .scalar_at(row)
                                         .into_pyobject(py)
                                         .map(|value| value.into_any().unbind())?,
-                                )?;
+                                );
                             }
                             values
                         };
@@ -760,7 +727,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     ));
                 }
                 let array = if copy == Some(true) {
-                    let ids = slf.borrow().logical_ids_vec()?;
+                    let ids = slf.borrow().logical_ids_vec();
                     crate::py::numpy::uint64_array(py, ids)?
                 } else {
                     if copy == Some(false) {
@@ -836,19 +803,19 @@ impl PyH3VertexArray {
     ///     One ``Point`` (lon/lat, ``OGC:CRS84``) per vertex.
     #[getter]
     fn point(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
-        let ids = self.logical_ids_vec()?;
+        let ids = self.logical_ids_vec();
         let points = py.detach(move || {
-            let mut points = crate::try_vec_with_capacity(ids.len())?;
-            for id in ids {
-                let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
-                let latlng = LatLng::from(vertex);
-                crate::try_push(&mut points, crate::geometry::XY {
-                    x: latlng.lng(),
-                    y: latlng.lat(),
-                })?;
-            }
-            Ok::<_, PyErr>(points)
-        })?;
+            ids.into_iter()
+                .map(|id| {
+                    let vertex = VertexIndex::try_from(id).expect("ids validated at construction");
+                    let latlng = LatLng::from(vertex);
+                    crate::geometry::XY {
+                        x: latlng.lng(),
+                        y: latlng.lat(),
+                    }
+                })
+                .collect::<Vec<_>>()
+        });
         let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
         for point in points {
             builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y))?;
@@ -883,12 +850,15 @@ impl PyH3EdgeArray {
     ///     One origin H3Cell per edge.
     #[getter]
     fn origin(&self) -> PyResult<PyCellArray> {
-        let mut ids = crate::try_vec_with_capacity(self.len())?;
-        for id in self.logical_ids_vec()? {
-            let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-            crate::try_push(&mut ids, u64::from(edge.origin()))?;
-        }
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
+        let ids = self
+            .logical_ids_vec()
+            .into_iter()
+            .map(|id| {
+                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                u64::from(edge.origin())
+            })
+            .collect();
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
     }
 
     /// The cells these directed edges enter.
@@ -899,12 +869,15 @@ impl PyH3EdgeArray {
     ///     One destination H3Cell per edge.
     #[getter]
     fn destination(&self) -> PyResult<PyCellArray> {
-        let mut ids = crate::try_vec_with_capacity(self.len())?;
-        for id in self.logical_ids_vec()? {
-            let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-            crate::try_push(&mut ids, u64::from(edge.destination()))?;
-        }
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
+        let ids = self
+            .logical_ids_vec()
+            .into_iter()
+            .map(|id| {
+                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                u64::from(edge.destination())
+            })
+            .collect();
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
     }
 
     /// Reverse every directed edge from its destination back to its origin.
@@ -921,13 +894,16 @@ impl PyH3EdgeArray {
     /// >>> edges = cell.edges
     /// >>> edges.reverse()[0].token
     /// '1672830829ffffff'
-    fn reverse(&self) -> PyResult<Self> {
-        let mut ids = crate::try_vec_with_capacity(self.len())?;
-        for id in self.logical_ids_vec()? {
-            let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-            crate::try_push(&mut ids, u64::from(edge.reverse()))?;
-        }
-        Ok(Self::from_ids(ids))
+    fn reverse(&self) -> Self {
+        let ids = self
+            .logical_ids_vec()
+            .into_iter()
+            .map(|id| {
+                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
+                u64::from(edge.reverse())
+            })
+            .collect();
+        Self::from_ids(ids)
     }
 
     /// Edge linework along each shared cell boundary.
@@ -938,20 +914,19 @@ impl PyH3EdgeArray {
     ///     One ``LineString`` (lon/lat, ``OGC:CRS84``) per edge.
     #[getter]
     fn line(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
-        let ids = self.logical_ids_vec()?;
+        let ids = self.logical_ids_vec();
         let shapes = py.detach(move || {
-            let mut shapes = crate::try_vec_with_capacity(ids.len())?;
+            let mut shapes = Vec::with_capacity(ids.len());
             for id in ids {
                 let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
                 let boundary = edge.boundary();
-                let mut points = crate::try_vec_with_capacity(boundary.len())?;
-                for latlng in boundary.iter() {
-                    crate::try_push(&mut points, Point::new_raw_xy(latlng.lng(), latlng.lat()))?;
-                }
-                crate::try_push(
-                    &mut shapes,
-                    Shape::LineString(LineSeq::from_proven(CoordSeq::try_from_points(&points)?)),
-                )?;
+                let points: Vec<_> = boundary
+                    .iter()
+                    .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
+                    .collect();
+                shapes.push(Shape::LineString(LineSeq::from_proven(
+                    CoordSeq::try_from_points(&points)?,
+                )));
             }
             Ok::<_, PyErr>(shapes)
         })?;
@@ -969,15 +944,16 @@ impl PyH3EdgeArray {
     ///     One ``float64`` length per edge.
     #[getter]
     fn length(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let ids = self.logical_ids_vec()?;
+        let ids = self.logical_ids_vec();
         let values = py.detach(move || {
-            let mut values = crate::try_vec_with_capacity(ids.len())?;
-            for id in ids {
-                let edge = DirectedEdgeIndex::try_from(id).expect("ids validated at construction");
-                crate::try_push(&mut values, edge.length_m())?;
-            }
-            Ok::<_, PyErr>(values)
-        })?;
+            ids.into_iter()
+                .map(|id| {
+                    DirectedEdgeIndex::try_from(id)
+                        .expect("ids validated at construction")
+                        .length_m()
+                })
+                .collect()
+        });
         float64_array(py, values)
     }
 }
@@ -992,67 +968,4 @@ pub(super) fn _unpickle_h3_edge_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3Ed
     let ids = crate::collect_u64_sequence(ids, "H3 edge array pickle ids")?;
     validate_h3_index_ids::<DirectedEdgeIndex>(&ids)?;
     Ok(PyH3EdgeArray::from_ids(ids))
-}
-
-#[cfg(test)]
-mod tests {
-    use pyo3::exceptions::PyMemoryError;
-    use pyo3::prelude::*;
-
-    use super::{PyH3EdgeArray, PyH3VertexArray};
-    use crate::py::cells::FactorizationError;
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    fn assert_native_allocation_converts_to_memory_error<F>(
-        py: Python<'_>,
-        label: &str,
-        assemble: F,
-    ) where
-        F: Fn() -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError>,
-    {
-        assemble().unwrap_or_else(|_| panic!("warm {label} pass must succeed"));
-        let ((), allocations) = allocation_count(|| {
-            assemble().unwrap_or_else(|_| panic!("counting {label} pass must succeed"));
-        });
-        assert!(allocations > 0);
-        let error = fail_allocations_after(allocations - 1, || {
-            let Err(error) = assemble() else {
-                panic!("the measured {label} allocation must fail");
-            };
-            assert!(matches!(&error, FactorizationError::Native(_)));
-            error.into_py_err("H3 count overflows int64", "H3 factor code overflows int64")
-        });
-        assert!(error.is_instance_of::<PyMemoryError>(py));
-        drop(error);
-    }
-
-    #[test]
-    fn h3_value_count_entries_allocation_error_converts_to_memory_error() {
-        Python::initialize();
-        Python::attach(|py| {
-            let vertices = PyH3VertexArray::from_ids(vec![1, 2, 3]);
-            assert_native_allocation_converts_to_memory_error(py, "H3 vertex value-count", || {
-                vertices.value_count_entries()
-            });
-            let edges = PyH3EdgeArray::from_ids(vec![1, 2, 3]);
-            assert_native_allocation_converts_to_memory_error(py, "H3 edge value-count", || {
-                edges.value_count_entries()
-            });
-        });
-    }
-
-    #[test]
-    fn h3_factorize_entries_allocation_error_converts_to_memory_error() {
-        Python::initialize();
-        Python::attach(|py| {
-            let vertices = PyH3VertexArray::from_ids(vec![1, 2, 3]);
-            assert_native_allocation_converts_to_memory_error(py, "H3 vertex factorize", || {
-                vertices.factorize_entries()
-            });
-            let edges = PyH3EdgeArray::from_ids(vec![1, 2, 3]);
-            assert_native_allocation_converts_to_memory_error(py, "H3 edge factorize", || {
-                edges.factorize_entries()
-            });
-        });
-    }
 }

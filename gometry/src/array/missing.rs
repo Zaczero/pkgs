@@ -198,7 +198,7 @@ impl ValidityMask {
         Self::from_missing_iter(len, missing)
     }
 
-    fn from_missing_iter(
+    pub(crate) fn from_missing_iter(
         len: usize,
         missing: impl IntoIterator<Item = bool>,
     ) -> crate::error::Result<Option<Self>> {

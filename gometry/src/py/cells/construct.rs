@@ -4,6 +4,7 @@ use pyo3::PyErr;
 use pyo3::exceptions::PyTypeError;
 use pyo3::types::PyAny;
 
+use super::grid_kind::append_cell_row;
 use crate::boundary::geographic;
 use crate::grid::geohash::Geohash;
 use crate::grid::tile::{TILE_MAX_LATITUDE, Tile};
@@ -15,7 +16,6 @@ use crate::py::cells::tiles::{PyTile, parse_tile_zoom, tile_arg};
 use crate::py::cells::{
     Bound, GeometryError, GridKind, PyCellArray, PyResult, Python, py_i64_required,
 };
-use crate::py::errors;
 use crate::py::errors::InvalidGeometryError;
 use crate::{
     I64Param, broadcast_coordinate_group, coordinate_input_with_expected,
@@ -290,48 +290,30 @@ where
                 "lat must not be provided when values is a geometry array",
             ));
         }
-        let is_point_storage = if array.is_compact_nullable() {
-            matches!(
-                array.storage(),
-                crate::array::GeometryArrayStorage::Packed(
-                    crate::array::PackedStorage::Points { .. }
-                )
-            )
-        } else {
-            array.storage().point_rows().is_some()
-        };
-        if !is_point_storage {
-            return Err(errors::geometry_type_err("expected Point geometry"));
-        }
-        let admission = GridSourceAdmission::new_for_array(array).map_err(PyErr::from)?;
-        let points = admission.admit_points(array).map_err(PyErr::from)?;
-        let depth = I64Param::parse(depth, depth_kw, points.len())?;
-        let mut ids = Vec::new();
-        let mut missing = Vec::new();
-        crate::try_reserve_pair(&mut ids, &mut missing, points.len()).map_err(pyo3::PyErr::from)?;
-        let mut any_missing = false;
-        for (row, point) in points.iter().enumerate() {
-            let Some(point) = point else {
+        let (xs, ys) = GridSourceAdmission::admit_point_columns(array).map_err(PyErr::from)?;
+        let depth = I64Param::parse(depth, depth_kw, array.len())?;
+        let mut ids = Vec::with_capacity(array.len());
+        let mut missing = None;
+        let mut coordinates = xs.into_iter().zip(ys);
+        for row in 0..array.len() {
+            if array.is_row_missing(row) {
                 // Array-degrades doctrine: missing geometry → missing cell.
-                crate::try_push_pair(&mut ids, &mut missing, 0, true).map_err(pyo3::PyErr::from)?;
-                any_missing = true;
+                append_cell_row(&mut ids, &mut missing, 0, true);
                 continue;
-            };
-            let (lon, lat) = crate::grid::canonical_lonlat(point.x, point.y);
-            geographic::validate_lonlat_xy(lon, lat)?;
+            }
+            let (x, y) = coordinates.next().expect("one coordinate per present row");
+            let (lon, lat) = crate::grid::canonical_lonlat(x, y);
             let depth = validate_depth(depth.get(row))?;
-            crate::try_push_pair(
+            append_cell_row(
                 &mut ids,
                 &mut missing,
                 from_xy(lon, lat, depth)?.into_cell_array_id(),
                 false,
-            )
-            .map_err(pyo3::PyErr::from)?;
+            );
         }
-        return Ok(if any_missing {
-            PyCellArray::from_ids_with_missing(kind, ids, missing)
-        } else {
-            PyCellArray::from_ids(kind, ids)
+        return Ok(match missing {
+            Some(missing) => PyCellArray::from_ids_with_missing(kind, ids, missing)?,
+            None => PyCellArray::from_ids(kind, ids)?,
         });
     }
     let lat = lat
@@ -355,14 +337,14 @@ where
     let len = lon.values.len();
     let depth = I64Param::parse(depth, depth_kw, len)?;
     let ids = py.detach(move || {
-        let mut ids = crate::try_vec_with_capacity(len)?;
+        let mut ids = Vec::with_capacity(len);
         for (row, (&lon, &lat)) in lon.values.iter().zip(lat.values.iter()).enumerate() {
             let (lon, lat) = crate::grid::canonical_lonlat(lon, lat);
             geographic::validate_lonlat_xy(lon, lat)?;
             let depth = validate_depth(depth.get(row))?;
-            crate::try_push(&mut ids, from_xy(lon, lat, depth)?.into_cell_array_id())?;
+            ids.push(from_xy(lon, lat, depth)?.into_cell_array_id());
         }
         Ok::<_, PyErr>(ids)
     })?;
-    Ok(PyCellArray::from_ids(kind, ids))
+    Ok(PyCellArray::from_ids(kind, ids)?)
 }

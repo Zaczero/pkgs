@@ -159,9 +159,6 @@ pub(crate) fn cell_array_from_keys<G: GridCell>(
     kind: GridKind,
     cells: impl IntoIterator<Item = G>,
 ) -> PyResult<PyCellArray> {
-    let mut ids = Vec::new();
-    for cell in cells {
-        crate::try_push(&mut ids, cell.hash_key())?;
-    }
-    Ok(PyCellArray::from_ids(kind, ids))
+    let ids = cells.into_iter().map(GridCell::hash_key).collect();
+    Ok(PyCellArray::from_ids(kind, ids)?)
 }

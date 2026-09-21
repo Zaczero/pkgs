@@ -5,11 +5,8 @@ use crate::py::cells::{
 use crate::py::errors::{ParseFormat, parse_error};
 
 pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyResult<PyCellArray> {
-    let mut ids = Vec::new();
-    for cell in cells {
-        crate::try_push(&mut ids, cell.raw())?;
-    }
-    Ok(PyCellArray::from_ids(GridKind::S2Cell, ids))
+    let ids = cells.into_iter().map(CellId::raw).collect();
+    Ok(PyCellArray::from_ids(GridKind::S2Cell, ids)?)
 }
 
 #[pymethods]

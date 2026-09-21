@@ -748,7 +748,7 @@ impl Groups {
                             let mut builder = CsrBuilder::<u64>::new();
                             for row in rows {
                                 builder
-                                    .push_row(this.cell_row_view(row)?.logical_ids()?)
+                                    .push_row(this.cell_row_view(row)?.logical_ids())
                                     .map_err(PyErr::from)?;
                             }
                             let (ids, offsets) = builder.finish().map_err(PyErr::from)?;

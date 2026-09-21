@@ -160,34 +160,9 @@ pub(crate) fn s2_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyS2Cell> {
                 Ok(admission) => admission,
                 Err(error) => return Err(GridCoverError::Native(error)),
             };
-            admission.admit_array_shapes(&array).and_then(|shapes| {
-                let mut parts = Vec::new();
-                for shape in shapes {
-                    let Some(shape) = shape? else {
-                        continue;
-                    };
-                    if !shape.is_empty() {
-                        crate::try_push_vec(&mut parts, shape)?;
-                    }
-                }
-                Ok::<_, GridCoverError>(parts)
-            })
+            admission.admit_bounding_collection(&array)
         });
-        let mut parts = result?;
-        if parts.is_empty() {
-            return Err(InvalidGeometryError::new_err(
-                "bounding cell requires a non-empty geometry",
-            ));
-        }
-        // ONE seam-aware owner for every representation: scalar, collection,
-        // and GeometryArray all fold through `bounding_cell`. The former
-        // planar envelope fold on multi-row regions dropped antimeridian
-        // handling and disagreed with GeometryCollection on seam cases (C15).
-        let collection = if parts.len() == 1 {
-            parts.pop().expect("one part")
-        } else {
-            Shape::geometry_collection(parts)?
-        };
+        let collection = result?;
         return bounding_cell_result(bounding::bounding_cell(&collection));
     }
     let bounds = bounding_query_bounds(value)?;
@@ -253,10 +228,7 @@ grid_free_functions! {
 /// the general union, as do antimeridian-straddling edges (caught per edge).
 ///
 pub(crate) fn s2_dissolve(cells: &[CellId]) -> PyResult<Typed> {
-    let mut owned = crate::try_vec_with_capacity(cells.len())?;
-    for &cell in cells {
-        crate::try_push(&mut owned, cell)?;
-    }
+    let owned = cells.to_vec();
     dissolve_grid_cells::<S2Dissolver>(SortedCells::new(owned))
 }
 

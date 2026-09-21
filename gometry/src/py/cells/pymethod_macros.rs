@@ -157,11 +157,7 @@ macro_rules! grid_cell_common_pymethods {
                         return Ok(Vec::new());
                     };
                     let children = cell.children_to(target)?;
-                    let mut ids = crate::try_vec_with_capacity(children.len())?;
-                    for child in children {
-                        crate::try_push(&mut ids, child.hash_key())?;
-                    }
-                    Ok(ids)
+                    Ok(children.into_iter().map(G::hash_key).collect())
                 }
 
                 let target = match $depth {
@@ -180,7 +176,7 @@ macro_rules! grid_cell_common_pymethods {
                 };
                 let cell = self.cell;
                 let ids = py.detach(move || child_ids(cell, target))?;
-                Ok(PyCellArray::from_ids($kind, ids))
+                Ok(PyCellArray::from_ids($kind, ids)?)
             }
 
             #[doc = concat!("Number of descendant cells at a finer ", $depth_name, ", counted closed-form without materializing them.")]

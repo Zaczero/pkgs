@@ -5,7 +5,6 @@
 //! Typed bulk cell storage — the CellArray Python surface.
 use std::collections::hash_map::Entry;
 use std::ops::Range;
-use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
 use pyo3::exceptions::PyValueError;
@@ -77,40 +76,24 @@ pub(crate) struct PyCellArray {
 #[derive(Clone, Debug)]
 struct CellStorage {
     kind: GridKind,
-    ids: Arc<[u64]>,
+    ids: crate::geometry::SharedSlice<u64>,
     /// Per-physical-row missing flags. `None` means every row is present
     /// (the common dense factory path). When `Some`, length equals `ids`.
-    missing: Option<Arc<[bool]>>,
+    missing: Option<crate::array::ValidityMask>,
 }
 
 impl CellStorage {
-    fn from_ids(kind: GridKind, ids: Vec<u64>) -> Self {
-        Self::from_shared_ids(kind, Arc::from(ids))
-    }
-
-    fn from_ids_with_missing(kind: GridKind, ids: Vec<u64>, missing: Vec<bool>) -> Self {
-        debug_assert_eq!(ids.len(), missing.len());
-        Self {
+    fn new(
+        kind: GridKind,
+        ids: Vec<u64>,
+        missing: Option<crate::array::ValidityMask>,
+    ) -> crate::error::Result<Self> {
+        debug_assert!(missing.as_ref().is_none_or(|mask| mask.len() == ids.len()));
+        Ok(Self {
             kind,
-            ids: Arc::from(ids),
-            missing: Some(Arc::from(missing)),
-        }
-    }
-
-    const fn from_shared_ids(kind: GridKind, ids: Arc<[u64]>) -> Self {
-        Self {
-            kind,
-            ids,
-            missing: None,
-        }
-    }
-
-    const fn kind(&self) -> GridKind {
-        self.kind
-    }
-
-    const fn ids(&self) -> &Arc<[u64]> {
-        &self.ids
+            ids: crate::geometry::SharedSlice::try_from_vec(ids)?,
+            missing,
+        })
     }
 }
 
@@ -122,12 +105,9 @@ trait CellArrayGrid: GridCell {
         Ok(cell_set::compact_with_floor(cells, floor).into_public_vec())
     }
     fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
-        let mut cells = crate::try_vec_with_capacity(ids.len())?;
-        cells.extend(ids.into_iter().map(Self::from_validated_id));
+        let cells: Vec<_> = ids.into_iter().map(Self::from_validated_id).collect();
         let cells = Self::compact_cells(cells, floor)?;
-        let mut ids = crate::try_vec_with_capacity(cells.len())?;
-        ids.extend(cells.into_iter().map(Self::hash_key));
-        Ok(ids)
+        Ok(cells.into_iter().map(Self::hash_key).collect())
     }
     fn uncompact_cells(cells: Vec<Self>, depth: u8) -> PyResult<Vec<Self>> {
         Ok(cell_set::uncompact(&cells, depth)?.into_public_vec())
@@ -265,20 +245,25 @@ macro_rules! dispatch_cell_grid {
 }
 
 impl PyCellArray {
-    pub(crate) fn from_ids(kind: GridKind, ids: Vec<u64>) -> Self {
-        Self {
-            storage: CellStorage::from_ids(kind, ids),
+    pub(crate) fn from_ids(kind: GridKind, ids: Vec<u64>) -> crate::error::Result<Self> {
+        Ok(Self {
+            storage: CellStorage::new(kind, ids, None)?,
             selection: RowSelection::Identity,
-        }
+        })
     }
 
     /// Build with a parallel missing mask (one flag per id). Used by bulk
     /// factories that degrade missing geometry rows instead of rejecting them.
-    pub(crate) fn from_ids_with_missing(kind: GridKind, ids: Vec<u64>, missing: Vec<bool>) -> Self {
-        Self {
-            storage: CellStorage::from_ids_with_missing(kind, ids, missing),
+    pub(crate) fn from_ids_with_missing(
+        kind: GridKind,
+        ids: Vec<u64>,
+        missing: Vec<bool>,
+    ) -> crate::error::Result<Self> {
+        let missing = crate::array::ValidityMask::from_vec(ids.len(), missing)?;
+        Ok(Self {
+            storage: CellStorage::new(kind, ids, missing)?,
             selection: RowSelection::Identity,
-        }
+        })
     }
 
     /// Whether logical row `i` is a missing factory placeholder.
@@ -286,7 +271,7 @@ impl PyCellArray {
         let Some(mask) = self.storage.missing.as_ref() else {
             return false;
         };
-        mask[physical_row(self.selection_ref(), logical)]
+        mask.is_missing(physical_row(self.selection_ref(), logical))
     }
 
     fn selection_ref(&self) -> RowSelectionRef<'_> {
@@ -294,21 +279,27 @@ impl PyCellArray {
     }
 
     pub(crate) fn len(&self) -> usize {
-        self.selection_ref().len(self.storage.ids().len())
+        self.selection_ref().len(self.storage.ids.len())
     }
 
     pub(crate) fn logical_heap_bytes_range(&self, range: Range<usize>) -> usize {
         debug_assert!(range.end <= self.len());
-        let ids = crate::heap_size::ARC_CONTROL_BYTES + range.len() * size_of::<u64>();
+        let ids = if range.is_empty() {
+            0
+        } else {
+            crate::heap_size::ARC_CONTROL_BYTES
+                + size_of::<Vec<u64>>()
+                + range.len() * size_of::<u64>()
+        };
         let missing = self.storage.missing.as_ref().map_or(0, |_| {
-            crate::heap_size::ARC_CONTROL_BYTES + range.len() * size_of::<bool>()
+            crate::heap_size::ARC_CONTROL_BYTES + size_of::<Vec<u8>>() + range.len().div_ceil(8)
         });
         ids + missing
     }
 
     /// The grid kind of these cells.
     pub(crate) const fn kind(&self) -> GridKind {
-        self.storage.kind()
+        self.storage.kind
     }
 
     /// A contiguous logical sub-range as a new array (zero-copy selection).
@@ -318,8 +309,8 @@ impl PyCellArray {
     }
 
     /// Materialized logical cell ids (for CSR value equality / pickling).
-    pub(crate) fn logical_ids(&self) -> PyResult<Vec<u64>> {
-        self.try_logical_ids_vec()
+    pub(crate) fn logical_ids(&self) -> Vec<u64> {
+        self.logical_ids_vec()
     }
 
     /// Value-equal when the grid kind, missing mask, and present cell ids match.
@@ -336,15 +327,15 @@ impl PyCellArray {
 
     /// The logical cells as boxed Python objects (one per row).
     pub(crate) fn to_cell_list(&self, py: Python<'_>) -> PyResult<Vec<Py<PyAny>>> {
-        let mut output = crate::try_vec_with_capacity(self.len())?;
+        let mut output = Vec::with_capacity(self.len());
         for logical in 0..self.len() {
-            crate::try_push(&mut output, self.cell_at(py, logical)?)?;
+            output.push(self.cell_at(py, logical)?);
         }
         Ok(output)
     }
 
     pub(super) fn id_at(&self, logical: usize) -> u64 {
-        self.storage.ids()[physical_row(self.selection_ref(), logical)]
+        self.storage.ids[physical_row(self.selection_ref(), logical)]
     }
 
     pub(super) fn cell_at(&self, py: Python<'_>, logical: usize) -> PyResult<Py<PyAny>> {
@@ -367,7 +358,7 @@ impl PyCellArray {
     ) -> crate::error::Result<Self> {
         Ok(self.with_selection(row_selection_from_logical_rows(
             self.selection_ref(),
-            self.storage.ids().len(),
+            self.storage.ids.len(),
             rows,
         )?))
     }
@@ -376,7 +367,7 @@ impl PyCellArray {
         if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
             let selection = row_selection_from_logical_rows(
                 self.selection_ref(),
-                self.storage.ids().len(),
+                self.storage.ids.len(),
                 logical,
             )?;
             return Ok(self.with_selection(selection));
@@ -384,7 +375,7 @@ impl PyCellArray {
         let mut rows = Vec::new();
         let mut i = start;
         while (step > 0 && i < stop) || (step < 0 && i > stop) {
-            crate::try_push_vec(&mut rows, i as usize)?;
+            rows.push(i as usize);
             i += step;
         }
         self.select_logical_rows(rows)
@@ -392,18 +383,14 @@ impl PyCellArray {
 
     fn logical_contiguous_ids(&self) -> Option<&[u64]> {
         match self.selection_ref() {
-            RowSelectionRef::Identity => Some(self.storage.ids()),
-            RowSelectionRef::Window { start, len } => self.storage.ids().get(start..start + len),
+            RowSelectionRef::Identity => Some(&self.storage.ids),
+            RowSelectionRef::Window { start, len } => self.storage.ids.get(start..start + len),
             RowSelectionRef::Gather(_) => None,
         }
     }
 
-    fn try_logical_ids_vec(&self) -> PyResult<Vec<u64>> {
-        let mut output = crate::try_vec_with_capacity(self.len())?;
-        for logical in self.logical_id_iter() {
-            crate::try_push(&mut output, logical)?;
-        }
-        Ok(output)
+    fn logical_ids_vec(&self) -> Vec<u64> {
+        self.logical_id_iter().collect()
     }
 
     fn logical_id_iter(&self) -> impl ExactSizeIterator<Item = u64> + '_ {
@@ -412,14 +399,9 @@ impl PyCellArray {
 
     /// Unique ids + per-unique counts (value_counts pass).
     fn value_count_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-        let mut slot_of: HashMap<u64, usize> = HashMap::new();
-        if slot_of.try_reserve(self.len()).is_err() {
-            return Err(FactorizationError::Native(
-                crate::error::ResourceError::Allocation.into(),
-            ));
-        }
-        let mut uniques = Vec::new();
-        let mut counts = Vec::new();
+        let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
+        let mut uniques = Vec::with_capacity(self.len());
+        let mut counts = Vec::with_capacity(self.len());
         for row in 0..self.len() {
             if self.is_row_missing(row) {
                 continue;
@@ -430,8 +412,8 @@ impl PyCellArray {
                 Entry::Vacant(entry) => {
                     let slot = uniques.len();
                     entry.insert(slot);
-                    crate::try_push_vec(&mut uniques, id)?;
-                    crate::try_push_vec(&mut counts, 0_i64)?;
+                    uniques.push(id);
+                    counts.push(0_i64);
                     slot
                 },
             };
@@ -445,18 +427,12 @@ impl PyCellArray {
 
     /// Unique ids + dense codes (factorize pass).
     fn factorize_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-        let mut slot_of: HashMap<u64, usize> = HashMap::new();
-        if slot_of.try_reserve(self.len()).is_err() {
-            return Err(FactorizationError::Native(
-                crate::error::ResourceError::Allocation.into(),
-            ));
-        }
-        let mut uniques = Vec::new();
-        let mut codes = Vec::new();
-        crate::try_reserve_vec(&mut codes, self.len())?;
+        let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
+        let mut uniques = Vec::with_capacity(self.len());
+        let mut codes = Vec::with_capacity(self.len());
         for row in 0..self.len() {
             if self.is_row_missing(row) {
-                crate::try_push_vec(&mut codes, -1)?;
+                codes.push(-1);
                 continue;
             }
             let id = self.id_at(row);
@@ -465,24 +441,20 @@ impl PyCellArray {
                 Entry::Vacant(entry) => {
                     let slot = uniques.len();
                     entry.insert(slot);
-                    crate::try_push_vec(&mut uniques, id)?;
+                    uniques.push(id);
                     slot
                 },
             };
             let Ok(code) = i64::try_from(slot) else {
                 return Err(FactorizationError::CodeOverflow);
             };
-            crate::try_push_vec(&mut codes, code)?;
+            codes.push(code);
         }
         Ok((uniques, codes))
     }
 
-    fn ids_from_cells<G: GridCell>(cells: Vec<G>) -> PyResult<Vec<u64>> {
-        let mut ids = crate::try_vec_with_capacity(cells.len())?;
-        for cell in cells {
-            crate::try_push(&mut ids, cell.hash_key())?;
-        }
-        Ok(ids)
+    fn ids_from_cells<G: GridCell>(cells: Vec<G>) -> Vec<u64> {
+        cells.into_iter().map(GridCell::hash_key).collect()
     }
 
     fn logical_cells<'a, G: CellArrayGrid + 'a>(&'a self) -> impl Iterator<Item = G> + 'a {
@@ -492,22 +464,20 @@ impl PyCellArray {
     }
 
     fn missing_mask(&self) -> PyResult<Option<ValidityMask>> {
-        let mut values = crate::try_vec_with_capacity(self.len())?;
-        for row in 0..self.len() {
-            crate::try_push(&mut values, self.is_row_missing(row))?;
+        if matches!(self.selection_ref(), RowSelectionRef::Identity) {
+            return Ok(self.storage.missing.clone());
         }
-        Ok(ValidityMask::from_vec(self.len(), values)?)
+        Ok(ValidityMask::from_missing_iter(
+            self.len(),
+            (0..self.len()).map(|row| self.is_row_missing(row)),
+        )?)
     }
 
-    fn map_logical_cells<G, T>(&self, mut f: impl FnMut(G) -> T) -> PyResult<Vec<T>>
+    fn map_logical_cells<G, T>(&self, f: impl FnMut(G) -> T) -> Vec<T>
     where
         G: CellArrayGrid,
     {
-        let mut values = crate::try_vec_with_capacity(self.len())?;
-        for cell in self.logical_cells::<G>() {
-            crate::try_push(&mut values, f(cell))?;
-        }
-        Ok(values)
+        self.logical_cells::<G>().map(f).collect()
     }
 
     fn numpy_array_kind(
@@ -591,7 +561,7 @@ impl PyCellArray {
                 )));
             }
             dispatch_cell_grid!(self, G, {
-                let mut values = crate::try_vec_with_capacity(self.len())?;
+                let mut values = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     let value = if self.is_row_missing(row) || other.is_row_missing(row) {
                         false
@@ -600,7 +570,7 @@ impl PyCellArray {
                         let right = G::from_validated_id(other.id_at(row));
                         left.contains_cell(right) || (intersects && right.contains_cell(left))
                     };
-                    crate::try_push(&mut values, value)?;
+                    values.push(value);
                 }
                 values
             })
@@ -616,7 +586,7 @@ impl PyCellArray {
             let other_id = kind.id_from_value(other)?;
             dispatch_cell_grid!(self, G, {
                 let right = G::from_validated_id(other_id);
-                let mut values = crate::try_vec_with_capacity(self.len())?;
+                let mut values = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     let value = if self.is_row_missing(row) {
                         false
@@ -624,7 +594,7 @@ impl PyCellArray {
                         let left = G::from_validated_id(self.id_at(row));
                         left.contains_cell(right) || (intersects && right.contains_cell(left))
                     };
-                    crate::try_push(&mut values, value)?;
+                    values.push(value);
                 }
                 values
             })
@@ -671,7 +641,7 @@ impl RowGetItemContainer for PyCellArray {
 
     fn empty(&self) -> PyResult<Self> {
         Ok(Self {
-            storage: CellStorage::from_ids(self.kind(), Vec::new()),
+            storage: CellStorage::new(self.kind(), Vec::new(), None)?,
             selection: RowSelection::Identity,
         })
     }
@@ -708,10 +678,7 @@ impl PyCellArray {
         } else {
             collect_inferred_ids(values)?
         };
-        let storage = match collected.missing {
-            Some(missing) => CellStorage::from_ids_with_missing(kind, collected.ids, missing),
-            None => CellStorage::from_ids(kind, collected.ids),
-        };
+        let storage = CellStorage::new(kind, collected.ids, collected.missing)?;
         Ok(Self {
             storage,
             selection: RowSelection::Identity,
@@ -824,12 +791,12 @@ impl PyCellArray {
     /// numpy.ndarray of bool
     #[getter]
     fn is_missing<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, numpy::PyArray1<bool>>> {
-        let mut flags = crate::try_vec_with_capacity(self.len())?;
-        for row in 0..self.len() {
-            crate::try_push(&mut flags, self.is_row_missing(row))?;
+        let array = numpy::PyArray1::<bool>::zeros(py, self.len(), false);
+        let mut write = array.try_readwrite()?;
+        for (row, output) in write.as_slice_mut()?.iter_mut().enumerate() {
+            *output = self.is_row_missing(row);
         }
-        let array = numpy::PyArray1::from_vec(py, flags);
-        array.try_readwrite()?.make_nonwriteable();
+        write.make_nonwriteable();
         Ok(array)
     }
 
@@ -1019,26 +986,17 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
 fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let result = (|| -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
             let (uniques, counts) = self.value_count_entries()?;
-            let mut order = Vec::new();
-            crate::try_reserve_vec(&mut order, uniques.len())?;
-            for slot in 0..uniques.len() {
-                crate::try_push_vec(&mut order, slot)?;
-            }
+            let mut order: Vec<_> = (0..uniques.len()).collect();
             order.sort_unstable_by(|&left, &right| {
                 counts[right]
                     .cmp(&counts[left])
                     .then_with(|| left.cmp(&right))
             });
-            let mut sorted_uniques = Vec::new();
-            let mut sorted_counts = Vec::new();
-            crate::try_reserve_pair(&mut sorted_uniques, &mut sorted_counts, order.len())?;
+            let mut sorted_uniques = Vec::with_capacity(order.len());
+            let mut sorted_counts = Vec::with_capacity(order.len());
             for &slot in &order {
-                crate::try_push_pair(
-                    &mut sorted_uniques,
-                    &mut sorted_counts,
-                    uniques[slot],
-                    counts[slot],
-                )?;
+                sorted_uniques.push(uniques[slot]);
+                sorted_counts.push(counts[slot]);
             }
             Ok((sorted_uniques, sorted_counts))
         })();
@@ -1051,7 +1009,7 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 ));
             },
         };
-        let cells = match Self::from_ids(self.kind(), sorted_uniques).into_pyobject(py) {
+        let cells = match Self::from_ids(self.kind(), sorted_uniques)?.into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {
                 drop(sorted_counts);
@@ -1105,7 +1063,7 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 return Err(error);
             },
         };
-        let cells = match Self::from_ids(self.kind(), uniques).into_pyobject(py) {
+        let cells = match Self::from_ids(self.kind(), uniques)?.into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {
                 drop(codes);
@@ -1125,32 +1083,28 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
             .unbind();
         let payload = if self.kind() == GridKind::GeohashCell {
             let tokens = dispatch_cell_grid!(self, G, {
-                let mut tokens = crate::try_vec_with_capacity(self.len())?;
+                let mut tokens = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     if !self.is_row_missing(row) {
-                        crate::try_push(
-                            &mut tokens,
-                            G::from_validated_id(self.id_at(row)).token(),
-                        )?;
+                        tokens.push(G::from_validated_id(self.id_at(row)).token());
                     }
                 }
-                Ok::<_, PyErr>(tokens)
+                tokens
             });
-            tokens?.into_py_any(py)?
+            tokens.into_py_any(py)?
         } else {
-            let mut ids = crate::try_vec_with_capacity(self.len())?;
+            let mut ids = Vec::with_capacity(self.len());
             for row in 0..self.len() {
                 if !self.is_row_missing(row) {
-                    crate::try_push(&mut ids, self.id_at(row))?;
+                    ids.push(self.id_at(row));
                 }
             }
             ids.into_py_any(py)?
         };
         let mask: Py<PyAny> = if (0..self.len()).any(|row| self.is_row_missing(row)) {
-            let mut bytes = crate::try_vec_with_capacity(self.len())?;
-            for row in 0..self.len() {
-                crate::try_push(&mut bytes, u8::from(self.is_row_missing(row)))?;
-            }
+            let bytes: Vec<_> = (0..self.len())
+                .map(|row| u8::from(self.is_row_missing(row)))
+                .collect();
             PyBytes::new(py, &bytes).into_any().unbind()
         } else {
             py.None()
@@ -1196,7 +1150,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             // the array base.
             return unsafe { uint64_slice_array(owner, values) };
         }
-        uint64_array(owner.py(), borrowed.try_logical_ids_vec()?)
+        uint64_array(owner.py(), borrowed.logical_ids_vec())
     }
 
     /// NumPy array protocol.
@@ -1241,7 +1195,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     }
                 }
                 let array = if copy == Some(true) {
-                    let ids = slf.borrow().try_logical_ids_vec()?;
+                    let ids = slf.borrow().logical_ids_vec();
                     uint64_array(py, ids)?
                 } else {
                     Self::to_numpy(slf)?
@@ -1284,7 +1238,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     pub(crate) fn center(&self, py: Python<'_>) -> PyResult<crate::PyGeometryArray> {
         use crate::grid::cell::GridCell as _;
         let cells = self.clone();
-        let points = py.detach(move || map_grid_cells!(&cells, |cell| cell.center_point()))?;
+        let points = py.detach(move || map_grid_cells!(&cells, |cell| cell.center_point()));
         let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
         for point in points {
             builder.push(point)?;
@@ -1322,20 +1276,17 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let cells = self.clone();
         let values = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
-                let mut values = crate::try_vec_with_capacity(cells.len())?;
+                let mut values = Vec::with_capacity(cells.len());
                 for row in 0..cells.len() {
-                    crate::try_push(
-                        &mut values,
-                        if cells.is_row_missing(row) {
-                            f64::NAN
-                        } else {
-                            G::from_validated_id(cells.id_at(row)).area_m2()
-                        },
-                    )?;
+                    values.push(if cells.is_row_missing(row) {
+                        f64::NAN
+                    } else {
+                        G::from_validated_id(cells.id_at(row)).area_m2()
+                    });
                 }
-                Ok::<_, PyErr>(values)
+                values
             })
-        })?;
+        });
         float64_array(py, values)
     }
 
@@ -1353,7 +1304,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     GridCell::boundary_shape(cell).map_err(PyErr::from)
                 })
             })
-        })?;
+        });
         let shapes = shapes.into_iter().collect::<PyResult<Vec<_>>>()?;
         let result = crate::PyGeometryArray::from_shapes(
             shapes,
@@ -1412,7 +1363,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         depth: Option<&Bound<'_, PyAny>>,
     ) -> PyResult<Py<PyAny>> {
         let values = dispatch_cell_grid!(self, G, {
-            let mut values = crate::try_vec_with_capacity(self.len())?;
+            let mut values = Vec::with_capacity(self.len());
             for row in 0..self.len() {
                 let value = if self.is_row_missing(row) {
                     f64::NAN
@@ -1421,7 +1372,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                         G::from_validated_id(self.id_at(row)), depth, G::parse_depth,
                     )? as f64
                 };
-                crate::try_push(&mut values, value)?;
+                values.push(value);
             }
             Ok::<_, PyErr>(values)
         })?;
@@ -1456,34 +1407,26 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     pub(crate) fn parent(&self, depth: Option<&Bound<'_, PyAny>>) -> PyResult<Self> {
         let kind = self.kind();
         let present = dispatch_cell_grid!(self, G, {
-            let mut present = crate::try_vec_with_capacity(self.len())?;
+            let mut present = Vec::with_capacity(self.len());
             for cell in self.logical_cells::<G>() {
-                crate::try_push(
-                    &mut present,
-                    cell_ops::cell_parent(cell, depth, G::parse_depth)?
-                        .hash_key(),
-                )?;
+                present.push(cell_ops::cell_parent(cell, depth, G::parse_depth)?.hash_key());
             }
             Ok::<_, PyErr>(present)
         })?;
-        let mut ids = crate::try_vec_with_capacity(self.len())?;
+        let mut ids = Vec::with_capacity(self.len());
         let mut next = present.into_iter();
         for row in 0..self.len() {
-            crate::try_push(&mut ids, if self.is_row_missing(row) {
+            ids.push(if self.is_row_missing(row) {
                 0
             } else {
                 next.next().expect("present parent count matches")
-            })?;
+            });
         }
-        let mut missing = crate::try_vec_with_capacity(self.len())?;
-        for row in 0..self.len() {
-            crate::try_push(&mut missing, self.is_row_missing(row))?;
-        }
-        Ok(Self::from_ids_with_missing(
-            kind,
-            ids,
-            missing,
-        ))
+        let missing = self.missing_mask()?;
+        Ok(Self {
+            storage: CellStorage::new(kind, ids, missing)?,
+            selection: RowSelection::Identity,
+        })
     }
 
     /// The edge-adjacent cells of every cell, as ragged rows.
@@ -1635,16 +1578,14 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let kind = self.kind();
         let cells = self.clone();
         let compacted = dispatch_cell_grid!(self, G, {
-            let mut ids = crate::try_vec_with_capacity(cells.len())?;
-            for logical in 0..cells.len() {
-                if !cells.is_row_missing(logical) {
-                    crate::try_push(&mut ids, cells.id_at(logical))?;
-                }
-            }
+            let ids = (0..cells.len())
+                .filter(|&logical| !cells.is_row_missing(logical))
+                .map(|logical| cells.id_at(logical))
+                .collect();
             let floor = G::parse_compact_floor(depth)?;
             py.detach(move || G::compact_ids(ids, floor))?
         });
-        Ok(Self::from_ids(kind, compacted))
+        Ok(Self::from_ids(kind, compacted)?)
     }
 
     /// Expand this cell set to a uniform depth, returned in the grid's public
@@ -1683,11 +1624,11 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 ));
             }
             py.detach(move || {
-                let cells = cells.map_logical_cells::<G, _>(|cell| cell)?;
-                Self::ids_from_cells(G::uncompact_cells(cells, depth)?)
+                let cells = cells.map_logical_cells::<G, _>(|cell| cell);
+                Ok::<_, PyErr>(Self::ids_from_cells(G::uncompact_cells(cells, depth)?))
             })?
         });
-        Ok(Self::from_ids(kind, expanded))
+        Ok(Self::from_ids(kind, expanded)?)
     }
 
     /// Dissolve this cell set into one outline geometry.
@@ -1709,22 +1650,19 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let cells = self.clone();
         py.detach(move || match cells.kind() {
             GridKind::H3Cell => {
-                let cells = cells.map_logical_cells::<h3o::CellIndex, _>(|cell| cell)?;
+                let cells = cells.map_logical_cells::<h3o::CellIndex, _>(|cell| cell);
                 super::h3::dissolve_cells(cells)
             },
             GridKind::S2Cell => {
-                let cells = cells
-                    .map_logical_cells::<CellId, _>(|cell| cell)?;
+                let cells = cells.map_logical_cells::<CellId, _>(|cell| cell);
                 super::s2::s2_dissolve(&cells)
             },
             GridKind::Tile => {
-                let cells = cells
-                    .map_logical_cells::<Tile, _>(|cell| cell)?;
+                let cells = cells.map_logical_cells::<Tile, _>(|cell| cell);
                 rect_cells_to_polygon(cells)
             },
             GridKind::GeohashCell => {
-                let cells = cells
-                    .map_logical_cells::<Geohash, _>(|cell| cell)?;
+                let cells = cells.map_logical_cells::<Geohash, _>(|cell| cell);
                 rect_cells_to_polygon(cells)
             },
         })
@@ -1751,9 +1689,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
     pub(crate) fn token(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         use pyo3::IntoPyObjectExt as _;
         let tokens = match self.kind() {
-            GridKind::H3Cell => self.tokens::<h3o::CellIndex>()?,
-            GridKind::S2Cell => self.tokens::<CellId>()?,
-            GridKind::Tile => self.tokens::<Tile>()?,
+            GridKind::H3Cell => self.tokens::<h3o::CellIndex>(),
+            GridKind::S2Cell => self.tokens::<CellId>(),
+            GridKind::Tile => self.tokens::<Tile>(),
             GridKind::GeohashCell => return self.geohash_tokens(py),
         };
         tokens.into_py_any(py)
@@ -1763,17 +1701,17 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
 }
 
 impl PyCellArray {
-    fn tokens<G: CellArrayGrid>(&self) -> PyResult<Vec<Option<String>>> {
-        let mut tokens = crate::try_vec_with_capacity(self.len())?;
+    fn tokens<G: CellArrayGrid>(&self) -> Vec<Option<String>> {
+        let mut tokens = Vec::with_capacity(self.len());
         for row in 0..self.len() {
             let token = if self.is_row_missing(row) {
                 None
             } else {
                 Some(G::from_validated_id(self.id_at(row)).token())
             };
-            crate::try_push(&mut tokens, token)?;
+            tokens.push(token);
         }
-        Ok(tokens)
+        tokens
     }
 
     fn geohash_tokens(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -1836,29 +1774,25 @@ pub(crate) fn _unpickle_cell_array(
                 "CellArray pickle mask present count does not match identities",
             ));
         }
-        let mut logical_ids = crate::try_vec_with_capacity(bytes.len())?;
-        let mut missing = crate::try_vec_with_capacity(bytes.len())?;
+        let mut logical_ids = Vec::with_capacity(bytes.len());
         let mut present_index = 0;
         for &value in bytes {
-            crate::try_push(
-                &mut logical_ids,
-                if value == 0 {
-                    let id = present[present_index];
-                    present_index += 1;
-                    id
-                } else {
-                    0
-                },
-            )?;
-            crate::try_push(&mut missing, value == 1)?;
+            logical_ids.push(if value == 0 {
+                let id = present[present_index];
+                present_index += 1;
+                id
+            } else {
+                0
+            });
         }
-        (logical_ids, Some(missing))
+        let missing = crate::array::ValidityMask::from_missing_iter(
+            bytes.len(),
+            bytes.iter().map(|&value| value == 1),
+        )?;
+        (logical_ids, missing)
     };
     Ok(PyCellArray {
-        storage: match missing {
-            Some(missing) => CellStorage::from_ids_with_missing(kind, ids, missing),
-            None => CellStorage::from_ids(kind, ids),
-        },
+        storage: CellStorage::new(kind, ids, missing)?,
         selection: RowSelection::Identity,
     })
 }
@@ -1866,72 +1800,9 @@ use pyo3::IntoPyObjectExt as _;
 
 #[cfg(test)]
 mod tests {
-    use pyo3::exceptions::PyMemoryError;
     use pyo3::prelude::*;
 
     use super::{GridKind, PyCellArray};
-    use crate::py::cells::{FactorizationError, GeometryError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[test]
-    fn value_count_entries_allocation_error_converts_to_memory_error() {
-        Python::initialize();
-        Python::attach(|py| {
-            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![1, 2, 3]);
-            cells
-                .value_count_entries()
-                .expect("warm value-count pass must succeed");
-            let ((), allocations) = allocation_count(|| {
-                cells
-                    .value_count_entries()
-                    .expect("counting value-count pass must succeed");
-            });
-            assert!(allocations > 0);
-
-            let error = fail_allocations_after(allocations - 1, || {
-                let Err(error) = cells.value_count_entries() else {
-                    panic!("the measured value-count allocation must fail");
-                };
-                assert!(matches!(&error, FactorizationError::Native(_)));
-                error.into_py_err(
-                    "cell value count overflows int64",
-                    "cell factor code overflows int64",
-                )
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            drop(error);
-        });
-    }
-
-    #[test]
-    fn factorize_entries_allocation_error_converts_to_memory_error() {
-        Python::initialize();
-        Python::attach(|py| {
-            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![1, 2, 3]);
-            cells
-                .factorize_entries()
-                .expect("warm factorize pass must succeed");
-            let ((), allocations) = allocation_count(|| {
-                cells
-                    .factorize_entries()
-                    .expect("counting factorize pass must succeed");
-            });
-            assert!(allocations > 0);
-
-            let error = fail_allocations_after(allocations - 1, || {
-                let Err(error) = cells.factorize_entries() else {
-                    panic!("the measured factorize allocation must fail");
-                };
-                assert!(matches!(&error, FactorizationError::Native(_)));
-                error.into_py_err(
-                    "cell value count overflows int64",
-                    "cell factor code overflows int64",
-                )
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            drop(error);
-        });
-    }
 
     fn h3_id(lat: f64, lon: f64, resolution: u8) -> u64 {
         u64::from(
@@ -1942,28 +1813,10 @@ mod tests {
     }
 
     #[test]
-    fn children_allocation_error_after_depth_parse_is_memory_error_without_row_notes() {
-        Python::initialize();
-        Python::attach(|py| {
-            let cells = PyCellArray::from_ids(GridKind::H3Cell, vec![
-                h3_id(37.7749, -122.4194, 7),
-                h3_id(37.78, -122.41, 7),
-            ]);
-            let error = fail_allocations_after(0, || match cells.children(py, None) {
-                Ok(_) => panic!("first CSR reserve must fail"),
-                Err(error) => error,
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            assert!(!error.is_instance_of::<GeometryError>(py));
-            drop(error);
-        });
-    }
-
-    #[test]
     fn empty_missing_and_max_depth_neighbors_children_succeed() {
         Python::initialize();
         Python::attach(|py| {
-            let empty = PyCellArray::from_ids(GridKind::H3Cell, Vec::new());
+            let empty = PyCellArray::from_ids(GridKind::H3Cell, Vec::new()).unwrap();
             match empty.neighbors(py) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),
@@ -1977,13 +1830,15 @@ mod tests {
             let missing =
                 PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![present, 0], vec![
                     false, true,
-                ]);
+                ])
+                .unwrap();
             match missing.neighbors(py) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),
             }
 
-            let max = PyCellArray::from_ids(GridKind::H3Cell, vec![h3_id(37.7749, -122.4194, 15)]);
+            let max = PyCellArray::from_ids(GridKind::H3Cell, vec![h3_id(37.7749, -122.4194, 15)])
+                .unwrap();
             match max.children(py, None) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),
@@ -1997,17 +1852,18 @@ mod tests {
 
         let cells = PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![1, 2, 3], vec![
             false, true, false,
-        ]);
+        ])
+        .unwrap();
         let arc = crate::heap_size::ARC_CONTROL_BYTES;
         assert_eq!(
             cells.heap_bytes(),
-            arc + 3 * std::mem::size_of::<u64>() + arc + 3 * std::mem::size_of::<bool>()
+            arc + size_of::<Vec<u64>>() + 3 * size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
         );
 
         let selected = cells.slice(1, 2, 1).unwrap();
         assert_eq!(
             selected.heap_bytes(),
-            arc + std::mem::size_of::<u64>() + arc + std::mem::size_of::<bool>()
+            arc + size_of::<Vec<u64>>() + size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
         );
     }
 }

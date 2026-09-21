@@ -194,7 +194,7 @@ impl Groups {
         ids: Vec<u64>,
         offsets: Vec<i64>,
     ) -> PyResult<Self> {
-        let values = Arc::new(PyCellArray::from_ids(kind, ids));
+        let values = Arc::new(PyCellArray::from_ids(kind, ids)?);
         // Validate before `len() - 1` so empty offsets never underflow.
         validate_csr_offsets(&offsets, values.len())?;
         let n = offsets
