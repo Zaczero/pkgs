@@ -313,7 +313,7 @@ where
         }
         return Ok(match missing {
             Some(missing) => PyCellArray::from_ids_with_missing(kind, ids, missing)?,
-            None => PyCellArray::from_ids(kind, ids)?,
+            None => PyCellArray::from_ids(kind, ids),
         });
     }
     let lat = lat
@@ -346,5 +346,5 @@ where
         }
         Ok::<_, PyErr>(ids)
     })?;
-    Ok(PyCellArray::from_ids(kind, ids)?)
+    Ok(PyCellArray::from_ids(kind, ids))
 }

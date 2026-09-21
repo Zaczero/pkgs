@@ -1007,23 +1007,20 @@ mod tests {
         reason = "bounds are named by axis and extreme, as in the public API"
     )]
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(minx, miny),
-                        Point::new_raw_xy(maxx, miny),
-                        Point::new_raw_xy(maxx, maxy),
-                        Point::new_raw_xy(minx, maxy),
-                        Point::new_raw_xy(minx, miny),
-                    ])
-                    .unwrap(),
-                )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(minx, miny),
+                    Point::new_raw_xy(maxx, miny),
+                    Point::new_raw_xy(maxx, maxy),
+                    Point::new_raw_xy(minx, maxy),
+                    Point::new_raw_xy(minx, miny),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
-            .expect("test polygon is valid"),
-        )
+            .unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn line(start: (f64, f64), end: (f64, f64)) -> Shape {
@@ -1161,23 +1158,20 @@ mod tests {
     #[test]
     fn geographic_line_scalar_does_not_enter_cartesian_direct_relation() {
         let scalar = PreparedPlan::new(line((175.0, 0.0), (-175.0, 0.0))).unwrap();
-        let polygon = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(170.0, -10.0),
-                        Point::new_raw_xy(-170.0, -10.0),
-                        Point::new_raw_xy(-170.0, 10.0),
-                        Point::new_raw_xy(170.0, 10.0),
-                        Point::new_raw_xy(170.0, -10.0),
-                    ])
-                    .unwrap(),
-                )
+        let polygon = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(170.0, -10.0),
+                    Point::new_raw_xy(-170.0, -10.0),
+                    Point::new_raw_xy(-170.0, 10.0),
+                    Point::new_raw_xy(170.0, 10.0),
+                    Point::new_raw_xy(170.0, -10.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
-            .expect("test polygon is valid"),
-        );
+            .unwrap(),
+            Vec::new(),
+        ));
         assert_eq!(
             scalar_vs_shapes(
                 &Predicate::Within.spec(),

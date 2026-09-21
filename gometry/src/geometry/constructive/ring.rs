@@ -120,28 +120,25 @@ mod tests {
             (2.0, 1.0, 8.0, 88.0),
             (1.0, 1.0, 5.0, 55.0),
         ]);
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
         let oriented = shape.orient_polygons(false).expect("orientation succeeds");
 
-        let expected = Shape::Polygon(
-            Polygon::new(
-                xyzm_ring(&[
-                    (0.0, 0.0, 1.0, 11.0),
-                    (4.0, 0.0, 4.0, 44.0),
-                    (4.0, 4.0, 3.0, 33.0),
-                    (0.0, 4.0, 2.0, 22.0),
-                    (0.0, 0.0, 1.0, 11.0),
-                ]),
-                vec![xyzm_ring(&[
-                    (1.0, 1.0, 5.0, 55.0),
-                    (1.0, 2.0, 6.0, 66.0),
-                    (2.0, 2.0, 7.0, 77.0),
-                    (2.0, 1.0, 8.0, 88.0),
-                    (1.0, 1.0, 5.0, 55.0),
-                ])],
-            )
-            .unwrap(),
-        );
+        let expected = Shape::Polygon(Polygon::new(
+            xyzm_ring(&[
+                (0.0, 0.0, 1.0, 11.0),
+                (4.0, 0.0, 4.0, 44.0),
+                (4.0, 4.0, 3.0, 33.0),
+                (0.0, 4.0, 2.0, 22.0),
+                (0.0, 0.0, 1.0, 11.0),
+            ]),
+            vec![xyzm_ring(&[
+                (1.0, 1.0, 5.0, 55.0),
+                (1.0, 2.0, 6.0, 66.0),
+                (2.0, 2.0, 7.0, 77.0),
+                (2.0, 1.0, 8.0, 88.0),
+                (1.0, 1.0, 5.0, 55.0),
+            ])],
+        ));
         assert_eq!(oriented, expected);
     }
 
@@ -161,28 +158,25 @@ mod tests {
             (1.0, 2.0, 8.0, 88.0),
             (1.0, 1.0, 5.0, 55.0),
         ]);
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
         let oriented = shape.orient_polygons(false).expect("orientation succeeds");
 
-        let expected = Shape::Polygon(
-            Polygon::new(
-                xyzm_ring(&[
-                    (0.0, 0.0, 1.0, 11.0),
-                    (4.0, 0.0, 2.0, 22.0),
-                    (4.0, 4.0, 3.0, 33.0),
-                    (0.0, 4.0, 4.0, 44.0),
-                    (0.0, 0.0, 1.0, 11.0),
-                ]),
-                vec![xyzm_ring(&[
-                    (1.0, 1.0, 5.0, 55.0),
-                    (1.0, 2.0, 8.0, 88.0),
-                    (2.0, 2.0, 7.0, 77.0),
-                    (2.0, 1.0, 6.0, 66.0),
-                    (1.0, 1.0, 5.0, 55.0),
-                ])],
-            )
-            .unwrap(),
-        );
+        let expected = Shape::Polygon(Polygon::new(
+            xyzm_ring(&[
+                (0.0, 0.0, 1.0, 11.0),
+                (4.0, 0.0, 2.0, 22.0),
+                (4.0, 4.0, 3.0, 33.0),
+                (0.0, 4.0, 4.0, 44.0),
+                (0.0, 0.0, 1.0, 11.0),
+            ]),
+            vec![xyzm_ring(&[
+                (1.0, 1.0, 5.0, 55.0),
+                (1.0, 2.0, 8.0, 88.0),
+                (2.0, 2.0, 7.0, 77.0),
+                (2.0, 1.0, 6.0, 66.0),
+                (1.0, 1.0, 5.0, 55.0),
+            ])],
+        ));
         assert_eq!(oriented, expected);
     }
 

@@ -1710,16 +1710,10 @@ mod tests {
 
     #[test]
     fn selected_views_resolve_physical_rows_directly() {
-        let selection = || {
-            RowSelection::gather_checked_native(vec![1_usize, 0, 1], 2)
-                .unwrap()
-                .unwrap()
-        };
+        let selection = || RowSelection::gather_checked_native(vec![1_usize, 0, 1], 2).unwrap();
         let point_storage = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::new(coords()),
-            row_map: RowSelection::gather_checked_native(vec![2_usize, 0, 2], 6)
-                .unwrap()
-                .unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![2_usize, 0, 2], 6).unwrap(),
         });
         let line_storage = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::new(coords()),
@@ -1747,9 +1741,7 @@ mod tests {
 
     #[test]
     fn point_row_cursor_maps_present_ranks_only_for_compact_payloads() {
-        let compact_map = RowSelection::gather_checked_native(vec![5_usize, 2, 5], 6)
-            .unwrap()
-            .unwrap();
+        let compact_map = RowSelection::gather_checked_native(vec![5_usize, 2, 5], 6).unwrap();
         let compact_mask = ValidityMask::from_vec(6, vec![true, false, true, true, false, false])
             .unwrap()
             .expect("compact mask");
@@ -1770,9 +1762,7 @@ mod tests {
             (5, Some(5))
         ]);
 
-        let row_aligned_map = RowSelection::gather_checked_native(vec![2_usize, 0, 2], 3)
-            .unwrap()
-            .unwrap();
+        let row_aligned_map = RowSelection::gather_checked_native(vec![2_usize, 0, 2], 3).unwrap();
         let row_aligned_mask = ValidityMask::from_vec(3, vec![false, true, false])
             .unwrap()
             .expect("row-aligned mask");
@@ -1792,9 +1782,8 @@ mod tests {
         let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1])
             .unwrap()
             .expect("compact mask");
-        let equal_length_compact_map = RowSelection::gather_checked_native(vec![0_usize, 1, 0], 2)
-            .unwrap()
-            .unwrap();
+        let equal_length_compact_map =
+            RowSelection::gather_checked_native(vec![0_usize, 1, 0], 2).unwrap();
         let equal_length_compact = PointRows::new(
             2,
             equal_length_compact_map.as_deref(),
@@ -1884,9 +1873,7 @@ mod tests {
             (0..9).map(|logical| (logical, None)).collect::<Vec<_>>()
         );
 
-        let dense_map = RowSelection::gather_checked_native(vec![4_usize, 1, 4, 0], 5)
-            .unwrap()
-            .unwrap();
+        let dense_map = RowSelection::gather_checked_native(vec![4_usize, 1, 4, 0], 5).unwrap();
         let dense_gather = PointRows::new(5, dense_map.as_deref(), None, PointRowLayout::Dense);
         assert_eq!(dense_gather.cursor().collect::<Vec<_>>(), [
             (0, Some(4)),
@@ -1911,9 +1898,7 @@ mod tests {
             (3, Some(0))
         ]);
 
-        let compact_map = RowSelection::gather_checked_native(vec![2_usize, 1, 2, 0], 3)
-            .unwrap()
-            .unwrap();
+        let compact_map = RowSelection::gather_checked_native(vec![2_usize, 1, 2, 0], 3).unwrap();
         let compact_gather = PointRows::new(
             3,
             compact_map.as_deref(),
@@ -1950,7 +1935,6 @@ mod tests {
                 (0..rows).map(|row| row & 1).collect::<Vec<_>>(),
                 2,
             )
-            .unwrap()
             .unwrap(),
         })
     }
@@ -1995,9 +1979,7 @@ mod tests {
     }
 
     fn gather_map(rows: Vec<usize>, physical_len: usize) -> RowSelection {
-        RowSelection::gather_checked_native(rows, physical_len)
-            .unwrap()
-            .unwrap()
+        RowSelection::gather_checked_native(rows, physical_len).unwrap()
     }
 
     #[test]

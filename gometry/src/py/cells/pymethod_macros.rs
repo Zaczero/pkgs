@@ -176,7 +176,7 @@ macro_rules! grid_cell_common_pymethods {
                 };
                 let cell = self.cell;
                 let ids = py.detach(move || child_ids(cell, target))?;
-                Ok(PyCellArray::from_ids($kind, ids)?)
+                Ok(PyCellArray::from_ids($kind, ids))
             }
 
             #[doc = concat!("Number of descendant cells at a finer ", $depth_name, ", counted closed-form without materializing them.")]
@@ -212,7 +212,7 @@ macro_rules! grid_cell_common_pymethods {
             /// -------
             #[doc = concat!("CellArray of ", $class_name)]
             #[getter]
-            fn neighbors(&self) -> PyResult<PyCellArray> {
+            fn neighbors(&self) -> PyCellArray {
                 cell_neighbors_array($kind, self.cell)
             }
 
@@ -435,7 +435,7 @@ macro_rules! grid_free_functions {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
             let $array_cells = crate::grid::cell_set::union(left, right).into_public_vec();
-            Ok($array_expr?)
+            Ok($array_expr)
         }
 
         #[doc = concat!("Hierarchy-aware intersection of two ", $label, " cell sets.")]
@@ -470,7 +470,7 @@ macro_rules! grid_free_functions {
             let right = $cell_set_arg(right)?;
             let $array_cells =
                 crate::grid::cell_set::intersection(&left, &right).into_public_vec();
-            Ok($array_expr?)
+            Ok($array_expr)
         }
 
         #[doc = concat!("Hierarchy-aware difference of two ", $label, " cell sets.")]
@@ -506,7 +506,7 @@ macro_rules! grid_free_functions {
             let right = $cell_set_arg(right)?;
             let $array_cells =
                 crate::grid::cell_set::difference(&left, &right).into_public_vec();
-            Ok($array_expr?)
+            Ok($array_expr)
         }
     };
     (@set_input_doc geohash_cell_set_arg) => {

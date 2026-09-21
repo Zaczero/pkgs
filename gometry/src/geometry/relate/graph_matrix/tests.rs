@@ -16,7 +16,6 @@ fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         .unwrap(),
         Vec::new(),
     )
-    .unwrap()
 }
 
 fn donut() -> Polygon {
@@ -33,7 +32,6 @@ fn donut() -> Polygon {
         )
         .unwrap(),
     ])
-    .unwrap()
 }
 
 fn polygon(points: &[[f64; 2]]) -> Polygon {
@@ -50,7 +48,6 @@ fn polygon(points: &[[f64; 2]]) -> Polygon {
         .unwrap(),
         Vec::new(),
     )
-    .unwrap()
 }
 
 fn radial_polygon(vertex_count: usize) -> Polygon {
@@ -66,7 +63,6 @@ fn radial_polygon(vertex_count: usize) -> Polygon {
         Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
         Vec::new(),
     )
-    .unwrap()
 }
 
 fn oscillating_line(case: usize) -> Shape {
@@ -368,13 +364,10 @@ fn two_unique_point_ring_relates_as_linework() {
     let b = Point::new_raw_xy(11.0, 10.0);
     // `Ring::from_closed` is the internal transport constructor. The final
     // `a` is the stored closing duplicate for the raw A-B-A ring.
-    let two_unique = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&[a, b, a, a]).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    );
+    let two_unique = Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&[a, b, a, a]).unwrap()).unwrap(),
+        Vec::new(),
+    ));
     let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
     let left = PreparedPlan::transient(&two_unique).unwrap();
     let right = PreparedPlan::transient(&square).unwrap();
@@ -1091,22 +1084,19 @@ fn geographic_areal_relation_declines_quotient_aliases() {
 
 #[test]
 fn geographic_cap_point_matrices_are_stable() {
-    let polygon = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(
-                CoordSeq::try_from_points(&[
-                    Point::new_raw_xy(170.0, 80.0),
-                    Point::new_raw_xy(-170.0, 80.0),
-                    Point::new_raw_xy(-170.0, 90.0),
-                    Point::new_raw_xy(170.0, 90.0),
-                ])
-                .unwrap(),
-            )
+    let polygon = Shape::Polygon(Polygon::new(
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(170.0, 80.0),
+                Point::new_raw_xy(-170.0, 80.0),
+                Point::new_raw_xy(-170.0, 90.0),
+                Point::new_raw_xy(170.0, 90.0),
+            ])
             .unwrap(),
-            Vec::new(),
         )
         .unwrap(),
-    );
+        Vec::new(),
+    ));
     for point in [
         Point::new_raw_xy(180.0, 85.0),
         Point::new_raw_xy(-180.0, 85.0),
@@ -1284,22 +1274,19 @@ fn polygon_line_relation_covers_line_walk_and_boundary_cases() {
         "1F20F1102",
     );
 
-    let zm_polygon = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(
-                CoordSeq::try_from_vecs(
-                    vec![0.0, 10.0, 10.0, 0.0, 0.0],
-                    vec![0.0, 0.0, 10.0, 10.0, 0.0],
-                    Some(vec![1.0, 2.0, 3.0, 4.0, 1.0]),
-                    Some(vec![5.0, 6.0, 7.0, 8.0, 5.0]),
-                )
-                .unwrap(),
+    let zm_polygon = Shape::Polygon(Polygon::new(
+        Ring::from_closed(
+            CoordSeq::try_from_vecs(
+                vec![0.0, 10.0, 10.0, 0.0, 0.0],
+                vec![0.0, 0.0, 10.0, 10.0, 0.0],
+                Some(vec![1.0, 2.0, 3.0, 4.0, 1.0]),
+                Some(vec![5.0, 6.0, 7.0, 8.0, 5.0]),
             )
             .unwrap(),
-            Vec::new(),
         )
         .unwrap(),
-    );
+        Vec::new(),
+    ));
     let zm_line = Shape::LineString(
         LineSeq::try_new(
             CoordSeq::try_from_vecs(
@@ -1384,38 +1371,32 @@ fn geographic_aggregate_contacts_use_quotient_face_locations() {
     ])
     .expect("test collection is valid");
     let pinch = Shape::geometry_collection(vec![
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(0.0, 0.0),
-                        Point::new_raw_xy(-2.0, -1.0),
-                        Point::new_raw_xy(-2.0, 1.0),
-                        Point::new_raw_xy(0.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(-2.0, -1.0),
+                    Point::new_raw_xy(-2.0, 1.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        ),
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(0.0, 0.0),
-                        Point::new_raw_xy(2.0, 1.0),
-                        Point::new_raw_xy(2.0, -1.0),
-                        Point::new_raw_xy(0.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
+            Vec::new(),
+        )),
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(0.0, 0.0),
+                    Point::new_raw_xy(2.0, 1.0),
+                    Point::new_raw_xy(2.0, -1.0),
+                    Point::new_raw_xy(0.0, 0.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        ),
+            Vec::new(),
+        )),
     ])
     .expect("test collection is valid");
     let frame = crate::crs::info("EPSG:4326")

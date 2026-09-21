@@ -409,7 +409,7 @@ impl ExactSourceInventory {
             let shell = rings.next().expect("coverage polygon has a shell");
             let mut holes = Vec::with_capacity(rings.size_hint().0);
             holes.extend(rings);
-            polygons.push(Polygon::new(shell, holes)?);
+            polygons.push(Polygon::new(shell, holes));
         }
         Shape::narrow_polygons(axes, polygons)
     }

@@ -44,7 +44,6 @@ fn ring(points: &[(f64, f64)]) -> Ring {
 
 fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Polygon {
     Polygon::new(ring(shell), holes.iter().map(|hole| ring(hole)).collect())
-        .expect("test polygon is valid")
 }
 
 fn collection(shapes: Vec<Shape>) -> Shape {

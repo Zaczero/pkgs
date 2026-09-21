@@ -381,7 +381,7 @@ pub(crate) fn apply_top_level_validity(
                 validity[bit / 8] |= 1 << (bit % 8);
             }
         }
-        crate::geometry::SharedSlice::try_from_vec(validity)?
+        crate::geometry::SharedSlice::from_vec(validity)
     };
     let private = array.private_data.cast::<ArrayPrivate>();
     if private.is_null() {
@@ -782,7 +782,7 @@ mod owner_export_tests {
     #[test]
     fn primitive_window_rejects_out_of_range() {
         ensure_python();
-        let values = SharedSlice::try_from_vec(vec![1.0_f64, 2.0, 3.0]).unwrap();
+        let values = SharedSlice::from_vec(vec![1.0_f64, 2.0, 3.0]);
         primitive_f64_array_windowed(values.clone(), 0, 3).unwrap();
         assert!(primitive_f64_array_windowed(values, 2, 2).is_err());
     }
@@ -791,7 +791,7 @@ mod owner_export_tests {
     fn make_array_rejects_length_past_owned_f64_column() {
         ensure_python();
         // Same residual the skeptic named: free length over a short Arc.
-        let short = SharedSlice::try_from_vec(vec![1.0_f64]).unwrap();
+        let short = SharedSlice::from_vec(vec![1.0_f64]);
         assert!(
             make_array_with_offset(
                 1000,

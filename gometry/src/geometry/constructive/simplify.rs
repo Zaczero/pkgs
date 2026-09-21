@@ -604,13 +604,12 @@ fn keep_polygon(
             },
         }
     }
-    Ok(match holes_out {
-        None => PolygonKeep::Same,
-        Some(holes) => PolygonKeep::New(Polygon::new(
+    Ok(holes_out.map_or(PolygonKeep::Same, |holes| {
+        PolygonKeep::New(Polygon::new(
             new_shell.unwrap_or_else(|| polygon.shell.clone()),
             holes,
-        )?),
-    })
+        ))
+    }))
 }
 
 fn try_prefix_line_members(
@@ -791,11 +790,11 @@ impl Shape {
     /// untouched. Keeps `simplify`/`simplify_vw` with `preserve_topology=False`
     /// from leaking a degenerate invalid polygon.
     fn dropping_collapsed_rings(self) -> Result<Self> {
-        fn clean(polygon: &Polygon) -> Result<Option<Polygon>> {
+        fn clean(polygon: &Polygon) -> Option<Polygon> {
             if !has_three_distinct_xy(polygon.shell.coords()) {
-                return Ok(None);
+                return None;
             }
-            Ok(Some(Polygon::new(
+            Some(Polygon::new(
                 polygon.shell.clone(),
                 polygon
                     .holes
@@ -803,10 +802,10 @@ impl Shape {
                     .filter(|hole| has_three_distinct_xy(hole.coords()))
                     .cloned()
                     .collect(),
-            )?))
+            ))
         }
         Ok(match self {
-            Self::Polygon(polygon) => clean(&polygon)?.map_or_else(
+            Self::Polygon(polygon) => clean(&polygon).map_or_else(
                 || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
                 Self::Polygon,
             ),
@@ -814,17 +813,15 @@ impl Shape {
                 let members = polygons
                     .members()
                     .map(|member| match member {
-                        crate::geometry::MultiMember::Empty => {
-                            Ok(crate::geometry::MultiMember::Empty)
-                        },
+                        crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
                         crate::geometry::MultiMember::Value(index) => {
-                            Ok(clean(&polygons.as_slice()[index])?.map_or(
+                            clean(&polygons.as_slice()[index]).map_or(
                                 crate::geometry::MultiMember::Empty,
                                 crate::geometry::MultiMember::Value,
-                            ))
+                            )
                         },
                     })
-                    .collect::<Result<Vec<_>>>()?;
+                    .collect::<Vec<_>>();
                 if members.is_empty() {
                     Self::empty_polygon()
                 } else {
@@ -1112,13 +1109,10 @@ mod keep_identity_tests {
     }
 
     fn square() -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
+            Vec::new(),
+        ))
     }
 
     #[test]
@@ -1213,7 +1207,7 @@ mod keep_identity_tests {
         let keep_b = closed_ring(&[1.0, 2.0, 2.0, 1.0, 1.0], &[5.0, 5.0, 6.0, 6.0, 5.0]);
         let a_ptr = keep_a.xs().as_ptr();
         let b_ptr = keep_b.xs().as_ptr();
-        let polygon = Shape::Polygon(Polygon::new(shell, vec![keep_a, drop, keep_b]).unwrap());
+        let polygon = Shape::Polygon(Polygon::new(shell, vec![keep_a, drop, keep_b]));
         // 0.5 keeps the 1×1 holes (diagonal offset ≈ 0.707) and drops the
         // 0.01-high spike below four closed vertices.
         let Shape::Polygon(out) = polygon.simplify_dp_raw(0.5).unwrap() else {
@@ -1228,13 +1222,10 @@ mod keep_identity_tests {
 
     #[test]
     fn shell_drop_is_typed_empty() {
-        let sliver = Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[0.0, 1.0, 0.5, 0.0], &[0.0, 0.0, 0.1, 0.0]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let sliver = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 1.0, 0.5, 0.0], &[0.0, 0.0, 0.1, 0.0]),
+            Vec::new(),
+        ));
         assert_eq!(
             sliver.simplify_dp_raw(1.0).unwrap(),
             Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY)
@@ -1243,13 +1234,10 @@ mod keep_identity_tests {
 
     #[test]
     fn collapsed_keep_all_drops_only_when_topology_is_off() {
-        let collapsed = Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[0.0, 0.0, 0.0, 0.0], &[0.0, 0.0, 0.0, 0.0]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let collapsed = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 0.0, 0.0, 0.0], &[0.0, 0.0, 0.0, 0.0]),
+            Vec::new(),
+        ));
         assert_eq!(collapsed.simplify_vw(0.0, true).unwrap(), collapsed);
         assert_eq!(
             collapsed.simplify_vw(0.0, false).unwrap(),
@@ -1346,13 +1334,11 @@ mod keep_identity_tests {
         let kept = Polygon::new(
             closed_ring(&[0.0, 4.0, 4.0, 0.0, 0.0], &[0.0, 0.0, 4.0, 4.0, 0.0]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let sliver = Polygon::new(
             closed_ring(&[10.0, 11.0, 10.5, 10.0], &[0.0, 0.0, 0.1, 0.0]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let shape = Shape::MultiPolygon(
             MultiPolygon::from_dense(vec![kept, sliver])
                 .unwrap()
@@ -1551,7 +1537,7 @@ mod guarded_borrow_tests {
     use super::RawSimplify;
     use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, Polygon, Ring, Shape, TopologyGuard, XY};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::fail_allocations_after;
 
     fn closed_ring(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> Ring {
         Ring::from_closed(
@@ -1567,18 +1553,15 @@ mod guarded_borrow_tests {
     }
 
     fn sliver_xyzm() -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                closed_ring(
-                    &[0.0, 1.0, 0.5, 0.0],
-                    &[0.0, 0.0, 0.1, 0.0],
-                    Some(&[1.0, 2.0, 3.0, 1.0]),
-                    Some(&[10.0, 20.0, 30.0, 10.0]),
-                ),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            closed_ring(
+                &[0.0, 1.0, 0.5, 0.0],
+                &[0.0, 0.0, 0.1, 0.0],
+                Some(&[1.0, 2.0, 3.0, 1.0]),
+                Some(&[10.0, 20.0, 30.0, 10.0]),
+            ),
+            Vec::new(),
+        ))
     }
 
     #[test]
@@ -1620,35 +1603,16 @@ mod guarded_borrow_tests {
     }
 
     #[test]
-    fn guarded_construction_reports_allocation_failure() {
-        let polygon = sliver_xyzm();
-        let (out, allocations) = allocation_count(|| polygon.simplify_dp(1.0, true).unwrap());
-        assert!(matches!(out, Shape::Polygon(_)));
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || polygon.simplify_dp(1.0, true))
-                .expect_err("every reachable allocation on the sliver path must propagate");
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-        }
-    }
-
-    #[test]
     fn guarded_select_keeps_source_index_ordinates() {
-        let polygon = Shape::Polygon(
-            Polygon::new(
-                closed_ring(
-                    &[0.0, 10.0, 10.0, 5.0, 0.0, 0.0],
-                    &[0.0, 0.0, 0.01, 0.01, 0.01, 0.0],
-                    Some(&[1.0, 2.0, 3.0, 4.0, 5.0, 1.0]),
-                    Some(&[10.0, 20.0, 30.0, 40.0, 50.0, 10.0]),
-                ),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let polygon = Shape::Polygon(Polygon::new(
+            closed_ring(
+                &[0.0, 10.0, 10.0, 5.0, 0.0, 0.0],
+                &[0.0, 0.0, 0.01, 0.01, 0.01, 0.0],
+                Some(&[1.0, 2.0, 3.0, 4.0, 5.0, 1.0]),
+                Some(&[10.0, 20.0, 30.0, 40.0, 50.0, 10.0]),
+            ),
+            Vec::new(),
+        ));
         assert!(matches!(
             polygon.simplify_raw_dp(1.0).unwrap(),
             RawSimplify::Changed(_)
@@ -1766,16 +1730,12 @@ mod keep_mask_scratch_tests {
 mod subdivision_tests {
     use super::*;
     use crate::geometry::overlay::{partition_calls, reset_partition_calls};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn ring_shape(points: &[Point]) -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn line_shape(points: &[Point]) -> Shape {
@@ -1810,39 +1770,6 @@ mod subdivision_tests {
         assert_eq!(partition_calls(), 1);
         assert_eq!(subdivision_work(), (3, 1));
         assert!(parts.iter().all(|part| part.coord_count() <= 8));
-    }
-
-    #[test]
-    fn allocation_prefix_failure_publishes_no_subdivision_parts() {
-        let shape = ring_shape(&[
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(2.0, 0.0),
-            Point::new_raw_xy(2.0, 1.0),
-            Point::new_raw_xy(2.0, 2.0),
-            Point::new_raw_xy(1.0, 2.0),
-            Point::new_raw_xy(0.0, 2.0),
-            Point::new_raw_xy(0.0, 1.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ]);
-        let (parts, allocations) = allocation_count(|| shape.subdivide(8, false).unwrap());
-        assert_eq!(parts.len(), 2);
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, || shape.subdivide(8, false));
-            match result {
-                Ok(parts) => assert_eq!(
-                    parts.len(),
-                    2,
-                    "retry at allocation prefix {allowed}/{allocations} published a partial result",
-                ),
-                Err(error) => assert!(matches!(
-                    error.kind(),
-                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                )),
-            }
-        }
-        assert_eq!(shape.coord_count(), 9);
     }
 
     #[test]
@@ -1917,9 +1844,10 @@ mod subdivision_tests {
             ]),
         )
         .unwrap();
-        let shape = Shape::Polygon(
-            Polygon::new(Ring::from_closed(coordinates).unwrap(), Vec::new()).unwrap(),
-        );
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(coordinates).unwrap(),
+            Vec::new(),
+        ));
         let parts = shape.subdivide(8, false).unwrap();
         assert_eq!(parts.len(), 2);
         let source = all_points(&shape);

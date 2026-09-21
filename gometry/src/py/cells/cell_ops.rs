@@ -88,7 +88,7 @@ where
     })
 }
 
-pub(crate) fn cell_neighbors_array<G: GridCell>(kind: GridKind, cell: G) -> PyResult<PyCellArray> {
+pub(crate) fn cell_neighbors_array<G: GridCell>(kind: GridKind, cell: G) -> PyCellArray {
     cell_array_from_keys(kind, cell.neighbors())
 }
 
@@ -158,7 +158,7 @@ pub(crate) fn cell_reduce<G: GridCell>(
 pub(crate) fn cell_array_from_keys<G: GridCell>(
     kind: GridKind,
     cells: impl IntoIterator<Item = G>,
-) -> PyResult<PyCellArray> {
+) -> PyCellArray {
     let ids = cells.into_iter().map(GridCell::hash_key).collect();
-    Ok(PyCellArray::from_ids(kind, ids)?)
+    PyCellArray::from_ids(kind, ids)
 }

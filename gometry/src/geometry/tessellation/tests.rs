@@ -290,7 +290,6 @@ fn polygon(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
             .map(|hole| Ring::closed(hole).expect("valid test hole"))
             .collect(),
     )
-    .expect("valid test polygon")
 }
 
 fn assert_triangulation_error(polygon: Polygon) {

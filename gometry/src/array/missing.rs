@@ -164,9 +164,9 @@ impl ValidityBuilder {
         Ok(())
     }
 
-    pub(crate) fn finish(self) -> crate::error::Result<Option<ValidityMask>> {
+    pub(crate) fn finish(self) -> Option<ValidityMask> {
         if self.valid_count == self.len {
-            return Ok(None);
+            return None;
         }
         let mut bytes = self
             .bytes
@@ -174,12 +174,12 @@ impl ValidityBuilder {
         if let Some(last) = bytes.last_mut() {
             *last &= trailing_mask(self.len);
         }
-        Ok(Some(ValidityMask {
-            bytes: SharedSlice::try_from_vec(bytes)?,
+        Some(ValidityMask {
+            bytes: SharedSlice::from_vec(bytes),
             bit_offset: 0,
             len: self.len,
             valid_count: self.valid_count,
-        }))
+        })
     }
 }
 
@@ -223,7 +223,7 @@ impl ValidityMask {
             return Ok(None);
         }
         Ok(Some(Self {
-            bytes: SharedSlice::try_from_vec(bytes)?,
+            bytes: SharedSlice::from_vec(bytes),
             bit_offset: 0,
             len,
             valid_count,
@@ -253,7 +253,7 @@ impl ValidityMask {
         }
         let valid_count = count_valid(&bytes, 0, len);
         Ok(Some(Self {
-            bytes: SharedSlice::try_from_vec(bytes)?,
+            bytes: SharedSlice::from_vec(bytes),
             bit_offset: 0,
             len,
             valid_count,
@@ -385,7 +385,7 @@ impl ValidityMask {
             return Ok(None);
         }
         Ok(Some(Self {
-            bytes: SharedSlice::try_from_vec(bytes)?,
+            bytes: SharedSlice::from_vec(bytes),
             bit_offset: 0,
             len: rows.len(),
             valid_count,
@@ -686,7 +686,7 @@ mod tests {
         builder.push(true).unwrap();
         assert_eq!(builder.len(), 2);
         assert_eq!(builder.present_count(), 2);
-        assert!(builder.finish().unwrap().is_none());
+        assert!(builder.finish().is_none());
     }
 
     #[test]
@@ -697,7 +697,7 @@ mod tests {
         for present in [false, true, false, true, true, false, true, false, true] {
             builder.push(present).unwrap();
         }
-        let mask = builder.finish().unwrap().unwrap();
+        let mask = builder.finish().unwrap();
         assert_eq!(mask.iter().collect::<Vec<_>>(), [
             true, false, true, false, false, true, false, true, false
         ]);
@@ -711,7 +711,7 @@ mod tests {
         let mut builder = ValidityBuilder::with_capacity(64);
         builder.push(false).unwrap();
         builder.push(true).unwrap();
-        let mask = builder.finish().unwrap().unwrap();
+        let mask = builder.finish().unwrap();
         assert_eq!(mask.arrow_bitmap().0.as_ref(), &[0b10]);
     }
 
@@ -724,42 +724,13 @@ mod tests {
         builder.extend_present(17).unwrap();
         builder.push(false).unwrap();
         builder.extend_present(3).unwrap();
-        let mask = builder.finish().unwrap().unwrap();
+        let mask = builder.finish().unwrap();
         let mut expected = vec![true];
         expected.extend([false; 17]);
         expected.push(true);
         expected.extend([false; 3]);
         assert_eq!(mask.iter().collect::<Vec<_>>(), expected);
         assert_eq!(mask.present_count(), 20);
-    }
-
-    #[test]
-    fn mask_publication_failure_preserves_source_and_allows_retry() {
-        use super::ValidityMask;
-        use crate::test_support::{allocation_count, fail_allocations_after};
-
-        let source = ValidityMask::from_sparse(5, &[1, 4]).unwrap().unwrap();
-        let rows = [4, 0, 4, 1];
-        let (result, allocations) = allocation_count(|| source.try_gather(&rows));
-        assert_eq!(result.unwrap().unwrap().iter().collect::<Vec<_>>(), [
-            true, false, true, true
-        ]);
-        assert!(allocations > 0);
-        for successful in 0..allocations {
-            let error =
-                fail_allocations_after(successful, || source.try_gather(&rows)).unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            ));
-            assert_eq!(source.iter().collect::<Vec<_>>(), [
-                false, true, false, false, true
-            ]);
-            let retry = source.try_gather(&rows).unwrap().unwrap();
-            assert_eq!(retry.iter().collect::<Vec<_>>(), [true, false, true, true]);
-        }
-        let window = fail_allocations_after(0, || source.window(1, 3)).unwrap();
-        assert_eq!(window.iter().collect::<Vec<_>>(), [true, false, false]);
     }
 
     use super::{

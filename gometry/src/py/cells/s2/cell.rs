@@ -4,9 +4,9 @@ use crate::py::cells::{
 };
 use crate::py::errors::{ParseFormat, parse_error};
 
-pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyResult<PyCellArray> {
+pub(crate) fn s2_cell_array(cells: impl IntoIterator<Item = CellId>) -> PyCellArray {
     let ids = cells.into_iter().map(CellId::raw).collect();
-    Ok(PyCellArray::from_ids(GridKind::S2Cell, ids)?)
+    PyCellArray::from_ids(GridKind::S2Cell, ids)
 }
 
 #[pymethods]

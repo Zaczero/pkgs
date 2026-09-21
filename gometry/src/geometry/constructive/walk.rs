@@ -799,11 +799,11 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
         }
     }
     drop(shell_indexes);
-    shells
+    Ok(shells
         .into_iter()
         .zip(assigned)
         .map(|((shell, ..), holes)| Polygon::new(shell, holes))
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
@@ -915,13 +915,10 @@ mod tests {
             XY::new(5.5, 1.0),
             XY::new(5.0, 1.0),
         ];
-        let shell_shape = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let shell_shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
+            Vec::new(),
+        ));
         assert!(hole.iter().all(|point| {
             shell_shape
                 .covers_point(Point::new_raw_xy(point.x, point.y))
@@ -968,13 +965,10 @@ mod tests {
         let shell = rectangle(0.0, 0.0, 10.0, 10.0, false);
         let outer_hole = rectangle(2.0, 2.0, 8.0, 8.0, true);
         let inner_hole = rectangle(3.0, 3.0, 7.0, 7.0, true);
-        let holed_shell = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
-                vec![Ring::from_closed(CoordSeq::try_from_xy(&outer_hole).unwrap()).unwrap()],
-            )
-            .unwrap(),
-        );
+        let holed_shell = Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
+            vec![Ring::from_closed(CoordSeq::try_from_xy(&outer_hole).unwrap()).unwrap()],
+        ));
         // The second negative ring is inside the first. A completed polygon
         // would exclude it, but assembly owns each negative ring against the
         // shell before those holes become polygon state.

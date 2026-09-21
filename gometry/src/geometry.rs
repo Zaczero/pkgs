@@ -569,11 +569,11 @@ impl Shape {
 }
 
 impl Polygon {
-    pub fn new(shell: Ring, holes: Vec<Ring>) -> Result<Self> {
-        Ok(Self {
+    pub fn new(shell: Ring, holes: Vec<Ring>) -> Self {
+        Self {
             shell,
-            holes: SharedSlice::try_from_vec(holes)?,
-        })
+            holes: SharedSlice::from_vec(holes),
+        }
     }
 
     pub fn points(&self) -> impl Iterator<Item = Point> + '_ {
@@ -697,7 +697,7 @@ impl Polygon {
             )
             .map_err(E::from)?;
         }
-        let holes = SharedSlice::try_from_vec(holes).map_err(E::from)?;
+        let holes = SharedSlice::from_vec(holes);
         Ok(Self { shell, holes })
     }
 
@@ -747,7 +747,7 @@ impl Polygon {
         }
         Ok(Some(Self {
             shell,
-            holes: SharedSlice::try_from_vec(holes)?,
+            holes: SharedSlice::from_vec(holes),
         }))
     }
 
@@ -767,7 +767,7 @@ impl Polygon {
         for hole in self.holes.iter() {
             crate::try_push_vec(&mut holes, constructive::oriented_ring(hole, !exterior_cw)?)?;
         }
-        Self::new(shell, holes)
+        Ok(Self::new(shell, holes))
     }
 
     fn normalize(&self) -> Result<Self> {
@@ -783,13 +783,13 @@ impl Polygon {
             )?;
         }
         holes.sort_unstable_by(compare_point_slices);
-        Self::new(
+        Ok(Self::new(
             Ring::try_from_closed(constructive::canonical_ring_seq(
                 self.shell.coords(),
                 false,
             )?)?,
             holes,
-        )
+        ))
     }
 
     fn equals_exact_impl<const Z: bool, const M: bool>(

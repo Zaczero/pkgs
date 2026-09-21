@@ -254,7 +254,7 @@ impl Shape {
             let columns = part.column_arcs();
             let physical_len = columns.xs.len();
             let window = crate::geometry::CoordWindow::from_range(columns.window, physical_len);
-            let m = SharedSlice::try_from_vec(measures)?;
+            let m = SharedSlice::from_vec(measures);
             measured.push(LineSeq::from_proven(
                 CoordSeq::from_shared_columns_with_window(
                     columns.xs,

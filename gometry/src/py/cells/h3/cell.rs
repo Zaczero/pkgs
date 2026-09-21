@@ -294,7 +294,7 @@ impl PyH3Cell {
             .into_iter()
             .map(u64::from)
             .collect();
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 
     /// Return cells exactly ``k`` grid steps away (hollow ring).
@@ -335,7 +335,7 @@ impl PyH3Cell {
             .into_iter()
             .map(u64::from)
             .collect();
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 
     /// Test whether ``other`` is an edge-adjacent neighbor of this cell.
@@ -568,7 +568,7 @@ impl PyH3Cell {
                 .map_err(super::super::coverage_ops::cover_budget_err)?;
             ids.push(u64::from(cell));
         }
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
+        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids))
     }
 }
 

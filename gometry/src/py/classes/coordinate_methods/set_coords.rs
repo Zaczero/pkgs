@@ -70,7 +70,7 @@ fn required_axis(
     let values = crate::coordinate_column_values_exact(py, &value, name, expected_len, |got| {
         axis_length_error(name, expected_len, got)
     })?;
-    SharedSlice::try_from_vec(values).map_err(PyErr::from)
+    Ok(SharedSlice::from_vec(values))
 }
 
 fn optional_replace_axis(
@@ -93,9 +93,7 @@ fn optional_replace_axis(
             "{name} must be finite"
         )));
     }
-    Ok(ReplacementAxis::Replace(
-        SharedSlice::try_from_vec(values).map_err(PyErr::from)?,
-    ))
+    Ok(ReplacementAxis::Replace(SharedSlice::from_vec(values)))
 }
 
 fn replacement_from_kwargs(
@@ -162,8 +160,8 @@ fn replacement_from_coordinates_view(
             ms: seq
                 .ms()
                 .map(|values| {
-                    SharedSlice::try_from_vec(crate::geometry::try_copy_slice(values)?)
-                        .map(ReplacementAxis::Replace)
+                    crate::geometry::try_copy_slice(values)
+                        .map(|values| ReplacementAxis::Replace(SharedSlice::from_vec(values)))
                         .map_err(PyErr::from)
                 })
                 .transpose()?
@@ -211,18 +209,14 @@ fn replacement_from_coordinates_view(
         return Err(PyErr::from(error));
     }
     Ok(CoordinateReplacement {
-        xs: SharedSlice::try_from_vec(xs).map_err(PyErr::from)?,
-        ys: SharedSlice::try_from_vec(ys).map_err(PyErr::from)?,
-        zs: zs
-            .map(|values| SharedSlice::try_from_vec(values).map(ReplacementAxis::Replace))
-            .transpose()
-            .map_err(PyErr::from)?
-            .unwrap_or(ReplacementAxis::Carry),
-        ms: ms
-            .map(|values| SharedSlice::try_from_vec(values).map(ReplacementAxis::Replace))
-            .transpose()
-            .map_err(PyErr::from)?
-            .unwrap_or(ReplacementAxis::Carry),
+        xs: SharedSlice::from_vec(xs),
+        ys: SharedSlice::from_vec(ys),
+        zs: zs.map_or(ReplacementAxis::Carry, |values| {
+            ReplacementAxis::Replace(SharedSlice::from_vec(values))
+        }),
+        ms: ms.map_or(ReplacementAxis::Carry, |values| {
+            ReplacementAxis::Replace(SharedSlice::from_vec(values))
+        }),
         len: expected_len,
         axes,
         positional: true,
@@ -301,18 +295,14 @@ fn replacement_from_matrix(
         return Err(InvalidGeometryError::new_err("coordinates must be finite"));
     }
     Ok(CoordinateReplacement {
-        xs: SharedSlice::try_from_vec(xs).map_err(PyErr::from)?,
-        ys: SharedSlice::try_from_vec(ys).map_err(PyErr::from)?,
-        zs: zs
-            .map(|values| SharedSlice::try_from_vec(values).map(ReplacementAxis::Replace))
-            .transpose()
-            .map_err(PyErr::from)?
-            .unwrap_or(ReplacementAxis::Carry),
-        ms: ms
-            .map(|values| SharedSlice::try_from_vec(values).map(ReplacementAxis::Replace))
-            .transpose()
-            .map_err(PyErr::from)?
-            .unwrap_or(ReplacementAxis::Carry),
+        xs: SharedSlice::from_vec(xs),
+        ys: SharedSlice::from_vec(ys),
+        zs: zs.map_or(ReplacementAxis::Carry, |values| {
+            ReplacementAxis::Replace(SharedSlice::from_vec(values))
+        }),
+        ms: ms.map_or(ReplacementAxis::Carry, |values| {
+            ReplacementAxis::Replace(SharedSlice::from_vec(values))
+        }),
         len: expected_len,
         axes,
         positional: true,
@@ -463,27 +453,27 @@ pub(crate) fn slice_replacement_for_shape(
     replacement: &CoordinateReplacement,
     start: usize,
     len: usize,
-) -> PyResult<CoordinateReplacement> {
+) -> CoordinateReplacement {
     let end = start + len;
-    Ok(CoordinateReplacement {
-        xs: SharedSlice::try_from_vec(replacement.xs[start..end].to_vec()).map_err(PyErr::from)?,
-        ys: SharedSlice::try_from_vec(replacement.ys[start..end].to_vec()).map_err(PyErr::from)?,
+    CoordinateReplacement {
+        xs: SharedSlice::from_vec(replacement.xs[start..end].to_vec()),
+        ys: SharedSlice::from_vec(replacement.ys[start..end].to_vec()),
         zs: match &replacement.zs {
-            ReplacementAxis::Replace(values) => ReplacementAxis::Replace(
-                SharedSlice::try_from_vec(values[start..end].to_vec()).map_err(PyErr::from)?,
-            ),
+            ReplacementAxis::Replace(values) => {
+                ReplacementAxis::Replace(SharedSlice::from_vec(values[start..end].to_vec()))
+            },
             ReplacementAxis::Carry => ReplacementAxis::Carry,
         },
         ms: match &replacement.ms {
-            ReplacementAxis::Replace(values) => ReplacementAxis::Replace(
-                SharedSlice::try_from_vec(values[start..end].to_vec()).map_err(PyErr::from)?,
-            ),
+            ReplacementAxis::Replace(values) => {
+                ReplacementAxis::Replace(SharedSlice::from_vec(values[start..end].to_vec()))
+            },
             ReplacementAxis::Carry => ReplacementAxis::Carry,
         },
         len,
         axes: replacement.axes,
         positional: replacement.positional,
-    })
+    }
 }
 
 pub(crate) fn map_coordinates_callback(

@@ -1328,7 +1328,7 @@ mod tests {
             Ring::closed(vec![pt(1.0, 1.0), pt(2.0, 1.0), pt(2.0, 2.0), pt(1.0, 2.0)]).unwrap();
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(Shape::Polygon(Polygon {
             shell,
-            holes: SharedSlice::try_from_vec(vec![hole]).unwrap(),
+            holes: SharedSlice::from_vec(vec![hole]),
         }))));
         assert!(view.single_seq().is_none());
         let points = view.collect_points();
@@ -1388,9 +1388,7 @@ mod tests {
             ring_offsets,
             polygon_offsets,
             Frame::default(),
-            RowSelection::gather_checked_native(vec![1, 0], 2)
-                .unwrap()
-                .unwrap(),
+            RowSelection::gather_checked_native(vec![1, 0], 2).unwrap(),
         )
         .unwrap();
         let gathered_points = gathered.coordinate_view().collect_points();
@@ -1485,9 +1483,7 @@ mod tests {
             coords,
             offsets,
             Frame::default(),
-            RowSelection::gather_checked_native(vec![2, 0], 3)
-                .unwrap()
-                .unwrap(),
+            RowSelection::gather_checked_native(vec![2, 0], 3).unwrap(),
         )
         .unwrap();
         let view = gathered.coordinate_view();
@@ -1680,12 +1676,11 @@ mod tests {
         let ys: [f64; 15] = std::array::from_fn(|i| xy[i].y);
         let zs: [f64; 15] = std::array::from_fn(|i| xy[i].z().unwrap());
         let m_owner =
-            SharedSlice::try_from_vec((0_u8..20).map(|value| f64::from(value) + 50.0).collect())
-                .unwrap();
+            SharedSlice::from_vec((0_u8..20).map(|value| f64::from(value) + 50.0).collect());
         let coords = CoordSeq::from_shared_columns(
-            SharedSlice::try_from_vec(xs.to_vec()).unwrap(),
-            SharedSlice::try_from_vec(ys.to_vec()).unwrap(),
-            Some(SharedSlice::try_from_vec(zs.to_vec()).unwrap()),
+            SharedSlice::from_vec(xs.to_vec()),
+            SharedSlice::from_vec(ys.to_vec()),
+            Some(SharedSlice::from_vec(zs.to_vec())),
             Some(MColumn::Local {
                 owner: m_owner.clone(),
                 offset: 3,

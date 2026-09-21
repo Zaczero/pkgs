@@ -849,7 +849,7 @@ impl PyH3EdgeArray {
     /// CellArray
     ///     One origin H3Cell per edge.
     #[getter]
-    fn origin(&self) -> PyResult<PyCellArray> {
+    fn origin(&self) -> PyCellArray {
         let ids = self
             .logical_ids_vec()
             .into_iter()
@@ -858,7 +858,7 @@ impl PyH3EdgeArray {
                 u64::from(edge.origin())
             })
             .collect();
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
+        PyCellArray::from_ids(GridKind::H3Cell, ids)
     }
 
     /// The cells these directed edges enter.
@@ -868,7 +868,7 @@ impl PyH3EdgeArray {
     /// CellArray
     ///     One destination H3Cell per edge.
     #[getter]
-    fn destination(&self) -> PyResult<PyCellArray> {
+    fn destination(&self) -> PyCellArray {
         let ids = self
             .logical_ids_vec()
             .into_iter()
@@ -877,7 +877,7 @@ impl PyH3EdgeArray {
                 u64::from(edge.destination())
             })
             .collect();
-        Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
+        PyCellArray::from_ids(GridKind::H3Cell, ids)
     }
 
     /// Reverse every directed edge from its destination back to its origin.

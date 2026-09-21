@@ -77,7 +77,7 @@ fn crossing_hole_relationship_issue(
     let polygon_issue = |polygon: &Polygon, path: &str| -> Result<Option<ValidationIssue>> {
         let mut crossing = Vec::new();
         for (index, hole) in polygon.holes.iter().enumerate() {
-            let candidate = Shape::Polygon(Polygon::new((*hole).clone(), Vec::new())?);
+            let candidate = Shape::Polygon(Polygon::new((*hole).clone(), Vec::new()));
             if crate::geometry::crosses_antimeridian_in_frame(&candidate, frame) {
                 crossing.push((index, hole));
             }
@@ -94,7 +94,7 @@ fn crossing_hole_relationship_issue(
             .filter(|(index, _)| !crossing_indices.contains(index))
             .map(|(_, hole)| hole.clone())
             .collect();
-        let container = Shape::Polygon(Polygon::new(polygon.shell.clone(), stationary)?);
+        let container = Shape::Polygon(Polygon::new(polygon.shell.clone(), stationary));
         let container = match try_topology_split(&container, domain) {
             Ok(container) => container,
             Err(error) => {
@@ -129,7 +129,7 @@ fn crossing_hole_relationship_issue(
                     path,
                 )));
             }
-            let hole = Shape::Polygon(Polygon::new(hole.clone(), Vec::new())?);
+            let hole = Shape::Polygon(Polygon::new(hole.clone(), Vec::new()));
             let hole = match try_topology_split(&hole, domain) {
                 Ok(hole) => hole,
                 Err(error) => {

@@ -295,7 +295,7 @@ impl<T> NonEmptyVec<T> {
             }
             .into());
         }
-        Ok(Self(SharedSlice::try_from_vec(items)?))
+        Ok(Self(SharedSlice::from_vec(items)))
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -513,7 +513,7 @@ impl MultipartMembers {
             }
         }
         Ok(if has_empty {
-            Self::Sparse(SharedSlice::try_from_vec(indices)?)
+            Self::Sparse(SharedSlice::from_vec(indices))
         } else {
             Self::Dense
         })
@@ -707,7 +707,7 @@ macro_rules! impl_multipart {
                 } else {
                     MultipartMembers::Dense
                 };
-                let values = SharedSlice::try_from_vec(values)?;
+                let values = SharedSlice::from_vec(values);
                 Ok(Self {
                     axes,
                     values,
@@ -739,7 +739,7 @@ macro_rules! impl_multipart {
                 );
                 Ok(Some(Self {
                     axes,
-                    values: SharedSlice::try_from_vec(values)?,
+                    values: SharedSlice::from_vec(values),
                     members: MultipartMembers::Dense,
                 }))
             }
@@ -776,7 +776,7 @@ macro_rules! impl_multipart {
                     );
                     return Ok(Self {
                         axes,
-                        values: SharedSlice::try_from_vec(values).map_err(E::from)?,
+                        values: SharedSlice::from_vec(values),
                         members: MultipartMembers::Dense,
                     });
                 }

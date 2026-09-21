@@ -227,7 +227,7 @@ impl BoundaryPlan {
                         .expect("each ring has one polygon owner"),
                 );
             }
-            polygons.push(Polygon::new(shell, holes)?);
+            polygons.push(Polygon::new(shell, holes));
         }
         drop(rings);
         let (chords, isolated) = remaining.split_at(self.lines.len());
@@ -759,7 +759,7 @@ pub(super) fn polygonize_faces(
     polygons.sort_unstable_by_key(|&(face, ..)| face);
     let mut output = Vec::with_capacity(polygons.len());
     for (_, shell, holes) in polygons {
-        output.push(Polygon::new(shell, holes)?);
+        output.push(Polygon::new(shell, holes));
     }
     Ok(output)
 }

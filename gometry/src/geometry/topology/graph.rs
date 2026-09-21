@@ -1423,8 +1423,7 @@ impl GraphBuilder {
             None
         };
         edges.sort_unstable_by(|left, right| {
-            left
-                .sources
+            left.sources
                 .first()
                 .cmp(&right.sources.first())
                 .then_with(|| {

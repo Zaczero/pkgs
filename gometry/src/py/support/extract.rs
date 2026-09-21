@@ -399,7 +399,7 @@ pub(crate) fn extract_polygons(value: &Bound<'_, PyAny>) -> PyResult<Vec<Polygon
         Ok(Polygon::new(
             Ring::closed(extract_points(shell, None, None)?)?,
             holes,
-        )?)
+        ))
     })
 }
 

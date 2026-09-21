@@ -98,7 +98,7 @@ pub(super) fn _unpickle_h3_cell(
 #[pyfunction]
 pub(super) fn h3_pentagons(resolution: &Bound<'_, PyAny>) -> PyResult<PyCellArray> {
     let resolution = parse_h3_resolution(resolution)?;
-    h3_cell_array(resolution.pentagons())
+    Ok(h3_cell_array(resolution.pentagons()))
 }
 
 /// Return the 122 resolution-0 H3 base cells.
@@ -113,6 +113,6 @@ pub(super) fn h3_pentagons(resolution: &Bound<'_, PyAny>) -> PyResult<PyCellArra
 /// >>> len(gm.h3_base_cells())
 /// 122
 #[pyfunction]
-pub(super) fn h3_base_cells() -> PyResult<PyCellArray> {
+pub(super) fn h3_base_cells() -> PyCellArray {
     h3_cell_array(CellIndex::base_cells())
 }

@@ -106,7 +106,6 @@ mod binary_areal_overlay_tests {
             .unwrap(),
             Vec::new(),
         )
-        .unwrap()
     }
 
     fn square(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
@@ -127,13 +126,10 @@ mod binary_areal_overlay_tests {
             })
             .collect();
         points.push(points[0]);
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn zm_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -155,13 +151,10 @@ mod binary_areal_overlay_tests {
         })
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn m_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -176,13 +169,10 @@ mod binary_areal_overlay_tests {
         .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(None), MOrdinate(Some(offset + x + y))))
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn zm_line(start: (f64, f64), end: (f64, f64)) -> Shape {
@@ -217,13 +207,10 @@ mod binary_areal_overlay_tests {
             })
             .collect::<Result<Vec<_>>>()
             .unwrap();
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn z_square(minx: f64, miny: f64, maxx: f64, maxy: f64, offset: f64) -> Shape {
@@ -238,13 +225,10 @@ mod binary_areal_overlay_tests {
         .map(|(x, y)| Point::new_axes(x, y, ZOrdinate(Some(offset + x + y)), MOrdinate(None)))
         .collect::<Result<Vec<_>>>()
         .unwrap();
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn line_seq(points: &[(f64, f64)]) -> LineSeq {
@@ -473,17 +457,13 @@ mod binary_areal_overlay_tests {
             ),
             (
                 "hole boundary touch",
-                Shape::Polygon(
-                    Polygon::new(
-                        polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)])
+                Shape::Polygon(Polygon::new(
+                    polygon(&[(0.0, 0.0), (6.0, 0.0), (6.0, 6.0), (0.0, 6.0), (0.0, 0.0)]).shell,
+                    vec![
+                        polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)])
                             .shell,
-                        vec![
-                            polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)])
-                                .shell,
-                        ],
-                    )
-                    .unwrap(),
-                ),
+                    ],
+                )),
                 square(2.0, 2.0, 3.0, 3.0),
             ),
         ];
@@ -520,7 +500,7 @@ mod binary_areal_overlay_tests {
     fn collapsed_shell_does_not_emit_an_areal_hole_as_linework() {
         let shell = polygon(&[(0.0, 0.0), (4.0, 0.0), (2.0, 0.0), (0.0, 0.0)]).shell;
         let hole = polygon(&[(1.0, 1.0), (3.0, 1.0), (3.0, 3.0), (1.0, 3.0), (1.0, 1.0)]).shell;
-        let source = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+        let source = Shape::Polygon(Polygon::new(shell, vec![hole]));
         let enclosing = square(-1.0, -1.0, 5.0, 5.0);
         let expected = line(&[(0.0, 0.0), (4.0, 0.0)]);
         for (left, right) in [(&source, &enclosing), (&enclosing, &source)] {
@@ -795,32 +775,29 @@ mod binary_areal_overlay_tests {
 
     #[test]
     fn polygon_line_intersection_boundary_and_hole_cases() {
-        let holed = Shape::Polygon(
-            Polygon::new(
-                polygon(&[
-                    (0.0, 0.0),
-                    (10.0, 0.0),
-                    (10.0, 10.0),
-                    (0.0, 10.0),
-                    (0.0, 0.0),
-                ])
-                .shell,
-                vec![
-                    Ring::from_closed(
-                        CoordSeq::try_from_points(&[
-                            Point::new(4.0, 4.0).unwrap(),
-                            Point::new(6.0, 4.0).unwrap(),
-                            Point::new(6.0, 6.0).unwrap(),
-                            Point::new(4.0, 6.0).unwrap(),
-                            Point::new(4.0, 4.0).unwrap(),
-                        ])
-                        .unwrap(),
-                    )
+        let holed = Shape::Polygon(Polygon::new(
+            polygon(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ])
+            .shell,
+            vec![
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        Point::new(4.0, 4.0).unwrap(),
+                        Point::new(6.0, 4.0).unwrap(),
+                        Point::new(6.0, 6.0).unwrap(),
+                        Point::new(4.0, 6.0).unwrap(),
+                        Point::new(4.0, 4.0).unwrap(),
+                    ])
                     .unwrap(),
-                ],
-            )
-            .unwrap(),
-        );
+                )
+                .unwrap(),
+            ],
+        ));
         let multipart = Shape::MultiPolygon(
             vec![
                 polygon(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),

@@ -699,7 +699,7 @@ fn bounds_query_shape(bounds: crate::geometry::Bounds) -> crate::error::Result<S
 /// Build a `CellArray` from source cell ids through the public factory path.
 pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
     cells: impl IntoIterator<Item = S::Cell>,
-) -> PyResult<PyCellArray> {
+) -> PyCellArray {
     cell_array_from_keys(S::KIND, cells)
 }
 

@@ -144,7 +144,7 @@ pub(crate) fn convex_buffer_budgeted(
         return Ok(Some(Shape::Polygon(Polygon::new(
             Ring::try_from_closed(seq)?,
             Vec::new(),
-        )?)));
+        ))));
     }
     // Negative distance: inward offset + validity certificate.
     convex_erosion_certified(polygon, -distance, rule, quadrant_segments, budget)
@@ -210,10 +210,7 @@ fn simple_erosion_polygon(
     if !line_is_simple(&ring)? {
         return Ok(None);
     }
-    Ok(Some(Polygon::new(
-        Ring::try_from_closed(ring)?,
-        Vec::new(),
-    )?))
+    Ok(Some(Polygon::new(Ring::try_from_closed(ring)?, Vec::new())))
 }
 
 /// General positive round-join polygonal buffer — the own winding-number
@@ -488,10 +485,7 @@ fn simple_stroke_polygon(
     if ring_winding(&ring).is_ccw()
         && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple()?
     {
-        Ok(Some(Polygon::new(
-            Ring::try_from_closed(ring)?,
-            Vec::new(),
-        )?))
+        Ok(Some(Polygon::new(Ring::try_from_closed(ring)?, Vec::new())))
     } else {
         Ok(None)
     }
@@ -840,7 +834,7 @@ pub(crate) fn point_buffer(
     Ok(Some(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(seq)?,
         Vec::new(),
-    )?)))
+    ))))
 }
 
 /// Collect expansion loops across a collection's parts, recursively.

@@ -217,7 +217,7 @@ fn replace_array_coordinates(
     let mut shapes = crate::try_vec_with_capacity(array.len())?;
     for row in array.row_operation().present_rows() {
         let count = row.row().with_shape(|shape| shape.coord_count())?;
-        let sub = slice_replacement_for_shape(&replacement, present_cursor, count)?;
+        let sub = slice_replacement_for_shape(&replacement, present_cursor, count);
         present_cursor += count;
         crate::try_push(
             &mut shapes,

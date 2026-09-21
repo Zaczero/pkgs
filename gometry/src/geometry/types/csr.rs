@@ -140,7 +140,7 @@ impl CsrOffsetBuilder {
             )?;
         }
         Ok(CsrOffsetColumn {
-            offsets: SharedSlice::try_from_vec(values)?,
+            offsets: SharedSlice::from_vec(values),
             _level: PhantomData,
         })
     }
@@ -325,7 +325,7 @@ fn offsets_from_ends(ends: Vec<usize>) -> Result<SharedSlice<i32>> {
             i32::try_from(end).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
         )?;
     }
-    SharedSlice::try_from_vec(offsets)
+    Ok(SharedSlice::from_vec(offsets))
 }
 
 fn validate_csr_ends(ends: &[usize], vertex_cap: usize) -> Result<()> {

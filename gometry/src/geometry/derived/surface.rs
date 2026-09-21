@@ -308,13 +308,10 @@ mod tests {
     }
 
     fn polygon(shell: &[(f64, f64)], holes: &[&[(f64, f64)]]) -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                closed_ring(shell),
-                holes.iter().copied().map(closed_ring).collect(),
-            )
-            .expect("test polygon"),
-        )
+        Shape::Polygon(Polygon::new(
+            closed_ring(shell),
+            holes.iter().copied().map(closed_ring).collect(),
+        ))
     }
 
     fn box_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {

@@ -478,14 +478,13 @@ mod tests {
     #[test]
     fn point_probe_policy_indexes_polygon_hierarchy() {
         let mut polygon = unit_square();
-        polygon.holes = SharedSlice::try_from_vec(
+        polygon.holes = SharedSlice::from_vec(
             std::iter::repeat_with(|| {
                 closed_ring(&[(2.0, 2.0), (3.0, 2.0), (3.0, 3.0), (2.0, 3.0), (2.0, 2.0)])
             })
             .take(33)
             .collect::<Vec<_>>(),
-        )
-        .unwrap();
+        );
         let tester = PointBatchTester::new(&Shape::Polygon(polygon)).unwrap();
         assert!(tester.uses_indexed_plan());
     }
@@ -565,10 +564,8 @@ mod tests {
 
     #[test]
     fn windowed_ring_index_reads_visible_coordinates() {
-        let source_xs =
-            SharedSlice::try_from_vec(vec![1000.0, 0.0, 2.0, 2.0, 0.0, 0.0, -1000.0]).unwrap();
-        let source_ys =
-            SharedSlice::try_from_vec(vec![1000.0, 0.0, 0.0, 2.0, 2.0, 0.0, -1000.0]).unwrap();
+        let source_xs = SharedSlice::from_vec(vec![1000.0, 0.0, 2.0, 2.0, 0.0, 0.0, -1000.0]);
+        let source_ys = SharedSlice::from_vec(vec![1000.0, 0.0, 0.0, 2.0, 2.0, 0.0, -1000.0]);
         let source_xs_weak = Arc::downgrade(&source_xs.owner().unwrap());
         let source_ys_weak = Arc::downgrade(&source_ys.owner().unwrap());
         let coords =
@@ -631,14 +628,13 @@ mod tests {
                 (0.0, 10.0),
                 (0.0, 0.0),
             ]),
-            holes: SharedSlice::try_from_vec(vec![closed_ring(&[
+            holes: SharedSlice::from_vec(vec![closed_ring(&[
                 (3.0, 3.0),
                 (7.0, 3.0),
                 (7.0, 7.0),
                 (3.0, 7.0),
                 (3.0, 3.0),
-            ])])
-            .unwrap(),
+            ])]),
         }
     }
 
@@ -753,7 +749,7 @@ mod tests {
         }
         let poly = Polygon {
             shell,
-            holes: SharedSlice::try_from_vec(holes).unwrap(),
+            holes: SharedSlice::from_vec(holes),
         };
         let shape = Shape::Polygon(poly);
         let tester = PointBatchTester::new(&shape).unwrap();

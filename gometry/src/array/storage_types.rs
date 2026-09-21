@@ -36,13 +36,13 @@ pub(crate) struct CheckedPhysicalRows {
 
 impl CheckedPhysicalRows {
     #[cfg(test)]
-    fn checked(rows: Vec<usize>, physical_len: usize) -> crate::error::Result<Option<Self>> {
+    fn checked(rows: Vec<usize>, physical_len: usize) -> Option<Self> {
         if rows.iter().any(|&physical| physical >= physical_len) {
-            return Ok(None);
+            return None;
         }
-        Ok(Some(Self {
-            rows: SharedSlice::try_from_vec(rows)?,
-        }))
+        Some(Self {
+            rows: SharedSlice::from_vec(rows),
+        })
     }
 
     fn as_slice(&self) -> &[usize] {
@@ -90,11 +90,8 @@ pub(crate) enum RowSelectionRef<'a> {
 impl RowSelection {
     /// A gather over `map`, or `None` when a row lies outside `physical_len`.
     #[cfg(test)]
-    pub(crate) fn gather_checked_native(
-        map: Vec<usize>,
-        physical_len: usize,
-    ) -> crate::error::Result<Option<Self>> {
-        Ok(CheckedPhysicalRows::checked(map, physical_len)?.map(Self::Gather))
+    pub(crate) fn gather_checked_native(map: Vec<usize>, physical_len: usize) -> Option<Self> {
+        CheckedPhysicalRows::checked(map, physical_len).map(Self::Gather)
     }
 
     pub(crate) fn as_deref(&self) -> RowSelectionRef<'_> {
@@ -409,8 +406,8 @@ impl RowSelectionBuild {
         Ok(())
     }
 
-    fn finish(self) -> crate::error::Result<RowSelection> {
-        Ok(match self.state {
+    fn finish(self) -> RowSelection {
+        match self.state {
             RowSelectionBuildState::Empty => RowSelection::Gather(CheckedPhysicalRows {
                 rows: SharedSlice::empty(),
             }),
@@ -419,10 +416,10 @@ impl RowSelectionBuild {
             },
             RowSelectionBuildState::Gathered(indices) => {
                 RowSelection::Gather(CheckedPhysicalRows {
-                    rows: SharedSlice::try_from_vec(indices)?,
+                    rows: SharedSlice::from_vec(indices),
                 })
             },
-        })
+        }
     }
 }
 
@@ -448,7 +445,7 @@ pub(crate) fn row_selection_from_logical_rows(
         );
         build.push(physical)?;
     }
-    build.finish()
+    Ok(build.finish())
 }
 
 pub(crate) fn contiguous_physical_range(
@@ -831,18 +828,12 @@ mod tests {
 
     #[test]
     fn checked_gather_rejects_out_of_range_physical_rows() {
-        assert!(
-            RowSelection::gather_checked_native(vec![0_usize, 3], 3)
-                .unwrap()
-                .is_none()
-        );
+        assert!(RowSelection::gather_checked_native(vec![0_usize, 3], 3).is_none());
     }
 
     #[test]
     fn checked_gather_preserves_valid_physical_rows() {
-        let row_map = RowSelection::gather_checked_native(vec![2_usize, 0], 3)
-            .unwrap()
-            .unwrap();
+        let row_map = RowSelection::gather_checked_native(vec![2_usize, 0], 3).unwrap();
         assert_eq!(row_map.as_deref().len(3), 2);
         assert_eq!(physical_row(row_map.as_deref(), 0), 2);
         assert_eq!(physical_row(row_map.as_deref(), 1), 0);
@@ -886,9 +877,7 @@ mod tests {
 
         let gather = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords,
-            row_map: RowSelection::gather_checked_native(vec![3_usize, 0, 2], 4)
-                .unwrap()
-                .unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![3_usize, 0, 2], 4).unwrap(),
         });
         assert_shapes_iter_exact(&gather);
     }
@@ -923,9 +912,7 @@ mod tests {
         let gather = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords,
             offsets,
-            row_map: RowSelection::gather_checked_native(vec![2_usize, 0], 3)
-                .unwrap()
-                .unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![2_usize, 0], 3).unwrap(),
         });
         assert_shapes_iter_exact(&gather);
     }
@@ -973,9 +960,7 @@ mod tests {
             coords,
             ring_offsets,
             polygon_offsets,
-            row_map: RowSelection::gather_checked_native(vec![1_usize, 0], 2)
-                .unwrap()
-                .unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![1_usize, 0], 2).unwrap(),
         });
         assert_shapes_iter_exact(&gather);
     }
@@ -997,11 +982,7 @@ mod row_selection_admission_tests {
 
     #[test]
     fn checked_gather_rejects_out_of_range_physical_rows() {
-        assert!(
-            RowSelection::gather_checked_native(vec![4_usize], 4)
-                .unwrap()
-                .is_none()
-        );
+        assert!(RowSelection::gather_checked_native(vec![4_usize], 4).is_none());
     }
 
     #[test]

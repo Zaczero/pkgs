@@ -506,7 +506,6 @@ mod tests {
             Ring::from_closed(CoordSeq::try_from_points(points).unwrap()).unwrap(),
             vec![],
         )
-        .expect("test polygon is valid")
     }
 
     fn ring(axes: CoordinateAxes) -> Ring {
@@ -549,8 +548,7 @@ mod tests {
 
     #[test]
     fn mixed_ring_sizing_rejects_before_append_mutation() {
-        let polygon =
-            Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]).unwrap();
+        let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
         let shape = Shape::MultiPolygon(
             MultiPolygon::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(polygon)])
                 .expect("polygon aggregate axes match"),

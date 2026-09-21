@@ -539,13 +539,10 @@ mod winding_buffer_tests {
     #[test]
     fn degenerate_buffer_at_collection_limit_returns_an_error() {
         let degenerate = Shape::MultiPolygon(
-            MultiPolygon::from_dense(vec![
-                Polygon::new(
-                    ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]),
-                    Vec::new(),
-                )
-                .unwrap(),
-            ])
+            MultiPolygon::from_dense(vec![Polygon::new(
+                ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]),
+                Vec::new(),
+            )])
             .unwrap()
             .unwrap(),
         );
@@ -577,7 +574,7 @@ mod winding_buffer_tests {
             (-0.514_876_326_055_279_8, 54.615_665_698_471_18),
             (-0.514_876_326_055_279_8, 48.442_629_193_004_55),
         ]);
-        let polygon = Polygon::new(shell, Vec::new()).unwrap();
+        let polygon = Polygon::new(shell, Vec::new());
         let eroded = winding_erosion(
             std::slice::from_ref(&polygon),
             3.938_095_265_107_087_5,
@@ -609,8 +606,7 @@ mod winding_buffer_tests {
                 (4.0, 6.0),
                 (4.0, 4.0),
             ])],
-        )
-        .unwrap();
+        );
         let buffered = winding_buffer(
             std::slice::from_ref(&with_hole),
             0.5,
@@ -644,8 +640,7 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let solid_buffered = winding_buffer(
             std::slice::from_ref(&solid),
             1.5,
@@ -668,8 +663,7 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let sealed = winding_buffer(
             std::slice::from_ref(&notched),
             0.3,
@@ -691,8 +685,7 @@ mod winding_buffer_tests {
         let square = Polygon::new(
             ring(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let parts = std::slice::from_ref(&square);
         let miter = WalkJoinRule::Miter { limit: 5.0 };
         let mitered = winding_buffer(parts, 1.0, miter, NonZeroU32::new(8).unwrap()).unwrap();
@@ -719,8 +712,7 @@ mod winding_buffer_tests {
         let spike = Polygon::new(
             ring(&[(0.0, 0.0), (12.0, 1.0), (0.0, 2.0), (0.0, 0.0)]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let parts = std::slice::from_ref(&spike);
         let distance = 0.5;
         let limit = 2.0;
@@ -784,8 +776,7 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let q = NonZeroU32::new(8).unwrap();
         // Accept: distance 1 < inradius 5 → simple eroded square area 64.
         let accepted = convex_buffer(&box_poly, -1.0, WalkJoinRule::Arc, q).unwrap();
@@ -816,8 +807,7 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         assert!(
             convex_buffer(&l_shape, -1.2, WalkJoinRule::Bevel, q).is_none(),
             "concave input must not enter the certificate path"
@@ -843,8 +833,7 @@ mod winding_buffer_tests {
                 (0.0, 0.0),
             ]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let parts = std::slice::from_ref(&l_shape);
         let kept =
             winding_erosion(parts, 1.2, WalkJoinRule::Bevel, NonZeroU32::new(8).unwrap()).unwrap();
@@ -949,13 +938,10 @@ mod winding_buffer_tests {
                 )
                 .expect("test line is valid"),
             ),
-            Shape::Polygon(
-                Polygon::new(
-                    ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
-                    Vec::new(),
-                )
-                .unwrap(),
-            ),
+            Shape::Polygon(Polygon::new(
+                ring(&[(6.0, 0.0), (10.0, 0.0), (10.0, 4.0), (6.0, 4.0), (6.0, 0.0)]),
+                Vec::new(),
+            )),
         ])
         .expect("test collection is valid");
         let buffered = collection.buffer(0.5).unwrap();
@@ -989,7 +975,6 @@ mod winding_buffer_tests {
                 ]),
                 Vec::new(),
             )
-            .unwrap()
         };
         let left = rectangle(0.0, 2.0);
         let right = rectangle(2.0, 4.0);
@@ -1016,13 +1001,11 @@ mod winding_buffer_tests {
         let bowtie = Polygon::new(
             ring(&[(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let collapsed_shell = Polygon::new(
             ring(&[(6.0, 0.0), (8.0, 0.0), (10.0, 0.0), (6.0, 0.0)]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let shell = ring(&[
             (10.0, 0.0),
             (14.0, 0.0),
@@ -1035,8 +1018,7 @@ mod winding_buffer_tests {
             (12.0, 2.0),
             (13.0, 2.0),
             (11.0, 2.0),
-        ])])
-        .unwrap();
+        ])]);
         let nested = Shape::geometry_collection(vec![
             Shape::Polygon(bowtie),
             Shape::geometry_collection(vec![
@@ -1072,13 +1054,11 @@ mod winding_buffer_tests {
                 (3.0, 7.0),
                 (3.0, 3.0),
             ])],
-        )
-        .unwrap();
+        );
         let filler = Polygon::new(
             ring(&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let source = Shape::MultiPolygon(
             MultiPolygon::from_dense(vec![frame, filler])
                 .unwrap()
@@ -1108,7 +1088,6 @@ mod winding_buffer_tests {
                 ]),
                 Vec::new(),
             )
-            .unwrap()
         };
         let matches_union = |left: Polygon, right: Polygon| {
             let multipart = Shape::MultiPolygon(
@@ -1154,25 +1133,22 @@ mod winding_buffer_tests {
 
     #[test]
     fn erosion_opens_and_closes_polygon_holes_at_the_union_boundary() {
-        let holed = Shape::Polygon(
-            Polygon::new(
-                ring(&[
-                    (0.0, 0.0),
-                    (10.0, 0.0),
-                    (10.0, 10.0),
-                    (0.0, 10.0),
-                    (0.0, 0.0),
-                ]),
-                vec![ring(&[
-                    (4.0, 4.0),
-                    (6.0, 4.0),
-                    (6.0, 6.0),
-                    (4.0, 6.0),
-                    (4.0, 4.0),
-                ])],
-            )
-            .unwrap(),
-        );
+        let holed = Shape::Polygon(Polygon::new(
+            ring(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ]),
+            vec![ring(&[
+                (4.0, 4.0),
+                (6.0, 4.0),
+                (6.0, 6.0),
+                (4.0, 6.0),
+                (4.0, 4.0),
+            ])],
+        ));
 
         let open = holed.buffer(-1.0).unwrap();
         assert!(
@@ -1187,13 +1163,10 @@ mod winding_buffer_tests {
 
     #[test]
     fn collapsed_areal_support_is_empty_and_collapsed_holes_are_ignored() {
-        let collapsed = Shape::Polygon(
-            Polygon::new(
-                ring(&[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (0.0, 0.0)]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let collapsed = Shape::Polygon(Polygon::new(
+            ring(&[(0.0, 0.0), (2.0, 0.0), (4.0, 0.0), (0.0, 0.0)]),
+            Vec::new(),
+        ));
         assert!(collapsed.buffer(0.0).unwrap().is_empty());
         assert!(collapsed.buffer(-1.0).unwrap().is_empty());
 
@@ -1204,16 +1177,13 @@ mod winding_buffer_tests {
             (0.0, 10.0),
             (0.0, 0.0),
         ]);
-        let collapsed_hole = Shape::Polygon(
-            Polygon::new(shell.clone(), vec![ring(&[
-                (2.0, 5.0),
-                (5.0, 5.0),
-                (8.0, 5.0),
-                (2.0, 5.0),
-            ])])
-            .unwrap(),
-        );
-        let solid = Shape::Polygon(Polygon::new(shell, Vec::new()).unwrap());
+        let collapsed_hole = Shape::Polygon(Polygon::new(shell.clone(), vec![ring(&[
+            (2.0, 5.0),
+            (5.0, 5.0),
+            (8.0, 5.0),
+            (2.0, 5.0),
+        ])]));
+        let solid = Shape::Polygon(Polygon::new(shell, Vec::new()));
         assert!(
             collapsed_hole
                 .buffer(-1.0)
@@ -1229,35 +1199,29 @@ mod winding_buffer_tests {
     /// answer), and puntal/lineal input annihilates exactly.
     #[test]
     fn zero_distance_buffer_is_the_winding_limit() {
-        let holed = Shape::Polygon(
-            Polygon::new(
-                ring(&[
-                    (0.0, 0.0),
-                    (10.0, 0.0),
-                    (10.0, 10.0),
-                    (0.0, 10.0),
-                    (0.0, 0.0),
-                ]),
-                vec![ring(&[
-                    (4.0, 4.0),
-                    (6.0, 4.0),
-                    (6.0, 6.0),
-                    (4.0, 6.0),
-                    (4.0, 4.0),
-                ])],
-            )
-            .unwrap(),
-        );
+        let holed = Shape::Polygon(Polygon::new(
+            ring(&[
+                (0.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (0.0, 10.0),
+                (0.0, 0.0),
+            ]),
+            vec![ring(&[
+                (4.0, 4.0),
+                (6.0, 4.0),
+                (6.0, 6.0),
+                (4.0, 6.0),
+                (4.0, 4.0),
+            ])],
+        ));
         let same = holed.buffer(0.0).unwrap();
         assert!((same.area() - 96.0).abs() < 1e-12, "{}", same.area());
 
-        let bowtie = Shape::Polygon(
-            Polygon::new(
-                ring(&[(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let bowtie = Shape::Polygon(Polygon::new(
+            ring(&[(0.0, 0.0), (4.0, 4.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]),
+            Vec::new(),
+        ));
         let lobe = bowtie.buffer(0.0).unwrap();
         assert!((lobe.area() - 4.0).abs() < 1e-12, "{}", lobe.area());
 
@@ -1382,7 +1346,7 @@ mod consecutive_dedup_tests {
             (0.0, 0.0),
         ]))
         .unwrap();
-        let polygon = Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap());
+        let polygon = Shape::Polygon(Polygon::new(ring, Vec::new()));
         let cleaned = polygon.snap_to_grid((1.0, 1.0), (0.0, 0.0)).unwrap();
         let Shape::Polygon(polygon) = cleaned else {
             panic!("expected polygon");
@@ -1407,7 +1371,7 @@ mod consecutive_dedup_tests {
             .unwrap(),
         )
         .unwrap();
-        let polygon = Shape::Polygon(Polygon::new(collapsed_ring, Vec::new()).unwrap());
+        let polygon = Shape::Polygon(Polygon::new(collapsed_ring, Vec::new()));
 
         assert_eq!(polygon.unique_points().unwrap().axes(), CoordinateAxes::XYZ);
         assert_eq!(
@@ -1461,7 +1425,7 @@ mod consecutive_dedup_tests {
             .unwrap(),
         )
         .unwrap();
-        let polygon = Shape::Polygon(Polygon::new(collapsed, Vec::new()).unwrap());
+        let polygon = Shape::Polygon(Polygon::new(collapsed, Vec::new()));
         assert_eq!(
             polygon.simplify_vw(0.0, false).unwrap(),
             Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZM)
@@ -1490,7 +1454,7 @@ mod consecutive_dedup_tests {
             .unwrap(),
         )
         .unwrap();
-        let polygon = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+        let polygon = Shape::Polygon(Polygon::new(shell, vec![hole]));
         let Shape::Polygon(out) = polygon.simplify_vw(0.0, false).unwrap() else {
             panic!("three-corner shell must remain a polygon");
         };
@@ -1859,23 +1823,20 @@ mod expansion_budget_threading_tests {
     }
 
     fn square_polygon(min_x: f64) -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new(min_x, 0.0).unwrap(),
-                        Point::new(min_x + 2.0, 0.0).unwrap(),
-                        Point::new(min_x + 2.0, 2.0).unwrap(),
-                        Point::new(min_x, 2.0).unwrap(),
-                        Point::new(min_x, 0.0).unwrap(),
-                    ])
-                    .unwrap(),
-                )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new(min_x, 0.0).unwrap(),
+                    Point::new(min_x + 2.0, 0.0).unwrap(),
+                    Point::new(min_x + 2.0, 2.0).unwrap(),
+                    Point::new(min_x, 2.0).unwrap(),
+                    Point::new(min_x, 0.0).unwrap(),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        )
+            Vec::new(),
+        ))
     }
 
     #[test]
@@ -1963,7 +1924,7 @@ mod expansion_budget_threading_tests {
         };
         let mut rings_budget = ExpansionBudget::new("segmentize", "max_length");
         rings_budget.add(GENERATED_ITEM_LIMIT - 12).unwrap();
-        Shape::Polygon(Polygon::new(square(0.0, 1.0), vec![square(0.25, 0.75)]).unwrap())
+        Shape::Polygon(Polygon::new(square(0.0, 1.0), vec![square(0.25, 0.75)]))
             .segmentize_budgeted(
                 0.25,
                 crate::geometry::SegmentPlacement::Planar,
@@ -2027,7 +1988,6 @@ mod winding_allocation_tests {
             .unwrap(),
             Vec::new(),
         )
-        .unwrap()
     }
 
     fn assert_resource(error: &crate::error::Error) {

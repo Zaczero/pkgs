@@ -626,7 +626,7 @@ fn tangent_circle_polygon(
     Ok(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(seq)?,
         Vec::new(),
-    )?))
+    )))
 }
 
 /// Emit a regular tangent-intersection polygon at a candidate disk radius,
@@ -1341,7 +1341,7 @@ fn build_inscribed_circle_once(
     Ok(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(seq)?,
         Vec::new(),
-    )?))
+    )))
 }
 
 /// Whether some polygon ring spans an area: a shape whose rings all lie on

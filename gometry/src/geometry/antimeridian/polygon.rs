@@ -283,7 +283,7 @@ fn chart_polygon(
     for hole in polygon.holes.iter() {
         holes.push(chart_ring(hole, frame, longitude_scale, latitude_scale)?);
     }
-    Polygon::new(shell, holes)
+    Ok(Polygon::new(shell, holes))
 }
 
 fn chart_shape(
@@ -417,13 +417,13 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     }
     if !crossing_holes.is_empty() {
         let axes = polygon.shell.coords().axes();
-        let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes)?;
+        let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes);
         let shell_parts = split_polygon_inner(&shell_only, preferred)?;
         let mut result = shape_from_polygons(shell_parts, axes)?;
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
             let hole_closure = pole_closure_for_ring(&hole);
-            let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new())?, hole_closure)?;
+            let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new()), hole_closure)?;
             let hole_shape = shape_from_polygons(hole_parts, hole_axes)?;
             result = result.difference(&hole_shape, Strictness::Strict)?;
         }
@@ -433,7 +433,7 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
     let segments = match split_ring_at_seam(&collect_points(polygon.shell.coords())) {
         SeamRing::Whole(shell) => {
             let shell = Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?;
-            return Ok(vec![Polygon::new(shell, stationary_holes)?]);
+            return Ok(vec![Polygon::new(shell, stationary_holes)]);
         },
         SeamRing::Pieces(pieces) => pieces,
     };
@@ -537,14 +537,14 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
         return Ok(vec![Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&world)?)?,
             vec![Ring::try_from_closed(CoordSeq::try_from_points(&hole)?)?],
-        )?]);
+        )]);
     }
     let mut polygons = Vec::with_capacity(shells.len());
     for shell in shells {
         polygons.push(Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&close_ring(shell))?)?,
             Vec::new(),
-        )?);
+        ));
     }
     // Assign each non-crossing hole to the part that contains it. Accumulate
     // every hole assigned to the same part.
@@ -583,7 +583,7 @@ fn assemble_polygons(segments: Vec<Vec<Point>>, kept_holes: &[&Ring]) -> Result<
             combined.append(&mut holes);
             combined
         };
-        *polygon = Polygon::new(polygon.shell.clone(), combined)?;
+        *polygon = Polygon::new(polygon.shell.clone(), combined);
     }
     Ok(polygons)
 }
@@ -827,29 +827,23 @@ mod tests {
 
     #[test]
     fn crs84_world_rectangle_is_identity() {
-        let shape = Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
-                    -90.0, -90.0, 90.0, 90.0, -90.0,
-                ]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let shape = Shape::Polygon(Polygon::new(
+            closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
+                -90.0, -90.0, 90.0, 90.0, -90.0,
+            ]),
+            Vec::new(),
+        ));
         assert_eq!(split_crs84(&shape), shape);
     }
 
     #[test]
     fn crs84_canonical_polygon_with_holes_is_identity() {
-        let shape = Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[0.0, 10.0, 10.0, 0.0, 0.0], &[0.0, 0.0, 10.0, 10.0, 0.0]),
-                vec![closed_ring(&[2.0, 4.0, 4.0, 2.0, 2.0], &[
-                    2.0, 2.0, 4.0, 4.0, 2.0,
-                ])],
-            )
-            .unwrap(),
-        );
+        let shape = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 10.0, 10.0, 0.0, 0.0], &[0.0, 0.0, 10.0, 10.0, 0.0]),
+            vec![closed_ring(&[2.0, 4.0, 4.0, 2.0, 2.0], &[
+                2.0, 2.0, 4.0, 4.0, 2.0,
+            ])],
+        ));
         assert_eq!(split_crs84(&shape), shape);
     }
 
@@ -883,9 +877,10 @@ mod tests {
             ys.push(ys[0]);
             closed_ring(&xs, &ys)
         };
-        Shape::Polygon(
-            Polygon::new(ring(shell), holes.iter().map(|hole| ring(hole)).collect()).unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            ring(shell),
+            holes.iter().map(|hole| ring(hole)).collect(),
+        ))
     }
 
     /// Every spelling of the seam vertices names one polygon, so each must
@@ -983,26 +978,20 @@ mod tests {
 
     #[test]
     fn crs84_zero_to_full_turn_band_rewrites() {
-        let shape = Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[0.0, 360.0, 360.0, 0.0, 0.0], &[
-                    -30.0, -30.0, 30.0, 30.0, -30.0,
-                ]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let shape = Shape::Polygon(Polygon::new(
+            closed_ring(&[0.0, 360.0, 360.0, 0.0, 0.0], &[
+                -30.0, -30.0, 30.0, 30.0, -30.0,
+            ]),
+            Vec::new(),
+        ));
         let split = split_crs84(&shape);
         assert_ne!(split, shape);
-        let expected = Shape::Polygon(
-            Polygon::new(
-                closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
-                    -30.0, -30.0, 30.0, 30.0, -30.0,
-                ]),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let expected = Shape::Polygon(Polygon::new(
+            closed_ring(&[-180.0, 180.0, 180.0, -180.0, -180.0], &[
+                -30.0, -30.0, 30.0, 30.0, -30.0,
+            ]),
+            Vec::new(),
+        ));
         assert_eq!(split, expected);
     }
 }

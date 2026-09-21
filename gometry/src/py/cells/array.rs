@@ -83,17 +83,13 @@ struct CellStorage {
 }
 
 impl CellStorage {
-    fn new(
-        kind: GridKind,
-        ids: Vec<u64>,
-        missing: Option<crate::array::ValidityMask>,
-    ) -> crate::error::Result<Self> {
+    fn new(kind: GridKind, ids: Vec<u64>, missing: Option<crate::array::ValidityMask>) -> Self {
         debug_assert!(missing.as_ref().is_none_or(|mask| mask.len() == ids.len()));
-        Ok(Self {
+        Self {
             kind,
-            ids: crate::geometry::SharedSlice::try_from_vec(ids)?,
+            ids: crate::geometry::SharedSlice::from_vec(ids),
             missing,
-        })
+        }
     }
 }
 
@@ -245,11 +241,11 @@ macro_rules! dispatch_cell_grid {
 }
 
 impl PyCellArray {
-    pub(crate) fn from_ids(kind: GridKind, ids: Vec<u64>) -> crate::error::Result<Self> {
-        Ok(Self {
-            storage: CellStorage::new(kind, ids, None)?,
+    pub(crate) fn from_ids(kind: GridKind, ids: Vec<u64>) -> Self {
+        Self {
+            storage: CellStorage::new(kind, ids, None),
             selection: RowSelection::Identity,
-        })
+        }
     }
 
     /// Build with a parallel missing mask (one flag per id). Used by bulk
@@ -261,7 +257,7 @@ impl PyCellArray {
     ) -> crate::error::Result<Self> {
         let missing = crate::array::ValidityMask::from_vec(ids.len(), missing)?;
         Ok(Self {
-            storage: CellStorage::new(kind, ids, missing)?,
+            storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
         })
     }
@@ -641,7 +637,7 @@ impl RowGetItemContainer for PyCellArray {
 
     fn empty(&self) -> PyResult<Self> {
         Ok(Self {
-            storage: CellStorage::new(self.kind(), Vec::new(), None)?,
+            storage: CellStorage::new(self.kind(), Vec::new(), None),
             selection: RowSelection::Identity,
         })
     }
@@ -678,7 +674,7 @@ impl PyCellArray {
         } else {
             collect_inferred_ids(values)?
         };
-        let storage = CellStorage::new(kind, collected.ids, collected.missing)?;
+        let storage = CellStorage::new(kind, collected.ids, collected.missing);
         Ok(Self {
             storage,
             selection: RowSelection::Identity,
@@ -1009,7 +1005,7 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 ));
             },
         };
-        let cells = match Self::from_ids(self.kind(), sorted_uniques)?.into_pyobject(py) {
+        let cells = match Self::from_ids(self.kind(), sorted_uniques).into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {
                 drop(sorted_counts);
@@ -1063,7 +1059,7 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 return Err(error);
             },
         };
-        let cells = match Self::from_ids(self.kind(), uniques)?.into_pyobject(py) {
+        let cells = match Self::from_ids(self.kind(), uniques).into_pyobject(py) {
             Ok(cells) => cells.into_any().unbind(),
             Err(error) => {
                 drop(codes);
@@ -1424,7 +1420,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         }
         let missing = self.missing_mask()?;
         Ok(Self {
-            storage: CellStorage::new(kind, ids, missing)?,
+            storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
         })
     }
@@ -1585,7 +1581,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             let floor = G::parse_compact_floor(depth)?;
             py.detach(move || G::compact_ids(ids, floor))?
         });
-        Ok(Self::from_ids(kind, compacted)?)
+        Ok(Self::from_ids(kind, compacted))
     }
 
     /// Expand this cell set to a uniform depth, returned in the grid's public
@@ -1628,7 +1624,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 Ok::<_, PyErr>(Self::ids_from_cells(G::uncompact_cells(cells, depth)?))
             })?
         });
-        Ok(Self::from_ids(kind, expanded)?)
+        Ok(Self::from_ids(kind, expanded))
     }
 
     /// Dissolve this cell set into one outline geometry.
@@ -1792,7 +1788,7 @@ pub(crate) fn _unpickle_cell_array(
         (logical_ids, missing)
     };
     Ok(PyCellArray {
-        storage: CellStorage::new(kind, ids, missing)?,
+        storage: CellStorage::new(kind, ids, missing),
         selection: RowSelection::Identity,
     })
 }
@@ -1816,7 +1812,7 @@ mod tests {
     fn empty_missing_and_max_depth_neighbors_children_succeed() {
         Python::initialize();
         Python::attach(|py| {
-            let empty = PyCellArray::from_ids(GridKind::H3Cell, Vec::new()).unwrap();
+            let empty = PyCellArray::from_ids(GridKind::H3Cell, Vec::new());
             match empty.neighbors(py) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),
@@ -1837,8 +1833,7 @@ mod tests {
                 Err(error) => panic!("{error}"),
             }
 
-            let max = PyCellArray::from_ids(GridKind::H3Cell, vec![h3_id(37.7749, -122.4194, 15)])
-                .unwrap();
+            let max = PyCellArray::from_ids(GridKind::H3Cell, vec![h3_id(37.7749, -122.4194, 15)]);
             match max.children(py, None) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),

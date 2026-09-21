@@ -1353,7 +1353,7 @@ fn embed(
                 .iter()
                 .map(|hole| closed_ring(&hole.vertices, hole.orientation)),
         )?;
-        let polygon = Polygon::new(shell, holes)?;
+        let polygon = Polygon::new(shell, holes);
         if !polygon_is_valid(&polygon)? {
             return Err(embedding_failure());
         }
@@ -1378,7 +1378,7 @@ fn embed(
     };
     let shell = embedded_ring(&clip.rings[0])?;
     let holes = try_collect_vec(clip.rings[1..].iter().map(|ring| embedded_ring(ring)))?;
-    let comparison_polygon = Polygon::new(shell, holes)?;
+    let comparison_polygon = Polygon::new(shell, holes);
     admit_embedded_clip(&comparison_polygon)?;
     let comparison_clip = Shape::Polygon(comparison_polygon);
     if let Some(source) = clip.source {
@@ -1730,7 +1730,7 @@ pub(super) fn build_collinear_polygons(
         let strip = Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_xy(&vertices)?)?,
             Vec::new(),
-        )?;
+        );
         match clip.source {
             None => budgeted_try_push(&mut cells, strip, budget)?,
             Some(polygon) => {
@@ -2946,7 +2946,7 @@ fn dual_embed(
             let mut points = Vec::new();
             try_reserve_vec(&mut points, rounded.len() + 1)?;
             points.extend(closed.clone().map(|xy| Point::new_raw_xy(xy.x, xy.y)));
-            if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new())?)? {
+            if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new()))? {
                 return Err(embedding_failure());
             }
             let site = exact::ExactPoint::from_xy(site_xy);
@@ -2963,7 +2963,7 @@ fn dual_embed(
         xs.push(rounded[0].x);
         ys.push(rounded[0].y);
         let ring = Ring::closed_coordseq(CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
-        polygons.push(Polygon::new(ring, Vec::new())?);
+        polygons.push(Polygon::new(ring, Vec::new()));
     }
     // Completeness by EDGE CANCELLATION rather than by a full overlay union.
     //
@@ -3082,8 +3082,7 @@ fn dual_embed(
             .chain(std::iter::once(&clip.fixed[0][0]))
             .map(|xy| Point::new_raw_xy(xy.x, xy.y)),
     );
-    let comparison_clip =
-        Shape::Polygon(Polygon::new(Ring::closed(clip_coordinates)?, Vec::new())?);
+    let comparison_clip = Shape::Polygon(Polygon::new(Ring::closed(clip_coordinates)?, Vec::new()));
     Ok(EmbeddedVoronoi {
         polygons,
         edges,

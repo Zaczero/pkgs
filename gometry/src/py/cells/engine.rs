@@ -196,7 +196,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
                 .and_then(|admitted| build(&admitted, max_cells))
         });
         let coverage = result?;
-        return PyCellArray::from_ids(kind, coverage)?.into_py_any(py);
+        return PyCellArray::from_ids(kind, coverage).into_py_any(py);
     }
     let Some(array) = exact_geometry_array(geom) else {
         return Err(expected_geometry_or_array());

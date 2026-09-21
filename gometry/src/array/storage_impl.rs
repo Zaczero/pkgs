@@ -363,12 +363,12 @@ impl GeometryArrayStorage {
             let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
             Ring::try_from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
         };
-        Polygon::new(
+        Ok(Polygon::new(
             ring(rings.start)?,
             (rings.start + 1..rings.end)
                 .map(ring)
                 .collect::<crate::error::Result<_>>()?,
-        )
+        ))
     }
 
     pub(crate) fn point_rows(&self) -> Option<PointRows<'_>> {

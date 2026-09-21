@@ -349,7 +349,7 @@ pub(crate) fn build_polygon(
         })?,
         None => Vec::new(),
     };
-    let shape = Shape::Polygon(Polygon::new(shell, holes).map_err(PyErr::from)?);
+    let shape = Shape::Polygon(Polygon::new(shell, holes));
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
     geometry_with_crs_epoch(shape, crs, epoch)
 }
@@ -854,7 +854,7 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
             Ok(Shape::Polygon(Polygon::new(
                 Ring::closed(points)?,
                 Vec::new(),
-            )?))
+            )))
         },
         PolygonMember::Nested(first) => {
             // Ring list: each ring source is materialized once before the
@@ -872,7 +872,7 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
                     Ring::closed(points_from_coordinate_members(&ring)?)?,
                 )?;
             }
-            Ok(Shape::Polygon(Polygon::new(shell, holes)?))
+            Ok(Shape::Polygon(Polygon::new(shell, holes)))
         },
     }
 }

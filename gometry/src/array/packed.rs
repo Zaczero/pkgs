@@ -1849,10 +1849,10 @@ mod compact_nullable_tests {
 
     #[test]
     fn sliced_xyzm_selection_keeps_the_independent_m_owner_and_window() {
-        let m = SharedSlice::try_from_vec((50..60).map(f64::from).collect()).unwrap();
+        let m = SharedSlice::from_vec((50..60).map(f64::from).collect());
         let coords = CoordSeq::from_shared_columns_with_window(
-            SharedSlice::try_from_vec((0..6).map(f64::from).collect()).unwrap(),
-            SharedSlice::try_from_vec(vec![10.0; 6]).unwrap(),
+            SharedSlice::from_vec((0..6).map(f64::from).collect()),
+            SharedSlice::from_vec(vec![10.0; 6]),
             None,
             Some(MColumn::Local {
                 owner: m.clone(),
@@ -1999,9 +1999,7 @@ mod compact_nullable_tests {
         let storage = Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::new(coords),
             offsets: CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap(),
-            row_map: RowSelection::gather_checked_native(vec![0, 0, 0], 1)
-                .unwrap()
-                .unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![0, 0, 0], 1).unwrap(),
         }));
         let mask = ValidityMask::from_vec(4, vec![false, false, false, true])
             .unwrap()
@@ -2032,9 +2030,7 @@ mod compact_nullable_tests {
             coords: Arc::new(coords),
             ring_offsets: CsrOffsetColumn::<RingLevel>::try_new(vec![0, 5], 5).unwrap(),
             polygon_offsets: CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
-            row_map: RowSelection::gather_checked_native(vec![0, 0], 1)
-                .unwrap()
-                .unwrap(),
+            row_map: RowSelection::gather_checked_native(vec![0, 0], 1).unwrap(),
         }));
         let mask = ValidityMask::from_vec(3, vec![false, false, true])
             .unwrap()

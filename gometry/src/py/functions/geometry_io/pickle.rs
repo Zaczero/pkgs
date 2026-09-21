@@ -228,7 +228,7 @@ fn pickled_csr_offsets<Level>(
     let mut offsets = Vec::new();
     crate::boundary::try_reserve_vec(&mut offsets, chunks.len())?;
     offsets.extend(chunks.iter().map(|chunk| i32::from_le_bytes(*chunk)));
-    CsrOffsetColumn::try_from_shared_i32(SharedSlice::try_from_vec(offsets)?, end_cap)
+    CsrOffsetColumn::try_from_shared_i32(SharedSlice::from_vec(offsets), end_cap)
 }
 
 /// Decode the little-endian `f64` columns of a packed payload.

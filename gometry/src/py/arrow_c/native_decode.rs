@@ -632,7 +632,7 @@ fn polygon_shape(
     for ring in rings {
         push(&mut holes, ring)?;
     }
-    Ok(Shape::Polygon(Polygon::new(shell, holes)?))
+    Ok(Shape::Polygon(Polygon::new(shell, holes)))
 }
 
 fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
@@ -903,11 +903,10 @@ impl NativeCoordinates {
                 || (0..size).any(|offset| values_node.missing_at(row * size + offset))
         })?;
         let coords = CoordSeq::from_shared_columns(
-            SharedSlice::try_from_vec(xs)?,
-            SharedSlice::try_from_vec(ys)?,
-            zs.map(SharedSlice::try_from_vec).transpose()?,
-            ms.map(|values| SharedSlice::try_from_vec(values).map(MColumn::Shared))
-                .transpose()?,
+            SharedSlice::from_vec(xs),
+            SharedSlice::from_vec(ys),
+            zs.map(SharedSlice::from_vec),
+            ms.map(|values| MColumn::Shared(SharedSlice::from_vec(values))),
         )
         .map_err(NativeArrowDecodeError::from)?;
         Ok(Self { coords, validity })

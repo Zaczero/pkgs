@@ -1321,7 +1321,7 @@ impl Shape {
                             crate::try_push_vec(&mut holes, hole)?;
                         }
                     }
-                    Self::Polygon(Polygon::new(shell, holes)?)
+                    Self::Polygon(Polygon::new(shell, holes))
                 },
                 None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
             },
@@ -1342,7 +1342,7 @@ impl Shape {
                                             crate::try_push_vec(&mut holes, hole)?;
                                         }
                                     }
-                                    MultiMember::Value(Polygon::new(shell, holes)?)
+                                    MultiMember::Value(Polygon::new(shell, holes))
                                 },
                                 None => MultiMember::Empty,
                             }

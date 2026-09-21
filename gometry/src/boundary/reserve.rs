@@ -1190,9 +1190,7 @@ mod tests {
         let mut builder = CsrBuilder::<u8>::new();
         builder.push_end(3).expect("first end");
         assert!(builder.push_end(2).is_err());
-        builder
-            .push_row([2])
-            .expect("reuse after invalid row end");
+        builder.push_row([2]).expect("reuse after invalid row end");
         let (values, offsets) = builder.finish();
         assert_eq!(values, [2]);
         assert_eq!(offsets, [0, 1]);

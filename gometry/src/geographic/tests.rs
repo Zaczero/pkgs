@@ -209,7 +209,7 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
     ]);
     let polygon = Polygon {
         shell,
-        holes: SharedSlice::try_from_vec(vec![bad_hole]).unwrap(),
+        holes: SharedSlice::from_vec(vec![bad_hole]),
     };
     let multipart = MultiPolygon::from_values(CoordinateAxes::XY, vec![
         MultiMember::Empty,
@@ -309,7 +309,7 @@ fn nested_invalid_coordinate_reports_longitude_before_latitude() {
     ]);
     let polygon = Polygon {
         shell,
-        holes: SharedSlice::try_from_vec(vec![bad_hole]).unwrap(),
+        holes: SharedSlice::from_vec(vec![bad_hole]),
     };
     let multipart = MultiPolygon::from_values(CoordinateAxes::XY, vec![
         MultiMember::Empty,

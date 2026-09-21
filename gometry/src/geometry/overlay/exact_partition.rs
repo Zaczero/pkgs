@@ -1551,7 +1551,7 @@ impl ExactSourceInventory {
             let shell = ring_iter.next().expect("polygon has a shell");
             let mut holes = Vec::with_capacity(ring_iter.size_hint().0);
             holes.extend(ring_iter);
-            polygons.push(Polygon::new(shell, holes)?);
+            polygons.push(Polygon::new(shell, holes));
         }
         let point_part = (!points.is_empty())
             .then(|| Shape::narrow_points(point_axes, points))
@@ -1746,12 +1746,10 @@ impl ExactSourceInventory {
             }
         }
         let mut selected = Vec::with_capacity(global.count as usize);
-        selected.extend(
-            (0..global.count as usize)
-                .map(|face| {
-                    face != 0 && samples[face].is_some() && depths[face].is_multiple_of(2)
-                }),
-        );
+        selected
+            .extend((0..global.count as usize).map(|face| {
+                face != 0 && samples[face].is_some() && depths[face].is_multiple_of(2)
+            }));
         let cells = ArealCells {
             faces: selected,
             spans: {

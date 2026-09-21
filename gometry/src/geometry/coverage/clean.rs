@@ -285,7 +285,6 @@ mod tests {
             Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
             Vec::new(),
         )
-        .unwrap()
     }
 
     fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
@@ -317,13 +316,10 @@ mod tests {
             points.push(Point::new_raw_xy(minx, maxy - (maxy - miny) * fraction));
         }
         points.push(points[0]);
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     }
 
     fn dense_rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Shape {
@@ -394,7 +390,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        let outer = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+        let outer = Shape::Polygon(Polygon::new(shell, vec![hole]));
         let rows = [outer, rectangle(1.005, 1.005, 1.995, 1.995)];
         assert_allocation_prefixes(&rows, 0.0, 0.05);
     }

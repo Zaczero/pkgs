@@ -783,7 +783,7 @@ pub(crate) fn try_triangle_shape(a: Point, b: Point, c: Point) -> Result<Shape> 
     Ok(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(builder.finish()?)?,
         Vec::new(),
-    )?))
+    )))
 }
 
 pub(crate) fn point_in_ccw_triangle(

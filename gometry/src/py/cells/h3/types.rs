@@ -1,7 +1,7 @@
 use h3o::{CellIndex, DirectedEdgeIndex, VertexIndex};
 
 use crate::geometry::types::Point;
-use crate::py::cells::{GridKind, PyCellArray, PyResult, pyclass};
+use crate::py::cells::{GridKind, PyCellArray, pyclass};
 
 pub(super) fn h3_latlng(p: Point) -> Result<h3o::LatLng, h3o::error::InvalidLatLng> {
     let (lon, lat) = crate::grid::canonical_lonlat(p.x, p.y);
@@ -35,12 +35,12 @@ pub(crate) struct PyH3Cell {
 
 crate::heapless!(CellIndex, PyH3Cell);
 
-pub(super) fn h3_cell_array(cells: impl IntoIterator<Item = CellIndex>) -> PyResult<PyCellArray> {
+pub(super) fn h3_cell_array(cells: impl IntoIterator<Item = CellIndex>) -> PyCellArray {
     let mut cells: Vec<_> = cells.into_iter().collect();
     cells.sort_unstable_by_key(|cell| u64::from(*cell));
     cells.dedup_by_key(|cell| u64::from(*cell));
     let ids = cells.into_iter().map(u64::from).collect();
-    Ok(PyCellArray::from_ids(GridKind::H3Cell, ids)?)
+    PyCellArray::from_ids(GridKind::H3Cell, ids)
 }
 
 /// A canonical H3 topological vertex.

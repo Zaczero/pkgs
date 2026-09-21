@@ -313,7 +313,7 @@ fn embedded_clip_admission_rejects_crossed_polygon() {
         Point::new_raw_xy(0.0, 0.0),
     ])
     .unwrap();
-    assert!(admit_embedded_clip(&Polygon::new(ring, Vec::new()).unwrap()).is_err());
+    assert!(admit_embedded_clip(&Polygon::new(ring, Vec::new())).is_err());
 }
 
 fn reversed_cycles(cycles: &[Vec<exact::ExactPoint>]) -> Vec<Vec<exact::ExactPoint>> {
@@ -607,13 +607,10 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
     // certificate and rejects this one-ULP boundary case. The independent
     // union/difference oracle still observes the same rectangular result.
     assert!(!coverage_is_valid(&cells, 0.0).unwrap());
-    let clip = Shape::Polygon(
-        Polygon::new(
-            rectangle(bounds[0], bounds[2], bounds[1], bounds[3]),
-            Vec::new(),
-        )
-        .unwrap(),
-    );
+    let clip = Shape::Polygon(Polygon::new(
+        rectangle(bounds[0], bounds[2], bounds[1], bounds[3]),
+        Vec::new(),
+    ));
     let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
     assert!(
         clip.difference(&union, Strictness::Lenient)
@@ -765,14 +762,14 @@ fn separator_fixture() -> (Vec<Site>, Polygon) {
             (-3.0, 3.0),
             (0.0, 0.0),
         ]),
-        Polygon::new(rectangle(-6.0, -6.0, 6.0, 6.0), Vec::new()).unwrap(),
+        Polygon::new(rectangle(-6.0, -6.0, 6.0, 6.0), Vec::new()),
     )
 }
 
 fn coincident_frame_fixture() -> (Vec<Site>, Polygon) {
     (
         sites_xy(&[(0.0, -1.0), (0.0, 1.0), (2.0, 0.5)]),
-        Polygon::new(rectangle(-1.0, 0.0, 0.5, 2.0), Vec::new()).unwrap(),
+        Polygon::new(rectangle(-1.0, 0.0, 0.5, 2.0), Vec::new()),
     )
 }
 
@@ -1042,8 +1039,7 @@ fn interior_first_separator_order_emits_one_full_chain() {
             (-1.0, 2.0),
         ]),
         Vec::new(),
-    )
-    .unwrap();
+    );
     let mut budget = ExpansionBudget::new("test", "interior-first chain");
     let atoms = node_polygon(&sites, &polygon, &mut budget);
     let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
@@ -1119,8 +1115,7 @@ fn edges_only_embed_still_rejects_colliding_binary64_vertices() {
     let clip = Polygon::new(
         rectangle(offset - 1.0, offset - 1.0, offset + 11.0, offset + 11.0),
         Vec::new(),
-    )
-    .unwrap();
+    );
     let mut budget = ExpansionBudget::new("test", "edges-only collision");
     let Err(error) = build_edges(
         &sites,
@@ -1218,8 +1213,7 @@ fn diamond_clip_in_square_aabb_covers_clip_with_no_separator_through_contacts() 
     let diamond = Polygon::new(
         closed_ring(&[(0.0, 1.0), (1.0, 0.0), (2.0, 1.0), (1.0, 2.0)]),
         Vec::new(),
-    )
-    .unwrap();
+    );
     let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
     let cells = site_shape(&sites)
         .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&diamond))
@@ -1232,8 +1226,7 @@ fn partial_collinear_frame_overlap_covers_clip() {
     let clip = Polygon::new(
         closed_ring(&[(1.0, 0.0), (3.0, 0.0), (3.0, 2.0), (0.0, 2.0)]),
         Vec::new(),
-    )
-    .unwrap();
+    );
     let sites = [(2.0, 1.0), (1.2, 1.4), (2.4, 1.5)];
     let cells = site_shape(&sites)
         .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
@@ -1246,8 +1239,7 @@ fn cyclically_rotated_rectangle_clip_covers_clip() {
     let clip = Polygon::new(
         closed_ring(&[(2.0, 0.0), (2.0, 2.0), (0.0, 2.0), (0.0, 0.0)]),
         Vec::new(),
-    )
-    .unwrap();
+    );
     let sites = [(0.5, 0.5), (1.5, 0.5), (1.0, 1.5)];
     let cells = site_shape(&sites)
         .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
@@ -1265,8 +1257,7 @@ fn holed_diamond_clip_covers_shell_minus_hole() {
             (1.25, 1.25),
             (0.75, 1.25),
         ])],
-    )
-    .unwrap();
+    );
     let sites = [(10.0, 0.0), (12.0, 0.0), (11.0, 1.0)];
     let cells = site_shape(&sites)
         .voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
@@ -1281,7 +1272,7 @@ fn holed_diamond_clip_covers_shell_minus_hole() {
 #[test]
 fn public_polygon_admits_sites_on_and_outside_clip_aabb() {
     let sites = sites_xy(&[(0.0, 0.0), (1.0, 0.0), (3.0, 1.0), (1.0, 1.0)]);
-    let polygon = Polygon::new(rectangle(0.0, 0.0, 2.0, 2.0), Vec::new()).unwrap();
+    let polygon = Polygon::new(rectangle(0.0, 0.0, 2.0, 2.0), Vec::new());
     let mut budget = ExpansionBudget::new("test", "sites on and outside R");
     let atoms = node_polygon(&sites, &polygon, &mut budget);
     assert!(
@@ -1315,7 +1306,7 @@ fn subnormal_clip_aabb_exact_lane_admits_sites_on_corners() {
         &certified_delaunay(&sites).unwrap(),
     )
     .unwrap();
-    let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()).unwrap();
+    let polygon = Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new());
     let mut polygon_budget = ExpansionBudget::new("test", "units4 polygon");
     build(
         &sites,
@@ -1354,8 +1345,7 @@ fn crossed_component_keeps_distinct_faces_with_the_same_owner() {
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -12.0, -1.0, 12.0, 1.0,
-    )])
-    .unwrap();
+    )]);
     let mut budget = ExpansionBudget::new("test", "Voronoi topology");
     let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
     let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
@@ -1394,8 +1384,7 @@ fn isolated_component_exterior_inherits_the_containing_face() {
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -1.0, -1.0, 1.0, 1.0,
-    )])
-    .unwrap();
+    )]);
     let mut budget = ExpansionBudget::new("test", "Voronoi topology");
     let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
     let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
@@ -1441,8 +1430,7 @@ fn two_isolated_holes_in_split_same_owner_cell_pair_by_containment() {
         rectangle(-12.0, -1.0, 12.0, 1.0),
         rectangle(-8.0, 6.0, -6.0, 8.0),
         rectangle(-1.2, -1.7, -0.6, -1.2),
-    ])
-    .unwrap();
+    ]);
     let subdivision = grafted_clip_subdivision(&sites, &clip_polygon);
     assert_boundary_walk_euler(&subdivision);
     assert!(
@@ -1472,8 +1460,7 @@ fn validate_rejects_a_mutated_twin_walk_label() {
         .collect();
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -1.0, -1.0, 1.0, 1.0,
-    )])
-    .unwrap();
+    )]);
     let mut subdivision = grafted_clip_subdivision(&sites, &clip_polygon);
     validate_exact_subdivision(&subdivision).unwrap();
     let slot = (0..subdivision.topology.targets.len())
@@ -1506,8 +1493,7 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
         .collect();
     let clip = Polygon::new(rectangle(-3.0, -3.0, 3.0, 3.0), vec![rectangle(
         -1.5, -1.0, 1.5, 1.0,
-    )])
-    .unwrap();
+    )]);
     let mut budget = ExpansionBudget::new("test", "collinear Voronoi topology");
     let edges = build_collinear_edges(
         &sites,
@@ -1617,7 +1603,7 @@ fn tolerance_clustered_sites_do_not_tie_private_frame_ownership() {
         0.1,
     )
     .unwrap();
-    let clip = Polygon::new(rectangle(-1.0, -1.0, 2.0, 2.0), Vec::new()).unwrap();
+    let clip = Polygon::new(rectangle(-1.0, -1.0, 2.0, 2.0), Vec::new());
     let mut budget = ExpansionBudget::new("test", "Voronoi topology");
     let diagram = build(
         &sites,
@@ -1633,7 +1619,10 @@ fn tolerance_clustered_sites_do_not_tie_private_frame_ownership() {
 #[test]
 fn semantic_admission_mutants_change_validity_overlap_gap_and_spill() {
     let shape = |min_x, min_y, max_x, max_y| {
-        Shape::Polygon(Polygon::new(rectangle(min_x, min_y, max_x, max_y), Vec::new()).unwrap())
+        Shape::Polygon(Polygon::new(
+            rectangle(min_x, min_y, max_x, max_y),
+            Vec::new(),
+        ))
     };
     let clip = shape(0.0, 0.0, 4.0, 4.0);
     let restored_rows = vec![shape(0.0, 0.0, 2.0, 4.0), shape(2.0, 0.0, 4.0, 4.0)];
@@ -1683,7 +1672,7 @@ fn semantic_admission_mutants_change_validity_overlap_gap_and_spill() {
         "mutated spill={mutated_spill}, restored spill={restored_spill}"
     );
 
-    let restored_polygon = Polygon::new(rectangle(0.0, 0.0, 4.0, 4.0), Vec::new()).unwrap();
+    let restored_polygon = Polygon::new(rectangle(0.0, 0.0, 4.0, 4.0), Vec::new());
     let mutated_polygon = Polygon::new(
         Ring::closed(
             [(0.0, 0.0), (4.0, 4.0), (0.0, 4.0), (4.0, 0.0), (0.0, 0.0)]
@@ -1693,8 +1682,7 @@ fn semantic_admission_mutants_change_validity_overlap_gap_and_spill() {
         )
         .unwrap(),
         Vec::new(),
-    )
-    .unwrap();
+    );
     let restored_valid = polygon_is_valid(&restored_polygon).unwrap();
     let mutated_valid = polygon_is_valid(&mutated_polygon).unwrap();
     assert_ne!(

@@ -230,19 +230,16 @@ mod linref_array_degrade_tests {
 
     #[test]
     fn linref_array_non_degradable_failures_still_abort() {
-        let polygon = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(line_coordseq(&[
-                    (0.0, 0.0),
-                    (1.0, 0.0),
-                    (1.0, 1.0),
-                    (0.0, 0.0),
-                ]))
-                .unwrap(),
-                vec![],
-            )
+        let polygon = Shape::Polygon(Polygon::new(
+            Ring::from_closed(line_coordseq(&[
+                (0.0, 0.0),
+                (1.0, 0.0),
+                (1.0, 1.0),
+                (0.0, 0.0),
+            ]))
             .unwrap(),
-        );
+            vec![],
+        ));
         let query = query_point();
         let wrong_kind = polygon
             .line_locate_point(query, false)

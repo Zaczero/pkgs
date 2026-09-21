@@ -762,22 +762,19 @@ mod geographic_masked_bounds_tests {
     }
 
     fn polygon(points: &[(f64, f64)]) -> Shape {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(
-                        &points
-                            .iter()
-                            .map(|&(x, y)| Point::new_raw_xy(x, y))
-                            .collect::<Vec<_>>(),
-                    )
-                    .unwrap(),
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(
+                    &points
+                        .iter()
+                        .map(|&(x, y)| Point::new_raw_xy(x, y))
+                        .collect::<Vec<_>>(),
                 )
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        )
+            Vec::new(),
+        ))
     }
 
     #[test]
@@ -890,7 +887,7 @@ mod concat_bulk_tests {
             Point::new_raw_xy(start, 0.0),
         ])
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()).unwrap())
+        Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()))
     }
 
     fn polygon_with_hole(start: f64) -> Shape {
@@ -910,12 +907,9 @@ mod concat_bulk_tests {
             Point::new_raw_xy(start + 0.25, 0.25),
         ])
         .unwrap();
-        Shape::Polygon(
-            Polygon::new(Ring::from_closed(shell).unwrap(), vec![
-                Ring::from_closed(hole).unwrap(),
-            ])
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(Ring::from_closed(shell).unwrap(), vec![
+            Ring::from_closed(hole).unwrap(),
+        ]))
     }
 
     fn points() -> PyGeometryArray {

@@ -389,12 +389,10 @@ impl CoordSeq {
         zs: Option<Vec<f64>>,
         ms: Option<Vec<f64>>,
     ) -> Result<Self> {
-        let xs = SharedSlice::try_from_vec(xs)?;
-        let ys = SharedSlice::try_from_vec(ys)?;
-        let zs = zs.map(SharedSlice::try_from_vec).transpose()?;
-        let ms = ms
-            .map(|values| SharedSlice::try_from_vec(values).map(MColumn::Shared))
-            .transpose()?;
+        let xs = SharedSlice::from_vec(xs);
+        let ys = SharedSlice::from_vec(ys);
+        let zs = zs.map(SharedSlice::from_vec);
+        let ms = ms.map(|values| MColumn::Shared(SharedSlice::from_vec(values)));
         Self::from_shared_columns(xs, ys, zs, ms)
     }
 
@@ -658,7 +656,7 @@ impl CoordSeq {
         if self.is_full_window(column) {
             Ok(column.clone())
         } else {
-            SharedSlice::try_from_vec(try_copy_slice(self.window(column))?)
+            Ok(SharedSlice::from_vec(try_copy_slice(self.window(column))?))
         }
     }
 

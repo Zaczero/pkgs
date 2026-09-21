@@ -113,7 +113,7 @@ impl Shape {
                 Self::Polygon(Polygon::new(
                     Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
                     Vec::new(),
-                )?),
+                )),
             )?;
         }
         Ok(shapes)

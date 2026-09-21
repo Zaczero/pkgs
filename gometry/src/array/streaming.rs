@@ -666,7 +666,7 @@ impl StreamingShapes {
                 "native payload length does not match its declared layout",
             ));
         }
-        let mask = validity.finish()?;
+        let mask = validity.finish();
         Ok((storage, mask, layout))
     }
 
@@ -896,7 +896,7 @@ impl StreamingPolygons {
             for index in rings.start + 1..rings.end {
                 crate::try_push_vec(&mut holes, ring(index)?)?;
             }
-            crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)?))?;
+            crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)))?;
         }
         Ok(shapes)
     }
@@ -955,7 +955,7 @@ fn polygon_shapes_from_parts(
         for index in rings.start + 1..rings.end {
             crate::try_push_vec(&mut holes, ring(index)?)?;
         }
-        crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)?))?;
+        crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)))?;
     }
     Ok(shapes)
 }
@@ -986,7 +986,7 @@ mod demotion_tests {
             None,
         )
         .unwrap();
-        Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()).unwrap())
+        Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()))
     }
 
     fn assert_demote_returns_resource_then_reuses(mut stream: StreamingShapes, reuse: &Shape) {

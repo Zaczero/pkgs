@@ -758,8 +758,7 @@ mod tests {
             )
             .unwrap(),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let square = Polygon::new(
             Ring::from_closed(
                 CoordSeq::try_from_points(&[
@@ -773,8 +772,7 @@ mod tests {
             )
             .unwrap(),
             Vec::new(),
-        )
-        .unwrap();
+        );
         let source =
             Shape::geometry_collection(vec![Shape::Polygon(z_square), Shape::Polygon(square)])
                 .expect("test collection is valid");
@@ -815,13 +813,10 @@ mod tests {
             Point::new_raw_xy(-179.0, 85.0),
             Point::new_raw_xy(-179.0, -85.0),
         ];
-        let world = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let world = Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+            Vec::new(),
+        ));
         let authority_plan = PreparedPlan::new(world.clone()).unwrap();
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         match cover(
@@ -859,13 +854,10 @@ mod tests {
             Point::new_raw_xy(0.0, 1.0),
             Point::new_raw_xy(0.0, 0.0),
         ];
-        let poly = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        );
+        let poly = Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+            Vec::new(),
+        ));
         let authority_plan = PreparedPlan::new(poly.clone()).unwrap();
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         let depth = 3_u8;
@@ -922,23 +914,20 @@ mod tests {
     fn rectangle_refinement_reuses_one_authority_graph() {
         use crate::geometry::Ring;
 
-        let source = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-10.0, 80.0),
-                        Point::new_raw_xy(10.0, 80.0),
-                        Point::new_raw_xy(10.0, 90.0),
-                        Point::new_raw_xy(-10.0, 90.0),
-                        Point::new_raw_xy(-10.0, 80.0),
-                    ])
-                    .unwrap(),
-                )
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-10.0, 80.0),
+                    Point::new_raw_xy(10.0, 80.0),
+                    Point::new_raw_xy(10.0, 90.0),
+                    Point::new_raw_xy(-10.0, 90.0),
+                    Point::new_raw_xy(-10.0, 80.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         let plan = PreparedPlan::new(source.clone()).unwrap();
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
@@ -966,24 +955,21 @@ mod tests {
     fn closed_edge_pentagon_cells_refine_to_interior() {
         use crate::geometry::Ring;
 
-        let source = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-50.0, 0.0),
-                        Point::new_raw_xy(50.0, 0.0),
-                        Point::new_raw_xy(50.0, 50.0),
-                        Point::new_raw_xy(0.0, 60.0),
-                        Point::new_raw_xy(-50.0, 50.0),
-                        Point::new_raw_xy(-50.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-50.0, 0.0),
+                    Point::new_raw_xy(50.0, 0.0),
+                    Point::new_raw_xy(50.0, 50.0),
+                    Point::new_raw_xy(0.0, 60.0),
+                    Point::new_raw_xy(-50.0, 50.0),
+                    Point::new_raw_xy(-50.0, 0.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         let plan = PreparedPlan::new(source.clone()).unwrap();
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
@@ -1026,35 +1012,32 @@ mod tests {
     fn exact_hole_cell_stays_outside_after_graph_refinement() {
         use crate::geometry::Ring;
 
-        let source = Shape::Polygon(
-            Polygon::new(
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-45.0, -45.0),
+                    Point::new_raw_xy(45.0, -45.0),
+                    Point::new_raw_xy(45.0, 45.0),
+                    Point::new_raw_xy(-45.0, 45.0),
+                    Point::new_raw_xy(-45.0, -45.0),
+                ])
+                .unwrap(),
+            )
+            .unwrap(),
+            vec![
                 Ring::from_closed(
                     CoordSeq::try_from_points(&[
                         Point::new_raw_xy(-45.0, -45.0),
-                        Point::new_raw_xy(45.0, -45.0),
-                        Point::new_raw_xy(45.0, 45.0),
-                        Point::new_raw_xy(-45.0, 45.0),
+                        Point::new_raw_xy(0.0, -45.0),
+                        Point::new_raw_xy(0.0, 0.0),
+                        Point::new_raw_xy(-45.0, 0.0),
                         Point::new_raw_xy(-45.0, -45.0),
                     ])
                     .unwrap(),
                 )
                 .unwrap(),
-                vec![
-                    Ring::from_closed(
-                        CoordSeq::try_from_points(&[
-                            Point::new_raw_xy(-45.0, -45.0),
-                            Point::new_raw_xy(0.0, -45.0),
-                            Point::new_raw_xy(0.0, 0.0),
-                            Point::new_raw_xy(-45.0, 0.0),
-                            Point::new_raw_xy(-45.0, -45.0),
-                        ])
-                        .unwrap(),
-                    )
-                    .unwrap(),
-                ],
-            )
-            .unwrap(),
-        );
+            ],
+        ));
         let plan = PreparedPlan::new(source.clone()).unwrap();
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
@@ -1088,23 +1071,20 @@ mod tests {
     fn unsupported_rectangle_refinement_distinguishes_cover_and_intersection() {
         use crate::geometry::Ring;
 
-        let source = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(170.0, 80.0),
-                        Point::new_raw_xy(-170.0, 80.0),
-                        Point::new_raw_xy(-170.0, 90.0),
-                        Point::new_raw_xy(170.0, 90.0),
-                        Point::new_raw_xy(170.0, 80.0),
-                    ])
-                    .unwrap(),
-                )
+        let source = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(170.0, 80.0),
+                    Point::new_raw_xy(-170.0, 80.0),
+                    Point::new_raw_xy(-170.0, 90.0),
+                    Point::new_raw_xy(170.0, 90.0),
+                    Point::new_raw_xy(170.0, 80.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         let plan = PreparedPlan::new(source.clone()).unwrap();
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
@@ -1148,23 +1128,20 @@ mod tests {
     fn periodic_authority_and_internal_chart_emit_the_same_candidates() {
         use crate::geometry::Ring;
 
-        let raw = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(179.0, -1.0),
-                        Point::new_raw_xy(-179.0, -1.0),
-                        Point::new_raw_xy(-179.0, 1.0),
-                        Point::new_raw_xy(179.0, 1.0),
-                        Point::new_raw_xy(179.0, -1.0),
-                    ])
-                    .unwrap(),
-                )
+        let raw = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(179.0, -1.0),
+                    Point::new_raw_xy(-179.0, -1.0),
+                    Point::new_raw_xy(-179.0, 1.0),
+                    Point::new_raw_xy(179.0, 1.0),
+                    Point::new_raw_xy(179.0, -1.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         let chart = raw.split_antimeridian().unwrap();
         let raw_plan = PreparedPlan::new(raw.clone()).unwrap();
         let raw_cache = crate::geometry::FrameDependentCaches::default();

@@ -189,7 +189,7 @@ fn join_components(shapes: &[Shape]) -> Result<Shape> {
                 polygon.shell.coords(),
                 polygon_axes,
             )?)?;
-            *polygon = crate::geometry::Polygon::new(shell, holes)?;
+            *polygon = crate::geometry::Polygon::new(shell, holes);
         }
     }
     build_certified_overlay_shape(points, lines, polygons)
@@ -977,7 +977,7 @@ fn canonicalize_polygon(
     for hole in polygon.holes.iter() {
         holes.push(canonicalize(hole)?);
     }
-    crate::geometry::Polygon::new(shell, holes)
+    Ok(crate::geometry::Polygon::new(shell, holes))
 }
 
 fn face_probe(ring: &[XY], sign: AreaSign) -> Option<XY> {

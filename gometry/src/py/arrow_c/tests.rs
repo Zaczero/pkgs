@@ -527,7 +527,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
     ])
     .unwrap();
     let polygon = PyGeometry::with_frame(
-        Shape::Polygon(Polygon::new(ring, Vec::new()).unwrap()),
+        Shape::Polygon(Polygon::new(ring, Vec::new())),
         crate::boundary::Frame::None,
     )
     .unwrap();

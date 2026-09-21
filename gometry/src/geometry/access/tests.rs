@@ -33,8 +33,7 @@ fn point_walkers_share_nested_preorder_and_short_circuit() {
         MultiMember::Value(points[2]),
     ])
     .expect("homogeneous multipoint");
-    let polygon =
-        Polygon::new(ring(&[points[3], points[4], points[5], points[3]]), vec![]).unwrap();
+    let polygon = Polygon::new(ring(&[points[3], points[4], points[5], points[3]]), vec![]);
     let shape = Shape::geometry_collection(vec![
         Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XYZM),
         Shape::Point(points[0]),
@@ -90,7 +89,7 @@ fn segment_walkers_share_chain_order_without_crossing_and_keep_ordinates() {
         point(20.75, 20.75, 127.0, 1027.0),
         point(20.25, 20.25, 125.0, 1025.0),
     ];
-    let polygon = Polygon::new(ring(&shell_points), vec![ring(&hole_points)]).unwrap();
+    let polygon = Polygon::new(ring(&shell_points), vec![ring(&hole_points)]);
     let lines = MultiLineString::try_new(CoordinateAxes::XYZM, vec![
         MultiMember::Empty,
         MultiMember::Value(line(&line_points)),

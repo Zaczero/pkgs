@@ -215,13 +215,10 @@ pub(super) fn multipoint(points: Vec<Point>) -> Shape {
     reason = "test helpers take owned fixture vectors at the call site"
 )]
 pub(super) fn polygon(points: Vec<Point>) -> Shape {
-    Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    )
+    Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+        Vec::new(),
+    ))
 }
 
 pub(super) fn dense_line(start_lon: f64, start_lat: f64, count: usize) -> Shape {

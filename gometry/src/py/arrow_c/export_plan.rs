@@ -378,8 +378,8 @@ fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<S
     }
     validate_binary_offsets(&offsets, data.len())?;
     Ok(StoragePlan::Binary {
-        offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
-        data: crate::geometry::SharedSlice::try_from_vec(data)?,
+        offsets: crate::geometry::SharedSlice::from_vec(offsets),
+        data: crate::geometry::SharedSlice::from_vec(data),
     })
 }
 
@@ -643,7 +643,7 @@ fn plan_single_list(
     }
     let coords = gather_coordseqs(axes, total, shapes.iter().map(|shape| points_of(shape)))?;
     Ok(StoragePlan::List {
-        offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
+        offsets: crate::geometry::SharedSlice::from_vec(offsets),
         start: 0,
         length: shapes.len(),
         child: Box::try_new(StoragePlan::Coordinates(coords)).map_err(crate::error::Error::from)?,
@@ -693,11 +693,11 @@ fn plan_multilines(
         lines.into_iter().map(LineSeq::as_coords),
     )?;
     Ok(StoragePlan::List {
-        offsets: crate::geometry::SharedSlice::try_from_vec(geometry_offsets)?,
+        offsets: crate::geometry::SharedSlice::from_vec(geometry_offsets),
         start: 0,
         length: shapes.len(),
         child: Box::try_new(StoragePlan::List {
-            offsets: crate::geometry::SharedSlice::try_from_vec(line_offsets)?,
+            offsets: crate::geometry::SharedSlice::from_vec(line_offsets),
             start: 0,
             length: line_count as usize,
             child: Box::try_new(StoragePlan::Coordinates(coords))
@@ -726,11 +726,11 @@ fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportRe
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
     Ok(StoragePlan::List {
-        offsets: crate::geometry::SharedSlice::try_from_vec(polygon_offsets)?,
+        offsets: crate::geometry::SharedSlice::from_vec(polygon_offsets),
         start: 0,
         length: shapes.len(),
         child: Box::try_new(StoragePlan::List {
-            offsets: crate::geometry::SharedSlice::try_from_vec(ring_offsets)?,
+            offsets: crate::geometry::SharedSlice::from_vec(ring_offsets),
             start: 0,
             length: ring_count as usize,
             child: Box::try_new(StoragePlan::Coordinates(coords))
@@ -782,15 +782,15 @@ fn plan_multipolygons(
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
     Ok(StoragePlan::List {
-        offsets: crate::geometry::SharedSlice::try_from_vec(multipolygon_offsets)?,
+        offsets: crate::geometry::SharedSlice::from_vec(multipolygon_offsets),
         start: 0,
         length: shapes.len(),
         child: Box::try_new(StoragePlan::List {
-            offsets: crate::geometry::SharedSlice::try_from_vec(polygon_offsets)?,
+            offsets: crate::geometry::SharedSlice::from_vec(polygon_offsets),
             start: 0,
             length: polygon_count as usize,
             child: Box::try_new(StoragePlan::List {
-                offsets: crate::geometry::SharedSlice::try_from_vec(ring_offsets)?,
+                offsets: crate::geometry::SharedSlice::from_vec(ring_offsets),
                 start: 0,
                 length: ring_count as usize,
                 child: Box::try_new(StoragePlan::Coordinates(coords))
@@ -878,8 +878,8 @@ fn plan_wkb_refs(shapes: &[&Shape]) -> NativeArrowExportResult<StoragePlan> {
     }
     validate_binary_offsets(&offsets, data.len())?;
     Ok(StoragePlan::Binary {
-        offsets: crate::geometry::SharedSlice::try_from_vec(offsets)?,
-        data: crate::geometry::SharedSlice::try_from_vec(data)?,
+        offsets: crate::geometry::SharedSlice::from_vec(offsets),
+        data: crate::geometry::SharedSlice::from_vec(data),
     })
 }
 
@@ -947,7 +947,7 @@ fn plan_validity(
                 values[bit / 8] |= 1 << (bit % 8);
             }
         }
-        crate::geometry::SharedSlice::try_from_vec(values)?
+        crate::geometry::SharedSlice::from_vec(values)
     };
     Ok(ValidityPlan {
         bitmap,

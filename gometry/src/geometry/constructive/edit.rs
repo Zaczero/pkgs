@@ -46,8 +46,8 @@ impl CoordSeq {
             (*out_x, *out_y) = op(x, y);
         }
         Self::from_shared_columns(
-            crate::geometry::SharedSlice::try_from_vec(xs)?,
-            crate::geometry::SharedSlice::try_from_vec(ys)?,
+            crate::geometry::SharedSlice::from_vec(xs),
+            crate::geometry::SharedSlice::from_vec(ys),
             self.carried_zs()?,
             self.carried_ms()?,
         )
@@ -147,14 +147,14 @@ impl CoordSeq {
             Err(GeometryErrorKind::NonFiniteCoordinate.into())
         } else {
             Self::from_shared_columns(
-                out_x
-                    .map(crate::geometry::SharedSlice::try_from_vec)
-                    .transpose()?
-                    .map_or_else(|| self.carried_xs(), Ok)?,
-                out_y
-                    .map(crate::geometry::SharedSlice::try_from_vec)
-                    .transpose()?
-                    .map_or_else(|| self.carried_ys(), Ok)?,
+                match out_x {
+                    Some(values) => crate::geometry::SharedSlice::from_vec(values),
+                    None => self.carried_xs()?,
+                },
+                match out_y {
+                    Some(values) => crate::geometry::SharedSlice::from_vec(values),
+                    None => self.carried_ys()?,
+                },
                 self.carried_zs()?,
                 self.carried_ms()?,
             )
@@ -212,14 +212,14 @@ impl CoordSeq {
             }
         }
         Self::from_shared_columns(
-            out_x.map_or_else(
-                || self.carried_xs(),
-                crate::geometry::SharedSlice::try_from_vec,
-            )?,
-            out_y.map_or_else(
-                || self.carried_ys(),
-                crate::geometry::SharedSlice::try_from_vec,
-            )?,
+            match out_x {
+                Some(values) => crate::geometry::SharedSlice::from_vec(values),
+                None => self.carried_xs()?,
+            },
+            match out_y {
+                Some(values) => crate::geometry::SharedSlice::from_vec(values),
+                None => self.carried_ys()?,
+            },
             self.carried_zs()?,
             self.carried_ms()?,
         )
@@ -235,12 +235,12 @@ impl CoordSeq {
         origin: (f64, f64),
     ) -> Result<Self, crate::error::Error> {
         Self::from_shared_columns(
-            crate::geometry::SharedSlice::try_from_vec(
+            crate::geometry::SharedSlice::from_vec(
                 snap_column_simd(self.xs(), origin.0, size.0)?.into_vec(),
-            )?,
-            crate::geometry::SharedSlice::try_from_vec(
+            ),
+            crate::geometry::SharedSlice::from_vec(
                 snap_column_simd(self.ys(), origin.1, size.1)?.into_vec(),
-            )?,
+            ),
             self.carried_zs()?,
             self.carried_ms()?,
         )
@@ -269,8 +269,8 @@ impl CoordSeq {
             ys.push(y);
         }
         Self::from_shared_columns(
-            crate::geometry::SharedSlice::try_from_vec(xs).map_err(E::from)?,
-            crate::geometry::SharedSlice::try_from_vec(ys).map_err(E::from)?,
+            crate::geometry::SharedSlice::from_vec(xs),
+            crate::geometry::SharedSlice::from_vec(ys),
             self.carried_zs()?,
             self.carried_ms()?,
         )
@@ -338,15 +338,13 @@ impl CoordSeq {
         // on empties, so `set_z`/`force_3d` flip has_z/has_m even with no
         // vertices (`MULTIPOINT EMPTY` → `MULTIPOINT Z EMPTY`).
         let ordinate_column = |value: Option<f64>| {
-            value
-                .map(|value| crate::geometry::SharedSlice::try_from_vec(fill(value)))
-                .transpose()
+            value.map(|value| crate::geometry::SharedSlice::from_vec(fill(value)))
         };
         let (out_zs, out_ms) = match axis {
-            OrdinateAxis::Z => (ordinate_column(value)?, self.carried_ms()?),
+            OrdinateAxis::Z => (ordinate_column(value), self.carried_ms()?),
             OrdinateAxis::M => (
                 self.carried_zs()?,
-                ordinate_column(value)?.map(crate::geometry::MColumn::Shared),
+                ordinate_column(value).map(crate::geometry::MColumn::Shared),
             ),
         };
         Self::from_shared_columns(self.carried_xs()?, self.carried_ys()?, out_zs, out_ms)

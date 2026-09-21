@@ -14,13 +14,10 @@ fn line(vertices: &[(f64, f64)]) -> Shape {
 
 fn polygon(vertices: &[(f64, f64)]) -> Shape {
     let points: Vec<_> = vertices.iter().map(|&(x, y)| XY::new(x, y)).collect();
-    Shape::Polygon(
-        crate::geometry::Polygon::new(
-            crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    )
+    Shape::Polygon(crate::geometry::Polygon::new(
+        crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()).unwrap(),
+        Vec::new(),
+    ))
 }
 
 fn adjacent_box_union(count: usize) -> Shape {
@@ -249,8 +246,9 @@ fn filled_interior_maximum_inside_a_target_hole_survives_box_discards() {
         let points: Vec<_> = points.iter().map(|&(x, y)| XY::new(x, y)).collect();
         crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()).unwrap()
     };
-    let holed =
-        Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), vec![ring(&hole)]).unwrap());
+    let holed = Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), vec![ring(
+        &hole,
+    )]));
     let value = distance(&polygon(&shell), &holed, None, 1.0).unwrap();
     assert!((value - 1.0).abs() <= 1e-9, "{value}");
 }
@@ -1144,25 +1142,22 @@ fn filled_target_membership_and_holes_remain_selected() {
         XY::new(0.0, 4.0),
         XY::new(0.0, 0.0),
     ];
-    let target = Shape::Polygon(
-        crate::geometry::Polygon::new(ring(&shell), vec![
-            ring(&[
-                XY::new(1.0, 1.0),
-                XY::new(3.0, 1.0),
-                XY::new(3.0, 3.0),
-                XY::new(1.0, 3.0),
-                XY::new(1.0, 1.0),
-            ]),
-            ring(&[
-                XY::new(6.0, 6.0),
-                XY::new(7.0, 6.0),
-                XY::new(7.0, 7.0),
-                XY::new(6.0, 7.0),
-                XY::new(6.0, 6.0),
-            ]),
-        ])
-        .unwrap(),
-    );
+    let target = Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), vec![
+        ring(&[
+            XY::new(1.0, 1.0),
+            XY::new(3.0, 1.0),
+            XY::new(3.0, 3.0),
+            XY::new(1.0, 3.0),
+            XY::new(1.0, 1.0),
+        ]),
+        ring(&[
+            XY::new(6.0, 6.0),
+            XY::new(7.0, 6.0),
+            XY::new(7.0, 7.0),
+            XY::new(6.0, 7.0),
+            XY::new(6.0, 6.0),
+        ]),
+    ]));
     let mut budget = ExpansionBudget::new("test", "support");
     let support = PreparedSupport::from_shape(&target, &mut budget).unwrap();
     assert!(
@@ -1179,7 +1174,7 @@ fn filled_target_membership_and_holes_remain_selected() {
             .unwrap(),
         1.0
     );
-    let filled = Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), Vec::new()).unwrap());
+    let filled = Shape::Polygon(crate::geometry::Polygon::new(ring(&shell), Vec::new()));
     assert!((distance(&filled, &target, Some(1e-6), 1.0).unwrap() - 1.0).abs() <= 1e-6);
 }
 
@@ -1311,25 +1306,22 @@ fn boundary_clone_keeps_filled_source_separate_from_boundary_target() {
     let ring = |points: &[XY]| {
         crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap()).unwrap()
     };
-    let shape = Shape::Polygon(
-        crate::geometry::Polygon::new(
-            ring(&[
-                XY::new(0.0, 0.0),
-                XY::new(4.0, 0.0),
-                XY::new(4.0, 4.0),
-                XY::new(0.0, 4.0),
-                XY::new(0.0, 0.0),
-            ]),
-            vec![ring(&[
-                XY::new(1.0, 1.0),
-                XY::new(3.0, 1.0),
-                XY::new(3.0, 3.0),
-                XY::new(1.0, 3.0),
-                XY::new(1.0, 1.0),
-            ])],
-        )
-        .unwrap(),
-    );
+    let shape = Shape::Polygon(crate::geometry::Polygon::new(
+        ring(&[
+            XY::new(0.0, 0.0),
+            XY::new(4.0, 0.0),
+            XY::new(4.0, 4.0),
+            XY::new(0.0, 4.0),
+            XY::new(0.0, 0.0),
+        ]),
+        vec![ring(&[
+            XY::new(1.0, 1.0),
+            XY::new(3.0, 1.0),
+            XY::new(3.0, 3.0),
+            XY::new(1.0, 3.0),
+            XY::new(1.0, 1.0),
+        ])],
+    ));
     let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
     let mut context = SearchContext::new(&accuracy);
     let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
@@ -1349,25 +1341,22 @@ fn selected_source_candidate_proof_checks_vertices_chords_and_hole_cycles() {
     let ring = |points: &[XY]| {
         crate::geometry::Ring::from_closed(CoordSeq::try_from_xy(points).unwrap()).unwrap()
     };
-    let shape = Shape::Polygon(
-        crate::geometry::Polygon::new(
-            ring(&[
-                XY::new(-100.0, -100.0),
-                XY::new(100.0, -100.0),
-                XY::new(100.0, 100.0),
-                XY::new(-100.0, 100.0),
-                XY::new(-100.0, -100.0),
-            ]),
-            vec![ring(&[
-                XY::new(-2.0, 8.0),
-                XY::new(2.0, 8.0),
-                XY::new(2.0, 10.0),
-                XY::new(-2.0, 10.0),
-                XY::new(-2.0, 8.0),
-            ])],
-        )
-        .unwrap(),
-    );
+    let shape = Shape::Polygon(crate::geometry::Polygon::new(
+        ring(&[
+            XY::new(-100.0, -100.0),
+            XY::new(100.0, -100.0),
+            XY::new(100.0, 100.0),
+            XY::new(-100.0, 100.0),
+            XY::new(-100.0, -100.0),
+        ]),
+        vec![ring(&[
+            XY::new(-2.0, 8.0),
+            XY::new(2.0, 8.0),
+            XY::new(2.0, 10.0),
+            XY::new(-2.0, 10.0),
+            XY::new(-2.0, 8.0),
+        ])],
+    ));
     let accuracy = Accuracy::new(Some(1e-6), 1.0).unwrap();
     let mut context = SearchContext::new(&accuracy);
     let source = PreparedSupport::from_shape(&shape, &mut context.budget).unwrap();
@@ -1924,7 +1913,7 @@ fn identical_cancelled_polygon_support_is_undefined() {
         .unwrap(),
     )
     .unwrap();
-    let shape = Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), vec![ring]).unwrap());
+    let shape = Shape::Polygon(crate::geometry::Polygon::new(ring.clone(), vec![ring]));
     distance(&shape, &shape, Some(1e-6), 1.0).unwrap_err();
 }
 

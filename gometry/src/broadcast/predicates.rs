@@ -637,22 +637,19 @@ mod geographic_tests {
     #[test]
     fn geographic_crossing_xy_agrees_with_scalar_oracle_at_seam_and_pole() {
         crate::test_support::initialize_python();
-        let shape = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(170.0, 80.0),
-                        Point::new_raw_xy(-170.0, 80.0),
-                        Point::new_raw_xy(-170.0, 90.0),
-                        Point::new_raw_xy(170.0, 90.0),
-                    ])
-                    .unwrap(),
-                )
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(170.0, 80.0),
+                    Point::new_raw_xy(-170.0, 80.0),
+                    Point::new_raw_xy(-170.0, 90.0),
+                    Point::new_raw_xy(170.0, 90.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
             .expect("EPSG:4326 is a valid geographic frame");
         let geometry = PyGeometry::with_frame(shape, frame).unwrap();

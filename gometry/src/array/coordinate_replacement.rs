@@ -48,9 +48,7 @@ impl CoordinateReplacement {
                         "coordinates must preserve each coordinate sequence axes",
                     ));
                 }
-                Ok(Some(
-                    SharedSlice::try_from_vec(values[range].to_vec()).map_err(PyErr::from)?,
-                ))
+                Ok(Some(SharedSlice::from_vec(values[range].to_vec())))
             },
             ReplacementAxis::Carry => carried,
         }
@@ -79,8 +77,7 @@ impl CoordinateReplacement {
             seq.axes().has_m(),
             Ok(seq
                 .ms()
-                .map(|values| SharedSlice::try_from_vec(values.to_vec()).map_err(PyErr::from))
-                .transpose()?),
+                .map(|values| SharedSlice::from_vec(values.to_vec()))),
             range,
         )
     }

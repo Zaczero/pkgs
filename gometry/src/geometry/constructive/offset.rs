@@ -119,7 +119,7 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         parts.push(normalized(Shape::Polygon(Polygon::new(
             xy_ring([start, end, offset_end(index), offset_start(index), start])?,
             Vec::new(),
-        )?))?);
+        )))?);
     }
     // A bevel join leaves a wedge between the two raw offset endpoints that
     // no per-segment quad covers; fill it so the union is the full sweep.
@@ -134,7 +134,7 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         parts.push(normalized(Shape::Polygon(Polygon::new(
             xy_ring([vertex, *incoming, *outgoing, vertex])?,
             Vec::new(),
-        )?))?);
+        )))?);
     }
     Ok(parts)
 }
@@ -202,9 +202,8 @@ fn sided_strip_source(source: &OffsetSource, signed: f64) -> Result<Option<Polyg
     if let Some(first) = shell.first().copied() {
         shell.push(first);
     }
-    Ring::from_closed(CoordSeq::try_from_points(&shell)?)
-        .map(|shell| Polygon::new(shell, Vec::new()))
-        .transpose()
+    Ok(Ring::from_closed(CoordSeq::try_from_points(&shell)?)
+        .map(|shell| Polygon::new(shell, Vec::new())))
 }
 
 /// The planned offset curve with the buffer's join vocabulary: round

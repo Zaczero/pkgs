@@ -127,18 +127,13 @@ fn assert_indexed_matches_exhaustive(source: &GeographicCoverageSource, points: 
 
 fn polygon_source(shell: &[Point], holes: Vec<Vec<Point>>) -> GeographicCoverageSource {
     GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(shell).unwrap()).unwrap(),
-                holes
-                    .into_iter()
-                    .map(|hole| {
-                        Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()).unwrap()
-                    })
-                    .collect(),
-            )
-            .unwrap(),
-        ),
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(shell).unwrap()).unwrap(),
+            holes
+                .into_iter()
+                .map(|hole| Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()).unwrap())
+                .collect(),
+        )),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap()
@@ -682,13 +677,10 @@ fn geographic_coverage_source_keeps_checked_degree_two_rings_available() {
         Point::new(0.0, 10.0).unwrap(),
         Point::new(170.0, 10.0).unwrap(),
     ];
-    let shape = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    );
+    let shape = Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
+        Vec::new(),
+    ));
     let source = GeographicCoverageSource::new(&shape, SphericalGridTarget::S2).unwrap();
     assert!(!source.is_unknown());
     assert_eq!(source.chains[0].degree, Some(2));
@@ -724,13 +716,10 @@ fn geographic_coverage_source_fails_open_without_a_physical_pole_roof() {
         Point::new(-180.0, 0.0).unwrap(),
     ];
     let source = GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        ),
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
+            Vec::new(),
+        )),
         SphericalGridTarget::H3(Resolution::Zero),
     )
     .unwrap();
@@ -752,9 +741,10 @@ fn periodic_pole_roof_blocks_raw_latitude_pruning() {
         (true, -60.0, -70.0, -1, PhysicalEndpointKey::SouthPole),
     ] {
         let source = GeographicCoverageSource::new(
-            &Shape::Polygon(
-                Polygon::new(periodic_latitude_ring(ring_latitude, reverse), Vec::new()).unwrap(),
-            ),
+            &Shape::Polygon(Polygon::new(
+                periodic_latitude_ring(ring_latitude, reverse),
+                Vec::new(),
+            )),
             SphericalGridTarget::H3(Resolution::Two),
         )
         .unwrap();
@@ -803,13 +793,10 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
         Point::new(-170.0, 80.0).unwrap(),
     ];
     let source = GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        ),
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
+            Vec::new(),
+        )),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
@@ -924,13 +911,10 @@ fn geographic_coverage_source_records_a_physical_south_finite_negative_winding_r
         Point::new(170.0, -10.0).unwrap(),
     ];
     let source = GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        ),
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(points.as_ref()).unwrap()).unwrap(),
+            Vec::new(),
+        )),
         SphericalGridTarget::S2,
     )
     .unwrap();
@@ -998,7 +982,7 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
         }
     }
     let source = GeographicCoverageSource::new(
-        &Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap()),
+        &Shape::Polygon(Polygon::new(shell, vec![hole])),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();
@@ -1189,13 +1173,10 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
         Point::new(-170.0, 80.0).unwrap(),
     ];
     let forward = GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(north.as_ref()).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        ),
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(north.as_ref()).unwrap()).unwrap(),
+            Vec::new(),
+        )),
         SphericalGridTarget::H3(Resolution::Zero),
     )
     .unwrap();
@@ -1219,13 +1200,10 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     let mut reversed = north.to_vec();
     reversed.reverse();
     let reverse = GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&reversed).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        ),
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&reversed).unwrap()).unwrap(),
+            Vec::new(),
+        )),
         SphericalGridTarget::H3(Resolution::Zero),
     )
     .unwrap();
@@ -1245,23 +1223,20 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
 
 #[test]
 fn exact_axis_rectangle_precedes_the_global_unknown_veto_for_cap_windows() {
-    let rectangle = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(
-                CoordSeq::try_from_points(&[
-                    Point::new(-180.0, 70.0).unwrap(),
-                    Point::new(180.0, 70.0).unwrap(),
-                    Point::new(180.0, 90.0).unwrap(),
-                    Point::new(-180.0, 90.0).unwrap(),
-                    Point::new(-180.0, 70.0).unwrap(),
-                ])
-                .unwrap(),
-            )
+    let rectangle = Shape::Polygon(Polygon::new(
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new(-180.0, 70.0).unwrap(),
+                Point::new(180.0, 70.0).unwrap(),
+                Point::new(180.0, 90.0).unwrap(),
+                Point::new(-180.0, 90.0).unwrap(),
+                Point::new(-180.0, 70.0).unwrap(),
+            ])
             .unwrap(),
-            Vec::new(),
         )
         .unwrap(),
-    );
+        Vec::new(),
+    ));
     let source =
         GeographicCoverageSource::new(&rectangle, SphericalGridTarget::H3(Resolution::Three))
             .unwrap();
@@ -1302,23 +1277,20 @@ fn exact_axis_rectangle_precedes_the_global_unknown_veto_for_cap_windows() {
 #[test]
 fn exact_axis_rectangle_requires_the_canonical_longitude_sheet() {
     let rectangle = |west, east| {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new(west, -5.0).unwrap(),
-                        Point::new(east, -5.0).unwrap(),
-                        Point::new(east, 5.0).unwrap(),
-                        Point::new(west, 5.0).unwrap(),
-                        Point::new(west, -5.0).unwrap(),
-                    ])
-                    .unwrap(),
-                )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new(west, -5.0).unwrap(),
+                    Point::new(east, -5.0).unwrap(),
+                    Point::new(east, 5.0).unwrap(),
+                    Point::new(west, 5.0).unwrap(),
+                    Point::new(west, -5.0).unwrap(),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        )
+            Vec::new(),
+        ))
     };
     let seam = GeographicCoverageSource::new(
         &rectangle(179.0, -179.0),
@@ -1363,29 +1335,26 @@ fn exact_axis_rectangle_requires_the_canonical_longitude_sheet() {
 
 #[test]
 fn subdivided_parallel_edges_remain_an_exact_full_longitude_rectangle() {
-    let shape = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(
-                CoordSeq::try_from_points(&[
-                    Point::new(-180.0, 70.0).unwrap(),
-                    Point::new(-60.0, 70.0).unwrap(),
-                    Point::new(60.0, 70.0).unwrap(),
-                    Point::new(180.0, 70.0).unwrap(),
-                    Point::new(180.0, 80.0).unwrap(),
-                    Point::new(180.0, 90.0).unwrap(),
-                    Point::new(60.0, 90.0).unwrap(),
-                    Point::new(-60.0, 90.0).unwrap(),
-                    Point::new(-180.0, 90.0).unwrap(),
-                    Point::new(-180.0, 80.0).unwrap(),
-                    Point::new(-180.0, 70.0).unwrap(),
-                ])
-                .unwrap(),
-            )
+    let shape = Shape::Polygon(Polygon::new(
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new(-180.0, 70.0).unwrap(),
+                Point::new(-60.0, 70.0).unwrap(),
+                Point::new(60.0, 70.0).unwrap(),
+                Point::new(180.0, 70.0).unwrap(),
+                Point::new(180.0, 80.0).unwrap(),
+                Point::new(180.0, 90.0).unwrap(),
+                Point::new(60.0, 90.0).unwrap(),
+                Point::new(-60.0, 90.0).unwrap(),
+                Point::new(-180.0, 90.0).unwrap(),
+                Point::new(-180.0, 80.0).unwrap(),
+                Point::new(-180.0, 70.0).unwrap(),
+            ])
             .unwrap(),
-            Vec::new(),
         )
         .unwrap(),
-    );
+        Vec::new(),
+    ));
     let bounds = shape.bounds().unwrap();
     assert!(
         is_axis_aligned_rectangle(&shape, bounds),
@@ -1406,13 +1375,10 @@ fn subdivided_parallel_edges_remain_an_exact_full_longitude_rectangle() {
 #[test]
 fn exact_axis_rectangle_requires_an_ordered_directed_boundary_walk() {
     let polygon = |points: Vec<Point>| {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
     };
     let bow_tie = polygon(vec![
         Point::new(-10.0, -5.0).unwrap(),
@@ -1570,22 +1536,19 @@ fn authority_edge_index_matches_exhaustive_exact_classification() {
 #[test]
 fn authority_edge_index_matches_polar_cap_interior() {
     let source = GeographicCoverageSource::new(
-        &Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new(-60.0, 70.0).unwrap(),
-                        Point::new(0.0, 80.0).unwrap(),
-                        Point::new(60.0, 70.0).unwrap(),
-                        Point::new(-60.0, 70.0).unwrap(),
-                    ])
-                    .unwrap(),
-                )
+        &Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new(-60.0, 70.0).unwrap(),
+                    Point::new(0.0, 80.0).unwrap(),
+                    Point::new(60.0, 70.0).unwrap(),
+                    Point::new(-60.0, 70.0).unwrap(),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        ),
+            Vec::new(),
+        )),
         SphericalGridTarget::H3(Resolution::Two),
     )
     .unwrap();

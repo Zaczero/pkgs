@@ -87,22 +87,19 @@ fn ogc_mod2_multiline_point_relations_have_known_answers() {
 fn touching_diagonal_polygons_keep_their_de9im_matrix() {
     let high = f64::from_bits(1.0_f64.to_bits() + 1);
     let polygon = |points: &[(f64, f64)]| {
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(
-                        &points
-                            .iter()
-                            .map(|&(x, y)| Point::new(x, y).unwrap())
-                            .collect::<Vec<_>>(),
-                    )
-                    .unwrap(),
+        Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(
+                    &points
+                        .iter()
+                        .map(|&(x, y)| Point::new(x, y).unwrap())
+                        .collect::<Vec<_>>(),
                 )
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        )
+            Vec::new(),
+        ))
     };
     // The upper polygon is encountered first, so its ray gets the lower
     // target id despite being geometrically second around the shared vertex.
@@ -304,23 +301,20 @@ mod convex_tests {
     fn axis_rectangle_detection_and_intersects_fast_path() {
         let p = |x: f64, y: f64| Point::new_raw_xy(x, y);
         let rect = |minx, miny, maxx, maxy| {
-            Shape::Polygon(
-                Polygon::new(
-                    Ring::from_closed(
-                        CoordSeq::try_from_points(&[
-                            p(minx, miny),
-                            p(maxx, miny),
-                            p(maxx, maxy),
-                            p(minx, maxy),
-                            p(minx, miny),
-                        ])
-                        .unwrap(),
-                    )
+            Shape::Polygon(Polygon::new(
+                Ring::from_closed(
+                    CoordSeq::try_from_points(&[
+                        p(minx, miny),
+                        p(maxx, miny),
+                        p(maxx, maxy),
+                        p(minx, maxy),
+                        p(minx, miny),
+                    ])
                     .unwrap(),
-                    Vec::new(),
                 )
                 .unwrap(),
-            )
+                Vec::new(),
+            ))
         };
         let bounds = |shape: &Shape| shape.bounds().expect("bounded");
 
@@ -330,61 +324,47 @@ mod convex_tests {
         assert!(is_axis_aligned_rectangle(&r, bounds(&r)));
         let line_box = rect(0.0, 0.0, 10.0, 0.0); // zero height → not a rectangle
         assert!(!is_axis_aligned_rectangle(&line_box, bounds(&line_box)));
-        let triangle = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        p(0.0, 0.0),
-                        p(10.0, 0.0),
-                        p(5.0, 10.0),
-                        p(0.0, 0.0),
-                    ])
+        let triangle = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[p(0.0, 0.0), p(10.0, 0.0), p(5.0, 10.0), p(0.0, 0.0)])
                     .unwrap(),
-                )
-                .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         assert!(!is_axis_aligned_rectangle(&triangle, bounds(&triangle)));
-        let diamond = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        p(5.0, 0.0),
-                        p(10.0, 5.0),
-                        p(5.0, 10.0),
-                        p(0.0, 5.0),
-                        p(5.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
+        let diamond = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    p(5.0, 0.0),
+                    p(10.0, 5.0),
+                    p(5.0, 10.0),
+                    p(0.0, 5.0),
+                    p(5.0, 0.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         assert!(!is_axis_aligned_rectangle(&diamond, bounds(&diamond)));
 
-        let densified = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        p(0.0, 0.0),
-                        p(5.0, 0.0),
-                        p(10.0, 0.0),
-                        p(10.0, 10.0),
-                        p(5.0, 10.0),
-                        p(0.0, 10.0),
-                        p(0.0, 0.0),
-                    ])
-                    .unwrap(),
-                )
+        let densified = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    p(0.0, 0.0),
+                    p(5.0, 0.0),
+                    p(10.0, 0.0),
+                    p(10.0, 10.0),
+                    p(5.0, 10.0),
+                    p(0.0, 10.0),
+                    p(0.0, 0.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
             .unwrap(),
-        );
+            Vec::new(),
+        ));
         assert!(is_axis_aligned_rectangle(&densified, bounds(&densified)));
         assert!(
             PreparedPlan::transient(&densified)

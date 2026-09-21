@@ -147,7 +147,7 @@ mod validate_lonlat_shape_tests {
         let hole =
             Ring::closed_coordseq(xy_seq(vec![0.2, 0.3, 0.3, 0.2], vec![95.0, 0.2, 0.3, 95.0]))
                 .unwrap();
-        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+        let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
         assert_first_xy(&domain_error(&shape), 0.2, 95.0);
     }
 

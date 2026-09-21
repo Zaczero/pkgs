@@ -831,7 +831,7 @@ fn chart_area_polygons(
                 try_push_vec(&mut holes, hole)?;
             }
         }
-        try_push_vec(&mut polygons, Polygon::new(shell, holes)?)?;
+        try_push_vec(&mut polygons, Polygon::new(shell, holes))?;
     }
     Ok(polygons)
 }

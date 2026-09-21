@@ -753,7 +753,7 @@ fn rebuild_polygon(
     polygon: &Polygon,
     rebuild_ring: &mut impl FnMut(&CoordSeq) -> Result<Vec<Point>>,
 ) -> Result<Polygon> {
-    Polygon::new(
+    Ok(Polygon::new(
         Ring::try_from_closed(CoordSeq::try_from_points(&rebuild_ring(
             polygon.shell.coords(),
         )?)?)?,
@@ -764,7 +764,7 @@ fn rebuild_polygon(
                 Ring::try_from_closed(CoordSeq::try_from_points(&rebuild_ring(hole.coords())?)?)
             })
             .collect::<Result<Vec<_>>>()?,
-    )
+    ))
 }
 
 #[cfg(test)]

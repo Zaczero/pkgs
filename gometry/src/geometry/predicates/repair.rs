@@ -82,14 +82,14 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         if shells.len() == 1 {
             try_push_vec(
                 &mut cleaned,
-                Polygon::new(shells.into_iter().next().expect("one shell"), holes)?,
+                Polygon::new(shells.into_iter().next().expect("one shell"), holes),
             )?;
         } else {
             // Re-attach each hole to the lobe that contains it.
             let mut lobes = Vec::new();
             try_reserve_vec(&mut lobes, shells.len())?;
             for shell in shells {
-                try_push_vec(&mut lobes, Polygon::new(shell, Vec::new())?)?;
+                try_push_vec(&mut lobes, Polygon::new(shell, Vec::new()))?;
             }
             let mut lobe_holes = Vec::new();
             try_reserve_vec(&mut lobe_holes, lobes.len())?;
@@ -102,7 +102,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             }
             for (lobe, holes) in lobes.iter_mut().zip(lobe_holes) {
                 if !holes.is_empty() {
-                    lobe.holes = SharedSlice::try_from_vec(holes)?;
+                    lobe.holes = SharedSlice::from_vec(holes);
                 }
             }
             for lobe in lobes {

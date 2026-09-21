@@ -40,7 +40,7 @@ impl Shape {
         Ok(Self::Polygon(Polygon::new(
             Ring::try_from_closed(minimum_area_rectangle(&open)?)?,
             Vec::new(),
-        )?))
+        )))
     }
 
     pub fn centroid(&self) -> Result<Self> {

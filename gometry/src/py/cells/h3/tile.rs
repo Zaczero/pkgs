@@ -459,7 +459,7 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> crate::error::Result<Shape> {
     Ok(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
         Vec::new(),
-    )?))
+    )))
 }
 
 #[cfg(test)]
@@ -518,23 +518,20 @@ mod edge_trace_tests {
 
     #[test]
     fn center_cover_is_sorted_and_unique() {
-        let shape = Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(
-                    CoordSeq::try_from_points(&[
-                        Point::new_raw_xy(-1.0, -1.0),
-                        Point::new_raw_xy(1.0, -1.0),
-                        Point::new_raw_xy(1.0, 1.0),
-                        Point::new_raw_xy(-1.0, 1.0),
-                        Point::new_raw_xy(-1.0, -1.0),
-                    ])
-                    .unwrap(),
-                )
+        let shape = Shape::Polygon(Polygon::new(
+            Ring::from_closed(
+                CoordSeq::try_from_points(&[
+                    Point::new_raw_xy(-1.0, -1.0),
+                    Point::new_raw_xy(1.0, -1.0),
+                    Point::new_raw_xy(1.0, 1.0),
+                    Point::new_raw_xy(-1.0, 1.0),
+                    Point::new_raw_xy(-1.0, -1.0),
+                ])
                 .unwrap(),
-                Vec::new(),
             )
-            .expect("test polygon is valid"),
-        );
+            .unwrap(),
+            Vec::new(),
+        ));
         let ids = |cells: Vec<TiledCell>| {
             cells
                 .into_iter()

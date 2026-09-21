@@ -21,7 +21,7 @@ pub(crate) fn shape_from_open_hull(
             Ok(Shape::Polygon(Polygon::new(
                 Ring::try_from_closed(CoordSeq::try_from_points(&ring)?)?,
                 Vec::new(),
-            )?))
+            )))
         },
     }
 }
@@ -45,7 +45,7 @@ pub(crate) fn shape_from_selected_hull(
             Ok(Shape::Polygon(Polygon::new(
                 Ring::try_from_closed(CoordSeq::try_from_points(&ring)?)?,
                 Vec::new(),
-            )?))
+            )))
         },
     }
 }

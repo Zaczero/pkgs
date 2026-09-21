@@ -29,7 +29,7 @@ fn drop_collinear_ring_vertices(polygon: &Polygon) -> crate::error::Result<Polyg
     for hole in polygon.holes.iter() {
         holes.push(simplify(hole)?);
     }
-    Polygon::new(shell, holes)
+    Ok(Polygon::new(shell, holes))
 }
 
 /// One pass with a stack, then the seam: a vertex on the segment between

@@ -143,7 +143,7 @@ mod tests {
                 .unwrap(),
         )
         .unwrap();
-        let shape = Shape::Polygon(Polygon::new(shell, vec![late_xy_hole]).unwrap());
+        let shape = Shape::Polygon(Polygon::new(shell, vec![late_xy_hole]));
 
         let preview = to_wkt_preview(&shape, 1).expect("unvisited late ring is irrelevant");
         assert!(preview.starts_with("POLYGON Z"));
@@ -277,8 +277,7 @@ mod tests {
                 ])
                 .unwrap(),
             ],
-        )
-        .expect("test polygon is valid");
+        );
         let z0 = Point::new_axes(179.9, -16.2, ZOrdinate(Some(5.0)), MOrdinate(None)).unwrap();
         let z1 = Point::new_axes(-179.8, -16.1, ZOrdinate(Some(6.0)), MOrdinate(None)).unwrap();
         let cases = vec![

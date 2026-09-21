@@ -1117,12 +1117,10 @@ fn source_len(source: CoordRun<'_>) -> usize {
 
 fn source_carried_ms(source: CoordRun<'_>) -> Result<Option<MColumn>> {
     match source {
-        CoordRun::Point(point) => point
-            .m()
-            .map(|m| {
-                SharedSlice::try_from_vec(vec![m]).map(|owner| MColumn::Local { owner, offset: 0 })
-            })
-            .transpose(),
+        CoordRun::Point(point) => Ok(point.m().map(|m| MColumn::Local {
+            owner: SharedSlice::from_vec(vec![m]),
+            offset: 0,
+        })),
         CoordRun::Seq(seq) => seq.carried_ms(),
     }
 }
@@ -1327,11 +1325,11 @@ impl TransformOutputPlan {
 
     pub(crate) fn finish(self, shapes: &[&Shape]) -> Result<Vec<Shape>> {
         let Self { xy, xyz, sequences } = self;
-        let xy_xs = SharedSlice::try_from_vec(xy.xs)?;
-        let xy_ys = SharedSlice::try_from_vec(xy.ys)?;
-        let xyz_xs = SharedSlice::try_from_vec(xyz.xs)?;
-        let xyz_ys = SharedSlice::try_from_vec(xyz.ys)?;
-        let xyz_zs = SharedSlice::try_from_vec(xyz.zs.expect("XYZ output columns carry Z"))?;
+        let xy_xs = SharedSlice::from_vec(xy.xs);
+        let xy_ys = SharedSlice::from_vec(xy.ys);
+        let xyz_xs = SharedSlice::from_vec(xyz.xs);
+        let xyz_ys = SharedSlice::from_vec(xyz.ys);
+        let xyz_zs = SharedSlice::from_vec(xyz.zs.expect("XYZ output columns carry Z"));
         let sequences = sequences
             .into_iter()
             .map(|owner| {

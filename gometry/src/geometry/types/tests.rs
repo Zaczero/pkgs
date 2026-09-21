@@ -246,7 +246,7 @@ mod csr_offset_column_tests {
         use crate::error::ErrorKind;
 
         let error = CsrOffsetColumn::<()>::try_from_shared_i32(
-            crate::geometry::SharedSlice::try_from_vec(vec![0, -1, 3]).unwrap(),
+            crate::geometry::SharedSlice::from_vec(vec![0, -1, 3]),
             3,
         )
         .expect_err("negative offset");
@@ -560,10 +560,10 @@ mod coordseq_m_storage_tests {
 
     #[test]
     fn local_m_storage_copies_only_the_requested_visible_window() {
-        let m = SharedSlice::try_from_vec(vec![50.0, 60.0]).unwrap();
+        let m = SharedSlice::from_vec(vec![50.0, 60.0]);
         let seq = CoordSeq::from_shared_columns_with_window(
-            SharedSlice::try_from_vec(vec![0.0, 1.0, 2.0, 3.0]).unwrap(),
-            SharedSlice::try_from_vec(vec![10.0, 11.0, 12.0, 13.0]).unwrap(),
+            SharedSlice::from_vec(vec![0.0, 1.0, 2.0, 3.0]),
+            SharedSlice::from_vec(vec![10.0, 11.0, 12.0, 13.0]),
             None,
             Some(MColumn::Local {
                 owner: m.clone(),
@@ -590,7 +590,7 @@ mod coordseq_m_storage_tests {
 
     #[test]
     fn shared_m_storage_keeps_the_parent_window() {
-        let m = SharedSlice::try_from_vec(vec![50.0, 60.0, 70.0, 80.0]).unwrap();
+        let m = SharedSlice::from_vec(vec![50.0, 60.0, 70.0, 80.0]);
         let seq = CoordSeq::try_from_vecs(
             vec![0.0, 1.0, 2.0, 3.0],
             vec![10.0, 11.0, 12.0, 13.0],
@@ -607,11 +607,10 @@ mod coordseq_m_storage_tests {
     fn nested_middle_local_m_keeps_distinct_offset_and_carries_without_allocation() {
         use crate::test_support::{allocation_count, fail_allocations_after};
 
-        let m = SharedSlice::try_from_vec((0..10).map(|value| f64::from(value) + 50.0).collect())
-            .unwrap();
+        let m = SharedSlice::from_vec((0..10).map(|value| f64::from(value) + 50.0).collect());
         let seq = CoordSeq::from_shared_columns_with_window(
-            SharedSlice::try_from_vec((0..6).map(f64::from).collect()).unwrap(),
-            SharedSlice::try_from_vec(vec![10.0; 6]).unwrap(),
+            SharedSlice::from_vec((0..6).map(f64::from).collect()),
+            SharedSlice::from_vec(vec![10.0; 6]),
             None,
             Some(MColumn::Local {
                 owner: m.clone(),

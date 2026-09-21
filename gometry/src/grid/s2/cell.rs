@@ -204,7 +204,7 @@ impl Cell {
         Ok(Shape::Polygon(Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_points(&shell)?)?,
             Vec::new(),
-        )?))
+        )))
     }
 
     /// The cell's exact latitude/longitude bound (canonical S2

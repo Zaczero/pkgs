@@ -263,13 +263,10 @@ fn box_shape(west: f64, south: f64, east: f64, north: f64) -> Shape {
         Point::new_raw_xy(west, north),
         Point::new_raw_xy(west, south),
     ];
-    Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    )
+    Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+        Vec::new(),
+    ))
 }
 
 fn polygon_with_hole() -> Shape {
@@ -287,13 +284,10 @@ fn polygon_with_hole() -> Shape {
         Point::new_raw_xy(17.0, 13.0),
         Point::new_raw_xy(13.0, 13.0),
     ];
-    Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-            vec![Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()).unwrap()],
-        )
-        .unwrap(),
-    )
+    Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+        vec![Ring::from_closed(CoordSeq::try_from_points(&hole).unwrap()).unwrap()],
+    ))
 }
 
 fn classify_with_native(source: &Shape, id: CellId) -> CellClass {
@@ -481,13 +475,10 @@ fn bowtie_polygon_keeps_both_filled_lobes_in_s2_cover() {
         Point::new_raw_xy(2.0, 0.0),
         Point::new_raw_xy(0.0, 0.0),
     ];
-    let source = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    );
+    let source = Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+        Vec::new(),
+    ));
     let left_lobe = Point::new_raw_xy(0.5, 1.5);
     let right_lobe = Point::new_raw_xy(1.5, 0.5);
     assert!(source.covers_point(left_lobe).unwrap());
@@ -1052,13 +1043,10 @@ fn concave_source_excludes_notch() {
         Point::new_raw_xy(0.0, 4.0),
         Point::new_raw_xy(0.0, 0.0),
     ];
-    let source = Shape::Polygon(
-        Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-            Vec::new(),
-        )
-        .unwrap(),
-    );
+    let source = Shape::Polygon(Polygon::new(
+        Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
+        Vec::new(),
+    ));
     let covering = fixed(8)
         .cover_identity(&source)
         .expect("small fixed-level covering is within budget");

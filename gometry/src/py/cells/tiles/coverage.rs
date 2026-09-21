@@ -22,7 +22,7 @@ impl RectCoverSpec for TileCoverSpec {
         cell.id()
     }
 }
-pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyResult<PyCellArray> {
+pub(super) fn tile_cell_array(cells: impl IntoIterator<Item = Tile>) -> PyCellArray {
     rect_cell_array_for::<TileCoverSpec>(cells)
 }
 

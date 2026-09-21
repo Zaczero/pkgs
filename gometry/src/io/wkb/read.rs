@@ -600,7 +600,7 @@ impl WkbReader<'_> {
                 self.read_ring(byte_order, axes)?,
             )?);
         }
-        Ok(Shape::Polygon(Polygon::new(shell, holes)?))
+        Ok(Shape::Polygon(Polygon::new(shell, holes)))
     }
 
     /// Read a container's members, threading the effective SRID across

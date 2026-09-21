@@ -2,15 +2,14 @@ use std::ops::Deref;
 use std::sync::Arc;
 
 use crate::HeapSize;
-use crate::error::Result;
 
-/// Immutable, allocation-fallible ownership for a slice-facing payload.
+/// Immutable shared ownership for a slice-facing payload.
 ///
 /// Empty payloads have no allocation. Non-empty payloads retain the original
 /// `Vec` so its capacity remains part of retained heap accounting.
 #[expect(
     clippy::rc_buffer,
-    reason = "nonempty owner is a fallibly allocated Arc<Vec<T>> so capacity remains in heap accounting; Arc<[T]> would lose that publication boundary"
+    reason = "nonempty owner is Arc<Vec<T>> so retained capacity remains visible to heap accounting; Arc<[T]> would lose it"
 )]
 pub(crate) struct SharedSlice<T> {
     owner: Option<Arc<Vec<T>>>,
@@ -21,17 +20,17 @@ impl<T> SharedSlice<T> {
         Self { owner: None }
     }
 
-    pub(crate) fn try_from_vec(values: Vec<T>) -> Result<Self> {
+    pub(crate) fn from_vec(values: Vec<T>) -> Self {
         if values.is_empty() {
-            return Ok(Self::empty());
+            return Self::empty();
         }
-        Ok(Self {
-            owner: Some(Arc::try_new(values).map_err(crate::error::Error::from)?),
-        })
+        Self {
+            owner: Some(Arc::new(values)),
+        }
     }
 
-    /// Adopt an already fallibly allocated vector without allocating another
-    /// owner. Empty vectors use the canonical no-owner representation.
+    /// Adopt an existing vector owner without allocating another owner.
+    /// Empty vectors use the canonical no-owner representation.
     #[expect(
         clippy::rc_buffer,
         reason = "the Arrow decoder transfers its already fallibly allocated Arc<Vec> owner"
@@ -178,25 +177,13 @@ impl<T: HeapSize> HeapSize for SharedSlice<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
     use super::SharedSlice;
     use crate::geometry::{
         CoordSeq, CoordWindow, CoordinateAxes, MultiMember, MultiPolygon, Point, Polygon, Ring,
         Shape,
     };
     use crate::heap_size::HeapSize as _;
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[derive(Clone)]
-    struct DropProbe(Arc<AtomicUsize>);
-
-    impl Drop for DropProbe {
-        fn drop(&mut self) {
-            self.0.fetch_add(1, Ordering::Relaxed);
-        }
-    }
+    use crate::test_support::allocation_count;
 
     fn square(offset: f64) -> Polygon {
         let points = [
@@ -210,7 +197,6 @@ mod tests {
             Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
             Vec::new(),
         )
-        .unwrap()
     }
 
     #[test]
@@ -261,9 +247,8 @@ mod tests {
             )
             .unwrap(),
             Vec::new(),
-        )
-        .unwrap();
-        let holed = Polygon::new(shell.shell, vec![hole.shell]).unwrap();
+        );
+        let holed = Polygon::new(shell.shell, vec![hole.shell]);
         let multipart = MultiPolygon::try_new(CoordinateAxes::XY, vec![
             MultiMember::Value(holed.clone()),
             MultiMember::Empty,
@@ -279,26 +264,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_freeze_drops_non_copy_values() {
-        let drops = Arc::new(AtomicUsize::new(0));
-        let values = vec![DropProbe(Arc::clone(&drops))];
-        let Err(error) = fail_allocations_after(0, || SharedSlice::try_from_vec(values)) else {
-            panic!("freeze must fail under allocation rejection");
-        };
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
-        assert_eq!(drops.load(Ordering::Relaxed), 1);
-    }
-
-    #[test]
-    fn concat_reports_allocation_error_but_axes_mismatch_is_none() {
+    fn concat_axes_mismatch_is_none() {
         let left = CoordSeq::try_from_vecs(vec![0.0], vec![0.0], None, None).unwrap();
-        let right = CoordSeq::try_from_vecs(vec![1.0], vec![1.0], None, None).unwrap();
         let xyz = CoordSeq::try_from_vecs(vec![1.0], vec![1.0], Some(vec![2.0]), None).unwrap();
         assert!(matches!(left.concat(&xyz), Ok(None)));
-        fail_allocations_after(0, || left.concat(&right)).unwrap_err();
     }
 
     #[test]
@@ -306,7 +275,7 @@ mod tests {
         let mut values = Vec::with_capacity(17);
         values.extend([1.0, 2.0]);
         let capacity = values.capacity();
-        let owner = SharedSlice::try_from_vec(values).unwrap();
+        let owner = SharedSlice::from_vec(values);
         assert_eq!(owner.capacity(), capacity);
         assert!(owner.heap_bytes() >= capacity * std::mem::size_of::<f64>());
     }

@@ -469,7 +469,7 @@ fn polygon_with_hole_uses_bbox() {
         .unwrap(),
     )
     .unwrap();
-    let shape = Shape::Polygon(Polygon::new(shell, vec![hole]).unwrap());
+    let shape = Shape::Polygon(Polygon::new(shell, vec![hole]));
     let cell = bounding_cell(&shape).expect("cell");
     dense_edge_hilbert_ok(cell, -1.0, -1.0, 1.0, 1.0);
 }
