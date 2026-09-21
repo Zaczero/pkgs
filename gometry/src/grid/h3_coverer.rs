@@ -43,18 +43,6 @@ pub(crate) enum H3CoverError {
     CapacityOverflow,
 }
 
-fn try_reserve_h3<T>(values: &mut Vec<T>, additional: usize) -> Result<(), H3CoverError> {
-    let required = values
-        .len()
-        .checked_add(additional)
-        .ok_or(H3CoverError::CapacityOverflow)?;
-    let element_size = std::mem::size_of::<T>();
-    if element_size != 0 && required > (isize::MAX as usize) / element_size {
-        return Err(H3CoverError::CapacityOverflow);
-    }
-    crate::try_reserve_vec(values, additional).map_err(H3CoverError::Native)
-}
-
 /// Keep the first atomic cover in its already sorted vector.  Once a second
 /// component contributes, promote exactly once and retain only unique cells.
 #[derive(Debug)]
@@ -94,9 +82,7 @@ impl H3UniqueCells {
             .ok_or(H3CoverError::CapacityOverflow)?;
         let reservation = occurrences.min(max_cells.unwrap_or(usize::MAX));
         let mut cells = HashMap::with_hasher(hash_state().map_err(H3CoverError::Native)?.clone());
-        cells
-            .try_reserve(reservation)
-            .map_err(|error| H3CoverError::Native(error.into()))?;
+        cells.reserve(reservation);
         Ok(Self { cells })
     }
 
@@ -110,17 +96,16 @@ impl H3UniqueCells {
         // while duplicates still remain admissible.
         let remaining =
             max_cells.map_or(usize::MAX, |limit| limit.saturating_sub(self.cells.len()));
-        self.try_reserve(component_len.min(remaining))
+        self.reserve(component_len.min(remaining))
     }
 
-    fn try_reserve(&mut self, additional: usize) -> Result<(), H3CoverError> {
+    fn reserve(&mut self, additional: usize) -> Result<(), H3CoverError> {
         self.cells
             .len()
             .checked_add(additional)
             .ok_or(H3CoverError::CapacityOverflow)?;
-        self.cells
-            .try_reserve(additional)
-            .map_err(|error| H3CoverError::Native(error.into()))
+        self.cells.reserve(additional);
+        Ok(())
     }
 
     fn insert(
@@ -146,16 +131,15 @@ impl H3UniqueCells {
         }
     }
 
-    fn finish(self) -> Result<Vec<H3CoveredCell>, H3CoverError> {
-        let mut output = Vec::new();
-        try_reserve_h3(&mut output, self.cells.len())?;
+    fn finish(self) -> Vec<H3CoveredCell> {
+        let mut output = Vec::with_capacity(self.cells.len());
         output.extend(
             self.cells
                 .into_iter()
                 .map(|(cell, interior)| H3CoveredCell { cell, interior }),
         );
         output.sort_unstable_by_key(|entry| u64::from(entry.cell));
-        Ok(output)
+        output
     }
 }
 
@@ -255,10 +239,10 @@ impl H3CoverAccumulator {
         Ok(())
     }
 
-    fn finish(self) -> Result<Vec<H3CoveredCell>, H3CoverError> {
+    fn finish(self) -> Vec<H3CoveredCell> {
         match self.state {
-            H3CoverAccumulatorState::Empty => Ok(Vec::new()),
-            H3CoverAccumulatorState::Single(cells) => Ok(cells),
+            H3CoverAccumulatorState::Empty => Vec::new(),
+            H3CoverAccumulatorState::Single(cells) => cells,
             H3CoverAccumulatorState::Many(cells) => cells.finish(),
         }
     }
@@ -340,7 +324,7 @@ pub(crate) fn h3_cover_shape(
         }
         merged.add_component(covered, max_cells)
     })?;
-    merged.finish()
+    Ok(merged.finish())
 }
 
 /// All-root H3 bbox enumeration.  Leaf negatives require the exact logical
@@ -353,8 +337,7 @@ pub(crate) fn h3_cover(
     max_cells: Option<usize>,
 ) -> Result<Vec<H3CoveredCell>, H3CoverError> {
     const MAX_DFS_FRONTIER: usize = 212; // 122 roots + 6 * 15 depth-first growth.
-    let mut stack = Vec::new();
-    try_reserve_h3(&mut stack, MAX_DFS_FRONTIER)?;
+    let mut stack = Vec::with_capacity(MAX_DFS_FRONTIER);
     stack.extend(CellIndex::base_cells());
     debug_assert_eq!(stack.len(), 122, "vendor base-cell partition changed");
 
@@ -383,9 +366,6 @@ pub(crate) fn h3_cover(
             RectClass::Boundary => {
                 let next = Resolution::try_from(u8::from(depth) + 1)
                     .map_err(|_| H3CoverError::CapacityOverflow)?;
-                let count = usize::try_from(cell.children_count(next))
-                    .map_err(|_| H3CoverError::CapacityOverflow)?;
-                try_reserve_h3(&mut stack, count)?;
                 stack.extend(cell.children(next));
             },
         }
@@ -513,7 +493,6 @@ fn emit_leaf(
         .checked_add(1)
         .ok_or(H3CoverError::CapacityOverflow)?;
     ensure_cover_budget(next_len, max_cells).map_err(H3CoverError::Budget)?;
-    try_reserve_h3(covered, 1)?;
     covered.push(H3CoveredCell { cell, interior });
     Ok(())
 }
@@ -531,7 +510,7 @@ fn emit_interior_descendants(
         .checked_add(count)
         .ok_or(H3CoverError::CapacityOverflow)?;
     ensure_cover_budget(total, max_cells).map_err(H3CoverError::Budget)?;
-    try_reserve_h3(covered, count)?;
+    covered.reserve(count);
     let start = covered.len();
     covered.extend(cell.children(target).map(|cell| H3CoveredCell {
         cell,

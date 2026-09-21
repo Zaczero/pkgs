@@ -6,8 +6,8 @@ use crate::grid::affine_source::{
 };
 use crate::grid::h3_coverer::{
     H3CoverAccumulator, H3CoverError, H3CoverPlan, H3CoveredCell, H3LeafClass, H3TraversalRule,
-    classify_h3_overlap, classify_h3_overlap_parts, emit_bbox_leaf, emit_interior_descendants,
-    emit_leaf, emit_overlap_leaf, fan_retains_point, h3_cover, h3_cover_shape, try_reserve_h3,
+    classify_h3_overlap, classify_h3_overlap_parts, emit_bbox_leaf, emit_overlap_leaf,
+    fan_retains_point, h3_cover, h3_cover_shape,
 };
 use crate::grid::spherical_arc::{
     ArcContact, Bound, H3FanPlan, H3FanPointClass, classify_h3_arc_contact, exact_h3_bbox_for_cell,
@@ -62,16 +62,6 @@ fn classify(shape: &Shape) -> H3LeafClass {
     classify_h3_overlap(&source, &plan)
 }
 
-fn assert_h3_allocation_error(error: H3CoverError) {
-    let H3CoverError::Native(error) = error else {
-        panic!("expected native allocation error");
-    };
-    assert!(matches!(
-        error.kind(),
-        crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-    ));
-}
-
 #[test]
 fn h3_hash_entropy_failure_preserves_native_kind_and_python_exception() {
     let error = super::H3UniqueCells::with_capacity_using(1, 1, None, || {
@@ -118,7 +108,7 @@ fn h3_accumulator_promotes_once_and_moves_each_submitted_cell_once() {
             accumulator.add_component(component, None).unwrap();
         }
         let stats = accumulator.stats();
-        let output = accumulator.finish().unwrap();
+        let output = accumulator.finish();
         (stats, output)
     });
 
@@ -158,7 +148,7 @@ fn h3_accumulator_doubling_families_keep_unique_work_linear() {
                 .unwrap();
         }
         let disjoint_stats = disjoint.stats();
-        assert_eq!(disjoint.finish().unwrap().len(), count);
+        assert_eq!(disjoint.finish().len(), count);
         assert_eq!(disjoint_stats.unique_cells, count);
         assert_eq!(
             disjoint_stats.accumulator_entries_moved,
@@ -182,7 +172,7 @@ fn h3_accumulator_doubling_families_keep_unique_work_linear() {
                 .unwrap();
         }
         let repeated_stats = repeated.stats();
-        assert_eq!(repeated.finish().unwrap(), vec![H3CoveredCell {
+        assert_eq!(repeated.finish(), vec![H3CoveredCell {
             cell: cells[0],
             interior: true
         }]);
@@ -215,7 +205,7 @@ fn h3_accumulator_doubling_families_keep_unique_work_linear() {
                 .unwrap();
         }
         let overlapping_stats = overlapping.stats();
-        assert_eq!(overlapping.finish().unwrap().len(), shared.len());
+        assert_eq!(overlapping.finish().len(), shared.len());
         assert_eq!(overlapping_stats.unique_cells, shared.len());
         assert_eq!(
             overlapping_stats.duplicate_merges,
@@ -256,7 +246,7 @@ fn h3_accumulator_doubling_families_keep_unique_work_linear() {
                 .unwrap();
         }
         let mixed_stats = mixed.stats();
-        assert_eq!(mixed.finish().unwrap().len(), count * 2);
+        assert_eq!(mixed.finish().len(), count * 2);
         assert_eq!(mixed_stats.unique_cells, count * 2);
         assert_eq!(mixed_stats.accumulator_entries_moved, count * 2);
     }
@@ -272,7 +262,7 @@ fn h3_accumulator_budget_counts_unique_cells_not_submissions() {
             .unwrap();
     }
     let duplicate_stats = duplicates.stats();
-    let duplicate_output = duplicates.finish().unwrap();
+    let duplicate_output = duplicates.finish();
     assert_eq!(duplicate_output, vec![H3CoveredCell {
         cell,
         interior: true
@@ -295,7 +285,7 @@ fn h3_accumulator_budget_counts_unique_cells_not_submissions() {
             )
             .unwrap();
     }
-    assert_eq!(within_budget.finish().unwrap().len(), 4);
+    assert_eq!(within_budget.finish().len(), 4);
 
     let mut over_budget = H3CoverAccumulator::default();
     for (index, cell) in cells.iter().copied().enumerate() {
@@ -310,151 +300,10 @@ fn h3_accumulator_budget_counts_unique_cells_not_submissions() {
             result.unwrap();
         } else {
             assert!(matches!(result, Err(H3CoverError::Budget(_))));
-            assert!(over_budget.finish().unwrap().is_empty());
+            assert!(over_budget.finish().is_empty());
             break;
         }
     }
-}
-
-#[test]
-fn h3_accumulator_allocation_failures_discard_partial_state() {
-    let cells: Vec<_> = CellIndex::base_cells().take(3).collect();
-    let component = |cell| {
-        vec![H3CoveredCell {
-            cell,
-            interior: false,
-        }]
-    };
-
-    let mut promotion = H3CoverAccumulator::default();
-    promotion.add_component(component(cells[0]), None).unwrap();
-    let second = component(cells[1]);
-    let error =
-        crate::test_support::fail_allocations_after(0, || promotion.add_component(second, None))
-            .unwrap_err();
-    assert_h3_allocation_error(error);
-    assert!(promotion.finish().unwrap().is_empty());
-
-    let mut reserve = H3CoverAccumulator::default();
-    reserve.add_component(component(cells[0]), None).unwrap();
-    reserve.add_component(component(cells[1]), None).unwrap();
-    let third: Vec<_> = CellIndex::base_cells()
-        .skip(2)
-        .take(64)
-        .map(|cell| H3CoveredCell {
-            cell,
-            interior: false,
-        })
-        .collect();
-    let error =
-        crate::test_support::fail_allocations_after(0, || reserve.add_component(third, None))
-            .unwrap_err();
-    assert_h3_allocation_error(error);
-    assert!(reserve.finish().unwrap().is_empty());
-
-    let mut final_output = H3CoverAccumulator::default();
-    final_output
-        .add_component(component(cells[0]), None)
-        .unwrap();
-    final_output
-        .add_component(component(cells[1]), None)
-        .unwrap();
-    let error =
-        crate::test_support::fail_allocations_after(0, || final_output.finish()).unwrap_err();
-    assert_h3_allocation_error(error);
-}
-
-#[test]
-fn h3_root_stack_allocation_failure_retries_without_partial_output() {
-    let source = GeographicCoverageSource::new(
-        &Shape::Point(Point::new(0.0, 0.0).unwrap()),
-        SphericalGridTarget::H3(Resolution::Zero),
-    )
-    .unwrap();
-    let plan = H3CoverPlan::new(Resolution::Zero);
-    let expected = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
-
-    let error = crate::test_support::fail_allocations_after(0, || {
-        h3_cover(&source, &plan, H3TraversalRule::Overlap, None)
-    })
-    .unwrap_err();
-    assert_h3_allocation_error(error);
-    let retry = h3_cover(&source, &plan, H3TraversalRule::Overlap, None).unwrap();
-    assert_eq!(retry, expected);
-}
-
-#[test]
-fn h3_child_frontier_reservation_failure_discards_frontier_and_retries() {
-    let first = CellIndex::base_cells().next().unwrap();
-    let second = CellIndex::base_cells().nth(1).unwrap();
-    let mut frontier = Vec::new();
-    crate::try_push_vec(&mut frontier, first).unwrap();
-    let capacity = frontier.capacity();
-    while frontier.len() < capacity {
-        frontier.push(first);
-    }
-
-    let error = crate::test_support::fail_allocations_after(0, || try_reserve_h3(&mut frontier, 1))
-        .unwrap_err();
-    assert_h3_allocation_error(error);
-    assert!(frontier.is_empty());
-
-    try_reserve_h3(&mut frontier, 1).unwrap();
-    frontier.push(second);
-    assert_eq!(frontier, vec![second]);
-}
-
-#[test]
-fn h3_leaf_output_allocation_failure_preserves_budget_precedence_and_retries() {
-    let cell = CellIndex::base_cells().next().unwrap();
-    let mut covered = Vec::new();
-    let error = crate::test_support::fail_allocations_after(0, || {
-        emit_leaf(cell, false, None, &mut covered)
-    })
-    .unwrap_err();
-    assert_h3_allocation_error(error);
-    assert!(covered.is_empty());
-
-    emit_leaf(cell, false, None, &mut covered).unwrap();
-    assert_eq!(covered, vec![H3CoveredCell {
-        cell,
-        interior: false
-    }]);
-
-    covered.clear();
-    let error = crate::test_support::fail_allocations_after(0, || {
-        emit_leaf(cell, false, Some(0), &mut covered)
-    })
-    .unwrap_err();
-    assert!(matches!(error, H3CoverError::Budget(_)));
-    assert!(covered.is_empty());
-}
-
-#[test]
-fn h3_interior_descendant_output_allocation_failure_retries_cleanly() {
-    let parent = CellIndex::base_cells().next().unwrap();
-    let target = Resolution::One;
-    let expected_count = usize::try_from(parent.children_count(target)).unwrap();
-    let mut covered = Vec::new();
-
-    let error = crate::test_support::fail_allocations_after(0, || {
-        emit_interior_descendants(parent, target, None, &mut covered)
-    })
-    .unwrap_err();
-    assert_h3_allocation_error(error);
-    assert!(covered.is_empty());
-
-    emit_interior_descendants(parent, target, None, &mut covered).unwrap();
-    assert_eq!(covered.len(), expected_count);
-    assert!(covered.iter().all(|entry| entry.interior));
-}
-
-#[test]
-fn h3_reservation_reports_capacity_overflow_before_allocation() {
-    let mut values = Vec::<H3CoveredCell>::new();
-    let error = try_reserve_h3(&mut values, usize::MAX).unwrap_err();
-    assert!(matches!(error, H3CoverError::CapacityOverflow));
-    assert!(values.is_empty());
 }
 
 #[test]
