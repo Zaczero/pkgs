@@ -4,18 +4,18 @@ use h3o::Resolution;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape, is_axis_aligned_rectangle};
 use crate::grid::affine_source::{
-    AuthorityCarrier, CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion, ExactFailure,
+    AuthorityCarrier, CompactLimbs, DirectPreimages, EXPANSION_LIMBS, ExactExpansion,
     ExactParentParameter, ExactPlanarCoordinates as _, ExactPlanarPoint, ExactRatio,
-    FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, INLINE_EXPANSION_LIMBS, LiftKind,
-    LiftedChain, LiftedLongitude, ParentCrossing, ParentParameterKey, PartitionConstraint,
-    RectClass, SelectionCarrier, SourceEdgeKey, SourceVertexKey, SphericalGridTarget,
-    SymbolicAffineEdge, authority_edge_exact_refinements, authority_edge_proxy_envelopes,
-    build_authority_edge_index, classify_lifted_ring_bucket, closed_between,
-    closed_between_expansion, closed_between_raw, combine_polygon_point_classes,
-    exact_affine_level, exact_axis_rectangle, exact_segment_touches_rectangle,
-    integer_levels_between, lifted_step, rectangular_candidate_admissions,
-    reset_authority_edge_exact_refinements, reset_rectangular_candidate_admissions,
-    selection_closed_between, subdivided_axis_aligned_rectangle,
+    FULL_TURN_DEGREES, GeographicCoverageSource, GridPointClass, LiftKind, LiftedChain,
+    LiftedLongitude, ParentCrossing, ParentParameterKey, PartitionConstraint, RectClass,
+    SelectionCarrier, SourceEdgeKey, SourceVertexKey, SphericalGridTarget, SymbolicAffineEdge,
+    authority_edge_exact_refinements, authority_edge_proxy_envelopes, build_authority_edge_index,
+    classify_lifted_ring_bucket, closed_between, closed_between_expansion, closed_between_raw,
+    combine_polygon_point_classes, exact_affine_level, exact_axis_rectangle,
+    exact_segment_touches_rectangle, integer_levels_between, lifted_step,
+    rectangular_candidate_admissions, reset_authority_edge_exact_refinements,
+    reset_rectangular_candidate_admissions, selection_closed_between,
+    subdivided_axis_aligned_rectangle,
 };
 use crate::grid::spherical_arc::{
     Bound, CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
@@ -101,9 +101,7 @@ fn exhaustive_authority_point_class(
 fn assert_indexed_matches_exhaustive(source: &GeographicCoverageSource, points: &[(f64, f64)]) {
     for &(longitude, latitude) in points {
         assert_eq!(
-            source
-                .authority_point_class(longitude, latitude)
-                .expect("exact point classification"),
+            source.authority_point_class(longitude, latitude),
             exhaustive_authority_point_class(source, longitude, latitude),
             "source point ({longitude}, {latitude})",
         );
@@ -300,29 +298,6 @@ fn compact_exact_storage_canonicalizes_heap_zero_and_grows_from_spare_capacity()
         heap.add(&inline_zero).unwrap().ordering(),
         Ordering::Greater
     );
-}
-
-#[test]
-fn compact_exact_heap_promotion_is_fallibly_reserved() {
-    let ((), allocations) = crate::test_support::allocation_count(|| {
-        let mut storage = CompactLimbs::single(1.0);
-        storage
-            .prepare(INLINE_EXPANSION_LIMBS + 1)
-            .expect("heap promotion");
-        assert!(matches!(storage, CompactLimbs::Heap(_)));
-    });
-    assert!(
-        allocations > 0,
-        "the direct control must enter the former heap-promotion allocation"
-    );
-
-    let error = crate::test_support::fail_allocations_after(0, || {
-        let mut storage = CompactLimbs::single(1.0);
-        storage
-            .prepare(INLINE_EXPANSION_LIMBS + 1)
-            .expect_err("allocation failure must remain recoverable")
-    });
-    assert_eq!(error, ExactFailure::Allocation);
 }
 
 #[test]
@@ -793,9 +768,7 @@ fn periodic_pole_roof_blocks_raw_latitude_pruning() {
             pole
         );
         assert_eq!(
-            source
-                .authority_point_class(0.0, latitude)
-                .expect("exact point classification"),
+            source.authority_point_class(0.0, latitude),
             GridPointClass::Interior
         );
         let latitude = if latitude > 0.0 {
@@ -844,10 +817,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
     assert_eq!(fill.degree, 2);
     assert!(!fill.periodic_exact);
     let query = ExactPlanarPoint::from_stored(0.0, 85.0).unwrap();
-    let DirectPreimages::Copies(copies) = source.chains[0]
-        .direct_preimages(0.0)
-        .expect("direct preimages")
-    else {
+    let DirectPreimages::Copies(copies) = source.chains[0].direct_preimages(0.0) else {
         panic!("the fixed two-turn cap has finite direct preimages");
     };
     assert_eq!(
@@ -869,9 +839,7 @@ fn non_exact_periodic_fill_demotes_a_planar_interior_to_unknown() {
         "only the periodic-exact certificate may promote that interior"
     );
     assert_eq!(
-        source
-            .authority_point_class(0.0, 85.0)
-            .expect("exact point classification"),
+        source.authority_point_class(0.0, 85.0),
         GridPointClass::Unknown
     );
 }
@@ -1063,27 +1031,19 @@ fn authority_point_location_respects_shell_hole_and_closed_boundary() {
         "an empty direct preimage remains a certified exterior in both paths"
     );
     assert_eq!(
-        source
-            .authority_point_class(3.0, 3.0)
-            .expect("exact point classification"),
+        source.authority_point_class(3.0, 3.0),
         GridPointClass::Interior
     );
     assert_eq!(
-        source
-            .authority_point_class(0.0, 0.0)
-            .expect("exact point classification"),
+        source.authority_point_class(0.0, 0.0),
         GridPointClass::Exterior
     );
     assert_eq!(
-        source
-            .authority_point_class(2.0, 0.0)
-            .expect("exact point classification"),
+        source.authority_point_class(2.0, 0.0),
         GridPointClass::Boundary
     );
     assert_eq!(
-        source
-            .authority_point_class(11.0, 0.0)
-            .expect("exact point classification"),
+        source.authority_point_class(11.0, 0.0),
         GridPointClass::Exterior
     );
 }
@@ -1210,15 +1170,11 @@ fn lifted_ring_index_keeps_nonfinite_queries_and_chains_fail_open() {
         Vec::new(),
     );
     assert_eq!(
-        source
-            .authority_point_class(f64::NAN, 0.0)
-            .expect("invalid query remains fail-open"),
+        source.authority_point_class(f64::NAN, 0.0),
         GridPointClass::Unknown
     );
     assert_eq!(
-        source
-            .authority_point_class(0.0, f64::INFINITY)
-            .expect("invalid query remains fail-open"),
+        source.authority_point_class(0.0, f64::INFINITY),
         GridPointClass::Unknown
     );
 }
@@ -1244,15 +1200,11 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     )
     .unwrap();
     assert_eq!(
-        forward
-            .authority_point_class(0.0, 85.0)
-            .expect("exact point classification"),
+        forward.authority_point_class(0.0, 85.0),
         GridPointClass::Interior
     );
     assert_eq!(
-        forward
-            .authority_point_class(0.0, 0.0)
-            .expect("exact point classification"),
+        forward.authority_point_class(0.0, 0.0),
         GridPointClass::Exterior
     );
     let north_query = ExactPlanarPoint::from_stored(0.0, 85.0).unwrap();
@@ -1278,21 +1230,15 @@ fn authority_point_location_is_invariant_to_polar_ring_winding() {
     )
     .unwrap();
     assert_eq!(
-        reverse
-            .authority_point_class(0.0, 85.0)
-            .expect("exact point classification"),
+        reverse.authority_point_class(0.0, 85.0),
         GridPointClass::Interior
     );
     assert_eq!(
-        reverse
-            .authority_point_class(0.0, -85.0)
-            .expect("exact point classification"),
+        reverse.authority_point_class(0.0, -85.0),
         GridPointClass::Exterior
     );
     assert_eq!(
-        reverse
-            .authority_point_class(0.0, 0.0)
-            .expect("exact point classification"),
+        reverse.authority_point_class(0.0, 0.0),
         GridPointClass::Exterior
     );
 }

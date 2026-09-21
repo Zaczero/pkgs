@@ -292,7 +292,6 @@ pub(super) fn subdivided_axis_aligned_rectangle(
                 let step = match lifted_step(start.x, end.x) {
                     Ok(step) => step,
                     Err(ExactFailure::Arithmetic) => return Ok(false),
-                    Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
                 };
                 let end = ExactExpansion::from_f64(end.x)?;
                 let start = ExactExpansion::from_f64(start.x)?;

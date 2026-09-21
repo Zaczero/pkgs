@@ -99,9 +99,9 @@ mod planar;
 mod rectangle;
 
 #[cfg(test)]
-pub(super) use exact_expansion::{CompactLimbs, EXPANSION_LIMBS, INLINE_EXPANSION_LIMBS};
+pub(super) use exact_expansion::{CompactLimbs, EXPANSION_LIMBS};
 use exact_expansion::{
-    ExactExpansion, ExactFailure, ExactRatio, ExactResult, exact, exact_allocation, exact_optional,
+    ExactExpansion, ExactFailure, ExactRatio, ExactResult, exact, exact_optional,
 };
 #[cfg(test)]
 use planar::classify_lifted_ring_copy;
@@ -231,7 +231,7 @@ enum ParentParameterKey {
     End,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ExactParentParameter {
     key: ParentParameterKey,
     ratio: ExactRatio,
@@ -239,14 +239,6 @@ struct ExactParentParameter {
 }
 
 impl ExactParentParameter {
-    fn try_clone(&self) -> ExactResult<Self> {
-        Ok(Self {
-            key: self.key,
-            ratio: self.ratio.try_clone()?,
-            enclosure: self.enclosure,
-        })
-    }
-
     fn new(key: ParentParameterKey, ratio: ExactRatio) -> ExactResult<Self> {
         let enclosure = ratio.certified_bound()?;
         ratio
@@ -472,7 +464,7 @@ impl LiftedRingFill {
         };
         let roof = match pole {
             Some(pole) => {
-                let Some(span) = exact_optional(ExactExpansion::exact_degree_turns(degree))? else {
+                let Some(span) = exact_optional(ExactExpansion::exact_degree_turns(degree)) else {
                     return Ok(None);
                 };
                 Some(PeriodicPoleRoof {
@@ -483,11 +475,11 @@ impl LiftedRingFill {
             },
             None => None,
         };
-        let Some(longitude_envelope) = exact_optional(chain.longitude_envelope())? else {
+        let Some(longitude_envelope) = exact_optional(chain.longitude_envelope()) else {
             return Ok(None);
         };
         let Some(periodic_exact) =
-            exact_optional(chain.periodic_exact(degree, &longitude_envelope))?
+            exact_optional(chain.periodic_exact(degree, &longitude_envelope))
         else {
             return Ok(None);
         };
@@ -519,7 +511,7 @@ impl LiftedRingFill {
     /// degree-based fallback.  The later exact PIP walks these copies.
     #[cfg(test)]
     fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
-        match self.direct_preimages(longitude).ok()? {
+        match self.direct_preimages(longitude) {
             DirectPreimages::Copies(copies) => Some(copies),
             DirectPreimages::Empty | DirectPreimages::Uncertain => None,
         }
@@ -527,11 +519,10 @@ impl LiftedRingFill {
 
     /// Copies of `longitude` whose lift can land on this fill, from the
     /// envelope proved at construction.
-    fn direct_preimages(&self, longitude: f64) -> ExactResult<DirectPreimages> {
+    fn direct_preimages(&self, longitude: f64) -> DirectPreimages {
         let query = match ExactExpansion::from_f64(longitude) {
             Ok(query) => query,
-            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
         };
         let (minimum, maximum) = &self.longitude_envelope;
         direct_preimages_for_envelope(minimum, maximum, &query)
@@ -543,7 +534,7 @@ impl LiftedRingFill {
         longitude: f64,
         query: &ExactPlanarPoint,
     ) -> ExactResult<GridPointClass> {
-        let copies = match self.direct_preimages(longitude)? {
+        let copies = match self.direct_preimages(longitude) {
             // No lift of the stored query lies in this finite fill's longitude
             // span.  That is a certified exterior, not an arithmetic failure.
             DirectPreimages::Empty => return Ok(GridPointClass::Exterior),
@@ -572,10 +563,7 @@ impl LiftedRingFill {
         longitude: f64,
         query: &ExactPlanarPoint,
     ) -> GridPointClass {
-        let Ok(copies) = self.direct_preimages(longitude) else {
-            return GridPointClass::Unknown;
-        };
-        let copies = match copies {
+        let copies = match self.direct_preimages(longitude) {
             DirectPreimages::Empty => return GridPointClass::Exterior,
             DirectPreimages::Copies(copies) => copies,
             DirectPreimages::Uncertain => return GridPointClass::Unknown,
@@ -621,13 +609,13 @@ fn direct_preimages_for_envelope(
     minimum: &ExactExpansion,
     maximum: &ExactExpansion,
     query: &ExactExpansion,
-) -> ExactResult<DirectPreimages> {
+) -> DirectPreimages {
     let (Some(minimum_proposal), Some(maximum_proposal), Some(query_proposal)) = (
         minimum.checked_estimate(),
         maximum.checked_estimate(),
         query.checked_estimate(),
     ) else {
-        return Ok(DirectPreimages::Uncertain);
+        return DirectPreimages::Uncertain;
     };
     let lower_proposal = ((minimum_proposal - query_proposal) / FULL_TURN_DEGREES).ceil();
     let upper_proposal = ((maximum_proposal - query_proposal) / FULL_TURN_DEGREES).floor();
@@ -636,19 +624,18 @@ fn direct_preimages_for_envelope(
         || !(i64::MIN as f64..=i64::MAX as f64).contains(&lower_proposal)
         || !(i64::MIN as f64..=i64::MAX as f64).contains(&upper_proposal)
     {
-        return Ok(DirectPreimages::Uncertain);
+        return DirectPreimages::Uncertain;
     }
     let mut lower = lower_proposal as i64;
     let mut upper = upper_proposal as i64;
     for _ in 0..4 {
         let ordering = match compare_expansion_query_copy(minimum, query, lower) {
             Ok(ordering) => ordering,
-            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
         };
         if ordering == Ordering::Greater {
             let Some(next) = lower.checked_add(1) else {
-                return Ok(DirectPreimages::Uncertain);
+                return DirectPreimages::Uncertain;
             };
             lower = next;
             continue;
@@ -656,8 +643,7 @@ fn direct_preimages_for_envelope(
         if lower > i64::MIN {
             let previous = match compare_expansion_query_copy(minimum, query, lower - 1) {
                 Ok(previous) => previous,
-                Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
             };
             if previous != Ordering::Greater {
                 lower -= 1;
@@ -669,12 +655,11 @@ fn direct_preimages_for_envelope(
     for _ in 0..4 {
         let ordering = match compare_expansion_query_copy(maximum, query, upper) {
             Ok(ordering) => ordering,
-            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
         };
         if ordering == Ordering::Less {
             let Some(next) = upper.checked_sub(1) else {
-                return Ok(DirectPreimages::Uncertain);
+                return DirectPreimages::Uncertain;
             };
             upper = next;
             continue;
@@ -682,8 +667,7 @@ fn direct_preimages_for_envelope(
         if upper < i64::MAX {
             let next = match compare_expansion_query_copy(maximum, query, upper + 1) {
                 Ok(next) => next,
-                Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
             };
             if next != Ordering::Less {
                 upper += 1;
@@ -693,9 +677,9 @@ fn direct_preimages_for_envelope(
         break;
     }
     if lower <= upper {
-        Ok(DirectPreimages::Copies(lower..=upper))
+        DirectPreimages::Copies(lower..=upper)
     } else {
-        Ok(DirectPreimages::Empty)
+        DirectPreimages::Empty
     }
 }
 
@@ -735,9 +719,7 @@ impl PeriodicParityBuckets {
         if length > edge_count.checked_add(2).ok_or(ExactFailure::Arithmetic)? {
             return Err(ExactFailure::Arithmetic);
         }
-        let mut events = Vec::new();
-        exact_allocation(crate::try_reserve_vec(&mut events, length))?;
-        events.resize(length, false);
+        let events = vec![false; length];
         Ok(Self {
             first,
             events,
@@ -784,20 +766,15 @@ impl LiftedChain {
         if points.len() < minimum || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
             return Err(ExactFailure::Arithmetic);
         }
-        let mut vertices = Vec::new();
-        let mut edges = Vec::new();
-        exact_allocation(crate::try_reserve_vec(&mut vertices, points.len()))?;
-        exact_allocation(crate::try_reserve_vec(
-            &mut edges,
-            points.len().saturating_sub(1),
-        ))?;
-        exact_allocation(crate::try_push_vec(&mut vertices, LiftedVertex {
+        let mut vertices = Vec::with_capacity(points.len());
+        let mut edges = Vec::with_capacity(points.len().saturating_sub(1));
+        vertices.push(LiftedVertex {
             longitude: LiftedLongitude {
                 raw: points[0].0,
                 turns: 0,
             },
             latitude: points[0].1,
-        }))?;
+        });
         for &(longitude, latitude) in &points[1..] {
             let previous = exact(vertices.last().copied())?;
             let step = lifted_step(previous.longitude.raw, longitude)?;
@@ -806,14 +783,14 @@ impl LiftedChain {
                 .turns
                 .checked_add(step.turn_delta)
                 .ok_or(ExactFailure::Arithmetic)?;
-            exact_allocation(crate::try_push_vec(&mut vertices, LiftedVertex {
+            vertices.push(LiftedVertex {
                 longitude: LiftedLongitude {
                     raw: longitude,
                     turns,
                 },
                 latitude,
-            }))?;
-            exact_allocation(crate::try_push_vec(&mut edges, step.kind))?;
+            });
+            edges.push(step.kind);
             while vertices.len() > minimum {
                 let last = vertices
                     .len()
@@ -886,23 +863,21 @@ impl LiftedChain {
 
     #[cfg(test)]
     fn direct_preimage_copies(&self, longitude: f64) -> Option<std::ops::RangeInclusive<i64>> {
-        match self.direct_preimages(longitude).ok()? {
+        match self.direct_preimages(longitude) {
             DirectPreimages::Copies(copies) => Some(copies),
             DirectPreimages::Empty | DirectPreimages::Uncertain => None,
         }
     }
 
     #[cfg(test)]
-    fn direct_preimages(&self, longitude: f64) -> ExactResult<DirectPreimages> {
+    fn direct_preimages(&self, longitude: f64) -> DirectPreimages {
         let (minimum, maximum) = match self.longitude_envelope() {
             Ok(envelope) => envelope,
-            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
         };
         let query = match ExactExpansion::from_f64(longitude) {
             Ok(query) => query,
-            Err(ExactFailure::Arithmetic) => return Ok(DirectPreimages::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
         };
         direct_preimages_for_envelope(&minimum, &maximum, &query)
     }
@@ -910,11 +885,11 @@ impl LiftedChain {
     fn longitude_envelope(&self) -> ExactResult<(ExactExpansion, ExactExpansion)> {
         let first = *exact(self.vertices.first())?;
         let mut minimum = ExactPlanarPoint::from_lifted(first)?.longitude;
-        let mut maximum = minimum.try_clone()?;
+        let mut maximum = minimum.clone();
         for &vertex in &self.vertices[1..] {
             let value = ExactPlanarPoint::from_lifted(vertex)?.longitude;
             if value.sub(&minimum)?.ordering() == Ordering::Less {
-                minimum = value.try_clone()?;
+                minimum = value.clone();
             }
             if value.sub(&maximum)?.ordering() == Ordering::Greater {
                 maximum = value;
@@ -1043,8 +1018,7 @@ impl SymbolicAffineEdge {
     ) -> ExactResult<Self> {
         let start_point = ExactPlanarPoint::from_lifted(start)?;
         let end_point = ExactPlanarPoint::from_lifted(end)?;
-        let mut parameters = Vec::new();
-        exact_allocation(crate::try_reserve_vec(&mut parameters, 8))?;
+        let mut parameters = Vec::with_capacity(8);
         parameters.push(ExactParentParameter::start()?);
         parameters.push(ExactParentParameter::end()?);
         let mut result = Self {
@@ -1108,7 +1082,6 @@ impl SymbolicAffineEdge {
                 Ordering::Greater => {},
             }
         }
-        exact_allocation(crate::try_reserve_vec(&mut self.parameters, 1))?;
         self.parameters.insert(insert_at, parameter);
         Ok(())
     }
@@ -1548,15 +1521,15 @@ impl SymbolicAffineEdge {
         let end_point = ExactPlanarPoint::from_lifted(self.end)?;
         for [start_parameter, end_parameter] in self.parameters.array_windows::<2>() {
             let Some(piece) = self.selection_piece(
-                start_parameter.try_clone()?,
-                end_parameter.try_clone()?,
+                start_parameter.clone(),
+                end_parameter.clone(),
                 &start_point,
                 &end_point,
             )?
             else {
                 return Err(ExactFailure::Arithmetic);
             };
-            exact_allocation(crate::try_push_vec(output, piece))?;
+            output.push(piece);
         }
         Ok(())
     }
@@ -1569,8 +1542,8 @@ impl SymbolicAffineEdge {
         let start_point = ExactPlanarPoint::from_lifted(self.start)?;
         let end_point = ExactPlanarPoint::from_lifted(self.end)?;
         for [start_parameter, end_parameter] in self.parameters.array_windows::<2>() {
-            let start = start_parameter.try_clone()?;
-            let end = end_parameter.try_clone()?;
+            let start = start_parameter.clone();
+            let end = end_parameter.clone();
             let midpoint = self.midpoint(&start.ratio, &end.ratio)?;
             let latitude =
                 self.coordinate_at(&midpoint, start_point.latitude(), end_point.latitude())?;
@@ -1592,7 +1565,7 @@ impl SymbolicAffineEdge {
                     )?,
                 },
             };
-            exact_allocation(crate::try_push_vec(output, piece))?;
+            output.push(piece);
         }
         Ok(())
     }
@@ -1834,7 +1807,6 @@ fn canonical_proxy_window(longitude: Bound) -> ExactResult<Option<Bound>> {
     match shifted_degree_bound(longitude, sheet) {
         Ok(value) => Ok(Some(value)),
         Err(ExactFailure::Arithmetic) => Ok(None),
-        Err(ExactFailure::Allocation) => Err(ExactFailure::Allocation),
     }
 }
 
@@ -2313,9 +2285,6 @@ fn build_authority_edge_index(
         let envelopes = match authority_edge_proxy_envelopes(authority_edge) {
             Ok(envelopes) => envelopes,
             Err(ExactFailure::Arithmetic) => return Ok(None),
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
         };
         for envelope in envelopes {
             entries.push(PackedBvhEntry::new(edge, envelope));
@@ -2422,35 +2391,22 @@ impl GeographicCoverageSource {
     }
 
     fn build(source: &Shape, target: SphericalGridTarget) -> crate::error::Result<Self> {
-        let exact_axis_rect = if let Some(bounds) = exact_world_band(source) {
-            Some(bounds)
-        } else if let Some(bounds) = source.bounds() {
-            let is_rectangle = match exact_axis_rectangle(source, bounds) {
-                Ok(value) => value,
-                Err(ExactFailure::Arithmetic) => false,
-                Err(ExactFailure::Allocation) => {
-                    return Err(crate::error::ResourceError::Allocation.into());
-                },
-            };
+        let exact_axis_rect = exact_world_band(source).or_else(|| {
+            let bounds = source.bounds()?;
+            let is_rectangle = exact_axis_rectangle(source, bounds).unwrap_or(false);
             if !is_rectangle
                 || !(-180.0..=180.0).contains(&bounds.minx())
                 || !(-180.0..=180.0).contains(&bounds.maxx())
                 || !(-90.0..=90.0).contains(&bounds.miny())
                 || !(-90.0..=90.0).contains(&bounds.maxy())
             {
-                None
-            } else {
-                match canonical_axis_rectangle_longitude(bounds) {
-                    Ok(true) => Some(bounds),
-                    Ok(false) | Err(ExactFailure::Arithmetic) => None,
-                    Err(ExactFailure::Allocation) => {
-                        return Err(crate::error::ResourceError::Allocation.into());
-                    },
-                }
+                return None;
             }
-        } else {
-            None
-        };
+            canonical_axis_rectangle_longitude(bounds)
+                .ok()
+                .filter(|&canonical| canonical)
+                .map(|_| bounds)
+        });
         let authority_latitude = source
             .bounds()
             .and_then(|bounds| Bound::new(bounds.miny(), bounds.maxy()));
@@ -2492,18 +2448,12 @@ impl GeographicCoverageSource {
                     unknown = true;
                     continue;
                 },
-                Err(ExactFailure::Allocation) => {
-                    return Err(crate::error::ResourceError::Allocation.into());
-                },
             };
             let latitude = match ExactExpansion::from_f64(input.latitude) {
                 Ok(value) => value,
                 Err(ExactFailure::Arithmetic) => {
                     unknown = true;
                     continue;
-                },
-                Err(ExactFailure::Allocation) => {
-                    return Err(crate::error::ResourceError::Allocation.into());
                 },
             };
             let point = SourcePoint {
@@ -2516,14 +2466,8 @@ impl GeographicCoverageSource {
                 latitude,
             };
             let authority_bound =
-                match GridDegreePoint::try_from_expansions(&point.longitude, &point.latitude) {
-                    Ok(bound) => Some(bound),
-                    Err(ExactFailure::Arithmetic) => None,
-                    Err(ExactFailure::Allocation) => {
-                        return Err(crate::error::ResourceError::Allocation.into());
-                    },
-                };
-            let selection = append_source_point(&point, &mut unknown)?;
+                GridDegreePoint::try_from_expansions(&point.longitude, &point.latitude).ok();
+            let selection = append_source_point(&point, &mut unknown);
             crate::try_push_vec(&mut point_records, SourcePointRecord {
                 authority: GridPointRecord {
                     point,
@@ -2790,9 +2734,6 @@ impl GeographicCoverageSource {
             match self.authority.edge_index.as_ref() {
                 Some(index) => match canonical_proxy_window(longitude) {
                     Err(ExactFailure::Arithmetic) | Ok(None) => None,
-                    Err(ExactFailure::Allocation) => {
-                        return Err(crate::error::ResourceError::Allocation.into());
-                    },
                     Ok(Some(longitude)) => {
                         let query = AABB::from_corners([longitude.lo, latitude.lo], [
                             longitude.hi,
@@ -2819,9 +2760,6 @@ impl GeographicCoverageSource {
                 match exact_authority_edge_touches_rectangle(edge, longitude, latitude) {
                     Ok(true) | Err(ExactFailure::Arithmetic) => return Ok(RectClass::Boundary),
                     Ok(false) => {},
-                    Err(ExactFailure::Allocation) => {
-                        return Err(crate::error::ResourceError::Allocation.into());
-                    },
                 }
             }
         } else {
@@ -2829,9 +2767,6 @@ impl GeographicCoverageSource {
                 match exact_authority_edge_touches_rectangle(edge, longitude, latitude) {
                     Ok(true) | Err(ExactFailure::Arithmetic) => return Ok(RectClass::Boundary),
                     Ok(false) => {},
-                    Err(ExactFailure::Allocation) => {
-                        return Err(crate::error::ResourceError::Allocation.into());
-                    },
                 }
             }
         }
@@ -2857,7 +2792,7 @@ impl GeographicCoverageSource {
         let Some(latitude) = strict_window_representative(latitude) else {
             return Ok(RectClass::Boundary);
         };
-        match self.authority_point_class(longitude, latitude)? {
+        match self.authority_point_class(longitude, latitude) {
             GridPointClass::Exterior => Ok(RectClass::Outside),
             GridPointClass::Interior => Ok(RectClass::Interior),
             GridPointClass::Boundary | GridPointClass::Unknown => Ok(RectClass::Boundary),
@@ -2980,21 +2915,18 @@ impl GeographicCoverageSource {
         &self,
         longitude: f64,
         latitude: f64,
-    ) -> crate::error::Result<GridPointClass> {
+    ) -> GridPointClass {
         if self.unknown
             || !longitude.is_finite()
             || !latitude.is_finite()
             || latitude.to_bits() == 90.0_f64.to_bits()
             || latitude.to_bits() == (-90.0_f64).to_bits()
         {
-            return Ok(GridPointClass::Unknown);
+            return GridPointClass::Unknown;
         }
         let query = match ExactPlanarPoint::from_stored(longitude, latitude) {
             Ok(query) => query,
-            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
+            Err(ExactFailure::Arithmetic) => return GridPointClass::Unknown,
         };
         let mut aggregate = GridPointClass::Exterior;
         for shell in self.ring_fills.iter().filter(|fill| fill.ring == 0) {
@@ -3006,29 +2938,15 @@ impl GeographicCoverageSource {
             }) {
                 continue;
             }
-            let shell_class = match self.selection_ring_point_class(component, 0, &query) {
-                Ok(class) => class,
-                Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
-                Err(ExactFailure::Allocation) => {
-                    return Err(crate::error::ResourceError::Allocation.into());
-                },
-            };
+            let shell_class = self.selection_ring_point_class(component, 0, &query);
             let component_class = match shell_class {
                 GridPointClass::Exterior => GridPointClass::Exterior,
                 GridPointClass::Boundary | GridPointClass::Unknown => shell_class,
-                GridPointClass::Interior => {
-                    match self.selection_component_hole_class(component, &query) {
-                        Ok(class) => class,
-                        Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
-                        Err(ExactFailure::Allocation) => {
-                            return Err(crate::error::ResourceError::Allocation.into());
-                        },
-                    }
-                },
+                GridPointClass::Interior => self.selection_component_hole_class(component, &query),
             };
             aggregate = combine_polygon_point_classes(aggregate, component_class);
         }
-        Ok(aggregate)
+        aggregate
     }
 
     /// Every exact selected pole endpoint, including pole crossings
@@ -3042,37 +2960,27 @@ impl GeographicCoverageSource {
     /// Exact retained-authority PIP for a non-pole stored degree point.  The
     /// positive selection image is deliberately not consulted here: it can
     /// only veto a later negative, never manufacture this authority result.
-    pub(crate) fn authority_point_class(
-        &self,
-        longitude: f64,
-        latitude: f64,
-    ) -> crate::error::Result<GridPointClass> {
+    pub(crate) fn authority_point_class(&self, longitude: f64, latitude: f64) -> GridPointClass {
         if self.unknown
             || !longitude.is_finite()
             || !latitude.is_finite()
             || latitude.to_bits() == 90.0_f64.to_bits()
             || latitude.to_bits() == (-90.0_f64).to_bits()
         {
-            return Ok(GridPointClass::Unknown);
+            return GridPointClass::Unknown;
         }
         let query = match ExactPlanarPoint::from_stored(longitude, latitude) {
             Ok(query) => query,
-            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
+            Err(ExactFailure::Arithmetic) => return GridPointClass::Unknown,
         };
         let mut aggregate = GridPointClass::Exterior;
         for shell in self.ring_fills.iter().filter(|fill| fill.ring == 0) {
             let Some(chain) = self.chains.get(shell.chain_index) else {
-                return Ok(GridPointClass::Unknown);
+                return GridPointClass::Unknown;
             };
             let shell_class = match shell.point_class(chain, longitude, &query) {
                 Ok(class) => class,
                 Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
-                Err(ExactFailure::Allocation) => {
-                    return Err(crate::error::ResourceError::Allocation.into());
-                },
             };
             let component = match shell_class {
                 GridPointClass::Exterior => GridPointClass::Exterior,
@@ -3081,15 +2989,12 @@ impl GeographicCoverageSource {
                     match self.component_hole_class(shell, longitude, &query) {
                         Ok(class) => class,
                         Err(ExactFailure::Arithmetic) => GridPointClass::Unknown,
-                        Err(ExactFailure::Allocation) => {
-                            return Err(crate::error::ResourceError::Allocation.into());
-                        },
                     }
                 },
             };
             aggregate = combine_polygon_point_classes(aggregate, component);
         }
-        Ok(aggregate)
+        aggregate
     }
 
     fn component_hole_class(
@@ -3125,24 +3030,24 @@ impl GeographicCoverageSource {
         &self,
         component: usize,
         query: &ExactPlanarPoint,
-    ) -> ExactResult<GridPointClass> {
+    ) -> GridPointClass {
         let mut unknown = false;
         for hole in self
             .ring_fills
             .iter()
             .filter(|fill| fill.component == component && fill.ring != 0)
         {
-            match self.selection_ring_point_class(component, hole.ring, query)? {
-                GridPointClass::Boundary => return Ok(GridPointClass::Boundary),
-                GridPointClass::Interior => return Ok(GridPointClass::Exterior),
+            match self.selection_ring_point_class(component, hole.ring, query) {
+                GridPointClass::Boundary => return GridPointClass::Boundary,
+                GridPointClass::Interior => return GridPointClass::Exterior,
                 GridPointClass::Unknown => unknown = true,
                 GridPointClass::Exterior => {},
             }
         }
         if unknown {
-            Ok(GridPointClass::Unknown)
+            GridPointClass::Unknown
         } else {
-            Ok(GridPointClass::Interior)
+            GridPointClass::Interior
         }
     }
 
@@ -3151,7 +3056,7 @@ impl GeographicCoverageSource {
         component: usize,
         ring: usize,
         query: &ExactPlanarPoint,
-    ) -> ExactResult<GridPointClass> {
+    ) -> GridPointClass {
         let edge_count = self
             .selection
             .edges
@@ -3163,7 +3068,7 @@ impl GeographicCoverageSource {
             })
             .count();
         if edge_count == 0 {
-            return Ok(GridPointClass::Unknown);
+            return GridPointClass::Unknown;
         }
         // Selection pieces are split into the physical [-180, 180] sheet.
         // A physical query has only its immediate -360/0/+360 preimages in
@@ -3172,8 +3077,7 @@ impl GeographicCoverageSource {
         let copies = -1_i64..=1_i64;
         let mut buckets = match PeriodicParityBuckets::new(copies, edge_count) {
             Ok(buckets) => buckets,
-            Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return GridPointClass::Unknown,
         };
         for piece in self.selection.edges.iter().filter(|piece| {
             piece.carrier.polygon
@@ -3185,16 +3089,16 @@ impl GeographicCoverageSource {
                 &piece.selection[1],
                 query,
                 &mut buckets,
-            )? {
-                BucketEdge::Decisive(result) => return Ok(result),
+            ) {
+                BucketEdge::Decisive(result) => return result,
                 BucketEdge::Continue => {},
-                BucketEdge::Uncertain => return Ok(GridPointClass::Unknown),
+                BucketEdge::Uncertain => return GridPointClass::Unknown,
             }
         }
         if buckets.any_interior() {
-            Ok(GridPointClass::Interior)
+            GridPointClass::Interior
         } else {
-            Ok(GridPointClass::Exterior)
+            GridPointClass::Exterior
         }
     }
 
@@ -3267,9 +3171,6 @@ fn append_lifted_chain(
             *unknown = true;
             return Ok(());
         },
-        Err(ExactFailure::Allocation) => {
-            return Err(crate::error::ResourceError::Allocation.into());
-        },
     };
     let chain_index = lifted.len();
     for (ordinal, edge_kind) in chain.edges.iter().copied().enumerate() {
@@ -3306,23 +3207,14 @@ fn append_lifted_chain(
                 *unknown = true;
                 continue;
             },
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
         };
         match edge.selection_pieces(&mut selection.edges) {
             Ok(()) => {},
             Err(ExactFailure::Arithmetic) => *unknown = true,
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
         }
         match edge.authority_pieces(&mut authority.pieces) {
             Ok(()) => {},
             Err(ExactFailure::Arithmetic) => *unknown = true,
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
         }
         crate::try_push_vec(&mut authority.edges, edge)?;
     }
@@ -3343,32 +3235,20 @@ fn append_lifted_chain(
 /// Retain the raw authority point even when its selection transform cannot be
 /// certified.  The latter is then a visible unknown; dropping the authority
 /// point would turn a fail-open source into an empty source.
-fn append_source_point(
-    point: &SourcePoint,
-    unknown: &mut bool,
-) -> crate::error::Result<Option<SelectionPointRecord>> {
+fn append_source_point(point: &SourcePoint, unknown: &mut bool) -> Option<SelectionPointRecord> {
     let selection = match selection_image_point(point) {
         Ok(selection) => selection,
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
-            return Ok(None);
-        },
-        Err(ExactFailure::Allocation) => {
-            return Err(crate::error::ResourceError::Allocation.into());
+            return None;
         },
     };
     let bound =
-        match GridDegreePoint::try_from_expansions(&selection.longitude, &selection.latitude) {
-            Ok(bound) => Some(bound),
-            Err(ExactFailure::Arithmetic) => None,
-            Err(ExactFailure::Allocation) => {
-                return Err(crate::error::ResourceError::Allocation.into());
-            },
-        };
-    Ok(Some(SelectionPointRecord {
+        GridDegreePoint::try_from_expansions(&selection.longitude, &selection.latitude).ok();
+    Some(SelectionPointRecord {
         point: selection,
         bounds: bound,
-    }))
+    })
 }
 
 fn append_selection_pole_witness(
@@ -3382,9 +3262,6 @@ fn append_selection_pole_witness(
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
             return Ok(());
-        },
-        Err(ExactFailure::Allocation) => {
-            return Err(crate::error::ResourceError::Allocation.into());
         },
     };
     crate::try_push_vec(output, witness)
@@ -3401,9 +3278,6 @@ fn append_selection_planar_pole_witness(
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
             return Ok(());
-        },
-        Err(ExactFailure::Allocation) => {
-            return Err(crate::error::ResourceError::Allocation.into());
         },
     };
     crate::try_push_vec(output, witness)

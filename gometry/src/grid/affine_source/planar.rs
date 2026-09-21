@@ -115,27 +115,21 @@ pub(super) fn classify_lifted_ring_bucket(
     let mut buckets = match PeriodicParityBuckets::new(copies, chain.edges.len()) {
         Ok(buckets) => buckets,
         Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
     };
     if let Some(y_index) = y_index {
         let Some(query_y) = query.latitude.as_f64() else {
             return Ok(GridPointClass::Unknown);
         };
         let mut terminal = None;
-        let mut failure = None;
         let mut visit =
             |edge: EdgeId| match bucket_lifted_chain_edge(chain, edge, query, &mut buckets) {
-                Ok(BucketEdge::Continue) => std::ops::ControlFlow::Continue(()),
-                Ok(BucketEdge::Decisive(result)) => {
+                BucketEdge::Continue => std::ops::ControlFlow::Continue(()),
+                BucketEdge::Decisive(result) => {
                     terminal = Some(result);
                     std::ops::ControlFlow::Break(())
                 },
-                Ok(BucketEdge::Uncertain) | Err(ExactFailure::Arithmetic) => {
+                BucketEdge::Uncertain => {
                     terminal = Some(GridPointClass::Unknown);
-                    std::ops::ControlFlow::Break(())
-                },
-                Err(ExactFailure::Allocation) => {
-                    failure = Some(ExactFailure::Allocation);
                     std::ops::ControlFlow::Break(())
                 },
             };
@@ -148,9 +142,6 @@ pub(super) fn classify_lifted_ring_bucket(
         } else {
             let _ = y_index.for_each_edge(query_y, visit);
         }
-        if let Some(failure) = failure {
-            return Err(failure);
-        }
         if let Some(result) = terminal {
             return Ok(result);
         }
@@ -159,7 +150,6 @@ pub(super) fn classify_lifted_ring_bucket(
             Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
                 Ok(point) => point,
                 Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             },
             None => return Ok(GridPointClass::Unknown),
         };
@@ -167,9 +157,8 @@ pub(super) fn classify_lifted_ring_bucket(
             let current = match ExactPlanarPoint::from_lifted(*vertex) {
                 Ok(point) => point,
                 Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
             };
-            match bucket_lifted_edge(&previous, &current, query, false, &mut buckets)? {
+            match bucket_lifted_edge(&previous, &current, query, false, &mut buckets) {
                 BucketEdge::Decisive(result) => return Ok(result),
                 BucketEdge::Continue => {},
                 BucketEdge::Uncertain => return Ok(GridPointClass::Unknown),
@@ -181,7 +170,6 @@ pub(super) fn classify_lifted_ring_bucket(
         Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
             Ok(point) => point,
             Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         },
         None => return Ok(GridPointClass::Unknown),
     };
@@ -189,7 +177,6 @@ pub(super) fn classify_lifted_ring_bucket(
         Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
             Ok(point) => point,
             Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
         },
         None => return Ok(GridPointClass::Unknown),
     };
@@ -227,7 +214,7 @@ pub(super) fn classify_lifted_ring_bucket(
                 &first as &dyn ExactPlanarCoordinates,
             ),
         ] {
-            match bucket_lifted_edge(start, end, query, true, &mut buckets)? {
+            match bucket_lifted_edge(start, end, query, true, &mut buckets) {
                 BucketEdge::Decisive(result) => return Ok(result),
                 BucketEdge::Continue => {},
                 BucketEdge::Uncertain => return Ok(GridPointClass::Unknown),
@@ -246,26 +233,24 @@ pub(super) fn bucket_lifted_chain_edge(
     edge: EdgeId,
     query: &ExactPlanarPoint,
     buckets: &mut PeriodicParityBuckets,
-) -> ExactResult<BucketEdge> {
+) -> BucketEdge {
     let edge = edge.as_usize();
     let Some(next) = edge.checked_add(1) else {
-        return Ok(BucketEdge::Uncertain);
+        return BucketEdge::Uncertain;
     };
     let start = match chain.vertices.get(edge).copied() {
         Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
             Ok(point) => point,
-            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
         },
-        None => return Ok(BucketEdge::Uncertain),
+        None => return BucketEdge::Uncertain,
     };
     let end = match chain.vertices.get(next).copied() {
         Some(vertex) => match ExactPlanarPoint::from_lifted(vertex) {
             Ok(point) => point,
-            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
         },
-        None => return Ok(BucketEdge::Uncertain),
+        None => return BucketEdge::Uncertain,
     };
     bucket_lifted_edge(&start, &end, query, false, buckets)
 }
@@ -289,38 +274,34 @@ pub(super) fn bucket_lifted_edge<
     query: &Q,
     artificial: bool,
     buckets: &mut PeriodicParityBuckets,
-) -> ExactResult<BucketEdge> {
+) -> BucketEdge {
     let start_y = match start.latitude().sub(query.latitude()) {
         Ok(value) => value,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let end_y = match end.latitude().sub(query.latitude()) {
         Ok(value) => value,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let on_latitude =
         match closed_between_expansion(start.latitude(), query.latitude(), end.latitude()) {
             Ok(value) => value,
-            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
         };
     if on_latitude {
         let delta = match start.longitude().sub(end.longitude()) {
             Ok(delta) => delta,
-            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
         };
         let (minimum, maximum) = if delta.ordering() == Ordering::Greater {
             (end.longitude(), start.longitude())
         } else {
             (start.longitude(), end.longitude())
         };
-        match direct_preimages_for_envelope(minimum, maximum, query.longitude())? {
+        match direct_preimages_for_envelope(minimum, maximum, query.longitude()) {
             DirectPreimages::Empty => {},
             DirectPreimages::Uncertain => {
-                return Ok(BucketEdge::Decisive(GridPointClass::Unknown));
+                return BucketEdge::Decisive(GridPointClass::Unknown);
             },
             DirectPreimages::Copies(copies) => {
                 let Some(count) = copies
@@ -328,24 +309,22 @@ pub(super) fn bucket_lifted_edge<
                     .checked_sub(*copies.start())
                     .and_then(|value| value.checked_add(1))
                 else {
-                    return Ok(BucketEdge::Uncertain);
+                    return BucketEdge::Uncertain;
                 };
                 // A shortest/full original edge can meet at most two seam
                 // spellings.  The artificial horizontal roof is excluded by
                 // the non-pole query contract before reaching this branch.
                 if count > 2 {
-                    return Ok(BucketEdge::Decisive(GridPointClass::Unknown));
+                    return BucketEdge::Decisive(GridPointClass::Unknown);
                 }
                 for copy in copies {
                     let shifted = match shifted_exact_planar_point(query, copy) {
                         Ok(shifted) => shifted,
-                        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
                     };
                     let orientation = match planar_orientation_ordering(start, end, &shifted) {
                         Ok(orientation) => orientation,
-                        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
                     };
                     let on_longitude = match closed_between_expansion(
                         start.longitude(),
@@ -353,15 +332,14 @@ pub(super) fn bucket_lifted_edge<
                         end.longitude(),
                     ) {
                         Ok(on_longitude) => on_longitude,
-                        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
                     };
                     if orientation == Ordering::Equal && on_longitude {
-                        return Ok(BucketEdge::Decisive(if artificial {
+                        return BucketEdge::Decisive(if artificial {
                             GridPointClass::Unknown
                         } else {
                             GridPointClass::Boundary
-                        }));
+                        });
                     }
                 }
             },
@@ -372,35 +350,31 @@ pub(super) fn bucket_lifted_edge<
     let crosses = (start_cmp != Ordering::Greater && end_cmp == Ordering::Greater)
         || (end_cmp != Ordering::Greater && start_cmp == Ordering::Greater);
     if !crosses {
-        return Ok(BucketEdge::Continue);
+        return BucketEdge::Continue;
     }
     let orientation = match planar_orientation(start, end, query) {
         Ok(orientation) => orientation,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let delta_y = match end.latitude().sub(start.latitude()) {
         Ok(delta_y) => delta_y,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     if delta_y.ordering() == Ordering::Equal {
-        return Ok(BucketEdge::Continue);
+        return BucketEdge::Continue;
     }
     let ratio = match ExactRatio::from_parts(orientation, delta_y) {
         Ok(ratio) => ratio,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let bucket = match ratio.floor_turn() {
         Ok(bucket) => bucket,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     if buckets.add_crossing(bucket).is_none() {
-        return Ok(BucketEdge::Uncertain);
+        return BucketEdge::Uncertain;
     }
-    Ok(BucketEdge::Continue)
+    BucketEdge::Continue
 }
 
 /// Exact ray contribution of one rational selection-image segment.  Selection
@@ -412,26 +386,22 @@ pub(super) fn bucket_selection_edge(
     end: &ExactSelectionPoint,
     query: &ExactPlanarPoint,
     buckets: &mut PeriodicParityBuckets,
-) -> ExactResult<BucketEdge> {
+) -> BucketEdge {
     let query_longitude = match ExactRatio::from_expansion(&query.longitude) {
         Ok(value) => value,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let query_latitude = match ExactRatio::from_expansion(&query.latitude) {
         Ok(value) => value,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let start_y = match start.latitude.sub(&query_latitude) {
         Ok(value) => value,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let end_y = match end.latitude.sub(&query_latitude) {
         Ok(value) => value,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let (start_cmp, end_cmp) = (start_y.numerator.ordering(), end_y.numerator.ordering());
 
@@ -441,29 +411,25 @@ pub(super) fn bucket_selection_edge(
     let on_latitude =
         match selection_closed_between(&start.latitude, &query_latitude, &end.latitude) {
             Ok(value) => value,
-            Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-            Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+            Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
         };
     if on_latitude {
         for turns in -1_i64..=1_i64 {
             let offset = match turns.checked_mul(360) {
                 Some(value) => match ExactRatio::from_i64(value, 1) {
                     Ok(offset) => offset,
-                    Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                    Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                    Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
                 },
-                None => return Ok(BucketEdge::Uncertain),
+                None => return BucketEdge::Uncertain,
             };
             let shifted_longitude = match query_longitude.add(&offset) {
                 Ok(value) => value,
-                Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
             };
             let orientation =
                 match selection_orientation_at(start, end, &shifted_longitude, &query_latitude) {
                     Ok(orientation) => orientation,
-                    Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                    Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                    Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
                 };
             let on_longitude = match selection_closed_between(
                 &start.longitude,
@@ -471,11 +437,10 @@ pub(super) fn bucket_selection_edge(
                 &end.longitude,
             ) {
                 Ok(on_longitude) => on_longitude,
-                Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-                Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+                Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
             };
             if orientation.numerator.ordering() == Ordering::Equal && on_longitude {
-                return Ok(BucketEdge::Decisive(GridPointClass::Boundary));
+                return BucketEdge::Decisive(GridPointClass::Boundary);
             }
         }
     }
@@ -483,33 +448,29 @@ pub(super) fn bucket_selection_edge(
     let crosses = (start_cmp != Ordering::Greater && end_cmp == Ordering::Greater)
         || (end_cmp != Ordering::Greater && start_cmp == Ordering::Greater);
     if !crosses {
-        return Ok(BucketEdge::Continue);
+        return BucketEdge::Continue;
     }
     let orientation = match selection_orientation_at(start, end, &query_longitude, &query_latitude)
     {
         Ok(orientation) => orientation,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let delta_y = match end.latitude.sub(&start.latitude) {
         Ok(delta_y) => delta_y,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let ratio = match orientation.div(&delta_y) {
         Ok(ratio) => ratio,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     let bucket = match ratio.floor_turn() {
         Ok(bucket) => bucket,
-        Err(ExactFailure::Arithmetic) => return Ok(BucketEdge::Uncertain),
-        Err(ExactFailure::Allocation) => return Err(ExactFailure::Allocation),
+        Err(ExactFailure::Arithmetic) => return BucketEdge::Uncertain,
     };
     if buckets.add_crossing(bucket).is_none() {
-        return Ok(BucketEdge::Uncertain);
+        return BucketEdge::Uncertain;
     }
-    Ok(BucketEdge::Continue)
+    BucketEdge::Continue
 }
 
 pub(super) fn selection_orientation_at(

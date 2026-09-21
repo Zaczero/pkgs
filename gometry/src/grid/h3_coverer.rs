@@ -419,7 +419,7 @@ fn emit_within_leaf(
     if source.is_unknown() {
         return Ok(());
     }
-    if classify_h3_overlap(source, &cell_plan)? == H3LeafClass::Interior {
+    if classify_h3_overlap(source, &cell_plan) == H3LeafClass::Interior {
         emit_leaf(cell, true, max_cells, covered)?;
     }
     Ok(())
@@ -447,7 +447,7 @@ fn emit_overlap_leaf(
     {
         return Ok(());
     }
-    let relation = classify_h3_overlap(source, &cell_plan)?;
+    let relation = classify_h3_overlap(source, &cell_plan);
     if relation == H3LeafClass::Outside {
         return Ok(());
     }
@@ -557,12 +557,12 @@ pub(crate) enum H3LeafClass {
 pub(crate) fn classify_h3_overlap(
     source: &GeographicCoverageSource,
     cell: &H3CellPlan,
-) -> Result<H3LeafClass, H3CoverError> {
+) -> H3LeafClass {
     if source.is_unknown() {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     }
     let Some(arcs) = cell.arcs() else {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     };
     let fan = cell.fan();
     // The certified latitude band of the cell's boundary arcs; a source
@@ -583,13 +583,13 @@ fn classify_h3_overlap_parts(
     arcs: &H3ArcSet,
     fan: &H3FanPlan,
     band: Option<Bound>,
-) -> Result<H3LeafClass, H3CoverError> {
+) -> H3LeafClass {
     if source.is_unknown() || !matches!(fan, H3FanPlan::Certified(_)) {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     }
 
     let Some(authority) = source.authority_pieces() else {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     };
     let in_band = |arc: AffineSourceArc| band.is_none_or(|band| arc.may_reach_latitudes(band));
     for piece in authority.filter(|piece| piece.is_polygon() && in_band(piece.arc())) {
@@ -597,19 +597,19 @@ fn classify_h3_overlap_parts(
             .iter()
             .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None)
         {
-            return Ok(H3LeafClass::Boundary);
+            return H3LeafClass::Boundary;
         }
     }
 
     let Some(selection) = source.selection_pieces() else {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     };
     for piece in selection.filter(|piece| piece.is_polygon() && piece.is_positive_only()) {
         if arcs
             .iter()
             .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None)
         {
-            return Ok(H3LeafClass::Boundary);
+            return H3LeafClass::Boundary;
         }
     }
 
@@ -624,7 +624,7 @@ fn classify_h3_overlap_parts(
             )
         })
     {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     }
 
     // Every physical pole is a structural sphere point, not an arbitrary
@@ -634,12 +634,12 @@ fn classify_h3_overlap_parts(
         .selection_pole_witnesses()
         .any(|point| fan_retains_point(fan, Some(point)))
     {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     }
 
     let mut lower_contact = false;
     let Some(authority) = source.authority_pieces() else {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     };
     for piece in authority.filter(|piece| !piece.is_polygon() && in_band(piece.arc())) {
         lower_contact |= arcs
@@ -647,7 +647,7 @@ fn classify_h3_overlap_parts(
             .any(|arc| classify_h3_arc_contact(&piece.arc(), arc, fan) != ArcContact::None);
     }
     let Some(selection) = source.selection_pieces() else {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     };
     for piece in selection.filter(|piece| !piece.is_polygon() && piece.is_positive_only()) {
         lower_contact |= arcs
@@ -666,46 +666,38 @@ fn classify_h3_overlap_parts(
     lower_contact |= source.has_positive_selection_lower();
 
     if !source.has_polygon() {
-        return Ok(if lower_contact {
+        return if lower_contact {
             H3LeafClass::Boundary
         } else {
             H3LeafClass::Outside
-        });
+        };
     }
 
     let center = LatLng::from(cell);
     let (Some(longitude), Some(latitude)) =
         (Bound::exact(center.lng()), Bound::exact(center.lat()))
     else {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     };
     if fan.kernel_point_class(longitude, latitude) != H3FanPointClass::Open {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     }
 
     // A reflected selection image can only veto a negative.  Crucially this
     // is candidate-local exact PIP, not the former global `has_positive...`
     // veto that widened every distant leaf when one source edge crossed a
     // pole.
-    if source
-        .positive_selection_point_class(center.lng(), center.lat())
-        .map_err(H3CoverError::Native)?
-        != GridPointClass::Exterior
+    if source.positive_selection_point_class(center.lng(), center.lat()) != GridPointClass::Exterior
     {
-        return Ok(H3LeafClass::Boundary);
+        return H3LeafClass::Boundary;
     }
 
-    Ok(
-        match source
-            .authority_point_class(center.lng(), center.lat())
-            .map_err(H3CoverError::Native)?
-        {
-            GridPointClass::Interior => H3LeafClass::Interior,
-            GridPointClass::Exterior if lower_contact => H3LeafClass::Boundary,
-            GridPointClass::Exterior => H3LeafClass::Outside,
-            GridPointClass::Boundary | GridPointClass::Unknown => H3LeafClass::Boundary,
-        },
-    )
+    match source.authority_point_class(center.lng(), center.lat()) {
+        GridPointClass::Interior => H3LeafClass::Interior,
+        GridPointClass::Exterior if lower_contact => H3LeafClass::Boundary,
+        GridPointClass::Exterior => H3LeafClass::Outside,
+        GridPointClass::Boundary | GridPointClass::Unknown => H3LeafClass::Boundary,
+    }
 }
 
 fn fan_retains_point(fan: &H3FanPlan, point: Option<GridDegreePoint>) -> bool {

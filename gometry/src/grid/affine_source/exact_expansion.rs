@@ -2,9 +2,8 @@
 //!
 //! Shewchuk expansions over a compact limb buffer: a value is a sum of
 //! non-overlapping doubles, so addition, subtraction and multiplication are
-//! exact until the buffer refuses to grow. The source's fail-open contract
-//! needs that refusal kept distinct from an arithmetic dead end, which is what
-//! [`ExactFailure`] carries.
+//! exact while they fit the bounded carrier. The source's fail-open contract
+//! treats a value that exceeds that bound as arithmetic uncertainty.
 
 use std::cmp::Ordering;
 
@@ -12,18 +11,12 @@ use super::FULL_TURN_DEGREES;
 use crate::geometry::expansion::{expansion_sign, expansion_sum_zeroelim, two_product};
 use crate::grid::spherical_arc::Bound;
 
-/// Limb ceiling for one expansion. A refusal to grow past it is an allocation
-/// failure, not an arithmetic one.
+/// Limb ceiling for one expansion.
 pub(crate) const EXPANSION_LIMBS: usize = 64;
 
-/// Arithmetic failure remains a fail-open `Unknown` at the source boundary;
-/// allocation failure must instead escape as the crate's native resource
-/// error. Keeping the two cases distinct is what prevents a refused expansion
-/// buffer from silently publishing a partial cover.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ExactFailure {
     Arithmetic,
-    Allocation,
 }
 
 pub(crate) type ExactResult<T> = std::result::Result<T, ExactFailure>;
@@ -32,25 +25,15 @@ pub(super) fn exact<T>(value: Option<T>) -> ExactResult<T> {
     value.ok_or(ExactFailure::Arithmetic)
 }
 
-pub(super) fn exact_allocation<T>(result: crate::error::Result<T>) -> ExactResult<T> {
-    result.map_err(|_| ExactFailure::Allocation)
+pub(super) fn exact_optional<T>(result: ExactResult<T>) -> Option<T> {
+    result.ok()
 }
 
-pub(super) fn exact_optional<T>(result: ExactResult<T>) -> crate::error::Result<Option<T>> {
-    match result {
-        Ok(value) => Ok(Some(value)),
-        Err(ExactFailure::Arithmetic) => Ok(None),
-        Err(ExactFailure::Allocation) => Err(crate::error::ResourceError::Allocation.into()),
-    }
-}
-
-/// Exact dyadic expansion with a bounded, initialized limb carrier. Capacity
-/// failure is distinct from arithmetic uncertainty until the owning source
-/// boundary maps it to a native resource error; no epsilon may ever choose a
-/// parent parameter.
+/// Exact dyadic expansion with a bounded, initialized limb carrier. No epsilon
+/// may ever choose a parent parameter.
 pub(crate) const INLINE_EXPANSION_LIMBS: usize = 4;
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) enum CompactLimbs {
     Inline {
         limbs: [f64; INLINE_EXPANSION_LIMBS],
@@ -111,20 +94,12 @@ impl CompactLimbs {
                 *len = u8::try_from(required).map_err(|_| ExactFailure::Arithmetic)?;
             },
             Self::Inline { limbs, len } => {
-                let mut expanded = Vec::new();
-                exact_allocation(crate::try_reserve_vec(&mut expanded, required))?;
-                expanded.resize(required, 0.0);
+                let mut expanded = vec![0.0; required];
                 expanded[..usize::from(*len)].copy_from_slice(&limbs[..usize::from(*len)]);
                 *self = Self::Heap(expanded);
             },
             Self::Heap(limbs) => {
-                let additional = required.saturating_sub(limbs.len());
-                exact_allocation(crate::try_reserve_vec(limbs, additional))?;
-                if limbs.len() < required {
-                    limbs.resize(required, 0.0);
-                } else {
-                    limbs.truncate(required);
-                }
+                limbs.resize(required, 0.0);
             },
         }
         Ok(())
@@ -146,31 +121,13 @@ impl CompactLimbs {
         }
     }
 
-    pub(super) fn try_clone(&self) -> ExactResult<Self> {
-        let mut result = match self {
-            Self::Inline { limbs, len } => Some(Self::Inline {
-                limbs: *limbs,
-                len: *len,
-            }),
-            Self::Heap(limbs) => {
-                let mut clone = Vec::new();
-                exact_allocation(crate::try_reserve_vec(&mut clone, limbs.len()))?;
-                clone.extend_from_slice(limbs);
-                Some(Self::Heap(clone))
-            },
-        }
-        .ok_or(ExactFailure::Arithmetic)?;
-        result.canonicalize();
-        Ok(result)
-    }
-
-    pub(super) fn try_negated(&self) -> ExactResult<Self> {
-        let mut result = self.try_clone()?;
+    pub(super) fn negated(&self) -> Self {
+        let mut result = self.clone();
         for limb in result.as_mut_slice() {
             *limb = -*limb;
         }
         result.canonicalize();
-        Ok(result)
+        result
     }
 
     pub(super) fn into_negated(mut self) -> Self {
@@ -188,7 +145,7 @@ impl PartialEq for CompactLimbs {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct ExactExpansion {
     pub(crate) limbs: CompactLimbs,
 }
@@ -266,16 +223,10 @@ impl ExactExpansion {
         }
     }
 
-    pub(super) fn try_clone(&self) -> ExactResult<Self> {
-        let mut limbs = self.limbs.try_clone()?;
-        limbs.canonicalize();
-        Ok(Self { limbs })
-    }
-
-    pub(super) fn neg(&self) -> ExactResult<Self> {
-        Ok(Self {
-            limbs: self.limbs.try_negated()?,
-        })
+    pub(super) fn neg(&self) -> Self {
+        Self {
+            limbs: self.limbs.negated(),
+        }
     }
 
     pub(super) fn into_negated(mut self) -> Self {
@@ -357,20 +308,13 @@ impl PartialEq for ExactExpansion {
 /// Exact ratio retained as source-parent identity.  `Bound` is intentionally
 /// absent here: an outward enclosure may evaluate an arc, but cannot identify
 /// which parent split produced that arc.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ExactRatio {
     pub(super) numerator: ExactExpansion,
     pub(super) denominator: ExactExpansion,
 }
 
 impl ExactRatio {
-    pub(super) fn try_clone(&self) -> ExactResult<Self> {
-        Ok(Self {
-            numerator: self.numerator.try_clone()?,
-            denominator: self.denominator.try_clone()?,
-        })
-    }
-
     pub(super) fn new(
         numerator: &ExactExpansion,
         denominator: &ExactExpansion,
@@ -378,12 +322,12 @@ impl ExactRatio {
         match denominator.ordering() {
             Ordering::Equal => Err(ExactFailure::Arithmetic),
             Ordering::Greater => Ok(Self {
-                numerator: numerator.try_clone()?,
-                denominator: denominator.try_clone()?,
+                numerator: numerator.clone(),
+                denominator: denominator.clone(),
             }),
             Ordering::Less => Ok(Self {
-                numerator: numerator.neg()?,
-                denominator: denominator.neg()?,
+                numerator: numerator.neg(),
+                denominator: denominator.neg(),
             }),
         }
     }
@@ -413,11 +357,11 @@ impl ExactRatio {
             Ordering::Equal => Err(ExactFailure::Arithmetic),
             Ordering::Greater => Ok(Self {
                 numerator,
-                denominator: denominator.try_clone()?,
+                denominator: denominator.clone(),
             }),
             Ordering::Less => Ok(Self {
                 numerator: numerator.into_negated(),
-                denominator: denominator.neg()?,
+                denominator: denominator.neg(),
             }),
         }
     }

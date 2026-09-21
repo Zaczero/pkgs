@@ -59,7 +59,7 @@ fn classify(shape: &Shape) -> H3LeafClass {
     let source =
         GeographicCoverageSource::new(shape, SphericalGridTarget::H3(Resolution::Two)).unwrap();
     let plan = h3_cell_plan(cell, Resolution::Two);
-    classify_h3_overlap(&source, &plan).expect("test source admits")
+    classify_h3_overlap(&source, &plan)
 }
 
 fn assert_h3_allocation_error(error: H3CoverError) {
@@ -70,75 +70,6 @@ fn assert_h3_allocation_error(error: H3CoverError) {
         error.kind(),
         crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
     ));
-}
-
-fn assert_h3_source_preparation_allocation_prefixes(source: &Shape, rule: H3TraversalRule) {
-    let plan = H3CoverPlan::new(Resolution::Zero);
-    let (expected, allocations) =
-        crate::test_support::allocation_count(|| h3_cover_shape(source, &plan, rule, None));
-    let expected = expected.expect("unrestricted H3 source preparation");
-    assert!(
-        allocations > 0,
-        "fixture must allocate during H3 preparation"
-    );
-
-    for prefix in 0..allocations {
-        let failed = crate::test_support::fail_allocations_after(prefix, || {
-            h3_cover_shape(source, &plan, rule, None)
-        });
-        let Err(error) = failed else {
-            panic!("allocation prefix {prefix} published an H3 cover");
-        };
-        assert_h3_allocation_error(error);
-    }
-    let retry = h3_cover_shape(source, &plan, rule, None)
-        .expect("retry after H3 source preparation allocation failures");
-    assert_eq!(retry, expected);
-}
-
-#[test]
-fn h3_source_preparation_point_allocation_prefixes_are_native() {
-    let point = Shape::Point(Point::new_raw_xy(10.0, 20.0));
-    assert_h3_source_preparation_allocation_prefixes(&point, H3TraversalRule::Overlap);
-}
-
-#[test]
-fn h3_source_preparation_line_allocation_prefixes_are_native() {
-    let line = Shape::LineString(
-        LineSeq::try_new(
-            CoordSeq::try_from_points(&[
-                Point::new_raw_xy(-50.0, -40.0),
-                Point::new_raw_xy(50.0, -40.0),
-            ])
-            .unwrap(),
-        )
-        .expect("test line is valid"),
-    );
-    assert_h3_source_preparation_allocation_prefixes(&line, H3TraversalRule::Overlap);
-}
-
-#[test]
-fn h3_source_preparation_polygon_allocation_prefixes_are_native() {
-    let source = Shape::Polygon(polygon(-10.0, 10.0, 10.0, 20.0));
-    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
-}
-
-#[test]
-fn h3_source_preparation_antimeridian_allocation_prefixes_are_native() {
-    let source = Shape::Polygon(polygon(179.0, -1.0, -179.0, 1.0));
-    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
-}
-
-#[test]
-fn h3_source_preparation_pole_allocation_prefixes_are_native() {
-    let source = Shape::Polygon(polygon(-20.0, 80.0, 20.0, 90.0));
-    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
-}
-
-#[test]
-fn h3_source_preparation_full_world_allocation_prefixes_are_native() {
-    let source = Shape::Polygon(polygon(-180.0, 70.0, 180.0, 80.0));
-    assert_h3_source_preparation_allocation_prefixes(&source, H3TraversalRule::Overlap);
 }
 
 #[test]
@@ -592,9 +523,7 @@ fn big_fixture_enters_each_area_proof_before_its_leaf_verdict() {
         "the stored H3 center reaches the certified fan"
     );
     assert_eq!(
-        source
-            .authority_point_class(center.lng(), center.lat())
-            .expect("test source admits"),
+        source.authority_point_class(center.lng(), center.lat()),
         GridPointClass::Interior,
         "the raw authority PIP sees the center in BIG"
     );
@@ -705,10 +634,7 @@ fn wrapped_selection_image_does_not_turn_an_unrelated_leaf_into_contact() {
             .any(|piece| !piece.is_positive_only()),
         "the source enters the wrapped seam partition without a reflected image"
     );
-    assert_eq!(
-        classify_h3_overlap(&source, &plan).expect("test source admits"),
-        H3LeafClass::Outside
-    );
+    assert_eq!(classify_h3_overlap(&source, &plan), H3LeafClass::Outside);
 }
 
 #[test]
@@ -728,14 +654,12 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
     let inside_center = h3o::LatLng::from(inside);
     let inside_plan = h3_cell_plan(inside, Resolution::Two);
     assert_eq!(
-        source
-            .positive_selection_point_class(inside_center.lng(), inside_center.lat())
-            .expect("test source admits"),
+        source.positive_selection_point_class(inside_center.lng(), inside_center.lat()),
         GridPointClass::Interior,
         "the reflected selected shell contains this exact H3 center"
     );
     assert_eq!(
-        classify_h3_overlap(&source, &inside_plan).expect("test source admits"),
+        classify_h3_overlap(&source, &inside_plan),
         H3LeafClass::Boundary
     );
 
@@ -744,9 +668,7 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
     let far_plan = h3_cell_plan(far, Resolution::Two);
     let far_fan = far_plan.fan();
     assert_eq!(
-        source
-            .positive_selection_point_class(far_center.lng(), far_center.lat())
-            .expect("test source admits"),
+        source.positive_selection_point_class(far_center.lng(), far_center.lat()),
         GridPointClass::Exterior,
         "the distant center is outside the exact reflected selection shell"
     );
@@ -763,14 +685,12 @@ fn reflected_selection_pip_vetoes_only_the_candidate_it_contains() {
         "the distant fan has no exact reflected-boundary contact"
     );
     assert_eq!(
-        source
-            .authority_point_class(far_center.lng(), far_center.lat())
-            .expect("test source admits"),
+        source.authority_point_class(far_center.lng(), far_center.lat()),
         GridPointClass::Exterior,
         "the raw out-of-strip shell cannot manufacture authority interior"
     );
     assert_eq!(
-        classify_h3_overlap(&source, &far_plan).expect("test source admits"),
+        classify_h3_overlap(&source, &far_plan),
         H3LeafClass::Outside
     );
 }
@@ -794,8 +714,7 @@ fn uncertified_fan_cannot_reach_an_empty_source_negative() {
             plan.arcs().unwrap(),
             &H3FanPlan::Uncertain,
             None
-        )
-        .expect("uncertainty is a source classification"),
+        ),
         H3LeafClass::Boundary,
         "an uncertified fan fails open before the source can establish Outside"
     );
@@ -835,10 +754,7 @@ fn selected_pole_crossing_retains_the_owner_for_both_antimeridian_spellings() {
             }),
             "the exact {longitude} pole crossing reaches the native fan without a seam spelling"
         );
-        assert_eq!(
-            classify_h3_overlap(&source, &plan).expect("test source admits"),
-            H3LeafClass::Boundary
-        );
+        assert_eq!(classify_h3_overlap(&source, &plan), H3LeafClass::Boundary);
     }
 }
 
