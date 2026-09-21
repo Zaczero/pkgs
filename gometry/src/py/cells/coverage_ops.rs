@@ -207,7 +207,7 @@ pub(crate) trait RectCoverSpec {
 
     const KIND: GridKind;
 
-    fn roots() -> crate::error::Result<Vec<Self::Cell>>;
+    fn roots() -> Vec<Self::Cell>;
     fn id(cell: &Self::Cell) -> u64;
 }
 
@@ -552,7 +552,7 @@ where
 {
     if cell_rule == CellRule::Bbox {
         let windows = envelope_windows(cover_shape)?;
-        let covered = coverer::cover_windows(&windows, S::roots()?, depth, max_cells)?;
+        let covered = coverer::cover_windows(&windows, S::roots(), depth, max_cells)?;
         return try_collect_cover_ids(covered.into_iter().map(|cell| S::id(&cell)))
             .map(SortedCells::from_sorted)
             .map(SortedCells::into_vec);
@@ -577,7 +577,7 @@ where
         &authority_cache,
         frame,
         rule,
-        S::roots()?,
+        S::roots(),
         depth,
         max_cells,
     )?;

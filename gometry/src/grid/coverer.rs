@@ -703,11 +703,7 @@ mod tests {
     use super::*;
     use crate::error::ErrorKind;
     use crate::geometry::{GeometryErrorKind, Ring};
-    use crate::grid::affine_source::{
-        rectangular_candidate_admissions, reset_rectangular_candidate_admissions,
-    };
-    use crate::grid::{geohash, tile};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::grid::geohash;
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {
         let unit = Bounds::new_raw(0.0, 0.0, 1.0, 1.0);
@@ -716,74 +712,6 @@ mod tests {
             end: crate::geometry::XY::new(end.0, end.1),
         };
         segment_vs_rect(segment, unit)
-    }
-
-    fn full_world_shape() -> Shape {
-        let shell = [
-            Point::new_raw_xy(-180.0, -90.0),
-            Point::new_raw_xy(180.0, -90.0),
-            Point::new_raw_xy(180.0, 90.0),
-            Point::new_raw_xy(-180.0, 90.0),
-            Point::new_raw_xy(-180.0, -90.0),
-        ];
-        Shape::Polygon(
-            Polygon::new(
-                Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
-                Vec::new(),
-            )
-            .unwrap(),
-        )
-    }
-
-    fn assert_rect_cover_allocation_prefixes<C>(
-        source: &Shape,
-        roots: impl Fn() -> crate::error::Result<Vec<C>> + Copy,
-        depth: u8,
-    ) where
-        C: RectCell + std::fmt::Debug,
-    {
-        let plan = PreparedPlan::new(source.clone()).expect("source preparation");
-        let cache = crate::geometry::FrameDependentCaches::default();
-        let run = || -> Result<Vec<C>, CoverError> {
-            cover(
-                source,
-                source,
-                &plan,
-                &cache,
-                crate::geographic::GeographicFrame::crs84(),
-                RectCoverRule::Overlap,
-                roots()?,
-                depth,
-                None,
-            )
-        };
-        reset_rectangular_candidate_admissions();
-        let expected = run().expect("unrestricted rectangular cover");
-        assert!(
-            rectangular_candidate_admissions() > 0,
-            "the cover must admit at least one rectangular candidate"
-        );
-        let (_, allocations) = allocation_count(run);
-        assert!(allocations > 0, "fixture must allocate during cover");
-
-        for prefix in 0..allocations {
-            let failed = fail_allocations_after(prefix, run);
-            let Err(CoverError::Preparation(error)) = failed else {
-                panic!("allocation prefix {prefix} published a partial cover");
-            };
-            assert!(
-                matches!(
-                    error.kind(),
-                    ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                ),
-                "unexpected allocation error: {error:?}"
-            );
-            assert_eq!(
-                run().expect("retry after rectangular cover allocation failure"),
-                expected,
-                "allocation prefix {prefix}"
-            );
-        }
     }
 
     #[test]
@@ -889,7 +817,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             1,
             None,
         ) {
@@ -932,7 +860,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             10,
             Some(usize::try_from(crate::grid::GRID_MAX_CELLS).unwrap()),
         ) {
@@ -946,24 +874,6 @@ mod tests {
             },
             Err(CoverError::Preparation(err)) => panic!("unexpected preparation error: {err}"),
         }
-    }
-
-    #[test]
-    fn geohash_cover_allocation_prefixes_retry_without_partial_candidates() {
-        assert_rect_cover_allocation_prefixes(&full_world_shape(), geohash::roots, 2);
-    }
-
-    #[test]
-    fn tile_cover_allocation_prefixes_retry_without_partial_candidates() {
-        assert_rect_cover_allocation_prefixes(
-            &full_world_shape(),
-            || {
-                let mut roots = Vec::new();
-                crate::try_push_vec(&mut roots, tile::root())?;
-                Ok(roots)
-            },
-            2,
-        );
     }
 
     #[test]
@@ -995,7 +905,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Center,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             depth,
             None,
         )
@@ -1007,7 +917,7 @@ mod tests {
             &authority_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             depth,
             None,
         )
@@ -1131,7 +1041,7 @@ mod tests {
             &cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Within,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             1,
             None,
         )
@@ -1296,7 +1206,7 @@ mod tests {
             &raw_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             3,
             None,
         )
@@ -1308,7 +1218,7 @@ mod tests {
             &chart_cache,
             crate::geographic::GeographicFrame::crs84(),
             RectCoverRule::Overlap,
-            geohash::roots().unwrap(),
+            geohash::roots(),
             3,
             None,
         )

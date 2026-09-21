@@ -121,7 +121,7 @@ impl GridCell for CellIndex {
         h3_kernel_area_m2(self)
     }
 
-    fn neighbors(self) -> crate::error::Result<Vec<Self>> {
+    fn neighbors(self) -> Vec<Self> {
         h3_immediate_neighbors(self)
     }
 

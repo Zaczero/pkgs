@@ -216,7 +216,7 @@ impl Geohash {
 
     /// The 8 surrounding cells (those that exist), row-major from
     /// north-west to south-east (lat grows north, so rows walk `[1, 0, -1]`).
-    pub(crate) fn neighbors(self) -> crate::error::Result<Vec<Self>> {
+    pub(crate) fn neighbors(self) -> Vec<Self> {
         super::ring_neighbors(self, [1, 0, -1], Self::neighbor)
     }
 
@@ -255,16 +255,13 @@ impl Geohash {
 use crate::grid::cell_set::uncompact;
 
 /// The 32 precision-1 root cells, in token order — the coverer's seeds.
-pub(crate) fn roots() -> crate::error::Result<Vec<Geohash>> {
-    let mut roots = Vec::new();
-    crate::try_reserve_vec(&mut roots, 32)?;
-    for value in 0..32_u64 {
-        crate::try_push_vec(&mut roots, Geohash {
+pub(crate) fn roots() -> Vec<Geohash> {
+    (0..32_u64)
+        .map(|value| Geohash {
             bits: value << (64 - 5),
             precision: 1,
-        })?;
-    }
-    Ok(roots)
+        })
+        .collect()
 }
 
 impl RectCell for Geohash {
@@ -362,7 +359,7 @@ mod tests {
         assert!(children.array_windows::<2>().all(|[a, b]| a < b));
         // Known neighbor table for "ww8p" (east = ww8r? verified via grid
         // math): the 8-neighborhood is distinct, same precision, adjacent.
-        let neighbors = Geohash::parse("u09t").unwrap().neighbors().unwrap();
+        let neighbors = Geohash::parse("u09t").unwrap().neighbors();
         assert_eq!(neighbors.len(), 8);
         assert!(neighbors.iter().any(|cell| cell.token() == "u09w"));
         // Antimeridian wrap: the east neighbor of the easternmost column

@@ -89,7 +89,7 @@ where
 }
 
 pub(crate) fn cell_neighbors_array<G: GridCell>(kind: GridKind, cell: G) -> PyResult<PyCellArray> {
-    cell_array_from_keys(kind, cell.neighbors()?)
+    cell_array_from_keys(kind, cell.neighbors())
 }
 
 pub(crate) fn cell_descendant_count<G, P>(

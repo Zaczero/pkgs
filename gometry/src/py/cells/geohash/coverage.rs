@@ -15,7 +15,7 @@ struct GeohashCoverSpec;
 impl RectCoverSpec for GeohashCoverSpec {
     type Cell = Geohash;
     const KIND: GridKind = GridKind::GeohashCell;
-    fn roots() -> crate::error::Result<Vec<Geohash>> {
+    fn roots() -> Vec<Geohash> {
         kernel::roots()
     }
     fn id(cell: &Geohash) -> u64 {

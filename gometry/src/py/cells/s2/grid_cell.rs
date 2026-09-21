@@ -28,11 +28,8 @@ impl GridCell for CellId {
         s2_area_m2(self)
     }
 
-    fn neighbors(self) -> crate::error::Result<Vec<Self>> {
-        let mut cells = Vec::new();
-        crate::try_reserve_vec(&mut cells, 4)?;
-        cells.extend(Self::edge_neighbors(self));
-        Ok(cells)
+    fn neighbors(self) -> Vec<Self> {
+        Self::edge_neighbors(self).to_vec()
     }
 
     fn parent_at(self, depth: u8) -> Option<Self> {

@@ -112,9 +112,8 @@ pub(crate) fn ring_neighbors<C: Copy + PartialEq>(
     center: C,
     dy_order: [i64; 3],
     neighbor: impl Fn(C, i64, i64) -> Option<C>,
-) -> crate::error::Result<Vec<C>> {
-    let mut cells = Vec::new();
-    crate::try_reserve_vec(&mut cells, 8)?;
+) -> Vec<C> {
+    let mut cells = Vec::with_capacity(8);
     for dy in dy_order {
         for dx in [-1, 0, 1] {
             if dx == 0 && dy == 0 {
@@ -128,7 +127,7 @@ pub(crate) fn ring_neighbors<C: Copy + PartialEq>(
             }
         }
     }
-    Ok(cells)
+    cells
 }
 
 #[cfg(test)]

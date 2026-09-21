@@ -268,7 +268,7 @@ impl Tile {
     /// grow south, so rows walk `[-1, 0, 1]`). At low zoom the antimeridian
     /// wrap can make two offsets land on the same tile (or on self) — each
     /// distinct tile appears once.
-    pub(crate) fn neighbors(self) -> crate::error::Result<Vec<Self>> {
+    pub(crate) fn neighbors(self) -> Vec<Self> {
         super::ring_neighbors(self, [-1, 0, 1], Self::neighbor)
     }
 }
@@ -512,7 +512,7 @@ mod tests {
         let east_edge = Tile { z: 4, x: 15, y: 7 };
         assert_eq!(east_edge.neighbor(1, 0).unwrap().x, 0);
         assert!(Tile { z: 4, x: 3, y: 0 }.neighbor(0, -1).is_none());
-        assert_eq!(Tile { z: 0, x: 0, y: 0 }.neighbors().unwrap().len(), 0);
+        assert_eq!(Tile { z: 0, x: 0, y: 0 }.neighbors().len(), 0);
         // z0 has no distinct neighbors (wraps onto itself).
         let id_order_parent = Tile { z: 3, x: 1, y: 1 };
         let id_order_other = Tile { z: 3, x: 2, y: 1 };

@@ -1508,7 +1508,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                     }
                     let cell = G::from_validated_id(cells.id_at(row));
                     builder.push_row(
-                        GridCell::neighbors(cell)?
+                        GridCell::neighbors(cell)
                             .into_iter()
                             .map(GridCell::hash_key),
                     )?;

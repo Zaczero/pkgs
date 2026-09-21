@@ -659,9 +659,8 @@ fn try_h3_grid_disk_cells_with_budget(
 
 /// The six (five at a pentagon) immediate neighbors: the `k = 1` ring, which
 /// fits any budget and so needs none of the ring machinery's limits.
-pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> crate::error::Result<Vec<CellIndex>> {
-    let mut cells = Vec::new();
-    crate::try_reserve_vec(&mut cells, 6)?;
+pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> Vec<CellIndex> {
+    let mut cells = Vec::with_capacity(6);
     for value in cell.grid_ring_fast(1) {
         let Some(value) = value else {
             cells.clear();
@@ -675,11 +674,11 @@ pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> crate::error::Result<Ve
                     cells.push(neighbor);
                 }
             }
-            return Ok(cells);
+            return cells;
         };
         cells.push(value);
     }
-    Ok(cells)
+    cells
 }
 
 fn try_h3_grid_ring_cells_with_budget(
@@ -717,24 +716,8 @@ mod immediate_neighbor_tests {
                     .grid_disk_distances_safe(1)
                     .filter_map(|(neighbor, distance)| (distance == 1).then_some(neighbor))
                     .collect();
-                assert_eq!(h3_immediate_neighbors(cell).unwrap(), expected);
-                let neighbors = crate::test_support::fail_allocations_after(1, || {
-                    h3_immediate_neighbors(cell).unwrap()
-                });
-                assert_eq!(neighbors, expected);
+                assert_eq!(h3_immediate_neighbors(cell), expected);
             }
         }
-    }
-
-    #[test]
-    fn immediate_neighbors_return_allocation_failure() {
-        let cell = h3o::Resolution::Seven.pentagons().next().unwrap();
-        let error = crate::test_support::fail_allocations_after(0, || {
-            h3_immediate_neighbors(cell).unwrap_err()
-        });
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
     }
 }

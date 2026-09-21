@@ -15,10 +15,8 @@ struct TileCoverSpec;
 impl RectCoverSpec for TileCoverSpec {
     type Cell = Tile;
     const KIND: GridKind = GridKind::Tile;
-    fn roots() -> crate::error::Result<Vec<Tile>> {
-        let mut roots = Vec::new();
-        crate::try_push_vec(&mut roots, kernel::root())?;
-        Ok(roots)
+    fn roots() -> Vec<Tile> {
+        vec![kernel::root()]
     }
     fn id(cell: &Tile) -> u64 {
         cell.id()
