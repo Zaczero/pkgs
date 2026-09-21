@@ -20,14 +20,12 @@ impl SchemaNode {
             nullable,
             children,
         } = self;
-        let mut owned_children = Vec::new();
-        crate::try_reserve_vec(&mut owned_children, children.len())?;
+        let mut owned_children = Vec::with_capacity(children.len());
         for child in children {
             owned_children.push(child.materialize_schema()?);
         }
         let children = owned_children;
-        let mut child_ptrs = Vec::new();
-        crate::try_reserve_vec(&mut child_ptrs, children.len())?;
+        let mut child_ptrs = Vec::with_capacity(children.len());
         for child in &children {
             child_ptrs.push(ptr::from_ref(child.as_ref()).cast_mut());
         }
@@ -101,12 +99,11 @@ fn schema_text(text: &str) -> NativeArrowExportResult<Vec<u8>> {
             "Arrow schema text contains a nul",
         ));
     }
-    let mut bytes = Vec::new();
     let capacity = text
         .len()
         .checked_add(1)
         .ok_or_else(|| NativeArrowExportError::overflow("Arrow schema text is too large"))?;
-    crate::try_reserve_vec(&mut bytes, capacity)?;
+    let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(text.as_bytes());
     bytes.push(0);
     Ok(bytes)
@@ -135,8 +132,7 @@ pub(crate) fn encode_schema_metadata(
                 NativeArrowExportError::geometry("Arrow schema metadata size overflows usize")
             })?;
     }
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, capacity)?;
+    let mut out = Vec::with_capacity(capacity);
     out.extend_from_slice(&pair_count.to_ne_bytes());
     for (key, value) in pairs {
         out.extend_from_slice(&(key.len() as i32).to_ne_bytes());
@@ -267,7 +263,7 @@ fn make_array_with_offset(
     let offset_i64 = checked_i64(offset, "offset")?;
     let n_buffers_i64 = checked_i64(n_buffers, "n_buffers")?;
 
-    let mut buffer_ptrs = crate::try_vec_with_capacity(n_buffers)?;
+    let mut buffer_ptrs = Vec::with_capacity(n_buffers);
     for slot in &buffers {
         buffer_ptrs.push(match slot {
             OwnedBufferSlot::Null => ptr::null(),
@@ -277,7 +273,7 @@ fn make_array_with_offset(
         });
     }
     let n_children_i64 = checked_i64(children.len(), "n_children")?;
-    let mut child_ptrs = crate::try_vec_with_capacity(children.len())?;
+    let mut child_ptrs = Vec::with_capacity(children.len());
     for child in &mut children {
         child_ptrs.push(ptr::from_mut(child.as_mut()));
     }
@@ -350,8 +346,7 @@ pub(crate) fn apply_top_level_validity(
     let validity = if mask_offset == offset && owned_bits >= total_bits {
         owned
     } else {
-        let mut validity = crate::try_vec_with_capacity(total_bits.div_ceil(8))?;
-        validity.resize(total_bits.div_ceil(8), 0);
+        let mut validity = vec![0; total_bits.div_ceil(8)];
         for row in 0..mask.len() {
             if mask.is_valid(row) {
                 let bit = offset + row;
@@ -475,12 +470,8 @@ pub(crate) fn primitive_f64_array_windowed(
     )
 }
 
-pub(crate) fn coordinate_schema(
-    axes: CoordinateAxes,
-    nullable: bool,
-) -> NativeArrowExportResult<SchemaNode> {
-    let mut children = Vec::new();
-    crate::try_reserve_vec(&mut children, 4)?;
+pub(crate) fn coordinate_schema(axes: CoordinateAxes, nullable: bool) -> SchemaNode {
+    let mut children = Vec::with_capacity(4);
     children.extend([
         SchemaNode {
             format: "g",
@@ -515,13 +506,13 @@ pub(crate) fn coordinate_schema(
             children: Vec::new(),
         });
     }
-    Ok(SchemaNode {
+    SchemaNode {
         format: "+s",
         name: "",
         metadata: None,
         nullable,
         children,
-    })
+    }
 }
 
 pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
@@ -532,7 +523,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     let start = columns.window.start;
     let len = columns.window.end - columns.window.start;
     let m_parts = columns.m_parts();
-    let mut children = crate::try_vec_with_capacity(4)?;
+    let mut children = Vec::with_capacity(4);
     children.push(primitive_f64_array_windowed(columns.xs, start, len)?);
     children.push(primitive_f64_array_windowed(columns.ys, start, len)?);
     if let Some(zs) = columns.zs {
@@ -590,8 +581,7 @@ pub(crate) fn extension_schema(
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<SchemaNode> {
     let extension_name = encoding.extension_name();
-    let mut metadata = Vec::new();
-    crate::try_reserve_vec(&mut metadata, 2)?;
+    let mut metadata = Vec::with_capacity(2);
     metadata.push(("ARROW:extension:name".to_owned(), extension_name.to_owned()));
     if let Some(value) = extension_metadata_json(crs, epoch)? {
         metadata.push(("ARROW:extension:metadata".to_owned(), value));
@@ -675,23 +665,18 @@ fn assemble_extension_metadata(
     Ok(out)
 }
 
-pub(crate) fn list_schema(
-    child: SchemaNode,
-    nullable: bool,
-) -> NativeArrowExportResult<SchemaNode> {
-    let mut children = Vec::new();
-    crate::try_reserve_vec(&mut children, 1)?;
-    children.push(SchemaNode {
+pub(crate) fn list_schema(child: SchemaNode, nullable: bool) -> SchemaNode {
+    let children = vec![SchemaNode {
         name: "item",
         ..child
-    });
-    Ok(SchemaNode {
+    }];
+    SchemaNode {
         format: "+l",
         name: "",
         metadata: None,
         nullable,
         children,
-    })
+    }
 }
 
 pub(crate) const fn wkb_schema(nullable: bool) -> SchemaNode {

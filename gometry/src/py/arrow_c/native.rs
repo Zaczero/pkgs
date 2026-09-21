@@ -647,7 +647,7 @@ fn validate_direct_physical_schema(
                 classification.encoding.extension_name()
             )));
         }
-        let metadata = schema.extension_metadata_bytes()?;
+        let metadata = schema.extension_metadata_bytes();
         let (crs, epoch) =
             arrow::parse_geoarrow_extension_metadata_for(&metadata, Some(classification.encoding))?;
         if !metadata::optional_crs_labels_operationally_equal(

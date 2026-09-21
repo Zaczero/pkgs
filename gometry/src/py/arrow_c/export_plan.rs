@@ -88,35 +88,35 @@ impl<'a> SchemaDescription<'a> {
         let storage = match self.layout.encoding {
             GeometryEncoding::Point => coordinate_schema(self.layout.axes, self.nullable),
             GeometryEncoding::MultiPoint | GeometryEncoding::LineString => list_schema(
-                coordinate_schema(self.layout.axes, self.nullable)?,
+                coordinate_schema(self.layout.axes, self.nullable),
                 self.nullable,
             ),
             GeometryEncoding::MultiLineString => list_schema(
                 list_schema(
-                    coordinate_schema(self.layout.axes, self.nullable)?,
+                    coordinate_schema(self.layout.axes, self.nullable),
                     self.nullable,
-                )?,
+                ),
                 self.nullable,
             ),
             GeometryEncoding::Polygon => list_schema(
                 list_schema(
-                    coordinate_schema(self.layout.axes, self.nullable)?,
+                    coordinate_schema(self.layout.axes, self.nullable),
                     self.nullable,
-                )?,
+                ),
                 self.nullable,
             ),
-            GeometryEncoding::MultiPolygon => Ok(list_schema(
+            GeometryEncoding::MultiPolygon => list_schema(
                 list_schema(
                     list_schema(
-                        coordinate_schema(self.layout.axes, self.nullable)?,
+                        coordinate_schema(self.layout.axes, self.nullable),
                         self.nullable,
-                    )?,
+                    ),
                     self.nullable,
-                )?,
+                ),
                 self.nullable,
-            )?),
-            GeometryEncoding::Wkb => Ok(wkb_schema(self.nullable)),
-        }?;
+            ),
+            GeometryEncoding::Wkb => wkb_schema(self.nullable),
+        };
         extension_schema(
             self.layout.encoding,
             storage,

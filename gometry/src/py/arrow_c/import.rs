@@ -107,8 +107,7 @@ pub(crate) unsafe fn schema_metadata_pairs_owned(
     unsafe {
         let mut cursor = schema.metadata.cast::<u8>();
         let pair_count = read_metadata_len(&mut cursor)?;
-        let mut pairs = Vec::new();
-        crate::boundary::try_reserve_vec(&mut pairs, pair_count).map_err(PyErr::from)?;
+        let mut pairs = Vec::with_capacity(pair_count);
         for _ in 0..pair_count {
             let key_len = read_metadata_len(&mut cursor)?;
             let key = Box::from(std::slice::from_raw_parts(cursor, key_len));
