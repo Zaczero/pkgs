@@ -492,24 +492,19 @@ impl Coverer {
         let mut stats = CoverStats::default();
         // E = emitted cells; Q = visible phase-2 emissions. Non-visible
         // candidates use depth-first scratch and never consume max_cells.
-        let mut cells: Vec<(CellId, bool)> = Vec::new();
-        crate::try_reserve_vec(&mut cells, 1)?;
+        let mut cells: Vec<(CellId, bool)> = Vec::with_capacity(1);
         // Visible phase-2 frontier (candidates already at/above min_level).
-        let mut queue: BinaryHeap<(Reverse<u8>, CellId, Candidate)> = BinaryHeap::new();
-        crate::try_reserve_heap(&mut queue, 6)?;
+        let mut queue: BinaryHeap<(Reverse<u8>, CellId, Candidate)> = BinaryHeap::with_capacity(6);
         // Non-visible boundary candidates can still have visible descendants.
         // Keep them depth-first so scratch scales with depth/fanout, not the
         // number of discarded candidates.
-        let mut invisible: Vec<Candidate> = Vec::new();
-        crate::try_reserve_vec(&mut invisible, 3 * MAX_LEVEL as usize)?;
+        let mut invisible: Vec<Candidate> = Vec::with_capacity(3 * MAX_LEVEL as usize);
         // Phase-1 DFS stack: unresolved candidates still below min_level.
         // Fail-open Boundary entries may later classify Outside — do not
         // charge them until proven productive.
-        let mut dfs: Vec<Candidate> = Vec::new();
-        crate::try_reserve_vec(&mut dfs, 6 + 3 * MAX_LEVEL as usize)?;
+        let mut dfs: Vec<Candidate> = Vec::with_capacity(6 + 3 * MAX_LEVEL as usize);
         // Reusable staging buffer for 4/16/64 target descendants.
-        let mut staged: Vec<Candidate> = Vec::new();
-        crate::try_reserve_vec(&mut staged, 64)?;
+        let mut staged: Vec<Candidate> = Vec::with_capacity(64);
 
         self.seed_faces(
             ctx,
@@ -610,26 +605,23 @@ impl Coverer {
                             self.hard_budget(),
                         )?;
                         if visible {
-                            crate::try_push_heap(
-                                queue,
-                                (
-                                    Reverse(candidate.certificate.id.level()),
-                                    candidate.certificate.id,
-                                    candidate,
-                                ),
-                            )?;
+                            queue.push((
+                                Reverse(candidate.certificate.id.level()),
+                                candidate.certificate.id,
+                                candidate,
+                            ));
                             stats.visible_queue_peak(queue.len());
                             stats.productive_frontier(cells.len(), queue.len());
                             stats.observe_frontier(dfs, queue, invisible, &[]);
                         } else {
-                            crate::try_push_vec(invisible, candidate)?;
+                            invisible.push(candidate);
                             stats.invisible_stack_peak(invisible.len());
                             stats.observe_frontier(dfs, queue, invisible, &[]);
                         }
                     } else {
                         // Below min_level: unresolved — resolve depth-first
                         // without charging the transient frontier.
-                        crate::try_push_vec(dfs, candidate)?;
+                        dfs.push(candidate);
                     }
                 },
             }
@@ -697,19 +689,16 @@ impl Coverer {
                                 self.hard_budget(),
                             )?;
                             if visible {
-                                crate::try_push_heap(
-                                    queue,
-                                    (
-                                        Reverse(child.certificate.id.level()),
-                                        child.certificate.id,
-                                        child,
-                                    ),
-                                )?;
+                                queue.push((
+                                    Reverse(child.certificate.id.level()),
+                                    child.certificate.id,
+                                    child,
+                                ));
                                 stats.visible_queue_peak(queue.len());
                                 stats.productive_frontier(cells.len(), queue.len());
                                 stats.observe_frontier(dfs, queue, invisible, &[]);
                             } else {
-                                crate::try_push_vec(invisible, child)?;
+                                invisible.push(child);
                                 stats.invisible_stack_peak(invisible.len());
                                 stats.observe_frontier(dfs, queue, invisible, &[]);
                             }
@@ -720,7 +709,7 @@ impl Coverer {
                         self.drain_invisible(ctx, rule, cells, queue, invisible, staged, stats)?;
                     } else {
                         staged.retain(|child| child.certificate.class != CellClass::Outside);
-                        crate::try_reserve_vec(dfs, staged.len())?;
+                        dfs.reserve(staged.len());
                         dfs.append(staged);
                         stats.observe_frontier(dfs, queue, invisible, staged);
                     }
@@ -828,19 +817,16 @@ impl Coverer {
                 ensure_cover_budget(projected, self.hard_budget())?;
                 for child in staged.drain(..) {
                     if is_visible(rule, child.certificate) {
-                        crate::try_push_heap(
-                            queue,
-                            (
-                                Reverse(child.certificate.id.level()),
-                                child.certificate.id,
-                                child,
-                            ),
-                        )?;
+                        queue.push((
+                            Reverse(child.certificate.id.level()),
+                            child.certificate.id,
+                            child,
+                        ));
                         stats.visible_queue_peak(queue.len());
                         stats.productive_frontier(cells.len(), queue.len());
                         stats.observe_frontier(&[], queue, invisible, &[]);
                     } else {
-                        crate::try_push_vec(invisible, child)?;
+                        invisible.push(child);
                         stats.invisible_stack_peak(invisible.len());
                         stats.observe_frontier(&[], queue, invisible, &[]);
                     }
@@ -855,10 +841,7 @@ impl Coverer {
         if visible {
             let projected = cells.len().saturating_add(queue.len()).saturating_add(1);
             ensure_cover_budget(projected, self.hard_budget())?;
-            crate::try_push_vec(
-                cells,
-                (certificate.id, certificate.class == CellClass::Interior),
-            )?;
+            cells.push((certificate.id, certificate.class == CellClass::Interior));
             stats.committed_emission();
             stats.productive_frontier(cells.len(), queue.len());
         }
@@ -922,8 +905,7 @@ fn productive_state(
                 return Ok(Some(Productivity::Terminal));
             }
             let target = root.id.level() + coverer.level_mod;
-            let mut children = Vec::new();
-            crate::try_reserve_vec(&mut children, fan_size(root.id.level(), target))?;
+            let mut children = Vec::with_capacity(fan_size(root.id.level(), target));
             stage_children_at(ctx, root.id, target, None, &mut children, stats)?;
             for index in 0..children.len() {
                 let child_certificate = children[index].certificate;
@@ -960,14 +942,13 @@ impl<'a> CoverContext<'a> {
         affine: &'a GeographicCoverageSource,
         relation: WorkingShapeRelation,
     ) -> Result<Self, crate::error::Error> {
-        let tester =
-            Arc::try_new(PointBatchTester::new(source)?).map_err(crate::error::Error::from)?;
+        let tester = Arc::new(PointBatchTester::new(source)?);
         let shared_area_tester = matches!(source, Shape::Polygon(_) | Shape::MultiPolygon(_))
             .then(|| Arc::clone(&tester));
         Ok(Self {
             tester,
             rects: NativeRectClassifier::new_with_area_tester(source, shared_area_tester)?,
-            point_leaves: closed_point_leaves(source)?,
+            point_leaves: closed_point_leaves(source),
             affine,
             corroborate: affine.s2_needs_corroboration(relation),
         })
@@ -980,64 +961,39 @@ impl<'a> CoverContext<'a> {
 /// normalization. Empty linework represents the same point set as
 /// `Point`, so it deliberately enters this exact owner path too; a nonzero
 /// segment stays on the general certificate traversal.
-fn closed_point_leaves(source: &Shape) -> crate::error::Result<Option<Vec<CellId>>> {
+fn closed_point_leaves(source: &Shape) -> Option<Vec<CellId>> {
     let mut has_nonzero_segment = false;
     source.for_each_segment(|segment| {
         has_nonzero_segment |= !same_point(segment.start, segment.end);
     });
     if has_nonzero_segment {
-        return Ok(None);
+        return None;
     }
 
     let mut leaves = Vec::new();
-    let mut error = None;
     source.for_each_point(|point| {
-        if error.is_some() {
-            return;
-        }
         let xyz = super::projection::lonlat_to_closed_owner_point(point.x, point.y);
         let leaf = CellId::from_point(xyz);
-        push_closed_point_leaf(&mut leaves, &mut error, leaf);
+        leaves.push(leaf);
         for neighbor in leaf.edge_neighbors() {
-            if error.is_some() {
-                return;
-            }
             if Cell::from_id(neighbor).contains_point(xyz) {
-                push_closed_point_leaf(&mut leaves, &mut error, neighbor);
+                leaves.push(neighbor);
                 // A corner can meet a diagonal leaf as well.  Discover it
                 // from an admitted edge neighbour; this is positive-only and
                 // never invents an owner from a proxy-negative result.
                 for diagonal in neighbor.edge_neighbors() {
-                    if error.is_some() {
-                        return;
-                    }
                     if diagonal != leaf && Cell::from_id(diagonal).contains_point(xyz) {
-                        push_closed_point_leaf(&mut leaves, &mut error, diagonal);
+                        leaves.push(diagonal);
                     }
                 }
             }
         }
     });
-    if let Some(error) = error {
-        return Err(error);
-    }
-    Ok((!leaves.is_empty()).then(|| {
+    (!leaves.is_empty()).then(|| {
         leaves.sort_unstable();
         leaves.dedup();
         leaves
-    }))
-}
-
-fn push_closed_point_leaf(
-    leaves: &mut Vec<CellId>,
-    error: &mut Option<crate::error::Error>,
-    leaf: CellId,
-) {
-    if error.is_none()
-        && let Err(value) = crate::try_push_vec(leaves, leaf)
-    {
-        *error = Some(value);
-    }
+    })
 }
 
 /// Bulk-emit interior `min_level` descendants after preflighting `4^Δ`.
@@ -1054,7 +1010,7 @@ fn emit_interior_descendants(
     // multi-million child range.
     if let Some(n) = interior_multiplicity(level, coverer.min_level) {
         ensure_cover_budget(base.saturating_add(n), coverer.hard_budget())?;
-        crate::try_reserve_vec(cells, n)?;
+        cells.reserve(n);
     } else if let Some(limit) = coverer.hard_budget() {
         // Shift overflow ⇒ larger than any finite usize budget.
         return Err(CoverBudgetExceeded::new(limit).into());
@@ -1062,7 +1018,7 @@ fn emit_interior_descendants(
     let end = id.child_end_at(coverer.min_level);
     let mut cursor = id.child_begin_at(coverer.min_level);
     while cursor != end {
-        crate::try_push_vec(cells, (cursor, true))?;
+        cells.push((cursor, true));
         stats.committed_emission();
         cursor = cursor.next();
     }
@@ -1142,8 +1098,7 @@ fn classify_one(
     id: CellId,
     stats: &mut CoverStats,
 ) -> Result<Candidate, CoverError> {
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, 1)?;
+    let mut out = Vec::with_capacity(1);
     classify_ids(
         ctx,
         std::iter::once(id),
@@ -1187,7 +1142,7 @@ fn local_probe_index(
     point: Point,
     known: Option<bool>,
     stats: &mut CoverStats,
-) -> Result<usize, CoverError> {
+) -> usize {
     if let Some(index) = probes.iter().position(|probe| {
         probe.point.x.to_bits() == point.x.to_bits() && probe.point.y.to_bits() == point.y.to_bits()
     }) {
@@ -1203,13 +1158,13 @@ fn local_probe_index(
                 probes[index].covered = Some(known);
             }
         }
-        return Ok(index);
+        return index;
     }
-    crate::try_push_vec(probes, LocalProbe {
+    probes.push(LocalProbe {
         point,
         covered: known,
-    })?;
-    Ok(probes.len() - 1)
+    });
+    probes.len() - 1
 }
 
 /// Classify a finite fan after its local point probes have been deduplicated.
@@ -1226,13 +1181,11 @@ fn classify_ids(
 ) -> Result<(), CoverError> {
     out.clear();
     if out.capacity() < fan_capacity {
-        crate::try_reserve_vec(out, fan_capacity - out.capacity())?;
+        out.reserve(fan_capacity - out.capacity());
     }
     let mut reuse = reuse;
-    let mut probes = Vec::new();
-    crate::try_reserve_vec(&mut probes, fan_capacity.saturating_mul(5))?;
-    let mut pending = Vec::new();
-    crate::try_reserve_vec(&mut pending, fan_capacity)?;
+    let mut probes = Vec::with_capacity(fan_capacity.saturating_mul(5));
+    let mut pending = Vec::with_capacity(fan_capacity);
 
     for id in ids {
         let cell = Cell::from_id(id);
@@ -1296,9 +1249,9 @@ fn classify_ids(
                     membership.center
                 }
             });
-            probe_indices[index] = local_probe_index(&mut probes, points[index], known, stats)?;
+            probe_indices[index] = local_probe_index(&mut probes, points[index], known, stats);
         }
-        crate::try_push_vec(&mut pending, PendingCandidate {
+        pending.push(PendingCandidate {
             id,
             cell,
             rectangular,
@@ -1306,7 +1259,7 @@ fn classify_ids(
             probe_indices,
             membership_known: probe_count != 0,
             reused,
-        })?;
+        });
     }
     debug_assert!(
         reuse.is_none_or(|candidates| candidates.is_empty()),
@@ -1322,7 +1275,7 @@ fn classify_ids(
 
     for pending in pending {
         if let Some(candidate) = pending.reused {
-            crate::try_push_vec(out, candidate)?;
+            out.push(candidate);
             continue;
         }
         let mut membership = PointMembership {
@@ -1352,14 +1305,11 @@ fn classify_ids(
             membership,
             stats,
         )?;
-        crate::try_push_vec(
-            out,
-            Candidate::new(CandidateCertificate {
-                id: pending.id,
-                class,
-                membership,
-            }),
-        )?;
+        out.push(Candidate::new(CandidateCertificate {
+            id: pending.id,
+            class,
+            membership,
+        }));
     }
     Ok(())
 }

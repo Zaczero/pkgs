@@ -4,7 +4,6 @@ use std::collections::BinaryHeap;
 use crate::geometry::{
     Bounds, CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, Strictness,
 };
-use crate::grid::CoverError;
 use crate::grid::affine_source::{
     GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
 };
@@ -18,7 +17,6 @@ use crate::grid::s2::projection::MAX_LEVEL;
 use crate::grid::spherical_arc::{
     CertifiedDegreeWindows, CertifiedLongitudeDegrees, DegreeWindowResult,
 };
-use crate::test_support::{allocation_count, fail_allocations_after};
 
 /// Independent reference coverer: classifies each cell with gometry's
 /// general native DE-9IM relate engine (a DIFFERENT code path from the
@@ -315,83 +313,6 @@ fn fixed(level: u8) -> Coverer {
     }
 }
 
-fn assert_s2_allocation_prefixes(source: &Shape, coverer: Coverer, rule: CoverRule) {
-    let affine = GeographicCoverageSource::new(source, SphericalGridTarget::S2)
-        .expect("test source carrier allocates");
-    let ctx = CoverContext::prepare(source, &affine, WorkingShapeRelation::Identity)
-        .expect("cover context");
-    let expected = coverer
-        .cover_prepared(&ctx, rule)
-        .expect("unrestricted cover");
-    let (_, allocations) = allocation_count(|| {
-        coverer
-            .cover_prepared(&ctx, rule)
-            .expect("count unrestricted cover")
-    });
-    assert!(allocations > 0, "fixture must allocate during traversal");
-
-    for prefix in 0..allocations {
-        let failed = fail_allocations_after(prefix, || coverer.cover_prepared(&ctx, rule));
-        let error = failed.expect_err("every allocation prefix must fail the cover");
-        let CoverError::Preparation(error) = error else {
-            panic!("allocation failure changed into a non-resource error: {error:?}");
-        };
-        assert!(
-            matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            ),
-            "unexpected allocation error: {error:?}"
-        );
-    }
-    let retry = coverer
-        .cover_prepared(&ctx, rule)
-        .expect("retry after allocation failures");
-    assert_eq!(retry.outer(), expected.outer());
-}
-
-fn assert_s2_source_preparation_allocation_prefixes(
-    source: &Shape,
-    working: &Shape,
-    relation: WorkingShapeRelation,
-    rule: CoverRule,
-) {
-    let coverer = Coverer {
-        min_level: 4,
-        max_level: 4,
-        level_mod: 1,
-        max_cells: None,
-        target_cells: 8,
-    };
-    let cover = || -> Result<Covering, CoverError> {
-        let affine = GeographicCoverageSource::from_validated(source, SphericalGridTarget::S2)?;
-        coverer.cover_for_rule(working, &affine, relation, rule)
-    };
-    cover().expect("warm source preparation");
-    let (expected, allocations) = allocation_count(cover);
-    let expected = expected.expect("unrestricted S2 source preparation");
-    assert!(
-        allocations > 0,
-        "fixture must allocate during S2 preparation"
-    );
-
-    for prefix in 0..allocations {
-        let failed = fail_allocations_after(prefix, cover);
-        let Err(CoverError::Preparation(error)) = failed else {
-            panic!("allocation prefix {prefix} published an S2 cover");
-        };
-        assert!(
-            matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            ),
-            "unexpected allocation error: {error:?}"
-        );
-    }
-    let retry = cover().expect("retry after S2 source preparation allocation failures");
-    assert_eq!(retry.outer(), expected.outer());
-}
-
 #[test]
 fn productive_state_is_isolated_between_sources() {
     let line = Shape::LineString(
@@ -525,120 +446,6 @@ fn fixed_within_drops_invisible_terminals_without_accumulating_them() {
     assert!(stats.certificate_storage_peak > 0, "{stats:?}");
     assert!(stats.certificate_storage_peak <= 64, "{stats:?}");
     assert_eq!(stats.retained_map_entries, 0, "{stats:?}");
-}
-
-#[test]
-fn s2_traversal_allocations_are_native_and_retryable() {
-    let point = Shape::Point(Point::new_raw_xy(-50.0, -40.0));
-    let polygon = box_shape(10.0, 20.0, 12.0, 22.0);
-
-    // These cases exercise the initial frontier, a finite fan, nested
-    // productivity batches, visible queue growth, invisible DFS, and final
-    // cell publication. Every allocation prefix is rejected and then retried
-    // against the untouched output oracle.
-    assert_s2_allocation_prefixes(&polygon, fixed(8), CoverRule::Overlap);
-    assert_s2_allocation_prefixes(&point, fixed(8), CoverRule::Within);
-    assert_s2_allocation_prefixes(
-        &point,
-        Coverer {
-            min_level: 0,
-            max_level: 8,
-            level_mod: 1,
-            max_cells: None,
-            target_cells: 8,
-        },
-        CoverRule::Within,
-    );
-    assert_s2_allocation_prefixes(
-        &point,
-        Coverer {
-            min_level: 0,
-            max_level: 8,
-            level_mod: 1,
-            max_cells: None,
-            target_cells: 8,
-        },
-        CoverRule::Overlap,
-    );
-}
-
-#[test]
-fn s2_source_preparation_point_allocation_prefixes_are_native() {
-    let point = Shape::Point(Point::new_raw_xy(10.0, 20.0));
-    assert_s2_source_preparation_allocation_prefixes(
-        &point,
-        &point,
-        WorkingShapeRelation::Identity,
-        CoverRule::Overlap,
-    );
-}
-
-#[test]
-fn s2_source_preparation_line_allocation_prefixes_are_native() {
-    let line = Shape::LineString(
-        LineSeq::try_new(
-            CoordSeq::try_from_points(&[
-                Point::new_raw_xy(-50.0, -40.0),
-                Point::new_raw_xy(50.0, -40.0),
-            ])
-            .unwrap(),
-        )
-        .expect("test line is valid"),
-    );
-    assert_s2_source_preparation_allocation_prefixes(
-        &line,
-        &line,
-        WorkingShapeRelation::Identity,
-        CoverRule::Overlap,
-    );
-}
-
-#[test]
-fn s2_source_preparation_polygon_allocation_prefixes_are_native() {
-    let polygon = box_shape(-10.0, 10.0, 10.0, 20.0);
-    assert_s2_source_preparation_allocation_prefixes(
-        &polygon,
-        &polygon,
-        WorkingShapeRelation::Identity,
-        CoverRule::Overlap,
-    );
-}
-
-#[test]
-fn s2_source_preparation_antimeridian_allocation_prefixes_are_native() {
-    let seam = box_shape(179.0, -1.0, -179.0, 1.0);
-    // The working-image split is an independent geographic transform
-    // boundary. Keep it outside this matrix so allocation faults exercise the
-    // shared affine source and cover-context preparation owned here.
-    let seam_working = seam.split_antimeridian().expect("seam split");
-    assert_s2_source_preparation_allocation_prefixes(
-        &seam,
-        &seam_working,
-        WorkingShapeRelation::AntimeridianSplit,
-        CoverRule::Overlap,
-    );
-}
-
-#[test]
-fn s2_source_preparation_pole_allocation_prefixes_are_native() {
-    let pole = box_shape(-20.0, 80.0, 20.0, 90.0);
-    assert_s2_source_preparation_allocation_prefixes(
-        &pole,
-        &pole,
-        WorkingShapeRelation::Identity,
-        CoverRule::Overlap,
-    );
-}
-
-#[test]
-fn s2_source_preparation_full_world_allocation_prefixes_are_native() {
-    let full_world = box_shape(-180.0, 70.0, 180.0, 80.0);
-    assert_s2_source_preparation_allocation_prefixes(
-        &full_world,
-        &full_world,
-        WorkingShapeRelation::Identity,
-        CoverRule::Overlap,
-    );
 }
 
 #[test]
