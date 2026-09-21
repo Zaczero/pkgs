@@ -7,7 +7,7 @@ use std::simd::cmp::SimdPartialEq as _;
 use std::simd::num::SimdFloat as _;
 
 use crate::HeapSize as _;
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geometry::types::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, Point, SharedSlice, XY, ZOrdinate,
     ensure_coordseq_vertex_capacity,
@@ -599,7 +599,7 @@ impl CoordSeq {
     }
 
     /// Concatenate two sequences of identical axes. `Ok(None)` means only an
-    /// axes mismatch; allocation failure is returned as `Err`.
+    /// axes mismatch; size or layout overflow is returned as `Err`.
     #[cfg(test)]
     pub fn concat(&self, other: &Self) -> Result<Option<Self>> {
         if self.axes() != other.axes() {
@@ -1022,76 +1022,39 @@ pub(crate) struct CoordSeqBuilder {
 
 impl CoordSeqBuilder {
     /// A builder for `capacity` coordinates carrying `axes` ordinates.
-    /// `capacity` is a reservation hint; later growth is still fallible.
+    /// `capacity` is checked against the `f64` column layout once.
     pub(crate) fn try_with_capacity(
         axes: CoordinateAxes,
         capacity: usize,
     ) -> crate::error::Result<Self> {
-        let mut xs = Vec::new();
-        crate::boundary::try_reserve_vec(&mut xs, capacity)?;
-        let mut ys = Vec::new();
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut ys, capacity) {
-            drop(xs);
-            return Err(error);
-        }
-        let zs = if axes.has_z() {
-            let mut values = Vec::new();
-            if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
-                drop((xs, ys));
-                return Err(error);
-            }
-            Some(values)
-        } else {
-            None
-        };
-        let ms = if axes.has_m() {
-            let mut values = Vec::new();
-            if let Err(error) = crate::boundary::try_reserve_vec(&mut values, capacity) {
-                drop((xs, ys, zs));
-                return Err(error);
-            }
-            Some(values)
-        } else {
-            None
-        };
+        std::alloc::Layout::array::<f64>(capacity)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         Ok(Self {
-            xs,
-            ys,
-            zs,
-            ms,
+            xs: Vec::with_capacity(capacity),
+            ys: Vec::with_capacity(capacity),
+            zs: axes.has_z().then(|| Vec::with_capacity(capacity)),
+            ms: axes.has_m().then(|| Vec::with_capacity(capacity)),
             mismatch_axes: None,
         })
     }
 
-    fn drop_scratch(&mut self) {
-        let has_z = self.zs.is_some();
-        let has_m = self.ms.is_some();
-        self.xs = Vec::new();
-        self.ys = Vec::new();
-        self.zs = has_z.then(Vec::new);
-        self.ms = has_m.then(Vec::new);
-        self.mismatch_axes = None;
-    }
-
     fn try_grow(&mut self, additional: usize) -> Result<()> {
-        if additional == 0 {
-            return Ok(());
+        let capacity = self
+            .xs
+            .len()
+            .checked_add(additional)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        std::alloc::Layout::array::<f64>(capacity)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        self.xs.reserve(additional);
+        self.ys.reserve(additional);
+        if let Some(column) = self.zs.as_mut() {
+            column.reserve(additional);
         }
-        let ok = self.xs.try_reserve(additional).is_ok()
-            && self.ys.try_reserve(additional).is_ok()
-            && self
-                .zs
-                .as_mut()
-                .is_none_or(|column| column.try_reserve(additional).is_ok())
-            && self
-                .ms
-                .as_mut()
-                .is_none_or(|column| column.try_reserve(additional).is_ok());
-        if ok {
-            return Ok(());
+        if let Some(column) = self.ms.as_mut() {
+            column.reserve(additional);
         }
-        self.drop_scratch();
-        Err(ResourceError::Allocation.into())
+        Ok(())
     }
 
     /// The axes this builder was declared with.

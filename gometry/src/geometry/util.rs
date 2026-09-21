@@ -63,7 +63,7 @@ pub(crate) fn geographic_bounds_to_shape(
             .checked_mul(2)
             .and_then(|value| value.checked_add(3))
     }
-    .ok_or(crate::error::ResourceError::Allocation)?;
+    .ok_or(crate::error::ResourceError::SizeOverflow)?;
     let mut points = Vec::new();
     points.reserve_exact(capacity);
     let span = bounds.maxx() - bounds.minx();

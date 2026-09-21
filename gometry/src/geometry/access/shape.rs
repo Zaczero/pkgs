@@ -1,6 +1,6 @@
 use std::ops::ControlFlow;
 
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryErrorKind, GeometryKind,
@@ -302,16 +302,7 @@ impl Shape {
     /// non-boxing counterpart to `points().collect()`. Reserve in the caller
     /// when the count is known.
     pub fn collect_points_into(&self, out: &mut Vec<Point>) -> Result<()> {
-        self.try_for_each_point(|point| {
-            if out.len() == out.capacity() {
-                let additional = out.capacity().max(8);
-                if out.try_reserve(additional).is_err() {
-                    return Err(ResourceError::Allocation.into());
-                }
-            }
-            out.push(point);
-            Ok(())
-        })
+        self.try_for_each_point(|point| crate::try_push_vec(out, point))
     }
 
     /// Materialize every vertex into a pre-sized `Vec`, avoiding the
@@ -341,25 +332,10 @@ impl Shape {
         }
         let capacity = self.coord_count();
         let mut seen = std::collections::HashSet::<Point>::new();
-        if seen.try_reserve(capacity).is_err() {
-            return Err(ResourceError::Allocation.into());
-        }
-        let mut unique = Vec::new();
-        crate::boundary::try_reserve_vec(&mut unique, capacity)?;
+        seen.reserve(capacity);
+        let mut unique = Vec::with_capacity(capacity);
         self.try_for_each_point(|point| {
-            if seen.len() == seen.capacity() {
-                let additional = seen.capacity().max(8);
-                if seen.try_reserve(additional).is_err() {
-                    return Err(ResourceError::Allocation.into());
-                }
-            }
             if seen.insert(point) {
-                if unique.len() == unique.capacity() {
-                    let additional = unique.capacity().max(8);
-                    if unique.try_reserve(additional).is_err() {
-                        return Err(ResourceError::Allocation.into());
-                    }
-                }
                 unique.push(point);
             }
             Ok::<_, crate::error::Error>(())

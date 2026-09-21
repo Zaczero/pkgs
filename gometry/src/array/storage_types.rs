@@ -394,7 +394,7 @@ impl RowSelectionBuild {
                     crate::boundary::try_reserve_vec(
                         &mut gathered,
                         len.checked_add(1)
-                            .ok_or(crate::error::ResourceError::Allocation)?,
+                            .ok_or(crate::error::ResourceError::SizeOverflow)?,
                     )?;
                     gathered.extend(*start..*start + *len);
                     gathered.push(index);
