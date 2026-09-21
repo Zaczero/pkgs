@@ -1,11 +1,11 @@
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
     segment_envelopes_disjoint,
 };
 use crate::geometry::{
-    HashMap, HashMapExt as _, Orientation, PointKey, Segment, XY, dedup_consecutive_xy,
-    for_each_candidate_pair, same_point, segments, single_chain, undirected_segment_edge_key,
+    HashMap, Orientation, PointKey, Segment, XY, dedup_consecutive_xy, for_each_candidate_pair,
+    same_point, segments, single_chain, undirected_segment_edge_key,
 };
 
 /// One original source ordinal that owned a unique undirected edge, plus
@@ -25,13 +25,6 @@ pub(crate) struct SegmentProvenance {
 }
 
 impl SegmentProvenance {
-    fn empty() -> Self {
-        Self {
-            offsets: vec![0],
-            entries: Vec::new(),
-        }
-    }
-
     pub(crate) fn owners(&self, piece: usize) -> &[SegmentSource] {
         let start = self.offsets[piece] as usize;
         let end = self.offsets[piece + 1] as usize;
@@ -84,10 +77,12 @@ impl std::ops::Index<usize> for SegmentProvenance {
 /// pays HashMap inserts + two flat vecs — never N tiny heap `Vec`s.
 pub(crate) fn dedup_undirected_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
-) -> (Vec<Segment>, SegmentProvenance) {
+) -> Result<(Vec<Segment>, SegmentProvenance)> {
     let segments = segments.into_iter();
     let capacity = segments.size_hint().0;
-    let mut index_of: HashMap<(PointKey, PointKey), u32> = HashMap::with_capacity(capacity);
+    let mut index_of: HashMap<(PointKey, PointKey), u32> =
+        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
+    index_of.reserve(capacity);
     let mut unique: Vec<Segment> = Vec::with_capacity(capacity);
     // Per original ordinal: (unique_index, reversed).
     let mut assignment: Vec<(u32, bool)> = Vec::with_capacity(capacity);
@@ -103,33 +98,55 @@ pub(crate) fn dedup_undirected_segments_sourced(
             );
             assignment.push((unique_index, reversed));
         } else {
-            let unique_index = unique.len() as u32;
+            let unique_index =
+                u32::try_from(unique.len()).map_err(|_| ResourceError::SizeOverflow)?;
             index_of.insert(key, unique_index);
             unique.push(segment);
             assignment.push((unique_index, false));
         }
     }
-    if unique.is_empty() {
-        return (Vec::new(), SegmentProvenance::empty());
-    }
+    drop(index_of);
     let unique_count = unique.len();
     let mut counts = vec![0_u32; unique_count];
     for &(unique_index, _) in &assignment {
-        counts[unique_index as usize] += 1;
+        counts[unique_index as usize] = counts[unique_index as usize]
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?;
     }
-    let mut offsets = Vec::with_capacity(unique_count + 1);
-    offsets.push(0);
-    for &count in &counts {
-        offsets.push(offsets[offsets.len() - 1] + count);
-    }
-    let mut entries = vec![(0_u32, false); assignment.len()];
-    let mut cursor = offsets[..unique_count].to_vec();
+    let offsets = placement_offsets(&mut counts)?;
+    let mut cursor = counts;
+    let mut entries = Vec::with_capacity(assignment.len());
+    entries.resize(assignment.len(), (0_u32, false));
     for (ordinal, &(unique_index, reversed)) in assignment.iter().enumerate() {
         let slot = cursor[unique_index as usize] as usize;
-        entries[slot] = (ordinal as u32, reversed);
+        entries[slot] = (
+            u32::try_from(ordinal).map_err(|_| ResourceError::SizeOverflow)?,
+            reversed,
+        );
         cursor[unique_index as usize] += 1;
     }
-    (unique, SegmentProvenance { offsets, entries })
+    Ok((unique, SegmentProvenance { offsets, entries }))
+}
+
+/// Build CSR offsets, replacing row counts with starting write cursors.
+pub(super) fn placement_offsets(counts: &mut [u32]) -> Result<Vec<u32>> {
+    let mut offsets = Vec::with_capacity(
+        counts
+            .len()
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?,
+    );
+    let mut start = 0_u32;
+    for count in counts {
+        offsets.push(start);
+        let end = start
+            .checked_add(*count)
+            .ok_or(ResourceError::SizeOverflow)?;
+        *count = start;
+        start = end;
+    }
+    offsets.push(start);
+    Ok(offsets)
 }
 
 /// Expand noded unique pieces once per original directed source so unit-weight
@@ -166,20 +183,28 @@ fn expand_directed_atoms(
 fn expand_provenance_to_atoms(
     unique_sources: &[u32],
     provenance: &SegmentProvenance,
-) -> SegmentProvenance {
+) -> Result<SegmentProvenance> {
     let atom_count = unique_sources.len();
-    let mut offsets = Vec::with_capacity(atom_count + 1);
+    let mut offsets = Vec::with_capacity(
+        atom_count
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?,
+    );
     offsets.push(0);
     let mut total = 0_u32;
     for &unique_index in unique_sources {
-        total += provenance.owners(unique_index as usize).len() as u32;
+        let count = u32::try_from(provenance.owners(unique_index as usize).len())
+            .map_err(|_| ResourceError::SizeOverflow)?;
+        total = total
+            .checked_add(count)
+            .ok_or(ResourceError::SizeOverflow)?;
         offsets.push(total);
     }
     let mut entries = Vec::with_capacity(total as usize);
     for &unique_index in unique_sources {
         entries.extend_from_slice(provenance.owners(unique_index as usize));
     }
-    SegmentProvenance { offsets, entries }
+    Ok(SegmentProvenance { offsets, entries })
 }
 
 /// Self-node one segment set: split every segment at its interior contacts
@@ -197,7 +222,7 @@ pub(crate) fn self_node_segments(segments: &[Segment]) -> Result<Vec<Segment>> {
     if segments.is_empty() {
         return Ok(Vec::new());
     }
-    let (unique, provenance) = dedup_undirected_segments_sourced(segments.iter().copied());
+    let (unique, provenance) = dedup_undirected_segments_sourced(segments.iter().copied())?;
     if provenance.all_single_forward() {
         // Unique (or pure forward 1:1 after collapse of identical copies that
         // still leave single forward — actually identical dups make len>1).
@@ -244,12 +269,12 @@ fn self_node_segments_unique(segments: &[Segment]) -> Result<Vec<Segment>> {
 pub(crate) fn self_node_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
 ) -> Result<(Vec<Segment>, SegmentProvenance)> {
-    let (unique, provenance) = dedup_undirected_segments_sourced(segments);
+    let (unique, provenance) = dedup_undirected_segments_sourced(segments)?;
     if unique.is_empty() {
-        return Ok((Vec::new(), SegmentProvenance::empty()));
+        return Ok((unique, provenance));
     }
     let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique)?;
-    let multi = expand_provenance_to_atoms(&unique_sources, &provenance);
+    let multi = expand_provenance_to_atoms(&unique_sources, &provenance)?;
     Ok((atomic, multi))
 }
 
@@ -259,41 +284,42 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
         overlaps_found,
     } = full_noding_events(segments)?;
     if !overlaps_found {
-        return Ok(split_by_events_sourced(segments, events));
+        return split_by_events_sourced(segments, events);
     }
     let (pre_split, pre_sources) =
-        split_by_events_sourced(segments, collinear_overlap_events(segments)?);
+        split_by_events_sourced(segments, collinear_overlap_events(segments)?)?;
     let NodingScan { events, .. } = full_noding_events(&pre_split)?;
-    let (atomic, mid_sources) = split_by_events_sourced(&pre_split, events);
-    let sources = mid_sources
-        .into_iter()
-        .map(|mid| pre_sources[mid as usize])
-        .collect();
+    let (atomic, mut sources) = split_by_events_sourced(&pre_split, events)?;
+    for source in &mut sources {
+        *source = pre_sources[*source as usize];
+    }
     Ok((atomic, sources))
 }
 
 /// Pass 1 of [`self_node_segments`]: collinear-overlap endpoint cuts only.
 #[cfg(test)]
 pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Result<Vec<Segment>> {
-    Ok(split_by_events(
-        segments,
-        collinear_overlap_events(segments)?,
-    ))
+    split_by_events(segments, collinear_overlap_events(segments)?)
 }
 
 /// The cut events of [`collinear_overlap_pass`].
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32, XY)>> {
-    let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
+    let mut events: Vec<(u32, XY)> = Vec::new();
+    let mut failure = Ok(());
     let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
         let (a, b) = (segments[left], segments[right]);
         let orientations = PairOrientations::new(a, b);
         if orientations.right_start == Orientation::Collinear
             && orientations.right_end == Orientation::Collinear
+            && let Err(error) =
+                push_collinear_overlap_cuts(segments, left, right, orientations, &mut events)
         {
-            push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
+            failure = Err(error);
+            return std::ops::ControlFlow::Break(());
         }
         std::ops::ControlFlow::Continue(())
     })?;
+    failure?;
     Ok(events)
 }
 
@@ -303,17 +329,19 @@ fn push_collinear_overlap_cuts(
     right: usize,
     orientations: PairOrientations,
     events: &mut Vec<(u32, XY)>,
-) -> bool {
+) -> Result<bool> {
     let mut cut_any = false;
     let (a, b) = (segments[left], segments[right]);
-    let mut push_if_interior = |target: usize, point: XY, segment: Segment| {
+    let mut push_if_interior = |target: usize, point: XY, segment: Segment| -> Result<()> {
         if point_in_segment_envelope(point, segment)
             && !same_point(point, segment.start)
             && !same_point(point, segment.end)
         {
-            events.push((target as u32, point));
+            let target = u32::try_from(target).map_err(|_| ResourceError::SizeOverflow)?;
+            events.push((target, point));
             cut_any = true;
         }
+        Ok(())
     };
 
     // Both endpoints of b are already known to be on a's carrier. For a
@@ -321,7 +349,7 @@ fn push_collinear_overlap_cuts(
     // envelopes decide all four endpoint cuts. A degenerate a has no carrier;
     // its endpoints still need b's precomputed orientation signs.
     for point in [b.start, b.end] {
-        push_if_interior(left, point, a);
+        push_if_interior(left, point, a)?;
     }
     if same_point(a.start, a.end) {
         for (point, orientation) in [
@@ -329,15 +357,15 @@ fn push_collinear_overlap_cuts(
             (a.end, orientations.left_end),
         ] {
             if orientation == Orientation::Collinear {
-                push_if_interior(right, point, b);
+                push_if_interior(right, point, b)?;
             }
         }
     } else {
         for point in [a.start, a.end] {
-            push_if_interior(right, point, b);
+            push_if_interior(right, point, b)?;
         }
     }
-    cut_any
+    Ok(cut_any)
 }
 
 /// The main pass of [`self_node_segments`]: full pairwise interior cuts,
@@ -349,7 +377,7 @@ pub(crate) fn full_noding_pass(segments: &[Segment]) -> Result<(Vec<Segment>, bo
         events,
         overlaps_found,
     } = full_noding_events(segments)?;
-    Ok((split_by_events(segments, events), overlaps_found))
+    Ok((split_by_events(segments, events)?, overlaps_found))
 }
 
 /// What one pass of the candidate sweep learned about a segment pool.
@@ -366,7 +394,7 @@ pub(in crate::geometry) struct NodingScan {
 /// replays [`split_by_events`]' ordering bit-for-bit without materializing
 /// the atomic segment soup.
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
-    let mut events: Vec<(u32, XY)> = Vec::with_capacity(8);
+    let mut events: Vec<(u32, XY)> = Vec::new();
     let mut overlaps_found = false;
     let mut failure = Ok(());
     // L1-aware sweep: large pools take the monotone-run path, avoiding the flat
@@ -403,8 +431,18 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
             // has to report.
             let identical = (same_point(a.start, b.start) && same_point(a.end, b.end))
                 || (same_point(a.start, b.end) && same_point(a.end, b.start));
-            overlaps_found |= identical
-                || push_collinear_overlap_cuts(segments, left, right, orientations, &mut events);
+            if identical {
+                overlaps_found = true;
+            } else {
+                match push_collinear_overlap_cuts(segments, left, right, orientations, &mut events)
+                {
+                    Ok(cut) => overlaps_found |= cut,
+                    Err(error) => {
+                        failure = Err(error);
+                        return std::ops::ControlFlow::Break(());
+                    },
+                }
+            }
             return std::ops::ControlFlow::Continue(());
         }
         if shares_endpoint {
@@ -414,7 +452,13 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
             Ok(Some(point)) => {
                 for (target, segment) in [(left, a), (right, b)] {
                     if !same_point(point, segment.start) && !same_point(point, segment.end) {
-                        events.push((target as u32, point));
+                        let result = u32::try_from(target)
+                            .map_err(|_| ResourceError::SizeOverflow.into())
+                            .map(|target| events.push((target, point)));
+                        if let Err(error) = result {
+                            failure = Err(error);
+                            return std::ops::ControlFlow::Break(());
+                        }
                     }
                 }
             },
@@ -437,9 +481,17 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
 /// shared tail of both noding passes (the splitter sorts and dedups cuts
 /// per segment).
 #[cfg(test)]
-pub(crate) fn split_by_events(segments: &[Segment], mut events: Vec<(u32, XY)>) -> Vec<Segment> {
+pub(crate) fn split_by_events(
+    segments: &[Segment],
+    mut events: Vec<(u32, XY)>,
+) -> Result<Vec<Segment>> {
     events.sort_unstable_by_key(|&(ordinal, _)| ordinal);
-    let mut atomic = Vec::with_capacity(segments.len() + events.len());
+    let mut atomic = Vec::with_capacity(
+        segments
+            .len()
+            .checked_add(events.len())
+            .ok_or(ResourceError::SizeOverflow)?,
+    );
     let mut cuts: Vec<XY> = Vec::new();
     let mut cursor = 0;
     for (index, &segment) in segments.iter().enumerate() {
@@ -448,19 +500,25 @@ pub(crate) fn split_by_events(segments: &[Segment], mut events: Vec<(u32, XY)>) 
             cuts.push(events[cursor].1);
             cursor += 1;
         }
-        split_segment_at(segment, &mut cuts, &mut atomic);
+        split_segment_at(segment, &mut cuts, &mut atomic)?;
     }
-    atomic
+    Ok(atomic)
 }
 
 /// [`split_by_events`] also reporting each piece's source ordinal.
 pub(crate) fn split_by_events_sourced(
     segments: &[Segment],
     mut events: Vec<(u32, XY)>,
-) -> (Vec<Segment>, Vec<u32>) {
+) -> Result<(Vec<Segment>, Vec<u32>)> {
     events.sort_unstable_by_key(|&(ordinal, _)| ordinal);
-    let mut atomic = Vec::with_capacity(segments.len() + events.len());
-    let mut sources: Vec<u32> = Vec::with_capacity(segments.len() + events.len());
+    let capacity = segments
+        .len()
+        .checked_add(events.len())
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut atomic = Vec::new();
+    let mut sources: Vec<u32> = Vec::new();
+    atomic.reserve(capacity);
+    sources.reserve(capacity);
     let mut cuts: Vec<XY> = Vec::new();
     let mut cursor = 0;
     for (index, &segment) in segments.iter().enumerate() {
@@ -469,20 +527,34 @@ pub(crate) fn split_by_events_sourced(
             cuts.push(events[cursor].1);
             cursor += 1;
         }
-        split_segment_at(segment, &mut cuts, &mut atomic);
-        sources.resize(atomic.len(), index as u32);
+        split_segment_at(segment, &mut cuts, &mut atomic)?;
+        sources.resize(
+            atomic.len(),
+            u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?,
+        );
     }
-    (atomic, sources)
+    Ok((atomic, sources))
 }
 
 /// Split `segment` at `cuts` (ordered along the segment, deduped) into atomic
 /// sub-segments appended to `out`.
-pub(crate) fn split_segment_at(segment: Segment, cuts: &mut Vec<XY>, out: &mut Vec<Segment>) {
+pub(crate) fn split_segment_at(
+    segment: Segment,
+    cuts: &mut Vec<XY>,
+    out: &mut Vec<Segment>,
+) -> Result<()> {
+    out.reserve(
+        cuts.len()
+            .checked_add(1)
+            .ok_or(ResourceError::SizeOverflow)?,
+    );
     if cuts.is_empty() {
         out.push(segment);
-        return;
+        return Ok(());
     }
-    cuts.sort_by(|left, right| segments::compare_along_segment(segment, *left, *right));
+    crate::geometry::try_sort_by(cuts, |left, right| {
+        Ok(segments::compare_along_segment(segment, *left, *right))
+    })?;
     dedup_consecutive_xy(cuts);
     let mut previous = segment.start;
     for &cut in cuts.iter() {
@@ -500,4 +572,5 @@ pub(crate) fn split_segment_at(segment: Segment, cuts: &mut Vec<XY>, out: &mut V
             end: segment.end,
         });
     }
+    Ok(())
 }

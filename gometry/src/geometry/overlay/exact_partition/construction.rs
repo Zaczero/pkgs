@@ -27,7 +27,6 @@ use crate::geometry::{
     ExpansionBudget, GeometryErrorKind, HashMap, PointKey, Result, Segment, XY,
     for_each_candidate_pair, same_point, same_topological_coordinate, single_chain,
 };
-use crate::{try_push_vec, try_reserve_vec};
 
 /// Stored endpoints and segment crossings: each point's nearest-even binary64
 /// and, for a crossing, its exact homogeneous point built on first demand.
@@ -41,16 +40,12 @@ pub(super) struct PointArena<'a> {
 }
 
 impl<'a> PointArena<'a> {
-    pub(super) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Result<Self> {
-        let mut recipes = Vec::new();
-        let mut rounded = Vec::new();
-        try_reserve_vec(&mut recipes, capacity)?;
-        try_reserve_vec(&mut rounded, capacity)?;
-        Ok(Self {
+    pub(super) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Self {
+        Self {
             unique,
-            recipes,
-            rounded,
-        })
+            recipes: Vec::with_capacity(capacity),
+            rounded: Vec::with_capacity(capacity),
+        }
     }
 
     pub(super) const fn len(&self) -> usize {
@@ -59,8 +54,8 @@ impl<'a> PointArena<'a> {
 
     pub(super) fn push(&mut self, recipe: NodeRecipe, rounded: XY) -> Result<u32> {
         let index = u32::try_from(self.recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        try_push_vec(&mut self.recipes, recipe)?;
-        try_push_vec(&mut self.rounded, rounded)?;
+        self.recipes.push(recipe);
+        self.rounded.push(rounded);
         Ok(index)
     }
 
@@ -82,7 +77,7 @@ impl<'a> PointArena<'a> {
         if let Some(point) = crossing.exact {
             #[cfg(test)]
             update_partition_metrics(|metrics| metrics.declined_crossings += 1);
-            let _ = exact.set(Box::try_new(point)?);
+            let _ = exact.set(Box::new(point));
         }
         self.push(NodeRecipe::Crossing { segments, exact }, crossing.point)
     }
@@ -118,10 +113,10 @@ impl<'a> PointArena<'a> {
                 let point = exact.get_or_try_init(|| -> Result<_> {
                     #[cfg(test)]
                     update_partition_metrics(|metrics| metrics.exact_crossings += 1);
-                    Ok(Box::try_new(crossing_homogeneous(
+                    Ok(Box::new(crossing_homogeneous(
                         self.unique[segments[0] as usize],
                         self.unique[segments[1] as usize],
-                    )?)?)
+                    )?))
                 })?;
                 Ok(Cow::Borrowed(&**point))
             },
@@ -258,13 +253,11 @@ pub(super) struct Forest<'a> {
 }
 
 impl<'a> Forest<'a> {
-    pub(super) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Result<Self> {
-        let mut parent = Vec::new();
-        try_reserve_vec(&mut parent, capacity)?;
-        Ok(Self {
-            parent,
-            points: PointArena::with_capacity(unique, capacity)?,
-        })
+    pub(super) fn with_capacity(unique: &'a [Segment], capacity: usize) -> Self {
+        Self {
+            parent: Vec::with_capacity(capacity),
+            points: PointArena::with_capacity(unique, capacity),
+        }
     }
 
     pub(super) fn find(&mut self, mut node: u32) -> u32 {
@@ -275,20 +268,20 @@ impl<'a> Forest<'a> {
         node
     }
 
-    pub(super) fn adopt(&mut self, handle: u32) -> Result<u32> {
+    pub(super) fn adopt(&mut self, handle: u32) -> u32 {
         debug_assert_eq!(handle as usize, self.parent.len());
-        try_push_vec(&mut self.parent, handle)?;
-        Ok(handle)
+        self.parent.push(handle);
+        handle
     }
 
     pub(super) fn push_stored(&mut self, point: XY) -> Result<u32> {
         let handle = self.points.push_stored(point)?;
-        self.adopt(handle)
+        Ok(self.adopt(handle))
     }
 
     pub(super) fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
         let handle = self.points.push_crossing(segments)?;
-        self.adopt(handle)
+        Ok(self.adopt(handle))
     }
 
     /// Join two handles denoting one point. A stored root wins, and between
@@ -365,10 +358,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         .ok_or(ResourceError::SizeOverflow)?;
     let mut endpoint_of: HashMap<PointKey, u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    endpoint_of
-        .try_reserve(endpoint_capacity)
-        .map_err(crate::error::Error::from)?;
-    let mut forest = Forest::with_capacity(unique, endpoint_capacity)?;
+    endpoint_of.reserve(endpoint_capacity);
+    let mut forest = Forest::with_capacity(unique, endpoint_capacity);
 
     let intern_stored =
         |point: XY, endpoint_of: &mut HashMap<PointKey, u32>, forest: &mut Forest| -> Result<u32> {
@@ -383,44 +374,44 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
 
     let mut start_handle = Vec::new();
     let mut end_handle = Vec::new();
-    try_reserve_vec(&mut start_handle, unique.len())?;
-    try_reserve_vec(&mut end_handle, unique.len())?;
+    start_handle.reserve(unique.len());
+    end_handle.reserve(unique.len());
     for &segment in unique {
-        try_push_vec(
-            &mut start_handle,
-            intern_stored(segment.start, &mut endpoint_of, &mut forest)?,
-        )?;
-        try_push_vec(
-            &mut end_handle,
-            intern_stored(segment.end, &mut endpoint_of, &mut forest)?,
-        )?;
+        start_handle.push(intern_stored(segment.start, &mut endpoint_of, &mut forest)?);
+        end_handle.push(intern_stored(segment.end, &mut endpoint_of, &mut forest)?);
     }
 
-    let pool_capacity = unique
-        .len()
-        .checked_add(isolated.len())
-        .ok_or(ResourceError::SizeOverflow)?;
-    let mut pool = Vec::new();
-    try_reserve_vec(&mut pool, pool_capacity)?;
-    pool.extend_from_slice(unique);
-    let mut extra_handles = Vec::new();
-    try_reserve_vec(&mut extra_handles, isolated.len())?;
-    let mut point_handles = Vec::new();
-    try_reserve_vec(&mut point_handles, isolated.len())?;
+    let mut extra_handles = Vec::with_capacity(isolated.len());
+    let mut point_handles = Vec::with_capacity(isolated.len());
     for &point in isolated {
         let key = PointKey::new(point);
         let existed = endpoint_of.contains_key(&key);
         let handle = intern_stored(point, &mut endpoint_of, &mut forest)?;
-        try_push_vec(&mut point_handles, handle)?;
+        point_handles.push(handle);
         if existed {
             continue;
         }
-        try_push_vec(&mut extra_handles, handle)?;
-        try_push_vec(&mut pool, Segment {
-            start: point,
-            end: point,
-        })?;
+        extra_handles.push(handle);
     }
+    drop(endpoint_of);
+    let pool = if extra_handles.is_empty() {
+        Cow::Borrowed(unique)
+    } else {
+        let capacity = unique
+            .len()
+            .checked_add(extra_handles.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let mut pool = Vec::with_capacity(capacity);
+        pool.extend_from_slice(unique);
+        pool.extend(extra_handles.iter().map(|&handle| {
+            let point = forest.points.rounded[handle as usize];
+            Segment {
+                start: point,
+                end: point,
+            }
+        }));
+        Cow::Owned(pool)
+    };
     #[cfg(test)]
     update_partition_metrics(|metrics| {
         metrics.candidate_pool_items = pool.len();
@@ -464,6 +455,8 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     }
     #[cfg(test)]
     drop(candidate_phase);
+    drop(pool);
+    drop(extra_handles);
     #[cfg(test)]
     update_partition_metrics(|metrics| {
         metrics.source_cut_entries = contacts.len();
@@ -472,21 +465,16 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     // Group contacts by segment (counting placement), then order each group
     // along its segment: by rounded coordinate first, and exactly only within
     // a run of equal rounded coordinates, whose equal points are one node.
-    let mut contact_starts = Vec::new();
-    try_reserve_vec(&mut contact_starts, unique.len() + 1)?;
-    contact_starts.resize(unique.len() + 1, 0_u32);
+    let mut contact_starts = vec![0_u32; unique.len() + 1];
     for &(segment, _) in &contacts {
         contact_starts[segment as usize + 1] += 1;
     }
     for index in 0..unique.len() {
         contact_starts[index + 1] += contact_starts[index];
     }
-    let mut along = Vec::new();
-    try_reserve_vec(&mut along, contacts.len())?;
-    along.resize(contacts.len(), 0_u32);
+    let mut along = vec![0_u32; contacts.len()];
     {
-        let mut cursor = Vec::new();
-        try_reserve_vec(&mut cursor, unique.len())?;
+        let mut cursor = Vec::with_capacity(unique.len());
         cursor.extend_from_slice(&contact_starts[..unique.len()]);
         for &(segment, handle) in &contacts {
             along[cursor[segment as usize] as usize] = handle;
@@ -502,7 +490,10 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
                 segment,
                 group,
                 |handle| handle,
-                |left, right| try_push_vec(&mut equal_pairs, (left, right)),
+                |left, right| {
+                    equal_pairs.push((left, right));
+                    Ok(())
+                },
             )?;
         }
     }
@@ -511,10 +502,9 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     }
 
     // Compact roots into nodes, moving each root's point out of the forest.
-    let mut compact_of: Vec<Option<u32>> = Vec::new();
-    try_reserve_vec(&mut compact_of, forest.parent.len())?;
+    let mut compact_of: Vec<Option<u32>> = Vec::with_capacity(forest.parent.len());
     compact_of.resize(forest.parent.len(), None);
-    let mut points = PointArena::with_capacity(unique, 0)?;
+    let mut points = PointArena::with_capacity(unique, 0);
     for handle in 0..forest.parent.len() as u32 {
         let root = forest.find(handle);
         if compact_of[root as usize].is_some() {
@@ -530,6 +520,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         let root = forest.find(handle as u32);
         compact_of[handle] = compact_of[root as usize];
     }
+    drop(forest);
     let node_of = |handle: u32| -> Result<u32> {
         compact_of[handle as usize].ok_or_else(|| {
             GeometryErrorKind::Invalid("partition handle was not compacted".into()).into()
@@ -541,13 +532,10 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     // bound to it once. Segments are visited in ascending order, so a
     // counting placement keeps each node's bindings in that order.
     let node_count = points.len();
-    let mut last_unique = Vec::new();
-    try_reserve_vec(&mut last_unique, node_count)?;
+    let mut last_unique = Vec::with_capacity(node_count);
     last_unique.resize(node_count, u32::MAX);
     let mut binding_nodes: Vec<(u32, u32)> = Vec::new();
-    let mut binding_starts = Vec::new();
-    try_reserve_vec(&mut binding_starts, node_count + 1)?;
-    binding_starts.resize(node_count + 1, 0_u32);
+    let mut binding_starts = vec![0_u32; node_count + 1];
     let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
     for (index, segment) in unique.iter().enumerate() {
         // A zero-length segment is an isolated point, bound as a point source.
@@ -565,33 +553,35 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             if last_unique[node as usize] != source {
                 last_unique[node as usize] = source;
                 binding_starts[node as usize + 1] += 1;
-                try_push_vec(&mut binding_nodes, (node, source))?;
+                binding_nodes.push((node, source));
             }
             if let Some(start) = previous
                 && start != node
             {
-                try_push_vec(&mut intervals, (source, start, node))?;
+                intervals.push((source, start, node));
             }
             previous = Some(node);
         }
     }
+    drop(end_handle);
+    drop(along);
+    drop(contact_starts);
+    drop(last_unique);
     for node in 0..node_count {
         binding_starts[node + 1] = binding_starts[node + 1]
             .checked_add(binding_starts[node])
             .ok_or(ResourceError::SizeOverflow)?;
     }
-    let mut bindings = Vec::new();
-    try_reserve_vec(&mut bindings, binding_nodes.len())?;
-    bindings.resize(binding_nodes.len(), 0_u32);
+    let mut bindings = vec![0_u32; binding_nodes.len()];
     {
-        let mut cursor = Vec::new();
-        try_reserve_vec(&mut cursor, node_count)?;
+        let mut cursor = Vec::with_capacity(node_count);
         cursor.extend_from_slice(&binding_starts[..node_count]);
         for &(node, source) in &binding_nodes {
             bindings[cursor[node as usize] as usize] = source;
             cursor[node as usize] += 1;
         }
     }
+    drop(binding_nodes);
 
     // The budget counts operation-wide net growth: overlap coalescing can
     // offset span growth elsewhere, while stored nodes and source atoms are free.
@@ -601,9 +591,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         .count();
     let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, baseline, budget)?;
 
-    let mut degree: Vec<u32> = Vec::new();
-    try_reserve_vec(&mut degree, node_count)?;
-    degree.resize(node_count, 0);
+    let mut degree = vec![0_u32; node_count];
     for span in &spans {
         degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
         degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
@@ -611,14 +599,14 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let mut isolated_nodes = Vec::new();
     for (index, &count) in degree.iter().enumerate() {
         if count == 0 {
-            try_push_vec(&mut isolated_nodes, NodeId(index as u32))?;
+            isolated_nodes.push(NodeId(index as u32));
         }
     }
+    drop(degree);
 
-    let mut point_nodes = Vec::new();
-    try_reserve_vec(&mut point_nodes, point_handles.len())?;
+    let mut point_nodes = Vec::with_capacity(point_handles.len());
     for handle in point_handles {
-        try_push_vec(&mut point_nodes, NodeId(node_of(handle)?))?;
+        point_nodes.push(NodeId(node_of(handle)?));
     }
 
     let mut point_sources = Vec::new();
@@ -626,7 +614,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         if same_point(segment.start, segment.end) {
             let node = NodeId(node_of(start_handle[source])?);
             let owners = provenance.owners(source);
-            try_reserve_vec(&mut point_sources, owners.len())?;
+            point_sources.reserve(owners.len());
             point_sources.extend(owners.iter().map(|&(ordinal, _)| (node, ordinal)));
         }
     }
@@ -689,7 +677,8 @@ pub(super) fn push_contact(
     handle: u32,
 ) -> Result<()> {
     let segment = u32::try_from(segment).map_err(|_| ResourceError::SizeOverflow)?;
-    try_push_vec(contacts, (segment, handle))
+    contacts.push((segment, handle));
+    Ok(())
 }
 
 /// A stored point exactly on a segment's carrier and strictly between its
@@ -856,64 +845,44 @@ pub(super) fn aggregate_atoms(
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
     let mut atom_of: HashMap<(u32, u32), u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    atom_of
-        .try_reserve(intervals.len())
-        .map_err(crate::error::Error::from)?;
+    atom_of.reserve(intervals.len());
     let mut spans: Vec<ExactSpan> = Vec::new();
-    let mut contributors: Vec<(u32, u32, bool)> = Vec::new();
-    try_reserve_vec(&mut contributors, intervals.len())?;
+    let mut contributors: Vec<(u32, u32, bool)> = Vec::with_capacity(intervals.len());
     for (unique, start, end) in intervals {
         let lo = start.min(end);
         let hi = start.max(end);
         if let Some(&atom) = atom_of.get(&(lo, hi)) {
             let reversed = start != spans[atom as usize].start.0;
-            try_push_vec(&mut contributors, (atom, unique, reversed))?;
+            contributors.push((atom, unique, reversed));
             continue;
         }
         if spans.len() >= baseline {
             budget.add(1)?;
         }
         let atom = u32::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut spans, 1)?;
-        try_push_vec(&mut spans, ExactSpan {
+        spans.push(ExactSpan {
             start: NodeId(start),
             end: NodeId(end),
             unique,
-        })?;
+        });
         atom_of.insert((lo, hi), atom);
-        try_push_vec(&mut contributors, (atom, unique, false))?;
+        contributors.push((atom, unique, false));
     }
+    drop(atom_of);
 
     let atom_count = spans.len();
-    let mut counts: Vec<usize> = Vec::new();
-    try_reserve_vec(&mut counts, atom_count)?;
-    counts.resize(atom_count, 0);
+    let mut counts = vec![0_u32; atom_count];
     for &(atom, unique, _) in &contributors {
+        let count = u32::try_from(source_provenance.owners(unique as usize).len())
+            .map_err(|_| ResourceError::SizeOverflow)?;
         counts[atom as usize] = counts[atom as usize]
-            .checked_add(source_provenance.owners(unique as usize).len())
-            .ok_or(ResourceError::SizeOverflow)?;
-    }
-    let mut offsets: Vec<u32> = Vec::new();
-    try_reserve_vec(
-        &mut offsets,
-        atom_count
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?,
-    )?;
-    try_push_vec(&mut offsets, 0)?;
-    for &count in &counts {
-        let next = (offsets[offsets.len() - 1] as usize)
             .checked_add(count)
             .ok_or(ResourceError::SizeOverflow)?;
-        let next = u32::try_from(next).map_err(|_| ResourceError::SizeOverflow)?;
-        try_push_vec(&mut offsets, next)?;
     }
-    let mut entries: Vec<SegmentSource> = Vec::new();
-    try_reserve_vec(&mut entries, offsets[atom_count] as usize)?;
+    let offsets = super::placement_offsets(&mut counts)?;
+    let mut cursor = counts;
+    let mut entries: Vec<SegmentSource> = Vec::with_capacity(offsets[atom_count] as usize);
     entries.resize(offsets[atom_count] as usize, (0, false));
-    let mut cursor: Vec<u32> = Vec::new();
-    try_reserve_vec(&mut cursor, atom_count)?;
-    cursor.extend_from_slice(&offsets[..atom_count]);
     for &(atom, unique, reversed_geom) in &contributors {
         for &(ordinal, reversed) in source_provenance.owners(unique as usize) {
             let slot = cursor[atom as usize] as usize;

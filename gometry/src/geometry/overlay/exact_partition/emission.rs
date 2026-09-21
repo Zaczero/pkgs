@@ -20,7 +20,6 @@ use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     CoordSeq, GeometryErrorKind, Point, Polygon, Result, Ring, Segment, XY, same_point,
 };
-use crate::{try_push_vec, try_reserve_vec};
 
 pub(super) struct GlobalFaces {
     pub(super) walk_faces: Vec<u32>,
@@ -69,24 +68,13 @@ pub(super) struct CoverageFaceState {
 }
 
 impl CoverageFaceState {
-    pub(super) fn new(polygon_count: usize, row_count: usize) -> Result<Self> {
-        let mut polygon_occupied = Vec::new();
-        try_reserve_vec(&mut polygon_occupied, polygon_count)?;
-        polygon_occupied.resize(polygon_count, false);
-        let mut row_polygon_counts = Vec::new();
-        try_reserve_vec(&mut row_polygon_counts, row_count)?;
-        row_polygon_counts.resize(row_count, 0_usize);
-        let mut active_positions = Vec::new();
-        try_reserve_vec(&mut active_positions, row_count)?;
-        active_positions.resize(row_count, usize::MAX);
-        let mut active_rows = Vec::new();
-        try_reserve_vec(&mut active_rows, row_count)?;
-        Ok(Self {
-            polygon_occupied,
-            row_polygon_counts,
-            active_positions,
-            active_rows,
-        })
+    pub(super) fn new(polygon_count: usize, row_count: usize) -> Self {
+        Self {
+            polygon_occupied: vec![false; polygon_count],
+            row_polygon_counts: vec![0; row_count],
+            active_positions: vec![usize::MAX; row_count],
+            active_rows: Vec::with_capacity(row_count),
+        }
     }
 
     pub(super) fn update_ring(
@@ -124,7 +112,7 @@ impl CoverageFaceState {
             *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
             if was_empty {
                 let position = self.active_rows.len();
-                try_push_vec(&mut self.active_rows, row)?;
+                self.active_rows.push(row);
                 self.active_positions[row] = position;
             }
         } else {
@@ -151,14 +139,12 @@ impl CoverageFaceState {
 }
 
 impl BoundaryPlan {
-    pub(super) fn line_walks(&self, topology: &IndexedTopology) -> Result<Vec<Vec<(usize, bool)>>> {
+    pub(super) fn line_walks(&self, topology: &IndexedTopology) -> Vec<Vec<(usize, bool)>> {
         if self.lines.is_empty() {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        let mut ends = Vec::new();
-        try_reserve_vec(&mut ends, self.lines.len())?;
-        let mut incidence = Vec::new();
-        try_reserve_vec(&mut incidence, topology.starts.len() - 1)?;
+        let mut ends = Vec::with_capacity(self.lines.len());
+        let mut incidence = Vec::with_capacity(topology.starts.len() - 1);
         incidence.resize(topology.starts.len() - 1, (0_usize, [0_usize; 2]));
         for (index, chord) in self.lines.iter().enumerate() {
             let pair = [
@@ -172,10 +158,9 @@ impl BoundaryPlan {
                 }
                 *degree += 1;
             }
-            try_push_vec(&mut ends, pair)?;
+            ends.push(pair);
         }
-        let mut used = Vec::new();
-        try_reserve_vec(&mut used, self.lines.len())?;
+        let mut used = Vec::with_capacity(self.lines.len());
         used.resize(self.lines.len(), false);
         let mut walks = Vec::new();
         // Open chains precede the remaining all-degree-two cycles.
@@ -194,8 +179,7 @@ impl BoundaryPlan {
                 loop {
                     used[edge] = true;
                     let reversed = ends[edge][0] != from;
-                    try_reserve_vec(&mut walk, 1)?;
-                    try_push_vec(&mut walk, (edge, reversed))?;
+                    walk.push((edge, reversed));
                     let far = ends[edge][usize::from(!reversed)];
                     let (degree, adjacent) = incidence[far];
                     if degree != 2 {
@@ -208,11 +192,10 @@ impl BoundaryPlan {
                     edge = next;
                     from = far;
                 }
-                try_reserve_vec(&mut walks, 1)?;
-                try_push_vec(&mut walks, walk)?;
+                walks.push(walk);
             }
         }
-        Ok(walks)
+        walks
     }
 
     pub(super) fn emit_xy_parts(
@@ -221,41 +204,34 @@ impl BoundaryPlan {
         topology: &IndexedTopology,
     ) -> Result<(Vec<Point>, Vec<CoordSeq>, Vec<Polygon>)> {
         let groups = self.polygon_walks(partition, topology)?;
-        let line_walks = self.line_walks(topology)?;
-        let segments = self.round_items(partition, topology)?;
+        let line_walks = self.line_walks(topology);
+        let (_, segments) = self.round_items(partition, topology)?;
         let mut remaining = segments.as_slice();
-        let mut rings = Vec::new();
-        try_reserve_vec(&mut rings, self.walks.len())?;
+        let mut rings = Vec::with_capacity(self.walks.len());
         for walk in &self.walks {
             let (chords, rest) = remaining.split_at(walk.len());
             remaining = rest;
-            try_push_vec(
-                &mut rings,
-                Some(closed_ring(chords.iter().map(|chord| chord.start))?),
-            )?;
+            rings.push(Some(closed_ring(chords.iter().map(|chord| chord.start))?));
         }
-        let mut polygons = Vec::new();
-        try_reserve_vec(&mut polygons, groups.len())?;
+        let mut polygons = Vec::with_capacity(groups.len());
         for group in groups {
             let mut indices = group.into_iter();
             let shell = rings[indices.next().expect("polygon has a shell")]
                 .take()
                 .expect("each ring has one polygon owner");
-            let mut holes = Vec::new();
-            try_reserve_vec(&mut holes, indices.len())?;
+            let mut holes = Vec::with_capacity(indices.len());
             for index in indices {
-                try_push_vec(
-                    &mut holes,
+                holes.push(
                     rings[index]
                         .take()
                         .expect("each ring has one polygon owner"),
-                )?;
+                );
             }
-            try_push_vec(&mut polygons, Polygon::new(shell, holes)?)?;
+            polygons.push(Polygon::new(shell, holes)?);
         }
+        drop(rings);
         let (chords, isolated) = remaining.split_at(self.lines.len());
-        let mut lines = Vec::new();
-        try_reserve_vec(&mut lines, line_walks.len())?;
+        let mut lines = Vec::with_capacity(line_walks.len());
         for walk in line_walks {
             let mut xs = Vec::new();
             let mut ys = Vec::new();
@@ -263,8 +239,8 @@ impl BoundaryPlan {
                 .len()
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            try_reserve_vec(&mut xs, coordinate_count)?;
-            try_reserve_vec(&mut ys, coordinate_count)?;
+            xs.reserve(coordinate_count);
+            ys.reserve(coordinate_count);
             for (index, reversed) in walk {
                 let chord = chords[index];
                 let (start, end) = if reversed {
@@ -273,11 +249,11 @@ impl BoundaryPlan {
                     (chord.start, chord.end)
                 };
                 if xs.is_empty() {
-                    try_push_vec(&mut xs, start.x)?;
-                    try_push_vec(&mut ys, start.y)?;
+                    xs.push(start.x);
+                    ys.push(start.y);
                 }
-                try_push_vec(&mut xs, end.x)?;
-                try_push_vec(&mut ys, end.y)?;
+                xs.push(end.x);
+                ys.push(end.y);
             }
             if xs.len() > 2
                 && same_point(
@@ -303,13 +279,12 @@ impl BoundaryPlan {
                 xs.reverse();
                 ys.reverse();
             }
-            try_push_vec(&mut lines, CoordSeq::try_from_vecs(xs, ys, None, None)?)?;
+            lines.push(CoordSeq::try_from_vecs(xs, ys, None, None)?);
         }
         lines.sort_unstable_by(crate::geometry::compare_point_slices);
-        let mut points = Vec::new();
-        try_reserve_vec(&mut points, isolated.len())?;
+        let mut points = Vec::with_capacity(isolated.len());
         for item in isolated {
-            try_push_vec(&mut points, Point::new_raw_xy(item.start.x, item.start.y))?;
+            points.push(Point::new_raw_xy(item.start.x, item.start.y));
         }
         Ok((points, lines, polygons))
     }
@@ -319,8 +294,7 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<NodeParts> {
-        let items = self.incident_items(topology)?;
-        let rounded_segments = self.round_items(partition, topology)?;
+        let (items, rounded_segments) = self.round_items(partition, topology)?;
         self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, true)
     }
 
@@ -330,9 +304,8 @@ impl BoundaryPlan {
         topology: &IndexedTopology,
         coordinates: &[Option<XY>],
     ) -> Result<NodeParts> {
-        let items = self.incident_items(topology)?;
-        let mut rounded_segments = Vec::new();
-        try_reserve_vec(&mut rounded_segments, items.len())?;
+        let items = self.incident_items(topology);
+        let mut rounded_segments = Vec::with_capacity(items.len());
         for &[start, end] in &items {
             let start = coordinates
                 .get(start.0 as usize)
@@ -352,7 +325,7 @@ impl BoundaryPlan {
                         "exact subdivision output lost a rounded end node".into(),
                     )
                 })?;
-            try_push_vec(&mut rounded_segments, Segment { start, end })?;
+            rounded_segments.push(Segment { start, end });
         }
         self.check_emitted_fans(topology, &rounded_segments)?;
         self.check_global_faces(partition, &items, &rounded_segments)?;
@@ -366,9 +339,8 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<NodeParts> {
-        let items = self.incident_items(topology)?;
-        let mut rounded_segments = Vec::new();
-        try_reserve_vec(&mut rounded_segments, items.len())?;
+        let items = self.incident_items(topology);
+        let mut rounded_segments = Vec::with_capacity(items.len());
         rounded_segments.extend(items.iter().map(|&[start, end]| Segment {
             start: partition.node_xy(start),
             end: partition.node_xy(end),
@@ -394,10 +366,10 @@ impl BoundaryPlan {
                 .len()
                 .checked_mul(2)
                 .ok_or(ResourceError::SizeOverflow)?;
-            try_reserve_vec(&mut rounded, rounded_capacity)?;
+            rounded.reserve(rounded_capacity);
             for (&[start, end], segment) in items.iter().zip(rounded_segments) {
-                try_push_vec(&mut rounded, (start, segment.start))?;
-                try_push_vec(&mut rounded, (end, segment.end))?;
+                rounded.push((start, segment.start));
+                rounded.push((end, segment.end));
             }
         }
         let node_chord = |chord: &PlannedChord| {
@@ -410,8 +382,7 @@ impl BoundaryPlan {
         };
 
         let groups = self.polygon_walks(partition, topology)?;
-        let mut rings: Vec<Option<Vec<NodeId>>> = Vec::new();
-        try_reserve_vec(&mut rings, self.walks.len())?;
+        let mut rings: Vec<Option<Vec<NodeId>>> = Vec::with_capacity(self.walks.len());
         rings.resize_with(self.walks.len(), || None);
         for (index, walk) in self.walks.iter().enumerate() {
             let mut nodes = Vec::new();
@@ -419,18 +390,17 @@ impl BoundaryPlan {
                 .len()
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            try_reserve_vec(&mut nodes, node_capacity)?;
+            nodes.reserve(node_capacity);
             for chord in walk {
-                try_push_vec(&mut nodes, node_chord(chord)[0])?;
+                nodes.push(node_chord(chord)[0]);
             }
             if let Some(&first) = nodes.first() {
-                try_push_vec(&mut nodes, first)?;
+                nodes.push(first);
                 canonicalize_closed_nodes(partition, &mut nodes)?;
             }
             rings[index] = Some(nodes);
         }
-        let mut polygons = Vec::new();
-        try_reserve_vec(&mut polygons, groups.len())?;
+        let mut polygons = Vec::with_capacity(groups.len());
         for group in groups {
             let mut indices = group.into_iter();
             let shell = rings[indices.next().expect("polygon has a shell")]
@@ -441,36 +411,35 @@ impl BoundaryPlan {
                 .len()
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            try_reserve_vec(&mut polygon_rings, ring_capacity)?;
-            try_push_vec(&mut polygon_rings, shell)?;
+            polygon_rings.reserve(ring_capacity);
+            polygon_rings.push(shell);
             for index in indices {
-                try_push_vec(
-                    &mut polygon_rings,
+                polygon_rings.push(
                     rings[index]
                         .take()
                         .expect("each ring has one polygon owner"),
-                )?;
+                );
             }
-            try_push_vec(&mut polygons, polygon_rings)?;
+            polygons.push(polygon_rings);
         }
+        drop(rings);
 
-        let line_walks = self.line_walks(topology)?;
-        let mut lines = Vec::new();
-        try_reserve_vec(&mut lines, line_walks.len())?;
+        let line_walks = self.line_walks(topology);
+        let mut lines = Vec::with_capacity(line_walks.len());
         for walk in line_walks {
             let mut nodes = Vec::new();
             let node_capacity = walk
                 .len()
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            try_reserve_vec(&mut nodes, node_capacity)?;
+            nodes.reserve(node_capacity);
             for (index, reversed) in walk {
                 let [start, end] = node_chord(&self.lines[index]);
                 let (start, end) = if reversed { (end, start) } else { (start, end) };
                 if nodes.is_empty() {
-                    try_push_vec(&mut nodes, start)?;
+                    nodes.push(start);
                 }
-                try_push_vec(&mut nodes, end)?;
+                nodes.push(end);
             }
             if nodes.len() > 2 && nodes.first() == nodes.last() {
                 canonicalize_closed_nodes(partition, &mut nodes)?;
@@ -485,10 +454,9 @@ impl BoundaryPlan {
             {
                 nodes.reverse();
             }
-            try_push_vec(&mut lines, nodes)?;
+            lines.push(nodes);
         }
-        let mut points = Vec::new();
-        try_reserve_vec(&mut points, self.points.len())?;
+        let mut points = Vec::with_capacity(self.points.len());
         points.extend(self.points.iter().map(|&(node, _)| node));
         Ok(NodeParts {
             points,
@@ -503,8 +471,7 @@ impl BoundaryPlan {
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
     ) -> Result<Vec<Vec<usize>>> {
-        let mut shells = Vec::new();
-        try_reserve_vec(&mut shells, self.face_quotient.len())?;
+        let mut shells = Vec::with_capacity(self.face_quotient.len());
         shells.resize(self.face_quotient.len(), None);
         let mut holes = Vec::new();
         let mut polygons = Vec::new();
@@ -523,20 +490,15 @@ impl BoundaryPlan {
             if is_shell {
                 debug_assert!(shells[host].is_none());
                 shells[host] = Some(polygons.len());
-                let mut rings = Vec::new();
-                try_reserve_vec(&mut rings, 1)?;
-                try_push_vec(&mut rings, index)?;
-                try_reserve_vec(&mut polygons, 1)?;
-                try_push_vec(&mut polygons, rings)?;
+                let rings = vec![index];
+                polygons.push(rings);
             } else {
-                try_reserve_vec(&mut holes, 1)?;
-                try_push_vec(&mut holes, (host, index))?;
+                holes.push((host, index));
             }
         }
         for (host, hole) in holes {
             let rings = &mut polygons[shells[host].expect("bounded occupied face has a shell")];
-            try_reserve_vec(rings, 1)?;
-            try_push_vec(rings, hole)?;
+            rings.push(hole);
         }
         Ok(polygons)
     }
@@ -548,10 +510,9 @@ impl BoundaryPlan {
     ) -> Result<()> {
         let mut darts = Vec::new();
         for chord in self.walks.iter().flatten().chain(&self.lines) {
-            try_reserve_vec(&mut darts, 1)?;
             let first = self.source_darts[chord.sources.start];
             let last = self.source_darts[chord.sources.end - 1];
-            try_push_vec(&mut darts, [first, topology.twins[last as usize]])?;
+            darts.push([first, topology.twins[last as usize]]);
         }
         debug_assert_eq!(segments.len(), darts.len() + self.points.len());
         ExactPartition::check_emitted_fans(topology, &darts, &segments[..darts.len()])
@@ -561,14 +522,14 @@ impl BoundaryPlan {
         &self,
         partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
-    ) -> Result<Vec<Segment>> {
-        let items = self.incident_items(topology)?;
+    ) -> Result<(Vec<[NodeId; 2]>, Vec<Segment>)> {
+        let items = self.incident_items(topology);
         let segments = partition.round_incident_items(&items)?;
         if partition.rounding_moves(&items) {
             self.check_emitted_fans(topology, &segments)?;
             self.check_global_faces(partition, &items, &segments)?;
         }
-        Ok(segments)
+        Ok((items, segments))
     }
 
     // Incidence and cyclic order fix each connected embedding up to its exterior.
@@ -583,26 +544,21 @@ impl BoundaryPlan {
         items: &[[NodeId; 2]],
         segments: &[Segment],
     ) -> Result<()> {
-        let mut sides = Vec::new();
-        try_reserve_vec(&mut sides, items.len())?;
+        let mut sides = Vec::with_capacity(items.len());
         for chord in self.walks.iter().flatten().chain(&self.lines) {
-            try_push_vec(&mut sides, chord.sides)?;
+            sides.push(chord.sides);
         }
         for &(_, host) in &self.points {
-            try_push_vec(&mut sides, [host, host])?;
+            sides.push([host, host]);
         }
         debug_assert_eq!(sides.len(), items.len());
         debug_assert_eq!(segments.len(), items.len());
         let node_count = partition.node_count();
         // Every node at its emitted coordinate, as stored doubles.
-        let mut coordinates = Vec::new();
-        try_reserve_vec(&mut coordinates, node_count)?;
+        let mut coordinates = Vec::with_capacity(node_count);
         coordinates.extend((0..node_count as u32).map(|node| partition.node_xy(NodeId(node))));
-        let mut incident_starts = Vec::new();
-        try_reserve_vec(&mut incident_starts, node_count + 1)?;
-        incident_starts.resize(node_count + 1, 0_u32);
-        let mut parents = Vec::new();
-        try_reserve_vec(&mut parents, node_count)?;
+        let mut incident_starts = vec![0_u32; node_count + 1];
+        let mut parents = Vec::with_capacity(node_count);
         parents.extend(0..node_count as u32);
         for (&[start, end], segment) in items.iter().zip(segments) {
             coordinates[start.0 as usize] = segment.start;
@@ -626,12 +582,9 @@ impl BoundaryPlan {
         for node in 0..node_count {
             incident_starts[node + 1] += incident_starts[node];
         }
-        let mut incident = Vec::new();
-        try_reserve_vec(&mut incident, incident_starts[node_count] as usize)?;
-        incident.resize(incident_starts[node_count] as usize, 0_u32);
+        let mut incident = vec![0_u32; incident_starts[node_count] as usize];
         {
-            let mut cursor = Vec::new();
-            try_reserve_vec(&mut cursor, node_count)?;
+            let mut cursor = Vec::with_capacity(node_count);
             cursor.extend_from_slice(&incident_starts[..node_count]);
             for (index, &[start, end]) in items.iter().enumerate() {
                 for node in [start, end].into_iter().take(1 + usize::from(end != start)) {
@@ -641,8 +594,7 @@ impl BoundaryPlan {
             }
         }
         // Each component's root is its lexicographically least emitted node.
-        let mut roots: Vec<Option<(usize, XY)>> = Vec::new();
-        try_reserve_vec(&mut roots, node_count)?;
+        let mut roots: Vec<Option<(usize, XY)>> = Vec::with_capacity(node_count);
         roots.resize(node_count, None);
         for node in 0..node_count {
             if incident_starts[node] == incident_starts[node + 1] {
@@ -662,6 +614,7 @@ impl BoundaryPlan {
         }
         // The face each component's own plan puts around it: its root's
         // exterior wedge, or the host of an isolated point.
+        drop(parents);
         let mut queries = Vec::new();
         let mut exteriors = Vec::new();
         for &(node, point) in roots.iter().flatten() {
@@ -696,12 +649,12 @@ impl BoundaryPlan {
                     has_upper = upper;
                 }
             }
-            try_push_vec(&mut queries, node as u32)?;
-            try_push_vec(
-                &mut exteriors,
-                exterior.expect("a component root has an incident emitted edge"),
-            )?;
+            queries.push(node as u32);
+            exteriors.push(exterior.expect("a component root has an incident emitted edge"));
         }
+        drop(roots);
+        drop(incident);
+        drop(incident_starts);
         // The emitted embedding keeps the exact incidence and fans, so the
         // face just east of the first chord a leftward ray from a root meets
         // is the face holding that component.
@@ -728,22 +681,21 @@ impl BoundaryPlan {
         Ok(())
     }
 
-    pub(super) fn incident_items(&self, topology: &IndexedTopology) -> Result<Vec<[NodeId; 2]>> {
+    pub(super) fn incident_items(&self, topology: &IndexedTopology) -> Vec<[NodeId; 2]> {
         let mut items = Vec::new();
         for chord in self.walks.iter().flatten().chain(&self.lines) {
-            try_reserve_vec(&mut items, 1)?;
             let first = self.source_darts[chord.sources.start] as usize;
             let last = self.source_darts[chord.sources.end - 1] as usize;
-            try_push_vec(&mut items, [
+            items.push([
                 NodeId(topology.owners[first]),
                 NodeId(topology.targets[last]),
-            ])?;
+            ]);
         }
-        try_reserve_vec(&mut items, self.points.len())?;
+        items.reserve(self.points.len());
         for &(node, _) in &self.points {
-            try_push_vec(&mut items, [node, node])?;
+            items.push([node, node]);
         }
-        Ok(items)
+        items
     }
 }
 
@@ -760,27 +712,21 @@ pub(super) fn polygonize_faces(
     global: &GlobalFaces,
 ) -> Result<Vec<Polygon>> {
     let face_of = |slot: usize| global.walk_faces[topology.face_of[slot] as usize];
-    let flags = |len: usize| -> Result<Vec<bool>> {
-        let mut flags = Vec::new();
-        try_reserve_vec(&mut flags, len)?;
-        flags.resize(len, false);
-        Ok(flags)
-    };
-    let mut spans = flags(partition.spans.len())?;
+    let flags = |len: usize| vec![false; len];
+    let mut spans = flags(partition.spans.len());
     for (slot, &span) in edges.iter().enumerate() {
         spans[span as usize] |= face_of(slot) != face_of(topology.twins[slot] as usize);
     }
     let lines = ArealCells {
-        faces: flags(global.count as usize)?,
+        faces: flags(global.count as usize),
         spans,
-        nodes: flags(partition.node_count())?,
+        nodes: flags(partition.node_count()),
     };
     lines
         .emission_plan(partition, topology, edges, global)?
         .round_items(partition, topology)?;
-    let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other)?;
-    let mut shells = Vec::new();
-    try_reserve_vec(&mut shells, global.count as usize)?;
+    let walks = global.boundary_walks(topology, |face, other| face != 0 && face != other);
+    let mut shells = Vec::with_capacity(global.count as usize);
     shells.resize(global.count as usize, None);
     let mut polygons: Vec<(usize, Ring, Vec<Ring>)> = Vec::new();
     let mut holes = Vec::new();
@@ -799,23 +745,21 @@ pub(super) fn polygonize_faces(
         )? {
             debug_assert!(shells[face].is_none());
             shells[face] = Some(polygons.len());
-            try_reserve_vec(&mut polygons, 1)?;
-            try_push_vec(&mut polygons, (face, ring, Vec::new()))?;
+            polygons.push((face, ring, Vec::new()));
         } else {
-            try_reserve_vec(&mut holes, 1)?;
-            try_push_vec(&mut holes, (face, ring))?;
+            holes.push((face, ring));
         }
     }
+    drop(walks);
     for (face, hole) in holes {
         let polygon = shells[face].expect("bounded face has a shell");
-        try_reserve_vec(&mut polygons[polygon].2, 1)?;
-        try_push_vec(&mut polygons[polygon].2, hole)?;
+        polygons[polygon].2.push(hole);
     }
+    drop(shells);
     polygons.sort_unstable_by_key(|&(face, ..)| face);
-    let mut output = Vec::new();
-    try_reserve_vec(&mut output, polygons.len())?;
+    let mut output = Vec::with_capacity(polygons.len());
     for (_, shell, holes) in polygons {
-        try_push_vec(&mut output, Polygon::new(shell, holes)?)?;
+        output.push(Polygon::new(shell, holes)?);
     }
     Ok(output)
 }
@@ -888,8 +832,8 @@ pub(super) fn closed_ring(vertices: impl ExactSizeIterator<Item = XY> + Clone) -
         .ok_or(ResourceError::SizeOverflow)?;
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    try_reserve_vec(&mut xs, count)?;
-    try_reserve_vec(&mut ys, count)?;
+    xs.reserve(count);
+    ys.reserve(count);
     let first = vertices.clone().next().expect("a ring has vertices");
     for vertex in vertices.chain([first]) {
         xs.push(vertex.x);
@@ -986,9 +930,8 @@ impl GlobalFaces {
             .into());
         }
         let mut walks =
-            self.boundary_walks(topology, |face, other| occupied[face] && !occupied[other])?;
-        let mut retained = Vec::new();
-        try_reserve_vec(&mut retained, partition.spans.len())?;
+            self.boundary_walks(topology, |face, other| occupied[face] && !occupied[other]);
+        let mut retained = Vec::with_capacity(partition.spans.len());
         retained.resize(partition.spans.len(), false);
         for &span in lines {
             retained[span as usize] = true;
@@ -998,9 +941,8 @@ impl GlobalFaces {
                 retained[edges[slot as usize] as usize] = true;
             }
         }
-        let face_quotient = self.quotient(topology, edges, &retained)?;
-        let mut protected = Vec::new();
-        try_reserve_vec(&mut protected, partition.node_count())?;
+        let face_quotient = self.quotient(topology, edges, &retained);
+        let mut protected = Vec::with_capacity(partition.node_count());
         protected.resize(partition.node_count(), false);
         match &partition.kept_nodes {
             KeptNodes::Selected => {},
@@ -1052,9 +994,7 @@ impl GlobalFaces {
                 .try_subtract(ay.try_product(&bx)?)?
                 .is_zero())
         };
-        let mut span_slots = Vec::new();
-        try_reserve_vec(&mut span_slots, partition.spans.len())?;
-        span_slots.resize(partition.spans.len(), 0);
+        let mut span_slots = vec![0; partition.spans.len()];
         for (slot, &span) in edges.iter().enumerate() {
             if topology.owners[slot] == partition.spans[span as usize].start.0 {
                 span_slots[span as usize] = slot;
@@ -1062,16 +1002,14 @@ impl GlobalFaces {
         }
         let mut source_darts = Vec::new();
         let mut make_chord = |slot: u32| -> Result<PlannedChord> {
-            try_reserve_vec(&mut source_darts, 1)?;
             let start = source_darts.len();
-            try_push_vec(&mut source_darts, slot)?;
+            source_darts.push(slot);
             Ok(PlannedChord {
                 sources: start..start + 1,
                 sides: sides(slot),
             })
         };
-        let mut planned_walks = Vec::new();
-        try_reserve_vec(&mut planned_walks, walks.len())?;
+        let mut planned_walks = Vec::with_capacity(walks.len());
         for walk in &mut walks {
             // Start at a retained corner so a joined source range never wraps.
             for index in 0..walk.len() {
@@ -1085,8 +1023,7 @@ impl GlobalFaces {
                     break;
                 }
             }
-            let mut chords = Vec::new();
-            try_reserve_vec(&mut chords, walk.len())?;
+            let mut chords = Vec::with_capacity(walk.len());
             for (index, &slot) in walk.iter().enumerate() {
                 let chord = make_chord(slot)?;
                 if index > 0 && can_join(walk[index - 1], slot)? {
@@ -1095,15 +1032,14 @@ impl GlobalFaces {
                         .expect("a joined chord has a preceding planned chord");
                     previous.sources.end = chord.sources.end;
                 } else {
-                    try_push_vec(&mut chords, chord)?;
+                    chords.push(chord);
                 }
             }
-            try_push_vec(&mut planned_walks, chords)?;
+            planned_walks.push(chords);
         }
-        let mut planned_lines = Vec::new();
-        try_reserve_vec(&mut planned_lines, lines.len())?;
-        let mut line_remaining = Vec::new();
-        try_reserve_vec(&mut line_remaining, partition.spans.len())?;
+        drop(walks);
+        let mut planned_lines = Vec::with_capacity(lines.len());
+        let mut line_remaining = Vec::with_capacity(partition.spans.len());
         line_remaining.resize(partition.spans.len(), false);
         for &span in lines {
             line_remaining[span as usize] = true;
@@ -1137,7 +1073,7 @@ impl GlobalFaces {
                 chord.sources.end = make_chord(next)?.sources.end;
                 slot = next;
             }
-            try_push_vec(&mut planned_lines, chord)?;
+            planned_lines.push(chord);
         }
         Ok(BoundaryPlan {
             source_darts,
@@ -1156,24 +1092,18 @@ impl GlobalFaces {
         &self,
         topology: &IndexedTopology,
         bounds: impl Fn(usize, usize) -> bool,
-    ) -> Result<Vec<Vec<u32>>> {
-        let mut selected = Vec::new();
-        try_reserve_vec(&mut selected, topology.targets.len())?;
+    ) -> Vec<Vec<u32>> {
+        let mut selected = Vec::with_capacity(topology.targets.len());
         for (slot, &walk) in topology.face_of.iter().enumerate() {
             let other = topology.face_of[topology.twins[slot] as usize];
-            try_push_vec(
-                &mut selected,
-                bounds(
-                    self.walk_faces[walk as usize] as usize,
-                    self.walk_faces[other as usize] as usize,
-                ),
-            )?;
+            selected.push(bounds(
+                self.walk_faces[walk as usize] as usize,
+                self.walk_faces[other as usize] as usize,
+            ));
         }
-        let mut visited = Vec::new();
-        try_reserve_vec(&mut visited, selected.len())?;
+        let mut visited = Vec::with_capacity(selected.len());
         visited.resize(selected.len(), false);
-        let mut positions = Vec::new();
-        try_reserve_vec(&mut positions, topology.starts.len() - 1)?;
+        let mut positions = Vec::with_capacity(topology.starts.len() - 1);
         positions.resize(topology.starts.len() - 1, None);
         let mut walks = Vec::new();
         for start in 0..selected.len() {
@@ -1185,21 +1115,18 @@ impl GlobalFaces {
             loop {
                 debug_assert!(!visited[slot]);
                 visited[slot] = true;
-                try_reserve_vec(&mut walk, 1)?;
                 positions[topology.owners[slot] as usize] = Some(walk.len());
-                try_push_vec(&mut walk, slot as u32)?;
+                walk.push(slot as u32);
                 let target = topology.targets[slot] as usize;
                 // A tangent hole can share a boundary walk with its shell.
                 // Cut closed cycles by exact identity before any rounding.
                 if let Some(begin) = positions[target] {
-                    let mut cycle = Vec::new();
-                    try_reserve_vec(&mut cycle, walk.len() - begin)?;
+                    let mut cycle = Vec::with_capacity(walk.len() - begin);
                     for dart in walk.drain(begin..) {
                         positions[topology.owners[dart as usize] as usize] = None;
-                        try_push_vec(&mut cycle, dart)?;
+                        cycle.push(dart);
                     }
-                    try_reserve_vec(&mut walks, 1)?;
-                    try_push_vec(&mut walks, cycle)?;
+                    walks.push(cycle);
                 }
                 let first = topology.starts[target] as usize;
                 let end = topology.starts[target + 1] as usize;
@@ -1219,7 +1146,7 @@ impl GlobalFaces {
             }
             debug_assert!(walk.is_empty());
         }
-        Ok(walks)
+        walks
     }
 
     pub(super) fn quotient(
@@ -1227,9 +1154,8 @@ impl GlobalFaces {
         topology: &IndexedTopology,
         edges: &[u32],
         retained: &[bool],
-    ) -> Result<Vec<u32>> {
-        let mut parents = Vec::new();
-        try_reserve_vec(&mut parents, self.count as usize)?;
+    ) -> Vec<u32> {
+        let mut parents = Vec::with_capacity(self.count as usize);
         parents.extend(0..self.count);
         for (slot, &edge) in edges.iter().enumerate() {
             let twin = topology.twins[slot] as usize;
@@ -1252,6 +1178,6 @@ impl GlobalFaces {
         for face in 0..parents.len() {
             parents[face] = parents[parents[face] as usize];
         }
-        Ok(parents)
+        parents
     }
 }

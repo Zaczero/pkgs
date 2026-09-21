@@ -53,7 +53,7 @@ fn line_contraction_preserves_bends_and_protected_points() {
                 &[false],
             )
             .unwrap();
-        let emitted = plan.round_items(&partition, &topology).unwrap();
+        let (_, emitted) = plan.round_items(&partition, &topology).unwrap();
         assert_eq!(emitted.len(), if protect { 3 } else { 2 });
         assert_eq!(plan.source_darts.len(), 3);
         assert!(emitted.iter().any(|segment| {
@@ -109,7 +109,7 @@ fn boundary_contraction_preserves_explicit_points_and_source_paths() {
             .unwrap();
         assert_eq!(plan.walks.len(), 1);
         assert_eq!(plan.source_darts.len(), if attach_line { 6 } else { 5 });
-        let emitted = plan.round_items(&partition, &topology).unwrap();
+        let (_, emitted) = plan.round_items(&partition, &topology).unwrap();
         assert_eq!(
             plan.walks[0].len(),
             if protect || attach_line { 5 } else { 4 },
@@ -151,7 +151,7 @@ fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
             || (span.end == start && span.start == crossing)
     }));
     let nodes = [start, crossing, isolated];
-    let coordinates = partition.round_nodes(&nodes).unwrap();
+    let coordinates = partition.round_nodes(&nodes);
     ExactPartition::check_node_injectivity(&nodes, &coordinates).unwrap();
     let emitted = partition
         .round_incident_items(&[[start, crossing]])
@@ -172,7 +172,7 @@ fn rounded_chord_can_hit_an_isolated_node_without_node_collision() {
     let plan = cells
         .emission_plan(&partition, &topology, &edges, &faces)
         .unwrap();
-    let items = plan.incident_items(&topology).unwrap();
+    let items = plan.incident_items(&topology);
     assert_eq!(items.len(), 2);
     let error = plan.emit_xy_parts(&partition, &topology).unwrap_err();
     assert!(matches!(
@@ -241,14 +241,13 @@ fn live_node_injectivity_distinguishes_repetition_from_rounding_collision() {
         Ordering::Less
     );
     let nodes = [first, second];
-    let coordinates = partition.round_nodes(&nodes).unwrap();
+    let coordinates = partition.round_nodes(&nodes);
     assert_eq!(coordinates, [XY::new(1.0, 0.0); 2]);
     assert!(ExactPartition::check_node_injectivity(&nodes, &coordinates).is_err());
     ExactPartition::check_node_injectivity(&[first, first], &coordinates).unwrap();
     let endpoint = partition.stored_node(XY::new(2.0, 0.0)).unwrap();
     let nodes = [first, endpoint];
-    ExactPartition::check_node_injectivity(&nodes, &partition.round_nodes(&nodes).unwrap())
-        .unwrap();
+    ExactPartition::check_node_injectivity(&nodes, &partition.round_nodes(&nodes)).unwrap();
     ExactPartition::check_node_injectivity(&[], &[]).unwrap();
 }
 
@@ -258,14 +257,12 @@ fn selected_nodes_round_in_requested_order() {
     let partition = case.partition();
     let crossing = partition.crossings()[0];
     let endpoint = partition.stored_node(XY::new(3.0, 1.0)).unwrap();
-    let rounded = partition
-        .round_nodes(&[endpoint, crossing, endpoint])
-        .unwrap();
+    let rounded = partition.round_nodes(&[endpoint, crossing, endpoint]);
     assert_eq!(rounded[0], XY::new(3.0, 1.0));
     assert_eq!(rounded[1].x, 1.0);
     assert_eq!(rounded[1].y.to_bits(), 0x3FD5_5555_5555_5555);
     assert_eq!(rounded[2], XY::new(3.0, 1.0));
-    assert!(partition.round_nodes(&[]).unwrap().is_empty());
+    assert!(partition.round_nodes(&[]).is_empty());
 }
 
 #[test]
@@ -351,9 +348,7 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
         let point = partition.node_xy(NodeId(index as u32));
         assert_eq!(filled, point.x >= 8.0 || point.y == 0.0);
     }
-    let (lines, points) = cells
-        .lower_dimensions(&partition, &topology, &edges, &faces)
-        .unwrap();
+    let (lines, points) = cells.lower_dimensions(&partition, &topology, &edges, &faces);
     assert!(points.is_empty());
     let mut intervals = lines
         .iter()
@@ -373,7 +368,7 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
             (start.x.min(end.x), start.x.max(end.x))
         })
         .collect::<Vec<_>>();
-    intervals.sort_by(|left, right| left.0.total_cmp(&right.0));
+    intervals.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
     assert_eq!(intervals, [(0.0, 2.0), (2.0, 4.0)]);
     let plan = cells
         .emission_plan(&partition, &topology, &edges, &faces)
@@ -382,7 +377,7 @@ fn collapsed_ring_sources_retain_support_without_winding_labels() {
     assert!(points.is_empty());
     assert_eq!(lines.len(), 1);
     let mut endpoints = lines[0].xs().to_vec();
-    endpoints.sort_by(f64::total_cmp);
+    endpoints.sort_unstable_by(f64::total_cmp);
     assert_eq!(endpoints, [0.0, 4.0]);
     assert_eq!(lines[0].ys(), [0.0, 0.0]);
     assert_eq!(polygons.len(), 1);
@@ -400,7 +395,8 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
         _ => unreachable!(),
     });
     let sources = ArealSources::new(&polygons).unwrap();
-    let (unique, provenance) = dedup_undirected_segments_sourced(sources.segments.iter().copied());
+    let (unique, provenance) =
+        dedup_undirected_segments_sourced(sources.segments.iter().copied()).unwrap();
     let mut budget = ExpansionBudget::new("exact_partition", "items");
     let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
     let (topology, edges) = partition.local_topology().unwrap();
@@ -419,7 +415,9 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
             selected.push(point);
         }
     }
-    selected.sort_by(|left, right| left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y)));
+    selected.sort_unstable_by(|left, right| {
+        left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
+    });
     assert_eq!(selected, [
         XY::new(0.0, 0.0),
         XY::new(0.0, 4.0),
@@ -428,9 +426,7 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
         XY::new(6.0, 6.0),
     ]);
     assert_eq!(cells.spans.iter().filter(|&&filled| filled).count(), 4);
-    let (lines, points) = cells
-        .lower_dimensions(&partition, &topology, &edges, &faces)
-        .unwrap();
+    let (lines, points) = cells.lower_dimensions(&partition, &topology, &edges, &faces);
     assert!(lines.is_empty());
     assert_eq!(points, [partition.stored_node(XY::new(6.0, 6.0)).unwrap()]);
     let plan = cells
@@ -439,7 +435,7 @@ fn areal_cells_exclude_cancelled_spurs_and_keep_collapsed_points() {
     assert_eq!(plan.points, [(points[0], 0)]);
     assert!(plan.lines.is_empty());
     assert_eq!(plan.walks.len(), 1);
-    let rounded = plan.round_items(&partition, &topology).unwrap();
+    let (_, rounded) = plan.round_items(&partition, &topology).unwrap();
     let mut actual: Vec<_> = rounded.iter().map(|span| (span.start, span.end)).collect();
     assert_eq!(actual.pop(), Some((XY::new(6.0, 6.0), XY::new(6.0, 6.0))));
     let first = actual
@@ -462,7 +458,8 @@ fn zero_length_sources_keep_owners_at_incident_and_isolated_nodes() {
         seg(0.0, 0.0, 2.0, 0.0),
         seg(1.0, 0.0, 1.0, 0.0),
         seg(3.0, 2.0, 3.0, 2.0),
-    ]);
+    ])
+    .unwrap();
     let mut budget = ExpansionBudget::new("exact_partition", "items");
     let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
     let incident = partition.stored_node(XY::new(1.0, 0.0)).unwrap();
@@ -574,40 +571,6 @@ fn occupied_support_owner_composes_stored_rings_and_parts() {
 }
 
 #[test]
-fn occupied_support_line_ordering_propagates_allocation_failures() {
-    let mut parts = vec![crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0))").unwrap()];
-    for index in 0..64 {
-        let x = 4.0 + f64::from(index) * 2.0;
-        parts.push(Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_points(&[
-                    Point::new_raw_xy(x, 0.0),
-                    Point::new_raw_xy(x + 1.0, 0.0),
-                ])
-                .unwrap(),
-            )
-            .unwrap(),
-        ));
-    }
-    let shape = Shape::geometry_collection(parts).unwrap();
-    let (result, count) =
-        crate::test_support::allocation_count(|| occupied_cartesian_support(&shape));
-    let expected = result.unwrap();
-    assert!(count > 0);
-    for allowed in 0..=count {
-        match crate::test_support::fail_allocations_after(allowed, || {
-            occupied_cartesian_support(&shape)
-        }) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            )),
-            Ok(actual) => assert!(actual.equals(&expected).unwrap()),
-        }
-    }
-}
-
-#[test]
 fn occupied_area_owner_rounds_exact_selected_faces() {
     let cases = [
         ("POLYGON ((0 0,1 0,1 1,0 1,0 0,1 0,1 1,0 1,0 0))", 1.0),
@@ -702,7 +665,7 @@ impl Case {
                 edges.push(segment);
             }
         }
-        let (unique, provenance) = dedup_undirected_segments_sourced(edges);
+        let (unique, provenance) = dedup_undirected_segments_sourced(edges).unwrap();
         Self {
             unique,
             provenance,
@@ -1296,7 +1259,7 @@ fn component_count(partition: &ExactPartition) -> usize {
 #[test]
 fn public_entry_matches_inner_on_empty() {
     let mut budget = ExpansionBudget::new("exact_partition", "items");
-    let (unique, provenance) = dedup_undirected_segments_sourced(Vec::<Segment>::new());
+    let (unique, provenance) = dedup_undirected_segments_sourced(Vec::<Segment>::new()).unwrap();
     let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
     assert_eq!(partition.node_count(), 0);
 }
@@ -1877,13 +1840,13 @@ fn selected_boundaries_keep_hole_direction_and_host_face() {
     assert_eq!(plan.polygon_walks(&partition, &topology).unwrap(), [vec![
         0, 1
     ]]);
-    let mut displaced = plan.round_items(&partition, &topology).unwrap();
+    let (_, mut displaced) = plan.round_items(&partition, &topology).unwrap();
     assert_eq!(displaced.len(), 8);
     for segment in &mut displaced[4..] {
         segment.start.x += 20.0;
         segment.end.x += 20.0;
     }
-    let items = plan.incident_items(&topology).unwrap();
+    let items = plan.incident_items(&topology);
     plan.check_emitted_fans(&topology, &displaced).unwrap();
     let error = plan
         .check_global_faces(&partition, &items, &displaced)
@@ -1929,7 +1892,13 @@ fn selected_boundaries_keep_hole_direction_and_host_face() {
         .unwrap();
     assert!(empty.walks.is_empty());
     assert!(empty.source_darts.is_empty());
-    assert!(empty.round_items(&partition, &topology).unwrap().is_empty());
+    assert!(
+        empty
+            .round_items(&partition, &topology)
+            .unwrap()
+            .1
+            .is_empty()
+    );
     assert_eq!(empty.face_quotient, [0, 0, 0]);
 }
 
@@ -1981,7 +1950,7 @@ fn selected_boundaries_split_a_hole_touching_its_shell() {
             1
         );
     }
-    assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
+    assert_eq!(plan.round_items(&partition, &topology).unwrap().1.len(), 8);
 }
 
 #[test]
@@ -2014,7 +1983,7 @@ fn selected_polygon_walks_classify_constructed_extrema() {
             let node = NodeId(topology.owners[plan.source_darts[chord.sources.start] as usize]);
             assert!(!partition.is_stored(node));
         }
-        assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 3);
+        assert_eq!(plan.round_items(&partition, &topology).unwrap().1.len(), 3);
     }
 }
 
@@ -2045,7 +2014,7 @@ fn certified_parts_serialize_polygon_line_and_isolated_point() {
     ]);
     assert_eq!(lines.len(), 1);
     let mut endpoints = lines[0].xs().to_vec();
-    endpoints.sort_by(f64::total_cmp);
+    endpoints.sort_unstable_by(f64::total_cmp);
     assert_eq!(endpoints, [6.0, 8.0]);
     assert_eq!(lines[0].ys(), [1.0, 1.0]);
     assert_eq!(polygons.len(), 1);
@@ -2057,7 +2026,7 @@ fn certified_parts_serialize_polygon_line_and_isolated_point() {
         .take(4)
         .map(|point| (point.x, point.y))
         .collect();
-    corners.sort_by(|left, right| left.partial_cmp(right).unwrap());
+    corners.sort_unstable_by(|left, right| left.partial_cmp(right).unwrap());
     assert_eq!(corners, [(0.0, 0.0), (0.0, 4.0), (4.0, 0.0), (4.0, 4.0)]);
 }
 
@@ -2150,7 +2119,7 @@ fn certified_line_serialization_closes_cycles_and_stops_at_junctions() {
         if spur {
             let line = lines.iter().find(|line| line.xs().len() == 2).unwrap();
             let mut xs = line.xs().to_vec();
-            xs.sort_by(f64::total_cmp);
+            xs.sort_unstable_by(f64::total_cmp);
             assert_eq!(xs, [-2.0, 0.0]);
             assert_eq!(line.ys(), [0.0, 0.0]);
         }
@@ -2205,7 +2174,7 @@ fn selected_polygon_walks_keep_an_island_inside_a_hole_separate() {
             assert!(x == 0.0 || x == 10.0);
         }
     }
-    assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 12);
+    assert_eq!(plan.round_items(&partition, &topology).unwrap().1.len(), 12);
     let (points, lines, polygons) = plan.emit_xy_parts(&partition, &topology).unwrap();
     assert!(points.is_empty());
     assert!(lines.is_empty());
@@ -2273,13 +2242,11 @@ fn selected_boundaries_keep_point_touching_regions_separate() {
             .collect::<Vec<_>>(),
         [vec![[1, 0]; 4], vec![[2, 0]; 4]]
     );
-    assert_eq!(plan.round_items(&partition, &topology).unwrap().len(), 8);
+    assert_eq!(plan.round_items(&partition, &topology).unwrap().1.len(), 8);
     assert_eq!(plan.walks.len(), 2);
-    let walks = faces
-        .boundary_walks(&topology, |face, other| {
-            [false, true, true][face] && ![false, true, true][other]
-        })
-        .unwrap();
+    let walks = faces.boundary_walks(&topology, |face, other| {
+        [false, true, true][face] && ![false, true, true][other]
+    });
     assert_eq!(walks.len(), 2);
     let contact = partition.stored_node(XY::new(2.0, 2.0)).unwrap();
     for walk in walks {
@@ -2295,7 +2262,6 @@ fn selected_boundaries_keep_point_touching_regions_separate() {
         faces
             .boundary_walks(&topology, |face, other| [false, false, false][face]
                 && ![false, false, false][other])
-            .unwrap()
             .is_empty()
     );
 }
@@ -2314,7 +2280,7 @@ fn emitted_fan_accepts_rotation_but_rejects_reflection() {
     let plan = faces
         .boundary_plan(&[0, 1, 2, 3], &topology, &edges, &partition, &[false])
         .unwrap();
-    let segments = plan.round_items(&partition, &topology).unwrap();
+    let (_, segments) = plan.round_items(&partition, &topology).unwrap();
     let rotated: Vec<_> = segments
         .iter()
         .map(|segment| Segment {
@@ -2389,7 +2355,7 @@ fn joined_chords_keep_endpoint_dart_order() {
         points: Vec::new(),
         face_quotient: vec![0],
     };
-    let emitted = plan.round_items(&partition, &topology).unwrap();
+    let (_, emitted) = plan.round_items(&partition, &topology).unwrap();
     assert_eq!(
         emitted
             .iter()
@@ -2439,10 +2405,10 @@ fn point_left_by_omitted_spoke_keeps_its_bounded_host() {
     assert_eq!(plan.points, [(point, 1)]);
     assert_eq!(plan.lines.len(), 4);
     assert!(plan.walks.is_empty());
-    let items = plan.incident_items(&topology).unwrap();
+    let items = plan.incident_items(&topology);
     assert_eq!(items.len(), 5);
     assert_eq!(items[4], [point, point]);
-    let rounded = plan.round_items(&partition, &topology).unwrap();
+    let (_, rounded) = plan.round_items(&partition, &topology).unwrap();
     assert_eq!(rounded[4].start, XY::new(2.0, 2.0));
     assert_eq!(rounded[4].end, XY::new(2.0, 2.0));
     let reflected: Vec<_> = rounded
@@ -2548,11 +2514,9 @@ fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
         [vec![[1, 0]; 4]]
     );
     assert_eq!(plan.walks.len(), 1);
-    let walks = faces
-        .boundary_walks(&topology, |face, other| {
-            [false, true, true][face] && ![false, true, true][other]
-        })
-        .unwrap();
+    let walks = faces.boundary_walks(&topology, |face, other| {
+        [false, true, true][face] && ![false, true, true][other]
+    });
     assert_eq!(walks.len(), 1);
     let boundary: Vec<_> = walks[0]
         .iter()
@@ -2565,7 +2529,7 @@ fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
         partition.stored_node(XY::new(0.0, 4.0)).unwrap(),
     ]);
     let mut retained = vec![true; partition.spans.len()];
-    let identity = faces.quotient(&topology, &edges, &retained).unwrap();
+    let identity = faces.quotient(&topology, &edges, &retained);
     for (face, &mapped) in identity.iter().enumerate() {
         assert_eq!(mapped as usize, face);
     }
@@ -2575,7 +2539,7 @@ fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
             retained[edge] = false;
         }
     }
-    let merged = faces.quotient(&topology, &edges, &retained).unwrap();
+    let merged = faces.quotient(&topology, &edges, &retained);
     assert_eq!(merged[0], 0);
     assert_ne!(merged[1], 0);
     assert_eq!(merged[1], merged[2]);
@@ -2583,7 +2547,7 @@ fn omitted_atoms_merge_faces_and_preserve_isolated_hosts() {
     let host = faces.component_hosts[topology.component_of[point.0 as usize] as usize];
     assert_eq!(merged[host as usize], merged[1]);
     retained.fill(false);
-    let erased = faces.quotient(&topology, &edges, &retained).unwrap();
+    let erased = faces.quotient(&topology, &edges, &retained);
     assert_eq!(erased, [0, 0, 0]);
 }
 
@@ -2621,7 +2585,8 @@ fn face_windings_cancel_opposite_sources_and_ignore_open_linework() {
 #[test]
 fn degenerate_unique_without_isolated_slice_does_not_vanish() {
     let (unique, provenance) =
-        dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 0.0), seg(1.0, 1.0, 1.0, 1.0)]);
+        dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 0.0), seg(1.0, 1.0, 1.0, 1.0)])
+            .unwrap();
     let mut budget = ExpansionBudget::new("exact_partition", "items");
     let partition = partition_unique_segments(&unique, &provenance, &[], &mut budget).unwrap();
     assert!(partition.stored_node(XY::new(1.0, 1.0)).is_some());
@@ -2663,7 +2628,8 @@ fn full_finite_exponent_pair_is_five_nodes_four_spans() {
 #[test]
 fn isolated_on_line_cuts_the_edge() {
     let mut budget = ExpansionBudget::new("exact_partition", "items");
-    let (unique, provenance) = dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 0.0)]);
+    let (unique, provenance) =
+        dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 0.0)]).unwrap();
     let partition =
         partition_unique_segments(&unique, &provenance, &[XY::new(1.0, 0.0)], &mut budget).unwrap();
     assert_eq!(partition.node_count(), 3);
@@ -2682,7 +2648,8 @@ fn isolated_on_line_cuts_the_edge() {
 fn isolated_at_crossing_is_stored_not_constructed() {
     let mut budget = ExpansionBudget::new("exact_partition", "items");
     let (unique, provenance) =
-        dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 2.0), seg(0.0, 2.0, 2.0, 0.0)]);
+        dedup_undirected_segments_sourced(vec![seg(0.0, 0.0, 2.0, 2.0), seg(0.0, 2.0, 2.0, 0.0)])
+            .unwrap();
     let partition =
         partition_unique_segments(&unique, &provenance, &[XY::new(1.0, 1.0)], &mut budget).unwrap();
     assert_eq!(partition.node_count(), 5);
@@ -2851,7 +2818,7 @@ fn star_crossings_keep_one_recipe_per_constructed_node() {
         assert_exact_at(&partition, node, [&dyadic(point.x), &one], [&zero, &one]);
         found.push(point.x);
     }
-    found.sort_by(f64::total_cmp);
+    found.sort_unstable_by(f64::total_cmp);
     assert_eq!(found, [1.0, 2.0, 3.0, 4.0]);
 }
 

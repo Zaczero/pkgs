@@ -17,7 +17,6 @@ use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
 use crate::geometry::tessellation::exact::{Interval, compare_ratios};
 use crate::geometry::{GeometryErrorKind, Result, XY};
-use crate::{try_push_vec, try_reserve_vec};
 
 /// Points a leftward ray sweep reads: rounded coordinates, an order on each
 /// axis, and orientation.
@@ -189,8 +188,7 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
     edge: E,
     queries: &[u32],
 ) -> Result<Vec<Option<u32>>> {
-    let mut order = Vec::new();
-    try_reserve_vec(&mut order, queries.len())?;
+    let mut order = Vec::with_capacity(queries.len());
     order.extend(0..queries.len());
     points.sort_by_axis(&mut order, Axis::Y, |index| queries[index], |_, _| Ok(()))?;
     // [lower, upper, edge] for the edges some ray crosses: a horizontal or
@@ -210,16 +208,14 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
             && points.compare_axis(queries[query], upper, Axis::Y)? == Ordering::Less
         {
             let index = u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?;
-            try_push_vec(&mut starts, [lower, upper, index])?;
+            starts.push([lower, upper, index]);
         }
     }
-    let mut ends = Vec::new();
-    try_reserve_vec(&mut ends, starts.len())?;
+    let mut ends = Vec::with_capacity(starts.len());
     ends.extend_from_slice(&starts);
     points.sort_by_axis(&mut starts, Axis::Y, |[lower, ..]| lower, |_, _| Ok(()))?;
     points.sort_by_axis(&mut ends, Axis::Y, |[_, upper, _]| upper, |_, _| Ok(()))?;
-    let mut answers = Vec::new();
-    try_reserve_vec(&mut answers, queries.len())?;
+    let mut answers = Vec::with_capacity(queries.len());
     answers.resize(queries.len(), None);
 
     let orientation = |a, b, c| {
@@ -247,8 +243,7 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
             negative(lower, upper, end)
         }
     };
-    let mut status: Vec<[u32; 3]> = Vec::new();
-    try_reserve_vec(&mut status, starts.len())?;
+    let mut status: Vec<[u32; 3]> = Vec::with_capacity(starts.len());
     let (mut next_start, mut next_end, mut next_query) = (0, 0, 0);
     while next_query < order.len() {
         let mut height = queries[order[next_query]];

@@ -16,7 +16,6 @@ use crate::geometry::{
     CoordSeq, CoordinateAxes, CoverageOverlapRule, ExactRationalArea, GeometryErrorKind, HashMap,
     Point, Polygon, Result, Ring, Shape, point_distance,
 };
-use crate::{try_push_vec, try_reserve_vec};
 
 impl ExactSourceInventory {
     /// Visit each global face with the rows whose exact areal supports occupy
@@ -31,8 +30,8 @@ impl ExactSourceInventory {
         row_count: usize,
         mut visit: impl FnMut(u32, &[usize]) -> Result<()>,
     ) -> Result<()> {
-        let winding_rings = self.winding_source_rings()?;
-        let mut state = CoverageFaceState::new(self.polygon_count, row_count)?;
+        let winding_rings = self.winding_source_rings();
+        let mut state = CoverageFaceState::new(self.polygon_count, row_count);
         partition.visit_face_windings_with_hook(
             topology,
             edges,
@@ -87,17 +86,13 @@ impl ExactSourceInventory {
             metrics.global_faces = global.count as usize;
         });
         let (face_starts, face_slots) = self.global_face_slots(&topology, &edges, &global)?;
-        let mut face_owners = Vec::new();
-        try_reserve_vec(&mut face_owners, global.count as usize)?;
+        let mut face_owners = Vec::with_capacity(global.count as usize);
         face_owners.resize(global.count as usize, u32::MAX);
-        let mut face_seen = Vec::new();
-        try_reserve_vec(&mut face_seen, global.count as usize)?;
+        let mut face_seen = Vec::with_capacity(global.count as usize);
         face_seen.resize(global.count as usize, false);
 
-        let mut candidates = Vec::new();
-        try_reserve_vec(&mut candidates, row_count)?;
-        let mut border_lengths = Vec::new();
-        try_reserve_vec(&mut border_lengths, row_count)?;
+        let mut candidates = Vec::with_capacity(row_count);
+        let mut border_lengths = Vec::with_capacity(row_count);
         border_lengths.resize(row_count, 0.0);
         let mut seen_rows = Vec::new();
 
@@ -119,9 +114,8 @@ impl ExactSourceInventory {
                     return Ok(());
                 }
                 candidates.clear();
-                for &row in active_rows {
-                    try_push_vec(&mut candidates, row)?;
-                }
+                candidates.reserve(active_rows.len());
+                candidates.extend_from_slice(active_rows);
                 candidates.sort_unstable();
                 let needs_stats = candidates.is_empty() && gap_width > 0.0
                     || candidates.len() > 1
@@ -214,7 +208,7 @@ impl ExactSourceInventory {
         });
         ExactPartition::check_node_injectivity(
             &output_nodes,
-            &partition.round_nodes(&output_nodes)?,
+            &partition.round_nodes(&output_nodes),
         )?;
         let by_node = self.resolve_node_points(
             partition,
@@ -223,28 +217,24 @@ impl ExactSourceInventory {
             declared_axes,
         )?;
 
-        let mut outputs = Vec::new();
-        try_reserve_vec(&mut outputs, row_count)?;
+        let mut outputs = Vec::with_capacity(row_count);
         for row in 0..row_count_u32 {
             let mut cells = ArealCells {
                 faces: Vec::new(),
                 spans: Vec::new(),
                 nodes: Vec::new(),
             };
-            try_reserve_vec(&mut cells.faces, face_owners.len())?;
+            cells.faces.reserve(face_owners.len());
             for &owner in &face_owners {
-                try_push_vec(&mut cells.faces, owner == row)?;
+                cells.faces.push(owner == row);
             }
-            try_reserve_vec(&mut cells.spans, partition.spans.len())?;
+            cells.spans.reserve(partition.spans.len());
             cells.spans.resize(partition.spans.len(), false);
-            try_reserve_vec(&mut cells.nodes, partition.node_count())?;
+            cells.nodes.reserve(partition.node_count());
             cells.nodes.resize(partition.node_count(), false);
             let plan = cells.emission_plan(partition, &topology, &edges, &global)?;
             let parts = plan.emit_node_parts_with_shared_rounding(partition, &topology)?;
-            try_push_vec(
-                &mut outputs,
-                self.coverage_shape_from_node_parts(parts, &by_node, declared_axes)?,
-            )?;
+            outputs.push(self.coverage_shape_from_node_parts(parts, &by_node, declared_axes)?);
         }
         #[cfg(test)]
         update_partition_metrics(|metrics| {
@@ -299,7 +289,7 @@ impl ExactSourceInventory {
         let node_capacity = boundary_spans
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut output_nodes, node_capacity)?;
+        output_nodes.reserve(node_capacity);
         for (slot, &edge) in edges.iter().enumerate() {
             let twin = topology.twins[slot] as usize;
             if slot > twin {
@@ -311,8 +301,8 @@ impl ExactSourceInventory {
                 continue;
             }
             let span = partition.spans[edge as usize];
-            try_push_vec(&mut output_nodes, span.start)?;
-            try_push_vec(&mut output_nodes, span.end)?;
+            output_nodes.push(span.start);
+            output_nodes.push(span.end);
         }
         output_nodes.sort_unstable_by_key(|node| node.0);
         output_nodes.dedup_by_key(|node| node.0);
@@ -360,7 +350,7 @@ impl ExactSourceInventory {
                 if seen_rows.contains(&operand) {
                     continue;
                 }
-                try_push_vec(seen_rows, operand)?;
+                seen_rows.push(operand);
                 let operand = operand as usize;
                 let border = border_lengths.get_mut(operand).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
@@ -393,45 +383,33 @@ impl ExactSourceInventory {
             .try_fold(0_usize, |count, ring| {
                 count.checked_add(ring).ok_or(ResourceError::SizeOverflow)
             })?;
-        let mut nodes = Vec::new();
-        try_reserve_vec(&mut nodes, node_count)?;
+        let mut nodes = Vec::with_capacity(node_count);
         for polygon in &parts.polygons {
             for ring in polygon {
-                for &node in ring {
-                    try_push_vec(&mut nodes, node)?;
-                }
+                nodes.extend_from_slice(ring);
             }
         }
         let axes = bucket_axes(&nodes, by_node, declared_axes, false, "coverage_clean")?;
-        let mut polygons = Vec::new();
-        try_reserve_vec(&mut polygons, parts.polygons.len())?;
+        let mut polygons = Vec::with_capacity(parts.polygons.len());
         for polygon in parts.polygons {
-            let mut rings = Vec::new();
-            try_reserve_vec(&mut rings, polygon.len())?;
+            let mut rings = Vec::with_capacity(polygon.len());
             for ring in polygon {
-                let mut points = Vec::new();
-                try_reserve_vec(&mut points, ring.len())?;
+                let mut points = Vec::with_capacity(ring.len());
                 for node in ring {
                     let point = by_node.get(&node).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
                             "exact coverage output lost a rounded node".into(),
                         )
                     })?;
-                    try_push_vec(&mut points, with_axes(*point, axes))?;
+                    points.push(with_axes(*point, axes));
                 }
-                try_push_vec(
-                    &mut rings,
-                    Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
-                )?;
+                rings.push(Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?);
             }
             let mut rings = rings.into_iter();
             let shell = rings.next().expect("coverage polygon has a shell");
-            let mut holes = Vec::new();
-            try_reserve_vec(&mut holes, rings.size_hint().0)?;
-            for ring in rings {
-                try_push_vec(&mut holes, ring)?;
-            }
-            try_push_vec(&mut polygons, Polygon::new(shell, holes)?)?;
+            let mut holes = Vec::with_capacity(rings.size_hint().0);
+            holes.extend(rings);
+            polygons.push(Polygon::new(shell, holes)?);
         }
         Shape::narrow_polygons(axes, polygons)
     }

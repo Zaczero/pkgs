@@ -11,13 +11,12 @@ use super::{
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
 use crate::geometry::{De9im, Dimension, GeometryErrorKind, HashMap, Loc, Result, RingKind};
-use crate::{try_push_vec, try_reserve_vec};
 
 impl ExactSourceInventory {
     pub(in crate::geometry) fn relate(&self, partition: &ExactPartition<'_>) -> Result<De9im> {
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let winding_rings = self.winding_source_rings()?;
+        let winding_rings = self.winding_source_rings();
         let facts =
             self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
         let line_boundaries = self.node_source_flags(partition)?;
@@ -100,39 +99,34 @@ impl ExactSourceInventory {
             span_faces,
             point_membership: Vec::new(),
         };
-        try_reserve_vec(&mut facts.face_membership, face_cells)?;
+        facts.face_membership.reserve(face_cells);
         facts.face_membership.resize(face_cells, false);
-        try_reserve_vec(&mut facts.span_raw, raw_cells)?;
+        facts.span_raw.reserve(raw_cells);
         facts.span_raw.resize(raw_cells, false);
-        try_reserve_vec(&mut facts.span_curve, span_cells)?;
+        facts.span_curve.reserve(span_cells);
         facts.span_curve.resize(span_cells, false);
-        try_reserve_vec(&mut facts.span_support, span_cells)?;
+        facts.span_support.reserve(span_cells);
         facts.span_support.resize(span_cells, false);
         let node_cells = partition
             .node_count()
             .checked_mul(operands)
             .ok_or(ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut facts.point_membership, node_cells)?;
+        facts.point_membership.reserve(node_cells);
         facts.point_membership.resize(node_cells, false);
         let mut shell_support = Vec::new();
         let mut hole_support = Vec::new();
-        try_reserve_vec(&mut shell_support, self.polygon_count)?;
-        try_reserve_vec(&mut hole_support, self.polygon_count)?;
+        shell_support.reserve(self.polygon_count);
+        hole_support.reserve(self.polygon_count);
         shell_support.resize(self.polygon_count, false);
         hole_support.resize(self.polygon_count, false);
-        let mut touched_polygons = Vec::new();
-        try_reserve_vec(&mut touched_polygons, partition.spans.len())?;
-        let mut point_sources_by_node = Vec::new();
-        try_reserve_vec(&mut point_sources_by_node, partition.point_sources.len())?;
+        let mut touched_polygons = Vec::with_capacity(partition.spans.len());
+        let mut point_sources_by_node = Vec::with_capacity(partition.point_sources.len());
         point_sources_by_node.extend_from_slice(&partition.point_sources);
         point_sources_by_node.sort_unstable_by_key(|(node, _)| node.0);
         let mut point_polygon_index =
             HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        point_polygon_index
-            .try_reserve(partition.point_sources.len())
-            .map_err(crate::error::Error::from)?;
-        let mut point_polygon_states = Vec::new();
-        try_reserve_vec(&mut point_polygon_states, partition.point_sources.len())?;
+        point_polygon_index.reserve(partition.point_sources.len());
+        let mut point_polygon_states = Vec::with_capacity(partition.point_sources.len());
         let mut point_shell_faces = Vec::new();
         for &(node, source) in &partition.point_sources {
             let source_index = source as usize;
@@ -151,24 +145,18 @@ impl ExactSourceInventory {
                 let state = u32::try_from(point_polygon_states.len())
                     .map_err(|_| ResourceError::SizeOverflow)?;
                 point_polygon_index.insert((node, polygon), state);
-                try_reserve_vec(&mut point_polygon_states, 1)?;
-                try_push_vec(&mut point_polygon_states, (node, polygon, false))?;
+                point_polygon_states.push((node, polygon, false));
                 state
             };
             let range = topology.starts[node.0 as usize] as usize
                 ..topology.starts[node.0 as usize + 1] as usize;
             if range.is_empty() {
                 let component = topology.component_of[node.0 as usize] as usize;
-                try_push_vec(
-                    &mut point_shell_faces,
-                    (global.component_hosts[component], state),
-                )?;
+                point_shell_faces.push((global.component_hosts[component], state));
             } else {
                 for slot in range {
-                    try_push_vec(
-                        &mut point_shell_faces,
-                        (global.walk_faces[topology.face_of[slot] as usize], state),
-                    )?;
+                    point_shell_faces
+                        .push((global.walk_faces[topology.face_of[slot] as usize], state));
                 }
             }
         }
@@ -247,8 +235,7 @@ impl ExactSourceInventory {
                         }
                         let polygon = self.ring_polygons[ring as usize] as usize;
                         if !shell_support[polygon] && !hole_support[polygon] {
-                            try_reserve_vec(&mut touched_polygons, 1)?;
-                            try_push_vec(&mut touched_polygons, polygon as u32)?;
+                            touched_polygons.push(polygon as u32);
                         }
                         if self.ring_holes[ring as usize] {
                             hole_support[polygon] = true;
@@ -326,36 +313,16 @@ impl ExactSourceInventory {
         global: &GlobalFaces,
     ) -> Result<(Vec<u32>, Vec<u32>)> {
         let count = global.count as usize;
-        let mut counts = Vec::new();
-        try_reserve_vec(&mut counts, count)?;
-        counts.resize(count, 0_u32);
+        let mut counts = vec![0_u32; count];
         for &walk in &topology.face_of {
             let face = global.walk_faces[walk as usize] as usize;
             counts[face] = counts[face]
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
         }
-        let mut starts: Vec<u32> = Vec::new();
-        try_reserve_vec(
-            &mut starts,
-            count.checked_add(1).ok_or(ResourceError::SizeOverflow)?,
-        )?;
-        try_push_vec(&mut starts, 0)?;
-        for count in counts {
-            let next = starts
-                .last()
-                .copied()
-                .unwrap_or(0_u32)
-                .checked_add(count)
-                .ok_or(ResourceError::SizeOverflow)?;
-            try_push_vec(&mut starts, next)?;
-        }
-        let mut slots = Vec::new();
-        try_reserve_vec(&mut slots, topology.face_of.len())?;
-        slots.resize(topology.face_of.len(), 0);
-        let mut cursor = Vec::new();
-        try_reserve_vec(&mut cursor, count)?;
-        cursor.extend_from_slice(&starts[..count]);
+        let starts = super::placement_offsets(&mut counts)?;
+        let mut cursor = counts;
+        let mut slots = vec![0; topology.face_of.len()];
         for (slot, &walk) in topology.face_of.iter().enumerate() {
             let face = global.walk_faces[walk as usize] as usize;
             let index = cursor[face] as usize;
@@ -377,7 +344,7 @@ impl ExactSourceInventory {
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)
         })?;
-        try_reserve_vec(&mut faces, face_capacity)?;
+        faces.reserve(face_capacity);
         if !edges.is_empty() {
             faces.resize(face_capacity, [u32::MAX; 2]);
         }
@@ -441,14 +408,11 @@ impl ExactSourceInventory {
             .node_count()
             .checked_mul(operands)
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut line_boundaries = Vec::new();
-        try_reserve_vec(&mut line_boundaries, cells)?;
+        let mut line_boundaries = Vec::with_capacity(cells);
         line_boundaries.resize(cells, false);
 
         let mut stored = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        stored
-            .try_reserve(partition.node_count())
-            .map_err(crate::error::Error::from)?;
+        stored.reserve(partition.node_count());
         for index in 0..partition.node_count() {
             if let Some(key) = partition.stored_key(index) {
                 stored.insert(key, index as u32);
@@ -564,7 +528,7 @@ impl ExactSourceInventory {
         operation: crate::geometry::OverlayOp,
         odd: bool,
     ) -> Result<ArealCells> {
-        let winding_rings = self.winding_source_rings()?;
+        let winding_rings = self.winding_source_rings();
         self.select_cells_with_winding_rings(
             partition,
             topology,
@@ -594,11 +558,11 @@ impl ExactSourceInventory {
             spans: Vec::new(),
             nodes: Vec::new(),
         };
-        try_reserve_vec(&mut cells.faces, global.count as usize)?;
+        cells.faces.reserve(global.count as usize);
         cells.faces.resize(global.count as usize, false);
-        try_reserve_vec(&mut cells.spans, partition.spans.len())?;
+        cells.spans.reserve(partition.spans.len());
         cells.spans.resize(partition.spans.len(), false);
-        try_reserve_vec(&mut cells.nodes, partition.node_count())?;
+        cells.nodes.reserve(partition.node_count());
         cells.nodes.resize(partition.node_count(), false);
         for face in 0..global.count as usize {
             cells.faces[face] = select_operation(
@@ -611,8 +575,7 @@ impl ExactSourceInventory {
             .node_count()
             .checked_mul(operands)
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut node_membership = Vec::new();
-        try_reserve_vec(&mut node_membership, node_cells)?;
+        let mut node_membership = Vec::with_capacity(node_cells);
         node_membership.resize(node_cells, false);
         for span_index in 0..partition.spans.len() {
             let membership = &facts.span_support[span_index * operands..][..operands];
@@ -661,16 +624,14 @@ impl ExactSourceInventory {
         Ok(cells)
     }
 
-    pub(super) fn linework_source_rings(&self) -> Result<Vec<Option<u32>>> {
-        let mut winding_rings = Vec::new();
-        try_reserve_vec(&mut winding_rings, self.source_rings.len())?;
-        for (&ring, &kind) in self.source_rings.iter().zip(&self.source_ring_kinds) {
-            try_push_vec(
-                &mut winding_rings,
+    pub(super) fn linework_source_rings(&self) -> Vec<Option<u32>> {
+        self.source_rings
+            .iter()
+            .zip(&self.source_ring_kinds)
+            .map(|(&ring, &kind)| {
                 matches!(kind, Some(RingKind::Winding))
-                    .then(|| ring.expect("a ring source always carries its ring identity")),
-            )?;
-        }
-        Ok(winding_rings)
+                    .then(|| ring.expect("a ring source always carries its ring identity"))
+            })
+            .collect()
     }
 }
