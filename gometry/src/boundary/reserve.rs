@@ -1,30 +1,27 @@
-//! Checked reservation for untrusted external counts and length hints.
+//! Checked layouts and bounded reservations for external counts and hints.
 //!
 //! Public Arrow lengths, Python `__len__` values, and multi-chunk coordinate
-//! totals are attacker-controlled. Infallibly calling `Vec::with_capacity` on
-//! them panics with capacity overflow; this module is the single fallible
-//! reservation keystone used at every such site.
+//! totals are attacker-controlled. This module rejects arithmetic and Rust
+//! layout overflow before allocation; allocator exhaustion itself follows the
+//! process-fatal native contract.
 //!
 //! ## Hints vs validated totals
 //!
-//! - **Hints** (`try_reserve_hint`): Python `__len__` and similar presizing
+//! - **Hints** (`reserve_hint`): Python `__len__` and similar presizing
 //!   guesses. Oversized hints are **clamped** (never a rejection that changes
-//!   validity); growth remains fallible via `try_reserve`.
+//!   validity).
 //! - **Validated totals** (`try_reserve_total` / `try_vec_with_capacity`):
 //!   checked sums of Arrow lengths and other exact, already-validated counts.
-//!   These use **uncapped** fallible reservation so multi-chunk import cannot
-//!   reject a total that single-chunk would accept. The allocator may still
-//!   fail cleanly with `MemoryError`.
+//!   These use **uncapped** checked-layout reservation so multi-chunk import
+//!   cannot reject a total that single-chunk would accept.
 //!
 //! ## No artificial element-count caps
 //!
 //! Valid large finite inputs (lists, generators of the same length) must share
-//! one outcome: success or clean proportional `MemoryError` from the allocator.
+//! one outcome: success or process-fatal native allocator exhaustion.
 //! Never reject with "too large to materialize" or a bare-stream ceiling; that
 //! invents a list-vs-generator asymmetry. The collector's retained output
-//! grows fallibly; a caller's per-item mapping must also use fallible
-//! allocation when it owns separate storage on an unbounded path (see
-//! [`collect_py_iter`]).
+//! grows proportionally (see [`collect_py_iter`]).
 
 use std::collections::BinaryHeap;
 
@@ -33,15 +30,12 @@ use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PySequence};
 
 use crate::error::{ResourceError, Result};
-use crate::py::errors::native_memory_error;
 
 /// Soft upper bound for a single **initial** reservation from an external
 /// length *hint* (`__len__`, etc.). Large enough to avoid thrash on typical
 /// batch sizes; small enough that a lying `sys.maxsize` / `i64::MAX` hint
 /// cannot force a multi-gigabyte empty `Vec` before the first item is
-/// yielded. Growth after the first item stays fallible via `try_reserve` /
-/// `try_reserve_next` on actual observed elements — never promote a hint to
-/// an exact allocation or iteration count (AGENTS carrier 3).
+/// yielded. Never promote a hint to an exact allocation or iteration count.
 pub(crate) const MAX_RESERVE_HINT: usize = 1 << 12; // 4096 elements
 
 /// Check pending Python signals often enough that a native loop over a Python
@@ -93,42 +87,34 @@ pub(crate) fn advisory_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> 
     value.len().map(Some)
 }
 
-/// Reserve output storage without constructing an error while the old buffer
-/// is still retained. The caller owns the Python conversion of the compact
-/// resource error.
-pub(crate) fn try_reserve_vec<T>(vec: &mut Vec<T>, additional: usize) -> Result<()> {
-    if additional == 0 {
-        return Ok(());
-    }
-    vec.try_reserve(additional).map_err(|_| {
-        *vec = Vec::new();
-        ResourceError::Allocation.into()
-    })
-}
-
-/// Fallibly append one value to Rust-owned output storage. The value and the
-/// retained vector are released before the allocation error is returned, so
-/// the caller has address-space headroom to build one.
-fn try_push_with<T, E>(vec: &mut Vec<T>, value: T, on_oom: impl FnOnce() -> E) -> Result<(), E> {
-    if vec.len() == vec.capacity() {
-        std::hint::cold_path();
-        if grow_for_push(vec).is_err() {
-            drop(value);
-            return Err(on_oom());
-        }
-    }
-    // Capacity is ensured above; `push` would carry its own infallible growth
-    // path, and its size keeps this helper from inlining.
-    let _ = vec.push_within_capacity(value);
+fn check_vec_capacity<T>(len: usize, additional: usize) -> Result<()> {
+    let capacity = len
+        .checked_add(additional)
+        .ok_or(ResourceError::SizeOverflow)?;
+    std::alloc::Layout::array::<T>(capacity).map_err(|_| ResourceError::SizeOverflow)?;
     Ok(())
 }
 
-/// [`try_push_with`] reporting the crate's allocation error.
-pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
-    try_push_with(vec, value, || ResourceError::Allocation.into())
+/// Reserve output storage after rejecting an impossible element layout.
+/// Allocator exhaustion follows Rust's process-fatal native contract.
+pub(crate) fn try_reserve_vec<T>(vec: &mut Vec<T>, additional: usize) -> Result<()> {
+    check_vec_capacity::<T>(vec.len(), additional)?;
+    vec.reserve(additional);
+    Ok(())
 }
 
-/// Collect fallible items into fallibly grown storage: the iterator's lower
+/// Append one value after rejecting the only recoverable failure: an
+/// impossible element layout.
+pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
+    if vec.len() == vec.capacity() {
+        std::hint::cold_path();
+        check_vec_capacity::<T>(vec.len(), 1)?;
+    }
+    vec.push(value);
+    Ok(())
+}
+
+/// Collect fallible items into checked-layout storage: the iterator's lower
 /// size bound is reserved up front, and the first error ends the collection.
 pub(crate) fn try_collect_vec<T, E>(
     items: impl IntoIterator<Item = std::result::Result<T, E>>,
@@ -145,77 +131,51 @@ where
     Ok(out)
 }
 
-/// Grow a full vector for the next push — double it, starting at 8 — and
-/// release its storage when the allocator refuses.
-fn grow_for_push<T>(vec: &mut Vec<T>) -> Result<(), ()> {
-    let additional = vec.capacity().max(8);
-    vec.try_reserve(additional).map_err(|_| *vec = Vec::new())
-}
-
-/// Reserve two parallel output columns as one fallible operation. If the
-/// second reservation fails, release the first column before the caller maps
-/// the resource error to a Python exception.
+/// Reserve two parallel output columns after checking both layouts.
 pub(crate) fn try_reserve_pair<T, U>(
     left: &mut Vec<T>,
     right: &mut Vec<U>,
     additional: usize,
 ) -> Result<()> {
-    if let Err(error) = try_reserve_vec(left, additional) {
-        *right = Vec::new();
-        return Err(error);
-    }
-    if let Err(error) = try_reserve_vec(right, additional) {
-        *left = Vec::new();
-        return Err(error);
-    }
+    check_vec_capacity::<T>(left.len(), additional)?;
+    check_vec_capacity::<U>(right.len(), additional)?;
+    left.reserve(additional);
+    right.reserve(additional);
     Ok(())
 }
 
-/// Append one item to each of two parallel output columns. A failure in the
-/// second append releases both columns before the error is converted.
+/// Append one item to each parallel column after both resulting layouts fit.
 pub(crate) fn try_push_pair<T, U>(
     left: &mut Vec<T>,
     right: &mut Vec<U>,
     left_value: T,
     right_value: U,
 ) -> Result<()> {
-    if let Err(error) = try_push_vec(left, left_value) {
-        drop(right_value);
-        *right = Vec::new();
-        return Err(error);
+    if left.len() == left.capacity() {
+        check_vec_capacity::<T>(left.len(), 1)?;
     }
-    if let Err(error) = try_push_vec(right, right_value) {
-        *left = Vec::new();
-        return Err(error);
+    if right.len() == right.capacity() {
+        check_vec_capacity::<U>(right.len(), 1)?;
     }
+    left.push(left_value);
+    right.push(right_value);
     Ok(())
 }
 
-/// Fallibly append one ordered work item to a heap used as a traversal
-/// frontier. The heap is released before returning an allocation error.
+/// Append one ordered work item after checking the heap element layout.
 pub(crate) fn try_push_heap<T: Ord>(heap: &mut BinaryHeap<T>, value: T) -> Result<()> {
     if heap.len() == heap.capacity() {
-        let additional = heap.capacity().max(8);
-        if heap.try_reserve(additional).is_err() {
-            drop(value);
-            *heap = BinaryHeap::new();
-            return Err(ResourceError::Allocation.into());
-        }
+        check_vec_capacity::<T>(heap.len(), 1)?;
     }
     heap.push(value);
     Ok(())
 }
 
-/// Fallibly reserve a known heap capacity, releasing the heap if the
-/// allocation is refused.
+/// Reserve a known heap capacity after checking its element layout.
 pub(crate) fn try_reserve_heap<T>(heap: &mut BinaryHeap<T>, additional: usize) -> Result<()> {
-    if additional == 0 {
-        return Ok(());
-    }
-    heap.try_reserve(additional).map_err(|_| {
-        *heap = BinaryHeap::new();
-        ResourceError::Allocation.into()
-    })
+    check_vec_capacity::<T>(heap.len(), additional)?;
+    heap.reserve(additional);
+    Ok(())
 }
 
 /// One generic CSR owner for ragged output. Every row end is monotonic and
@@ -323,9 +283,7 @@ impl<T> CsrBuilder<T> {
     }
 }
 
-/// Fallible collection for a Python-facing result iterator. Unlike
-/// `Iterator::collect`, outer growth is routed through the shared reserve
-/// policy and retained output is dropped by `try_push` on allocation failure.
+/// Collect a Python-facing result iterator while preserving its first error.
 pub(crate) fn try_collect_results<T>(
     values: impl IntoIterator<Item = PyResult<T>>,
 ) -> PyResult<Vec<T>> {
@@ -343,40 +301,28 @@ pub(crate) fn try_collect_results<T>(
     Ok(out)
 }
 
-/// Fallibly reserve capacity for `additional` more elements, treating the
-/// count as an untrusted **hint**. Oversized hints are clamped to
-/// [`MAX_RESERVE_HINT`] (never rejected); `try_reserve` turns overflow / OOM
-/// into a clean Python error instead of a panic. This only sizes the initial
-/// chunk — honest large streams grow fallibly as items arrive.
-pub(crate) fn try_reserve_hint<T>(vec: &mut Vec<T>, additional: usize) -> PyResult<()> {
-    let additional = additional.min(MAX_RESERVE_HINT);
-    if additional == 0 {
-        return Ok(());
-    }
-    if vec.try_reserve(additional).is_err() {
-        *vec = Vec::new();
-        return Err(native_memory_error());
-    }
-    Ok(())
+/// Reserve from an untrusted **hint** without letting the hint affect
+/// validity. The reservation is clamped to both the advisory bound and `T`'s
+/// remaining addressable layout.
+pub(crate) fn reserve_hint<T>(vec: &mut Vec<T>, additional: usize) {
+    let element_size = std::mem::size_of::<T>();
+    let max_capacity = (isize::MAX as usize)
+        .checked_div(element_size)
+        .unwrap_or(usize::MAX);
+    let additional = additional
+        .min(MAX_RESERVE_HINT)
+        .min(max_capacity.saturating_sub(vec.len()));
+    vec.reserve(additional);
 }
 
-/// Fallibly reserve capacity for an exact, **validated** total (checked Arrow
-/// length sums, known array lengths, etc.). No soft cap — multi-chunk and
-/// single-chunk paths share the same validity; only the allocator can fail.
+/// Reserve capacity for an exact external total after checking Rust's layout.
 pub(crate) fn try_reserve_total<T>(vec: &mut Vec<T>, additional: usize) -> PyResult<()> {
-    if additional == 0 {
-        return Ok(());
-    }
-    if vec.try_reserve(additional).is_err() {
-        *vec = Vec::new();
-        return Err(native_memory_error());
-    }
+    check_vec_capacity::<T>(vec.len(), additional).map_err(PyErr::from)?;
+    vec.reserve(additional);
     Ok(())
 }
 
-/// Build an empty `Vec` with a fallible capacity reservation from a validated
-/// total (checked sum of external lengths, etc.). Uncapped — see
-/// [`try_reserve_total`].
+/// Build an empty `Vec` from a validated external total.
 pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
     let mut vec = Vec::new();
     try_reserve_total(&mut vec, capacity)?;
@@ -384,19 +330,15 @@ pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
 }
 
 /// Build an empty `Vec` from an untrusted length hint (clamped).
-pub(crate) fn try_vec_with_capacity_hint<T>(capacity: usize) -> PyResult<Vec<T>> {
+pub(crate) fn vec_with_capacity_hint<T>(capacity: usize) -> Vec<T> {
     let mut vec = Vec::new();
-    try_reserve_hint(&mut vec, capacity)?;
-    Ok(vec)
+    reserve_hint(&mut vec, capacity);
+    vec
 }
 
-/// Fallibly push one element, growing capacity without trusting a bulk hint.
-///
-/// On OOM the **item is dropped** with the vector contents before the native
-/// exception is raised, so Python error adoption has address-space headroom
-/// under `RLIMIT_AS`.
+/// Push one element while retaining a typed layout-overflow error.
 pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
-    try_push_with(vec, item, native_memory_error)
+    try_push_vec(vec, item).map_err(PyErr::from)
 }
 
 /// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
@@ -443,11 +385,11 @@ pub(crate) fn collect_bool_mask(
     })
 }
 
-/// Collect sequence elements once (classify + materialize in one pass) with
-/// fallible reservation. Never uses generic `Vec<T>: FromPyObject`.
+/// Collect sequence elements once (classify + materialize in one pass) without
+/// trusting a reported length. Never uses generic `Vec<T>: FromPyObject`.
 pub(crate) fn collect_sequence_items(sequence: &Bound<'_, PySequence>) -> PyResult<Vec<Py<PyAny>>> {
     // Prefer the iterator protocol so a lying `__len__` cannot force a huge
-    // empty allocation; fallible per-item growth handles real large sequences.
+    // empty allocation; observed elements drive real growth.
     let any = sequence.as_any();
     match any.try_iter() {
         Ok(iter) => {
@@ -533,8 +475,8 @@ fn extract_bytes_payload(item: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     })
 }
 
-/// Copy a one-byte Python buffer into exclusive Rust storage with fallible
-/// allocation. This is the owning counterpart to [`with_one_byte_buffer`].
+/// Copy a one-byte Python buffer into exclusive Rust storage. This is the
+/// owning counterpart to [`with_one_byte_buffer`].
 /// The source producer must remain quiescent until the copy returns; owning
 /// the result does not synchronize the source read.
 pub(crate) fn copy_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
@@ -572,13 +514,11 @@ pub(crate) fn copy_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
     ))
 }
 
-/// Collect Python strings without making an infallible owned copy per item.
-/// Allocation failure drops already-retained strings before the Python error
-/// object is constructed.
+/// Collect Python strings while preserving provider and type errors.
 pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<String>> {
     let mut out = Vec::new();
     if let Some(hint) = advisory_len(values)? {
-        try_reserve_hint(&mut out, hint)?;
+        reserve_hint(&mut out, hint);
     }
     let iter = py_iter_or_error(values, || {
         PyTypeError::new_err(format!("{what} must be an iterable of strings"))
@@ -650,7 +590,7 @@ fn with_u8_buffer_owned<R>(
             "expected a one-byte buffer (itemsize 1)",
         ));
     }
-    // Copy into exclusively owned Rust storage with a fallible reservation.
+    // Copy into exclusively owned Rust storage.
     let mut owned = try_vec_with_capacity(buffer.item_count())?;
     owned.resize(buffer.item_count(), 0);
     buffer.copy_to_slice(py, &mut owned)?;
@@ -673,7 +613,7 @@ fn with_i8_buffer_owned<R>(
     buffer.copy_to_slice(py, &mut signed)?;
     // Bit-preserving i8 → u8 on exclusive storage (no alias into Python
     // memory). The types have identical layout, so this reuses the one
-    // fallibly allocated buffer instead of retaining two copies.
+    // allocated buffer instead of retaining two copies.
     let (ptr, len, capacity) = signed.into_raw_parts();
     // SAFETY: `i8` and `u8` are same-size, same-alignment byte types and every
     // element is initialized by `copy_to_slice` above.
@@ -721,35 +661,12 @@ fn try_i64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i64> {
 
 /// THE mandatory entry for every Python-iterable → `Vec` boundary.
 ///
-/// `__len__` is a clamped **hint** only; every element is grown via
-/// fallible reservation before the map runs. Callers that need a mapped type
-/// pass a closure; the identity map (`|item| Ok(item)`) materializes the raw
-/// `Bound` items.
+/// `__len__` is a clamped **hint** only. Callers that need a mapped type pass a
+/// closure; the identity map (`|item| Ok(item)`) materializes raw `Bound` items.
 ///
-/// Prefer this over `iter.collect::<PyResult<Vec<_>>>()` or bare `Vec::push`
-/// loops — those grow infallibly until Rust aborts on capacity overflow / OOM.
 /// There is no bare-stream element ceiling: a finite generator of N elements
-/// succeeds the same way as a list of N.
-///
-/// ## Full no-abort invariant (outer growth **and** the map)
-///
-/// Reservation-before-map alone is **not** the complete boundary. It only
-/// makes growth of the outer `Vec<T>` fallible. If `map` itself performs an
-/// infallible Rust heap allocation (e.g. `extract::<String>()`, `String::from`,
-/// an uncapped `Vec` push, `Arc::from` of a slice), that allocation can still
-/// abort under `RLIMIT_AS` with `memory allocation of N bytes failed` while
-/// the outer `try_reserve` still has room for another `T` slot. On unbounded
-/// public ingest paths the map must therefore either:
-/// - perform no per-item Rust heap allocation beyond what this collector
-///   already reserved (identity / `Copy` / Arc-clone of an existing handle), or
-/// - perform their own owned allocation before publication.
-///
-/// ## Drop retained output before raising
-///
-/// Under a tight address-space cap the retained `Vec` may be what exhausted
-/// the heap. Constructing a Rust `PyErr` while that `Vec` still holds every
-/// item aborts instead of raising. This collector drops `out` before provider
-/// and conversion errors are returned.
+/// has the same validity as a list of N. Provider and mapping errors stop the
+/// iteration and release retained output; native allocator exhaustion aborts.
 pub(crate) fn collect_py_iter<'py, T>(
     values: &Bound<'py, PyAny>,
     map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
@@ -770,7 +687,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
     let mut out = Vec::new();
     // Length is a clamped *hint* only — never a validity gate.
     if let Some(hint) = advisory_len(values)? {
-        try_reserve_hint(&mut out, hint)?;
+        reserve_hint(&mut out, hint);
     }
     let mut index = 0;
     loop {
@@ -784,10 +701,11 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
         };
         check_python_signals(values.py(), index)?;
         index = index.saturating_add(1);
-        // Reserve a slot for `T` before mapping so outer growth is fallible.
-        // Free retained items before raising the native error (see invariant).
-        if out.len() == out.capacity() && grow_for_push(&mut out).is_err() {
-            return Err(native_memory_error());
+        // Reject an impossible element layout before mapping; valid-layout
+        // native growth follows Rust's process-fatal allocator contract.
+        if out.len() == out.capacity() {
+            check_vec_capacity::<T>(out.len(), 1).map_err(PyErr::from)?;
+            out.reserve(1);
         }
         match map(item) {
             Ok(value) => out.push(value),
@@ -804,7 +722,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
 ///
 /// Stops after `expected + 1` elements so an unbounded iterator (e.g.
 /// `itertools.repeat`) cannot grow forever when the length is known from the
-/// receiver. Uses fallible exact reservation for the validated count.
+/// receiver. The validated count receives one checked-layout reservation.
 ///
 /// On length mismatch, `on_len` receives the observed count (or `expected + 1`
 /// when the iterator still has more). Domain callers use this for stable
@@ -847,7 +765,6 @@ pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
                 return Err(err);
             },
         };
-        // try_push frees `out` on OOM before boxing PyErr.
         try_push(&mut out, value)?;
     }
     if out.len() != expected {
@@ -919,16 +836,13 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    use pyo3::exceptions::PyMemoryError;
-
     use super::*;
-    use crate::test_support::fail_allocations_after;
 
     #[test]
     fn reserve_hint_clamps_instead_of_rejecting() {
         let mut v: Vec<u8> = Vec::new();
         // Formerly raised ValueError for additional > MAX_RESERVE_HINT.
-        try_reserve_hint(&mut v, MAX_RESERVE_HINT + 1).expect("hint must clamp, not reject");
+        reserve_hint(&mut v, MAX_RESERVE_HINT + 1);
         assert!(v.capacity() <= MAX_RESERVE_HINT);
         assert!(v.capacity() > 0);
     }
@@ -938,25 +852,13 @@ mod tests {
         let mut v: Vec<u8> = Vec::new();
         // Validated totals must not share the hint cap as a rejection.
         // Use u8 so the allocation stays ~64 MiB + 1, not f64-scale.
-        match try_reserve_total(&mut v, MAX_RESERVE_HINT + 1) {
-            Ok(()) => assert!(v.capacity() > MAX_RESERVE_HINT),
-            Err(err) => {
-                // OOM is acceptable; a "maximum reserve" ValueError is not.
-                let msg = err.to_string();
-                assert!(
-                    !msg.contains("maximum reserve")
-                        && !msg.contains("exceeds maximum")
-                        && !msg.contains("too large to materialize"),
-                    "validated total must not hit the hint cap: {msg}"
-                );
-            },
-        }
+        try_reserve_total(&mut v, MAX_RESERVE_HINT + 1).expect("small validated total");
+        assert!(v.capacity() > MAX_RESERVE_HINT);
     }
 
     #[test]
-    fn try_push_grows_fallibly_without_bulk_capacity_panic() {
-        // Element-by-element growth is the R01/R02 keystone path: a lying
-        // bulk hint never reaches `Vec::with_capacity`.
+    fn try_push_grows_without_trusting_bulk_hints() {
+        // A lying bulk hint never becomes an exact allocation.
         let mut v: Vec<u32> = Vec::new();
         for i in 0..64 {
             try_push(&mut v, i).expect("small growth must succeed");
@@ -1047,39 +949,6 @@ mod tests {
     }
 
     #[test]
-    fn try_push_releases_retained_output_before_native_memory_error() {
-        Python::initialize();
-        Python::attach(|py| {
-            struct DropProbe {
-                id: u8,
-                dropped: Rc<RefCell<Vec<u8>>>,
-            }
-
-            impl Drop for DropProbe {
-                fn drop(&mut self) {
-                    self.dropped.borrow_mut().push(self.id);
-                }
-            }
-
-            let dropped = Rc::new(RefCell::new(Vec::with_capacity(3)));
-            let probe = |id| DropProbe {
-                id,
-                dropped: Rc::clone(&dropped),
-            };
-            let mut values = Vec::with_capacity(2);
-            values.push(probe(1));
-            values.push(probe(2));
-            let result = fail_allocations_after(0, || try_push(&mut values, probe(3)));
-            let error = result.expect_err("the persistent allocator must reject growth");
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            let mut ids = dropped.borrow().clone();
-            ids.sort_unstable();
-            assert_eq!(ids, [1, 2, 3]);
-            drop(error);
-        });
-    }
-
-    #[test]
     fn try_push_pair_keeps_parallel_columns_aligned() {
         let mut left = Vec::new();
         let mut right = Vec::new();
@@ -1091,10 +960,7 @@ mod tests {
 
     #[test]
     fn try_push_has_no_element_count_ceiling() {
-        // N3: try_push must not hard-reject past MAX_RESERVE_HINT; growth is
-        // fallible-only. Spot-check past a former backstop size is impractical
-        // (64 Mi), so assert the capacity path has no len-gate by growing a
-        // small buffer far past the doubling start without a count reject.
+        // Spot-check that ordinary growth has no advisory-hint ceiling.
         let mut v: Vec<u8> = Vec::new();
         for i in 0..10_000 {
             try_push(&mut v, (i & 0xFF) as u8).expect("no artificial count ceiling");
@@ -1103,8 +969,8 @@ mod tests {
     }
 
     #[test]
-    fn try_vec_with_capacity_hint_clamps_absurd_counts() {
-        let v: Vec<u8> = try_vec_with_capacity_hint(usize::MAX / 8).expect("hint clamps");
+    fn vec_with_capacity_hint_clamps_absurd_counts() {
+        let v: Vec<u8> = vec_with_capacity_hint(usize::MAX / 8);
         assert!(v.capacity() <= MAX_RESERVE_HINT);
     }
 
@@ -1158,14 +1024,6 @@ mod tests {
         let (values, offsets) = builder.finish();
         assert!(values.is_empty());
         assert_eq!(offsets, [0]);
-    }
-
-    #[test]
-    fn failed_growth_releases_retained_storage_before_error() {
-        let mut values = vec![1_u8, 2, 3];
-        assert!(try_reserve_vec(&mut values, usize::MAX).is_err());
-        assert!(values.is_empty());
-        assert_eq!(values.capacity(), 0);
     }
 
     #[test]

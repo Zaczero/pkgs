@@ -269,12 +269,12 @@ pub(crate) fn restore_spatial_index(
         index.metadata = (has_metadata || has_present_rows).then(|| values.frame.clone());
         return Ok(index);
     }
-    let mut rows = crate::try_vec_with_capacity_hint(values.len())?;
-    let mut live = crate::try_vec_with_capacity_hint(values.len())?;
+    let mut rows = crate::vec_with_capacity_hint(values.len());
+    let mut live = crate::vec_with_capacity_hint(values.len());
     let mut present = false;
     let mut row_operation = values.row_operation();
     let domain = crate::geometry::topology_domain(&values.frame)?;
-    let mut entries = crate::try_vec_with_capacity_hint(values.len())?;
+    let mut entries = crate::vec_with_capacity_hint(values.len());
     let mut non_prunable_live = 0;
     for logical in 0..values.len() {
         let geometry = if let Some(row) = row_operation.present_row_at(logical)? {

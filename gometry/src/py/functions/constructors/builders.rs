@@ -787,7 +787,7 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
     let Some(first) = crate::f64_scalar_named("coordinate", &first_item)? else {
         // Ring cardinality is variable; only the coordinate-member branch is
         // bounded by the four-ordinate contract.
-        let mut values = crate::try_vec_with_capacity_hint(1)?;
+        let mut values = crate::vec_with_capacity_hint(1);
         crate::try_push(&mut values, first_item)?;
         let rest = crate::collect_py_iter_from_iter(member, iter, Ok::<_, PyErr>)?;
         for item in rest {

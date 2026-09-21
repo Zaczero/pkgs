@@ -715,7 +715,7 @@ fn classify_bounds_shape(
         return Ok(BoundsShape::One(values));
     }
     let mut rows = Vec::new();
-    crate::try_reserve_hint(&mut rows, items.len())?;
+    crate::reserve_hint(&mut rows, items.len());
     let mut width = None;
     for item in items {
         let values =
