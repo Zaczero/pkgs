@@ -399,45 +399,6 @@ pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
     try_push_with(vec, item, native_memory_error)
 }
 
-/// Fallibly copy a UTF-8 slice into an owned [`String`].
-///
-/// `Err(())` means the allocator refused the reservation — **do not** build a
-/// `PyErr` until any large retained buffers that exhausted memory have been
-/// dropped (see [`collect_py_iter`]). Use the native memory-error owner after
-/// free.
-///
-/// On unbounded ingest paths, `String::from` / `extract::<String>` allocate
-/// infallibly and abort under OOM instead of surfacing `MemoryError`.
-pub(crate) fn try_string_from_str(s: &str) -> Result<String, ()> {
-    let mut buf = Vec::<u8>::new();
-    buf.try_reserve_exact(s.len()).map_err(|_| ())?;
-    buf.extend_from_slice(s.as_bytes());
-    // SAFETY: `s` is valid UTF-8; we only copied its bytes into reserved space.
-    Ok(unsafe { String::from_utf8_unchecked(buf) })
-}
-
-/// Format into a `String` whose growth is reported instead of aborting.
-pub(crate) fn try_format(args: std::fmt::Arguments<'_>) -> crate::error::Result<String> {
-    struct FallibleString(String);
-
-    impl std::fmt::Write for FallibleString {
-        fn write_str(&mut self, value: &str) -> std::fmt::Result {
-            self.0
-                .try_reserve(value.len())
-                .map_err(|_| std::fmt::Error)?;
-            self.0.push_str(value);
-            Ok(())
-        }
-    }
-
-    let mut output = FallibleString(String::new());
-    if std::fmt::write(&mut output, args).is_err() {
-        drop(output);
-        return Err(ResourceError::Allocation.into());
-    }
-    Ok(output.0)
-}
-
 /// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
 /// (which allocates from a lying `__len__` before any Rust length check).
 ///
@@ -628,10 +589,7 @@ pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyRes
         let text: &str = item
             .extract()
             .map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
-        let Ok(owned) = try_string_from_str(text) else {
-            drop(out);
-            return Err(native_memory_error());
-        };
+        let owned = text.to_owned();
         try_push(&mut out, owned)?;
     }
     Ok(out)
@@ -784,18 +742,14 @@ fn try_i64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i64> {
 /// public ingest paths the map must therefore either:
 /// - perform no per-item Rust heap allocation beyond what this collector
 ///   already reserved (identity / `Copy` / Arc-clone of an existing handle), or
-/// - route every new owned allocation through a fallible path
-///   ([`try_string_from_str`], nested `collect_py_iter` / `try_push`, etc.).
+/// - perform their own owned allocation before publication.
 ///
 /// ## Drop retained output before raising
 ///
 /// Under a tight address-space cap the retained `Vec` may be what exhausted
 /// the heap. Constructing a Rust `PyErr` while that `Vec` still holds every
-/// item aborts instead of raising. This collector drops `out` before any OOM
-/// error is built; maps that build a Python error on
-/// their own OOM path must use [`try_string_from_str`]'s `Err(())` form (or
-/// equivalent) so the collector can free first — see
-/// [`crate::py::crs::functions_config`] for the search-path loop.
+/// item aborts instead of raising. This collector drops `out` before provider
+/// and conversion errors are returned.
 pub(crate) fn collect_py_iter<'py, T>(
     values: &Bound<'py, PyAny>,
     map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,

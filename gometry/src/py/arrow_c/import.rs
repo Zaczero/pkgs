@@ -62,7 +62,7 @@ pub(crate) fn geometries_from_native_capsules_classified(
 ) -> PyResult<Py<PyAny>> {
     let (batch, classified) =
         crate::py::arrow_c::native_arrow_batch_from_capsules(schema_capsule, array_capsule)?;
-    let (classification, _) = NativeArrowClassification::from_schema(&classified)?;
+    let (classification, _) = NativeArrowClassification::from_schema(&classified);
     let mut accumulator = NativeArrowAccumulator::new();
     accumulator.admit_classification(&classification)?;
     let decoded = py
@@ -193,7 +193,7 @@ pub(crate) unsafe fn import_stream(
         }
         let (admitted_schema, classified) =
             crate::py::arrow_c::admit_and_classify_raw_schema(schema_guard.as_ptr())?;
-        let (classification, struct_child) = NativeArrowClassification::from_schema(&classified)?;
+        let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
         let mut accumulator = NativeArrowAccumulator::new();
         accumulator.admit_classification(&classification)?;
         let mut batch_index: usize = 0;

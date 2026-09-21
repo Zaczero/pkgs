@@ -592,13 +592,9 @@ pub(crate) fn extension_schema(
     let extension_name = encoding.extension_name();
     let mut metadata = Vec::new();
     crate::try_reserve_vec(&mut metadata, 2)?;
-    let text = |value: &str| {
-        crate::boundary::try_string_from_str(value)
-            .map_err(|()| crate::error::Error::from(crate::error::ResourceError::Allocation))
-    };
-    metadata.push((text("ARROW:extension:name")?, text(extension_name)?));
+    metadata.push(("ARROW:extension:name".to_owned(), extension_name.to_owned()));
     if let Some(value) = extension_metadata_json(crs, epoch)? {
-        metadata.push((text("ARROW:extension:metadata")?, value));
+        metadata.push(("ARROW:extension:metadata".to_owned(), value));
     }
     Ok(SchemaNode {
         metadata: Some(metadata),
@@ -659,9 +655,10 @@ fn assemble_extension_metadata(
         .map_or(0, str::len)
         .checked_add(extra)
         .ok_or_else(|| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))?;
-    let mut out = String::new();
-    out.try_reserve_exact(needed)
-        .map_err(crate::error::Error::from)?;
+    if needed > isize::MAX as usize {
+        return Err(crate::error::Error::from(crate::error::ResourceError::SizeOverflow).into());
+    }
+    let mut out = String::with_capacity(needed);
     if let Some(projjson) = projjson {
         out.push_str(CRS_PREFIX);
         out.push_str(&projjson);
@@ -826,23 +823,6 @@ mod owner_export_tests {
     }
 
     #[test]
-    fn assemble_extension_metadata_rejects_output_reservation() {
-        let projjson = "{}".to_owned();
-        let error = crate::test_support::fail_allocations_after(0, || {
-            assemble_extension_metadata(Some(projjson), None)
-        })
-        .unwrap_err();
-        assert!(matches!(
-            &error,
-            NativeArrowExportError::Core(error)
-                if matches!(
-                    error.kind(),
-                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                )
-        ));
-    }
-
-    #[test]
     fn assemble_extension_metadata_epoch_extremes_use_one_envelope_allocation() {
         for epoch in [
             f64::MAX,
@@ -869,21 +849,9 @@ mod owner_export_tests {
             );
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
             assert!(value["epoch"].is_number(), "{text}");
-            let error = crate::test_support::fail_allocations_after(0, || {
-                assemble_extension_metadata(None, Some(number))
-            })
-            .unwrap_err();
-            assert!(
-                matches!(
-                    &error,
-                    NativeArrowExportError::Core(error)
-                        if matches!(
-                            error.kind(),
-                            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                        )
-                ),
-                "{error:?}"
-            );
+            let repeated =
+                assemble_extension_metadata(None, Some(number)).expect("repeated epoch envelope");
+            assert_eq!(repeated, text);
         }
     }
 

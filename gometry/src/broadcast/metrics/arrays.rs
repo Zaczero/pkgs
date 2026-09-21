@@ -406,9 +406,7 @@ pub(crate) fn array_crs_distances(
                 (&model, right.shape.shape())
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crate::boundary::try_string_from_str(crs).map_err(|()| {
-                        crate::error::Error::from(crate::error::ResourceError::Allocation)
-                    })?;
+                    let crs = Arc::clone(crs);
                     let state = Arc::clone(state);
                     let target = *target;
                     move |points| {
@@ -427,9 +425,7 @@ pub(crate) fn array_crs_distances(
             if let crs::MetricModel::Geodesic { crs, state, frame } = &model
                 && !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crate::boundary::try_string_from_str(crs).map_err(|()| {
-                        crate::error::Error::from(crate::error::ResourceError::Allocation)
-                    })?;
+                    let crs = Arc::clone(crs);
                     let state = Arc::clone(state);
                     let right_shape = right.plan_or_transient()?;
                     let right_cache = right.frame_cache()?;
@@ -1143,9 +1139,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             // geodesic point/line queries.
             if !array.has_missing()
                 && let Some(values) = array.reduce_packed_points_detached(py, {
-                    let crs = crate::boundary::try_string_from_str(&crs).map_err(|()| {
-                        crate::error::Error::from(crate::error::ResourceError::Allocation)
-                    })?;
+                    let crs = Arc::clone(&crs);
                     let state = Arc::clone(&state);
                     let other_shape = other.plan_or_transient()?;
                     let other_cache = other.frame_cache()?;
@@ -1229,131 +1223,5 @@ pub(crate) fn array_crs_dwithin_scalar(
             })?;
             bool_array_mask_missing(py, rows.map_err(rows_err)?, array.missing())
         },
-    }
-}
-
-#[cfg(test)]
-mod allocation_tests {
-    use pyo3::exceptions::PyMemoryError;
-    use pyo3::prelude::Py;
-
-    use super::*;
-    use crate::boundary::{Frame, crs_arc_static};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[test]
-    #[expect(
-        clippy::needless_borrows_for_generic_args,
-        reason = "the test retries one closure across every allocator prefix"
-    )]
-    fn per_element_dwithin_output_allocation_is_fallible_and_retryable() {
-        pyo3::Python::initialize();
-        pyo3::Python::attach(|py| -> PyResult<()> {
-            let frame = Frame::Crs(crs_arc_static("EPSG:4326"));
-            let array = PyGeometryArray::from_shapes(
-                vec![
-                    Shape::Point(Point::new_raw_xy(0.0, 0.0)),
-                    Shape::Point(Point::new_raw_xy(1.0, 0.0)),
-                ],
-                frame,
-            )?;
-            let right = Py::new(
-                py,
-                PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(180.0, 0.0))),
-            )?;
-            let right = right.bind(py).as_any();
-            let right = GeometryInput::One(
-                crate::exact_geometry(right).expect("test value is an exact geometry"),
-            );
-            let distance = F64Param::PerElement(vec![f64::INFINITY, f64::INFINITY].into());
-            let run = || {
-                array_crs_dwithin_per_element_values(
-                    &array,
-                    right,
-                    &distance,
-                    MetricOp::Dwithin,
-                    None,
-                )
-            };
-
-            let expected = run()?;
-            let (_, allocations) = allocation_count(&run);
-            assert!(allocations > 0, "per-element output was not allocated");
-            for allowed in 0..allocations {
-                let result = fail_allocations_after(allowed, &run);
-                let error = result.err().unwrap_or_else(|| {
-                    panic!("per-element prefix {allowed} unexpectedly succeeded")
-                });
-                assert!(error.is_instance_of::<PyMemoryError>(py));
-                let retry = run()?;
-                assert_eq!(retry, expected, "per-element retry at {allowed}");
-            }
-            Ok(())
-        })
-        .expect("per-element allocation test should complete");
-    }
-
-    #[test]
-    #[expect(
-        clippy::needless_borrows_for_generic_args,
-        reason = "the test retries one closure across every allocator prefix"
-    )]
-    fn packed_dwithin_mask_allocation_is_fallible_and_retryable() {
-        pyo3::Python::initialize();
-        pyo3::Python::attach(|py| -> PyResult<()> {
-            let left = PyGeometryArray::from_shapes(
-                vec![
-                    Shape::Point(Point::new_raw_xy(0.0, 0.0)),
-                    Shape::Point(Point::new_raw_xy(2.0, 0.0)),
-                ],
-                Frame::None,
-            )?;
-            let right = PyGeometryArray::from_shapes(
-                vec![
-                    Shape::Point(Point::new_raw_xy(0.0, 0.0)),
-                    Shape::Point(Point::new_raw_xy(4.0, 0.0)),
-                ],
-                Frame::None,
-            )?;
-            let run = || {
-                array_pair_metric(
-                    py,
-                    &left,
-                    &right,
-                    Some(|left, right| Ok(points_dwithin(left, right, 1.0))),
-                    Some(|lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                        let mut values = Vec::new();
-                        crate::boundary::try_reserve_vec(&mut values, lx.len())?;
-                        values.resize(lx.len(), false);
-                        for (index, value) in values.iter_mut().enumerate() {
-                            *value = points_dwithin(
-                                Point::new_raw_xy(lx[index], ly[index]),
-                                Point::new_raw_xy(rx[index], ry[index]),
-                                1.0,
-                            );
-                        }
-                        Ok(values)
-                    }),
-                    None::<fn(Bounds, Bounds) -> Option<bool>>,
-                    false,
-                    |_row, _left, _right, _left_products, _right_products| Ok(false),
-                )
-            };
-
-            let expected = run()?;
-            let (_, allocations) = allocation_count(&run);
-            assert!(allocations > 0, "packed dwithin mask was not allocated");
-            for allowed in 0..allocations {
-                let result = fail_allocations_after(allowed, &run);
-                let error = result.err().unwrap_or_else(|| {
-                    panic!("packed mask prefix {allowed} unexpectedly succeeded")
-                });
-                assert!(error.is_instance_of::<PyMemoryError>(py));
-                let retry = run()?;
-                assert_eq!(retry, expected, "packed mask retry at {allowed}");
-            }
-            Ok(())
-        })
-        .expect("packed mask allocation test should complete");
     }
 }

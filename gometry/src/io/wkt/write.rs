@@ -26,14 +26,14 @@ pub(crate) fn to_wkt_with_dimension(
     let body = format_wkt(shape, output_dimension, WktNumberFormat::Shortest)?;
     match wkt_srid_prefix(crs, include_srid)? {
         Some(prefix) => {
-            let mut output = String::new();
             let length = prefix
                 .len()
                 .checked_add(body.len())
                 .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
-            output
-                .try_reserve(length)
-                .map_err(crate::error::Error::from)?;
+            if length > isize::MAX as usize {
+                return Err(IoError::wkt("WKT output exceeds String capacity"));
+            }
+            let mut output = String::with_capacity(length);
             output.push_str(&prefix);
             output.push_str(&body);
             Ok(output)
@@ -138,9 +138,10 @@ fn format_wkt(
     let capacity = coordinate_bytes
         .checked_add(structural_bytes)
         .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
-    let mut out = String::new();
-    out.try_reserve(capacity)
-        .map_err(crate::error::Error::from)?;
+    if capacity > isize::MAX as usize {
+        return Err(IoError::wkt("WKT output exceeds String capacity"));
+    }
+    let mut out = String::with_capacity(capacity);
     write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
     Ok(out)
 }
@@ -154,9 +155,10 @@ pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
     let capacity = limit
         .checked_add(4096)
         .ok_or_else(|| IoError::wkt("WKT preview length overflows usize"))?;
-    let mut out = String::new();
-    out.try_reserve(capacity)
-        .map_err(crate::error::Error::from)?;
+    if capacity > isize::MAX as usize {
+        return Err(IoError::wkt("WKT preview exceeds String capacity"));
+    }
+    let mut out = String::with_capacity(capacity);
     write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit)?;
     Ok(out)
 }

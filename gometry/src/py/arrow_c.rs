@@ -64,10 +64,8 @@ pub(crate) fn arc_from_string(value: String) -> Arc<String> {
     clippy::rc_buffer,
     reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
 )]
-pub(crate) fn try_arc_from_str(value: &str) -> PyResult<Arc<String>> {
-    let value =
-        crate::boundary::try_string_from_str(value).map_err(|()| errors::native_memory_error())?;
-    Ok(arc_from_string(value))
+pub(crate) fn arc_from_str(value: &str) -> Arc<String> {
+    arc_from_string(value.to_owned())
 }
 
 pub(crate) fn arc_new<T>(value: T) -> Arc<T> {

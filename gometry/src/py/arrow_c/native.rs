@@ -21,8 +21,8 @@ use crate::py::arrow_c::admitted::{
 };
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
-    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, admitted, arc_from_vec,
-    arc_new, array_capsule_name, capsule_pointer, schema_capsule_name, try_arc_from_str,
+    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, admitted, arc_from_str,
+    arc_from_vec, arc_new, array_capsule_name, capsule_pointer, schema_capsule_name,
 };
 use crate::py::geoarrow::GeometryEncoding;
 use crate::py::{arrow, arrow_c, errors};
@@ -620,7 +620,7 @@ pub(crate) fn native_arrow_batch_from_capsules(
     let admitted_schema = unsafe { AdmittedArrowSchema::capture(&schema_shell) }?;
     drop(schema_shell);
     let classified = classify_admitted_geometry_schema(&admitted_schema)?;
-    let (classification, struct_child) = NativeArrowClassification::from_schema(&classified)?;
+    let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
     // SAFETY: capsule points at a live producer array shell.
     let array_shell = unsafe { MovedArrowShell::take(array) }?;
     // SAFETY: only the owned node escapes.
@@ -850,22 +850,16 @@ impl NativeArrowClassification {
         }
     }
 
-    pub(crate) fn from_schema(
-        classified: &ClassifiedGeometrySchema,
-    ) -> PyResult<(Self, Option<usize>)> {
-        Ok((
+    pub(crate) fn from_schema(classified: &ClassifiedGeometrySchema) -> (Self, Option<usize>) {
+        (
             Self {
                 encoding: classified.encoding,
                 wkb_offset_width: classified.wkb_offset_width,
-                crs: classified
-                    .crs
-                    .as_deref()
-                    .map(try_arc_from_str)
-                    .transpose()?,
+                crs: classified.crs.as_deref().map(arc_from_str),
                 epoch: classified.epoch,
             },
             classified.struct_child,
-        ))
+        )
     }
 }
 
@@ -965,11 +959,7 @@ fn build_owned_node_admitted(
         }
         for index in 0..validated.n_children {
             let child_schema = &schema.children[index];
-            let Ok(name) = crate::boundary::try_string_from_str(child_schema.name()) else {
-                drop(children);
-                drop(field_names);
-                return Err(errors::native_memory_error());
-            };
+            let name = child_schema.name().to_owned();
             field_names.push(name);
             // SAFETY: children live under capture shell for this construction.
             let child_array_ptr = unsafe { validated.child_ptr(index)? };
@@ -1049,7 +1039,7 @@ fn build_owned_node_admitted(
         format: validated.format,
         buffers,
         children: arc_from_vec(children),
-        schema_name: arrow_c::try_arc_from_str(schema.name())?,
+        schema_name: arrow_c::arc_from_str(schema.name()),
         field_names: arc_from_vec(field_names),
         effective_missing,
     })

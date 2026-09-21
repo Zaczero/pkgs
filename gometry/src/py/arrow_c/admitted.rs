@@ -22,10 +22,10 @@ use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::import::schema_metadata_pairs_owned;
 use crate::py::arrow_c::native::{drop_moved_arrow, move_arrow_shell};
 use crate::py::arrow_c::{
-    ArrowReleaseSlot, ArrowSchema, arc_from_string, arc_from_vec, try_arc_from_str,
+    ArrowReleaseSlot, ArrowSchema, arc_from_str, arc_from_string, arc_from_vec,
 };
 use crate::py::geoarrow::GeometryEncoding;
-use crate::py::{arrow, errors, geoarrow};
+use crate::py::{arrow, geoarrow};
 
 /// Geometry decoding selected from an owned Arrow schema tree.
 #[derive(Clone, Debug)]
@@ -286,7 +286,7 @@ impl AdmittedArrowSchema {
             }
         }
         let name = if raw.name.is_null() {
-            try_arc_from_str("")?
+            arc_from_str("")
         } else {
             owned_c_str(raw.name, "Arrow field name")?
         };
@@ -332,7 +332,7 @@ impl AdmittedArrowSchema {
         // checked i64 offsets remain available to selected-geometry admission.
         let format = owned_c_str(schema.format, "Arrow schema format")?;
         let name = if schema.name.is_null() {
-            try_arc_from_str("")?
+            arc_from_str("")
         } else {
             owned_c_str(schema.name, "Arrow field name")?
         };
@@ -492,9 +492,7 @@ fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<String>
     let s = unsafe { CStr::from_ptr(ptr) }
         .to_str()
         .map_err(|_| PyTypeError::new_err(format!("{what} is not valid UTF-8")))?;
-    let owned =
-        crate::boundary::try_string_from_str(s).map_err(|()| errors::native_memory_error())?;
-    Ok(arc_from_string(owned))
+    Ok(arc_from_string(s.to_owned()))
 }
 
 type OwnedMetadataPairs = Vec<(Box<[u8]>, Box<[u8]>)>;
@@ -752,8 +750,7 @@ fn validate_admitted_coordinate_storage(schema: &AdmittedArrowSchema) -> PyResul
                 "geoarrow point ordinate children must be leaves",
             ));
         }
-        let name = crate::boundary::try_string_from_str(child.name())
-            .map_err(|()| errors::native_memory_error())?;
+        let name = child.name().to_owned();
         crate::try_push(&mut fields, (name, child.format() == "g"))?;
     }
     geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;

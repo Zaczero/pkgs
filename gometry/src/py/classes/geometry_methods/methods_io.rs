@@ -217,12 +217,13 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
                         "hexadecimal WKB output size overflows usize",
                     ));
                 };
-                let mut out = String::new();
-                if out.try_reserve(capacity).is_err() {
+                if capacity > isize::MAX as usize {
                     drop(wkb);
-                    drop(out);
-                    return Err(errors::native_memory_error());
+                    return Err(errors::native_overflow_error(
+                        "hexadecimal WKB output exceeds String capacity",
+                    ));
                 }
+                let mut out = String::with_capacity(capacity);
                 for byte in wkb {
                     let _ = if spec == "x" {
                         write!(out, "{byte:02x}")

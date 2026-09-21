@@ -54,9 +54,10 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     let capacity = coordinate_bytes
         .checked_add(structural_bytes)
         .ok_or_else(|| IoError::geojson("GeoJSON output length overflows usize"))?;
-    let mut out = String::new();
-    out.try_reserve(capacity)
-        .map_err(crate::error::Error::from)?;
+    if capacity > isize::MAX as usize {
+        return Err(IoError::geojson("GeoJSON output exceeds String capacity"));
+    }
+    let mut out = String::with_capacity(capacity);
     write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
     Ok(out)
 }

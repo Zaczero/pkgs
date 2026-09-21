@@ -77,8 +77,7 @@ fn cached_geodesic_object(crs: &str, state: &RuntimeState) -> Result<CachedGeode
         flattening,
     )?;
     Ok(CachedGeodesicObject {
-        definition: crate::boundary::try_string_from_str(crs)
-            .map_err(|()| crate::error::ResourceError::Allocation)?,
+        definition: crs.to_owned(),
         object: Geodesic::new(ellipsoid.semi_major_metre, flattening),
     })
 }

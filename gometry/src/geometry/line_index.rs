@@ -225,9 +225,7 @@ impl LineIndexSlot {
                 ErrorKind::Geometry(GeometryErrorKind::EmptyLinework) => Ok(Self::Empty),
                 ErrorKind::Geometry(GeometryErrorKind::LineStringRequired) => Ok(Self::NotLineal),
                 ErrorKind::Resource(_) => Err(error),
-                _ => Ok(Self::Invalid(crate::boundary::try_format(format_args!(
-                    "{error}"
-                ))?)),
+                _ => Ok(Self::Invalid(error.to_string())),
             },
         }
     }

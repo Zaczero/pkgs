@@ -78,11 +78,8 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
     {
         return Ok(Some(vec![parse_path(value, "search_paths")?]));
     }
-    // Specialized fallible loop (not bare collect_py_iter + extract::<String>):
-    // each path is an owned heap `String`. Outer `Vec` growth *and* per-item
-    // string reservation must be fallible, and retained output must be dropped
-    // *before* raising `MemoryError` — otherwise RLIMIT_AS can abort while the
-    // exception is constructed (`memory allocation of N bytes failed`).
+    // Keep the specialized loop so provider exceptions remain distinguishable
+    // from values that simply are not string/path-like entries.
     let mut paths = Vec::new();
     if let Some(hint) = crate::advisory_len(value)? {
         crate::try_reserve_hint(&mut paths, hint)?;
@@ -111,10 +108,6 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
         }
         match take_path_string(&item, "search_paths entries") {
             Ok(owned) => paths.push(owned),
-            Err(PathTakeError::Oom) => {
-                drop(paths);
-                return Err(native_memory_error());
-            },
             Err(PathTakeError::Provider(err)) => {
                 drop(paths);
                 return Err(err);
@@ -134,20 +127,15 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
 }
 
 enum PathTakeError {
-    /// Allocator refused the owned-string reservation (no `PyErr` yet).
-    Oom,
     Provider(PyErr),
     Err(PyErr),
 }
 
 /// Copy a string/path-like Python value into an owned Rust path string.
-///
-/// OOM is `PathTakeError::Oom` so the caller can drop retained buffers before
-/// raising the native `MemoryError`.
 fn take_path_string(value: &Bound<'_, PyAny>, name: &'static str) -> Result<String, PathTakeError> {
     if let Ok(py_str) = value.cast::<pyo3::types::PyString>() {
         let s = py_str.to_str().map_err(PathTakeError::Err)?;
-        return crate::try_string_from_str(s).map_err(|()| PathTakeError::Oom);
+        return Ok(s.to_owned());
     }
     let fspath = value
         .getattr_opt(pyo3::intern!(value.py(), "__fspath__"))
@@ -165,7 +153,7 @@ fn take_path_string(value: &Bound<'_, PyAny>, name: &'static str) -> Result<Stri
     let path = fspath.call0().map_err(PathTakeError::Provider)?;
     if let Ok(py_str) = path.cast::<pyo3::types::PyString>() {
         let s = py_str.to_str().map_err(PathTakeError::Err)?;
-        return crate::try_string_from_str(s).map_err(|()| PathTakeError::Oom);
+        return Ok(s.to_owned());
     }
     Err(PathTakeError::Err(PyTypeError::new_err(format!(
         "{name} must resolve to a string path"
@@ -173,11 +161,8 @@ fn take_path_string(value: &Bound<'_, PyAny>, name: &'static str) -> Result<Stri
 }
 
 fn parse_path(value: &Bound<'_, PyAny>, name: &'static str) -> PyResult<String> {
-    // Fallible owned copy: `extract::<String>()` allocates infallibly and can
-    // abort under RLIMIT_AS on unbounded `search_paths` streams.
     match take_path_string(value, name) {
         Ok(s) => Ok(s),
-        Err(PathTakeError::Oom) => Err(native_memory_error()),
         Err(PathTakeError::Provider(err) | PathTakeError::Err(err)) => Err(err),
     }
 }

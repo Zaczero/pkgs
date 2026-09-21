@@ -66,24 +66,18 @@ impl<'a> SchemaDescription<'a> {
         }
     }
 
-    fn into_owned(self) -> NativeArrowExportResult<SchemaDescription<'static>> {
+    fn into_owned(self) -> SchemaDescription<'static> {
         let crs = match self.crs {
             None => None,
             Some(Cow::Owned(value)) => Some(value),
-            Some(Cow::Borrowed(value)) => {
-                Some(crate::boundary::try_string_from_str(value).map_err(
-                    |()| -> NativeArrowExportError {
-                        crate::error::Error::from(crate::error::ResourceError::Allocation).into()
-                    },
-                )?)
-            },
+            Some(Cow::Borrowed(value)) => Some(value.to_owned()),
         };
-        Ok(SchemaDescription {
+        SchemaDescription {
             layout: self.layout,
             nullable: self.nullable,
             crs: crs.map(Cow::Owned),
             epoch: self.epoch,
-        })
+        }
     }
 
     #[expect(
@@ -284,15 +278,6 @@ pub(crate) fn describe_geometry_array(
     SchemaDescription::borrowed(layout, array.crs_str(), array.epoch())
 }
 
-#[cfg(test)]
-pub(crate) fn describe_shapes<'a>(
-    shapes: &[Shape],
-    crs: Option<&'a str>,
-    epoch: Option<f64>,
-) -> SchemaDescription<'a> {
-    SchemaDescription::borrowed(describe_shape_iter(shapes.iter()), crs, epoch)
-}
-
 pub(crate) fn describe_shape<'a>(
     shape: &Shape,
     crs: Option<&'a str>,
@@ -305,7 +290,7 @@ pub(crate) fn plan_geometry_array(
     array: &PyGeometryArray,
     encoding: ArrowEncoding,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let schema = describe_geometry_array(array, encoding).into_owned()?;
+    let schema = describe_geometry_array(array, encoding).into_owned();
     #[cfg(test)]
     record_payload_builder();
     let storage = match encoding {
@@ -1019,25 +1004,5 @@ mod tests {
             assert!(core.is_instance_of::<crate::py::errors::GeometryError>(py));
             assert!(core.value(py).to_string().contains("i32 offset"));
         });
-    }
-
-    #[test]
-    fn borrowed_schema_crs_copy_reports_allocation_failure() {
-        let shapes = vec![Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0))];
-        let crs = "EPSG:4326".to_owned();
-        let description = describe_shapes(&shapes, Some(&crs), None);
-        let error =
-            crate::test_support::fail_allocations_after(0, || description.clone().into_owned())
-                .expect_err("borrowed CRS copy must use the fallible allocator path");
-        assert!(matches!(
-            error,
-            NativeArrowExportError::Core(error)
-                if matches!(
-                    error.kind(),
-                    crate::error::ErrorKind::Resource(
-                        crate::error::ResourceError::Allocation
-                    )
-                )
-        ));
     }
 }

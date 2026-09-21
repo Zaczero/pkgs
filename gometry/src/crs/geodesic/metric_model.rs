@@ -190,16 +190,6 @@ enum HorizontalComponent {
     Planar { info: std::sync::Arc<CrsInfo> },
 }
 
-#[expect(
-    clippy::rc_buffer,
-    reason = "Arc<str> has no fallible constructor; the CRS text is allocated fallibly and then shared"
-)]
-fn shared_definition(info: &crate::crs::CrsInfo) -> Result<Arc<String>> {
-    let definition = crate::boundary::try_string_from_str(&info.definition)
-        .map_err(|()| crate::error::ResourceError::Allocation)?;
-    Ok(Arc::new(definition))
-}
-
 fn horizontal_component(
     crs: &str,
     state: &crate::crs::RuntimeState,
@@ -212,7 +202,7 @@ fn horizontal_component(
         && let Some(frame) = info.geographic_frame()
     {
         return Ok(HorizontalComponent::Geodesic {
-            crs: shared_definition(&info)?,
+            crs: Arc::new(info.definition.to_string()),
             frame,
         });
     }
@@ -223,7 +213,7 @@ fn horizontal_component(
                 CrsError::crs_create(crs, "geographic CRS has no typed native frame")
             })?;
             return Ok(HorizontalComponent::Geodesic {
-                crs: shared_definition(&info)?,
+                crs: Arc::new(info.definition.to_string()),
                 frame,
             });
         }
@@ -496,45 +486,7 @@ pub(crate) fn is_angular_unit(unit: &str) -> bool {
 mod tests {
     use super::metric_axis_factors_at;
     use crate::crs::{RUNTIME_STATE_TEST_LOCK, info_with_state, runtime_state_snapshot};
-    use crate::error::{ErrorKind, ResourceError, Result};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[test]
-    #[expect(
-        clippy::panic_in_result_fn,
-        clippy::needless_borrows_for_generic_args,
-        reason = "the test retries compound factor construction across every allocator prefix"
-    )]
-    fn compound_metric_factors_propagate_allocation_failures_and_retry() -> Result<()> {
-        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
-        let state = runtime_state_snapshot()?;
-        let info = info_with_state("EPSG:7405", &state)?;
-        let expected =
-            metric_axis_factors_at(&info, &state)?.expect("EPSG:7405 has linear compound axes");
-        assert!(expected.len() >= 3);
-        let expected_scale = super::ensure_3d_metric_at(Some("EPSG:7405"), &state)?;
-
-        let run = || super::ensure_3d_metric_at(Some("EPSG:7405"), &state);
-        let (actual, allocations) = allocation_count(&run);
-        assert_eq!(actual?.get(), expected_scale.get());
-        assert!(allocations > 0, "compound factors did not allocate");
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, &run);
-            let error = result
-                .err()
-                .unwrap_or_else(|| panic!("compound prefix {allowed} unexpectedly succeeded"));
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert_eq!(
-                run()?.get(),
-                expected_scale.get(),
-                "compound retry at {allowed}"
-            );
-        }
-        Ok(())
-    }
+    use crate::error::{ErrorKind, Result};
 
     #[test]
     #[expect(

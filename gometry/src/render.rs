@@ -5,37 +5,11 @@
 //! SVG rendering of geometries for Jupyter/`_repr_svg_`. Pure geometry →
 //! string; no `PyO3`. The Y axis is flipped so geographic north points up.
 
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geometry::{Bounds, CoordSeq, Coordinates, Point, Polygon, Shape};
 
-struct TryString(String);
-
-impl TryString {
-    const fn new() -> Self {
-        Self(String::new())
-    }
-
-    #[expect(
-        clippy::same_name_method,
-        reason = "shadows `fmt::Write::write_fmt` so `write!` on this buffer yields the crate's fallible result"
-    )]
-    fn write_fmt(&mut self, args: std::fmt::Arguments<'_>) -> Result<()> {
-        std::fmt::write(self, args).map_err(|_| ResourceError::Allocation.into())
-    }
-
-    fn finish(self) -> String {
-        self.0
-    }
-}
-
-impl std::fmt::Write for TryString {
-    fn write_str(&mut self, value: &str) -> std::fmt::Result {
-        self.0
-            .try_reserve(value.len())
-            .map_err(|_| std::fmt::Error)?;
-        self.0.push_str(value);
-        Ok(())
-    }
+fn write_string(output: &mut String, args: std::fmt::Arguments<'_>) {
+    std::fmt::write(output, args).expect("writing to String cannot fail");
 }
 
 pub(crate) fn html_text_escape(value: &str) -> String {
@@ -99,69 +73,64 @@ pub(crate) fn geometry_array_svg_grid_html_masked<'a>(
     n: usize,
     preview: usize,
 ) -> Result<String> {
-    let mut cells = TryString::new();
+    let mut cells = String::new();
     for row in rows.take(preview) {
         let svg = match row {
-            crate::array::ArrayRow::Missing { .. } => missing_svg()?,
+            crate::array::ArrayRow::Missing { .. } => missing_svg(),
             crate::array::ArrayRow::Present(row) => row.row().with_shape(render_shape_svg)??,
         };
-        cells.write_fmt(format_args!(
-            "<div style=\"display:inline-block;margin:2px\">{svg}</div>"
-        ))?;
+        write_string(
+            &mut cells,
+            format_args!("<div style=\"display:inline-block;margin:2px\">{svg}</div>"),
+        );
     }
-    let mut output = TryString::new();
-    output.write_fmt(format_args!(
-        "<div class=\"gometry-geom-array\"><div>{n} geometries"
-    ))?;
+    let mut output = String::new();
+    write_string(
+        &mut output,
+        format_args!("<div class=\"gometry-geom-array\"><div>{n} geometries"),
+    );
     if n > preview {
-        output.write_fmt(format_args!(" (showing first {preview})"))?;
+        write_string(&mut output, format_args!(" (showing first {preview})"));
     }
-    output.write_fmt(format_args!(
-        "</div><div style=\"display:flex;flex-wrap:wrap\">{}</div></div>",
-        cells.finish()
-    ))?;
-    Ok(output.finish())
+    write_string(
+        &mut output,
+        format_args!("</div><div style=\"display:flex;flex-wrap:wrap\">{cells}</div></div>"),
+    );
+    Ok(output)
 }
 
-fn missing_svg() -> Result<String> {
-    crate::boundary::try_string_from_str(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\" viewBox=\"0 0 120 80\">\
-         <rect x=\"1\" y=\"1\" width=\"118\" height=\"78\" fill=\"#f7f7f7\" stroke=\"#d0d0d0\"/>\
-         <text x=\"60\" y=\"44\" text-anchor=\"middle\" font-size=\"14\" fill=\"#777\">missing</text>\
-         </svg>",
-    )
-    .map_err(|()| ResourceError::Allocation.into())
+fn missing_svg() -> String {
+    "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\" viewBox=\"0 0 120 80\">\
+     <rect x=\"1\" y=\"1\" width=\"118\" height=\"78\" fill=\"#f7f7f7\" stroke=\"#d0d0d0\"/>\
+     <text x=\"60\" y=\"44\" text-anchor=\"middle\" font-size=\"14\" fill=\"#777\">missing</text>\
+     </svg>"
+        .to_owned()
 }
 
 pub(crate) fn render_shape_svg(shape: &Shape) -> Result<String> {
     const EMPTY: &str = "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\"/>";
     if shape.is_empty() {
-        return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|()| ResourceError::Allocation.into());
+        return Ok(EMPTY.to_owned());
     }
     let Some(bounds) = svg_bounds(shape) else {
-        return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|()| ResourceError::Allocation.into());
+        return Ok(EMPTY.to_owned());
     };
     let (minx, miny, maxx, maxy) = bounds.into_tuple();
     let w = maxx - minx;
     let h = maxy - miny;
     if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
-        return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|()| ResourceError::Allocation.into());
+        return Ok(EMPTY.to_owned());
     }
     // Map world → local pixel frame so extreme-but-finite coordinates never
     // produce infinite viewBox/stroke or NaN transforms.
     let scale = SVG_MAX_PX / w.max(h);
     if !scale.is_finite() || scale <= 0.0 {
-        return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|()| ResourceError::Allocation.into());
+        return Ok(EMPTY.to_owned());
     }
     let px_w = (w * scale).max(1.0);
     let px_h = (h * scale).max(1.0);
     if !px_w.is_finite() || !px_h.is_finite() {
-        return crate::boundary::try_string_from_str(EMPTY)
-            .map_err(|()| ResourceError::Allocation.into());
+        return Ok(EMPTY.to_owned());
     }
     let sw = 1.5_f64;
     let r = 3.0_f64;
@@ -181,27 +150,31 @@ pub(crate) fn render_shape_svg(shape: &Shape) -> Result<String> {
     } else {
         "rgba(239,68,68,0.25)"
     };
-    let body = svg_elements_local(shape, stroke, fill, sw, r, minx, miny, scale)?;
+    let body = svg_elements_local(shape, stroke, fill, sw, r, minx, miny, scale);
     // The flip about `flip_y` puts y increasing up and insets the drawing by
     // `pad` on every side of the viewBox.
-    let mut output = TryString::new();
-    output.write_fmt(format_args!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\" \
+    let mut output = String::new();
+    write_string(
+        &mut output,
+        format_args!(
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" class=\"gometry-geom\" \
          width=\"{box_w:.0}\" height=\"{box_h:.0}\" viewBox=\"0 0 {box_w:.6} {box_h:.6}\" \
          preserveAspectRatio=\"xMidYMid meet\">\
          <g transform=\"matrix(1 0 0 -1 {pad:.6} {flip_y:.6})\">{body}</g></svg>"
-    ))?;
-    Ok(output.finish())
+        ),
+    );
+    Ok(output)
 }
 
 pub(crate) fn render_shape_html(shape: &Shape, repr: &str) -> Result<String> {
     let svg = render_shape_svg(shape)?;
     let repr = html_text_escape(repr);
-    let mut output = TryString::new();
-    output.write_fmt(format_args!(
-        "<div class=\"gometry-geom-html\"><div>{repr}</div>{svg}</div>"
-    ))?;
-    Ok(output.finish())
+    let mut output = String::new();
+    write_string(
+        &mut output,
+        format_args!("<div class=\"gometry-geom-html\"><div>{repr}</div>{svg}</div>"),
+    );
+    Ok(output)
 }
 
 fn map_xy(x: f64, y: f64, minx: f64, miny: f64, scale: f64) -> (f64, f64) {
@@ -214,22 +187,21 @@ fn svg_path_points_local<C: Coordinates + ?Sized>(
     minx: f64,
     miny: f64,
     scale: f64,
-) -> Result<String> {
-    let mut s = TryString::new();
+) -> String {
+    let mut output = String::new();
     for (i, p) in points.iter_coords().enumerate() {
         let (x, y) = map_xy(p.x, p.y, minx, miny, scale);
         if !x.is_finite() || !y.is_finite() {
             continue;
         }
         let cmd = if i == 0 { 'M' } else { 'L' };
-        s.write_fmt(format_args!("{cmd}{x:.6} {y:.6} "))?;
+        write_string(&mut output, format_args!("{cmd}{x:.6} {y:.6} "));
     }
     if close {
-        s.write_fmt(format_args!("Z"))?;
+        output.push('Z');
     }
-    let mut output = s.finish();
     output.truncate(output.trim_end().len());
-    Ok(output)
+    output
 }
 
 fn svg_elements_local(
@@ -241,66 +213,68 @@ fn svg_elements_local(
     minx: f64,
     miny: f64,
     scale: f64,
-) -> Result<String> {
-    let mut out = TryString::new();
-    let circle = |out: &mut TryString, p: &Point| -> Result<()> {
+) -> String {
+    let mut out = String::new();
+    let circle = |out: &mut String, p: &Point| {
         let (x, y) = map_xy(p.x, p.y, minx, miny, scale);
-        out.write_fmt(format_args!(
-            "<circle cx=\"{x:.6}\" cy=\"{y:.6}\" r=\"{r:.6}\" fill=\"{stroke}\"/>"
-        ))
+        write_string(
+            out,
+            format_args!("<circle cx=\"{x:.6}\" cy=\"{y:.6}\" r=\"{r:.6}\" fill=\"{stroke}\"/>"),
+        );
     };
-    let polyline = |out: &mut TryString, pts: &CoordSeq| -> Result<()> {
-        let path = svg_path_points_local(pts, false, minx, miny, scale)?;
-        out.write_fmt(format_args!(
-            "<path d=\"{path}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
-        ))
+    let polyline = |out: &mut String, pts: &CoordSeq| {
+        let path = svg_path_points_local(pts, false, minx, miny, scale);
+        write_string(
+            out,
+            format_args!(
+                "<path d=\"{path}\" fill=\"none\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
+            ),
+        );
     };
-    let polygon_path = |out: &mut TryString, polygon: &Polygon| -> Result<()> {
-        let mut d = TryString::new();
-        d.write_fmt(format_args!(
-            "{}",
-            svg_path_points_local(&polygon.shell, true, minx, miny, scale)?
-        ))?;
+    let polygon_path = |out: &mut String, polygon: &Polygon| {
+        let mut d = svg_path_points_local(&polygon.shell, true, minx, miny, scale);
         for hole in polygon.holes.iter() {
-            d.write_fmt(format_args!(
-                " {}",
-                svg_path_points_local(hole, true, minx, miny, scale)?
-            ))?;
+            write_string(
+                &mut d,
+                format_args!(" {}", svg_path_points_local(hole, true, minx, miny, scale)),
+            );
         }
-        let d = d.finish();
-        out.write_fmt(format_args!(
-            "<path fill-rule=\"evenodd\" d=\"{d}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
-        ))
+        write_string(
+            out,
+            format_args!(
+                "<path fill-rule=\"evenodd\" d=\"{d}\" fill=\"{fill}\" stroke=\"{stroke}\" stroke-width=\"{sw:.6}\"/>"
+            ),
+        );
     };
     match shape {
-        Shape::Point(p) => circle(&mut out, p)?,
+        Shape::Point(p) => circle(&mut out, p),
         Shape::MultiPoint(points) => {
             for p in points {
-                circle(&mut out, &p)?;
+                circle(&mut out, &p);
             }
         },
-        Shape::LineString(points) => polyline(&mut out, points)?,
+        Shape::LineString(points) => polyline(&mut out, points),
         Shape::MultiLineString(lines) => {
             for line in lines {
-                polyline(&mut out, line)?;
+                polyline(&mut out, line);
             }
         },
-        Shape::Polygon(polygon) => polygon_path(&mut out, polygon)?,
+        Shape::Polygon(polygon) => polygon_path(&mut out, polygon),
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                polygon_path(&mut out, polygon)?;
+                polygon_path(&mut out, polygon);
             }
         },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                let elements =
-                    svg_elements_local(geometry, stroke, fill, sw, r, minx, miny, scale)?;
-                out.write_fmt(format_args!("{elements}"))?;
+                out.push_str(&svg_elements_local(
+                    geometry, stroke, fill, sw, r, minx, miny, scale,
+                ));
             }
         },
         Shape::Empty(..) => {},
     }
-    Ok(out.finish())
+    out
 }
 
 #[cfg(test)]

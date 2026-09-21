@@ -49,9 +49,9 @@ use boundary::{
     strict_i32, strict_i32_overflow, strict_i64, strict_i64_overflow, strict_i128,
     strict_optional_i64, strict_u64, try_collect_results, try_collect_vec,
     try_coordseq_from_nd_buffer, try_push, try_push_heap, try_push_pair, try_push_vec,
-    try_reserve_heap, try_reserve_hint, try_reserve_pair, try_reserve_vec, try_string_from_str,
-    try_vec_with_capacity, try_vec_with_capacity_hint, validate_lonlat_shape,
-    validate_subdivide_max_vertices, wgs84_crs, with_one_byte_buffer,
+    try_reserve_heap, try_reserve_hint, try_reserve_pair, try_reserve_vec, try_vec_with_capacity,
+    try_vec_with_capacity_hint, validate_lonlat_shape, validate_subdivide_max_vertices, wgs84_crs,
+    with_one_byte_buffer,
 };
 mod collections;
 #[cfg(test)]

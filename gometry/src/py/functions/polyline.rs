@@ -40,26 +40,21 @@ fn scale(value: f64, factor: f64) -> i64 {
     (value * factor + 0.5).floor() as i64
 }
 
-fn push_encoded_char(out: &mut String, value: char) -> PyResult<()> {
-    if out.try_reserve(1).is_err() {
-        *out = String::new();
-        return Err(errors::native_memory_error());
-    }
+fn push_encoded_char(out: &mut String, value: char) {
     out.push(value);
-    Ok(())
 }
 
 /// Append one signed value as zig-zag 5-bit chunks offset by 63.
-fn encode_value(value: i64, out: &mut String) -> PyResult<()> {
+fn encode_value(value: i64, out: &mut String) {
     let mut bits = value << 1;
     if value < 0 {
         bits = !bits;
     }
     while bits >= 0x20 {
-        push_encoded_char(out, char::from((0x20 | (bits & 0x1F)) as u8 + 63))?;
+        push_encoded_char(out, char::from((0x20 | (bits & 0x1F)) as u8 + 63));
         bits >>= 5;
     }
-    push_encoded_char(out, char::from(bits as u8 + 63))
+    push_encoded_char(out, char::from(bits as u8 + 63));
 }
 
 fn encode_xy(
@@ -80,8 +75,8 @@ fn encode_xy(
     }
     let lat = scale(y, factor);
     let lon = scale(x, factor);
-    encode_value(lat - previous.0, out)?;
-    encode_value(lon - previous.1, out)?;
+    encode_value(lat - previous.0, out);
+    encode_value(lon - previous.1, out);
     *previous = (lat, lon);
     Ok(())
 }
@@ -193,11 +188,12 @@ fn python_str_repr(value: &str) -> PyResult<String> {
         .checked_mul(4)
         .and_then(|length| length.checked_add(2))
         .ok_or_else(|| errors::native_overflow_error("polyline error text size overflows usize"))?;
-    let mut out = String::new();
-    if out.try_reserve(capacity).is_err() {
-        drop(out);
-        return Err(errors::native_memory_error());
+    if capacity > isize::MAX as usize {
+        return Err(errors::native_overflow_error(
+            "polyline error text exceeds String capacity",
+        ));
     }
+    let mut out = String::with_capacity(capacity);
     out.push('"');
     for byte in value.bytes() {
         match byte {

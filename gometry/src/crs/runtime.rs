@@ -66,26 +66,12 @@ pub(crate) fn normalize(value: &str) -> Result<String> {
                 "invalid EPSG code: expected an unsigned 32-bit decimal code".to_owned(),
             )
         })?;
-        let mut digit_count = 1;
-        let mut remaining = code;
-        while remaining >= 10 {
-            digit_count += 1;
-            remaining /= 10;
-        }
-        let mut normalized = String::new();
-        normalized
-            .try_reserve_exact("EPSG:".len() + digit_count)
-            .map_err(crate::error::Error::from)?;
-        std::fmt::write(&mut normalized, format_args!("EPSG:{code}"))
-            .map_err(|_| crate::error::ResourceError::Allocation)?;
-        return Ok(normalized);
+        return Ok(format!("EPSG:{code}"));
     }
-    match trimmed {
-        "CRS84" => crate::boundary::try_string_from_str("OGC:CRS84")
-            .map_err(|()| crate::error::ResourceError::Allocation.into()),
-        _ => crate::boundary::try_string_from_str(trimmed)
-            .map_err(|()| crate::error::ResourceError::Allocation.into()),
-    }
+    Ok(match trimmed {
+        "CRS84" => "OGC:CRS84".to_owned(),
+        _ => trimmed.to_owned(),
+    })
 }
 
 pub(crate) fn normalize_pair(source: &str, target: &str) -> Result<(String, String)> {
