@@ -157,7 +157,7 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
             (window.east, window.north),
             (window.west, window.north),
         ] {
-            crate::try_push(&mut corners, h3_corner_cell(lon, lat, max_res)?)?;
+            corners.push(h3_corner_cell(lon, lat, max_res)?);
         }
     }
     if corners.is_empty() {

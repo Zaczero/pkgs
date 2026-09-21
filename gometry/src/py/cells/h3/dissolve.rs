@@ -54,20 +54,17 @@ impl GridDissolver for H3Dissolver {
         cell: Self::Cell,
         is_member: &dyn Fn(Self::Cell) -> bool,
     ) -> PyResult<Vec<CoordSeq>> {
-        let mut segments = Vec::new();
+        let mut segments = Vec::with_capacity(6);
         for edge in cell.edges() {
             if is_member(edge.destination()) {
                 continue;
             }
             let boundary = edge.boundary();
-            let mut points = crate::try_vec_with_capacity(boundary.len())?;
-            for latlng in boundary.iter() {
-                crate::try_push(&mut points, Point::new_raw_xy(latlng.lng(), latlng.lat()))?;
-            }
-            crate::try_push(
-                &mut segments,
-                CoordSeq::try_from_points(&points).map_err(pyo3::PyErr::from)?,
-            )?;
+            let points: Vec<_> = boundary
+                .iter()
+                .map(|latlng| Point::new_raw_xy(latlng.lng(), latlng.lat()))
+                .collect();
+            segments.push(CoordSeq::try_from_points(&points).map_err(pyo3::PyErr::from)?);
         }
         Ok(segments)
     }

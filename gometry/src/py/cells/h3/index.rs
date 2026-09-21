@@ -152,7 +152,7 @@ where
             I::ARRAY_ENTITY
         )));
     }
-    let mut out = crate::try_vec_with_capacity(bytes.len() / width)?;
+    let mut out = Vec::with_capacity(bytes.len() / width);
     for chunk in bytes.chunks_exact(width) {
         // SAFETY: dtype matched by extract; tobytes is native-endian for T.
         let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
@@ -162,7 +162,7 @@ where
                 I::ARRAY_ENTITY
             ))
         })?;
-        crate::try_push(&mut out, id)?;
+        out.push(id);
     }
     Ok(out)
 }

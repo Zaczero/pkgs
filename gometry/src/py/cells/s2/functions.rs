@@ -288,16 +288,15 @@ impl GridDissolver for S2Dissolver {
         is_member: &dyn Fn(Self::Cell) -> bool,
     ) -> PyResult<Vec<CoordSeq>> {
         let vertices = S2GeomCell::from_id(cell).vertices_lonlat();
-        let mut segments = Vec::new();
+        let mut segments = Vec::with_capacity(4);
         for (k, neighbor) in cell.edge_neighbors().into_iter().enumerate() {
             if is_member(neighbor) {
                 continue;
             }
-            crate::try_push(
-                &mut segments,
+            segments.push(
                 CoordSeq::try_from_points(&[vertices[k], vertices[(k + 1) % 4]])
                     .map_err(PyErr::from)?,
-            )?;
+            );
         }
         Ok(segments)
     }
