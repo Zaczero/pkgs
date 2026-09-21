@@ -695,12 +695,12 @@ impl Groups {
                                 .map_err(PyErr::from)?;
                             for row in rows {
                                 for &value in this.int64_row_slice(row) {
-                                    builder.push(value).map_err(PyErr::from)?;
+                                    builder.values_mut().push(value);
                                 }
                                 let end = builder.len();
                                 builder.push_end(end).map_err(PyErr::from)?;
                             }
-                            let (ids, offsets) = builder.finish().map_err(PyErr::from)?;
+                            let (ids, offsets) = builder.finish();
                             let rows = 0..offsets.len() - 1;
                             Self {
                                 values: GroupsValues::Int64(ids.into()),
@@ -730,12 +730,12 @@ impl Groups {
                                     values.gather_logical_row_range(this.row_values_window(row))?;
                                 for shape in row_values.storage().iter_shapes() {
                                     let shape = shape.map_err(PyErr::from)?.into_owned();
-                                    builder.push(shape).map_err(PyErr::from)?;
+                                    builder.values_mut().push(shape);
                                 }
                                 let end = builder.len();
                                 builder.push_end(end).map_err(PyErr::from)?;
                             }
-                            let (shapes, offsets) = builder.finish().map_err(PyErr::from)?;
+                            let (shapes, offsets) = builder.finish();
                             let flat = Arc::new(PyGeometryArray::from_shapes(
                                 shapes,
                                 values.frame.clone(),
@@ -751,7 +751,7 @@ impl Groups {
                                     .push_row(this.cell_row_view(row)?.logical_ids())
                                     .map_err(PyErr::from)?;
                             }
-                            let (ids, offsets) = builder.finish().map_err(PyErr::from)?;
+                            let (ids, offsets) = builder.finish();
                             Self::from_cell_flat(kind, ids, offsets)?
                         },
                     }

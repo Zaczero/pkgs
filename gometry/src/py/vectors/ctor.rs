@@ -75,12 +75,12 @@ impl Groups {
         Self::from_geometry_csr(Arc::new(values), group_offsets.into(), 0..n)
     }
 
-    /// Adopt a fallible geometry CSR builder after its detached row walk.
+    /// Adopt a checked geometry CSR builder after its detached row walk.
     pub(crate) fn from_geometry_builder(
         frame: crate::Frame,
         builder: CsrBuilder<Shape>,
     ) -> PyResult<Self> {
-        let (shapes, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+        let (shapes, offsets) = builder.finish();
         let values = PyGeometryArray::from_shapes(shapes, frame)?;
         validate_csr_offsets(&offsets, values.len())?;
         let n = offsets
@@ -99,7 +99,7 @@ impl Groups {
             for row in rows {
                 builder.push_row(row)?;
             }
-            builder.finish()
+            Ok(builder.finish())
         }
 
         let crate::geometry::PolygonizeFull {
@@ -137,7 +137,7 @@ impl Groups {
         frame: crate::Frame,
         builder: CsrBuilder<crate::Point>,
     ) -> PyResult<Self> {
-        let (vertices, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+        let (vertices, offsets) = builder.finish();
         let values = if vertices.is_empty() {
             PyGeometryArray::from_shapes(Vec::new(), frame)?
         } else {
@@ -185,7 +185,7 @@ impl Groups {
                 .push_row(row.as_ref().iter().copied())
                 .map_err(pyo3::PyErr::from)?;
         }
-        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+        let (ids, offsets) = builder.finish();
         Self::from_cell_flat(kind, ids, offsets)
     }
 
@@ -232,34 +232,8 @@ mod self_intersection_csr_tests {
     use super::{Groups, GroupsValues, self_intersection_csr};
     use crate::array::{PyGeometryArray, ValidityMask};
     use crate::boundary::{Frame, crs_arc_static};
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::Shape;
     use crate::io::parse_wkt;
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[test]
-    fn polygonize_assembly_failure_releases_all_output_categories() {
-        let shape = line("LINESTRING (0 0, 2 1)");
-        let Shape::LineString(coords) = &shape else {
-            panic!("line fixture")
-        };
-        let observer = std::sync::Arc::downgrade(&coords.column_arcs().xs.owner().unwrap());
-        let full = crate::geometry::PolygonizeFull {
-            polygons: vec![shape.clone()],
-            cuts: vec![vec![shape.clone()], vec![shape.clone()]],
-            dangles: vec![vec![shape.clone()]],
-            invalid_rings: vec![vec![shape]],
-        };
-        let result = fail_allocations_after(0, || Groups::polygonize_full_parts(full, Frame::None));
-        let Err(error) = result else {
-            panic!("cuts allocation must fail");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(observer.upgrade().is_none());
-    }
 
     #[test]
     fn polygonize_assembly_preserves_empty_diagnostic_rows() {
@@ -285,22 +259,6 @@ mod self_intersection_csr_tests {
         crate::geometry::topology_domain(&array.frame).expect("topology domain")
     }
 
-    fn kernel_allocations(array: &PyGeometryArray) -> usize {
-        let domain = domain(array);
-        allocation_count(|| {
-            for row in array.row_operation().rows_with_missing(|| ()) {
-                if let crate::array::ArrayRow::Present(row) = row {
-                    row.row()
-                        .with_shape(|shape| {
-                            crate::geometry::self_intersections_in_frame(shape, domain).unwrap()
-                        })
-                        .unwrap();
-                }
-            }
-        })
-        .1
-    }
-
     #[test]
     fn crossing_line_keeps_the_intersection_point() {
         let array = PyGeometryArray::from_shapes(
@@ -310,8 +268,7 @@ mod self_intersection_csr_tests {
         .unwrap();
         let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
             .expect("CSR walk")
-            .finish()
-            .expect("finish");
+            .finish();
         assert_eq!(offsets, [0, 1]);
         let Shape::Point(point) = shapes[0] else {
             panic!("intersection is a point");
@@ -334,8 +291,7 @@ mod self_intersection_csr_tests {
         .unwrap();
         let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
             .expect("CSR walk")
-            .finish()
-            .expect("finish");
+            .finish();
         assert_eq!(offsets, [0, 1, 1, 1]);
         assert_eq!(shapes.len(), 1);
         let Shape::Point(point) = shapes[0] else {
@@ -358,43 +314,5 @@ mod self_intersection_csr_tests {
         };
         assert_eq!(values.frame, frame);
         assert_eq!(groups.offsets.as_ref(), &[0, 0]);
-    }
-
-    #[test]
-    fn csr_allocation_failure_is_native_until_the_closure_exits() {
-        let array =
-            PyGeometryArray::from_shapes(vec![line("LINESTRING (0 0, 1 0)")], Frame::None).unwrap();
-        let domain = domain(&array);
-        let _ = kernel_allocations(&array);
-        drop(self_intersection_csr(&array, domain).expect("warm walk before the fault window"));
-        let kernel = kernel_allocations(&array);
-        let (_, walk) = allocation_count(|| {
-            self_intersection_csr(&array, domain).expect("walk succeeds without a fault window")
-        });
-        assert!(
-            walk > kernel,
-            "CSR row growth must allocate after the infallible kernel (kernel={kernel}, walk={walk})"
-        );
-        let Err(error) = fail_allocations_after(kernel, || self_intersection_csr(&array, domain))
-        else {
-            panic!("offset growth must fail under rejection");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        crate::test_support::initialize_python();
-        let pyerr: PyErr = error.into();
-        Python::attach(|py| {
-            let value = pyerr.value(py);
-            if let Ok(notes) = value.getattr("__notes__") {
-                let notes: Vec<String> = notes.extract().unwrap_or_default();
-                assert!(
-                    notes.iter().all(|note| !note.contains("array element")),
-                    "allocation failure must not grow a row note: {notes:?}"
-                );
-            }
-            drop(pyerr);
-        });
     }
 }

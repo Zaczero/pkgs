@@ -1456,7 +1456,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                             .map(GridCell::hash_key),
                     )?;
                 }
-                builder.finish()
+                Ok::<_, PyErr>(builder.finish())
             })
         })?;
         Groups::from_cell_flat(kind, ids, offsets)
@@ -1538,7 +1538,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                             .map(GridCell::hash_key),
                     )?;
                 }
-                builder.finish()
+                Ok::<_, PyErr>(builder.finish())
             })
         })?;
         Groups::from_cell_flat(kind, ids, offsets)

@@ -24,7 +24,7 @@ fn append_nearest_candidates(
     return_distance: bool,
 ) -> PyResult<()> {
     for candidate in candidates {
-        builder.push(candidate.idx).map_err(pyo3::PyErr::from)?;
+        builder.values_mut().push(candidate.idx);
         if return_distance {
             crate::try_push_vec(distances, candidate.distance).map_err(pyo3::PyErr::from)?;
         }
@@ -438,7 +438,7 @@ impl PySpatialIndex {
                         let end = builder.len();
                         builder.push_end(end).map_err(pyo3::PyErr::from)?;
                     }
-                    builder.finish().map_err(pyo3::PyErr::from)
+                    Ok::<_, PyErr>(builder.finish())
                 })?;
                 return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
             }
@@ -494,7 +494,7 @@ impl PySpatialIndex {
                         }
                     },
                 }
-                builder.finish().map_err(pyo3::PyErr::from)
+                Ok::<_, PyErr>(builder.finish())
             })?;
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
@@ -717,7 +717,7 @@ impl PySpatialIndex {
                     None => array.try_for_each_element_bounds(&mut append)?,
                 };
                 if visited {
-                    let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+                    let (ids, offsets) = builder.finish();
                     return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
                 }
             }
@@ -761,7 +761,7 @@ impl PySpatialIndex {
                 let end = builder.len();
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
             }
-            let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+            let (ids, offsets) = builder.finish();
             return Groups::from_int64_csr(ids, offsets)?.into_py_any(py);
         }
         Err(PyTypeError::new_err("expected Geometry or GeometryArray"))
@@ -944,7 +944,7 @@ impl PySpatialIndex {
                         }
                     },
                 }
-                let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+                let (ids, offsets) = builder.finish();
                 Ok::<_, pyo3::PyErr>((ids, offsets, distances))
             })?;
             return format_nearest_rows(py, ids, offsets, distances, return_distance);

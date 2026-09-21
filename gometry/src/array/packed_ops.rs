@@ -488,7 +488,7 @@ impl PyGeometryArray {
                         ));
                     }
                     for value in values {
-                        builder.push(value).map_err(|error| (row, error))?;
+                        builder.values_mut().push(value);
                     }
                     let end = builder.len() / 4;
                     builder.push_end(end).map_err(|error| (row, error))?;

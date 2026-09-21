@@ -840,7 +840,7 @@ impl PySpatialIndex {
                 },
             )?;
         }
-        let (mut ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+        let (mut ids, offsets) = builder.finish();
         if ids.is_empty() {
             return Ok(RowMatches { ids, offsets });
         }
@@ -929,7 +929,7 @@ impl PySpatialIndex {
                 .map_err(pyo3::PyErr::from)?;
         }
         ids.truncate(refined_ids);
-        let (_, refined_offsets) = refined_offsets.finish().map_err(pyo3::PyErr::from)?;
+        let (_, refined_offsets) = refined_offsets.finish();
         Ok(RowMatches {
             ids,
             offsets: refined_offsets,
@@ -1392,7 +1392,7 @@ impl PySpatialIndex {
             let end = builder.len();
             builder.push_end(end).map_err(pyo3::PyErr::from)?;
         }
-        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+        let (ids, offsets) = builder.finish();
         Ok(RowMatches { ids, offsets })
     }
 
@@ -1458,7 +1458,7 @@ impl PySpatialIndex {
             let end = builder.len();
             builder.push_end(end).map_err(pyo3::PyErr::from)?;
         }
-        let (ids, offsets) = builder.finish().map_err(pyo3::PyErr::from)?;
+        let (ids, offsets) = builder.finish();
         Ok(RowMatches { ids, offsets })
     }
 }

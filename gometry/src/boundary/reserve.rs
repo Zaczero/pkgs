@@ -218,10 +218,9 @@ pub(crate) fn try_reserve_heap<T>(heap: &mut BinaryHeap<T>, additional: usize) -
     })
 }
 
-/// One generic CSR owner for ragged output. Values grow fallibly and every
-/// row end is checked, monotonic, and representable as `i64` before it is
-/// retained. Empty offsets mean the implicit initial zero; the finished
-/// zero-row representation is the offsets column `[0]`.
+/// One generic CSR owner for ragged output. Every row end is monotonic and
+/// representable as `i64` before it is retained. Empty offsets mean the
+/// implicit initial zero; the finished zero-row representation is `[0]`.
 pub(crate) struct CsrBuilder<T> {
     values: Vec<T>,
     offsets: Vec<i64>,
@@ -237,27 +236,25 @@ impl<T> CsrBuilder<T> {
 
     /// Reserve exact, already-validated capacities for values and rows.
     pub(crate) fn with_capacity(value_capacity: usize, row_capacity: usize) -> Result<Self> {
-        let mut builder = Self::new();
-        try_reserve_vec(&mut builder.values, value_capacity)?;
         let rows = row_capacity
             .checked_add(1)
             .ok_or(ResourceError::SizeOverflow)?;
-        if let Err(error) = try_reserve_vec(&mut builder.offsets, rows) {
-            builder.release();
-            return Err(error);
-        }
-        Ok(builder)
+        std::alloc::Layout::array::<T>(value_capacity).map_err(|_| ResourceError::SizeOverflow)?;
+        std::alloc::Layout::array::<i64>(rows).map_err(|_| ResourceError::SizeOverflow)?;
+        Ok(Self {
+            values: Vec::with_capacity(value_capacity),
+            offsets: Vec::with_capacity(rows),
+        })
     }
 
     /// Reserve only a bounded initial chunk from advisory external hints.
-    /// Hints never affect validity; observed values still grow through the
-    /// same fallible path.
+    /// Hints never affect validity; observed values retain ordinary growth.
     #[cfg(test)]
-    pub(crate) fn with_capacity_hint(value_hint: usize, row_hint: usize) -> Result<Self> {
-        Self::with_capacity(
-            value_hint.min(MAX_RESERVE_HINT),
-            row_hint.min(MAX_RESERVE_HINT),
-        )
+    pub(crate) fn with_capacity_hint(value_hint: usize, row_hint: usize) -> Self {
+        Self {
+            values: Vec::with_capacity(value_hint.min(MAX_RESERVE_HINT)),
+            offsets: Vec::with_capacity(row_hint.min(MAX_RESERVE_HINT) + 1),
+        }
     }
 
     fn release(&mut self) {
@@ -265,18 +262,10 @@ impl<T> CsrBuilder<T> {
         self.offsets = Vec::new();
     }
 
-    pub(crate) fn push(&mut self, value: T) -> Result<()> {
-        if let Err(error) = try_push_vec(&mut self.values, value) {
-            self.release();
-            return Err(error);
-        }
-        Ok(())
-    }
-
     pub(crate) fn push_row(&mut self, values: impl IntoIterator<Item = T>) -> Result<()> {
-        for value in values {
-            self.push(value)?;
-        }
+        let values = values.into_iter();
+        self.values.reserve(values.size_hint().0);
+        self.values.extend(values);
         let end = self.values.len();
         self.push_end(end)
     }
@@ -294,16 +283,10 @@ impl<T> CsrBuilder<T> {
             self.release();
             return Err(crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into());
         }
-        if self.offsets.is_empty()
-            && let Err(error) = try_push_vec(&mut self.offsets, 0)
-        {
-            self.release();
-            return Err(error);
+        if self.offsets.is_empty() {
+            self.offsets.push(0);
         }
-        if let Err(error) = try_push_vec(&mut self.offsets, end) {
-            self.release();
-            return Err(error);
-        }
+        self.offsets.push(end);
         Ok(())
     }
 
@@ -328,18 +311,15 @@ impl<T> CsrBuilder<T> {
         self.offsets[row] as usize..self.offsets[row + 1] as usize
     }
 
-    pub(crate) fn finish(self) -> Result<(Vec<T>, Vec<i64>)> {
+    pub(crate) fn finish(self) -> (Vec<T>, Vec<i64>) {
         let Self {
             values,
             mut offsets,
         } = self;
-        if offsets.is_empty()
-            && let Err(error) = try_push_vec(&mut offsets, 0)
-        {
-            drop(values);
-            return Err(error);
+        if offsets.is_empty() {
+            offsets.push(0);
         }
-        Ok((values, offsets))
+        (values, offsets)
     }
 }
 
@@ -1002,7 +982,6 @@ mod tests {
     use pyo3::exceptions::PyMemoryError;
 
     use super::*;
-    use crate::error::ErrorKind;
     use crate::test_support::fail_allocations_after;
 
     #[test]
@@ -1191,117 +1170,56 @@ mod tests {
 
     #[test]
     fn csr_builder_preserves_empty_rows_and_checked_offsets() {
-        let mut builder = CsrBuilder::<u8>::with_capacity_hint(4, 3).expect("small hint");
+        let mut builder = CsrBuilder::<u8>::with_capacity_hint(4, 3);
         builder.push_row(std::iter::empty()).expect("empty row");
         builder.push_row([1, 2]).expect("values");
         builder
             .push_row(std::iter::empty())
             .expect("second empty row");
         assert_eq!(builder.row_range(1), 0..2);
-        let (values, offsets) = builder.finish().expect("finish CSR");
+        let (values, offsets) = builder.finish();
         assert_eq!(values, [1, 2]);
         assert_eq!(offsets, [0, 0, 2, 2]);
     }
 
     #[test]
     fn csr_builder_rejects_non_monotonic_and_non_i64_offsets() {
+        assert!(CsrBuilder::<u8>::with_capacity(usize::MAX, 0).is_err());
+        assert!(CsrBuilder::<u8>::with_capacity(0, usize::MAX).is_err());
+
         let mut builder = CsrBuilder::<u8>::new();
         builder.push_end(3).expect("first end");
         assert!(builder.push_end(2).is_err());
         builder
             .push_row([2])
-            .expect("reuse after row-growth failure");
-        let (values, offsets) = builder.finish().expect("reused CSR");
+            .expect("reuse after invalid row end");
+        let (values, offsets) = builder.finish();
         assert_eq!(values, [2]);
         assert_eq!(offsets, [0, 1]);
 
         let mut builder = CsrBuilder::<u8>::new();
         if usize::BITS > 63 {
             assert!(builder.push_end(i64::MAX as usize + 1).is_err());
-            let (values, offsets) = builder.finish().expect("empty after overflow");
+            let (values, offsets) = builder.finish();
             assert!(values.is_empty());
             assert_eq!(offsets, [0]);
-        } else {
-            assert!(CsrBuilder::<u8>::with_capacity(0, usize::MAX).is_err());
         }
 
         let mut builder = CsrBuilder::<u8>::new();
         builder.push_row([1]).expect("row");
         builder.clear();
         builder.push_row([2]).expect("reuse after clear");
-        let (values, offsets) = builder.finish().expect("cleared CSR");
+        let (values, offsets) = builder.finish();
         assert_eq!(values, [2]);
         assert_eq!(offsets, [0, 1]);
     }
 
     #[test]
     fn csr_builder_treats_finite_hints_as_advisory() {
-        let builder = CsrBuilder::<u8>::with_capacity_hint(usize::MAX, usize::MAX)
-            .expect("lying finite hint is clamped");
-        let (values, offsets) = builder.finish().expect("empty reserved CSR");
+        let builder = CsrBuilder::<u8>::with_capacity_hint(usize::MAX, usize::MAX);
+        let (values, offsets) = builder.finish();
         assert!(values.is_empty());
         assert_eq!(offsets, [0]);
-    }
-
-    #[test]
-    fn csr_builder_new_and_clear_succeed_under_allocation_rejection() {
-        let builder = fail_allocations_after(0, || {
-            let mut builder = CsrBuilder::<u8>::new();
-            builder.clear();
-            builder
-        });
-        let (values, offsets) = builder.finish().expect("finish after rejected new/clear");
-        assert!(values.is_empty());
-        assert_eq!(offsets, [0]);
-    }
-
-    #[test]
-    fn csr_builder_empty_finish_returns_allocation_error_when_zero_offset_fails() {
-        let error = fail_allocations_after(0, || CsrBuilder::<u8>::new().finish())
-            .expect_err("empty finish must allocate the zero offset");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
-    #[test]
-    fn csr_builder_push_end_allocation_failure_drops_payload_and_allows_reuse() {
-        struct DropProbe {
-            id: u8,
-            dropped: Rc<RefCell<Vec<u8>>>,
-        }
-
-        impl Drop for DropProbe {
-            fn drop(&mut self) {
-                self.dropped.borrow_mut().push(self.id);
-            }
-        }
-
-        let dropped = Rc::new(RefCell::new(Vec::with_capacity(3)));
-        let probe = |id| DropProbe {
-            id,
-            dropped: Rc::clone(&dropped),
-        };
-        let mut builder = CsrBuilder::<DropProbe>::new();
-        builder.push(probe(1)).expect("retained value");
-        builder.push(probe(2)).expect("retained value");
-        let error = fail_allocations_after(0, || builder.push_end(2))
-            .expect_err("offset growth must fail under rejection");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        let mut ids = dropped.borrow().clone();
-        ids.sort_unstable();
-        assert_eq!(ids, [1, 2]);
-        drop(error);
-
-        builder.push(probe(3)).expect("reuse after offset fault");
-        builder.push_end(1).expect("reuse row end");
-        let (values, offsets) = builder.finish().expect("reused CSR");
-        assert_eq!(offsets, [0, 1]);
-        assert_eq!(values.iter().map(|value| value.id).collect::<Vec<_>>(), [3]);
     }
 
     #[test]

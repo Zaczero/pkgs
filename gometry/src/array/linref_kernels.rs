@@ -229,9 +229,7 @@ mod tests {
     use crate::array::{GeometryArrayStorage, PyGeometryArray, ValidityMask};
     use crate::boundary::Frame;
     use crate::crs::{DistanceMode, MetricModel};
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq, Shape};
-    use crate::test_support::fail_allocations_after;
 
     fn line_seq(xs: Vec<f64>, ys: Vec<f64>, zs: Option<Vec<f64>>, ms: Option<Vec<f64>>) -> LineSeq {
         LineSeq::try_new(CoordSeq::try_from_vecs(xs, ys, zs, ms).unwrap()).expect("test line")
@@ -253,17 +251,6 @@ mod tests {
         array
     }
 
-    fn warm_row_products(array: &PyGeometryArray) {
-        let mut rows = array.row_operation();
-        for logical_row in rows.rows_with_missing(|| ()) {
-            if let crate::array::ArrayRow::Present(row) = logical_row {
-                let logical = row.logical();
-                let _prepared = rows.prepared(row);
-                let _cache = rows.frame_cache(logical).unwrap();
-            }
-        }
-    }
-
     fn point_xyzm(shape: &Shape) -> (f64, f64, Option<f64>, Option<f64>) {
         match shape {
             Shape::Point(point) => (point.x, point.y, point.z(), point.m()),
@@ -280,7 +267,7 @@ mod tests {
             &MetricModel::COORDINATE,
         )
         .expect("count samples");
-        let (shapes, offsets) = builder.finish().expect("csr");
+        let (shapes, offsets) = builder.finish();
         assert_eq!(offsets, vec![0, 2, 4]);
         assert_eq!(point_xyzm(&shapes[0]), (0.0, 0.0, Some(0.0), Some(10.0)));
         assert_eq!(point_xyzm(&shapes[1]), (10.0, 0.0, Some(10.0), Some(20.0)));
@@ -300,7 +287,7 @@ mod tests {
             &MetricModel::COORDINATE,
         )
         .expect("at samples");
-        let (shapes, offsets) = builder.finish().expect("csr");
+        let (shapes, offsets) = builder.finish();
         assert_eq!(offsets, vec![0, 1, 2]);
         assert_eq!(point_xyzm(&shapes[0]), (2.5, 0.0, Some(2.5), Some(12.5)));
         assert_eq!(point_xyzm(&shapes[1]), (2.5, 0.0, None, None));
@@ -317,33 +304,10 @@ mod tests {
             &MetricModel::COORDINATE,
         )
         .expect("missing empty group");
-        let (shapes, offsets) = builder.finish().expect("csr");
+        let (shapes, offsets) = builder.finish();
         assert_eq!(offsets, vec![0, 2, 2]);
         assert_eq!(shapes.len(), 2);
         assert_eq!(point_xyzm(&shapes[0]), (0.0, 0.0, Some(0.0), Some(10.0)));
         assert_eq!(point_xyzm(&shapes[1]), (10.0, 0.0, Some(10.0), Some(20.0)));
-    }
-
-    #[test]
-    fn mixed_builder_allocation_fails_after_warm_cache() {
-        let array = mixed_zm_and_xy_lines()
-            .with_missing_mask(ValidityMask::from_sparse(2, &[0]).unwrap())
-            .unwrap();
-        warm_row_products(&array);
-        let error = fail_allocations_after(0, || {
-            match interpolate_mixed_row_groups(
-                &array,
-                &RowInterpolatePlan::Counts(crate::I64Param::Scalar(2)),
-                &MetricModel::COORDINATE,
-            ) {
-                Err(error) => error,
-                Ok(_) => panic!("builder alloc"),
-            }
-        });
-        assert_eq!(error.0, 0);
-        assert!(matches!(
-            error.1.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
     }
 }

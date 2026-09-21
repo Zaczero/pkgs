@@ -124,7 +124,7 @@ impl CsrOffsetBuilder {
     }
 
     pub(crate) fn finish(self, vertex_cap: usize) -> Result<CsrOffsetColumn> {
-        let (_, offsets) = self.builder.finish()?;
+        let (_, offsets) = self.builder.finish();
         if offsets
             .last()
             .is_some_and(|&last| last as usize > vertex_cap)
