@@ -6,7 +6,6 @@
 //! locate / substring (by distance/fraction and by M), plus the geodesic-aware
 //! splitting helpers.
 
-use super::line_index::try_boxed_slice;
 use super::linear_3d;
 use crate::error::Result;
 #[cfg(test)]
@@ -424,7 +423,7 @@ impl MeasuredLineIndex {
         let mut owned = Vec::new();
         crate::boundary::try_reserve_vec(&mut owned, parts.len())?;
         owned.extend(parts.iter().map(|line| line.as_coords().clone()));
-        let parts = try_boxed_slice(owned)?;
+        let parts = owned.into_boxed_slice();
         let mut first = None;
         let mut last = None;
         let mut previous: Option<Point> = None;
@@ -778,35 +777,23 @@ mod measured_window_tests {
     use super::*;
 
     #[test]
-    fn interpolate_m_propagates_each_allocation_failure() {
-        use crate::error::{ErrorKind, ResourceError};
+    fn interpolate_m_preserves_multipart_empty_members() {
         use crate::geometry::MultiMember;
-        use crate::test_support::{allocation_count, fail_allocations_after};
 
         let source =
             crate::io::parse_wkt("MULTILINESTRING (EMPTY, (0 0, 3 0), (8 0, 11 0), EMPTY)")
                 .unwrap();
         let range = MeasureRange::interpolate_m(10.0, 40.0).unwrap();
-        let (output, allocations) =
-            allocation_count(|| source.interpolate_m(range, false, point_distance));
-        let Shape::MultiLineString(lines) = output.unwrap() else {
+        let Shape::MultiLineString(lines) = source
+            .interpolate_m(range, false, point_distance)
+            .expect("measured interpolation")
+        else {
             panic!("multipart output");
         };
         assert_eq!(lines.member_count(), 4);
         assert!(matches!(lines.members().next(), Some(MultiMember::Empty)));
         assert_eq!(lines.as_slice()[0].ms(), Some(&[10.0, 25.0][..]));
         assert_eq!(lines.as_slice()[1].ms(), Some(&[25.0, 40.0][..]));
-        assert!(allocations > 0);
-        for successful in 0..allocations {
-            let error = fail_allocations_after(successful, || {
-                source.interpolate_m(range, false, point_distance)
-            })
-            .expect_err("every allocation must propagate failure");
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-        }
     }
 
     #[test]

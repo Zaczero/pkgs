@@ -111,31 +111,15 @@ pub(crate) unsafe fn schema_metadata_pairs_owned(
         crate::boundary::try_reserve_vec(&mut pairs, pair_count).map_err(PyErr::from)?;
         for _ in 0..pair_count {
             let key_len = read_metadata_len(&mut cursor)?;
-            let key = copy_metadata_bytes(std::slice::from_raw_parts(cursor, key_len), &mut pairs)?;
+            let key = Box::from(std::slice::from_raw_parts(cursor, key_len));
             cursor = cursor.add(key_len);
             let value_len = read_metadata_len(&mut cursor)?;
-            let value =
-                copy_metadata_bytes(std::slice::from_raw_parts(cursor, value_len), &mut pairs)?;
+            let value = Box::from(std::slice::from_raw_parts(cursor, value_len));
             cursor = cursor.add(value_len);
             pairs.push((key, value));
         }
         Ok(pairs)
     }
-}
-
-fn copy_metadata_bytes(bytes: &[u8], retained: &mut OwnedMetadataPairs) -> PyResult<Box<[u8]>> {
-    let Ok(mut output) = Box::<[u8]>::try_new_uninit_slice(bytes.len()) else {
-        // Drop already-copied metadata before constructing the native
-        // exception so the allocation failure remains recoverable.
-        *retained = Vec::new();
-        return Err(crate::py::errors::native_memory_error());
-    };
-    for (slot, &byte) in output.iter_mut().zip(bytes) {
-        slot.write(byte);
-    }
-    // SAFETY: every slot was initialized by the loop above, and the boxed
-    // slice has the exact requested length.
-    Ok(unsafe { output.assume_init() })
 }
 
 const unsafe fn read_metadata_i32(cursor: &mut *const u8) -> i32 {

@@ -438,20 +438,6 @@ pub(crate) fn try_format(args: std::fmt::Arguments<'_>) -> crate::error::Result<
     Ok(output.0)
 }
 
-/// Copy a valid UTF-8 slice into one exact, fallible `Box<str>` allocation.
-pub(crate) fn try_boxed_str(s: &str) -> crate::error::Result<Box<str>> {
-    let mut bytes =
-        Box::<[u8]>::try_new_uninit_slice(s.len()).map_err(|_| ResourceError::Allocation)?;
-    for (slot, &byte) in bytes.iter_mut().zip(s.as_bytes()) {
-        slot.write(byte);
-    }
-    // SAFETY: the loop above writes one initialized byte into every slot.
-    let bytes = unsafe { bytes.assume_init() };
-    // SAFETY: `bytes` contains exactly the bytes of valid UTF-8 input `s`.
-    // `str` and `[u8]` use the same slice data pointer and length metadata.
-    Ok(unsafe { std::mem::transmute::<Box<[u8]>, Box<str>>(bytes) })
-}
-
 /// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
 /// (which allocates from a lying `__len__` before any Rust length check).
 ///

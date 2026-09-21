@@ -87,13 +87,13 @@ impl PreparedPlan {
             semi_major,
             flattening,
             metric.runtime_generation(),
-        )?;
+        );
         let other_key = GeodesicPartsKey::new_at_generation(
             crs,
             semi_major,
             flattening,
             metric.runtime_generation(),
-        )?;
+        );
         let self_parts = self.geodesic_parts(self_cache, self_key, metric)?;
         let other_parts = other.geodesic_parts(other_cache, other_key, metric)?;
         geodesic_nearest_points_with_parts(

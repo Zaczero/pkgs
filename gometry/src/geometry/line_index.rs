@@ -237,9 +237,7 @@ impl LineIndexSlot {
             Self::Index(index) => Ok(index),
             Self::NotLineal => Err(GeometryErrorKind::LineStringRequired.into()),
             Self::Empty => Err(GeometryErrorKind::EmptyLinework.into()),
-            Self::Invalid(msg) => Err(GeometryErrorKind::message(crate::boundary::try_boxed_str(
-                msg,
-            )?)),
+            Self::Invalid(msg) => Err(GeometryErrorKind::message(Box::<str>::from(msg.as_str()))),
         }
     }
 }
@@ -332,14 +330,8 @@ impl LineIndex {
             .rev()
             .find_map(|line| line.last())
             .unwrap_or(last);
-        let segments = try_boxed_slice(segments)?;
-        let prefix = match try_boxed_slice(prefix) {
-            Ok(prefix) => prefix,
-            Err(error) => {
-                drop(segments);
-                return Err(error);
-            },
-        };
+        let segments = segments.into_boxed_slice();
+        let prefix = prefix.into_boxed_slice();
         Ok(Self {
             segments,
             prefix,
@@ -380,14 +372,8 @@ impl LineIndex {
             crate::boundary::try_push_vec(&mut prefix, total)?;
         }
         let last = coords.last().unwrap_or(last);
-        let segments = try_boxed_slice(segments)?;
-        let prefix = match try_boxed_slice(prefix) {
-            Ok(prefix) => prefix,
-            Err(error) => {
-                drop(segments);
-                return Err(error);
-            },
-        };
+        let segments = segments.into_boxed_slice();
+        let prefix = prefix.into_boxed_slice();
         Ok(Self {
             segments,
             prefix,
@@ -656,31 +642,6 @@ impl HeapSize for LineIndex {
     fn heap_bytes(&self) -> usize {
         self.segments.heap_bytes() + self.prefix.heap_bytes()
     }
-}
-
-pub(crate) fn try_boxed_slice<T>(mut values: Vec<T>) -> Result<Box<[T]>> {
-    if values.try_shrink_to_fit().is_err() {
-        drop(values);
-        return Err(crate::error::ResourceError::Allocation.into());
-    }
-    if values.capacity() == values.len() {
-        // With no spare capacity this conversion only transfers ownership and
-        // cannot request another allocation.
-        return Ok(values.into_boxed_slice());
-    }
-    // An allocator may retain padding after a successful shrink. Move into an
-    // exact fallible box rather than letting `into_boxed_slice` retry that
-    // shrink infallibly.
-    let len = values.len();
-    let Ok(mut boxed) = Box::<[T]>::try_new_uninit_slice(len) else {
-        drop(values);
-        return Err(crate::error::ResourceError::Allocation.into());
-    };
-    for (slot, value) in boxed.iter_mut().zip(values) {
-        slot.write(value);
-    }
-    // SAFETY: the loop moved one initialized value into every slot.
-    Ok(unsafe { boxed.assume_init() })
 }
 
 fn try_push_distinct_point(points: &mut Vec<Point>, point: Point) -> Result<()> {

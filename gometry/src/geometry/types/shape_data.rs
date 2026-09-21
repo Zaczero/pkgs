@@ -404,7 +404,7 @@ impl PreparedPlan {
         metric: &impl SegmentMetric,
     ) -> Result<Arc<LineIndex>> {
         let key =
-            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation)?;
+            GeodesicPartsKey::new_at_generation(crs, semi_major, flattening, runtime_generation);
         let cached = frame_cache.get(&key).and_then(|entry| entry.line_index);
         if let Some(index) = cached {
             return Ok(index);
@@ -454,7 +454,7 @@ impl PreparedPlan {
             semi_major,
             flattening,
             metric.runtime_generation(),
-        )?;
+        );
         self.geodesic_parts(frame_cache, key, metric).map(|_| ())
     }
 
@@ -635,34 +635,6 @@ mod footprint_tests {
         assert!(data.metric.get().is_some());
         assert!(data.heap_bytes() > cold);
     }
-
-    #[test]
-    fn cold_nested_metric_product_allocation_failure_is_retryable() {
-        use crate::error::{ErrorKind, ResourceError};
-        use crate::test_support::fail_allocations_after;
-
-        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
-        plan.metric();
-        assert!(plan.metric.get().expect("sidecar").distance.get().is_none());
-        let Err(error) = fail_allocations_after(0, || plan.distance_parts()) else {
-            panic!("nested distance parts allocation unexpectedly succeeded");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(
-            plan.metric
-                .get()
-                .expect("sidecar remains")
-                .distance
-                .get()
-                .is_none()
-        );
-        let first = std::ptr::from_ref(plan.distance_parts().expect("retry after rejection"));
-        let second = std::ptr::from_ref(plan.distance_parts().expect("cached distance parts"));
-        assert_eq!(first, second);
-    }
 }
 
 #[cfg(test)]
@@ -670,44 +642,24 @@ mod frame_cache_tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::allocation_count;
 
     #[test]
     fn frame_cache_key_includes_crs_ellipsoid_and_runtime_generation() {
         let base =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4)
-                .expect("test cache key");
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4);
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation(
-                "EPSG:4267",
-                6_378_137.0,
-                1.0 / 298.257_223_563,
-                4,
-            )
-            .expect("test cache key")
+            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_137.0, 1.0 / 298.257_223_563, 4,)
         );
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation(
-                "EPSG:4326",
-                6_378_136.0,
-                1.0 / 298.257_223_563,
-                4,
-            )
-            .expect("test cache key")
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_136.0, 1.0 / 298.257_223_563, 4,)
         );
         assert_ne!(
             base,
-            GeodesicPartsKey::new_at_generation(
-                "EPSG:4326",
-                6_378_137.0,
-                1.0 / 298.257_223_563,
-                5,
-            )
-            .expect("test cache key")
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5,)
         );
     }
 
@@ -715,14 +667,11 @@ mod frame_cache_tests {
     fn differing_frame_or_generation_replaces_the_single_entry() {
         let cache = FrameDependentCaches::default();
         let first =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4)
-                .expect("test cache key");
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 4);
         let next_generation =
-            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5)
-                .expect("test cache key");
+            GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5);
         let other_frame =
-            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_206.4, 1.0 / 294.978_698_2, 5)
-                .expect("test cache key");
+            GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_206.4, 1.0 / 294.978_698_2, 5);
         let _ = cache.merge(first.clone(), |_| {});
         assert!(cache.get(&first).is_some());
         let _ = cache.merge(next_generation.clone(), |_| {});
@@ -736,10 +685,8 @@ mod frame_cache_tests {
     #[test]
     fn stale_generation_cannot_replace_a_newer_entry() {
         let cache = FrameDependentCaches::default();
-        let older = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 4)
-            .expect("test key");
-        let newer = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 5)
-            .expect("test key");
+        let older = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 4);
+        let newer = GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 0.0, 5);
         assert!(cache.merge(newer.clone(), |_| {}).is_some());
         assert!(cache.merge(older.clone(), |_| {}).is_none());
         assert!(cache.get(&newer).is_some());
@@ -939,7 +886,7 @@ mod frame_cache_tests {
     }
 
     #[test]
-    fn exact_measured_fraction_propagates_each_allocation_failure() {
+    fn exact_measured_fraction_is_allocation_free() {
         let max = f64::MAX;
         let shape = PreparedPlan::new(Shape::LineString(
             LineSeq::try_new(
@@ -963,16 +910,6 @@ mod frame_cache_tests {
         // Planar exact measured interpolation is intentionally allocation-free;
         // lock zero so a future heap spill fails rather than weakening coverage.
         assert_eq!(allocations, 0);
-        for prefix in 0..allocations {
-            let error = fail_allocations_after(prefix, || {
-                shape.line_interpolate_point_m_with(0.0, &PlanarMetric)
-            })
-            .unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-        }
     }
 
     #[test]
@@ -1033,7 +970,7 @@ mod frame_cache_tests {
     #[test]
     fn single_entry_container_adds_no_heap_allocation() {
         let cache = FrameDependentCaches::default();
-        let key = GeodesicPartsKey::new_at_generation("TEST", 1.0, 0.0, 0).expect("test cache key");
+        let key = GeodesicPartsKey::new_at_generation("TEST", 1.0, 0.0, 0);
         let key_heap = key.heap_bytes();
         let _ = cache.merge(key, |_| {});
         // The key's existing string storage and the empty entry account for
@@ -1055,8 +992,7 @@ mod frame_cache_tests {
                             6_378_137.0,
                             1.0 / 298.257_223_563,
                             generation + worker,
-                        )
-                        .expect("test cache key");
+                        );
                         let _ = cache.merge(key, |_| {});
                     }
                 });
@@ -1067,8 +1003,7 @@ mod frame_cache_tests {
             6_378_137.0,
             1.0 / 298.257_223_563,
             70,
-        )
-        .expect("test cache key");
+        );
         assert!(cache.get(&latest).is_some());
     }
 }

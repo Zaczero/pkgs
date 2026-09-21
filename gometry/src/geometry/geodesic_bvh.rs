@@ -10,7 +10,7 @@
 
 use crate::HeapSize;
 use crate::collections::HashMap;
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geometry::{
     BvhCode, BvhNode, GeodesicMetric, GeodesicParts, GeodesicSegment, GeodesicSegmentQuery,
     GeodesicSegmentQueryResult, GeodesicSegmentScratch, GeodesicWitnessNeed, HashMapExt as _,
@@ -50,16 +50,6 @@ pub(crate) struct GeodesicFacetBvh {
     segment_ids: Box<[u32]>,
 }
 
-fn try_boxed_filled<T: Copy>(len: usize, value: T) -> Result<Box<[T]>> {
-    let mut values =
-        Box::<[T]>::try_new_uninit_slice(len).map_err(|_| ResourceError::Allocation)?;
-    for slot in &mut *values {
-        slot.write(value);
-    }
-    // SAFETY: every element was initialized with a valid copy of `value` above.
-    Ok(unsafe { values.assume_init() })
-}
-
 fn cached_auxiliary_unit(
     aux_cache: &mut HashMap<(u64, u64), [f64; 3]>,
     point: crate::geometry::XY,
@@ -95,11 +85,11 @@ impl GeodesicFacetBvh {
         let leaf_count = geodesic_leaf_count(segments.len());
         let node_count = 2 * leaf_count - 1;
         let mut tree = Self {
-            anchors: try_boxed_filled(node_count, Point::new_raw_xy(0.0, 0.0))?,
-            reaches: try_boxed_filled(node_count, 0.0)?,
-            codes: try_boxed_filled(node_count, 0)?,
-            leaves: try_boxed_filled(leaf_count, GeodesicLeaf { first: 0, len: 0 })?,
-            segment_ids: try_boxed_filled(segments.len(), 0)?,
+            anchors: vec![Point::new_raw_xy(0.0, 0.0); node_count].into_boxed_slice(),
+            reaches: vec![0.0; node_count].into_boxed_slice(),
+            codes: vec![0; node_count].into_boxed_slice(),
+            leaves: vec![GeodesicLeaf { first: 0, len: 0 }; leaf_count].into_boxed_slice(),
+            segment_ids: vec![0; segments.len()].into_boxed_slice(),
         };
         let mut aux_cache = HashMap::new();
         aux_cache
