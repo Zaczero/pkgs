@@ -7,17 +7,16 @@
 
 use super::cell::HierarchicalCell;
 
-/// A fallibly-built canonical cell set.
+/// A canonical cell set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CanonicalCellSet<C: HierarchicalCell> {
     cells: Vec<C>,
 }
 
 impl<C: HierarchicalCell> CanonicalCellSet<C> {
-    /// Normalize an arbitrary finite vector. Allocation failures are returned
-    /// as resource errors rather than aborting through `Vec` growth.
-    pub(crate) fn new(cells: Vec<C>) -> crate::error::Result<Self> {
-        Ok(Self::from_range_sorted(normalize_with_floor(cells, 0)?))
+    /// Normalize an arbitrary finite vector.
+    pub(crate) fn new(cells: Vec<C>) -> Self {
+        Self::from_range_sorted(normalize_with_floor(cells, 0))
     }
 
     const fn from_range_sorted(cells: Vec<C>) -> Self {
@@ -36,22 +35,10 @@ impl<C: HierarchicalCell> CanonicalCellSet<C> {
     }
 }
 
-fn try_copy<T: Copy>(values: &[T]) -> crate::error::Result<Vec<T>> {
-    let mut copied = Vec::new();
-    crate::boundary::try_reserve_vec(&mut copied, values.len())?;
-    for &value in values {
-        crate::boundary::try_push_vec(&mut copied, value)?;
-    }
-    Ok(copied)
-}
-
 /// Canonicalize with sibling groups never merging into parents coarser than
 /// `floor` (cells already coarser pass through unchanged). The returned set's
 /// public conversion follows the family's explicit identity order.
-fn normalize_with_floor<C: HierarchicalCell>(
-    mut cells: Vec<C>,
-    floor: u8,
-) -> crate::error::Result<Vec<C>> {
+fn normalize_with_floor<C: HierarchicalCell>(mut cells: Vec<C>, floor: u8) -> Vec<C> {
     // Ancestors first on equal range starts, so absorption is a single
     // forward pass.
     cells.sort_unstable_by(|a, b| {
@@ -60,13 +47,12 @@ fn normalize_with_floor<C: HierarchicalCell>(
             .then(b.range_max().cmp(&a.range_max()))
     });
     cells.dedup();
-    let mut out: Vec<C> = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, cells.len())?;
+    let mut out: Vec<C> = Vec::with_capacity(cells.len());
     for cell in cells {
         if out.last().is_some_and(|&last| last.contains(cell)) {
             continue;
         }
-        crate::boundary::try_push_vec(&mut out, cell)?;
+        out.push(cell);
         // Merge complete sibling groups (cascading upward). `out` is sorted,
         // distinct, and free of containment, so `count` cells one level below
         // `parent` and inside its range are exactly its children.
@@ -87,10 +73,10 @@ fn normalize_with_floor<C: HierarchicalCell>(
                 break;
             }
             out.truncate(out.len() - count);
-            crate::boundary::try_push_vec(&mut out, parent)?;
+            out.push(parent);
         }
     }
-    Ok(out)
+    out
 }
 
 /// Compact to the coarsest covering with merging stopped at `floor`
@@ -98,10 +84,8 @@ fn normalize_with_floor<C: HierarchicalCell>(
 pub(crate) fn compact_with_floor<C: HierarchicalCell>(
     cells: Vec<C>,
     floor: u8,
-) -> crate::error::Result<CanonicalCellSet<C>> {
-    Ok(CanonicalCellSet::from_range_sorted(normalize_with_floor(
-        cells, floor,
-    )?))
+) -> CanonicalCellSet<C> {
+    CanonicalCellSet::from_range_sorted(normalize_with_floor(cells, floor))
 }
 
 /// Expand every cell to `target` (each must be at or above it). Overlapping
@@ -112,7 +96,7 @@ pub(crate) fn uncompact<C: HierarchicalCell>(
     cells: &[C],
     target: u8,
 ) -> crate::error::Result<CanonicalCellSet<C>> {
-    let canonical = CanonicalCellSet::new(try_copy(cells)?)?;
+    let canonical = CanonicalCellSet::new(cells.to_vec());
     uncompact_canonical(&canonical, target)
 }
 
@@ -133,21 +117,17 @@ fn uncompact_canonical<C: HierarchicalCell>(
     target: u8,
 ) -> crate::error::Result<CanonicalCellSet<C>> {
     let estimated = checked_estimate(cells.as_slice(), target)?;
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, estimated)?;
-    let mut stack = Vec::new();
-    crate::boundary::try_reserve_vec(&mut stack, cells.as_slice().len())?;
-    for &cell in cells.as_slice().iter().rev() {
-        crate::boundary::try_push_vec(&mut stack, cell)?;
-    }
+    let mut out = Vec::with_capacity(estimated);
+    let mut stack = Vec::with_capacity(cells.as_slice().len());
+    stack.extend(cells.as_slice().iter().rev().copied());
     while let Some(cell) = stack.pop() {
         if cell.depth() >= target {
-            crate::boundary::try_push_vec(&mut out, cell)?;
+            out.push(cell);
         } else {
             let children_start = stack.len();
-            for child in cell.children() {
-                crate::boundary::try_push_vec(&mut stack, child)?;
-            }
+            let children = cell.children();
+            stack.reserve(children.len());
+            stack.extend(children);
             stack[children_start..].reverse();
         }
     }
@@ -158,10 +138,8 @@ fn uncompact_canonical<C: HierarchicalCell>(
 pub(crate) fn union<C: HierarchicalCell>(
     left: CanonicalCellSet<C>,
     right: CanonicalCellSet<C>,
-) -> crate::error::Result<CanonicalCellSet<C>> {
+) -> CanonicalCellSet<C> {
     let mut cells = left;
-    let additional = right.cells.len();
-    crate::boundary::try_reserve_vec(&mut cells.cells, additional)?;
     cells.cells.extend(right.cells);
     CanonicalCellSet::new(cells.cells)
 }
@@ -171,9 +149,8 @@ pub(crate) fn union<C: HierarchicalCell>(
 pub(crate) fn intersection<C: HierarchicalCell>(
     left: &CanonicalCellSet<C>,
     right: &CanonicalCellSet<C>,
-) -> crate::error::Result<CanonicalCellSet<C>> {
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, left.cells.len().min(right.cells.len()))?;
+) -> CanonicalCellSet<C> {
+    let mut out = Vec::with_capacity(left.cells.len().min(right.cells.len()));
     let (mut i, mut j) = (0, 0);
     while i < left.cells.len() && j < right.cells.len() {
         let (a, b) = (left.cells[i], right.cells[j]);
@@ -182,7 +159,7 @@ pub(crate) fn intersection<C: HierarchicalCell>(
         } else if b.range_max() < a.range_min() {
             j += 1;
         } else {
-            crate::boundary::try_push_vec(&mut out, if a.contains(b) { b } else { a })?;
+            out.push(if a.contains(b) { b } else { a });
             if a.range_max() < b.range_max() {
                 i += 1;
             } else {
@@ -190,7 +167,7 @@ pub(crate) fn intersection<C: HierarchicalCell>(
             }
         }
     }
-    Ok(CanonicalCellSet::from_range_sorted(out))
+    CanonicalCellSet::from_range_sorted(out)
 }
 
 /// Hierarchy-aware difference of two NORMALIZED sets: cells partially
@@ -199,31 +176,25 @@ pub(crate) fn intersection<C: HierarchicalCell>(
 pub(crate) fn difference<C: HierarchicalCell>(
     left: &CanonicalCellSet<C>,
     right: &CanonicalCellSet<C>,
-) -> crate::error::Result<CanonicalCellSet<C>> {
-    fn subtract<C: HierarchicalCell>(
-        cell: C,
-        subtrahend: &[C],
-        out: &mut Vec<C>,
-    ) -> crate::error::Result<()> {
+) -> CanonicalCellSet<C> {
+    fn subtract<C: HierarchicalCell>(cell: C, subtrahend: &[C], out: &mut Vec<C>) {
         let start = subtrahend.partition_point(|member| member.range_max() < cell.range_min());
         let end = start
             + subtrahend[start..].partition_point(|member| member.range_min() <= cell.range_max());
         let overlapping = &subtrahend[start..end];
         if overlapping.is_empty() {
-            crate::boundary::try_push_vec(out, cell)?;
+            out.push(cell);
         } else if !overlapping[0].contains(cell) && cell.depth() < C::max_depth() {
             for child in cell.children() {
-                subtract(child, overlapping, out)?;
+                subtract(child, overlapping, out);
             }
         }
-        Ok(())
     }
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, left.cells.len())?;
+    let mut out = Vec::with_capacity(left.cells.len());
     for &cell in &left.cells {
-        subtract(cell, &right.cells, &mut out)?;
+        subtract(cell, &right.cells, &mut out);
     }
-    Ok(CanonicalCellSet::from_range_sorted(out))
+    CanonicalCellSet::from_range_sorted(out)
 }
 
 /// Whether a NORMALIZED set contains `cell` entirely (some member is an
@@ -302,7 +273,7 @@ mod tests {
         target: u8,
         inputs: &[C],
     ) {
-        let roots = CanonicalCellSet::new(roots.into_iter().collect()).unwrap();
+        let roots = CanonicalCellSet::new(roots.into_iter().collect());
         let expected = roots
             .as_slice()
             .iter()
@@ -326,20 +297,19 @@ mod tests {
     fn geohash_set_algebra_identities() {
         let base = Geohash::from_lonlat(13.4, 52.5, 4);
         let children: Vec<_> = HierarchicalCell::children(base).collect();
-        let left = CanonicalCellSet::new(vec![base]).unwrap();
-        let right = CanonicalCellSet::new(children[..2].to_vec()).unwrap();
+        let left = CanonicalCellSet::new(vec![base]);
+        let right = CanonicalCellSet::new(children[..2].to_vec());
 
-        assert_eq!(union(left.clone(), right.clone()).unwrap(), left);
-        assert_eq!(intersection(&left, &right).unwrap(), right);
-        let expected = CanonicalCellSet::new(children[2..].to_vec()).unwrap();
-        assert_eq!(difference(&left, &right).unwrap(), expected);
-        assert!(difference(&left, &left).unwrap().as_slice().is_empty());
-        let empty = CanonicalCellSet::new(Vec::new()).unwrap();
-        assert_eq!(difference(&left, &empty).unwrap(), left);
+        assert_eq!(union(left.clone(), right.clone()), left);
+        assert_eq!(intersection(&left, &right), right);
+        let expected = CanonicalCellSet::new(children[2..].to_vec());
+        assert_eq!(difference(&left, &right), expected);
+        assert!(difference(&left, &left).as_slice().is_empty());
+        let empty = CanonicalCellSet::new(Vec::new());
+        assert_eq!(difference(&left, &empty), left);
         // A complete sibling group merges back into the parent.
         assert_eq!(
             CanonicalCellSet::new(HierarchicalCell::children(base).collect::<Vec<_>>())
-                .unwrap()
                 .into_public_vec(),
             vec![base]
         );
@@ -353,19 +323,18 @@ mod tests {
     fn tile_set_algebra_identities() {
         let base = Tile::from_lonlat(13.4, 52.5, 8).expect("in domain");
         let children: Vec<_> = HierarchicalCell::children(base).collect();
-        let left = CanonicalCellSet::new(vec![base]).unwrap();
-        let right = CanonicalCellSet::new(children[..2].to_vec()).unwrap();
+        let left = CanonicalCellSet::new(vec![base]);
+        let right = CanonicalCellSet::new(children[..2].to_vec());
 
-        assert_eq!(union(left.clone(), right.clone()).unwrap(), left);
-        assert_eq!(intersection(&left, &right).unwrap(), right);
+        assert_eq!(union(left.clone(), right.clone()), left);
+        assert_eq!(intersection(&left, &right), right);
         assert_eq!(
-            difference(&left, &right).unwrap(),
-            CanonicalCellSet::new(children[2..].to_vec()).unwrap()
+            difference(&left, &right),
+            CanonicalCellSet::new(children[2..].to_vec())
         );
-        assert!(difference(&left, &left).unwrap().as_slice().is_empty());
+        assert!(difference(&left, &left).as_slice().is_empty());
         assert_eq!(
             CanonicalCellSet::new(HierarchicalCell::children(base).collect::<Vec<_>>())
-                .unwrap()
                 .into_public_vec(),
             vec![base]
         );

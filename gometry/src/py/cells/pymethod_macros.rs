@@ -403,7 +403,7 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::grid::cell_set::CanonicalCellSet<$cell_type>> {
             let items = crate::py::cells::cell_items(cells)?;
             let ids = crate::try_collect_results(items.iter().map(|cell| $parse_cell(cell)))?;
-            Ok(crate::grid::cell_set::CanonicalCellSet::new(ids)?)
+            Ok(crate::grid::cell_set::CanonicalCellSet::new(ids))
         }
 
         #[doc = concat!("Hierarchy-aware union of two ", $label, " cell sets.")]
@@ -438,7 +438,7 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
-            let $array_cells = crate::grid::cell_set::union(left, right)?.into_public_vec();
+            let $array_cells = crate::grid::cell_set::union(left, right).into_public_vec();
             Ok($array_expr?)
         }
 
@@ -472,7 +472,8 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
-            let $array_cells = crate::grid::cell_set::intersection(&left, &right)?.into_public_vec();
+            let $array_cells =
+                crate::grid::cell_set::intersection(&left, &right).into_public_vec();
             Ok($array_expr?)
         }
 
@@ -507,7 +508,8 @@ macro_rules! grid_free_functions {
         ) -> pyo3::PyResult<crate::py::cells::PyCellArray> {
             let left = $cell_set_arg(left)?;
             let right = $cell_set_arg(right)?;
-            let $array_cells = crate::grid::cell_set::difference(&left, &right)?.into_public_vec();
+            let $array_cells =
+                crate::grid::cell_set::difference(&left, &right).into_public_vec();
             Ok($array_expr?)
         }
     };

@@ -124,7 +124,7 @@ mod tests {
             Vec::new(),
         ];
         for cells in cases {
-            let ours = CanonicalCellSet::new(cells.clone()).unwrap();
+            let ours = CanonicalCellSet::new(cells.clone());
             let mut oracle = ::s2::cellunion::CellUnion(
                 cells
                     .iter()
@@ -137,10 +137,7 @@ mod tests {
                 oracle.0.iter().map(|c| c.0).collect::<Vec<_>>()
             );
             // Idempotent.
-            assert_eq!(
-                CanonicalCellSet::new(ours.as_slice().to_vec()).unwrap(),
-                ours
-            );
+            assert_eq!(CanonicalCellSet::new(ours.as_slice().to_vec()), ours);
         }
     }
 
@@ -152,31 +149,24 @@ mod tests {
         let children = base.children().expect("not leaf");
         // A complete quartet would merge to level 10 — the floor forbids it.
         assert_eq!(
-            compact_with_floor(children.to_vec(), 11)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(children.to_vec(), 11).into_public_vec(),
             children.to_vec()
         );
         assert_eq!(
-            compact_with_floor(children.to_vec(), 10)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(children.to_vec(), 10).into_public_vec(),
             vec![base]
         );
         // Already-coarser cells pass through unchanged.
         let coarse = cell(0.0, 0.0, 3);
-        let mixed = compact_with_floor(vec![coarse, children[0]], 5).unwrap();
-        assert_eq!(
-            mixed,
-            CanonicalCellSet::new(vec![coarse, children[0]]).unwrap()
-        );
+        let mixed = compact_with_floor(vec![coarse, children[0]], 5);
+        assert_eq!(mixed, CanonicalCellSet::new(vec![coarse, children[0]]));
     }
 
     /// Uncompact inverts compact and orders along the curve.
     #[test]
     fn uncompact_round_trips() {
         let base = cell(13.4, 52.5, 10);
-        let expanded = uncompact(&[base], 12).expect("within allocator");
+        let expanded = uncompact(&[base], 12).expect("descendant count fits usize");
         assert_eq!(expanded.as_slice().len(), 16);
         assert!(expanded.as_slice().array_windows::<2>().all(|[a, b]| a < b));
         assert!(
@@ -186,16 +176,14 @@ mod tests {
                 .all(|&child| base.contains(child))
         );
         assert_eq!(
-            CanonicalCellSet::new(expanded.as_slice().to_vec())
-                .unwrap()
-                .into_public_vec(),
+            CanonicalCellSet::new(expanded.as_slice().to_vec()).into_public_vec(),
             vec![base]
         );
         // Leaf-level identity.
         let leaf = cell(1.0, 2.0, MAX_LEVEL);
         assert_eq!(
             uncompact(&[leaf], MAX_LEVEL)
-                .expect("within allocator")
+                .expect("descendant count fits usize")
                 .into_public_vec(),
             vec![leaf]
         );
@@ -206,22 +194,22 @@ mod tests {
     fn set_algebra_identities() {
         let base = cell(13.4, 52.5, 10);
         let children = base.children().expect("not leaf");
-        let left = CanonicalCellSet::new(vec![base]).unwrap();
-        let right = CanonicalCellSet::new(children[..2].to_vec()).unwrap();
+        let left = CanonicalCellSet::new(vec![base]);
+        let right = CanonicalCellSet::new(children[..2].to_vec());
 
         // union(ancestor, descendants) = ancestor.
-        assert_eq!(union(left.clone(), right.clone()).unwrap(), left);
+        assert_eq!(union(left.clone(), right.clone()), left);
         // intersection keeps the finer side.
-        assert_eq!(intersection(&left, &right).unwrap(), right);
+        assert_eq!(intersection(&left, &right), right);
         // difference splits exactly: base - first two children = last two.
         assert_eq!(
-            difference(&left, &right).unwrap(),
-            CanonicalCellSet::new(children[2..].to_vec()).unwrap()
+            difference(&left, &right),
+            CanonicalCellSet::new(children[2..].to_vec())
         );
         // x - x = empty; x - empty = x.
-        assert!(difference(&left, &left).unwrap().as_slice().is_empty());
-        let empty = CanonicalCellSet::new(Vec::new()).unwrap();
-        assert_eq!(difference(&left, &empty).unwrap(), left);
+        assert!(difference(&left, &left).as_slice().is_empty());
+        let empty = CanonicalCellSet::new(Vec::new());
+        assert_eq!(difference(&left, &empty), left);
         // Membership range searches.
         assert!(contains_any(left.as_slice(), children[3]));
         assert!(intersects_any(right.as_slice(), base));

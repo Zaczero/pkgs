@@ -119,7 +119,7 @@ trait CellArrayGrid: GridCell {
     fn parse_depth(value: &Bound<'_, PyAny>) -> PyResult<u8>;
     fn parse_compact_floor(depth: Option<&Bound<'_, PyAny>>) -> PyResult<u8>;
     fn compact_cells(cells: Vec<Self>, floor: u8) -> PyResult<Vec<Self>> {
-        Ok(cell_set::compact_with_floor(cells, floor)?.into_public_vec())
+        Ok(cell_set::compact_with_floor(cells, floor).into_public_vec())
     }
     fn compact_ids(ids: Vec<u64>, floor: u8) -> PyResult<Vec<u64>> {
         let mut cells = crate::try_vec_with_capacity(ids.len())?;

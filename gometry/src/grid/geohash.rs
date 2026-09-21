@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn uncompact_materializes_without_fixed_budget() {
         let root = Geohash::parse("u").unwrap();
-        let cells = uncompact(&[root], 4).expect("within allocator");
+        let cells = uncompact(&[root], 4).expect("descendant count fits usize");
         assert_eq!(cells.as_slice().len(), 32_usize.pow(3));
     }
 }

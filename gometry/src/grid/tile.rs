@@ -450,51 +450,38 @@ mod tests {
         // All four children of `parent` compact back into it…
         let children = parent.children().to_vec();
         assert_eq!(
-            compact_with_floor(children.clone(), 0)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(children.clone(), 0).into_public_vec(),
             vec![parent]
         );
         assert_eq!(
-            compact_with_floor(children.clone(), 5)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(children.clone(), 5).into_public_vec(),
             vec![parent]
         );
         // …unless the floor (coarsest allowed) forbids producing zoom 5.
         assert_eq!(
-            compact_with_floor(children.clone(), 6)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(children.clone(), 6).into_public_vec(),
             uncompact(&children, 6)
-                .expect("within allocator")
+                .expect("descendant count fits usize")
                 .into_public_vec()
         );
         // Three of four siblings do NOT merge (incomplete quad).
         let partial: Vec<Tile> = children[..3].to_vec();
-        assert_eq!(compact_with_floor(partial, 0).unwrap().as_slice().len(), 3);
+        assert_eq!(compact_with_floor(partial, 0).as_slice().len(), 3);
         // uncompact expands back to a uniform zoom and round-trips a compacted set.
-        let expanded = uncompact(&[parent], 7).expect("within allocator");
+        let expanded = uncompact(&[parent], 7).expect("descendant count fits usize");
         assert_eq!(expanded.as_slice().len(), 16);
         assert_eq!(
-            compact_with_floor(expanded.as_slice().to_vec(), 0)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(expanded.as_slice().to_vec(), 0).into_public_vec(),
             vec![parent]
         );
         // A tile nested under an ancestor already present is absorbed —
         // including when the ancestor is COARSER than the merge floor.
         let mixed = vec![parent, Tile { z: 7, x: 41, y: 81 }];
         assert_eq!(
-            compact_with_floor(mixed.clone(), 0)
-                .unwrap()
-                .into_public_vec(),
+            compact_with_floor(mixed.clone(), 0).into_public_vec(),
             vec![parent]
         );
-        assert_eq!(
-            compact_with_floor(mixed, 6).unwrap().into_public_vec(),
-            vec![parent]
-        );
+        assert_eq!(compact_with_floor(mixed, 6).into_public_vec(), vec![parent]);
     }
 
     #[test]
