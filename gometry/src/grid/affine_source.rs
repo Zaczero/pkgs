@@ -486,8 +486,7 @@ impl LiftedRingFill {
         let y_index = if uses_linear_plan_for_len(chain.edges.len()) {
             None
         } else {
-            let mut latitudes = Vec::new();
-            crate::try_reserve_vec(&mut latitudes, chain.vertices.len())?;
+            let mut latitudes = Vec::with_capacity(chain.vertices.len());
             latitudes.extend(chain.vertices.iter().map(|vertex| vertex.latitude));
             // Closed chains retain their repeated first vertex, so adjacent
             // spans include the represented closing edge without a synthetic
@@ -2413,24 +2412,20 @@ impl GeographicCoverageSource {
         let mut chains = Vec::new();
         let mut points = Vec::new();
         let mut component = 0;
-        collect_shape_chains(source, &mut chains, &mut points, &mut component)?;
+        collect_shape_chains(source, &mut chains, &mut points, &mut component);
         let mut unknown = false;
-        let mut lifted = Vec::new();
-        let mut ring_fills = Vec::new();
-        let mut point_records = Vec::new();
+        let mut lifted = Vec::with_capacity(chains.len());
+        let mut ring_fills = Vec::with_capacity(chains.len());
+        let mut point_records = Vec::with_capacity(points.len());
         let mut authority = AuthorityCarrier {
             edges: Vec::new(),
             edge_index: None,
-            pieces: Vec::new(),
+            pieces: Vec::with_capacity(chains.len()),
         };
         let mut selection = SelectionCarrier {
             edges: Vec::new(),
             poles: Vec::new(),
         };
-        crate::try_reserve_vec(&mut lifted, chains.len())?;
-        crate::try_reserve_vec(&mut ring_fills, chains.len())?;
-        crate::try_reserve_vec(&mut point_records, points.len())?;
-        crate::try_reserve_vec(&mut authority.pieces, chains.len())?;
         for input in &chains {
             append_lifted_chain(
                 input,
@@ -2468,13 +2463,13 @@ impl GeographicCoverageSource {
             let authority_bound =
                 GridDegreePoint::try_from_expansions(&point.longitude, &point.latitude).ok();
             let selection = append_source_point(&point, &mut unknown);
-            crate::try_push_vec(&mut point_records, SourcePointRecord {
+            point_records.push(SourcePointRecord {
                 authority: GridPointRecord {
                     point,
                     bounds: authority_bound,
                 },
                 selection,
-            })?;
+            });
         }
         let selection_point_count = point_records
             .iter()
@@ -2486,15 +2481,15 @@ impl GeographicCoverageSource {
             .checked_mul(2)
             .and_then(|count| count.checked_add(selection_point_count))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        crate::try_reserve_vec(&mut selection.poles, pole_capacity)?;
+        selection.poles.reserve(pole_capacity);
         for record in &point_records {
             if let Some(point) = &record.selection {
-                append_selection_pole_witness(point, &mut selection.poles, &mut unknown)?;
+                append_selection_pole_witness(point, &mut selection.poles, &mut unknown);
             }
         }
         for piece in &selection.edges {
             for point in &piece.selection {
-                append_selection_planar_pole_witness(point, &mut selection.poles, &mut unknown)?;
+                append_selection_planar_pole_witness(point, &mut selection.poles, &mut unknown);
             }
         }
         authority.edge_index = build_authority_edge_index(&authority.edges)?;
@@ -2740,8 +2735,10 @@ impl GeographicCoverageSource {
                             latitude.hi,
                         ]);
                         let mut ordinals = Vec::new();
-                        index
-                            .visit(query, &mut |edge| crate::try_push_vec(&mut ordinals, *edge))?;
+                        index.visit(query, &mut |edge| {
+                            ordinals.push(*edge);
+                            Ok(())
+                        })?;
                         ordinals.sort_unstable();
                         ordinals.dedup();
                         Some(ordinals)
@@ -3216,19 +3213,19 @@ fn append_lifted_chain(
             Ok(()) => {},
             Err(ExactFailure::Arithmetic) => *unknown = true,
         }
-        crate::try_push_vec(&mut authority.edges, edge)?;
+        authority.edges.push(edge);
     }
     debug_assert_eq!(chain_index, lifted.len());
     if input.closed {
         if let Some(fill) =
             LiftedRingFill::from_chain(chain_index, input.component, input.ring, &chain)?
         {
-            crate::try_push_vec(ring_fills, fill)?;
+            ring_fills.push(fill);
         } else {
             *unknown = true;
         }
     }
-    crate::try_push_vec(lifted, chain)?;
+    lifted.push(chain);
     Ok(())
 }
 
@@ -3255,32 +3252,32 @@ fn append_selection_pole_witness(
     point: &SelectionPointRecord,
     output: &mut Vec<GridDegreePoint>,
     unknown: &mut bool,
-) -> crate::error::Result<()> {
+) {
     let witness = match selection_pole_witness_fallible(&point.point) {
         Ok(Some(witness)) => witness,
-        Ok(None) => return Ok(()),
+        Ok(None) => return,
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
-            return Ok(());
+            return;
         },
     };
-    crate::try_push_vec(output, witness)
+    output.push(witness);
 }
 
 fn append_selection_planar_pole_witness(
     point: &ExactSelectionPoint,
     output: &mut Vec<GridDegreePoint>,
     unknown: &mut bool,
-) -> crate::error::Result<()> {
+) {
     let witness = match selection_planar_pole_witness_fallible(point) {
         Ok(Some(witness)) => witness,
-        Ok(None) => return Ok(()),
+        Ok(None) => return,
         Err(ExactFailure::Arithmetic) => {
             *unknown = true;
-            return Ok(());
+            return;
         },
     };
-    crate::try_push_vec(output, witness)
+    output.push(witness);
 }
 
 #[derive(Debug)]
@@ -3304,59 +3301,58 @@ fn collect_shape_chains(
     output: &mut Vec<SourceChainInput>,
     points: &mut Vec<SourcePointInput>,
     component: &mut usize,
-) -> crate::error::Result<()> {
+) {
     match shape {
         Shape::Point(point) => {
-            push_point(*point, *component, 0, points)?;
+            push_point(*point, *component, 0, points);
             *component = component.saturating_add(1);
         },
         Shape::MultiPoint(input) => {
-            crate::try_reserve_vec(points, input.len())?;
+            points.reserve(input.len());
             for (ordinal, point) in input.points().enumerate() {
-                push_point(point, *component, ordinal, points)?;
+                push_point(point, *component, ordinal, points);
             }
             *component = component.saturating_add(1);
         },
         Shape::Empty(..) => {},
         Shape::LineString(line) => {
             if let Some(pole) = physical_pole_chain(line) {
-                push_point(pole, *component, 0, points)?;
+                push_point(pole, *component, 0, points);
             } else {
-                push_chain(line, false, *component, 0, output)?;
+                push_chain(line, false, *component, 0, output);
             }
             *component = component.saturating_add(1);
         },
         Shape::MultiLineString(lines) => {
             for line in lines {
                 if let Some(pole) = physical_pole_chain(line) {
-                    push_point(pole, *component, 0, points)?;
+                    push_point(pole, *component, 0, points);
                 } else {
-                    push_chain(line, false, *component, 0, output)?;
+                    push_chain(line, false, *component, 0, output);
                 }
                 *component = component.saturating_add(1);
             }
         },
         Shape::Polygon(polygon) => {
             for (ring_index, ring) in polygon.rings().enumerate() {
-                push_chain(ring, true, *component, ring_index, output)?;
+                push_chain(ring, true, *component, ring_index, output);
             }
             *component = component.saturating_add(1);
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
                 for (ring_index, ring) in polygon.rings().enumerate() {
-                    push_chain(ring, true, *component, ring_index, output)?;
+                    push_chain(ring, true, *component, ring_index, output);
                 }
                 *component = component.saturating_add(1);
             }
         },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_shape_chains(geometry, output, points, component)?;
+                collect_shape_chains(geometry, output, points, component);
             }
         },
     }
-    Ok(())
 }
 
 /// A lon/lat line whose every vertex reaches the same physical pole after
@@ -3380,13 +3376,13 @@ fn push_point(
     component: usize,
     ordinal: usize,
     output: &mut Vec<SourcePointInput>,
-) -> crate::error::Result<()> {
-    crate::try_push_vec(output, SourcePointInput {
+) {
+    output.push(SourcePointInput {
         component,
         ordinal,
         longitude: point.x,
         latitude: point.y,
-    })
+    });
 }
 
 fn push_chain(
@@ -3395,18 +3391,14 @@ fn push_chain(
     component: usize,
     ring: usize,
     output: &mut Vec<SourceChainInput>,
-) -> crate::error::Result<()> {
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, coords.len())?;
-    for point in coords.points() {
-        crate::try_push_vec(&mut points, (point.x, point.y))?;
-    }
-    crate::try_push_vec(output, SourceChainInput {
+) {
+    let points = coords.points().map(|point| (point.x, point.y)).collect();
+    output.push(SourceChainInput {
         component,
         ring,
         points,
         closed,
-    })
+    });
 }
 
 #[cfg(test)]
