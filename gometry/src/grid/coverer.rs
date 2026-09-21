@@ -44,16 +44,11 @@ pub(crate) trait RectCell: Copy + Eq + Ord {
     /// Push each child with its lon/lat bounds into `out`, derived from
     /// `parent_bounds` when the grid allows (tiles: four children from parent
     /// edges + one shared latitude split). Default recomputes `child.bounds()`.
-    fn push_children_bounds(
-        self,
-        parent_bounds: Bounds,
-        out: &mut Vec<(Self, Bounds)>,
-    ) -> crate::error::Result<()> {
+    fn push_children_bounds(self, parent_bounds: Bounds, out: &mut Vec<(Self, Bounds)>) {
         let _ = parent_bounds;
-        for child in self.children() {
-            crate::try_push_vec(out, (child, child.bounds()))?;
-        }
-        Ok(())
+        let children = self.children();
+        out.reserve(children.len());
+        out.extend(children.map(|child| (child, child.bounds())));
     }
     /// The edge-adjacent neighbours across the four rectangle sides, in the
     /// CCW order `[south(miny), east(maxx), north(maxy), west(minx)]` —
@@ -107,14 +102,10 @@ struct SegmentBroadPhase {
 impl SegmentBroadPhase {
     fn build(segments: impl IntoIterator<Item = Segment>) -> Result<Self, crate::error::Error> {
         let segments = segments.into_iter();
-        let mut entries = Vec::new();
-        crate::try_reserve_vec(&mut entries, segments.size_hint().0)?;
-        for segment in segments {
-            crate::try_push_vec(
-                &mut entries,
-                PackedBvhEntry::new(segment, segment_envelope(segment)),
-            )?;
-        }
+        let mut entries = Vec::with_capacity(segments.size_hint().0);
+        entries.extend(
+            segments.map(|segment| PackedBvhEntry::new(segment, segment_envelope(segment))),
+        );
         Ok(Self {
             tree: PackedBvh::build(entries)?,
         })
@@ -295,13 +286,12 @@ impl NativeRectClassifier {
         area_tester: Option<Arc<PointBatchTester>>,
     ) -> Result<Self, crate::error::Error> {
         let mut polygons = Vec::new();
-        collect_area(source, &mut polygons)?;
+        collect_area(source, &mut polygons);
         let area = dissolved_area_shape(polygons)?
             .map(|shape| -> crate::error::Result<_> {
                 let tester = match area_tester {
                     Some(tester) => tester,
-                    None => Arc::try_new(PointBatchTester::new(&shape)?)
-                        .map_err(crate::error::Error::from)?,
+                    None => Arc::new(PointBatchTester::new(&shape)?),
                 };
                 Ok(AreaRectClassifier {
                     bounds: shape.bounds(),
@@ -312,7 +302,7 @@ impl NativeRectClassifier {
             .transpose()?;
 
         let mut line_seqs = Vec::new();
-        collect_line_sequences(source, &mut line_seqs)?;
+        collect_line_sequences(source, &mut line_seqs);
         let line_index = if line_seqs.is_empty() {
             None
         } else {
@@ -322,7 +312,7 @@ impl NativeRectClassifier {
         };
 
         let mut points = Vec::new();
-        collect_points(source, &mut points)?;
+        collect_points(source, &mut points);
 
         Ok(Self {
             source_bounds: source.bounds(),
@@ -414,14 +404,10 @@ fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::
     if polygons.len() <= 1 {
         return area_shape(polygons);
     }
-    let mut parts = Vec::new();
-    crate::try_reserve_vec(&mut parts, polygons.len())?;
-    for polygon in polygons {
-        crate::try_push_vec(&mut parts, Shape::Polygon(polygon))?;
-    }
+    let parts: Vec<_> = polygons.into_iter().map(Shape::Polygon).collect();
     let dissolved = Shape::union_all(&parts, Strictness::Strict)?;
     let mut polygons = Vec::new();
-    collect_area(&dissolved, &mut polygons)?;
+    collect_area(&dissolved, &mut polygons);
     area_shape(polygons)
 }
 
@@ -433,53 +419,44 @@ pub(crate) fn dissolved_polygonal_area(
     source: &Shape,
 ) -> Result<Option<Shape>, crate::error::Error> {
     let mut polygons = Vec::new();
-    collect_area(source, &mut polygons)?;
+    collect_area(source, &mut polygons);
     dissolved_area_shape(polygons)
 }
 
-fn collect_area(source: &Shape, out: &mut Vec<Polygon>) -> Result<(), crate::error::Error> {
+fn collect_area(source: &Shape, out: &mut Vec<Polygon>) {
     match source {
         Shape::Polygon(polygon) => {
-            crate::try_push_vec(out, polygon.clone())?;
+            out.push(polygon.clone());
         },
         Shape::MultiPolygon(polygons) => {
-            crate::try_reserve_vec(out, polygons.len())?;
-            for polygon in polygons {
-                crate::try_push_vec(out, polygon.clone())?;
-            }
+            out.reserve(polygons.len());
+            out.extend(polygons.iter().cloned());
         },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_area(geometry, out)?;
+                collect_area(geometry, out);
             }
         },
         _ => {},
     }
-    Ok(())
 }
 
-fn collect_line_sequences<'a>(
-    source: &'a Shape,
-    out: &mut Vec<&'a CoordSeq>,
-) -> Result<(), crate::error::Error> {
+fn collect_line_sequences<'a>(source: &'a Shape, out: &mut Vec<&'a CoordSeq>) {
     match source {
         Shape::LineString(line) => {
-            crate::try_push_vec(out, line)?;
+            out.push(line);
         },
         Shape::MultiLineString(lines) => {
-            crate::try_reserve_vec(out, lines.len())?;
-            for line in lines {
-                crate::try_push_vec(out, line)?;
-            }
+            out.reserve(lines.len());
+            out.extend(lines.iter().map(AsRef::as_ref));
         },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_line_sequences(geometry, out)?;
+                collect_line_sequences(geometry, out);
             }
         },
         _ => {},
     }
-    Ok(())
 }
 
 fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentBroadPhase> {
@@ -497,25 +474,22 @@ fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentBroadPha
     }
 }
 
-fn collect_points(source: &Shape, out: &mut Vec<Point>) -> Result<(), crate::error::Error> {
+fn collect_points(source: &Shape, out: &mut Vec<Point>) {
     match source {
         Shape::Point(point) => {
-            crate::try_push_vec(out, *point)?;
+            out.push(*point);
         },
         Shape::MultiPoint(points) => {
-            crate::try_reserve_vec(out, points.len())?;
-            for point in points {
-                crate::try_push_vec(out, point)?;
-            }
+            out.reserve(points.len());
+            out.extend(points);
         },
         Shape::GeometryCollection(geometries) => {
             for geometry in geometries {
-                collect_points(geometry, out)?;
+                collect_points(geometry, out);
             }
         },
         _ => {},
     }
-    Ok(())
 }
 
 const fn rect_probe(bounds: Bounds) -> Segment {
@@ -539,8 +513,8 @@ const fn rect_probe(bounds: Bounds) -> Segment {
 ///
 /// The emitted cell count is bounded by `max_cells` (when `Some`), checked at
 /// every emission: a world-scale geometry at a fine `target_depth` fails with
-/// [`CoverBudgetExceeded`] (naming `max_cells`) before the next allocation
-/// instead of flooding memory. `None` = unlimited.
+/// [`CoverBudgetExceeded`] (naming `max_cells`) before publishing the next
+/// output cell instead of flooding memory. `None` = unlimited.
 pub(crate) fn cover<C: RectCell>(
     authority: &Shape,
     working: &Shape,
@@ -637,15 +611,12 @@ fn traverse<C: RectCell>(
     let mut cells = Vec::new();
     // Carry bounds through every traversal step so the terminal can be
     // refined without recomputing a cell's rectangle.
-    let mut boundary = Vec::new();
-    crate::try_reserve_vec(&mut boundary, roots.len())?;
-    for cell in roots {
-        crate::try_push_vec(&mut boundary, (cell, cell.bounds()))?;
-    }
+    let mut boundary = Vec::with_capacity(roots.len());
+    boundary.extend(roots.into_iter().map(|cell| (cell, cell.bounds())));
     let mut interior: Vec<C> = Vec::new();
     let mut emit = |cell| {
         ensure_cover_budget(cells.len().saturating_add(1), max_cells)?;
-        crate::try_push_vec(&mut cells, cell)?;
+        cells.push(cell);
         Ok::<_, CoverError>(())
     };
     loop {
@@ -653,9 +624,9 @@ fn traverse<C: RectCell>(
             if cell.depth() >= target_depth {
                 emit(cell)?;
             } else {
-                for child in cell.children() {
-                    crate::try_push_vec(&mut interior, child)?;
-                }
+                let children = cell.children();
+                interior.reserve(children.len());
+                interior.extend(children);
             }
         }
         let Some((cell, bounds)) = boundary.pop() else {
@@ -667,9 +638,9 @@ fn traverse<C: RectCell>(
                 if cell.depth() >= target_depth {
                     emit(cell)?;
                 } else {
-                    for child in cell.children() {
-                        crate::try_push_vec(&mut interior, child)?;
-                    }
+                    let children = cell.children();
+                    interior.reserve(children.len());
+                    interior.extend(children);
                 }
             },
             RectClass::Boundary => {
@@ -681,7 +652,7 @@ fn traverse<C: RectCell>(
                     // Expand in place onto `boundary` — avoid a side buffer
                     // that copies twice. Children derived from parent edges
                     // (Tile: one shared mid-lat) rather than full recompute.
-                    cell.push_children_bounds(bounds, &mut boundary)?;
+                    cell.push_children_bounds(bounds, &mut boundary);
                 }
             },
         }
@@ -702,7 +673,7 @@ pub(crate) enum CellClass {
 mod tests {
     use super::*;
     use crate::error::ErrorKind;
-    use crate::geometry::{GeometryErrorKind, Ring};
+    use crate::geometry::GeometryErrorKind;
     use crate::grid::geohash;
 
     fn contact(start: (f64, f64), end: (f64, f64)) -> RectContact {

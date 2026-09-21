@@ -291,11 +291,7 @@ impl RectCell for Tile {
     fn children(self) -> impl ExactSizeIterator<Item = Self> {
         Self::children(self).into_iter()
     }
-    fn push_children_bounds(
-        self,
-        parent: Bounds,
-        out: &mut Vec<(Self, Bounds)>,
-    ) -> crate::error::Result<()> {
+    fn push_children_bounds(self, parent: Bounds, out: &mut Vec<(Self, Bounds)>) {
         // Child edges use the same emitted-boundary functions as `bounds()`.
         // The child grid has twice the parent's cell count, so the shared
         // midpoint is just its odd-indexed boundary.
@@ -305,35 +301,25 @@ impl RectCell for Tile {
         let mid_lon = longitude_boundary(child_x + 1, child_cells);
         let mid_lat = latitude_boundary(child_y + 1, child_cells);
         let kids = Self::children(self);
-        crate::try_push_vec(
-            out,
+        out.reserve(kids.len());
+        out.extend([
             (
                 kids[0],
                 Bounds::new_raw(parent.minx(), mid_lat, mid_lon, parent.maxy()),
             ),
-        )?;
-        crate::try_push_vec(
-            out,
             (
                 kids[1],
                 Bounds::new_raw(mid_lon, mid_lat, parent.maxx(), parent.maxy()),
             ),
-        )?;
-        crate::try_push_vec(
-            out,
             (
                 kids[2],
                 Bounds::new_raw(parent.minx(), parent.miny(), mid_lon, mid_lat),
             ),
-        )?;
-        crate::try_push_vec(
-            out,
             (
                 kids[3],
                 Bounds::new_raw(mid_lon, parent.miny(), parent.maxx(), mid_lat),
             ),
-        )?;
-        Ok(())
+        ]);
     }
     fn edge_neighbors(self) -> [Option<Self>; 4] {
         // Tile rows grow southward (y down), so south is y+1 and north is y-1;
@@ -377,9 +363,7 @@ mod tests {
         ];
         for parent in parents {
             let mut derived = Vec::new();
-            parent
-                .push_children_bounds(parent.bounds(), &mut derived)
-                .expect("child bounds");
+            parent.push_children_bounds(parent.bounds(), &mut derived);
             let kids = parent.children();
             assert_eq!(derived.len(), 4);
             for (i, (child, bounds)) in derived.into_iter().enumerate() {
