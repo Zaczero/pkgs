@@ -146,8 +146,7 @@ impl FrameDependentCaches {
         #[cfg(test)]
         self.geographic_topology_builds
             .fetch_add(1, Ordering::Relaxed);
-        let built =
-            Arc::try_new(TopologyGraph::geographic(view)?).map_err(crate::error::Error::from)?;
+        let built = Arc::new(TopologyGraph::geographic(view)?);
         let mut slot = self
             .geographic_topology
             .lock()
@@ -288,15 +287,15 @@ impl ShapeData {
 }
 
 impl PreparedPlan {
-    pub(crate) fn new(shape: impl IntoSharedShape) -> crate::error::Result<Self> {
-        Ok(Self {
-            shape: shape.try_into_shared()?,
+    pub(crate) fn new(shape: impl IntoSharedShape) -> Self {
+        Self {
+            shape: shape.into_shared(),
             topology: OnceLock::new(),
             metric: OnceLock::new(),
-        })
+        }
     }
 
-    pub(crate) fn transient(shape: &Shape) -> crate::error::Result<Self> {
+    pub(crate) fn transient(shape: &Shape) -> Self {
         Self::new(ShapeData::new(shape.clone()))
     }
 
@@ -308,57 +307,50 @@ impl PreparedPlan {
         &self.shape
     }
 
-    fn topology(&self) -> Result<&TopologyPlan> {
+    fn topology(&self) -> &TopologyPlan {
         self.topology
-            .get_or_try_init(|| {
-                Box::try_new(TopologyPlan::default()).map_err(crate::error::Error::from)
-            })
-            .map(Box::as_ref)
+            .get_or_init(|| Box::new(TopologyPlan::default()))
+            .as_ref()
     }
 
-    fn metric(&self) -> Result<&MetricPlan> {
+    fn metric(&self) -> &MetricPlan {
         self.metric
-            .get_or_try_init(|| {
-                Box::try_new(MetricPlan::default()).map_err(crate::error::Error::from)
-            })
-            .map(Box::as_ref)
+            .get_or_init(|| Box::new(MetricPlan::default()))
+            .as_ref()
     }
 
     pub(crate) fn validate_cached(&self) -> Result<Option<&ValidationIssue>> {
         Ok(self
-            .topology()?
+            .topology()
             .validity
             .get_or_try_init(|| {
-                self.shape()
-                    .validate()?
-                    .map(|issue| Box::try_new(issue).map_err(crate::error::Error::from))
-                    .transpose()
+                Ok::<_, crate::error::Error>(self.shape().validate()?.map(Box::new))
             })?
             .as_deref())
     }
 
     pub(crate) fn is_simple_cached(&self) -> Result<bool> {
         Ok(*self
-            .topology()?
+            .topology()
             .simplicity
             .get_or_try_init(|| self.shape().is_simple())?)
     }
 
-    pub(crate) fn crosses_antimeridian(&self) -> Result<bool> {
-        Ok(*self
-            .topology()?
+    pub(crate) fn crosses_antimeridian(&self) -> bool {
+        *self
+            .topology()
             .antimeridian_crossing
-            .get_or_init(|| self.shape().crosses_antimeridian()))
+            .get_or_init(|| self.shape().crosses_antimeridian())
     }
 
     pub(crate) fn distance_parts(&self) -> Result<&DistanceParts> {
         if let Some(parts) = self.metric.get().and_then(|metric| metric.distance.get()) {
             return Ok(parts.as_ref());
         }
-        self.metric()?
+        self.metric()
             .distance
             .get_or_try_init(|| {
-                Box::try_new(self.shape().distance_parts()?).map_err(crate::error::Error::from)
+                Ok::<_, crate::error::Error>(Box::new(self.shape().distance_parts()?))
             })
             .map(Box::as_ref)
     }
@@ -371,31 +363,33 @@ impl PreparedPlan {
         {
             return Ok(parts.as_ref());
         }
-        self.metric()?
+        self.metric()
             .distance_3d
             .get_or_try_init(|| {
-                Box::try_new(crate::geometry::Distance3dParts::build(self.shape())?)
-                    .map_err(crate::error::Error::from)
+                Ok::<_, crate::error::Error>(Box::new(crate::geometry::Distance3dParts::build(
+                    self.shape(),
+                )?))
             })
             .map(Box::as_ref)
     }
 
     pub(crate) fn line_index(&self) -> Result<&LineIndex> {
-        self.metric()?
+        self.metric()
             .line_index
             .get_or_try_init(|| {
-                Box::try_new(LineIndexSlot::build(self.shape(), &PlanarMetric)?)
-                    .map_err(crate::error::Error::from)
+                Ok::<_, crate::error::Error>(Box::new(LineIndexSlot::build(
+                    self.shape(),
+                    &PlanarMetric,
+                )?))
             })?
             .get()
     }
 
     pub(crate) fn measured_line_index(&self) -> Result<&MeasuredLineIndex> {
-        self.metric()?
+        self.metric()
             .measured_line_index
             .get_or_try_init(|| {
-                Box::try_new(MeasuredLineIndexSlot::build(self.shape())?)
-                    .map_err(crate::error::Error::from)
+                Ok::<_, crate::error::Error>(Box::new(MeasuredLineIndexSlot::build(self.shape())?))
             })?
             .get()
     }
@@ -415,8 +409,7 @@ impl PreparedPlan {
         if let Some(index) = cached {
             return Ok(index);
         }
-        let index = Arc::try_new(LineIndex::build(self.shape(), metric)?)
-            .map_err(crate::error::Error::from)?;
+        let index = Arc::new(LineIndex::build(self.shape(), metric)?);
         let entry = frame_cache.merge(key, |entry| {
             entry.line_index.get_or_insert_with(|| Arc::clone(&index));
         });
@@ -441,8 +434,7 @@ impl PreparedPlan {
         if let Some(parts) = cached {
             return Ok(parts);
         }
-        let parts = Arc::try_new(self.shape().geodesic_parts(metric)?)
-            .map_err(crate::error::Error::from)?;
+        let parts = Arc::new(self.shape().geodesic_parts(metric)?);
         let entry = frame_cache.merge(key, |entry| {
             entry.parts.get_or_insert_with(|| Arc::clone(&parts));
         });
@@ -472,7 +464,7 @@ impl PreparedPlan {
     /// indexed at no more than twice the cost of knowing in advance.
     pub(crate) fn cartesian_point_location(&self, point: Point) -> Result<crate::geometry::Loc> {
         const SCANS_BEFORE_INDEXING: u32 = 3;
-        let topology = self.topology()?;
+        let topology = self.topology();
         if let Some(Some(tester)) = topology.point_tester.get() {
             return tester.location(point);
         }
@@ -490,14 +482,12 @@ impl PreparedPlan {
     /// The indexed point tester of a polygonal shape, built on first use.
     pub(crate) fn point_tester(&self) -> Result<Option<&PointBatchTester>> {
         Ok(self
-            .topology()?
+            .topology()
             .point_tester
             .get_or_try_init(|| -> Result<_> {
                 if matches!(self.shape(), Shape::Polygon(_) | Shape::MultiPolygon(_)) {
                     let tester = PointBatchTester::new(self.shape())?;
-                    Ok(Some(
-                        Box::try_new(tester).map_err(crate::error::Error::from)?,
-                    ))
+                    Ok(Some(Box::new(tester)))
                 } else {
                     Ok(None)
                 }
@@ -594,24 +584,24 @@ impl From<Shape> for ShapeData {
 }
 
 pub(crate) trait IntoSharedShape {
-    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>>;
+    fn into_shared(self) -> Arc<ShapeData>;
 }
 
 impl IntoSharedShape for Shape {
-    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>> {
-        ShapeData::new(self).try_into_shared()
+    fn into_shared(self) -> Arc<ShapeData> {
+        ShapeData::new(self).into_shared()
     }
 }
 
 impl IntoSharedShape for ShapeData {
-    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>> {
-        Arc::try_new(self).map_err(crate::error::Error::from)
+    fn into_shared(self) -> Arc<ShapeData> {
+        Arc::new(self)
     }
 }
 
 impl IntoSharedShape for Arc<ShapeData> {
-    fn try_into_shared(self) -> crate::error::Result<Arc<ShapeData>> {
-        Ok(self)
+    fn into_shared(self) -> Arc<ShapeData> {
+        self
     }
 }
 
@@ -631,7 +621,7 @@ mod footprint_tests {
 
     #[test]
     fn retained_heap_bytes_does_not_force_caches() {
-        let data = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
+        let data = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
         let cold = data.heap_bytes();
         assert!(data.metric.get().is_none());
         assert!(data.topology.get().is_none());
@@ -647,36 +637,12 @@ mod footprint_tests {
     }
 
     #[test]
-    fn cold_metric_sidecar_allocation_failure_is_retryable() {
-        use crate::error::{ErrorKind, ResourceError};
-        use crate::test_support::fail_allocations_after;
-
-        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
-        assert!(plan.metric.get().is_none());
-        let Err(error) = fail_allocations_after(0, || plan.distance_parts()) else {
-            panic!("distance parts allocation unexpectedly succeeded");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(plan.metric.get().is_none());
-        let first = std::ptr::from_ref(plan.distance_parts().expect("retry after rejection"));
-        let second = std::ptr::from_ref(plan.distance_parts().expect("cached distance parts"));
-        assert_eq!(first, second);
-        assert!(std::ptr::eq(
-            plan.metric.get().expect("published sidecar").as_ref(),
-            plan.metric.get().expect("reused sidecar").as_ref()
-        ));
-    }
-
-    #[test]
     fn cold_nested_metric_product_allocation_failure_is_retryable() {
         use crate::error::{ErrorKind, ResourceError};
         use crate::test_support::fail_allocations_after;
 
-        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0))).unwrap();
-        plan.metric().expect("publish metric sidecar");
+        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
+        plan.metric();
         assert!(plan.metric.get().expect("sidecar").distance.get().is_none());
         let Err(error) = fail_allocations_after(0, || plan.distance_parts()) else {
             panic!("nested distance parts allocation unexpectedly succeeded");
@@ -788,8 +754,7 @@ mod frame_cache_tests {
                     .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         let cache = FrameDependentCaches::default();
         let first = shape
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)
@@ -813,8 +778,7 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         let first = std::ptr::from_ref(shape.measured_line_index().expect("measured line index"));
         let second = std::ptr::from_ref(
             shape
@@ -870,8 +834,7 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         shape.measured_line_index().expect("measured line index");
 
         let (interpolation, allocations) = allocation_count(|| {
@@ -929,8 +892,7 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         shape.measured_line_index().expect("measured line index");
 
         let (located, allocations) = allocation_count(|| {
@@ -967,55 +929,13 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         shape.measured_line_index().expect("measured line index");
 
         let located = shape
             .line_locate_point_m_with(Point::new_raw_xy(minimum, 1.0), &PlanarMetric)
             .expect("exact subnormal measured locate");
         assert_eq!(located.to_bits(), minimum.to_bits());
-    }
-
-    #[test]
-    fn cold_measured_line_product_allocation_failure_is_retryable() {
-        let shape = Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_vecs(vec![0.0, 1.0], vec![0.0, 1.0], None, Some(vec![0.0, 1.0]))
-                    .unwrap(),
-            )
-            .expect("line coordinate sequence must contain at least two vertices"),
-        );
-        let new_plan = || PreparedPlan::new(shape.clone()).expect("prepared line");
-        let plan = new_plan();
-        let (_, allocations) =
-            allocation_count(|| plan.measured_line_index().expect("measured line product"));
-        assert!(allocations > 0);
-        for prefix in 0..allocations {
-            let plan = new_plan();
-            let Err(error) = fail_allocations_after(prefix, || plan.measured_line_index()) else {
-                panic!("measured line product allocation unexpectedly succeeded");
-            };
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert!(
-                plan.metric
-                    .get()
-                    .is_none_or(|metric| metric.measured_line_index.get().is_none())
-            );
-        }
-
-        let shape = new_plan();
-        let first =
-            std::ptr::from_ref(shape.measured_line_index().expect("retry measured product"));
-        let second = std::ptr::from_ref(
-            shape
-                .measured_line_index()
-                .expect("cached measured product"),
-        );
-        assert_eq!(first, second);
     }
 
     #[test]
@@ -1032,8 +952,7 @@ mod frame_cache_tests {
                 .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         shape.measured_line_index().expect("measured line index");
 
         let (_, allocations) = allocation_count(|| {
@@ -1064,8 +983,7 @@ mod frame_cache_tests {
                     .unwrap(),
             )
             .expect("line coordinate sequence must contain at least two vertices"),
-        ))
-        .unwrap();
+        ));
         let cache = FrameDependentCaches::default();
         shape
             .geodesic_line_index(&cache, "TEST", 1.0, 0.0, 0, &PlanarMetric)

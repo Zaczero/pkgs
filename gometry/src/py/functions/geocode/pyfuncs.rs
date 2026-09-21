@@ -232,7 +232,7 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
     }
     let frame = Frame::new(Some(WGS84_LONLAT.into()), None)?;
     match CodeInput::parse(code, "code")? {
-        CodeInput::Scalar(code) => Ok(Typed(PyGeometry::with_frame(polygon_shape(&code)?, frame)?)
+        CodeInput::Scalar(code) => Ok(Typed(PyGeometry::with_frame(polygon_shape(&code)?, frame))
             .into_pyobject(py)?
             .unbind()),
         CodeInput::Many(codes) => {

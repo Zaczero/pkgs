@@ -227,7 +227,7 @@ fn require_array_contract(
             overwrite: true,
         }
         .apply(&array.frame)?;
-        array = array.retag_frame(frame)?;
+        array = array.retag_frame(frame);
     }
     if let Some(axes) = axes {
         let axes_diagnostic = if let Some(actual) = array.storage().packed_axes() {
@@ -333,7 +333,7 @@ fn parse_require_geojson_value(
         )
         .into());
     };
-    Ok(PyGeometry::with_frame(shape, frame)?)
+    Ok(PyGeometry::with_frame(shape, frame))
 }
 
 fn parse_require_bytes_slice(data: &[u8], fallback: Option<&Crs>) -> PyResult<PyGeometry> {

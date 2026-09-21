@@ -807,10 +807,9 @@ fn split_operand_arc_for_topology(
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
-        Arc::try_new(PreparedPlan::new(ShapeData::from(
+        Ok(Arc::new(PreparedPlan::new(ShapeData::from(
             plan.shape().split_antimeridian_in_frame(frame)?,
-        ))?)
-        .map_err(crate::error::Error::from)
+        ))))
     } else {
         Ok(plan)
     }
@@ -840,14 +839,14 @@ where
         let left_split = if left_crosses {
             Some(PreparedPlan::new(ShapeData::from(
                 left.shape().split_antimeridian_in_frame(frame)?,
-            ))?)
+            )))
         } else {
             None
         };
         let right_split = if right_crosses {
             Some(PreparedPlan::new(ShapeData::from(
                 right.shape().split_antimeridian_in_frame(frame)?,
-            ))?)
+            )))
         } else {
             None
         };
@@ -922,7 +921,7 @@ where
             };
             drop(metric_scratch);
             let shape = result?;
-            Ok(Typed(PyGeometry::with_frame(shape, frame)?)
+            Ok(Typed(PyGeometry::with_frame(shape, frame))
                 .into_pyobject(py)?
                 .unbind())
         },
@@ -1324,7 +1323,7 @@ mod tests {
             let left_shape = crate::io::parse_wkt("POINT Z (0 0 0)").unwrap();
             let right_shape = crate::io::parse_wkt("POINT Z (0 0 3)").unwrap();
             let array = PyGeometryArray::from_shapes(vec![left_shape], frame.clone()).unwrap();
-            let right = PyGeometry::with_frame(right_shape, frame).unwrap();
+            let right = PyGeometry::with_frame(right_shape, frame);
             let left = Bound::new(py, array).unwrap().into_any();
             let right = Bound::new(py, right).unwrap().into_any();
             binary_dispatch_counters::reset();
@@ -1436,8 +1435,7 @@ mod tests {
                 frame.clone(),
             )
             .unwrap();
-            let right =
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame).unwrap();
+            let right = PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 0.0)), frame);
             let array = Bound::new(py, array).unwrap().into_any();
             let right = Bound::new(py, right).unwrap().into_any();
             let result = dispatch_binary(

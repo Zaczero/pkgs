@@ -281,27 +281,25 @@ pub(crate) fn array_capsule(py: Python<'_>, array: GometryArrowArray) -> PyResul
     )
 }
 
-pub(crate) fn stream_from_export(export: ExportedArray) -> PyResult<Box<ArrowArrayStream>> {
-    let private = Box::try_new(StreamPrivate {
+pub(crate) fn stream_from_export(export: ExportedArray) -> ArrowArrayStream {
+    let private = Box::new(StreamPrivate {
         schema: export.schema_node,
         array: Some(export.array),
         last_error: c"",
-    })
-    .map_err(crate::error::Error::from)?;
-    let mut stream = Box::try_new(ArrowArrayStream {
+    });
+    let mut stream = ArrowArrayStream {
         get_schema: Some(stream_get_schema),
         get_next: Some(stream_get_next),
         get_last_error: Some(stream_get_last_error),
         release: Some(release_stream),
         private_data: std::ptr::null_mut(),
-    })
-    .map_err(crate::error::Error::from)?;
+    };
     stream.private_data = Box::into_raw(private).cast();
-    Ok(stream)
+    stream
 }
 
 pub(crate) fn stream_capsule(py: Python<'_>, export: ExportedArray) -> PyResult<Py<PyAny>> {
-    let stream = stream_from_export(export)?;
+    let stream = Box::new(stream_from_export(export));
     owned_capsule(
         py,
         stream,

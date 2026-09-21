@@ -413,8 +413,7 @@ fn plan_storage(
                 offsets: offsets.shared_offsets(),
                 start,
                 length,
-                child: Box::try_new(StoragePlan::Coordinates(coords.as_ref().clone()))
-                    .map_err(crate::error::Error::from)?,
+                child: Box::new(StoragePlan::Coordinates(coords.as_ref().clone())),
             })
         },
         GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -445,14 +444,13 @@ fn plan_storage(
                 offsets: ring_offsets.shared_offsets(),
                 start: 0,
                 length: ring_offsets.len().saturating_sub(1),
-                child: Box::try_new(StoragePlan::Coordinates(coords.as_ref().clone()))
-                    .map_err(crate::error::Error::from)?,
+                child: Box::new(StoragePlan::Coordinates(coords.as_ref().clone())),
             };
             Ok(StoragePlan::List {
                 offsets: polygon_offsets.shared_offsets(),
                 start,
                 length,
-                child: Box::try_new(rings).map_err(crate::error::Error::from)?,
+                child: Box::new(rings),
             })
         },
         GeometryArrayStorage::Mixed(shapes) => {
@@ -646,7 +644,7 @@ fn plan_single_list(
         offsets: crate::geometry::SharedSlice::from_vec(offsets),
         start: 0,
         length: shapes.len(),
-        child: Box::try_new(StoragePlan::Coordinates(coords)).map_err(crate::error::Error::from)?,
+        child: Box::new(StoragePlan::Coordinates(coords)),
     })
 }
 
@@ -696,14 +694,12 @@ fn plan_multilines(
         offsets: crate::geometry::SharedSlice::from_vec(geometry_offsets),
         start: 0,
         length: shapes.len(),
-        child: Box::try_new(StoragePlan::List {
+        child: Box::new(StoragePlan::List {
             offsets: crate::geometry::SharedSlice::from_vec(line_offsets),
             start: 0,
             length: line_count as usize,
-            child: Box::try_new(StoragePlan::Coordinates(coords))
-                .map_err(crate::error::Error::from)?,
-        })
-        .map_err(crate::error::Error::from)?,
+            child: Box::new(StoragePlan::Coordinates(coords)),
+        }),
     })
 }
 
@@ -729,14 +725,12 @@ fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportRe
         offsets: crate::geometry::SharedSlice::from_vec(polygon_offsets),
         start: 0,
         length: shapes.len(),
-        child: Box::try_new(StoragePlan::List {
+        child: Box::new(StoragePlan::List {
             offsets: crate::geometry::SharedSlice::from_vec(ring_offsets),
             start: 0,
             length: ring_count as usize,
-            child: Box::try_new(StoragePlan::Coordinates(coords))
-                .map_err(crate::error::Error::from)?,
-        })
-        .map_err(crate::error::Error::from)?,
+            child: Box::new(StoragePlan::Coordinates(coords)),
+        }),
     })
 }
 
@@ -785,20 +779,17 @@ fn plan_multipolygons(
         offsets: crate::geometry::SharedSlice::from_vec(multipolygon_offsets),
         start: 0,
         length: shapes.len(),
-        child: Box::try_new(StoragePlan::List {
+        child: Box::new(StoragePlan::List {
             offsets: crate::geometry::SharedSlice::from_vec(polygon_offsets),
             start: 0,
             length: polygon_count as usize,
-            child: Box::try_new(StoragePlan::List {
+            child: Box::new(StoragePlan::List {
                 offsets: crate::geometry::SharedSlice::from_vec(ring_offsets),
                 start: 0,
                 length: ring_count as usize,
-                child: Box::try_new(StoragePlan::Coordinates(coords))
-                    .map_err(crate::error::Error::from)?,
-            })
-            .map_err(crate::error::Error::from)?,
-        })
-        .map_err(crate::error::Error::from)?,
+                child: Box::new(StoragePlan::Coordinates(coords)),
+            }),
+        }),
     })
 }
 

@@ -1318,7 +1318,7 @@ mod exact_projection_allocation_tests {
         );
         let retained = segment_projection(point, segment).unwrap();
         let exact = super::super::exact_interior_projection(point, segment).unwrap();
-        let exact = super::super::SegmentProjection::ExactInterior(Box::try_new(exact).unwrap());
+        let exact = super::super::SegmentProjection::ExactInterior(Box::new(exact));
         let start = Point::new_raw_xy(0.0, 0.0);
         let end = Point::new_raw_axes(
             segment.end.x,

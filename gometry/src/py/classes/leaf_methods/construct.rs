@@ -218,7 +218,7 @@ impl PyPoint {
             .map_err(PyErr::from)?;
         }
 
-        Ok(Typed(PyGeometry::with_frame(shape, frame)?))
+        Ok(Typed(PyGeometry::with_frame(shape, frame)))
     }
 }
 

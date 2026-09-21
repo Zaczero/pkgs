@@ -368,12 +368,11 @@ impl PyGeometryArray {
                     (out_coords, out_offsets, RowSelection::Identity)
                 };
                 Ok(Self::from_result_storage(
-                    Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                        coords: Arc::try_new(out_coords).map_err(crate::error::Error::from)?,
+                    Arc::new(GeometryArrayStorage::Packed(PackedStorage::Lines {
+                        coords: Arc::new(out_coords),
                         offsets: out_offsets,
                         row_map: out_map,
-                    }))
-                    .map_err(crate::error::Error::from)?,
+                    })),
                     self.frame.clone(),
                     self.missing().cloned(),
                     StorageLayout::LogicalRows,
@@ -407,13 +406,12 @@ impl PyGeometryArray {
                     (out_coords, out_rings, out_polygons, RowSelection::Identity)
                 };
                 Ok(Self::from_result_storage(
-                    Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                        coords: Arc::try_new(out_coords).map_err(crate::error::Error::from)?,
+                    Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                        coords: Arc::new(out_coords),
                         ring_offsets: out_rings,
                         polygon_offsets: out_polygons,
                         row_map: out_map,
-                    }))
-                    .map_err(crate::error::Error::from)?,
+                    })),
                     self.frame.clone(),
                     self.missing().cloned(),
                     StorageLayout::LogicalRows,

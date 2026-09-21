@@ -142,7 +142,7 @@ impl PreparedPlan {
         let left = if self_crosses {
             self_split = Self::new(crate::geometry::ShapeData::from(
                 self.shape().split_antimeridian_in_frame(frame)?,
-            ))?;
+            ));
             &self_split
         } else {
             self
@@ -150,7 +150,7 @@ impl PreparedPlan {
         let right = if other_crosses {
             other_split = Self::new(crate::geometry::ShapeData::from(
                 other.shape().split_antimeridian_in_frame(frame)?,
-            ))?;
+            ));
             &other_split
         } else {
             other

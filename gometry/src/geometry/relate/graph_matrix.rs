@@ -90,8 +90,8 @@ impl GeographicPrepared<'_> {
 /// Every named predicate is a projection of this result.
 pub(crate) fn graph_relate_shapes(left: &Shape, right: &Shape) -> Result<De9im> {
     graph_relate_data(
-        &PreparedPlan::transient(left)?,
-        &PreparedPlan::transient(right)?,
+        &PreparedPlan::transient(left),
+        &PreparedPlan::transient(right),
     )
 }
 
@@ -103,8 +103,8 @@ fn graph_relate_shapes_geographic(left: &Shape, right: &Shape) -> De9im {
         crate::geographic::AngularFactor::try_new("test degrees", std::f64::consts::PI / 180.0)
             .unwrap();
     let frame = GeographicFrame::try_new(unit, unit, 0.0).unwrap();
-    let left = PreparedPlan::transient(left).unwrap();
-    let right = PreparedPlan::transient(right).unwrap();
+    let left = PreparedPlan::transient(left);
+    let right = PreparedPlan::transient(right);
     let left_cache = crate::geometry::FrameDependentCaches::default();
     let right_cache = crate::geometry::FrameDependentCaches::default();
     graph_relate_data_geographic(

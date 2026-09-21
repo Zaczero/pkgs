@@ -401,7 +401,7 @@ fn split_geodesic_operands(
                              crosses: bool|
              -> crate::error::Result<(PreparedPlan, bool)> {
                 if !crosses {
-                    return Ok((PreparedPlan::new(ShapeData::new(x.shape().clone()))?, false));
+                    return Ok((PreparedPlan::new(ShapeData::new(x.shape().clone())), false));
                 }
                 let normalized_shape = x.shape().split_antimeridian_in_frame(frame)?;
                 let changed = normalized_shape != *x.shape()
@@ -411,7 +411,7 @@ fn split_geodesic_operands(
                         normalized_shape
                     } else {
                         x.shape().clone()
-                    }))?,
+                    })),
                     changed,
                 ))
             };
@@ -952,11 +952,7 @@ mod dwithin_parity_tests {
 
     fn shape_data_dwithin(a: Point, b: Point, limit: f64) -> bool {
         PreparedPlan::new(ShapeData::new(Shape::Point(a)))
-            .unwrap()
-            .dwithin(
-                &PreparedPlan::new(ShapeData::new(Shape::Point(b))).unwrap(),
-                limit,
-            )
+            .dwithin(&PreparedPlan::new(ShapeData::new(Shape::Point(b))), limit)
             .unwrap()
     }
 

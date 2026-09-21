@@ -21,7 +21,7 @@ impl PyGeometryArray {
                     let geometry = PyGeometry::with_frame(
                         row.row().with_shape(Clone::clone)?,
                         self.frame.clone(),
-                    )?;
+                    );
                     Typed(geometry).into_py_any(py)
                 },
             })

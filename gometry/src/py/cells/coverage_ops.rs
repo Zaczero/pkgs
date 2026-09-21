@@ -158,7 +158,7 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
         .map_err(PyErr::from)?;
-    Ok(PyGeometry::typed_wgs84(shape)?)
+    Ok(PyGeometry::typed_wgs84(shape))
 }
 
 pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Typed>> {
@@ -182,7 +182,7 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     }
     let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
         .map_err(PyErr::from)?;
-    Ok(Some(PyGeometry::typed_wgs84(shape)?))
+    Ok(Some(PyGeometry::typed_wgs84(shape)))
 }
 
 pub(crate) fn coordseq_crosses_lon_seam(segment: &CoordSeq) -> bool {
@@ -370,7 +370,7 @@ impl GridSourceAdmission {
         } else {
             geometry.shape.shape().clone()
         };
-        Ok(PyGeometry::wgs84(Self::normalize_shape(shape)?)?)
+        Ok(PyGeometry::wgs84(Self::normalize_shape(shape)?))
     }
 
     pub(crate) fn admit_array_shapes(
@@ -732,7 +732,7 @@ mod tests {
 
     #[test]
     fn scalar_empty_is_empty_coverage() {
-        let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon()).unwrap();
+        let geometry = crate::PyGeometry::wgs84(Shape::empty_polygon());
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
         let admitted = admission.admit_geometry(&geometry).unwrap();
         let error = super::coverage_factory_shapes(&admitted, "H3").expect_err("empty scalar");
@@ -741,8 +741,7 @@ mod tests {
 
     #[test]
     fn invalid_lonlat_is_native_geometry() {
-        let geometry =
-            crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0))).unwrap();
+        let geometry = crate::PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(0.0, 95.0)));
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
         let error = admission
             .admit_geometry(&geometry)
@@ -769,8 +768,7 @@ mod tests {
         let geometry = crate::PyGeometry::with_frame(
             Shape::Point(Point::new_raw_xy(-104.0, 40.0)),
             Frame::Crs(crate::boundary::crs_arc_static("EPSG:4267")),
-        )
-        .unwrap();
+        );
         let admission = GridSourceAdmission::new(&geometry.frame).unwrap();
         let execution = admission
             .transformer

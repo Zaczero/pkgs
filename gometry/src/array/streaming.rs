@@ -588,7 +588,7 @@ impl StreamingShapes {
                 }
                 (
                     GeometryArrayStorage::Packed(PackedStorage::Points {
-                        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                        coords: Arc::new(coords),
                         row_map: crate::array::RowSelection::Identity,
                     }),
                     StorageLayout::PresentOnly,
@@ -607,7 +607,7 @@ impl StreamingShapes {
                 }
                 let storage = if packed_i32_capacity(coords.len())? {
                     GeometryArrayStorage::Packed(PackedStorage::Lines {
-                        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                        coords: Arc::new(coords),
                         offsets,
                         row_map: crate::array::RowSelection::Identity,
                     })
@@ -636,7 +636,7 @@ impl StreamingShapes {
                 let storage =
                     if packed_i32_capacity(coords.len())? && packed_i32_capacity(ring_count)? {
                         GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                            coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                            coords: Arc::new(coords),
                             ring_offsets: ring_offsets.cast_level::<RingLevel>(),
                             polygon_offsets: polygon_offsets.cast_level::<PolygonLevel>(),
                             row_map: crate::array::RowSelection::Identity,
@@ -673,11 +673,11 @@ impl StreamingShapes {
     pub(crate) fn finish(self, frame: Frame) -> crate::error::Result<PyGeometryArray> {
         let (storage, missing, layout) = self.finish_parts()?;
         PyGeometryArray::from_result_storage(
-            Arc::try_new(storage).map_err(crate::error::Error::from)?,
+            Arc::new(storage),
             frame,
             missing,
             layout,
-            ComputedCaches::fresh()?,
+            ComputedCaches::fresh(),
         )
     }
 }

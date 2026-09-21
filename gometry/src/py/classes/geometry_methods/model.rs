@@ -367,7 +367,7 @@ fn geometry_parts_getitem(
             let mut row = start;
             for _ in 0..count {
                 if let Some(part) = geometry.shape.part_at(row as usize) {
-                    crate::try_push(&mut parts, geometry.typed_shape(part)?)?;
+                    crate::try_push(&mut parts, geometry.typed_shape(part))?;
                 }
                 row += step;
             }
@@ -376,7 +376,7 @@ fn geometry_parts_getitem(
         RowIndexOrSlice::Index(row) => {
             let part = geometry.shape.part_at(row).expect("part index in range");
             Ok(geometry
-                .typed_shape(part)?
+                .typed_shape(part)
                 .into_pyobject(py)?
                 .into_any()
                 .unbind())
@@ -611,7 +611,7 @@ impl RowContainer for PyGeometryParts {
             .shape
             .part_at(row)
             .expect("part index in range");
-        self.geometry.typed_shape(part)?.into_py_any(py)
+        self.geometry.typed_shape(part).into_py_any(py)
     }
 }
 
@@ -647,7 +647,7 @@ mod frame_cache_ownership_tests {
     #[test]
     fn scalar_retag_preserves_row_products_but_new_shapes_are_fresh() {
         let geometry =
-            PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 2.0)), Frame::None).unwrap();
+            PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 2.0)), Frame::None);
         let clone = geometry.clone();
         assert!(Arc::ptr_eq(
             &geometry.frame_cache().unwrap(),
@@ -687,8 +687,7 @@ mod frame_cache_ownership_tests {
         let transformed = PyGeometry::with_frame(
             Shape::Point(Point::new_raw_xy(1.0, 2.0)),
             retagged.frame.clone(),
-        )
-        .unwrap();
+        );
         assert!(!Arc::ptr_eq(&retagged.shape, &transformed.shape));
         assert!(!Arc::ptr_eq(
             &retagged.frame_cache().unwrap(),
@@ -897,39 +896,32 @@ impl PyGeometry {
         epoch: Option<f64>,
     ) -> crate::Result<Self> {
         Ok(Self {
-            shape: shape.try_into_shared()?,
-            row_products: RowProducts::fresh(1)?,
+            shape: shape.into_shared(),
+            row_products: RowProducts::fresh(1),
             product_row: 0,
             frame: Frame::new(crs, epoch)?,
         })
     }
 
     /// New WGS84 lon/lat geometry with no coordinate epoch.
-    pub(crate) fn wgs84(
-        shape: impl crate::geometry::IntoSharedShape,
-    ) -> crate::error::Result<Self> {
+    pub(crate) fn wgs84(shape: impl crate::geometry::IntoSharedShape) -> Self {
         Self::with_frame(shape, Frame::Crs(wgs84_crs()))
     }
 
     /// [`wgs84`](Self::wgs84) wrapped as [`Typed`] for return to Python.
-    pub(crate) fn typed_wgs84(
-        shape: impl crate::geometry::IntoSharedShape,
-    ) -> crate::error::Result<Typed> {
-        Ok(Typed(Self::wgs84(shape)?))
+    pub(crate) fn typed_wgs84(shape: impl crate::geometry::IntoSharedShape) -> Typed {
+        Typed(Self::wgs84(shape))
     }
 
     /// New geometry from an already-built [`Frame`] with fresh products — the
     /// zero-conversion path for new coordinate storage.
-    pub(crate) fn with_frame(
-        shape: impl crate::geometry::IntoSharedShape,
-        frame: Frame,
-    ) -> crate::error::Result<Self> {
-        Ok(Self {
-            shape: shape.try_into_shared()?,
-            row_products: RowProducts::fresh(1)?,
+    pub(crate) fn with_frame(shape: impl crate::geometry::IntoSharedShape, frame: Frame) -> Self {
+        Self {
+            shape: shape.into_shared(),
+            row_products: RowProducts::fresh(1),
             product_row: 0,
             frame,
-        })
+        }
     }
 
     /// Re-tag immutable coordinates without invalidating their row products.
@@ -956,10 +948,7 @@ impl PyGeometry {
     }
 
     /// New geometry that keeps this one's CRS and epoch but swaps in `shape`.
-    pub(crate) fn with_shape(
-        &self,
-        shape: impl crate::geometry::IntoSharedShape,
-    ) -> crate::error::Result<Self> {
+    pub(crate) fn with_shape(&self, shape: impl crate::geometry::IntoSharedShape) -> Self {
         Self::with_frame(shape, self.frame.clone())
     }
 
@@ -975,16 +964,13 @@ impl PyGeometry {
         })
     }
 
-    pub(crate) fn from_prepared_plan(
-        plan: Arc<PreparedPlan>,
-        frame: Frame,
-    ) -> crate::error::Result<Self> {
-        Ok(Self {
+    pub(crate) fn from_prepared_plan(plan: Arc<PreparedPlan>, frame: Frame) -> Self {
+        Self {
             shape: Arc::clone(plan.shape_arc()),
-            row_products: RowProducts::fresh(1)?,
+            row_products: RowProducts::fresh(1),
             product_row: 0,
             frame,
-        })
+        }
     }
 
     pub(crate) fn plan_or_transient(&self) -> crate::error::Result<Arc<PreparedPlan>> {
@@ -994,10 +980,7 @@ impl PyGeometry {
     /// Like [`with_shape`](Self::with_shape) but wrapped as [`Typed`] for
     /// return to Python as the leaf subclass matching `shape` (e.g.
     /// `centroid` → Point).
-    pub(crate) fn typed_shape(
-        &self,
-        shape: impl crate::geometry::IntoSharedShape,
-    ) -> crate::error::Result<Typed> {
-        Ok(Typed(self.with_shape(shape)?))
+    pub(crate) fn typed_shape(&self, shape: impl crate::geometry::IntoSharedShape) -> Typed {
+        Typed(self.with_shape(shape))
     }
 }

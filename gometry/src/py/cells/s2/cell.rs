@@ -192,7 +192,9 @@ pub(crate) fn cell_pole_side(boundary: &Shape) -> Option<bool> {
 }
 
 pub(crate) fn s2_boundary_geometry(cell: CellId) -> crate::error::Result<PyGeometry> {
-    PyGeometry::wgs84(S2GeomCell::from_id(cell).boundary_shape()?)
+    Ok(PyGeometry::wgs84(
+        S2GeomCell::from_id(cell).boundary_shape()?,
+    ))
 }
 use pyo3::pymethods;
 use pyo3::types::PyBool;

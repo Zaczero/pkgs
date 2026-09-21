@@ -76,12 +76,12 @@ impl PyH3Vertex {
     /// Point
     ///     Longitude/latitude point tagged ``OGC:CRS84``.
     #[getter]
-    fn point(&self) -> PyResult<Typed> {
+    fn point(&self) -> Typed {
         let latlng = LatLng::from(self.vertex);
-        Ok(PyGeometry::typed_wgs84(Shape::Point(Point::new_raw_xy(
+        PyGeometry::typed_wgs84(Shape::Point(Point::new_raw_xy(
             latlng.lng(),
             latlng.lat(),
-        )))?)
+        )))
     }
 
     fn __int__(&self) -> u64 {
@@ -265,7 +265,7 @@ fn reverse(&self) -> Self {
             .collect();
         Ok(PyGeometry::typed_wgs84(Shape::LineString(
             LineSeq::from_proven(CoordSeq::try_from_points(&points)?),
-        ))?)
+        )))
     }
 
     /// Length of the edge in meters (spherical, like `H3Cell.area`).

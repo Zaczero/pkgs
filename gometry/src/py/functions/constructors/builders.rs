@@ -25,7 +25,7 @@ pub(super) fn geometry_with_crs_epoch(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<PyGeometry> {
-    Ok(PyGeometry::with_frame(shape, parse_crs_epoch(crs, epoch)?)?)
+    Ok(PyGeometry::with_frame(shape, parse_crs_epoch(crs, epoch)?))
 }
 
 fn multipart_members(
@@ -49,9 +49,9 @@ fn multipart_members(
                     "{context} expected {expected} at element {this_row}"
                 ))
             })?;
-            Ok(PyGeometry::with_frame(shape, geometry.frame.clone())?)
+            Ok(PyGeometry::with_frame(shape, geometry.frame.clone()))
         } else {
-            Ok(PyGeometry::with_frame(raw(&item)?, Frame::None)?)
+            Ok(PyGeometry::with_frame(raw(&item)?, Frame::None))
         }
     })?;
     let frame = Frame::resolve_items(
@@ -399,7 +399,7 @@ pub(crate) fn build_multi_point(
         },
     )?;
     if members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_point(), frame)?);
+        return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
     if members.iter().all(|shape| matches!(shape, Shape::Point(_))) {
@@ -416,7 +416,7 @@ pub(crate) fn build_multi_point(
                 CoordSeq::try_from_points(&points).map_err(PyErr::from)?,
             ),
             frame,
-        )?);
+        ));
     }
     let mut point_members = crate::try_vec_with_capacity(members.len())?;
     for shape in members {
@@ -427,12 +427,12 @@ pub(crate) fn build_multi_point(
         })?;
     }
     if point_members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_point(), frame)?);
+        return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
     }
     Ok(PyGeometry::with_frame(
         Shape::MultiPoint(MultiPoint::try_new(axes, point_members).map_err(PyErr::from)?),
         frame,
-    )?)
+    ))
 }
 
 /// Build a ``MultiLineString`` from a sequence of line coordinate sequences.
@@ -473,7 +473,7 @@ pub(crate) fn build_multi_line_string(
         },
     )?;
     if members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_line_string(), frame)?);
+        return Ok(PyGeometry::with_frame(empty_multi_line_string(), frame));
     }
     let axes = homogeneous_multipart_axes(&members, "MultiLineString")?;
     if members
@@ -489,7 +489,7 @@ pub(crate) fn build_multi_line_string(
         }
         let shape = Shape::multi_line_string(axes, lines).map_err(PyErr::from)?;
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        return Ok(PyGeometry::with_frame(shape, frame)?);
+        return Ok(PyGeometry::with_frame(shape, frame));
     }
     let member_count = members.len();
     let mut line_members = Vec::new();
@@ -511,7 +511,7 @@ pub(crate) fn build_multi_line_string(
     // members at construction rather than admit a shape that cannot serialize
     // without inventing Z/M.
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-    Ok(PyGeometry::with_frame(shape, frame)?)
+    Ok(PyGeometry::with_frame(shape, frame))
 }
 
 /// Build a ``MultiPolygon`` from a sequence of polygons.
@@ -538,7 +538,7 @@ pub(crate) fn build_multi_polygon(
         polygon_from_coordinates_item,
     )?;
     if members.is_empty() {
-        return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame)?);
+        return Ok(PyGeometry::with_frame(empty_multi_polygon(), frame));
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPolygon")?;
     if members
@@ -554,7 +554,7 @@ pub(crate) fn build_multi_polygon(
         }
         let shape = Shape::multi_polygon(axes, polygons).map_err(PyErr::from)?;
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-        return Ok(PyGeometry::with_frame(shape, frame)?);
+        return Ok(PyGeometry::with_frame(shape, frame));
     }
     let member_count = members.len();
     let mut polygon_members = Vec::new();
@@ -573,7 +573,7 @@ pub(crate) fn build_multi_polygon(
     let shape =
         Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members).map_err(PyErr::from)?);
     crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
-    Ok(PyGeometry::with_frame(shape, frame)?)
+    Ok(PyGeometry::with_frame(shape, frame))
 }
 
 pub(super) fn build_box_shape(

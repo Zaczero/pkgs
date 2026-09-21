@@ -27,7 +27,7 @@ impl PyGeometryArray {
             let storage = self.selected_point_present_range(present)?;
             return Self::from_selected_storage(
                 self,
-                Arc::try_new(storage).map_err(crate::error::Error::from)?,
+                Arc::new(storage),
                 self.frame.clone(),
                 missing,
                 StorageLayout::PresentOnly,
@@ -54,7 +54,7 @@ impl PyGeometryArray {
         };
         Self::from_selected_storage(
             self,
-            Arc::try_new(storage).map_err(crate::error::Error::from)?,
+            Arc::new(storage),
             self.frame.clone(),
             missing,
             layout,
@@ -69,8 +69,7 @@ impl PyGeometryArray {
         );
         Self::from_selected_storage(
             self,
-            Arc::try_new(self.selected_storage(rows.iter().copied())?)
-                .map_err(crate::error::Error::from)?,
+            Arc::new(self.selected_storage(rows.iter().copied())?),
             self.frame.clone(),
             None,
             StorageLayout::LogicalRows,
@@ -98,21 +97,20 @@ impl PyGeometryArray {
                 };
                 if present.is_empty() {
                     GeometryArrayStorage::Packed(PackedStorage::Points {
-                        coords: Arc::try_new(
+                        coords: Arc::new(
                             crate::array::PointColumnBuilder::try_with_capacity(coords.axes(), 0)?
                                 .finish()?,
-                        )
-                        .map_err(crate::error::Error::from)?,
+                        ),
                         row_map: RowSelection::Identity,
                     })
                 } else if let Some(window) =
                     contiguous_physical_range(row_map.as_deref(), present.iter().copied())
                 {
                     GeometryArrayStorage::Packed(PackedStorage::Points {
-                        coords: Arc::try_new(coords.view(
-                            crate::geometry::CoordWindow::from_range(window, coords.len()),
-                        ))
-                        .map_err(crate::error::Error::from)?,
+                        coords: Arc::new(coords.view(crate::geometry::CoordWindow::from_range(
+                            window,
+                            coords.len(),
+                        ))),
                         row_map: RowSelection::Identity,
                     })
                 } else {
@@ -175,10 +173,9 @@ impl PyGeometryArray {
         };
         if present.is_empty() {
             return Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::try_new(
+                coords: Arc::new(
                     PointColumnBuilder::try_with_capacity(coords.axes(), 0)?.finish()?,
-                )
-                .map_err(crate::error::Error::from)?,
+                ),
                 row_map: RowSelection::Identity,
             }));
         }
@@ -186,11 +183,10 @@ impl PyGeometryArray {
             crate::array::contiguous_physical_range(row_map.as_deref(), present.clone())
         {
             return Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::try_new(coords.view(crate::geometry::CoordWindow::from_range(
+                coords: Arc::new(coords.view(crate::geometry::CoordWindow::from_range(
                     window,
                     coords.len(),
-                )))
-                .map_err(crate::error::Error::from)?,
+                ))),
                 row_map: RowSelection::Identity,
             }));
         }

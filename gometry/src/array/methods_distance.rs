@@ -350,14 +350,12 @@ impl PyGeometryArray {
             let ring_offsets = ring_builder.finish(vertex_count)?.cast_level::<RingLevel>();
             let polygon_offsets = polygon_builder.finish(rows)?.cast_level::<PolygonLevel>();
             return Ok(Self::from_result_storage(
-                Arc::try_new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                    coords: Arc::try_new(CoordSeq::try_from_vecs(xs, ys, None, None)?)
-                        .map_err(crate::error::Error::from)?,
+                Arc::new(GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                    coords: Arc::new(CoordSeq::try_from_vecs(xs, ys, None, None)?),
                     ring_offsets,
                     polygon_offsets,
                     row_map: RowSelection::Identity,
-                }))
-                .map_err(crate::error::Error::from)?,
+                })),
                 self.frame.clone(),
                 self.missing().cloned(),
                 // The output rectangles have the same per-row bounds as the

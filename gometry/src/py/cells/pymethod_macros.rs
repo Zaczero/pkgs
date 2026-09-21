@@ -59,7 +59,7 @@ macro_rules! grid_cell_common_pymethods {
             /// -------
             /// Point
             #[getter]
-            fn center(&self) -> PyResult<Typed> {
+            fn center(&self) -> Typed {
                 cell_center(self.cell)
             }
 

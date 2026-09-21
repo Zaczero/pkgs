@@ -41,7 +41,7 @@ impl GeoParquetPhysicalLayout {
         &self,
         crs: Option<String>,
         epoch: Option<f64>,
-    ) -> PyResult<NativeArrowClassification> {
+    ) -> NativeArrowClassification {
         NativeArrowClassification::new(self.encoding, self.wkb_offset_width, crs, epoch)
     }
 
@@ -308,7 +308,12 @@ pub(crate) fn arrow_classification(
             WkbOffsetWidth::Int32
         };
         let (crs, epoch) = parse_geoarrow_extension_metadata_for(&metadata, Some(encoding))?;
-        return NativeArrowClassification::new(encoding, wkb_offset_width, crs, epoch);
+        return Ok(NativeArrowClassification::new(
+            encoding,
+            wkb_offset_width,
+            crs,
+            epoch,
+        ));
     }
 
     let types = pa.getattr("types")?;
@@ -318,12 +323,12 @@ pub(crate) fn arrow_classification(
     let is_large_binary = arrow_type_is_large_binary(pa, &value_type)?;
     let is_binary_view = arrow_type_is_binary_view(pa, &value_type)?;
     if is_binary || is_large_binary || is_binary_view {
-        return NativeArrowClassification::new(
+        return Ok(NativeArrowClassification::new(
             GeometryEncoding::Wkb,
             wkb_offset_width(is_large_binary, is_binary_view),
             None,
             None,
-        );
+        ));
     }
     Err(PyTypeError::new_err(
         "expected a geoarrow point, multipoint, linestring, multilinestring, polygon, multipolygon, WKB, binary, or large_binary Arrow array",

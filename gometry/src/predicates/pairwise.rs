@@ -484,10 +484,10 @@ pub(crate) fn nearest_points(
             let (left_shape, right_shape) =
                 crate::geometry::nearest_point_pair(pair.as_ref(), common);
             (
-                crate::Typed(PyGeometry::with_frame(left_shape, left.frame.clone())?)
+                crate::Typed(PyGeometry::with_frame(left_shape, left.frame.clone()))
                     .into_pyobject(py)?
                     .unbind(),
-                crate::Typed(PyGeometry::with_frame(right_shape, right.frame.clone())?)
+                crate::Typed(PyGeometry::with_frame(right_shape, right.frame.clone()))
                     .into_pyobject(py)?
                     .unbind(),
             )

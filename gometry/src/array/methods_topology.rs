@@ -59,7 +59,7 @@ impl PyGeometryArray {
             overwrite,
         }
         .apply(&self.frame)?;
-        Ok(self.retag_frame(frame)?)
+        Ok(self.retag_frame(frame))
     }
 
     /// Declare (or clear) the array's coordinate epoch (see
@@ -96,7 +96,7 @@ impl PyGeometryArray {
     pub fn set_epoch(&self, epoch: Option<&Bound<'_, PyAny>>, overwrite: bool) -> PyResult<Self> {
         let epoch = coordinate_epoch_option("epoch", epoch)?;
         let frame = FrameEdit::SetEpoch { epoch, overwrite }.apply(&self.frame)?;
-        Ok(self.retag_frame(frame)?)
+        Ok(self.retag_frame(frame))
     }
 
     /// Reproject all geometries to a target CRS.

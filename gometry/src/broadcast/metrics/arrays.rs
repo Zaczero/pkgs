@@ -1259,7 +1259,7 @@ mod allocation_tests {
             )?;
             let right = Py::new(
                 py,
-                PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(180.0, 0.0)))?,
+                PyGeometry::wgs84(Shape::Point(Point::new_raw_xy(180.0, 0.0))),
             )?;
             let right = right.bind(py).as_any();
             let right = GeometryInput::One(

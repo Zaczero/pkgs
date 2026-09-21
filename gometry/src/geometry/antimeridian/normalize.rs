@@ -33,16 +33,16 @@ fn needs_topology_split(shape: &Shape, domain: TopologyDomain) -> bool {
     }
 }
 
-fn data_needs_topology_split(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
-    Ok(match domain {
+fn data_needs_topology_split(data: &PreparedPlan, domain: TopologyDomain) -> bool {
+    match domain {
         TopologyDomain::Cartesian => false,
         TopologyDomain::Geographic(frame) if frame == GeographicFrame::crs84() => {
-            data.crosses_antimeridian()?
+            data.crosses_antimeridian()
         },
         TopologyDomain::Geographic(frame) => {
             crate::geometry::crosses_antimeridian_in_frame(data.shape(), frame)
         },
-    })
+    }
 }
 
 fn rings_share_source_linework(left: &CoordSeq, right: &CoordSeq) -> bool {
@@ -237,7 +237,7 @@ pub(crate) fn validate_data_in_frame(
     data: &PreparedPlan,
     domain: TopologyDomain,
 ) -> Result<Option<ValidationIssue>> {
-    if data_needs_topology_split(data, domain)? {
+    if data_needs_topology_split(data, domain) {
         validate_shape_in_frame(data.shape(), domain)
     } else {
         Ok(data.validate_cached()?.cloned())
@@ -247,7 +247,7 @@ pub(crate) fn validate_data_in_frame(
 /// Frame-aware simplicity. Non-crossing inputs keep the frozen handle's cached
 /// verdict; seam-crossing geographic inputs answer on normalized topology.
 pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
-    if data_needs_topology_split(data, domain)? {
+    if data_needs_topology_split(data, domain) {
         match try_topology_split(data.shape(), domain) {
             Ok(shape) => shape.is_simple(),
             Err(error) if matches!(error.kind(), crate::error::ErrorKind::Resource(_)) => {
@@ -263,7 +263,7 @@ pub(crate) fn is_simple_data_in_frame(data: &PreparedPlan, domain: TopologyDomai
 /// Frame-aware `is_ring`: closure is structural on the original line, while
 /// simplicity is evaluated on normalized seam topology.
 pub(crate) fn is_ring_data_in_frame(data: &PreparedPlan, domain: TopologyDomain) -> Result<bool> {
-    if data_needs_topology_split(data, domain)? {
+    if data_needs_topology_split(data, domain) {
         if !data.shape().is_closed() {
             return Ok(false);
         }

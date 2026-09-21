@@ -110,10 +110,10 @@ impl PyGeometry {
         let repaired = py.detach(|| {
             geometry::repair_data_in_frame(&*self.plan_or_transient()?, domain, method)
         })?;
-        Ok(Typed(match repaired {
-            None => self.clone(),
-            Some(shape) => self.with_shape(shape)?,
-        }))
+        Ok(Typed(repaired.map_or_else(
+            || self.clone(),
+            |shape| self.with_shape(shape),
+        )))
     }
 
     pub(crate) fn self_intersections_impl(&self, py: Python<'_>) -> PyResult<PyGeometryArray> {
@@ -257,7 +257,7 @@ impl PyGeometry {
 
     pub(crate) fn line_merge_impl(&self, py: Python<'_>) -> PyResult<Typed> {
         let shape = Arc::clone(&self.shape);
-        Ok(self.typed_shape(py.detach(move || shape.line_merge())?)?)
+        Ok(self.typed_shape(py.detach(move || shape.line_merge())?))
     }
 
     /// `tolerance` is already validated non-negative at the free-function boundary.
@@ -290,12 +290,12 @@ impl PyGeometry {
         let Some(points) = self.shape.extremes() else {
             return Ok(None);
         };
-        let make = |point| Self::with_frame(Shape::Point(point), self.frame.clone()).map(Typed);
+        let make = |point| Typed(Self::with_frame(Shape::Point(point), self.frame.clone()));
         let typed = [
-            make(points[0])?,
-            make(points[1])?,
-            make(points[2])?,
-            make(points[3])?,
+            make(points[0]),
+            make(points[1]),
+            make(points[2]),
+            make(points[3]),
         ];
         let result = support::extreme_points_type(py)?.call1(PyTuple::new(py, typed)?)?;
         Ok(Some(result.unbind()))

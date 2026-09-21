@@ -887,11 +887,11 @@ impl PyGeometryArray {
         }
         let (storage, missing, layout) = builder.finish_parts().map_err(PyErr::from)?;
         Self::from_result_storage(
-            Arc::try_new(storage).map_err(crate::error::Error::from)?,
+            Arc::new(storage),
             self.frame.clone(),
             missing,
             layout,
-            crate::array::ComputedCaches::fresh()?,
+            crate::array::ComputedCaches::fresh(),
         )
         .map_err(PyErr::from)
     }
@@ -1055,9 +1055,7 @@ mod replacement_tests {
     use super::*;
     use crate::PyGeometry;
     use crate::boundary::Frame;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{Point, Shape, ShapeData};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
     fn replacement_starts_with_fresh_products_and_releases_the_source_owner() {
@@ -1074,16 +1072,18 @@ mod replacement_tests {
         let source_plan = source
             .row_products
             .prepared_plan(0, || {
-                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))))
-                    .map_err(crate::error::Error::from)
+                Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
+                    0.0, 0.0,
+                )))))
             })
             .unwrap();
         let source_frame = source.row_products.frame_cache(0).unwrap();
         let source_unchanged_plan = source
             .row_products
             .prepared_plan(1, || {
-                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 1.0))))
-                    .map_err(crate::error::Error::from)
+                Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
+                    1.0, 1.0,
+                )))))
             })
             .unwrap();
         let source_unchanged_frame = source.row_products.frame_cache(1).unwrap();
@@ -1091,10 +1091,10 @@ mod replacement_tests {
         assert_eq!(source.row_products.owner_strong_count(), 1);
         Python::initialize();
         let result = Python::attach(|py| {
-            let replacement = Typed(
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(9.0, 9.0)), Frame::None)
-                    .unwrap(),
-            )
+            let replacement = Typed(PyGeometry::with_frame(
+                Shape::Point(Point::new_raw_xy(9.0, 9.0)),
+                Frame::None,
+            ))
             .into_py_any(py)?;
             let positions = pyo3::types::PyList::new(py, [0_isize])?;
             let values = pyo3::types::PyList::new(py, [replacement])?;
@@ -1133,8 +1133,9 @@ mod replacement_tests {
         let result_plan = result
             .row_products
             .prepared_plan(0, || {
-                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(9.0, 9.0))))
-                    .map_err(crate::error::Error::from)
+                Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
+                    9.0, 9.0,
+                )))))
             })
             .unwrap();
         assert_eq!(
@@ -1145,8 +1146,9 @@ mod replacement_tests {
         let result_unchanged_plan = result
             .row_products
             .prepared_plan(1, || {
-                Arc::try_new(ShapeData::new(Shape::Point(Point::new_raw_xy(1.0, 1.0))))
-                    .map_err(crate::error::Error::from)
+                Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
+                    1.0, 1.0,
+                )))))
             })
             .unwrap();
         result.row_products.frame_cache(1).unwrap();
@@ -1159,39 +1161,5 @@ mod replacement_tests {
             "replacement_diagnostic source_alive_after_drop={}",
             source_owner.upgrade().is_some()
         );
-    }
-
-    #[test]
-    fn fresh_replacement_owner_allocation_failures_are_retryable_native_errors() {
-        fn build_result(
-            storage: &Arc<GeometryArrayStorage>,
-        ) -> crate::error::Result<PyGeometryArray> {
-            PyGeometryArray::from_result_storage(
-                Arc::clone(storage),
-                Frame::None,
-                None,
-                StorageLayout::LogicalRows,
-                crate::array::ComputedCaches::fresh()?,
-            )
-        }
-
-        let storage = Arc::try_new(GeometryArrayStorage::Mixed(vec![
-            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-            Shape::Point(Point::new_raw_xy(3.0, 4.0)),
-        ]))
-        .unwrap();
-
-        let (result, allocations) = allocation_count(|| build_result(&storage));
-        result.expect("unconstrained replacement build");
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || build_result(&storage)).unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            let retry = build_result(&storage).expect("retry after a failed owner publication");
-            assert_eq!(retry.row_products.initialized_counts(), (0, 0, 0));
-        }
     }
 }

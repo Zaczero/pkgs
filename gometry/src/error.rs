@@ -132,8 +132,7 @@ impl From<ErrorKind> for Error {
             ErrorKind::Crs(CrsError::GeodesicExponentOverflow) => {
                 ErrorStorage::Static(&GEODESIC_EXPONENT_OVERFLOW_ERROR)
             },
-            kind => Box::try_new(kind)
-                .map_or(ErrorStorage::Static(&ALLOCATION_ERROR), ErrorStorage::Owned),
+            kind => ErrorStorage::Owned(Box::new(kind)),
         })
     }
 }

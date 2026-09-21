@@ -705,13 +705,10 @@ mod tests {
         let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
         Python::initialize();
         Python::attach(|py| {
-            let index = spatial_index(vec![
-                PyGeometry::with_frame(
-                    ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
-                    Frame::None,
-                )
-                .unwrap(),
-            ])
+            let index = spatial_index(vec![PyGeometry::with_frame(
+                ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+                Frame::None,
+            )])
             .expect("fixture index");
             let state = HeapNearest::new(2, index.__len__()).expect("state is chosen first");
             let mut visited = NearestVisited::default();
@@ -721,8 +718,7 @@ mod tests {
                 Ok(Arc::new(FrameDependentCaches::default()))
             };
             let query =
-                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))))
-                    .unwrap();
+                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))));
             let model = metric_model(Some("EPSG:4326")).expect("geodesic model");
             let ResolvedMetric::Geodesic(resolved) =
                 ResolvedMetric::from_model(&model).expect("resolved geodesic")
@@ -756,13 +752,11 @@ mod tests {
                 let geometry = PyGeometry::with_frame(
                     ShapeData::new(Shape::Point(Point::new_raw_xy(handle as f64, 0.0))),
                     Frame::None,
-                )
-                .expect("point");
+                );
                 assert_eq!(index.insert_one(&geometry).expect("insert"), handle);
             }
             let query =
-                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(63.25, 0.0))))
-                    .expect("query");
+                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(63.25, 0.0))));
             let model = metric_model(None).expect("planar metric");
             let ResolvedMetric::Planar { to_metre } =
                 ResolvedMetric::from_model(&model).expect("resolved planar metric")

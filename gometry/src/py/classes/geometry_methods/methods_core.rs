@@ -194,7 +194,7 @@ impl PyGeometry {
             self.shape.coord_count(),
         )?;
         let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape)?)
+        Ok(self.typed_shape(shape))
     }
     /// Apply a vectorized callback to this geometry's coordinate matrix.
     ///
@@ -222,7 +222,7 @@ impl PyGeometry {
         )));
         let replacement = map_coordinates_callback(py, coords, func)?;
         let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
-        Ok(self.typed_shape(shape)?)
+        Ok(self.typed_shape(shape))
     }
     /// Whether the geometry is empty (no points, rings, or parts).
     ///

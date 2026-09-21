@@ -67,7 +67,7 @@ fn apply_overlay_all(
     let (metadata, shapes) = pooled_shapes(values)?;
     let domain = crate::geometry::topology_domain(&metadata)?;
     let shape = py.detach(move || kernel(&shapes, domain, crate::geometry::Strictness::Lenient))?;
-    Ok(Typed(PyGeometry::with_frame(shape, metadata)?))
+    Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
 /// The `&`/`|`/`-`/`^` operator entry shared by the `Geometry` and
@@ -290,7 +290,7 @@ pub(crate) fn union_all(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<T
         let shape = py.detach(move || {
             Shape::union_all_topo(&[multipoint], domain, crate::geometry::Strictness::Lenient)
         })?;
-        return Ok(Typed(PyGeometry::with_frame(shape, array.frame.clone())?));
+        return Ok(Typed(PyGeometry::with_frame(shape, array.frame.clone())));
     }
     apply_overlay_all(py, values, Shape::union_all_topo)
 }
@@ -354,7 +354,7 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
     }
     let domain = crate::geometry::topology_domain(&metadata)?;
     let shape = py.detach(move || crate::geometry::coverage_union_topo(&shapes, domain))?;
-    Ok(Typed(PyGeometry::with_frame(shape, metadata)?))
+    Ok(Typed(PyGeometry::with_frame(shape, metadata)))
 }
 
 /// Build polygons from the pooled linework of many geometries.

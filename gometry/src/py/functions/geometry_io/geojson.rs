@@ -89,7 +89,7 @@ fn decode_geojson_bytes(
 fn decoded_geojson_into_py(py: Python<'_>, decoded: DecodedGeoJson) -> PyResult<Py<PyAny>> {
     match decoded {
         DecodedGeoJson::Array(array) => Ok(array.into_pyobject(py)?.unbind().into()),
-        DecodedGeoJson::Scalar(shape, frame) => Ok(Typed(PyGeometry::with_frame(shape, frame)?)
+        DecodedGeoJson::Scalar(shape, frame) => Ok(Typed(PyGeometry::with_frame(shape, frame))
             .into_pyobject(py)?
             .unbind()),
     }

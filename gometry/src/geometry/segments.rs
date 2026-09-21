@@ -1459,14 +1459,14 @@ fn projection_from_classification(
     let emitted_foot = historical_fraction
         .filter(|historical| historical.to_bits() == fraction.to_bits())
         .map(|historical| interpolate_segment_point(segment.start, segment.end, historical));
-    Ok(SegmentProjection::ExactInterior(Box::try_new(
+    Ok(SegmentProjection::ExactInterior(Box::new(
         ExactSegmentProjection {
             numerator: terms.numerator,
             denominator: terms.denominator,
             fraction,
             emitted_foot,
         },
-    )?))
+    )))
 }
 
 fn exact_interior_projection(point: XY, segment: Segment) -> Result<ExactSegmentProjection> {
@@ -1709,12 +1709,12 @@ impl PointSegmentSelection {
             },
             SelectionProjectionSource::Ready(projection) => match projection {
                 SegmentProjection::ExactInterior(inner) => Ok(SegmentProjection::ExactInterior(
-                    Box::try_new(ExactSegmentProjection {
+                    Box::new(ExactSegmentProjection {
                         numerator: inner.numerator.try_clone()?,
                         denominator: inner.denominator.try_clone()?,
                         fraction: inner.fraction,
                         emitted_foot: inner.emitted_foot,
-                    })?,
+                    }),
                 )),
                 other => Ok(other.clone()),
             },
@@ -1860,13 +1860,12 @@ fn point_segment_metric_exact(point: XY, segment: Segment) -> Result<PointSegmen
             let squared = ExactSquaredDistance::interior(&terms)?;
             let rounded = squared.rounded_trustworthy()?;
             let fraction = round_ratio(&terms.numerator, &terms.denominator)?;
-            let projection =
-                SegmentProjection::ExactInterior(Box::try_new(ExactSegmentProjection {
-                    numerator: terms.numerator,
-                    denominator: terms.denominator,
-                    fraction,
-                    emitted_foot: None,
-                })?);
+            let projection = SegmentProjection::ExactInterior(Box::new(ExactSegmentProjection {
+                numerator: terms.numerator,
+                denominator: terms.denominator,
+                fraction,
+                emitted_foot: None,
+            }));
             match rounded {
                 Some(measurement_squared) => PointSegmentMetric::Squared {
                     measurement_squared,

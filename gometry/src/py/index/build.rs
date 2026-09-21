@@ -56,7 +56,7 @@ fn spatial_index_rows(
             None => PyGeometry::with_frame(
                 PyGeometryArray::missing_placeholder(),
                 placeholder_frame.clone(),
-            )?,
+            ),
             Some(item) => item.with_prepared_plan(item.plan_or_transient()?)?,
         })
     }))?;
@@ -198,11 +198,11 @@ pub(crate) fn build_spatial_index(
             |logical_row| match logical_row {
                 crate::array::ArrayRow::Missing { .. } => Ok(None),
                 crate::array::ArrayRow::Present(row) => {
-                    let plan = row_operation.prepared(row)?.into_owned_plan()?;
+                    let plan = row_operation.prepared(row)?.into_owned_plan();
                     Ok(Some(PyGeometry::from_prepared_plan(
                         plan,
                         array.frame.clone(),
-                    )?))
+                    )))
                 },
             },
         ))?;
@@ -279,11 +279,10 @@ pub(crate) fn restore_spatial_index(
     for logical in 0..values.len() {
         let geometry = if let Some(row) = row_operation.present_row_at(logical)? {
             present = true;
-            let plan = std::sync::Arc::try_new(crate::PreparedPlan::new(ShapeData::new(
+            let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
                 row.row().with_shape(std::clone::Clone::clone)?,
-            ))?)
-            .map_err(crate::error::Error::from)?;
-            let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone())?;
+            )));
+            let geometry = PyGeometry::from_prepared_plan(plan, values.frame.clone());
             let bounds = geometry.shape.bounds().ok_or_else(|| {
                 GeometryError::new_err(format!(
                     "spatial index pickle payload marks empty handle {logical} as live"
@@ -301,7 +300,7 @@ pub(crate) fn restore_spatial_index(
             geometry
         } else {
             crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
-            PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), values.frame.clone())?
+            PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), values.frame.clone())
         };
         crate::try_push(&mut rows, geometry)?;
     }
@@ -345,9 +344,7 @@ mod ownership_tests {
     use super::*;
     use crate::HeapSize;
     use crate::boundary::Frame;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{Bounds, CoordSeq, CsrOffsetColumn, Point, PolygonLevel, RingLevel};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn points() -> PyGeometryArray {
         PyGeometryArray::packed_points(
@@ -543,7 +540,7 @@ mod ownership_tests {
         pyo3::Python::initialize();
         let shape = crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))")
             .expect("test WKT admits");
-        let item = PyGeometry::with_frame(ShapeData::new(shape), Frame::None).unwrap();
+        let item = PyGeometry::with_frame(ShapeData::new(shape), Frame::None);
         let index = spatial_index(vec![item]).unwrap();
         assert_eq!(index.live_handles_sorted().unwrap(), [0]);
 
@@ -573,26 +570,15 @@ mod ownership_tests {
             crate::array::PreparedRow::Owned(data) => data,
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
         };
-        let indexed_arc = index
-            .rows
-            .prepared_row(0)
-            .unwrap()
-            .into_owned_plan()
-            .unwrap();
+        let indexed_arc = index.rows.prepared_row(0).unwrap().into_owned_plan();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
         let inverse = packed_spatial_index(&source).unwrap().unwrap();
-        let indexed_first = inverse
-            .rows
-            .prepared_row(0)
-            .unwrap()
-            .into_owned_plan()
-            .unwrap();
+        let indexed_first = inverse.rows.prepared_row(0).unwrap().into_owned_plan();
         let source_second = source
             .prepared_row(0, source.storage().row(0))
             .unwrap()
-            .into_owned_plan()
-            .unwrap();
+            .into_owned_plan();
         assert!(Arc::ptr_eq(&indexed_first, &source_second));
         assert!(crate::HeapSize::heap_bytes(&source) > source.nbytes());
     }
@@ -620,50 +606,5 @@ mod ownership_tests {
             restored.rows.heap_bytes(),
             HeapSize::heap_bytes(&restored.rows)
         );
-    }
-
-    #[test]
-    fn static_index_build_and_query_reject_each_allocation_prefix() {
-        let entries = [
-            IndexEntry {
-                idx: 0,
-                envelope: AABB::from_point([0.0, 0.0]),
-            },
-            IndexEntry {
-                idx: 1,
-                envelope: AABB::from_point([10.0, 10.0]),
-            },
-        ];
-        let query = AABB::from_point([0.0, 0.0]);
-        let run = || -> crate::error::Result<Vec<usize>> {
-            let mut owned_entries = Vec::new();
-            for entry in entries {
-                crate::try_push_vec(&mut owned_entries, entry)?;
-            }
-            let total_rows = owned_entries.len();
-            let tree = StaticStrTree::build(owned_entries, total_rows)?;
-            let mut matches = Vec::new();
-            tree.append_intersecting(&[1, 1], &query, &mut matches)?;
-            Ok(matches)
-        };
-
-        let expected = run().expect("unrestricted static index query");
-        let (_, allocations) = allocation_count(run);
-        assert!(allocations > 0, "static index construction must allocate");
-        for prefix in 0..allocations {
-            let result = fail_allocations_after(prefix, run);
-            let Err(error) = result else {
-                panic!("static index query succeeded at allocation prefix {prefix}");
-            };
-            assert!(
-                matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation)),
-                "unexpected static index allocation error: {error:?}"
-            );
-            assert_eq!(
-                run().expect("static index query retry"),
-                expected,
-                "allocation prefix {prefix}"
-            );
-        }
     }
 }

@@ -330,8 +330,8 @@ fn scalar_geodesic_dwithin_allocations_are_resource_and_retryable() -> Result<()
     let left_shape = line(vec![p(-2.0, 0.0), p(2.0, 0.0)]);
     let right_shape = line(vec![p(-2.0, 1.0), p(2.0, 1.0)]);
     with_ellipsoid_metric("EPSG:4326", &[&left_shape, &right_shape], |metric| {
-        let left = PreparedPlan::new(left_shape.clone())?;
-        let right = PreparedPlan::new(right_shape.clone())?;
+        let left = PreparedPlan::new(left_shape.clone());
+        let right = PreparedPlan::new(right_shape.clone());
         let (semi_major, flattening) = metric.ellipsoid_parameters();
         let run = || {
             let left_cache = FrameDependentCaches::default();
@@ -1230,7 +1230,7 @@ fn fixed_geodesic_point_rows_propagate_allocation_failures_and_retry() -> Result
     ];
     for (name, target, limit) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
-            let data = PreparedPlan::new(target.clone())?;
+            let data = PreparedPlan::new(target.clone());
             let frame_cache = FrameDependentCaches::default();
             let (semi_major, flattening) = metric.ellipsoid_parameters();
             let xs = [0.0, 10.0];
@@ -1422,8 +1422,8 @@ fn cached_geodesic_parts_match_shape_kernels() -> Result<()> {
     for (name, left, right) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&left, &right], |metric| {
             let (semi_major, flattening) = metric.ellipsoid_parameters();
-            let left_data = PreparedPlan::new(left.clone()).unwrap();
-            let right_data = PreparedPlan::new(right.clone()).unwrap();
+            let left_data = PreparedPlan::new(left.clone());
+            let right_data = PreparedPlan::new(right.clone());
             let left_cache = FrameDependentCaches::default();
             let right_cache = FrameDependentCaches::default();
             let expected_distance = live_geodesic_distance(&left, &right, metric)?;
@@ -1663,7 +1663,7 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
                 "{name}: streamed cap vs parts cap"
             );
             let (semi_major, flattening) = metric.ellipsoid_parameters();
-            let data = PreparedPlan::new(shape.clone()).unwrap();
+            let data = PreparedPlan::new(shape.clone());
             let frame_cache = FrameDependentCaches::default();
             let runtime_state = crate::crs::runtime_state_snapshot()?;
             data.prepare_geodesic_parts(&frame_cache, "EPSG:4326", semi_major, flattening, metric)?;

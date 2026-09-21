@@ -62,7 +62,7 @@ pub(crate) fn info_with_state(
                 let info = ProjObject::new_with_state(&normalized, state)?.info(info_crs)?;
                 Ok(CachedCrsInfo {
                     definition: cache_crs,
-                    info: std::sync::Arc::try_new(info).map_err(crate::error::Error::from)?,
+                    info: std::sync::Arc::new(info),
                 })
             },
         )?;

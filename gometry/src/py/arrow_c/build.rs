@@ -1,5 +1,3 @@
-#[cfg(test)]
-use std::cell::Cell;
 use std::fmt::Write as _;
 use std::mem::size_of;
 use std::ptr;
@@ -12,21 +10,6 @@ use crate::py::arrow_c::{
     GeometryError, NativeArrowExportError, NativeArrowExportResult, PyResult, SchemaNode,
     SchemaPrivate, release_array, release_schema,
 };
-
-#[cfg(test)]
-thread_local! {
-    static SCHEMA_GUARD_DROPS: Cell<usize> = const { Cell::new(0) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_schema_guard_drops() {
-    SCHEMA_GUARD_DROPS.with(|count| count.set(0));
-}
-
-#[cfg(test)]
-pub(crate) fn schema_guard_drops() -> usize {
-    SCHEMA_GUARD_DROPS.with(Cell::get)
-}
 
 impl SchemaNode {
     pub(crate) fn materialize_schema(&self) -> NativeArrowExportResult<GometryArrowSchema> {
@@ -48,7 +31,7 @@ impl SchemaNode {
         for child in &children {
             child_ptrs.push(ptr::from_ref(child.as_ref()).cast_mut());
         }
-        let mut private = Box::try_new(SchemaPrivate {
+        let mut private = Box::new(SchemaPrivate {
             format: schema_text(format)?,
             name: schema_text(name)?,
             metadata: metadata
@@ -57,9 +40,8 @@ impl SchemaNode {
                 .transpose()?,
             children,
             child_ptrs,
-        })
-        .map_err(crate::error::Error::from)?;
-        let mut schema = Box::try_new(ArrowSchema {
+        });
+        let mut schema = Box::new(ArrowSchema {
             format: private.format.as_ptr().cast(),
             name: private.name.as_ptr().cast(),
             metadata: private
@@ -77,8 +59,7 @@ impl SchemaNode {
             dictionary: ptr::null_mut(),
             release: Some(release_schema),
             private_data: ptr::null_mut(),
-        })
-        .map_err(crate::error::Error::from)?;
+        });
         schema.private_data = Box::into_raw(private).cast();
         Ok(GometryArrowSchema(schema))
     }
@@ -105,8 +86,6 @@ impl GometryArrowSchema {
 
 impl Drop for GometryArrowSchema {
     fn drop(&mut self) {
-        #[cfg(test)]
-        SCHEMA_GUARD_DROPS.with(|count| count.set(count.get() + 1));
         // SAFETY: the guard owns the shell and the callback is idempotent.
         unsafe {
             if let Some(release) = self.0.release {
@@ -302,14 +281,13 @@ fn make_array_with_offset(
     for child in &mut children {
         child_ptrs.push(ptr::from_mut(child.as_mut()));
     }
-    let mut private = Box::try_new(ArrayPrivate {
+    let mut private = Box::new(ArrayPrivate {
         owners: buffers,
         buffers: buffer_ptrs,
         _children: children,
         child_ptrs,
-    })
-    .map_err(crate::error::Error::from)?;
-    let mut array = Box::try_new(ArrowArray {
+    });
+    let mut array = Box::new(ArrowArray {
         length: length_i64,
         null_count: 0,
         offset: offset_i64,
@@ -324,8 +302,7 @@ fn make_array_with_offset(
         dictionary: ptr::null_mut(),
         release: Some(release_array),
         private_data: ptr::null_mut(),
-    })
-    .map_err(crate::error::Error::from)?;
+    });
     array.private_data = Box::into_raw(private).cast();
     Ok(GometryArrowArray(array))
 }
@@ -732,47 +709,6 @@ pub(crate) const fn wkb_schema(nullable: bool) -> SchemaNode {
 
 #[cfg(test)]
 mod owner_export_tests {
-    use crate::py::arrow_c;
-    use crate::py::arrow_c::ArrowArray;
-    #[test]
-    fn failed_parent_publication_releases_child_tree_once() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        use super::{OwnedBufferSlot, make_array};
-        use crate::test_support::{allocation_count, fail_allocations_after};
-        static RELEASES: AtomicUsize = AtomicUsize::new(0);
-        unsafe extern "C" fn counted_release(array: *mut ArrowArray) {
-            RELEASES.fetch_add(1, Ordering::Relaxed);
-            // SAFETY: this callback wraps the production callback on an owned child.
-            unsafe {
-                arrow_c::release_array(array);
-            }
-        }
-        ensure_python();
-        let fixture = || {
-            let mut child = make_array(0, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-            child.as_mut().release = Some(counted_release);
-            ([OwnedBufferSlot::Null], [child])
-        };
-        let (buffers, children) = fixture();
-        let (parent, allocations) = allocation_count(|| make_array(0, buffers, children));
-        drop(parent.unwrap());
-        assert_eq!(RELEASES.load(Ordering::Relaxed), 1);
-        assert!(allocations > 0);
-        for successful in 0..allocations {
-            RELEASES.store(0, Ordering::Relaxed);
-            let (buffers, children) = fixture();
-            let result = fail_allocations_after(successful, || make_array(0, buffers, children));
-            assert!(result.is_err(), "allocation {successful} was not rejected");
-            drop(result);
-            assert_eq!(
-                RELEASES.load(Ordering::Relaxed),
-                1,
-                "allocation {successful}"
-            );
-        }
-    }
-
     use super::*;
 
     fn ensure_python() {

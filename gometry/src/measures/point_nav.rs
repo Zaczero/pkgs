@@ -1857,7 +1857,7 @@ fn destination_many_array(
                 crate::array::ArrayRow::Present(row) => {
                     let logical = row.logical();
                     row.row().try_with_shape(|shape| {
-                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone())?;
+                        let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
                         point_destination(
                             &geometry,
                             bearing.values[logical],
@@ -1908,7 +1908,7 @@ fn destination_point_array(
     match point_in {
         One(geometry) if len == 1 && bearing.scalar && distance.scalar => {
             let shape = point_destination(geometry, bearing.values[0], distance.values[0], unit)?;
-            Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind())
+            Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind())
         },
         One(geometry) => {
             let point = point_operand(geometry, MetricOp::Destination)?;
@@ -1961,7 +1961,7 @@ pub(crate) fn destination_point_receiver(
     validate_destination_distances(&distance.values)?;
     if len == 1 && bearing.scalar && distance.scalar {
         let shape = point_destination(geometry, bearing.values[0], distance.values[0], unit)?;
-        return Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind());
+        return Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind());
     }
     let point = point_operand(geometry, MetricOp::Destination)?;
     let model = resolve_metric(geometry.crs_str(), unit, MetricOp::Destination)?;
@@ -2006,7 +2006,7 @@ pub(crate) fn rhumb_destination_point_receiver(
     let Some(point) = point else {
         if len == 1 && bearing.scalar && distance.scalar {
             return Ok(geometry
-                .typed_shape(Shape::empty_point())?
+                .typed_shape(Shape::empty_point())
                 .into_pyobject(py)?
                 .unbind());
         }
@@ -2021,7 +2021,7 @@ pub(crate) fn rhumb_destination_point_receiver(
             distance.values[0],
             &metric.state,
         )?;
-        return Ok(geometry.typed_shape(shape)?.into_pyobject(py)?.unbind());
+        return Ok(geometry.typed_shape(shape).into_pyobject(py)?.unbind());
     }
     let axes = CoordinateAxes::from_point(point);
     let coords = py.detach(move || {
@@ -2216,7 +2216,7 @@ fn point_binary_geometry_sink(
             } else {
                 fallback(left, right, 0)?
             };
-            return Ok(left.typed_shape(shape)?.into_pyobject(py)?.unbind());
+            return Ok(left.typed_shape(shape).into_pyobject(py)?.unbind());
         },
         PointBinaryExecution::Rows(len) => len,
     };
@@ -2278,12 +2278,12 @@ fn point_unary_geometry(
             if let Some(point) = geometry_point(geometry) {
                 let ctx = setup(geometry.crs_str())?;
                 return Ok(geometry
-                    .typed_shape(point_unary_geometry_eval(point_op, &ctx, 0, point)?)?
+                    .typed_shape(point_unary_geometry_eval(point_op, &ctx, 0, point)?)
                     .into_pyobject(py)?
                     .unbind());
             }
             Ok(geometry
-                .typed_shape(fallback(geometry, 0)?)?
+                .typed_shape(fallback(geometry, 0)?)
                 .into_pyobject(py)?
                 .unbind())
         },
@@ -2333,8 +2333,7 @@ fn point_unary_geometry(
                         crate::array::ArrayRow::Present(row) => {
                             let logical = row.logical();
                             row.row().try_with_shape(|shape| {
-                                let geometry =
-                                    PyGeometry::with_frame(shape.clone(), frame.clone())?;
+                                let geometry = PyGeometry::with_frame(shape.clone(), frame.clone());
                                 fallback(&geometry, logical)
                                     .map(Some)
                                     .map_err(|err| crate::note_array_row(err, logical))

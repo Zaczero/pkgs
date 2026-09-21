@@ -133,8 +133,8 @@ impl Shape {
     pub fn relate_pattern(&self, other: &Self, pattern: &str) -> Result<bool> {
         let compiled =
             CompiledPattern::new(pattern).ok_or_else(|| Self::invalid_de9im_pattern(pattern))?;
-        let left = PreparedPlan::transient(self)?;
-        let right = PreparedPlan::transient(other)?;
+        let left = PreparedPlan::transient(self);
+        let right = PreparedPlan::transient(other);
         let pair = PreparedTopologyPair::Cartesian {
             left: &left,
             right: &right,

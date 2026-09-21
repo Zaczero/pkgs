@@ -17,7 +17,6 @@ use crate::py::arrow_c::*;
 static NATIVE_SIGNAL_STREAM_TEST_LOCK: Mutex<()> = Mutex::new(());
 static NATIVE_SCHEMA_TEST_LOCK: Mutex<()> = Mutex::new(());
 static NATIVE_SIGNAL_ARRAY_RELEASES: AtomicUsize = AtomicUsize::new(0);
-static NATIVE_FAULT_SCHEMA_RELEASES: AtomicUsize = AtomicUsize::new(0);
 
 fn release_twice(export: ExportedArray) {
     let mut schema = export.schema;
@@ -190,12 +189,6 @@ unsafe extern "C" fn counted_array_release(array: *mut ArrowArray) {
     // SAFETY: the callback receives a live production-owned array shell from
     // this test stream and forwards its release to the production callback.
     unsafe { release_array(array) }
-}
-
-unsafe extern "C" fn counted_fault_schema_release(schema: *mut ArrowSchema) {
-    NATIVE_FAULT_SCHEMA_RELEASES.fetch_add(1, Ordering::Relaxed);
-    // SAFETY: the callback receives the consumer-owned schema shell.
-    unsafe { release_schema(schema) }
 }
 
 struct NativeSignalStreamState {
@@ -371,136 +364,12 @@ fn native_signal_stream(
     )
 }
 
-struct FaultAfterBatchStreamState {
-    schema: SchemaNode,
-    batch: Option<Box<ArrowArray>>,
-    allocation_failure: Option<crate::test_support::AllocationFailureGuard>,
-    stream_releases: Arc<AtomicUsize>,
-}
-
-impl Drop for FaultAfterBatchStreamState {
-    fn drop(&mut self) {
-        if let Some(mut batch) = self.batch.take()
-            && let Some(release) = batch.release
-        {
-            // SAFETY: the stream state uniquely owns any batch not yet
-            // transferred to the callback output.
-            unsafe { release(batch.as_mut()) }
-        }
-        // Restore the allocator after producer-owned cleanup has completed.
-        drop(self.allocation_failure.take());
-        self.stream_releases.fetch_add(1, Ordering::Release);
-    }
-}
-
-unsafe extern "C" fn fault_after_batch_get_schema(
-    stream: *mut ArrowArrayStream,
-    out: *mut ArrowSchema,
-) -> c_int {
-    if stream.is_null() || out.is_null() {
-        return EINVAL;
-    }
-    // SAFETY: the importer owns the serialized callback sequence and keeps
-    // the stream shell live until the callback returns.
-    let state = unsafe { (*stream).private_data.cast::<FaultAfterBatchStreamState>() };
-    if state.is_null() {
-        return EINVAL;
-    }
-    // SAFETY: private_data is the state installed by fault_after_batch_stream.
-    let state = unsafe { &*state };
-    let Ok(mut schema) = state.schema.materialize_schema() else {
-        return ENOMEM;
-    };
-    schema.as_mut().release = Some(counted_fault_schema_release);
-    // SAFETY: the independent schema shell transfers to the callback output.
-    unsafe { ptr::write(out, *schema.into_box()) }
-    0
-}
-
-unsafe extern "C" fn fault_after_batch_get_next(
-    stream: *mut ArrowArrayStream,
-    out: *mut ArrowArray,
-) -> c_int {
-    if stream.is_null() || out.is_null() {
-        return EINVAL;
-    }
-    // SAFETY: the importer owns the serialized callback sequence and keeps
-    // the stream shell live until the callback returns.
-    let state = unsafe { (*stream).private_data.cast::<FaultAfterBatchStreamState>() };
-    if state.is_null() {
-        return EINVAL;
-    }
-    // SAFETY: private_data is uniquely borrowed for this callback.
-    let state = unsafe { &mut *state };
-    if let Some(batch) = state.batch.take() {
-        // SAFETY: the batch shell transfers to the callback output.
-        unsafe { ptr::write(out, *batch) }
-        // The next allocation belongs to moved-shell admission, immediately
-        // after this successful callback returns.
-        state.allocation_failure = Some(crate::test_support::AllocationFailureGuard::new(0));
-    } else {
-        // SAFETY: the output shell is writable and EOF is release == NULL.
-        unsafe { ptr::write(out, empty_array()) }
-    }
-    0
-}
-
-unsafe extern "C" fn fault_after_batch_last_error(_stream: *mut ArrowArrayStream) -> *const c_char {
-    c"".as_ptr()
-}
-
-unsafe extern "C" fn fault_after_batch_release(stream: *mut ArrowArrayStream) {
-    if stream.is_null() {
-        return;
-    }
-    // SAFETY: release is called once for this test-owned stream shell.
-    unsafe {
-        let state = (*stream).private_data.cast::<FaultAfterBatchStreamState>();
-        (*stream).release = None;
-        (*stream).private_data = ptr::null_mut();
-        if !state.is_null() {
-            drop(Box::from_raw(state));
-        }
-    }
-}
-
-fn fault_after_batch_stream(geometry: &PyGeometry) -> (Box<ArrowArrayStream>, Arc<AtomicUsize>) {
-    let export = exported(geometry);
-    let schema = export.schema_node.clone();
-    let ExportedArray {
-        schema: mut exported_schema,
-        array,
-        ..
-    } = export;
-    // SAFETY: the standalone schema is replaced by the cloned description in
-    // the stream state and is no longer externally visible.
-    unsafe { release_schema(exported_schema.as_mut()) }
-    let mut batch = array.into_box();
-    batch.release = Some(counted_array_release);
-    let stream_releases = Arc::new(AtomicUsize::new(0));
-    let state = Box::new(FaultAfterBatchStreamState {
-        schema,
-        batch: Some(batch),
-        allocation_failure: None,
-        stream_releases: Arc::clone(&stream_releases),
-    });
-    let stream = Box::new(ArrowArrayStream {
-        get_schema: Some(fault_after_batch_get_schema),
-        get_next: Some(fault_after_batch_get_next),
-        get_last_error: Some(fault_after_batch_last_error),
-        release: Some(fault_after_batch_release),
-        private_data: Box::into_raw(state).cast(),
-    });
-    (stream, stream_releases)
-}
-
 #[test]
 fn release_callbacks_are_idempotent_for_native_exports() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
         crate::boundary::Frame::None,
-    )
-    .unwrap();
+    );
     release_twice(exported(&point));
 
     let line = PyGeometry::with_frame(
@@ -515,8 +384,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
             .expect("test line is valid"),
         ),
         crate::boundary::Frame::None,
-    )
-    .unwrap();
+    );
     release_twice(exported(&line));
 
     let ring = Ring::closed(vec![
@@ -529,8 +397,7 @@ fn release_callbacks_are_idempotent_for_native_exports() {
     let polygon = PyGeometry::with_frame(
         Shape::Polygon(Polygon::new(ring, Vec::new())),
         crate::boundary::Frame::None,
-    )
-    .unwrap();
+    );
     release_twice(exported(&polygon));
 }
 
@@ -539,8 +406,7 @@ fn schema_only_export_releases_without_array_export() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
         crate::boundary::Frame::None,
-    )
-    .unwrap();
+    );
     reset_schema_release_callbacks();
     release_schema_twice(exported_schema(&point));
     assert_eq!(schema_release_callbacks(), 3);
@@ -551,8 +417,7 @@ fn schema_only_export_releases_without_array_export() {
             crate::geometry::CoordinateAxes::XY,
         ),
         crate::boundary::Frame::None,
-    )
-    .unwrap();
+    );
     reset_schema_release_callbacks();
     release_schema_twice(exported_schema(&collection));
     assert_eq!(schema_release_callbacks(), 1);
@@ -633,98 +498,6 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
     .expect("schema-only payload negative control");
 }
 
-#[test]
-fn schema_description_epoch_publication_releases_guards_and_retries() {
-    let _test_lock = NATIVE_SCHEMA_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
-    let description = describe_shapes(&shapes, None, Some(2020.0));
-    let node_count = schema_node_count(&description.materialize_schema().unwrap());
-    let (result, allocations) = crate::test_support::allocation_count(|| {
-        let node = description.materialize_schema()?;
-        node.materialize_schema()
-    });
-    let schema = result.expect("unfaulted schema publication");
-    drop(schema);
-    assert!(allocations > 0);
-
-    assert_schema_allocation_retries(
-        allocations,
-        node_count,
-        |successful| {
-            crate::test_support::fail_allocations_after(successful, || {
-                let node = description.materialize_schema()?;
-                node.materialize_schema()
-            })
-        },
-        || {
-            let node = description.materialize_schema()?;
-            node.materialize_schema()
-        },
-    );
-}
-
-#[test]
-fn crs_schema_tree_publication_releases_guards_after_proj_export() {
-    let _test_lock = NATIVE_SCHEMA_TEST_LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let shapes = vec![crate::io::parse_wkt("POINT ZM (1 2 3 4)").unwrap()];
-    let crs = "EPSG:4326".to_owned();
-    let description = describe_shapes(&shapes, Some(&crs), None);
-    // PROJ's CRS export/cache boundary is outside this allocator test: build
-    // the actual description and its CRS metadata first, then inject failures
-    // only while publishing the native schema tree that retains those bytes.
-    let node = description.materialize_schema().unwrap();
-    let node_count = schema_node_count(&node);
-    let (result, allocations) = crate::test_support::allocation_count(|| node.materialize_schema());
-    let schema = result.expect("unfaulted schema publication");
-    drop(schema);
-    assert!(allocations > 0);
-
-    assert_schema_allocation_retries(
-        allocations,
-        node_count,
-        |successful| {
-            let failing_node = node.clone();
-            crate::test_support::fail_allocations_after(successful, || {
-                failing_node.materialize_schema()
-            })
-        },
-        || node.materialize_schema(),
-    );
-}
-
-fn assert_schema_allocation_retries(
-    allocations: usize,
-    node_count: usize,
-    mut failed: impl FnMut(usize) -> NativeArrowExportResult<GometryArrowSchema>,
-    mut retry: impl FnMut() -> NativeArrowExportResult<GometryArrowSchema>,
-) {
-    for successful in 0..allocations {
-        reset_schema_guard_drops();
-        reset_schema_release_callbacks();
-        let result = failed(successful);
-        assert!(result.is_err(), "allocation {successful} was not rejected");
-        let failed_drops = schema_guard_drops();
-        assert!(failed_drops <= node_count);
-        assert_eq!(failed_drops, schema_release_callbacks());
-        let retry = retry().expect("schema publication must remain retryable");
-        drop(retry);
-        assert_eq!(
-            schema_guard_drops(),
-            failed_drops + node_count,
-            "every partially published schema guard releases once at allocation {successful}"
-        );
-        assert_eq!(schema_guard_drops(), schema_release_callbacks());
-    }
-}
-
-fn schema_node_count(node: &SchemaNode) -> usize {
-    1 + node.children.iter().map(schema_node_count).sum::<usize>()
-}
-
 fn schema_snapshot_node_count(snapshot: &SchemaSnapshot) -> usize {
     1 + snapshot
         .children
@@ -738,19 +511,18 @@ fn stream_export_release_is_idempotent_after_batch_move() {
     let point = PyGeometry::with_frame(
         Shape::Point(Point::new_raw_xy(1.0, 2.0)),
         crate::boundary::Frame::None,
-    )
-    .unwrap();
-    let mut stream = stream_from_export(exported(&point)).unwrap();
+    );
+    let mut stream = stream_from_export(exported(&point));
     let mut array = empty_array();
 
     // SAFETY: this test owns the stream and moves its one batch into a
     // stack ArrowArray, then releases both sides through their callbacks.
     unsafe {
-        assert_eq!(stream_get_next(stream.as_mut(), &raw mut array), 0);
+        assert_eq!(stream_get_next(&raw mut stream, &raw mut array), 0);
         assert!(array.release.is_some());
         release_array(&raw mut array);
-        release_stream(stream.as_mut());
-        release_stream(stream.as_mut());
+        release_stream(&raw mut stream);
+        release_stream(&raw mut stream);
     }
 }
 
@@ -766,8 +538,7 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         let point = PyGeometry::with_frame(
             Shape::Point(Point::new_raw_xy(1.0, 2.0)),
             crate::boundary::Frame::None,
-        )
-        .unwrap();
+        );
         let batch_count = 65;
         let (mut stream, remaining_at_release, released) =
             native_signal_stream(&point, batch_count, 63);
@@ -801,52 +572,6 @@ fn stream_import_checks_native_pending_interrupt_before_exhaustion() {
         Ok(())
     })
     .expect("native Arrow stream signal test");
-}
-
-#[test]
-fn stream_batch_move_allocation_failure_releases_schema_batch_and_stream_once() {
-    let _test_lock = NATIVE_SIGNAL_STREAM_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    NATIVE_SIGNAL_ARRAY_RELEASES.store(0, Ordering::Relaxed);
-    NATIVE_FAULT_SCHEMA_RELEASES.store(0, Ordering::Relaxed);
-    crate::test_support::initialize_python();
-    Python::attach(|py| -> PyResult<()> {
-        let point = PyGeometry::with_frame(
-            Shape::Point(Point::new_raw_xy(1.0, 2.0)),
-            crate::boundary::Frame::None,
-        )
-        .unwrap();
-        let (mut stream, stream_releases) = fault_after_batch_stream(&point);
-        let stream_ptr = std::ptr::from_mut::<ArrowArrayStream>(stream.as_mut());
-        // SAFETY: `stream` is a live test stream owned by this frame.
-        let result = unsafe { super::import::import_stream(py, stream_ptr, None, None) };
-        let Err(error) = result else {
-            panic!("the post-get_next allocation must fail");
-        };
-        assert!(error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py));
-        assert_eq!(
-            NATIVE_FAULT_SCHEMA_RELEASES.load(Ordering::Relaxed),
-            1,
-            "the live stream schema output is released once"
-        );
-        assert_eq!(
-            NATIVE_SIGNAL_ARRAY_RELEASES.load(Ordering::Relaxed),
-            1,
-            "the live batch output is released once after shell allocation fails"
-        );
-        assert_eq!(
-            stream_releases.load(Ordering::Acquire),
-            1,
-            "the consumed stream shell is released once"
-        );
-        assert!(
-            stream.release.is_none(),
-            "the original stream shell is inert after consumption"
-        );
-        Ok(())
-    })
-    .expect("post-get_next Arrow allocation failure test");
 }
 
 // Compile-fail fixtures for arrow_c / frozen-i64 are driven by the crate-root

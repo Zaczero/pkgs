@@ -780,33 +780,29 @@ fn resolve_columns<'a>(
     }
 }
 
-fn assemble_packed_output(
-    output: PackedColumnOutput,
-) -> crate::error::Result<GeometryArrayStorage> {
+fn assemble_packed_output(output: PackedColumnOutput) -> GeometryArrayStorage {
     match output {
-        PackedColumnOutput::Points(coords) => {
-            Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
-                row_map: crate::array::RowSelection::Identity,
-            }))
-        },
+        PackedColumnOutput::Points(coords) => GeometryArrayStorage::Packed(PackedStorage::Points {
+            coords: Arc::new(coords),
+            row_map: crate::array::RowSelection::Identity,
+        }),
         PackedColumnOutput::Lines { coords, offsets } => {
-            Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords: Arc::new(coords),
                 offsets,
                 row_map: crate::array::RowSelection::Identity,
-            }))
+            })
         },
         PackedColumnOutput::Polygons {
             coords,
             ring_offsets,
             polygon_offsets,
-        } => Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-            coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+        } => GeometryArrayStorage::Packed(PackedStorage::Polygons {
+            coords: Arc::new(coords),
             ring_offsets,
             polygon_offsets,
             row_map: crate::array::RowSelection::Identity,
-        })),
+        }),
     }
 }
 
@@ -1410,11 +1406,11 @@ impl PyGeometryArray {
             _ => StorageLayout::LogicalRows,
         };
         Self::from_result_storage(
-            Arc::try_new(assemble_packed_output(output)?).map_err(crate::error::Error::from)?,
+            Arc::new(assemble_packed_output(output)),
             output_frame,
             self.missing().cloned(),
             layout,
-            ComputedCaches::fresh()?,
+            ComputedCaches::fresh(),
         )
     }
 

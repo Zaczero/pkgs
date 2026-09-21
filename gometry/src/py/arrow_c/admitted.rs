@@ -22,7 +22,7 @@ use crate::py::arrow::WkbOffsetWidth;
 use crate::py::arrow_c::import::schema_metadata_pairs_owned;
 use crate::py::arrow_c::native::{drop_moved_arrow, move_arrow_shell};
 use crate::py::arrow_c::{
-    ArrowReleaseSlot, ArrowSchema, try_arc_from_str, try_arc_from_string, try_arc_from_vec,
+    ArrowReleaseSlot, ArrowSchema, arc_from_string, arc_from_vec, try_arc_from_str,
 };
 use crate::py::geoarrow::GeometryEncoding;
 use crate::py::{arrow, errors, geoarrow};
@@ -74,7 +74,7 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
             ));
         }
         // SAFETY: caller guarantees a live base structure for the move.
-        let moved = unsafe { move_arrow_shell(source) }?;
+        let moved = unsafe { move_arrow_shell(source) };
         if moved.is_null() {
             return Err(PyTypeError::new_err("Arrow move produced a null shell"));
         }
@@ -295,9 +295,9 @@ impl AdmittedArrowSchema {
         Ok(Self {
             format,
             name,
-            metadata: try_arc_from_vec(metadata)?,
+            metadata: arc_from_vec(metadata),
             dictionary_present: !raw.dictionary.is_null(),
-            children: try_arc_from_vec(children)?,
+            children: arc_from_vec(children),
         })
     }
 
@@ -380,9 +380,9 @@ impl AdmittedArrowSchema {
         Ok(Self {
             format,
             name,
-            metadata: try_arc_from_vec(metadata)?,
+            metadata: arc_from_vec(metadata),
             dictionary_present,
-            children: try_arc_from_vec(children)?,
+            children: arc_from_vec(children),
         })
     }
 
@@ -494,7 +494,7 @@ fn owned_c_str(ptr: *const std::ffi::c_char, what: &str) -> PyResult<Arc<String>
         .map_err(|_| PyTypeError::new_err(format!("{what} is not valid UTF-8")))?;
     let owned =
         crate::boundary::try_string_from_str(s).map_err(|()| errors::native_memory_error())?;
-    try_arc_from_string(owned)
+    Ok(arc_from_string(owned))
 }
 
 type OwnedMetadataPairs = Vec<(Box<[u8]>, Box<[u8]>)>;

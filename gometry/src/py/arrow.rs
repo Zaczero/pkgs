@@ -343,11 +343,11 @@ impl NativeArrowAccumulator {
         let storage = combine_native_storage(storage)?;
         let missing = crate::array::ValidityMask::from_sparse(length, &missing_rows)?;
         let output = PyGeometryArray::from_result_storage(
-            Arc::try_new(storage).map_err(crate::error::Error::from)?,
+            Arc::new(storage),
             frame,
             missing,
             crate::array::StorageLayout::PresentOnly,
-            crate::array::ComputedCaches::fresh()?,
+            crate::array::ComputedCaches::fresh(),
         )?;
         Ok(output.into_pyobject(py)?.into_any().unbind())
     }
@@ -486,7 +486,7 @@ fn combine_packed_parts(
                 };
                 builder.extend_window(coords, 0..coords.len())?;
             }
-            let coords = Arc::try_new(builder.finish()?).map_err(crate::error::Error::from)?;
+            let coords = Arc::new(builder.finish()?);
             Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords,
                 row_map: crate::array::RowSelection::Identity,
@@ -515,7 +515,7 @@ fn combine_packed_parts(
             let coords = builder.finish()?;
             let coord_len = coords.len();
             Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                coords: Arc::new(coords),
                 offsets: offsets.finish(coord_len)?,
                 row_map: crate::array::RowSelection::Identity,
             })))
@@ -554,7 +554,7 @@ fn combine_packed_parts(
             let coord_len = coords.len();
             Ok(Some(GeometryArrayStorage::Packed(
                 PackedStorage::Polygons {
-                    coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+                    coords: Arc::new(coords),
                     ring_offsets: ring_offsets.finish(coord_len)?.cast_level(),
                     polygon_offsets: polygon_offsets.finish(rings)?.cast_level(),
                     row_map: crate::array::RowSelection::Identity,
@@ -763,7 +763,7 @@ fn py_from_geoparquet_arrow(
     let layout = layout.cast::<metadata::GeoParquetPhysicalLayout>()?.get();
     let embedded_crs = crate::parse_crs(crs)?.map(|value| value.as_str().to_owned());
     let embedded_epoch = crate::coordinate_epoch_option("epoch", epoch)?;
-    let classification = layout.classification(embedded_crs, embedded_epoch)?;
+    let classification = layout.classification(embedded_crs, embedded_epoch);
     geometries_from_pyarrow_with_classification(py, data, classification, crs, epoch)
 }
 

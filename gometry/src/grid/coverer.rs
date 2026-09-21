@@ -228,7 +228,7 @@ impl<'a> GeographicCandidateClassifier<'a> {
             },
             None => {
                 let candidate = bounds_to_shape(bounds)?;
-                let candidate_plan = PreparedPlan::transient(&candidate)?;
+                let candidate_plan = PreparedPlan::transient(&candidate);
                 let candidate_cache = crate::geometry::FrameDependentCaches::default();
                 let operands = PreparedTopologyPair::Geographic {
                     left: self.prepared,
@@ -776,7 +776,7 @@ mod tests {
         let source =
             Shape::geometry_collection(vec![Shape::Polygon(z_square), Shape::Polygon(square)])
                 .expect("test collection is valid");
-        let authority_plan = PreparedPlan::new(source.clone()).unwrap();
+        let authority_plan = PreparedPlan::new(source.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
 
         let error = match cover(
@@ -817,7 +817,7 @@ mod tests {
             Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
             Vec::new(),
         ));
-        let authority_plan = PreparedPlan::new(world.clone()).unwrap();
+        let authority_plan = PreparedPlan::new(world.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         match cover(
             &world,
@@ -858,7 +858,7 @@ mod tests {
             Ring::from_closed(CoordSeq::try_from_points(&shell).unwrap()).unwrap(),
             Vec::new(),
         ));
-        let authority_plan = PreparedPlan::new(poly.clone()).unwrap();
+        let authority_plan = PreparedPlan::new(poly.clone());
         let authority_cache = crate::geometry::FrameDependentCaches::default();
         let depth = 3_u8;
         let center = cover(
@@ -928,7 +928,7 @@ mod tests {
             .unwrap(),
             Vec::new(),
         ));
-        let plan = PreparedPlan::new(source.clone()).unwrap();
+        let plan = PreparedPlan::new(source.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
             &source,
@@ -970,7 +970,7 @@ mod tests {
             .unwrap(),
             Vec::new(),
         ));
-        let plan = PreparedPlan::new(source.clone()).unwrap();
+        let plan = PreparedPlan::new(source.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
             &source,
@@ -1038,7 +1038,7 @@ mod tests {
                 .unwrap(),
             ],
         ));
-        let plan = PreparedPlan::new(source.clone()).unwrap();
+        let plan = PreparedPlan::new(source.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
             &source,
@@ -1085,7 +1085,7 @@ mod tests {
             .unwrap(),
             Vec::new(),
         ));
-        let plan = PreparedPlan::new(source.clone()).unwrap();
+        let plan = PreparedPlan::new(source.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let classifier = GeographicCandidateClassifier::new(
             &source,
@@ -1143,9 +1143,9 @@ mod tests {
             Vec::new(),
         ));
         let chart = raw.split_antimeridian().unwrap();
-        let raw_plan = PreparedPlan::new(raw.clone()).unwrap();
+        let raw_plan = PreparedPlan::new(raw.clone());
         let raw_cache = crate::geometry::FrameDependentCaches::default();
-        let chart_plan = PreparedPlan::new(chart.clone()).unwrap();
+        let chart_plan = PreparedPlan::new(chart.clone());
         let chart_cache = crate::geometry::FrameDependentCaches::default();
         let from_raw = cover(
             &raw,

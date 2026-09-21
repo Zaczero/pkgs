@@ -481,14 +481,13 @@ mod tests {
                 .expect("EPSG:4326 is a valid geographic frame");
             let invalid = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone())
-                    .unwrap(),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone()),
             )
             .expect("invalid-latitude point binds")
             .into_any();
             let other = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame).unwrap(),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame),
             )
             .expect("origin point binds")
             .into_any();
@@ -514,14 +513,13 @@ mod tests {
                 .expect("EPSG:4326 is a valid geographic frame");
             let invalid = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone())
-                    .unwrap(),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.5, 91.0)), frame.clone()),
             )
             .expect("invalid-latitude point binds")
             .into_any();
             let other = Bound::new(
                 py,
-                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame).unwrap(),
+                PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(0.0, 0.0)), frame),
             )
             .expect("origin point binds")
             .into_any();

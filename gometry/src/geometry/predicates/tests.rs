@@ -368,8 +368,7 @@ mod convex_tests {
         assert!(is_axis_aligned_rectangle(&densified, bounds(&densified)));
         assert!(
             PreparedPlan::transient(&densified)
-                .unwrap()
-                .intersects(&PreparedPlan::transient(&r).unwrap())
+                .intersects(&PreparedPlan::transient(&r))
                 .unwrap(),
             "cached planar intersects recognizes a densified rectangle"
         );
@@ -433,8 +432,8 @@ mod convex_tests {
             let right = crate::io::parse_wkt(right).unwrap();
             let expected = graph_relate_shapes(&left, &right).unwrap().is_intersects();
             let (left, right) = (
-                PreparedPlan::transient(&left).unwrap(),
-                PreparedPlan::transient(&right).unwrap(),
+                PreparedPlan::transient(&left),
+                PreparedPlan::transient(&right),
             );
             assert_eq!(
                 left.intersects(&right).unwrap(),

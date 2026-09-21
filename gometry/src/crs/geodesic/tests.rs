@@ -1149,7 +1149,7 @@ fn spherical_antipodal_latitude_sign_selects_the_original_meridian_branch() {
 fn geodesic_lrs_index_rejects_nonunique_shortest_endpoints() {
     let geodesic = Geodesic::new(6_378_137.0, 0.0);
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let shape = PreparedPlan::new(line(&[p(0.0, 10.0), p(180.0, -10.0)])).unwrap();
+    let shape = PreparedPlan::new(line(&[p(0.0, 10.0), p(180.0, -10.0)]));
     assert!(
         shape
             .geodesic_line_index(
@@ -1366,8 +1366,8 @@ fn prolate_lower_bound_is_zero_and_cached_distance_paths_match_brute() -> Result
     let (expected_distance, expected_nearest) =
         brute_geodesic_distance_and_nearest_points(&left, &right, &metric)
             .expect("non-empty shapes");
-    let left_data = PreparedPlan::new(left).unwrap();
-    let right_data = PreparedPlan::new(right).unwrap();
+    let left_data = PreparedPlan::new(left);
+    let right_data = PreparedPlan::new(right);
     let left_cache = FrameDependentCaches::default();
     let right_cache = FrameDependentCaches::default();
     let actual_distance = left_data.geodesic_distance_cached(

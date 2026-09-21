@@ -64,8 +64,8 @@ impl Shape {
 
     #[cfg(test)]
     pub fn distance(&self, other: &Self) -> Result<f64> {
-        crate::geometry::PreparedPlan::new(ShapeData::new(self.clone()))?.distance(
-            &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone()))?,
+        crate::geometry::PreparedPlan::new(ShapeData::new(self.clone())).distance(
+            &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone())),
         )
     }
 
@@ -149,8 +149,8 @@ impl Shape {
 
     #[cfg(test)]
     pub fn dwithin(&self, other: &Self, distance: f64) -> Result<bool> {
-        crate::geometry::PreparedPlan::new(ShapeData::new(self.clone()))?.dwithin(
-            &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone()))?,
+        crate::geometry::PreparedPlan::new(ShapeData::new(self.clone())).dwithin(
+            &crate::geometry::PreparedPlan::new(ShapeData::new(other.clone())),
             distance,
         )
     }

@@ -3,7 +3,6 @@
     clippy::type_complexity,
     clippy::needless_range_loop,
     clippy::use_self,
-    clippy::needless_question_mark,
     clippy::missing_const_for_fn,
     reason = "owned Arrow admission + recursive capture is intentionally explicit"
 )]
@@ -22,9 +21,8 @@ use crate::py::arrow_c::admitted::{
 };
 use crate::py::arrow_c::foreign_buffer::ForeignArrowBuffer;
 use crate::py::arrow_c::{
-    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, admitted,
-    array_capsule_name, capsule_pointer, schema_capsule_name, try_arc_from_str, try_arc_from_vec,
-    try_arc_new,
+    ArrowArray, ArrowReleaseSlot, ArrowSchema, ClassifiedGeometrySchema, admitted, arc_from_vec,
+    arc_new, array_capsule_name, capsule_pointer, schema_capsule_name, try_arc_from_str,
 };
 use crate::py::geoarrow::GeometryEncoding;
 use crate::py::{arrow, arrow_c, errors};
@@ -479,7 +477,7 @@ fn with_owned_content_layout<R>(
 ///
 /// `source` must be a live producer-owned base structure. The caller takes
 /// ownership of the returned shell and must pass it to `drop_moved_arrow`.
-pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> PyResult<*mut T> {
+pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> *mut T {
     // SAFETY: the caller guarantees a live base structure. A bytewise copy is
     // the Arrow-specified move operation; nulling source release leaves its
     // capsule-owned shell inert.
@@ -487,9 +485,9 @@ pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> Py
         // Keep the producer release slot intact until the consumer shell has
         // been allocated. If the allocation is refused, the caller can still
         // release the original producer-owned shell exactly once.
-        let moved = Box::try_new(ptr::read(source)).map_err(|_| errors::native_memory_error())?;
+        let moved = Box::new(ptr::read(source));
         *T::release_slot(source) = None;
-        Ok(Box::into_raw(moved))
+        Box::into_raw(moved)
     }
 }
 
@@ -843,13 +841,13 @@ impl NativeArrowClassification {
         wkb_offset_width: WkbOffsetWidth,
         crs: Option<String>,
         epoch: Option<f64>,
-    ) -> PyResult<Self> {
-        Ok(Self {
+    ) -> Self {
+        Self {
             encoding,
             wkb_offset_width,
-            crs: crs.map(arrow_c::try_arc_from_string).transpose()?,
+            crs: crs.map(arrow_c::arc_from_string),
             epoch,
-        })
+        }
     }
 
     pub(crate) fn from_schema(
@@ -1050,9 +1048,9 @@ fn build_owned_node_admitted(
         n_buffers: validated.n_buffers,
         format: validated.format,
         buffers,
-        children: try_arc_from_vec(children)?,
+        children: arc_from_vec(children),
         schema_name: arrow_c::try_arc_from_str(schema.name())?,
-        field_names: try_arc_from_vec(field_names)?,
+        field_names: arc_from_vec(field_names),
         effective_missing,
     })
 }
@@ -1152,7 +1150,7 @@ fn project_ancestor_missing(
                 range.fill(true);
             }
             if missing.iter().any(|&is_missing| is_missing) {
-                Ok(Some(try_arc_from_vec(missing)?))
+                Ok(Some(arc_from_vec(missing)))
             } else {
                 Ok(None)
             }
@@ -1177,7 +1175,7 @@ fn project_ancestor_missing(
                 })?;
                 missing[start..start + width].fill(true);
             }
-            Ok(Some(try_arc_from_vec(missing)?))
+            Ok(Some(arc_from_vec(missing)))
         },
         ArrowFormat::Binary
         | ArrowFormat::LargeBinary
@@ -1223,7 +1221,7 @@ fn merge_owned_row_missing(
         }
     }
     if any {
-        Ok(Some(try_arc_from_vec(missing)?))
+        Ok(Some(arc_from_vec(missing)))
     } else {
         Ok(None)
     }
@@ -1376,7 +1374,7 @@ fn snapshot_native_buffers(
         let slots = OwnedBufferSlots::BinaryView {
             validity,
             views,
-            data: try_arc_new(data)?,
+            data: arc_new(data),
             n_buffers: array.n_buffers,
         };
         validate_owned_null_count(array, &slots)?;
@@ -1421,7 +1419,7 @@ fn snapshot_native_buffers(
         ArrowFormat::BinaryView => unreachable!("handled above"),
     }
 
-    let slots = OwnedBufferSlots::Dense(try_arc_from_vec(snapshots)?);
+    let slots = OwnedBufferSlots::Dense(arc_from_vec(snapshots));
     // Content validation on OWNED validity only (P02 null_count match).
     validate_owned_null_count(array, &slots)?;
     let ranges = array.binary_view_data_ranges.clone();
@@ -1438,9 +1436,9 @@ fn snapshot_one_buffer_range(
         // Typed empty for float values so decode reuses Arc<Vec<f64>> without
         // a second LE→f64 materialization path.
         if matches!(array.format, ArrowFormat::Float64) && index == 1 {
-            return Ok(OwnedBuffer::F64(try_arc_from_vec(Vec::new())?));
+            return Ok(OwnedBuffer::F64(arc_from_vec(Vec::new())));
         }
-        return Ok(OwnedBuffer::Bytes(try_arc_from_vec(Vec::new())?));
+        return Ok(OwnedBuffer::Bytes(arc_from_vec(Vec::new())));
     }
     // SAFETY: layout validation + capture shell pin buffer table.
     let source = unsafe { array.buffer_ptr(index) };
@@ -1449,7 +1447,7 @@ fn snapshot_one_buffer_range(
         // required; returning an empty snapshot here would let a later reader
         // index it and panic instead of reporting malformed Arrow input.
         if index == 0 {
-            return Ok(OwnedBuffer::Bytes(try_arc_from_vec(Vec::new())?));
+            return Ok(OwnedBuffer::Bytes(arc_from_vec(Vec::new())));
         }
         return Err(PyTypeError::new_err("Arrow required buffer is missing"));
     }
@@ -1469,7 +1467,7 @@ fn snapshot_one_buffer_range(
     if matches!(array.format, ArrowFormat::Float64) && index == 1 {
         return owned_f64_from_le_bytes(&bytes).map(OwnedBuffer::F64);
     }
-    Ok(OwnedBuffer::Bytes(try_arc_from_vec(bytes)?))
+    Ok(OwnedBuffer::Bytes(arc_from_vec(bytes)))
 }
 
 fn visible_validity_range(array: &CaptureLayout) -> PyResult<(usize, usize)> {
@@ -1508,7 +1506,7 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
     {
         let mut empty = crate::try_vec_with_capacity(width)?;
         empty.resize(width, 0);
-        try_arc_from_vec(empty)?
+        arc_from_vec(empty)
     } else {
         let OwnedBuffer::Bytes(raw) = snapshot_one_buffer_range(array, 1, start, len)? else {
             unreachable!("offset snapshots are byte buffers")
@@ -1563,7 +1561,7 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
             rebased[at..at + width].copy_from_slice(&local.to_le_bytes());
         }
     }
-    Ok((OwnedBuffer::Bytes(try_arc_from_vec(rebased)?), first, last))
+    Ok((OwnedBuffer::Bytes(arc_from_vec(rebased)), first, last))
 }
 
 /// Validate the four-byte BinaryView inline prefix against the selected owned
@@ -1638,7 +1636,7 @@ fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<Vec<f64>>> {
     for chunk in chunks {
         crate::try_push(&mut values, f64::from_le_bytes(*chunk))?;
     }
-    Ok(try_arc_from_vec(values)?)
+    Ok(arc_from_vec(values))
 }
 
 /// P02: Known(n>0) null_count must match the owned validity bitmap.
@@ -1706,14 +1704,14 @@ fn scan_binary_view_data_ranges_owned(
 ) -> PyResult<Arc<HashMap<usize, std::ops::Range<usize>>>> {
     let mut ranges = HashMap::new();
     if array.length == 0 {
-        return Ok(try_arc_new(ranges)?);
+        return Ok(arc_new(ranges));
     }
     let max_data_buffers = array.n_buffers - 3;
     let OwnedBuffer::Bytes(views) = views else {
-        return Ok(try_arc_new(ranges)?);
+        return Ok(arc_new(ranges));
     };
     if views.is_empty() {
-        return Ok(try_arc_new(ranges)?);
+        return Ok(arc_new(ranges));
     }
     let sizes_index = array.n_buffers - 1;
     let mut declared_sizes = HashMap::new();
@@ -1795,7 +1793,7 @@ fn scan_binary_view_data_ranges_owned(
             })
             .or_insert(byte_offset..span_end);
     }
-    Ok(try_arc_new(ranges)?)
+    Ok(arc_new(ranges))
 }
 
 /// Rebase non-inline BinaryView descriptor offsets to their selected owned
@@ -1844,7 +1842,7 @@ fn rebase_owned_binary_view_offsets(
             .map_err(|_| PyTypeError::new_err("Arrow binary-view offset exceeds i32 range"))?;
         view[12..16].copy_from_slice(&local.to_le_bytes());
     }
-    Ok(OwnedBuffer::Bytes(try_arc_from_vec(rebased)?))
+    Ok(OwnedBuffer::Bytes(arc_from_vec(rebased)))
 }
 
 /// Owned-bitmap BinaryView validity (no producer slice).
@@ -2179,41 +2177,6 @@ mod layout_validation_tests {
             MOVED_SCHEMA_RELEASES.load(Ordering::Relaxed),
             schema_before + 1
         );
-        assert_eq!(
-            MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
-            array_before + 1
-        );
-    }
-
-    #[test]
-    fn moved_shell_allocation_failure_keeps_source_release_slot() {
-        ensure_python();
-        let _guard = CAPSULE_RELEASE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let array_before = MOVED_ARRAY_RELEASES.load(Ordering::Relaxed);
-        let buffers = dummy_buffers(2);
-        let mut array = stack_array(0, 0, 0, 2, 0, buffers.as_ptr(), ptr::null_mut());
-        array.release = Some(count_moved_array_release);
-
-        let result = crate::test_support::fail_allocations_after(0, || unsafe {
-            MovedArrowShell::take(&raw mut array)
-        });
-        let Err(error) = result else {
-            panic!("moved-shell allocation should have been rejected");
-        };
-        Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
-        assert!(
-            array.release.is_some(),
-            "failed move must retain producer ownership"
-        );
-
-        // The source shell is still live after the failed consumer allocation;
-        // releasing it here proves the failure did not consume or duplicate it.
-        unsafe {
-            let release = array.release.expect("source release remains live");
-            release(&raw mut array);
-        }
         assert_eq!(
             MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
             array_before + 1

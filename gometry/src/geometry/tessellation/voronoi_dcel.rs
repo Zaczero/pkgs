@@ -2120,16 +2120,14 @@ struct Tagged {
 }
 
 impl Tagged {
-    fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
+    fn clone_tagged(&self) -> Self {
+        Self {
             vertex: match &self.vertex {
                 DualVertex::Center(component) => DualVertex::Center(*component),
-                DualVertex::Generated(point) => {
-                    DualVertex::Generated(Box::try_new((**point).clone())?)
-                },
+                DualVertex::Generated(point) => DualVertex::Generated(Box::new((**point).clone())),
             },
             leaving: self.leaving,
-        })
+        }
     }
 }
 
@@ -2334,7 +2332,7 @@ fn dual_close_hull_chain(
 ) -> Result<Vec<Tagged>> {
     let generated = |point: &exact::ExactPoint, leaving| -> Result<Tagged> {
         Ok(Tagged {
-            vertex: DualVertex::Generated(Box::try_new(point.clone())?),
+            vertex: DualVertex::Generated(Box::new(point.clone())),
             leaving,
         })
     };
@@ -2539,7 +2537,7 @@ fn dual_clip_convex(
                 let previous_point = dual_vertex_point(&current[previous].vertex, centers);
                 if let Some(hit) = crossing(previous_point, tag, this_point)? {
                     try_push_vec(&mut next, Tagged {
-                        vertex: DualVertex::Generated(Box::try_new(hit)?),
+                        vertex: DualVertex::Generated(Box::new(hit)),
                         // Entering: the rest of the original edge follows.
                         // Leaving: the new edge runs along this side.
                         leaving: if this_in { tag } else { EdgeTag::Axis },
@@ -2547,7 +2545,7 @@ fn dual_clip_convex(
                 }
             }
             if this_in {
-                try_push_vec(&mut next, current[index].try_clone()?)?;
+                try_push_vec(&mut next, current[index].clone_tagged())?;
             }
             (previous, previous_in) = (index, this_in);
         }

@@ -97,8 +97,8 @@ fn line(points: &[[f64; 2]]) -> Shape {
 }
 
 fn assert_polygon_line_case(name: &str, polygon: &Shape, line: &Shape, expected: &str) {
-    let polygon_plan = PreparedPlan::transient(polygon).unwrap();
-    let line_plan = PreparedPlan::transient(line).unwrap();
+    let polygon_plan = PreparedPlan::transient(polygon);
+    let line_plan = PreparedPlan::transient(line);
     let forward = graph_relate_data(&polygon_plan, &line_plan).unwrap();
     assert_eq!(forward.text(), expected, "{name}: known matrix");
     assert_eq!(
@@ -171,8 +171,8 @@ fn assert_areal_fast_path(name: &str, left: &Shape, right: &Shape) {
 }
 
 fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str) {
-    let left_plan = PreparedPlan::transient(left).unwrap();
-    let right_plan = PreparedPlan::transient(right).unwrap();
+    let left_plan = PreparedPlan::transient(left);
+    let right_plan = PreparedPlan::transient(right);
     let forward = graph_relate_data(&left_plan, &right_plan).unwrap();
     assert_eq!(forward.text(), expected, "{name}: forward");
     assert_eq!(
@@ -235,8 +235,8 @@ fn collection_boundary_contact_keeps_area_and_line_interior_distinct() {
     )
     .unwrap();
     let right = crate::io::parse_wkt("GEOMETRYCOLLECTION(LINESTRING(2 1,3 1))").unwrap();
-    let left_plan = PreparedPlan::transient(&left).unwrap();
-    let right_plan = PreparedPlan::transient(&right).unwrap();
+    let left_plan = PreparedPlan::transient(&left);
+    let right_plan = PreparedPlan::transient(&right);
     assert_eq!(
         graph_relate_data(&left_plan, &right_plan).unwrap().text(),
         "102FF1FF2"
@@ -248,8 +248,8 @@ fn collapsed_linework_and_polygon_ring_keep_exact_lower_dimensions() {
     let collapsed =
         crate::io::parse_wkt("GEOMETRYCOLLECTION(POLYGON((0 0,1 0,0 0,1 0,0 0)))").unwrap();
     let line = crate::io::parse_wkt("LINESTRING(0 0,1 0)").unwrap();
-    let left = PreparedPlan::transient(&collapsed).unwrap();
-    let right = PreparedPlan::transient(&line).unwrap();
+    let left = PreparedPlan::transient(&collapsed);
+    let right = PreparedPlan::transient(&line);
     assert_eq!(
         graph_relate_data(&left, &right).unwrap().text(),
         "1FFF0FFF2"
@@ -261,8 +261,8 @@ fn external_hole_boundary_is_not_polygon_support() {
     let polygon =
         crate::io::parse_wkt("POLYGON ((0 0,2 0,2 2,0 2,0 0),(5 5,6 5,6 6,5 6,5 5))").unwrap();
     let point = Shape::Point(Point::new_raw_xy(5.0, 5.0));
-    let left = PreparedPlan::transient(&polygon).unwrap();
-    let right = PreparedPlan::transient(&point).unwrap();
+    let left = PreparedPlan::transient(&polygon);
+    let right = PreparedPlan::transient(&point);
     assert_eq!(
         graph_relate_data(&left, &right).unwrap().text(),
         "FF2FF10F2"
@@ -341,15 +341,15 @@ fn ambiguous_and_unsupported_pair_relations_match_known_matrices() {
     ] {
         assert_relation_case(name, left, right, expected);
     }
-    let collapsed_left = PreparedPlan::transient(&collapsed).unwrap();
-    let square_right = PreparedPlan::transient(&square).unwrap();
+    let collapsed_left = PreparedPlan::transient(&collapsed);
+    let square_right = PreparedPlan::transient(&square);
     assert_eq!(
         graph_relate_data(&collapsed_left, &square_right)
             .unwrap()
             .text(),
         "F1FF0F212"
     );
-    let invalid_left = PreparedPlan::transient(&invalid).unwrap();
+    let invalid_left = PreparedPlan::transient(&invalid);
     assert_eq!(
         graph_relate_data(&invalid_left, &square_right)
             .unwrap()
@@ -369,13 +369,13 @@ fn two_unique_point_ring_relates_as_linework() {
         Vec::new(),
     ));
     let square = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
-    let left = PreparedPlan::transient(&two_unique).unwrap();
-    let right = PreparedPlan::transient(&square).unwrap();
+    let left = PreparedPlan::transient(&two_unique);
+    let right = PreparedPlan::transient(&square);
     let forward = graph_relate_data(&left, &right).unwrap();
     assert_eq!(forward.text(), "FF1FF0212");
 
-    let reverse_left = PreparedPlan::transient(&square).unwrap();
-    let reverse_right = PreparedPlan::transient(&two_unique).unwrap();
+    let reverse_left = PreparedPlan::transient(&square);
+    let reverse_right = PreparedPlan::transient(&two_unique);
     assert_eq!(
         graph_relate_data(&reverse_left, &reverse_right).unwrap().0,
         forward.transpose().0
@@ -638,8 +638,8 @@ fn direct_areal_relation_declines_unsupported_operands() {
         );
     }
     let collapsed = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
-    let collapsed_left = PreparedPlan::transient(&collapsed).unwrap();
-    let areal_right = PreparedPlan::transient(&areal).unwrap();
+    let collapsed_left = PreparedPlan::transient(&collapsed);
+    let areal_right = PreparedPlan::transient(&areal);
     assert_eq!(
         graph_relate_data(&collapsed_left, &areal_right)
             .unwrap()
@@ -684,8 +684,8 @@ fn prepared_matrix_matches_shape_matrix_for_curated_pairs() {
     ];
     for (left, right) in pairs {
         let expected = graph_relate_shapes(&left, &right).unwrap();
-        let left = PreparedPlan::new(left).unwrap();
-        let right = PreparedPlan::new(right).unwrap();
+        let left = PreparedPlan::new(left);
+        let right = PreparedPlan::new(right);
         assert_eq!(
             graph_relate_data(&left, &right).unwrap().text(),
             expected.text()
@@ -746,8 +746,8 @@ fn geographic_graph_oracle(
     right: &Shape,
     frame: crate::geographic::GeographicFrame,
 ) -> De9im {
-    let left = PreparedPlan::transient(left).unwrap();
-    let right = PreparedPlan::transient(right).unwrap();
+    let left = PreparedPlan::transient(left);
+    let right = PreparedPlan::transient(right);
     let left_cache = crate::geometry::FrameDependentCaches::default();
     let right_cache = crate::geometry::FrameDependentCaches::default();
     let left = GeographicPrepared::try_new(&left, &left_cache, frame)
@@ -1011,8 +1011,8 @@ fn geographic_areal_relation_uses_the_safe_cartesian_fold() {
             expected.0,
             "{name}: fold"
         );
-        let left_plan = PreparedPlan::transient(&left).unwrap();
-        let right_plan = PreparedPlan::transient(&right).unwrap();
+        let left_plan = PreparedPlan::transient(&left);
+        let right_plan = PreparedPlan::transient(&right);
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
@@ -1063,8 +1063,8 @@ fn geographic_areal_relation_declines_quotient_aliases() {
             "{name}: fold admission"
         );
         let expected = geographic_graph_oracle(&left, &ordinary, frame);
-        let left_plan = PreparedPlan::transient(&left).unwrap();
-        let right_plan = PreparedPlan::transient(&ordinary).unwrap();
+        let left_plan = PreparedPlan::transient(&left);
+        let right_plan = PreparedPlan::transient(&ordinary);
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
@@ -1135,8 +1135,8 @@ fn oblique_polygon_line_contacts_keep_boundary_interior_points() {
             "101FF0212",
             "radial case {case}: line/polygon"
         );
-        let polygon_plan = PreparedPlan::transient(&polygon).unwrap();
-        let line_plan = PreparedPlan::transient(&line).unwrap();
+        let polygon_plan = PreparedPlan::transient(&polygon);
+        let line_plan = PreparedPlan::transient(&line);
         assert_eq!(
             graph_relate_data(&polygon_plan, &line_plan).unwrap().text(),
             "1F20F1102",
@@ -1413,8 +1413,8 @@ fn geographic_aggregate_contacts_use_quotient_face_locations() {
             graph_relate_shapes_geographic(geometry, &point).text(),
             expected
         );
-        let left = PreparedPlan::new(geometry.clone()).unwrap();
-        let right = PreparedPlan::new(point).unwrap();
+        let left = PreparedPlan::new(geometry.clone());
+        let right = PreparedPlan::new(point);
         let left_cache = crate::geometry::FrameDependentCaches::default();
         let right_cache = crate::geometry::FrameDependentCaches::default();
         assert_eq!(
@@ -1440,8 +1440,8 @@ fn geographic_grad_pole_aliases_match_after_native_latitude_admission() {
         raw_pole = raw_pole.next_up();
     }
     assert_eq!(raw_pole.to_bits(), frame.pole().to_bits());
-    let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, frame.pole()))).unwrap();
-    let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(200.0, frame.pole()))).unwrap();
+    let left = PreparedPlan::new(Shape::Point(Point::new_raw_xy(0.0, frame.pole())));
+    let right = PreparedPlan::new(Shape::Point(Point::new_raw_xy(200.0, frame.pole())));
     let left_cache = crate::geometry::FrameDependentCaches::default();
     let right_cache = crate::geometry::FrameDependentCaches::default();
     assert!(
@@ -1605,8 +1605,8 @@ fn point_polygon_relation_matches_known_matrices() {
         ("outside", 9.0, 9.0, "FF2FF10F2"),
     ] {
         let point = Shape::Point(crate::geometry::Point::new_raw_xy(x, y));
-        let left = PreparedPlan::transient(&square).unwrap();
-        let right = PreparedPlan::transient(&point).unwrap();
+        let left = PreparedPlan::transient(&square);
+        let right = PreparedPlan::transient(&point);
         let forward = graph_relate_data(&left, &right).unwrap();
         assert_eq!(forward.text(), expected, "{name} polygon-first");
         let reverse = graph_relate_data(&right, &left).unwrap();

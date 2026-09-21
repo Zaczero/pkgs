@@ -42,7 +42,7 @@ impl PySpatialIndex {
                 .source
                 .geometry_at(handle)
                 .map_err(crate::PyErr::from)?;
-            let plan = self.rows.prepared_row(handle)?.into_owned_plan()?;
+            let plan = self.rows.prepared_row(handle)?.into_owned_plan();
             return Ok(crate::Typed(geometry.with_prepared_plan(plan)?));
         }
         let geometry = &self.rows.boxed[handle - packed_len];
@@ -52,7 +52,7 @@ impl PySpatialIndex {
         Ok(crate::Typed(crate::PyGeometry::with_frame(
             crate::ShapeData::new(geometry.shape.shape().clone()),
             frame,
-        )?))
+        )))
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
@@ -205,11 +205,11 @@ impl PySpatialIndex {
                 drop(entries);
                 return Err(pyo3::PyErr::from(error));
             }
-            let plan = array.prepared_row(offset, row)?.into_owned_plan()?;
+            let plan = array.prepared_row(offset, row)?.into_owned_plan();
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
             if let Err(error) = crate::try_push_vec(
                 &mut items,
-                PyGeometry::from_prepared_plan(plan, array.frame.clone())?,
+                PyGeometry::from_prepared_plan(plan, array.frame.clone()),
             ) {
                 drop(entries);
                 return Err(pyo3::PyErr::from(error));
@@ -357,24 +357,17 @@ mod tests {
     use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq, Point, Shape, ShapeData};
     use crate::py::index::{DistanceUnit, NearestOptions, spatial_index};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::fail_allocations_after;
 
     fn point(x: f64, y: f64) -> PyGeometry {
         PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(x, y))),
             Frame::None,
         )
-        .expect("point geometry")
     }
 
     fn empty_index() -> PySpatialIndex {
         spatial_index(Vec::new()).expect("empty index")
-    }
-
-    fn points(start: usize, end: usize) -> Vec<PyGeometry> {
-        (start..end)
-            .map(|handle| point(handle as f64, 0.0))
-            .collect()
     }
 
     fn crossing_line() -> PyGeometry {
@@ -383,7 +376,7 @@ mod tests {
         let shape = Shape::LineString(LineSeq::try_new(coordinates).expect("crossing line"));
         let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)
             .expect("geographic frame");
-        PyGeometry::with_frame(ShapeData::new(shape), frame).expect("geographic line")
+        PyGeometry::with_frame(ShapeData::new(shape), frame)
     }
 
     fn framed_point(x: f64, y: f64, frame: &Frame) -> PyGeometry {
@@ -391,7 +384,6 @@ mod tests {
             ShapeData::new(Shape::Point(Point::new_raw_xy(x, y))),
             frame.clone(),
         )
-        .expect("framed point")
     }
 
     fn clone_fixture() -> PySpatialIndex {
@@ -468,129 +460,6 @@ mod tests {
     }
 
     #[test]
-    fn scalar_insert_allocation_prefixes_leave_state_retryable() {
-        Python::initialize();
-        Python::attach(|py| {
-            let base = empty_index();
-            let counting_geometry = point(1.0, 2.0);
-            let mut counted = base.try_clone().expect("clone");
-            let (result, allocations) =
-                allocation_count(|| counted.insert_one(&counting_geometry).expect("insert"));
-            assert_eq!(result, 0);
-            assert!(allocations > 0);
-
-            let mut prefix = 0;
-            loop {
-                let mut candidate = base.try_clone().expect("clone");
-                let geometry = point(1.0, 2.0);
-                let result = fail_allocations_after(prefix, || candidate.insert_one(&geometry));
-                let Ok(handle) = result else {
-                    let error = result.expect_err("allocation failure result");
-                    assert!(error.is_instance_of::<PyMemoryError>(py));
-                    assert_eq!(candidate.rows.len(), 0);
-                    assert_eq!(candidate.rows.live_count(), 0);
-                    assert_eq!(candidate.overflow.total_entries(), 0);
-                    assert_eq!(candidate.overflow.live_entry_count(), 0);
-                    assert_eq!(candidate.overflow.dead_entry_count(), 0);
-                    assert!(candidate.metadata.is_none());
-                    assert_eq!(candidate.mutation_gen, 0);
-                    let geometry = point(1.0, 2.0);
-                    assert_eq!(candidate.insert_one(&geometry).expect("retry"), 0);
-                    prefix += 1;
-                    assert!(prefix <= allocations + 8);
-                    continue;
-                };
-                assert_eq!(handle, 0);
-                break;
-            }
-        });
-    }
-
-    #[test]
-    fn arbitrary_batch_insert_allocation_prefixes_preserve_carries() {
-        Python::initialize();
-        Python::attach(|py| {
-            let mut base = empty_index();
-            for handle in 0..7 {
-                assert_eq!(
-                    base.insert_one(&point(handle as f64, 0.0))
-                        .expect("base insert"),
-                    handle
-                );
-            }
-            let counting_items = points(7, 16);
-            let mut counted = base.try_clone().expect("clone");
-            let (result, allocations) =
-                allocation_count(|| counted.insert_items(counting_items).expect("batch insert"));
-            assert_eq!(result, (7..16).collect::<Vec<_>>());
-            assert!(allocations > 0);
-
-            let mut prefix = 0;
-            loop {
-                let mut candidate = base.try_clone().expect("clone");
-                let batch = points(7, 16);
-                let result = fail_allocations_after(prefix, || candidate.insert_items(batch));
-                let Err(error) = result else {
-                    let handles = result.expect("successful batch");
-                    assert_eq!(handles, (7..16).collect::<Vec<_>>());
-                    break;
-                };
-                assert!(error.is_instance_of::<PyMemoryError>(py));
-                assert_eq!(candidate.rows.len(), 7);
-                assert_eq!(candidate.rows.live_count(), 7);
-                assert_eq!(candidate.overflow.total_entries(), 7);
-                assert_eq!(candidate.overflow.live_entry_count(), 7);
-                assert_eq!(candidate.overflow.dead_entry_count(), 0);
-                assert_eq!(candidate.mutation_gen, 7);
-                let retry = candidate
-                    .insert_items(points(7, 16))
-                    .expect("batch retry after allocation failure");
-                assert_eq!(retry, (7..16).collect::<Vec<_>>());
-                prefix += 1;
-                assert!(prefix <= allocations + 8);
-            }
-        });
-    }
-
-    #[test]
-    fn geographic_duplicate_envelopes_are_fallible_and_retryable() {
-        Python::initialize();
-        Python::attach(|py| {
-            let base = empty_index();
-            let counting_geometry = crossing_line();
-            let mut counted = base.try_clone().expect("clone");
-            let (handle, allocations) =
-                allocation_count(|| counted.insert_one(&counting_geometry).expect("insert"));
-            assert_eq!(handle, 0);
-            assert!(allocations > 0);
-            assert_eq!(counted.overflow.entry_count_for_handle(0), 2);
-            assert_eq!(counted.overflow.total_entries(), 2);
-
-            let mut prefix = 0;
-            loop {
-                let mut candidate = base.try_clone().expect("clone");
-                let geometry = crossing_line();
-                let result = fail_allocations_after(prefix, || candidate.insert_one(&geometry));
-                let Ok(handle) = result else {
-                    let error = result.expect_err("allocation failure result");
-                    assert!(error.is_instance_of::<PyMemoryError>(py));
-                    assert!(candidate.metadata.is_none());
-                    assert_eq!(candidate.rows.len(), 0);
-                    assert_eq!(candidate.overflow.total_entries(), 0);
-                    assert_eq!(candidate.insert_one(&crossing_line()).expect("retry"), 0);
-                    assert_eq!(candidate.overflow.entry_count_for_handle(0), 2);
-                    prefix += 1;
-                    assert!(prefix <= allocations + 8);
-                    continue;
-                };
-                assert_eq!(handle, 0);
-                assert_eq!(candidate.overflow.entry_count_for_handle(0), 2);
-                break;
-            }
-        });
-    }
-
-    #[test]
     fn removal_without_compaction_only_tombstones_the_row() {
         let mut index = empty_index();
         for handle in 0..3 {
@@ -611,57 +480,6 @@ mod tests {
         assert_eq!(index.overflow.live_entry_count(), 2);
         assert_eq!(index.overflow.dead_entry_count(), 1);
         assert_eq!(index.mutation_gen, generation + 1);
-    }
-
-    #[test]
-    fn compaction_allocation_prefixes_leave_tombstone_unpublished() {
-        Python::initialize();
-        Python::attach(|py| {
-            let mut base = empty_index();
-            for handle in 0..4 {
-                assert_eq!(
-                    base.insert_one(&point(handle as f64, 0.0)).expect("insert"),
-                    handle
-                );
-            }
-            assert!(base.remove_handle(0).expect("first removal"));
-            assert!(base.remove_handle(1).expect("second removal"));
-            let mut counted = base.try_clone().expect("clone");
-            let (removed, allocations) =
-                allocation_count(|| counted.remove_handle(2).expect("compact removal"));
-            assert!(removed);
-            assert!(allocations > 0);
-            assert_eq!(counted.overflow.total_entries(), 1);
-            assert_eq!(counted.overflow.live_entry_count(), 1);
-            assert_eq!(counted.overflow.dead_entry_count(), 0);
-
-            let mut prefix = 0;
-            loop {
-                let mut candidate = base.try_clone().expect("clone");
-                let result = fail_allocations_after(prefix, || candidate.remove_handle(2));
-                let Err(error) = result else {
-                    assert!(result.expect("successful compaction removal"));
-                    assert!(!candidate.rows.is_live(2));
-                    assert_eq!(candidate.overflow.total_entries(), 1);
-                    assert_eq!(candidate.overflow.live_entry_count(), 1);
-                    assert_eq!(candidate.overflow.dead_entry_count(), 0);
-                    break;
-                };
-                assert!(error.is_instance_of::<PyMemoryError>(py));
-                assert!(candidate.rows.is_live(2));
-                assert_eq!(candidate.overflow.total_entries(), 4);
-                assert_eq!(candidate.overflow.live_entry_count(), 2);
-                assert_eq!(candidate.overflow.dead_entry_count(), 2);
-                assert_eq!(candidate.mutation_gen, base.mutation_gen);
-                assert!(candidate.remove_handle(2).expect("compaction retry"));
-                assert!(!candidate.rows.is_live(2));
-                assert_eq!(candidate.overflow.total_entries(), 1);
-                assert_eq!(candidate.overflow.live_entry_count(), 1);
-                assert_eq!(candidate.overflow.dead_entry_count(), 0);
-                prefix += 1;
-                assert!(prefix <= allocations + 8);
-            }
-        });
     }
 
     #[test]

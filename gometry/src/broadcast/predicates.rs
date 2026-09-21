@@ -513,7 +513,7 @@ fn xy_predicate_array_values(
                             ));
                         }
                         let row_cache = rows.frame_cache(logical)?;
-                        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)))?;
+                        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
                         let point_cache = crate::geometry::FrameDependentCaches::default();
                         Ok(topology_scalar_pair(
                             &spec,
@@ -558,7 +558,7 @@ fn xy_array_values(
     x.into_iter()
         .zip(y)
         .map(|(x, y)| {
-            let point = PreparedPlan::new(ShapeData::from(Shape::Point(Point::new_raw_xy(x, y))))?;
+            let point = PreparedPlan::new(ShapeData::from(Shape::Point(Point::new_raw_xy(x, y))));
             let point_cache = crate::geometry::FrameDependentCaches::default();
             topology_scalar_pair(
                 &spec,
@@ -605,7 +605,7 @@ pub(crate) fn xy_predicate_values(
             let location = py.detach(move || original.cartesian_point_location(point))?;
             return Ok(py_bool(py, xy_location_matches(location, inclusive)));
         }
-        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)))?;
+        let point = PreparedPlan::new(ShapeData::from(Shape::Point(point)));
         let point_cache = crate::geometry::FrameDependentCaches::default();
         let value = py.detach(move || {
             PreparedTopologyPair::try_for_domain(
@@ -652,7 +652,7 @@ mod geographic_tests {
         ));
         let frame = Frame::new(Some(crs_arc_static("EPSG:4326")), None)
             .expect("EPSG:4326 is a valid geographic frame");
-        let geometry = PyGeometry::with_frame(shape, frame).unwrap();
+        let geometry = PyGeometry::with_frame(shape, frame);
 
         // The first four points sit on or immediately beside both longitude
         // representations of the seam; the rest test the high-latitude cap.
@@ -672,7 +672,7 @@ mod geographic_tests {
         let expected: Vec<bool> = probes
             .iter()
             .map(|&(x, y)| {
-                let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y))).unwrap();
+                let point = PreparedPlan::new(Shape::Point(Point::new_raw_xy(x, y)));
                 let point_cache = crate::geometry::FrameDependentCaches::default();
                 PreparedTopologyPair::try_for_domain(
                     &source,

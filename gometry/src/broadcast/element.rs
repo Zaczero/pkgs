@@ -140,7 +140,7 @@ impl BulkElement for String {
 
 impl BulkElement for Shape {
     fn into_py(self, py: Python<'_>, frame: &Frame) -> PyResult<Py<PyAny>> {
-        Ok(Typed(PyGeometry::with_frame(self, frame.clone())?)
+        Ok(Typed(PyGeometry::with_frame(self, frame.clone()))
             .into_pyobject(py)?
             .unbind())
     }

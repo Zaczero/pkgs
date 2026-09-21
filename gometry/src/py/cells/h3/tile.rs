@@ -28,8 +28,7 @@ fn checked_predicate(
     cell: CellIndex,
 ) -> Result<bool, H3TileError> {
     let center = LatLng::from(cell);
-    let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(center.lng(), center.lat())))
-        .map_err(H3TileError::Preparation)?;
+    let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(center.lng(), center.lat())));
     let probe_cache = crate::geometry::FrameDependentCaches::default();
     let operands = PreparedTopologyPair::Geographic {
         left: *authority,
@@ -471,7 +470,7 @@ mod edge_trace_tests {
     #[test]
     fn invalid_authority_retains_its_geometry_diagnostic() {
         let shape = Shape::Point(Point::new_raw_xy(0.0, 91.0));
-        let authority = PreparedPlan::transient(&shape).unwrap();
+        let authority = PreparedPlan::transient(&shape);
         let cache = crate::geometry::FrameDependentCaches::default();
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()
@@ -538,7 +537,7 @@ mod edge_trace_tests {
                 .map(|cell| u64::from(cell.cell))
                 .collect::<Vec<_>>()
         };
-        let authority = PreparedPlan::new(shape.clone()).unwrap();
+        let authority = PreparedPlan::new(shape.clone());
         let cache = crate::geometry::FrameDependentCaches::default();
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()

@@ -64,11 +64,11 @@ fn rebuild_shared_mixed(
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
     PyGeometryArray::from_result_storage(
-        Arc::try_new(GeometryArrayStorage::Mixed(mapped)).map_err(crate::error::Error::from)?,
+        Arc::new(GeometryArrayStorage::Mixed(mapped)),
         source.frame.clone(),
         source.missing().cloned(),
         StorageLayout::LogicalRows,
-        ComputedCaches::fresh()?,
+        ComputedCaches::fresh(),
     )
 }
 

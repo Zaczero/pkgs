@@ -46,16 +46,8 @@ pub(crate) type NativeArrowExportResult<T> = std::result::Result<T, NativeArrowE
     clippy::rc_buffer,
     reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
 )]
-pub(crate) fn try_arc_from_vec<T>(values: Vec<T>) -> PyResult<Arc<Vec<T>>> {
-    try_arc_from_vec_native(values).map_err(PyErr::from)
-}
-
-#[expect(
-    clippy::rc_buffer,
-    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-)]
-pub(crate) fn try_arc_from_vec_native<T>(values: Vec<T>) -> crate::error::Result<Arc<Vec<T>>> {
-    Arc::try_new(values).map_err(crate::error::Error::from)
+pub(crate) fn arc_from_vec<T>(values: Vec<T>) -> Arc<Vec<T>> {
+    Arc::new(values)
 }
 
 /// Publish an owned string only after both its bytes and shared allocation
@@ -64,8 +56,8 @@ pub(crate) fn try_arc_from_vec_native<T>(values: Vec<T>) -> crate::error::Result
     clippy::rc_buffer,
     reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"
 )]
-pub(crate) fn try_arc_from_string(value: String) -> PyResult<Arc<String>> {
-    Arc::try_new(value).map_err(|_| errors::native_memory_error())
+pub(crate) fn arc_from_string(value: String) -> Arc<String> {
+    Arc::new(value)
 }
 
 #[expect(
@@ -75,15 +67,11 @@ pub(crate) fn try_arc_from_string(value: String) -> PyResult<Arc<String>> {
 pub(crate) fn try_arc_from_str(value: &str) -> PyResult<Arc<String>> {
     let value =
         crate::boundary::try_string_from_str(value).map_err(|()| errors::native_memory_error())?;
-    try_arc_from_string(value)
+    Ok(arc_from_string(value))
 }
 
-pub(crate) fn try_arc_new<T>(value: T) -> PyResult<Arc<T>> {
-    try_arc_new_native(value).map_err(PyErr::from)
-}
-
-pub(crate) fn try_arc_new_native<T>(value: T) -> crate::error::Result<Arc<T>> {
-    Arc::try_new(value).map_err(crate::error::Error::from)
+pub(crate) fn arc_new<T>(value: T) -> Arc<T> {
+    Arc::new(value)
 }
 
 impl From<crate::error::Error> for NativeArrowExportError {
@@ -239,8 +227,6 @@ pub(crate) use build::{
     admitted_list_array_windowed, apply_prebuilt_top_level_validity, coordinate_array,
     coordinate_schema, empty_array, extension_schema, list_schema, wkb_schema,
 };
-#[cfg(test)]
-pub(crate) use build::{reset_schema_guard_drops, schema_guard_drops};
 pub(crate) use capsule_lifecycle::{
     ArrowReleaseSlot, array_to_array_capsules, array_to_schema_capsule, array_to_stream_capsule,
     capsule_destructor, geometry_to_array_capsules, geometry_to_schema_capsule,
@@ -254,7 +240,7 @@ pub(crate) use export_plan::{
     plan_geometry_array, plan_shapes, plan_wkb_shapes, prepare_export_plan,
 };
 #[cfg(test)]
-pub(crate) use export_plan::{describe_shapes, payload_events, reset_payload_events};
+pub(crate) use export_plan::{payload_events, reset_payload_events};
 pub(crate) use import::{capsule_pointer, geometries_from_arrow_c};
 pub(crate) use native::{
     NativeArrowBatch, NativeArrowClassification, NativeArrowDecodeError, NativeDecodedBatch,

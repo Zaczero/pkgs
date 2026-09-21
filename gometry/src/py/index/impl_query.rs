@@ -397,15 +397,7 @@ impl PySpatialIndex {
                 }),
             ))
         }) {
-            Ok(Ok(Some(caps))) => {
-                if let Ok(caps) = Arc::try_new(caps) {
-                    Some(caps)
-                } else {
-                    drop(products);
-                    drop(cache);
-                    return Err(native_memory_error());
-                }
-            },
+            Ok(Ok(Some(caps))) => Some(Arc::new(caps)),
             Ok(Ok(None)) | Err(_) => None,
             Ok(Err(())) => {
                 drop(products);
@@ -832,7 +824,7 @@ impl PySpatialIndex {
                 &mut queries,
                 if end > row_start {
                     Some((
-                        PreparedPlan::new(ShapeData::new(Shape::Point(point)))?,
+                        PreparedPlan::new(ShapeData::new(Shape::Point(point))),
                         query_rows.frame_cache(row)?,
                     ))
                 } else {
@@ -1299,7 +1291,7 @@ impl PySpatialIndex {
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
-            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)))?;
+            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
             match (coordinate_distance, distance) {
                 (Some(radius), _) => {
@@ -1428,7 +1420,7 @@ impl PySpatialIndex {
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
-            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)))?;
+            let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
             if let Some(radius) = coordinate_distance {
                 self.collect_within_distance_2(
@@ -1482,19 +1474,15 @@ mod tests {
     fn refinement_kind_gate_precedes_geographic_admission() {
         crate::test_support::initialize_python();
         let frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None).unwrap();
-        let index = spatial_index(vec![
-            PyGeometry::with_frame(
-                ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
-                frame.clone(),
-            )
-            .unwrap(),
-        ])
+        let index = spatial_index(vec![PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+            frame.clone(),
+        )])
         .unwrap();
         let query = PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 91.0))),
             frame,
-        )
-        .unwrap();
+        );
         for predicate in [Predicate::Crosses, Predicate::Overlaps] {
             let plan = PreparedIndexQuery::Topological { predicate };
             assert_eq!(
@@ -1506,13 +1494,10 @@ mod tests {
 
     #[test]
     fn dwithin_exact_refinement_preserves_unset_query_bounds() {
-        let index = spatial_index(vec![
-            PyGeometry::with_frame(
-                ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
-                Frame::None,
-            )
-            .unwrap(),
-        ])
+        let index = spatial_index(vec![PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
+            Frame::None,
+        )])
         .unwrap();
         let array = PyGeometryArray::mixed_shapes(
             vec![Shape::LineString(
@@ -1563,13 +1548,10 @@ mod tests {
             frame.clone(),
         )
         .unwrap();
-        let index = spatial_index(vec![
-            PyGeometry::with_frame(
-                ShapeData::new(Shape::Point(Point::new_raw_xy(10.0, 10.0))),
-                frame,
-            )
-            .unwrap(),
-        ])
+        let index = spatial_index(vec![PyGeometry::with_frame(
+            ShapeData::new(Shape::Point(Point::new_raw_xy(10.0, 10.0))),
+            frame,
+        )])
         .unwrap();
         let plan = PreparedIndexQuery::for_array(&index, &array, None, None, None).unwrap();
         let row = array
@@ -1590,10 +1572,9 @@ mod tests {
         let item = PyGeometry::with_frame(
             ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
             Frame::None,
-        )
-        .unwrap();
+        );
         let index = spatial_index(vec![item]).unwrap();
-        let query = PreparedPlan::new(ShapeData::new(Shape::empty_polygon())).expect("empty query");
+        let query = PreparedPlan::new(ShapeData::new(Shape::empty_polygon()));
         let matches = index
             .topological_matches(
                 &query,

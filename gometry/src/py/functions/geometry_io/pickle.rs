@@ -123,10 +123,10 @@ pub(crate) fn _unpickle_geometry(
     let wkb = snapshot_bytes(wkb)?;
     let geometry = py
         .detach(move || {
-            PyGeometry::with_frame(
+            Ok::<_, crate::error::Error>(PyGeometry::with_frame(
                 crate::io::parse_wkb(&wkb)?.shape,
                 pickled_frame(crs, epoch)?,
-            )
+            ))
         })
         .map_err(PyErr::from)?;
     Ok(Typed(geometry))

@@ -208,19 +208,11 @@ pub(crate) fn grid_cover_dispatch<'py>(
             Err(error) => return Err(GridCoverError::Native(error)),
         };
         admission.admit_array_shapes(&array).and_then(|shapes| {
-            let admitted = shapes
-                .into_iter()
-                .enumerate()
-                .map(|(logical, shape)| match shape {
-                    Err(error) => Err(error),
-                    Ok(None) => Ok(None),
-                    Ok(Some(shape)) => PyGeometry::wgs84(shape).map(Some).map_err(|error| {
-                        GridCoverError::NativeRow {
-                            row: logical,
-                            error,
-                        }
-                    }),
-                });
+            let admitted = shapes.into_iter().map(|shape| match shape {
+                Err(error) => Err(error),
+                Ok(None) => Ok(None),
+                Ok(Some(shape)) => Ok(Some(PyGeometry::wgs84(shape))),
+            });
             cover_array_rows(admitted, max_cells, build)
         })
     });
@@ -286,7 +278,7 @@ fn remaining_cover_budget(
         .transpose()
 }
 
-pub(super) fn lonlat_point_geometry(point: Point) -> crate::error::Result<PyGeometry> {
+pub(super) fn lonlat_point_geometry(point: Point) -> PyGeometry {
     PyGeometry::wgs84(Shape::Point(point))
 }
 
@@ -306,7 +298,7 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         },
         shape => shape,
     };
-    Ok(PyGeometry::typed_wgs84(shape)?)
+    Ok(PyGeometry::typed_wgs84(shape))
 }
 
 /// Topology-driven dissolve for a uniform-depth rect-grid coverage (geohash /
@@ -417,18 +409,12 @@ mod tests {
     #[test]
     fn first_row_budget_beats_later_invalid_latitude() {
         let admitted = vec![
-            Ok(Some(
-                crate::PyGeometry::wgs84(crate::geometry::Shape::Point(
-                    crate::geometry::Point::new_raw_xy(13.4, 52.5),
-                ))
-                .unwrap(),
-            )),
-            Ok(Some(
-                crate::PyGeometry::wgs84(crate::geometry::Shape::Point(
-                    crate::geometry::Point::new_raw_xy(0.0, 95.0),
-                ))
-                .unwrap(),
-            )),
+            Ok(Some(crate::PyGeometry::wgs84(
+                crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(13.4, 52.5)),
+            ))),
+            Ok(Some(crate::PyGeometry::wgs84(
+                crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(0.0, 95.0)),
+            ))),
         ];
         let error = cover_array_rows(admitted, Some(1), |_, _| Ok(vec![0, 1]))
             .expect_err("row 0 must exhaust max_cells before row 1 lonlat");
@@ -469,16 +455,13 @@ mod tests {
     fn missing_and_empty_present_rows_are_empty_groups() {
         let rows = cover_array_rows(
             vec![
-                Ok(Some(
-                    crate::PyGeometry::wgs84(crate::geometry::Shape::empty_polygon()).unwrap(),
-                )),
+                Ok(Some(crate::PyGeometry::wgs84(
+                    crate::geometry::Shape::empty_polygon(),
+                ))),
                 Ok(None),
-                Ok(Some(
-                    crate::PyGeometry::wgs84(crate::geometry::Shape::Point(
-                        crate::geometry::Point::new_raw_xy(1.0, 2.0),
-                    ))
-                    .unwrap(),
-                )),
+                Ok(Some(crate::PyGeometry::wgs84(
+                    crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
+                ))),
             ],
             None,
             |_, _| Ok(vec![7]),

@@ -286,6 +286,6 @@ impl PyGeometry {
         }
         let shape = py.detach(|| transformer.transform_shape(self.shape.shape()))?;
         drain_accuracy_warning(py, &transformer.execution())?;
-        Ok(Typed(Self::with_frame(shape, output)?))
+        Ok(Typed(Self::with_frame(shape, output)))
     }
 }

@@ -93,7 +93,7 @@ pub(super) fn box_(
     Ok(Typed(PyGeometry::with_frame(
         shape,
         Frame::new(crs, epoch)?,
-    )?))
+    )))
 }
 
 /// Create a ``GeometryArray`` of points from parallel coordinate columns.

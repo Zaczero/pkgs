@@ -136,7 +136,7 @@ mod tests {
             };
 
             // Warm the CRS and geodesic caches so the final allocation in the
-            // successful call is Box::try_new inside GeodesicMetric::from_model.
+            // successful call is Box::new inside GeodesicMetric::from_model.
             let mut warm_scratch = MetricScratch::default();
             match resolver.resolve_ctx(&frame, &mut warm_scratch) {
                 Ok(_) => {},

@@ -9,12 +9,12 @@ use crate::py::cells::{GridKind, PyCellArray, lonlat_point_geometry};
 use crate::py::errors::GeometryError;
 use crate::{PyGeometry, Typed};
 
-pub(crate) fn cell_center<G: GridCell>(cell: G) -> PyResult<Typed> {
-    Ok(Typed(lonlat_point_geometry(cell.center_point())?))
+pub(crate) fn cell_center<G: GridCell>(cell: G) -> Typed {
+    Typed(lonlat_point_geometry(cell.center_point()))
 }
 
 pub(crate) fn cell_boundary<G: GridCell>(cell: G) -> PyResult<Typed> {
-    Ok(Typed(PyGeometry::wgs84(cell.boundary_shape()?)?))
+    Ok(Typed(PyGeometry::wgs84(cell.boundary_shape()?)))
 }
 
 /// Resolve the target depth for parent walks (explicit depth, or one coarser).

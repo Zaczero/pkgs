@@ -153,7 +153,7 @@ fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         }
     }
     let coords = if missing.is_empty() {
-        Arc::try_new(coordinates.coords().clone()).map_err(crate::error::Error::from)?
+        Arc::new(coordinates.coords().clone())
     } else {
         let mut builder = CoordSeqBuilder::try_with_capacity(
             coordinates.axes(),
@@ -164,7 +164,7 @@ fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
                 builder.push_at(coordinates.coords(), row)?;
             }
         }
-        Arc::try_new(builder.finish()?).map_err(crate::error::Error::from)?
+        Arc::new(builder.finish()?)
     };
     Ok(NativeDecodedBatch {
         length: node.length,
@@ -438,8 +438,7 @@ fn packed_lines_storage(
             offsets.push_end(range.end, i32::MAX as usize)?;
         }
         return Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
-            coords: Arc::try_new(coordinates.coords().clone())
-                .map_err(crate::error::Error::from)?,
+            coords: Arc::new(coordinates.coords().clone()),
             offsets: offsets.finish(coordinates.coords().len())?,
             row_map: RowSelection::Identity,
         }));
@@ -455,7 +454,7 @@ fn packed_lines_storage(
     }
     let (coords, offsets) = builder.finish(total_vertices)?;
     Ok(GeometryArrayStorage::Packed(PackedStorage::Lines {
-        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+        coords: Arc::new(coords),
         offsets,
         row_map: RowSelection::Identity,
     }))
@@ -487,8 +486,7 @@ fn packed_polygon_storage(
             polygon_offsets.push_end(rings, i32::MAX as usize)?;
         }
         return Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-            coords: Arc::try_new(coordinates.coords().clone())
-                .map_err(crate::error::Error::from)?,
+            coords: Arc::new(coordinates.coords().clone()),
             ring_offsets: ring_offsets
                 .finish(coordinates.coords().len())?
                 .cast_level(),
@@ -524,7 +522,7 @@ fn packed_polygon_storage(
     let coords = builder.finish()?;
     let coord_len = coords.len();
     Ok(GeometryArrayStorage::Packed(PackedStorage::Polygons {
-        coords: Arc::try_new(coords).map_err(crate::error::Error::from)?,
+        coords: Arc::new(coords),
         ring_offsets: ring_offsets.finish(coord_len)?.cast_level(),
         polygon_offsets: polygon_offsets.finish(rings)?.cast_level(),
         row_map: RowSelection::Identity,
@@ -1080,7 +1078,7 @@ fn combined_validity(
     for row in 0..length {
         push(&mut values, !missing(row))?;
     }
-    Ok(Some(arrow_c::try_arc_from_vec_native(values)?))
+    Ok(Some(arrow_c::arc_from_vec(values)))
 }
 
 fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
@@ -1095,102 +1093,12 @@ fn push<T>(values: &mut Vec<T>, value: T) -> DecodeResult<()> {
 mod tests {
     use std::sync::Arc;
 
-    use pyo3::exceptions::PyMemoryError;
-    use pyo3::prelude::Python;
-
     use super::super::{
         NativeArrowBatch, NativeArrowClassification, OwnedBuffer, OwnedBufferSlots,
     };
     use super::{ArrowFormat, NativeDecodedStorage, NativeNode};
     use crate::py::arrow::WkbOffsetWidth;
     use crate::py::geoarrow::GeometryEncoding;
-
-    #[test]
-    fn direct_point_decode_reuses_admitted_columns_and_retries_allocation_prefixes() {
-        #[expect(
-            clippy::rc_buffer,
-            reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-        )]
-        fn make_batch() -> (NativeArrowBatch, Arc<Vec<f64>>) {
-            let x = Arc::new(vec![1.0, 2.0]);
-            let y = Arc::new(vec![3.0, 4.0]);
-            let leaf = |values: Arc<Vec<f64>>| NativeNode {
-                length: 2,
-                validity_offset: 0,
-                n_buffers: 2,
-                format: ArrowFormat::Float64,
-                buffers: OwnedBufferSlots::Dense(Arc::new(vec![
-                    Some(OwnedBuffer::Bytes(Arc::new(Vec::new()))),
-                    Some(OwnedBuffer::F64(values)),
-                ])),
-                children: Arc::new(Vec::new()),
-                schema_name: Arc::new(String::new()),
-                field_names: Arc::new(Vec::new()),
-                effective_missing: None,
-            };
-            let node = NativeNode {
-                length: 2,
-                validity_offset: 0,
-                n_buffers: 1,
-                format: ArrowFormat::Struct,
-                buffers: OwnedBufferSlots::Dense(Arc::new(vec![Some(OwnedBuffer::Bytes(
-                    Arc::new(Vec::new()),
-                ))])),
-                children: Arc::new(vec![leaf(Arc::clone(&x)), leaf(y)]),
-                schema_name: Arc::new(String::new()),
-                field_names: Arc::new(vec![String::from("x"), String::from("y")]),
-                effective_missing: None,
-            };
-            (
-                NativeArrowBatch {
-                    node,
-                    classification: NativeArrowClassification {
-                        encoding: GeometryEncoding::Point,
-                        wkb_offset_width: WkbOffsetWidth::Int32,
-                        crs: None,
-                        epoch: None,
-                    },
-                },
-                x,
-            )
-        }
-
-        crate::test_support::initialize_python();
-        let (batch, x) = make_batch();
-        let (decoded, allocations) = crate::test_support::allocation_count(|| batch.decode());
-        let decoded = decoded.expect("direct point decode");
-        let NativeDecodedStorage::Packed(crate::array::GeometryArrayStorage::Packed(
-            crate::array::PackedStorage::Points { coords, .. },
-        )) = decoded.storage
-        else {
-            panic!("uniform point input must decode directly to packed storage")
-        };
-        let columns = coords.column_arcs();
-        assert!(Arc::ptr_eq(
-            &x,
-            &columns.xs.owner().expect("non-empty x owner")
-        ));
-        assert!(
-            allocations > 0,
-            "direct decode must have fallible allocations"
-        );
-
-        for allowed in 0..allocations {
-            let (batch, _) = make_batch();
-            let result = crate::test_support::fail_allocations_after(allowed, || batch.decode());
-            let error = match result {
-                Ok(_) => panic!("allocation prefix {allowed} should fail"),
-                Err(error) => error.into_py_err(),
-            };
-            Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
-            let (retry, _) = make_batch();
-            let retry = retry
-                .decode()
-                .expect("failed direct decode must be retryable");
-            assert_eq!(retry.length, 2);
-            assert_eq!(retry.storage.len(), 2);
-        }
-    }
 
     fn f64_leaf(name: &str, values: Vec<f64>) -> NativeNode {
         let length = values.len();

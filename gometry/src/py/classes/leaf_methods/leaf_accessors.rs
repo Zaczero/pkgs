@@ -182,10 +182,10 @@ impl PyPolygon {
 
     /// Exterior ring as a closed ``LineString``.
     #[getter]
-    pub(crate) fn exterior(slf: PyRef<'_, Self>) -> PyResult<Typed> {
+    pub(crate) fn exterior(slf: PyRef<'_, Self>) -> Typed {
         let base = slf.as_super();
         let ring = base.shape.exterior().expect("Polygon has an exterior ring");
-        Ok(base.typed_shape(ring)?)
+        base.typed_shape(ring)
     }
 
     /// Interior rings (holes), each a closed ``LineString``.
@@ -196,7 +196,7 @@ impl PyPolygon {
             base.shape
                 .interiors()
                 .into_iter()
-                .map(|ring| Ok::<_, pyo3::PyErr>(base.typed_shape(ring)?)),
+                .map(|ring| Ok::<_, pyo3::PyErr>(base.typed_shape(ring))),
         )
     }
 }
