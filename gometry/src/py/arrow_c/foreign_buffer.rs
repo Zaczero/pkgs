@@ -4,7 +4,6 @@
 //! `#[path]`-include the production type. It must never grow a slice accessor,
 //! `Deref`, `AsRef`, `Index`, or `Send`/`Sync` implementation.
 
-use std::collections::TryReserveError;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -69,18 +68,22 @@ impl<'owner> ForeignArrowBuffer<'owner> {
     ///
     /// Same obligations as [`Self::new`] for the full lifetime of this value
     /// through the return of this method.
-    pub(crate) unsafe fn snapshot(self) -> Result<Vec<u8>, TryReserveError> {
+    pub(crate) unsafe fn snapshot(self) -> Vec<u8> {
         if self.len == 0 {
-            return Ok(Vec::new());
+            return Vec::new();
         }
-        let mut out = Vec::new();
-        out.try_reserve_exact(self.len)?;
+        let mut out = Vec::with_capacity(self.len);
         // SAFETY: construction requires the full `len` span is readable and
-        // quiescent for the capture; destination is a fresh exclusive Vec.
+        // quiescent for the capture; the spare destination is fresh,
+        // exclusive, and has exactly `len` slots.
         unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.ptr.as_ptr(),
+                out.spare_capacity_mut().as_mut_ptr().cast(),
+                self.len,
+            );
             out.set_len(self.len);
-            std::ptr::copy_nonoverlapping(self.ptr.as_ptr(), out.as_mut_ptr(), self.len);
         }
-        Ok(out)
+        out
     }
 }

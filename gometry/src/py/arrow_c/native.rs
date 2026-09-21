@@ -948,8 +948,8 @@ fn build_owned_node_admitted(
     let (buffers, _) = snapshot_native_buffers(validated)?;
     // Own-row nulls from owned validity, OR'd with any ancestor mask.
     let effective_missing = merge_owned_row_missing(validated, &buffers, effective_missing)?;
-    let mut field_names = crate::try_vec_with_capacity(validated.n_children)?;
-    let mut children = crate::try_vec_with_capacity(validated.n_children)?;
+    let mut field_names = Vec::with_capacity(validated.n_children);
+    let mut children = Vec::with_capacity(validated.n_children);
     if validated.n_children > 0 {
         if schema.children.len() != validated.n_children {
             return Err(errors::parse_error(
@@ -1116,7 +1116,7 @@ fn project_ancestor_missing(
                 usize::try_from(value)
                     .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))
             };
-            let mut missing = crate::try_vec_with_capacity(child_length)?;
+            let mut missing = Vec::with_capacity(child_length);
             missing.resize(child_length, false);
             for (row, &is_missing) in parent_missing.iter().enumerate() {
                 if !is_missing {
@@ -1154,7 +1154,7 @@ fn project_ancestor_missing(
                     "Arrow fixed-size-list child visible length does not match parent",
                 ));
             }
-            let mut missing = crate::try_vec_with_capacity(child_length)?;
+            let mut missing = Vec::with_capacity(child_length);
             missing.resize(child_length, false);
             for (row, &is_missing) in parent_missing.iter().enumerate() {
                 if !is_missing {
@@ -1192,11 +1192,11 @@ fn merge_owned_row_missing(
                 "Arrow ancestor missing length does not match child length",
             ));
         }
-        let mut missing = crate::try_vec_with_capacity(len)?;
+        let mut missing = Vec::with_capacity(len);
         missing.extend_from_slice(a.as_slice());
         missing
     } else {
-        let mut missing = crate::try_vec_with_capacity(len)?;
+        let mut missing = Vec::with_capacity(len);
         missing.resize(len, false);
         missing
     };
@@ -1348,8 +1348,7 @@ fn snapshot_native_buffers(
         // (not the physical parent prefix), after the owned descriptors have
         // been rebased to that local origin.
         let mut data = HashMap::new();
-        data.try_reserve(ranges.len())
-            .map_err(|_| errors::native_memory_error())?;
+        data.reserve(ranges.len());
         for (&data_index, range) in ranges.iter() {
             let len = range
                 .end
@@ -1371,7 +1370,7 @@ fn snapshot_native_buffers(
         return Ok((slots, array.binary_view_data_ranges.clone()));
     }
 
-    let mut snapshots = crate::try_vec_with_capacity(array.n_buffers)?;
+    let mut snapshots = Vec::with_capacity(array.n_buffers);
     snapshots.push(Some(snapshot_one_buffer_range(
         array,
         0,
@@ -1448,11 +1447,7 @@ fn snapshot_one_buffer_range(
     // borrowed shell pins its producer allocation until this snapshot finishes.
     let foreign = unsafe { ForeignArrowBuffer::new(source, len, array.shell) };
     // SAFETY: ForeignArrowBuffer::snapshot contract (same as construction).
-    let bytes = unsafe {
-        foreign
-            .snapshot()
-            .map_err(|_| errors::native_memory_error())?
-    };
+    let bytes = unsafe { foreign.snapshot() };
     // Float64 values: decode LE f64 once at admission; drop the byte copy.
     if matches!(array.format, ArrowFormat::Float64) && index == 1 {
         return owned_f64_from_le_bytes(&bytes).map(OwnedBuffer::F64);
@@ -1494,9 +1489,7 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
         // admission snapshot.
         && unsafe { array.buffer_ptr(1) }.is_null()
     {
-        let mut empty = crate::try_vec_with_capacity(width)?;
-        empty.resize(width, 0);
-        arc_from_vec(empty)
+        arc_from_vec(vec![0; width])
     } else {
         let OwnedBuffer::Bytes(raw) = snapshot_one_buffer_range(array, 1, start, len)? else {
             unreachable!("offset snapshots are byte buffers")
@@ -1527,8 +1520,7 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
     };
     let first = usize::try_from(read(0)?)
         .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))?;
-    let mut rebased = crate::try_vec_with_capacity(raw.len())?;
-    rebased.extend_from_slice(&raw);
+    let mut rebased = raw.to_vec();
     let mut last = first;
     for index in 0..slots {
         let value = usize::try_from(read(index)?)
@@ -1622,9 +1614,9 @@ fn owned_f64_from_le_bytes(bytes: &[u8]) -> PyResult<Arc<Vec<f64>>> {
     }
     let (chunks, rest) = bytes.as_chunks::<8>();
     debug_assert!(rest.is_empty());
-    let mut values = crate::try_vec_with_capacity(chunks.len())?;
+    let mut values = Vec::with_capacity(chunks.len());
     for chunk in chunks {
-        crate::try_push(&mut values, f64::from_le_bytes(*chunk))?;
+        values.push(f64::from_le_bytes(*chunk));
     }
     Ok(arc_from_vec(values))
 }
@@ -1747,9 +1739,7 @@ fn scan_binary_view_data_ranges_owned(
         let declared_size = if let Some(size) = declared_sizes.get(&buffer_index) {
             *size
         } else {
-            declared_sizes
-                .try_reserve(1)
-                .map_err(|_| errors::native_memory_error())?;
+            declared_sizes.reserve(1);
             let byte_start = checked_byte_span(
                 buffer_index,
                 8,
@@ -1771,9 +1761,7 @@ fn scan_binary_view_data_ranges_owned(
         }
         // Prefix match deferred until data buffers are snapshotted (owned).
         if !ranges.contains_key(&buffer_index) {
-            ranges
-                .try_reserve(1)
-                .map_err(|_| errors::native_memory_error())?;
+            ranges.reserve(1);
         }
         ranges
             .entry(buffer_index)
@@ -1799,8 +1787,7 @@ fn rebase_owned_binary_view_offsets(
     let OwnedBuffer::Bytes(views) = views else {
         return Ok(views.clone());
     };
-    let mut rebased = crate::try_vec_with_capacity(views.len())?;
-    rebased.extend_from_slice(views);
+    let mut rebased = views.to_vec();
     let (views, remainder) = rebased.as_chunks_mut::<16>();
     debug_assert!(remainder.is_empty());
     for (row, view) in views.iter_mut().enumerate() {
@@ -1884,7 +1871,6 @@ mod layout_validation_tests {
     use std::ptr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use pyo3::exceptions::PyMemoryError;
     use pyo3::ffi;
     use pyo3::prelude::Python;
 
@@ -2170,34 +2156,6 @@ mod layout_validation_tests {
         assert_eq!(
             MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
             array_before + 1
-        );
-    }
-
-    #[test]
-    fn foreign_snapshot_allocation_failure_is_memory_error_and_releases_once() {
-        ensure_python();
-        let _guard = CAPSULE_RELEASE_TEST_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let array_before = MOVED_ARRAY_RELEASES.load(Ordering::Relaxed);
-        let values = [1.0_f64];
-        let buffers: [*const c_void; 2] = [ptr::null(), values.as_ptr().cast()];
-        let mut array = stack_array(1, 0, 0, 2, 0, buffers.as_ptr(), ptr::null_mut());
-        array.release = Some(count_moved_array_release);
-
-        let result = try_with_stack_layout(&mut array, ArrowFormat::Float64, 0, |layout| {
-            crate::test_support::fail_allocations_after(0, || {
-                snapshot_one_buffer_range(layout, 1, 0, std::mem::size_of::<f64>())
-            })
-        });
-        let Err(error) = result else {
-            panic!("foreign snapshot allocation should have been rejected");
-        };
-        Python::attach(|py| assert!(error.is_instance_of::<PyMemoryError>(py)));
-        assert_eq!(
-            MOVED_ARRAY_RELEASES.load(Ordering::Relaxed),
-            array_before + 1,
-            "the failed snapshot must still release its moved shell exactly once"
         );
     }
 
