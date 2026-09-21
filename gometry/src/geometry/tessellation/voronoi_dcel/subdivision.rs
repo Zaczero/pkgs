@@ -6,9 +6,8 @@
 
 use super::{
     AtomicEdge, BoundaryFaceId, ExactSign, ExpansionBudget, IndexedTopology,
-    IndexedTopologyScratch, NodedAtoms, Ordering, OwnerTransition, ResourceError, Result, Site,
-    SiteAdjacency, SiteId, Transition, VecDeque, XY, exact, nearest_site_walk, try_reserve_vec,
-    voronoi_error,
+    IndexedTopologyScratch, NodedAtoms, Ordering, OwnerTransition, Result, Site, SiteAdjacency,
+    SiteId, Transition, VecDeque, XY, exact, nearest_site_walk, try_reserve_vec, voronoi_error,
 };
 
 pub(super) struct ExactVertex {
@@ -30,32 +29,25 @@ pub(super) fn build_exact_subdivision(
 ) -> Result<ExactSubdivision> {
     let vertices = atoms.vertices.len();
     let edges = atoms.edges.len();
-    let slots = edges.saturating_mul(2);
+    let slots = edges * 2;
     budget.add(slots)?;
     budget.add(slots)?;
     let mut topology = IndexedTopology::default();
     let mut scratch = IndexedTopologyScratch::default();
-    let mut edge_of_slot = Vec::new();
-    let mut cursors = Vec::new();
-    let mut exact_vertices = Vec::new();
-    for reserve in [
-        topology.starts.try_reserve(vertices + 1),
-        topology.targets.try_reserve(slots),
-        topology.owners.try_reserve(slots),
-        topology.twins.try_reserve(slots),
-        topology.component_of.try_reserve(vertices),
-        topology.face_of.try_reserve(slots),
-        topology.face_starts.try_reserve(slots + 1),
-        topology.face_slots.try_reserve(slots),
-        scratch.component_stack.try_reserve(vertices),
-        scratch.successor.try_reserve(slots),
-        scratch.edge_slots.try_reserve(edges),
-        edge_of_slot.try_reserve(slots),
-        cursors.try_reserve(vertices),
-        exact_vertices.try_reserve(vertices),
-    ] {
-        reserve.map_err(|_| ResourceError::Allocation)?;
-    }
+    topology.starts.reserve(vertices + 1);
+    topology.targets.reserve(slots);
+    topology.owners.reserve(slots);
+    topology.twins.reserve(slots);
+    topology.component_of.reserve(vertices);
+    topology.face_of.reserve(slots);
+    topology.face_starts.reserve(slots + 1);
+    topology.face_slots.reserve(slots);
+    scratch.component_stack.reserve(vertices);
+    scratch.successor.reserve(slots);
+    scratch.edge_slots.reserve(edges);
+    let mut edge_of_slot = Vec::with_capacity(slots);
+    let mut cursors = Vec::with_capacity(vertices);
+    let mut exact_vertices = Vec::with_capacity(vertices);
     topology.starts.resize(vertices + 1, 0);
     for edge in &atoms.edges {
         topology.starts[edge.endpoints[0].0 as usize + 1] += 1;
@@ -324,13 +316,8 @@ pub(super) fn graft_components(
         .ok_or_else(|| voronoi_error("private frame is absent"))?;
     let frame_component =
         topology.component_of[subdivision.edges[frame_edge].endpoints[0].0 as usize] as usize;
-    let mut labels = Vec::new();
-    try_reserve_vec(&mut labels, boundary_faces)?;
-    labels.resize(boundary_faces, None);
-    let mut queue = VecDeque::new();
-    queue
-        .try_reserve(boundary_faces)
-        .map_err(|_| ResourceError::Allocation)?;
+    let mut labels = vec![None; boundary_faces];
+    let mut queue = VecDeque::with_capacity(boundary_faces);
     let outside_frame = RegionLabel {
         frame_winding: 0,
         clip_winding: 0,

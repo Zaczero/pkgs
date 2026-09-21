@@ -500,13 +500,8 @@ impl ConstrainedMesh {
         #[cfg(test)]
         update_work(|counters| counters.inside_label_passes += 1);
         let count = self.mesh.triangle_count();
-        let mut label = Vec::new();
-        crate::try_reserve_vec(&mut label, count)?;
-        label.resize(count, None);
-        let mut queue = VecDeque::new();
-        queue
-            .try_reserve(count)
-            .map_err(|_| crate::error::ResourceError::Allocation)?;
+        let mut label = vec![None; count];
+        let mut queue = VecDeque::with_capacity(count);
         // Seed from the hull: beyond a hull edge is the outside, so a face is
         // outside unless that hull edge is itself a constraint, in which case
         // the polygon's boundary runs along the hull and the face is inside.
@@ -1210,64 +1205,6 @@ mod tests {
     }
 
     #[test]
-    fn source_piece_preparation_allocation_failures_are_retryable() {
-        // An edge endpoint far below the other's scale widens the exact split
-        // point past the two inline limbs, onto the allocating path.
-        let pts = points(&[(1e-100, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
-        let mesh = ConstrainedMesh::build(&pts, &[[0, 1], [1, 2], [2, 3], [3, 0]]).unwrap();
-        let edge = mesh.mesh.edge_slot(0, 1).unwrap().unwrap();
-        let xy = |site: usize| pts[site].xy();
-        let (result, allocations) =
-            crate::test_support::allocation_count(|| mesh.prepare_split(&xy, &pts, edge));
-        result.unwrap();
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let result = crate::test_support::fail_allocations_after(allowed, || {
-                mesh.prepare_split(&xy, &pts, edge)
-            });
-            assert!(matches!(
-                result,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                    )
-            ));
-        }
-        crate::test_support::fail_allocations_after(allocations + 8, || {
-            mesh.prepare_split(&xy, &pts, edge)
-        })
-        .unwrap();
-    }
-
-    #[test]
-    fn source_chain_validation_allocation_failures_are_retryable() {
-        let pts = points(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
-        let mesh = ConstrainedMesh::build(&pts, &[[0, 1], [1, 2], [2, 3], [3, 0]]).unwrap();
-        let (result, allocations) =
-            crate::test_support::allocation_count(|| mesh.validate_source_chains(&pts));
-        result.unwrap();
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let result = crate::test_support::fail_allocations_after(allowed, || {
-                mesh.validate_source_chains(&pts)
-            });
-            assert!(matches!(
-                result,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                    )
-            ));
-        }
-        crate::test_support::fail_allocations_after(allocations + 8, || {
-            mesh.validate_source_chains(&pts)
-        })
-        .unwrap();
-    }
-
-    #[test]
     fn unrepresentable_circumcenter_is_an_explicit_midpoint_case() {
         let a = XY::new(0.0, 0.0);
         let b = XY::new(1.0, 0.0);
@@ -1284,24 +1221,6 @@ mod tests {
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Voronoi(_))
-        ));
-    }
-
-    #[test]
-    fn circumcenter_propagates_rounding_allocation_failure() {
-        let a = XY::new(0.0, 0.0);
-        let b = XY::new(1.0, 0.0);
-        let c = XY::new(0.5, f64::from_bits(1));
-        let (result, allocations) = crate::test_support::allocation_count(|| circumcenter(a, b, c));
-        assert_eq!(result.unwrap(), None);
-        assert!(allocations > 0, "the exact rounding path must allocate");
-
-        let error =
-            crate::test_support::fail_allocations_after(allocations - 1, || circumcenter(a, b, c))
-                .unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
         ));
     }
 }

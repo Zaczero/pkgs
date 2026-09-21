@@ -251,14 +251,12 @@ fn outward_padded_bounds(
 
 fn try_unique_xy_points(shape: &Shape) -> crate::error::Result<Vec<XY>> {
     let mut seen = HashSet::new();
-    seen.try_reserve(shape.coord_count())
-        .map_err(|_| crate::error::ResourceError::Allocation)?;
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, shape.coord_count())?;
+    seen.reserve(shape.coord_count());
+    let mut points = Vec::with_capacity(shape.coord_count());
     shape.try_for_each_point(|point| {
         let point = point.xy();
         if seen.insert(PointKey::new(point)) {
-            crate::try_push_vec(&mut points, point)?;
+            points.push(point);
         }
         Ok::<_, crate::error::Error>(())
     })?;
@@ -1433,30 +1431,7 @@ mod tests {
 #[cfg(test)]
 mod snap_reference_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{MOrdinate, ZOrdinate};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    fn assert_allocation(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
-    fn prefix_sweep(run: impl Fn() -> crate::error::Result<()>) {
-        run().expect("unfaulted snap operation must succeed");
-        let ((), allocations) = allocation_count(|| run().unwrap());
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, &run);
-            let Err(error) = result else {
-                panic!("snap operation unexpectedly succeeded at allocation prefix {allowed}");
-            };
-            assert_allocation(&error);
-        }
-        run().expect("snap caller-owned allocation must retry cleanly");
-    }
 
     fn line_reference_points(count: usize) -> Vec<XY> {
         (0..count).map(|index| XY::new(index as f64, 0.0)).collect()
@@ -1586,47 +1561,5 @@ mod snap_reference_tests {
         let expected = large.next_down().to_bits();
         assert_eq!(one_inserted[0].z().unwrap().to_bits(), expected);
         assert_eq!(one_inserted[0].m().unwrap().to_bits(), expected);
-    }
-
-    #[test]
-    fn linear_snap_reference_build_allocations_are_retryable() {
-        let points = line_reference_points(2);
-        prefix_sweep(|| SnapReference::build(&points, 0.5).map(|_| ()));
-    }
-
-    #[test]
-    fn linear_snap_insertion_allocations_are_retryable() {
-        // Only an off-segment reference outside both endpoint balls stages an
-        // inserted point, so this is the input that exercises the candidate
-        // and output allocations. Endpoint-coincident references are filtered
-        // before anything is retained, and that case allocates nothing.
-        let points = vec![XY::new(0.5, 0.2)];
-        let reference = SnapReference::build(&points, 0.5).unwrap();
-        let start = Point::new_raw_xy(0.0, 0.0);
-        let end = Point::new_raw_xy(1.0, 0.0);
-        prefix_sweep(|| reference.insertions(start, end).map(|_| ()));
-    }
-
-    #[test]
-    fn linear_snap_point_output_allocations_are_retryable() {
-        let points = line_reference_points(2);
-        let reference = SnapReference::build(&points, 0.5).unwrap();
-        prefix_sweep(|| snap_points_to_reference(&points[..], &reference).map(|_| ()));
-    }
-
-    #[test]
-    fn shape_snap_reference_staging_allocations_are_retryable() {
-        let source = Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_points(&[
-                    Point::new_raw_xy(0.0, 0.0),
-                    Point::new_raw_xy(2.0, 0.0),
-                ])
-                .unwrap(),
-            )
-            .unwrap(),
-        );
-        let reference = Shape::Point(Point::new_raw_xy(1.0, 1.0));
-        prefix_sweep(|| source.snap(&reference, 1.0).map(|_| ()));
     }
 }

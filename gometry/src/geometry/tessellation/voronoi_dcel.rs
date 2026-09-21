@@ -18,7 +18,7 @@ use std::collections::VecDeque;
 use std::ops::ControlFlow;
 
 use crate::collections::try_hash_map_with_capacity;
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geometry::arrangement::{IndexedTopology, IndexedTopologyScratch};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::overlay::certify_emitted_incidence;
@@ -2865,9 +2865,7 @@ fn dual_embed(
         let point = dual_vertex_point(vertex, centers);
         let mut xy = point.round_nearest_even()?;
         let key = PointKey::new(xy);
-        interned
-            .try_reserve(1)
-            .map_err(|_| ResourceError::Allocation)?;
+        interned.reserve(1);
         let id = match interned.entry(key) {
             std::collections::hash_map::Entry::Occupied(existing) => {
                 let &(representative, id) = existing.get();
