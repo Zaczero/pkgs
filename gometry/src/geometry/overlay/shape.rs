@@ -6,7 +6,6 @@ use crate::geometry::{
     CoordSeq, CoordinateAxes, GeometryErrorKind, GeometryKind, HashMap, HashSet, LineSeq, Lineal,
     PointKey, Segment, Shape, TopologyDomain, carry_ordinates, undirected_segment_edge_key,
 };
-use crate::{try_push_vec, try_reserve_vec};
 impl Shape {
     pub(crate) fn intersection(&self, other: &Self, strictness: Strictness) -> Result<Self> {
         self.overlay(other, OverlayOp::Intersection, strictness)
@@ -140,21 +139,15 @@ impl Shape {
                 // Dissolve the component lines into maximal chains at degree-2
                 // nodes, splitting every Y/T/X junction (degree `>= 3`). The
                 // overlay line sink uses the same [`merge_chains`] rule.
-                let mut edges = Vec::new();
-                try_reserve_vec(&mut edges, lines.len())?;
-                for line in lines {
-                    try_push_vec(&mut edges, line.as_coords().clone())?;
-                }
-                let chains = merge_chains(&edges)?;
+                let chains = merge_chains(lines)?;
                 // A merge that produced nothing keeps the lineal type
                 // (`MULTILINESTRING EMPTY`), unlike the general narrowing.
                 if chains.is_empty() {
                     Self::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XY)
                 } else {
-                    let mut proven = Vec::new();
-                    try_reserve_vec(&mut proven, chains.len())?;
+                    let mut proven = Vec::with_capacity(chains.len());
                     for line in chains {
-                        try_push_vec(&mut proven, LineSeq::from_proven(line))?;
+                        proven.push(LineSeq::from_proven(line));
                     }
                     Self::narrow_lines(lines.axes(), proven)?
                 }
@@ -174,26 +167,18 @@ impl Shape {
         let partition = inventory.partition(&mut budget)?;
         let emission = inventory.line_emission(&partition)?;
         let (same, opposite) = shared_paths_from_exact(&emission)?;
-        let mut same_lines = Vec::new();
-        try_reserve_vec(&mut same_lines, same.len())?;
+        let mut same_lines = Vec::with_capacity(same.len());
         for line in same {
-            try_push_vec(&mut same_lines, LineSeq::from_proven(line))?;
+            same_lines.push(LineSeq::from_proven(line));
         }
-        let mut opposite_lines = Vec::new();
-        try_reserve_vec(&mut opposite_lines, opposite.len())?;
+        let mut opposite_lines = Vec::with_capacity(opposite.len());
         for line in opposite {
-            try_push_vec(&mut opposite_lines, LineSeq::from_proven(line))?;
+            opposite_lines.push(LineSeq::from_proven(line));
         }
-        let mut result_parts = Vec::new();
-        try_reserve_vec(&mut result_parts, 2)?;
-        try_push_vec(
-            &mut result_parts,
+        let result_parts = vec![
             Self::multi_line_string(CoordinateAxes::XY, same_lines)?,
-        )?;
-        try_push_vec(
-            &mut result_parts,
             Self::multi_line_string(CoordinateAxes::XY, opposite_lines)?,
-        )?;
+        ];
         let result = Self::geometry_collection(result_parts)?;
         carry_ordinates(result, &[self, other], "shared_paths", false)
     }
@@ -209,15 +194,13 @@ fn shared_paths_from_exact(emission: &ExactLineEmission) -> Result<(Vec<CoordSeq
     let mut same_keys = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
     let mut opposite_keys =
         HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-    try_reserve_vec(&mut same, emission.segments.len())?;
-    try_reserve_vec(&mut opposite, emission.segments.len())?;
+    same.reserve(emission.segments.len());
+    opposite.reserve(emission.segments.len());
     for map in [&mut same_path_direction, &mut opposite_path_direction] {
-        map.try_reserve(emission.segments.len())
-            .map_err(crate::error::Error::from)?;
+        map.reserve(emission.segments.len());
     }
     for set in [&mut same_keys, &mut opposite_keys] {
-        set.try_reserve(emission.segments.len())
-            .map_err(crate::error::Error::from)?;
+        set.reserve(emission.segments.len());
     }
 
     for (index, &segment) in emission.segments.iter().enumerate() {
@@ -259,11 +242,11 @@ fn shared_paths_from_exact(emission: &ExactLineEmission) -> Result<(Vec<CoordSeq
         if has_opposite_direction {
             opposite_keys.insert(key);
             opposite_path_direction.insert(key, segment);
-            try_push_vec(&mut opposite, line)?;
+            opposite.push(line);
         } else {
             same_keys.insert(key);
             same_path_direction.insert(key, segment);
-            try_push_vec(&mut same, line)?;
+            same.push(line);
         }
     }
 
@@ -288,25 +271,21 @@ fn orient_shared_paths(
     paths: Vec<CoordSeq>,
     directions: &HashMap<(PointKey, PointKey), Segment>,
 ) -> Result<Vec<CoordSeq>> {
-    let mut oriented = Vec::new();
-    try_reserve_vec(&mut oriented, paths.len())?;
+    let mut oriented = Vec::with_capacity(paths.len());
     for path in paths {
         let start = path.first().expect("shared path has a start").xy();
         let end = path.point_at(1).xy();
         let key = undirected_segment_edge_key(Segment { start, end });
         let Some(expected) = directions.get(&key) else {
-            try_push_vec(&mut oriented, path)?;
+            oriented.push(path);
             continue;
         };
         if start == expected.start && end == expected.end {
-            try_push_vec(&mut oriented, path)?;
+            oriented.push(path);
         } else {
-            let mut points = Vec::new();
-            try_reserve_vec(&mut points, path.len())?;
-            for point in path.iter().rev() {
-                try_push_vec(&mut points, point)?;
-            }
-            try_push_vec(&mut oriented, CoordSeq::try_from_points(&points)?)?;
+            let mut points = Vec::with_capacity(path.len());
+            points.extend(path.iter().rev());
+            oriented.push(CoordSeq::try_from_points(&points)?);
         }
     }
     Ok(oriented)

@@ -222,7 +222,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
                 }
             }
             weight
-        })
+        })?
     };
     // Outside-winding seed per component and per operand: every loop
     // lives in exactly one component, and loops of other components
@@ -234,7 +234,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
             .map(|&anchor| arrangement.component_of_point(anchor)),
     );
     let mut probes = std::mem::take(&mut scratch.probes);
-    arrangement.component_probes_from_slots(&mut probes, &mut scratch.probe_slots);
+    arrangement.component_probes_from_slots(&mut probes, &mut scratch.probe_slots)?;
     let mut ranges = std::mem::take(&mut scratch.ranges);
     let mut boxes = std::mem::take(&mut scratch.boxes);
     let seeds = outside_winding_seeds_with_scratch(
@@ -246,7 +246,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         &mut ranges,
         &mut boxes,
     )?;
-    let windings = arrangement.face_windings(&seeds);
+    let windings = arrangement.face_windings(&seeds)?;
     scratch.segments = segments;
     scratch.tags = tags;
     scratch.segment_loop = segment_loop;

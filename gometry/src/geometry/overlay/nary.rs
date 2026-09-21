@@ -16,7 +16,6 @@ use crate::geometry::{
     TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates, ordered_edge, point_on_segment,
     same_point, segment_midpoint,
 };
-use crate::try_push_vec;
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
 ///
@@ -58,10 +57,9 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
 
     match domain {
         TopologyDomain::Cartesian => {
-            let mut refs = Vec::new();
-            crate::try_reserve_vec(&mut refs, geometries.len())?;
+            let mut refs = Vec::with_capacity(geometries.len());
             refs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
-            exact_cartesian_overlay(&refs, op, strictness, bounds_certificates)
+            exact_cartesian_overlay(refs, op, strictness, bounds_certificates)
         },
         TopologyDomain::Geographic(frame) => {
             let originals = GeographicInputs::try_from_shapes(
@@ -80,7 +78,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
 /// ordinates afterwards. Inputs whose bounds never meet cannot interact, so
 /// each bounds-connected component is partitioned alone.
 fn exact_cartesian_overlay(
-    inputs: &[&Shape],
+    mut inputs: Vec<&Shape>,
     operation: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
@@ -88,23 +86,19 @@ fn exact_cartesian_overlay(
     if inputs.len() == 1 && operation == OverlayOp::Intersection {
         return Ok(inputs[0].clone());
     }
-    let mut ordered = Vec::new();
-    crate::try_reserve_vec(&mut ordered, inputs.len())?;
-    ordered.extend_from_slice(inputs);
     if operation == OverlayOp::Difference {
-        ordered[1..].sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
+        inputs[1..].sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
     } else {
-        ordered.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
+        inputs.sort_unstable_by(|left, right| crate::geometry::compare_shapes(left, right));
     }
-    let inputs = ordered.as_slice();
+    let inputs = inputs.as_slice();
     // Declared axes are a fact about the whole input, not any one component.
     let declared_axes = overlay_declared_axes(inputs, operation);
     let strict = strictness.is_strict();
     let components = if bounds_certificates && inputs.len() > 1 {
-        let mut bounds = Vec::new();
-        crate::try_reserve_vec(&mut bounds, inputs.len())?;
+        let mut bounds = Vec::with_capacity(inputs.len());
         for shape in inputs {
-            try_push_vec(&mut bounds, shape.bounds())?;
+            bounds.push(shape.bounds());
         }
         if operation == OverlayOp::Intersection && intersection_bounds_empty(&bounds) {
             return Ok(empty_nary_overlay_shape(inputs, operation));
@@ -116,12 +110,11 @@ fn exact_cartesian_overlay(
     let shape = match components {
         None => exact_partition_overlay(inputs, operation, declared_axes, strict)?,
         Some(components) => {
-            let mut shapes = Vec::new();
-            crate::try_reserve_vec(&mut shapes, components.len())?;
+            let mut shapes = Vec::with_capacity(components.len());
             let mut subset = Vec::new();
             for component in components {
                 subset.clear();
-                crate::try_reserve_vec(&mut subset, component.len())?;
+                subset.reserve(component.len());
                 subset.extend(component.iter().map(|&index| inputs[index]));
                 shapes.push(exact_partition_overlay(
                     &subset,
@@ -185,8 +178,7 @@ fn join_components(shapes: &[Shape]) -> Result<Shape> {
     let polygon_axes = common(&mut polygons.iter().map(crate::geometry::Polygon::axes));
     for polygon in &mut polygons {
         if polygon.axes() != polygon_axes {
-            let mut holes = Vec::new();
-            crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
+            let mut holes = Vec::with_capacity(polygon.holes.len());
             for hole in polygon.holes.iter() {
                 holes.push(crate::geometry::Ring::try_from_closed(restricted(
                     hole.coords(),
@@ -256,23 +248,20 @@ fn overlay_admitted(
     force_graph: bool,
 ) -> Result<Shape> {
     let frame = originals.frame();
-    let bounds_facts = overlay_bounds_facts_geographic(originals, op)?;
+    let bounds_facts = overlay_bounds_facts_geographic(originals, op);
     let certify = bounds_certificates
         && originals.views().len() > 1
         && bounds_facts.raw_coordinate_bounds_sound;
     if certify && op == OverlayOp::Intersection && intersection_bounds_empty(&bounds_facts.bounds) {
-        let mut inputs = Vec::new();
-        crate::try_reserve_vec(&mut inputs, originals.views().len())?;
+        let mut inputs = Vec::with_capacity(originals.views().len());
         for view in originals.views() {
-            try_push_vec(&mut inputs, view.shape())?;
+            inputs.push(view.shape());
         }
         return Ok(empty_nary_overlay_shape(&inputs, op));
     }
 
     let mut sources = Vec::new();
-    sources
-        .try_reserve_exact(originals.views().len())
-        .map_err(crate::error::Error::from)?;
+    sources.reserve_exact(originals.views().len());
     for view in originals.views() {
         let shape = if crate::geometry::crosses_antimeridian_in_frame(view.shape(), frame) {
             view.shape()
@@ -293,8 +282,7 @@ fn overlay_admitted(
         sources.sort_unstable_by(crate::geometry::compare_shapes);
     }
 
-    let mut refs = Vec::new();
-    crate::try_reserve_vec(&mut refs, sources.len())?;
+    let mut refs = Vec::with_capacity(sources.len());
     refs.extend(sources.iter());
     let noded = GeographicInputs::try_from_shapes(frame, refs.iter().copied())
         .map_err(overlay_view_error)?;
@@ -305,10 +293,9 @@ fn overlay_admitted(
         return Ok(originals.views()[0].shape().clone());
     }
     let components = if certify {
-        let mut bounds = Vec::new();
-        crate::try_reserve_vec(&mut bounds, refs.len())?;
+        let mut bounds = Vec::with_capacity(refs.len());
         for shape in &refs {
-            try_push_vec(&mut bounds, shape.bounds())?;
+            bounds.push(shape.bounds());
         }
         interacting_components(&bounds, op)?
     } else {
@@ -371,11 +358,10 @@ fn overlay_bounds_facts_from(
 fn overlay_bounds_facts_geographic(
     originals: &GeographicInputs<'_>,
     op: OverlayOp,
-) -> Result<OverlayBoundsFacts> {
-    let mut bounds = Vec::new();
-    crate::try_reserve_vec(&mut bounds, originals.views().len())?;
+) -> OverlayBoundsFacts {
+    let mut bounds = Vec::with_capacity(originals.views().len());
     for view in originals.views() {
-        try_push_vec(&mut bounds, view.shape().bounds())?;
+        bounds.push(view.shape().bounds());
     }
     let raw_coordinate_bounds_sound =
         originals.views().iter().zip(&bounds).all(|(view, bounds)| {
@@ -387,7 +373,7 @@ fn overlay_bounds_facts_geographic(
                 )
             })
         });
-    Ok(overlay_bounds_facts_from(
+    overlay_bounds_facts_from(
         bounds,
         raw_coordinate_bounds_sound,
         op,
@@ -395,7 +381,7 @@ fn overlay_bounds_facts_geographic(
             .views()
             .iter()
             .any(|view| has_nonempty_point_or_line_support(view.shape())),
-    ))
+    )
 }
 
 /// The bounds-connected groups of inputs to assemble, when that differs from
@@ -420,8 +406,7 @@ fn interacting_components(
         return Ok(None);
     }
     let count = bounds.len();
-    let mut parent = Vec::new();
-    crate::try_reserve_vec(&mut parent, count)?;
+    let mut parent = Vec::with_capacity(count);
     parent.extend(0..count);
     let _ = crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
         let (a, b) = (root(&mut parent, left), root(&mut parent, right));
@@ -439,26 +424,24 @@ fn interacting_components(
         if left == count {
             return Ok(None);
         }
-        let mut component = Vec::new();
-        crate::try_reserve_vec(&mut component, left)?;
+        let mut component = Vec::with_capacity(left);
         component.extend((0..count).filter(|&node| parent[node] == 0));
-        try_push_vec(&mut components, component)?;
+        components.push(component);
         return Ok(Some(components));
     }
     let roots = (0..count).filter(|&node| parent[node] == node).count();
     if roots == 1 {
         return Ok(None);
     }
-    let mut slot_of_root = Vec::new();
-    crate::try_reserve_vec(&mut slot_of_root, count)?;
+    let mut slot_of_root = Vec::with_capacity(count);
     slot_of_root.resize(count, usize::MAX);
-    crate::try_reserve_vec(&mut components, roots)?;
+    components.reserve(roots);
     for (node, &root) in parent.iter().enumerate() {
         if slot_of_root[root] == usize::MAX {
             slot_of_root[root] = components.len();
             components.push(Vec::new());
         }
-        try_push_vec(&mut components[slot_of_root[root]], node)?;
+        components[slot_of_root[root]].push(node);
     }
     Ok(Some(components))
 }
@@ -500,12 +483,12 @@ fn assemble_overlay(
     // and then read for nothing but those rings, which is the whole noding
     // pipeline charged to a lane that does not need it.
     if raw_polygon_loops_eligible {
-        let loops = shape_polygon_loops(inputs)?;
+        let loops = shape_polygon_loops(inputs);
         if !loops.is_empty() {
-            let polygons = crate::geometry::winding_region(&loops, |winding| winding != 0)?
-                .into_iter()
-                .map(|polygon| canonicalize_polygon(&polygon, inputs.frame()))
-                .collect::<Result<Vec<_>>>()?;
+            let mut polygons = crate::geometry::winding_region(&loops, |winding| winding != 0)?;
+            for polygon in &mut polygons {
+                *polygon = canonicalize_polygon(polygon, inputs.frame())?;
+            }
             return build_overlay_shape(Vec::new(), &[], &polygons);
         }
     }
@@ -519,17 +502,15 @@ fn assemble_joint_graph_overlay(
     raw_polygon_loops_eligible: bool,
 ) -> Result<Shape> {
     let graph = TopologyGraph::geographic_many(inputs)?;
-    let mut source_graphs = Vec::new();
-    crate::try_reserve_vec(&mut source_graphs, inputs.views().len())?;
+    let mut source_graphs = Vec::with_capacity(inputs.views().len());
     for view in inputs.views() {
-        try_push_vec(&mut source_graphs, TopologyGraph::geographic(*view)?)?;
+        source_graphs.push(TopologyGraph::geographic(*view)?);
     }
     let polygons = overlay_polygons(&graph, &source_graphs, op, raw_polygon_loops_eligible)?;
     // Overlay edges and candidate points are numerous for high-resolution
     // boundaries; prepare the retained polygons once instead of rescanning
     // every output ring for each candidate.
-    let mut polygon_indexes = Vec::new();
-    crate::try_reserve_vec(&mut polygon_indexes, polygons.len())?;
+    let mut polygon_indexes = Vec::with_capacity(polygons.len());
     for polygon in &polygons {
         polygon_indexes.push(crate::geometry::PolygonPointIndex::build(polygon)?);
     }
@@ -547,12 +528,12 @@ fn append_overlay_parts(
 ) -> Result<()> {
     shape.try_for_each_component(&mut |component| {
         match component {
-            crate::geometry::Component::Point(point) => try_push_vec(points, point)?,
+            crate::geometry::Component::Point(point) => points.push(point),
             crate::geometry::Component::LineString(line) => {
-                try_push_vec(lines, line.as_coords().clone())?;
+                lines.push(line.as_coords().clone());
             },
             crate::geometry::Component::Polygon(polygon) => {
-                try_push_vec(polygons, polygon.clone())?;
+                polygons.push(polygon.clone());
             },
         }
         Ok(())
@@ -570,26 +551,23 @@ fn overlay_polygons(
     raw_polygon_loops_eligible: bool,
 ) -> Result<Vec<crate::geometry::Polygon>> {
     if raw_polygon_loops_eligible {
-        let loops = source_polygon_loops(sources)?;
+        let loops = source_polygon_loops(sources);
         if !loops.is_empty() {
-            let polygons = crate::geometry::winding_region(&loops, |winding| winding != 0)?;
-            let mut canonical = Vec::new();
-            crate::try_reserve_vec(&mut canonical, polygons.len())?;
-            for polygon in polygons {
-                try_push_vec(&mut canonical, canonicalize_polygon(&polygon, graph.frame)?)?;
+            let mut polygons = crate::geometry::winding_region(&loops, |winding| winding != 0)?;
+            for polygon in &mut polygons {
+                *polygon = canonicalize_polygon(polygon, graph.frame)?;
             }
-            return Ok(canonical);
+            return Ok(polygons);
         }
     }
-    let mut area_edges = Vec::new();
-    crate::try_reserve_vec(&mut area_edges, graph.edges.len())?;
+    let mut area_edges = Vec::with_capacity(graph.edges.len());
     for (index, edge) in graph
         .edges
         .iter()
         .enumerate()
         .filter(|(_, edge)| graph.edge_has_area_source(edge))
     {
-        try_push_vec(&mut area_edges, (index, edge.segment))?;
+        area_edges.push((index, edge.segment));
     }
     if area_edges.is_empty() {
         return Ok(Vec::new());
@@ -601,18 +579,15 @@ fn overlay_polygons(
     {
         area_edges
     } else {
-        unwrap_geographic_area_edges(graph, graph.frame, &area_edges)?
+        unwrap_geographic_area_edges(graph, graph.frame, &area_edges)
     };
-    let mut segments = Vec::new();
-    crate::try_reserve_vec(&mut segments, arranged_edges.len())?;
+    let mut segments = Vec::with_capacity(arranged_edges.len());
     for &(_, segment) in &arranged_edges {
-        try_push_vec(&mut segments, segment)?;
+        segments.push(segment);
     }
     let mut edge_by_endpoints: HashMap<(PointKey, PointKey), usize> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    edge_by_endpoints
-        .try_reserve(arranged_edges.len())
-        .map_err(crate::error::Error::from)?;
+    edge_by_endpoints.reserve(arranged_edges.len());
     for &(edge_index, segment) in &arranged_edges {
         edge_by_endpoints
             .entry(ordered_edge(
@@ -625,17 +600,17 @@ fn overlay_polygons(
     // The joint graph already split every area edge at every source contact.
     // The arrangement below is therefore the one and only face assembly for
     // both binary and aggregate overlays.
-    let arrangement = Arrangement::new_with_rings(&segments);
-    let mut selected = Vec::new();
-    crate::try_reserve_vec(&mut selected, arrangement.faces.len())?;
+    let arrangement = Arrangement::new_with_rings(&segments)?;
+    let mut selected = Vec::with_capacity(arrangement.faces.len());
+    let mut area_membership = Vec::new();
     for face in &arrangement.faces {
         if face.ring.len() < 4 || face.area_sign == AreaSign::Zero {
-            try_push_vec(&mut selected, 0)?;
+            selected.push(0);
             continue;
         }
         let mut probe = None;
-        let mut area_membership = Vec::new();
-        crate::try_reserve_vec(&mut area_membership, sources.len())?;
+        area_membership.clear();
+        area_membership.reserve(sources.len());
         for (source_row, source) in sources.iter().enumerate() {
             let inside = face_area_side(
                 &face.ring,
@@ -651,22 +626,18 @@ fn overlay_polygons(
                 });
                 source.contains_area_interior(probe)
             });
-            try_push_vec(&mut area_membership, inside)?;
+            area_membership.push(inside);
         }
-        try_push_vec(
-            &mut selected,
-            i32::from(keep_area_face(&area_membership, op)),
-        )?;
+        selected.push(i32::from(keep_area_face(&area_membership, op)));
     }
-    let regions = crate::geometry::assemble_region_polygons(
-        arrangement.region_rings(&selected, |keep| keep != 0),
+    drop(area_membership);
+    let mut regions = crate::geometry::assemble_region_polygons(
+        arrangement.region_rings(&selected, |keep| keep != 0)?,
     )?;
-    let mut canonical = Vec::new();
-    crate::try_reserve_vec(&mut canonical, regions.len())?;
-    for polygon in regions {
-        try_push_vec(&mut canonical, canonicalize_polygon(&polygon, graph.frame)?)?;
+    for polygon in &mut regions {
+        *polygon = canonicalize_polygon(polygon, graph.frame)?;
     }
-    Ok(canonical)
+    Ok(regions)
 }
 
 fn has_nonempty_point_or_line_support(shape: &Shape) -> bool {
@@ -687,35 +658,31 @@ fn has_nonempty_point_or_line_support(shape: &Shape) -> bool {
 fn least_crossed_meridian(
     axis: crate::geographic::PeriodicAxis,
     edges: &[(usize, Segment)],
-) -> Result<f64> {
+) -> f64 {
     let canonical = |longitude: f64| {
         axis.canonicalize(longitude)
             .expect("validated geographic longitude")
             .get()
     };
-    let mut vertices = Vec::new();
-    crate::try_reserve_vec(&mut vertices, edges.len())?;
+    let mut vertices = Vec::with_capacity(edges.len());
     for &(_, segment) in edges {
-        try_push_vec(&mut vertices, canonical(segment.start.x))?;
+        vertices.push(canonical(segment.start.x));
     }
-    vertices.sort_by(f64::total_cmp);
+    vertices.sort_unstable_by(f64::total_cmp);
     vertices.dedup();
     let period = axis.period();
     let Some(&first) = vertices.first() else {
-        return Ok(-axis.half_period());
+        return -axis.half_period();
     };
     // Candidate meridians sit midway between neighbouring vertex longitudes,
     // including the gap that wraps past the seam.
-    let mut candidates = Vec::new();
-    crate::try_reserve_vec(&mut candidates, vertices.len())?;
+    let mut candidates = Vec::with_capacity(vertices.len());
     for pair in vertices.array_windows::<2>() {
-        try_push_vec(&mut candidates, f64::midpoint(pair[0], pair[1]))?;
+        candidates.push(f64::midpoint(pair[0], pair[1]));
     }
     let last = *vertices.last().expect("nonempty vertices");
-    try_push_vec(&mut candidates, f64::midpoint(last, first + period))?;
-    let mut crossings = Vec::new();
-    crate::try_reserve_vec(&mut crossings, candidates.len() + 1)?;
-    crossings.resize(candidates.len() + 1, 0_i64);
+    candidates.push(f64::midpoint(last, first + period));
+    let mut crossings = vec![0_i64; candidates.len() + 1];
     let add = |from: f64, to: f64, crossings: &mut Vec<i64>| {
         let lo = candidates.partition_point(|&candidate| candidate <= from);
         let hi = candidates.partition_point(|&candidate| candidate < to);
@@ -753,17 +720,16 @@ fn least_crossed_meridian(
             best = (running, candidate);
         }
     }
-    Ok(best.1)
+    best.1
 }
 
 fn unwrap_geographic_area_edges(
     graph: &TopologyGraph,
     frame: crate::geographic::GeographicFrame,
     edges: &[(usize, Segment)],
-) -> Result<Vec<(usize, Segment)>> {
+) -> Vec<(usize, Segment)> {
     let axis = frame.longitude();
-    let mut adjacency = Vec::new();
-    crate::try_reserve_vec(&mut adjacency, graph.nodes.len())?;
+    let mut adjacency = Vec::with_capacity(graph.nodes.len());
     adjacency.resize_with(graph.nodes.len(), Vec::new);
     for &(_, segment) in edges {
         let start = graph
@@ -783,12 +749,11 @@ fn unwrap_geographic_area_edges(
         {
             delta = full_turn;
         }
-        try_push_vec(&mut adjacency[start], (end, delta))?;
-        try_push_vec(&mut adjacency[end], (start, -delta))?;
+        adjacency[start].push((end, delta));
+        adjacency[end].push((start, -delta));
     }
 
-    let mut longitudes = Vec::new();
-    crate::try_reserve_vec(&mut longitudes, graph.nodes.len())?;
+    let mut longitudes = Vec::with_capacity(graph.nodes.len());
     longitudes.resize(graph.nodes.len(), None);
     // Chart extent of each connected boundary component, in walk order.
     let mut components: Vec<(Vec<usize>, f64, f64)> = Vec::new();
@@ -798,23 +763,22 @@ fn unwrap_geographic_area_edges(
         }
         longitudes[seed] = Some(graph.nodes[seed].point.x);
         let mut members = Vec::new();
-        let mut stack = Vec::new();
-        crate::try_reserve_vec(&mut stack, graph.nodes.len())?;
-        try_push_vec(&mut stack, seed)?;
+        let mut stack = Vec::with_capacity(graph.nodes.len());
+        stack.push(seed);
         let (mut west, mut east) = (f64::INFINITY, f64::NEG_INFINITY);
         while let Some(node) = stack.pop() {
             let longitude = longitudes[node].expect("assigned chart longitude");
-            try_push_vec(&mut members, node)?;
+            members.push(node);
             west = west.min(longitude);
             east = east.max(longitude);
             for &(neighbor, delta) in &adjacency[node] {
                 if longitudes[neighbor].is_none() {
                     longitudes[neighbor] = Some(longitude + delta);
-                    try_push_vec(&mut stack, neighbor)?;
+                    stack.push(neighbor);
                 }
             }
         }
-        try_push_vec(&mut components, (members, west, east))?;
+        components.push((members, west, east));
     }
     // Each component is unwrapped from its own seed, so a hole or island that
     // shares no boundary with its surroundings can land a full turn away from
@@ -822,7 +786,7 @@ fn unwrap_geographic_area_edges(
     // cut into the one window east of that meridian; the chart is then the
     // sphere cut open along it, and nesting between components survives.
     let period = axis.period();
-    let cut = least_crossed_meridian(axis, edges)?;
+    let cut = least_crossed_meridian(axis, edges);
     for (members, west, east) in &components {
         let turns = ((west - cut) / period).floor();
         let window_west = cut + turns * period;
@@ -837,8 +801,7 @@ fn unwrap_geographic_area_edges(
         }
     }
 
-    let mut unwrapped = Vec::new();
-    crate::try_reserve_vec(&mut unwrapped, edges.len())?;
+    let mut unwrapped = Vec::with_capacity(edges.len());
     for &(index, segment) in edges {
         let start = graph
             .node_for(segment.start)
@@ -848,101 +811,91 @@ fn unwrap_geographic_area_edges(
             .node_for(segment.end)
             .expect("area edge end has a graph node")
             .index();
-        try_push_vec(
-            &mut unwrapped,
-            (index, Segment {
-                start: XY::new(
-                    longitudes[start].expect("area edge start has a chart longitude"),
-                    segment.start.y,
-                ),
-                end: XY::new(
-                    longitudes[end].expect("area edge end has a chart longitude"),
-                    segment.end.y,
-                ),
-            }),
-        )?;
+        unwrapped.push((index, Segment {
+            start: XY::new(
+                longitudes[start].expect("area edge start has a chart longitude"),
+                segment.start.y,
+            ),
+            end: XY::new(
+                longitudes[end].expect("area edge end has a chart longitude"),
+                segment.end.y,
+            ),
+        }));
     }
-    Ok(unwrapped)
+    unwrapped
 }
 
 /// The operands' own polygon rings as winding loops, in the order the graph
 /// builder would collect them. [`source_polygon_loops`] reads the same rings
 /// back out of built graphs; this reads them from the shapes, so the
 /// winding-union lane never has to build one.
-fn shape_polygon_loops(inputs: &GeographicInputs<'_>) -> Result<Vec<(Vec<f64>, Vec<f64>)>> {
-    fn visit(shape: &Shape, out: &mut Vec<(Vec<f64>, Vec<f64>)>) -> Result<()> {
+fn shape_polygon_loops(inputs: &GeographicInputs<'_>) -> Vec<(Vec<f64>, Vec<f64>)> {
+    fn visit(shape: &Shape, out: &mut Vec<(Vec<f64>, Vec<f64>)>) {
         match shape {
-            Shape::Polygon(polygon) => push_polygon_loops(polygon, out)?,
+            Shape::Polygon(polygon) => push_polygon_loops(polygon, out),
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    push_polygon_loops(polygon, out)?;
+                    push_polygon_loops(polygon, out);
                 }
             },
             Shape::GeometryCollection(parts) => {
                 for part in parts {
-                    visit(part, out)?;
+                    visit(part, out);
                 }
             },
             _ => {},
         }
-        Ok(())
     }
 
     let mut out = Vec::new();
     for view in inputs.views() {
-        visit(view.shape(), &mut out)?;
+        visit(view.shape(), &mut out);
     }
-    Ok(out)
+    out
 }
 
-fn push_polygon_loops(
-    polygon: &crate::geometry::Polygon,
-    out: &mut Vec<(Vec<f64>, Vec<f64>)>,
-) -> Result<()> {
+fn push_polygon_loops(polygon: &crate::geometry::Polygon, out: &mut Vec<(Vec<f64>, Vec<f64>)>) {
     for ring in polygon.rings() {
-        if let Some(loop_columns) = ring_loop_columns(ring)? {
-            try_push_vec(out, loop_columns)?;
+        if let Some(loop_columns) = ring_loop_columns(ring) {
+            out.push(loop_columns);
         }
     }
-    Ok(())
 }
 
 /// One ring as open `(xs, ys)` columns — the closing repeat dropped, and
 /// nothing shorter than a triangle.
-fn ring_loop_columns(ring: &crate::geometry::Ring) -> Result<Option<(Vec<f64>, Vec<f64>)>> {
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, ring.coord_count())?;
-    for point in ring.iter_coords() {
-        try_push_vec(&mut points, point)?;
-    }
+fn ring_loop_columns(ring: &crate::geometry::Ring) -> Option<(Vec<f64>, Vec<f64>)> {
+    let mut points = Vec::with_capacity(ring.coord_count());
+    points.extend(ring.iter_coords());
     if points.len() > 1 && same_point(points[0], *points.last().expect("non-empty ring")) {
         points.pop();
     }
     if points.len() < 3 {
-        return Ok(None);
+        return None;
     }
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    crate::try_reserve_pair(&mut xs, &mut ys, points.len())?;
+    xs.reserve(points.len());
+    ys.reserve(points.len());
     for point in points {
-        try_push_vec(&mut xs, point.x)?;
-        try_push_vec(&mut ys, point.y)?;
+        xs.push(point.x);
+        ys.push(point.y);
     }
-    Ok(Some((xs, ys)))
+    Some((xs, ys))
 }
 
-fn source_polygon_loops(sources: &[TopologyGraph]) -> Result<Vec<(Vec<f64>, Vec<f64>)>> {
+fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> {
     let mut loops = Vec::new();
     for source in sources {
         for support in &source.area_support {
             for ring in support.source().rings() {
-                if let Some(columns) = ring_loop_columns(ring)? {
-                    try_push_vec(&mut loops, columns)?;
+                if let Some(columns) = ring_loop_columns(ring) {
+                    loops.push(columns);
                 }
             }
         }
     }
-    Ok(loops)
+    loops
 }
 
 /// The face's membership in one source, read from the source's own edges on
@@ -1000,8 +953,7 @@ fn canonicalize_polygon(
 ) -> Result<crate::geometry::Polygon> {
     let axis = frame.longitude();
     let canonicalize = |ring: &crate::geometry::Ring| {
-        let mut points = Vec::new();
-        crate::try_reserve_vec(&mut points, ring.coord_count())?;
+        let mut points = Vec::with_capacity(ring.coord_count());
         for point in ring.coords().iter_coords() {
             let longitude = axis
                 .canonicalize(point.x)
@@ -1012,20 +964,23 @@ fn canonicalize_polygon(
                 == crate::geographic::SeamIdentity::Pole;
             let on_seam =
                 longitude.identity(axis) == crate::geographic::SeamIdentity::Seam && !at_pole;
-            try_push_vec(
-                &mut points,
-                (Point::new_raw_xy(longitude.get(), point.y), on_seam),
-            )?;
+            points.push((Point::new_raw_xy(longitude.get(), point.y), on_seam));
         }
         spell_seam_vertices(&mut points, axis.period());
-        let points: Vec<Point> = points.into_iter().map(|(point, _)| point).collect();
-        crate::geometry::Ring::try_from_closed(CoordSeq::try_from_points(&points)?)
+        let mut xs = Vec::new();
+        let mut ys = Vec::new();
+        xs.reserve(points.len());
+        ys.reserve(points.len());
+        for (point, _) in points {
+            xs.push(point.x);
+            ys.push(point.y);
+        }
+        crate::geometry::Ring::try_from_closed(CoordSeq::try_from_vecs(xs, ys, None, None)?)
     };
     let shell = canonicalize(&polygon.shell)?;
-    let mut holes = Vec::new();
-    crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
+    let mut holes = Vec::with_capacity(polygon.holes.len());
     for hole in polygon.holes.iter() {
-        try_push_vec(&mut holes, canonicalize(hole)?)?;
+        holes.push(canonicalize(hole)?);
     }
     crate::geometry::Polygon::new(shell, holes)
 }
@@ -1135,9 +1090,7 @@ fn output_polygon_edges(
             .ok_or(ResourceError::SizeOverflow)
     })?;
     let mut edges = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-    edges
-        .try_reserve(capacity)
-        .map_err(crate::error::Error::from)?;
+    edges.reserve(capacity);
     for polygon in polygons {
         for ring in polygon.rings() {
             for [start, end] in ring.segment_pairs() {
@@ -1155,8 +1108,7 @@ fn overlay_lines(
     polygon_edges: &HashSet<(PointKey, PointKey)>,
     op: OverlayOp,
 ) -> Result<Vec<CoordSeq>> {
-    let mut lines = Vec::new();
-    crate::try_reserve_vec(&mut lines, graph.edges.len())?;
+    let mut lines = Vec::with_capacity(graph.edges.len());
     for edge in &graph.edges {
         let edge_key = ordered_edge(
             PointKey::new(edge.segment.start),
@@ -1170,21 +1122,17 @@ fn overlay_lines(
             continue;
         }
         let midpoint = segment_midpoint(edge.segment);
-        let mut covered = Vec::new();
-        crate::try_reserve_vec(&mut covered, sources.len())?;
-        let mut line_membership = Vec::new();
-        crate::try_reserve_vec(&mut line_membership, sources.len())?;
+        let mut covered = Vec::with_capacity(sources.len());
+        let mut line_membership = Vec::with_capacity(sources.len());
         for (source_row, source) in sources.iter().enumerate() {
-            try_push_vec(
-                &mut covered,
+            covered.push(
                 source.locate_edge_piece(edge.segment) != TopologyLocation::Exterior
                     || graph.edge_has_line_source_for_row(edge, source_row as u32),
-            )?;
-            try_push_vec(
-                &mut line_membership,
+            );
+            line_membership.push(
                 source.has_line_support(midpoint.xy())
                     || graph.edge_has_line_source_for_row(edge, source_row as u32),
-            )?;
+            );
         }
         let result_covers = polygon_indexes.iter().try_fold(false, |covered, polygon| {
             Ok::<_, crate::error::Error>(covered || polygon.covers_point(midpoint)?)
@@ -1203,10 +1151,10 @@ fn overlay_lines(
             },
         };
         if keep {
-            try_push_vec(
-                &mut lines,
-                CoordSeq::try_from_xy(&[edge.segment.start, edge.segment.end])?,
-            )?;
+            lines.push(CoordSeq::try_from_xy(&[
+                edge.segment.start,
+                edge.segment.end,
+            ])?);
         }
     }
     Ok(lines)
@@ -1228,30 +1176,21 @@ fn overlay_points(
             0
         })
         .ok_or(ResourceError::SizeOverflow)?;
-    let mut candidates = Vec::new();
-    crate::try_reserve_vec(&mut candidates, candidate_capacity)?;
-    for source in graph
-        .source_points
-        .iter()
-        .filter(|source| !source.collapsed_line)
-    {
-        try_push_vec(&mut candidates, source.point.xy().point())?;
-    }
-    if op == OverlayOp::Intersection {
-        for node in &graph.nodes {
-            try_push_vec(&mut candidates, node.point.point())?;
-        }
-    }
     let mut kept = Vec::new();
-    crate::try_reserve_vec(&mut kept, candidates.len())?;
-    for point in candidates {
-        let mut membership = Vec::new();
-        crate::try_reserve_vec(&mut membership, sources.len())?;
+    let mut membership = Vec::new();
+    let mut initialized = false;
+    let mut visit = |point: Point| -> Result<()> {
+        if !initialized {
+            kept.reserve(candidate_capacity);
+            membership.reserve(sources.len());
+            initialized = true;
+        }
+        membership.clear();
         for (source_row, source) in sources.iter().enumerate() {
             let value = source.locate_point_for_overlay(point.xy()) != TopologyLocation::Exterior
                 || (op == OverlayOp::Intersection
                     && graph.has_line_source_at_node(point.xy(), source_row as u32));
-            try_push_vec(&mut membership, value)?;
+            membership.push(value);
         }
         let keep = match op {
             OverlayOp::Union => membership.iter().any(|&present| present),
@@ -1276,12 +1215,29 @@ fn overlay_points(
                     .any(|[start, end]| point_on_segment(point, start, end))
             })
         {
-            try_push_vec(&mut kept, point)?;
+            kept.push(point);
+        }
+        Ok(())
+    };
+    for source in graph
+        .source_points
+        .iter()
+        .filter(|source| !source.collapsed_line)
+    {
+        visit(source.point.xy().point())?;
+    }
+    if op == OverlayOp::Intersection {
+        for node in &graph.nodes {
+            visit(node.point.point())?;
         }
     }
-    let mut candidates = kept;
-    dedup_points(&mut candidates)?;
-    Ok(candidates)
+    drop(visit);
+    drop(membership);
+    if !initialized {
+        return Ok(Vec::new());
+    }
+    dedup_points(&mut kept)?;
+    Ok(kept)
 }
 
 pub(crate) fn empty_nary_overlay_shape(inputs: &[&Shape], op: OverlayOp) -> Shape {
