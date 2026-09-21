@@ -16,7 +16,6 @@ pub(crate) struct IndexedTopology {
 #[derive(Default)]
 pub(crate) struct IndexedTopologyScratch {
     pub(crate) component_stack: Vec<u32>,
-    pub(crate) face_cursor: Vec<u32>,
     pub(crate) successor: Vec<u32>,
     pub(crate) edge_slots: Vec<[u32; 2]>,
 }
@@ -164,7 +163,6 @@ impl IndexedTopology {
 impl IndexedTopologyScratch {
     pub(crate) fn clear(&mut self) {
         self.component_stack.clear();
-        self.face_cursor.clear();
         self.successor.clear();
         self.edge_slots.clear();
     }

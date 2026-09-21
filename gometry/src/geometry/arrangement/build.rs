@@ -1,4 +1,5 @@
 use super::walk::arrangement_faces;
+use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{
     Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares, build_csr,
     dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts, positional_loop_pieces,
@@ -14,14 +15,14 @@ impl Arrangement<i32> {
     /// [`Arrangement::region_rings`]; use [`Arrangement::new_with_rings`]
     /// to materialize every face's ring.
     #[cfg(test)]
-    pub(crate) fn new(segments: &[Segment]) -> Self {
+    pub(crate) fn new(segments: &[Segment]) -> Result<Self> {
         Self::weighted(segments, |_| 1)
     }
 
     /// [`Arrangement::new`] with every [`Face::ring`] materialized — for
     /// consumers that read the faces themselves (coverage cleaning) rather
     /// than a winding-selected region boundary.
-    pub(crate) fn new_with_rings(segments: &[Segment]) -> Self {
+    pub(crate) fn new_with_rings(segments: &[Segment]) -> Result<Self> {
         Self::build::<true>(segments, |_| 1)
     }
 
@@ -52,8 +53,7 @@ impl Arrangement<i32> {
         };
         let mut spares = arrangement_spares();
         let mut typed = typed_spares::<i32>();
-        let mut ids = std::mem::take(&mut spares.ids);
-        ids.clear();
+        let ids = spares.take_ids()?;
         let vertex_count = n + group_count as usize;
         let mut points = std::mem::take(&mut spares.points);
         points.clear();
@@ -110,7 +110,7 @@ impl Arrangement<i32> {
             spares.topology.starts = starts;
             spares.topology.targets = targets;
             spares.edge_of_slot = edge_of_slot;
-            spares.ids = ids;
+            spares.ids = Some(ids);
             spares.filled = filled;
             typed.multiplicities = multiplicities;
             return Ok(None);
@@ -121,7 +121,7 @@ impl Arrangement<i32> {
         spares.edge_of_slot = edge_of_slot;
         spares.filled = filled;
         typed.multiplicities = multiplicities;
-        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)))
+        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)?))
     }
 }
 
@@ -150,37 +150,49 @@ impl<W: WindingWeight> Arrangement<W> {
         };
         let mut spares = arrangement_spares();
         let mut typed = typed_spares::<W>();
-        let mut ids = std::mem::take(&mut spares.ids);
-        ids.clear();
-        let vertex_count = n + group_count as usize;
+        let mut ids = spares.take_ids()?;
+        let vertex_count = n
+            .checked_add(group_count as usize)
+            .ok_or(ResourceError::SizeOverflow)?;
+        u32::try_from(vertex_count).map_err(|_| ResourceError::SizeOverflow)?;
         let mut points = std::mem::take(&mut spares.points);
         points.clear();
         points.reserve(vertex_count);
         let (is_cut, pieces, anchor_ids) =
-            positional_loop_pieces(segments, loop_ranges, &cuts, group_count, &mut points);
+            positional_loop_pieces(segments, loop_ranges, &cuts, group_count, &mut points)?;
         debug_assert_eq!(points.len(), vertex_count);
         let mut starts = std::mem::take(&mut spares.topology.starts);
         starts.clear();
-        starts.reserve(vertex_count + 1);
+        starts.reserve(
+            vertex_count
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        );
         starts.push(0);
         let mut total = 0_u32;
         for &cut in &is_cut {
-            total += if cut { 4 } else { 2 };
+            total = total
+                .checked_add(if cut { 4 } else { 2 })
+                .ok_or(ResourceError::SizeOverflow)?;
             starts.push(total);
         }
         let half_edge_count = total as usize;
         debug_assert_eq!(half_edge_count, 2 * pieces.len());
         let mut targets = std::mem::take(&mut spares.topology.targets);
         targets.clear();
+        targets.reserve(half_edge_count);
         targets.resize(half_edge_count, 0);
         let mut edge_of_slot = std::mem::take(&mut spares.edge_of_slot);
         edge_of_slot.clear();
+        edge_of_slot.reserve(half_edge_count);
         edge_of_slot.resize(half_edge_count, 0);
         let mut multiplicities = std::mem::take(&mut typed.multiplicities);
         multiplicities.clear();
+        multiplicities.reserve(half_edge_count);
         multiplicities.resize(half_edge_count, W::UNSET);
         let mut filled = std::mem::take(&mut spares.filled);
         filled.clear();
+        filled.reserve(vertex_count);
         filled.resize(vertex_count, 0);
         for (edge, &(from, to, loop_index)) in pieces.iter().enumerate() {
             let weight = weight_of_loop(loop_index as usize);
@@ -206,7 +218,7 @@ impl<W: WindingWeight> Arrangement<W> {
             spares.topology.starts = starts;
             spares.topology.targets = targets;
             spares.edge_of_slot = edge_of_slot;
-            spares.ids = ids;
+            spares.ids = Some(ids);
             spares.filled = filled;
             typed.multiplicities = multiplicities;
             return Ok(None);
@@ -224,30 +236,30 @@ impl<W: WindingWeight> Arrangement<W> {
         spares.topology.targets = targets;
         spares.edge_of_slot = edge_of_slot;
         typed.multiplicities = multiplicities;
-        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)))
+        Ok(Some(Self::finish_topology::<false>(ids, spares, typed)?))
     }
 
     /// Build from noded directed segments, `weight_of(index)` giving each
     /// source segment's winding weight (a binary overlay tags operands
     /// with per-operand units). Face rings are not collected (see
     /// [`Arrangement::new`]).
-    pub(crate) fn weighted(segments: &[Segment], weight_of: impl Fn(usize) -> W) -> Self {
+    pub(crate) fn weighted(segments: &[Segment], weight_of: impl Fn(usize) -> W) -> Result<Self> {
         Self::build::<false>(segments, weight_of)
     }
 
     pub(crate) fn build<const RINGS: bool>(
         segments: &[Segment],
         weight_of: impl Fn(usize) -> W,
-    ) -> Self {
+    ) -> Result<Self> {
         let mut spares = arrangement_spares();
         let mut typed = typed_spares::<W>();
-        let (ids, points, edges, connected) = dedup_vertices_and_edges(
+        let (ids, points, edges) = dedup_vertices_and_edges(
             segments,
             weight_of,
-            std::mem::take(&mut spares.ids),
+            spares.take_ids()?,
             std::mem::take(&mut spares.points),
             std::mem::take(&mut typed.edges),
-        );
+        )?;
         let (starts, mut targets, mut multiplicities, mut edge_of_slot) = build_csr(
             points.len(),
             &edges,
@@ -255,7 +267,7 @@ impl<W: WindingWeight> Arrangement<W> {
             std::mem::take(&mut spares.topology.targets),
             std::mem::take(&mut typed.multiplicities),
             std::mem::take(&mut spares.edge_of_slot),
-        );
+        )?;
         typed.edges = edges;
         typed.edges.clear();
         sort_rows_counterclockwise(
@@ -270,7 +282,6 @@ impl<W: WindingWeight> Arrangement<W> {
         spares.topology.targets = targets;
         spares.edge_of_slot = edge_of_slot;
         typed.multiplicities = multiplicities;
-        let _ = connected;
         Self::finish_topology::<RINGS>(ids, spares, typed)
     }
 
@@ -281,7 +292,7 @@ impl<W: WindingWeight> Arrangement<W> {
         ids: HashMap<PointKey, u32>,
         mut core: crate::scratch_pool::ScratchLease<arrangement::ArrangementSpares>,
         typed: crate::scratch_pool::ScratchLease<TypedSpares<W>>,
-    ) -> Self {
+    ) -> Result<Self> {
         let component_count = {
             let ArrangementSpares {
                 topology,
@@ -295,7 +306,9 @@ impl<W: WindingWeight> Arrangement<W> {
             topology.twins.reserve(slots);
             topology.component_of.reserve(vertices);
             topology.face_of.reserve(slots);
-            topology.face_starts.reserve(slots + 1);
+            topology
+                .face_starts
+                .reserve(slots.checked_add(1).ok_or(ResourceError::SizeOverflow)?);
             topology.face_slots.reserve(slots);
             topology_scratch.component_stack.reserve(vertices);
             topology_scratch.successor.reserve(slots);
@@ -303,15 +316,15 @@ impl<W: WindingWeight> Arrangement<W> {
             topology.finish(edge_of_slot, topology_scratch)
         };
         core.edge_of_slot.clear();
-        core.ids = ids;
+        core.ids = Some(ids);
         let faces = arrangement_faces::<RINGS>(&core.points, &core.topology);
-        Self {
+        Ok(Self {
             core,
             typed,
             faces,
             component_count,
             thread_bound: std::marker::PhantomData,
-        }
+        })
     }
 
     /// Winding number per face from one `seed` value per component
@@ -329,6 +342,7 @@ impl<W: WindingWeight> Arrangement<W> {
         let mut windings = vec![W::UNSET; self.faces.len()];
         let mut queue = std::mem::take(&mut self.core.winding_queue);
         queue.clear();
+        queue.reserve(self.faces.len());
         // Every component's outer face is its MOST NEGATIVE walk (it
         // encloses the whole component, so no other walk can be more
         // negative). Seeding anything else — in particular zero-area
@@ -336,6 +350,7 @@ impl<W: WindingWeight> Arrangement<W> {
         // interior face with the outside winding and poison the fill.
         let mut outer = std::mem::take(&mut self.core.outer);
         outer.clear();
+        outer.reserve(self.component_count as usize);
         outer.resize(self.component_count as usize, None);
         for (face_id, face) in self.faces.iter().enumerate() {
             let slot = &mut outer[face.component as usize];
@@ -389,6 +404,7 @@ impl<W: WindingWeight> Arrangement<W> {
         probes: &mut Vec<Option<XY>>,
     ) {
         probes.clear();
+        probes.reserve(self.component_count as usize);
         probes.resize(self.component_count as usize, None);
         for (vertex, &component) in self.component_of.iter().enumerate() {
             let slot = &mut probes[component as usize];
@@ -398,6 +414,7 @@ impl<W: WindingWeight> Arrangement<W> {
         }
         // Every component is seeded by at least one vertex above.
         points.clear();
+        points.reserve(probes.len());
         points.extend(
             probes
                 .iter()
@@ -409,7 +426,10 @@ impl<W: WindingWeight> Arrangement<W> {
     /// Component id of the loop whose first point is `point` (must be a
     /// vertex of the arrangement).
     pub(crate) fn component_of_point(&self, point: XY) -> u32 {
-        let vertex = self.ids[&PointKey::new(point)];
+        let vertex = self
+            .ids
+            .as_ref()
+            .expect("completed arrangement has vertex ids")[&PointKey::new(point)];
         self.component_of[vertex as usize]
     }
 
@@ -437,6 +457,7 @@ impl<W: WindingWeight> Arrangement<W> {
         let mut spares = region_spares();
         let mut used = std::mem::take(&mut spares.used);
         used.clear();
+        used.reserve(half_edge_count);
         used.resize(half_edge_count, false);
         let mut rings = Vec::new();
         // Pinch-splitter scratch, reused across rings AND across calls:
@@ -444,6 +465,7 @@ impl<W: WindingWeight> Arrangement<W> {
         // replaces the old per-vertex coordinate hashing entirely.
         let mut position_of = std::mem::take(&mut spares.position_of);
         position_of.clear();
+        position_of.reserve(self.points.len());
         position_of.resize(self.points.len(), (0, 0));
         let mut generation = 0_u32;
         let mut ring = std::mem::take(&mut spares.ring);

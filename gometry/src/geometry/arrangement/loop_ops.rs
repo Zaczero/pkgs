@@ -1,5 +1,5 @@
-use ahash::HashSetExt as _;
-
+use crate::collections::{HashSet, collection_hash_state};
+use crate::error::ResourceError;
 use crate::geometry::arrangement::{WindingWeight, compare_departures};
 use crate::geometry::overlay::NodingScan;
 use crate::geometry::{PointKey, Segment, XY, overlay, same_point, segments};
@@ -55,7 +55,8 @@ pub(crate) fn positional_loop_cuts(
     // full_noding_events, so stacked multiparts paid a full quadratic node
     // only to fall back to the general path that dedups first.
     {
-        let mut seen = crate::collections::HashSet::with_capacity(n);
+        let mut seen = HashSet::with_hasher(collection_hash_state()?.clone());
+        seen.reserve(n);
         if !segments
             .iter()
             .all(|segment| seen.insert(PointKey::new(segment.start)))
@@ -81,10 +82,15 @@ pub(crate) fn positional_loop_cuts(
     // (the crossing is the rounding of one exact point). Anything else —
     // concurrent crossings, ulp-twin placements, one-sided events left by
     // endpoint-filtered T-junctions — bails.
-    let mut by_key: Vec<u32> = (0..n_events as u32).collect();
+    let event_count = u32::try_from(n_events).map_err(|_| ResourceError::SizeOverflow)?;
+    let mut by_key = Vec::with_capacity(n_events);
+    by_key.extend(0..event_count);
     by_key.sort_unstable_by_key(|&event| PointKey::new(events[event as usize].1));
     let mut group_of = vec![u32::MAX; n_events];
-    let mut keys: Vec<PointKey> = Vec::with_capacity(n + n_events / 2);
+    let key_count = n
+        .checked_add(n_events / 2)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut keys = Vec::with_capacity(key_count);
     keys.extend(segments.iter().map(|segment| PointKey::new(segment.start)));
     let mut group_count = 0_u32;
     let mut run = 0;
@@ -112,19 +118,20 @@ pub(crate) fn positional_loop_cuts(
     // landing on a vertex), zero-length pieces — all MERGE in the general
     // dedup; positional identity cannot express that. Duplicate detection
     // only — a presized set beats sorting the whole key vector.
-    let mut seen = crate::collections::HashSet::with_capacity(keys.len());
+    let mut seen = HashSet::with_hasher(collection_hash_state()?.clone());
+    seen.reserve(keys.len());
     if !keys.iter().all(|&key| seen.insert(key)) {
         return Ok(None);
     }
-    // Cuts per ordinal, ordered exactly like split_segment_at: a stable
-    // directed-coordinate sort (ordinal and group ride along as payload).
-    let mut cuts: Vec<LoopCut> = std::iter::zip(&events, &group_of)
-        .map(|(&(ordinal, point), &group)| LoopCut {
+    // Unique cuts per ordinal have the same order as split_segment_at.
+    let mut cuts = Vec::with_capacity(n_events);
+    cuts.extend(
+        std::iter::zip(&events, &group_of).map(|(&(ordinal, point), &group)| LoopCut {
             ordinal,
             point,
             group,
-        })
-        .collect();
+        }),
+    );
     let mut slice_start = 0;
     while slice_start < n_events {
         let ordinal = events[slice_start].0;
@@ -134,7 +141,7 @@ pub(crate) fn positional_loop_cuts(
         }
         let segment = segments[ordinal as usize];
         let slice = &mut cuts[slice_start..slice_end];
-        slice.sort_by(|left, right| {
+        slice.sort_unstable_by(|left, right| {
             segments::compare_along_segment(segment, left.point, right.point)
         });
         // Same-coordinate neighbors are impossible here: `same_point` and
@@ -223,11 +230,19 @@ pub(crate) fn positional_loop_pieces(
     cuts: &[LoopCut],
     group_count: u32,
     points: &mut Vec<XY>,
-) -> LoopDecomposition {
-    let mut is_cut: Vec<bool> = Vec::with_capacity(segments.len() + group_count as usize);
+) -> crate::error::Result<LoopDecomposition> {
+    let vertex_count = segments
+        .len()
+        .checked_add(group_count as usize)
+        .ok_or(ResourceError::SizeOverflow)?;
+    let piece_count = segments
+        .len()
+        .checked_add(cuts.len())
+        .ok_or(ResourceError::SizeOverflow)?;
+    let mut is_cut = Vec::with_capacity(vertex_count);
     let mut group_vertex = vec![u32::MAX; group_count as usize];
-    let mut pieces: Vec<(u32, u32, u32)> = Vec::with_capacity(segments.len() + cuts.len());
-    let mut anchor_ids: Vec<u32> = Vec::with_capacity(loop_ranges.len());
+    let mut pieces = Vec::with_capacity(piece_count);
+    let mut anchor_ids = Vec::with_capacity(loop_ranges.len());
     let mut cursor = 0;
     for (loop_index, &(start, end)) in loop_ranges.iter().enumerate() {
         let loop_index = loop_index as u32;
@@ -266,7 +281,7 @@ pub(crate) fn positional_loop_pieces(
             current = segment_end;
         }
     }
-    (is_cut, pieces, anchor_ids)
+    Ok((is_cut, pieces, anchor_ids))
 }
 
 /// Order every CSR row of a single-loop build to match the general path:

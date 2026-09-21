@@ -79,7 +79,7 @@ pub(crate) struct ArrangementSpares {
     pub(crate) topology: IndexedTopology,
     pub(crate) topology_scratch: IndexedTopologyScratch,
     pub(crate) edge_of_slot: Vec<u32>,
-    pub(crate) ids: HashMap<PointKey, u32>,
+    pub(crate) ids: Option<HashMap<PointKey, u32>>,
     pub(crate) filled: Vec<u32>,
     pub(crate) outer: Vec<Option<u32>>,
     pub(crate) winding_queue: std::collections::VecDeque<u32>,
@@ -91,7 +91,9 @@ impl RetainScratch for ArrangementSpares {
         self.topology.clear();
         self.topology_scratch.clear();
         self.edge_of_slot.clear();
-        self.ids.clear();
+        if let Some(ids) = &mut self.ids {
+            ids.clear();
+        }
         self.filled.clear();
         self.outer.clear();
         self.winding_queue.clear();
@@ -108,12 +110,11 @@ impl RetainScratch for ArrangementSpares {
             .saturating_add(flat_vec_retained_bytes(&self.topology.face_starts))
             .saturating_add(flat_vec_retained_bytes(&self.topology.face_slots))
             .saturating_add(flat_vec_retained_bytes(&self.edge_of_slot))
-            .saturating_add(hash_map_retained_bytes(&self.ids))
+            .saturating_add(self.ids.as_ref().map_or(0, hash_map_retained_bytes))
             .saturating_add(flat_vec_retained_bytes(&self.filled))
             .saturating_add(flat_vec_retained_bytes(
                 &self.topology_scratch.component_stack,
             ))
-            .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.face_cursor))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.successor))
             .saturating_add(flat_vec_retained_bytes(&self.topology_scratch.edge_slots))
             .saturating_add(flat_vec_retained_bytes(&self.outer))
@@ -122,6 +123,20 @@ impl RetainScratch for ArrangementSpares {
                     .capacity()
                     .saturating_mul(std::mem::size_of::<u32>()),
             )
+    }
+}
+
+impl ArrangementSpares {
+    pub(crate) fn take_ids(&mut self) -> crate::error::Result<HashMap<PointKey, u32>> {
+        match self.ids.take() {
+            Some(mut ids) => {
+                ids.clear();
+                Ok(ids)
+            },
+            None => Ok(HashMap::with_hasher(
+                crate::collections::collection_hash_state()?.clone(),
+            )),
+        }
     }
 }
 
@@ -285,13 +300,14 @@ mod tests {
         scratch.component_of.reserve_exact(23);
         scratch.filled.reserve_exact(29);
         scratch.topology_scratch.component_stack.reserve_exact(31);
-        scratch.topology_scratch.face_cursor.reserve_exact(37);
         scratch.topology_scratch.successor.reserve_exact(41);
         scratch.topology_scratch.edge_slots.reserve_exact(43);
         scratch.edge_of_slot.reserve_exact(47);
         scratch.outer.reserve_exact(41);
         scratch.winding_queue.reserve_exact(43);
-        scratch.ids.reserve(29);
+        let mut ids = scratch.take_ids().unwrap();
+        ids.reserve(29);
+        scratch.ids = Some(ids);
         assert_eq!(
             scratch.retained_bytes(),
             flat_vec_retained_bytes(&scratch.points)
@@ -302,14 +318,11 @@ mod tests {
                 .saturating_add(flat_vec_retained_bytes(&scratch.face_of))
                 .saturating_add(flat_vec_retained_bytes(&scratch.face_starts))
                 .saturating_add(flat_vec_retained_bytes(&scratch.face_slots))
-                .saturating_add(hash_map_retained_bytes(&scratch.ids))
+                .saturating_add(scratch.ids.as_ref().map_or(0, hash_map_retained_bytes))
                 .saturating_add(flat_vec_retained_bytes(&scratch.component_of))
                 .saturating_add(flat_vec_retained_bytes(&scratch.filled))
                 .saturating_add(flat_vec_retained_bytes(
                     &scratch.topology_scratch.component_stack
-                ))
-                .saturating_add(flat_vec_retained_bytes(
-                    &scratch.topology_scratch.face_cursor
                 ))
                 .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.successor))
                 .saturating_add(flat_vec_retained_bytes(
@@ -414,9 +427,11 @@ mod tests {
             let entries = SCRATCH_RETAIN_BYTES
                 / (size_of::<PointKey>() + size_of::<u32>() + size_of::<usize>())
                 + 1;
-            scratch.ids.reserve(entries);
-            assert!(hash_map_retained_bytes(&scratch.ids) > SCRATCH_RETAIN_BYTES);
+            let mut ids = scratch.take_ids().unwrap();
+            ids.reserve(entries);
+            assert!(hash_map_retained_bytes(&ids) > SCRATCH_RETAIN_BYTES);
+            scratch.ids = Some(ids);
         }
-        assert_eq!(arrangement_spares().ids.capacity(), 0);
+        assert!(arrangement_spares().ids.is_none());
     }
 }

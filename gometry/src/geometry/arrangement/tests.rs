@@ -16,7 +16,7 @@ fn loop_segments(points: &[(f64, f64)]) -> Vec<Segment> {
 }
 
 fn general(segments: &[Segment]) -> Arrangement<i32> {
-    Arrangement::new(&super::super::overlay::self_node_segments(segments).unwrap())
+    Arrangement::new(&super::super::overlay::self_node_segments(segments).unwrap()).unwrap()
 }
 
 /// Bit-exact equality over every derived structure the consumers read:
@@ -280,7 +280,7 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
     assert!(segments.iter().all(|segment| {
         segment.start.x * segment.end.y - segment.end.x * segment.start.y == 0.0
     }));
-    let mut winding = Arrangement::new(&segments);
+    let mut winding = Arrangement::new(&segments).unwrap();
     assert!(winding.faces.iter().all(|face| face.ring.is_empty()));
     assert!(
         winding
@@ -289,7 +289,7 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
             .any(|face| face.area_sign == AreaSign::Positive)
     );
 
-    let mut rings = Arrangement::new_with_rings(&segments);
+    let mut rings = Arrangement::new_with_rings(&segments).unwrap();
     assert!(
         rings
             .faces
@@ -345,9 +345,9 @@ fn nested_arrangements_keep_the_last_dropped_outer_scratch() {
         (0.0, 4.0),
         (-1.0, 2.0),
     ]);
-    let outer = Arrangement::new(&small);
+    let outer = Arrangement::new(&small).unwrap();
     let outer_capacity = outer.points.capacity();
-    let inner = Arrangement::new(&large);
+    let inner = Arrangement::new(&large).unwrap();
     assert_ne!(outer.points.as_ptr(), inner.points.as_ptr());
     drop(inner);
     drop(outer);
@@ -359,7 +359,7 @@ fn panicking_weight_callback_returns_cleared_leases() {
     let _budget = crate::scratch_pool::RetainBudgetGuard::new();
     let segments = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
     let result = std::panic::catch_unwind(|| {
-        Arrangement::<i32>::weighted(&segments, |_| panic!("weight failed"));
+        let _ = Arrangement::<i32>::weighted(&segments, |_| panic!("weight failed"));
     });
     assert!(result.is_err());
     assert!(arrangement_spares().points.is_empty());
@@ -432,7 +432,8 @@ fn connected_chord_bridge_dfs_undo_keeps_south_body() {
             }
         }
         weight
-    });
+    })
+    .unwrap();
     assert_eq!(
         arrangement.component_count, 1,
         "chord and bridge must yield one vertex component, got {}",
@@ -521,7 +522,7 @@ fn unbounded_face_predecessor_of_minus_x(arrangement: &Arrangement<[i32; 2]>) ->
         .expect("arrangement has vertices");
     let range = arrangement.starts[vertex] as usize..arrangement.starts[vertex + 1] as usize;
     let mut outgoing: Vec<usize> = range.collect();
-    outgoing.sort_by(|&left, &right| {
+    outgoing.sort_unstable_by(|&left, &right| {
         compare_departures(
             origin,
             arrangement.points[arrangement.targets[left] as usize],
@@ -569,6 +570,10 @@ fn dual_adjacency(arrangement: &Arrangement<[i32; 2]>) -> Vec<Vec<(usize, [i32; 
         .map(|neighbors| neighbors.iter().any(|&(_, d)| d[1] != 0))
         .collect();
     for neighbors in &mut adj {
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "Preserve traversal order among equal-priority neighbors in the winding oracle."
+        )]
         neighbors.sort_by_key(|&(neighbor, delta)| {
             (!touches_hole[neighbor], -(delta[1].abs()), neighbor)
         });

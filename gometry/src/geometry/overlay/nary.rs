@@ -595,7 +595,7 @@ fn overlay_polygons(
     // The joint graph already split every area edge at every source contact.
     // The arrangement below is therefore the one and only face assembly for
     // both binary and aggregate overlays.
-    let arrangement = Arrangement::new_with_rings(&segments);
+    let arrangement = Arrangement::new_with_rings(&segments)?;
     let mut selected = Vec::with_capacity(arrangement.faces.len());
     let mut area_membership = Vec::new();
     for face in &arrangement.faces {

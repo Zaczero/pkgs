@@ -222,7 +222,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
                 }
             }
             weight
-        })
+        })?
     };
     // Outside-winding seed per component and per operand: every loop
     // lives in exactly one component, and loops of other components

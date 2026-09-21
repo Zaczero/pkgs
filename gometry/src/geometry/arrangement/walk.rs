@@ -1,5 +1,6 @@
 use std::cmp::Ordering;
 
+use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{Face, IndexedTopology, WindingWeight};
 use crate::geometry::{
     HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_sign, orientation, same_point,
@@ -16,17 +17,21 @@ pub(crate) fn split_ring_at_pinches(
 ) {
     path.clear();
     path_ids.clear();
+    path.reserve(ring.len());
+    path_ids.reserve(ids.len());
     for (&point, &id) in std::iter::zip(ring, ids) {
         let (stamp, position) = position_of[id as usize];
         if stamp == generation {
             let start = position as usize;
-            let mut piece = path.split_off(start);
-            let piece_ids = path_ids.split_off(start);
-            for &inner in &piece_ids[1..] {
+            let mut piece = Vec::with_capacity(path.len() - start + 1);
+            piece.extend_from_slice(&path[start..]);
+            for &inner in &path_ids[start + 1..] {
                 // Inner vertices may legitimately repeat later — drop them
                 // from the open path's table (stamp 0 is never current).
                 position_of[inner as usize].0 = 0;
             }
+            path.truncate(start);
+            path_ids.truncate(start);
             piece.push(point);
             rings.push(piece);
             // The pinch vertex stays on the open path (its table entry
@@ -50,17 +55,19 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
     points: &[XY],
     topology: &IndexedTopology,
 ) -> Vec<Face> {
-    let mut faces = Vec::new();
+    let mut faces = Vec::with_capacity(topology.face_starts.len() - 1);
     // One cycle scratch for sign classification when rings are not kept
     // (`RINGS=false`); for `RINGS=true` each completed cycle is moved into the
     // face and the next face reuses a fresh buffer (no free-list needed —
     // faces own their rings for the arrangement lifetime).
-    let mut cycle_scratch = Vec::with_capacity(16);
+    let mut cycle_scratch = Vec::new();
     for face in 0..topology.face_starts.len() - 1 {
+        let cycle_len = (topology.face_starts[face + 1] - topology.face_starts[face]) as usize + 1;
         let mut cycle = if RINGS {
-            Vec::with_capacity(16)
+            Vec::with_capacity(cycle_len)
         } else {
             cycle_scratch.clear();
+            cycle_scratch.reserve(cycle_len);
             std::mem::take(&mut cycle_scratch)
         };
         for &slot in &topology.face_slots
@@ -103,27 +110,31 @@ pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
     mut ids: HashMap<PointKey, u32>,
     mut points: Vec<XY>,
     mut edges: Vec<(u32, u32, W)>,
-) -> (HashMap<PointKey, u32>, Vec<XY>, Vec<(u32, u32, W)>, bool) {
+) -> Result<(HashMap<PointKey, u32>, Vec<XY>, Vec<(u32, u32, W)>)> {
     // Worst case every segment contributes two unique endpoints
     // (disconnected soups); chains share and stay under it.
     ids.clear();
-    ids.reserve(segments.len() * 2);
+    let endpoint_count = segments
+        .len()
+        .checked_mul(2)
+        .ok_or(ResourceError::SizeOverflow)?;
+    ids.reserve(endpoint_count);
     points.clear();
-    points.reserve(segments.len() * 2);
-    let mut id_of = |point: XY, points: &mut Vec<XY>| -> u32 {
-        *ids.entry(PointKey::new(point)).or_insert_with(|| {
-            points.push(point);
-            (points.len() - 1) as u32
-        })
+    points.reserve(endpoint_count);
+    let mut id_of = |point: XY, points: &mut Vec<XY>| -> Result<u32> {
+        match ids.entry(PointKey::new(point)) {
+            std::collections::hash_map::Entry::Occupied(entry) => Ok(*entry.get()),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let id = u32::try_from(points.len()).map_err(|_| ResourceError::SizeOverflow)?;
+                points.push(point);
+                entry.insert(id);
+                Ok(id)
+            },
+        }
     };
     edges.clear();
     edges.reserve(segments.len());
     let mut previous: Option<(PointKey, u32)> = None;
-    // One fully chained, closed walk visits every vertex along a single
-    // path — the graph is CONNECTED by construction and the component
-    // pass can skip its union-find entirely (single noded loops, the
-    // stroke buffer's whole caseload).
-    let mut chained = true;
     for (index, segment) in segments.iter().enumerate() {
         if same_point(segment.start, segment.end) {
             continue;
@@ -135,14 +146,10 @@ pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
         let start_key = PointKey::new(segment.start);
         let a = match previous {
             Some((key, id)) if key == start_key => id,
-            None => id_of(segment.start, &mut points),
-            Some(_) => {
-                chained = false;
-                id_of(segment.start, &mut points)
-            },
+            _ => id_of(segment.start, &mut points)?,
         };
         let end_key = PointKey::new(segment.end);
-        let b = id_of(segment.end, &mut points);
+        let b = id_of(segment.end, &mut points)?;
         previous = Some((end_key, b));
         if a <= b {
             edges.push((a, b, weight));
@@ -160,12 +167,11 @@ pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
             false
         }
     });
-    // Closed: the walk returned to vertex 0 (the loop's first point).
-    let connected = chained && previous.is_some_and(|(_, id)| id == 0) && !points.is_empty();
-    (ids, points, edges, connected)
+    Ok((ids, points, edges))
 }
 
 /// Two-pass CSR fill over the deduplicated edges (both half-edges placed).
+#[expect(clippy::type_complexity, reason = "private construction plumbing")]
 pub(crate) fn build_csr<W: WindingWeight>(
     vertex_count: usize,
     edges: &[(u32, u32, W)],
@@ -174,9 +180,18 @@ pub(crate) fn build_csr<W: WindingWeight>(
     mut targets: Vec<u32>,
     mut multiplicities: Vec<W>,
     mut edge_of_slot: Vec<u32>,
-) -> (Vec<u32>, Vec<u32>, Vec<W>, Vec<u32>) {
+) -> Result<(Vec<u32>, Vec<u32>, Vec<W>, Vec<u32>)> {
+    let half_edge_count = edges
+        .len()
+        .checked_mul(2)
+        .ok_or(ResourceError::SizeOverflow)?;
+    u32::try_from(half_edge_count).map_err(|_| ResourceError::SizeOverflow)?;
+    let start_count = vertex_count
+        .checked_add(1)
+        .ok_or(ResourceError::SizeOverflow)?;
     starts.clear();
-    starts.resize(vertex_count + 1, 0);
+    starts.reserve(start_count);
+    starts.resize(start_count, 0);
     for &(a, b, _) in edges {
         starts[a as usize + 1] += 1;
         starts[b as usize + 1] += 1;
@@ -184,13 +199,15 @@ pub(crate) fn build_csr<W: WindingWeight>(
     for index in 0..vertex_count {
         starts[index + 1] += starts[index];
     }
-    let half_edge_count = starts[vertex_count] as usize;
     let mut cursor = starts.clone();
     targets.clear();
+    targets.reserve(half_edge_count);
     targets.resize(half_edge_count, 0);
     multiplicities.clear();
+    multiplicities.reserve(half_edge_count);
     multiplicities.resize(half_edge_count, W::UNSET);
     edge_of_slot.clear();
+    edge_of_slot.reserve(half_edge_count);
     edge_of_slot.resize(half_edge_count, 0);
     for (edge, &(a, b, multiplicity)) in edges.iter().enumerate() {
         let slot_a = cursor[a as usize] as usize;
@@ -204,7 +221,7 @@ pub(crate) fn build_csr<W: WindingWeight>(
         edge_of_slot[slot_b] = edge as u32;
         cursor[b as usize] += 1;
     }
-    (starts, targets, multiplicities, edge_of_slot)
+    Ok((starts, targets, multiplicities, edge_of_slot))
 }
 
 /// Sort every CSR row counter-clockwise by departure angle.
@@ -227,6 +244,7 @@ pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
             continue;
         }
         row.clear();
+        row.reserve(range.len());
         row.extend(
             range
                 .clone()
