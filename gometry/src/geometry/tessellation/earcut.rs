@@ -300,8 +300,10 @@ pub(crate) const fn ring_segments_adjacent(len: usize, left: usize, right: usize
 }
 
 pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Result<()> {
-    let mut order = (0..holes.len()).collect::<Vec<_>>();
-    order.sort_by(|&left, &right| compare_hole_leftmost_xy_slope(&holes[left], &holes[right]));
+    let mut order: Vec<_> = (0..holes.len()).collect();
+    order.sort_unstable_by(|&left, &right| {
+        compare_hole_leftmost_xy_slope(&holes[left], &holes[right]).then_with(|| left.cmp(&right))
+    });
     for hole_index in order {
         let hole = rotate_ring(&holes[hole_index], leftmost_vertex(&holes[hole_index]));
         let bridge = find_hole_bridge(ring, &hole).ok_or_else(|| {

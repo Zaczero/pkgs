@@ -1107,7 +1107,7 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
         )
     };
     let mut order: Vec<usize> = (0..triangles.len()).collect();
-    order.sort_by(|&a, &b| span(&all_corners[a]).0.total_cmp(&span(&all_corners[b]).0));
+    order.sort_unstable_by(|&a, &b| span(&all_corners[a]).0.total_cmp(&span(&all_corners[b]).0));
 
     for (position, &left) in order.iter().enumerate() {
         let left_max_x = span(&all_corners[left]).1;

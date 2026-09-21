@@ -1469,7 +1469,7 @@ fn exact_angle_orders_high_valence_star_without_scale() {
         ExactPoint::from_xy(XY::new(0.0, f64::MAX)),
         ExactPoint::from_xy(XY::new(f64::from_bits(1), 0.0)),
     ];
-    rays.sort_by(|left, right| angle_ccw_cmp(&origin, left, right).unwrap());
+    rays.sort_unstable_by(|left, right| angle_ccw_cmp(&origin, left, right).unwrap());
     assert_eq!(
         rays[0].round_nearest_even().unwrap(),
         XY::new(f64::from_bits(1), 0.0)

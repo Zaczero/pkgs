@@ -1073,12 +1073,12 @@ fn minimum_circle_support_matches_independent_boundary_cases() {
         let circle = smallest_enclosing_circle(&points).unwrap();
         let (support, count) = circle.support_xy(&points);
         let mut actual = support[..count].to_vec();
-        actual.sort_by(|left, right| {
+        actual.sort_unstable_by(|left, right| {
             left.x
                 .total_cmp(&right.x)
                 .then_with(|| left.y.total_cmp(&right.y))
         });
-        expected.sort_by(|left, right| {
+        expected.sort_unstable_by(|left, right| {
             left.x
                 .total_cmp(&right.x)
                 .then_with(|| left.y.total_cmp(&right.y))

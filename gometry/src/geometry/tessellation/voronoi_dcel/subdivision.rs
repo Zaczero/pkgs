@@ -48,7 +48,6 @@ pub(super) fn build_exact_subdivision(
         topology.face_starts.try_reserve(slots + 1),
         topology.face_slots.try_reserve(slots),
         scratch.component_stack.try_reserve(vertices),
-        scratch.face_cursor.try_reserve(vertices),
         scratch.successor.try_reserve(slots),
         scratch.edge_slots.try_reserve(edges),
         edge_of_slot.try_reserve(slots),

@@ -515,7 +515,7 @@ fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
         }
     }
     for (side_index, side) in sides.iter_mut().enumerate() {
-        side.sort_by(|left, right| left.0.total_cmp(&right.0));
+        side.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
         let (start, end) = if side_index % 2 == 0 {
             (bounds[0], bounds[1])
         } else {
@@ -716,7 +716,7 @@ fn first_equal_label_misattaches_a_hole(subdivision: &ExactSubdivision) -> bool 
             ExactSign::Zero => panic!("selected walk has zero orientation"),
         }
     }
-    positives.sort_by_key(|(face, _)| *face);
+    positives.sort_unstable_by_key(|(face, _)| *face);
     negatives.into_iter().any(|(negative, label)| {
         let parent = positives
             .iter()
@@ -1527,7 +1527,7 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
             (first.x, first.y, last.x, last.y)
         })
         .collect();
-    endpoints.sort_by(|left, right| {
+    endpoints.sort_unstable_by(|left, right| {
         left.0
             .total_cmp(&right.0)
             .then_with(|| left.1.total_cmp(&right.1))
@@ -1603,7 +1603,7 @@ fn sloped_collinear_envelope_emits_analytic_bisector() {
     .unwrap();
     assert_eq!(edges.len(), 1);
     let mut endpoints: Vec<_> = edges[0].iter().map(|point| point.xy()).collect();
-    endpoints.sort_by(|left, right| left.x.total_cmp(&right.x));
+    endpoints.sort_unstable_by(|left, right| left.x.total_cmp(&right.x));
     assert_eq!(endpoints, [XY::new(0.0, 2.0), XY::new(2.0, 0.0)]);
 }
 

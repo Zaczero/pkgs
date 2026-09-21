@@ -782,7 +782,7 @@ impl Polygon {
                 Ring::try_from_closed(constructive::canonical_ring_seq(hole.coords(), true)?)?,
             )?;
         }
-        holes.sort_by(compare_point_slices);
+        holes.sort_unstable_by(compare_point_slices);
         Self::new(
             Ring::try_from_closed(constructive::canonical_ring_seq(
                 self.shell.coords(),

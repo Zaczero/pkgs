@@ -1297,7 +1297,7 @@ impl Shape {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => {
                 let mut values = points.try_to_vec()?;
-                values.sort_by(compare_points);
+                values.sort_unstable_by(compare_points);
                 let mut values = values.into_iter();
                 let mut members = Vec::new();
                 crate::boundary::try_reserve_vec(&mut members, points.member_count())?;
@@ -1323,7 +1323,7 @@ impl Shape {
                 for line in lines.iter() {
                     crate::try_push_vec(&mut values, line.normalized()?)?;
                 }
-                values.sort_by(compare_point_slices);
+                values.sort_unstable_by(compare_point_slices);
                 let mut values = values.into_iter();
                 let mut members = Vec::new();
                 crate::try_reserve_vec(&mut members, lines.member_count())?;
@@ -1349,7 +1349,7 @@ impl Shape {
                 for polygon in polygons.iter() {
                     crate::try_push_vec(&mut values, polygon.normalize()?)?;
                 }
-                values.sort_by(compare_polygons);
+                values.sort_unstable_by(compare_polygons);
                 let mut values = values.into_iter();
                 let mut members = Vec::new();
                 crate::try_reserve_vec(&mut members, polygons.member_count())?;
@@ -1374,7 +1374,7 @@ impl Shape {
                 for geometry in geometries {
                     crate::try_push_vec(&mut members, geometry.normalize()?)?;
                 }
-                members.sort_by(compare_shapes);
+                members.sort_unstable_by(compare_shapes);
                 Self::GeometryCollection(geometries.try_rebuild_members(members)?)
             },
             Self::Empty(..) => self.clone(),

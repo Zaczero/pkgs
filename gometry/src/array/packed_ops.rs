@@ -344,8 +344,8 @@ impl PyGeometryArray {
     /// The array reordered by ascending `keys` (stable, so equal keys keep
     /// row order).
     pub(crate) fn taken_by_keys(&self, keys: &[u64]) -> crate::error::Result<Self> {
-        let mut order: Vec<usize> = (0..keys.len()).collect();
-        order.sort_by_key(|&row| (self.is_row_missing(row), keys[row]));
+        let mut order: Vec<_> = (0..keys.len()).collect();
+        order.sort_unstable_by_key(|&row| (self.is_row_missing(row), keys[row], row));
         self.gather_logical_rows(&order)
     }
 

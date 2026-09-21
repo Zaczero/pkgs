@@ -1382,6 +1382,10 @@ fn fallible_sort_is_stable_and_matches_the_standard_sort() {
             .map(|index| ((index as u32).wrapping_mul(2_654_435_761) % 7, index))
             .collect();
         let mut expected = items.clone();
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "The standard stable sort is the independent oracle for equal-key ordering."
+        )]
         expected.sort_by_key(|item| item.0);
         let mut sorted = items;
         try_sort_by(&mut sorted, |left, right| Ok(left.0.cmp(&right.0))).unwrap();

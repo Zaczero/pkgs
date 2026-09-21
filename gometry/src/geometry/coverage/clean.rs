@@ -257,7 +257,8 @@ fn dissolve_edge_incidences(
     if survivors.is_empty() {
         return Ok(Shape::empty_polygon());
     }
-    survivors.sort_by_key(|segment| crate::geometry::undirected_segment_edge_key(*segment));
+    survivors
+        .sort_unstable_by_key(|segment| crate::geometry::undirected_segment_edge_key(*segment));
     let inventory = ExactSourceInventory::from_segments(&survivors)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;

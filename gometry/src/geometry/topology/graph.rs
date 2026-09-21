@@ -1422,8 +1422,9 @@ impl GraphBuilder {
         } else {
             None
         };
-        edges.sort_by(|left, right| {
-            left.sources
+        edges.sort_unstable_by(|left, right| {
+            left
+                .sources
                 .first()
                 .cmp(&right.sources.first())
                 .then_with(|| {
@@ -1776,7 +1777,7 @@ impl QuotientArrangement {
         } = self;
         for (node, row) in outgoing.iter_mut().enumerate() {
             let origin = origins[node];
-            row.sort_by(|&left, &right| {
+            row.sort_unstable_by(|&left, &right| {
                 compare_quotient_rays(frame, origin, &darts[left], &darts[right])
             });
         }

@@ -734,7 +734,7 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
             AreaSign::Zero => {},
         }
     }
-    shells.sort_by(|left, right| {
+    shells.sort_unstable_by(|left, right| {
         crate::geometry::cmp_area_keys_then_open_columns(
             left.1,
             right.1,
