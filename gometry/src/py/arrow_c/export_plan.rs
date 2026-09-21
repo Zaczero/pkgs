@@ -156,9 +156,12 @@ fn record_payload_materialization() {
     PAYLOAD_MATERIALIZATIONS.with(|count| count.set(count.get() + 1));
 }
 
-fn initial_offsets() -> crate::error::Result<Vec<i32>> {
-    let mut offsets = Vec::new();
-    crate::try_push_vec(&mut offsets, 0)?;
+fn initial_offsets(rows: usize) -> NativeArrowExportResult<Vec<i32>> {
+    let capacity = rows
+        .checked_add(1)
+        .ok_or_else(|| NativeArrowExportError::overflow("Arrow offset count overflows usize"))?;
+    let mut offsets = Vec::with_capacity(capacity);
+    offsets.push(0);
     Ok(offsets)
 }
 
@@ -322,16 +325,6 @@ fn plan_geometry_array_auto(
 }
 
 fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<StoragePlan> {
-    let mut offsets = Vec::new();
-    let mut data = Vec::new();
-    crate::boundary::try_reserve_vec(
-        &mut offsets,
-        array
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| NativeArrowExportError::overflow("WKB offset count overflows usize"))?,
-    )
-    .map_err(NativeArrowExportError::from)?;
     let mut total = 0_usize;
     for row in array.row_operation().rows_with_missing(|| ()) {
         if let ArrayRow::Present(row) = row {
@@ -344,22 +337,18 @@ fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<S
         }
     }
     validate_wkb_total(total)?;
-    crate::boundary::try_reserve_vec(&mut data, total).map_err(NativeArrowExportError::from)?;
-    crate::boundary::try_push_vec(&mut offsets, 0_i32).map_err(NativeArrowExportError::from)?;
+    let mut data = Vec::with_capacity(total);
+    let mut offsets = initial_offsets(array.len())?;
     for row in array.row_operation().rows_with_missing(|| ()) {
         if let ArrayRow::Present(row) = row {
             row.row()
                 .try_with_shape(|shape| crate::io::write_wkb_to_srid(&mut data, shape, None))?;
         }
-        crate::boundary::try_push_vec(
-            &mut offsets,
-            i32::try_from(data.len()).map_err(|_| {
-                NativeArrowExportError::overflow(
-                    "Arrow output exceeds the i32 offset capacity for binary/list arrays",
-                )
-            })?,
-        )
-        .map_err(NativeArrowExportError::from)?;
+        offsets.push(i32::try_from(data.len()).map_err(|_| {
+            NativeArrowExportError::overflow(
+                "Arrow output exceeds the i32 offset capacity for binary/list arrays",
+            )
+        })?);
     }
     validate_binary_offsets(&offsets, data.len())?;
     Ok(StoragePlan::Binary {
@@ -439,9 +428,7 @@ fn plan_storage(
             })
         },
         GeometryArrayStorage::Mixed(shapes) => {
-            let mut refs = Vec::new();
-            crate::try_reserve_vec(&mut refs, shapes.len())?;
-            refs.extend(shapes.iter());
+            let refs: Vec<_> = shapes.iter().collect();
             plan_shape_refs_with_layout(&refs, layout)
         },
     }
@@ -452,9 +439,7 @@ pub(crate) fn plan_shapes(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let mut refs = Vec::new();
-    crate::try_reserve_vec(&mut refs, shapes.len())?;
-    refs.extend(shapes.iter());
+    let refs: Vec<_> = shapes.iter().collect();
     let schema = SchemaDescription::owned(describe_shape_iter(refs.iter().copied()), crs, epoch);
     #[cfg(test)]
     record_payload_builder();
@@ -471,9 +456,7 @@ pub(crate) fn plan_wkb_shapes(
     crs: Option<String>,
     epoch: Option<f64>,
 ) -> NativeArrowExportResult<ArrowExportPlan> {
-    let mut refs = Vec::new();
-    crate::try_reserve_vec(&mut refs, shapes.len())?;
-    refs.extend(shapes.iter());
+    let refs: Vec<_> = shapes.iter().collect();
     let layout = GeometrySchema {
         encoding: GeometryEncoding::Wkb,
         axes: CoordinateAxes::XY,
@@ -565,15 +548,12 @@ fn plan_shape_refs_with_layout(
 ) -> NativeArrowExportResult<StoragePlan> {
     match layout.encoding {
         GeometryEncoding::Point => {
-            let mut points = Vec::new();
-            crate::boundary::try_reserve_vec(&mut points, shapes.len())
-                .map_err(NativeArrowExportError::from)?;
+            let mut points = Vec::with_capacity(shapes.len());
             for shape in shapes {
                 let Shape::Point(point) = shape else {
                     unreachable!("schema description selected point payload")
                 };
-                crate::boundary::try_push_vec(&mut points, *point)
-                    .map_err(NativeArrowExportError::from)?;
+                points.push(*point);
             }
             Ok(StoragePlan::Coordinates(CoordSeq::try_from_points(
                 &points,
@@ -608,21 +588,13 @@ fn plan_single_list(
             NativeArrowExportError::overflow("Arrow coordinate count overflows usize")
         })
     })?;
-    let mut offsets = Vec::new();
-    crate::boundary::try_reserve_vec(
-        &mut offsets,
-        shapes.len().checked_add(1).ok_or_else(|| {
-            NativeArrowExportError::overflow("Arrow offset count overflows usize")
-        })?,
-    )
-    .map_err(NativeArrowExportError::from)?;
-    crate::boundary::try_push_vec(&mut offsets, 0_i32).map_err(NativeArrowExportError::from)?;
+    let mut offsets = initial_offsets(shapes.len())?;
     let mut count = 0_i32;
     for shape in shapes {
         count = count
             .checked_add(i32::try_from(points_of(shape).len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        crate::boundary::try_push_vec(&mut offsets, count).map_err(NativeArrowExportError::from)?;
+        offsets.push(count);
     }
     let coords = gather_coordseqs(axes, total, shapes.iter().map(|shape| points_of(shape)))?;
     Ok(StoragePlan::List {
@@ -637,9 +609,17 @@ fn plan_multilines(
     shapes: &[&Shape],
     axes: CoordinateAxes,
 ) -> NativeArrowExportResult<StoragePlan> {
-    let mut geometry_offsets = initial_offsets()?;
-    let mut line_offsets = initial_offsets()?;
-    let mut lines = Vec::new();
+    let total_lines = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::MultiLineString(lines) = shape else {
+            unreachable!()
+        };
+        total
+            .checked_add(lines.member_count())
+            .ok_or_else(|| NativeArrowExportError::overflow("Arrow line count overflows usize"))
+    })?;
+    let mut geometry_offsets = initial_offsets(shapes.len())?;
+    let mut line_offsets = initial_offsets(total_lines)?;
+    let mut lines = Vec::with_capacity(total_lines);
     let mut line_count = 0_i32;
     let mut point_count = 0_i32;
     for shape in shapes {
@@ -649,23 +629,19 @@ fn plan_multilines(
         line_count = line_count
             .checked_add(i32::try_from(items.member_count()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        crate::boundary::try_push_vec(&mut geometry_offsets, line_count)
-            .map_err(NativeArrowExportError::from)?;
+        geometry_offsets.push(line_count);
         for member in items.members() {
             match member {
                 crate::geometry::MultiMember::Empty => {
-                    crate::boundary::try_push_vec(&mut line_offsets, point_count)
-                        .map_err(NativeArrowExportError::from)?;
+                    line_offsets.push(point_count);
                 },
                 crate::geometry::MultiMember::Value(index) => {
                     let line = &items.as_slice()[index];
                     point_count = point_count
                         .checked_add(i32::try_from(line.len()).map_err(|_| offset_error())?)
                         .ok_or_else(offset_error)?;
-                    crate::boundary::try_push_vec(&mut line_offsets, point_count)
-                        .map_err(NativeArrowExportError::from)?;
-                    crate::boundary::try_push_vec(&mut lines, line)
-                        .map_err(NativeArrowExportError::from)?;
+                    line_offsets.push(point_count);
+                    lines.push(line);
                 },
             }
         }
@@ -689,9 +665,17 @@ fn plan_multilines(
 }
 
 fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportResult<StoragePlan> {
-    let mut polygon_offsets = initial_offsets()?;
-    let mut ring_offsets = initial_offsets()?;
-    let mut rings = Vec::new();
+    let total_rings = shapes.iter().try_fold(0_usize, |total, shape| {
+        let Shape::Polygon(polygon) = shape else {
+            unreachable!()
+        };
+        total
+            .checked_add(polygon_ring_count(polygon)?)
+            .ok_or_else(|| NativeArrowExportError::overflow("Arrow ring count overflows usize"))
+    })?;
+    let mut polygon_offsets = initial_offsets(shapes.len())?;
+    let mut ring_offsets = initial_offsets(total_rings)?;
+    let mut rings = Vec::with_capacity(total_rings);
     let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
     for shape in shapes {
@@ -699,10 +683,9 @@ fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportRe
             unreachable!()
         };
         ring_count = ring_count
-            .checked_add(i32::try_from(polygon.holes.len() + 1).map_err(|_| offset_error())?)
+            .checked_add(i32::try_from(polygon_ring_count(polygon)?).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        crate::boundary::try_push_vec(&mut polygon_offsets, ring_count)
-            .map_err(NativeArrowExportError::from)?;
+        polygon_offsets.push(ring_count);
         push_polygon_plan(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
@@ -723,10 +706,29 @@ fn plan_multipolygons(
     shapes: &[&Shape],
     axes: CoordinateAxes,
 ) -> NativeArrowExportResult<StoragePlan> {
-    let mut multipolygon_offsets = initial_offsets()?;
-    let mut polygon_offsets = initial_offsets()?;
-    let mut ring_offsets = initial_offsets()?;
-    let mut rings = Vec::new();
+    let (total_polygons, total_rings) =
+        shapes
+            .iter()
+            .try_fold((0_usize, 0_usize), |(polygons, rings), shape| {
+                let Shape::MultiPolygon(items) = shape else {
+                    unreachable!()
+                };
+                let polygons = polygons.checked_add(items.member_count()).ok_or_else(|| {
+                    NativeArrowExportError::overflow("Arrow polygon count overflows usize")
+                })?;
+                let rings = items.iter().try_fold(rings, |rings, polygon| {
+                    rings
+                        .checked_add(polygon_ring_count(polygon)?)
+                        .ok_or_else(|| {
+                            NativeArrowExportError::overflow("Arrow ring count overflows usize")
+                        })
+                })?;
+                Ok::<_, NativeArrowExportError>((polygons, rings))
+            })?;
+    let mut multipolygon_offsets = initial_offsets(shapes.len())?;
+    let mut polygon_offsets = initial_offsets(total_polygons)?;
+    let mut ring_offsets = initial_offsets(total_rings)?;
+    let mut rings = Vec::with_capacity(total_rings);
     let mut polygon_count = 0_i32;
     let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
@@ -737,23 +739,21 @@ fn plan_multipolygons(
         polygon_count = polygon_count
             .checked_add(i32::try_from(polygons.member_count()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        crate::boundary::try_push_vec(&mut multipolygon_offsets, polygon_count)
-            .map_err(NativeArrowExportError::from)?;
+        multipolygon_offsets.push(polygon_count);
         for member in polygons.members() {
             match member {
                 crate::geometry::MultiMember::Empty => {
-                    crate::boundary::try_push_vec(&mut polygon_offsets, ring_count)
-                        .map_err(NativeArrowExportError::from)?;
+                    polygon_offsets.push(ring_count);
                 },
                 crate::geometry::MultiMember::Value(index) => {
                     let polygon = &polygons.as_slice()[index];
                     ring_count = ring_count
                         .checked_add(
-                            i32::try_from(polygon.holes.len() + 1).map_err(|_| offset_error())?,
+                            i32::try_from(polygon_ring_count(polygon)?)
+                                .map_err(|_| offset_error())?,
                         )
                         .ok_or_else(offset_error)?;
-                    crate::boundary::try_push_vec(&mut polygon_offsets, ring_count)
-                        .map_err(NativeArrowExportError::from)?;
+                    polygon_offsets.push(ring_count);
                     push_polygon_plan(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
                 },
             }
@@ -788,11 +788,18 @@ fn push_polygon_plan<'a>(
         *point_count = point_count
             .checked_add(i32::try_from(ring.len()).map_err(|_| offset_error())?)
             .ok_or_else(offset_error)?;
-        crate::boundary::try_push_vec(ring_offsets, *point_count)
-            .map_err(NativeArrowExportError::from)?;
-        crate::boundary::try_push_vec(rings, ring).map_err(NativeArrowExportError::from)?;
+        ring_offsets.push(*point_count);
+        rings.push(ring);
     }
     Ok(())
+}
+
+fn polygon_ring_count(polygon: &Polygon) -> NativeArrowExportResult<usize> {
+    polygon
+        .holes
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| NativeArrowExportError::overflow("Arrow ring count overflows usize"))
 }
 
 fn gather_coordseqs<'a>(
@@ -800,18 +807,10 @@ fn gather_coordseqs<'a>(
     total: usize,
     seqs: impl Iterator<Item = &'a CoordSeq>,
 ) -> NativeArrowExportResult<CoordSeq> {
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    crate::boundary::try_reserve_vec(&mut xs, total).map_err(NativeArrowExportError::from)?;
-    crate::boundary::try_reserve_vec(&mut ys, total).map_err(NativeArrowExportError::from)?;
-    let mut zs = axes.has_z().then(Vec::new);
-    let mut ms = axes.has_m().then(Vec::new);
-    if let Some(values) = &mut zs {
-        crate::boundary::try_reserve_vec(values, total).map_err(NativeArrowExportError::from)?;
-    }
-    if let Some(values) = &mut ms {
-        crate::boundary::try_reserve_vec(values, total).map_err(NativeArrowExportError::from)?;
-    }
+    let mut xs = Vec::with_capacity(total);
+    let mut ys = Vec::with_capacity(total);
+    let mut zs = axes.has_z().then(|| Vec::with_capacity(total));
+    let mut ms = axes.has_m().then(|| Vec::with_capacity(total));
     for seq in seqs {
         xs.extend_from_slice(seq.xs());
         ys.extend_from_slice(seq.ys());
@@ -832,25 +831,11 @@ fn plan_wkb_refs(shapes: &[&Shape]) -> NativeArrowExportResult<StoragePlan> {
             .ok_or_else(|| NativeArrowExportError::overflow("WKB size overflows usize"))
     })?;
     validate_wkb_total(total)?;
-    let mut data = Vec::new();
-    crate::boundary::try_reserve_vec(&mut data, total).map_err(NativeArrowExportError::from)?;
-    let mut offsets = Vec::new();
-    crate::boundary::try_reserve_vec(
-        &mut offsets,
-        shapes
-            .len()
-            .checked_add(1)
-            .ok_or_else(|| NativeArrowExportError::overflow("WKB offset count overflows usize"))?,
-    )
-    .map_err(NativeArrowExportError::from)?;
-    crate::boundary::try_push_vec(&mut offsets, 0_i32).map_err(NativeArrowExportError::from)?;
+    let mut data = Vec::with_capacity(total);
+    let mut offsets = initial_offsets(shapes.len())?;
     for shape in shapes {
         crate::io::write_wkb_to_srid(&mut data, shape, None)?;
-        crate::boundary::try_push_vec(
-            &mut offsets,
-            i32::try_from(data.len()).map_err(|_| offset_error())?,
-        )
-        .map_err(NativeArrowExportError::from)?;
+        offsets.push(i32::try_from(data.len()).map_err(|_| offset_error())?);
     }
     validate_binary_offsets(&offsets, data.len())?;
     Ok(StoragePlan::Binary {
@@ -913,10 +898,7 @@ fn plan_validity(
     let bitmap = if mask_offset == offset && owned.len().saturating_mul(8) >= total_bits {
         owned
     } else {
-        let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, total_bits.div_ceil(8))
-            .map_err(NativeArrowExportError::from)?;
-        values.resize(total_bits.div_ceil(8), 0);
+        let mut values = vec![0; total_bits.div_ceil(8)];
         for row in 0..mask.len() {
             if mask.is_valid(row) {
                 let bit = offset + row;
