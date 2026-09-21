@@ -2209,15 +2209,14 @@ impl<T> PackedBvh<T> {
                 .and_then(|count| count.checked_sub(1))
                 .ok_or(crate::error::ResourceError::SizeOverflow)?
         };
-        let mut nodes = Vec::new();
-        crate::try_reserve_vec(&mut nodes, node_capacity)?;
+        let mut nodes = Vec::with_capacity(node_capacity);
         for (order, entry) in entries.iter_mut().enumerate() {
             entry.order = order;
         }
         let root = if entry_count == 0 {
             None
         } else {
-            Some(Self::build_node(&mut entries, &mut nodes, 0, entry_count)?)
+            Some(Self::build_node(&mut entries, &mut nodes, 0, entry_count))
         };
         Ok(Self {
             entries,
@@ -2231,16 +2230,16 @@ impl<T> PackedBvh<T> {
         nodes: &mut Vec<PackedBvhNode>,
         start: usize,
         end: usize,
-    ) -> crate::error::Result<usize> {
+    ) -> usize {
         let envelope = envelope_for_entries(&entries[start..end]);
         let node = nodes.len();
-        crate::try_push_vec(nodes, PackedBvhNode {
+        nodes.push(PackedBvhNode {
             envelope,
             start,
             end,
             left: None,
             right: None,
-        })?;
+        });
         if end - start > PACKED_BVH_LEAF_SIZE {
             let axis = longest_axis(envelope);
             entries[start..end].sort_unstable_by(|left, right| {
@@ -2250,12 +2249,12 @@ impl<T> PackedBvh<T> {
                     .then_with(|| left.order.cmp(&right.order))
             });
             let middle = start + (end - start) / 2;
-            let left = Self::build_node(entries, nodes, start, middle)?;
-            let right = Self::build_node(entries, nodes, middle, end)?;
+            let left = Self::build_node(entries, nodes, start, middle);
+            let right = Self::build_node(entries, nodes, middle, end);
             nodes[node].left = Some(left);
             nodes[node].right = Some(right);
         }
-        Ok(node)
+        node
     }
 
     pub(crate) fn visit(
@@ -2309,8 +2308,7 @@ fn build_authority_edge_index(
         .len()
         .checked_mul(3)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    let mut entries = Vec::new();
-    crate::try_reserve_vec(&mut entries, entry_capacity)?;
+    let mut entries = Vec::with_capacity(entry_capacity);
     for (edge, authority_edge) in edges.iter().enumerate() {
         let envelopes = match authority_edge_proxy_envelopes(authority_edge) {
             Ok(envelopes) => envelopes,
@@ -2320,7 +2318,7 @@ fn build_authority_edge_index(
             },
         };
         for envelope in envelopes {
-            crate::try_push_vec(&mut entries, PackedBvhEntry::new(edge, envelope))?;
+            entries.push(PackedBvhEntry::new(edge, envelope));
         }
     }
     Ok(Some(PackedBvh::build(entries)?))
