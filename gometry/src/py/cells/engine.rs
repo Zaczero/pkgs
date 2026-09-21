@@ -108,29 +108,9 @@ pub(super) fn bounding_query_region(value: &Bound<'_, PyAny>) -> PyResult<Boundi
                 Ok(admission) => admission,
                 Err(error) => return Err(GridCoverError::Native(error)),
             };
-            admission.admit_array_shapes(&array).and_then(|shapes| {
-                let mut nonempty = Vec::new();
-                for shape in shapes {
-                    let Some(shape) = shape? else {
-                        continue;
-                    };
-                    if !shape.is_empty() {
-                        crate::try_push_vec(&mut nonempty, shape)?;
-                    }
-                }
-                Ok::<_, GridCoverError>(nonempty)
-            })
+            admission.admit_bounding_collection(&array)
         });
-        let mut shapes = result?;
-        let shape = match shapes.len() {
-            0 => {
-                return Err(InvalidGeometryError::new_err(
-                    "bounding cell requires a non-empty geometry",
-                ));
-            },
-            1 => shapes.pop().expect("one shape"),
-            _ => Shape::geometry_collection(shapes)?,
-        };
+        let shape = result?;
         let bounds = if shape.crosses_antimeridian() {
             crate::geometry::geographic_crossing_bounds(&shape)
         } else {
@@ -216,7 +196,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
                 .and_then(|admitted| build(&admitted, max_cells))
         });
         let coverage = result?;
-        return PyCellArray::from_ids(kind, coverage).into_py_any(py);
+        return PyCellArray::from_ids(kind, coverage)?.into_py_any(py);
     }
     let Some(array) = exact_geometry_array(geom) else {
         return Err(expected_geometry_or_array());
@@ -228,9 +208,10 @@ pub(crate) fn grid_cover_dispatch<'py>(
             Err(error) => return Err(GridCoverError::Native(error)),
         };
         admission.admit_array_shapes(&array).and_then(|shapes| {
-            let mut admitted = Vec::new();
-            for (logical, shape) in shapes.into_iter().enumerate() {
-                let geometry = match shape {
+            let admitted = shapes
+                .into_iter()
+                .enumerate()
+                .map(|(logical, shape)| match shape {
                     Err(error) => Err(error),
                     Ok(None) => Ok(None),
                     Ok(Some(shape)) => PyGeometry::wgs84(shape).map(Some).map_err(|error| {
@@ -239,9 +220,7 @@ pub(crate) fn grid_cover_dispatch<'py>(
                             error,
                         }
                     }),
-                };
-                crate::try_push_vec(&mut admitted, geometry)?;
-            }
+                });
             cover_array_rows(admitted, max_cells, build)
         })
     });
@@ -250,13 +229,14 @@ pub(crate) fn grid_cover_dispatch<'py>(
 }
 
 fn cover_array_rows(
-    admitted: Vec<Result<Option<PyGeometry>, GridCoverError>>,
+    admitted: impl IntoIterator<Item = Result<Option<PyGeometry>, GridCoverError>>,
     max_cells: Option<usize>,
     build: impl Fn(&PyGeometry, Option<usize>) -> Result<Vec<u64>, GridCoverError>,
 ) -> Result<Vec<Vec<u64>>, GridCoverError> {
     let mut produced = 0_usize;
-    let mut out = Vec::new();
-    for (logical, geometry) in admitted.into_iter().enumerate() {
+    let admitted = admitted.into_iter();
+    let mut out = Vec::with_capacity(admitted.size_hint().0);
+    for (logical, geometry) in admitted.enumerate() {
         let ids = match geometry? {
             None => Vec::new(),
             Some(geometry) => {
@@ -278,7 +258,7 @@ fn cover_array_rows(
                 }
             },
         };
-        crate::try_push_vec(&mut out, ids)?;
+        out.push(ids);
     }
     Ok(out)
 }
@@ -351,7 +331,7 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
         cells.as_slice().len().checked_mul(4).ok_or_else(|| {
             errors::native_overflow_error("coverage outline size overflows usize")
         })?;
-    let mut outline = crate::try_vec_with_capacity(capacity)?;
+    let mut outline = Vec::with_capacity(capacity);
     for cell in cells.as_slice() {
         let bounds = cell.bounds();
         // CCW corners: (minx,miny) -> (maxx,miny) -> (maxx,maxy) -> (minx,maxy).
@@ -367,14 +347,13 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
             let interior =
                 neighbor.is_some_and(|across| cells.as_slice().binary_search(&across).is_ok());
             if !interior {
-                crate::try_push(
-                    &mut outline,
+                outline.push(
                     crate::geometry::CoordSeq::try_from_points(&[
                         corners[side],
                         corners[(side + 1) % 4],
                     ])
                     .map_err(PyErr::from)?,
-                )?;
+                );
             }
         }
     }
@@ -394,10 +373,14 @@ pub(super) fn rect_cells_to_polygon<C: RectCell>(cells: Vec<C>) -> PyResult<Type
     if let Some(typed) = rect_dissolve(&cells)? {
         return Ok(typed);
     }
-    let shapes = crate::try_collect_results(cells.as_slice().iter().map(|cell| {
-        let shape = crate::geometry::bounds_to_shape(cell.bounds()).map_err(PyErr::from)?;
-        shape.split_antimeridian().map_err(PyErr::from)
-    }))?;
+    let shapes = cells
+        .as_slice()
+        .iter()
+        .map(|cell| {
+            let shape = crate::geometry::bounds_to_shape(cell.bounds()).map_err(PyErr::from)?;
+            shape.split_antimeridian().map_err(PyErr::from)
+        })
+        .collect::<PyResult<Vec<_>>>()?;
     coverage_to_polygon(&shapes)
 }
 
@@ -502,28 +485,5 @@ mod tests {
         )
         .expect("empty and missing are groups");
         assert_eq!(rows, vec![Vec::new(), Vec::new(), vec![7]]);
-    }
-
-    #[test]
-    fn allocation_failure_after_fixture_is_native_resource() {
-        let admitted = vec![
-            Ok(Some(
-                crate::PyGeometry::wgs84(crate::geometry::Shape::empty_polygon()).unwrap(),
-            )),
-            Ok(Some(
-                crate::PyGeometry::wgs84(crate::geometry::Shape::empty_polygon()).unwrap(),
-            )),
-        ];
-        let error = crate::test_support::fail_allocations_after(0, || {
-            cover_array_rows(admitted, None, |_, _| unreachable!("empty rows skip build"))
-                .expect_err("collector allocation must fail")
-        });
-        assert!(
-            matches!(&error, GridCoverError::Native(inner) if matches!(
-                inner.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            )),
-            "{error:?}"
-        );
     }
 }
