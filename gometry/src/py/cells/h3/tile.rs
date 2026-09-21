@@ -13,9 +13,6 @@ pub(super) enum H3TileError {
 }
 
 fn insert_cell(cells: &mut HashSet<CellIndex>, cell: CellIndex) -> bool {
-    if cells.contains(&cell) {
-        return false;
-    }
     cells.insert(cell)
 }
 
