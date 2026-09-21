@@ -33,24 +33,17 @@ struct MemberPathBuilder {
 }
 
 impl MemberPathBuilder {
-    fn push(&mut self, member: usize) -> Result<(), GeographicViewError> {
+    fn push(&mut self, member: usize) {
         if self.len < INLINE_MEMBER_DEPTH {
             self.inline[self.len] = member;
         } else {
             if self.overflow.is_empty() {
-                self.overflow
-                    .try_reserve(INLINE_MEMBER_DEPTH + 1)
-                    .map_err(|_| GeographicViewError::Resource)?;
+                self.overflow.reserve(INLINE_MEMBER_DEPTH + 1);
                 self.overflow.extend_from_slice(&self.inline);
-            } else {
-                self.overflow
-                    .try_reserve(1)
-                    .map_err(|_| GeographicViewError::Resource)?;
             }
             self.overflow.push(member);
         }
         self.len += 1;
-        Ok(())
     }
 
     fn pop(&mut self) {
@@ -62,19 +55,12 @@ impl MemberPathBuilder {
         }
     }
 
-    fn location(&self) -> Result<GeographicMemberPath, GeographicViewError> {
-        let mut overflow = Vec::new();
-        if !self.overflow.is_empty() {
-            overflow
-                .try_reserve_exact(self.overflow.len())
-                .map_err(|_| GeographicViewError::Resource)?;
-            overflow.extend_from_slice(&self.overflow);
-        }
-        Ok(GeographicMemberPath {
+    fn location(&self) -> GeographicMemberPath {
+        GeographicMemberPath {
             inline: self.inline,
             len: self.len,
-            overflow,
-        })
+            overflow: self.overflow.clone(),
+        }
     }
 }
 
@@ -114,38 +100,21 @@ impl fmt::Display for GeographicDiagnostic {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum GeographicViewError {
-    Diagnostic(Box<GeographicDiagnostic>),
-    Resource,
-}
+pub(crate) type GeographicViewError = Box<GeographicDiagnostic>;
 
-impl GeographicViewError {
-    fn diagnostic(location: GeographicLocation, native: XY, source: GeographicError) -> Self {
-        Box::try_new(GeographicDiagnostic {
+impl GeographicDiagnostic {
+    fn boxed(location: GeographicLocation, native: XY, source: GeographicError) -> Box<Self> {
+        Box::new(Self {
             location,
             native,
             source,
         })
-        .map_or(Self::Resource, Self::Diagnostic)
     }
 }
 
-impl fmt::Display for GeographicViewError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Diagnostic(diagnostic) => diagnostic.fmt(f),
-            Self::Resource => f.write_str("memory allocation failed"),
-        }
-    }
-}
-
-impl std::error::Error for GeographicViewError {
+impl std::error::Error for GeographicDiagnostic {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Diagnostic(diagnostic) => Some(&diagnostic.source),
-            Self::Resource => None,
-        }
+        Some(&self.source)
     }
 }
 
@@ -179,13 +148,13 @@ impl GeographicCoordinate {
 fn coordinate(
     frame: GeographicFrame,
     point: Point,
-    location: impl FnOnce() -> Result<GeographicLocation, GeographicViewError>,
+    location: impl FnOnce() -> GeographicLocation,
 ) -> Result<GeographicCoordinate, GeographicViewError> {
     let longitude = match frame.longitude().canonicalize(point.x) {
         Ok(longitude) => longitude,
         Err(source) => {
-            return Err(GeographicViewError::diagnostic(
-                location()?,
+            return Err(GeographicDiagnostic::boxed(
+                location(),
                 XY::from(point),
                 source,
             ));
@@ -194,8 +163,8 @@ fn coordinate(
     let latitude = match Latitude::try_new(frame, point.y) {
         Ok(latitude) => latitude,
         Err(source) => {
-            return Err(GeographicViewError::diagnostic(
-                location()?,
+            return Err(GeographicDiagnostic::boxed(
+                location(),
                 XY::from(point),
                 source,
             ));
@@ -220,13 +189,11 @@ fn visit_coordseq(
         visit(coordinate(
             frame,
             coords.point_at(coordinate_index),
-            || {
-                Ok(GeographicLocation {
-                    row,
-                    members: members.location()?,
-                    ring,
-                    coordinate: coordinate_index,
-                })
+            || GeographicLocation {
+                row,
+                members: members.location(),
+                ring,
+                coordinate: coordinate_index,
             },
         )?)?;
     }
@@ -241,25 +208,23 @@ fn visit_shape(
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
 ) -> Result<(), GeographicViewError> {
     match shape {
-        Shape::Point(point) => visit(coordinate(frame, *point, || {
-            Ok(GeographicLocation {
-                row,
-                members: members.location()?,
-                ring: None,
-                coordinate: 0,
-            })
+        Shape::Point(point) => visit(coordinate(frame, *point, || GeographicLocation {
+            row,
+            members: members.location(),
+            ring: None,
+            coordinate: 0,
         })?),
         Shape::MultiPoint(points) => {
             for (logical, member) in points.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
-                    members.push(logical)?;
+                    members.push(logical);
                     visit(coordinate(frame, points.point_at(physical), || {
-                        Ok(GeographicLocation {
+                        GeographicLocation {
                             row,
-                            members: members.location()?,
+                            members: members.location(),
                             ring: None,
                             coordinate: 0,
-                        })
+                        }
                     })?)?;
                     members.pop();
                 }
@@ -270,7 +235,7 @@ fn visit_shape(
         Shape::MultiLineString(lines) => {
             for (logical, member) in lines.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
-                    members.push(logical)?;
+                    members.push(logical);
                     visit_coordseq(
                         frame,
                         &lines.as_slice()[physical],
@@ -293,7 +258,7 @@ fn visit_shape(
         Shape::MultiPolygon(polygons) => {
             for (logical, member) in polygons.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
-                    members.push(logical)?;
+                    members.push(logical);
                     for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
                         visit_coordseq(frame, coords, row, members, Some(ring), visit)?;
                     }
@@ -304,7 +269,7 @@ fn visit_shape(
         },
         Shape::GeometryCollection(collection) => {
             for (member, shape) in collection.iter().enumerate() {
-                members.push(member)?;
+                members.push(member);
                 visit_shape(frame, shape, row, members, visit)?;
                 members.pop();
             }
@@ -370,10 +335,7 @@ impl<'a> GeographicInputs<'a> {
     ) -> Result<Self, GeographicViewError> {
         let frame = first.frame();
         let mut inputs = Self::try_from_shapes(frame, rest)?;
-        inputs
-            .views
-            .try_reserve(1)
-            .map_err(|_| GeographicViewError::Resource)?;
+        inputs.views.reserve(1);
         inputs.views.insert(0, first);
         Ok(inputs)
     }
@@ -382,30 +344,25 @@ impl<'a> GeographicInputs<'a> {
         frame: GeographicFrame,
         shapes: impl ExactSizeIterator<Item = &'a Shape>,
     ) -> Result<Self, GeographicViewError> {
-        let mut views = Vec::new();
-        let _ = views.try_reserve_exact(shapes.len());
+        let mut views = Vec::with_capacity(shapes.len());
         for shape in shapes {
             let view = ScalarGeographicView::try_new(frame, shape)?;
-            crate::try_push_vec(&mut views, view).map_err(|_| GeographicViewError::Resource)?;
+            views.push(view);
         }
         Ok(Self { frame, views })
     }
 
     /// Copy indexed views from this batch. Frame comes from `self`; indices
     /// are this batch's positions. Does not re-admit.
-    pub(crate) fn try_selected(&self, indices: &[usize]) -> Result<Self, GeographicViewError> {
-        let mut views = Vec::new();
-        views
-            .try_reserve_exact(indices.len())
-            .map_err(|_| GeographicViewError::Resource)?;
+    pub(crate) fn selected(&self, indices: &[usize]) -> Self {
+        let mut views = Vec::with_capacity(indices.len());
         for &index in indices {
-            crate::try_push_vec(&mut views, self.views[index])
-                .map_err(|_| GeographicViewError::Resource)?;
+            views.push(self.views[index]);
         }
-        Ok(Self {
+        Self {
             frame: self.frame,
             views,
-        })
+        }
     }
 
     pub(crate) const fn frame(&self) -> GeographicFrame {
@@ -488,7 +445,7 @@ impl RingSummary {
         let axis = frame.longitude();
         let mut seam_transits = 0_i64;
         let fail = |index: usize, source: GeographicError| {
-            GeographicViewError::diagnostic(
+            GeographicDiagnostic::boxed(
                 GeographicLocation {
                     coordinate: index,
                     ..GeographicLocation::default()

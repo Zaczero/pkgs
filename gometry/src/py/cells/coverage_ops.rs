@@ -255,10 +255,7 @@ impl From<CoverBudgetExceeded> for GridCoverError {
 
 impl From<GeographicViewError> for GridCoverError {
     fn from(error: GeographicViewError) -> Self {
-        match error {
-            GeographicViewError::Resource => Self::Native(ResourceError::Allocation.into()),
-            GeographicViewError::Diagnostic(diagnostic) => Self::Geographic(diagnostic),
-        }
+        Self::Geographic(error)
     }
 }
 

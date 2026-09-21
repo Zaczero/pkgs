@@ -4,7 +4,7 @@ use ahash::HashMapExt as _;
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::collections::HashSet;
 use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
+use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
 #[cfg(test)]
 use crate::geometry::predicates;
@@ -61,18 +61,8 @@ impl<'a> GeographicPrepared<'a> {
                 bounds_sound,
             });
         }
-        let view = match ScalarGeographicView::try_new(frame, plan.shape()) {
-            Ok(view) => view,
-            Err(GeographicViewError::Resource) => {
-                return Err(ResourceError::Allocation.into());
-            },
-            Err(GeographicViewError::Diagnostic(diagnostic)) => {
-                return Err(invalid_lonlat_error(
-                    diagnostic.native.x,
-                    diagnostic.native.y,
-                ));
-            },
-        };
+        let view = ScalarGeographicView::try_new(frame, plan.shape())
+            .map_err(|diagnostic| invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y))?;
         let bounds_sound = plan.bounds().is_some_and(|bounds| {
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
                 Some(plan.shape()),
@@ -1043,9 +1033,7 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
     }
     let mut edges = Vec::new();
     try_reserve_vec(&mut edges, by_segment.len())?;
-    for edge in by_segment.into_values() {
-        try_push_vec(&mut edges, edge)?;
-    }
+    edges.extend(by_segment.into_values());
     Ok((edges, hints))
 }
 

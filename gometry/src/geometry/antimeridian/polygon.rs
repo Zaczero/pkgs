@@ -1,4 +1,4 @@
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geographic::{
     GeographicFrame, GeographicRing, GeographicViewError, Latitude, RingDomain, RingSummary,
     RingTurn, ScalarGeographicView,
@@ -17,7 +17,8 @@ impl Shape {
     /// coordinates exist only for this operation; source coordinates remain
     /// the storage authority.
     pub(crate) fn split_antimeridian_in_frame(&self, frame: GeographicFrame) -> Result<Self> {
-        let view = ScalarGeographicView::try_new(frame, self).map_err(split_view_error)?;
+        let view =
+            ScalarGeographicView::try_new(frame, self).map_err(|error| split_view_error(&error))?;
         split_geographic_view(view)
     }
 
@@ -157,13 +158,8 @@ impl Shape {
     }
 }
 
-fn split_view_error(error: GeographicViewError) -> crate::error::Error {
-    match error {
-        GeographicViewError::Resource => ResourceError::Allocation.into(),
-        GeographicViewError::Diagnostic(diagnostic) => {
-            GeometryErrorKind::antimeridian_split_failed(diagnostic.to_string())
-        },
-    }
+fn split_view_error(error: &GeographicViewError) -> crate::error::Error {
+    GeometryErrorKind::antimeridian_split_failed(error.to_string())
 }
 
 fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
@@ -241,7 +237,8 @@ fn chart_ring(
     latitude_scale: f64,
 ) -> Result<Ring> {
     let geographic = GeographicRing::from_ring(ring);
-    let summary = RingSummary::try_new(frame, &geographic).map_err(split_view_error)?;
+    let summary =
+        RingSummary::try_new(frame, &geographic).map_err(|error| split_view_error(&error))?;
     let mut points = Vec::new();
     points.reserve_exact(geographic.len());
     if matches!(summary.domain, RingDomain::FullLongitude(_))

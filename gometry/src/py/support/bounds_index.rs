@@ -210,14 +210,7 @@ fn for_each_part(
 }
 
 fn geographic_view_py_error(error: GeographicViewError) -> pyo3::PyErr {
-    match error {
-        GeographicViewError::Resource => {
-            crate::error::Error::from(crate::error::ResourceError::Allocation).into()
-        },
-        GeographicViewError::Diagnostic(diagnostic) => {
-            InvalidGeometryError::new_err(diagnostic.to_string())
-        },
-    }
+    InvalidGeometryError::new_err(error.to_string())
 }
 
 fn geographic_index_envelopes(
@@ -295,7 +288,7 @@ fn geographic_index_envelopes(
     let longitude = if full_longitude {
         CircularInterval::Full
     } else {
-        union_circular_intervals(frame.longitude(), intervals)?
+        union_circular_intervals(frame.longitude(), intervals)
     };
     let mut envelopes = Vec::new();
     let mut push = |window: [f64; 2]| {

@@ -2424,7 +2424,7 @@ impl GeographicCoverageSource {
     }
 
     fn build(source: &Shape, target: SphericalGridTarget) -> crate::error::Result<Self> {
-        let exact_axis_rect = if let Some(bounds) = exact_world_band(source)? {
+        let exact_axis_rect = if let Some(bounds) = exact_world_band(source) {
             Some(bounds)
         } else if let Some(bounds) = source.bounds() {
             let is_rectangle = match exact_axis_rectangle(source, bounds) {

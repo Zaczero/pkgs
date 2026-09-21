@@ -926,7 +926,7 @@ impl Shape {
             subject.view(),
             std::iter::once(&rectangle),
         )
-        .map_err(overlay_view_error)?;
+        .map_err(|error| overlay_view_error(&error))?;
         let clipped = overlay_all_geographic_from(
             &originals,
             OverlayOp::Intersection,

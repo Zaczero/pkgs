@@ -2,8 +2,8 @@ use crate::boundary::geographic;
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::crs::RuntimeState;
 use crate::crs::geodesic::geographic_metric_frame_at;
-use crate::error::{ResourceError, Result};
-use crate::geographic::{GeographicFrame, GeographicViewError, ScalarGeographicView};
+use crate::error::Result;
+use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::{CoordSeq, Shape};
 
 /// Validate geometry coordinates in their CRS-native geographic frame. This
@@ -13,14 +13,11 @@ pub(crate) fn ensure_geographic_domain_in_frame(
     frame: GeographicFrame,
     shape: &Shape,
 ) -> Result<()> {
-    match ScalarGeographicView::try_new(frame, shape) {
-        Ok(_) => Ok(()),
-        Err(GeographicViewError::Resource) => Err(ResourceError::Allocation.into()),
-        Err(GeographicViewError::Diagnostic(diagnostic)) => Err(geographic::invalid_lonlat_error(
-            diagnostic.native.x,
-            diagnostic.native.y,
-        )),
-    }
+    ScalarGeographicView::try_new(frame, shape)
+        .map(|_| ())
+        .map_err(|diagnostic| {
+            geographic::invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y)
+        })
 }
 
 pub(crate) fn ensure_geographic_lonlat_in_frame(

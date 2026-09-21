@@ -66,7 +66,7 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
                 frame,
                 geometries.iter().map(std::borrow::Borrow::borrow),
             )
-            .map_err(overlay_view_error)?;
+            .map_err(|error| overlay_view_error(&error))?;
             overlay_all_geographic_from(&originals, op, strictness, bounds_certificates)
         },
     }
@@ -230,7 +230,7 @@ pub(crate) fn occupied_geographic_support(
     frame: crate::geographic::GeographicFrame,
 ) -> Result<Shape> {
     let originals = GeographicInputs::try_from_shapes(frame, std::iter::once(shape))
-        .map_err(overlay_view_error)?;
+        .map_err(|error| overlay_view_error(&error))?;
     overlay_admitted(
         &originals,
         OverlayOp::Union,
@@ -285,7 +285,7 @@ fn overlay_admitted(
     let mut refs = Vec::with_capacity(sources.len());
     refs.extend(sources.iter());
     let noded = GeographicInputs::try_from_shapes(frame, refs.iter().copied())
-        .map_err(overlay_view_error)?;
+        .map_err(|error| overlay_view_error(&error))?;
     if originals.views().len() == 1
         && op == OverlayOp::Intersection
         && !crate::geometry::crosses_antimeridian_in_frame(originals.views()[0].shape(), frame)
@@ -307,7 +307,7 @@ fn overlay_admitted(
         let mut lines = Vec::new();
         let mut polygons = Vec::new();
         for component in &components {
-            let subset = noded.try_selected(component).map_err(overlay_view_error)?;
+            let subset = noded.selected(component);
             let shape = assemble_overlay(&subset, op, raw_polygon_loops_eligible)?;
             append_overlay_parts(&shape, &mut points, &mut lines, &mut polygons)?;
         }
@@ -331,13 +331,8 @@ struct OverlayBoundsFacts {
     raw_polygon_loops_eligible: bool,
 }
 
-pub(in crate::geometry) fn overlay_view_error(error: GeographicViewError) -> crate::error::Error {
-    match error {
-        GeographicViewError::Resource => ResourceError::Allocation.into(),
-        GeographicViewError::Diagnostic(diagnostic) => {
-            invalid_lonlat_error(diagnostic.native.x, diagnostic.native.y)
-        },
-    }
+pub(in crate::geometry) fn overlay_view_error(error: &GeographicViewError) -> crate::error::Error {
+    invalid_lonlat_error(error.native.x, error.native.y)
 }
 
 fn overlay_bounds_facts_from(

@@ -1,5 +1,5 @@
 use super::value::EdgeDirection;
-use super::view::{GeographicDiagnostic, RingLatitudeSpan};
+use super::view::RingLatitudeSpan;
 use super::*;
 
 fn factor(value: f64) -> AngularFactor {
@@ -22,13 +22,6 @@ fn xy_seq(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::CoordSeq {
 
 fn ring(xs: Vec<f64>, ys: Vec<f64>) -> crate::geometry::Ring {
     crate::geometry::Ring::closed_coordseq(xy_seq(xs, ys)).unwrap()
-}
-
-fn require_diagnostic(error: GeographicViewError) -> Box<GeographicDiagnostic> {
-    match error {
-        GeographicViewError::Diagnostic(diagnostic) => diagnostic,
-        GeographicViewError::Resource => panic!("expected a coordinate diagnostic"),
-    }
 }
 
 #[test]
@@ -102,8 +95,7 @@ fn latitude_admission_is_one_exterior_ulp_and_contextual() {
     let rejected = crate::geometry::Shape::Point(
         crate::geometry::Point::new(0.0, pole.next_up().next_up()).unwrap(),
     );
-    let error =
-        require_diagnostic(ScalarGeographicView::try_new(degrees(), &rejected).unwrap_err());
+    let error = ScalarGeographicView::try_new(degrees(), &rejected).unwrap_err();
     assert_eq!(error.location.coordinate, 0);
     assert_bits(error.native.x, 0.0);
     assert_bits(error.native.y, pole.next_up().next_up());
@@ -229,7 +221,7 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
             .expect("test collection is valid"),
     ])
     .expect("test collection is valid");
-    let error = require_diagnostic(ScalarGeographicView::try_new(degrees(), &nested).unwrap_err());
+    let error = ScalarGeographicView::try_new(degrees(), &nested).unwrap_err();
     assert_eq!(error.location.members.as_slice(), [0, 0, 1]);
     assert_eq!(error.location.ring, Some(1));
     assert_eq!(error.location.coordinate, 2);
@@ -264,17 +256,6 @@ fn valid_deeply_nested_validation_does_not_allocate_per_coordinate() {
     });
     assert_eq!(one_allocations, 1);
     assert_eq!(many_allocations, one_allocations);
-}
-
-#[test]
-fn admitted_walk_rejects_allocation_after_view_construction() {
-    let shape = deeply_nested_line(128);
-    let view = ScalarGeographicView::try_new(degrees(), &shape).unwrap();
-    let mut count = 0;
-    crate::test_support::fail_allocations_after(0, || {
-        view.for_each_coordinate(|_| count += 1);
-    });
-    assert_eq!(count, 128);
 }
 
 #[test]
@@ -340,7 +321,7 @@ fn nested_invalid_coordinate_reports_longitude_before_latitude() {
             .expect("test collection is valid"),
     ])
     .expect("test collection is valid");
-    let error = require_diagnostic(ScalarGeographicView::try_new(degrees(), &nested).unwrap_err());
+    let error = ScalarGeographicView::try_new(degrees(), &nested).unwrap_err();
     assert_eq!(error.location.members.as_slice(), [0, 0, 1]);
     assert_eq!(error.location.ring, Some(1));
     assert_eq!(error.location.coordinate, 2);
@@ -356,24 +337,6 @@ fn nested_invalid_coordinate_reports_longitude_before_latitude() {
 }
 
 #[test]
-fn nested_path_allocation_failure_is_resource() {
-    let shape = deeply_nested_line(2);
-    let error = crate::test_support::fail_allocations_after(0, || {
-        ScalarGeographicView::try_new(degrees(), &shape).unwrap_err()
-    });
-    assert!(matches!(error, GeographicViewError::Resource));
-}
-
-#[test]
-fn diagnostic_box_failure_is_resource() {
-    let rejected = crate::geometry::Shape::Point(crate::geometry::Point::new(0.0, 91.0).unwrap());
-    let error = crate::test_support::fail_allocations_after(0, || {
-        ScalarGeographicView::try_new(degrees(), &rejected).unwrap_err()
-    });
-    assert!(matches!(error, GeographicViewError::Resource));
-}
-
-#[test]
 fn domain_admission_reports_first_native_xy() {
     let shape = crate::geometry::Shape::LineString(
         crate::geometry::LineSeq::try_new(xy_seq(vec![0.0, 10.0], vec![95.0, 91.0])).unwrap(),
@@ -385,33 +348,6 @@ fn domain_admission_reports_first_native_xy() {
         "{message}"
     );
     assert!(!message.contains("(10, 91)"), "{message}");
-}
-
-#[test]
-fn domain_path_allocation_is_not_masked_by_later_invalid_coordinate() {
-    let point = crate::geometry::Shape::Point(crate::geometry::Point::new(0.0, 95.0).unwrap());
-    let nested = (0..5).fold(point, |shape, _| {
-        crate::geometry::Shape::geometry_collection(vec![shape]).expect("test collection is valid")
-    });
-    let error = crate::test_support::fail_allocations_after(0, || {
-        crate::crs::ensure_geographic_domain_in_frame(degrees(), &nested).unwrap_err()
-    });
-    assert!(matches!(
-        error.kind(),
-        crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-    ));
-}
-
-#[test]
-fn domain_nested_valid_path_allocation_is_resource() {
-    let nested = deeply_nested_line(2);
-    let error = crate::test_support::fail_allocations_after(0, || {
-        crate::crs::ensure_geographic_domain_in_frame(degrees(), &nested).unwrap_err()
-    });
-    assert!(matches!(
-        error.kind(),
-        crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-    ));
 }
 
 #[test]
@@ -739,8 +675,8 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
         assert!(window[0].is_finite() && window[1].is_finite());
     }
     let point = CircularInterval::try_arc(axis, -axis.half_period(), 0.0).unwrap();
-    let first = union_circular_intervals(axis, [arc, point]).unwrap();
-    let second = union_circular_intervals(axis, [arc, point]).unwrap();
+    let first = union_circular_intervals(axis, [arc, point]);
+    let second = union_circular_intervals(axis, [arc, point]);
     assert_eq!(first, second);
     assert!(first.windows(axis).is_some_and(|windows| match windows {
         LongitudeWindows::One(window) => window.into_iter().all(f64::is_finite),
@@ -753,30 +689,26 @@ fn extreme_axis_interval_arithmetic_remains_finite() {
 fn largest_gap_union_handles_disconnected_ties_and_full() {
     let axis = degrees().longitude();
     let arc = |start, sweep| CircularInterval::try_arc(axis, start, sweep).unwrap();
-    let disconnected = union_circular_intervals(axis, [arc(170.0, 5.0), arc(-5.0, 10.0)]).unwrap();
+    let disconnected = union_circular_intervals(axis, [arc(170.0, 5.0), arc(-5.0, 10.0)]);
     assert_eq!(disconnected, arc(-5.0, 180.0));
     let tie = union_circular_intervals(axis, [
         arc(-135.0, 0.0),
         arc(-45.0, 0.0),
         arc(45.0, 0.0),
         arc(135.0, 0.0),
-    ])
-    .unwrap();
+    ]);
     assert_eq!(tie, arc(-135.0, 270.0));
     assert_eq!(
-        union_circular_intervals(axis, [arc(-180.0, 180.0), arc(0.0, 180.0)]).unwrap(),
+        union_circular_intervals(axis, [arc(-180.0, 180.0), arc(0.0, 180.0)]),
         CircularInterval::Full
     );
+    assert_eq!(union_circular_intervals(axis, []), CircularInterval::Empty);
     assert_eq!(
-        union_circular_intervals(axis, []).unwrap(),
-        CircularInterval::Empty
-    );
-    assert_eq!(
-        union_circular_intervals(axis, [arc(1.0, 2.0)]).unwrap(),
+        union_circular_intervals(axis, [arc(1.0, 2.0)]),
         arc(1.0, 2.0)
     );
     assert_eq!(
-        union_circular_intervals(axis, [CircularInterval::Full]).unwrap(),
+        union_circular_intervals(axis, [CircularInterval::Full]),
         CircularInterval::Full
     );
 }

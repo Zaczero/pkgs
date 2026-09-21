@@ -1,8 +1,6 @@
 use std::cmp::Ordering;
 
 use super::{CanonicalLongitude, GeographicError, PeriodicAxis};
-use crate::error::Result;
-use crate::{try_push_vec, try_reserve_vec};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum CircularInterval {
@@ -73,10 +71,7 @@ pub(crate) enum LongitudeWindows {
     Full,
 }
 
-pub(crate) fn union_circular_intervals<I>(
-    axis: PeriodicAxis,
-    intervals: I,
-) -> Result<CircularInterval>
+pub(crate) fn union_circular_intervals<I>(axis: PeriodicAxis, intervals: I) -> CircularInterval
 where
     I: IntoIterator<Item = CircularInterval>,
 {
@@ -84,35 +79,33 @@ where
         .into_iter()
         .filter(|value| !matches!(value, CircularInterval::Empty));
     let Some(first) = iter.next() else {
-        return Ok(CircularInterval::Empty);
+        return CircularInterval::Empty;
     };
     if matches!(first, CircularInterval::Full) {
-        return Ok(CircularInterval::Full);
+        return CircularInterval::Full;
     }
     let Some(second) = iter.next() else {
-        return Ok(first);
+        return first;
     };
     if matches!(second, CircularInterval::Full) {
-        return Ok(CircularInterval::Full);
+        return CircularInterval::Full;
     }
-    let mut segments = Vec::new();
-    try_reserve_vec(&mut segments, 4)?;
-    add_segments(axis, first, &mut segments)?;
-    add_segments(axis, second, &mut segments)?;
+    let mut segments = Vec::with_capacity(4);
+    add_segments(axis, first, &mut segments);
+    add_segments(axis, second, &mut segments);
     for interval in iter {
         if matches!(interval, CircularInterval::Full) {
-            return Ok(CircularInterval::Full);
+            return CircularInterval::Full;
         }
-        add_segments(axis, interval, &mut segments)?;
+        add_segments(axis, interval, &mut segments);
     }
     segments.sort_unstable_by(|a, b| a[0].total_cmp(&b[0]).then_with(|| a[1].total_cmp(&b[1])));
-    let mut merged: Vec<[f64; 2]> = Vec::new();
-    try_reserve_vec(&mut merged, segments.len())?;
+    let mut merged: Vec<[f64; 2]> = Vec::with_capacity(segments.len());
     for segment in segments {
         if let Some(last) = merged.last_mut().filter(|last| segment[0] <= last[1]) {
             last[1] = last[1].max(segment[1]);
         } else {
-            try_push_vec(&mut merged, segment)?;
+            merged.push(segment);
         }
     }
     let mut best_gap = 0.0;
@@ -134,34 +127,29 @@ where
         }
     }
     if best_gap == 0.0 {
-        Ok(CircularInterval::Full)
+        CircularInterval::Full
     } else {
-        Ok(CircularInterval::Arc {
+        CircularInterval::Arc {
             start: axis
                 .canonicalize(best_start)
                 .expect("best start is canonical"),
             sweep: axis.period() - best_gap,
-        })
+        }
     }
 }
 
-fn add_segments(
-    axis: PeriodicAxis,
-    interval: CircularInterval,
-    out: &mut Vec<[f64; 2]>,
-) -> Result<()> {
+fn add_segments(axis: PeriodicAxis, interval: CircularInterval, out: &mut Vec<[f64; 2]>) {
     let CircularInterval::Arc { start, sweep } = interval else {
-        return Ok(());
+        return;
     };
     let zero_start = to_zero_based(axis, start);
     let remaining = axis.period() - zero_start;
     if sweep <= remaining {
-        try_push_vec(out, [zero_start, axis.period() - (remaining - sweep)])?;
+        out.push([zero_start, axis.period() - (remaining - sweep)]);
     } else {
-        try_push_vec(out, [zero_start, axis.period()])?;
-        try_push_vec(out, [0.0, sweep - remaining])?;
+        out.push([zero_start, axis.period()]);
+        out.push([0.0, sweep - remaining]);
     }
-    Ok(())
 }
 
 fn arc_endpoint(axis: PeriodicAxis, start: CanonicalLongitude, sweep: f64) -> CanonicalLongitude {

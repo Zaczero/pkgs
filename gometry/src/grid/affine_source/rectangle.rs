@@ -323,27 +323,21 @@ pub(super) fn exact_axis_rectangle(source: &Shape, bounds: Bounds) -> ExactResul
     subdivided_axis_aligned_rectangle(source, bounds)
 }
 
-pub(super) fn exact_world_band(source: &Shape) -> crate::error::Result<Option<Bounds>> {
+pub(super) fn exact_world_band(source: &Shape) -> Option<Bounds> {
     let Shape::Polygon(polygon) = source else {
-        return Ok(None);
+        return None;
     };
     if !polygon.holes.is_empty() {
-        return Ok(None);
+        return None;
     }
-    let summary = match RingSummary::try_new(
+    let Ok(summary) = RingSummary::try_new(
         GeographicFrame::crs84(),
         &GeographicRing::from_ring(&polygon.shell),
-    ) {
-        Ok(summary) => summary,
-        Err(crate::geographic::GeographicViewError::Resource) => {
-            return Err(crate::error::ResourceError::Allocation.into());
-        },
-        Err(crate::geographic::GeographicViewError::Diagnostic(_)) => return Ok(None),
+    ) else {
+        return None;
     };
-    Ok(
-        (summary.turn == RingTurn::None && matches!(summary.domain, RingDomain::FullLongitude(_)))
-            .then(|| Bounds::new_raw(-180.0, summary.south.get(), 180.0, summary.north.get())),
-    )
+    (summary.turn == RingTurn::None && matches!(summary.domain, RingDomain::FullLongitude(_)))
+        .then(|| Bounds::new_raw(-180.0, summary.south.get(), 180.0, summary.north.get()))
 }
 
 /// A bounds rectangle is a complete source model only on the canonical
