@@ -79,7 +79,7 @@ impl NativeDecodedStorage {
                 let mut shapes = Vec::new();
                 reserve(&mut shapes, storage.len())?;
                 for shape in storage.iter_shapes() {
-                    push(&mut shapes, shape?.into_owned())?;
+                    shapes.push(shape?.into_owned());
                 }
                 Ok(shapes)
             },
@@ -135,7 +135,7 @@ fn missing_rows(node: &NativeNode) -> DecodeResult<Vec<usize>> {
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
         }
     }
     Ok(missing)
@@ -187,10 +187,10 @@ fn decode_points_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
-        push(&mut shapes, coordinates.point_shape(row, row)?)?;
+        shapes.push(coordinates.point_shape(row, row)?);
     }
     Ok(mixed_batch(node.length, shapes, missing))
 }
@@ -251,7 +251,7 @@ fn decode_coordseq_rows(
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
         let range = list_range(node, row)?;
@@ -274,7 +274,7 @@ fn decode_coordseq_rows(
                 _ => unreachable!("coordinate sequence decoder only handles two encodings"),
             }
         };
-        push(&mut shapes, shape)?;
+        shapes.push(shape);
     }
     Ok(NativeDecodedBatch {
         length: node.length,
@@ -298,7 +298,7 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
         let line_range = list_range(node, row)?;
@@ -312,15 +312,12 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
             }
             let vertex_range = list_range(lines, line_index)?;
             if vertex_range.is_empty() {
-                push(&mut members, MultiMember::Empty)?;
+                members.push(MultiMember::Empty);
             } else {
                 let coords = coordinates.coordseq(vertex_range.start, vertex_range.end, row)?;
-                push(
-                    &mut members,
-                    MultiMember::Value(
-                        LineSeq::try_new(coords).map_err(NativeArrowDecodeError::from)?,
-                    ),
-                )?;
+                members.push(MultiMember::Value(
+                    LineSeq::try_new(coords).map_err(NativeArrowDecodeError::from)?,
+                ));
             }
         }
         let shape = if members.is_empty() {
@@ -331,7 +328,7 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
                     .map_err(NativeArrowDecodeError::from)?,
             )
         };
-        push(&mut shapes, shape)?;
+        shapes.push(shape);
     }
     Ok(NativeDecodedBatch {
         length: node.length,
@@ -415,12 +412,12 @@ fn decode_polygons_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> 
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
         let range = list_range(node, row)?;
         let shape = polygon_shape(&coordinates, rings, range, row)?;
-        push(&mut shapes, shape)?;
+        shapes.push(shape);
     }
     Ok(mixed_batch(node.length, shapes, missing))
 }
@@ -546,7 +543,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
         let polygon_range = list_range(node, row)?;
@@ -560,7 +557,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
             }
             let ring_range = list_range(polygons, polygon_index)?;
             if ring_range.is_empty() {
-                push(&mut items, MultiMember::Empty)?;
+                items.push(MultiMember::Empty);
                 continue;
             }
             for ring_index in ring_range.clone() {
@@ -571,8 +568,8 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
                 }
             }
             match polygon_shape(&coordinates, rings, ring_range, row)? {
-                Shape::Polygon(polygon) => push(&mut items, MultiMember::Value(polygon))?,
-                Shape::Empty(GeometryKind::Polygon, _) => push(&mut items, MultiMember::Empty)?,
+                Shape::Polygon(polygon) => items.push(MultiMember::Value(polygon)),
+                Shape::Empty(GeometryKind::Polygon, _) => items.push(MultiMember::Empty),
                 _ => {
                     return Err(NativeArrowDecodeError::geoarrow(
                         "Arrow multipolygon member decoded as an unexpected shape",
@@ -588,7 +585,7 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
                     .map_err(NativeArrowDecodeError::from)?,
             )
         };
-        push(&mut shapes, shape)?;
+        shapes.push(shape);
     }
     Ok(NativeDecodedBatch {
         length: node.length,
@@ -621,14 +618,14 @@ fn polygon_shape(
         let vertex_range = list_range(rings, ring_index)?;
         let coords = coordinates.coordseq(vertex_range.start, vertex_range.end, row)?;
         let ring = io::admit_closed_ring(coords).map_err(arrow_ring_error)?;
-        push(&mut shell_and_holes, ring)?;
+        shell_and_holes.push(ring);
     }
     let mut rings = shell_and_holes.into_iter();
     let shell = rings.next().expect("non-empty polygon range has a shell");
     let mut holes = Vec::new();
     reserve(&mut holes, rings.len())?;
     for ring in rings {
-        push(&mut holes, ring)?;
+        holes.push(ring);
     }
     Ok(Shape::Polygon(Polygon::new(shell, holes)))
 }
@@ -645,7 +642,7 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
         let start = offset(node, row)?;
@@ -654,8 +651,8 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
             NativeArrowDecodeError::geoarrow("Arrow WKB offsets are out of bounds")
         })?;
         let parsed = io::parse_wkb(bytes).map_err(NativeArrowDecodeError::from)?;
-        push(&mut shapes, parsed.shape)?;
-        push(&mut srids, parsed.srid)?;
+        shapes.push(parsed.shape);
+        srids.push(parsed.srid);
     }
     Ok(NativeDecodedBatch {
         length: node.length,
@@ -677,7 +674,7 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
     reserve(&mut missing, node.length)?;
     for row in 0..node.length {
         if node.missing_at(row) {
-            push(&mut missing, row)?;
+            missing.push(row);
             continue;
         }
         let start = row
@@ -724,8 +721,8 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
             })?
         };
         let parsed = io::parse_wkb(bytes).map_err(NativeArrowDecodeError::from)?;
-        push(&mut shapes, parsed.shape)?;
-        push(&mut srids, parsed.srid)?;
+        shapes.push(parsed.shape);
+        srids.push(parsed.srid);
     }
     Ok(NativeDecodedBatch {
         length: node.length,
@@ -887,13 +884,13 @@ impl NativeCoordinates {
         }
         for row in 0..node.length {
             let start = row * size;
-            push(&mut xs, values[start])?;
-            push(&mut ys, values[start + 1])?;
+            xs.push(values[start]);
+            ys.push(values[start + 1]);
             if let Some(zs) = zs.as_mut() {
-                push(zs, values[start + 2])?;
+                zs.push(values[start + 2]);
             }
             if let Some(ms) = ms.as_mut() {
-                push(ms, values[start + if has_z { 3 } else { 2 }])?;
+                ms.push(values[start + if has_z { 3 } else { 2 }]);
             }
         }
         let validity = combined_validity(node.length, |row| {
@@ -1076,17 +1073,21 @@ fn combined_validity(
     let mut values = Vec::new();
     reserve(&mut values, length)?;
     for row in 0..length {
-        push(&mut values, !missing(row))?;
+        values.push(!missing(row));
     }
     Ok(Some(arrow_c::arc_from_vec(values)))
 }
 
 fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
-    crate::boundary::try_reserve_vec(values, capacity).map_err(NativeArrowDecodeError::from)
-}
-
-fn push<T>(values: &mut Vec<T>, value: T) -> DecodeResult<()> {
-    crate::boundary::try_push_vec(values, value).map_err(NativeArrowDecodeError::from)
+    let element_size = std::mem::size_of::<T>();
+    let max_capacity = (isize::MAX as usize)
+        .checked_div(element_size)
+        .unwrap_or(usize::MAX);
+    if capacity > max_capacity {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
+    values.reserve(capacity);
+    Ok(())
 }
 
 #[cfg(test)]
