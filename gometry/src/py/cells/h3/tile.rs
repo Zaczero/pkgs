@@ -9,16 +9,14 @@ use crate::py::cells::h3::{CellIndex, LatLng, Resolution, TiledCell, h3_latlng};
 #[derive(Debug)]
 pub(super) enum H3TileError {
     Budget(CoverBudgetExceeded),
-    Allocation,
     Preparation(crate::error::Error),
 }
 
-fn try_insert_cell(cells: &mut HashSet<CellIndex>, cell: CellIndex) -> Result<bool, H3TileError> {
+fn insert_cell(cells: &mut HashSet<CellIndex>, cell: CellIndex) -> bool {
     if cells.contains(&cell) {
-        return Ok(false);
+        return false;
     }
-    cells.try_reserve(1).map_err(|_| H3TileError::Allocation)?;
-    Ok(cells.insert(cell))
+    cells.insert(cell)
 }
 
 fn check_budget(produced: usize, max_cells: Option<usize>) -> Result<(), H3TileError> {
@@ -70,14 +68,13 @@ pub(super) fn h3_tile(
     shape.try_for_each_component(&mut |component| {
         h3_tile_shape(component, &authority, resolution, max_cells, &mut coverage)
     })?;
-    let mut cells = Vec::new();
+    let mut cells = Vec::with_capacity(coverage.len());
     #[expect(
         clippy::iter_over_hash_type,
         reason = "the cells are sorted before they leave"
     )]
     for cell in coverage {
-        crate::boundary::try_push_vec(&mut cells, TiledCell { cell })
-            .map_err(|_| H3TileError::Allocation)?;
+        cells.push(TiledCell { cell });
     }
     cells.sort_unstable_by_key(|cell| u64::from(cell.cell));
     Ok(cells)
@@ -121,7 +118,7 @@ pub(super) fn h3_tile_point(
     };
     let cell = latlng.to_cell(resolution);
     if checked_predicate(authority, cell)? {
-        try_insert_cell(coverage, cell)?;
+        insert_cell(coverage, cell);
         check_budget(coverage.len(), max_cells)?;
     }
     Ok(())
@@ -149,11 +146,11 @@ pub(super) fn h3_tile_line(
     visit_edge_cells(coords, resolution, |edge_cell| {
         for &raw in h3_one_ring(edge_cell, &mut scratch) {
             let cell = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-            if !try_insert_cell(&mut seen, cell)? {
+            if !insert_cell(&mut seen, cell) {
                 continue;
             }
             if checked_predicate(authority, cell)? {
-                try_insert_cell(coverage, cell)?;
+                insert_cell(coverage, cell);
                 check_budget(coverage.len(), max_cells)?;
             }
         }
@@ -177,11 +174,10 @@ fn flood_checked(
             for &raw in h3_one_ring(cell, scratch) {
                 let neighbor =
                     CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-                if try_insert_cell(seen, neighbor)? && checked_predicate(authority, neighbor)? {
-                    try_insert_cell(coverage, neighbor)?;
+                if insert_cell(seen, neighbor) && checked_predicate(authority, neighbor)? {
+                    insert_cell(coverage, neighbor);
                     check_budget(coverage.len(), max_cells)?;
-                    crate::boundary::try_push_vec(&mut next, neighbor)
-                        .map_err(|_| H3TileError::Allocation)?;
+                    next.push(neighbor);
                 }
             }
         }
@@ -213,13 +209,12 @@ pub(super) fn h3_tile_polygon(
         visit_edge_cells(ring.coords(), resolution, |edge_cell| {
             for &raw in h3_one_ring(edge_cell, &mut scratch) {
                 let cell = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-                if try_insert_cell(&mut seen, cell)? {
+                if insert_cell(&mut seen, cell) {
                     let matched = checked_predicate(authority, cell)?;
                     if matched {
-                        try_insert_cell(coverage, cell)?;
+                        insert_cell(coverage, cell);
                         check_budget(coverage.len(), max_cells)?;
-                        crate::boundary::try_push_vec(&mut outline, cell)
-                            .map_err(|_| H3TileError::Allocation)?;
+                        outline.push(cell);
                     }
                 }
             }
@@ -243,13 +238,12 @@ pub(super) fn h3_tile_polygon(
     for &cell in &outline {
         for &raw in h3_one_ring(cell, &mut scratch) {
             let neighbor = CellIndex::try_from(raw).expect("h3o grid disk returned a valid cell");
-            if try_insert_cell(&mut seen, neighbor)? {
+            if insert_cell(&mut seen, neighbor) {
                 let matched = checked_predicate(authority, neighbor)?;
                 if matched {
-                    try_insert_cell(coverage, neighbor)?;
+                    insert_cell(coverage, neighbor);
                     check_budget(coverage.len(), max_cells)?;
-                    crate::boundary::try_push_vec(&mut frontier, neighbor)
-                        .map_err(|_| H3TileError::Allocation)?;
+                    frontier.push(neighbor);
                 }
             }
         }
@@ -281,9 +275,8 @@ fn h3_tile_polygon_seeds_center(
         for point in ring.coords().points() {
             if let Ok(latlng) = h3_latlng(point) {
                 let seed = latlng.to_cell(resolution);
-                if try_insert_cell(&mut seed_seen, seed)? {
-                    crate::boundary::try_push_vec(&mut seed_band, seed)
-                        .map_err(|_| H3TileError::Allocation)?;
+                if insert_cell(&mut seed_seen, seed) {
+                    seed_band.push(seed);
                 }
             }
         }
@@ -292,14 +285,13 @@ fn h3_tile_polygon_seeds_center(
         && let Ok(latlng) = h3_latlng(inside)
     {
         let seed = latlng.to_cell(resolution);
-        if try_insert_cell(&mut seed_seen, seed)? {
-            crate::boundary::try_push_vec(&mut seed_band, seed)
-                .map_err(|_| H3TileError::Allocation)?;
+        if insert_cell(&mut seed_seen, seed) {
+            seed_band.push(seed);
         }
     }
     for &seed in &seed_band {
         if checked_predicate(authority, seed)? {
-            try_insert_cell(coverage, seed)?;
+            insert_cell(coverage, seed);
             check_budget(coverage.len(), max_cells)?;
         }
     }
@@ -388,9 +380,7 @@ fn densify_edge_samples(
     visit: &mut impl FnMut(CellIndex) -> Result<(), H3TileError>,
 ) -> Result<(), H3TileError> {
     // Explicit stack avoids deep recursion on long multi-hop edges.
-    let mut stack: Vec<(Point, CellIndex, Point, CellIndex)> = Vec::new();
-    crate::boundary::try_push_vec(&mut stack, (start, start_cell, end, end_cell))
-        .map_err(|_| H3TileError::Allocation)?;
+    let mut stack = vec![(start, start_cell, end, end_cell)];
     while let Some((a_pt, a_cell, b_pt, b_cell)) = stack.pop() {
         if a_cell == b_cell {
             continue;
@@ -414,10 +404,8 @@ fn densify_edge_samples(
         if points_equal_signed_zero(mid, a_pt) || points_equal_signed_zero(mid, b_pt) {
             continue;
         }
-        crate::boundary::try_push_vec(&mut stack, (a_pt, a_cell, mid, mid_cell))
-            .map_err(|_| H3TileError::Allocation)?;
-        crate::boundary::try_push_vec(&mut stack, (mid, mid_cell, b_pt, b_cell))
-            .map_err(|_| H3TileError::Allocation)?;
+        stack.push((a_pt, a_cell, mid, mid_cell));
+        stack.push((mid, mid_cell, b_pt, b_cell));
     }
     Ok(())
 }

@@ -1,7 +1,6 @@
 use h3o::CellIndex;
 
 use super::tile::H3TileError;
-use crate::error::ResourceError;
 use crate::grid::h3_coverer::{H3CoverError, H3CoverPlan, H3TraversalRule, h3_cover_shape};
 use crate::py::cells::coverage_ops::{
     GridCoverError, coverage_factory_shapes, envelope_window_shapes,
@@ -31,7 +30,6 @@ impl From<H3TileError> for GridCoverError {
     fn from(error: H3TileError) -> Self {
         match error {
             H3TileError::Budget(error) => Self::Budget(error),
-            H3TileError::Allocation => Self::Native(ResourceError::Allocation.into()),
             H3TileError::Preparation(error) => Self::Native(error),
         }
     }
@@ -86,11 +84,7 @@ pub(super) fn build_coverage(
                 resolution,
                 max_cells,
             )?;
-            let mut cells = Vec::new();
-            for cell in annotated {
-                crate::try_push_vec(&mut cells, cell.cell)?;
-            }
-            Ok(cells)
+            Ok(annotated.into_iter().map(|cell| cell.cell).collect())
         },
         CellRule::Within | CellRule::Overlap | CellRule::Bbox => {
             let (source, rule) = match cell_rule {
@@ -115,11 +109,7 @@ pub(super) fn build_coverage(
             // true spherical cell stays inside the affine lon/lat source.
             // Therefore uncertainty fails CLOSED here (exclude Boundary), the
             // deliberate inverse of overlap's fail-OPEN completeness rule.
-            let mut cells = Vec::new();
-            for cell in annotated {
-                crate::try_push_vec(&mut cells, cell.cell)?;
-            }
-            Ok(cells)
+            Ok(annotated.into_iter().map(|cell| cell.cell).collect())
         },
     }
 }
