@@ -1,5 +1,5 @@
 use crate::grid::spherical_arc::{H3BoundingWindow, h3_cell_contains_windows};
-use crate::py::cells::coverage_ops::{SortedCells, try_collect_cover_ids};
+use crate::py::cells::coverage_ops::{SortedCells, collect_cover_ids};
 use crate::py::cells::h3::register::build_coverage;
 use crate::py::cells::h3::{
     CellIndex, LatLng, PyH3Cell, Resolution, h3_resolution, h3_resolution_from_i64, parse_h3_index,
@@ -302,12 +302,12 @@ pub(super) fn h3_cover(
         max_cells,
         |geometry, effective_max_cells| {
             let cells = build_coverage(geometry, resolution, cell_rule, effective_max_cells)?;
-            try_collect_cover_ids(
+            Ok(collect_cover_ids(
                 SortedCells::from_sorted(cells)
                     .into_vec()
                     .into_iter()
                     .map(u64::from),
-            )
+            ))
         },
     )
 }

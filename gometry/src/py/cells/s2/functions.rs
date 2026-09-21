@@ -427,12 +427,12 @@ pub(crate) fn s2_cover(
                 ..parsed
             };
             let cells = register::build_coverage(geometry, parsed, cell_rule)?;
-            coverage_ops::try_collect_cover_ids(
+            Ok(coverage_ops::collect_cover_ids(
                 SortedCells::from_sorted(cells)
                     .into_vec()
                     .into_iter()
                     .map(CellId::raw),
-            )
+            ))
         },
     )
 }

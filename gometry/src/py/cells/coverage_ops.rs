@@ -86,13 +86,12 @@ where
         if !any_adjacent {
             // No shared edges: assemble a MultiPolygon of the per-cell
             // polygons directly — never pay union/polygonize.
-            let shapes = crate::try_collect_results(
-                prepared
-                    .as_slice()
-                    .iter()
-                    .copied()
-                    .map(|cell| D::fallback_shape(cell).map_err(PyErr::from)),
-            )?;
+            let shapes = prepared
+                .as_slice()
+                .iter()
+                .copied()
+                .map(|cell| D::fallback_shape(cell).map_err(PyErr::from))
+                .collect::<PyResult<Vec<_>>>()?;
             return multipolygon_from_cell_shapes(shapes);
         }
         let Some(capacity) = prepared.as_slice().len().checked_mul(2) else {
@@ -104,7 +103,7 @@ where
             ));
         };
         let is_member = |neighbor: D::Cell| prepared.as_slice().binary_search(&neighbor).is_ok();
-        let mut outline = crate::try_vec_with_capacity(capacity)?;
+        let mut outline = Vec::with_capacity(capacity);
         let mut crosses_seam = false;
         'scan: for &cell in prepared.as_slice() {
             for segment in D::exterior_edge_segments(cell, &is_member)? {
@@ -112,7 +111,7 @@ where
                     crosses_seam = true;
                     break 'scan;
                 }
-                crate::try_push(&mut outline, segment)?;
+                outline.push(segment);
             }
         }
         if !crosses_seam && let Some(typed) = polygonize_outline(outline)? {
@@ -122,13 +121,12 @@ where
     } else {
         cells
     };
-    let shapes = crate::try_collect_results(
-        fallback_cells
-            .as_slice()
-            .iter()
-            .copied()
-            .map(|cell| D::fallback_shape(cell).map_err(PyErr::from)),
-    )?;
+    let shapes = fallback_cells
+        .as_slice()
+        .iter()
+        .copied()
+        .map(|cell| D::fallback_shape(cell).map_err(PyErr::from))
+        .collect::<PyResult<Vec<_>>>()?;
     coverage_to_polygon(&shapes)
 }
 
@@ -140,14 +138,13 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
             "a coverage needs at least one cell to dissolve into a polygon",
         ));
     }
-    let mut polygons = crate::try_vec_with_capacity(shapes.len())?;
+    let mut polygons = Vec::with_capacity(shapes.len());
     for shape in shapes {
         match shape {
-            Shape::Polygon(polygon) => crate::try_push(&mut polygons, polygon)?,
+            Shape::Polygon(polygon) => polygons.push(polygon),
             Shape::MultiPolygon(parts) => {
-                for polygon in parts {
-                    crate::try_push(&mut polygons, polygon)?;
-                }
+                polygons.reserve(parts.len());
+                polygons.extend(parts);
             },
             // A cell boundary split at the antimeridian is polygonal; nothing
             // else reaches here, and an empty result is the error below.
@@ -170,21 +167,16 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     }
     let outline = Shape::multi_line_string(
         crate::geometry::CoordinateAxes::XY,
-        crate::try_collect_results(
-            outline
-                .into_iter()
-                .map(|line| Ok::<_, PyErr>(LineSeq::from_proven(line))),
-        )?,
+        outline.into_iter().map(LineSeq::from_proven).collect(),
     )
     .map_err(PyErr::from)?;
-    let polygons = crate::try_collect_results(
-        Shape::build_area_all(&[&outline], true)?
-            .into_iter()
-            .filter_map(|shape| match shape {
-                Shape::Polygon(polygon) => Some(Ok(polygon)),
-                _ => None,
-            }),
-    )?;
+    let polygons: Vec<_> = Shape::build_area_all(&[&outline], true)?
+        .into_iter()
+        .filter_map(|shape| match shape {
+            Shape::Polygon(polygon) => Some(polygon),
+            _ => None,
+        })
+        .collect();
     if polygons.is_empty() {
         return Ok(None);
     }
@@ -343,25 +335,23 @@ impl GridSourceAdmission {
     }
 
     fn transform_shapes(
-        &self,
-        shapes: &[&Shape],
-        logical_rows: Option<&[usize]>,
+        transformer: &crs::TransformPlan,
+        source_rows: &[(usize, Shape)],
     ) -> Result<Vec<Shape>, GridCoverError> {
-        if let Some(transformer) = &self.transformer {
-            return transformer
-                .transform_shapes_indexed(shapes)
-                .map_err(|failure| {
-                    let row = failure
-                        .coordinate
-                        .and_then(|rank| logical_rows.and_then(|rows| rows.get(rank).copied()));
-                    let error = failure.error;
-                    match row {
-                        Some(row) => GridCoverError::NativeRow { row, error },
-                        None => GridCoverError::Native(error),
-                    }
-                });
-        }
-        Ok(shapes.iter().map(|shape| (**shape).clone()).collect())
+        let mut shapes = Vec::with_capacity(source_rows.len());
+        shapes.extend(source_rows.iter().map(|(_, shape)| shape));
+        transformer
+            .transform_shapes_indexed(&shapes)
+            .map_err(|failure| {
+                let row = failure
+                    .coordinate
+                    .and_then(|rank| source_rows.get(rank).map(|(logical, _)| *logical));
+                let error = failure.error;
+                match row {
+                    Some(row) => GridCoverError::NativeRow { row, error },
+                    None => GridCoverError::Native(error),
+                }
+            })
     }
 
     fn normalize_shape(shape: Shape) -> Result<Shape, GridCoverError> {
@@ -387,7 +377,10 @@ impl GridSourceAdmission {
         self,
         array: &PyGeometryArray,
     ) -> Result<Vec<Result<Option<Shape>, GridCoverError>>, GridCoverError> {
-        let mut source_rows = Vec::new();
+        let present_count = array
+            .missing()
+            .map_or_else(|| array.len(), |mask| mask.present_count());
+        let mut source_rows = Vec::with_capacity(present_count);
         for row in array.row_operation().present_rows() {
             let logical = row.logical();
             let shape =
@@ -397,35 +390,36 @@ impl GridSourceAdmission {
                         row: logical,
                         error,
                     })?;
-            crate::try_push_vec(&mut source_rows, (logical, shape))?;
+            source_rows.push((logical, shape));
         }
-        let logical_rows: Vec<_> = source_rows.iter().map(|(logical, _)| *logical).collect();
-        let source_shapes: Vec<_> = source_rows.iter().map(|(_, shape)| shape).collect();
-        let mut output = Vec::new();
-        crate::try_reserve_vec(&mut output, array.len())?;
-        for _ in 0..array.len() {
-            crate::try_push_vec(&mut output, Ok(None))?;
-        }
-        let transformed = match self.transform_shapes(&source_shapes, Some(&logical_rows)) {
-            Ok(transformed) => transformed,
-            Err(GridCoverError::NativeRow { row, error }) => {
-                let rank = logical_rows
-                    .iter()
-                    .position(|&logical| logical == row)
-                    .expect("transform failure row came from the source batch");
-                let prefix =
-                    self.transform_shapes(&source_shapes[..rank], Some(&logical_rows[..rank]))?;
-                for ((logical, _), shape) in source_rows[..rank].iter().zip(prefix) {
-                    output[*logical] = Self::normalize_shape(shape)
-                        .map(Some)
-                        .map_err(|error| error.at_row(*logical));
-                }
-                output[row] = Err(GridCoverError::NativeRow { row, error });
-                return Ok(output);
-            },
-            Err(error) => return Err(error),
+        let mut output = Vec::with_capacity(array.len());
+        output.resize_with(array.len(), || Ok(None));
+        let mut transformed = if let Some(transformer) = &self.transformer {
+            match Self::transform_shapes(transformer, &source_rows) {
+                Ok(transformed) => Some(transformed.into_iter()),
+                Err(GridCoverError::NativeRow { row, error }) => {
+                    let rank = source_rows
+                        .iter()
+                        .position(|(logical, _)| *logical == row)
+                        .expect("transform failure row came from the source batch");
+                    let prefix = Self::transform_shapes(transformer, &source_rows[..rank])?;
+                    for ((logical, _), shape) in source_rows[..rank].iter().zip(prefix) {
+                        output[*logical] = Self::normalize_shape(shape)
+                            .map(Some)
+                            .map_err(|error| error.at_row(*logical));
+                    }
+                    output[row] = Err(GridCoverError::NativeRow { row, error });
+                    return Ok(output);
+                },
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
         };
-        for ((logical, _), shape) in source_rows.into_iter().zip(transformed) {
+        for (logical, source) in source_rows {
+            let shape = transformed.as_mut().map_or(source, |shapes| {
+                shapes.next().expect("one transformed shape per source row")
+            });
             output[logical] = Self::normalize_shape(shape)
                 .map(Some)
                 .map_err(|error| error.at_row(logical));
@@ -433,62 +427,66 @@ impl GridSourceAdmission {
         Ok(output)
     }
 
-    pub(crate) fn admit_points(
+    pub(crate) fn admit_bounding_collection(
         self,
         array: &PyGeometryArray,
-    ) -> Result<Vec<Option<Point>>, GridCoverError> {
-        let mut output = Vec::new();
-        crate::try_reserve_vec(&mut output, array.len())?;
-        for _ in 0..array.len() {
-            crate::try_push_vec(&mut output, None)?;
+    ) -> Result<Shape, GridCoverError> {
+        let mut parts = Vec::new();
+        for shape in self.admit_array_shapes(array)? {
+            if let Some(shape) = shape?
+                && !shape.is_empty()
+            {
+                parts.push(shape);
+            }
         }
-        let mut logical_rows = Vec::new();
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::try_reserve_vec(&mut logical_rows, array.len())?;
-        crate::try_reserve_pair(&mut xs, &mut ys, array.len())?;
+        match parts.len() {
+            0 => Err(crate::geometry::GeometryErrorKind::message(
+                "bounding cell requires a non-empty geometry",
+            )
+            .into()),
+            1 => Ok(parts.pop().expect("one shape")),
+            _ => Ok(Shape::geometry_collection(parts)?),
+        }
+    }
 
-        if array.is_compact_nullable() {
-            if !matches!(
-                array.storage(),
-                crate::array::GeometryArrayStorage::Packed(
-                    crate::array::PackedStorage::Points { .. }
-                )
-            ) {
-                return Err(GridCoverError::Type);
+    pub(crate) fn admit_point_columns(
+        array: &PyGeometryArray,
+    ) -> Result<(Vec<f64>, Vec<f64>), GridCoverError> {
+        let points = array.storage().point_rows().ok_or(GridCoverError::Type)?;
+        let admission = Self::new_for_array(array)?;
+        let present_count = array
+            .missing()
+            .map_or_else(|| array.len(), |mask| mask.present_count());
+        let mut xs = Vec::with_capacity(present_count);
+        let mut ys = Vec::with_capacity(present_count);
+        for logical in 0..array.len() {
+            if array.is_row_missing(logical) {
+                continue;
             }
-            for row in array.row_operation().rows_with_missing(|| ()) {
-                let crate::array::ArrayRow::Present(row) = row else {
-                    continue;
-                };
-                let logical = row.logical();
-                let crate::array::ShapeRow::Point(point) = row.row() else {
-                    unreachable!("compact point storage yields point rows")
-                };
-                crate::try_push_vec(&mut logical_rows, logical)?;
-                crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)?;
-            }
-        } else {
-            let Some(points) = array.storage().point_rows() else {
-                return Err(GridCoverError::Type);
+            let row = if array.is_compact_nullable() {
+                xs.len()
+            } else {
+                logical
             };
-            for logical in 0..array.len() {
-                if array.is_row_missing(logical) {
-                    continue;
-                }
-                let point = points.get(logical);
-                crate::try_push_vec(&mut logical_rows, logical)?;
-                crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)?;
-            }
+            let point = points.get(row);
+            xs.push(point.x);
+            ys.push(point.y);
         }
 
-        if let Some(transformer) = &self.transformer {
+        if let Some(transformer) = &admission.transformer {
             transformer
                 .transform_coordinates_indexed(&mut xs, &mut ys, crate::Zt::None)
                 .map_err(|failure| {
-                    let row = failure
-                        .coordinate
-                        .and_then(|rank| logical_rows.get(rank).copied());
+                    let row = failure.coordinate.and_then(|rank| {
+                        array.missing().map_or_else(
+                            || (rank < array.len()).then_some(rank),
+                            |mask| {
+                                mask.cursor().find_map(|(logical, present)| {
+                                    (present == Some(rank)).then_some(logical)
+                                })
+                            },
+                        )
+                    });
                     let error = failure.error;
                     match row {
                         Some(row) => GridCoverError::NativeRow { row, error },
@@ -496,16 +494,18 @@ impl GridSourceAdmission {
                     }
                 })?;
         }
-        for (rank, &logical) in logical_rows.iter().enumerate() {
-            geographic::validate_lonlat_xy(xs[rank], ys[rank]).map_err(|error| {
-                GridCoverError::NativeRow {
-                    row: logical,
-                    error,
-                }
+        let mut coordinates = xs.iter().zip(&ys);
+        for logical in 0..array.len() {
+            if array.is_row_missing(logical) {
+                continue;
+            }
+            let (&x, &y) = coordinates.next().expect("one coordinate per present row");
+            geographic::validate_lonlat_xy(x, y).map_err(|error| GridCoverError::NativeRow {
+                row: logical,
+                error,
             })?;
-            output[logical] = Some(Point::new_raw_xy(xs[rank], ys[rank]));
         }
-        Ok(output)
+        Ok((xs, ys))
     }
 }
 
@@ -526,16 +526,8 @@ pub(crate) fn admit_grid_geometry(geometry: &PyGeometry) -> PyResult<PyGeometry>
     admission.admit_geometry(geometry).map_err(PyErr::from)
 }
 
-/// Fallible identity collect of cover cell ids. Prior ids drop before the
-/// allocation error leaves the collector.
-pub(crate) fn try_collect_cover_ids(
-    values: impl IntoIterator<Item = u64>,
-) -> Result<Vec<u64>, GridCoverError> {
-    let mut out = Vec::new();
-    for value in values {
-        crate::try_push_vec(&mut out, value)?;
-    }
-    Ok(out)
+pub(crate) fn collect_cover_ids(values: impl IntoIterator<Item = u64>) -> Vec<u64> {
+    values.into_iter().collect()
 }
 
 /// Build canonical cell ids from an admitted membership source and its working
@@ -551,11 +543,12 @@ where
     S: RectCoverSpec,
 {
     if cell_rule == CellRule::Bbox {
-        let windows = envelope_windows(cover_shape)?;
+        let windows = envelope_windows(cover_shape);
         let covered = coverer::cover_windows(&windows, S::roots(), depth, max_cells)?;
-        return try_collect_cover_ids(covered.into_iter().map(|cell| S::id(&cell)))
-            .map(SortedCells::from_sorted)
-            .map(SortedCells::into_vec);
+        return Ok(SortedCells::from_sorted(collect_cover_ids(
+            covered.into_iter().map(|cell| S::id(&cell)),
+        ))
+        .into_vec());
     }
     let authority = membership.shape.as_ref();
     let authority_plan = membership.plan_or_transient()?;
@@ -581,9 +574,10 @@ where
         depth,
         max_cells,
     )?;
-    try_collect_cover_ids(covered.into_iter().map(|cell| S::id(&cell)))
-        .map(SortedCells::from_sorted)
-        .map(SortedCells::into_vec)
+    Ok(SortedCells::from_sorted(collect_cover_ids(
+        covered.into_iter().map(|cell| S::id(&cell)),
+    ))
+    .into_vec())
 }
 
 /// Shared error and source-normalization helpers for grid factories.
@@ -649,39 +643,29 @@ pub(crate) fn coverage_factory_shapes(
 /// atomic component of the admitted working shape, split in two where it
 /// wraps the antimeridian. One merged envelope would flood the ground between
 /// distant parts, and the band behind a seam split, with unrelated cells.
-pub(crate) fn envelope_windows(
-    cover_shape: &Shape,
-) -> Result<Vec<crate::geometry::Bounds>, GridCoverError> {
+pub(crate) fn envelope_windows(cover_shape: &Shape) -> Vec<crate::geometry::Bounds> {
     let mut windows = Vec::new();
-    cover_shape.try_for_each_component(&mut |component| {
+    cover_shape.for_each_component(&mut |component| {
         let Some(bounds) = component.to_shape().bounds() else {
-            return Ok(());
+            return;
         };
         let (west, south, east, north) =
             (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
         if west > east {
-            crate::try_push_vec(
-                &mut windows,
-                crate::geometry::Bounds::new_raw(west, south, 180.0, north),
-            )?;
-            crate::try_push_vec(
-                &mut windows,
-                crate::geometry::Bounds::new_raw(-180.0, south, east, north),
-            )?;
+            windows.push(crate::geometry::Bounds::new_raw(west, south, 180.0, north));
+            windows.push(crate::geometry::Bounds::new_raw(-180.0, south, east, north));
         } else {
-            crate::try_push_vec(&mut windows, bounds)?;
+            windows.push(bounds);
         }
-        Ok::<_, GridCoverError>(())
-    })?;
-    Ok(windows)
+    });
+    windows
 }
 
 /// [`envelope_windows`] as query shapes, for grids whose cells are not lon/lat
 /// rectangles and so cover the windows under `'overlap'`.
 pub(crate) fn envelope_window_shapes(cover_shape: &Shape) -> Result<Vec<Shape>, GridCoverError> {
-    let windows = envelope_windows(cover_shape)?;
-    let mut shapes = Vec::new();
-    crate::try_reserve_vec(&mut shapes, windows.len())?;
+    let windows = envelope_windows(cover_shape);
+    let mut shapes = Vec::with_capacity(windows.len());
     for window in windows {
         shapes.push(bounds_query_shape(window)?);
     }
@@ -721,9 +705,9 @@ pub(crate) fn rect_cell_array_for<S: RectCoverSpec>(
 
 #[cfg(test)]
 mod tests {
-    use super::{GridCoverError, GridSourceAdmission, SortedCells, try_collect_cover_ids};
+    use super::{GridCoverError, GridSourceAdmission, SortedCells};
     use crate::Frame;
-    use crate::error::{ErrorKind, ResourceError};
+    use crate::error::ErrorKind;
     use crate::geographic::{GeographicFrame, ScalarGeographicView};
     use crate::geometry::{GeometryErrorKind, Point, Shape};
     use crate::grid::CoverError;
@@ -828,19 +812,5 @@ mod tests {
             crate::geometry::GeometryErrorKind::message("prepared"),
         ));
         assert!(matches!(error, GridCoverError::Native(_)), "{error:?}");
-    }
-
-    #[test]
-    fn identity_id_collect_allocation_is_native_resource() {
-        let error = crate::test_support::fail_allocations_after(0, || {
-            try_collect_cover_ids([1_u64, 2, 3]).expect_err("id collect allocation must fail")
-        });
-        assert!(
-            matches!(&error, GridCoverError::Native(inner) if matches!(
-                inner.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            "{error:?}"
-        );
     }
 }
