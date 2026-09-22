@@ -16,7 +16,7 @@ use crate::py::numpy::optional_float64_array;
 /// Prepared/frame products deliberately do not live here: every computed
 /// result receives a fresh product owner.
 pub(crate) struct ComputedCaches {
-    bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
+    bounds_cache: Arc<std::sync::OnceLock<ElementBounds>>,
     total_bounds_cache: TotalBoundsCache,
 }
 
@@ -29,7 +29,7 @@ impl ComputedCaches {
     }
 
     pub(crate) const fn carried(
-        bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
+        bounds_cache: Arc<std::sync::OnceLock<ElementBounds>>,
         total_bounds_cache: TotalBoundsCache,
     ) -> Self {
         Self {
@@ -183,22 +183,22 @@ impl PyGeometryArray {
     /// Return the published per-element bounds without initializing the cache.
     /// Cold callers must fall back to their row-local bounds computation.
     pub(crate) fn existing_element_bounds(&self) -> Option<ElementBounds> {
-        self.bounds_cache.get().cloned().flatten()
+        self.bounds_cache.get().cloned()
     }
 
-    /// Build and publish the full per-element bounds cache when a caller
-    /// explicitly requires it. Every owned allocation is fallible, and a
-    /// failed initialization leaves the cache unpublished for a later retry.
-    pub(crate) fn try_element_bounds(&self) -> crate::error::Result<Option<ElementBounds>> {
-        let bounds = self.bounds_cache.get_or_try_init(|| {
-            let mut values = Vec::new();
-            crate::boundary::try_reserve_vec(&mut values, self.len())?;
-            let columnar = self.try_for_each_element_bounds(|bounds| {
-                crate::boundary::try_push_vec(&mut values, bounds)
-            })?;
-            Ok::<_, crate::error::Error>(columnar.then(|| Arc::new(values)))
-        })?;
-        Ok(bounds.clone())
+    /// Build and publish per-element bounds for packed storage.
+    pub(crate) fn element_bounds(&self) -> Option<ElementBounds> {
+        if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
+            return None;
+        }
+        Some(Arc::clone(self.bounds_cache.get_or_init(|| {
+            let mut values = Vec::with_capacity(self.len());
+            let Ok(_) = self.try_for_each_element_bounds(|bounds| {
+                values.push(bounds);
+                Ok::<_, std::convert::Infallible>(())
+            });
+            Arc::new(values)
+        })))
     }
 
     /// Visit each logical row's planar bounds in row order, straight off the
@@ -753,19 +753,16 @@ impl PyGeometryArray {
                 "present-only payload length must match the mask present count",
             ));
         }
-        let mut rows = Vec::new();
-        crate::boundary::try_reserve_vec(&mut rows, mask.len())?;
+        let mut rows = Vec::with_capacity(mask.len());
         let mut present = shapes.iter();
         for missing in mask.iter() {
             if missing {
-                crate::try_push_vec(&mut rows, Self::missing_placeholder())?;
+                rows.push(Self::missing_placeholder());
             } else {
-                let shape = present.next().ok_or_else(|| {
-                    crate::geometry::GeometryErrorKind::message(
-                        "present-only payload ended before the missing mask",
-                    )
-                })?;
-                crate::try_push_vec(&mut rows, shape.clone())?;
+                let shape = present
+                    .next()
+                    .expect("present count matches the admitted mask");
+                rows.push(shape.clone());
             }
         }
         Ok(GeometryArrayStorage::Mixed(rows))
@@ -986,11 +983,10 @@ impl PyGeometryArray {
             )));
         }
         let count = len / 4;
-        let mut rings = Vec::new();
-        let mut polygons = Vec::new();
-        crate::try_reserve_vec(&mut rings, count + 1)?;
-        crate::try_reserve_vec(&mut polygons, count + 1)?;
-        rings.extend((0..=count).map(|index| index * 4));
+        let capacity = count.wrapping_add(1);
+        let mut rings = Vec::with_capacity(capacity);
+        let mut polygons = Vec::with_capacity(capacity);
+        rings.extend((0..=count).map(|index| index.wrapping_mul(4)));
         polygons.extend(0..=count);
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(rings, len)?;
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(polygons, count)?;
@@ -1102,10 +1098,10 @@ impl PyGeometryArray {
         items: Vec<PyGeometry>,
         frame: Frame,
     ) -> crate::error::Result<Self> {
-        let mut shapes = Vec::new();
-        for item in items {
-            crate::boundary::try_push_vec(&mut shapes, item.shape.shape().clone())?;
-        }
+        let shapes = items
+            .into_iter()
+            .map(|item| item.shape.shape().clone())
+            .collect();
         Self::from_shapes(shapes, frame)
     }
 
@@ -1933,6 +1929,21 @@ mod element_bounds_cache_tests {
     }
 
     #[test]
+    fn mixed_element_bounds_decline_without_allocating() {
+        let array = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                Shape::empty_polygon(),
+            ],
+            Frame::None,
+        )
+        .unwrap();
+        let (bounds, allocations) = allocation_count(|| array.element_bounds());
+        assert!(bounds.is_none());
+        assert_eq!(allocations, 0);
+    }
+
+    #[test]
     fn cold_row_seed_does_not_materialize_element_bounds() {
         let array = lines();
         let (seed, allocations) = allocation_count(|| array.row_bounds_seed(0));
@@ -1946,8 +1957,7 @@ mod element_bounds_cache_tests {
     fn warm_lookup_returns_the_published_element_bounds() {
         let array = lines();
         let published = array
-            .try_element_bounds()
-            .unwrap()
+            .element_bounds()
             .expect("packed lines publish element bounds");
         let (lookup, allocations) = allocation_count(|| {
             array
@@ -1967,8 +1977,7 @@ mod element_bounds_cache_tests {
         let array = lines();
         let cold = array.heap_bytes();
         array
-            .try_element_bounds()
-            .expect("element bounds")
+            .element_bounds()
             .expect("non-empty lines publish bounds");
         assert!(array.heap_bytes() > cold);
     }
@@ -1982,8 +1991,7 @@ mod element_bounds_cache_tests {
         )
         .unwrap();
         let bounds = array
-            .try_element_bounds()
-            .unwrap()
+            .element_bounds()
             .expect("compact lines publish element bounds");
 
         assert_eq!(bounds.len(), 2);

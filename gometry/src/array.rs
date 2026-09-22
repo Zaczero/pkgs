@@ -318,7 +318,7 @@ pub struct PyGeometryArray {
     /// the packed columns when explicitly required and reused by every
     /// predicate refutation. The array is frozen, so the cache cannot become
     /// stale. `Arc<OnceLock>` makes cloning the handle share the cache.
-    pub(crate) bounds_cache: Arc<std::sync::OnceLock<Option<ElementBounds>>>,
+    pub(crate) bounds_cache: Arc<std::sync::OnceLock<ElementBounds>>,
     /// Lazy array-wide aggregate bounds (including the geographic antimeridian
     /// fold when the frame is geographic). Same lifecycle as `bounds_cache`:
     /// fresh on `from_storage_arc` / frame retag (geographic fold depends on

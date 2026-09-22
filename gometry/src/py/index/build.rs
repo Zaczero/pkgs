@@ -84,17 +84,14 @@ fn packed_index_payload(
     array: &PyGeometryArray,
     domain: TopologyDomain,
 ) -> PyResult<(Vec<IndexEntry>, Vec<u8>, usize)> {
-    let mut entries = Vec::new();
-    crate::try_reserve_vec(&mut entries, array.len()).map_err(pyo3::PyErr::from)?;
-    let mut live = Vec::new();
-    crate::try_reserve_vec(&mut live, array.len()).map_err(pyo3::PyErr::from)?;
+    let mut entries = Vec::with_capacity(array.len());
+    let mut live = Vec::with_capacity(array.len());
     let mut non_prunable_live = 0;
     let element_bounds = (!matches!(
         array.storage(),
         GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
     ))
-    .then(|| array.try_element_bounds())
-    .transpose()?
+    .then(|| array.element_bounds())
     .flatten();
     let rows = array.row_operation();
     for logical_row in rows.rows_with_missing(|| ()) {
@@ -121,13 +118,10 @@ fn packed_index_payload(
             },
             TopologyDomain::Geographic(_) => shape_row.try_with_shape(|shape| {
                 let cover = index_envelopes(shape, bounds, domain)?;
-                for &envelope in cover.entries() {
-                    crate::try_push_vec(&mut entries, IndexEntry {
-                        idx: logical,
-                        envelope,
-                    })
-                    .map_err(pyo3::PyErr::from)?;
-                }
+                entries.extend(cover.entries().iter().map(|&envelope| IndexEntry {
+                    idx: logical,
+                    envelope,
+                }));
                 Ok::<_, pyo3::PyErr>(())
             })?,
         }
