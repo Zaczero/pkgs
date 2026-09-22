@@ -12,6 +12,8 @@ pub(crate) enum TotpError {
     DigitsOutOfRange { digits: u8 },
     #[error("Invalid step_seconds: must be non-zero")]
     StepSecondsMustBeNonZero,
+    #[error("Time window is outside the signed 64-bit counter range")]
+    TimeWindowOutOfRange,
     #[error("Invalid algorithm: expected sha1, sha256, or sha512")]
     InvalidAlgorithm,
     #[error("Invalid arguments: time and time_window cannot both be set")]
@@ -21,13 +23,5 @@ pub(crate) enum TotpError {
 impl TotpError {
     pub(crate) fn into_pyerr(self) -> PyErr {
         PyValueError::new_err(self.to_string())
-    }
-}
-
-pub(crate) fn validate_digits(digits: u8) -> Result<(), TotpError> {
-    if (1..=9).contains(&digits) {
-        Ok(())
-    } else {
-        Err(TotpError::DigitsOutOfRange { digits })
     }
 }

@@ -1,4 +1,6 @@
 #![feature(likely_unlikely)]
+#![feature(const_index)]
+#![feature(const_trait_impl)]
 
 mod algorithm;
 mod base32;
@@ -15,7 +17,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyInt, PyString};
 
 use crate::algorithm::parse_algorithm;
-use crate::errors::{TotpError, validate_digits};
+use crate::errors::TotpError;
 use crate::secret::parse_secret_from_py;
 use crate::time::{resolve_counter, time_window_from_time};
 use crate::totp::{totp_code, verify};
@@ -24,8 +26,8 @@ const MODULUS_BY_DIGITS: [NonZeroU32; 10] = {
     let mut table = [NonZeroU32::MIN; 10];
     let mut value = 1;
     let mut digits = 0;
-    while digits < table.len() {
-        table[digits] = match NonZeroU32::new(value) {
+    while let Some(slot) = table.get_mut(digits) {
+        *slot = match NonZeroU32::new(value) {
             Some(value) => value,
             None => panic!("decimal modulus must be non-zero"),
         };
@@ -37,43 +39,61 @@ const MODULUS_BY_DIGITS: [NonZeroU32; 10] = {
     table
 };
 
-const fn modulus_for_digits(digits: u8) -> NonZeroU32 {
-    MODULUS_BY_DIGITS[digits as usize]
+#[derive(Clone, Copy)]
+struct Digits {
+    count: u8,
+    modulus: NonZeroU32,
 }
 
-fn format_code_py(py: Python<'_>, mut code: u32, digits: u8) -> Py<PyString> {
+const fn admit_digits(count: u8) -> Result<Digits, TotpError> {
+    let Some(&modulus) = MODULUS_BY_DIGITS.get(count as usize) else {
+        return Err(TotpError::DigitsOutOfRange { digits: count });
+    };
+    if count == 0 {
+        return Err(TotpError::DigitsOutOfRange { digits: count });
+    }
+    Ok(Digits { count, modulus })
+}
+
+fn format_code_py(py: Python<'_>, mut code: u32, digits: Digits) -> Py<PyString> {
     let mut buf = [b'0'; 9];
 
-    for c in buf.iter_mut().rev().take(digits as usize) {
-        *c = b'0' + (code % 10) as u8;
+    let start = buf.len().wrapping_sub(usize::from(digits.count));
+    let view = buf
+        .get_mut(start..)
+        .expect("admitted digit count fits code buffer");
+    for c in view.iter_mut().rev() {
+        *c = b'0'.wrapping_add((code % 10) as u8);
         code /= 10;
     }
 
     // Safety: all bytes are ASCII digits.
-    let view = unsafe { str::from_utf8_unchecked(&buf[buf.len() - digits as usize..]) };
+    let view = unsafe { str::from_utf8_unchecked(view) };
     PyString::new(py, view).into()
 }
 
-fn parse_code_str(code: &str, digits: u8) -> Option<u32> {
-    let mut value = 0;
-    let mut seen_digits = 0;
+fn parse_code_str(code: &str, digits: Digits) -> Option<u32> {
+    let mut value = 0_u32;
+    let mut seen_digits = 0_u8;
 
     for &b in code.as_bytes() {
         if !b.is_ascii_digit() {
             continue;
         }
-        if unlikely(seen_digits == digits) {
+        if unlikely(seen_digits == digits.count) {
             return None;
         }
 
-        value = value * 10 + u32::from(b - b'0');
-        seen_digits += 1;
+        value = value
+            .wrapping_mul(10)
+            .wrapping_add(u32::from(b.wrapping_sub(b'0')));
+        seen_digits = seen_digits.wrapping_add(1);
     }
 
-    (seen_digits == digits).then_some(value)
+    (seen_digits == digits.count).then_some(value)
 }
 
-fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: NonZeroU32) -> Option<u32> {
+fn parse_code_py(code: &Bound<'_, PyAny>, digits: Digits) -> Option<u32> {
     if let Ok(value) = code.cast::<PyString>() {
         if let Ok(s) = value.to_str() {
             return parse_code_str(s, digits);
@@ -85,7 +105,7 @@ fn parse_code_py(code: &Bound<'_, PyAny>, digits: u8, modulus: NonZeroU32) -> Op
         let Ok(value) = value.extract::<u32>() else {
             return None;
         };
-        return (value < modulus.get()).then_some(value);
+        return (value < digits.modulus.get()).then_some(value);
     }
 
     None
@@ -109,15 +129,13 @@ fn totp_generate(
     step_seconds: i64,
     t0: i64,
 ) -> PyResult<Py<PyString>> {
-    validate_digits(digits).map_err(TotpError::into_pyerr)?;
+    let digits = admit_digits(digits).map_err(TotpError::into_pyerr)?;
     let algorithm = parse_algorithm(algorithm).map_err(TotpError::into_pyerr)?;
     let counter =
         resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
 
     let secret = parse_secret_from_py(secret)?;
-    let modulus = modulus_for_digits(digits);
-
-    let code = totp_code(secret.as_ref(), counter, modulus, algorithm);
+    let code = totp_code(secret.as_ref(), counter, digits.modulus, algorithm);
 
     Ok(format_code_py(py, code, digits))
 }
@@ -135,13 +153,12 @@ fn totp_verify(
     t0: i64,
     window: u8,
 ) -> PyResult<bool> {
-    validate_digits(digits).map_err(TotpError::into_pyerr)?;
+    let digits = admit_digits(digits).map_err(TotpError::into_pyerr)?;
     let algorithm = parse_algorithm(algorithm).map_err(TotpError::into_pyerr)?;
     let counter =
         resolve_counter(time, time_window, step_seconds, t0).map_err(TotpError::into_pyerr)?;
 
-    let modulus = modulus_for_digits(digits);
-    let Some(code) = parse_code_py(code, digits, modulus) else {
+    let Some(code) = parse_code_py(code, digits) else {
         return Ok(false);
     };
 
@@ -151,7 +168,7 @@ fn totp_verify(
         secret.as_ref(),
         counter,
         window,
-        modulus,
+        digits.modulus,
         code,
         algorithm,
     ))

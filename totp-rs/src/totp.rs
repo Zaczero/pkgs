@@ -85,10 +85,10 @@ fn verify_with_mac<M: Mac + FixedOutputReset>(
     }
 
     for offset in 1..=i64::from(window) {
-        if matches(counter - offset) {
+        if counter.checked_sub(offset).is_some_and(&mut matches) {
             return true;
         }
-        if matches(counter + offset) {
+        if counter.checked_add(offset).is_some_and(&mut matches) {
             return true;
         }
     }

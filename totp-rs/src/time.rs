@@ -23,8 +23,9 @@ pub(crate) fn time_window_from_time(
         return Err(TotpError::StepSecondsMustBeNonZero);
     }
 
-    let diff = time_seconds_or_default(time) - t0;
-    Ok(diff.div_euclid(step_seconds))
+    let diff = i128::from(time_seconds_or_default(time)).wrapping_sub(i128::from(t0));
+    let counter = diff.div_euclid(i128::from(step_seconds));
+    i64::try_from(counter).map_err(|_| TotpError::TimeWindowOutOfRange)
 }
 
 pub(crate) fn resolve_counter(

@@ -6,30 +6,17 @@ const INVALID: u8 = 0xFF;
 const IGNORE: u8 = 0xFE;
 const DECODE_LUT: [u8; 256] = {
     let mut lut = [INVALID; 256];
-
-    // A-Z / a-z
-    let mut i = 0;
-    while i < 26 {
-        lut[(b'A' + i) as usize] = i;
-        lut[(b'a' + i) as usize] = i;
-        i += 1;
+    let mut index = 0;
+    while let Some(slot) = lut.get_mut(index) {
+        *slot = match index as u8 {
+            byte @ b'A'..=b'Z' => byte - b'A',
+            byte @ b'a'..=b'z' => byte - b'a',
+            byte @ b'2'..=b'7' => byte - b'2' + 26,
+            b'\t'..=b'\r' | b' ' | b'=' => IGNORE,
+            _ => INVALID,
+        };
+        index += 1;
     }
-
-    // 2-7
-    i = 0;
-    while i < 6 {
-        lut[(b'2' + i) as usize] = 26 + i;
-        i += 1;
-    }
-
-    // Whitespace and padding
-    i = b'\t';
-    while i <= b'\r' {
-        lut[i as usize] = IGNORE;
-        i += 1;
-    }
-    lut[b' ' as usize] = IGNORE;
-    lut[b'=' as usize] = IGNORE;
 
     lut
 };
@@ -37,12 +24,18 @@ const DECODE_LUT: [u8; 256] = {
 pub(crate) fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, TotpError> {
     let bytes = encoded.as_bytes();
 
-    let mut out = Vec::with_capacity(bytes.len() * 5 / 8);
+    let capacity = (bytes.len() / 8)
+        .wrapping_mul(5)
+        .wrapping_add((bytes.len() % 8).wrapping_mul(5) / 8);
+    let mut out = Vec::with_capacity(capacity);
     let mut acc = 0;
     let mut bits = 0_u8;
 
     for (index, &b) in bytes.iter().enumerate() {
-        let v = DECODE_LUT[b as usize];
+        let v = DECODE_LUT
+            .get(b as usize)
+            .copied()
+            .expect("every byte has a lookup entry");
         if unlikely(v == INVALID) {
             return Err(TotpError::InvalidSecretChar { index });
         }
@@ -51,12 +44,12 @@ pub(crate) fn decode_base32_secret(encoded: &str) -> Result<Vec<u8>, TotpError> 
         }
 
         acc = (acc << 5) | u32::from(v);
-        bits += 5;
+        bits = bits.wrapping_add(5);
 
         while bits >= 8 {
-            bits -= 8;
+            bits = bits.wrapping_sub(8);
             out.push((acc >> bits) as u8);
-            acc &= (1 << bits) - 1;
+            acc &= (1_u32 << bits).wrapping_sub(1);
         }
     }
 
