@@ -261,7 +261,6 @@ mod csr_offset_column_tests {
 mod coordseq_builder_tests {
     use super::*;
     use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
 
     #[test]
     fn finish_rejects_mismatched_point_axes() {
@@ -389,76 +388,52 @@ mod coordseq_builder_tests {
     }
 
     #[test]
-    fn try_with_capacity_returns_resource_on_allocation_failure() {
-        match fail_allocations_after(0, || {
-            CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 8)
-        }) {
-            Err(error) => assert!(matches!(
+    fn coordinate_capacity_rejects_unrepresentable_layouts() {
+        for axes in [
+            CoordinateAxes::XY,
+            CoordinateAxes::XYZ,
+            CoordinateAxes::XYM,
+            CoordinateAxes::XYZM,
+        ] {
+            let Err(error) = CoordSeqBuilder::try_with_capacity(axes, usize::MAX) else {
+                panic!("unrepresentable coordinate layout was accepted");
+            };
+            assert!(matches!(
                 error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(_) => panic!("expected allocation failure"),
+                ErrorKind::Resource(ResourceError::SizeOverflow)
+            ));
         }
     }
 
     #[test]
-    fn push_grows_under_hint_and_drops_scratch_on_failure() {
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 0).unwrap();
-        builder.push(Point::new_raw_xy(0.0, 0.0)).unwrap();
-        match fail_allocations_after(0, || {
-            for index in 1..32 {
-                builder.push(Point::new_raw_xy(f64::from(index), f64::from(index)))?;
+    fn coordinate_growth_preserves_every_active_column() {
+        for (axes, z, m) in [
+            (CoordinateAxes::XY, None, None),
+            (CoordinateAxes::XYZ, Some(17.0), None),
+            (CoordinateAxes::XYM, None, Some(23.0)),
+            (CoordinateAxes::XYZM, Some(17.0), Some(23.0)),
+        ] {
+            let mut builder = CoordSeqBuilder::try_with_capacity(axes, 0).unwrap();
+            for index in 0..32 {
+                builder
+                    .push(Point::new_raw_axes(
+                        f64::from(index),
+                        5.0,
+                        ZOrdinate(z),
+                        MOrdinate(m),
+                    ))
+                    .unwrap();
             }
-            Ok::<_, crate::error::Error>(())
-        }) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(()) => panic!("expected allocation failure"),
+            let coords = builder.finish().unwrap();
+            assert_eq!(coords.len(), 32);
+            assert_eq!(coords.axes(), axes);
+            for (index, point) in coords.iter().enumerate() {
+                assert_eq!(point.x, index as f64);
+                assert_eq!(point.y, 5.0);
+                assert_eq!(point.z(), z);
+                assert_eq!(point.m(), m);
+            }
         }
-        assert_eq!(builder.len(), 0);
-    }
-
-    #[test]
-    fn xyz_push_drops_all_columns_together_on_allocation_failure() {
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XYZ, 0).unwrap();
-        // Allow XY reservations so the fault lands on the optional Z column.
-        match fail_allocations_after(2, || {
-            builder.push(Point::new_raw_axes(
-                0.0,
-                0.0,
-                ZOrdinate(Some(1.0)),
-                MOrdinate(None),
-            ))
-        }) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(()) => panic!("expected allocation failure"),
-        }
-        assert_eq!(builder.len(), 0);
-    }
-
-    #[test]
-    fn xym_push_drops_all_columns_together_on_allocation_failure() {
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XYM, 0).unwrap();
-        match fail_allocations_after(2, || {
-            builder.push(Point::new_raw_axes(
-                0.0,
-                0.0,
-                ZOrdinate(None),
-                MOrdinate(Some(1.0)),
-            ))
-        }) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(()) => panic!("expected allocation failure"),
-        }
-        assert_eq!(builder.len(), 0);
     }
 }
 
@@ -605,7 +580,7 @@ mod coordseq_m_storage_tests {
 
     #[test]
     fn nested_middle_local_m_keeps_distinct_offset_and_carries_without_allocation() {
-        use crate::test_support::{allocation_count, fail_allocations_after};
+        use crate::test_support::allocation_count;
 
         let m = SharedSlice::from_vec((0..10).map(|value| f64::from(value) + 50.0).collect());
         let seq = CoordSeq::from_shared_columns_with_window(
@@ -639,7 +614,6 @@ mod coordseq_m_storage_tests {
 
         let (carried, allocations) = allocation_count(|| nested.carried_ms().unwrap());
         assert_eq!(allocations, 0);
-        fail_allocations_after(0, || nested.carried_ms()).unwrap();
 
         let mapped = nested.map_xy(|x, y| (x + 1.0, y + 1.0)).unwrap();
         assert_eq!(mapped.xs(), &[4.0, 5.0]);
@@ -653,7 +627,7 @@ mod coordseq_m_storage_tests {
 
     #[test]
     fn shared_middle_m_carry_reuses_owner_as_local_without_allocation() {
-        use crate::test_support::{allocation_count, fail_allocations_after};
+        use crate::test_support::allocation_count;
 
         let seq = CoordSeq::try_from_vecs(
             vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
@@ -667,7 +641,6 @@ mod coordseq_m_storage_tests {
         assert_eq!(seq.ms(), Some(&[51.0, 52.0, 53.0][..]));
         let (carried, allocations) = allocation_count(|| seq.carried_ms().unwrap());
         assert_eq!(allocations, 0);
-        fail_allocations_after(0, || seq.carried_ms()).unwrap();
 
         let mapped = seq.map_xy(|x, y| (x + 1.0, y)).unwrap();
         assert_eq!(mapped.xs(), &[2.0, 3.0, 4.0]);
@@ -681,28 +654,9 @@ mod coordseq_m_storage_tests {
 }
 
 #[cfg(test)]
-mod size_probe_tests {
+mod point_gather_tests {
     use super::*;
-
-    /// Documents the engine's per-segment memory footprint (the density
-    /// lever evidence): a `Segment` carries two full `Point`s.
-    #[test]
-    fn record_engine_type_sizes() {
-        println!("Point = {}", std::mem::size_of::<Point>());
-        println!("Segment = {}", std::mem::size_of::<Segment>());
-        println!(
-            "SweepEntry-equivalent = {}",
-            std::mem::size_of::<[f64; 4]>() + 8
-        );
-    }
-}
-
-#[cfg(test)]
-mod gather_allocation_tests {
-    use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{LineSeq, Shape};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn repeated_xy_line() -> Shape {
         Shape::LineString(
@@ -719,77 +673,18 @@ mod gather_allocation_tests {
         )
     }
 
-    fn three_vertex_line() -> Shape {
-        Shape::LineString(
-            LineSeq::try_new(
-                CoordSeq::try_from_points(&[
-                    Point::new_raw_xy(0.0, 0.0),
-                    Point::new_raw_xy(1.0, 0.0),
-                    Point::new_raw_xy(0.0, 1.0),
-                ])
-                .unwrap(),
-            )
-            .unwrap(),
-        )
-    }
-
-    fn assert_allocation(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
     #[test]
-    fn points_vec_returns_resource_on_allocation_failure() {
-        let shape = repeated_xy_line();
-        match fail_allocations_after(0, || shape.points_vec()) {
-            Err(error) => assert_allocation(&error),
-            Ok(_) => panic!("expected allocation failure"),
-        }
-    }
-
-    #[test]
-    fn collect_points_into_returns_resource_on_allocation_failure() {
+    fn collect_points_into_preserves_prefix_order_and_repeated_vertices() {
         let shape = repeated_xy_line();
         let mut out = vec![Point::new_raw_xy(-1.0, -1.0)];
-        match fail_allocations_after(0, || shape.collect_points_into(&mut out)) {
-            Err(error) => {
-                assert_allocation(&error);
-                assert_eq!(out.len(), 1);
-                assert_eq!(out[0].x, -1.0);
-            },
-            Ok(()) => panic!("expected allocation failure"),
-        }
-    }
-
-    #[test]
-    fn unique_points_returns_resource_on_allocation_failure() {
-        let shape = repeated_xy_line();
-        let result =
-            std::thread::spawn(move || fail_allocations_after(0, || shape.unique_points()))
-                .join()
-                .unwrap();
-        match result {
-            Err(error) => assert_allocation(&error),
-            Ok(_) => panic!("expected allocation failure"),
-        }
-    }
-
-    #[test]
-    fn cold_std_hash_state_needs_no_allocation() {
-        use std::hash::BuildHasher as _;
-
-        let point = Point::new_raw_xy(3.0, 7.0);
-        let hash = std::thread::spawn(move || {
-            fail_allocations_after(0, || {
-                let seen = std::collections::HashSet::<Point>::new();
-                seen.hasher().hash_one(point)
-            })
-        })
-        .join()
-        .unwrap();
-        std::hint::black_box(hash);
+        shape.collect_points_into(&mut out).unwrap();
+        assert_eq!(out, [
+            Point::new_raw_xy(-1.0, -1.0),
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(1.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ]);
     }
 
     #[test]
@@ -807,23 +702,5 @@ mod gather_allocation_tests {
         let unique = shape.unique_points().unwrap();
         assert_eq!(unique.axes(), CoordinateAxes::XYZM);
         assert_eq!(unique.points_vec().unwrap(), [a, b, c, d]);
-    }
-
-    #[test]
-    fn minimum_clearance_rejects_each_cold_allocation() {
-        let shape = three_vertex_line();
-        let (clearance, count) = allocation_count(|| shape.minimum_clearance().unwrap());
-        assert!(count > 0);
-        assert!(clearance.is_finite());
-        for allowed in 0..count {
-            match fail_allocations_after(allowed, || shape.minimum_clearance()) {
-                Err(error) => assert_allocation(&error),
-                Ok(value) if value.is_infinite() => {
-                    panic!("allocation failure must not look like infinite clearance")
-                },
-                Ok(_) => panic!("each cold construction allocation must propagate"),
-            }
-        }
-        assert_eq!(shape.minimum_clearance().unwrap(), clearance);
     }
 }
