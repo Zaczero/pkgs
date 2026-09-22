@@ -65,7 +65,7 @@ impl<'a> BufferedTerminatorFinder<'a> {
     fn find(&mut self, buffer: &[u8]) -> Option<usize> {
         let start = self.search_start.min(buffer.len());
         if let Some(offset) = buffer.get(start..).and_then(|tail| self.finder.find(tail)) {
-            return Some(start + offset);
+            return Some(start.wrapping_add(offset));
         }
         self.search_start = buffer.len().saturating_sub(self.overlap);
         None
@@ -221,7 +221,7 @@ impl HeaderParseState {
         limit_request_field_size: Option<usize>,
     ) -> bool {
         let too_many_header_fields = if let Some(limit) = limit_request_fields {
-            self.header_field_count += 1;
+            self.header_field_count = self.header_field_count.saturating_add(1);
             self.header_field_count > limit
         } else {
             false
@@ -236,6 +236,7 @@ impl HeaderParseState {
             return Http1Error::MalformedHeaderLine.err();
         };
         let value = trim_ows(raw_value);
+        let index = self.headers.len();
         let known_name = self.headers.push(name, value).map_err(|()| {
             if request_header_name_needs_lowercase(name).is_none() {
                 Http1Error::InvalidHeaderName
@@ -250,7 +251,7 @@ impl HeaderParseState {
         self.header_meta.observe_known_header_slice(
             known_name,
             value,
-            self.headers.len() - 1,
+            index,
             self.collect_proxy_headers,
         );
         match known_name {
@@ -261,7 +262,7 @@ impl HeaderParseState {
                 if self.host_header_index.is_some() {
                     return Http1Error::ConflictingAbsoluteFormAuthority.err();
                 }
-                self.host_header_index = Some(self.headers.len() - 1);
+                self.host_header_index = Some(index);
             },
             KnownRequestHeaderName::Connection => {
                 self.connection |= parse_connection_header_tokens(value);
@@ -385,7 +386,9 @@ where
         BufferedTerminatorFinder::new(&HEADER_TERMINATOR_FINDER, HEADER_TERMINATOR.len());
     let header_len = loop {
         if let Some(end) = header_search.find(buffer) {
-            if limit_request_head_size.is_some_and(|limit| end + HEADER_TERMINATOR.len() > limit) {
+            if limit_request_head_size
+                .is_some_and(|limit| end.wrapping_add(HEADER_TERMINATOR.len()) > limit)
+            {
                 write_empty_response(
                     writer,
                     config,
@@ -421,7 +424,7 @@ where
         }
     };
 
-    let mut head = buffer.split_to(header_len + HEADER_TERMINATOR.len());
+    let mut head = buffer.split_to(header_len.wrapping_add(HEADER_TERMINATOR.len()));
     head.truncate(header_len);
     Ok(Some(head.freeze()))
 }
@@ -751,7 +754,7 @@ where
         }
         let chunk_len = usize::min(buffer.len(), remaining);
         consume_body_bytes(buffer, chunk_len, tx, body).await?;
-        remaining -= chunk_len;
+        remaining = remaining.saturating_sub(chunk_len);
     }
 
     Ok(())
@@ -819,7 +822,7 @@ where
             }
             let chunk_len = buffer.len().min(remaining);
             batch.push(buffer, chunk_len, tx, body).await?;
-            remaining -= chunk_len;
+            remaining = remaining.saturating_sub(chunk_len);
         }
 
         if let Err(error) = consume_chunk_crlf(reader, buffer, timeout_duration).await {
@@ -888,7 +891,7 @@ where
         return Http1Error::InvalidChunkSize.err();
     };
     let size = parse_chunk_size(line)?;
-    buffer.advance(line_end + LINE_TERMINATOR.len());
+    buffer.advance(line_end.wrapping_add(LINE_TERMINATOR.len()));
     Ok(size)
 }
 
@@ -954,7 +957,7 @@ fn trim_ows(value: &[u8]) -> &[u8] {
     let end = value
         .iter()
         .rposition(|byte| !matches!(byte, b' ' | b'\t'))
-        .map_or(start, |index| index + 1);
+        .map_or(start, |index| index.wrapping_add(1));
     value.get(start..end).unwrap_or_default()
 }
 
@@ -970,10 +973,10 @@ where
     let mut fields = 0_usize;
     let mut line_search =
         BufferedTerminatorFinder::new(&LINE_TERMINATOR_FINDER, LINE_TERMINATOR.len());
-    let mut section_bytes = 0;
+    let mut section_bytes = 0_usize;
     loop {
         let Some(end) = line_search.find(buffer) else {
-            let buffered_bytes = section_bytes + buffer.len();
+            let buffered_bytes = section_bytes.saturating_add(buffer.len());
             if buffered_bytes >= MAX_TRAILER_SECTION_BYTES {
                 return Http1Error::MalformedHeaderLine.err();
             }
@@ -982,7 +985,7 @@ where
                 buffer,
                 timeout_duration,
                 Http1Error::RequestBodyTimedOut,
-                Some(MAX_TRAILER_SECTION_BYTES - buffered_bytes),
+                Some(MAX_TRAILER_SECTION_BYTES.saturating_sub(buffered_bytes)),
             )
             .await?
             {
@@ -990,7 +993,7 @@ where
             }
             continue;
         };
-        let line_len = end + LINE_TERMINATOR.len();
+        let line_len = end.wrapping_add(LINE_TERMINATOR.len());
         section_bytes = section_bytes.saturating_add(line_len);
         if section_bytes > MAX_TRAILER_SECTION_BYTES {
             return Http1Error::MalformedHeaderLine.err();
@@ -999,7 +1002,7 @@ where
             buffer.advance(line_len);
             return Ok(());
         }
-        fields += 1;
+        fields = fields.saturating_add(1);
         if limits.max_fields.is_some_and(|limit| fields > limit) {
             return Http1Error::TooManyTrailerFields.err();
         }
@@ -1142,10 +1145,10 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
             break;
         }
         value = value
-            .checked_shl(4)
+            .checked_mul(16)
             .and_then(|value| value.checked_add(usize::from(digit)))
             .ok_or(Http1Error::InvalidChunkSize)?;
-        index += 1;
+        index = index.wrapping_add(1);
     }
     if index == 0 {
         return Http1Error::InvalidChunkSize.err();
@@ -1156,7 +1159,7 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
         .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
     {
         trailing_whitespace = true;
-        index += 1;
+        index = index.wrapping_add(1);
     }
     if index == line.len() {
         return if trailing_whitespace {
@@ -1170,19 +1173,19 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
         if line.get(index) != Some(&b';') {
             return Http1Error::InvalidChunkSize.err();
         }
-        index += 1;
+        index = index.wrapping_add(1);
         while line
             .get(index)
             .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
         {
-            index += 1;
+            index = index.wrapping_add(1);
         }
         let token_start = index;
         while line
             .get(index)
             .is_some_and(|byte| request_header_name_needs_lowercase(&[*byte]).is_some())
         {
-            index += 1;
+            index = index.wrapping_add(1);
         }
         if index == token_start {
             return Http1Error::InvalidChunkSize.err();
@@ -1193,21 +1196,21 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
             .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
         {
             trailing_whitespace = true;
-            index += 1;
+            index = index.wrapping_add(1);
         }
         if line.get(index) == Some(&b'=') {
-            index += 1;
+            index = index.wrapping_add(1);
             while line
                 .get(index)
                 .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
             {
-                index += 1;
+                index = index.wrapping_add(1);
             }
             if line.get(index) == Some(&b'\"') {
-                index += 1;
+                index = index.wrapping_add(1);
                 let mut closed = false;
                 while let Some(&byte) = line.get(index) {
-                    index += 1;
+                    index = index.wrapping_add(1);
                     match byte {
                         b'\"' => {
                             closed = true;
@@ -1220,7 +1223,7 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
                             if escaped.is_ascii_control() || escaped == 0x7F {
                                 return Http1Error::InvalidChunkSize.err();
                             }
-                            index += 1;
+                            index = index.wrapping_add(1);
                         },
                         byte if byte.is_ascii_control() || byte == 0x7F => {
                             return Http1Error::InvalidChunkSize.err();
@@ -1237,7 +1240,7 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
                     .get(index)
                     .is_some_and(|byte| request_header_name_needs_lowercase(&[*byte]).is_some())
                 {
-                    index += 1;
+                    index = index.wrapping_add(1);
                 }
                 if index == value_start {
                     return Http1Error::InvalidChunkSize.err();
@@ -1249,7 +1252,7 @@ fn parse_chunk_size(line: &[u8]) -> Result<usize, H2CornError> {
                 .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
             {
                 trailing_whitespace = true;
-                index += 1;
+                index = index.wrapping_add(1);
             }
         }
         if index == line.len() {

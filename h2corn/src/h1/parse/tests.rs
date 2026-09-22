@@ -133,7 +133,7 @@ const fn unlimited_fields() -> super::FieldLimits {
 fn base64url_encode(src: &[u8]) -> Vec<u8> {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
-    let mut out = Vec::with_capacity(src.len().div_ceil(3) * 4);
+    let mut out = Vec::with_capacity(src.len().div_ceil(3).saturating_mul(4));
     let (chunks, remainder) = src.as_chunks::<3>();
     for &[c0, c1, c2] in chunks {
         out.push(TABLE[usize::from(c0 >> 2)]);
@@ -963,4 +963,20 @@ fn parse_chunk_size_rejects_empty_and_invalid_values() {
         parse_chunk_size(b"1 g").unwrap_err().kind(),
         ErrorKind::Http1(Http1Error::InvalidChunkSize)
     ));
+}
+
+#[test]
+fn parse_chunk_size_rejects_hexadecimal_overflow() {
+    for line in [
+        b"10000000000000000".as_slice(),
+        b"10000000000000001;extension=value",
+        b"fffffffffffffffff",
+    ] {
+        assert!(matches!(
+            parse_chunk_size(line).unwrap_err().kind(),
+            ErrorKind::Http1(Http1Error::InvalidChunkSize)
+        ));
+    }
+    let maximum = format!("{:x}", usize::MAX);
+    assert_eq!(parse_chunk_size(maximum.as_bytes()).unwrap(), usize::MAX);
 }
