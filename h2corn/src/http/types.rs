@@ -1202,8 +1202,8 @@ impl AsRef<str> for Protocol {
 }
 
 fn slice_range(owner: &Bytes, slice: &[u8]) -> Option<(u32, u32)> {
-    let owner_start = owner.as_ptr() as usize;
-    let slice_start = slice.as_ptr() as usize;
+    let owner_start = owner.as_ptr().addr();
+    let slice_start = slice.as_ptr().addr();
     let start = slice_start.checked_sub(owner_start)?;
     let end = start.checked_add(slice.len())?;
     if end > owner.len() {

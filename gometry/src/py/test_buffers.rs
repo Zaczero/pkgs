@@ -49,8 +49,9 @@ pub(crate) struct IndirectFloat64Buffer {
     /// Contiguous coordinate payload (row-major for 2-D).
     values: Box<[f64]>,
     /// Pointer table as `usize` addresses (one per element for 1-D, per row for
-    /// 2-D). Stored as integers so the pyclass is `Send + Sync`; reconstructed
-    /// to `*const f64` only inside `__getbuffer__` while the owner is live.
+    /// 2-D). Stored as integers so the pyclass is `Send + Sync`. Provenance is
+    /// exposed because buffer consumers load these entries as pointers while
+    /// `view.obj` keeps the immutable payload alive.
     pointers: Box<[usize]>,
     shape: Box<[isize]>,
     strides: Box<[isize]>,
@@ -70,7 +71,7 @@ impl IndirectFloat64Buffer {
                 }
                 let values: Box<[f64]> = values.into_boxed_slice();
                 let pointers: Box<[usize]> = (0..n)
-                    .map(|i| std::ptr::from_ref(&values[i]) as usize)
+                    .map(|i| std::ptr::from_ref(&values[i]).expose_provenance())
                     .collect::<Vec<_>>()
                     .into_boxed_slice();
                 Ok(Self {
@@ -101,7 +102,7 @@ impl IndirectFloat64Buffer {
                     Box::from([])
                 } else {
                     (0..n)
-                        .map(|row| std::ptr::from_ref(&values[row * d]) as usize)
+                        .map(|row| std::ptr::from_ref(&values[row * d]).expose_provenance())
                         .collect::<Vec<_>>()
                         .into_boxed_slice()
                 };

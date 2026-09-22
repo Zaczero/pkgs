@@ -499,7 +499,7 @@ impl RowProducts {
             let physical = self.selection.as_deref().physical(logical);
             if let Some(chunk) = self.owner.existing_cell(physical) {
                 let offset = physical % ROWS_PER_CHUNK;
-                let chunk_id = Arc::as_ptr(&chunk) as usize;
+                let chunk_id = Arc::as_ptr(&chunk).addr();
                 chunks.insert(chunk_id);
                 if chunk.cells[offset].prepared.get().is_some() {
                     prepared.insert((chunk_id, offset));
