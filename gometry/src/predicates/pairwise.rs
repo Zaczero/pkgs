@@ -467,8 +467,8 @@ pub(crate) fn nearest_points(
     match (admission.left, admission.right) {
         (GeometryInput::One(left), GeometryInput::One(right)) => {
             let common = crate::geometry::common_axes(left.shape.shape(), right.shape.shape());
-            let left_plan = left.plan_or_transient()?;
-            let right_plan = right.plan_or_transient()?;
+            let left_plan = left.prepared_plan();
+            let right_plan = right.prepared_plan();
             let left_cache = crate::geometry::FrameDependentCaches::default();
             let right_cache = crate::geometry::FrameDependentCaches::default();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;

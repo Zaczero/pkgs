@@ -71,7 +71,7 @@ pub(super) fn build_coverage(
         // a traversal/seed working image; membership stays unsplit and normalized.
         CellRule::Center => {
             let cover_shape = coverage_factory_shapes(geometry, "H3")?;
-            let authority = geometry.plan_or_transient()?;
+            let authority = geometry.prepared_plan();
             let crate::geometry::TopologyDomain::Geographic(frame) =
                 crate::geometry::topology_domain(&geometry.frame)?
             else {

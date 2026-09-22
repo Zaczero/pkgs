@@ -41,7 +41,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     fixed_is_left: bool,
     model: crate::crs::MetricModel,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
-    let fixed_plan = fixed.plan_or_transient()?;
+    let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
     if let crate::crs::MetricModel::Geodesic { crs, frame, state } = model {
@@ -161,7 +161,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     } else {
         array.frame.clone()
     };
-    let fixed_plan = fixed.plan_or_transient()?;
+    let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
     let rows = py.detach(move || {

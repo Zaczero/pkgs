@@ -335,7 +335,7 @@ pub(crate) fn array_crs_distances(
             // and reuse them across every element (a large fixed geometry otherwise
             // rebuilds its vertex/segment sets per pair).
             if let crs::MetricModel::Planar { to_metre } = model {
-                let right_shape = right.plan_or_transient()?;
+                let right_shape = right.prepared_plan();
                 if !array.is_compact_nullable()
                     && let Some(values) = array.reduce_packed_points_detached(py, {
                         let right_shape = Arc::clone(&right_shape);
@@ -355,7 +355,7 @@ pub(crate) fn array_crs_distances(
                 if !array.is_compact_nullable()
                     && let Some(points) = array.storage().point_rows()
                 {
-                    let right_shape = right.plan_or_transient()?;
+                    let right_shape = right.prepared_plan();
                     return float64_array_mask_missing(
                         py,
                         py.detach(move || {
@@ -374,7 +374,7 @@ pub(crate) fn array_crs_distances(
                 // state persists on ITS handle for later operations. Pure Rust
                 // work — run it detached.
                 let array = array.clone();
-                let right_shape = right.plan_or_transient()?;
+                let right_shape = right.prepared_plan();
                 return float64_array(
                     py,
                     py.detach(move || {
@@ -423,7 +423,7 @@ pub(crate) fn array_crs_distances(
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = Arc::clone(crs);
                     let state = Arc::clone(state);
-                    let right_shape = right.plan_or_transient()?;
+                    let right_shape = right.prepared_plan();
                     let right_cache = right.frame_cache();
                     move |points| {
                         let (xs, ys) = points
@@ -449,7 +449,7 @@ pub(crate) fn array_crs_distances(
             // row use its own persistent handle cache.
             if let crs::MetricModel::Geodesic { crs, state, .. } = model {
                 let array = array.clone();
-                let right_shape = right.plan_or_transient()?;
+                let right_shape = right.prepared_plan();
                 let right_cache = right.frame_cache();
                 let rows = py.detach(move || {
                     let mut rows = array.row_operation();
@@ -841,7 +841,7 @@ fn array_crs_dwithin_per_element_values(
         GeometryInput::One(right) => {
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
-            let right_plan = right.plan_or_transient()?;
+            let right_plan = right.prepared_plan();
             let right_cache = right.frame_cache();
             if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
                 ensure_geodesic_array_rows(array, metric.frame)?;
@@ -1015,7 +1015,7 @@ pub(crate) fn array_crs_dwithin_scalar(
     if array.has_missing() {
         let resolved = crs::ResolvedMetric::from_model(&model)?;
         let array_owned = array.clone();
-        let other_shape = other.plan_or_transient()?;
+        let other_shape = other.prepared_plan();
         let other_cache = other.frame_cache();
         if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
             ensure_geodesic_array_rows(array, metric.frame)?;
@@ -1066,7 +1066,7 @@ pub(crate) fn array_crs_dwithin_scalar(
         let limit = distance / to_metre.get();
         if !array.is_compact_nullable()
             && let Some(values) = array.reduce_packed_points_detached(py, {
-                let other_shape = other.plan_or_transient()?;
+                let other_shape = other.prepared_plan();
                 move |points| {
                     Ok(other_shape
                         .dwithin_points(points.iter().map(|point| (point.x, point.y)), limit)?)
@@ -1079,7 +1079,7 @@ pub(crate) fn array_crs_dwithin_scalar(
         if !array.is_compact_nullable()
             && let Some(points) = array.storage().point_rows()
         {
-            let other_shape = other.plan_or_transient()?;
+            let other_shape = other.prepared_plan();
             return bool_array_mask_missing(
                 py,
                 py.detach(move || {
@@ -1095,7 +1095,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             let missing = array.missing().cloned();
             let row_count = array.len();
             let limit = distance / to_metre.get();
-            let other_shape = other.plan_or_transient()?;
+            let other_shape = other.prepared_plan();
             // Box-separation reject against the FIXED operand's box, from the
             // array's batch per-element boxes: an element whose box sits farther
             // (squared) than the limit is settled false before materialization.
@@ -1137,7 +1137,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 && let Some(values) = array.reduce_packed_points_detached(py, {
                     let crs = Arc::clone(&crs);
                     let state = Arc::clone(&state);
-                    let other_shape = other.plan_or_transient()?;
+                    let other_shape = other.prepared_plan();
                     let other_cache = other.frame_cache();
                     move |points| {
                         let (xs, ys) = points
@@ -1160,7 +1160,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                 return bool_array_mask_missing(py, values, array.missing());
             }
             let array_owned = array.clone();
-            let other_shape = other.plan_or_transient()?;
+            let other_shape = other.prepared_plan();
             let other_cache = other.frame_cache();
             let row_count = array_owned.len();
             let rows = py.detach(move || {

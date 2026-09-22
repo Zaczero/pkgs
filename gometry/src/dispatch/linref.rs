@@ -85,12 +85,12 @@ pub(crate) fn line_locate_input(
     match (lines, points) {
         (GeometryInput::One(line), GeometryInput::One(point)) => {
             let query = locate_query(point.shape.shape())?;
-            let plan = line.plan_or_transient()?;
+            let plan = line.prepared_plan();
             let located = locate.at(&plan, &*line.frame_cache(), query, Lane::Scalar)?;
             Ok(located.into_pyobject(py)?.unbind().into())
         },
         (GeometryInput::One(line), GeometryInput::Many(points)) => {
-            let plan = line.plan_or_transient()?;
+            let plan = line.prepared_plan();
             let cache = line.frame_cache();
             let points = points.clone();
             detach_collect_f64(py, move || {
@@ -182,7 +182,7 @@ pub(crate) fn line_interpolate_points_scalar(
         )?
         .require_model(MetricOp::LineInterpolate)?
         .clone();
-    let line = geometry.plan_or_transient()?;
+    let line = geometry.prepared_plan();
     let shapes =
         line_interpolate_points_shape(&model, &line, &*geometry.frame_cache(), plan, Lane::Scalar)?;
     Ok(PyGeometryArray::from_shapes(

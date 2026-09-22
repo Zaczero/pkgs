@@ -56,7 +56,7 @@ impl PySpatialIndex {
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
-        let geometry = geometry.with_prepared_plan(geometry.plan_or_transient()?);
+        let geometry = geometry.with_prepared_plan(geometry.prepared_plan());
         // A non-empty index validates the frame WITHOUT mutating; an empty index
         // will adopt this geometry's frame, but only AFTER the geometry is proven
         // indexable below — so a failed empty insert never frame-locks a fresh
@@ -109,8 +109,8 @@ impl PySpatialIndex {
         }
         let items = items
             .into_iter()
-            .map(|item| Ok(item.with_prepared_plan(item.plan_or_transient()?)))
-            .collect::<pyo3::PyResult<Vec<_>>>()?;
+            .map(|item| item.with_prepared_plan(item.prepared_plan()))
+            .collect::<Vec<_>>();
         let frame = index_metadata(&items)?;
         if let Some(frame) = &frame {
             self.check_insert_frame(frame)?;

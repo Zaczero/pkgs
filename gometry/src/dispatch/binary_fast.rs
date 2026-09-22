@@ -122,8 +122,8 @@ pub(crate) fn dispatch_predicate(
         ) {
             return Ok(crate::broadcast::py_bool(py, verdict));
         }
-        let left_plan = left.plan_or_transient()?;
-        let right_plan = right.plan_or_transient()?;
+        let left_plan = left.prepared_plan();
+        let right_plan = right.prepared_plan();
         // Only geographic topology reads frame products; resolving them for a
         // planar pair allocates a row-product chunk per operand that the
         // Cartesian arm never looks at.

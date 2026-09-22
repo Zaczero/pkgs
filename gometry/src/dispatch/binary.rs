@@ -25,11 +25,6 @@ use crate::{PyGeometry, PyGeometryArray, Typed};
 
 type FramedMaskedRows<R> = (Vec<R>, Option<ValidityMask>, Frame);
 
-enum BinaryRowsError {
-    Setup(crate::error::Error),
-    Row(usize, crate::error::Error),
-}
-
 /// Keep raw row errors until the metric scratch owner has been released.
 enum RawMetricBinary<R> {
     Scalar(Result<R>),
@@ -266,13 +261,13 @@ fn run_binary_fixed_array_rows<R, K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> std::result::Result<(Vec<R>, Frame), BinaryRowsError>
+) -> Result<(Vec<R>, Frame), (usize, crate::error::Error)>
 where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
 {
     let output_frame = frame.clone();
-    let fixed_plan = fixed.plan_or_transient().map_err(BinaryRowsError::Setup)?;
+    let fixed_plan = fixed.prepared_plan();
     // Metric/predicate binary array×scalar: keep prepared handles (`&PreparedPlan`);
     // frame caches are derived from MetricCtx. Never demote these kernels to
     // bare `&Shape` (Deref coercion would drop prepared engines).
@@ -291,7 +286,6 @@ where
         },
     )
     .map(|values| (values, output_frame))
-    .map_err(|(row, error)| BinaryRowsError::Row(row, error))
 }
 
 fn run_binary_array_array_rows<R, K>(
@@ -303,7 +297,7 @@ fn run_binary_array_array_rows<R, K>(
     domain: TopologyDomain,
     metric: MetricCtx<'_>,
     kernel: K,
-) -> std::result::Result<FramedMaskedRows<R>, BinaryRowsError>
+) -> Result<FramedMaskedRows<R>, (usize, crate::error::Error)>
 where
     R: BulkElement,
     K: Fn(&PreparedPlan, &PreparedPlan, &CachelessRowContext<'_>) -> Result<R> + Send + Sync,
@@ -322,8 +316,7 @@ where
             let right_data = right_products.prepared_at(row, right_row)?;
             kernel(&left_data, &right_data, ctx)
         },
-    )
-    .map_err(|(row, error)| BinaryRowsError::Row(row, error))?;
+    )?;
     Ok((values, missing, output_frame))
 }
 
@@ -493,11 +486,7 @@ where
         ),
     };
     drop(scratch);
-    let (values, missing, frame) = match result {
-        Ok(result) => result,
-        Err(BinaryRowsError::Setup(error)) => return Err(error.into()),
-        Err(BinaryRowsError::Row(row, error)) => return Err(rows_err((row, error))),
-    };
+    let (values, missing, frame) = result.map_err(rows_err)?;
     R::bulk_into_py_masked(values, py, &frame, missing.as_ref())
 }
 
@@ -536,24 +525,24 @@ where
         (|| -> Result<_> {
             Ok(match (left_input, right_input, resolved) {
                 (One(left), One(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                    let left = left.plan_or_transient()?;
-                    let right = right.plan_or_transient()?;
+                    let left = left.prepared_plan();
+                    let right = right.prepared_plan();
                     RawMetricBinary::Scalar(py.detach(|| planar(to_metre.get(), &left, &right)))
                 },
                 (One(left), One(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                    let left_plan = left.plan_or_transient()?;
-                    let right_plan = right.plan_or_transient()?;
+                    let left_plan = left.prepared_plan();
+                    let right_plan = right.prepared_plan();
                     let row = GeodesicBinaryRow {
                         metric,
-                        left_cache: &*left.frame_cache(),
-                        right_cache: &*right.frame_cache(),
+                        left_cache: &left.frame_cache(),
+                        right_cache: &right.frame_cache(),
                     };
                     RawMetricBinary::Scalar(py.detach(|| geodesic(&left_plan, &right_plan, &row)))
                 },
                 (Many(array), One(fixed), crate::crs::ResolvedMetric::Planar { to_metre })
                 | (One(fixed), Many(array), crate::crs::ResolvedMetric::Planar { to_metre }) => {
                     let scalar_left = matches!(left_input, One(_));
-                    let fixed = fixed.plan_or_transient()?;
+                    let fixed = fixed.prepared_plan();
                     let output_missing = array.missing().cloned();
                     let array = array.clone();
                     RawMetricBinary::Array(
@@ -582,7 +571,7 @@ where
                 (Many(array), One(fixed), crate::crs::ResolvedMetric::Geodesic(metric))
                 | (One(fixed), Many(array), crate::crs::ResolvedMetric::Geodesic(metric)) => {
                     let scalar_left = matches!(left_input, One(_));
-                    let fixed_plan = fixed.plan_or_transient()?;
+                    let fixed_plan = fixed.prepared_plan();
                     let fixed_cache = fixed.frame_cache();
                     let output_missing = array.missing().cloned();
                     let array = array.clone();
@@ -730,8 +719,8 @@ fn run_binary_scalar_scalar<R: Send>(
         metric,
         lane: Lane::Scalar,
     };
-    let left_plan = left.plan_or_transient()?;
-    let right_plan = right.plan_or_transient()?;
+    let left_plan = left.prepared_plan();
+    let right_plan = right.prepared_plan();
     py.detach(move || kernel(&left_plan, &right_plan, &ctx))
 }
 
@@ -789,11 +778,7 @@ where
         }
     };
     drop(scratch);
-    match result {
-        Ok(values) => Ok(values),
-        Err(BinaryRowsError::Setup(error)) => Err(error.into()),
-        Err(BinaryRowsError::Row(row, error)) => Err(rows_err((row, error))),
-    }
+    result.map_err(rows_err)
 }
 
 /// Split one operand when the resolved frame is geographic and the shape
@@ -802,7 +787,7 @@ fn split_operand_arc_for_topology(
     domain: TopologyDomain,
     geometry: &PyGeometry,
 ) -> Result<Arc<PreparedPlan>> {
-    let plan = geometry.plan_or_transient()?;
+    let plan = geometry.prepared_plan();
     if let TopologyDomain::Geographic(frame) = domain
         && crate::geometry::crosses_antimeridian_in_frame(plan.shape(), frame)
     {
@@ -910,13 +895,11 @@ where
                     metric,
                     lane: Lane::Scalar,
                 };
-                (|| -> Result<_> {
-                    let left_shape = left.plan_or_transient()?;
-                    let right_shape = right.plan_or_transient()?;
-                    invoke_topology_geometry_kernel(domain, &left_shape, &right_shape, &|l, r| {
-                        kernel(l, r, &ctx)
-                    })
-                })()
+                let left_shape = left.prepared_plan();
+                let right_shape = right.prepared_plan();
+                invoke_topology_geometry_kernel(domain, &left_shape, &right_shape, &|l, r| {
+                    kernel(l, r, &ctx)
+                })
             };
             drop(metric_scratch);
             let shape = result?;

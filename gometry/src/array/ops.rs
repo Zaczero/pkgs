@@ -236,7 +236,7 @@ impl PyGeometryArray {
                     ArrayRow::Missing { .. } => None,
                     ArrayRow::Present(row) => {
                         let geometry = rows.geometry(row).map_err(PyErr::from)?;
-                        let plan = geometry.plan_or_transient()?;
+                        let plan = geometry.prepared_plan();
                         let issue = crate::geometry::validate_data_in_frame(&plan, domain)?;
                         Some(PyValidationReport { geometry, issue })
                     },

@@ -172,7 +172,7 @@ impl PySpatialIndex {
             unit,
             crate::dispatch::MetricOp::Nearest,
         )?;
-        let query_plan = geometry.plan_or_transient()?;
+        let query_plan = geometry.prepared_plan();
         let mut frontier = BinaryHeap::new();
         let mut leaf_frontier = Vec::new();
         let mut visited = NearestVisited::default();

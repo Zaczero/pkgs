@@ -373,14 +373,14 @@ impl RowProductsHandle {
         )
     }
 
-    pub(crate) fn prepared_plan(
+    pub(crate) fn prepared_plan<E>(
         &mut self,
         logical: usize,
-        shape: impl FnOnce() -> crate::error::Result<Arc<ShapeData>>,
-    ) -> crate::error::Result<Arc<PreparedPlan>> {
+        shape: impl FnOnce() -> Result<Arc<ShapeData>, E>,
+    ) -> Result<Arc<PreparedPlan>, E> {
         let (chunk, offset) = self.cell(logical);
         Ok(Arc::clone(chunk.cells[offset].prepared.get_or_try_init(
-            || Ok::<_, crate::error::Error>(Arc::new(PreparedPlan::new(shape()?))),
+            || shape().map(|shape| Arc::new(PreparedPlan::new(shape))),
         )?))
     }
 
@@ -419,11 +419,11 @@ impl RowProducts {
         self.operation().frame_cache(logical)
     }
 
-    pub(crate) fn prepared_plan(
+    pub(crate) fn prepared_plan<E>(
         &self,
         logical: usize,
-        shape: impl FnOnce() -> crate::error::Result<Arc<ShapeData>>,
-    ) -> crate::error::Result<Arc<PreparedPlan>> {
+        shape: impl FnOnce() -> Result<Arc<ShapeData>, E>,
+    ) -> Result<Arc<PreparedPlan>, E> {
         self.operation().prepared_plan(logical, shape)
     }
 
@@ -782,7 +782,7 @@ impl PyGeometryArray {
     ) -> crate::error::Result<PyGeometry> {
         let frame = self.frame.clone();
         if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
-            let plan = products.prepared_plan(row.logical, || {
+            let plan = products.prepared_plan(row.logical, || -> crate::error::Result<_> {
                 Ok(Arc::new(ShapeData::new(row.row.with_shape(Clone::clone)?)))
             })?;
             return Ok(PyGeometry::with_row_products(
@@ -985,7 +985,7 @@ mod frame_cache_row_tests {
         let source = RowProducts::fresh(100_000_000);
         let shape = Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(7.0, 11.0))));
         let source_plan = source
-            .prepared_plan(99_999_999, || Ok(Arc::clone(&shape)))
+            .prepared_plan::<std::convert::Infallible>(99_999_999, || Ok(Arc::clone(&shape)))
             .unwrap();
         let source_frame = source.frame_cache(99_999_999);
         let source_owner = source.owner_weak();
@@ -1068,13 +1068,15 @@ mod frame_cache_row_tests {
         let products = RowProducts::fresh(1);
         let mut handle = products.operation();
         RowProducts::reset_directory_resolution_count();
-        let _ = handle
-            .prepared_plan(0, || {
-                Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
-                    1.0, 2.0,
-                )))))
-            })
-            .unwrap();
+        drop(
+            handle
+                .prepared_plan::<std::convert::Infallible>(0, || {
+                    Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
+                        1.0, 2.0,
+                    )))))
+                })
+                .unwrap(),
+        );
         let _ = handle.frame_cache(0);
         assert_eq!(RowProducts::directory_resolution_count(), 1);
     }
@@ -1128,7 +1130,7 @@ mod frame_cache_row_tests {
             std::thread::spawn(move || {
                 products
                     .operation()
-                    .prepared_plan(0, || {
+                    .prepared_plan::<std::convert::Infallible>(0, || {
                         Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
                             1.0, 2.0,
                         )))))
@@ -1210,7 +1212,7 @@ mod frame_cache_row_tests {
         let cold_products = RowProducts::fresh(1);
         let cold_calls = Cell::new(0);
         let cold_plan = cold_products
-            .prepared_plan(0, || {
+            .prepared_plan::<std::convert::Infallible>(0, || {
                 cold_calls.set(cold_calls.get() + 1);
                 Ok(Arc::clone(&shape))
             })
@@ -1221,14 +1223,16 @@ mod frame_cache_row_tests {
         let warm_products = RowProducts::fresh(1);
         let warm_calls = Cell::new(0);
         let warm_plan = warm_products
-            .prepared_plan(0, || {
+            .prepared_plan::<std::convert::Infallible>(0, || {
                 warm_calls.set(warm_calls.get() + 1);
                 Ok(Arc::clone(&shape))
             })
             .unwrap();
         assert_eq!(warm_calls.get(), 1);
         let reused = warm_products
-            .prepared_plan(0, || panic!("warm prepared-plan factory was invoked"))
+            .prepared_plan::<std::convert::Infallible>(0, || {
+                panic!("warm prepared-plan factory was invoked")
+            })
             .unwrap();
         assert!(Arc::ptr_eq(&warm_plan, &reused));
         assert_eq!(warm_calls.get(), 1);
@@ -1527,7 +1531,7 @@ mod prepared_row_ownership_tests {
             .unwrap()
             .into_owned_plan();
         let geometry = array.geometry_at(0).unwrap();
-        let extracted = geometry.prepared_plan().unwrap();
+        let extracted = geometry.prepared_plan();
         assert!(Arc::ptr_eq(&plan, &extracted));
         assert!(Arc::ptr_eq(
             &geometry.frame_cache(),

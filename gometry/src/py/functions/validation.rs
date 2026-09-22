@@ -199,7 +199,7 @@ fn require_geometry_contract(
         );
         return Err(errors::invalid_geometry_issue(&issue, row));
     }
-    let plan = geometry.plan_or_transient()?;
+    let plan = geometry.prepared_plan();
     let domain = geometry::topology_domain(&geometry.frame)?;
     let issue = match py {
         Some(py) => py.detach(move || geometry::validate_data_in_frame(&plan, domain)),

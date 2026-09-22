@@ -1072,7 +1072,7 @@ mod replacement_tests {
         .unwrap();
         let source_plan = source
             .row_products
-            .prepared_plan(0, || {
+            .prepared_plan::<std::convert::Infallible>(0, || {
                 Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
                     0.0, 0.0,
                 )))))
@@ -1081,7 +1081,7 @@ mod replacement_tests {
         let source_frame = source.row_products.frame_cache(0);
         let source_unchanged_plan = source
             .row_products
-            .prepared_plan(1, || {
+            .prepared_plan::<std::convert::Infallible>(1, || {
                 Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
                     1.0, 1.0,
                 )))))
@@ -1133,7 +1133,7 @@ mod replacement_tests {
 
         let result_plan = result
             .row_products
-            .prepared_plan(0, || {
+            .prepared_plan::<std::convert::Infallible>(0, || {
                 Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
                     9.0, 9.0,
                 )))))
@@ -1146,7 +1146,7 @@ mod replacement_tests {
         result.row_products.frame_cache(0);
         let result_unchanged_plan = result
             .row_products
-            .prepared_plan(1, || {
+            .prepared_plan::<std::convert::Infallible>(1, || {
                 Ok(Arc::new(ShapeData::new(Shape::Point(Point::new_raw_xy(
                     1.0, 1.0,
                 )))))

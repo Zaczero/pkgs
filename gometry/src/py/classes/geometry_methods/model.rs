@@ -660,8 +660,8 @@ mod frame_cache_ownership_tests {
             &retagged.frame_cache()
         ));
         assert!(Arc::ptr_eq(
-            &geometry.prepared_plan().unwrap(),
-            &retagged.prepared_plan().unwrap()
+            &geometry.prepared_plan(),
+            &retagged.prepared_plan()
         ));
         assert_eq!(geometry.heap_bytes(), retagged.heap_bytes());
 
@@ -673,8 +673,8 @@ mod frame_cache_ownership_tests {
             .set_epoch_keep_crs(Some(2020.0))
             .expect("EPSG:4326 accepts a coordinate epoch");
         assert!(Arc::ptr_eq(
-            &geometry.prepared_plan().unwrap(),
-            &construction_retag.prepared_plan().unwrap()
+            &geometry.prepared_plan(),
+            &construction_retag.prepared_plan()
         ));
         assert!(Arc::ptr_eq(
             &geometry.frame_cache(),
@@ -691,8 +691,8 @@ mod frame_cache_ownership_tests {
             &transformed.frame_cache()
         ));
         assert!(!Arc::ptr_eq(
-            &retagged.prepared_plan().unwrap(),
-            &transformed.prepared_plan().unwrap()
+            &retagged.prepared_plan(),
+            &transformed.prepared_plan()
         ));
     }
 }
@@ -859,9 +859,11 @@ impl PyGeometry {
         self.row_products.frame_cache(self.product_row)
     }
 
-    pub(crate) fn prepared_plan(&self) -> crate::error::Result<Arc<PreparedPlan>> {
-        self.row_products
-            .prepared_plan(self.product_row, || Ok(Arc::clone(&self.shape)))
+    pub(crate) fn prepared_plan(&self) -> Arc<PreparedPlan> {
+        let Ok(plan) = self.row_products.prepared_plan(self.product_row, || {
+            Ok::<_, std::convert::Infallible>(Arc::clone(&self.shape))
+        });
+        plan
     }
 
     pub(crate) fn cached_prepared_plan(&self) -> Option<Arc<PreparedPlan>> {
@@ -966,10 +968,6 @@ impl PyGeometry {
             product_row: 0,
             frame,
         }
-    }
-
-    pub(crate) fn plan_or_transient(&self) -> crate::error::Result<Arc<PreparedPlan>> {
-        self.prepared_plan()
     }
 
     /// Like [`with_shape`](Self::with_shape) but wrapped as [`Typed`] for

@@ -51,15 +51,17 @@ fn spatial_index_rows(
     let rows = items
         .into_iter()
         .map(|item| {
-            Ok::<_, pyo3::PyErr>(match item {
-                None => PyGeometry::with_frame(
-                    PyGeometryArray::missing_placeholder(),
-                    placeholder_frame.clone(),
-                ),
-                Some(item) => item.with_prepared_plan(item.plan_or_transient()?),
-            })
+            item.map_or_else(
+                || {
+                    PyGeometry::with_frame(
+                        PyGeometryArray::missing_placeholder(),
+                        placeholder_frame.clone(),
+                    )
+                },
+                |item| item.with_prepared_plan(item.prepared_plan()),
+            )
         })
-        .collect::<pyo3::PyResult<Vec<_>>>()?;
+        .collect();
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,

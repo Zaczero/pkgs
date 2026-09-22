@@ -661,7 +661,7 @@ impl PySpatialIndex {
         unit: Option<DistanceUnit>,
     ) -> PyResult<Vec<usize>> {
         let plan = PreparedIndexQuery::for_geometry(self, geometry, None, distance, unit)?;
-        let query_plan = geometry.plan_or_transient()?;
+        let query_plan = geometry.prepared_plan();
         let row = plan.row(
             self,
             ShapeRow::Handle(&query_plan),
@@ -975,7 +975,7 @@ impl PySpatialIndex {
         plan: &PreparedIndexQuery,
     ) -> PyResult<Vec<usize>> {
         let mut matches = candidates;
-        let query_plan = geometry.plan_or_transient()?;
+        let query_plan = geometry.prepared_plan();
         let domain = self.domain()?;
         let mut products = self.rows.operation();
         match plan {
@@ -1072,7 +1072,7 @@ impl PySpatialIndex {
     ) -> PyResult<Vec<usize>> {
         let plan =
             PreparedIndexQuery::for_geometry(self, geometry, Some(predicate), distance, unit)?;
-        let query_plan = geometry.plan_or_transient()?;
+        let query_plan = geometry.prepared_plan();
         if let IndexPredicate::Topological(predicate) = predicate
             && distance.is_none()
         {

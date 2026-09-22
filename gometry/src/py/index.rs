@@ -525,7 +525,7 @@ impl<'a> IndexRowOperation<'a> {
             return packed.prepared(row);
         }
         let geometry = &self.rows.boxed[handle - packed_len];
-        Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()?))
+        Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
     }
 
     pub(crate) fn frame_cache(

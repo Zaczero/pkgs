@@ -551,7 +551,7 @@ where
         .into_vec());
     }
     let authority = membership.shape.as_ref();
-    let authority_plan = membership.plan_or_transient()?;
+    let authority_plan = membership.prepared_plan();
     let authority_cache = membership.frame_cache();
     let TopologyDomain::Geographic(frame) = crate::geometry::topology_domain(&membership.frame)?
     else {

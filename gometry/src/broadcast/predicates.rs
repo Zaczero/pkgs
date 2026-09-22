@@ -48,7 +48,7 @@ pub(crate) fn predicate_scalar_vs_array(
 ) -> PyResult<Py<PyAny>> {
     let spec = *spec;
     let missing = array.missing().cloned();
-    let plan = scalar.plan_or_transient()?;
+    let plan = scalar.prepared_plan();
     let scalar_cache = scalar.frame_cache();
     let array = array.clone();
     bool_array_mask_missing(
@@ -244,7 +244,7 @@ where
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
     let output_missing = array.missing().cloned();
-    let scalar_plan = scalar.plan_or_transient()?;
+    let scalar_plan = scalar.prepared_plan();
     let scalar_cache = scalar.frame_cache();
     let array = array.clone();
     let values = py
@@ -355,8 +355,8 @@ where
     let domain = admission.domain;
     match (left, right) {
         (GeometryInput::One(left), GeometryInput::One(right)) => {
-            let left_plan = left.plan_or_transient()?;
-            let right_plan = right.plan_or_transient()?;
+            let left_plan = left.prepared_plan();
+            let right_plan = right.prepared_plan();
             let left_cache = left.frame_cache();
             let right_cache = right.frame_cache();
             let value = py.detach(move || {
@@ -597,7 +597,7 @@ pub(crate) fn xy_predicate_values(
         Predicate::Contains.spec()
     };
     let domain = crate::geometry::topology_domain(&geometry.frame)?;
-    let original = geometry.plan_or_transient()?;
+    let original = geometry.prepared_plan();
     let original_cache = geometry.frame_cache();
     if scalar {
         let point = Point::new(x[0], y[0])?;
@@ -667,7 +667,7 @@ mod geographic_tests {
         ];
         let x = probes.iter().map(|&(x, _)| x).collect();
         let y = probes.iter().map(|&(_, y)| y).collect();
-        let source = geometry.plan_or_transient().unwrap();
+        let source = geometry.prepared_plan();
         let domain = crate::geometry::topology_domain(&geometry.frame).unwrap();
         let expected: Vec<bool> = probes
             .iter()

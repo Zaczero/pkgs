@@ -96,7 +96,7 @@ impl PyGeometry {
 
     pub(crate) fn validate_impl(&self, py: Python<'_>) -> PyResult<PyValidationReport> {
         let geometry = self.clone();
-        let plan = self.plan_or_transient()?;
+        let plan = self.prepared_plan();
         let domain = geometry::topology_domain(&self.frame)?;
         Ok(PyValidationReport {
             geometry,
@@ -106,9 +106,8 @@ impl PyGeometry {
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Typed> {
         let domain = geometry::topology_domain(&self.frame)?;
-        let repaired = py.detach(|| {
-            geometry::repair_data_in_frame(&*self.plan_or_transient()?, domain, method)
-        })?;
+        let repaired =
+            py.detach(|| geometry::repair_data_in_frame(&self.prepared_plan(), domain, method))?;
         Ok(Typed(repaired.map_or_else(
             || self.clone(),
             |shape| self.with_shape(shape),

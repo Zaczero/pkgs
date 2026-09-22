@@ -31,7 +31,7 @@ fn execute_unary_scalar<R: BulkElement>(
         metric,
         lane: Lane::Scalar,
     };
-    let plan = geometry.plan_or_transient()?;
+    let plan = geometry.prepared_plan();
     py.detach(move || kernel(&plan, &ctx))
 }
 
@@ -289,20 +289,18 @@ pub(crate) fn unary_scalar_linref_shape(
                 return Err(PyErr::from(error));
             },
         };
-        (|| -> Result<_> {
-            let row = LinearReferenceRow {
-                op: CachelessRowContext {
-                    frame: &frame,
-                    domain,
-                    metric,
-                    lane: Lane::Scalar,
-                },
-                model,
-                cache: &*geometry.frame_cache(),
-            };
-            let plan = geometry.plan_or_transient()?;
-            py.detach(move || kernel(&plan, &row))
-        })()
+        let row = LinearReferenceRow {
+            op: CachelessRowContext {
+                frame: &frame,
+                domain,
+                metric,
+                lane: Lane::Scalar,
+            },
+            model,
+            cache: &geometry.frame_cache(),
+        };
+        let plan = geometry.prepared_plan();
+        py.detach(move || kernel(&plan, &row))
     };
     drop(scratch);
     let shape = result?;
