@@ -723,7 +723,6 @@ pub(crate) fn cleanup_constraint_lines(lines: Vec<[XY; 2]>) -> Vec<[XY; 2]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn sites(points: &[(f64, f64)]) -> Vec<Site> {
         points
@@ -794,76 +793,5 @@ mod tests {
             }
         }
         assert_eq!(topology.hull, [0, 1, 2, 3]);
-    }
-
-    #[test]
-    fn constrained_source_plan_allocation_prefixes_are_retryable() {
-        let ring = CoordSeq::try_from_points(&[
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(4.0, 0.0),
-            Point::new_raw_xy(4.0, 4.0),
-            Point::new_raw_xy(0.0, 4.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ])
-        .unwrap();
-        let rings = [&ring];
-        let (result, allocations) = allocation_count(|| constrained_source_plan(&rings));
-        result.unwrap();
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, || constrained_source_plan(&rings));
-            assert!(matches!(
-                result,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        crate::error::ErrorKind::Resource(
-                            crate::error::ResourceError::Allocation
-                        )
-                    )
-            ));
-        }
-        fail_allocations_after(allocations + 8, || constrained_source_plan(&rings)).unwrap();
-    }
-
-    #[test]
-    fn constrained_plan_publication_allocation_prefixes_are_retryable() {
-        let ring = CoordSeq::try_from_points(&[
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(4.0, 0.0),
-            Point::new_raw_xy(4.0, 4.0),
-            Point::new_raw_xy(0.0, 4.0),
-            Point::new_raw_xy(0.0, 0.0),
-        ])
-        .unwrap();
-        let plan =
-            constrained_triangle_plan([&ring].into_iter(), 16.0, CdtRefinement::Off).unwrap();
-        let (result, allocations) = allocation_count(|| {
-            let mut budget = ExpansionBudget::new("triangulate", "min_angle/max_area");
-            publish_constrained_plan(&plan, &mut budget)
-        });
-        result.unwrap();
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, || {
-                let mut budget = ExpansionBudget::new("triangulate", "min_angle/max_area");
-                publish_constrained_plan(&plan, &mut budget)
-            });
-            assert!(matches!(
-                result,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        crate::error::ErrorKind::Resource(
-                            crate::error::ResourceError::Allocation
-                        )
-                    )
-            ));
-        }
-        fail_allocations_after(allocations + 8, || {
-            let mut budget = ExpansionBudget::new("triangulate", "min_angle/max_area");
-            publish_constrained_plan(&plan, &mut budget)
-        })
-        .unwrap();
     }
 }

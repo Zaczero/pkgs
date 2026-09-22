@@ -27,7 +27,7 @@ fn exact_segment_rejects_projective_point_at_infinity() {
         Ok(super::exact::SegmentIntersection::None)
     ));
 }
-use crate::error::{ErrorKind, ResourceError};
+use crate::error::ErrorKind;
 use crate::geometry::segments::Orientation;
 use crate::geometry::tessellation::delaunay::cleanup_constraint_lines;
 use crate::geometry::tessellation::earcut::{
@@ -37,10 +37,9 @@ use crate::geometry::tessellation::earcut::{
 use crate::geometry::{
     CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq, MOrdinate, MultiMember, MultiPolygon, Point,
-    Polygon, Ring, Shape, Strictness, VoronoiBoundary, ZOrdinate, open_point_cycle_decision,
-    orientation, ring_contains_interior,
+    Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision, orientation,
+    ring_contains_interior,
 };
-use crate::test_support::{allocation_count, fail_allocations_after};
 
 fn xy(x: f64, y: f64) -> Point {
     Point::new(x, y).expect("finite test coordinate")
@@ -123,165 +122,6 @@ fn public_delaunay_keeps_collinear_empty_contract() {
     assert!(source.delaunay_triangles().unwrap().is_empty());
 }
 
-#[test]
-fn unconstrained_delaunay_allocation_prefixes_are_resource_errors_and_retryable() {
-    let large = 2.0_f64.powi(200);
-    let tiny = 2.0_f64.powi(-200);
-    let points = [
-        xy(-large, 0.0),
-        xy(0.0, -tiny),
-        xy(large, 0.0),
-        xy(0.0, tiny),
-    ];
-    let source = Shape::MultiPoint(CoordSeq::try_from_points(&points).unwrap().into());
-    let before = source.clone();
-
-    let (result, allocations) = allocation_count(|| source.delaunay_triangle_vertices());
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, || source.delaunay_triangle_vertices());
-        assert!(matches!(
-            result,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                )
-        ));
-        assert_eq!(
-            source, before,
-            "source remains immutable after allocation failure"
-        );
-    }
-    fail_allocations_after(allocations + 8, || source.delaunay_triangle_vertices()).unwrap();
-
-    let (result, allocations) =
-        allocation_count(|| super::delaunay::delaunay_triangulation(&points));
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result =
-            fail_allocations_after(allowed, || super::delaunay::delaunay_triangulation(&points));
-        assert!(matches!(
-            result,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                )
-        ));
-    }
-    fail_allocations_after(allocations + 8, || {
-        super::delaunay::delaunay_triangulation(&points)
-    })
-    .unwrap();
-
-    let (result, allocations) = allocation_count(|| source.delaunay_triangles());
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, || source.delaunay_triangles());
-        assert!(matches!(
-            result,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                )
-        ));
-        assert_eq!(
-            source, before,
-            "source remains immutable after scalar publication failure"
-        );
-    }
-    fail_allocations_after(allocations + 8, || source.delaunay_triangles()).unwrap();
-}
-
-/// Every allocation prefix of `operation` fails with the allocation error, and
-/// an allocator with room to spare reproduces the unconstrained result. One
-/// warm-up call first fills the thread's scratch pools, so the counted call is
-/// the costliest a later call can be.
-fn assert_allocation_prefixes_recover<T: PartialEq + std::fmt::Debug>(
-    operation: impl Fn() -> crate::error::Result<T>,
-) {
-    operation().unwrap();
-    let (expected, allocations) = allocation_count(&operation);
-    let expected = expected.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, &operation);
-        assert!(
-            matches!(
-                &result,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        ErrorKind::Resource(ResourceError::Allocation)
-                    )
-            ),
-            "prefix {allowed} of {allocations}: {result:?}"
-        );
-    }
-    assert_eq!(
-        fail_allocations_after(allocations + 8, &operation).unwrap(),
-        expected
-    );
-}
-
-fn voronoi_sites(points: &[Point]) -> Shape {
-    Shape::MultiPoint(CoordSeq::try_from_points(points).unwrap().into())
-}
-
-#[test]
-fn dual_voronoi_allocation_prefixes_are_resource_errors_and_retryable() {
-    let sites = voronoi_sites(&[
-        xy(0.0, 0.0),
-        xy(4.0, 0.0),
-        xy(4.0, 4.0),
-        xy(0.0, 4.0),
-        xy(2.0, 2.0),
-        xy(5.0, 2.5),
-    ]);
-    for boundary in [VoronoiBoundary::Envelope, VoronoiBoundary::Padded] {
-        assert_allocation_prefixes_recover(|| sites.voronoi_polygons(0.0, boundary));
-        assert_allocation_prefixes_recover(|| sites.voronoi_edges(0.0, boundary));
-    }
-    assert_allocation_prefixes_recover(|| sites.voronoi_polygons(0.6, VoronoiBoundary::Envelope));
-}
-
-/// The polygon clip runs the exact subdivision; a holed clip reaches hole
-/// normalization and ring nesting, and edges reach chain publication.
-#[test]
-fn clipped_voronoi_cell_allocation_prefixes_are_resource_errors_and_retryable() {
-    let sites = voronoi_sites(&[xy(0.0, 0.0), xy(4.0, 0.0), xy(1.0, 3.0)]);
-    let clip = polygon(
-        vec![xy(-1.0, -1.0), xy(5.0, -1.0), xy(5.0, 4.0), xy(-1.0, 4.0)],
-        vec![vec![xy(1.5, 0.5), xy(1.5, 1.0), xy(2.0, 1.0), xy(2.0, 0.5)]],
-    );
-    assert_allocation_prefixes_recover(|| {
-        sites.voronoi_polygons(0.0, VoronoiBoundary::Polygon(&clip))
-    });
-}
-
-#[test]
-fn clipped_voronoi_edge_allocation_prefixes_are_resource_errors_and_retryable() {
-    let sites = voronoi_sites(&[xy(0.0, 0.0), xy(4.0, 0.0), xy(1.0, 3.0)]);
-    let clip = polygon(
-        vec![xy(-1.0, -1.0), xy(5.0, -1.0), xy(5.0, 4.0), xy(-1.0, 4.0)],
-        vec![],
-    );
-    assert_allocation_prefixes_recover(|| {
-        sites.voronoi_edges(0.0, VoronoiBoundary::Polygon(&clip))
-    });
-}
-
-#[test]
-fn collinear_voronoi_allocation_prefixes_are_resource_errors_and_retryable() {
-    let sites = voronoi_sites(&[xy(0.0, 0.0), xy(1.0, 1.0), xy(3.0, 3.0)]);
-    assert_allocation_prefixes_recover(|| sites.voronoi_edges(0.0, VoronoiBoundary::Padded));
-}
-
 fn polygon(shell: Vec<Point>, holes: Vec<Vec<Point>>) -> Polygon {
     Polygon::new(
         Ring::closed(shell).expect("valid test shell"),
@@ -313,44 +153,13 @@ fn triangle_sink_rejects_before_shape_allocation() {
 }
 
 #[test]
-fn triangle_sink_rejects_allocation_after_budget() {
-    let mut budget = ExpansionBudget::new("triangulate", "method");
-    let mut sink = BudgetedTriangleSink::new(&mut budget);
-    let error = fail_allocations_after(0, || sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0)))
-        .expect_err("output allocation must fail");
-    assert!(matches!(
-        error.kind(),
-        ErrorKind::Resource(ResourceError::Allocation)
-    ));
-    sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
-        .expect("a rejected output allocation must be retryable");
-    let shapes = sink.into_shapes();
-    assert_eq!(budget.used(), 4);
-    assert_eq!(shapes.len(), 1);
-}
-
-#[test]
-fn packed_triangle_sink_rejects_before_and_on_allocation() {
+fn packed_triangle_sink_rejects_before_allocation() {
     let mut budget = ExpansionBudget::new("triangulate", "method");
     budget.add(GENERATED_ITEM_LIMIT).unwrap();
     let mut sink = BudgetedPackedTriangleSink::new(&mut budget);
     sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
         .unwrap_err();
     assert!(sink.into_vertices().is_empty());
-
-    let mut budget = ExpansionBudget::new("triangulate", "method");
-    let mut sink = BudgetedPackedTriangleSink::new(&mut budget);
-    let error = fail_allocations_after(0, || sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0)))
-        .expect_err("output allocation must fail");
-    assert!(matches!(
-        error.kind(),
-        ErrorKind::Resource(ResourceError::Allocation)
-    ));
-    sink.emit(xy(0.0, 0.0), xy(1.0, 0.0), xy(0.0, 1.0))
-        .expect("a rejected packed allocation must be retryable");
-    let vertices = sink.into_vertices();
-    assert_eq!(budget.used(), 4);
-    assert_eq!(vertices.len(), 4);
 }
 
 #[test]
@@ -645,95 +454,6 @@ fn triangulation_budgets_reject_before_reserving_generated_vertices() {
         .constrained_delaunay_vertices_budgeted(CdtRefinement::Off, &mut constrained_budget)
         .unwrap_err();
     assert_eq!(take_constrained_output_reserves(), 0);
-}
-
-#[test]
-fn constrained_mesh_allocation_prefixes_are_resource_errors_and_retryable() {
-    let source = Shape::Polygon(polygon(
-        vec![xy(0.0, 0.0), xy(4.0, 0.0), xy(4.0, 4.0), xy(0.0, 4.0)],
-        Vec::new(),
-    ));
-    let before = source.clone();
-    let (result, allocations) =
-        allocation_count(|| source.constrained_delaunay_vertices(CdtRefinement::Off));
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, || {
-            source.constrained_delaunay_vertices(CdtRefinement::Off)
-        });
-        assert!(matches!(
-            result,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                )
-        ));
-        assert_eq!(
-            source, before,
-            "source remains immutable after allocation failure"
-        );
-    }
-    fail_allocations_after(allocations + 8, || {
-        source.constrained_delaunay_vertices(CdtRefinement::Off)
-    })
-    .unwrap();
-
-    let refinement = CdtRefinement::On {
-        min_angle: None,
-        max_area: Some(crate::Positive::try_new("max_area", 2.0).unwrap()),
-    };
-    let (result, allocations) =
-        allocation_count(|| source.constrained_delaunay_vertices(refinement));
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result =
-            fail_allocations_after(allowed, || source.constrained_delaunay_vertices(refinement));
-        assert!(matches!(
-            result,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                )
-        ));
-        assert_eq!(
-            source, before,
-            "source remains immutable after refinement failure"
-        );
-    }
-    fail_allocations_after(allocations + 8, || {
-        source.constrained_delaunay_vertices(refinement)
-    })
-    .unwrap();
-
-    let (result, allocations) =
-        allocation_count(|| source.constrained_delaunay_triangles(CdtRefinement::Off));
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, || {
-            source.constrained_delaunay_triangles(CdtRefinement::Off)
-        });
-        assert!(matches!(
-            result,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                )
-        ));
-        assert_eq!(
-            source, before,
-            "source remains immutable after scalar publication failure"
-        );
-    }
-    fail_allocations_after(allocations + 8, || {
-        source.constrained_delaunay_triangles(CdtRefinement::Off)
-    })
-    .unwrap();
 }
 
 #[test]

@@ -453,31 +453,6 @@ impl Shape {
         crate::try_collect_vec(cells.into_iter().map(|polygon| Ok(Self::Polygon(polygon))))
     }
 
-    #[cfg(test)]
-    pub(crate) fn voronoi_edges(
-        &self,
-        tolerance: f64,
-        boundary: VoronoiBoundary<'_>,
-    ) -> Result<Vec<Self>> {
-        let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
-        self.voronoi_edges_budgeted(tolerance, boundary, &mut budget)
-    }
-
-    #[cfg(test)]
-    pub(crate) fn voronoi_edges_budgeted(
-        &self,
-        tolerance: f64,
-        boundary: VoronoiBoundary<'_>,
-        budget: &mut ExpansionBudget,
-    ) -> Result<Vec<Self>> {
-        crate::try_collect_vec(
-            self.voronoi_edges_raw(tolerance, boundary, budget)?
-                .into_line_seqs()?
-                .into_iter()
-                .map(|line| Ok(Self::LineString(line))),
-        )
-    }
-
     /// The edges as one packed line column: what an array result stores, so
     /// the Python lane never builds a line object per edge.
     pub(crate) fn voronoi_edge_column_budgeted(
