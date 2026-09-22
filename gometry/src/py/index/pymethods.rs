@@ -618,9 +618,8 @@ impl PySpatialIndex {
         let distance = query_distance(Some(predicate), distance)?;
         let mut left = Vec::new();
         let mut right = Vec::new();
-        self.for_each_symmetric_pair(predicate, distance, unit, |i, j| {
-            crate::try_push_pair(&mut left, &mut right, i as i64, j as i64)
-                .map_err(pyo3::PyErr::from)
+        self.for_each_symmetric_matches(predicate, distance, unit, |i, matches| {
+            super::free_functions::append_join_matches(&mut left, &mut right, i, matches);
         })?;
         Ok((int64_array(py, left)?, int64_array(py, right)?))
     }
@@ -862,19 +861,8 @@ impl PySpatialIndex {
                         "nearest output size overflows usize",
                     )
                 })?;
-                let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
-                let mut distances = Vec::new();
-                if return_distance {
-                    if let Err(error) =
-                        crate::try_reserve_pair(builder.values_mut(), &mut distances, capacity)
-                    {
-                        builder.clear();
-                        return Err(pyo3::PyErr::from(error));
-                    }
-                } else if let Err(error) = crate::try_reserve_vec(builder.values_mut(), capacity) {
-                    builder.clear();
-                    return Err(pyo3::PyErr::from(error));
-                }
+                let mut builder = CsrBuilder::<usize>::with_capacity(capacity, row_count);
+                let mut distances = Vec::with_capacity(if return_distance { capacity } else { 0 });
                 let mut frontier = BinaryHeap::new();
                 let mut leaf_frontier = Vec::new();
                 let mut visited = NearestVisited::default();

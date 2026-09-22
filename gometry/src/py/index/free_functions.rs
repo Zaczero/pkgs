@@ -180,6 +180,18 @@ pub(crate) fn join_pair_columns(
     py.detach(|| join_item_pairs(&left_items, index, predicate, distance, unit))
 }
 
+pub(super) fn append_join_matches(
+    left_ids: &mut Vec<i64>,
+    right_ids: &mut Vec<i64>,
+    left: usize,
+    matches: &[usize],
+) {
+    left_ids.reserve(matches.len());
+    right_ids.reserve(matches.len());
+    left_ids.resize(left_ids.len().wrapping_add(matches.len()), left as i64);
+    right_ids.extend(matches.iter().map(|&right| right as i64));
+}
+
 /// Join an extracted geometry array against the index.
 fn join_array_pairs(
     array: &crate::PyGeometryArray,
@@ -199,13 +211,10 @@ fn join_array_pairs(
             distance,
             unit,
         )?;
-        let mut left_ids = Vec::new();
-        let mut right_ids = Vec::new();
+        let mut left_ids = Vec::with_capacity(matches.ids.len());
+        let mut right_ids = Vec::with_capacity(matches.ids.len());
         for (left_idx, row) in matches.rows().enumerate() {
-            let left = left_idx as i64;
-            for &idx in row {
-                crate::try_push_pair(&mut left_ids, &mut right_ids, left, idx as i64)?;
-            }
+            append_join_matches(&mut left_ids, &mut right_ids, left_idx, row);
         }
         return Ok((left_ids, right_ids));
     }
@@ -225,13 +234,10 @@ fn join_array_pairs(
                     continue;
                 };
                 let logical = row.logical();
-                let left = logical as i64;
                 let shape = rows.prepared(row)?;
-                for right_idx in
-                    index.topological_matches(&shape, &*rows.frame_cache(logical), topological)?
-                {
-                    crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
-                }
+                let matches =
+                    index.topological_matches(&shape, &*rows.frame_cache(logical), topological)?;
+                append_join_matches(&mut left_ids, &mut right_ids, logical, &matches);
             }
             return Ok((left_ids, right_ids));
         }
@@ -254,14 +260,7 @@ fn join_array_pairs(
                         &mut scratch,
                         array.row_bounds_seed(logical),
                     )?;
-                    for &right_idx in &scratch {
-                        crate::try_push_pair(
-                            &mut left_ids,
-                            &mut right_ids,
-                            logical as i64,
-                            right_idx as i64,
-                        )?;
-                    }
+                    append_join_matches(&mut left_ids, &mut right_ids, logical, &scratch);
                 }
             },
             crate::crs::ResolvedMetric::Geodesic(metric) => {
@@ -282,14 +281,7 @@ fn join_array_pairs(
                         &mut scratch,
                         array.row_bounds_seed(logical),
                     )?;
-                    for &right_idx in &scratch {
-                        crate::try_push_pair(
-                            &mut left_ids,
-                            &mut right_ids,
-                            logical as i64,
-                            right_idx as i64,
-                        )?;
-                    }
+                    append_join_matches(&mut left_ids, &mut right_ids, logical, &scratch);
                 }
             },
         }
@@ -308,10 +300,8 @@ fn join_item_pairs(
     let mut left_ids = Vec::new();
     let mut right_ids = Vec::new();
     for (left_idx, geometry) in left_items.iter().enumerate() {
-        let left = left_idx as i64;
-        for right_idx in index.query_exact(geometry, predicate, distance, unit)? {
-            crate::try_push_pair(&mut left_ids, &mut right_ids, left, right_idx as i64)?;
-        }
+        let matches = index.query_exact(geometry, predicate, distance, unit)?;
+        append_join_matches(&mut left_ids, &mut right_ids, left_idx, &matches);
     }
     Ok((left_ids, right_ids))
 }

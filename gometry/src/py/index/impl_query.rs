@@ -104,15 +104,13 @@ impl PySpatialIndex {
         sort_unique_row_ids(out, start, self.rows.len());
     }
 
-    /// Walk every unordered live pair `(i, j)` with `i < j` whose geometries
-    /// satisfy the symmetric `predicate` — the self-join engine behind
-    /// `self_join`.
-    pub(crate) fn for_each_symmetric_pair(
+    /// Visit each live row's matching higher handles for a symmetric predicate.
+    pub(crate) fn for_each_symmetric_matches(
         &self,
         predicate: IndexPredicate,
         distance: Option<NonNegative>,
         unit: Option<DistanceUnit>,
-        mut found: impl FnMut(usize, usize) -> PyResult<()>,
+        mut found: impl FnMut(usize, &[usize]),
     ) -> PyResult<()> {
         let spec = match predicate {
             IndexPredicate::Topological(predicate) => Some(predicate.spec()),
@@ -230,9 +228,7 @@ impl PySpatialIndex {
                 },
                 (None, None) => unreachable!("dwithin self-join resolves its metric once"),
             }
-            for &j in &candidates {
-                found(i, j)?;
-            }
+            found(i, &candidates);
         }
         Ok(())
     }
