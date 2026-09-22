@@ -406,9 +406,9 @@ impl PyGeometryArray {
                     source.cursor().filter_map(|(logical, present)| {
                         present.filter(|_| mask.is_valid(logical))
                     }),
-                )?
+                )
             } else {
-                self.selected_storage((0..mask.len()).filter(|&logical| !mask.is_missing(logical)))?
+                self.selected_storage((0..mask.len()).filter(|&logical| !mask.is_missing(logical)))
             };
             return Self::from_selected_storage(
                 &self,
@@ -526,7 +526,7 @@ impl PyGeometryArray {
                         row_map.as_deref(),
                         offsets.len().saturating_sub(1),
                         present_rows,
-                    )?,
+                    ),
                 });
                 Self::compact_storage_from_present(&selected, mask)
             },
@@ -544,7 +544,7 @@ impl PyGeometryArray {
                         row_map.as_deref(),
                         polygon_offsets.len().saturating_sub(1),
                         present_rows,
-                    )?,
+                    ),
                 });
                 Self::compact_storage_from_present(&selected, mask)
             },
@@ -919,7 +919,7 @@ impl PyGeometryArray {
         let products = if rows.missing().is_some_and(|mask| mask.present_count() == 0) {
             prepared::RowProducts::fresh(rows.len())
         } else {
-            source.selected_row_products(source_rows)?
+            source.selected_row_products(source_rows)
         };
         let caches = ComputedCaches::fresh();
         Ok(Self {

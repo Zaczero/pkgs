@@ -1527,8 +1527,7 @@ mod tests {
                 crate::array::RowSelectionRef::Identity,
                 n_polygons,
                 rows,
-            )
-            .unwrap(),
+            ),
         )
         .unwrap()
     }
@@ -1706,8 +1705,7 @@ mod tests {
                 crate::array::RowSelectionRef::Identity,
                 3,
                 1..3,
-            )
-            .unwrap(),
+            ),
         )
         .unwrap();
         let view = array.coordinate_view();

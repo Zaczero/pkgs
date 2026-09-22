@@ -203,7 +203,7 @@ impl Groups {
             .map_err(PyErr::from)
     }
 
-    fn cell_row_view(&self, row: usize) -> crate::error::Result<PyCellArray> {
+    fn cell_row_view(&self, row: usize) -> PyCellArray {
         let GroupsValues::Cells(values) = &self.values else {
             unreachable!("cell_row_view requires Cells backing");
         };
@@ -277,7 +277,7 @@ impl Groups {
         match &self.values {
             GroupsValues::Int64(_) => frozen_i64_view(slf, |this| this.int64_row_slice(row)),
             GroupsValues::Geometry(_) => self.geometry_row_view(row)?.into_py_any(py),
-            GroupsValues::Cells(_) => self.cell_row_view(row)?.into_py_any(py),
+            GroupsValues::Cells(_) => self.cell_row_view(row).into_py_any(py),
         }
     }
 
@@ -302,8 +302,8 @@ impl Groups {
                     .expect("geometry backing is known from the match"),
             ),
             (GroupsValues::Cells(left), GroupsValues::Cells(right)) => Ok(left
-                .logical_row_range(self.values_window())?
-                .logical_eq(&right.logical_row_range(other.values_window())?)),
+                .logical_row_range(self.values_window())
+                .logical_eq(&right.logical_row_range(other.values_window()))),
             _ => Ok(false),
         }
     }
@@ -375,7 +375,7 @@ impl Groups {
                 let Ok(other) = item.cast::<PyCellArray>() else {
                     return Ok(false);
                 };
-                Ok(self.cell_row_view(row)?.logical_eq(other.get()))
+                Ok(self.cell_row_view(row).logical_eq(other.get()))
             },
         }
     }
@@ -415,7 +415,7 @@ impl Groups {
             },
             GroupsContainsNeedle::Cells(expected) => {
                 for row in 0..self.rows.len() {
-                    if self.cell_row_view(row)?.logical_eq(&expected) {
+                    if self.cell_row_view(row).logical_eq(&expected) {
                         return Ok(true);
                     }
                 }
@@ -533,7 +533,7 @@ impl Groups {
                 if start == 0 && end == values.len() {
                     values.as_ref().clone().into_py_any(py)
                 } else {
-                    values.logical_row_range(start..end)?.into_py_any(py)
+                    values.logical_row_range(start..end).into_py_any(py)
                 }
             },
         }
@@ -746,7 +746,7 @@ impl Groups {
                             let mut builder = CsrBuilder::<u64>::new();
                             for row in rows {
                                 builder
-                                    .push_row(this.cell_row_view(row)?.logical_ids())
+                                    .push_row(this.cell_row_view(row).logical_ids())
                                     .map_err(PyErr::from)?;
                             }
                             let (ids, offsets) = builder.finish();
@@ -902,7 +902,7 @@ impl Groups {
                 "Groups",
             ),
             GroupsValues::Cells(_) => preview(
-                (0..self.rows.len()).map(|row| Ok(self.cell_row_view(row)?.__repr__())),
+                (0..self.rows.len()).map(|row| Ok(self.cell_row_view(row).__repr__())),
                 self.rows.len(),
                 "Groups",
             ),
@@ -936,7 +936,7 @@ impl Groups {
                     PyList::new(py, items)?.into_py_any(py)?
                 },
                 GroupsValues::Cells(_) => {
-                    let items = self.cell_row_view(row)?.to_cell_list(py)?;
+                    let items = self.cell_row_view(row).to_cell_list(py)?;
                     PyList::new(py, items)?.into_py_any(py)?
                 },
             };
@@ -991,7 +991,7 @@ impl Groups {
                 let windowed = if start == 0 && end == values.len() {
                     values.as_ref().clone()
                 } else {
-                    values.logical_row_range(start..end)?
+                    values.logical_row_range(start..end)
                 };
                 let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
                 Ok((

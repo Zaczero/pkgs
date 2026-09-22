@@ -455,14 +455,14 @@ impl RowProducts {
         DIRECTORY_RESOLUTIONS.with(Cell::get)
     }
 
-    fn selected(&self, rows: impl IntoIterator<Item = usize>) -> crate::error::Result<Self> {
+    fn selected(&self, rows: impl IntoIterator<Item = usize>) -> Self {
         let current = self.selection.as_deref();
         let physical_len = self.owner.physical_len;
-        let selection = crate::array::row_selection_from_logical_rows(current, physical_len, rows)?;
-        Ok(Self {
+        let selection = crate::array::row_selection_from_logical_rows(current, physical_len, rows);
+        Self {
             owner: Arc::clone(&self.owner),
             selection,
-        })
+        }
     }
 
     #[cfg(test)]
@@ -653,7 +653,7 @@ impl PyGeometryArray {
     pub(crate) fn selected_row_products(
         &self,
         rows: impl IntoIterator<Item = usize>,
-    ) -> crate::error::Result<RowProducts> {
+    ) -> RowProducts {
         self.row_products.selected(rows)
     }
 
@@ -953,11 +953,11 @@ mod frame_cache_row_tests {
         source.frame_cache(0);
         source.frame_cache(1);
         source.frame_cache(64);
-        let selected = source.selected([1, 1]).unwrap();
+        let selected = source.selected([1, 1]);
         let unpopulated = RowProducts::fresh(128);
         let _ = unpopulated.operation().cell(1);
         unpopulated.frame_cache(1);
-        let selected_without_products = unpopulated.selected([1, 1]).unwrap();
+        let selected_without_products = unpopulated.selected([1, 1]);
 
         assert_eq!(
             selected.heap_bytes(),
@@ -1028,7 +1028,7 @@ mod frame_cache_row_tests {
 
     #[test]
     fn duplicate_logical_rows_share_one_physical_cell() {
-        let products = RowProducts::fresh(3).selected([2, 2]).unwrap();
+        let products = RowProducts::fresh(3).selected([2, 2]);
         let mut handle = products.operation();
         let (chunk, offset) = handle.cell(0);
         let first = (Arc::as_ptr(chunk), offset);

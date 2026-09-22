@@ -183,22 +183,22 @@ macro_rules! h3_index_array_common {
                 }
             }
 
-            fn select_logical_rows(&self, rows: impl IntoIterator<Item = usize>) -> crate::error::Result<Self> {
-                Ok(self.with_selection(row_selection_from_logical_rows(
+            fn select_logical_rows(&self, rows: impl IntoIterator<Item = usize>) -> Self {
+                self.with_selection(row_selection_from_logical_rows(
                     self.selection_ref(),
                     self.ids.len(),
                     rows,
-                )?))
+                ))
             }
 
-            fn slice(&self, start: isize, stop: isize, step: isize) -> crate::error::Result<Self> {
+            fn slice(&self, start: isize, stop: isize, step: isize) -> Self {
                 if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
                     let selection = row_selection_from_logical_rows(
                         self.selection_ref(),
                         self.ids.len(),
                         logical,
-                    )?;
-                    return Ok(self.with_selection(selection));
+                    );
+                    return self.with_selection(selection);
                 }
                 self.select_logical_rows(crate::py::row::slice_row_indices(start, stop, step))
             }
@@ -290,11 +290,11 @@ macro_rules! h3_index_array_common {
 
         impl RowGetItemContainer for $array {
             fn gather_rows(&self, rows: &[usize]) -> PyResult<Self> {
-                Ok(self.select_logical_rows(rows.iter().copied())?)
+                Ok(self.select_logical_rows(rows.iter().copied()))
             }
 
             fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
-                Ok(self.slice(start, stop, step)?)
+                Ok(self.slice(start, stop, step))
             }
 
             fn empty(&self) -> PyResult<Self> {

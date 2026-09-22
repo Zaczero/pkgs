@@ -412,40 +412,28 @@ struct RowSelectionBuild {
 enum RowSelectionBuildState {
     #[default]
     Empty,
-    Contiguous {
-        start: usize,
-        len: usize,
-    },
+    Contiguous(std::ops::Range<usize>),
     Gathered(Vec<usize>),
 }
 
 impl RowSelectionBuild {
-    fn push(&mut self, index: usize) -> crate::error::Result<()> {
+    fn push(&mut self, index: usize) {
         match &mut self.state {
             RowSelectionBuildState::Empty => {
-                self.state = RowSelectionBuildState::Contiguous {
-                    start: index,
-                    len: 1,
-                };
+                self.state = RowSelectionBuildState::Contiguous(index..index.wrapping_add(1));
             },
-            RowSelectionBuildState::Contiguous { start, len } => {
-                if index == *start + *len {
-                    *len += 1;
+            RowSelectionBuildState::Contiguous(window) => {
+                if index == window.end {
+                    window.end = index.wrapping_add(1);
                 } else {
-                    let mut gathered = Vec::new();
-                    crate::boundary::try_reserve_vec(
-                        &mut gathered,
-                        len.checked_add(1)
-                            .ok_or(crate::error::ResourceError::SizeOverflow)?,
-                    )?;
-                    gathered.extend(*start..*start + *len);
+                    let mut gathered = Vec::with_capacity(window.len().wrapping_add(1));
+                    gathered.extend(window.clone());
                     gathered.push(index);
                     self.state = RowSelectionBuildState::Gathered(gathered);
                 }
             },
-            RowSelectionBuildState::Gathered(indices) => crate::try_push_vec(indices, index)?,
+            RowSelectionBuildState::Gathered(indices) => indices.push(index),
         }
-        Ok(())
     }
 
     fn finish(self) -> RowSelection {
@@ -453,9 +441,10 @@ impl RowSelectionBuild {
             RowSelectionBuildState::Empty => RowSelection::Gather(CheckedPhysicalRows {
                 rows: SharedSlice::empty(),
             }),
-            RowSelectionBuildState::Contiguous { start, len } => {
-                RowSelection::Window(RowWindow { start, len })
-            },
+            RowSelectionBuildState::Contiguous(window) => RowSelection::Window(RowWindow {
+                start: window.start,
+                len: window.len(),
+            }),
             RowSelectionBuildState::Gathered(indices) => {
                 RowSelection::Gather(CheckedPhysicalRows {
                     rows: SharedSlice::from_vec(indices),
@@ -465,15 +454,11 @@ impl RowSelectionBuild {
     }
 }
 
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "row-map membership is a caller invariant; the Result is the allocation path"
-)]
 pub(crate) fn row_selection_from_logical_rows(
     row_map: RowSelectionRef<'_>,
     physical_len: usize,
     rows: impl IntoIterator<Item = usize>,
-) -> crate::error::Result<RowSelection> {
+) -> RowSelection {
     let mut build = RowSelectionBuild::default();
     for logical in rows {
         assert!(
@@ -485,9 +470,9 @@ pub(crate) fn row_selection_from_logical_rows(
             physical < physical_len,
             "physical row is outside backing storage"
         );
-        build.push(physical)?;
+        build.push(physical);
     }
-    Ok(build.finish())
+    build.finish()
 }
 
 pub(crate) fn contiguous_physical_range(
@@ -942,7 +927,7 @@ mod tests {
 
         let window = GeometryArrayStorage::Packed(PackedStorage::Points {
             coords: Arc::clone(&coords),
-            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3).unwrap(),
+            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3),
         });
         assert_shapes_iter_exact(&window);
 
@@ -976,7 +961,7 @@ mod tests {
         let window = GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords: Arc::clone(&coords),
             offsets: offsets.clone(),
-            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 3, 0..2).unwrap(),
+            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 3, 0..2),
         });
         assert_shapes_iter_exact(&window);
 
@@ -1023,7 +1008,7 @@ mod tests {
             coords: Arc::clone(&coords),
             ring_offsets: ring_offsets.clone(),
             polygon_offsets: polygon_offsets.clone(),
-            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 2, 1..2).unwrap(),
+            row_map: row_selection_from_logical_rows(RowSelectionRef::Identity, 2, 1..2),
         });
         assert_shapes_iter_exact(&window);
 
@@ -1058,22 +1043,24 @@ mod row_selection_admission_tests {
 
     #[test]
     fn logical_row_composition_builds_a_private_window() {
-        let selection =
-            row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3).unwrap();
+        let selection = row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 1..3);
         assert!(matches!(selection, RowSelection::Window(_)));
     }
 
     #[test]
     fn logical_row_composition_preserves_empty_range_at_physical_end() {
-        let selection =
-            row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 4..4).unwrap();
+        let selection = row_selection_from_logical_rows(RowSelectionRef::Identity, 4, 4..4);
         assert_eq!(selection.as_deref().len(4), 0);
     }
 
     #[test]
     #[should_panic(expected = "logical row is outside selected row map")]
     fn logical_row_composition_rejects_identity_logical_end() {
-        drop(row_selection_from_logical_rows(RowSelectionRef::Identity, 4, [4]).unwrap());
+        drop(row_selection_from_logical_rows(
+            RowSelectionRef::Identity,
+            4,
+            [4],
+        ));
     }
 
     #[test]
@@ -1083,13 +1070,13 @@ mod row_selection_admission_tests {
             start: usize::MAX - 1,
             len: 1,
         };
-        drop(row_selection_from_logical_rows(row_map, usize::MAX, [1]).unwrap());
+        drop(row_selection_from_logical_rows(row_map, usize::MAX, [1]));
     }
 
     #[test]
     #[should_panic(expected = "physical row is outside backing storage")]
     fn logical_row_composition_rejects_gathered_physical_end() {
         let row_map = RowSelectionRef::Gather(&[4]);
-        drop(row_selection_from_logical_rows(row_map, 4, [0]).unwrap());
+        drop(row_selection_from_logical_rows(row_map, 4, [0]));
     }
 }

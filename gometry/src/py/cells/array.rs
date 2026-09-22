@@ -296,8 +296,8 @@ impl PyCellArray {
 
     /// A contiguous logical sub-range as a new array (zero-copy selection).
     /// Used by [`crate::py::vectors::Groups`] to view one ragged row of cells.
-    pub(crate) fn logical_row_range(&self, range: Range<usize>) -> crate::error::Result<Self> {
-        self.slice(range.start as isize, range.end as isize, 1)
+    pub(crate) fn logical_row_range(&self, range: Range<usize>) -> Self {
+        self.select_logical_rows(range)
     }
 
     /// Materialized logical cell ids (for CSR value equality / pickling).
@@ -344,25 +344,22 @@ impl PyCellArray {
         }
     }
 
-    fn select_logical_rows(
-        &self,
-        rows: impl IntoIterator<Item = usize>,
-    ) -> crate::error::Result<Self> {
-        Ok(self.with_selection(row_selection_from_logical_rows(
+    fn select_logical_rows(&self, rows: impl IntoIterator<Item = usize>) -> Self {
+        self.with_selection(row_selection_from_logical_rows(
             self.selection_ref(),
             self.storage.ids.len(),
             rows,
-        )?))
+        ))
     }
 
-    fn slice(&self, start: isize, stop: isize, step: isize) -> crate::error::Result<Self> {
+    fn slice(&self, start: isize, stop: isize, step: isize) -> Self {
         if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
             let selection = row_selection_from_logical_rows(
                 self.selection_ref(),
                 self.storage.ids.len(),
                 logical,
-            )?;
-            return Ok(self.with_selection(selection));
+            );
+            return self.with_selection(selection);
         }
         self.select_logical_rows(slice_row_indices(start, stop, step))
     }
@@ -618,11 +615,11 @@ impl RowContainer for PyCellArray {
 
 impl RowGetItemContainer for PyCellArray {
     fn gather_rows(&self, rows: &[usize]) -> PyResult<Self> {
-        Ok(self.select_logical_rows(rows.iter().copied())?)
+        Ok(self.select_logical_rows(rows.iter().copied()))
     }
 
     fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
-        Ok(self.slice(start, stop, step)?)
+        Ok(self.slice(start, stop, step))
     }
 
     fn empty(&self) -> PyResult<Self> {
@@ -1843,7 +1840,7 @@ mod tests {
             arc + size_of::<Vec<u64>>() + 3 * size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
         );
 
-        let selected = cells.slice(1, 2, 1).unwrap();
+        let selected = cells.slice(1, 2, 1);
         assert_eq!(
             selected.heap_bytes(),
             arc + size_of::<Vec<u64>>() + size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
