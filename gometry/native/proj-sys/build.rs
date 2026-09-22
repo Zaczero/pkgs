@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .atleast_version(MINIMUM_PROJ_VERSION)
         .probe("proj")
         .map(|pk| {
-            eprintln!("found acceptable libproj already installed at: {:?}", pk.link_paths[0]);
+            eprintln!("found acceptable libproj already installed at: {:?}", pk.link_paths);
             if cfg!(feature = "network") {
                 // Generally, system proj installations have been built with tiff support
                 // allowing for network grid interaction. If this proves to be untrue
@@ -43,10 +43,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Tell cargo to tell rustc to link the system proj
             // shared library.
-            println!("cargo:rustc-link-search=native={:?}", pk.link_paths[0]);
+            for path in &pk.link_paths {
+                println!("cargo:rustc-link-search=native={}", path.display());
+            }
             println!("cargo:rustc-link-lib=proj");
 
-            pk.include_paths[0].clone()
+            pk.include_paths.into_iter().next().expect("pkg-config reported a PROJ include directory")
         })
         .or_else(|err| {
             eprintln!("pkg-config unable to find existing libproj installation: {err}");
@@ -57,7 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "buildtime_bindgen")]
     generate_bindings(include_path)?;
     #[cfg(not(feature = "buildtime_bindgen"))]
-    let _ = include_path;
+    drop(include_path);
 
     Ok(())
 }
@@ -304,30 +306,16 @@ fn replace_pinned_source_section(
         .into());
     }
     let start_index = text.find(start).expect("checked unique section start");
-    let suffix = &text[start_index..];
+    let (prefix, suffix) = text.split_at(start_index);
     if suffix.matches(end).count() != 1 {
         return Err(format!(
             "bundled PROJ {MINIMUM_PROJ_VERSION} section end anchor is not unique after its start in {relative}"
         )
         .into());
     }
-    let end_index = suffix
-        .find(end)
-        .map(|offset| start_index + offset)
-        .ok_or_else(|| {
-            format!(
-                "bundled PROJ {MINIMUM_PROJ_VERSION} section end is before its start in {relative}"
-            )
-        })?;
-    fs::write(
-        path,
-        format!(
-            "{}{}{}",
-            &text[..start_index],
-            replacement,
-            &text[end_index..]
-        ),
-    )?;
+    let end_index = suffix.find(end).expect("checked unique section end");
+    let (_, suffix) = suffix.split_at(end_index);
+    fs::write(path, format!("{prefix}{replacement}{suffix}"))?;
     Ok(())
 }
 
