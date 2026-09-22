@@ -2706,11 +2706,8 @@ fn segment_direction_dot(left: Segment, right: Segment) -> f64 {
     left_dx * right_dx + left_dy * right_dy
 }
 
-/// Minimum of `metric` evaluated for each segment endpoint against the other
-/// segment; `0.0` when the segments intersect. `metric` is monomorphized per
-/// call site (plain or squared distance), so this stays allocation- and
-/// indirection-free.
-pub(super) fn shared_segment_part(left: Segment, right: Segment) -> Option<(bool, Vec<XY>)> {
+/// Return the positive-length collinear overlap in source coordinates.
+pub(super) fn shared_segment_part(left: Segment, right: Segment) -> Option<SharedSpan> {
     // The fused kernel already computes the EXACT collinear overlap span (its
     // endpoints are actual input coordinates, ordered along the segment). Reuse
     // it directly — a positive-length shared run is exactly an overlap whose two
@@ -2723,7 +2720,7 @@ pub(super) fn shared_segment_part(left: Segment, right: Segment) -> Option<(bool
     if same_point(span.start, span.end) {
         return None;
     }
-    Some((span.same_direction, vec![span.start, span.end]))
+    Some(span)
 }
 
 pub(crate) fn point_segment_distance(point: impl Into<XY>, segment: Segment) -> Result<f64> {

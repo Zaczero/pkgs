@@ -319,10 +319,10 @@ fn shared_segment_part_keeps_tiny_overlap_on_huge_coordinates() {
         start: XY::new(1.0e13 - 1.0, 0.0),
         end: XY::new(2.0e13, 0.0),
     };
-    let (same_direction, span) =
-        shared_segment_part(left, right).expect("positive-length shared run");
-    assert!(same_direction);
-    assert_eq!(span, vec![XY::new(1.0e13 - 1.0, 0.0), XY::new(1.0e13, 0.0)]);
+    let span = shared_segment_part(left, right).expect("positive-length shared run");
+    assert!(span.same_direction);
+    assert_eq!(span.start, XY::new(1.0e13 - 1.0, 0.0));
+    assert_eq!(span.end, XY::new(1.0e13, 0.0));
 }
 
 /// Direction of a shared collinear run comes from endpoint ORDER on the
@@ -337,10 +337,9 @@ fn shared_segment_part_tiny_identical_segments_stay_same_direction() {
             start: XY::new(0.0, 0.0),
             end: XY::new(length, 0.0),
         };
-        let (same_direction, _) =
-            shared_segment_part(segment, segment).expect("positive-length shared run");
+        let span = shared_segment_part(segment, segment).expect("positive-length shared run");
         assert!(
-            same_direction,
+            span.same_direction,
             "length {length:e} misclassified as opposite"
         );
     }

@@ -2101,8 +2101,7 @@ fn has_cross_component_line_overlap(edges: &[SourceEdge]) -> crate::error::Resul
         return Ok(lines.iter().enumerate().any(|(index, left)| {
             lines[index + 1..].iter().any(|right| {
                 left.component != right.component
-                    && shared_segment_part(left.segment, right.segment)
-                        .is_some_and(|(_, run)| !same_point(run[0], run[1]))
+                    && shared_segment_part(left.segment, right.segment).is_some()
             })
         }));
     }
@@ -2111,8 +2110,7 @@ fn has_cross_component_line_overlap(edges: &[SourceEdge]) -> crate::error::Resul
         index.intersecting_candidates(left.segment).any(|right| {
             right.ordinal > ordinal
                 && left.component != lines[right.ordinal].component
-                && shared_segment_part(left.segment, lines[right.ordinal].segment)
-                    .is_some_and(|(_, run)| !same_point(run[0], run[1]))
+                && shared_segment_part(left.segment, lines[right.ordinal].segment).is_some()
         })
     }))
 }

@@ -80,18 +80,6 @@ pub(crate) fn classify_ring_pair(
             "$",
         )));
     }
-    if let Some((_, part)) = shared_segment_part(left.segment, right.segment) {
-        if part.len() >= 2 && !same_point(part[0], part[1]) {
-            return Ok(Some(ValidationIssue::new(
-                "shared_linework",
-                format!("{} on a line", describe(left.line, right.line)),
-                Some(part[0].point()),
-                "$",
-            )));
-        }
-        record_touch(touches, left, right, part[0].point());
-        return Ok(None);
-    }
     // A proper crossing is interior to both segments: the rings cross. Any
     // other contact is an endpoint of one on the other, a touch.
     match segment_contact_exact(left.segment, right.segment) {
@@ -105,6 +93,14 @@ pub(crate) fn classify_ring_pair(
             record_touch(touches, left, right, point.point());
             Ok(None)
         },
+        Contact::Collinear { span } if !same_point(span.start, span.end) => {
+            Ok(Some(ValidationIssue::new(
+                "shared_linework",
+                format!("{} on a line", describe(left.line, right.line)),
+                Some(span.start.point()),
+                "$",
+            )))
+        },
         Contact::Disjoint | Contact::Collinear { .. } => Ok(None),
     }
 }
@@ -115,8 +111,8 @@ pub(crate) fn pair_contact_point(
     left: Segment,
     right: Segment,
 ) -> crate::error::Result<Option<XY>> {
-    if let Some((_, part)) = shared_segment_part(left, right) {
-        return Ok(Some(part[0]));
+    if let Some(span) = shared_segment_part(left, right) {
+        return Ok(Some(span.start));
     }
     segment_cross_point(left, right)
 }
@@ -138,8 +134,9 @@ pub(crate) fn record_touch(
         .or_default()
         .entry(PointKey::new(point))
         .or_default();
-    push_touch_directions(&mut entry[0], first.segment, point.xy());
-    push_touch_directions(&mut entry[1], second.segment, point.xy());
+    let [first_directions, second_directions] = entry;
+    push_touch_directions(first_directions, first.segment, point.xy());
+    push_touch_directions(second_directions, second.segment, point.xy());
 }
 
 pub(crate) fn push_touch_directions(directions: &mut Vec<XY>, segment: Segment, point: XY) {
@@ -169,9 +166,9 @@ pub(crate) fn settle_touches(
     for (&(ring_a, ring_b), points) in ring_touches {
         let mut point_touches: Vec<_> = points.iter().collect();
         point_touches.sort_unstable_by_key(|(key, _)| **key);
-        for (&key, directions) in point_touches {
+        for (&key, [first_directions, second_directions]) in point_touches {
             let point = XY::new(f64::from_bits(key.x), f64::from_bits(key.y));
-            if wedges_interleave(&directions[0], &directions[1], point) {
+            if wedges_interleave(first_directions, second_directions, point) {
                 return Some(ValidationIssue::new(
                     "ring_intersection",
                     describe(ring_a, ring_b),
@@ -182,11 +179,7 @@ pub(crate) fn settle_touches(
             if !connectivity {
                 continue;
             }
-            let next_node = ring_count + touch_nodes.len();
-            let node = *touch_nodes.entry(key).or_insert_with(|| {
-                graph.push();
-                next_node
-            });
+            let node = *touch_nodes.entry(key).or_insert_with(|| graph.push());
             for ring in [ring_a, ring_b] {
                 if edges.insert((ring, node)) && graph.union(ring, node) {
                     return Some(ValidationIssue::new(
@@ -208,49 +201,33 @@ pub(crate) fn wedges_interleave(first: &[XY], second: &[XY], point: XY) -> bool 
     if first.len() < 2 || second.len() < 2 {
         return false;
     }
-    let total = first.len() + second.len();
+    let total = first.len().wrapping_add(second.len());
     let mut slots = [(0.0_f64, false); MAX_WEDGE_SLOTS];
-    for (index, direction) in first.iter().enumerate() {
-        slots[index] = (
-            pseudo_angle(direction.x - point.x, direction.y - point.y),
-            false,
-        );
-    }
-    for (index, direction) in second.iter().enumerate() {
-        slots[first.len() + index] = (
-            pseudo_angle(direction.x - point.x, direction.y - point.y),
-            true,
-        );
-    }
-    if total > MAX_WEDGE_SLOTS {
-        let mut heap: Vec<(f64, bool)> = Vec::with_capacity(total);
-        for direction in first {
-            heap.push((
-                pseudo_angle(direction.x - point.x, direction.y - point.y),
-                false,
-            ));
-        }
-        for direction in second {
-            heap.push((
-                pseudo_angle(direction.x - point.x, direction.y - point.y),
-                true,
-            ));
-        }
-        heap.sort_unstable_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
-        let changes = heap
-            .iter()
-            .zip(heap.iter().cycle().skip(1))
-            .take(heap.len())
-            .filter(|(left, right)| left.1 != right.1)
-            .count();
-        return changes >= 4;
-    }
-    slots[..total]
-        .sort_unstable_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
-    let changes = slots[..total]
+    let mut heap;
+    let directions = first
         .iter()
-        .zip(slots[..total].iter().cycle().skip(1))
-        .take(total)
+        .map(|direction| (direction, false))
+        .chain(second.iter().map(|direction| (direction, true)))
+        .map(|(direction, side)| {
+            (
+                pseudo_angle(direction.x - point.x, direction.y - point.y),
+                side,
+            )
+        });
+    let slots = if let Some(slots) = slots.get_mut(..total) {
+        for (slot, direction) in slots.iter_mut().zip(directions) {
+            *slot = direction;
+        }
+        slots
+    } else {
+        heap = Vec::with_capacity(total);
+        heap.extend(directions);
+        heap.as_mut_slice()
+    };
+    slots.sort_unstable_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+    let changes = slots
+        .iter()
+        .zip(slots.iter().cycle().skip(1))
         .filter(|(left, right)| left.1 != right.1)
         .count();
     changes >= 4
@@ -268,4 +245,25 @@ pub(in crate::geometry) fn pseudo_angle(dx: f64, dy: f64) -> f64 {
     }
     let core = dx / denominator;
     if dy >= 0.0 { 1.0 - core } else { 3.0 + core }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wedges_interleave;
+    use crate::geometry::XY;
+
+    #[test]
+    fn ring_touch_directions_classify_small_and_large_fans() {
+        let point = XY::new(0.0, 0.0);
+        let left = [XY::new(-1.0, 1.0), XY::new(-1.0, -1.0)];
+        for count in [2, 18] {
+            let mut right: Vec<_> = (1..=count).map(|y| XY::new(1.0, f64::from(y))).collect();
+            assert!(!wedges_interleave(&right, &left, point));
+            assert!(!wedges_interleave(&left, &right, point));
+
+            right.push(XY::new(-2.0, 0.0));
+            assert!(wedges_interleave(&right, &left, point));
+            assert!(wedges_interleave(&left, &right, point));
+        }
+    }
 }

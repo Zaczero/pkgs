@@ -122,34 +122,39 @@ pub(crate) fn python_hasher() -> impl std::hash::Hasher {
 
 /// Minimal union-find for cycle detection over small node sets (the
 /// validity ring-touch graph, clustering components): path-halving find,
-/// size-union. `union` reports whether the two nodes were ALREADY
+/// rank-union. `union` reports whether the two nodes were ALREADY
 /// connected — adding such an edge closes a cycle.
 pub(crate) struct UnionFind {
     parent: Vec<usize>,
-    size: Vec<u32>,
+    rank: Vec<u8>,
 }
 
 impl UnionFind {
     pub(crate) fn new(nodes: usize) -> Self {
         Self {
             parent: (0..nodes).collect(),
-            size: vec![1; nodes],
+            rank: vec![0; nodes],
         }
     }
 
     pub(crate) fn find(&mut self, mut node: usize) -> usize {
-        while self.parent[node] != node {
-            self.parent[node] = self.parent[self.parent[node]];
-            node = self.parent[node];
+        loop {
+            let parent = *self.parent.get(node).expect("union-find node exists");
+            if parent == node {
+                return node;
+            }
+            let grandparent = *self.parent.get(parent).expect("union-find parent exists");
+            *self.parent.get_mut(node).expect("union-find node exists") = grandparent;
+            node = grandparent;
         }
-        node
     }
 
-    /// Append one fresh singleton node, returning nothing (its id is the
-    /// previous node count).
-    pub(crate) fn push(&mut self) {
-        self.parent.push(self.parent.len());
-        self.size.push(1);
+    /// Append one fresh singleton node and return its id.
+    pub(crate) fn push(&mut self) -> usize {
+        let node = self.parent.len();
+        self.parent.push(node);
+        self.rank.push(0);
+        node
     }
 
     /// Join `a` and `b`; `true` when they were ALREADY connected — adding
@@ -159,13 +164,18 @@ impl UnionFind {
         if root_a == root_b {
             return true;
         }
-        let (big, small) = if self.size[root_a] >= self.size[root_b] {
+        let rank_a = *self.rank.get(root_a).expect("union-find root exists");
+        let rank_b = *self.rank.get(root_b).expect("union-find root exists");
+        let (big, small) = if rank_a >= rank_b {
             (root_a, root_b)
         } else {
             (root_b, root_a)
         };
-        self.parent[small] = big;
-        self.size[big] += self.size[small];
+        *self.parent.get_mut(small).expect("union-find root exists") = big;
+        if rank_a == rank_b {
+            // Rank r requires at least 2^r nodes, so rank is below usize::BITS.
+            *self.rank.get_mut(big).expect("union-find root exists") = rank_a.wrapping_add(1);
+        }
         false
     }
 }
@@ -176,7 +186,9 @@ impl UnionFind {
 /// in `O(universe / 64 + n)`, which also drops repeats; a sparser one is
 /// sorted by comparison.
 pub(crate) fn sort_unique_row_ids(ids: &mut Vec<usize>, start: usize, universe: usize) {
-    let tail = &mut ids[start..];
+    let tail = ids
+        .get_mut(start..)
+        .expect("row-id tail starts within output");
     if tail.len() < 2 {
         return;
     }
@@ -186,23 +198,38 @@ pub(crate) fn sort_unique_row_ids(ids: &mut Vec<usize>, start: usize, universe: 
     } else {
         let mut bitmap = vec![0_u64; universe.div_ceil(64)];
         for &id in tail.iter() {
-            bitmap[id / 64] |= 1 << (id % 64);
+            *bitmap.get_mut(id / 64).expect("row id is within universe") |= 1 << (id % 64);
         }
-        let mut write = 0;
+        let mut output = tail.iter_mut();
         for (word_index, mut word) in bitmap.into_iter().enumerate() {
             while word != 0 {
-                tail[write] = word_index * 64 + word.trailing_zeros() as usize;
-                write += 1;
-                word &= word - 1;
+                *output.next().expect("unique rows fit in the input tail") = word_index
+                    .wrapping_mul(64)
+                    .wrapping_add(word.trailing_zeros() as usize);
+                word &= word.wrapping_sub(1);
             }
         }
-        write
+        let remaining = output.len();
+        tail.len().wrapping_sub(remaining)
     };
-    ids.truncate(start + unique);
+    ids.truncate(start.wrapping_add(unique));
 }
 
 #[cfg(test)]
 mod row_id_sort_tests {
+
+    #[test]
+    fn union_find_detects_cycles_after_merging_and_appending_components() {
+        let mut graph = super::UnionFind::new(6);
+        for (a, b) in [(0, 1), (2, 3), (4, 5), (0, 2), (4, 0)] {
+            assert!(!graph.union(a, b));
+        }
+        assert!(graph.union(1, 5));
+        let appended = graph.push();
+        assert!(!graph.union(appended, 3));
+        assert!(graph.union(5, appended));
+        assert!(graph.union(appended, appended));
+    }
 
     #[test]
     fn cold_collection_hash_state_needs_no_rust_heap_allocation() {

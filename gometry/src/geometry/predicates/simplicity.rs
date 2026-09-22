@@ -6,7 +6,7 @@ use crate::geometry::{
     Contact, CoordSeq, Coordinates as _, HashSet, IndexedSegment, LineworkChains, Orientation,
     Point, PointKey, Polygon, Ring, Segment, SegmentIndex, Shape, ValidationIssue, XY, orientation,
     point_on_segment, ring_winding, same_point, segment_contact_exact, segment_cross_point,
-    segments_intersect, shared_segment_part,
+    segments_intersect,
 };
 /// Whether a vertex-SUBSET simplification of a polygon kept its linework
 /// simple, checked on the DELTA only: removals replace vertex paths with
@@ -161,19 +161,13 @@ pub(crate) fn segments_are_adjacent(left: IndexedSegment, right: IndexedSegment)
 /// boundary, so any contact with it offends). Positive-extent collinear
 /// overlaps are never a finite point contact.
 pub(crate) fn cross_line_touch_is_simple(left: IndexedSegment, right: IndexedSegment) -> bool {
-    let contact = if let Some((_, part)) = shared_segment_part(left.segment, right.segment) {
-        if part.len() >= 2 && !same_point(part[0], part[1]) {
-            return false;
-        }
-        part[0]
-    } else {
-        match segment_contact_exact(left.segment, right.segment) {
-            // Interior to both segments, so an endpoint of neither line.
-            Contact::Cross => return false,
-            Contact::Touch { point } => point,
-            // Envelope-only candidates that never actually touch.
-            Contact::Disjoint | Contact::Collinear { .. } => return true,
-        }
+    let contact = match segment_contact_exact(left.segment, right.segment) {
+        // Interior to both segments, so an endpoint of neither line.
+        Contact::Cross => return false,
+        Contact::Touch { point } => point,
+        Contact::Collinear { span } => return same_point(span.start, span.end),
+        // Envelope-only candidates that never actually touch.
+        Contact::Disjoint => return true,
     };
     is_line_boundary(left, contact) && is_line_boundary(right, contact)
 }
