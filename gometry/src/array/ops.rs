@@ -3,7 +3,6 @@
 //! Free `#[pyfunction]` surfaces call these instead of exposing thin method
 //! delegates on `GeometryArray`.
 
-use pyo3::exceptions::PyOverflowError;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::array::{
@@ -69,7 +68,6 @@ impl PyGeometryArray {
         // take exactly one block, i.e. the classic single-buffer fast path.
         const FLUSH_BYTES: usize = 32 << 20;
         let precision = precision.map(parse_precision).transpose()?;
-        let crs = self.crs_ref().cloned();
         let len = self.len();
         // An array CRS is uniform across present rows. Resolve it once, but
         // retain the old all-missing behavior by skipping validation when no
@@ -77,7 +75,7 @@ impl PyGeometryArray {
         // the row loop when resolution itself fails.
         let has_present = len != 0 && self.missing().is_none_or(|mask| mask.present_count() != 0);
         let srid = if include_srid && has_present {
-            match crate::io::extended_srid_code(crs.as_deref(), true, "EWKB") {
+            match crate::io::extended_srid_code(self.crs_str(), true, "EWKB") {
                 Ok(srid) => srid,
                 Err(error) => {
                     let row = self.missing().map_or(0, |mask| {
@@ -89,23 +87,15 @@ impl PyGeometryArray {
         } else {
             None
         };
-        let mut output: Vec<Py<PyBytes>> = crate::try_vec_with_capacity(len)?;
-        let mut next_row = 0_usize;
-        while next_row < len {
-            let array = self.clone();
-            let start_row = next_row;
+        let mut output = Vec::with_capacity(len);
+        let mut rows = self.row_operation().rows_with_missing(|| ()).enumerate();
+        while rows.len() != 0 {
             let (buffer, ends) = py
                 .detach(
-                    move || -> Result<(Vec<u8>, Vec<usize>), (usize, crate::error::Error)> {
+                    || -> Result<(Vec<u8>, Vec<usize>), (usize, crate::error::Error)> {
                         let mut buffer: Vec<u8> = Vec::new();
                         let mut ends: Vec<usize> = Vec::new();
-                        let rows = array.row_operation();
-                        for (offset, logical_row) in rows
-                            .rows_with_missing(String::new)
-                            .skip(start_row)
-                            .enumerate()
-                        {
-                            let row = start_row + offset;
+                        for (row, logical_row) in rows.by_ref() {
                             if let ArrayRow::Present(view) = logical_row {
                                 let view = view.row();
                                 view.try_with_shape(|shape| {
@@ -119,10 +109,7 @@ impl PyGeometryArray {
                                 })
                                 .map_err(|error| (row, error))?;
                             }
-                            if let Err(error) = crate::try_push_vec(&mut ends, buffer.len()) {
-                                drop(buffer);
-                                return Err((row, error));
-                            }
+                            ends.push(buffer.len());
                             if buffer.len() >= FLUSH_BYTES {
                                 break;
                             }
@@ -131,17 +118,11 @@ impl PyGeometryArray {
                     },
                 )
                 .map_err(rows_err)?;
-            next_row = start_row
-                .checked_add(ends.len())
-                .ok_or_else(|| PyOverflowError::new_err("WKB row count overflows usize"))?;
             let mut start = 0;
             for end in ends {
                 let bytes = PyBytes::new(py, &buffer[start..end]).unbind();
                 start = end;
-                if let Err(error) = crate::try_push_vec(&mut output, bytes) {
-                    drop(buffer);
-                    return Err(pyo3::PyErr::from(error));
-                }
+                output.push(bytes);
             }
         }
         Ok(output)
