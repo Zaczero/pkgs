@@ -2,7 +2,6 @@ use crate::py::crs::{
     Bound, PyAny, PyAnyMethods as _, PyErr, PyResult, PyStringMethods as _, PyTypeError, crs,
     pyfunction,
 };
-use crate::py::errors::native_memory_error;
 
 #[pyfunction(signature = (
     *,
@@ -99,13 +98,6 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
             },
         };
         crate::check_python_signals(value.py(), paths.len())?;
-        if paths.len() == paths.capacity() {
-            let additional = paths.capacity().max(8);
-            if paths.try_reserve(additional).is_err() {
-                drop(paths);
-                return Err(native_memory_error());
-            }
-        }
         match take_path_string(&item, "search_paths entries") {
             Ok(owned) => paths.push(owned),
             Err(PathTakeError::Provider(err)) => {
