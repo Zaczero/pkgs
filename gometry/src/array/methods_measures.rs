@@ -442,9 +442,7 @@ impl PyGeometryArray {
             };
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let ring_offsets = polygon_columns.ring_offsets();
-            let mut values = Vec::new();
-            crate::boundary::try_reserve_vec(&mut values, polygon_columns.rows())
-                .map_err(PackedColumnError::Batch)?;
+            let mut values = Vec::with_capacity(polygon_columns.rows());
             for row in 0..polygon_columns.rows() {
                 let area = crate::geometry::polygon_area_measure_columns(
                     xs,
@@ -452,8 +450,7 @@ impl PyGeometryArray {
                     ring_offsets,
                     polygon_columns.polygon_rings(row),
                 );
-                crate::boundary::try_push_vec(&mut values, area * scale)
-                    .map_err(PackedColumnError::Batch)?;
+                values.push(area * scale);
             }
             Ok(values)
         })
@@ -499,7 +496,7 @@ impl PyGeometryArray {
                             )
                         },
                     );
-                    values.map_err(PackedColumnError::Batch)
+                    Ok(values)
                 })
             },
             model @ crs::MetricModel::Geodesic { frame, .. } => {
@@ -559,7 +556,7 @@ impl PyGeometryArray {
                             unreachable!("length packed lane requires line or polygon storage")
                         },
                     };
-                    values.map_err(PackedColumnError::Batch)
+                    Ok(values)
                 })
             },
         }
@@ -574,10 +571,7 @@ impl PyGeometryArray {
         let to_metre =
             crate::broadcast::resolve_metric_3d(self.crs_str(), unit, op)?.coordinate_scale();
         if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
-            let mut values = Vec::new();
-            crate::boundary::try_reserve_vec(&mut values, self.len()).map_err(PyErr::from)?;
-            values.resize(self.len(), 0.0);
-            return Ok(Some(values));
+            return Ok(Some(vec![0.0; self.len()]));
         }
         if !matches!(
             self.storage(),
@@ -593,10 +587,7 @@ impl PyGeometryArray {
                 columns,
                 |line_columns| {
                     let Some(zs) = line_columns.coords().zs() else {
-                        let mut values = Vec::new();
-                        crate::boundary::try_reserve_vec(&mut values, line_columns.rows())?;
-                        values.resize(line_columns.rows(), f64::NAN);
-                        return Ok(values);
+                        return vec![f64::NAN; line_columns.rows()];
                     };
                     let XyColumns { xs, ys } = line_columns.physical_xy();
                     segmented_planar_lengths_3d(
@@ -609,10 +600,7 @@ impl PyGeometryArray {
                 },
                 |polygon_columns| {
                     let Some(zs) = polygon_columns.coords().zs() else {
-                        let mut values = Vec::new();
-                        crate::boundary::try_reserve_vec(&mut values, polygon_columns.rows())?;
-                        values.resize(polygon_columns.rows(), f64::NAN);
-                        return Ok(values);
+                        return vec![f64::NAN; polygon_columns.rows()];
                     };
                     let XyColumns { xs, ys } = polygon_columns.physical_xy();
                     segmented_planar_lengths_3d(
@@ -624,7 +612,7 @@ impl PyGeometryArray {
                     )
                 },
             );
-            values.map_err(PackedColumnError::Batch)
+            Ok(values)
         })
     }
 

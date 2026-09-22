@@ -15,9 +15,7 @@ use crate::array::packed_columns::{
     LineColumns, PackedColumnResult, PackedColumns, PointColumns, PointRows, PolygonColumns,
     SegmentedRuns, XyColumns, batch_err, row_err,
 };
-use crate::array::storage_helpers::{
-    packed_line_measure, packed_line_row_pivot, packed_polygon_measure, packed_polygon_row_pivot,
-};
+use crate::array::storage_helpers::{packed_line_row_pivot, packed_polygon_row_pivot};
 use crate::array::{
     Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
     PackedColumnOutput, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
@@ -128,10 +126,6 @@ pub(crate) fn buffer_point_columns(
         polygon_offsets,
     }))
 }
-
-// `line_measure`/`polygon_measure` are the sanctioned indirection required by
-// `tools/gates/_check_packed_execution.py`: array method surfaces may not call the
-// raw `packed_*_measure` storage helpers directly.
 
 /// Private crossover: a leaf/run with this many *segments* (verts − 1) or more
 /// is "long" — always PerRun. Shorter runs take ColumnStream when a contiguous
@@ -257,7 +251,7 @@ pub(crate) fn segmented_planar_lengths(
     xs: &[f64],
     ys: &[f64],
     scale: f64,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     segmented_planar_lengths_dims::<false>(runs, xs, ys, &[], scale)
 }
 
@@ -268,7 +262,7 @@ pub(crate) fn segmented_planar_lengths_3d(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     segmented_planar_lengths_dims::<true>(runs, xs, ys, zs, scale)
 }
 
@@ -288,24 +282,22 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     let n_groups = runs.n_groups();
     if n_groups == 0 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     debug_assert!(!HAS_Z || zs.len() == xs.len());
     debug_assert_eq!(xs.len(), ys.len());
 
     if !runs.row_map.is_identity() {
-        let mut output = Vec::new();
-        crate::boundary::try_reserve_vec(&mut output, n_groups)?;
+        let mut output = Vec::with_capacity(n_groups);
         for group in 0..n_groups {
-            crate::boundary::try_push_vec(
-                &mut output,
-                per_run_group_length::<HAS_Z>(&runs, group, xs, ys, zs, scale),
-            )?;
+            output.push(per_run_group_length::<HAS_Z>(
+                &runs, group, xs, ys, zs, scale,
+            ));
         }
-        return Ok(output);
+        return output;
     }
 
     if runs.group_offsets.is_none() {
@@ -317,9 +309,7 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
                 && group_is_short(&runs, n_groups / 2)
                 && group_is_short(&runs, n_groups - 1);
             if sample_short {
-                let mut out = Vec::new();
-                crate::boundary::try_reserve_vec(&mut out, n_groups)?;
-                out.resize(n_groups, 0.0);
+                let mut out = vec![0.0; n_groups];
                 column_stream_identity_lengths::<HAS_Z>(
                     &runs,
                     0..n_groups,
@@ -329,7 +319,7 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
                     scale,
                     &mut out,
                 );
-                return Ok(out);
+                return out;
             }
             return partitioned_identity_lengths::<HAS_Z>(&runs, xs, ys, zs, scale);
         }
@@ -354,10 +344,9 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
         group_missing: leaf_missing.as_ref(),
         row_map: RowSelectionRef::Identity,
     };
-    let leaf_lengths = segmented_planar_lengths_dims::<HAS_Z>(leaf_runs, xs, ys, zs, 1.0)?;
+    let leaf_lengths = segmented_planar_lengths_dims::<HAS_Z>(leaf_runs, xs, ys, zs, 1.0);
     let scale_is_one = scale.to_bits() == 1.0_f64.to_bits();
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, n_groups)?;
+    let mut output = Vec::with_capacity(n_groups);
     for group in 0..n_groups {
         let value = if runs.is_missing(group) {
             f64::NAN
@@ -365,9 +354,9 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
             let total: f64 = leaf_lengths[runs.group_leaves(group)].iter().sum();
             if scale_is_one { total } else { total * scale }
         };
-        crate::boundary::try_push_vec(&mut output, value)?;
+        output.push(value);
     }
-    Ok(output)
+    output
 }
 
 fn partitioned_identity_lengths<const HAS_Z: bool>(
@@ -376,11 +365,9 @@ fn partitioned_identity_lengths<const HAS_Z: bool>(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     let n_groups = runs.n_groups();
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, n_groups)?;
-    out.resize(n_groups, 0.0);
+    let mut out = vec![0.0; n_groups];
     let mut group = 0;
     while group < n_groups {
         let short = group_is_short(runs, group);
@@ -403,7 +390,7 @@ fn partitioned_identity_lengths<const HAS_Z: bool>(
             fill_per_run_span::<HAS_Z>(runs, span_start..group, xs, ys, zs, scale, &mut out);
         }
     }
-    Ok(out)
+    out
 }
 
 fn fill_per_run_span<const HAS_Z: bool>(
@@ -432,14 +419,12 @@ fn tight_identity_per_run<const HAS_Z: bool>(
     ys: &[f64],
     zs: &[f64],
     scale: f64,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     let n = runs.n_groups();
     let offsets = runs.leaf_offsets;
     let missing = runs.group_missing;
     let scale_is_one = scale.to_bits() == 1.0_f64.to_bits();
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, n)?;
-    out.resize(n, 0.0);
+    let mut out = vec![0.0; n];
     for (g, slot) in out.iter_mut().enumerate() {
         if missing.is_some_and(|mask| mask.is_missing(g)) {
             *slot = f64::NAN;
@@ -461,7 +446,7 @@ fn tight_identity_per_run<const HAS_Z: bool>(
         };
         *slot = if scale_is_one { total } else { total * scale };
     }
-    Ok(out)
+    out
 }
 
 fn per_run_group_length<const HAS_Z: bool>(
@@ -636,11 +621,22 @@ pub(crate) fn line_measure<'a, F>(
     offsets: &[i32],
     map: impl Into<RowSelectionRef<'a>>,
     measure: F,
-) -> Result<Vec<f64>>
+) -> Vec<f64>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
 {
-    packed_line_measure(xs, ys, offsets, map, measure)
+    let map = map.into();
+    let rows = line_logical_len(offsets, map);
+    let mut output = Vec::with_capacity(rows);
+    for logical in 0..rows {
+        let window = map.csr_window(offsets, logical);
+        output.push(measure(
+            column_window(xs, &window),
+            column_window(ys, &window),
+            window,
+        ));
+    }
+    output
 }
 
 /// Mask-aware variant of [`line_measure`]. Missing rows retain their output
@@ -652,7 +648,7 @@ pub(crate) fn line_measure_masked<'a, F>(
     map: impl Into<RowSelectionRef<'a>>,
     missing: Option<&ValidityMask>,
     measure: F,
-) -> Result<Vec<f64>>
+) -> Vec<f64>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
 {
@@ -661,8 +657,7 @@ where
     };
     let map = map.into();
     let rows = line_logical_len(offsets, map);
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, rows)?;
+    let mut output = Vec::with_capacity(rows);
     for logical in 0..rows {
         let value = if missing.is_missing(logical) {
             f64::NAN
@@ -674,9 +669,9 @@ where
                 window,
             )
         };
-        crate::boundary::try_push_vec(&mut output, value)?;
+        output.push(value);
     }
-    Ok(output)
+    output
 }
 
 pub(crate) fn polygon_measure<'a, F, C>(
@@ -687,20 +682,27 @@ pub(crate) fn polygon_measure<'a, F, C>(
     map: impl Into<RowSelectionRef<'a>>,
     ring_measure: F,
     combine: C,
-) -> Result<Vec<f64>>
+) -> Vec<f64>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
     C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
 {
-    packed_polygon_measure(
-        xs,
-        ys,
-        ring_offsets,
-        polygon_offsets,
-        map,
-        ring_measure,
-        combine,
-    )
+    let map = map.into();
+    let rows = polygon_logical_len(polygon_offsets, map);
+    let mut output = Vec::with_capacity(rows);
+    for logical in 0..rows {
+        let rings = polygon_rings_range(polygon_offsets, map, logical);
+        let ring = |index: usize| {
+            let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
+            ring_measure(
+                column_window(xs, &window),
+                column_window(ys, &window),
+                window,
+            )
+        };
+        output.push(combine(rings, &ring));
+    }
+    output
 }
 
 /// Mask-aware variant of [`polygon_measure`]. Missing polygon rows emit the
@@ -714,7 +716,7 @@ pub(crate) fn polygon_measure_masked<'a, F, C>(
     missing: Option<&ValidityMask>,
     ring_measure: F,
     combine: C,
-) -> Result<Vec<f64>>
+) -> Vec<f64>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
     C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
@@ -732,8 +734,7 @@ where
     };
     let map = map.into();
     let rows = polygon_logical_len(polygon_offsets, map);
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, rows)?;
+    let mut output = Vec::with_capacity(rows);
     for logical in 0..rows {
         let value = if missing.is_missing(logical) {
             f64::NAN
@@ -749,9 +750,9 @@ where
             };
             combine(rings, &ring)
         };
-        crate::boundary::try_push_vec(&mut output, value)?;
+        output.push(value);
     }
-    Ok(output)
+    output
 }
 
 /// Validate geographic ordinates for present packed rows only. Nullable

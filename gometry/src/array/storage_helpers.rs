@@ -2,10 +2,7 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-use crate::array::{
-    Bounds, OriginSpec, Point, Result, RowSelectionRef, line_logical_len, polygon_logical_len,
-    polygon_rings_range,
-};
+use crate::array::{Bounds, OriginSpec, Point, Result};
 
 /// Planar bounds of one row's contiguous vertex columns; `None` when empty.
 pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
@@ -20,64 +17,6 @@ pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
 /// not `Copy` on our toolchain, but indexing via `start`/`end` is zero-cost.
 pub(crate) fn column_window<'a, T>(data: &'a [T], range: &std::ops::Range<usize>) -> &'a [T] {
     &data[range.start..range.end]
-}
-
-pub(crate) fn packed_line_measure<'a, F>(
-    xs: &[f64],
-    ys: &[f64],
-    offsets: &[i32],
-    map: impl Into<RowSelectionRef<'a>>,
-    measure: F,
-) -> Result<Vec<f64>>
-where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
-{
-    let map = map.into();
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, line_logical_len(offsets, map))?;
-    for logical in 0..line_logical_len(offsets, map) {
-        let window = map.csr_window(offsets, logical);
-        crate::boundary::try_push_vec(
-            &mut output,
-            measure(
-                column_window(xs, &window),
-                column_window(ys, &window),
-                window,
-            ),
-        )?;
-    }
-    Ok(output)
-}
-
-pub(crate) fn packed_polygon_measure<'a, F, C>(
-    xs: &[f64],
-    ys: &[f64],
-    ring_offsets: &[i32],
-    polygon_offsets: &[i32],
-    map: impl Into<RowSelectionRef<'a>>,
-    ring_measure: F,
-    combine: C,
-) -> Result<Vec<f64>>
-where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
-    C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
-{
-    let map = map.into();
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, polygon_logical_len(polygon_offsets, map))?;
-    for logical in 0..polygon_logical_len(polygon_offsets, map) {
-        let rings = polygon_rings_range(polygon_offsets, map, logical);
-        let ring = |index: usize| {
-            let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-            ring_measure(
-                column_window(xs, &window),
-                column_window(ys, &window),
-                window,
-            )
-        };
-        crate::boundary::try_push_vec(&mut output, combine(rings, &ring))?;
-    }
-    Ok(output)
 }
 
 /// Map a packed centroid column result to a validated point (`POINT EMPTY` on
