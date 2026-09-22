@@ -1,3 +1,5 @@
+use std::num::NonZeroUsize;
+
 use crate::geometry::{
     CoordinateAxes, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
     ZOrdinate, column_all_finite,
@@ -111,19 +113,32 @@ impl WkbReader<'_> {
 
     fn validate_element_count(&self, count: usize) -> Result<()> {
         // Nested members: each costs at least a WKB header (byte order + type).
-        self.validate_count_bytes(count, WKB_HEADER_BASE, "element")
+        self.validate_count_bytes(
+            count,
+            NonZeroUsize::new(WKB_HEADER_BASE).expect("WKB header is nonempty"),
+            "element",
+        )
     }
 
     fn validate_ring_count(&self, ring_count: usize) -> Result<()> {
         // Encoding-true bound: each ring starts with a 4-byte vertex count.
         // Empty / short rings fail in `read_ring` via `Ring::MIN_VERTICES_CLOSED`
         // before materializing the ring set (first ring fails immediately).
-        self.validate_count_bytes(ring_count, WKB_COUNT, "ring")
+        self.validate_count_bytes(
+            ring_count,
+            NonZeroUsize::new(WKB_COUNT).expect("WKB count is nonempty"),
+            "ring",
+        )
     }
 
     /// Encoding-true bound: `count * minimum_bytes` must fit in remaining input.
-    fn validate_count_bytes(&self, count: usize, minimum_bytes: usize, kind: &str) -> Result<()> {
-        if count > self.remaining_bytes().wrapping_div(minimum_bytes) {
+    fn validate_count_bytes(
+        &self,
+        count: usize,
+        minimum_bytes: NonZeroUsize,
+        kind: &str,
+    ) -> Result<()> {
+        if count > self.remaining_bytes() / minimum_bytes {
             return Err(IoError::wkb(format!(
                 "WKB {kind} count exceeds remaining input"
             )));
@@ -159,18 +174,21 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
             f64::from_le_bytes(array)
         }
     };
-    let stride = 2_usize
-        .wrapping_add(usize::from(Z))
-        .wrapping_add(usize::from(M))
-        .wrapping_mul(size_of::<f64>());
-    debug_assert!(bytes.len().is_multiple_of(stride));
+    let stride = NonZeroUsize::new(
+        2_usize
+            .wrapping_add(usize::from(Z))
+            .wrapping_add(usize::from(M))
+            .wrapping_mul(size_of::<f64>()),
+    )
+    .expect("WKB vertices contain XY");
+    debug_assert!(bytes.len().is_multiple_of(stride.get()));
     // Count proven by byte length ÷ stride (no separate trusted count).
     let count = bytes.len() / stride;
     let mut xs = Vec::with_capacity(count);
     let mut ys = Vec::with_capacity(count);
     let mut zs = Z.then(|| Vec::with_capacity(count));
     let mut ms = M.then(|| Vec::with_capacity(count));
-    for vertex in bytes.chunks_exact(stride) {
+    for vertex in bytes.chunks_exact(stride.get()) {
         let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
         let (&[x_bytes, y_bytes], remaining) = ordinates
             .split_first_chunk::<2>()
@@ -522,11 +540,12 @@ impl WkbReader<'_> {
         axes: CoordinateAxes,
         count: usize,
     ) -> Result<CoordSeq> {
-        let stride = wkb_dimension(axes).wrapping_mul(size_of::<f64>());
-        if count > self.remaining_bytes().wrapping_div(stride) {
+        let stride = NonZeroUsize::new(wkb_dimension(axes).wrapping_mul(size_of::<f64>()))
+            .expect("WKB vertices contain XY");
+        if count > self.remaining_bytes() / stride {
             return Err(IoError::wkb("WKB coordinate count exceeds remaining input"));
         }
-        let byte_len = count.wrapping_mul(stride);
+        let byte_len = count.wrapping_mul(stride.get());
         let bytes = self
             .value
             .get(self.offset..)
