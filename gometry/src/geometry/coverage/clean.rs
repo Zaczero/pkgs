@@ -241,7 +241,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
 fn dissolve_edge_incidences(
     incidences: HashMap<
         (crate::geometry::PointKey, crate::geometry::PointKey),
-        (crate::geometry::Segment, u32),
+        (crate::geometry::Segment, usize),
     >,
 ) -> Result<Shape> {
     let mut survivors = Vec::new();

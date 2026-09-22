@@ -323,12 +323,13 @@ def test_three_polygons_sharing_one_edge_is_invalid() -> None:
     assert not any(g.is_empty for g in gm.coverage_invalid_edges(triple))
 
 
-def test_coincident_rows_are_invalid_coverage() -> None:
-    """Two identical boundaries enclose overlap, not a shared interface."""
+@pytest.mark.parametrize('copies', [2, 3, 5])
+def test_coincident_rows_are_invalid_coverage(copies: int) -> None:
+    """Repeated boundaries enclose overlap, not a shared interface."""
     first = gm.box(0, 0, 1, 1)
     # Equivalent presentation with a different ring start and orientation.
     second = gm.from_wkt('POLYGON ((1 1, 1 0, 0 0, 0 1, 1 1))')
-    rows = gm.GeometryArray([first, second])
+    rows = gm.GeometryArray([first, *[second] * (copies - 1)])
     assert not gm.coverage_is_valid(rows)
     assert all(not edge.is_empty for edge in gm.coverage_invalid_edges(rows))
     for operation in (
@@ -337,6 +338,16 @@ def test_coincident_rows_are_invalid_coverage() -> None:
     ):
         with pytest.raises(gm.InvalidGeometryError, match='valid polygonal coverage'):
             operation()
+
+
+def test_adjacent_coverage_rows_can_have_identical_bounds() -> None:
+    rows = gm.from_wkt([
+        'POLYGON ((0 0, 1 0, 1 1, 0 0))',
+        'POLYGON ((0 0, 1 1, 0 1, 0 0))',
+    ])
+    assert gm.coverage_is_valid(rows)
+    assert all(edge.is_empty for edge in gm.coverage_invalid_edges(rows))
+    assert gm.equals(gm.coverage_union(rows), gm.box(0, 0, 1, 1))
 
 
 def test_check_and_do_coverage_operations_reject_invalid_input() -> None:
