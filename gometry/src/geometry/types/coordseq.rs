@@ -644,34 +644,29 @@ impl CoordSeq {
 
     /// Carry one shared XY/Z column through an op that leaves it untouched:
     /// zero copy when this sequence spans the column's whole backing owner,
-    /// otherwise a fallible copy of the visible window.
-    fn carried(&self, column: &SharedSlice<f64>) -> Result<SharedSlice<f64>> {
+    /// otherwise a copy of the visible window.
+    fn carried(&self, column: &SharedSlice<f64>) -> SharedSlice<f64> {
         if self.is_full_window(column) {
-            Ok(column.clone())
+            column.clone()
         } else {
-            Ok(SharedSlice::from_vec(crate::boundary::try_copy_slice(
-                self.window(column),
-            )?))
+            SharedSlice::from_vec(self.window(column).to_vec())
         }
     }
 
     /// The X column carried with zero copy on the full-window common case.
-    pub(crate) fn carried_xs(&self) -> Result<SharedSlice<f64>> {
+    pub(crate) fn carried_xs(&self) -> SharedSlice<f64> {
         self.carried(&self.xs)
     }
 
     /// The Y column carried with zero copy on the full-window common case.
-    pub(crate) fn carried_ys(&self) -> Result<SharedSlice<f64>> {
+    pub(crate) fn carried_ys(&self) -> SharedSlice<f64> {
         self.carried(&self.ys)
     }
 
     /// The Z column (if present) carried with zero copy on the full-window
     /// common case — for ops that rewrite XY but leave Z untouched.
-    pub(crate) fn carried_zs(&self) -> Result<Option<SharedSlice<f64>>> {
-        self.zs
-            .as_ref()
-            .map(|column| self.carried(column))
-            .transpose()
+    pub(crate) fn carried_zs(&self) -> Option<SharedSlice<f64>> {
+        self.zs.as_ref().map(|column| self.carried(column))
     }
 
     /// The M column carried without copying the payload: full Shared stays

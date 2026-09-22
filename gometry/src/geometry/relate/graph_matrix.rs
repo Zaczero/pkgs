@@ -555,18 +555,9 @@ fn graph_relate_with_node_cells(
         .ok_or(ResourceError::SizeOverflow)?;
     let mut nodes = Vec::new();
     try_reserve_vec(&mut nodes, node_capacity)?;
-    let mut seen = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-    seen.try_reserve(node_capacity)
-        .map_err(crate::error::Error::from)?;
-    let mut node_owners =
-        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    node_owners
-        .try_reserve(node_capacity)
-        .map_err(crate::error::Error::from)?;
-    let mut transient = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-    transient
-        .try_reserve(node_capacity)
-        .map_err(crate::error::Error::from)?;
+    let mut seen = crate::collections::try_hash_set_with_capacity(node_capacity)?;
+    let mut node_owners = crate::collections::try_hash_map_with_capacity(node_capacity)?;
+    let mut transient = crate::collections::try_hash_set_with_capacity(node_capacity)?;
     for node in left.nodes.iter().chain(right.nodes.iter()) {
         push_node(
             &mut nodes,
@@ -900,10 +891,7 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
             .len()
             .checked_mul(2)
             .ok_or(ResourceError::SizeOverflow)?;
-        let mut hints = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        hints
-            .try_reserve(hint_capacity)
-            .map_err(crate::error::Error::from)?;
+        let mut hints = crate::collections::try_hash_map_with_capacity(hint_capacity)?;
         for edge in &graph.edges {
             let location = edge_location(edge);
             let label = if left_present {
@@ -968,18 +956,12 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
         let hints = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
         return Ok((edges, hints));
     }
-    let mut by_segment = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    by_segment
-        .try_reserve(atomic.len())
-        .map_err(crate::error::Error::from)?;
+    let mut by_segment = crate::collections::try_hash_map_with_capacity(atomic.len())?;
     let hint_capacity = atomic
         .len()
         .checked_mul(2)
         .ok_or(ResourceError::SizeOverflow)?;
-    let mut hints = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    hints
-        .try_reserve(hint_capacity)
-        .map_err(crate::error::Error::from)?;
+    let mut hints = crate::collections::try_hash_map_with_capacity(hint_capacity)?;
     for (segment, owners) in atomic.into_iter().zip(provenance.iter()) {
         if same_point(segment.start, segment.end) {
             continue;

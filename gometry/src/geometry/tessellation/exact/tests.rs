@@ -1218,14 +1218,12 @@ fn certified_materialization_preserves_exact_homogeneous_coordinates() {
 fn distinct_exact_vertices_can_collide_after_rounding() {
     let one = ExactDyadic::one();
     let base =
-        ExactPoint::homogeneous(ExactDyadic::from_f64(1.0), ExactDyadic::zero(), one.clone())
-            .unwrap();
+        ExactPoint::homogeneous(ExactDyadic::from_f64(1.0), ExactDyadic::zero(), one.clone());
     let shifted = ExactPoint::homogeneous(
         ExactDyadic::from_f64(1.0).add(ExactDyadic::from_parts(false, vec![1], -1074)),
         ExactDyadic::zero(),
         one,
-    )
-    .unwrap();
+    );
     assert_ne!(base.x().unwrap(), shifted.x().unwrap());
     assert_eq!(
         base.round_nearest_even().unwrap(),
@@ -1287,8 +1285,7 @@ fn squared_distance_cmp_point_exact_accounts_for_negative_projective_weight() {
         ExactDyadic::from_f64(-1.0),
         ExactDyadic::from_f64(-1.0),
         ExactDyadic::from_f64(-1.0),
-    )
-    .unwrap();
+    );
     assert_eq!(
         squared_distance_cmp_point_exact(&origin, XY::new(0.0, 0.0), XY::new(3.0, 0.0)).unwrap(),
         Ordering::Less

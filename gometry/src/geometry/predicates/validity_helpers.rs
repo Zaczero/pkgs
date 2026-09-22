@@ -339,10 +339,7 @@ struct IndexedSegment {
 }
 
 fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<PointKey, usize>> {
-    let mut indices = HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    indices
-        .try_reserve(points.len())
-        .map_err(crate::error::Error::from)?;
+    let mut indices = crate::collections::try_hash_map_with_capacity(points.len())?;
     for (index, &point) in points.iter().enumerate() {
         indices.entry(PointKey::new(point)).or_insert(index);
     }

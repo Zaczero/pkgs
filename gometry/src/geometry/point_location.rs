@@ -53,8 +53,8 @@ impl RingPointIndex {
         };
         Ok(Self {
             bounds,
-            xs: coords.carried_xs()?,
-            ys: coords.carried_ys()?,
+            xs: coords.carried_xs(),
+            ys: coords.carried_ys(),
             kind,
             edges: EdgeYIndex::build(ys)?,
         })

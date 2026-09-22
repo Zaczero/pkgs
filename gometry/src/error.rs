@@ -5,8 +5,8 @@
 //! exception classes). Domain vocabulary stays in the owning module —
 //! `GeometryErrorKind` in `geometry`, `CrsError` in `crs`, `IoError` in `io`,
 //! `FrameError` in `metadata` — and composes
-//! here. Domain payloads are boxed; allocation failure and size overflow use
-//! static kinds so reporting exhausted resources needs no further allocation.
+//! here. Domain payloads are boxed; entropy failure and size overflow use
+//! static kinds.
 
 use thiserror::Error as ThisError;
 
@@ -15,16 +15,11 @@ use crate::crs::CrsError;
 use crate::geometry::GeometryErrorKind;
 use crate::io::IoError;
 
-/// A fallible allocation at an owned resource boundary.
-///
-/// The error carries no allocation-sized context. Python conversion adds the
-/// user-facing exception only after the producer has released retained output.
+/// Entropy acquisition and representable resource-size failures.
 #[derive(Debug, ThisError)]
 pub(crate) enum ResourceError {
     #[error("operating system entropy acquisition failed")]
     Entropy,
-    #[error("memory allocation failed while materializing output")]
-    Allocation,
     #[error("resource size arithmetic overflowed")]
     SizeOverflow,
     #[error("{0}")]
@@ -55,7 +50,6 @@ enum ErrorStorage {
     Static(&'static ErrorKind),
 }
 
-static ALLOCATION_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Allocation);
 static ENTROPY_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::Entropy);
 static SIZE_OVERFLOW_ERROR: ErrorKind = ErrorKind::Resource(ResourceError::SizeOverflow);
 static GEODESIC_EXPONENT_OVERFLOW_ERROR: ErrorKind =
@@ -123,9 +117,6 @@ impl From<ErrorKind> for Error {
     fn from(kind: ErrorKind) -> Self {
         Self(match kind {
             ErrorKind::Resource(ResourceError::Entropy) => ErrorStorage::Static(&ENTROPY_ERROR),
-            ErrorKind::Resource(ResourceError::Allocation) => {
-                ErrorStorage::Static(&ALLOCATION_ERROR)
-            },
             ErrorKind::Resource(ResourceError::SizeOverflow) => {
                 ErrorStorage::Static(&SIZE_OVERFLOW_ERROR)
             },
@@ -164,18 +155,6 @@ impl From<FrameError> for Error {
 impl From<ResourceError> for Error {
     fn from(error: ResourceError) -> Self {
         ErrorKind::Resource(error).into()
-    }
-}
-
-impl From<std::alloc::AllocError> for Error {
-    fn from(_: std::alloc::AllocError) -> Self {
-        ResourceError::Allocation.into()
-    }
-}
-
-impl From<std::collections::TryReserveError> for Error {
-    fn from(_: std::collections::TryReserveError) -> Self {
-        ResourceError::Allocation.into()
     }
 }
 

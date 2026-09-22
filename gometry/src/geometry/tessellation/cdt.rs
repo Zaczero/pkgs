@@ -308,13 +308,15 @@ impl ConstrainedMesh {
             return Ok(());
         }
         if let Some(slot) = self.mesh.edge_slot(u, v)? {
-            self.insert_source_piece(SourcePiece {
-                source,
-                start_site: u,
-                end_site: v,
-                lo,
-                hi,
-            })?;
+            self.source_pieces
+                .entry(ordered(u, v))
+                .or_insert(SourcePiece {
+                    source,
+                    start_site: u,
+                    end_site: v,
+                    lo,
+                    hi,
+                });
             self.mark(slot);
             return Ok(());
         }
@@ -419,14 +421,6 @@ impl ConstrainedMesh {
         self.source_constraints
             .get(id)
             .expect("source constraint ids are dense")
-    }
-
-    fn insert_source_piece(&mut self, piece: SourcePiece) -> Result<()> {
-        self.source_pieces.try_reserve(1)?;
-        self.source_pieces
-            .entry(ordered(piece.start_site, piece.end_site))
-            .or_insert(piece);
-        Ok(())
     }
 
     /// Flip the crossed edges until none cross `u -> v`, then mark the edge.
@@ -634,7 +628,7 @@ impl ConstrainedMesh {
                 pairs.remove(&ordered(piece.start_site, piece.end_site));
                 pairs.insert(ordered(piece.start_site, site));
                 pairs.insert(ordered(site, piece.end_site));
-                self.source_pieces.try_reserve(2)?;
+                self.source_pieces.reserve(2);
             }
             crate::try_reserve_vec(points, 1)?;
             crate::try_reserve_vec(&mut self.provenance, 1)?;

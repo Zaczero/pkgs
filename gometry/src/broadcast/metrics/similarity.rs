@@ -184,7 +184,7 @@ impl SimilarityOp {
         scale: f64,
     ) -> crate::error::Result<Vec<f64>> {
         let mut values = Vec::new();
-        values.try_reserve_exact(len)?;
+        crate::try_reserve_vec(&mut values, len)?;
         values.resize(len, 0.0);
         match self {
             Self::Hausdorff { max_error } => {

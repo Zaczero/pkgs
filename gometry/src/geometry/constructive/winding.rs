@@ -787,8 +787,7 @@ pub(crate) fn multipoint_loops(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<()>> {
-    let mut seen = HashSet::new();
-    seen.try_reserve(points.len())?;
+    let mut seen = HashSet::with_capacity(points.len());
     for point in points.iter_coords() {
         // `canonical_f64_bits` matches `same_topological_coordinate`: ±0.0
         // share one key while every other finite coordinate remains bit-exact.

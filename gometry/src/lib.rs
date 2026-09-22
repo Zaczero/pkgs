@@ -15,7 +15,6 @@
 )]
 #![deny(clippy::unreadable_literal, clippy::redundant_clone)]
 #![feature(
-    allocator_api,
     once_cell_try,
     portable_simd,
     slice_partition_dedup,

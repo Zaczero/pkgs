@@ -54,21 +54,11 @@ fn cached_auxiliary_unit(
     aux_cache: &mut HashMap<(u64, u64), [f64; 3]>,
     point: crate::geometry::XY,
     metric: &impl GeodesicMetric,
-) -> Result<[f64; 3]> {
+) -> [f64; 3] {
     let key = (point.x.to_bits(), point.y.to_bits());
-    if let Some(&auxiliary) = aux_cache.get(&key) {
-        return Ok(auxiliary);
-    }
-    if aux_cache.len() == aux_cache.capacity() {
-        aux_cache
-            .try_reserve(1)
-            .map_err(crate::error::Error::from)?;
-    }
-    let auxiliary = metric.auxiliary_unit(point);
-    // A successful reserve (or a pre-existing spare slot) makes this insert
-    // allocation-free.
-    aux_cache.insert(key, auxiliary);
-    Ok(auxiliary)
+    *aux_cache
+        .entry(key)
+        .or_insert_with(|| metric.auxiliary_unit(point))
 }
 
 impl GeodesicFacetBvh {
@@ -91,15 +81,12 @@ impl GeodesicFacetBvh {
             leaves: vec![GeodesicLeaf { first: 0, len: 0 }; leaf_count].into_boxed_slice(),
             segment_ids: vec![0; segments.len()].into_boxed_slice(),
         };
-        let mut aux_cache = HashMap::new();
-        aux_cache
-            .try_reserve(segments.len() + 1)
-            .map_err(crate::error::Error::from)?;
+        let mut aux_cache = HashMap::with_capacity(segments.len().wrapping_add(1));
         let mut ids = Vec::new();
         crate::try_reserve_vec(&mut ids, segments.len())?;
         for (index, segment) in segments.iter().enumerate() {
-            let start_aux = cached_auxiliary_unit(&mut aux_cache, segment.start.xy(), metric)?;
-            let end_aux = cached_auxiliary_unit(&mut aux_cache, segment.end.xy(), metric)?;
+            let start_aux = cached_auxiliary_unit(&mut aux_cache, segment.start.xy(), metric);
+            let end_aux = cached_auxiliary_unit(&mut aux_cache, segment.end.xy(), metric);
             // `ids` receives exactly one entry per segment after the exact
             // reservation above.
             ids.push(SegmentBuild {

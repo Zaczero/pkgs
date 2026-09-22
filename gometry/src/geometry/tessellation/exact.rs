@@ -315,14 +315,6 @@ struct ExactSupportCircle {
     radius_denominator: ExactDyadic,
 }
 
-fn try_exact_point(point: XY) -> Result<ExactPoint> {
-    ExactPoint::homogeneous(
-        ExactDyadic::from_f64(point.x),
-        ExactDyadic::from_f64(point.y),
-        ExactDyadic::one(),
-    )
-}
-
 fn try_radius_squared(center: &ExactPoint, point: XY) -> Result<(ExactDyadic, ExactDyadic)> {
     let px = ExactDyadic::from_f64(point.x);
     let py = ExactDyadic::from_f64(point.y);
@@ -338,7 +330,11 @@ fn try_radius_squared(center: &ExactPoint, point: XY) -> Result<(ExactDyadic, Ex
 fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
     match support {
         [point] => {
-            let center = try_exact_point(*point)?;
+            let center = ExactPoint::homogeneous(
+                ExactDyadic::from_f64(point.x),
+                ExactDyadic::from_f64(point.y),
+                ExactDyadic::one(),
+            );
             Ok(ExactSupportCircle {
                 center,
                 radius_numerator: ExactDyadic::zero(),
@@ -354,7 +350,7 @@ fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
                 ax.try_clone()?.try_add(bx.try_clone()?)?,
                 ay.try_clone()?.try_add(by.try_clone()?)?,
                 ExactDyadic::from_f64(2.0),
-            )?;
+            );
             let (radius_numerator, radius_denominator) = try_radius_squared(&center, *a)?;
             Ok(ExactSupportCircle {
                 center,
@@ -824,16 +820,16 @@ impl Recipe {
 impl ExactPoint {
     /// The ONLY constructor. Every homogeneous triple gets its certified
     /// interval here, so a point can never exist without its filter bound.
-    fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Result<Self> {
+    fn homogeneous(x: ExactDyadic, y: ExactDyadic, w: ExactDyadic) -> Self {
         let bounds = [ratio_interval(&x, &w), ratio_interval(&y, &w)];
         if VERIFY_INTERVALS {
             verify_interval(&x, &w, bounds[0]);
             verify_interval(&y, &w, bounds[1]);
         }
-        Ok(Self {
-            coords: Coords::Exact(Rc::try_new(Homogeneous { x, y, w })?),
+        Self {
+            coords: Coords::Exact(Rc::new(Homogeneous { x, y, w })),
             bounds,
-        })
+        }
     }
 
     /// A circumcenter whose nearest-even rounding is certified: the exact
@@ -865,13 +861,13 @@ impl ExactPoint {
     fn coords(&self) -> Result<&Homogeneous> {
         let coords = match &self.coords {
             Coords::Exact(coords) => coords,
-            Coords::Double { xy, exact } => exact.get_or_try_init(|| {
-                Ok::<_, Error>(Rc::try_new(Homogeneous {
+            Coords::Double { xy, exact } => exact.get_or_init(|| {
+                Rc::new(Homogeneous {
                     x: ExactDyadic::from_f64(xy.x),
                     y: ExactDyadic::from_f64(xy.y),
                     w: ExactDyadic::one(),
-                })?)
-            })?,
+                })
+            }),
             Coords::Certified { recipe, exact, .. } => exact.get_or_try_init(|| {
                 let coords = match *recipe {
                     Recipe::Circumcenter(sites) => intersection_homogeneous(
@@ -886,7 +882,7 @@ impl ExactPoint {
                         )?,
                     )?,
                 };
-                Ok::<_, Error>(Rc::try_new(coords)?)
+                Ok::<_, Error>(Rc::new(coords))
             })?,
         };
         Ok(coords)
@@ -1045,7 +1041,7 @@ impl ExactPoint {
             .w
             .try_product(&right.w)?
             .try_product(&ExactDyadic::from_f64(2.0))?;
-        Self::homogeneous(
+        Ok(Self::homogeneous(
             left.x
                 .try_product(&right.w)?
                 .try_add(right.x.try_product(&left.w)?)?,
@@ -1053,7 +1049,7 @@ impl ExactPoint {
                 .try_product(&right.w)?
                 .try_add(right.y.try_product(&left.w)?)?,
             denominator,
-        )
+        ))
     }
 
     pub(super) fn compare_x(&self, other: &Self) -> Result<Ordering> {
@@ -1586,11 +1582,11 @@ fn extreme_points<'a>(
 
 /// The point at x = `x.0 / x.1` and y = `y.0 / y.1`.
 fn corner(x: (&ExactDyadic, &ExactDyadic), y: (&ExactDyadic, &ExactDyadic)) -> Result<ExactPoint> {
-    ExactPoint::homogeneous(
+    Ok(ExactPoint::homogeneous(
         x.0.try_product(y.1)?,
         y.0.try_product(x.1)?,
         x.1.try_product(y.1)?,
-    )
+    ))
 }
 
 /// Tight axis-aligned bounds of exact points: no pad, no enclosing super-frame.
@@ -1758,7 +1754,7 @@ fn intersection_homogeneous(a: &ExactLine, b: &ExactLine) -> Result<Homogeneous>
 /// Cross product of two exact homogeneous lines, with certified bounds.
 pub(super) fn line_intersection(a: &ExactLine, b: &ExactLine) -> Result<ExactPoint> {
     let Homogeneous { x, y, w } = intersection_homogeneous(a, b)?;
-    ExactPoint::homogeneous(x, y, w)
+    Ok(ExactPoint::homogeneous(x, y, w))
 }
 
 pub(super) fn signed_line_product(line: &ExactLine, point: &ExactPoint) -> Result<ExactSign> {

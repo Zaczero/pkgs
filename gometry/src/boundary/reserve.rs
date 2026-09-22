@@ -131,13 +131,6 @@ where
     Ok(out)
 }
 
-pub(crate) fn try_copy_slice<T: Copy>(values: &[T]) -> Result<Vec<T>> {
-    let mut out = Vec::new();
-    try_reserve_vec(&mut out, values.len())?;
-    out.extend_from_slice(values);
-    Ok(out)
-}
-
 /// Reserve two parallel output columns after checking both layouts.
 pub(crate) fn try_reserve_pair<T, U>(
     left: &mut Vec<T>,

@@ -35,7 +35,7 @@ impl CoordinateReplacement {
         &self,
         axis: &ReplacementAxis,
         member_has_axis: bool,
-        carried: PyResult<Option<SharedSlice<f64>>>,
+        carried: impl FnOnce() -> Option<SharedSlice<f64>>,
         range: std::ops::Range<usize>,
     ) -> PyResult<Option<SharedSlice<f64>>> {
         match axis {
@@ -50,7 +50,7 @@ impl CoordinateReplacement {
                 }
                 Ok(Some(SharedSlice::from_vec(values[range].to_vec())))
             },
-            ReplacementAxis::Carry => carried,
+            ReplacementAxis::Carry => Ok(carried()),
         }
     }
 
@@ -59,12 +59,7 @@ impl CoordinateReplacement {
         seq: &CoordSeq,
         range: std::ops::Range<usize>,
     ) -> PyResult<Option<SharedSlice<f64>>> {
-        self.axis_column_for_seq(
-            &self.zs,
-            seq.axes().has_z(),
-            seq.carried_zs().map_err(PyErr::from),
-            range,
-        )
+        self.axis_column_for_seq(&self.zs, seq.axes().has_z(), || seq.carried_zs(), range)
     }
 
     pub(crate) fn m_column_for_seq(
@@ -75,9 +70,10 @@ impl CoordinateReplacement {
         self.axis_column_for_seq(
             &self.ms,
             seq.axes().has_m(),
-            Ok(seq
-                .ms()
-                .map(|values| SharedSlice::from_vec(values.to_vec()))),
+            || {
+                seq.ms()
+                    .map(|values| SharedSlice::from_vec(values.to_vec()))
+            },
             range,
         )
     }
@@ -129,7 +125,7 @@ impl CoordinateReplacement {
                 }
                 Some(values.clone())
             },
-            ReplacementAxis::Carry => old.carried_zs().map_err(PyErr::from)?,
+            ReplacementAxis::Carry => old.carried_zs(),
         };
         let ms = match &self.ms {
             ReplacementAxis::Replace(values) => {

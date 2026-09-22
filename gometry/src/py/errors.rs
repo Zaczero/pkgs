@@ -265,7 +265,6 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
 
 enum NativeResource {
     Entropy,
-    Allocation,
     Overflow,
     OverflowContext(&'static str),
 }
@@ -283,23 +282,10 @@ impl NativeResource {
                 }
                 PyErr::fetch(py)
             }),
-            Self::Allocation => native_memory_error(),
             Self::Overflow => native_size_overflow_error(),
             Self::OverflowContext(message) => native_overflow_error(message),
         }
     }
-}
-
-/// Raise Python's native `MemoryError` without creating PyO3's lazy Rust error
-/// box. The C helper sets the interpreter error and returns NULL; adoption is
-/// deliberately delegated to PyO3's version-aware fetch path.
-pub(crate) fn native_memory_error() -> PyErr {
-    Python::attach(|py| {
-        // SAFETY: `Python::attach` supplies the active interpreter state.
-        let _ = unsafe { ffi::PyErr_NoMemory() };
-        debug_assert!(PyErr::occurred(py));
-        PyErr::fetch(py)
-    })
 }
 
 /// Raise the fixed native overflow exception without creating a Rust error
@@ -358,7 +344,6 @@ fn native_resource(error: &Error) -> Option<NativeResource> {
     match error.kind() {
         ErrorKind::Resource(kind) => Some(match kind {
             ResourceError::Entropy => NativeResource::Entropy,
-            ResourceError::Allocation => NativeResource::Allocation,
             ResourceError::SizeOverflow => NativeResource::Overflow,
             ResourceError::SizeOverflowContext(message) => NativeResource::OverflowContext(message),
         }),

@@ -483,7 +483,7 @@ impl StaticStrForest {
         let mut offset = 0;
         while offset < entries.len() {
             let chunk_len = highest_power_of_two(entries.len() - offset);
-            let mut carry = crate::boundary::try_copy_slice(&entries[offset..offset + chunk_len])?;
+            let mut carry = entries[offset..offset + chunk_len].to_vec();
             let mut rank = chunk_len.trailing_zeros() as usize;
             offset += chunk_len;
 

@@ -152,19 +152,14 @@ fn replacement_from_coordinates_view(
         && seq.len() == expected_len
     {
         return Ok(CoordinateReplacement {
-            xs: seq.carried_xs().map_err(PyErr::from)?,
-            ys: seq.carried_ys().map_err(PyErr::from)?,
+            xs: seq.carried_xs(),
+            ys: seq.carried_ys(),
             zs: seq
-                .carried_zs()?
+                .carried_zs()
                 .map_or(ReplacementAxis::Carry, ReplacementAxis::Replace),
             ms: seq
                 .ms()
-                .map(|values| {
-                    crate::boundary::try_copy_slice(values)
-                        .map(|values| ReplacementAxis::Replace(SharedSlice::from_vec(values)))
-                        .map_err(PyErr::from)
-                })
-                .transpose()?
+                .map(|values| ReplacementAxis::Replace(SharedSlice::from_vec(values.to_vec())))
                 .unwrap_or(ReplacementAxis::Carry),
             len: expected_len,
             axes,

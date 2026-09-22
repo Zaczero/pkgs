@@ -338,9 +338,7 @@ pub(crate) fn metric_concave_hull(
             crs,
             state,
             |projected| {
-                let mut seen = HashSet::new();
-                seen.try_reserve(projected.coord_count())
-                    .map_err(crate::error::Error::from)?;
+                let mut seen = HashSet::with_capacity(projected.coord_count());
                 let mut pairs = Vec::new();
                 crate::boundary::try_reserve_vec(&mut pairs, projected.coord_count())?;
                 let mut point_index = 0;

@@ -130,9 +130,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
         // PointKey identity is CONSERVATIVE here (canonicalizes ±0.0 and
         // ignores Z/M): a false duplicate just routes through the exact
         // splitter below, which then splits nothing — never the reverse.
-        let mut seen: HashSet<PointKey> =
-            HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-        seen.try_reserve(scan).map_err(crate::error::Error::from)?;
+        let mut seen: HashSet<PointKey> = crate::collections::try_hash_set_with_capacity(scan)?;
         if (0..scan).all(|index| seen.insert(PointKey::new(XY::new(xs[index], ys[index])))) {
             let mut result = Vec::new();
             try_push_vec(&mut result, ring.clone())?;
@@ -150,9 +148,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
     try_reserve_vec(&mut loops, count)?;
     let mut stack = Vec::new();
     try_reserve_vec(&mut stack, count)?;
-    let mut open: HashMap<PointKey, usize> =
-        HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-    open.try_reserve(count).map_err(crate::error::Error::from)?;
+    let mut open: HashMap<PointKey, usize> = crate::collections::try_hash_map_with_capacity(count)?;
     for point in points {
         let key = PointKey::new(point);
         if let Some(&start) = open.get(&key) {

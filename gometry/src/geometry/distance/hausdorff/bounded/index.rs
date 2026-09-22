@@ -240,9 +240,8 @@ impl SupportIndex {
             min_y: y,
             max_y: y,
         };
-        let mut frontier = BinaryHeap::new();
         // Pending subtrees are disjoint and each contains at least one leaf.
-        frontier.try_reserve(self.nodes.len().div_ceil(2))?;
+        let mut frontier = BinaryHeap::with_capacity(self.nodes.len().div_ceil(2));
         let lower = |bounds| box_distance_lower(query, bounds).to_bits();
         frontier.push(std::cmp::Reverse((lower(self.nodes[root].bounds), root)));
         while let Some(std::cmp::Reverse((lower_bits, node_index))) = frontier.pop() {

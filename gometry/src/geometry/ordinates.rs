@@ -44,11 +44,7 @@ impl OrdinateSource {
                 .checked_add(shape.coord_count())
                 .ok_or(crate::error::ResourceError::SizeOverflow)
         })?;
-        let mut vertices =
-            HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
-        vertices
-            .try_reserve(total_coords)
-            .map_err(crate::error::Error::from)?;
+        let vertices = crate::collections::try_hash_map_with_capacity(total_coords)?;
         let mut segments = Vec::new();
         try_reserve_vec(&mut segments, total_coords)?;
         Ok(Self {
@@ -172,10 +168,6 @@ impl AxisValue {
 
 fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) -> Result<()> {
     let key = PointKey::new(point);
-    if let Some(values) = vertices.get_mut(&key) {
-        return try_push_vec(values, point);
-    }
-    vertices.try_reserve(1).map_err(crate::error::Error::from)?;
     let values = vertices.entry(key).or_default();
     try_push_vec(values, point)
 }

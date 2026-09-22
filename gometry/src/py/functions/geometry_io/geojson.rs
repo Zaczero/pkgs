@@ -1147,11 +1147,10 @@ impl<'de> Visitor<'de> for FeatureRowsMetaVisitor {
         A: SeqAccess<'de>,
     {
         let mut rows = Vec::new();
+        if let Some(hint) = seq.size_hint() {
+            crate::reserve_hint(&mut rows, hint);
+        }
         while let Some(row) = seq.next_element()? {
-            if rows.try_reserve(1).is_err() {
-                rows.clear();
-                return Err(de::Error::custom("feature sequence allocation failed"));
-            }
             rows.push(row);
         }
         Ok(FeatureRowsMeta::Rows(rows))
@@ -1431,7 +1430,6 @@ impl RawJsonToPy<'_, '_> {
                 self.skip_whitespace();
                 self.consume(b':')?;
                 let value = self.parse_value(depth + 1)?;
-                values.try_reserve(1).map_err(crate::error::Error::from)?;
                 values.insert(key, value);
                 self.skip_whitespace();
                 match self.current() {

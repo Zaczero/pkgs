@@ -930,7 +930,7 @@ impl Groups {
             let value = match &self.values {
                 GroupsValues::Int64(_) => {
                     let source = self.int64_row_slice(row);
-                    let values = crate::boundary::try_copy_slice(source)?;
+                    let values = source.to_vec();
                     values.into_py_any(py)?
                 },
                 GroupsValues::Geometry(_) => {
@@ -966,7 +966,7 @@ impl Groups {
         }
         match &self.values {
             GroupsValues::Int64(values) => {
-                let copied = crate::boundary::try_copy_slice(&values[start..end])?;
+                let copied = values[start..end].to_vec();
                 let args = (copied, rebased).into_py_any(py)?;
                 Ok((
                     module

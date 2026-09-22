@@ -48,7 +48,7 @@ impl CoordSeq {
         Self::from_shared_columns(
             crate::geometry::SharedSlice::from_vec(xs),
             crate::geometry::SharedSlice::from_vec(ys),
-            self.carried_zs()?,
+            self.carried_zs(),
             self.carried_ms()?,
         )
     }
@@ -149,13 +149,13 @@ impl CoordSeq {
             Self::from_shared_columns(
                 match out_x {
                     Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                    None => self.carried_xs()?,
+                    None => self.carried_xs(),
                 },
                 match out_y {
                     Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                    None => self.carried_ys()?,
+                    None => self.carried_ys(),
                 },
-                self.carried_zs()?,
+                self.carried_zs(),
                 self.carried_ms()?,
             )
         }
@@ -214,13 +214,13 @@ impl CoordSeq {
         Self::from_shared_columns(
             match out_x {
                 Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                None => self.carried_xs()?,
+                None => self.carried_xs(),
             },
             match out_y {
                 Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                None => self.carried_ys()?,
+                None => self.carried_ys(),
             },
-            self.carried_zs()?,
+            self.carried_zs(),
             self.carried_ms()?,
         )
     }
@@ -241,7 +241,7 @@ impl CoordSeq {
             crate::geometry::SharedSlice::from_vec(
                 snap_column_simd(self.ys(), origin.1, size.1)?.into_vec(),
             ),
-            self.carried_zs()?,
+            self.carried_zs(),
             self.carried_ms()?,
         )
     }
@@ -271,7 +271,7 @@ impl CoordSeq {
         Self::from_shared_columns(
             crate::geometry::SharedSlice::from_vec(xs),
             crate::geometry::SharedSlice::from_vec(ys),
-            self.carried_zs()?,
+            self.carried_zs(),
             self.carried_ms()?,
         )
         .map_err(E::from)
@@ -292,7 +292,7 @@ impl CoordSeq {
     /// The XY columns alone, dropping Z/M. Shares the backing `Arc`s with zero
     /// copy when this sequence spans its whole columns (the common case).
     pub fn force_2d(&self) -> Result<Self> {
-        Self::from_shared_columns(self.carried_xs()?, self.carried_ys()?, None, None)
+        Self::from_shared_columns(self.carried_xs(), self.carried_ys(), None, None)
     }
 
     /// Set or clear the Z ordinate column. `value=None` removes Z (M is
@@ -343,11 +343,11 @@ impl CoordSeq {
         let (out_zs, out_ms) = match axis {
             OrdinateAxis::Z => (ordinate_column(value), self.carried_ms()?),
             OrdinateAxis::M => (
-                self.carried_zs()?,
+                self.carried_zs(),
                 ordinate_column(value).map(crate::geometry::MColumn::Shared),
             ),
         };
-        Self::from_shared_columns(self.carried_xs()?, self.carried_ys()?, out_zs, out_ms)
+        Self::from_shared_columns(self.carried_xs(), self.carried_ys(), out_zs, out_ms)
     }
 }
 

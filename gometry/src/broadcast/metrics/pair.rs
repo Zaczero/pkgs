@@ -551,27 +551,23 @@ pub(crate) fn same_storage_similarity_metric_zeros(
     storage: &GeometryArrayStorage,
 ) -> crate::error::Result<Vec<f64>> {
     let mut values = Vec::new();
+    crate::try_reserve_vec(&mut values, storage.len())?;
     match storage {
         GeometryArrayStorage::Packed(PackedStorage::Lines {
             offsets, row_map, ..
         }) => {
             let map = row_map.as_deref();
             let rows = crate::array::line_logical_len(offsets.as_slice(), map);
-            values.try_reserve_exact(rows)?;
             for logical in 0..rows {
-                crate::try_push_vec(
-                    &mut values,
-                    if map.csr_window(offsets.as_slice(), logical).is_empty() {
-                        f64::INFINITY
-                    } else {
-                        0.0
-                    },
-                )?;
+                values.push(if map.csr_window(offsets.as_slice(), logical).is_empty() {
+                    f64::INFINITY
+                } else {
+                    0.0
+                });
             }
         },
         GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
             let rows = crate::array::point_logical_len(coords, row_map.as_deref());
-            values.try_reserve_exact(rows)?;
             values.resize(rows, 0.0);
         },
         GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -582,11 +578,9 @@ pub(crate) fn same_storage_similarity_metric_zeros(
         }) => {
             let map = row_map.as_deref();
             let rows = crate::array::polygon_logical_len(polygon_offsets.as_slice(), map);
-            values.try_reserve_exact(rows)?;
             for logical in 0..rows {
                 let rings = map.csr_window(polygon_offsets.as_slice(), logical);
-                crate::try_push_vec(
-                    &mut values,
+                values.push(
                     if !rings.is_empty()
                         && (ring_offsets[rings.start] as usize) < (ring_offsets[rings.end] as usize)
                     {
@@ -594,16 +588,12 @@ pub(crate) fn same_storage_similarity_metric_zeros(
                     } else {
                         f64::INFINITY
                     },
-                )?;
+                );
             }
         },
         GeometryArrayStorage::Mixed(shapes) => {
-            values.try_reserve_exact(shapes.len())?;
             for shape in shapes {
-                crate::try_push_vec(
-                    &mut values,
-                    if shape.is_empty() { f64::INFINITY } else { 0.0 },
-                )?;
+                values.push(if shape.is_empty() { f64::INFINITY } else { 0.0 });
             }
         },
     }
