@@ -24,7 +24,7 @@ use str_tree::{StaticStrForest, StaticStrTree};
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_unique_row_ids;
 use crate::geometry::{Bounds, Point, Shape, ShapeData};
-use crate::py::errors::{GeometryError, native_memory_error, parameter_error};
+use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
 use crate::{
@@ -427,21 +427,18 @@ pub(crate) struct PySpatialIndex {
     non_prunable_live: usize,
 }
 
-impl PySpatialIndex {
-    /// Fallible deep clone for Python copy protocols. Mutable forest runs and
-    /// row/liveness buffers get independent owners; immutable geometry payloads
-    /// retain their Arc-backed sharing. The lazy cap cache is intentionally
-    /// empty because a clone may diverge on its next mutation.
-    pub(crate) fn try_clone(&self) -> crate::error::Result<Self> {
-        Ok(Self {
-            rows: self.rows.try_clone()?,
+impl Clone for PySpatialIndex {
+    fn clone(&self) -> Self {
+        Self {
+            rows: self.rows.clone(),
             bulk: Arc::clone(&self.bulk),
-            overflow: self.overflow.try_clone()?,
+            overflow: self.overflow.clone(),
+            // A copied index can diverge on its next mutation.
             geodesic_caps: std::sync::Mutex::default(),
             mutation_gen: self.mutation_gen,
             metadata: self.metadata.clone(),
             non_prunable_live: self.non_prunable_live,
-        })
+        }
     }
 }
 
@@ -455,7 +452,7 @@ pub(crate) struct IndexEntry {
 /// The array remains the sole owner of packed row interpretation; the index
 /// resolves rows through its owner-bound operation instead of cloning every
 /// component and duplicating CSR/selection logic.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct PackedStore {
     pub(crate) source: PyGeometryArray,
 }
@@ -464,7 +461,7 @@ pub(crate) struct PackedStore {
 /// coordinate columns zero-copy (no per-row boxing); Mixed-array rows,
 /// iterable rows, and every later `insert` are boxed handles. A handle is
 /// its build/insert position: packed rows first, then boxed rows.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct IndexRows {
     pub(crate) packed: Option<PackedStore>,
     boxed: Vec<PyGeometry>,
@@ -550,32 +547,6 @@ impl<'a> IndexRowOperation<'a> {
 }
 
 impl IndexRows {
-    /// Fallible copy of index-owned row storage. Geometry and packed-array
-    /// payloads are immutable Arc-backed owners, while the boxed handle and
-    /// liveness vectors are copied into exact-sized independent buffers.
-    pub(crate) fn try_clone(&self) -> crate::error::Result<Self> {
-        let packed = self.packed.as_ref().map(|packed| PackedStore {
-            // PyGeometryArray is immutable; its storage, validity, bounds,
-            // and row-product owners all clone by Arc handle.
-            source: packed.source.clone(),
-        });
-
-        let mut boxed = Vec::new();
-        boxed.try_reserve_exact(self.boxed.len())?;
-        boxed.extend(self.boxed.iter().cloned());
-
-        let mut live = Vec::new();
-        live.try_reserve_exact(self.live.len())?;
-        live.extend_from_slice(&self.live);
-
-        Ok(Self {
-            packed,
-            boxed,
-            live,
-            live_count: self.live_count,
-        })
-    }
-
     pub(crate) fn operation(&self) -> IndexRowOperation<'_> {
         IndexRowOperation::new(self)
     }
@@ -643,17 +614,13 @@ impl IndexRows {
         Ok(PyGeometryArray::scatter_present_rows(&present, missing)?)
     }
 
-    /// Reserve both persistent columns before mutating either one. Unlike the
-    /// disposable-output helpers, a failed reserve must leave an existing
-    /// index intact, so this deliberately preserves the current buffers.
+    /// Admit both persistent column layouts before reserving their storage.
     fn try_reserve(&mut self, additional: usize) -> PyResult<()> {
-        if self.boxed.try_reserve(additional).is_err() {
-            return Err(native_memory_error());
-        }
-        if self.live.try_reserve(additional).is_err() {
-            return Err(native_memory_error());
-        }
-        Ok(())
+        Ok(crate::boundary::try_reserve_pair(
+            &mut self.boxed,
+            &mut self.live,
+            additional,
+        )?)
     }
 
     fn is_live(&self, handle: usize) -> bool {

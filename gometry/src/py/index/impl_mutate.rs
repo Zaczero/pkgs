@@ -464,7 +464,7 @@ mod tests {
     fn cloned_forests_mutate_independently() {
         let mut left = empty_index();
         assert_eq!(left.insert_one(&point(0.0, 0.0)).unwrap(), 0);
-        let mut right = left.try_clone().expect("clone");
+        let mut right = left.clone();
         assert_eq!(left.insert_one(&point(10.0, 0.0)).unwrap(), 1);
         assert_eq!(right.overflow.total_entries(), 1);
         assert_eq!(right.rows.live_count(), 1);
@@ -479,7 +479,7 @@ mod tests {
         let handles = source.live_handles_sorted().expect("source handles");
         let weights = run_weights(&source);
         assert_eq!(weights, [(0, 1), (1, 2), (3, 8)]);
-        let counted = source.try_clone().expect("unrestricted clone");
+        let counted = source.clone();
         assert_copy_state(&counted, &handles, &weights);
         let spatial_query = AABB::from_corners([11.5, -1.0], [19.5, 1.0]);
         let mut source_hits = Vec::new();
@@ -521,7 +521,7 @@ mod tests {
             .expect("clone nearest");
         assert_eq!(source_nearest, clone_nearest);
 
-        let mut cloned = source.try_clone().expect("clone");
+        let mut cloned = source.clone();
         assert_copy_state(&cloned, &handles, &weights);
         let new_handle = cloned
             .insert_one(&framed_point(100.0, 0.0, &query_frame))

@@ -318,7 +318,7 @@ impl HeapSize for StaticStrTree {
 /// `live_entries` and `dead_entries` count physical entries, while
 /// `entry_counts` records how many envelopes each never-reused overflow handle
 /// contributed.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct StaticStrForest {
     runs: Vec<Option<Arc<StaticStrTree>>>,
     handle_start: usize,
@@ -346,28 +346,6 @@ impl StaticStrForest {
     )]
     pub(super) fn heap_bytes(&self) -> usize {
         HeapSize::heap_bytes(self)
-    }
-
-    /// Share immutable runs and copy their physical-entry accounting.
-    /// No geodesic cache belongs here; it remains an index-level
-    /// cache and is intentionally rebuilt empty by [`PySpatialIndex`].
-    pub(super) fn try_clone(&self) -> crate::error::Result<Self> {
-        let mut runs = Vec::new();
-        runs.try_reserve_exact(self.runs.len())?;
-        runs.extend(self.runs.iter().cloned());
-
-        let mut entry_counts = Vec::new();
-        entry_counts.try_reserve_exact(self.entry_counts.len())?;
-        entry_counts.extend_from_slice(&self.entry_counts);
-
-        Ok(Self {
-            runs,
-            handle_start: self.handle_start,
-            entry_counts,
-            total_entries: self.total_entries,
-            live_entries: self.live_entries,
-            dead_entries: self.dead_entries,
-        })
     }
 
     #[cfg(test)]
@@ -461,14 +439,12 @@ impl StaticStrForest {
         Ok(())
     }
 
-    /// Fallibly reserve the persistent per-overflow-row count column. No
-    /// logical state changes if the allocator rejects this request.
+    /// Admit the persistent count-column layout before reserving storage.
     pub(super) fn try_reserve_entry_counts(
         &mut self,
         additional: usize,
     ) -> crate::error::Result<()> {
-        self.entry_counts.try_reserve(additional)?;
-        Ok(())
+        crate::try_reserve_vec(&mut self.entry_counts, additional)
     }
 
     pub(super) fn entry_count_for_handle(&self, handle: usize) -> usize {
@@ -500,12 +476,9 @@ impl StaticStrForest {
         }
 
         let rank_count = required_rank_count(self.runs.len(), total_entries);
-        let mut pending: Vec<Option<Vec<IndexEntry>>> = Vec::new();
-        pending.try_reserve(rank_count)?;
+        let mut pending: Vec<Option<Vec<IndexEntry>>> = Vec::with_capacity(rank_count);
         pending.resize_with(rank_count, || None);
-        let mut consumed = Vec::new();
-        consumed.try_reserve(rank_count)?;
-        consumed.resize(rank_count, false);
+        let mut consumed = vec![false; rank_count];
 
         let mut offset = 0;
         while offset < entries.len() {
@@ -517,7 +490,7 @@ impl StaticStrForest {
             loop {
                 debug_assert!(rank < pending.len());
                 if let Some(staged) = pending[rank].take() {
-                    carry.try_reserve(staged.len())?;
+                    crate::try_reserve_vec(&mut carry, staged.len())?;
                     carry.extend_from_slice(&staged);
                     rank += 1;
                     continue;
@@ -527,7 +500,7 @@ impl StaticStrForest {
                     && let Some(existing) = self.runs[rank].as_ref()
                 {
                     consumed[rank] = true;
-                    carry.try_reserve(existing.entry_count())?;
+                    crate::try_reserve_vec(&mut carry, existing.entry_count())?;
                     carry.extend_from_slice(existing.entries());
                     rank += 1;
                     continue;
@@ -537,8 +510,7 @@ impl StaticStrForest {
             }
         }
 
-        let mut runs = Vec::new();
-        runs.try_reserve(rank_count)?;
+        let mut runs = Vec::with_capacity(rank_count);
         for entries in pending {
             runs.push(
                 entries
@@ -612,7 +584,7 @@ impl StaticStrForest {
         debug_assert!(removed_entries <= self.live_entries);
         let remaining = self.live_entries - removed_entries;
         let mut entries = Vec::new();
-        entries.try_reserve(remaining)?;
+        crate::try_reserve_vec(&mut entries, remaining)?;
         for entry in self.live_entries(live) {
             if entry.idx != removed_handle {
                 entries.push(*entry);
