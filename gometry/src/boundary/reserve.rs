@@ -113,6 +113,11 @@ impl<T> CsrBuilder<T> {
         }
     }
 
+    pub(crate) fn reserve_rows(&mut self, additional: usize) {
+        self.offsets
+            .reserve(additional.wrapping_add(usize::from(self.offsets.is_empty())));
+    }
+
     fn release(&mut self) {
         self.values = Vec::new();
         self.offsets = Vec::new();

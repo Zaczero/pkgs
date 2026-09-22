@@ -1,4 +1,4 @@
-//! Contiguous gather materialization owned by separated-data export boundaries.
+//! Contiguous coordinate and CSR materialization of selected packed rows.
 
 use crate::array::packed_columns::{PackedColumnResult, batch_err};
 use crate::array::{
@@ -18,11 +18,13 @@ pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<C
 pub(crate) fn gather_line_columns(
     coords: &CoordSeq,
     offsets: &[i32],
-    map: &[usize],
+    selection: RowSelectionRef<'_>,
 ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-    let mut builder = PackedColumnBuilder::like(coords, 0);
-    for &physical in map {
-        let window = offsets[physical] as usize..offsets[physical + 1] as usize;
+    let rows = crate::array::line_logical_len(offsets, selection);
+    let vertices = crate::array::packed_lines_coord_len(offsets, selection);
+    let mut builder = PackedColumnBuilder::like(coords, vertices, rows);
+    for row in 0..rows {
+        let window = selection.csr_window(offsets, row);
         builder.push_window(coords, window)?;
     }
     let cap = builder.vertex_len();
@@ -39,8 +41,12 @@ pub(crate) fn gather_polygon_columns(
     CsrOffsetColumn<RingLevel>,
     CsrOffsetColumn<PolygonLevel>,
 )> {
-    let mut builder = PackedColumnBuilder::like(coords, 0);
-    let mut polygon_builder = CsrOffsetBuilder::new();
+    let selection = RowSelectionRef::Gather(map);
+    let vertices =
+        crate::array::packed_polygons_coord_len(ring_offsets, polygon_offsets, selection);
+    let rings = crate::array::packed_polygons_ring_len(polygon_offsets, selection);
+    let mut builder = PackedColumnBuilder::like(coords, vertices, rings);
+    let mut polygon_builder = CsrOffsetBuilder::with_capacity(map.len());
     let mut ring_index = 0_usize;
     for &physical in map {
         let ring_start = polygon_offsets[physical] as usize;
@@ -91,7 +97,8 @@ fn materialize_gather(storage: &PackedStorage) -> PackedColumnResult<Option<Pack
         } => match row_map.as_deref() {
             RowSelectionRef::Gather(map) => {
                 let (out_coords, out_offsets) =
-                    gather_line_columns(coords, offsets.as_slice(), map).map_err(batch_err)?;
+                    gather_line_columns(coords, offsets.as_slice(), RowSelectionRef::Gather(map))
+                        .map_err(batch_err)?;
                 Some(PackedStorage::Lines {
                     coords: Arc::new(out_coords),
                     offsets: out_offsets,

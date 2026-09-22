@@ -16,14 +16,14 @@ pub(crate) struct PackedColumnBuilder {
 }
 
 impl PackedColumnBuilder {
-    /// Reserve every live ordinate column before appending generated rows.
-    pub(crate) fn like(coords: &CoordSeq, capacity: usize) -> Self {
+    /// Reserve the active ordinate columns and their row offsets together.
+    pub(crate) fn like(coords: &CoordSeq, capacity: usize, rows: usize) -> Self {
         Self {
             xs: Vec::with_capacity(capacity),
             ys: Vec::with_capacity(capacity),
             zs: coords.zs().map(|_| Vec::with_capacity(capacity)),
             ms: coords.ms().map(|_| Vec::with_capacity(capacity)),
-            offsets: CsrOffsetBuilder::new(),
+            offsets: CsrOffsetBuilder::with_capacity(rows),
         }
     }
 
@@ -184,15 +184,21 @@ impl PackedColumnBuilder {
 pub(crate) fn concat_packed_line_columns(
     columns: impl IntoIterator<Item = (CoordSeq, CsrOffsetColumn)>,
 ) -> CrateResult<(CoordSeq, CsrOffsetColumn)> {
-    let mut builder = None;
+    let mut builder: Option<PackedColumnBuilder> = None;
     for (coords, offsets) in columns {
         let n_lines = offsets.len().saturating_sub(1);
         if n_lines == 0 {
             continue;
         }
         let ends = offsets.as_slice();
-        let builder =
-            builder.get_or_insert_with(|| PackedColumnBuilder::like(&coords, coords.len()));
+        let builder = match &mut builder {
+            Some(builder) => {
+                builder.reserve_columns(coords.len());
+                builder.offsets.reserve_rows(n_lines);
+                builder
+            },
+            None => builder.insert(PackedColumnBuilder::like(&coords, coords.len(), n_lines)),
+        };
         for line in 0..n_lines {
             builder.push_window(&coords, ends[line] as usize..ends[line + 1] as usize)?;
         }

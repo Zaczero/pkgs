@@ -301,7 +301,8 @@ impl<'a> LineColumns<'a> {
     /// reverse keeps sharing the source offset table via
     /// [`crate::array::reverse_coord_windows`] instead.
     pub(crate) fn reverse_selected(&self) -> crate::error::Result<(CoordSeq, CsrOffsetColumn)> {
-        let mut builder = PackedColumnBuilder::like(self.coords, self.selected_vertex_len());
+        let mut builder =
+            PackedColumnBuilder::like(self.coords, self.selected_vertex_len(), self.rows());
         for logical in 0..self.rows() {
             builder.push_reversed_window(self.coords, self.row_window(logical))?;
         }
@@ -464,8 +465,9 @@ impl<'a> PolygonColumns<'a> {
         CsrOffsetColumn<RingLevel>,
         CsrOffsetColumn<PolygonLevel>,
     )> {
-        let mut builder = PackedColumnBuilder::like(self.coords, self.selected_vertex_len());
-        let mut polygon_builder = CsrOffsetBuilder::new();
+        let rings = crate::array::packed_polygons_ring_len(self.polygon_offsets(), self.row_map);
+        let mut builder = PackedColumnBuilder::like(self.coords, self.selected_vertex_len(), rings);
+        let mut polygon_builder = CsrOffsetBuilder::with_capacity(self.rows());
         let mut ring_index = 0_usize;
         for logical in 0..self.rows() {
             for ring in self.polygon_rings(logical) {
@@ -2041,6 +2043,59 @@ mod tests {
             allocation_count(|| packed_column_kernels::bounds_values_from_columns(&columns));
         assert_eq!(values.len(), 32 * 4);
         assert_eq!(allocations, 1);
+    }
+
+    #[test]
+    fn selected_reverse_reserves_coordinate_and_offset_columns() {
+        let counts = [2, 128].map(|rows| {
+            let storage = gathered_lines(rows);
+            let Some(PackedColumns::Lines(columns)) =
+                resolve_packed_columns(&storage, None, PointRowLayout::Dense)
+            else {
+                panic!("line fixture requires line columns");
+            };
+            let (output, allocations) = allocation_count(|| columns.reverse_selected());
+            let (coords, offsets) = output.unwrap();
+            assert_eq!(coords.len(), rows.wrapping_mul(3));
+            assert_eq!(offsets.len(), rows.wrapping_add(1));
+            assert_eq!(coords.xs().first(), Some(&2.0));
+            assert_eq!(coords.xs().last(), Some(&3.0));
+            allocations
+        });
+        assert_eq!(counts.first(), counts.last());
+    }
+
+    #[test]
+    fn selected_affine_reserves_only_visible_coordinates() {
+        use crate::HeapSize as _;
+
+        let source = coords();
+        let prefix = source.view(CoordWindow::from_range(0..3, source.len()));
+        let source_offsets = CsrOffsetColumn::try_new(vec![0, 3, 6], source.len()).unwrap();
+        let prefix_offsets = CsrOffsetColumn::try_new(vec![0, 3], prefix.len()).unwrap();
+        let footprints = [
+            LineColumns::from_parts(&source, &source_offsets, RowSelectionRef::Window {
+                start: 0,
+                len: 1,
+            }),
+            LineColumns::from_parts(&prefix, &prefix_offsets, RowSelectionRef::Identity),
+        ]
+        .map(|columns| {
+            let Ok(PackedColumnOutput::Lines { coords, offsets }) =
+                packed_column_kernels::packed_per_row_self_origin_affine_columns(
+                    PackedColumns::Lines(columns),
+                    crate::array::OriginSpec::Center,
+                    [2.0, 0.0, 0.0, 2.0],
+                )
+            else {
+                panic!("line affine must produce line columns");
+            };
+            assert_eq!(coords.xs(), &[-1.0, 1.0, 3.0]);
+            assert_eq!(coords.ys(), &[-0.5, 1.5, -0.5]);
+            assert_eq!(offsets.as_slice(), &[0, 3]);
+            coords.heap_bytes()
+        });
+        assert_eq!(footprints.first(), footprints.last());
     }
 
     #[test]

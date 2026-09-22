@@ -441,7 +441,11 @@ fn packed_lines_storage(
         }));
     }
 
-    let mut builder = PackedColumnBuilder::like(coordinates.coords(), total_vertices);
+    let mut builder = PackedColumnBuilder::like(
+        coordinates.coords(),
+        total_vertices,
+        node.length.wrapping_sub(missing.len()),
+    );
     for row in 0..node.length {
         if node.missing_at(row) {
             continue;

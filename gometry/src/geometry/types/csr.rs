@@ -82,6 +82,10 @@ impl CsrOffsetBuilder {
         }
     }
 
+    pub(crate) fn reserve_rows(&mut self, additional: usize) {
+        self.builder.reserve_rows(additional);
+    }
+
     /// Append the end offset of the next row; `vertex_index` must not exceed
     /// `vertex_cap`.
     pub(crate) fn push_end(&mut self, vertex_index: usize, vertex_cap: usize) -> Result<()> {

@@ -4,30 +4,10 @@ use crate::HeapSize as _;
 use crate::array::{
     ArrayRow, Bound, CoordSeq, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
     PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result, RowSelectionRef, Shape,
-    column_window, curves, line_logical_len, note_array_row, parse_curve_bounds, physical_row,
-    rows_err,
+    column_window, curves, note_array_row, parse_curve_bounds, physical_row, rows_err,
 };
 use crate::boundary::input;
 use crate::py::vectors::Groups;
-
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub(crate) struct LogicalRow(usize);
-
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-pub(crate) struct PhysicalRow(usize);
-
-fn resolve_physical_row(row_map: RowSelectionRef<'_>, logical: LogicalRow) -> PhysicalRow {
-    PhysicalRow(physical_row(row_map, logical.0))
-}
-
-fn resolve_physical_rows(
-    len: usize,
-    row_map: RowSelectionRef<'_>,
-) -> impl ExactSizeIterator<Item = PhysicalRow> + '_ {
-    (0..len).map(move |logical| resolve_physical_row(row_map, LogicalRow(logical)))
-}
 
 fn selected_row_map_heap_bytes(
     row_map: RowSelectionRef<'_>,
@@ -199,35 +179,8 @@ impl PyGeometryArray {
         offsets: &[i32],
         row_map: impl Into<RowSelectionRef<'a>>,
     ) -> PyResult<Self> {
-        {
-            let selection = row_map.into();
-            self.select_packed_lines(
-                coords,
-                offsets,
-                resolve_physical_rows(line_logical_len(offsets, selection), selection),
-            )
-        }
-    }
-
-    /// Gather selected packed-line rows into fresh CSR columns — physical
-    /// CSR indices only (does not consult `row_map`). The column-direct core
-    /// of `take`/`filter`/`__getitem__` slice over `Lines` storage when the
-    /// iterator already carries physical indices (no row boxing, no re-pack
-    /// scan).
-    pub(crate) fn select_packed_lines(
-        &self,
-        coords: &CoordSeq,
-        offsets: &[i32],
-        rows: impl Iterator<Item = PhysicalRow>,
-    ) -> PyResult<Self> {
-        let mut builder = PackedColumnBuilder::like(coords, 0);
-        for row in rows {
-            let row = row.0;
-            let window = offsets[row] as usize..offsets[row + 1] as usize;
-            builder.push_window(coords, window)?;
-        }
-        let cap = builder.vertex_len();
-        let (out_coords, out_offsets) = builder.finish(cap)?;
+        let (out_coords, out_offsets) =
+            super::packed_gather::gather_line_columns(coords, offsets, row_map.into())?;
         Ok(Self::packed_lines(
             out_coords,
             out_offsets,
@@ -275,7 +228,7 @@ impl PyGeometryArray {
     ) -> Result<Self> {
         let (xs, ys) = (coords.xs(), coords.ys());
         let rows = offsets.len() - 1;
-        let mut builder = PackedColumnBuilder::like(coords, xs.len());
+        let mut builder = PackedColumnBuilder::like(coords, xs.len(), rows);
         let mut keep: Vec<bool> = Vec::new();
         for row in 0..rows {
             let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
