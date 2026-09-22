@@ -87,7 +87,8 @@ where
     let mut dimensions = [dimension];
     // SAFETY: the NumPy API is initialized by this call, and the built-in type
     // descriptor is returned as an owned pointer or null with a Python error.
-    let dtype_ptr = unsafe { numpy::PY_ARRAY_API.PyArray_DescrFromType(py, T::NPY_TYPE as _) };
+    let dtype_ptr =
+        unsafe { numpy::PY_ARRAY_API.PyArray_DescrFromType(py, T::NPY_TYPE as std::ffi::c_int) };
     // SAFETY: `dtype_ptr` is an owned descriptor pointer returned by NumPy or
     // null with the Python exception describing the failed allocation.
     let Some(dtype) = (unsafe { Bound::from_owned_ptr_or_opt(py, dtype_ptr.cast()) }) else {

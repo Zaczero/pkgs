@@ -598,7 +598,7 @@ mod tests {
     fn ray_filter_declines_wrong_nonzero_underflow_sign() {
         let mu = f64::from_bits(1);
         let a = (1.0, -4096.0 * mu);
-        let b = (-2.0_f64.powi(-12), 6144.0 * mu);
+        let b = (-(2.0_f64.powi(-12)), 6144.0 * mu);
         let p = (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
         assert_ne!(a.1 > p.1, b.1 > p.1);
         let t1 = (b.0 - a.0) * (p.1 - a.1);

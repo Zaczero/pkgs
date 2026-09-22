@@ -282,7 +282,7 @@ fn exact_clip_rounds_mixed_exponent_boundary_crossings() {
     let rect = Bounds::new(0.0, 0.0, 1.0, 2.0_f64.powi(600)).expect("valid rectangle");
     let actual = clip_segment(
         XY::new(2.0_f64.powi(-600), -tiny),
-        XY::new(-2.0_f64.powi(500), 2.0_f64.powi(500)),
+        XY::new(-(2.0_f64.powi(500)), 2.0_f64.powi(500)),
         rect,
     )
     .expect("exact clip placement")
@@ -293,7 +293,7 @@ fn exact_clip_rounds_mixed_exponent_boundary_crossings() {
     let unit = Bounds::new(0.0, 0.0, 1.0, 1.0).expect("valid unit rectangle");
     let actual = clip_segment(
         XY::new(f64::from_bits(1), 2.0_f64.powi(-500)),
-        XY::new(-2.0_f64.powi(500), -2.0_f64.powi(1023)),
+        XY::new(-(2.0_f64.powi(500)), -(2.0_f64.powi(1023))),
         unit,
     )
     .expect("exact clip placement")

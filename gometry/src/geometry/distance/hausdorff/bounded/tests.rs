@@ -1034,7 +1034,7 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
     let point_support = PreparedSupport::from_line_columns(&[0.0], &[0.0]).unwrap();
     for point in [
         ExactPoint::from_xy(XY::new(3.0, 4.0)),
-        ExactPoint::from_xy(XY::new(2.0_f64.powi(500), -2.0_f64.powi(500))),
+        ExactPoint::from_xy(XY::new(2.0_f64.powi(500), -(2.0_f64.powi(500)))),
         ExactPoint::from_xy(XY::new(f64::from_bits(1), -f64::from_bits(2))),
     ] {
         let actual = point_support

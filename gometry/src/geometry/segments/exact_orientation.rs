@@ -234,7 +234,7 @@ mod tests {
     fn stored_orientation_preserves_all_underflow_ray_permutations() {
         let mu = f64::from_bits(1);
         let a = (1.0, -4096.0 * mu);
-        let b = (-2.0_f64.powi(-12), 6144.0 * mu);
+        let b = (-(2.0_f64.powi(-12)), 6144.0 * mu);
         let p = (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
         for ((left, middle, right), expected) in [
             ((a, b, p), ExactSign::Positive),
@@ -266,7 +266,7 @@ mod tests {
             ),
             (
                 (1.0, -4096.0 * tiny),
-                (-2.0_f64.powi(-12), 6144.0 * tiny),
+                (-(2.0_f64.powi(-12)), 6144.0 * tiny),
                 (f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * tiny),
             ),
         ];

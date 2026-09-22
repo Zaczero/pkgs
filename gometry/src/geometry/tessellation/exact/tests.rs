@@ -230,7 +230,7 @@ fn incircle_cocircular_squares_underflow_to_opposite_wrong_signs() {
 fn orient2d_uses_the_shared_underflow_ray_resolver_for_all_permutations() {
     let mu = f64::from_bits(1);
     let a = XY::new(1.0, -4096.0 * mu);
-    let b = XY::new(-2.0_f64.powi(-12), 6144.0 * mu);
+    let b = XY::new(-(2.0_f64.powi(-12)), 6144.0 * mu);
     let p = XY::new(f64::from_bits(0x3FD9_9733_3333_3333), 2048.0 * mu);
     for ((left, middle, right), expected) in [
         ((a, b, p), ExactSign::Positive),
@@ -293,7 +293,7 @@ fn filtered_predicates_never_contradict_exact_signs() {
         (
             "underflow ray",
             XY::new(1.0, f64::from_bits(0x8000_0000_0000_1000)),
-            XY::new(-2.0_f64.powi(-12), f64::from_bits(0x1800)),
+            XY::new(-(2.0_f64.powi(-12)), f64::from_bits(0x1800)),
             XY::new(f64::from_bits(0x3FD9_9733_3333_3333), f64::from_bits(0x800)),
             ExactSign::Positive,
         ),
