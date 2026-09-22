@@ -208,7 +208,7 @@ impl PyCoordinates {
     /// the source row for each vertex of a ``GeometryArray``.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        int64_array(py, self.view.row_index_i64()?)
+        int64_array(py, self.view.row_index_i64())
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
@@ -277,10 +277,7 @@ impl PyCoordinates {
             dict.set_item("m", column_axis_to_py(py, slf.clone(), CoordinateAxis::M)?)?;
         }
         if index {
-            dict.set_item(
-                "index",
-                int64_array(py, slf.borrow().view.row_index_i64()?)?,
-            )?;
+            dict.set_item("index", int64_array(py, slf.borrow().view.row_index_i64())?)?;
         }
         Ok(dict)
     }

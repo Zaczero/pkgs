@@ -590,8 +590,7 @@ impl IndexRows {
     /// for compact nullable storage: its physical payload contains only
     /// present rows and can otherwise make a removed logical row live again.
     fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
-        let mut shapes = Vec::new();
-        crate::try_reserve_vec(&mut shapes, self.live_count)?;
+        let mut shapes = Vec::with_capacity(self.live_count);
         let mut rows = self.operation();
         for handle in 0..self.len() {
             if self.is_live(handle) {
@@ -599,7 +598,7 @@ impl IndexRows {
                     .row(handle)?
                     .with_shape(std::clone::Clone::clone)
                     .map_err(pyo3::PyErr::from)?;
-                crate::try_push_vec(&mut shapes, shape).map_err(pyo3::PyErr::from)?;
+                shapes.push(shape);
             }
         }
         let present = PyGeometryArray::from_shapes(shapes, frame)?;
@@ -614,13 +613,9 @@ impl IndexRows {
         Ok(PyGeometryArray::scatter_present_rows(&present, missing)?)
     }
 
-    /// Admit both persistent column layouts before reserving their storage.
-    fn try_reserve(&mut self, additional: usize) -> PyResult<()> {
-        Ok(crate::boundary::try_reserve_pair(
-            &mut self.boxed,
-            &mut self.live,
-            additional,
-        )?)
+    fn reserve_insert(&mut self, additional: usize) {
+        self.boxed.reserve(additional);
+        self.live.reserve(additional);
     }
 
     fn is_live(&self, handle: usize) -> bool {

@@ -166,8 +166,6 @@ fn replacement_from_coordinates_view(
             positional: true,
         });
     }
-    std::alloc::Layout::array::<f64>(expected_len)
-        .map_err(|_| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))?;
     let mut xs = Vec::with_capacity(expected_len);
     let mut ys = Vec::with_capacity(expected_len);
     let mut zs = axes.has_z().then(|| Vec::with_capacity(expected_len));

@@ -135,7 +135,7 @@ pub(crate) fn column_axis_to_py(
 ) -> PyResult<Py<PyAny>> {
     let owner = slf.clone().into_any();
     let this = slf.borrow();
-    match this.view.column(axis)? {
+    match this.view.column(axis) {
         coordinates::CoordinateColumnRef::Missing => {
             let mut values = crate::try_vec_with_capacity(this.view.len())?;
             for _ in 0..this.view.len() {
@@ -257,7 +257,7 @@ pub(crate) fn get_coordinates(
     };
     let matrix = float64_matrix(py, data, rows, dims)?;
     if return_index {
-        let indexes = int64_array(py, view.row_index_i64()?)?;
+        let indexes = int64_array(py, view.row_index_i64())?;
         Ok((matrix, indexes).into_pyobject(py)?.unbind().into())
     } else {
         Ok(matrix)

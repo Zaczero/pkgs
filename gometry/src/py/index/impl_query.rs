@@ -397,13 +397,8 @@ impl PySpatialIndex {
                 }),
             ))
         }) {
-            Ok(Ok(Some(caps))) => Some(Arc::new(caps)),
-            Ok(Ok(None)) | Err(_) => None,
-            Ok(Err(error)) => {
-                drop(products);
-                drop(cache);
-                return Err(error.into());
-            },
+            Ok(Some(caps)) => Some(Arc::new(caps)),
+            Ok(None) | Err(_) => None,
         };
         *cache = GeodesicCapsCache {
             row_count: self.rows.len(),

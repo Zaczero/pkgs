@@ -373,7 +373,7 @@ impl CoordinateView {
     }
 
     /// Resolve one axis to a borrowed or materialized column.
-    pub fn column(&self, axis: CoordinateAxis) -> crate::error::Result<CoordinateColumnRef<'_>> {
+    pub fn column(&self, axis: CoordinateAxis) -> CoordinateColumnRef<'_> {
         if let CoordinateOwner::Array {
             storage,
             missing: None,
@@ -381,7 +381,7 @@ impl CoordinateView {
             && let GeometryArrayStorage::Packed(packed) = storage.as_ref()
             && let Some((coords, span)) = packed_contiguous_coord_span(packed)
         {
-            return Ok(borrowed_axis(coords, span, axis));
+            return borrowed_axis(coords, span, axis);
         }
         if let CoordinateOwner::Array { storage, missing } = &self.owner
             && let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
@@ -394,22 +394,22 @@ impl CoordinateView {
                 CoordinateAxis::Y => coords.ys(),
                 CoordinateAxis::Z => {
                     let Some(zs) = coords.zs() else {
-                        return Ok(CoordinateColumnRef::Missing);
+                        return CoordinateColumnRef::Missing;
                     };
                     zs
                 },
                 CoordinateAxis::M => {
                     let Some(ms) = coords.ms() else {
-                        return Ok(CoordinateColumnRef::Missing);
+                        return CoordinateColumnRef::Missing;
                     };
                     ms
                 },
             };
             let out = map.iter().map(|&row| values[row]).collect();
-            return Ok(CoordinateColumnRef::Dense(out));
+            return CoordinateColumnRef::Dense(out);
         }
         if let Some(seq) = self.single_seq() {
-            return Ok(match axis {
+            return match axis {
                 CoordinateAxis::X => CoordinateColumnRef::Borrowed(seq.xs()),
                 CoordinateAxis::Y => CoordinateColumnRef::Borrowed(seq.ys()),
                 CoordinateAxis::Z => seq
@@ -418,14 +418,14 @@ impl CoordinateView {
                 CoordinateAxis::M => seq
                     .ms()
                     .map_or(CoordinateColumnRef::Missing, CoordinateColumnRef::Borrowed),
-            });
+            };
         }
-        Ok(match axis {
-            CoordinateAxis::X => CoordinateColumnRef::Dense(self.gather_ordinate(|point| point.x)?),
-            CoordinateAxis::Y => CoordinateColumnRef::Dense(self.gather_ordinate(|point| point.y)?),
-            CoordinateAxis::Z => self.gather_optional(Point::z)?,
-            CoordinateAxis::M => self.gather_optional(Point::m)?,
-        })
+        match axis {
+            CoordinateAxis::X => CoordinateColumnRef::Dense(self.gather_ordinate(|point| point.x)),
+            CoordinateAxis::Y => CoordinateColumnRef::Dense(self.gather_ordinate(|point| point.y)),
+            CoordinateAxis::Z => self.gather_optional(Point::z),
+            CoordinateAxis::M => self.gather_optional(Point::m),
+        }
     }
 
     /// Stream every flattened coordinate without
@@ -489,7 +489,7 @@ impl CoordinateView {
     /// Per-coordinate geometry-row index (all `0` for a scalar geometry; the
     /// logical source row for an array owner). Backs `coords.row_index`.
     #[cfg(test)]
-    pub fn row_index(&self) -> crate::error::Result<Vec<usize>> {
+    pub fn row_index(&self) -> Vec<usize> {
         self.row_index_cast(|row| row)
     }
 
@@ -497,17 +497,15 @@ impl CoordinateView {
     /// coordinate-run altitude (CSR window fills / one fill per run) rather
     /// than per-vertex push. Mirrors [`row_index`] for the `Coordinates.index`
     /// getter and `get_coordinates(..., return_index=True)`.
-    pub fn row_index_i64(&self) -> crate::error::Result<Vec<i64>> {
+    pub fn row_index_i64(&self) -> Vec<i64> {
         self.row_index_cast(|row| row as i64)
     }
 
     /// Shared run-wise row-index emitter. Identity packed storage fills from
     /// CSR offsets (or the point column length); every other owner walks
     /// coordinate runs once and fills each run's span with its logical row id.
-    fn row_index_cast<T: Copy>(&self, cast: impl Fn(usize) -> T) -> crate::error::Result<Vec<T>> {
+    fn row_index_cast<T: Copy>(&self, cast: impl Fn(usize) -> T) -> Vec<T> {
         let capacity = self.len();
-        std::alloc::Layout::array::<T>(capacity)
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let zero = cast(0);
 
         if let CoordinateOwner::Array {
@@ -519,7 +517,7 @@ impl CoordinateView {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
                     if row_map.is_identity() =>
                 {
-                    return Ok((0..coords.len()).map(cast).collect());
+                    return (0..coords.len()).map(cast).collect();
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..
@@ -531,7 +529,7 @@ impl CoordinateView {
                         let end = end as usize;
                         indexes[start..end].fill(cast(row));
                     }
-                    return Ok(indexes);
+                    return indexes;
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     ring_offsets,
@@ -552,7 +550,7 @@ impl CoordinateView {
                         let end = rings[ring_end] as usize;
                         indexes[start..end].fill(cast(row));
                     }
-                    return Ok(indexes);
+                    return indexes;
                 },
                 _ => {},
             }
@@ -560,7 +558,7 @@ impl CoordinateView {
 
         // Scalar geometry: every coordinate belongs to the single owner (id 0).
         if matches!(&self.owner, CoordinateOwner::Shape(_)) {
-            return Ok(vec![zero; capacity]);
+            return vec![zero; capacity];
         }
 
         // Mask / gather / window / mixed: one fill per coordinate run, logical
@@ -578,7 +576,7 @@ impl CoordinateView {
             remaining = rest;
         });
         debug_assert!(remaining.is_empty());
-        Ok(indexes)
+        indexes
     }
 
     /// The coordinate at `index` (flattened), or `None` if out of range.
@@ -759,13 +757,11 @@ impl CoordinateView {
         }
     }
 
-    fn gather_ordinate(&self, project: impl Fn(Point) -> f64) -> crate::error::Result<Vec<f64>> {
+    fn gather_ordinate(&self, project: impl Fn(Point) -> f64) -> Vec<f64> {
         let count = self.len();
-        std::alloc::Layout::array::<f64>(count)
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let mut out = Vec::with_capacity(count);
         self.for_each_point(|point| out.push(project(point)));
-        Ok(out)
+        out
     }
 }
 
@@ -1136,10 +1132,7 @@ fn visible_coordinate_bits(
 }
 
 impl CoordinateView {
-    fn gather_optional(
-        &self,
-        project: impl Fn(Point) -> Option<f64>,
-    ) -> crate::error::Result<CoordinateColumnRef<'_>> {
+    fn gather_optional(&self, project: impl Fn(Point) -> Option<f64>) -> CoordinateColumnRef<'_> {
         // One pass into a dense f64 lane + 1-byte presence mask (≈9 B/coord).
         // Homogeneous present → Dense (no Option). Fully absent → Missing.
         // Mixed → Nullable once at the end so list paths keep None for absent
@@ -1147,8 +1140,6 @@ impl CoordinateView {
         // (a NaN-only lane would collapse the two). Peak is the dense+mask
         // working set, not a 16 B Option lane overlapping a dense prefix.
         let capacity = self.len();
-        std::alloc::Layout::array::<f64>(capacity)
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let mut values = Vec::with_capacity(capacity);
         let mut present = Vec::with_capacity(capacity);
         let mut any = false;
@@ -1168,19 +1159,17 @@ impl CoordinateView {
             present.push(is_present);
         });
         if !any {
-            return Ok(CoordinateColumnRef::Missing);
+            return CoordinateColumnRef::Missing;
         }
         if all_present {
-            return Ok(CoordinateColumnRef::Dense(values));
+            return CoordinateColumnRef::Dense(values);
         }
-        std::alloc::Layout::array::<Option<f64>>(values.len())
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let nullable = values
             .into_iter()
             .zip(present)
             .map(|(value, is_present)| is_present.then_some(value))
             .collect();
-        Ok(CoordinateColumnRef::Nullable(nullable))
+        CoordinateColumnRef::Nullable(nullable)
     }
 }
 
@@ -1270,11 +1259,11 @@ mod tests {
         assert_eq!(seq.xs(), &[0.0, 1.0, 3.0]);
         assert_eq!(seq.ys(), &[0.0, 2.0, 4.0]);
         assert!(matches!(
-            view.column(CoordinateAxis::X).unwrap(),
+            view.column(CoordinateAxis::X),
             CoordinateColumnRef::Borrowed(_)
         ));
         assert!(matches!(
-            view.column(CoordinateAxis::Z).unwrap(),
+            view.column(CoordinateAxis::Z),
             CoordinateColumnRef::Missing
         ));
     }
@@ -1297,7 +1286,7 @@ mod tests {
         assert_eq!(points[5], pt(1.0, 1.0));
         // X column over the multipart polygon materializes (no single run).
         assert!(matches!(
-            view.column(CoordinateAxis::X).unwrap(),
+            view.column(CoordinateAxis::X),
             CoordinateColumnRef::Dense(_)
         ));
     }
@@ -1338,7 +1327,7 @@ mod tests {
         assert_eq!(points[10], pt(10.0, 10.0));
         assert_eq!(points[13], pt(10.0, 11.0));
         assert_eq!(
-            array.coordinate_view().row_index_i64().unwrap(),
+            array.coordinate_view().row_index_i64(),
             [[0; 10].as_slice(), &[1; 5]].concat()
         );
 
@@ -1356,7 +1345,7 @@ mod tests {
         assert_eq!(gathered_points[5], pt(0.0, 0.0));
         assert_eq!(gathered_points[10], pt(1.0, 1.0));
         assert_eq!(
-            gathered.coordinate_view().row_index_i64().unwrap(),
+            gathered.coordinate_view().row_index_i64(),
             [[0; 5].as_slice(), &[1; 10]].concat()
         );
 
@@ -1367,7 +1356,7 @@ mod tests {
         let masked_points = masked_view.collect_points();
         assert_eq!(masked_view.len(), 10);
         assert_eq!(masked_points.len(), 10);
-        assert_eq!(masked_view.row_index_i64().unwrap(), vec![1; 10]);
+        assert_eq!(masked_view.row_index_i64(), vec![1; 10]);
         assert_eq!(masked_points[0], pt(0.0, 0.0));
         assert_eq!(masked_points[5], pt(1.0, 1.0));
     }
@@ -1385,8 +1374,8 @@ mod tests {
         let offsets = CsrOffsetColumn::try_new(vec![0, 2, 5], 5).unwrap();
         let array = PyGeometryArray::packed_lines(coords, offsets, Frame::default()).unwrap();
         let view = array.coordinate_view();
-        assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1, 1]);
-        assert_eq!(view.row_index().unwrap(), vec![0, 0, 1, 1, 1]);
+        assert_eq!(view.row_index_i64(), vec![0, 0, 1, 1, 1]);
+        assert_eq!(view.row_index(), vec![0, 0, 1, 1, 1]);
         assert!(view.single_seq().is_some());
     }
 
@@ -1421,7 +1410,7 @@ mod tests {
         .unwrap();
         let view = array.coordinate_view();
         // Row 0: shell (5) + hole (5); row 1: shell (5).
-        assert_eq!(view.row_index_i64().unwrap(), vec![
+        assert_eq!(view.row_index_i64(), vec![
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1
         ]);
     }
@@ -1447,7 +1436,7 @@ mod tests {
         .unwrap();
         let view = gathered.coordinate_view();
         // Logical row 0 = physical 2 (2 verts); logical row 1 = physical 0 (2 verts).
-        assert_eq!(view.row_index_i64().unwrap(), vec![0, 0, 1, 1]);
+        assert_eq!(view.row_index_i64(), vec![0, 0, 1, 1]);
         let points = view.collect_points();
         assert_eq!(points[0], pt(4.0, 0.0));
         assert_eq!(points[2], pt(0.0, 0.0));
@@ -1469,7 +1458,7 @@ mod tests {
         assert_eq!(points[0], pt(9.0, 9.0));
         assert_eq!(points[1], pt(0.0, 0.0));
         assert_eq!(points[2], pt(1.0, 1.0));
-        assert_eq!(view.row_index().unwrap(), vec![0, 0, 0]);
+        assert_eq!(view.row_index(), vec![0, 0, 0]);
     }
 
     #[test]
@@ -1493,7 +1482,7 @@ mod tests {
         ])
         .expect("test collection is valid");
         let view = CoordinateView::from_shape(Arc::new(ShapeData::new(collection)));
-        match view.column(CoordinateAxis::Z).unwrap() {
+        match view.column(CoordinateAxis::Z) {
             CoordinateColumnRef::Nullable(values) => {
                 assert_eq!(values.len(), 3);
                 assert_eq!(values[0], None);
@@ -1649,23 +1638,23 @@ mod tests {
         let array = packed_polygons(coords.clone(), vec![0, 5, 10, 15], vec![0, 1, 2, 3], 1..2);
         let view = array.coordinate_view();
         let (_, allocations) =
-            crate::test_support::allocation_count(|| view.column(CoordinateAxis::X).unwrap());
+            crate::test_support::allocation_count(|| view.column(CoordinateAxis::X));
         assert_eq!(allocations, 0);
-        match view.column(CoordinateAxis::X).unwrap() {
+        match view.column(CoordinateAxis::X) {
             CoordinateColumnRef::Borrowed(column) => {
                 assert_eq!(column, &coords.xs()[5..10]);
                 assert_eq!(column.as_ptr(), coords.xs()[5..10].as_ptr());
             },
             _ => panic!("expected borrowed X"),
         }
-        match view.column(CoordinateAxis::Z).unwrap() {
+        match view.column(CoordinateAxis::Z) {
             CoordinateColumnRef::Borrowed(column) => {
                 assert_eq!(column, &zs[5..10]);
                 assert_eq!(column.as_ptr(), coords.zs().unwrap()[5..10].as_ptr());
             },
             _ => panic!("expected borrowed Z"),
         }
-        match view.column(CoordinateAxis::M).unwrap() {
+        match view.column(CoordinateAxis::M) {
             CoordinateColumnRef::Borrowed(column) => {
                 assert_eq!(column, &m_owner.as_slice()[8..13]);
                 assert_eq!(column.as_ptr(), m_owner.as_slice()[8..13].as_ptr());
@@ -1684,11 +1673,11 @@ mod tests {
             1..2,
         );
         assert!(matches!(
-            xy_only.coordinate_view().column(CoordinateAxis::Z).unwrap(),
+            xy_only.coordinate_view().column(CoordinateAxis::Z),
             CoordinateColumnRef::Missing
         ));
         assert!(matches!(
-            xy_only.coordinate_view().column(CoordinateAxis::M).unwrap(),
+            xy_only.coordinate_view().column(CoordinateAxis::M),
             CoordinateColumnRef::Missing
         ));
         assert!(!view.equal_visible(&xy_only.coordinate_view(), None, None));
@@ -1721,9 +1710,9 @@ mod tests {
         .unwrap();
         let view = array.coordinate_view();
         let (_, allocations) =
-            crate::test_support::allocation_count(|| view.column(CoordinateAxis::X).unwrap());
+            crate::test_support::allocation_count(|| view.column(CoordinateAxis::X));
         assert_eq!(allocations, 0);
-        match view.column(CoordinateAxis::X).unwrap() {
+        match view.column(CoordinateAxis::X) {
             CoordinateColumnRef::Borrowed(xs) => {
                 assert_eq!(xs, &coords.xs()[2..7]);
                 assert_eq!(xs.as_ptr(), coords.xs()[2..7].as_ptr());

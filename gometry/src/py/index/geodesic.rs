@@ -429,23 +429,20 @@ impl GeodesicRowCaps {
         shape: crs::EllipsoidShape,
         row_count: usize,
         live: impl Iterator<Item = (usize, Option<(Point, f64)>)>,
-    ) -> crate::error::Result<Option<Self>> {
+    ) -> Option<Self> {
         let major = shape.semi_major.get();
         let flattening = shape.flattening;
         let one_minus_f = 1.0 - flattening;
-        let mut anchors = Vec::new();
-        let mut reaches = Vec::new();
-        crate::boundary::try_reserve_pair(&mut anchors, &mut reaches, row_count)?;
-        anchors.resize(row_count, (Radians(0.0), Radians(0.0)));
-        reaches.resize(row_count, 0.0);
+        let mut anchors = vec![(Radians(0.0), Radians(0.0)); row_count];
+        let mut reaches = vec![0.0; row_count];
         for (handle, row) in live {
             let Some((anchor, reach)) = row else {
-                return Ok(None);
+                return None;
             };
             if !(-180.0..=180.0).contains(&anchor.x) || !(-90.0..=90.0).contains(&anchor.y) {
                 // Out-of-domain rows must reach the exact path so they raise
                 // its domain error instead of being silently pruned.
-                return Ok(None);
+                return None;
             }
             *anchors
                 .get_mut(handle)
@@ -457,13 +454,13 @@ impl GeodesicRowCaps {
                 .get_mut(handle)
                 .expect("live handle is within row storage") = reach;
         }
-        Ok(Some(Self {
+        Some(Self {
             minor_radius: major * one_minus_f,
             backend_floor: crate::geometry::GeodesicNumericalPolicy::new(major).backend_floor(),
             one_minus_f,
             anchors,
             reaches,
-        }))
+        })
     }
 
     /// The query side of the bound: a reduced anchor for `point`. `None`

@@ -167,9 +167,6 @@ impl PySpatialIndex {
         self.check_insert_frame(&array.frame)?;
         let adopt_frame = self.metadata.is_none().then(|| array.frame.clone());
         let start = self.rows.len();
-        std::alloc::Layout::array::<PyGeometry>(len)
-            .and_then(|_| std::alloc::Layout::array::<IndexEntry>(len))
-            .map_err(|_| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))?;
         let mut entries = Vec::with_capacity(len);
         let mut items = Vec::with_capacity(len);
         let mut entry_counts = Vec::with_capacity(len);
@@ -258,7 +255,7 @@ impl PySpatialIndex {
             .map_err(crate::error::Error::from)
             .map_err(pyo3::PyErr::from)?;
         let prepared = self.overflow.prepare_insert(&entries, total_rows)?;
-        self.rows.try_reserve(count)?;
+        self.rows.reserve_insert(count);
         self.overflow
             .try_reserve_entry_counts(count)
             .map_err(pyo3::PyErr::from)?;

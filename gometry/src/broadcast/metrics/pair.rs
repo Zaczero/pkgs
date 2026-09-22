@@ -269,8 +269,6 @@ fn compact_lonlat_points(
     array: &PyGeometryArray,
 ) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
     let projected_crs = array.crs_str().filter(|crs| !crs::is_wgs84_lonlat(crs));
-    std::alloc::Layout::array::<f64>(array.len())
-        .map_err(|_| LonLatPointsError::Setup(crate::error::ResourceError::SizeOverflow.into()))?;
     let mut xs = Vec::with_capacity(array.len());
     let mut ys = Vec::with_capacity(array.len());
     let mut present = Vec::with_capacity(array.len());
