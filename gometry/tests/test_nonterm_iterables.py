@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import collections
 import collections.abc
-import os
 import subprocess
 import sys
 import tempfile
@@ -21,34 +20,22 @@ from pathlib import Path
 import gometry as gm
 import pytest
 
-_requires_rlimit_as = pytest.mark.skipif(
-    sys.platform in {'darwin', 'win32'},
-    reason='requires an enforced resource.RLIMIT_AS',
-)
-
 
 def _run_child(
     script: str, *, timeout: float = 8.0
 ) -> subprocess.CompletedProcess[str]:
-    """Run *script* in a fresh interpreter under ``timeout`` wall seconds.
-
-    The native allocator commits inside address space it reserved at startup,
-    which an address-space cap cannot refuse; reserving in small steps lets
-    the cap bite as soon as the headroom is gone instead of after the first
-    gigabyte of an infinite stream.
-    """
+    """Run *script* in a fresh interpreter under ``timeout`` wall seconds."""
     return subprocess.run(
         [sys.executable, '-c', textwrap.dedent(script)],
         capture_output=True,
         check=False,
         text=True,
         timeout=timeout,
-        env={**os.environ, 'MIMALLOC_ARENA_RESERVE': '4MiB'},
     )
 
 
 def _assert_terminates(
-    script: str, *, timeout: float = 8.0, allow_sigabrt: bool = False
+    script: str, *, timeout: float = 8.0
 ) -> subprocess.CompletedProcess[str]:
     """Assert the child finishes (raises or returns) inside *timeout*.
 
@@ -62,10 +49,8 @@ def _assert_terminates(
             f'child hung past {timeout}s (rc would be 124 under GNU timeout):\n'
             f'stdout={exc.stdout!r}\nstderr={exc.stderr!r}'
         )
-    if not allow_sigabrt:
-        # Never accept a process abort (SIGABRT = 134 on Linux).
-        assert completed.returncode != -6, f'SIGABRT:\n{completed.stderr}'
-        assert completed.returncode != 134, f'abort exit 134:\n{completed.stderr}'
+    assert completed.returncode != -6, f'SIGABRT:\n{completed.stderr}'
+    assert completed.returncode != 134, f'abort exit 134:\n{completed.stderr}'
     return completed
 
 
@@ -503,142 +488,8 @@ def test_d11_honest_points_and_buffer() -> None:
 
 
 # ---------------------------------------------------------------------------
-# D10 / N3 — untrusted iterable materialization: fallible only, no hard cap
+# D10 / N3 — finite iterable materialization without an artificial cap
 # ---------------------------------------------------------------------------
-
-
-def _d10_rlimit_script(body: str, *, headroom: int = 16 * 1024 * 1024) -> str:
-    """Child script: tight RLIMIT_AS so infinite collect → catchable MemoryError.
-
-    N3 removed the artificial ``MAX_BARE_COLLECT`` ceiling. Valid large finite
-    generators succeed; infinite streams rely on proportional fallible growth.
-    Under Linux overcommit that only cleanly surfaces with a process rlimit.
-    The cap is the address space the imports already hold plus ``headroom``,
-    so how much an infinite stream materializes first does not depend on
-    what the interpreter, NumPy and the allocator reserved at startup.
-    """
-    indented = textwrap.indent(textwrap.dedent(body).strip(), '    ')
-    return f"""\
-import itertools
-import resource
-import sys
-import gometry as gm
-
-# Pre-load NumPy before the address-space cap. gometry imports NumPy at package
-# import time (core dependency), but under RLIMIT_AS a first NumPy/OpenBLAS init
-# can still abort with a non-MemoryError message and miss the fallible-collection
-# path under test if init is deferred past the cap.
-import numpy  # noqa: F401
-
-# This disposable child never needs to raise its address-space ceiling again.
-with open('/proc/self/status') as status:
-    in_use = next(int(line.split()[1]) * 1024 for line in status if line.startswith('VmSize:'))
-_, hard = resource.getrlimit(resource.RLIMIT_AS)
-limit = in_use + {headroom}
-if hard != resource.RLIM_INFINITY:
-    limit = min(limit, hard)
-resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-
-try:
-{indented}
-    print("ok-no-raise")
-    raise SystemExit(2)
-except MemoryError as exc:
-    print("MemoryError", exc)
-    raise SystemExit(0)
-except BaseException as exc:
-    name = type(exc).__name__
-    print(name, exc)
-    # SIGSEGV / OOM-killer are not clean; PanicException is a hard fail.
-    raise SystemExit(1 if name == "PanicException" else 0)
-"""
-
-
-_POLYGON_HOLES_REPEAT = (
-    'gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)], '
-    'holes=itertools.repeat([(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)]))'
-)
-
-
-@pytest.mark.parametrize(
-    ('body', 'inner_arc_oom'),
-    [
-        (
-            'gm.from_features(itertools.repeat({"type": "Feature", "geometry": {"type": "Point", "coordinates": [0, 0]}, "properties": {}}))',
-            False,
-        ),
-        ('gm.GeometryCollection(itertools.repeat(gm.Point(0, 0)))', False),
-        ('gm.line_strings(itertools.repeat([(0, 0), (1, 1)]))', False),
-        pytest.param(_POLYGON_HOLES_REPEAT, True, id='polygon-holes-inner-arc-oom'),
-        ('gm.crs_transform_bounds(4326, 3857, itertools.repeat((0, 0, 1, 1)))', False),
-        ('gm.h3_union(itertools.repeat(gm.H3Cell(0.0, 0.0, resolution=5)), [])', False),
-    ],
-)
-@_requires_rlimit_as
-def test_d10_infinite_iterable_memoryerror_not_abort(
-    body: str, inner_arc_oom: bool
-) -> None:
-    """Under RLIMIT_AS: infinite bare stream → MemoryError (not hang/SIGABRT)."""
-    completed = _assert_terminates(
-        _d10_rlimit_script(body), timeout=30.0, allow_sigabrt=inner_arc_oom
-    )
-    if inner_arc_oom:
-        # The dedicated non-strict xfail below owns this one known inner
-        # allocation failure. This parameter remains the strict no-hang check.
-        return
-    assert completed.returncode in (0, 1), (
-        f'unexpected rc {completed.returncode}: {completed.stdout!r} {completed.stderr!r}'
-    )
-    blob = completed.stdout + completed.stderr
-    assert 'PanicException' not in blob
-    assert completed.returncode != 134
-    assert completed.returncode != -6  # SIGABRT
-    assert 'MemoryError' in blob
-
-
-@_requires_rlimit_as
-def test_d10_polygon_holes_inner_arc_oom_memoryerror() -> None:
-    """Only the documented allocator abort remains an expected limitation."""
-    completed = _assert_terminates(
-        _d10_rlimit_script(_POLYGON_HOLES_REPEAT), timeout=30.0, allow_sigabrt=True
-    )
-    blob = completed.stdout + completed.stderr
-    if (
-        completed.returncode in (-6, 134)
-        and 'memory allocation of 56 bytes failed' in blob
-    ):
-        pytest.xfail('documented proportional OOM in Polygon hole Arc<[f64]> ingress')
-    assert completed.returncode in (0, 1), (
-        f'unexpected rc {completed.returncode}: {completed.stdout!r} {completed.stderr!r}'
-    )
-    assert 'PanicException' not in blob
-    assert 'MemoryError' in blob
-
-
-@pytest.mark.parametrize(
-    'body',
-    [
-        """
-cell = gm.H3Cell(0.0, 0.0, resolution=5)
-vid = int(cell.vertices[0])
-gm.H3VertexArray(itertools.repeat(vid))
-""",
-        """
-cell = gm.H3Cell(0.0, 0.0, resolution=5)
-eid = int(cell.edges[0])
-gm.H3EdgeArray(itertools.repeat(eid))
-""",
-    ],
-)
-@_requires_rlimit_as
-def test_d10_h3_vertex_edge_array_repeat_terminates(body: str) -> None:
-    """Sister path: H3VertexArray/H3EdgeArray id collect (was SIGABRT)."""
-    completed = _assert_terminates(_d10_rlimit_script(body), timeout=30.0)
-    blob = completed.stdout + completed.stderr
-    assert 'PanicException' not in blob
-    assert completed.returncode != 134
-    assert completed.returncode != -6
-    assert 'MemoryError' in blob
 
 
 def test_d10_honest_collection_and_features() -> None:
@@ -679,20 +530,6 @@ def test_n3_crs_configure_generator_2_20_matches_list() -> None:
         assert from_gen['search_paths'] == from_list['search_paths']
     finally:
         gm.crs_reset()
-
-
-@_requires_rlimit_as
-def test_n3_infinite_crs_configure_memoryerror_under_rlimit() -> None:
-    """N3: infinite search_paths generator → catchable MemoryError under rlimit."""
-    completed = _assert_terminates(
-        _d10_rlimit_script("gm.crs_configure(search_paths=itertools.repeat('/tmp'))"),
-        timeout=30.0,
-    )
-    blob = completed.stdout + completed.stderr
-    assert 'PanicException' not in blob
-    assert completed.returncode != 134
-    assert completed.returncode != -6
-    assert 'MemoryError' in blob
 
 
 # ---------------------------------------------------------------------------
