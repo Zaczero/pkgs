@@ -34,9 +34,12 @@ impl PyGeometryArray {
     /// Present row shapes as owned values for n-ary kernels that stage a
     /// coverage or noding universe.
     pub(crate) fn present_shapes(&self) -> crate::error::Result<Vec<Shape>> {
-        let mut shapes = Vec::new();
+        let mut shapes = Vec::with_capacity(
+            self.missing()
+                .map_or(self.len(), ValidityMask::present_count),
+        );
         for row in self.present_shape_rows() {
-            crate::try_push_vec(&mut shapes, row?.1)?;
+            shapes.push(row?.1);
         }
         Ok(shapes)
     }
@@ -76,11 +79,11 @@ impl PyGeometryArray {
     {
         use pyo3::IntoPyObjectExt as _;
         let Some(mask) = self.missing() else {
-            return rows
-                .into_iter()
-                .map(|(_, value)| value)
-                .collect::<Vec<_>>()
-                .into_py_any(py);
+            return Ok(
+                pyo3::types::PyList::new(py, rows.into_iter().map(|(_, value)| value))?
+                    .into_any()
+                    .unbind(),
+            );
         };
         let mut present = rows.into_iter();
         let out: Vec<Py<PyAny>> = mask
@@ -101,5 +104,37 @@ impl PyGeometryArray {
         let exhausted = present.next().is_none();
         debug_assert!(exhausted);
         out.into_py_any(py)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use pyo3::prelude::*;
+
+    use super::*;
+    use crate::boundary::Frame;
+    use crate::geometry::Point;
+
+    #[test]
+    fn dense_row_list_publishes_without_native_staging() {
+        Python::initialize();
+        let array = PyGeometryArray::from_shapes(
+            vec![
+                Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+                Shape::Point(Point::new_raw_xy(1.0, 1.0)),
+            ],
+            Frame::None,
+        )
+        .unwrap();
+        Python::attach(|py| {
+            let rows = vec![(0, "first".to_owned()), (1, "second".to_owned())];
+            let output = crate::test_support::assert_no_allocations(|| {
+                array.masked_present_row_list(py, rows)
+            })
+            .unwrap();
+            assert_eq!(output.bind(py).extract::<Vec<String>>().unwrap(), [
+                "first", "second"
+            ],);
+        });
     }
 }

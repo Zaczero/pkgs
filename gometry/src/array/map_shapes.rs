@@ -17,25 +17,18 @@ fn try_map_shape_rows<T, E>(
 where
     E: From<crate::error::Error>,
 {
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(
-        &mut output,
+    let mut output = Vec::with_capacity(
         array
             .missing()
             .map_or(array.len(), |mask| mask.present_count()),
-    )
-    .map_err(|error| (0, E::from(error)))?;
-    let mut apply = |shape: &Shape, row| match transform(shape, row) {
-        Ok(value) => {
-            crate::boundary::try_push_vec(&mut output, value)
-                .map_err(|error| (row, E::from(error)))?;
-            Ok(())
-        },
-        Err(error) => Err((row, error)),
-    };
-    for result in array.present_shape_rows() {
-        let (row, shape) = result.map_err(|error| (0, E::from(error)))?;
-        apply(&shape, row)?;
+    );
+    for row in array.row_operation().present_rows() {
+        let logical = row.logical();
+        let value = row
+            .row()
+            .try_with_shape(|shape| transform(shape, logical))
+            .map_err(|error| (logical, error))?;
+        output.push(value);
     }
     Ok(output)
 }
@@ -46,8 +39,7 @@ fn rebuild_shared_mixed(
     changed_present: Vec<Option<Shape>>,
 ) -> Result<PyGeometryArray> {
     let mut changed = changed_present.into_iter();
-    let mut mapped = Vec::new();
-    crate::boundary::try_reserve_vec(&mut mapped, shapes.len())?;
+    let mut mapped = Vec::with_capacity(shapes.len());
     for (row, shape) in shapes.iter().enumerate() {
         let mapped_shape = {
             if source.missing().is_some_and(|mask| mask.is_missing(row)) {
@@ -59,7 +51,7 @@ fn rebuild_shared_mixed(
                     .unwrap_or_else(|| shape.clone())
             }
         };
-        crate::boundary::try_push_vec(&mut mapped, mapped_shape)?;
+        mapped.push(mapped_shape);
     }
     let exhausted = changed.next().is_none();
     debug_assert!(exhausted);
