@@ -20,31 +20,6 @@ use crate::py::support;
 use crate::py::vectors::Groups;
 
 impl PyGeometryArray {
-    /// Per-row export rows as a Python list with ``None`` at missing rows —
-    /// the masked exit shared by ``to_wkt``/``to_wkb``/``to_geojson``.
-    pub(crate) fn masked_row_list<T>(&self, py: Python<'_>, rows: Vec<T>) -> PyResult<Py<PyAny>>
-    where
-        T: for<'py> pyo3::IntoPyObjectExt<'py>,
-    {
-        use pyo3::IntoPyObjectExt as _;
-        match self.missing() {
-            None => rows.into_py_any(py),
-            Some(mask) => {
-                let mut output = Vec::new();
-                for (row, value) in rows.into_iter().enumerate() {
-                    let value = if mask.is_missing(row) {
-                        py.None()
-                    } else {
-                        value.into_py_any(py)?
-                    };
-                    output.push(value);
-                }
-                let rows = output;
-                rows.into_py_any(py)
-            },
-        }
-    }
-
     pub(crate) fn to_wkt_impl(
         &self,
         py: Python<'_>,
