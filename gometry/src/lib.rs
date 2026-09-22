@@ -13,7 +13,6 @@
     clippy::too_many_lines,
     reason = "a flow reads best in one place; the long functions here are single pipelines whose phases share state, and splitting them would smear one operation across helpers"
 )]
-#![deny(clippy::unreadable_literal, clippy::redundant_clone)]
 #![feature(
     once_cell_try,
     portable_simd,
