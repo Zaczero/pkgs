@@ -546,8 +546,7 @@ impl PyGeometryArray {
     }
 
     pub(crate) fn quantize_unary_packed(&self, _py: Python<'_>, precision: i32) -> PyResult<Self> {
-        if let Some(axes) = self.uniform_axes()?
-            && !matches!(self.storage(), GeometryArrayStorage::Mixed(_))
+        if let Some(axes) = self.storage().packed_axes()
             && let Some(mapped) = Python::attach(|py| {
                 self.map_packed_points_detached(py, self.frame.clone(), axes, move |point| {
                     Ok(point.quantize(precision))

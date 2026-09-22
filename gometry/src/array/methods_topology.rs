@@ -361,7 +361,7 @@ impl PyGeometryArray {
         }
         if value.is_some()
             && !overwrite
-            && self.uniform_axes()?.is_some_and(|axes| ordinate.has(axes))
+            && self.uniform_axes().is_some_and(|axes| ordinate.has(axes))
         {
             return Ok(self.clone());
         }

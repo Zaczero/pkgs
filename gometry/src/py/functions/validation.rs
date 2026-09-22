@@ -6,6 +6,7 @@
 
 use pyo3::prelude::*;
 
+use crate::array::GeometryArrayStorage;
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
 use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
@@ -229,46 +230,47 @@ fn require_array_contract(
         array = array.retag_frame(frame);
     }
     if let Some(axes) = axes {
-        let axes_diagnostic = if let Some(actual) = array.storage().packed_axes() {
-            (actual != axes).then(|| {
-                let row = array
-                    .row_operation()
-                    .present_rows()
-                    .next()
-                    .map(|row| row.logical());
-                (format!("{:?}", actual.as_str()), row)
-            })
-        } else {
-            let mut seen: Vec<CoordinateAxes> = Vec::new();
-            let mut first_mismatch = None;
-            for row in array.row_operation().present_rows() {
-                let row_axes = row
-                    .row()
-                    .with_shape(|shape| shape.axes())
-                    .map_err(PyErr::from)?;
-                if !seen.contains(&row_axes) {
-                    seen.push(row_axes);
+        let axes_diagnostic = match array.storage() {
+            GeometryArrayStorage::Packed(packed) => {
+                let actual = packed.axes();
+                (actual != axes).then(|| {
+                    let row = array
+                        .row_operation()
+                        .present_rows()
+                        .next()
+                        .map(|row| row.logical());
+                    (format!("{:?}", actual.as_str()), row)
+                })
+            },
+            GeometryArrayStorage::Mixed(_) => {
+                let mut seen: Vec<CoordinateAxes> = Vec::new();
+                let mut first_mismatch = None;
+                for row in array.row_operation().present_rows() {
+                    let row_axes = row.row().axes();
+                    if !seen.contains(&row_axes) {
+                        seen.push(row_axes);
+                    }
+                    if first_mismatch.is_none() && row_axes != axes {
+                        first_mismatch = Some(row.logical());
+                    }
                 }
-                if first_mismatch.is_none() && row_axes != axes {
-                    first_mismatch = Some(row.logical());
-                }
-            }
-            let mismatch =
-                first_mismatch.is_some() || (seen.is_empty() && axes != CoordinateAxes::XY);
-            mismatch.then(|| {
-                let got = match seen.as_slice() {
-                    [] => format!("{:?}", CoordinateAxes::XY.as_str()),
-                    [one] => format!("{:?}", one.as_str()),
-                    many => format!(
-                        "mixed ({})",
-                        many.iter()
-                            .map(|axes| axes.as_str())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                };
-                (got, first_mismatch)
-            })
+                let mismatch =
+                    first_mismatch.is_some() || (seen.is_empty() && axes != CoordinateAxes::XY);
+                mismatch.then(|| {
+                    let got = match seen.as_slice() {
+                        [] => format!("{:?}", CoordinateAxes::XY.as_str()),
+                        [one] => format!("{:?}", one.as_str()),
+                        many => format!(
+                            "mixed ({})",
+                            many.iter()
+                                .map(|axes| axes.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        ),
+                    };
+                    (got, first_mismatch)
+                })
+            },
         };
         if let Some((got, row)) = axes_diagnostic {
             let issue = ValidationIssue::new(

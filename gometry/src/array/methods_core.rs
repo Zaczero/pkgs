@@ -212,7 +212,7 @@ fn replace_array_coordinates(
             .map_or(array.len(), crate::array::ValidityMask::present_count),
     );
     for row in array.row_operation().present_rows() {
-        let count = row.row().with_shape(|shape| shape.coord_count())?;
+        let count = row.row().coord_count();
         let sub = slice_replacement_for_shape(&replacement, present_cursor, count);
         present_cursor = present_cursor.wrapping_add(count);
         shapes.push(
@@ -491,16 +491,12 @@ impl PyGeometryArray {
     pub fn coordinate_axes_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let rows = self
             .row_operation()
-            .rows_with_missing(|| "")
+            .rows_with_missing(|| ())
             .map(|row| match row {
-                ArrayRow::Missing { value, .. } => Ok(value),
-                ArrayRow::Present(row) => row
-                    .row()
-                    .with_shape(|shape| shape.axes().as_str())
-                    .map_err(PyErr::from),
-            })
-            .collect::<pyo3::PyResult<Vec<_>>>()?;
-        self.masked_row_list(py, rows)
+                ArrayRow::Missing { .. } => None,
+                ArrayRow::Present(row) => Some(row.row().axes().as_str()),
+            });
+        Ok(PyList::new(py, rows)?.into_any().unbind())
     }
     /// Ordinate layout shared by every present row, or ``None`` when rows
     /// differ.
@@ -509,8 +505,8 @@ impl PyGeometryArray {
     /// -------
     /// str or None
     #[getter("common_coordinate_axes")]
-    pub fn coordinate_axes(&self) -> PyResult<Option<&'static str>> {
-        Ok(self.uniform_axes()?.map(geometry::CoordinateAxes::as_str))
+    pub fn coordinate_axes(&self) -> Option<&'static str> {
+        self.uniform_axes().map(geometry::CoordinateAxes::as_str)
     }
     /// Whether each geometry carries a Z ordinate. Missing rows are false.
     ///
@@ -524,12 +520,10 @@ impl PyGeometryArray {
             self.row_operation()
                 .rows_with_missing(|| false)
                 .map(|row| match row {
-                    ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(row) => {
-                        row.row().with_shape(Shape::has_z).map_err(PyErr::from)
-                    },
+                    ArrayRow::Missing { value, .. } => value,
+                    ArrayRow::Present(row) => row.row().axes().has_z(),
                 })
-                .collect::<pyo3::PyResult<Vec<_>>>()?,
+                .collect(),
         )
     }
     /// Whether each geometry carries an M ordinate. Missing rows are false.
@@ -544,12 +538,10 @@ impl PyGeometryArray {
             self.row_operation()
                 .rows_with_missing(|| false)
                 .map(|row| match row {
-                    ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(row) => {
-                        row.row().with_shape(Shape::has_m).map_err(PyErr::from)
-                    },
+                    ArrayRow::Missing { value, .. } => value,
+                    ArrayRow::Present(row) => row.row().axes().has_m(),
                 })
-                .collect::<pyo3::PyResult<Vec<_>>>()?,
+                .collect(),
         )
     }
     /// Per-geometry bounds ``(minx, miny, maxx, maxy)`` (see
@@ -618,45 +610,37 @@ impl PyGeometryArray {
     /// Returns
     /// -------
     /// list of str
-    pub fn _geoparquet_geometry_types(&self) -> PyResult<Vec<String>> {
+    pub fn _geoparquet_geometry_types(&self) -> Vec<String> {
         use std::collections::BTreeSet;
 
-        let mut labels = BTreeSet::new();
-        let mut kinds: BTreeSet<(&'static str, &'static str)> = BTreeSet::new();
-        let present = |row: usize| !self.is_row_missing(row);
-        match self.uniform_axes()? {
-            Some(axes) => {
-                let tag = axes.wkt_tag();
-                match self.storage() {
-                    GeometryArrayStorage::Packed(storage) => {
-                        if (0..self.len()).any(present) {
-                            labels.insert(format!("{}{tag}", storage.kind().geometry_type()));
-                        }
-                    },
-                    GeometryArrayStorage::Mixed(_) => {
-                        // Keyed by the two static strings, not formatted per
-                        // row: a million rows collapse to at most a dozen
-                        // labels, so only the survivors are built.
-                        for (row, shape) in self.storage().iter_shapes().enumerate() {
-                            let shape = shape.map_err(PyErr::from)?;
-                            if present(row) {
-                                kinds.insert((shape.geometry_type(), tag));
-                            }
-                        }
-                    },
+        match self.storage() {
+            GeometryArrayStorage::Packed(storage) => {
+                if self
+                    .missing()
+                    .map_or(self.len(), crate::array::ValidityMask::present_count)
+                    == 0
+                {
+                    return Vec::new();
                 }
+                vec![format!(
+                    "{}{}",
+                    storage.kind().geometry_type(),
+                    storage.axes().wkt_tag()
+                )]
             },
-            None => {
-                for (row, shape) in self.storage().iter_shapes().enumerate() {
-                    let shape = shape.map_err(PyErr::from)?;
-                    if present(row) {
+            GeometryArrayStorage::Mixed(shapes) => {
+                let mut kinds = BTreeSet::new();
+                for (row, shape) in shapes.iter().enumerate() {
+                    if !self.is_row_missing(row) {
                         kinds.insert((shape.geometry_type(), shape.axes().wkt_tag()));
                     }
                 }
+                kinds
+                    .into_iter()
+                    .map(|(kind, tag)| format!("{kind}{tag}"))
+                    .collect()
             },
         }
-        labels.extend(kinds.into_iter().map(|(kind, tag)| format!("{kind}{tag}")));
-        Ok(labels.into_iter().collect())
     }
     /// Top-level parts grouped by source row.
     ///
@@ -728,13 +712,10 @@ impl PyGeometryArray {
             self.row_operation()
                 .rows_with_missing(|| 0_i64)
                 .map(|row| match row {
-                    ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(row) => row
-                        .row()
-                        .with_shape(|shape| shape.coord_count() as i64)
-                        .map_err(PyErr::from),
+                    ArrayRow::Missing { value, .. } => value,
+                    ArrayRow::Present(row) => row.row().coord_count() as i64,
                 })
-                .collect::<pyo3::PyResult<Vec<_>>>()?,
+                .collect(),
         )
     }
     /// Return an array with the same topology and replacement coordinates.

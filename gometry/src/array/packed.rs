@@ -284,31 +284,26 @@ impl PyGeometryArray {
     /// missing rows are skipped (their XY placeholder must not vote). Packed
     /// all-missing arrays retain their declared layout; heterogeneous
     /// all-missing arrays are `XY`.
-    pub fn uniform_axes(&self) -> crate::error::Result<Option<CoordinateAxes>> {
-        if let Some(axes) = self.storage().packed_axes() {
-            return Ok(Some(axes));
-        }
-        if self
-            .missing()
-            .as_ref()
-            .is_some_and(|mask| mask.present_count() == 0)
-        {
-            return Ok(Some(CoordinateAxes::XY));
+    pub fn uniform_axes(&self) -> Option<CoordinateAxes> {
+        let GeometryArrayStorage::Mixed(shapes) = self.storage() else {
+            return self.storage().packed_axes();
+        };
+        if self.missing().is_some_and(|mask| mask.present_count() == 0) {
+            return Some(CoordinateAxes::XY);
         }
         let mut axes = None;
-        for (row, shape) in self.storage().iter_shapes().enumerate() {
+        for (row, shape) in shapes.iter().enumerate() {
             if self.is_row_missing(row) {
                 continue;
             }
-            let shape = shape?;
             let row_axes = shape.axes();
             match axes {
                 None => axes = Some(row_axes),
-                Some(seen) if seen != row_axes => return Ok(None),
+                Some(seen) if seen != row_axes => return None,
                 Some(_) => {},
             }
         }
-        Ok(Some(axes.unwrap_or(CoordinateAxes::XY)))
+        Some(axes.unwrap_or(CoordinateAxes::XY))
     }
 
     // --- Frame accessors (#37 migration; see PyGeometry::crs_ref) -----------
@@ -1479,10 +1474,10 @@ mod compact_nullable_tests {
                 ValidityMask::from_vec(3, vec![true, false, true]).unwrap(),
             )
             .unwrap();
-            assert_eq!(array.uniform_axes().unwrap(), Some(axes));
+            assert_eq!(array.uniform_axes(), Some(axes));
             assert_eq!(array.nbytes(), axes.byte_width(1));
             let all_missing = array.gather_logical_rows(&[0, 2]).unwrap();
-            assert_eq!(all_missing.uniform_axes().unwrap(), Some(axes));
+            assert_eq!(all_missing.uniform_axes(), Some(axes));
             assert_eq!(all_missing.nbytes(), 0);
         }
     }

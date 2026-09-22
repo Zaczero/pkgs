@@ -2,7 +2,9 @@ use std::sync::Arc;
 
 use crate::array::{GeometryArrayStorage, row_bounds};
 use crate::error::Result;
-use crate::geometry::{Bounds, CoordSeq, CoordWindow, LineSeq, Point, PreparedPlan, Shape};
+use crate::geometry::{
+    Bounds, CoordSeq, CoordWindow, CoordinateAxes, LineSeq, Point, PreparedPlan, Shape,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct VertexWindow {
@@ -23,6 +25,29 @@ pub(crate) enum ShapeRow<'a> {
 }
 
 impl<'a> ShapeRow<'a> {
+    pub(crate) fn axes(self) -> CoordinateAxes {
+        match self {
+            Self::Handle(handle) => handle.shape().axes(),
+            Self::Shape(shape) => shape.axes(),
+            Self::Point(point) => CoordinateAxes::from_point(point),
+            Self::Line(coords, ..) | Self::Rings(coords, ..) => coords.axes(),
+        }
+    }
+
+    pub(crate) fn coord_count(self) -> usize {
+        match self {
+            Self::Handle(handle) => handle.shape().coord_count(),
+            Self::Shape(shape) => shape.coord_count(),
+            Self::Point(_) => 1,
+            Self::Line(_, start, end) => end.wrapping_sub(start),
+            Self::Rings(_, offsets, start, end) => {
+                let start = offsets.get(start).expect("admitted ring start");
+                let end = offsets.get(end).expect("admitted ring end");
+                end.wrapping_sub(*start) as usize
+            },
+        }
+    }
+
     pub(crate) const fn line(coords: &'a CoordSeq, window: CoordWindow) -> Self {
         Self::Line(coords, window.start(), window.end())
     }

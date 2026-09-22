@@ -264,8 +264,54 @@ mod linref_array_degrade_tests {
 
 #[cfg(test)]
 mod multipart_storage_tests {
+    use pyo3::prelude::*;
+
     use super::super::{Frame, GeometryArrayStorage, PyGeometryArray, ValidityMask};
     use crate::io::{parse_wkt, to_wkt};
+
+    #[test]
+    fn packed_coordinate_axes_publish_without_shape_or_vector_staging() {
+        Python::initialize();
+        let polygon = parse_wkt(
+            "POLYGON ZM ((0 0 1 2, 4 0 1 2, 4 4 1 2, 0 0 1 2), \
+             (1 1 3 4, 2 1 3 4, 2 2 3 4, 1 1 3 4))",
+        )
+        .unwrap();
+        let array = PyGeometryArray::from_shapes(vec![polygon; 2], Frame::None).unwrap();
+        let gathered = array.gather_logical_rows(&[1, 0, 1]).unwrap();
+        let masked = gathered
+            .clone()
+            .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
+            .unwrap();
+        Python::attach(|py| {
+            for source in [&array, &gathered, &masked] {
+                let (output, allocations) =
+                    crate::test_support::allocation_count(|| source.coordinate_axes_rows(py));
+                let values = output
+                    .unwrap()
+                    .bind(py)
+                    .extract::<Vec<Option<String>>>()
+                    .unwrap();
+                let expected: Vec<_> = (0..source.len())
+                    .map(|row| (!source.is_row_missing(row)).then(|| "XYZM".to_owned()))
+                    .collect();
+                assert_eq!(values, expected);
+                assert_eq!(allocations, 0);
+                let counts = source
+                    .num_coordinates(py)
+                    .unwrap()
+                    .bind(py)
+                    .call_method0("tolist")
+                    .unwrap()
+                    .extract::<Vec<i64>>()
+                    .unwrap();
+                let expected_counts: Vec<_> = (0..source.len())
+                    .map(|row| if source.is_row_missing(row) { 0 } else { 8 })
+                    .collect();
+                assert_eq!(counts, expected_counts);
+            }
+        });
+    }
 
     #[test]
     fn selected_polygon_bounds_do_not_require_shape_allocation() {

@@ -372,7 +372,7 @@ impl PyGeometryArray {
         // Mixed-axis rows cannot land in one packed coords column (`from_points`
         // assumes axis-homogeneity); per-shape `delaunay_triangles` preserves
         // each row's ordinate layout via `carry_each`.
-        if self.uniform_axes()?.is_none() {
+        if self.uniform_axes().is_none() {
             return self.flat_map_shapes_groups_budgeted(
                 py,
                 "triangulate",
