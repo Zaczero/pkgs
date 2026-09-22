@@ -2959,9 +2959,9 @@ fn dual_embed(
             }
         }
         budget.add(rounded.len())?;
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::boundary::try_reserve_pair(&mut xs, &mut ys, rounded.len() + 1)?;
+        let capacity = rounded.len().wrapping_add(1);
+        let mut xs = Vec::with_capacity(capacity);
+        let mut ys = Vec::with_capacity(capacity);
         xs.extend(rounded.iter().map(|xy| xy.x));
         ys.extend(rounded.iter().map(|xy| xy.y));
         xs.push(rounded[0].x);

@@ -146,15 +146,12 @@ impl Shape {
             };
         }
         match self {
-            Self::Point(point) => point_buffer(*point, distance, quadrant_segments, budget),
+            Self::Point(point) => {
+                point_buffer(*point, distance, quadrant_segments, budget).map(Some)
+            },
             Self::MultiPoint(points) => {
-                let mut loops = Vec::new();
-                crate::try_reserve_vec(&mut loops, points.len())?;
-                if multipoint_loops(&mut loops, points, distance, quadrant_segments, budget)?
-                    .is_none()
-                {
-                    return Ok(None);
-                }
+                let mut loops = Vec::with_capacity(points.len());
+                multipoint_loops(&mut loops, points, distance, quadrant_segments, budget)?;
                 let parts = winding_region(&loops, |winding| winding >= 1)?;
                 if parts.is_empty() {
                     return Ok(None);

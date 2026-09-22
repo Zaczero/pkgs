@@ -630,8 +630,7 @@ fn minimum_circle_edge_certificate_rejects_an_inscribed_source_passing_ring() {
         NonZeroU32::new(16).expect("non-zero"),
         &mut budget,
     )
-    .expect("inscribed ring construction")
-    .expect("ring");
+    .expect("inscribed ring construction");
     let Shape::Polygon(polygon) = &output else {
         panic!("point buffer must emit a polygon");
     };
