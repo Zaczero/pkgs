@@ -89,15 +89,32 @@ pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
     Ok(())
 }
 
-/// One generic CSR owner for ragged output. Every row end is monotonic and
-/// representable as `i64` before it is retained. Empty offsets mean the
-/// implicit initial zero; the finished zero-row representation is `[0]`.
-pub(crate) struct CsrBuilder<T> {
-    values: Vec<T>,
-    offsets: Vec<i64>,
+pub(crate) trait CsrOffset: Copy + Default + Ord {
+    fn checked_end(end: usize) -> Result<Self>;
 }
 
-impl<T> CsrBuilder<T> {
+impl CsrOffset for i64 {
+    fn checked_end(end: usize) -> Result<Self> {
+        Self::try_from(end).map_err(|_| ResourceError::SizeOverflow.into())
+    }
+}
+
+impl CsrOffset for i32 {
+    fn checked_end(end: usize) -> Result<Self> {
+        Self::try_from(end)
+            .map_err(|_| crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into())
+    }
+}
+
+/// One generic CSR owner for ragged output. Every row end is monotonic and
+/// representable in its stored offset width before it is retained. Empty offsets
+/// mean the implicit initial zero; the finished zero-row representation is `[0]`.
+pub(crate) struct CsrBuilder<T, Offset = i64> {
+    values: Vec<T>,
+    offsets: Vec<Offset>,
+}
+
+impl<T, Offset: CsrOffset> CsrBuilder<T, Offset> {
     pub(crate) const fn new() -> Self {
         Self {
             values: Vec::new(),
@@ -133,17 +150,20 @@ impl<T> CsrBuilder<T> {
     /// used by packed representations whose physical value count differs from
     /// the logical row count (for example, four vertices per triangle).
     pub(crate) fn push_end(&mut self, end: usize) -> Result<()> {
-        let Ok(end) = i64::try_from(end) else {
-            self.release();
-            return Err(ResourceError::SizeOverflow.into());
+        let end = match Offset::checked_end(end) {
+            Ok(end) => end,
+            Err(error) => {
+                self.release();
+                return Err(error);
+            },
         };
-        let last = self.offsets.last().copied().unwrap_or(0);
+        let last = self.offsets.last().copied().unwrap_or_default();
         if end < last {
             self.release();
             return Err(crate::geometry::GeometryErrorKind::MalformedCsrOffsets.into());
         }
         if self.offsets.is_empty() {
-            self.offsets.push(0);
+            self.offsets.push(Offset::default());
         }
         self.offsets.push(end);
         Ok(())
@@ -161,20 +181,22 @@ impl<T> CsrBuilder<T> {
         &mut self.values
     }
 
-    #[cfg(test)]
-    pub(crate) fn row_range(&self, row: usize) -> std::ops::Range<usize> {
-        self.offsets[row] as usize..self.offsets[row + 1] as usize
-    }
-
-    pub(crate) fn finish(self) -> (Vec<T>, Vec<i64>) {
+    pub(crate) fn finish(self) -> (Vec<T>, Vec<Offset>) {
         let Self {
             values,
             mut offsets,
         } = self;
         if offsets.is_empty() {
-            offsets.push(0);
+            offsets.push(Offset::default());
         }
         (values, offsets)
+    }
+}
+
+#[cfg(test)]
+impl<T> CsrBuilder<T> {
+    pub(crate) fn row_range(&self, row: usize) -> std::ops::Range<usize> {
+        self.offsets[row] as usize..self.offsets[row + 1] as usize
     }
 }
 

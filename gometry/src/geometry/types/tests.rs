@@ -204,15 +204,13 @@ mod csr_offset_column_tests {
 
     #[test]
     fn csr_offset_builder_rejects_invalid_final_capacity() {
-        for (end, cap) in [(7, 6), (0x8000_0000, 0x8000_0000)] {
-            let mut builder = CsrOffsetBuilder::new();
-            builder.push_end(end, end).unwrap();
-            let error = builder.finish(cap).unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
-            ));
-        }
+        let mut builder = CsrOffsetBuilder::new();
+        builder.push_end(7, 7).unwrap();
+        let error = builder.finish(6).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
     }
 
     #[test]

@@ -60,7 +60,7 @@ impl GeometryKind {
 
 /// Amortized CSR offset column builder for hot mutators (simplify, densify, …).
 pub(crate) struct CsrOffsetBuilder {
-    builder: crate::boundary::CsrBuilder<()>,
+    builder: crate::boundary::CsrBuilder<(), i32>,
 }
 
 impl Default for CsrOffsetBuilder {
@@ -135,14 +135,8 @@ impl CsrOffsetBuilder {
         {
             return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
         }
-        let mut values = Vec::with_capacity(offsets.len());
-        for offset in offsets {
-            values.push(
-                i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
-            );
-        }
         Ok(CsrOffsetColumn {
-            offsets: SharedSlice::from_vec(values),
+            offsets: SharedSlice::from_vec(offsets),
             _level: PhantomData,
         })
     }
@@ -319,13 +313,9 @@ fn validate_csr_offsets_i32(offsets: &[i32], end_cap: usize) -> Result<()> {
 }
 
 fn offsets_from_ends(ends: Vec<usize>) -> Result<SharedSlice<i32>> {
-    let mut offsets = Vec::new();
-    crate::boundary::try_reserve_vec(&mut offsets, ends.len())?;
+    let mut offsets = Vec::with_capacity(ends.len());
     for end in ends {
-        crate::boundary::try_push_vec(
-            &mut offsets,
-            i32::try_from(end).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
-        )?;
+        offsets.push(i32::try_from(end).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?);
     }
     Ok(SharedSlice::from_vec(offsets))
 }
@@ -359,7 +349,58 @@ pub(crate) fn ensure_coordseq_vertex_capacity(len: usize) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::checked_csr_window;
+    use super::{CsrOffsetBuilder, GeometryErrorKind, checked_csr_window};
+    use crate::error::ErrorKind;
+
+    #[test]
+    fn packed_offsets_admit_their_stored_width_and_preserve_error_kinds() {
+        let maximum = i32::MAX as usize;
+        let mut builder = CsrOffsetBuilder::new();
+        builder.push_end(maximum, maximum).unwrap();
+        let column = builder.finish(maximum).unwrap();
+        assert_eq!(column.as_slice(), &[0, i32::MAX]);
+
+        let mut builder = CsrOffsetBuilder::new();
+        let error = builder
+            .push_end(maximum.wrapping_add(1), usize::MAX)
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
+        builder.push_end(1, 1).unwrap();
+        let error = builder.push_end(0, 1).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::MalformedCsrOffsets)
+        ));
+        builder.push_end(0, 1).unwrap();
+        builder.push_end(1, 1).unwrap();
+        assert_eq!(builder.finish(1).unwrap().as_slice(), &[0, 0, 1]);
+
+        let mut builder = CsrOffsetBuilder::new();
+        let error = builder.push_end(2, 1).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
+    }
+
+    #[test]
+    fn packed_offset_finish_allocates_only_the_shared_owner() {
+        for rows in [0, 3, 1024] {
+            let mut builder = CsrOffsetBuilder::with_capacity(rows);
+            for end in 1..=rows {
+                builder.push_end(end, rows).unwrap();
+            }
+            let (column, allocations) =
+                crate::test_support::allocation_count(|| builder.finish(rows));
+            let column = column.unwrap();
+            assert_eq!(allocations, 1);
+            assert_eq!(column.len(), rows.wrapping_add(1));
+            assert!(column.iter().copied().eq(0..=rows as i32));
+        }
+    }
 
     #[test]
     fn checked_csr_window_rejects_malformed_boundaries_without_panicking() {
