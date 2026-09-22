@@ -883,21 +883,19 @@ impl Shape {
         &self,
         candidate: impl Fn(XY, XY, XY) -> Result<Option<f64>>,
     ) -> Result<Self> {
-        let mut segments = Vec::new();
-        crate::try_reserve_vec(&mut segments, self.segment_count())?;
-        self.try_for_each_segment_chain(|chain| {
+        let mut segments = Vec::with_capacity(self.segment_count());
+        let Ok(()) = self.try_for_each_segment_chain(|chain| {
             segments.extend(line_segments(chain));
-            Ok::<_, crate::error::Error>(())
-        })?;
-        let mut vertex_cloud = Vec::new();
-        crate::try_reserve_vec(&mut vertex_cloud, self.coord_count())?;
+            Ok::<_, std::convert::Infallible>(())
+        });
+        let mut vertex_cloud = Vec::with_capacity(self.coord_count());
         // Original XY only: the guard indexes the source point set, never
         // simplified output. Isolated points participate in the vertex
         // probe, so the walk is every vertex, not only segment chains.
-        self.try_for_each_point(|point| {
+        let Ok(()) = self.try_for_each_point(|point| {
             vertex_cloud.push([point.x, point.y]);
-            Ok::<_, crate::error::Error>(())
-        })?;
+            Ok::<_, std::convert::Infallible>(())
+        });
         let guard = TopologyGuard::new(&segments, vertex_cloud);
         self.map_chains(&|points: &CoordSeq| {
             let xs = points.xs();
@@ -1510,7 +1508,7 @@ mod dp_zero_split_tests {
 mod guarded_borrow_tests {
 
     use super::RawSimplify;
-    use crate::geometry::{CoordSeq, Polygon, Ring, Shape, TopologyGuard, XY};
+    use crate::geometry::{CoordSeq, Polygon, Ring, Shape};
 
     fn closed_ring(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> Ring {
         Ring::from_closed(
@@ -1535,15 +1533,6 @@ mod guarded_borrow_tests {
             ),
             Vec::new(),
         ))
-    }
-
-    #[test]
-    fn vertex_cloud_walk_stores_xy() {
-        let vertices = [XY::new(1.0, 2.0), XY::new(3.0, 4.0)];
-        assert_eq!(TopologyGuard::try_vertex_cloud(vertices).unwrap(), vec![
-            [1.0, 2.0],
-            [3.0, 4.0]
-        ]);
     }
 
     #[test]

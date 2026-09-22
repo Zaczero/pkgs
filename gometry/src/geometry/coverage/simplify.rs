@@ -31,12 +31,12 @@ fn exact_chain(
     view: ExactChainView,
     source_spans: &[Vec<(u32, bool)>],
     source_segments: &[Segment],
-) -> Result<Chain> {
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, view.nodes.len())?;
-    for &node in &view.nodes {
-        points.push(partition.node_xy(node));
-    }
+) -> Chain {
+    let points = view
+        .nodes
+        .iter()
+        .map(|&node| partition.node_xy(node))
+        .collect();
     let mut chain_source_segments = Vec::new();
     for (source, segment) in source_segments.iter().enumerate() {
         if same_point(segment.start, segment.end)
@@ -49,15 +49,15 @@ fn exact_chain(
         {
             continue;
         }
-        crate::try_push_vec(&mut chain_source_segments, *segment)?;
+        chain_source_segments.push(*segment);
     }
-    Ok(Chain {
+    Chain {
         nodes: view.nodes,
         spans: view.spans,
         points,
         source_segments: chain_source_segments,
         shared: view.shared,
-    })
+    }
 }
 
 /// Simplify one chain with endpoints pinned and a global topology guard: a
@@ -184,7 +184,7 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
             continue;
         }
         let (before, after) = (prev[index], next[index]);
-        if !guard.removal_is_safe(xy(before), xy(index), xy(after), chain_segments)? {
+        if !guard.removal_is_safe(xy(before), xy(index), xy(after), chain_segments) {
             continue;
         }
         removed[index] = true;
@@ -246,7 +246,7 @@ pub(in crate::geometry) struct TopologyGuard<'a> {
     // (the dominant case on digitized/gridded inputs) are accepted without
     // probing, so an all-collinear pass never pays either bulk load.
     segment_index: std::cell::OnceCell<SegmentIndex>,
-    vertex_cloud: Vec<[f64; 2]>,
+    vertex_cloud: std::cell::Cell<Vec<[f64; 2]>>,
     vertex_tree: std::cell::OnceCell<BulkRTree<[f64; 2]>>,
 }
 
@@ -262,22 +262,9 @@ impl<'a> TopologyGuard<'a> {
         Self {
             segments,
             segment_index: std::cell::OnceCell::new(),
-            vertex_cloud,
+            vertex_cloud: std::cell::Cell::new(vertex_cloud),
             vertex_tree: std::cell::OnceCell::new(),
         }
-    }
-
-    /// Walk original XY once into the vertex cloud the index stores.
-    pub(in crate::geometry) fn try_vertex_cloud(
-        vertices: impl IntoIterator<Item = XY>,
-    ) -> Result<Vec<[f64; 2]>> {
-        let vertices = vertices.into_iter();
-        let mut vertex_cloud = Vec::new();
-        crate::try_reserve_vec(&mut vertex_cloud, vertices.size_hint().0)?;
-        for point in vertices {
-            crate::try_push_vec(&mut vertex_cloud, [point.x, point.y])?;
-        }
-        Ok(vertex_cloud)
     }
 
     fn segment_index(&self) -> &SegmentIndex {
@@ -287,7 +274,7 @@ impl<'a> TopologyGuard<'a> {
 
     fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
         self.vertex_tree
-            .get_or_init(|| BulkRTree::bulk_load_with_params(self.vertex_cloud.clone()))
+            .get_or_init(|| BulkRTree::bulk_load_with_params(self.vertex_cloud.take()))
     }
 
     pub(in crate::geometry) fn removal_is_safe(
@@ -296,7 +283,7 @@ impl<'a> TopologyGuard<'a> {
         vertex: XY,
         next: XY,
         chain_segments: &[Segment],
-    ) -> Result<bool> {
+    ) -> bool {
         // Exact-collinear interior vertex: the shortcut occupies precisely
         // the union of the two original segments — the linework's point set
         // is unchanged, so both probes are vacuous. This keeps gridded /
@@ -307,7 +294,7 @@ impl<'a> TopologyGuard<'a> {
             && vertex.y >= prev.y.min(next.y)
             && vertex.y <= prev.y.max(next.y)
         {
-            return Ok(true);
+            return true;
         }
         // The contact guard and the swept-region guard below are separate:
         // the first preserves the embedding against linework contacts, while
@@ -355,7 +342,7 @@ impl<'a> TopologyGuard<'a> {
                 }
             });
         if contact {
-            return Ok(false);
+            return false;
         }
         // No foreign vertex strictly inside the swept triangle. On the
         // original valid linework, a segment entering this region would have
@@ -378,7 +365,7 @@ impl<'a> TopologyGuard<'a> {
                 !(same_point(point, prev) || same_point(point, vertex) || same_point(point, next))
                     && point_in_triangle(point, prev, vertex, next)
             });
-        Ok(!inside)
+        !inside
     }
 }
 
@@ -404,7 +391,7 @@ fn source_ordinals_for_ring(
     source_segments: &[Segment],
     cursor: &mut usize,
 ) -> Result<Vec<u32>> {
-    let mut ordinals = Vec::new();
+    let mut ordinals = Vec::with_capacity(ring.len().saturating_sub(1));
     for segment in line_segments(ring).filter(|segment| !same_point(segment.start, segment.end)) {
         let ordinal = (*cursor..source_segments.len()).find(|&index| {
             let source = source_segments[index];
@@ -417,7 +404,7 @@ fn source_ordinals_for_ring(
             .into());
         };
         *cursor = ordinal + 1;
-        crate::try_push_vec(&mut ordinals, ordinal as u32)?;
+        ordinals.push(ordinal as u32);
     }
     Ok(ordinals)
 }
@@ -432,8 +419,7 @@ fn source_run_nodes(partition: &ExactPartition<'_>, run: &[SourceAtom]) -> Resul
     } else {
         first_span.start
     };
-    let mut nodes = Vec::new();
-    crate::try_reserve_vec(&mut nodes, run.len() + 1)?;
+    let mut nodes = Vec::with_capacity(run.len().wrapping_add(1));
     nodes.push(first_node);
     let mut current = first_node;
     for &atom in run {
@@ -459,13 +445,13 @@ fn chain_run_indices(
     chain: &Chain,
     run: &[SourceAtom],
     run_nodes: &[NodeId],
-) -> Result<Option<Vec<usize>>> {
+) -> Option<Vec<usize>> {
     let count = chain.spans.len();
     if run.is_empty() || run.len() > count {
-        return Ok(None);
+        return None;
     }
     let cyclic = chain.nodes.first() == chain.nodes.last();
-    let matches = |start: usize, forward: bool| -> Result<Option<Vec<usize>>> {
+    let matches = |start: usize, forward: bool| {
         for index in 0..run.len() {
             let (span_index, node_index) = if cyclic {
                 if forward {
@@ -484,11 +470,10 @@ fn chain_run_indices(
             if chain.spans[span_index] != run[index].span
                 || chain.nodes[node_index] != run_nodes[index]
             {
-                return Ok(None);
+                return None;
             }
         }
-        let mut indices = Vec::new();
-        crate::try_reserve_vec(&mut indices, run.len() + 1)?;
+        let mut indices = Vec::with_capacity(run.len().wrapping_add(1));
         for index in 0..=run.len() {
             let node_index = if cyclic {
                 if forward {
@@ -503,31 +488,31 @@ fn chain_run_indices(
             };
             indices.push(node_index);
         }
-        Ok(Some(indices))
+        Some(indices)
     };
 
     if cyclic {
         for start in 0..count {
-            if let Some(indices) = matches(start, true)? {
-                return Ok(Some(indices));
+            if let Some(indices) = matches(start, true) {
+                return Some(indices);
             }
-            if let Some(indices) = matches(start, false)? {
-                return Ok(Some(indices));
+            if let Some(indices) = matches(start, false) {
+                return Some(indices);
             }
         }
     } else {
         for start in 0..count.saturating_sub(run.len() - 1) {
-            if let Some(indices) = matches(start, true)? {
-                return Ok(Some(indices));
+            if let Some(indices) = matches(start, true) {
+                return Some(indices);
             }
         }
         for start in run.len()..=count {
-            if let Some(indices) = matches(start, false)? {
-                return Ok(Some(indices));
+            if let Some(indices) = matches(start, false) {
+                return Some(indices);
             }
         }
     }
-    Ok(None)
+    None
 }
 
 fn replacement_for_chain_run(
@@ -537,11 +522,10 @@ fn replacement_for_chain_run(
     run: &[SourceAtom],
 ) -> Result<Vec<XY>> {
     let run_nodes = source_run_nodes(partition, run)?;
-    let indices = chain_run_indices(chain, run, &run_nodes)?.ok_or_else(|| {
+    let indices = chain_run_indices(chain, run, &run_nodes).ok_or_else(|| {
         GeometryErrorKind::Invalid("coverage source run is absent from its exact chain".into())
     })?;
-    let mut replacement = Vec::new();
-    crate::try_reserve_vec(&mut replacement, indices.len())?;
+    let mut replacement = Vec::with_capacity(indices.len());
     for (position, &index) in indices.iter().enumerate() {
         if position == indices.len() - 1 || simplified.kept.contains(&index) {
             replacement.push(chain.points[index]);
@@ -570,10 +554,9 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
         return Ok(prepared.iter().map(|row| row.shape.clone()).collect());
     }
 
-    let mut all_segments = Vec::new();
+    let mut all_segments = Vec::with_capacity(prepared.iter().map(|row| row.segments.len()).sum());
     for row in &prepared {
-        crate::try_reserve_vec(&mut all_segments, row.segments.len())?;
-        all_segments.extend(row.segments.iter().copied());
+        all_segments.extend_from_slice(&row.segments);
     }
     let source_refs: Vec<&Shape> = prepared.iter().map(|row| row.shape).collect();
     let inventory = ExactSourceInventory::from_shapes(&source_refs)?;
@@ -581,23 +564,26 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
     let partition = inventory.partition(&mut budget)?;
     let views = partition.coverage_chain_views(inventory.source_operands())?;
     let source_spans = partition.source_span_views(inventory.source_segments())?;
-    let mut chains = Vec::new();
-    crate::try_reserve_vec(&mut chains, views.chains.len())?;
+    let mut chains = Vec::with_capacity(views.chains.len());
     for view in views.chains {
         chains.push(exact_chain(
             &partition,
             view,
             &source_spans,
             inventory.source_segments(),
-        )?);
+        ));
     }
     let guard = TopologyGuard::new(
         &all_segments,
-        TopologyGuard::try_vertex_cloud(
-            all_segments
-                .iter()
-                .flat_map(|segment| [segment.start, segment.end]),
-        )?,
+        all_segments
+            .iter()
+            .flat_map(|segment| {
+                [[segment.start.x, segment.start.y], [
+                    segment.end.x,
+                    segment.end.y,
+                ]]
+            })
+            .collect(),
     );
     let simplified: Vec<SimplifiedChain> = chains
         .iter()
@@ -621,6 +607,8 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
             Ok(SimplifiedChain { kept })
         })
         .collect::<Result<Vec<_>>>()?;
+    drop(guard);
+    drop(all_segments);
 
     let mut source_cursor = 0;
     prepared
@@ -686,16 +674,18 @@ fn rebuild_row(
                 )
                 .into());
             }
-            for &(span, reversed) in source {
-                crate::try_push_vec(&mut atoms, SourceAtom { span, reversed })?;
-            }
+            atoms.extend(
+                source
+                    .iter()
+                    .map(|&(span, reversed)| SourceAtom { span, reversed }),
+            );
         }
         let chain_at = |index: usize| chain_of_span[atoms[index].span as usize] as usize;
         let count = atoms.len();
         let start = (0..count)
             .find(|&index| chain_at((index + count - 1) % count) != chain_at(index))
             .unwrap_or(0);
-        let mut out: Vec<Point> = Vec::new();
+        let mut out: Vec<Point> = Vec::with_capacity(count.wrapping_add(1));
         let mut consumed = 0;
         while consumed < count {
             let here = (start + consumed) % count;
@@ -704,8 +694,7 @@ fn rebuild_row(
             while len < count && chain_at((start + consumed + len) % count) == id {
                 len += 1;
             }
-            let mut run = Vec::new();
-            crate::try_reserve_vec(&mut run, len)?;
+            let mut run = Vec::with_capacity(len);
             for offset in 0..len {
                 run.push(atoms[(start + consumed + offset) % count]);
             }
@@ -766,6 +755,29 @@ mod guarded_scratch_tests {
     }
 
     #[test]
+    fn vertex_index_is_lazy_and_adds_no_staging_allocation() {
+        use crate::geometry::BulkRTree;
+        use crate::test_support::{allocation_count, assert_no_allocations};
+
+        for count in [1, 32, 4096] {
+            let cloud: Vec<_> = (0..count).map(|index| [f64::from(index), 1.0]).collect();
+            let direct_cloud = cloud.clone();
+            let guard = assert_no_allocations(|| TopologyGuard::new(&[], cloud));
+            assert_no_allocations(|| {
+                assert!(guard.removal_is_safe(collinear_x(0), collinear_x(1), collinear_x(2), &[]));
+            });
+            let (direct, direct_allocations) =
+                allocation_count(|| BulkRTree::bulk_load_with_params(direct_cloud));
+            let (indexed, lazy_allocations) = allocation_count(|| guard.vertex_tree());
+            assert_eq!(indexed.size(), direct.size());
+            assert_eq!(lazy_allocations, direct_allocations, "vertex count {count}");
+            assert_no_allocations(|| {
+                assert!(std::ptr::eq(indexed, guard.vertex_tree()));
+            });
+        }
+    }
+
+    #[test]
     fn short_chain_keeps_both_endpoints() {
         let guard = dummy_guard();
         let kept =
@@ -821,10 +833,6 @@ mod guarded_scratch_tests {
             end: next,
         }];
         let guard = TopologyGuard::new(&segments, Vec::new());
-        assert!(
-            !guard
-                .removal_is_safe(previous, vertex, next, &chain_segments)
-                .unwrap()
-        );
+        assert!(!guard.removal_is_safe(previous, vertex, next, &chain_segments));
     }
 }
