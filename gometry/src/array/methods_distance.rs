@@ -307,25 +307,17 @@ impl PyGeometryArray {
             })
         {
             let rows = bounds.len();
-            let vertex_count = rows.checked_mul(5).ok_or_else(|| {
-                crate::error::Error::from(crate::error::ResourceError::SizeOverflow)
-            })?;
-            let mut xs = Vec::new();
-            let mut ys = Vec::new();
-            crate::boundary::try_reserve_vec(&mut xs, vertex_count)?;
-            crate::boundary::try_reserve_vec(&mut ys, vertex_count)?;
-            let mut ring_builder = crate::geometry::CsrOffsetBuilder::new();
-            let mut polygon_builder = crate::geometry::CsrOffsetBuilder::new();
-            let mut ring_count = 0_usize;
+            let vertex_count = rows.wrapping_mul(5);
+            let mut xs = Vec::with_capacity(vertex_count);
+            let mut ys = Vec::with_capacity(vertex_count);
+            let mut ring_builder = crate::geometry::CsrOffsetBuilder::with_capacity(rows);
+            let mut polygon_builder = crate::geometry::CsrOffsetBuilder::with_capacity(rows);
             for b in bounds.iter() {
                 let bb = b.expect("all bounds present (checked)");
                 xs.extend_from_slice(&[bb.minx(), bb.maxx(), bb.maxx(), bb.minx(), bb.minx()]);
                 ys.extend_from_slice(&[bb.miny(), bb.miny(), bb.maxy(), bb.maxy(), bb.miny()]);
                 ring_builder.push_end(xs.len(), vertex_count)?;
-                ring_count = ring_count.checked_add(1).ok_or_else(|| {
-                    crate::error::Error::from(crate::error::ResourceError::SizeOverflow)
-                })?;
-                polygon_builder.push_end(ring_count, rows)?;
+                polygon_builder.push_end(ring_builder.row_count(), rows)?;
             }
             let ring_offsets = ring_builder.finish(vertex_count)?.cast_level::<RingLevel>();
             let polygon_offsets = polygon_builder.finish(rows)?.cast_level::<PolygonLevel>();

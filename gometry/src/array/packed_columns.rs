@@ -1698,6 +1698,46 @@ mod tests {
     }
 
     #[test]
+    fn point_buffers_reserve_all_output_columns_once() {
+        let allocations = [2_usize, 128].map(|rows| {
+            let storage = GeometryArrayStorage::Packed(PackedStorage::Points {
+                coords: Arc::new(
+                    CoordSeq::try_from_vecs(vec![0.0; rows], vec![0.0; rows], None, None).unwrap(),
+                ),
+                row_map: RowSelection::Identity,
+            });
+            let Some(PackedColumns::Points(points)) =
+                resolve_packed_columns(&storage, None, PointRowLayout::Dense)
+            else {
+                panic!("point fixture must resolve packed points");
+            };
+            let (output, count) = allocation_count(|| {
+                packed_column_kernels::buffer_point_columns(
+                    &points,
+                    1.0,
+                    std::num::NonZeroU32::new(4).unwrap(),
+                    None,
+                )
+            });
+            let Ok(Some(PackedColumnOutput::Polygons {
+                coords,
+                ring_offsets,
+                polygon_offsets,
+            })) = output
+            else {
+                panic!("point buffers must produce packed polygons");
+            };
+            assert_eq!(coords.len(), rows.wrapping_mul(17));
+            assert_eq!(ring_offsets.len(), rows.wrapping_add(1));
+            assert_eq!(polygon_offsets.len(), rows.wrapping_add(1));
+            assert_eq!(coords.xs().first(), coords.xs().last());
+            assert_eq!(coords.ys().first(), coords.ys().last());
+            count
+        });
+        assert_eq!(allocations.first(), allocations.last());
+    }
+
+    #[test]
     fn geodesic_xy_lanes_borrow_contiguous_rows_and_copy_gathers() {
         let coords = coords();
         let gather = RowSelection::gather_checked_native(vec![4, 1, 4], coords.len()).unwrap();

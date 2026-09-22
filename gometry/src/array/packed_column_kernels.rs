@@ -51,19 +51,15 @@ pub(crate) fn buffer_point_columns(
         quadrant_segments.get() as usize,
     )
     .map_err(batch_err)?;
-    let vertices_per_row = steps.checked_add(1).ok_or_else(|| {
-        batch_err(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into())
-    })?;
+    let vertices_per_row = steps.wrapping_add(1);
     let point_rows = points.rows();
     let present_rows = point_rows.present_count();
     let total = present_rows
         .checked_mul(vertices_per_row)
         .ok_or_else(|| batch_err(crate::error::ResourceError::SizeOverflow.into()))?;
 
-    let mut unit_x = Vec::new();
-    let mut unit_y = Vec::new();
-    crate::boundary::try_reserve_vec(&mut unit_x, steps).map_err(batch_err)?;
-    crate::boundary::try_reserve_vec(&mut unit_y, steps).map_err(batch_err)?;
+    let mut unit_x = Vec::with_capacity(steps);
+    let mut unit_y = Vec::with_capacity(steps);
     let (sin_step, cos_step) = (std::f64::consts::TAU / steps as f64).sin_cos();
     let (mut sin_theta, mut cos_theta) = (0.0_f64, 1.0_f64);
     for step in 0..steps {
@@ -81,20 +77,17 @@ pub(crate) fn buffer_point_columns(
         xs: source_xs,
         ys: source_ys,
     } = points.physical_xy();
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    crate::boundary::try_reserve_vec(&mut xs, total).map_err(batch_err)?;
-    crate::boundary::try_reserve_vec(&mut ys, total).map_err(batch_err)?;
-    let mut ring_offsets = CsrOffsetBuilder::new();
-    let mut polygon_offsets = CsrOffsetBuilder::new();
-    let mut ring_count = 0_usize;
+    let mut xs = Vec::with_capacity(total);
+    let mut ys = Vec::with_capacity(total);
+    let mut ring_offsets = CsrOffsetBuilder::with_capacity(present_rows);
+    let mut polygon_offsets = CsrOffsetBuilder::with_capacity(rows);
     for (_row, physical) in point_rows.cursor() {
         if let Some(physical) = physical {
             let center_x = source_xs[physical];
             let center_y = source_ys[physical];
-            for step in 0..steps {
-                let x = center_x + distance * unit_x[step];
-                let y = center_y + distance * unit_y[step];
+            for (&unit_x, &unit_y) in unit_x.iter().zip(&unit_y) {
+                let x = center_x + distance * unit_x;
+                let y = center_y + distance * unit_y;
                 if !x.is_finite() || !y.is_finite() {
                     return Ok(None);
                 }
@@ -105,16 +98,16 @@ pub(crate) fn buffer_point_columns(
             let first_y = ys[ys.len() - steps];
             xs.push(first);
             ys.push(first_y);
-            ring_count += 1;
             ring_offsets
                 .push_end(xs.len(), i32::MAX as usize)
                 .map_err(batch_err)?;
         }
         polygon_offsets
-            .push_end(ring_count, i32::MAX as usize)
+            .push_end(ring_offsets.row_count(), i32::MAX as usize)
             .map_err(batch_err)?;
     }
     let coords = CoordSeq::try_from_vecs(xs, ys, None, None).map_err(batch_err)?;
+    let ring_count = ring_offsets.row_count();
     let ring_offsets = ring_offsets.finish(total).map_err(batch_err)?.cast_level();
     let polygon_offsets = polygon_offsets
         .finish(ring_count)

@@ -45,7 +45,7 @@ impl PyGeometryArray {
     /// 'POINT (1 2)'
     pub fn to_numpy(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let len = self.len();
-        let mut values = crate::try_vec_with_capacity(len)?;
+        let mut values = Vec::with_capacity(len);
         let mut rows = self.row_operation();
         for row in rows.rows_with_missing(|| ()) {
             match row {
