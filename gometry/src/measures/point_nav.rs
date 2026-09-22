@@ -410,8 +410,7 @@ fn point_operand(geometry: &PyGeometry, operation: MetricOp) -> PyResult<Option<
 
 /// Destinations from POINT EMPTY along many bearings: one empty point each.
 fn empty_destinations(py: Python<'_>, geometry: &PyGeometry, len: usize) -> PyResult<Py<PyAny>> {
-    let mut shapes = Vec::new();
-    crate::try_reserve_vec(&mut shapes, len)?;
+    let mut shapes = Vec::with_capacity(len);
     shapes.resize_with(len, Shape::empty_point);
     Ok(
         PyGeometryArray::from_shapes(shapes, geometry.frame.clone())?
@@ -604,10 +603,7 @@ fn cross_track_points_with_radius(
 enum PointOperand<'a> {
     One(Point),
     Compact(&'a PyGeometryArray),
-    Many {
-        points: PointRows<'a>,
-        missing: Option<&'a ValidityMask>,
-    },
+    Many(PointRows<'a>),
 }
 
 enum PreparedPointOperand<'a> {
@@ -630,15 +626,7 @@ impl<'a> PointOperand<'a> {
                     .expect("compact point rows carry validity")
                     .full_rank(),
             },
-            Self::Many { points, .. } => PreparedPointOperand::Many(points),
-        }
-    }
-
-    const fn missing(&self) -> Option<&'a ValidityMask> {
-        match self {
-            Self::One(_) => None,
-            Self::Compact(array) => array.missing(),
-            Self::Many { missing, .. } => *missing,
+            Self::Many(points) => PreparedPointOperand::Many(points),
         }
     }
 }
@@ -695,20 +683,6 @@ fn input_len(input: GeometryInput<'_>) -> Option<usize> {
     match input {
         GeometryInput::One(_) => None,
         GeometryInput::Many(array) => Some(array.len()),
-    }
-}
-
-fn input_point<'a>(input: &'a GeometryInput<'a>) -> Option<PointOperand<'a>> {
-    match input {
-        GeometryInput::One(geometry) => geometry_point(geometry).map(PointOperand::One),
-        GeometryInput::Many(array) if array.is_compact_nullable() => matches!(
-            array.storage(),
-            GeometryArrayStorage::Packed(PackedStorage::Points { .. })
-        )
-        .then_some(PointOperand::Compact(array)),
-        GeometryInput::Many(array) => array
-            .masked_point_rows()
-            .map(|(points, missing)| PointOperand::Many { points, missing }),
     }
 }
 
@@ -1624,10 +1598,6 @@ fn union_missing_masks(inputs: &[&GeometryInput<'_>]) -> Option<ValidityMask> {
     union_many(inputs.iter().map(|input| input_missing(input)))
 }
 
-fn union_point_operand_missing(inputs: &[&PointOperand<'_>]) -> Option<ValidityMask> {
-    union_many(inputs.iter().map(|input| input.missing()))
-}
-
 #[derive(Clone, Copy)]
 enum PointBinaryInput<'a> {
     One(&'a PyGeometry),
@@ -1669,10 +1639,7 @@ impl<'a> PointBinaryInput<'a> {
             Self::Many(array) => array
                 .storage()
                 .point_rows()
-                .map(|points| PointOperand::Many {
-                    points,
-                    missing: array.missing(),
-                }),
+                .map(PointOperand::Many),
         }
     }
 
@@ -2397,9 +2364,9 @@ fn cross_track_broadcast(
             Frame::compatible_parts(point_crs, point_epoch, end_crs, end_epoch, OP.name())?;
             let missing = union_missing_masks(&[&point_in, &start_in, &end_in]);
             if let (Some(points), Some(starts), Some(ends)) = (
-                input_point(&point_in),
-                input_point(&start_in),
-                input_point(&end_in),
+                PointBinaryInput::from(point_in).point_operand(),
+                PointBinaryInput::from(start_in).point_operand(),
+                PointBinaryInput::from(end_in).point_operand(),
             ) {
                 let model =
                     require_geographic_model(input_crs_str(&point_in), OP).map_err(row_zero)?;
@@ -2409,7 +2376,6 @@ fn cross_track_broadcast(
                 let radius = crs::geodesic_cross_track_radius_crs_at(&metric.crs, &metric.state)
                     .map_err(PyErr::from)
                     .map_err(row_zero)?;
-                let missing_for_rows = union_point_operand_missing(&[&points, &starts, &ends]);
                 return float64_array(
                     py,
                     py.detach(move || {
@@ -2420,7 +2386,7 @@ fn cross_track_broadcast(
                             starts,
                             ends,
                             len,
-                            missing_for_rows.as_ref(),
+                            missing.as_ref(),
                         )
                     })?,
                 );

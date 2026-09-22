@@ -1,21 +1,8 @@
 use crate::array::{
-    Arc, PointRows, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, ValidityMask, coordinates,
+    Arc, Py, PyAny, PyGeometryArray, PyResult, Python, Shape, ValidityMask, coordinates,
 };
 
 impl PyGeometryArray {
-    /// Packed point rows together with their logical missingness.
-    ///
-    /// Keeping the raw packed-row access in this mask-aware boundary prevents
-    /// point fast paths from accidentally dropping the companion mask.
-    pub(crate) fn masked_point_rows(&self) -> Option<(PointRows<'_>, Option<&ValidityMask>)> {
-        if self.is_compact_nullable() {
-            return None;
-        }
-        self.storage()
-            .point_rows()
-            .map(|points| (points, self.missing()))
-    }
-
     /// Iterate storage rows that are present in the logical array.
     ///
     /// Dense arrays reuse the raw storage iterator; masked arrays skip the
