@@ -59,10 +59,9 @@ pub(crate) async fn sendfile_all_tcp(
     offset: &mut u64,
     len: usize,
 ) -> io::Result<()> {
-    let end = *offset + len as u64;
-    while *offset < end {
+    let mut remaining = len;
+    while remaining != 0 {
         writer.get_ref().writable().await?;
-        let remaining = (end - *offset) as usize;
         match sendfile(writer.get_ref().as_ref(), file, Some(offset), remaining) {
             Ok(0) => {
                 return Err(Error::new(
@@ -70,7 +69,7 @@ pub(crate) async fn sendfile_all_tcp(
                     "sendfile wrote zero bytes",
                 ));
             },
-            Ok(_) => {},
+            Ok(written) => remaining = remaining.wrapping_sub(written),
             Err(err) if err.kind() == ErrorKind::WouldBlock => {},
             Err(err) => return Err(err.into()),
         }

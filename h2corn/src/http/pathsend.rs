@@ -74,10 +74,10 @@ impl SendfileCursor<'_> {
 
 impl Drop for SendfileCursor<'_> {
     fn drop(&mut self) {
-        let advanced = self.file_offset.saturating_sub(self.initial_offset);
-        let advanced = usize::try_from(advanced).unwrap_or(usize::MAX);
-        debug_assert!(advanced <= *self.unread_file_len);
-        *self.unread_file_len = (*self.unread_file_len).saturating_sub(advanced);
+        debug_assert!(*self.file_offset >= self.initial_offset);
+        let advanced = self.file_offset.wrapping_sub(self.initial_offset);
+        debug_assert!(advanced <= *self.unread_file_len as u64);
+        *self.unread_file_len = self.unread_file_len.wrapping_sub(advanced as usize);
     }
 }
 
@@ -99,21 +99,22 @@ impl PathCursor {
     }
 
     fn record_read(&mut self, read: usize) -> io::Result<()> {
+        debug_assert!(read <= self.unread_file_len);
         self.buffered = 0..read;
-        self.file_offset += read as u64;
+        self.file_offset = self.file_offset.wrapping_add(read as u64);
         if read == 0 {
             if self.unread_file_len != 0 {
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof));
             }
         } else {
-            self.unread_file_len = self.unread_file_len.saturating_sub(read);
+            self.unread_file_len = self.unread_file_len.wrapping_sub(read);
         }
         Ok(())
     }
 
     fn consume_buffered(&mut self, len: usize) {
-        debug_assert!(len <= self.buffered.end - self.buffered.start);
-        self.buffered.start += len;
+        debug_assert!(len <= self.buffered.len());
+        self.buffered.start = self.buffered.start.wrapping_add(len);
         if self.buffered.start == self.buffered.end {
             self.buffered = 0..0;
         }
@@ -198,7 +199,9 @@ impl FileStreamer {
             self.read = PathReadState::Reading(spawn_blocking(move || {
                 let read = read_at(
                     &file,
-                    buffer.get_mut(..read_len).unwrap_or_default(),
+                    buffer
+                        .get_mut(..read_len)
+                        .expect("read length is bounded by the buffer"),
                     offset,
                 );
                 PathReadResult { file, buffer, read }

@@ -87,19 +87,12 @@ pub(crate) async fn write_all_vectored<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    let mut remaining: usize = slices.iter().map(|slice| slice.len()).sum();
-    if remaining == 0 {
-        return Ok(());
-    }
     let mut bufs = slices;
-    while remaining > 0 {
+    IoSlice::advance_slices(&mut bufs, 0);
+    while !bufs.is_empty() {
         let written = writer.write_vectored(bufs).await?;
         if written == 0 {
             return Err(io::Error::from(io::ErrorKind::WriteZero));
-        }
-        remaining -= written;
-        if remaining == 0 {
-            break;
         }
         IoSlice::advance_slices(&mut bufs, written);
     }
@@ -131,7 +124,7 @@ mod write_all_vectored_tests {
         ) -> Poll<io::Result<usize>> {
             let take = buf.len().min(self.max_per_call);
             self.bytes.extend_from_slice(&buf[..take]);
-            self.calls += 1;
+            self.calls = self.calls.wrapping_add(1);
             Poll::Ready(Ok(take))
         }
 
@@ -141,17 +134,17 @@ mod write_all_vectored_tests {
             bufs: &[IoSlice<'_>],
         ) -> Poll<io::Result<usize>> {
             let mut remaining = self.max_per_call;
-            let mut written = 0;
+            let mut written = 0_usize;
             for buf in bufs {
                 let take = remaining.min(buf.len());
                 self.bytes.extend_from_slice(&buf[..take]);
-                written += take;
-                remaining -= take;
+                written = written.wrapping_add(take);
+                remaining = remaining.wrapping_sub(take);
                 if remaining == 0 {
                     break;
                 }
             }
-            self.calls += 1;
+            self.calls = self.calls.wrapping_add(1);
             Poll::Ready(Ok(written))
         }
 
@@ -204,7 +197,13 @@ mod write_all_vectored_tests {
     async fn partial_progress_crosses_slice_boundaries() {
         let a = b"abcd";
         let b = b"efgh";
-        let mut slices = [IoSlice::new(a), IoSlice::new(b)];
+        let mut slices = [
+            IoSlice::new(b""),
+            IoSlice::new(a),
+            IoSlice::new(b""),
+            IoSlice::new(b),
+            IoSlice::new(b""),
+        ];
         let mut writer = ThrottledWriter {
             max_per_call: 3,
             ..ThrottledWriter::default()
