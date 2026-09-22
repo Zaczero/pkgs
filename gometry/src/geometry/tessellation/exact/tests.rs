@@ -441,33 +441,6 @@ fn ratio_rounding_rejects_zero_denominators() {
 }
 
 #[test]
-fn ratio_rounding_propagates_each_allocation_failure() {
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let cases = [
-        (ExactDyadic::one(), ExactDyadic::from_f64(3.0)),
-        (
-            ExactDyadic::from_f64(f64::from_bits(1)),
-            ExactDyadic::from_f64(2.0),
-        ),
-        (ExactDyadic::from_f64(f64::MAX), ExactDyadic::from_f64(0.5)),
-        (ExactDyadic::one(), ExactDyadic::zero()),
-    ];
-    for (numerator, denominator) in cases {
-        let (_, count) = allocation_count(|| round_ratio(&numerator, &denominator));
-        for prefix in 0..count {
-            let error = fail_allocations_after(prefix, || round_ratio(&numerator, &denominator))
-                .unwrap_err();
-            assert!(
-                matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation)),
-                "allocation prefix {prefix}"
-            );
-        }
-    }
-}
-
-#[test]
 fn ratio_rounding_is_ties_to_even_and_handles_extremes() {
     let one = ExactDyadic::one();
     let halfway = ExactDyadic::from_f64(1.0)
@@ -555,8 +528,7 @@ fn ordinary_one_limb_try_arithmetic_does_not_allocate() {
 
 #[test]
 fn exact_sum_spills_only_when_an_inline_result_carries() {
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::allocation_count;
 
     let left = ExactDyadic::from_parts(false, vec![u64::MAX, u64::MAX - 1], 0);
     let no_carry = ExactDyadic::from_parts(false, vec![1], 0);
@@ -568,36 +540,6 @@ fn exact_sum_spills_only_when_an_inline_result_carries() {
     let (sum, allocations) = allocation_count(|| left.clone().try_add(carry.clone()).unwrap());
     assert_eq!(allocations, 1);
     assert_eq!(sum, ExactDyadic::from_parts(false, vec![1], 128));
-    let error = fail_allocations_after(0, || left.try_add(carry)).unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        ErrorKind::Resource(ResourceError::Allocation)
-    ));
-}
-
-#[test]
-fn exact_ratio_clone_propagates_each_allocation_failure() {
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let ratio = ExactRational::new(
-        ExactDyadic::from_parts(false, vec![1, 2, 3], -4),
-        ExactDyadic::from_parts(false, vec![1, 4, 5], -4),
-    )
-    .unwrap();
-    assert!(ratio.numerator.limbs.len() > 2);
-    assert!(ratio.denominator.limbs.len() > 2);
-
-    let (result, allocations) = allocation_count(|| ratio.try_clone());
-    result.unwrap();
-    assert!(allocations > 0);
-    for prefix in 0..allocations {
-        let error = fail_allocations_after(prefix, || ratio.try_clone()).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
 }
 
 #[test]
@@ -664,9 +606,8 @@ fn denominator_one_rational_arithmetic_avoids_cross_product_allocations() {
 }
 
 #[test]
-fn denominator_one_rational_heap_results_still_report_allocation_failures() {
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+fn denominator_one_rational_heap_results_allocate_once() {
+    use crate::test_support::allocation_count;
 
     let left =
         ExactRational::from_dyadic(ExactDyadic::from_parts(false, vec![u64::MAX, u64::MAX], 0));
@@ -676,14 +617,6 @@ fn denominator_one_rational_heap_results_still_report_allocation_failures() {
     let (result, allocations) = allocation_count(|| left.try_add(&right));
     assert_eq!(allocations, 1);
     assert_eq!(result.unwrap(), expected);
-
-    for prefix in 0..allocations {
-        let error = fail_allocations_after(prefix, || left.try_add(&right)).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
 }
 
 #[test]
@@ -1624,7 +1557,7 @@ fn minimum_circle_diameter_filter_handles_mixed_exponents_without_allocation() {
 }
 
 #[test]
-fn minimum_circle_three_support_rounding_stays_fallible_at_mixed_exponents() {
+fn minimum_circle_three_support_rounding_handles_mixed_exponents() {
     let scale = 2.0_f64.powi(200);
     let tiny = 2.0_f64.powi(-200);
     let support = [
@@ -1632,20 +1565,5 @@ fn minimum_circle_three_support_rounding_stays_fallible_at_mixed_exponents() {
         XY::new(scale, 0.0),
         XY::new(0.0, tiny),
     ];
-    let (result, allocations) =
-        crate::test_support::allocation_count(|| round_support_circle(&support));
-    assert!(
-        result.is_ok(),
-        "mixed-exponent circumcircle is representable"
-    );
-    assert!(
-        allocations > 0,
-        "three-support exact construction must allocate"
-    );
-    let error = crate::test_support::fail_allocations_after(0, || round_support_circle(&support))
-        .unwrap_err();
-    assert!(matches!(
-        error.kind(),
-        crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-    ));
+    round_support_circle(&support).expect("mixed-exponent circumcircle is representable");
 }

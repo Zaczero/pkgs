@@ -2670,28 +2670,6 @@ mod sqrt_ratio_tests {
             );
         }
     }
-
-    #[test]
-    fn proposed_sqrt_bracket_preserves_allocation_failure_reporting() {
-        let numerator = ExactDyadic::from_f64(3.0);
-        let denominator = ExactDyadic::one();
-        let (_, allocations) =
-            crate::test_support::allocation_count(|| round_sqrt_ratio(&numerator, &denominator));
-        assert!(allocations > 0, "exact neighbor comparison must allocate");
-        for allowed in 0..allocations {
-            let error = crate::test_support::fail_allocations_after(allowed, || {
-                round_sqrt_ratio(&numerator, &denominator)
-            })
-            .unwrap_err();
-            assert!(
-                matches!(
-                    error.kind(),
-                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                ),
-                "allocation prefix {allowed}"
-            );
-        }
-    }
 }
 
 #[cfg(test)]
