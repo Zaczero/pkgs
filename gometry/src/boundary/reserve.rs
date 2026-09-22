@@ -252,22 +252,15 @@ pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
 /// Accepts any sequence of `expected_len` bools; length is taken from the
 /// array, not from the mask's `__len__` as a capacity hint for bulk extract.
 pub(crate) fn collect_bool_mask(
-    _py: Python<'_>,
     mask: &Bound<'_, PyAny>,
     expected_len: usize,
 ) -> PyResult<Vec<bool>> {
-    if let Some(reported_len) = advisory_len(mask)?
-        && reported_len != expected_len
-    {
-        return Err(PyValueError::new_err(format!(
-            "mask length {reported_len} does not match array length {expected_len}"
-        )));
-    }
-    // The iterator is the source of truth even for sequences: ``__len__`` is
-    // only a reservation hint and a lying sequence must not lose or invent
-    // rows. Exact collection reads one extra item to detect excess.
-    collect_py_iter_exact(
+    let iter = py_iter_or_error(mask, || {
+        PyTypeError::new_err("mask must be a sequence or iterable of bool")
+    })?;
+    collect_py_iter_exact_from_iter(
         mask,
+        iter,
         expected_len,
         |item| {
             item.extract::<bool>()
@@ -279,15 +272,6 @@ pub(crate) fn collect_bool_mask(
             ))
         },
     )
-    .map_err(|error| {
-        if error.is_instance_of::<pyo3::exceptions::PyTypeError>(mask.py())
-            && error.to_string().contains("not iterable")
-        {
-            PyTypeError::new_err("mask must be a sequence or iterable of bool")
-        } else {
-            error
-        }
-    })
 }
 
 /// Collect sequence elements once (classify + materialize in one pass) without
@@ -551,7 +535,7 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
 ///
 /// Stops after `expected + 1` elements so an unbounded iterator (e.g.
 /// `itertools.repeat`) cannot grow forever when the length is known from the
-/// receiver. The validated count receives one checked-layout reservation.
+/// receiver. The receiver's count sizes the output reservation.
 ///
 /// On length mismatch, `on_len` receives the observed count (or `expected + 1`
 /// when the iterator still has more). Domain callers use this for stable
@@ -574,8 +558,6 @@ pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<T>> {
-    std::alloc::Layout::array::<T>(expected)
-        .map_err(|_| crate::error::Error::from(ResourceError::SizeOverflow))?;
     let mut out = Vec::with_capacity(expected);
     for index in 0..expected {
         check_python_signals(values.py(), index)?;

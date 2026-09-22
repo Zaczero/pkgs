@@ -7134,9 +7134,8 @@ class GeometryArray(Sequence[_GeometryT_co]):
         All-present results normalize back to dense. Use ``fill_missing`` to
         replace missing rows with real geometry.
 
-        The mask is collected with a fixed expected length and fallible
-        reservation — never generic ``Vec<bool>`` extraction from a lying
-        ``__len__`` (which can allocator-abort before the length check).
+        The array's row count determines the expected mask length. The mask's
+        length hint is ignored; its iterator supplies the values.
         """
     def to_numpy(self) -> npt.NDArray[np.object_]:
         """Export the array as a ``numpy.ndarray`` of typed geometry objects.

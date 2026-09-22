@@ -248,6 +248,46 @@ def test_iter_and_len_provider_errors_are_not_reclassified() -> None:
     assert len(gm.GeometryArray(LyingLen())) == 2
 
 
+def test_missing_mask_preserves_iterator_acquisition_error() -> None:
+    error = TypeError('provider not iterable sentinel')
+
+    class RaisingIter:
+        def __iter__(self):
+            raise error
+
+    array = gm.points([1.0, 2.0], [3.0, 4.0])
+    assert_same(lambda: array._with_missing(RaisingIter()), error)
+
+
+@pytest.mark.parametrize(
+    'prefix',
+    [[], [True], [True, False]],
+    ids=['first-item', 'second-item', 'surplus-probe'],
+)
+def test_missing_mask_preserves_iteration_error(prefix: list[bool]) -> None:
+    error = TypeError('provider not iterable sentinel')
+
+    def values():
+        yield from prefix
+        raise error
+
+    array = gm.points([1.0, 2.0], [3.0, 4.0])
+    assert_same(lambda: array._with_missing(values()), error)
+
+
+@pytest.mark.parametrize(
+    ('mask', 'observed'),
+    [([], 0), ([True], 1), ([True, False, object()], 3)],
+    ids=['empty', 'short', 'surplus-before-type-check'],
+)
+def test_missing_mask_reports_observed_length(mask: list, observed: int) -> None:
+    array = gm.points([1.0, 2.0], [3.0, 4.0])
+    with pytest.raises(
+        ValueError, match=f'^mask length {observed} does not match array length 2$'
+    ):
+        array._with_missing(iter(mask))
+
+
 def test_index_provider_errors_are_not_reclassified() -> None:
     class RaisingIndex:
         def __index__(self):

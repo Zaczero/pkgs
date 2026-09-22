@@ -699,12 +699,11 @@ impl PyGeometryArray {
     /// All-present results normalize back to dense. Use ``fill_missing`` to
     /// replace missing rows with real geometry.
     ///
-    /// The mask is collected with a fixed expected length and fallible
-    /// reservation — never generic ``Vec<bool>`` extraction from a lying
-    /// ``__len__`` (which can allocator-abort before the length check).
-    pub fn _with_missing(&self, py: Python<'_>, mask: &Bound<'_, PyAny>) -> PyResult<Self> {
+    /// The array's row count determines the expected mask length. The mask's
+    /// length hint is ignored; its iterator supplies the values.
+    pub fn _with_missing(&self, mask: &Bound<'_, PyAny>) -> PyResult<Self> {
         let expected = self.len();
-        let mask = crate::collect_bool_mask(py, mask, expected)?;
+        let mask = crate::collect_bool_mask(mask, expected)?;
         let incoming = ValidityMask::from_vec(expected, mask)?;
         // OR with existing bits (pandas GeometryExtensionArray semantics):
         // never unmask a row that already carries a missing placeholder.

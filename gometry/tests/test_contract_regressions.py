@@ -1646,14 +1646,13 @@ def test_zero_chunk_tagged_int64_geoarrow_rejected() -> None:
         gm.from_arrow(pa.array([1, 2, 3], type=ext))
 
 
-def test_lying_len_with_missing_raises_cleanly() -> None:
-    """``_with_missing`` must not allocator-abort on a lying ``__len__`` mask."""
+@pytest.mark.parametrize('reported', [0, 1, 1 << 62])
+def test_with_missing_uses_actual_mask_values(reported: int) -> None:
     arr = gm.points([0.0, 1.0], [0.0, 1.0])
-    lying = _LyingLenSequence([True, False], reported=(1 << 62))
-    # Length is captured from the mask once and compared to the array — never
-    # used as ``Vec::with_capacity`` via FromPyObject.
-    with pytest.raises((ValueError, MemoryError, TypeError, OverflowError)):
-        arr._with_missing(lying)
+    mask = _LyingLenSequence([True, False], reported=reported)
+    result = arr._with_missing(mask)
+    assert result.is_missing.tolist() == [True, False]
+    assert result[1] == gm.Point(1.0, 1.0)
 
 
 def test_lying_len_fancy_index_raises_cleanly() -> None:
