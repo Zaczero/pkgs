@@ -327,14 +327,13 @@ pub(crate) fn planar_to_metre(
     let Some(factors) = metric_axis_factors_at(info, state)? else {
         return fail("planar metrics require linear (length) axis units, but the axes are angular");
     };
-    let horizontal = &factors[..factors.len().min(2)];
-    let unit = ensure_positive_finite_linear_unit(horizontal[0], |message| {
+    let unit = ensure_positive_finite_linear_unit(factors.first, |message| {
         CrsError::metric_units(crs, message)
     })?;
     let unit_value = unit.get();
     // Axis factors are declarations, so approximate equality would silently
     // substitute the first axis's factor for a distinct one.
-    if horizontal.iter().any(|factor| *factor != unit_value) {
+    if factors.second.is_some_and(|factor| factor != unit_value) {
         return fail("X and Y axes use different linear units; results would not be uniform");
     }
     Ok(unit)
@@ -371,10 +370,6 @@ pub(crate) fn ensure_3d_metric(crs: Option<&str>) -> Result<PositiveFiniteScale>
     ensure_3d_metric_at(Some(crs), &state)
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "unit conversion factors are exact CRS declarations, not approximate measurements"
-)]
 pub(crate) fn ensure_3d_metric_at(
     crs: Option<&str>,
     state: &crate::crs::RuntimeState,
@@ -389,9 +384,8 @@ pub(crate) fn ensure_3d_metric_at(
             "axes are angular (geographic); reproject to a projected CRS with to_crs",
         ));
     };
-    let unit = ensure_positive_finite_linear_unit(factors[0], fail)?;
-    let unit_value = unit.get();
-    if factors.iter().any(|factor| *factor != unit_value) {
+    let unit = ensure_positive_finite_linear_unit(factors.first, fail)?;
+    if !factors.uniform {
         return Err(fail(
             "axis units differ (e.g. meter vs foot); use one consistent linear unit",
         ));
@@ -405,20 +399,28 @@ pub(crate) fn ensure_3d_metric_at(
     Ok(unit)
 }
 
-/// Linear (length) unit conversion factors of every axis, recursing into the
-/// sub-CRS of a compound CRS. `Ok(None)` if any axis is angular (degree/radian)
-/// or has no usable unit — i.e. the CRS is not a pure linear/metric system.
-/// Resource failures from recursive CRS lookup or factor storage are returned
-/// unchanged.
-pub(crate) fn metric_axis_factors_at(
+#[derive(Debug)]
+struct MetricAxisFactors {
+    first: f64,
+    second: Option<f64>,
+    uniform: bool,
+}
+
+/// Summarize linear axis factors in declaration order, recursing into compound
+/// CRSs. `Ok(None)` means an axis is angular or lacks a usable linear unit.
+#[expect(
+    clippy::float_cmp,
+    reason = "unit conversion factors are exact CRS declarations, not approximate measurements"
+)]
+fn metric_axis_factors_at(
     crs_info: &CrsInfo,
     state: &crate::crs::RuntimeState,
-) -> Result<Option<Vec<f64>>> {
+) -> Result<Option<MetricAxisFactors>> {
     if crs_info.kind.starts_with("geographic") {
         return Ok(None);
     }
     if crs_info.kind == "compound" {
-        let mut factors = Vec::new();
+        let mut factors: Option<MetricAxisFactors> = None;
         for sub in &crs_info.sub_crs {
             let definition = sub.definition.as_deref().unwrap_or(sub.crs.as_str());
             if definition.is_empty() {
@@ -428,15 +430,14 @@ pub(crate) fn metric_axis_factors_at(
             let Some(sub_factors) = metric_axis_factors_at(&sub_info, state)? else {
                 return Ok(None);
             };
-            if let Err(error) = crate::boundary::try_reserve_vec(&mut factors, sub_factors.len()) {
-                drop(sub_factors);
-                return Err(error);
+            if let Some(factors) = &mut factors {
+                factors.second.get_or_insert(sub_factors.first);
+                factors.uniform &= sub_factors.uniform && factors.first == sub_factors.first;
+            } else {
+                factors = Some(sub_factors);
             }
-            // The exact reservation above covers every element moved from the
-            // child, so extending the aggregate cannot grow it.
-            factors.extend(sub_factors);
         }
-        return Ok((!factors.is_empty()).then_some(factors));
+        return Ok(factors);
     }
     for axis in &crs_info.axes {
         let Some(unit) = axis.unit_name.as_deref() else {
@@ -446,11 +447,14 @@ pub(crate) fn metric_axis_factors_at(
             return Ok(None);
         }
     }
-    let mut factors = Vec::new();
-    crate::boundary::try_reserve_vec(&mut factors, crs_info.axes.len())?;
-    // The validated axis count is the exact append count.
-    factors.extend(crs_info.axes.iter().map(|axis| axis.unit_conversion_factor));
-    Ok((!factors.is_empty()).then_some(factors))
+    Ok(crs_info.axes.split_first().map(|(first, rest)| {
+        let first = first.unit_conversion_factor;
+        MetricAxisFactors {
+            first,
+            second: rest.first().map(|axis| axis.unit_conversion_factor),
+            uniform: rest.iter().all(|axis| axis.unit_conversion_factor == first),
+        }
+    }))
 }
 
 /// Whether an axis direction is horizontal (part of the X/Y plane). Unknown
@@ -487,6 +491,61 @@ mod tests {
     use super::metric_axis_factors_at;
     use crate::crs::{RUNTIME_STATE_TEST_LOCK, info_with_state, runtime_state_snapshot};
     use crate::error::{ErrorKind, Result};
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test asserts allocation counts after fallible CRS fixture setup"
+    )]
+    fn metric_axis_factors_add_no_storage_to_cached_crs_lookups() -> Result<()> {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = runtime_state_snapshot()?;
+        for crs in ["EPSG:3857", "EPSG:7405"] {
+            let info = info_with_state(crs, &state)?;
+            let _warm = metric_axis_factors_at(&info, &state)?;
+            let (lookups, lookup_allocations) =
+                crate::test_support::allocation_count(|| -> Result<()> {
+                    for sub in &info.sub_crs {
+                        let definition = sub.definition.as_deref().unwrap_or(sub.crs.as_str());
+                        let _info = info_with_state(definition, &state)?;
+                    }
+                    Ok(())
+                });
+            lookups?;
+            let (factors, allocations) =
+                crate::test_support::allocation_count(|| metric_axis_factors_at(&info, &state));
+            assert!(factors?.is_some());
+            assert_eq!(allocations, lookup_allocations, "{crs}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[expect(
+        clippy::panic_in_result_fn,
+        reason = "the test asserts declared axis factors after fallible CRS fixture setup"
+    )]
+    fn compound_axis_factors_distinguish_horizontal_and_vertical_units() -> Result<()> {
+        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = runtime_state_snapshot()?;
+        let mut info = (*info_with_state("EPSG:7405", &state)?).clone();
+        let [horizontal, vertical] = info.sub_crs.as_mut_slice() else {
+            panic!("compound fixture has horizontal and vertical components");
+        };
+        horizontal.definition = Some("EPSG:2263".into());
+        vertical.definition = Some("EPSG:5701".into());
+        let factors = metric_axis_factors_at(&info, &state)?.expect("linear compound axes");
+        let horizontal = info_with_state("EPSG:2263", &state)?;
+        let first = horizontal
+            .axes
+            .first()
+            .expect("horizontal axis")
+            .unit_conversion_factor;
+        assert_eq!(factors.first, first);
+        assert_eq!(factors.second, Some(first));
+        assert!(!factors.uniform);
+        Ok(())
+    }
 
     #[test]
     #[expect(
