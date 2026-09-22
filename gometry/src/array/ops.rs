@@ -138,43 +138,33 @@ impl PyGeometryArray {
                 "GeoJSON has no M ordinate; remove M with set_m(None), or use WKT/GeoArrow",
             ));
         }
-        let array = self.clone();
         // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
-        let frame = self.frame.clone();
-        Ok(if include_z {
-            py.detach(move || {
-                let domain = io::geojson_domain(frame.crs_str())?;
-                let mut out = Vec::new();
-                for row in array.row_operation().rows_with_missing(String::new) {
-                    let value = match row {
-                        ArrayRow::Missing { value, .. } => value,
-                        ArrayRow::Present(row) => row
-                            .row()
-                            .try_with_shape(|shape| io::to_geojson_string::<true>(shape, domain))?,
-                    };
-                    crate::boundary::try_push_vec(&mut out, value)?;
-                }
-                Ok::<Vec<String>, crate::error::Error>(out)
-            })?
-        } else {
-            let frame = self.frame.clone();
-            py.detach(move || {
-                let domain = io::geojson_domain(frame.crs_str())?;
-                let mut out = Vec::new();
-                for row in array.row_operation().rows_with_missing(String::new) {
-                    let value = match row {
-                        ArrayRow::Missing { value, .. } => value,
-                        ArrayRow::Present(row) => row.row().try_with_shape(|shape| {
-                            io::to_geojson_string::<false>(shape, domain)
-                        })?,
-                    };
-                    crate::boundary::try_push_vec(&mut out, value)?;
-                }
-                Ok::<Vec<String>, crate::error::Error>(out)
-            })?
-        })
+        Ok(py.detach(|| {
+            let domain = io::geojson_domain(self.crs_str())?;
+            if include_z {
+                self.geojson_rows::<true>(domain)
+            } else {
+                self.geojson_rows::<false>(domain)
+            }
+        })?)
+    }
+
+    fn geojson_rows<const INCLUDE_Z: bool>(
+        &self,
+        domain: geometry::TopologyDomain,
+    ) -> Result<Vec<String>> {
+        let mut output = Vec::with_capacity(self.len());
+        for row in self.row_operation().rows_with_missing(String::new) {
+            output.push(match row {
+                ArrayRow::Missing { value, .. } => value,
+                ArrayRow::Present(row) => row
+                    .row()
+                    .try_with_shape(|shape| io::to_geojson_string::<INCLUDE_Z>(shape, domain))?,
+            });
+        }
+        Ok(output)
     }
 
     pub(crate) fn validate_impl(
@@ -184,8 +174,7 @@ impl PyGeometryArray {
         let domain = geometry::topology_domain(&self.frame)?;
         // Validating every row is the same native work `repair` detaches.
         py.detach(|| {
-            let mut reports = Vec::new();
-            crate::boundary::try_reserve_vec(&mut reports, self.len())?;
+            let mut reports = Vec::with_capacity(self.len());
             let mut rows = self.row_operation();
             for row in rows.rows_with_missing(|| ()) {
                 let report = match row {
@@ -197,44 +186,40 @@ impl PyGeometryArray {
                         Some(PyValidationReport { geometry, issue })
                     },
                 };
-                crate::try_push_vec(&mut reports, report)?;
+                reports.push(report);
             }
             Ok(reports)
         })
     }
 
     pub(crate) fn repair_impl(&self, py: Python<'_>, method: RepairMethod) -> PyResult<Self> {
-        let array = self.clone();
         let domain = geometry::topology_domain(&self.frame)?;
         let repaired = py
-            .detach(move || {
+            .detach(|| {
                 let mut all_present_valid = true;
-                let mut shapes = Vec::new();
-                for logical_row in array.row_operation().rows_with_missing(|| ()) {
+                let mut shapes = Vec::with_capacity(
+                    self.missing()
+                        .map_or(self.len(), crate::array::ValidityMask::present_count),
+                );
+                for logical_row in self.row_operation().rows_with_missing(|| ()) {
                     let ArrayRow::Present(row) = logical_row else {
                         continue;
                     };
                     let logical = row.logical();
-                    let shape = row.row();
-                    match shape
+                    let (shape, changed) = row
+                        .row()
                         .try_with_shape(|shape| {
-                            geometry::repair_shape_in_frame(shape, domain, method)
+                            Ok::<_, crate::error::Error>(
+                                geometry::repair_shape_in_frame(shape, domain, method)?
+                                    .map_or_else(
+                                        || (shape.clone(), false),
+                                        |repaired| (repaired, true),
+                                    ),
+                            )
                         })
-                        .map_err(|error| (logical, error))?
-                    {
-                        None => crate::boundary::try_push_vec(
-                            &mut shapes,
-                            shape
-                                .with_shape(Clone::clone)
-                                .map_err(|error| (logical, error))?,
-                        )
-                        .map_err(|error| (logical, error))?,
-                        Some(repaired) => {
-                            all_present_valid = false;
-                            crate::boundary::try_push_vec(&mut shapes, repaired)
-                                .map_err(|error| (logical, error))?;
-                        },
-                    }
+                        .map_err(|error| (logical, error))?;
+                    all_present_valid &= !changed;
+                    shapes.push(shape);
                 }
                 Ok(if all_present_valid {
                     None
