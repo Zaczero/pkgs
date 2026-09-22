@@ -25,20 +25,13 @@ pub(crate) fn native_concave_hull(
     }
 
     let triangle_count = triangulation.triangles.len() / 3;
-    let mut alive = Vec::new();
-    crate::try_reserve_vec(&mut alive, triangle_count)?;
-    alive.resize(triangle_count, true);
-    let mut boundary_degree = Vec::new();
-    crate::try_reserve_vec(&mut boundary_degree, points.len())?;
-    boundary_degree.resize(points.len(), 0_i16);
+    let mut alive = vec![true; triangle_count];
+    let mut boundary_degree = vec![0_i16; points.len()];
     let mut heap = BinaryHeap::new();
     for halfedge in 0..triangulation.triangles.len() {
         if is_boundary_halfedge(&triangulation, &alive, halfedge) {
             bump_boundary_degree(&mut boundary_degree, &triangulation, halfedge, 1);
-            crate::try_push_heap(
-                &mut heap,
-                ConcaveBoundaryEdge::new(points, &triangulation, halfedge),
-            )?;
+            heap.push(ConcaveBoundaryEdge::new(points, &triangulation, halfedge));
         }
     }
 
@@ -72,8 +65,8 @@ pub(crate) fn native_concave_hull(
         let right = next_halfedge(halfedge);
         bump_boundary_degree(&mut boundary_degree, &triangulation, left, 1);
         bump_boundary_degree(&mut boundary_degree, &triangulation, right, 1);
-        push_live_twin_boundary(points, &triangulation, &alive, left, &mut heap)?;
-        push_live_twin_boundary(points, &triangulation, &alive, right, &mut heap)?;
+        push_live_twin_boundary(points, &triangulation, &alive, left, &mut heap);
+        push_live_twin_boundary(points, &triangulation, &alive, right, &mut heap);
     }
 
     extract_concave_boundary(points, &triangulation, &alive)
@@ -216,12 +209,11 @@ fn push_live_twin_boundary(
     alive: &[bool],
     peeled_halfedge: usize,
     heap: &mut BinaryHeap<ConcaveBoundaryEdge>,
-) -> crate::error::Result<()> {
+) {
     let twin = triangulation.halfedges[peeled_halfedge];
     if twin != EMPTY && is_boundary_halfedge(triangulation, alive, twin) {
-        crate::try_push_heap(heap, ConcaveBoundaryEdge::new(points, triangulation, twin))?;
+        heap.push(ConcaveBoundaryEdge::new(points, triangulation, twin));
     }
-    Ok(())
 }
 
 fn extract_concave_boundary(
@@ -234,9 +226,7 @@ fn extract_concave_boundary(
     // one `Vec` per point. `overflowed` flags any degree>2 vertex the two slots
     // cannot represent, preserving the malformed-boundary rejection below.
     const NONE: u32 = u32::MAX;
-    let mut adjacency = Vec::new();
-    crate::try_reserve_vec(&mut adjacency, points.len())?;
-    adjacency.resize(points.len(), [NONE; 2]);
+    let mut adjacency = vec![[NONE; 2]; points.len()];
     let mut overflowed = false;
     for halfedge in 0..triangulation.triangles.len() {
         if is_boundary_halfedge(triangulation, alive, halfedge) {
@@ -264,12 +254,11 @@ fn extract_concave_boundary(
     }
 
     let boundary_vertex_count = adjacency.iter().filter(|slot| slot[0] != NONE).count();
-    let mut ring = Vec::new();
-    crate::try_reserve_vec(&mut ring, boundary_vertex_count)?;
+    let mut ring = Vec::with_capacity(boundary_vertex_count);
     let mut previous = u32::MAX;
     let mut current = start as u32;
     loop {
-        crate::try_push_vec(&mut ring, current as usize)?;
+        ring.push(current as usize);
         let neighbors = adjacency[current as usize];
         let next = if neighbors[0] == previous {
             neighbors[1]
@@ -305,11 +294,7 @@ fn canonicalize_open_hull_indices(
             "concave hull boundary is degenerate",
         ));
     }
-    let mut cycle = Vec::new();
-    crate::try_reserve_vec(&mut cycle, ring.len())?;
-    for &index in &ring {
-        crate::try_push_vec(&mut cycle, points[index].xy())?;
-    }
+    let cycle: Vec<_> = ring.iter().map(|&index| points[index].xy()).collect();
     let winding = open_xy_cycle_winding(&cycle);
     if winding.is_degenerate() {
         return Err(GeometryErrorKind::triangulation(
