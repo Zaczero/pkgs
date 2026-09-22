@@ -1636,10 +1636,7 @@ impl<'a> PointBinaryInput<'a> {
                 GeometryArrayStorage::Packed(PackedStorage::Points { .. })
             )
             .then_some(PointOperand::Compact(array)),
-            Self::Many(array) => array
-                .storage()
-                .point_rows()
-                .map(PointOperand::Many),
+            Self::Many(array) => array.storage().point_rows().map(PointOperand::Many),
         }
     }
 
