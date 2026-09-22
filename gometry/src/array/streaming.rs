@@ -7,8 +7,7 @@ use crate::array::{
     PackedStorage, PolygonLevel, PyGeometryArray, RingLevel, RowSelectionRef, Shape, ShapeRow,
     StorageLayout, ValidityBuilder, ValidityMask,
 };
-use crate::error::ErrorKind;
-use crate::geometry::types::{checked_csr_window, ensure_coordseq_vertex_capacity};
+use crate::geometry::types::checked_csr_window;
 use crate::geometry::{
     CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, LineSeq, Polygon,
 };
@@ -75,7 +74,6 @@ pub(crate) struct StreamingShapes {
 
 enum StreamingState {
     Empty,
-    LeadingMissing(usize),
     Points(crate::geometry::CoordSeqBuilder),
     Lines(StreamingLines),
     Polygons(StreamingPolygons),
@@ -93,18 +91,6 @@ pub(crate) struct StreamingPolygons {
     coords: crate::geometry::CoordSeqBuilder,
     ring_offsets: CsrOffsetBuilder,
     polygon_offsets: CsrOffsetBuilder,
-}
-
-/// Packed CSR columns are `i32`. Overflow is a structural packed-format limit
-/// and demotes to mixed shapes; any other error (including Resource) propagates.
-fn packed_i32_capacity(len: usize) -> crate::error::Result<bool> {
-    match ensure_coordseq_vertex_capacity(len) {
-        Ok(()) => Ok(true),
-        Err(error) => match error.kind() {
-            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded) => Ok(false),
-            _ => Err(error),
-        },
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -126,8 +112,8 @@ impl StreamingShapes {
     }
 
     /// Supply exact selected-payload hints when a caller already owns them.
-    /// Hints only affect the first native reservation; observed growth remains
-    /// fallible and no hint controls validity or logical length.
+    /// Hints only affect the first native reservation; no hint controls
+    /// validity or logical length.
     pub(crate) fn with_capacity(coordinate_capacity: usize, row_capacity: usize) -> Self {
         Self::with_capacity_and_rings(coordinate_capacity, row_capacity, row_capacity)
     }
@@ -147,21 +133,16 @@ impl StreamingShapes {
         }
     }
 
-    /// Fallibly append one parsed shape. Prefer this over any infallible push
-    /// at a Python-iterator boundary.
+    /// Append one parsed shape, retaining coordinate and CSR admission errors.
     pub(crate) fn try_push(&mut self, shape: Shape) -> crate::error::Result<()> {
         if self.try_push_shape_native(&shape)? {
-            self.validity.push(true)?;
+            self.validity.push(true);
             #[cfg(test)]
             record_stream_row_advance();
             return Ok(());
         }
-        self.try_demote()?;
-        let StreamingState::Shapes(shapes) = &mut self.state else {
-            unreachable!("demotion always leaves the mixed lane");
-        };
-        crate::try_push_vec(shapes, shape)?;
-        self.validity.push(true)?;
+        self.try_demote()?.push(shape);
+        self.validity.push(true);
         #[cfg(test)]
         record_stream_row_advance();
         Ok(())
@@ -169,17 +150,13 @@ impl StreamingShapes {
 
     pub(crate) fn try_push_shape_ref(&mut self, shape: &Shape) -> crate::error::Result<()> {
         if self.try_push_shape_native(shape)? {
-            self.validity.push(true)?;
+            self.validity.push(true);
             #[cfg(test)]
             record_stream_row_advance();
             return Ok(());
         }
-        self.try_demote()?;
-        let StreamingState::Shapes(shapes) = &mut self.state else {
-            unreachable!("demotion always leaves the mixed lane");
-        };
-        crate::try_push_vec(shapes, shape.clone())?;
-        self.validity.push(true)?;
+        self.try_demote()?.push(shape.clone());
+        self.validity.push(true);
         #[cfg(test)]
         record_stream_row_advance();
         Ok(())
@@ -193,18 +170,15 @@ impl StreamingShapes {
             return self.try_push_missing();
         };
         if self.try_push_row_native(row)? {
-            self.validity.push(true)?;
+            self.validity.push(true);
             #[cfg(test)]
             record_stream_row_advance();
             return Ok(());
         }
-        self.try_demote()?;
+        let shapes = self.try_demote()?;
         let shape = row.with_shape(Clone::clone)?;
-        let StreamingState::Shapes(shapes) = &mut self.state else {
-            unreachable!("demotion always leaves the mixed lane");
-        };
-        crate::try_push_vec(shapes, shape)?;
-        self.validity.push(true)?;
+        shapes.push(shape);
+        self.validity.push(true);
         #[cfg(test)]
         record_stream_row_advance();
         Ok(())
@@ -214,17 +188,11 @@ impl StreamingShapes {
     /// and polygon CSR state receives a zero-width logical window.
     pub(crate) fn try_push_missing(&mut self) -> crate::error::Result<()> {
         match &mut self.state {
-            StreamingState::Empty => self.state = StreamingState::LeadingMissing(1),
-            StreamingState::LeadingMissing(count) => {
-                *count = count
-                    .checked_add(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            },
-            StreamingState::Points(_) | StreamingState::Shapes(_) => {},
+            StreamingState::Empty | StreamingState::Points(_) | StreamingState::Shapes(_) => {},
             StreamingState::Lines(builder) => builder.try_push_missing()?,
             StreamingState::Polygons(builder) => builder.try_push_missing()?,
         }
-        self.validity.push(false)?;
+        self.validity.push(false);
         #[cfg(test)]
         record_stream_row_advance();
         Ok(())
@@ -263,7 +231,7 @@ impl StreamingShapes {
                     builder.extend_window(coords, rows.clone());
                     self.state = StreamingState::Points(builder);
                 }
-                self.validity.extend_present(rows.len())?;
+                self.validity.extend_present(rows.len());
                 #[cfg(test)]
                 record_stream_bulk_extension(rows.len());
                 Ok(true)
@@ -292,12 +260,12 @@ impl StreamingShapes {
                         axes,
                         self.coordinate_capacity,
                         self.row_capacity,
-                        self.leading_missing(),
+                        self.validity.len(),
                     )?;
                     builder.try_extend(coords, offsets.as_slice(), rows.clone())?;
                     self.state = StreamingState::Lines(builder);
                 }
-                self.validity.extend_present(rows.len())?;
+                self.validity.extend_present(rows.len());
                 #[cfg(test)]
                 record_stream_bulk_extension(rows.len());
                 Ok(true)
@@ -333,7 +301,7 @@ impl StreamingShapes {
                         self.coordinate_capacity,
                         self.row_capacity,
                         self.ring_capacity,
-                        self.leading_missing(),
+                        self.validity.len(),
                     )?;
                     builder.try_extend(
                         coords,
@@ -343,7 +311,7 @@ impl StreamingShapes {
                     )?;
                     self.state = StreamingState::Polygons(builder);
                 }
-                self.validity.extend_present(rows.len())?;
+                self.validity.extend_present(rows.len());
                 #[cfg(test)]
                 record_stream_bulk_extension(rows.len());
                 Ok(true)
@@ -415,7 +383,7 @@ impl StreamingShapes {
                 axes,
                 self.coordinate_capacity,
                 self.row_capacity,
-                self.leading_missing(),
+                self.validity.len(),
             )?;
             builder.try_push_span(coords, window)?;
             self.state = StreamingState::Lines(builder);
@@ -438,7 +406,7 @@ impl StreamingShapes {
                 self.coordinate_capacity.max(polygon.coord_count()),
                 self.row_capacity,
                 self.ring_capacity,
-                self.leading_missing(),
+                self.validity.len(),
             )?;
             builder.try_push(polygon)?;
             self.state = StreamingState::Polygons(builder);
@@ -473,7 +441,7 @@ impl StreamingShapes {
                 self.coordinate_capacity,
                 self.row_capacity,
                 self.ring_capacity,
-                self.leading_missing(),
+                self.validity.len(),
             )?;
             builder.try_push_spans(coords, ring_offsets, rings)?;
             self.state = StreamingState::Polygons(builder);
@@ -481,16 +449,9 @@ impl StreamingShapes {
         Ok(true)
     }
 
-    const fn leading_missing(&self) -> usize {
-        match self.state {
-            StreamingState::LeadingMissing(count) => count,
-            _ => 0,
-        }
-    }
-
     fn admit_kind(&self, kind: RowKind) -> bool {
         match (&self.state, kind) {
-            (StreamingState::Empty | StreamingState::LeadingMissing(_), _) => true,
+            (StreamingState::Empty, _) => true,
             (StreamingState::Points(_), RowKind::Point(axes))
             | (StreamingState::Lines(_), RowKind::Line(axes))
             | (StreamingState::Polygons(_), RowKind::Polygon(axes)) => self.state_axes() == axes,
@@ -503,30 +464,31 @@ impl StreamingShapes {
             StreamingState::Points(builder) => builder.axes(),
             StreamingState::Lines(builder) => builder.coords.axes(),
             StreamingState::Polygons(builder) => builder.coords.axes(),
-            StreamingState::Empty
-            | StreamingState::LeadingMissing(_)
-            | StreamingState::Shapes(_) => CoordinateAxes::XY,
+            StreamingState::Empty | StreamingState::Shapes(_) => CoordinateAxes::XY,
         }
     }
 
     /// Re-expand native state into present-only mixed shapes. Validity remains
     /// owned by this accumulator and is therefore not represented as scalar
     /// placeholder shapes.
-    pub(crate) fn try_demote(&mut self) -> crate::error::Result<&mut Vec<Shape>> {
+    fn try_demote(&mut self) -> crate::error::Result<&mut Vec<Shape>> {
         let state = std::mem::replace(&mut self.state, StreamingState::Empty);
         let result = (|| -> crate::error::Result<Vec<Shape>> {
             match state {
                 StreamingState::Points(builder) => {
                     let coords = builder.finish()?;
-                    let mut shapes = Vec::new();
-                    crate::boundary::try_reserve_vec(&mut shapes, coords.len())?;
+                    let mut shapes = Vec::with_capacity(coords.len().max(self.row_capacity));
                     shapes.extend(coords.iter().map(Shape::Point));
                     Ok(shapes)
                 },
-                StreamingState::Lines(builder) => builder.into_present_shapes(&self.validity),
-                StreamingState::Polygons(builder) => builder.into_present_shapes(&self.validity),
+                StreamingState::Lines(builder) => {
+                    builder.into_present_shapes(&self.validity, self.row_capacity)
+                },
+                StreamingState::Polygons(builder) => {
+                    builder.into_present_shapes(&self.validity, self.row_capacity)
+                },
                 StreamingState::Shapes(shapes) => Ok(shapes),
-                StreamingState::Empty | StreamingState::LeadingMissing(_) => Ok(Vec::new()),
+                StreamingState::Empty => Ok(Vec::with_capacity(self.row_capacity)),
             }
         })();
         let shapes = match result {
@@ -557,7 +519,7 @@ impl StreamingShapes {
         let logical_len = validity.len();
         let present_len = validity.present_count();
         let (storage, layout) = match state {
-            StreamingState::Empty | StreamingState::LeadingMissing(_) => (
+            StreamingState::Empty => (
                 GeometryArrayStorage::Mixed(Vec::new()),
                 StorageLayout::PresentOnly,
             ),
@@ -589,65 +551,36 @@ impl StreamingShapes {
             },
             StreamingState::Lines(builder) => {
                 let (coords, offsets) = builder.into_parts()?;
-                if offsets.len()
-                    != logical_len
-                        .checked_add(1)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?
-                {
+                if offsets.len() != logical_len.wrapping_add(1) {
                     return Err(GeometryErrorKind::message(
                         "line logical offsets length does not match validity",
                     ));
                 }
-                let storage = if packed_i32_capacity(coords.len())? {
+                (
                     GeometryArrayStorage::Packed(PackedStorage::Lines {
                         coords: Arc::new(coords),
                         offsets,
                         row_map: crate::array::RowSelection::Identity,
-                    })
-                } else {
-                    GeometryArrayStorage::Mixed(line_shapes_from_parts(&coords, &offsets, None)?)
-                };
-                let layout = if matches!(storage, GeometryArrayStorage::Packed(_)) {
-                    StorageLayout::LogicalRows
-                } else {
-                    StorageLayout::PresentOnly
-                };
-                (storage, layout)
+                    }),
+                    StorageLayout::LogicalRows,
+                )
             },
             StreamingState::Polygons(builder) => {
                 let (coords, ring_offsets, polygon_offsets) = builder.into_parts()?;
-                if polygon_offsets.len()
-                    != logical_len
-                        .checked_add(1)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?
-                {
+                if polygon_offsets.len() != logical_len.wrapping_add(1) {
                     return Err(GeometryErrorKind::message(
                         "polygon logical offsets length does not match validity",
                     ));
                 }
-                let ring_count = ring_offsets.len().saturating_sub(1);
-                let storage =
-                    if packed_i32_capacity(coords.len())? && packed_i32_capacity(ring_count)? {
-                        GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                            coords: Arc::new(coords),
-                            ring_offsets: ring_offsets.cast_level::<RingLevel>(),
-                            polygon_offsets: polygon_offsets.cast_level::<PolygonLevel>(),
-                            row_map: crate::array::RowSelection::Identity,
-                        })
-                    } else {
-                        GeometryArrayStorage::Mixed(polygon_shapes_from_parts(
-                            &coords,
-                            &ring_offsets,
-                            &polygon_offsets,
-                            None,
-                        )?)
-                    };
-                let layout = if matches!(storage, GeometryArrayStorage::Packed(_)) {
-                    StorageLayout::LogicalRows
-                } else {
-                    StorageLayout::PresentOnly
-                };
-                (storage, layout)
+                (
+                    GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                        coords: Arc::new(coords),
+                        ring_offsets,
+                        polygon_offsets,
+                        row_map: crate::array::RowSelection::Identity,
+                    }),
+                    StorageLayout::LogicalRows,
+                )
             },
         };
         let payload_len = storage.len();
@@ -741,9 +674,28 @@ impl StreamingLines {
         Ok((coords, offsets))
     }
 
-    fn into_present_shapes(self, validity: &ValidityBuilder) -> crate::error::Result<Vec<Shape>> {
+    fn into_present_shapes(
+        self,
+        validity: &ValidityBuilder,
+        capacity: usize,
+    ) -> crate::error::Result<Vec<Shape>> {
         let (coords, offsets) = self.into_parts()?;
-        line_shapes_from_parts(&coords, &offsets, Some(validity))
+        let mut shapes = Vec::with_capacity(validity.present_count().max(capacity));
+        for (logical, [start, end]) in offsets.array_windows::<2>().enumerate() {
+            if !validity.is_present(logical) {
+                continue;
+            }
+            let row = coords.view(CoordWindow::from_range(
+                *start as usize..*end as usize,
+                coords.len(),
+            ));
+            shapes.push(if row.is_empty() {
+                Shape::typed_empty(GeometryKind::LineString, coords.axes())
+            } else {
+                Shape::LineString(LineSeq::from_proven(row))
+            });
+        }
+        Ok(shapes)
     }
 }
 
@@ -843,72 +795,30 @@ impl StreamingPolygons {
         Ok((coords, ring_offsets, polygon_offsets))
     }
 
-    fn into_present_shapes(self, validity: &ValidityBuilder) -> crate::error::Result<Vec<Shape>> {
+    fn into_present_shapes(
+        self,
+        validity: &ValidityBuilder,
+        capacity: usize,
+    ) -> crate::error::Result<Vec<Shape>> {
         let (coords, ring_offsets, polygon_offsets) = self.into_parts()?;
-        polygon_shapes_from_parts(&coords, &ring_offsets, &polygon_offsets, Some(validity))
-    }
-}
-
-fn line_shapes_from_parts(
-    coords: &CoordSeq,
-    offsets: &CsrOffsetColumn,
-    validity: Option<&ValidityBuilder>,
-) -> crate::error::Result<Vec<Shape>> {
-    let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(
-        &mut shapes,
-        validity.map_or_else(
-            || offsets.len().saturating_sub(1),
-            ValidityBuilder::present_count,
-        ),
-    )?;
-    for (logical, [start, end]) in offsets.array_windows::<2>().enumerate() {
-        if validity.is_some_and(|mask| !mask.is_present(logical)) {
-            continue;
+        let mut shapes = Vec::with_capacity(validity.present_count().max(capacity));
+        for (logical, [start, end]) in polygon_offsets.array_windows::<2>().enumerate() {
+            if !validity.is_present(logical) {
+                continue;
+            }
+            let rings = *start as usize..*end as usize;
+            if rings.is_empty() {
+                shapes.push(Shape::typed_empty(GeometryKind::Polygon, coords.axes()));
+                continue;
+            }
+            shapes.push(Shape::Polygon(GeometryArrayStorage::polygon_view(
+                &coords,
+                ring_offsets.as_slice(),
+                rings,
+            )?));
         }
-        let row = coords.view(CoordWindow::from_range(
-            *start as usize..*end as usize,
-            coords.len(),
-        ));
-        shapes.push(if row.is_empty() {
-            Shape::typed_empty(GeometryKind::LineString, coords.axes())
-        } else {
-            Shape::LineString(LineSeq::from_proven(row))
-        });
+        Ok(shapes)
     }
-    Ok(shapes)
-}
-
-fn polygon_shapes_from_parts(
-    coords: &CoordSeq,
-    ring_offsets: &CsrOffsetColumn<RingLevel>,
-    polygon_offsets: &CsrOffsetColumn<PolygonLevel>,
-    validity: Option<&ValidityBuilder>,
-) -> crate::error::Result<Vec<Shape>> {
-    let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(
-        &mut shapes,
-        validity.map_or_else(
-            || polygon_offsets.len().saturating_sub(1),
-            ValidityBuilder::present_count,
-        ),
-    )?;
-    for (logical, [start, end]) in polygon_offsets.array_windows::<2>().enumerate() {
-        if validity.is_some_and(|mask| !mask.is_present(logical)) {
-            continue;
-        }
-        let rings = *start as usize..*end as usize;
-        if rings.is_empty() {
-            shapes.push(Shape::typed_empty(GeometryKind::Polygon, coords.axes()));
-            continue;
-        }
-        shapes.push(Shape::Polygon(GeometryArrayStorage::polygon_view(
-            coords,
-            ring_offsets.as_slice(),
-            rings,
-        )?));
-    }
-    Ok(shapes)
 }
 
 #[cfg(test)]

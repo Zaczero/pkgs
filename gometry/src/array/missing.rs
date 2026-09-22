@@ -26,7 +26,7 @@ pub(crate) struct ValidityMask {
     valid_count: usize,
 }
 
-/// Fallible validity publisher for one logical row stream.
+/// Validity publisher for one logical row stream.
 ///
 /// The builder keeps the Arrow polarity (`1 = present`) while rows are
 /// admitted, so nullable producers do not need a parallel missing-row index
@@ -70,43 +70,30 @@ impl ValidityBuilder {
             .is_none_or(|bytes| bytes[row / 8] & (1 << (row % 8)) != 0)
     }
 
-    pub(crate) fn push(&mut self, present: bool) -> crate::error::Result<()> {
-        if self.len == usize::MAX {
-            return Err(crate::error::ResourceError::SizeOverflow.into());
-        }
+    pub(crate) fn push(&mut self, present: bool) {
+        let end = self.len.wrapping_add(1);
         if !present && self.bytes.is_none() {
-            let byte_len = self
-                .capacity_hint
-                .max(
-                    self.len
-                        .checked_add(1)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
-                )
-                .div_ceil(8);
-            let mut bytes = Vec::new();
-            crate::boundary::try_reserve_vec(&mut bytes, byte_len)?;
-            bytes.resize((self.len + 1).div_ceil(8), u8::MAX);
-            bytes[self.len / 8] &= !(1 << (self.len % 8));
+            let mut bytes = Vec::with_capacity(self.capacity_hint.max(end).div_ceil(8));
+            bytes.resize(end.div_ceil(8), u8::MAX);
             self.bytes = Some(bytes);
         } else if let Some(bytes) = &mut self.bytes
             && self.len.is_multiple_of(8)
         {
-            crate::try_push_vec(bytes, 0)?;
+            bytes.push(0);
         }
         if let Some(bytes) = &mut self.bytes {
-            let byte = self.len / 8;
+            let byte = bytes.last_mut().expect("current row has a validity byte");
             let bit = self.len % 8;
             if present {
-                bytes[byte] |= 1 << bit;
+                *byte |= 1 << bit;
             } else {
-                bytes[byte] &= !(1 << bit);
+                *byte &= !(1 << bit);
             }
         }
         if present {
-            self.valid_count += 1;
+            self.valid_count = self.valid_count.wrapping_add(1);
         }
-        self.len += 1;
-        Ok(())
+        self.len = end;
     }
 
     /// Append an all-present run without visiting one validity bit per row.
@@ -114,25 +101,14 @@ impl ValidityBuilder {
     /// A bitmap is allocated only when an earlier row was missing. Newly
     /// covered bytes are initialized to zero before the run is marked
     /// present; unused trailing bits are normalized by [`Self::finish`].
-    pub(crate) fn extend_present(&mut self, count: usize) -> crate::error::Result<()> {
+    pub(crate) fn extend_present(&mut self, count: usize) {
         if count == 0 {
-            return Ok(());
+            return;
         }
-        let end = self
-            .len
-            .checked_add(count)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let valid_count = self
-            .valid_count
-            .checked_add(count)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let end = self.len.wrapping_add(count);
         if let Some(bytes) = &mut self.bytes {
             let required = end.div_ceil(8);
-            if required > bytes.len() {
-                let additional = required - bytes.len();
-                crate::boundary::try_reserve_vec(bytes, additional)?;
-                bytes.resize(required, 0);
-            }
+            bytes.resize(required, 0);
             let start = self.len;
             let first = start / 8;
             let last = (end - 1) / 8;
@@ -156,29 +132,24 @@ impl ValidityBuilder {
             }
         }
         self.len = end;
-        self.valid_count = valid_count;
-        Ok(())
+        self.valid_count = self.valid_count.wrapping_add(count);
     }
 
-    pub(crate) fn extend_missing(&mut self, count: usize) -> crate::error::Result<()> {
+    pub(crate) fn extend_missing(&mut self, count: usize) {
         if count == 0 {
-            return Ok(());
+            return;
         }
         let start = self.len;
-        let end = start
-            .checked_add(count)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        self.push(false)?;
-        let bytes = self.bytes.as_mut().expect("missing row initializes bitmap");
-        let required = end.div_ceil(8);
-        if required > bytes.len() {
-            crate::boundary::try_reserve_vec(bytes, required - bytes.len())?;
-            bytes.resize(required, 0);
-        }
+        let end = start.wrapping_add(count);
+        let bytes = self.bytes.get_or_insert_with(|| {
+            let mut bytes = Vec::with_capacity(self.capacity_hint.max(end).div_ceil(8));
+            bytes.resize(start.div_ceil(8), u8::MAX);
+            bytes
+        });
+        bytes.resize(end.div_ceil(8), 0);
         bytes[start / 8] &= (1_u8 << (start % 8)) - 1;
         bytes[start / 8 + 1..].fill(0);
         self.len = end;
-        Ok(())
     }
 
     pub(crate) fn finish(self) -> Option<ValidityMask> {
@@ -650,8 +621,8 @@ mod tests {
         use super::ValidityBuilder;
 
         let mut builder = ValidityBuilder::new();
-        builder.push(true).unwrap();
-        builder.push(true).unwrap();
+        builder.push(true);
+        builder.push(true);
         assert_eq!(builder.len(), 2);
         assert_eq!(builder.present_count(), 2);
         assert!(builder.finish().is_none());
@@ -663,7 +634,7 @@ mod tests {
 
         let mut builder = ValidityBuilder::new();
         for present in [false, true, false, true, true, false, true, false, true] {
-            builder.push(present).unwrap();
+            builder.push(present);
         }
         let mask = builder.finish().unwrap();
         assert_eq!(mask.iter().collect::<Vec<_>>(), [
@@ -677,10 +648,26 @@ mod tests {
         use super::ValidityBuilder;
 
         let mut builder = ValidityBuilder::with_capacity(64);
-        builder.push(false).unwrap();
-        builder.push(true).unwrap();
+        builder.push(false);
+        builder.push(true);
         let mask = builder.finish().unwrap();
         assert_eq!(mask.arrow_bitmap().0.as_ref(), &[0b10]);
+    }
+
+    #[test]
+    fn validity_builder_reserves_the_first_missing_run_once() {
+        for prefix in [0, 7, 8, 9, 511] {
+            let mut builder = super::ValidityBuilder::new();
+            builder.extend_present(prefix);
+            let ((), allocations) =
+                crate::test_support::allocation_count(|| builder.extend_missing(4096));
+            assert_eq!(allocations, 1, "prefix {prefix}");
+            let mask = builder.finish().expect("missing run");
+            assert_eq!(mask.present_count(), prefix);
+            assert_eq!(mask.missing_count(), 4096);
+            assert!(mask.iter().take(prefix).all(|missing| !missing));
+            assert!(mask.iter().skip(prefix).all(|missing| missing));
+        }
     }
 
     #[test]
@@ -690,11 +677,11 @@ mod tests {
         for prefix in 0..16 {
             for missing in [0, 1, 7, 8, 9, 31] {
                 let mut builder = ValidityBuilder::new();
-                builder.extend_present(prefix).unwrap();
-                builder.extend_missing(missing).unwrap();
-                builder.extend_present(17).unwrap();
-                builder.extend_missing(3).unwrap();
-                builder.push(true).unwrap();
+                builder.extend_present(prefix);
+                builder.extend_missing(missing);
+                builder.extend_present(17);
+                builder.extend_missing(3);
+                builder.push(true);
                 let mask = builder.finish().unwrap();
                 let expected: Vec<_> = (0..prefix + missing + 21)
                     .map(|row| {

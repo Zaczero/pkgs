@@ -1122,10 +1122,10 @@ fn project_ancestor_missing(
                         "Arrow list child offsets exceed the selected child length",
                     ));
                 }
-                missing.extend_present(start - missing.len())?;
-                missing.extend_missing(end - start)?;
+                missing.extend_present(start - missing.len());
+                missing.extend_missing(end - start);
             }
-            missing.extend_present(child_length - missing.len())?;
+            missing.extend_present(child_length - missing.len());
             Ok(missing.finish())
         },
         ArrowFormat::FixedSizeList(width) => {
@@ -1140,9 +1140,9 @@ fn project_ancestor_missing(
             let mut missing = crate::array::ValidityBuilder::with_capacity(child_length);
             for is_missing in parent_missing.iter() {
                 if is_missing {
-                    missing.extend_missing(width)?;
+                    missing.extend_missing(width);
                 } else {
-                    missing.extend_present(width)?;
+                    missing.extend_present(width);
                 }
             }
             Ok(missing.finish())
