@@ -88,12 +88,6 @@ fn part_output_len<const CLOSED: bool>(
     }
 }
 
-/// Exact-capacity SoA builder for one smoothed part. The budget check already
-/// caps `cap` at [`SMOOTH_MAX_COORDS`], then grows each live column once.
-fn reserve_builder(coords: &CoordSeq, cap: usize) -> Result<CoordSeqBuilder> {
-    CoordSeqBuilder::try_with_capacity(coords.axes(), cap)
-}
-
 /// Corner-cutting Chaikin smoothing and centripetal Catmull-Rom subdivision
 /// for line/polygon boundary chains. Points, empties, and chains with fewer
 /// than two vertices pass through unchanged; Z/M interpolate linearly along
@@ -144,30 +138,30 @@ fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
         return Ok(points.clone());
     }
     if !keep_endpoints {
-        let mut out = reserve_builder(points, 2 * (count - 1))?;
+        let mut out = CoordSeqBuilder::with_capacity(points.axes(), 2 * (count - 1));
         for index in 0..count - 1 {
             let start = points.point_at(index);
             let end = points.point_at(index + 1);
-            out.push(lerp_point(start, end, 0.25))?;
-            out.push(lerp_point(start, end, 0.75))?;
+            out.push(lerp_point(start, end, 0.25));
+            out.push(lerp_point(start, end, 0.75));
         }
         return out.finish();
     }
-    let mut out = reserve_builder(points, 2 * count - 2)?;
-    out.push_at(points, 0)?;
+    let mut out = CoordSeqBuilder::with_capacity(points.axes(), 2 * count - 2);
+    out.push_at(points, 0);
     for index in 0..count - 1 {
         let start = points.point_at(index);
         let end = points.point_at(index + 1);
         if index == 0 {
-            out.push(lerp_point(start, end, 0.75))?;
+            out.push(lerp_point(start, end, 0.75));
         } else if index == count - 2 {
-            out.push(lerp_point(start, end, 0.25))?;
+            out.push(lerp_point(start, end, 0.25));
         } else {
-            out.push(lerp_point(start, end, 0.25))?;
-            out.push(lerp_point(start, end, 0.75))?;
+            out.push(lerp_point(start, end, 0.25));
+            out.push(lerp_point(start, end, 0.75));
         }
     }
-    out.push_at(points, count - 1)?;
+    out.push_at(points, count - 1);
     out.finish()
 }
 
@@ -177,7 +171,7 @@ fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
         return Ok(points.clone());
     }
     let edge_count = count - 1;
-    let mut out = reserve_builder(points, 2 * edge_count + 1)?;
+    let mut out = CoordSeqBuilder::with_capacity(points.axes(), 2 * edge_count + 1);
     // Capture the first emitted corner so the ring can close bit-identically
     // without reading back from the SoA builder.
     let mut first_corner = None;
@@ -189,10 +183,10 @@ fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
         if index == 0 {
             first_corner = Some(q);
         }
-        out.push(q)?;
-        out.push(r)?;
+        out.push(q);
+        out.push(r);
     }
-    out.push(first_corner.expect("closed Chaikin has at least one edge"))?;
+    out.push(first_corner.expect("closed Chaikin has at least one edge"));
     out.finish()
 }
 
@@ -208,8 +202,8 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
     }
     let edge_count = count - 1;
     let total = edge_count * samples + 1;
-    let mut out = reserve_builder(points, total)?;
-    out.push_at(points, 0)?;
+    let mut out = CoordSeqBuilder::with_capacity(points.axes(), total);
+    out.push_at(points, 0);
     let first = points.point_at(0);
     for edge in 0..edge_count {
         let p0 = catmull_control::<CLOSED>(points, edge as isize - 1);
@@ -239,14 +233,14 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
                     _ => None,
                 }),
             );
-            out.push(point)?;
+            out.push(point);
         }
         if !CLOSED || edge < edge_count - 1 {
-            out.push_at(points, edge + 1)?;
+            out.push_at(points, edge + 1);
         }
     }
     if CLOSED {
-        out.push(first)?;
+        out.push(first);
     }
     out.finish()
 }

@@ -417,8 +417,8 @@ fn parse_points(value: &Value, path: &JsonPath<'_>) -> Result<CoordSeq> {
     };
     let first = parse_point(first, &path.index(0))?;
     let axes = CoordinateAxes::from_point(first);
-    let mut points = CoordSeqBuilder::try_with_capacity(axes, positions.len())?;
-    points.push(first)?;
+    let mut points = CoordSeqBuilder::with_capacity(axes, positions.len());
+    points.push(first);
     for (index, position) in rest.iter().enumerate() {
         let point = parse_point(position, &path.index(index + 1))?;
         // See `geojson_mixed_axes_message`: no NaN-fill promotion — non-finite
@@ -427,7 +427,7 @@ fn parse_points(value: &Value, path: &JsonPath<'_>) -> Result<CoordSeq> {
             return Err(IoError::geojson(geojson_mixed_axes_message())
                 .with_parse_path(&path.index(index + 1).render()));
         }
-        points.push(point)?;
+        points.push(point);
     }
     points.finish()
 }

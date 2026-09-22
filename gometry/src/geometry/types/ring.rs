@@ -64,17 +64,10 @@ impl Ring {
         }
         // XY-open: silently append the first point to close the ring.
         let first = coords.point_at(0);
-        let mut closed = CoordSeqBuilder::try_with_capacity(
-            coords.axes(),
-            coords
-                .len()
-                .checked_add(1)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?,
-        )?;
-        for index in 0..coords.len() {
-            closed.push_at(&coords, index)?;
-        }
-        closed.push(first)?;
+        let mut closed =
+            CoordSeqBuilder::with_capacity(coords.axes(), coords.len().wrapping_add(1));
+        closed.extend_window(&coords, 0..coords.len());
+        closed.push(first);
         Ok(Self(closed.finish()?))
     }
 

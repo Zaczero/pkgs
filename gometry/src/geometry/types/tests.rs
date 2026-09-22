@@ -260,20 +260,18 @@ mod csr_offset_column_tests {
 #[cfg(test)]
 mod coordseq_builder_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
+    use crate::error::ErrorKind;
 
     #[test]
     fn finish_rejects_mismatched_point_axes() {
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 2).unwrap();
-        builder.push(Point::new_raw_xy(0.0, 0.0)).unwrap();
-        builder
-            .push(Point::new_raw_axes(
-                1.0,
-                1.0,
-                ZOrdinate(Some(0.0)),
-                MOrdinate(None),
-            ))
-            .unwrap();
+        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, 2);
+        builder.push(Point::new_raw_xy(0.0, 0.0));
+        builder.push(Point::new_raw_axes(
+            1.0,
+            1.0,
+            ZOrdinate(Some(0.0)),
+            MOrdinate(None),
+        ));
         let err = builder.finish().unwrap_err();
         assert!(matches!(
             err.kind(),
@@ -293,8 +291,8 @@ mod coordseq_builder_tests {
             MOrdinate(None),
         )])
         .unwrap();
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 1).unwrap();
-        builder.push_at(&source, 0).unwrap();
+        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, 1);
+        builder.push_at(&source, 0);
         let err = builder.finish().unwrap_err();
         assert!(matches!(
             err.kind(),
@@ -332,8 +330,8 @@ mod coordseq_builder_tests {
 
     #[test]
     fn finish_rejects_mismatched_push_xyzm_ordinals() {
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 1).unwrap();
-        builder.push_xyzm(0.0, 0.0, Some(1.0), None).unwrap();
+        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, 1);
+        builder.push_xyzm(0.0, 0.0, Some(1.0), None);
         let err = builder.finish().unwrap_err();
         assert!(matches!(
             err.kind(),
@@ -356,23 +354,19 @@ mod coordseq_builder_tests {
 
     #[test]
     fn finish_seals_homogeneous_points() {
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XYZ, 2).unwrap();
-        builder
-            .push(Point::new_raw_axes(
-                0.0,
-                0.0,
-                ZOrdinate(Some(1.0)),
-                MOrdinate(None),
-            ))
-            .unwrap();
-        builder
-            .push(Point::new_raw_axes(
-                2.0,
-                3.0,
-                ZOrdinate(Some(4.0)),
-                MOrdinate(None),
-            ))
-            .unwrap();
+        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XYZ, 2);
+        builder.push(Point::new_raw_axes(
+            0.0,
+            0.0,
+            ZOrdinate(Some(1.0)),
+            MOrdinate(None),
+        ));
+        builder.push(Point::new_raw_axes(
+            2.0,
+            3.0,
+            ZOrdinate(Some(4.0)),
+            MOrdinate(None),
+        ));
         let seq = builder.finish().expect("homogeneous XYZ sequence");
         assert_eq!(seq.len(), 2);
         assert_eq!(seq.axes(), CoordinateAxes::XYZ);
@@ -381,28 +375,10 @@ mod coordseq_builder_tests {
 
     #[test]
     fn empty_builder_finishes_empty_sequence() {
-        let builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 0).unwrap();
+        let builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, 0);
         let seq = builder.finish().unwrap();
         assert_eq!(seq.len(), 0);
         assert_eq!(seq.axes(), CoordinateAxes::XY);
-    }
-
-    #[test]
-    fn coordinate_capacity_rejects_unrepresentable_layouts() {
-        for axes in [
-            CoordinateAxes::XY,
-            CoordinateAxes::XYZ,
-            CoordinateAxes::XYM,
-            CoordinateAxes::XYZM,
-        ] {
-            let Err(error) = CoordSeqBuilder::try_with_capacity(axes, usize::MAX) else {
-                panic!("unrepresentable coordinate layout was accepted");
-            };
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::SizeOverflow)
-            ));
-        }
     }
 
     #[test]
@@ -413,16 +389,14 @@ mod coordseq_builder_tests {
             (CoordinateAxes::XYM, None, Some(23.0)),
             (CoordinateAxes::XYZM, Some(17.0), Some(23.0)),
         ] {
-            let mut builder = CoordSeqBuilder::try_with_capacity(axes, 0).unwrap();
+            let mut builder = CoordSeqBuilder::with_capacity(axes, 0);
             for index in 0..32 {
-                builder
-                    .push(Point::new_raw_axes(
-                        f64::from(index),
-                        5.0,
-                        ZOrdinate(z),
-                        MOrdinate(m),
-                    ))
-                    .unwrap();
+                builder.push(Point::new_raw_axes(
+                    f64::from(index),
+                    5.0,
+                    ZOrdinate(z),
+                    MOrdinate(m),
+                ));
             }
             let coords = builder.finish().unwrap();
             assert_eq!(coords.len(), 32);

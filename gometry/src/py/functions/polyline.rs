@@ -115,14 +115,9 @@ fn encode_shape(shape: &Shape, factor: f64) -> PyResult<String> {
 /// Decode polyline bytes straight into SoA columns (no intermediate
 /// `Vec<Point>` staging). Returns the sealed coordinate sequence.
 fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
-    // Polyline vertices are always XY lon/lat. Size hint from the encoded
-    // length (~5 chars/ordinate worst-case) keeps growth rare without
-    // over-reading.
-    // Each vertex needs at least one byte for each of latitude and longitude,
-    // so later growth stays rare; growth is still fallible.
+    // Each vertex needs at least one byte for latitude and one for longitude.
     let capacity = (data.len() / 2).max(2);
-    let mut builder =
-        CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, capacity).map_err(PyErr::from)?;
+    let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, capacity);
     let mut bytes = data.bytes();
     let (mut lat, mut lon) = (0_i64, 0_i64);
     // Hoist constant domain bounds once for the whole stream.
@@ -152,7 +147,7 @@ fn decode_line(data: &str, factor: f64) -> PyResult<CoordSeq> {
         // Point::new validates finiteness; polyline domain gates above keep
         // values finite, so the builder path matches the prior error surface.
         Point::new(x, y).map_err(|error| ParseError::new_err(error.to_string()))?;
-        builder.push_xyzm(x, y, None, None)?;
+        builder.push_xyzm(x, y, None, None);
     }
     builder.finish().map_err(PyErr::from)
 }

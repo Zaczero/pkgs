@@ -11,7 +11,7 @@ pub(crate) fn box_polygon(
     maxx: f64,
     maxy: f64,
 ) -> crate::error::Result<Polygon> {
-    let mut coords = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, 5)?;
+    let mut coords = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, 5);
     coords.try_push(Point::new(minx, miny))?;
     coords.try_push(Point::new(maxx, miny))?;
     coords.try_push(Point::new(maxx, maxy))?;

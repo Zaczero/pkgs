@@ -348,7 +348,7 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let axes = coords.axes();
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, self.len())?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, self.len());
         for row in self.row_operation().rows_with_missing(|| ()) {
             match row {
                 crate::array::ArrayRow::Missing { .. } => builder.push_xyzm(
@@ -356,9 +356,9 @@ impl PyGeometryArray {
                     f64::NAN,
                     axes.has_z().then_some(f64::NAN),
                     axes.has_m().then_some(f64::NAN),
-                )?,
+                ),
                 crate::array::ArrayRow::Present(row) => match row.row() {
-                    crate::array::ShapeRow::Point(point) => builder.push(point)?,
+                    crate::array::ShapeRow::Point(point) => builder.push(point),
                     _ => {
                         unreachable!("compact point storage yields point rows")
                     },
@@ -470,12 +470,10 @@ impl PyGeometryArray {
         coords: &CoordSeq,
         row_map: RowSelectionRef<'_>,
     ) -> crate::error::Result<CoordSeq> {
-        let mut builder = PointColumnBuilder::try_with_capacity(
-            coords.axes(),
-            point_logical_len(coords, row_map),
-        )?;
+        let mut builder =
+            PointColumnBuilder::with_capacity(coords.axes(), point_logical_len(coords, row_map));
         for logical in 0..point_logical_len(coords, row_map) {
-            builder.push_at(coords, physical_row(row_map, logical))?;
+            builder.push_at(coords, physical_row(row_map, logical));
         }
         builder.finish()
     }
@@ -495,11 +493,10 @@ impl PyGeometryArray {
                 "logical nullable payload length must match the missing mask",
             ));
         }
-        let mut builder =
-            PointColumnBuilder::try_with_capacity(coords.axes(), mask.present_count())?;
+        let mut builder = PointColumnBuilder::with_capacity(coords.axes(), mask.present_count());
         for (logical, present) in mask.cursor() {
             if present.is_some() {
-                builder.push_at(coords, physical_row(row_map.as_deref(), logical))?;
+                builder.push_at(coords, physical_row(row_map.as_deref(), logical));
             }
         }
         Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
@@ -607,17 +604,17 @@ impl PyGeometryArray {
                         row_map: RowSelection::Identity,
                     }));
                 }
-                let mut builder = PointColumnBuilder::try_with_capacity(
+                let mut builder = PointColumnBuilder::with_capacity(
                     coords.axes(),
                     crate::array::packed_lines_coord_len(offsets.as_slice(), map),
-                )?;
+                );
                 let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
                 for (_, present_index) in mask.cursor() {
                     if present_index.is_some() {
                         let physical = physical_row(map, present_row);
                         for vertex in offsets[physical] as usize..offsets[physical + 1] as usize {
-                            builder.push_at(coords, vertex)?;
+                            builder.push_at(coords, vertex);
                         }
                         present_row += 1;
                     }
@@ -656,14 +653,14 @@ impl PyGeometryArray {
                         row_map: RowSelection::Identity,
                     }));
                 }
-                let mut builder = PointColumnBuilder::try_with_capacity(
+                let mut builder = PointColumnBuilder::with_capacity(
                     coords.axes(),
                     crate::array::packed_polygons_coord_len(
                         ring_offsets.as_slice(),
                         polygon_offsets.as_slice(),
                         map,
                     ),
-                )?;
+                );
                 let mut out_rings = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut out_polygons = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
@@ -677,7 +674,7 @@ impl PyGeometryArray {
                             for vertex in
                                 ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize
                             {
-                                builder.push_at(coords, vertex)?;
+                                builder.push_at(coords, vertex);
                             }
                             rings += 1;
                             out_rings.push_end(builder.len(), i32::MAX as usize)?;

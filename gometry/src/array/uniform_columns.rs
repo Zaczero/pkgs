@@ -67,12 +67,12 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return Ok(None);
         };
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total)?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, total);
         for shape in replay {
             let Shape::LineString(seq) = shape else {
                 unreachable!("validated in the first pass");
             };
-            builder.extend_window(seq, 0..seq.len())?;
+            builder.extend_window(seq, 0..seq.len());
         }
         let Some(coords) = admit_or_decline(builder.finish())? else {
             return Ok(None);
@@ -154,13 +154,13 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return Ok(None);
         };
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
         for shape in replay {
             let Shape::Polygon(polygon) = shape else {
                 unreachable!("validated in the first pass");
             };
             for seq in polygon.rings() {
-                builder.extend_window(seq, 0..seq.len())?;
+                builder.extend_window(seq, 0..seq.len());
             }
         }
         let Some(coords) = admit_or_decline(builder.finish())? else {
@@ -205,12 +205,12 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return Ok(None);
         };
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, shapes.len())?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, shapes.len());
         for shape in shapes {
             let Shape::Point(point) = shape else {
                 unreachable!("validated in the first pass");
             };
-            builder.push(*point)?;
+            builder.push(*point);
         }
         admit_or_decline(builder.finish())
     }

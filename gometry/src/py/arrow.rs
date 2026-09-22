@@ -476,7 +476,7 @@ fn combine_packed_parts(
 
     match family {
         NativePackedFamily::Points(axes) => {
-            let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+            let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
             for part in parts {
                 let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
                     PackedStorage::Points { coords, .. },
@@ -484,7 +484,7 @@ fn combine_packed_parts(
                 else {
                     unreachable!("packed parts have one point family")
                 };
-                builder.extend_window(coords, 0..coords.len())?;
+                builder.extend_window(coords, 0..coords.len());
             }
             let coords = Arc::new(builder.finish()?);
             Ok(Some(GeometryArrayStorage::Packed(PackedStorage::Points {
@@ -493,7 +493,7 @@ fn combine_packed_parts(
             })))
         },
         NativePackedFamily::Lines(axes) => {
-            let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+            let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
             let mut offsets = CsrOffsetBuilder::with_capacity(total_rows);
             for part in parts {
                 let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
@@ -508,7 +508,7 @@ fn combine_packed_parts(
                 };
                 for row in 0..source_offsets.len().saturating_sub(1) {
                     let window = source_offsets[row] as usize..source_offsets[row + 1] as usize;
-                    builder.extend_window(source, window)?;
+                    builder.extend_window(source, window);
                     offsets.push_end(builder.len(), i32::MAX as usize)?;
                 }
             }
@@ -521,7 +521,7 @@ fn combine_packed_parts(
             })))
         },
         NativePackedFamily::Polygons(axes) => {
-            let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
+            let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
             let mut ring_offsets = CsrOffsetBuilder::with_capacity(total_rings);
             let mut polygon_offsets = CsrOffsetBuilder::with_capacity(total_rows);
             let mut rings = 0_usize;
@@ -543,7 +543,7 @@ fn combine_packed_parts(
                     for ring in ring_start..ring_end {
                         let window = source_ring_offsets[ring] as usize
                             ..source_ring_offsets[ring + 1] as usize;
-                        builder.extend_window(source, window)?;
+                        builder.extend_window(source, window);
                         ring_offsets.push_end(builder.len(), i32::MAX as usize)?;
                         rings += 1;
                     }

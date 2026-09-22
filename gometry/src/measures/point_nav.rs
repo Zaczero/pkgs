@@ -211,7 +211,7 @@ fn rhumb_destination_scalar_coords(
     distances: &[f64],
     axes: CoordinateAxes,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, bearings.len())?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, bearings.len());
     for row in 0..bearings.len() {
         let shape = rhumb_destination_point(
             &metric.crs,
@@ -222,10 +222,7 @@ fn rhumb_destination_scalar_coords(
             &metric.state,
         )
         .map_err(|err| crate::note_array_row(err, row))?;
-        if let Err(error) = builder.push(point_from_point_nav_shape(&shape)) {
-            drop(builder);
-            return Err(crate::note_array_row(error.into(), row));
-        }
+        builder.push(point_from_point_nav_shape(&shape));
     }
     Ok(builder.finish()?)
 }
@@ -1024,17 +1021,17 @@ trait PointBinaryGeometryKernel: Copy + Send + Sync {
         missing: Option<&ValidityMask>,
         mut points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<CoordSeq> {
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, len);
         for row in 0..len {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
-                builder.push(point_nav_missing_point_with_axes(axes))?;
+                builder.push(point_nav_missing_point_with_axes(axes));
                 continue;
             }
             let (left, right) = points(row);
             let shape = self
                 .eval_geodesic(metric, row, left, right)
                 .map_err(|err| crate::note_array_row(err, row))?;
-            builder.push(point_from_point_nav_shape(&shape))?;
+            builder.push(point_from_point_nav_shape(&shape));
         }
         Ok(match missing {
             Some(_) => builder.finish_with_missing_placeholders()?,
@@ -1135,10 +1132,10 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
         missing: Option<&ValidityMask>,
         mut points: impl FnMut(usize) -> (Point, Point),
     ) -> PyResult<CoordSeq> {
-        let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+        let mut builder = CoordSeqBuilder::with_capacity(axes, len);
         for row in 0..len {
             if missing.is_some_and(|mask| mask.is_missing(row)) {
-                builder.push(point_nav_missing_point_with_axes(axes))?;
+                builder.push(point_nav_missing_point_with_axes(axes));
                 continue;
             }
             let (left, right) = points(row);
@@ -1152,7 +1149,7 @@ impl PointBinaryGeometryKernel for InterpolatePointKernel<'_> {
                 self.normalized,
             )
             .map_err(|err| crate::note_array_row(err.into(), row))?;
-            builder.push(point)?;
+            builder.push(point);
         }
         Ok(match missing {
             Some(_) => builder.finish_with_missing_placeholders()?,
@@ -1187,16 +1184,16 @@ fn point_binary_geometry_coords_planar<const HAS_MISSING: bool, K: PointBinaryGe
     missing: Option<&ValidityMask>,
     mut points: impl FnMut(usize) -> (Point, Point),
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         if row_missing::<HAS_MISSING>(missing, row) {
-            builder.push(point_nav_missing_point_with_axes(axes))?;
+            builder.push(point_nav_missing_point_with_axes(axes));
         } else {
             let (left, right) = points(row);
             let shape = kernel
                 .eval_planar(to_metre, row, left, right)
                 .map_err(|err| crate::note_array_row(err, row))?;
-            builder.push(point_from_point_nav_shape(&shape))?;
+            builder.push(point_from_point_nav_shape(&shape));
         }
     }
     Ok(builder.finish()?)
@@ -1343,15 +1340,15 @@ fn point_unary_geometry_coords_planar<const HAS_MISSING: bool, K: PointUnaryGeom
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         if row_missing::<HAS_MISSING>(missing, row) {
-            builder.push(point_nav_missing_point_with_axes(axes))?;
+            builder.push(point_nav_missing_point_with_axes(axes));
         } else {
             let shape = kernel
                 .eval_planar(to_metre, row, points.get(row))
                 .map_err(|err| crate::note_array_row(err, row))?;
-            builder.push(point_from_point_nav_shape(&shape))?;
+            builder.push(point_from_point_nav_shape(&shape));
         }
     }
     Ok(builder.finish()?)
@@ -1365,15 +1362,15 @@ fn point_unary_geometry_coords_geodesic<const HAS_MISSING: bool, K: PointUnaryGe
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         if row_missing::<HAS_MISSING>(missing, row) {
-            builder.push(point_nav_missing_point_with_axes(axes))?;
+            builder.push(point_nav_missing_point_with_axes(axes));
         } else {
             let shape = kernel
                 .eval_geodesic(metric, row, points.get(row))
                 .map_err(|err| crate::note_array_row(err, row))?;
-            builder.push(point_from_point_nav_shape(&shape))?;
+            builder.push(point_from_point_nav_shape(&shape));
         }
     }
     Ok(builder.finish()?)
@@ -1436,10 +1433,10 @@ fn destination_many_coords_geodesic(
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         if missing.is_some_and(|mask| mask.is_missing(row)) {
-            builder.push(point_nav_missing_point_with_axes(axes))?;
+            builder.push(point_nav_missing_point_with_axes(axes));
             continue;
         }
         builder.try_push(
@@ -1464,10 +1461,10 @@ fn destination_many_coords_planar<const HAS_MISSING: bool>(
     axes: CoordinateAxes,
     missing: Option<&ValidityMask>,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         if row_missing::<HAS_MISSING>(missing, row) {
-            builder.push(point_nav_missing_point_with_axes(axes))?;
+            builder.push(point_nav_missing_point_with_axes(axes));
         } else {
             builder.try_push(
                 kernel
@@ -1525,7 +1522,7 @@ fn destination_scalar_coords_geodesic(
     len: usize,
     axes: CoordinateAxes,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         builder.try_push(
             destination_point_on_geodesic(
@@ -1549,7 +1546,7 @@ fn destination_scalar_coords_planar(
     len: usize,
     axes: CoordinateAxes,
 ) -> PyResult<CoordSeq> {
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, len)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, len);
     for row in 0..len {
         builder.try_push(
             destination_point_planar(to_metre, point, bearing[row], distance[row])

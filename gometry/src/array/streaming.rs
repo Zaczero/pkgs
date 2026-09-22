@@ -254,13 +254,13 @@ impl StreamingShapes {
                     return Ok(false);
                 }
                 if let StreamingState::Points(builder) = &mut self.state {
-                    builder.extend_window(coords, rows.clone())?;
+                    builder.extend_window(coords, rows.clone());
                 } else {
-                    let mut builder = crate::geometry::CoordSeqBuilder::try_with_capacity(
+                    let mut builder = crate::geometry::CoordSeqBuilder::with_capacity(
                         axes,
                         self.coordinate_capacity,
-                    )?;
-                    builder.extend_window(coords, rows.clone())?;
+                    );
+                    builder.extend_window(coords, rows.clone());
                     self.state = StreamingState::Points(builder);
                 }
                 self.validity.extend_present(rows.len())?;
@@ -354,7 +354,7 @@ impl StreamingShapes {
 
     fn try_push_shape_native(&mut self, shape: &Shape) -> crate::error::Result<bool> {
         match shape {
-            Shape::Point(point) => self.try_push_point_native(*point),
+            Shape::Point(point) => Ok(self.push_point_native(*point)),
             Shape::LineString(line) => self.try_push_line_native(line),
             Shape::Polygon(polygon) if super::polygon_pack_axes(polygon).is_some() => {
                 self.try_push_polygon_native(polygon)
@@ -365,7 +365,7 @@ impl StreamingShapes {
 
     fn try_push_row_native(&mut self, row: ShapeRow<'_>) -> crate::error::Result<bool> {
         match row {
-            ShapeRow::Point(point) => self.try_push_point_native(point),
+            ShapeRow::Point(point) => Ok(self.push_point_native(point)),
             ShapeRow::Line(coords, start, end) => {
                 self.try_push_line_span_native(coords, start..end)
             },
@@ -377,26 +377,21 @@ impl StreamingShapes {
         }
     }
 
-    fn try_push_point_native(
-        &mut self,
-        point: crate::geometry::Point,
-    ) -> crate::error::Result<bool> {
+    fn push_point_native(&mut self, point: crate::geometry::Point) -> bool {
         let axes = CoordinateAxes::from_point(point);
         if matches!(self.state, StreamingState::Shapes(_)) || !self.admit_kind(RowKind::Point(axes))
         {
-            return Ok(false);
+            return false;
         }
         if let StreamingState::Points(builder) = &mut self.state {
-            builder.push(point)?;
+            builder.push(point);
         } else {
-            let mut builder = crate::geometry::CoordSeqBuilder::try_with_capacity(
-                axes,
-                self.coordinate_capacity,
-            )?;
-            builder.push(point)?;
+            let mut builder =
+                crate::geometry::CoordSeqBuilder::with_capacity(axes, self.coordinate_capacity);
+            builder.push(point);
             self.state = StreamingState::Points(builder);
         }
-        Ok(true)
+        true
     }
 
     fn try_push_line_native(&mut self, line: &LineSeq) -> crate::error::Result<bool> {
@@ -704,7 +699,7 @@ impl StreamingLines {
     ) -> crate::error::Result<Self> {
         let offsets = CsrOffsetBuilder::with_capacity(row_capacity);
         let mut out = Self {
-            coords: crate::geometry::CoordSeqBuilder::try_with_capacity(axes, coordinate_capacity)?,
+            coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, coordinate_capacity),
             offsets,
         };
         for _ in 0..leading_missing {
@@ -718,7 +713,7 @@ impl StreamingLines {
         coords: &CoordSeq,
         window: std::ops::Range<usize>,
     ) -> crate::error::Result<()> {
-        self.coords.extend_window(coords, window)?;
+        self.coords.extend_window(coords, window);
         self.offsets.push_end(self.coords.len(), i32::MAX as usize)
     }
 
@@ -731,7 +726,7 @@ impl StreamingLines {
         let window = checked_csr_window(offsets, rows, coords.len())?;
         let output_start = self.coords.len();
         self.coords
-            .extend_window(coords, window.source_start()..window.source_end())?;
+            .extend_window(coords, window.source_start()..window.source_end());
         self.offsets.extend_rebased(window, output_start)
     }
 
@@ -761,7 +756,7 @@ impl StreamingPolygons {
         leading_missing: usize,
     ) -> crate::error::Result<Self> {
         let mut out = Self {
-            coords: crate::geometry::CoordSeqBuilder::try_with_capacity(axes, coordinate_capacity)?,
+            coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, coordinate_capacity),
             ring_offsets: CsrOffsetBuilder::with_capacity(ring_capacity),
             polygon_offsets: CsrOffsetBuilder::with_capacity(row_capacity),
         };
@@ -773,7 +768,7 @@ impl StreamingPolygons {
 
     fn try_push(&mut self, polygon: &Polygon) -> crate::error::Result<()> {
         for ring in polygon.rings() {
-            self.coords.extend_window(ring, 0..ring.len())?;
+            self.coords.extend_window(ring, 0..ring.len());
             self.ring_offsets
                 .push_end(self.coords.len(), i32::MAX as usize)?;
         }
@@ -790,7 +785,7 @@ impl StreamingPolygons {
         for ring in rings {
             let start = ring_offsets[ring] as usize;
             let end = ring_offsets[ring + 1] as usize;
-            self.coords.extend_window(coords, start..end)?;
+            self.coords.extend_window(coords, start..end);
             self.ring_offsets
                 .push_end(self.coords.len(), i32::MAX as usize)?;
         }
@@ -815,7 +810,7 @@ impl StreamingPolygons {
         let output_coordinate_start = self.coords.len();
         let output_ring_start = self.ring_offsets.row_count();
         self.coords
-            .extend_window(coords, ring_window.source_start()..ring_window.source_end())?;
+            .extend_window(coords, ring_window.source_start()..ring_window.source_end());
         self.ring_offsets
             .extend_rebased(ring_window, output_coordinate_start)?;
         self.polygon_offsets

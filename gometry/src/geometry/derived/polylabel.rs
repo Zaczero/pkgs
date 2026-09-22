@@ -783,10 +783,10 @@ fn normalized_polylabel_frame(
     let xy = shape.force_2d()?;
     let normalized = xy.try_map_coordseqs(
         |seq| {
-            let mut builder = CoordSeqBuilder::try_with_capacity(seq.axes(), seq.len())?;
+            let mut builder = CoordSeqBuilder::with_capacity(seq.axes(), seq.len());
             for point in seq.iter_coords() {
                 let xy = frame.frame_xy(point.x, point.y);
-                builder.push(point.with_xy(xy.x, xy.y)?)?;
+                builder.push(point.with_xy(xy.x, xy.y)?);
             }
             builder.finish()
         },

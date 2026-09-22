@@ -111,7 +111,7 @@ where
                 })
             });
             let mut builder =
-                PointColumnBuilder::try_with_capacity(CoordinateAxes::XY, columns.row_count())?;
+                PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
                 if row.is_missing() {
@@ -140,7 +140,7 @@ where
                     error,
                 })
             }) {
-                builder.push(result?)?;
+                builder.push(result?);
             }
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder
@@ -170,7 +170,7 @@ where
                 })
             });
             let mut builder =
-                PointColumnBuilder::try_with_capacity(CoordinateAxes::XY, columns.row_count())?;
+                PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             let mut crossings = Vec::new();
             for result in columns.map_rows(|row| {
                 let row_index = row.index();
@@ -202,7 +202,7 @@ where
                     error,
                 })
             }) {
-                builder.push(result?)?;
+                builder.push(result?);
             }
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder

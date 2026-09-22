@@ -8,9 +8,9 @@ use crate::array::{
 };
 
 pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<CoordSeq> {
-    let mut builder = PointColumnBuilder::try_with_capacity(coords.axes(), map.len())?;
+    let mut builder = PointColumnBuilder::with_capacity(coords.axes(), map.len());
     for &physical in map {
-        builder.push_at(coords, physical)?;
+        builder.push_at(coords, physical);
     }
     builder.finish()
 }

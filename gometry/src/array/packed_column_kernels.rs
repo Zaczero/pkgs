@@ -846,7 +846,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
         return Ok(CoordSeq::try_from_vecs(xs, ys, zs, ms)?);
     }
 
-    let mut output = CoordSeqBuilder::try_with_capacity(coords.axes(), rows.len())?;
+    let mut output = CoordSeqBuilder::with_capacity(coords.axes(), rows.len());
     let mut present_row = 0;
     for (_, physical) in rows.cursor() {
         if physical.is_some() {
@@ -855,7 +855,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
                 ys[present_row],
                 zs.as_ref().map(|values| values[present_row]),
                 ms.as_ref().map(|values| values[present_row]),
-            )?;
+            );
             present_row += 1;
         } else {
             output.push_xyzm(
@@ -863,7 +863,7 @@ pub(crate) fn map_masked_point_columns_to_crs(
                 f64::NAN,
                 coords.zs().map(|_| f64::NAN),
                 coords.ms().map(|_| f64::NAN),
-            )?;
+            );
         }
     }
     debug_assert_eq!(present_row, present_count);
@@ -1173,16 +1173,13 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let coords = if let Some(coords) = point_columns.contiguous_coords() {
                     coords
                 } else {
-                    let mut builder = CoordSeqBuilder::try_with_capacity(
+                    let mut builder = CoordSeqBuilder::with_capacity(
                         point_columns.coords().axes(),
                         point_columns.rows().present_count(),
-                    )
-                    .map_err(batch_err)?;
+                    );
                     for (_, physical) in point_columns.rows().cursor() {
                         if let Some(physical) = physical {
-                            builder
-                                .push_at(point_columns.coords(), physical)
-                                .map_err(batch_err)?;
+                            builder.push_at(point_columns.coords(), physical);
                         }
                     }
                     builder.finish().map_err(batch_err)?
@@ -1197,8 +1194,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 } else {
                     rows.len()
                 };
-                let mut builder =
-                    CoordSeqBuilder::try_with_capacity(axes, capacity).map_err(batch_err)?;
+                let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
                 let mut has_missing = false;
                 for (logical, physical) in rows.cursor() {
                     let Some(physical) = physical else {
@@ -1206,14 +1202,12 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                             continue;
                         }
                         has_missing = true;
-                        builder
-                            .push(Point::new_raw_axes(
-                                f64::NAN,
-                                f64::NAN,
-                                ZOrdinate(axes.has_z().then_some(f64::NAN)),
-                                MOrdinate(axes.has_m().then_some(f64::NAN)),
-                            ))
-                            .map_err(|error| row_err(logical, error))?;
+                        builder.push(Point::new_raw_axes(
+                            f64::NAN,
+                            f64::NAN,
+                            ZOrdinate(axes.has_z().then_some(f64::NAN)),
+                            MOrdinate(axes.has_m().then_some(f64::NAN)),
+                        ));
                         continue;
                     };
                     let point = point_columns.coords().point_at(physical);
@@ -1235,12 +1229,10 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         )
                         .map_err(|error| row_err(logical, error))?
                     };
-                    builder
-                        .push(
-                            Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
-                                .map_err(|error| row_err(logical, error))?,
-                        )
-                        .map_err(|error| row_err(logical, error))?;
+                    builder.push(
+                        Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
+                            .map_err(|error| row_err(logical, error))?,
+                    );
                 }
                 let coords = if rows.is_compact() || !has_missing {
                     builder.finish().map_err(batch_err)?

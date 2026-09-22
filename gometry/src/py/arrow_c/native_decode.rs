@@ -155,13 +155,13 @@ fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let coords = if missing.is_empty() {
         Arc::new(coordinates.coords().clone())
     } else {
-        let mut builder = CoordSeqBuilder::try_with_capacity(
+        let mut builder = CoordSeqBuilder::with_capacity(
             coordinates.axes(),
             node.length.saturating_sub(missing.len()),
-        )?;
+        );
         for row in 0..node.length {
             if !node.missing_at(row) {
-                builder.push_at(coordinates.coords(), row)?;
+                builder.push_at(coordinates.coords(), row);
             }
         }
         Arc::new(builder.finish()?)
@@ -495,7 +495,7 @@ fn packed_polygon_storage(
     let rings_node = node
         .child(0)
         .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
-    let mut builder = CoordSeqBuilder::try_with_capacity(coordinates.axes(), total_vertices)?;
+    let mut builder = CoordSeqBuilder::with_capacity(coordinates.axes(), total_vertices);
     let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count);
     let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows);
     let mut rings = 0_usize;
@@ -507,9 +507,9 @@ fn packed_polygon_storage(
         for ring_index in range {
             let vertex_range = list_range(rings_node, ring_index)?;
             let open = coordinates.ring_admission(vertex_range.clone(), row)?;
-            builder.extend_window(coordinates.coords(), vertex_range.clone())?;
+            builder.extend_window(coordinates.coords(), vertex_range.clone());
             if open {
-                builder.push_at(coordinates.coords(), vertex_range.start)?;
+                builder.push_at(coordinates.coords(), vertex_range.start);
             }
             ring_offsets.push_end(builder.len(), i32::MAX as usize)?;
             rings += 1;

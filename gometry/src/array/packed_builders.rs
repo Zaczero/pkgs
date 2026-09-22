@@ -164,9 +164,7 @@ impl PyGeometryArray {
         };
         if present.clone().next().is_none() {
             return Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
-                coords: Arc::new(
-                    PointColumnBuilder::try_with_capacity(coords.axes(), 0)?.finish()?,
-                ),
+                coords: Arc::new(PointColumnBuilder::with_capacity(coords.axes(), 0).finish()?),
                 row_map: RowSelection::Identity,
             }));
         }

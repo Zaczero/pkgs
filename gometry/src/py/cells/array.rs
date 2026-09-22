@@ -1235,9 +1235,9 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         use crate::grid::cell::GridCell as _;
         let cells = self.clone();
         let points = py.detach(move || map_grid_cells!(&cells, |cell| cell.center_point()));
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
+        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, points.len());
         for point in points {
-            builder.push(point)?;
+            builder.push(point);
         }
         let coords = builder.finish()?;
         let result = crate::PyGeometryArray::packed_points(

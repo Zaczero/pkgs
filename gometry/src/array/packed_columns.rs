@@ -824,14 +824,13 @@ fn push_replacement_vertex(
     old_index: usize,
     replacement: &CoordinateReplacement,
     replacement_index: usize,
-) -> PackedColumnResult<()> {
+) {
     builder.push_xyzm(
         replacement.xs[replacement_index],
         replacement.ys[replacement_index],
         replacement_axis_value(&replacement.zs, replacement_index, old.zs(), old_index),
         replacement_axis_value(&replacement.ms, replacement_index, old.ms(), old_index),
-    )?;
-    Ok(())
+    );
 }
 
 fn validate_replacement_ring(
@@ -884,21 +883,21 @@ fn replace_point_columns<const HAS_MISSING: bool>(
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = point_columns.coords();
     let rows = point_columns.rows();
-    let mut builder = CoordSeqBuilder::try_with_capacity(
+    let mut builder = CoordSeqBuilder::with_capacity(
         old.axes(),
         if rows.is_compact() {
             rows.present_count()
         } else {
             rows.len()
         },
-    )?;
+    );
     for (_row, physical) in rows.cursor() {
         if let Some(physical) = physical {
-            push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index)?;
+            push_replacement_vertex(&mut builder, old, physical, replacement, *replacement_index);
             *replacement_index += 1;
         } else if !rows.is_compact() {
             debug_assert!(HAS_MISSING);
-            builder.push(missing_point(old.axes()))?;
+            builder.push(missing_point(old.axes()));
         }
     }
     let coords = if rows.is_compact() {
@@ -916,7 +915,7 @@ fn replace_line_columns<const HAS_MISSING: bool>(
     missing: Option<&ValidityMask>,
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = line_columns.coords();
-    let mut builder = CoordSeqBuilder::try_with_capacity(old.axes(), 0)?;
+    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), 0);
     let mut offsets = crate::array::CsrOffsetBuilder::new();
     for row in 0..line_columns.rows() {
         if packed_row_missing::<HAS_MISSING>(missing, row) {
@@ -931,7 +930,7 @@ fn replace_line_columns<const HAS_MISSING: bool>(
                         old_index,
                         replacement,
                         *replacement_index,
-                    )?;
+                    );
                     *replacement_index += 1;
                 }
             }
@@ -956,7 +955,7 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
 ) -> PackedColumnResult<PackedColumnOutput> {
     let old = polygon_columns.coords();
     let ring_offsets = polygon_columns.ring_offsets();
-    let mut builder = CoordSeqBuilder::try_with_capacity(old.axes(), 0)?;
+    let mut builder = CoordSeqBuilder::with_capacity(old.axes(), 0);
     let mut ring_builder = crate::array::CsrOffsetBuilder::new();
     let mut polygon_builder = crate::array::CsrOffsetBuilder::new();
     let mut ring_count = 0;
@@ -979,7 +978,7 @@ fn replace_polygon_columns<const HAS_MISSING: bool>(
                     old_index,
                     replacement,
                     *replacement_index,
-                )?;
+                );
                 *replacement_index += 1;
             }
             validate_windows.push(output_start..builder.len());
@@ -1084,14 +1083,14 @@ fn map_selected_points(
     match columns {
         PackedColumns::Points(points) => {
             let rows = points.rows();
-            let mut builder = CoordSeqBuilder::try_with_capacity(
+            let mut builder = CoordSeqBuilder::with_capacity(
                 output_axes,
                 if rows.is_compact() {
                     rows.present_count()
                 } else {
                     rows.len()
                 },
-            )?;
+            );
             let mut has_missing = false;
             for (logical, physical) in rows.cursor() {
                 let Some(physical) = physical else {
@@ -1099,13 +1098,13 @@ fn map_selected_points(
                         continue;
                     }
                     has_missing = true;
-                    builder.push(missing_point(output_axes))?;
+                    builder.push(missing_point(output_axes));
                     continue;
                 };
                 builder.push(
                     map(points.coords().point_at(physical))
                         .map_err(|error| row_err(logical, error))?,
-                )?;
+                );
             }
             let coords = if rows.is_compact() {
                 builder.finish().map_err(batch_err)?
@@ -1120,7 +1119,7 @@ fn map_selected_points(
                 .map(|logical| lines.row_window(logical).len())
                 .filter(|&len| len >= 2)
                 .sum();
-            let mut builder = CoordSeqBuilder::try_with_capacity(output_axes, capacity)?;
+            let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
             let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows());
             for logical in 0..lines.rows() {
                 if !lines.is_missing(logical) {
@@ -1130,7 +1129,7 @@ fn map_selected_points(
                             builder.push(
                                 map(lines.coords().point_at(physical))
                                     .map_err(|error| row_err(logical, error))?,
-                            )?;
+                            );
                         }
                     }
                 }
@@ -1156,7 +1155,7 @@ fn map_selected_points(
                     source[ring + 1] as usize - source[ring] as usize
                 })
                 .sum();
-            let mut builder = CoordSeqBuilder::try_with_capacity(output_axes, capacity)?;
+            let mut builder = CoordSeqBuilder::with_capacity(output_axes, capacity);
             let mut rings = CsrOffsetBuilder::with_capacity(ring_count);
             let mut polygon_offsets = CsrOffsetBuilder::with_capacity(polygons.rows());
             let mut ring_count = 0;
@@ -1168,7 +1167,7 @@ fn map_selected_points(
                             builder.push(
                                 map(polygons.coords().point_at(physical))
                                     .map_err(|error| row_err(logical, error))?,
-                            )?;
+                            );
                         }
                         ring_count += 1;
                         rings

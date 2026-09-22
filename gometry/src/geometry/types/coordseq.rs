@@ -354,9 +354,9 @@ impl CoordSeq {
             }
             .into());
         }
-        let mut builder = CoordSeqBuilder::try_with_capacity(first.axes, points.len())?;
+        let mut builder = CoordSeqBuilder::with_capacity(first.axes, points.len());
         for &point in points {
-            builder.push(point)?;
+            builder.push(point);
         }
         builder.finish()
     }
@@ -966,9 +966,9 @@ fn concat_f64_slices(left: &[f64], right: &[f64]) -> Result<Vec<f64>> {
 /// [`crate::geometry::LineSeq::segment`], which is where the rule is documented.
 pub(crate) fn coerced_pair(start: Point, end: Point) -> Result<CoordSeq> {
     let (start, end) = coerce_to_common_axes(start, end);
-    let mut builder = CoordSeqBuilder::try_with_capacity(start.axes, 2)?;
-    builder.push(start)?;
-    builder.push(end)?;
+    let mut builder = CoordSeqBuilder::with_capacity(start.axes, 2);
+    builder.push(start);
+    builder.push(end);
     builder.finish()
 }
 
@@ -1009,30 +1009,17 @@ pub(crate) struct CoordSeqBuilder {
 
 impl CoordSeqBuilder {
     /// A builder for `capacity` coordinates carrying `axes` ordinates.
-    /// `capacity` is checked against the `f64` column layout once.
-    pub(crate) fn try_with_capacity(
-        axes: CoordinateAxes,
-        capacity: usize,
-    ) -> crate::error::Result<Self> {
-        std::alloc::Layout::array::<f64>(capacity)
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
-        Ok(Self {
+    pub(crate) fn with_capacity(axes: CoordinateAxes, capacity: usize) -> Self {
+        Self {
             xs: Vec::with_capacity(capacity),
             ys: Vec::with_capacity(capacity),
             zs: axes.has_z().then(|| Vec::with_capacity(capacity)),
             ms: axes.has_m().then(|| Vec::with_capacity(capacity)),
             mismatch_axes: None,
-        })
+        }
     }
 
-    fn try_grow(&mut self, additional: usize) -> Result<()> {
-        let capacity = self
-            .xs
-            .len()
-            .checked_add(additional)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        std::alloc::Layout::array::<f64>(capacity)
-            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+    fn reserve(&mut self, additional: usize) {
         self.xs.reserve(additional);
         self.ys.reserve(additional);
         if let Some(column) = self.zs.as_mut() {
@@ -1041,7 +1028,6 @@ impl CoordSeqBuilder {
         if let Some(column) = self.ms.as_mut() {
             column.reserve(additional);
         }
-        Ok(())
     }
 
     /// The axes this builder was declared with.
@@ -1057,8 +1043,10 @@ impl CoordSeqBuilder {
     /// Append one point. Every live builder column is written (`Point` always
     /// carries z/m fields). Axes and finiteness are validated on
     /// [`finish`](Self::finish).
-    pub(crate) fn push(&mut self, point: Point) -> Result<()> {
-        self.try_grow(1)?;
+    pub(crate) fn push(&mut self, point: Point) {
+        if self.xs.len() == self.xs.capacity() {
+            self.reserve(1);
+        }
         if point.axes != self.axes() {
             self.mismatch_axes.get_or_insert(point.axes);
         }
@@ -1070,24 +1058,23 @@ impl CoordSeqBuilder {
         if let Some(ms) = &mut self.ms {
             ms.push(point.m);
         }
-        Ok(())
     }
 
-    /// Propagate a callback error or a growth failure.
+    /// Propagate a callback error before appending its point.
     pub(crate) fn try_push<E>(
         &mut self,
         result: std::result::Result<Point, E>,
-    ) -> std::result::Result<(), E>
-    where
-        E: From<crate::error::Error>,
-    {
-        self.push(result?).map_err(E::from)
+    ) -> std::result::Result<(), E> {
+        self.push(result?);
+        Ok(())
     }
 
     /// Append one coordinate from a [`CoordSeq`] by vertex index (gather paths).
     /// Axes and finiteness are validated on [`finish`](Self::finish).
-    pub(crate) fn push_at(&mut self, coords: &CoordSeq, index: usize) -> Result<()> {
-        self.try_grow(1)?;
+    pub(crate) fn push_at(&mut self, coords: &CoordSeq, index: usize) {
+        if self.xs.len() == self.xs.capacity() {
+            self.reserve(1);
+        }
         if coords.axes() != self.axes() {
             self.mismatch_axes.get_or_insert_with(|| coords.axes());
         }
@@ -1099,14 +1086,13 @@ impl CoordSeqBuilder {
         if let (Some(ms), Some(column)) = (self.ms.as_mut(), coords.ms()) {
             ms.push(column[index]);
         }
-        Ok(())
     }
 
     /// Append one contiguous coordinate window column-wise. The caller owns
     /// row/CSR validation; axes and finiteness are checked when the builder is
     /// finished.
-    pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) -> Result<()> {
-        self.try_grow(window.len())?;
+    pub(crate) fn extend_window(&mut self, coords: &CoordSeq, window: Range<usize>) {
+        self.reserve(window.len());
         if coords.axes() != self.axes() {
             self.mismatch_axes.get_or_insert_with(|| coords.axes());
         }
@@ -1118,20 +1104,15 @@ impl CoordSeqBuilder {
         if let (Some(output), Some(column)) = (self.ms.as_mut(), coords.ms()) {
             output.extend_from_slice(&column[window]);
         }
-        Ok(())
     }
 
     /// Append one coordinate from raw ordinates. `z`/`m` must be `Some`
     /// exactly when the declared axes carry them; axes and finiteness are
     /// validated on [`finish`](Self::finish).
-    pub(crate) fn push_xyzm(
-        &mut self,
-        x: f64,
-        y: f64,
-        z: Option<f64>,
-        m: Option<f64>,
-    ) -> Result<()> {
-        self.try_grow(1)?;
+    pub(crate) fn push_xyzm(&mut self, x: f64, y: f64, z: Option<f64>, m: Option<f64>) {
+        if self.xs.len() == self.xs.capacity() {
+            self.reserve(1);
+        }
         if z.is_some() != self.zs.is_some() || m.is_some() != self.ms.is_some() {
             self.mismatch_axes
                 .get_or_insert_with(|| CoordinateAxes::new(HasZ(z.is_some()), HasM(m.is_some())));
@@ -1144,7 +1125,6 @@ impl CoordSeqBuilder {
         if let (Some(ms), Some(m)) = (&mut self.ms, m) {
             ms.push(m);
         }
-        Ok(())
     }
 
     /// Seal finite, axis-homogeneous columns into a [`CoordSeq`].

@@ -775,11 +775,11 @@ pub(crate) fn try_triangle_shape(a: Point, b: Point, c: Point) -> Result<Shape> 
     };
     let (a, b, c) = (coerce(a), coerce(b), coerce(c));
     let axes = CoordinateAxes::new(HasZ(has_z), HasM(has_m));
-    let mut builder = CoordSeqBuilder::try_with_capacity(axes, 4)?;
-    builder.push(a)?;
-    builder.push(b)?;
-    builder.push(c)?;
-    builder.push(a)?;
+    let mut builder = CoordSeqBuilder::with_capacity(axes, 4);
+    builder.push(a);
+    builder.push(b);
+    builder.push(c);
+    builder.push(a);
     Ok(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(builder.finish()?)?,
         Vec::new(),

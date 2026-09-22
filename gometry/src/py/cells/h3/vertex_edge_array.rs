@@ -816,9 +816,9 @@ impl PyH3VertexArray {
                 })
                 .collect::<Vec<_>>()
         });
-        let mut builder = CoordSeqBuilder::try_with_capacity(CoordinateAxes::XY, points.len())?;
+        let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::XY, points.len());
         for point in points {
-            builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y))?;
+            builder.push(crate::geometry::Point::new_raw_xy(point.x, point.y));
         }
         let coords = builder.finish()?;
         Ok(crate::PyGeometryArray::packed_points(
