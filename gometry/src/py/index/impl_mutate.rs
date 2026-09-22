@@ -85,7 +85,7 @@ impl PySpatialIndex {
         let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
         let mut entry_counts = [0_usize; 1];
         let mut entries = Vec::new();
-        crate::try_reserve_vec(&mut entries, cover.entries().len())?;
+        entries.reserve(cover.entries().len());
         let idx = self.rows.len();
         entries.extend(
             cover
@@ -117,12 +117,8 @@ impl PySpatialIndex {
         }
         let adopt_frame = self.metadata.is_none().then(|| frame.clone()).flatten();
         let start = self.rows.len();
-        let mut entries = Vec::new();
-        let mut entry_counts = Vec::new();
-        if let Err(error) = crate::try_reserve_pair(&mut entries, &mut entry_counts, items.len()) {
-            drop(items);
-            return Err(pyo3::PyErr::from(error));
-        }
+        let mut entries = Vec::with_capacity(items.len());
+        let mut entry_counts = Vec::with_capacity(items.len());
         let domain = crate::geometry::topology_domain(
             frame
                 .as_ref()
@@ -137,13 +133,10 @@ impl PySpatialIndex {
                 .ok_or_else(|| GeometryError::new_err("cannot index empty geometry"))?;
             let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
-                if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
+                entries.push(IndexEntry {
                     idx: start + offset,
                     envelope,
-                }) {
-                    drop(items);
-                    return Err(pyo3::PyErr::from(error));
-                }
+                });
             }
             entry_counts.push(cover.entries().len());
             non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
@@ -174,15 +167,12 @@ impl PySpatialIndex {
         self.check_insert_frame(&array.frame)?;
         let adopt_frame = self.metadata.is_none().then(|| array.frame.clone());
         let start = self.rows.len();
-        let mut entries = Vec::new();
-        let mut items = Vec::new();
-        let mut entry_counts = Vec::new();
-        if let Err(error) = crate::try_reserve_vec(&mut entries, len) {
-            return Err(pyo3::PyErr::from(error));
-        }
-        if let Err(error) = crate::try_reserve_pair(&mut items, &mut entry_counts, len) {
-            return Err(pyo3::PyErr::from(error));
-        }
+        std::alloc::Layout::array::<PyGeometry>(len)
+            .and_then(|_| std::alloc::Layout::array::<IndexEntry>(len))
+            .map_err(|_| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))?;
+        let mut entries = Vec::with_capacity(len);
+        let mut items = Vec::with_capacity(len);
+        let mut entry_counts = Vec::with_capacity(len);
         let domain = crate::geometry::topology_domain(&array.frame)?;
         let mut non_prunable_live = 0;
         for (offset, row) in array.storage().iter_rows().enumerate() {
@@ -192,13 +182,10 @@ impl PySpatialIndex {
             let shape = row.with_shape(std::clone::Clone::clone)?;
             let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
-                if let Err(error) = crate::try_push_vec(&mut entries, IndexEntry {
+                entries.push(IndexEntry {
                     idx: start + offset,
                     envelope,
-                }) {
-                    drop(items);
-                    return Err(pyo3::PyErr::from(error));
-                }
+                });
             }
             entry_counts.push(cover.entries().len());
             let plan = array.prepared_row(offset, row)?.into_owned_plan();

@@ -16,12 +16,8 @@ pub(crate) fn nearest_point_columns_masked(
     missing: Option<ValidityMask>,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let pair_count = pairs.len();
-    let mut left = Vec::new();
-    let mut right = Vec::new();
-    if let Err(error) = crate::try_reserve_pair(&mut left, &mut right, pair_count) {
-        drop(pairs);
-        return Err(error.into());
-    }
+    let mut left = Vec::with_capacity(pair_count);
+    let mut right = Vec::with_capacity(pair_count);
     for (row, (pair, common)) in pairs.into_iter().enumerate() {
         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
             left.push(PyGeometryArray::missing_placeholder());
