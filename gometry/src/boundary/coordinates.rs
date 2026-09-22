@@ -405,11 +405,7 @@ impl CoordinateView {
                     ms
                 },
             };
-            let mut out = Vec::new();
-            crate::boundary::try_reserve_vec(&mut out, map.len())?;
-            for &row in map.iter() {
-                crate::boundary::try_push_vec(&mut out, values[row])?;
-            }
+            let out = map.iter().map(|&row| values[row]).collect();
             return Ok(CoordinateColumnRef::Dense(out));
         }
         if let Some(seq) = self.single_seq() {
@@ -510,6 +506,8 @@ impl CoordinateView {
     /// coordinate runs once and fills each run's span with its logical row id.
     fn row_index_cast<T: Copy>(&self, cast: impl Fn(usize) -> T) -> crate::error::Result<Vec<T>> {
         let capacity = self.len();
+        std::alloc::Layout::array::<T>(capacity)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let zero = cast(0);
 
         if let CoordinateOwner::Array {
@@ -521,24 +519,16 @@ impl CoordinateView {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
                     if row_map.is_identity() =>
                 {
-                    let mut indexes = Vec::new();
-                    crate::boundary::try_reserve_vec(&mut indexes, coords.len())?;
-                    for row in 0..coords.len() {
-                        crate::boundary::try_push_vec(&mut indexes, cast(row))?;
-                    }
-                    return Ok(indexes);
+                    return Ok((0..coords.len()).map(cast).collect());
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..
                 }) if row_map.is_identity() => {
                     let offsets = offsets.as_slice();
-                    let mut indexes = Vec::new();
-                    crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
-                    indexes.resize(capacity, zero);
-                    let n_rows = offsets.len().saturating_sub(1);
-                    for row in 0..n_rows {
-                        let start = offsets[row] as usize;
-                        let end = offsets[row + 1] as usize;
+                    let mut indexes = vec![zero; capacity];
+                    for (row, &[start, end]) in offsets.array_windows::<2>().enumerate() {
+                        let start = start as usize;
+                        let end = end as usize;
                         indexes[start..end].fill(cast(row));
                     }
                     return Ok(indexes);
@@ -551,13 +541,10 @@ impl CoordinateView {
                 }) if row_map.is_identity() => {
                     let rings = ring_offsets.as_slice();
                     let polys = polygon_offsets.as_slice();
-                    let mut indexes = Vec::new();
-                    crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
-                    indexes.resize(capacity, zero);
-                    let n_rows = polys.len().saturating_sub(1);
-                    for row in 0..n_rows {
-                        let ring_start = polys[row] as usize;
-                        let ring_end = polys[row + 1] as usize;
+                    let mut indexes = vec![zero; capacity];
+                    for (row, &[ring_start, ring_end]) in polys.array_windows::<2>().enumerate() {
+                        let ring_start = ring_start as usize;
+                        let ring_end = ring_end as usize;
                         if ring_start == ring_end {
                             continue;
                         }
@@ -573,28 +560,24 @@ impl CoordinateView {
 
         // Scalar geometry: every coordinate belongs to the single owner (id 0).
         if matches!(&self.owner, CoordinateOwner::Shape(_)) {
-            let mut indexes = Vec::new();
-            crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
-            indexes.resize(capacity, zero);
-            return Ok(indexes);
+            return Ok(vec![zero; capacity]);
         }
 
         // Mask / gather / window / mixed: one fill per coordinate run, logical
         // row ids, missing rows skipped by `for_each`.
-        let mut indexes = Vec::new();
-        crate::boundary::try_reserve_vec(&mut indexes, capacity)?;
-        indexes.resize(capacity, zero);
-        let mut cursor = 0_usize;
+        let mut indexes = vec![zero; capacity];
+        let mut remaining = indexes.as_mut_slice();
         self.for_each(&mut |geometry, run| {
             let len = match run {
                 CoordRun::Seq(seq) => seq.len(),
                 CoordRun::Point(_) => 1,
             };
             let id = cast(geometry.unwrap_or(0));
-            indexes[cursor..cursor + len].fill(id);
-            cursor += len;
+            let (output, rest) = std::mem::take(&mut remaining).split_at_mut(len);
+            output.fill(id);
+            remaining = rest;
         });
-        debug_assert_eq!(cursor, capacity);
+        debug_assert!(remaining.is_empty());
         Ok(indexes)
     }
 
