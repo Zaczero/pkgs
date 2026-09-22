@@ -90,16 +90,19 @@ impl RowContainer for CoordinateCursor {
     }
 
     fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
-        let point = if let Some(lock) = &self.material {
-            let points = lock.get_or_init(|| self.view.collect_points());
-            *points
-                .get(row)
-                .expect("iterator index already range-checked")
-        } else {
-            self.view
-                .point_at(row)
-                .expect("iterator index already range-checked")
-        };
+        let point = self.material.as_ref().map_or_else(
+            || {
+                self.view
+                    .point_at(row)
+                    .expect("iterator index already range-checked")
+            },
+            |lock| {
+                let points = lock.get_or_init(|| self.view.collect_points());
+                *points
+                    .get(row)
+                    .expect("iterator index already range-checked")
+            },
+        );
         coordinate_tuple(py, point, self.layout)
     }
 }

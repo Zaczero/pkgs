@@ -200,14 +200,8 @@ impl CoordSeq {
             Err(GeometryErrorKind::NonFiniteCoordinate.into())
         } else {
             Self::from_shared_columns(
-                match out_x {
-                    Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                    None => self.carried_xs(),
-                },
-                match out_y {
-                    Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                    None => self.carried_ys(),
-                },
+                out_x.map_or_else(|| self.carried_xs(), crate::geometry::SharedSlice::from_vec),
+                out_y.map_or_else(|| self.carried_ys(), crate::geometry::SharedSlice::from_vec),
                 self.carried_zs(),
                 self.carried_ms(),
             )
@@ -236,14 +230,8 @@ impl CoordSeq {
             }
         }
         Self::from_shared_columns(
-            match out_x {
-                Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                None => self.carried_xs(),
-            },
-            match out_y {
-                Some(values) => crate::geometry::SharedSlice::from_vec(values),
-                None => self.carried_ys(),
-            },
+            out_x.map_or_else(|| self.carried_xs(), crate::geometry::SharedSlice::from_vec),
+            out_y.map_or_else(|| self.carried_ys(), crate::geometry::SharedSlice::from_vec),
             self.carried_zs(),
             self.carried_ms(),
         )
