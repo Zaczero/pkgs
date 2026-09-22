@@ -220,7 +220,10 @@ impl LineSeq {
     where
         E: From<crate::error::Error>,
     {
-        let points = crate::try_collect_vec(self.iter().map(map))?;
+        let points = self
+            .iter()
+            .map(map)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Self(CoordSeq::try_from_points(&points).map_err(E::from)?))
     }
 }
@@ -374,7 +377,11 @@ impl GeometryCollection {
         E: From<crate::error::Error>,
         F: FnMut(&Shape) -> std::result::Result<Shape, E>,
     {
-        let members = crate::try_collect_vec(self.members.iter().map(&mut map))?;
+        let members = self
+            .members
+            .iter()
+            .map(&mut map)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Self::from_members(
             NonEmptyVec::try_from_vec(members).map_err(E::from)?,
             self.depth.get() as usize,
@@ -388,7 +395,11 @@ impl GeometryCollection {
         F: FnMut(Shape) -> std::result::Result<Shape, E>,
     {
         let limit = self.depth.get() as usize;
-        let members = crate::try_collect_vec(self.members.into_iter().map(&mut map))?;
+        let members = self
+            .members
+            .into_iter()
+            .map(&mut map)
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Self::from_members(NonEmptyVec::try_from_vec(members).map_err(E::from)?, limit)
             .map_err(E::from)
     }
@@ -769,7 +780,11 @@ macro_rules! impl_multipart {
                 E: From<crate::error::Error>,
             {
                 if matches!(self.members, MultipartMembers::Dense) {
-                    let values = crate::try_collect_vec(self.values.iter().map(&mut map))?;
+                    let values = self
+                        .values
+                        .iter()
+                        .map(&mut map)
+                        .collect::<Result<Vec<_>, E>>()?;
                     assert!(
                         values.iter().all(|value| shape_member_axes(value) == axes),
                         "homogeneous nonempty multipart payload"
@@ -780,10 +795,15 @@ macro_rules! impl_multipart {
                         members: MultipartMembers::Dense,
                     });
                 }
-                let members = crate::try_collect_vec(self.members().map(|member| match member {
-                    MultiMember::Empty => Ok(MultiMember::Empty),
-                    MultiMember::Value(index) => map(&self.values[index]).map(MultiMember::Value),
-                }))?;
+                let members = self
+                    .members()
+                    .map(|member| match member {
+                        MultiMember::Empty => Ok(MultiMember::Empty),
+                        MultiMember::Value(index) => {
+                            map(&self.values[index]).map(MultiMember::Value)
+                        },
+                    })
+                    .collect::<Result<Vec<_>, E>>()?;
                 Self::from_values(axes, members).map_err(E::from)
             }
 
@@ -977,16 +997,24 @@ impl MultiPoint {
         E: From<crate::error::Error>,
     {
         if matches!(self.members, MultipartMembers::Dense) {
-            let points = crate::try_collect_vec(self.points().map(&mut map))?;
+            let points = self
+                .points()
+                .map(&mut map)
+                .collect::<std::result::Result<Vec<_>, _>>()?;
             return Ok(Self {
                 coords: CoordSeq::try_from_points(&points).map_err(E::from)?,
                 members: MultipartMembers::Dense,
             });
         }
-        let members = crate::try_collect_vec(self.members().map(|member| match member {
-            MultiMember::Empty => Ok(MultiMember::Empty),
-            MultiMember::Value(index) => map(self.coords.point_at(index)).map(MultiMember::Value),
-        }))?;
+        let members = self
+            .members()
+            .map(|member| match member {
+                MultiMember::Empty => Ok(MultiMember::Empty),
+                MultiMember::Value(index) => {
+                    map(self.coords.point_at(index)).map(MultiMember::Value)
+                },
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let axes = members
             .iter()
             .find_map(|member| match member {

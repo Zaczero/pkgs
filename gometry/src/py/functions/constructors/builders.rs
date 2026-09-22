@@ -943,12 +943,15 @@ pub(crate) fn build_geometry_collection(
         },
         "GeometryCollection",
     )?;
-    let items = crate::try_collect_results(members.into_iter().map(|geometry| {
-        Ok::<_, PyErr>(match std::sync::Arc::try_unwrap(geometry.shape) {
-            Ok(data) => data.into_shape(),
-            Err(shared) => shared.shape().clone(),
-        })
-    }))?;
+    let items = members
+        .into_iter()
+        .map(
+            |geometry| match std::sync::Arc::try_unwrap(geometry.shape) {
+                Ok(data) => data.into_shape(),
+                Err(shared) => shared.shape().clone(),
+            },
+        )
+        .collect();
     Ok(PyGeometry::with_epoch(
         Shape::geometry_collection(items)?,
         frame.crs_owned(),

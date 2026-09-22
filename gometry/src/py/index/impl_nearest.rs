@@ -737,7 +737,6 @@ mod tests {
             let mut rows = index.rows.operation();
             let mut expected: Vec<_> = index
                 .live_handles_sorted()
-                .expect("live handles")
                 .into_iter()
                 .map(|handle| {
                     let data = rows.prepared(handle).expect("prepared row");

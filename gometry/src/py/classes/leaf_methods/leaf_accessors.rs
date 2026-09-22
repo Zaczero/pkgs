@@ -190,13 +190,12 @@ impl PyPolygon {
 
     /// Interior rings (holes), each a closed ``LineString``.
     #[getter]
-    pub(crate) fn interiors(slf: PyRef<'_, Self>) -> PyResult<Vec<Typed>> {
+    pub(crate) fn interiors(slf: PyRef<'_, Self>) -> Vec<Typed> {
         let base = slf.as_super();
-        crate::try_collect_results(
-            base.shape
-                .interiors()
-                .into_iter()
-                .map(|ring| Ok::<_, pyo3::PyErr>(base.typed_shape(ring))),
-        )
+        base.shape
+            .interiors()
+            .into_iter()
+            .map(|ring| base.typed_shape(ring))
+            .collect()
     }
 }

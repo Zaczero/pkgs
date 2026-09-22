@@ -979,10 +979,10 @@ impl PyGeometryArray {
 
     pub fn __repr__(&self) -> PyResult<String> {
         let mut out = String::from("<GeometryArray");
-        let kinds = crate::try_collect_results(self.present_shape_rows().map(|row| {
+        let kinds = self.present_shape_rows().map(|row| {
             row.map(|(_, shape)| shape.geometry_type())
                 .map_err(PyErr::from)
-        }))?;
+        }).collect::<PyResult<Vec<_>>>()?;
         if let Some(first) = kinds.first()
             && kinds.iter().all(|kind| kind == first)
         {

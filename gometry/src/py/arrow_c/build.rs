@@ -255,8 +255,8 @@ fn make_array_with_offset(
     buffers: impl IntoIterator<Item = OwnedBufferSlot>,
     children: impl IntoIterator<Item = GometryArrowArray>,
 ) -> PyResult<GometryArrowArray> {
-    let buffers = crate::try_collect_results(buffers.into_iter().map(Ok))?;
-    let mut children = crate::try_collect_results(children.into_iter().map(Ok))?;
+    let buffers: Vec<_> = buffers.into_iter().collect();
+    let mut children: Vec<_> = children.into_iter().collect();
     ensure_owned_buffer_window(length, offset, &buffers)?;
     let n_buffers = buffers.len();
     let length_i64 = checked_i64(length, "length")?;

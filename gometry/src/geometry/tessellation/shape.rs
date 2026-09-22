@@ -449,7 +449,7 @@ impl Shape {
         } else {
             voronoi_dcel::build(&canonical, boundary, budget, true, &mesh)?.into_polygons()
         };
-        crate::try_collect_vec(cells.into_iter().map(|polygon| Ok(Self::Polygon(polygon))))
+        Ok(cells.into_iter().map(Self::Polygon).collect())
     }
 
     /// The edges as one packed line column: what an array result stores, so

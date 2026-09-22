@@ -117,11 +117,10 @@ pub(crate) fn rows_from_indices(
     len: usize,
     label: &str,
 ) -> PyResult<Vec<usize>> {
-    crate::try_collect_results(
-        indices
-            .into_iter()
-            .map(|index| normalize_row(index, len, label)),
-    )
+    indices
+        .into_iter()
+        .map(|index| normalize_row(index, len, label))
+        .collect::<pyo3::PyResult<Vec<_>>>()
 }
 
 pub(crate) fn collect_slice_rows(start: isize, stop: isize, step: isize) -> Vec<usize> {

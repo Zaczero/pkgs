@@ -1000,11 +1000,7 @@ impl PySpatialIndex {
         } else {
             self.insert_items(geometry_items(values)?)?
         };
-        let handles = crate::try_collect_results(
-            handles
-                .into_iter()
-                .map(|handle| Ok::<_, pyo3::PyErr>(handle as i64)),
-        )?;
+        let handles = handles.into_iter().map(|handle| handle as i64).collect();
         int64_array(py, handles)
     }
 

@@ -255,11 +255,11 @@ impl PyGeometryArray {
         let source = self.crs_str().ok_or_else(|| {
             CRSError::new_err("estimate_local_crs requires a CRS-tagged geometry array")
         })?;
-        let shapes = crate::try_collect_results(
-            self.present_shape_rows()
-                .map(|result| result.map(|(_, shape)| shape).map_err(PyErr::from))
-                .filter(|result| !matches!(result, Ok(shape) if shape.is_empty())),
-        )?;
+        let shapes = self
+            .present_shape_rows()
+            .map(|result| result.map(|(_, shape)| shape).map_err(PyErr::from))
+            .filter(|result| !matches!(result, Ok(shape) if shape.is_empty()))
+            .collect::<pyo3::PyResult<Vec<_>>>()?;
         if shapes.is_empty() {
             return Err(CRSError::new_err(
                 "estimate_local_crs requires at least one present, non-empty geometry",
@@ -502,16 +502,17 @@ impl PyGeometryArray {
     ///     One ``'XY'``/``'XYZ'``/``'XYM'``/``'XYZM'`` token per row.
     #[getter("coordinate_axes")]
     pub fn coordinate_axes_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let rows =
-            crate::try_collect_results(self.row_operation().rows_with_missing(|| "").map(|row| {
-                match row {
-                    ArrayRow::Missing { value, .. } => Ok(value),
-                    ArrayRow::Present(row) => row
-                        .row()
-                        .with_shape(|shape| shape.axes().as_str())
-                        .map_err(PyErr::from),
-                }
-            }))?;
+        let rows = self
+            .row_operation()
+            .rows_with_missing(|| "")
+            .map(|row| match row {
+                ArrayRow::Missing { value, .. } => Ok(value),
+                ArrayRow::Present(row) => row
+                    .row()
+                    .with_shape(|shape| shape.axes().as_str())
+                    .map_err(PyErr::from),
+            })
+            .collect::<pyo3::PyResult<Vec<_>>>()?;
         self.masked_row_list(py, rows)
     }
     /// Ordinate layout shared by every present row, or ``None`` when rows
@@ -533,14 +534,15 @@ impl PyGeometryArray {
     pub fn has_z_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         bool_array(
             py,
-            crate::try_collect_results(self.row_operation().rows_with_missing(|| false).map(
-                |row| match row {
+            self.row_operation()
+                .rows_with_missing(|| false)
+                .map(|row| match row {
                     ArrayRow::Missing { value, .. } => Ok(value),
                     ArrayRow::Present(row) => {
                         row.row().with_shape(Shape::has_z).map_err(PyErr::from)
                     },
-                },
-            ))?,
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         )
     }
     /// Whether each geometry carries an M ordinate. Missing rows are false.
@@ -552,14 +554,15 @@ impl PyGeometryArray {
     pub fn has_m_rows(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         bool_array(
             py,
-            crate::try_collect_results(self.row_operation().rows_with_missing(|| false).map(
-                |row| match row {
+            self.row_operation()
+                .rows_with_missing(|| false)
+                .map(|row| match row {
                     ArrayRow::Missing { value, .. } => Ok(value),
                     ArrayRow::Present(row) => {
                         row.row().with_shape(Shape::has_m).map_err(PyErr::from)
                     },
-                },
-            ))?,
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         )
     }
     /// Per-geometry bounds ``(minx, miny, maxx, maxy)`` (see
@@ -612,13 +615,15 @@ impl PyGeometryArray {
             GeometryArrayStorage::Packed(PackedStorage::Polygons { .. }) => {
                 try_collect_values(std::iter::repeat_n("Polygon", self.len()), self.len())?
             },
-            GeometryArrayStorage::Mixed(_) => {
-                crate::try_collect_results(self.storage().iter_shapes().map(|shape| {
+            GeometryArrayStorage::Mixed(_) => self
+                .storage()
+                .iter_shapes()
+                .map(|shape| {
                     shape
                         .map(|shape| shape.geometry_type())
                         .map_err(PyErr::from)
-                }))?
-            },
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         };
         self.masked_row_list(py, rows)
     }
@@ -727,17 +732,17 @@ impl PyGeometryArray {
                 (0..self.len()).map(|row| i64::from(!self.is_row_missing(row))),
                 self.len(),
             )?,
-            GeometryArrayStorage::Mixed(_) => crate::try_collect_results(
-                self.row_operation()
-                    .rows_with_missing(|| 0_i64)
-                    .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => Ok(value),
-                        ArrayRow::Present(row) => row
-                            .row()
-                            .with_shape(|shape| shape.part_count() as i64)
-                            .map_err(PyErr::from),
-                    }),
-            )?,
+            GeometryArrayStorage::Mixed(_) => self
+                .row_operation()
+                .rows_with_missing(|| 0_i64)
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => row
+                        .row()
+                        .with_shape(|shape| shape.part_count() as i64)
+                        .map_err(PyErr::from),
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         };
         int64_array(py, values)
     }
@@ -751,17 +756,16 @@ impl PyGeometryArray {
     pub fn num_coordinates(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         int64_array(
             py,
-            crate::try_collect_results(self.row_operation().rows_with_missing(|| 0_i64).map(
-                |row| {
-                    match row {
-                        ArrayRow::Missing { value, .. } => Ok(value),
-                        ArrayRow::Present(row) => row
-                            .row()
-                            .with_shape(|shape| shape.coord_count() as i64)
-                            .map_err(PyErr::from),
-                    }
-                },
-            ))?,
+            self.row_operation()
+                .rows_with_missing(|| 0_i64)
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => row
+                        .row()
+                        .with_shape(|shape| shape.coord_count() as i64)
+                        .map_err(PyErr::from),
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         )
     }
     /// Return an array with the same topology and replacement coordinates.
@@ -883,17 +887,17 @@ impl PyGeometryArray {
                 }),
                 self.len(),
             )?,
-            GeometryArrayStorage::Mixed(_) => crate::try_collect_results(
-                self.row_operation()
-                    .rows_with_missing(|| -1_i64)
-                    .map(|row| match row {
-                        ArrayRow::Missing { value, .. } => Ok(value),
-                        ArrayRow::Present(row) => row
-                            .row()
-                            .with_shape(|shape| i64::from(shape.topological_dimension().code()))
-                            .map_err(PyErr::from),
-                    }),
-            )?,
+            GeometryArrayStorage::Mixed(_) => self
+                .row_operation()
+                .rows_with_missing(|| -1_i64)
+                .map(|row| match row {
+                    ArrayRow::Missing { value, .. } => Ok(value),
+                    ArrayRow::Present(row) => row
+                        .row()
+                        .with_shape(|shape| i64::from(shape.topological_dimension().code()))
+                        .map_err(PyErr::from),
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         };
         int64_array(py, values)
     }

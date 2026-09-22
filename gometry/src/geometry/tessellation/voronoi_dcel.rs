@@ -36,7 +36,7 @@ use crate::geometry::{
 use crate::geometry::{
     GENERATED_ITEM_LIMIT, tessellation::certified_delaunay, tessellation::shape,
 };
-use crate::{try_collect_vec, try_push_vec, try_reserve_vec};
+use crate::{try_push_vec, try_reserve_vec};
 
 macro_rules! dense_id {
     ($name:ident) => {
@@ -934,24 +934,29 @@ impl EmbeddedEdges {
         match self.canonical() {
             Self::Packed { coords, offsets } => {
                 let ends = offsets.as_slice();
-                try_collect_vec(ends.array_windows::<2>().map(|&[start, end]| {
-                    let range = start as usize..end as usize;
+                ends.array_windows::<2>()
+                    .map(|&[start, end]| {
+                        let range = start as usize..end as usize;
+                        LineSeq::try_new(CoordSeq::try_from_vecs(
+                            copied(&coords.xs()[range.clone()])?,
+                            copied(&coords.ys()[range])?,
+                            None,
+                            None,
+                        )?)
+                    })
+                    .collect::<std::result::Result<Vec<_>, _>>()
+            },
+            Self::Segments(segments) => segments
+                .into_iter()
+                .map(|[a, b]| {
                     LineSeq::try_new(CoordSeq::try_from_vecs(
-                        copied(&coords.xs()[range.clone()])?,
-                        copied(&coords.ys()[range])?,
+                        copied(&[a.x, b.x])?,
+                        copied(&[a.y, b.y])?,
                         None,
                         None,
                     )?)
-                }))
-            },
-            Self::Segments(segments) => try_collect_vec(segments.into_iter().map(|[a, b]| {
-                LineSeq::try_new(CoordSeq::try_from_vecs(
-                    copied(&[a.x, b.x])?,
-                    copied(&[a.y, b.y])?,
-                    None,
-                    None,
-                )?)
-            })),
+                })
+                .collect::<std::result::Result<Vec<_>, _>>(),
         }
     }
 
@@ -1348,11 +1353,11 @@ fn embed(
             return Err(voronoi_error("embedded cell lost its exact face owner"));
         }
         let shell = closed_ring(&part.shell.vertices, part.shell.orientation)?;
-        let holes = try_collect_vec(
-            part.holes
-                .iter()
-                .map(|hole| closed_ring(&hole.vertices, hole.orientation)),
-        )?;
+        let holes = part
+            .holes
+            .iter()
+            .map(|hole| closed_ring(&hole.vertices, hole.orientation))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         let polygon = Polygon::new(shell, holes);
         if !polygon_is_valid(&polygon)? {
             return Err(embedding_failure());
@@ -1377,7 +1382,10 @@ fn embed(
         Ring::closed(coordinates)
     };
     let shell = embedded_ring(&clip.rings[0])?;
-    let holes = try_collect_vec(clip.rings[1..].iter().map(|ring| embedded_ring(ring)))?;
+    let holes = clip.rings[1..]
+        .iter()
+        .map(|ring| embedded_ring(ring))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
     let comparison_polygon = Polygon::new(shell, holes);
     admit_embedded_clip(&comparison_polygon)?;
     let comparison_clip = Shape::Polygon(comparison_polygon);

@@ -40,7 +40,7 @@ fn preview(
     name: &str,
 ) -> PyResult<String> {
     const PREVIEW: usize = 8;
-    let body = crate::try_collect_results(values.take(PREVIEW))?;
+    let body = values.take(PREVIEW).collect::<pyo3::PyResult<Vec<_>>>()?;
     let ellipsis = if len > PREVIEW { ", ..." } else { "" };
     Ok(format!(
         "{name}([{}{}], len={len})",

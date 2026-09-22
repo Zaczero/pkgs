@@ -7,10 +7,7 @@ use crate::py::index::{
 };
 pub(crate) fn spatial_index(items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
     let metadata = index_metadata(&items)?;
-    spatial_index_rows(
-        crate::try_collect_results(items.into_iter().map(|item| Ok(Some(item))))?,
-        metadata,
-    )
+    spatial_index_rows(items.into_iter().map(Some).collect(), metadata)
 }
 
 /// Build over a sparse row table. ``None`` rows retain their input position as
@@ -51,15 +48,18 @@ fn spatial_index_rows(
     // boxed row positions the query results index into.
     let total_rows = items.len();
     let placeholder_frame = metadata.clone().unwrap_or_default();
-    let rows = crate::try_collect_results(items.into_iter().map(|item| {
-        Ok::<_, pyo3::PyErr>(match item {
-            None => PyGeometry::with_frame(
-                PyGeometryArray::missing_placeholder(),
-                placeholder_frame.clone(),
-            ),
-            Some(item) => item.with_prepared_plan(item.plan_or_transient()?),
+    let rows = items
+        .into_iter()
+        .map(|item| {
+            Ok::<_, pyo3::PyErr>(match item {
+                None => PyGeometry::with_frame(
+                    PyGeometryArray::missing_placeholder(),
+                    placeholder_frame.clone(),
+                ),
+                Some(item) => item.with_prepared_plan(item.plan_or_transient()?),
+            })
         })
-    }))?;
+        .collect::<pyo3::PyResult<Vec<_>>>()?;
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
@@ -193,8 +193,9 @@ pub(crate) fn build_spatial_index(
             return Ok(index);
         }
         let mut row_operation = array.row_operation();
-        let rows = crate::try_collect_results(row_operation.rows_with_missing(|| ()).map(
-            |logical_row| match logical_row {
+        let rows = row_operation
+            .rows_with_missing(|| ())
+            .map(|logical_row| match logical_row {
                 crate::array::ArrayRow::Missing { .. } => Ok(None),
                 crate::array::ArrayRow::Present(row) => {
                     let plan = row_operation.prepared(row)?.into_owned_plan();
@@ -203,8 +204,8 @@ pub(crate) fn build_spatial_index(
                         array.frame.clone(),
                     )))
                 },
-            },
-        ))?;
+            })
+            .collect::<pyo3::PyResult<Vec<_>>>()?;
         // Frame is adopted only when at least one non-missing geometry is
         // present. A zero-row OR all-missing source leaves the index
         // frame-FREE (adopted by the first successful insert) — locking an
@@ -228,12 +229,11 @@ pub(crate) fn build_spatial_index(
         .into_items();
         return py.detach(move || spatial_index(items));
     }
-    let present = crate::try_collect_results(
-        raw_items
-            .iter()
-            .filter(|item| !item.is_none())
-            .map(|item| Ok::<_, pyo3::PyErr>(item.clone())),
-    )?;
+    let present = raw_items
+        .iter()
+        .filter(|item| !item.is_none())
+        .cloned()
+        .collect::<Vec<_>>();
     let present = crate::coerce_collected_geometry_items(
         &present,
         true,
@@ -242,18 +242,20 @@ pub(crate) fn build_spatial_index(
     .into_items();
     let metadata = index_metadata(&present)?;
     let mut present = present.into_iter();
-    let rows = crate::try_collect_results(raw_items.into_iter().map(|item| {
-        let row = if item.is_none() {
-            None
-        } else {
-            Some(
-                present
-                    .next()
-                    .expect("present rows were coerced from the same input mask"),
-            )
-        };
-        Ok::<_, pyo3::PyErr>(row)
-    }))?;
+    let rows = raw_items
+        .into_iter()
+        .map(|item| {
+            if item.is_none() {
+                None
+            } else {
+                Some(
+                    present
+                        .next()
+                        .expect("present rows were coerced from the same input mask"),
+                )
+            }
+        })
+        .collect();
     py.detach(move || spatial_index_rows(rows, metadata))
 }
 
@@ -441,7 +443,7 @@ mod ownership_tests {
         let index = packed_spatial_index(&source).unwrap().unwrap();
 
         assert_eq!(index.rows.live, [0, 1, 0, 1]);
-        assert_eq!(index.live_handles_sorted().unwrap(), [1, 3]);
+        assert_eq!(index.live_handles_sorted(), [1, 3]);
         assert!(index.rows.packed.is_some());
         assert!(index.rows.boxed.is_empty());
         assert_eq!(source.row_products.initialized_counts(), before);
@@ -468,7 +470,7 @@ mod ownership_tests {
         let index = packed_spatial_index(&source).unwrap().unwrap();
 
         assert_eq!(index.rows.live, [1, 0, 1]);
-        assert_eq!(index.live_handles_sorted().unwrap(), [0, 2]);
+        assert_eq!(index.live_handles_sorted(), [0, 2]);
         assert!(index.rows.packed.is_some());
         assert!(index.rows.boxed.is_empty());
         let mut rows = index.rows.operation();
@@ -488,7 +490,7 @@ mod ownership_tests {
         let window = source.gather_logical_row_range(1..5).unwrap();
         let index = packed_spatial_index(&window).unwrap().unwrap();
         assert!(window.is_compact_nullable());
-        assert_eq!(index.live_handles_sorted().unwrap(), [0, 1, 3]);
+        assert_eq!(index.live_handles_sorted(), [0, 1, 3]);
 
         let mut rows = index.rows.operation();
         let mut point_x = |handle| match rows.row(handle).unwrap() {
@@ -501,7 +503,7 @@ mod ownership_tests {
 
         let gathered = source.gather_logical_rows(&[4, 2, 4, 1]).unwrap();
         let gathered_index = packed_spatial_index(&gathered).unwrap().unwrap();
-        assert_eq!(gathered_index.live_handles_sorted().unwrap(), [0, 1, 2, 3]);
+        assert_eq!(gathered_index.live_handles_sorted(), [0, 1, 2, 3]);
         let mut gathered_rows = gathered_index.rows.operation();
         let mut point_x = |handle| match gathered_rows.row(handle).unwrap() {
             crate::array::ShapeRow::Point(point) => point.x,
@@ -527,7 +529,7 @@ mod ownership_tests {
         assert_eq!(selected.row_products.initialized_counts(), (0, 0, 0));
 
         let index = packed_spatial_index(&selected).unwrap().unwrap();
-        assert_eq!(index.live_handles_sorted().unwrap(), [1, 2]);
+        assert_eq!(index.live_handles_sorted(), [1, 2]);
         assert_eq!(selected.row_products.initialized_counts(), (0, 0, 0));
         assert!(index.rows.boxed.is_empty());
     }
@@ -541,7 +543,7 @@ mod ownership_tests {
             .expect("test WKT admits");
         let item = PyGeometry::with_frame(ShapeData::new(shape), Frame::None);
         let index = spatial_index(vec![item]).unwrap();
-        assert_eq!(index.live_handles_sorted().unwrap(), [0]);
+        assert_eq!(index.live_handles_sorted(), [0]);
 
         let array = PyGeometryArray::packed_polygons(
             CoordSeq::try_from_vecs(
@@ -557,7 +559,7 @@ mod ownership_tests {
         )
         .unwrap();
         let index = packed_spatial_index(&array).unwrap().unwrap();
-        assert_eq!(index.live_handles_sorted().unwrap(), [0]);
+        assert_eq!(index.live_handles_sorted(), [0]);
     }
 
     #[test]

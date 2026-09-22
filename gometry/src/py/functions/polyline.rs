@@ -271,20 +271,24 @@ pub(crate) fn present_polylines_of(
     factor: f64,
 ) -> PyResult<Vec<(usize, String)>> {
     require_polyline_crs(array.crs_str())?;
-    crate::try_collect_results(array.present_shape_rows().map(|result| {
-        let (row, shape) = result.map_err(PyErr::from)?;
-        let encode = || -> PyResult<String> {
-            if shape.has_z() || shape.has_m() {
-                return Err(
-                    crate::geometry::GeometryErrorKind::ordinate_dropped("to_polyline").into(),
-                );
-            }
-            encode_shape(&shape, factor)
-        };
-        encode()
-            .map(|encoded| (row, encoded))
-            .map_err(|err| note_array_row(err, row))
-    }))
+    array
+        .present_shape_rows()
+        .map(|result| {
+            let (row, shape) = result.map_err(PyErr::from)?;
+            let encode = || -> PyResult<String> {
+                if shape.has_z() || shape.has_m() {
+                    return Err(crate::geometry::GeometryErrorKind::ordinate_dropped(
+                        "to_polyline",
+                    )
+                    .into());
+                }
+                encode_shape(&shape, factor)
+            };
+            encode()
+                .map(|encoded| (row, encoded))
+                .map_err(|err| note_array_row(err, row))
+        })
+        .collect::<pyo3::PyResult<Vec<_>>>()
 }
 
 /// Encode one geometry (must be a `LineString` or `Point`).

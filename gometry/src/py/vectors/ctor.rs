@@ -23,10 +23,14 @@ impl Groups {
         fn cast_usize_vec(values: Vec<usize>) -> PyResult<Vec<i64>> {
             bytemuck::allocation::try_cast_vec(values).map_or_else(
                 |(_, values)| {
-                    crate::try_collect_results(values.into_iter().map(|value| {
-                        i64::try_from(value)
-                            .map_err(|_| PyOverflowError::new_err("index does not fit in int64"))
-                    }))
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            i64::try_from(value).map_err(|_| {
+                                PyOverflowError::new_err("index does not fit in int64")
+                            })
+                        })
+                        .collect::<pyo3::PyResult<Vec<_>>>()
                 },
                 Ok,
             )

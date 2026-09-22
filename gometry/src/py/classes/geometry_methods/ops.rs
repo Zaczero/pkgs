@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 
-use pyo3::PyErr;
 use pyo3::types::{PyBytes, PyTuple};
 
 use crate::py::classes::geometry_methods::{
@@ -26,7 +25,7 @@ impl PyGeometry {
     ) -> PyResult<PyGeometryArray> {
         // Shape-native sink: never stage per-part `PyGeometry` wrappers.
         Ok(PyGeometryArray::from_shapes(
-            crate::try_collect_results(shapes.into_iter().map(Ok::<_, PyErr>))?,
+            shapes.into_iter().collect(),
             self.frame.clone(),
         )?)
     }

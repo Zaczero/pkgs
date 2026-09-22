@@ -94,11 +94,15 @@ fn geocode_encode_broadcast(
         [(&mut lon, "longitude"), (&mut lat, "latitude")],
         "lon and lat",
     )?;
-    let encoded =
-        crate::try_collect_results(lon.values.iter().zip(&lat.values).map(|(&lon, &lat)| {
+    let encoded = lon
+        .values
+        .iter()
+        .zip(&lat.values)
+        .map(|(&lon, &lat)| {
             geographic::validate_lonlat_xy(lon, lat)?;
             operation(lon, lat)
-        }))?;
+        })
+        .collect::<pyo3::PyResult<Vec<_>>>()?;
     if scalar {
         encoded
             .into_iter()
@@ -130,12 +134,11 @@ fn code_lonlat_broadcast(
             let lon = F64Param::parse(lon, "lon", codes.len())?;
             let lat = F64Param::parse(lat, "lat", codes.len())?;
             py.detach(move || {
-                crate::try_collect_results(
-                    codes
-                        .iter()
-                        .enumerate()
-                        .map(|(row, code)| operation(code, lon.get(row), lat.get(row))),
-                )
+                codes
+                    .iter()
+                    .enumerate()
+                    .map(|(row, code)| operation(code, lon.get(row), lat.get(row)))
+                    .collect::<pyo3::PyResult<Vec<_>>>()
             })?
             .into_py_any(py)
         },
@@ -237,7 +240,10 @@ pub(crate) fn pluscode_polygon(py: Python<'_>, code: &Bound<'_, PyAny>) -> PyRes
             .unbind()),
         CodeInput::Many(codes) => {
             let shapes = py.detach(move || {
-                crate::try_collect_results(codes.iter().map(|code| polygon_shape(code)))
+                codes
+                    .iter()
+                    .map(|code| polygon_shape(code))
+                    .collect::<pyo3::PyResult<Vec<_>>>()
             })?;
             Ok(PyGeometryArray::from_shapes(shapes, frame)?
                 .into_pyobject(py)?

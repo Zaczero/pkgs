@@ -7,14 +7,14 @@ use crate::py::index::{
 };
 
 impl PySpatialIndex {
-    pub(crate) fn live_handles_sorted(&self) -> PyResult<Vec<usize>> {
-        let mut handles = crate::try_collect_results(
-            self.live_entries()
-                .map(|entry| Ok::<_, pyo3::PyErr>(entry.idx)),
-        )?;
+    pub(crate) fn live_handles_sorted(&self) -> Vec<usize> {
+        let mut handles = self
+            .live_entries()
+            .map(|entry| entry.idx)
+            .collect::<Vec<_>>();
         handles.sort_unstable();
         handles.dedup();
-        Ok(handles)
+        handles
     }
 
     pub(crate) fn is_live_handle(&self, handle: usize) -> bool {
@@ -107,11 +107,10 @@ impl PySpatialIndex {
         if items.is_empty() {
             return Ok(Vec::new());
         }
-        let items = crate::try_collect_results(
-            items
-                .into_iter()
-                .map(|item| Ok(item.with_prepared_plan(item.plan_or_transient()?))),
-        )?;
+        let items = items
+            .into_iter()
+            .map(|item| Ok(item.with_prepared_plan(item.plan_or_transient()?)))
+            .collect::<pyo3::PyResult<Vec<_>>>()?;
         let frame = index_metadata(&items)?;
         if let Some(frame) = &frame {
             self.check_insert_frame(frame)?;
@@ -421,7 +420,7 @@ mod tests {
     }
 
     fn assert_copy_state(index: &PySpatialIndex, handles: &[usize], weights: &[(usize, usize)]) {
-        assert_eq!(index.live_handles_sorted().expect("live handles"), handles);
+        assert_eq!(index.live_handles_sorted(), handles);
         assert_eq!(run_weights(index), weights);
         assert_eq!(index.overflow.total_entries(), 11);
         assert_eq!(index.overflow.live_entry_count(), 10);
@@ -476,7 +475,7 @@ mod tests {
     #[test]
     fn populated_index_clone_preserves_state_and_mutates_independently() {
         let source = clone_fixture();
-        let handles = source.live_handles_sorted().expect("source handles");
+        let handles = source.live_handles_sorted();
         let weights = run_weights(&source);
         assert_eq!(weights, [(0, 1), (1, 2), (3, 8)]);
         let counted = source.clone();
@@ -542,18 +541,12 @@ mod tests {
             let memo = py.None().bind(py).clone();
             let deep = source.__deepcopy__(py, &memo).expect("deepcopy");
             assert_eq!(
-                copy.bind(py)
-                    .borrow()
-                    .live_handles_sorted()
-                    .expect("copy handles"),
-                source.live_handles_sorted().expect("source handles")
+                copy.bind(py).borrow().live_handles_sorted(),
+                source.live_handles_sorted()
             );
             assert_eq!(
-                deep.bind(py)
-                    .borrow()
-                    .live_handles_sorted()
-                    .expect("deepcopy handles"),
-                source.live_handles_sorted().expect("source handles")
+                deep.bind(py).borrow().live_handles_sorted(),
+                source.live_handles_sorted()
             );
             assert_eq!(source.overflow.total_entries(), 11);
             assert_eq!(source.overflow.dead_entry_count(), 1);

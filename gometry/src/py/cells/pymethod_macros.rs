@@ -398,7 +398,7 @@ macro_rules! grid_free_functions {
             cells: &pyo3::Bound<'_, pyo3::PyAny>,
         ) -> pyo3::PyResult<crate::grid::cell_set::CanonicalCellSet<$cell_type>> {
             let items = crate::py::cells::cell_items(cells)?;
-            let ids = crate::try_collect_results(items.iter().map(|cell| $parse_cell(cell)))?;
+            let ids = items.iter().map(|cell| $parse_cell(cell)).collect::<pyo3::PyResult<Vec<_>>>()?;
             Ok(crate::grid::cell_set::CanonicalCellSet::new(ids))
         }
 

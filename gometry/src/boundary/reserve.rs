@@ -114,23 +114,6 @@ pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
     Ok(())
 }
 
-/// Collect fallible items into checked-layout storage: the iterator's lower
-/// size bound is reserved up front, and the first error ends the collection.
-pub(crate) fn try_collect_vec<T, E>(
-    items: impl IntoIterator<Item = std::result::Result<T, E>>,
-) -> std::result::Result<Vec<T>, E>
-where
-    E: From<crate::error::Error>,
-{
-    let items = items.into_iter();
-    let mut out = Vec::new();
-    try_reserve_vec(&mut out, items.size_hint().0).map_err(E::from)?;
-    for item in items {
-        try_push_vec(&mut out, item?).map_err(E::from)?;
-    }
-    Ok(out)
-}
-
 /// Reserve two parallel output columns after checking both layouts.
 pub(crate) fn try_reserve_pair<T, U>(
     left: &mut Vec<T>,
@@ -281,24 +264,6 @@ impl<T> CsrBuilder<T> {
         }
         (values, offsets)
     }
-}
-
-/// Collect a Python-facing result iterator while preserving its first error.
-pub(crate) fn try_collect_results<T>(
-    values: impl IntoIterator<Item = PyResult<T>>,
-) -> PyResult<Vec<T>> {
-    let mut out = Vec::new();
-    for value in values {
-        let value = match value {
-            Ok(value) => value,
-            Err(error) => {
-                drop(out);
-                return Err(error);
-            },
-        };
-        try_push(&mut out, value)?;
-    }
-    Ok(out)
 }
 
 /// Reserve from an untrusted **hint** without letting the hint affect

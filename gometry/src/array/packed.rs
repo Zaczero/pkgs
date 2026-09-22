@@ -133,17 +133,17 @@ impl PyGeometryArray {
         from_shape: impl Fn(&Shape) -> Option<f64>,
     ) -> PyResult<Py<PyAny>> {
         if self.is_compact_nullable() {
-            let values = crate::try_collect_results(
-                self.row_operation()
-                    .rows_with_missing(|| None::<f64>)
-                    .map(|row| match row {
-                        crate::array::ArrayRow::Missing { value, .. } => Ok(value),
-                        crate::array::ArrayRow::Present(row) => row
-                            .row()
-                            .with_shape(&from_shape)
-                            .map_err(crate::PyErr::from),
-                    }),
-            )?;
+            let values = self
+                .row_operation()
+                .rows_with_missing(|| None::<f64>)
+                .map(|row| match row {
+                    crate::array::ArrayRow::Missing { value, .. } => Ok(value),
+                    crate::array::ArrayRow::Present(row) => row
+                        .row()
+                        .with_shape(&from_shape)
+                        .map_err(crate::PyErr::from),
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?;
             return optional_float64_array(py, values);
         }
         let missing = self.missing().cloned();
@@ -167,14 +167,16 @@ impl PyGeometryArray {
         }
         optional_float64_array(
             py,
-            crate::try_collect_results(self.storage().iter_shapes().enumerate().map(
-                |(row, shape)| {
+            self.storage()
+                .iter_shapes()
+                .enumerate()
+                .map(|(row, shape)| {
                     let shape = shape.map_err(crate::PyErr::from)?;
                     Ok((!self.is_row_missing(row))
                         .then(|| from_shape(&shape))
                         .flatten())
-                },
-            ))?,
+                })
+                .collect::<pyo3::PyResult<Vec<_>>>()?,
         )
     }
 

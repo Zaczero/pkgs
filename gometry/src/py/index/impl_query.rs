@@ -125,7 +125,7 @@ impl PySpatialIndex {
             _ => None,
         };
         let radius = distance.map_or(0.0, NonNegative::get);
-        let live = self.live_handles_sorted()?;
+        let live = self.live_handles_sorted();
         let mut candidates = Vec::new();
         let mut products = self.rows.operation();
         for &i in &live {
