@@ -632,7 +632,10 @@ impl PyGeometryArray {
                     },
                 )
             } else {
-                bounds_values_from_columns_masked(&columns, missing.as_ref())
+                Ok(bounds_values_from_columns_masked(
+                    &columns,
+                    missing.as_ref(),
+                ))
             };
             values.map_err(PackedColumnError::Batch)
         })? {

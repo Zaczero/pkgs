@@ -792,25 +792,15 @@ pub(crate) fn map_masked_point_columns_to_crs(
     coords: &CoordSeq,
     selection: RowSelectionRef<'_>,
     missing: &ValidityMask,
-    present_count: usize,
     layout: PointRowLayout,
 ) -> std::result::Result<CoordSeq, crate::crs::TransformFailure> {
     let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
-    debug_assert_eq!(rows.len(), missing.len());
-    debug_assert_eq!(rows.present_count(), present_count);
+    let present_count = rows.present_count();
     let compact = rows.is_compact();
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    let mut zs = coords.zs().map(|_| Vec::new());
-    let mut ms = coords.ms().map(|_| Vec::new());
-    xs.reserve(present_count);
-    ys.reserve(present_count);
-    if let Some(zs) = zs.as_mut() {
-        crate::try_reserve_vec(zs, present_count)?;
-    }
-    if let Some(ms) = ms.as_mut() {
-        crate::try_reserve_vec(ms, present_count)?;
-    }
+    let mut xs = Vec::with_capacity(present_count);
+    let mut ys = Vec::with_capacity(present_count);
+    let mut zs = coords.zs().map(|_| Vec::with_capacity(present_count));
+    let mut ms = coords.ms().map(|_| Vec::with_capacity(present_count));
     for (_, physical) in rows.cursor() {
         let Some(physical) = physical else {
             continue;
@@ -818,10 +808,10 @@ pub(crate) fn map_masked_point_columns_to_crs(
         xs.push(coords.xs()[physical]);
         ys.push(coords.ys()[physical]);
         if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
-            crate::try_push_vec(output, source[physical])?;
+            output.push(source[physical]);
         }
         if let (Some(output), Some(source)) = (ms.as_mut(), coords.ms()) {
-            crate::try_push_vec(output, source[physical])?;
+            output.push(source[physical]);
         }
     }
     let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
@@ -877,13 +867,12 @@ pub(crate) fn reduce_lines_or_polygons<R>(
 fn bounds_values_from_columns_impl<const MASKED: bool>(
     columns: &PackedColumns<'_>,
     missing: Option<&ValidityMask>,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     let XyColumns { xs, ys } = columns.physical_xy();
     let rows = columns.row_count();
     // Keep the row result in its natural fixed-width shape while reducing;
     // flattening moves the same allocation into NumPy's one-dimensional lane.
-    let mut values = Vec::new();
-    crate::boundary::try_reserve_vec(&mut values, rows)?;
+    let mut values = Vec::with_capacity(rows);
     match columns {
         PackedColumns::Points(point_columns) => {
             let rows = point_columns.rows();
@@ -925,10 +914,10 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
             }
         },
     }
-    Ok(values.into_flattened())
+    values.into_flattened()
 }
 
-pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Result<Vec<f64>> {
+pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Vec<f64> {
     bounds_values_from_columns_impl::<false>(columns, None)
 }
 
@@ -936,7 +925,7 @@ pub(crate) fn bounds_values_from_columns(columns: &PackedColumns<'_>) -> Result<
 pub(crate) fn bounds_values_from_columns_masked(
     columns: &PackedColumns<'_>,
     missing: Option<&ValidityMask>,
-) -> Result<Vec<f64>> {
+) -> Vec<f64> {
     missing.map_or_else(
         || bounds_values_from_columns(columns),
         |missing| bounds_values_from_columns_impl::<true>(columns, Some(missing)),
@@ -966,26 +955,22 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
     frame: crate::geographic::GeographicFrame,
     missing: Option<&ValidityMask>,
 ) -> Result<Vec<f64>> {
-    let mut values = Vec::new();
-    let capacity = columns
-        .row_count()
-        .checked_mul(4)
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    crate::boundary::try_reserve_vec(&mut values, capacity)?;
+    if let PackedColumns::Points(_) = columns {
+        return Ok(if MASKED {
+            bounds_values_from_columns_masked(columns, missing)
+        } else {
+            bounds_values_from_columns(columns)
+        });
+    }
+    let mut values = Vec::with_capacity(columns.row_count());
     match columns {
-        PackedColumns::Points(_) => {
-            return if MASKED {
-                bounds_values_from_columns_masked(columns, missing)
-            } else {
-                bounds_values_from_columns(columns)
-            };
-        },
+        PackedColumns::Points(_) => unreachable!("point bounds use coordinate columns directly"),
         PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
             for row in 0..line_columns.rows() {
                 if MASKED && missing.is_some_and(|mask| mask.is_missing(row)) {
-                    values.extend_from_slice(&[f64::NAN; 4]);
+                    values.push([f64::NAN; 4]);
                     continue;
                 }
                 let window = line_columns.row_window(row);
@@ -1003,7 +988,7 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         row_bounds_values(xs, ys, window)
                     }
                 };
-                values.extend_from_slice(&bounds);
+                values.push(bounds);
             }
         },
         PackedColumns::Polygons(polygon_columns) => {
@@ -1012,7 +997,7 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
             let ring_offsets = polygon_columns.ring_offsets();
             for row in 0..polygon_columns.rows() {
                 if MASKED && missing.is_some_and(|mask| mask.is_missing(row)) {
-                    values.extend_from_slice(&[f64::NAN; 4]);
+                    values.push([f64::NAN; 4]);
                     continue;
                 }
                 let rings = polygon_columns.polygon_rings(row);
@@ -1033,11 +1018,11 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
                         row_bounds_values(xs, ys, vertices)
                     }
                 };
-                values.extend_from_slice(&bounds);
+                values.push(bounds);
             }
         },
     }
-    Ok(values)
+    Ok(values.into_flattened())
 }
 
 pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<Bounds> {

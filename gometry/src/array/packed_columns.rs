@@ -1263,7 +1263,6 @@ fn map_selected_to_crs(
                     points.coords(),
                     points.selection(),
                     missing,
-                    missing.present_count(),
                     points.row_layout(),
                 )
                 .map_err(|failure| {
@@ -1728,6 +1727,56 @@ mod tests {
     }
 
     #[test]
+    fn geographic_point_bounds_allocate_only_the_output() {
+        let coords = coords();
+        let gather = RowSelection::gather_checked_native(vec![4, 1, 4], coords.len()).unwrap();
+        let missing = ValidityMask::from_vec(3, vec![false, true, false]).unwrap();
+        for mask in [None, Some(&missing)] {
+            let columns = PackedColumns::Points(resolve_point_columns(
+                &coords,
+                gather.as_deref(),
+                mask,
+                PointRowLayout::RowAligned,
+            ));
+            let (bounds, allocations) = allocation_count(|| {
+                packed_column_kernels::geographic_bounds_values_from_columns_masked(
+                    &columns,
+                    crate::geographic::GeographicFrame::crs84(),
+                    mask,
+                )
+            });
+            let bounds = bounds.unwrap();
+            assert_eq!(allocations, 1);
+            let expected = if mask.is_some() {
+                [
+                    4.0,
+                    4.0,
+                    4.0,
+                    4.0,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    f64::NAN,
+                    4.0,
+                    4.0,
+                    4.0,
+                    4.0,
+                ]
+            } else {
+                [4.0, 4.0, 4.0, 4.0, 1.0, 1.0, 1.0, 1.0, 4.0, 4.0, 4.0, 4.0]
+            };
+            assert_eq!(bounds.len(), expected.len());
+            for (actual, expected) in bounds.iter().zip(expected) {
+                if expected.is_nan() {
+                    assert!(actual.is_nan());
+                } else {
+                    assert_eq!(*actual, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn selected_views_resolve_physical_rows_directly() {
         let selection = || RowSelection::gather_checked_native(vec![1_usize, 0, 1], 2).unwrap();
         let point_storage = GeometryArrayStorage::Packed(PackedStorage::Points {
@@ -1754,7 +1803,7 @@ mod tests {
             };
             assert_eq!(columns.row_count(), 3);
             assert_eq!(columns.map_rows(|row| row.index()), vec![0, 1, 2]);
-            drop(packed_column_kernels::bounds_values_from_columns(&columns).expect("bounds"));
+            drop(packed_column_kernels::bounds_values_from_columns(&columns));
         }
     }
 
@@ -1955,9 +2004,8 @@ mod tests {
         let storage = gathered_lines(32);
         let columns =
             resolve_packed_columns(&storage, None, PointRowLayout::Dense).expect("packed columns");
-        let (values, allocations) = allocation_count(|| {
-            packed_column_kernels::bounds_values_from_columns(&columns).expect("bounds")
-        });
+        let (values, allocations) =
+            allocation_count(|| packed_column_kernels::bounds_values_from_columns(&columns));
         assert_eq!(values.len(), 32 * 4);
         assert_eq!(allocations, 1);
     }
