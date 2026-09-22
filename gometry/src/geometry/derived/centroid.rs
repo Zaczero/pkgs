@@ -641,12 +641,13 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
 }
 
 fn visit_areal_polygons(shape: &Shape, visit: &mut dyn FnMut(&Polygon)) {
-    let _: Result<(), std::convert::Infallible> = shape.try_for_each_component(&mut |component| {
-        if let Component::Polygon(polygon) = component {
-            visit(polygon);
-        }
-        Ok(())
-    });
+    let Ok(()): Result<(), std::convert::Infallible> =
+        shape.try_for_each_component(&mut |component| {
+            if let Component::Polygon(polygon) = component {
+                visit(polygon);
+            }
+            Ok(())
+        });
 }
 
 fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64, f64)> {

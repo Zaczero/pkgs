@@ -7,6 +7,7 @@
 //!
 //! Packed array owners retain their row selection and missing-value semantics.
 
+use std::convert::Infallible;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
@@ -101,10 +102,11 @@ impl CoordinateView {
     where
         F: for<'x> FnMut(Option<usize>, CoordRun<'x>),
     {
-        let _: ControlFlow<()> = self.try_for_each(&mut |geometry, run| {
-            visit(geometry, run);
-            ControlFlow::Continue(())
-        });
+        let ControlFlow::Continue(()): ControlFlow<Infallible> =
+            self.try_for_each(&mut |geometry, run| {
+                visit(geometry, run);
+                ControlFlow::Continue(())
+            });
     }
 
     /// Breakable traversal: `ControlFlow::Break` stops at the current run.
@@ -437,10 +439,11 @@ impl CoordinateView {
         reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
     )]
     pub fn for_each_point(&self, mut visit: impl FnMut(Point)) {
-        let _: ControlFlow<()> = self.try_for_each_point(&mut |coord| {
-            visit(coord);
-            ControlFlow::Continue(())
-        });
+        let ControlFlow::Continue(()): ControlFlow<Infallible> =
+            self.try_for_each_point(&mut |coord| {
+                visit(coord);
+                ControlFlow::Continue(())
+            });
     }
 
     /// Breakable point stream: `ControlFlow::Break` stops at the current

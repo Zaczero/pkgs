@@ -1,3 +1,4 @@
+use std::convert::Infallible;
 use std::ops::ControlFlow;
 
 use crate::error::Result;
@@ -211,10 +212,11 @@ impl Shape {
         reason = "visitor type is intentionally opaque at this one-pass traversal boundary"
     )]
     pub fn for_each_point(&self, mut visit: impl FnMut(Point)) {
-        let _: ControlFlow<()> = self.try_for_each_point_inner(&mut |point| {
-            visit(point);
-            ControlFlow::Continue(())
-        });
+        let ControlFlow::Continue(()): ControlFlow<Infallible> =
+            self.try_for_each_point_inner(&mut |point| {
+                visit(point);
+                ControlFlow::Continue(())
+            });
     }
 
     /// Whether any vertex satisfies `predicate`, short-circuiting on the first
@@ -363,10 +365,11 @@ impl Shape {
     /// collections — as borrowed columns. The chain enumeration behind
     /// segment-level prepared state (facet linework).
     pub(crate) fn for_each_segment_chain(&self, mut visit: impl FnMut(&CoordSeq)) {
-        let _: ControlFlow<()> = self.for_each_segment_chain_inner(&mut |chain| {
-            visit(chain);
-            ControlFlow::Continue(())
-        });
+        let ControlFlow::Continue(()): ControlFlow<Infallible> =
+            self.for_each_segment_chain_inner(&mut |chain| {
+                visit(chain);
+                ControlFlow::Continue(())
+            });
     }
 
     /// Visit every segment-bearing chain until `visit` returns `Err`.
