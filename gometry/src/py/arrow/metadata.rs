@@ -212,22 +212,22 @@ impl GeoParquetPhysicalLayout {
 
 /// Typed failure categories at the GeoParquet physical-layout boundary.
 ///
-/// The Python projection deliberately retains its historical exception
-/// classes: layout failures are `GeometryError`, malformed or contradictory
-/// metadata is `ParseError(format="geoparquet")`, and native allocation
-/// failures remain `MemoryError`.
+/// Layout failures are `GeometryError`; malformed or contradictory metadata is
+/// `ParseError(format="geoparquet")`. Python allocation errors retain their
+/// original exception objects.
 #[derive(Debug)]
 enum GeoParquetAdmissionError {
     Layout(String),
     Metadata(String),
     Resource(crate::error::Error),
+    PythonResource(PyErr),
 }
 
 impl GeoParquetAdmissionError {
     fn layout_from_py(error: PyErr) -> Self {
         Python::attach(|py| {
             if error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py) {
-                Self::Resource(crate::error::ResourceError::Allocation.into())
+                Self::PythonResource(error)
             } else {
                 Self::Layout(error.value(py).to_string())
             }
@@ -238,7 +238,8 @@ impl GeoParquetAdmissionError {
         match self {
             Self::Layout(detail) => geoparquet_layout_error(detail),
             Self::Metadata(detail) => geoparquet_meta_error(detail),
-            Self::Resource(error) => geoparquet_resource_error(error),
+            Self::Resource(error) => geoparquet_resource_error(error.into()),
+            Self::PythonResource(error) => geoparquet_resource_error(error),
         }
     }
 }
@@ -247,7 +248,7 @@ impl From<PyErr> for GeoParquetAdmissionError {
     fn from(error: PyErr) -> Self {
         Python::attach(|py| {
             if error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py) {
-                Self::Resource(crate::error::ResourceError::Allocation.into())
+                Self::PythonResource(error)
             } else {
                 Self::Metadata(error.value(py).to_string())
             }
@@ -931,8 +932,7 @@ fn geoparquet_layout_error(detail: impl std::fmt::Display) -> PyErr {
     error
 }
 
-fn geoparquet_resource_error(error: crate::error::Error) -> PyErr {
-    let error: PyErr = error.into();
+fn geoparquet_resource_error(error: PyErr) -> PyErr {
     Python::attach(|py| {
         let _ = error.value(py).setattr("category", "resource");
     });
@@ -1471,7 +1471,7 @@ const fn wkb_offset_width(is_large_binary: bool, is_binary_view: bool) -> WkbOff
 
 #[cfg(test)]
 mod tests {
-    use pyo3::exceptions::PyMemoryError;
+    use pyo3::exceptions::{PyMemoryError, PyOverflowError};
     use pyo3::types::PyAnyMethods as _;
 
     use super::GeoParquetAdmissionError;
@@ -1515,10 +1515,11 @@ mod tests {
                 "geoparquet"
             );
 
-            let resource =
-                GeoParquetAdmissionError::Resource(crate::error::ResourceError::Allocation.into())
-                    .into_py_err();
-            assert!(resource.is_instance_of::<PyMemoryError>(py));
+            let resource = GeoParquetAdmissionError::Resource(
+                crate::error::ResourceError::SizeOverflow.into(),
+            )
+            .into_py_err();
+            assert!(resource.is_instance_of::<PyOverflowError>(py));
             assert_eq!(
                 resource
                     .value(py)
@@ -1528,6 +1529,30 @@ mod tests {
                     .expect("resource category string"),
                 "resource"
             );
+        });
+    }
+
+    #[test]
+    fn geoparquet_python_memory_errors_preserve_exception_identity() {
+        crate::test_support::initialize_python();
+        pyo3::Python::attach(|py| {
+            let original = PyMemoryError::new_err("provider allocation failed");
+            for admitted in [
+                GeoParquetAdmissionError::layout_from_py(original.clone_ref(py)),
+                GeoParquetAdmissionError::from(original.clone_ref(py)),
+            ] {
+                let projected = admitted.into_py_err();
+                assert!(projected.value(py).is(original.value(py)));
+                assert_eq!(
+                    projected
+                        .value(py)
+                        .getattr("category")
+                        .unwrap()
+                        .extract::<&str>()
+                        .unwrap(),
+                    "resource"
+                );
+            }
         });
     }
 }
