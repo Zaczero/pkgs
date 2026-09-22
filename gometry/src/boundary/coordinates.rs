@@ -1,14 +1,11 @@
 //! Shape-wide coordinate access — the structural `SoA` view behind
 //! `geom.coords`.
 //!
-//! [`Coordinates`](crate::geometry::Coordinates) stays the small by-value
-//! nested rings, collections), flattens coordinates in canonical depth-first
+//! The view traverses nested rings and collections in canonical depth-first
 //! order, and borrows the underlying [`CoordSeq`] columns directly when the
 //! view is one contiguous run so per-axis access stays zero-copy.
 //!
-//! Later build-order increments grow this with run iteration for columnar Arrow
-//! export, alternate owners (`array.coords` over packed storage), and a tuple
-//! layout selector — each added alongside the consumer that needs it.
+//! Packed array owners retain their row selection and missing-value semantics.
 
 use std::ops::ControlFlow;
 use std::sync::Arc;
@@ -428,8 +425,8 @@ impl CoordinateView {
             });
         }
         Ok(match axis {
-            CoordinateAxis::X => CoordinateColumnRef::Dense(self.gather_x()?),
-            CoordinateAxis::Y => CoordinateColumnRef::Dense(self.gather_y()?),
+            CoordinateAxis::X => CoordinateColumnRef::Dense(self.gather_ordinate(|point| point.x)?),
+            CoordinateAxis::Y => CoordinateColumnRef::Dense(self.gather_ordinate(|point| point.y)?),
             CoordinateAxis::Z => self.gather_optional(Point::z)?,
             CoordinateAxis::M => self.gather_optional(Point::m)?,
         })
@@ -779,18 +776,13 @@ impl CoordinateView {
         }
     }
 
-    fn gather_x(&self) -> crate::error::Result<Vec<f64>> {
-        let mut out = Vec::new();
-        crate::boundary::try_reserve_vec(&mut out, self.len())?;
-        match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
-            &mut out, coord.x,
-        ) {
-            Ok(()) => ControlFlow::Continue(()),
-            Err(error) => ControlFlow::Break(error),
-        }) {
-            ControlFlow::Continue(()) => Ok(out),
-            ControlFlow::Break(error) => Err(error),
-        }
+    fn gather_ordinate(&self, project: impl Fn(Point) -> f64) -> crate::error::Result<Vec<f64>> {
+        let count = self.len();
+        std::alloc::Layout::array::<f64>(count)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let mut out = Vec::with_capacity(count);
+        self.for_each_point(|point| out.push(project(point)));
+        Ok(out)
     }
 }
 
@@ -1161,20 +1153,6 @@ fn visible_coordinate_bits(
 }
 
 impl CoordinateView {
-    fn gather_y(&self) -> crate::error::Result<Vec<f64>> {
-        let mut out = Vec::new();
-        crate::boundary::try_reserve_vec(&mut out, self.len())?;
-        match self.try_for_each_point(&mut |coord| match crate::boundary::try_push_vec(
-            &mut out, coord.y,
-        ) {
-            Ok(()) => ControlFlow::Continue(()),
-            Err(error) => ControlFlow::Break(error),
-        }) {
-            ControlFlow::Continue(()) => Ok(out),
-            ControlFlow::Break(error) => Err(error),
-        }
-    }
-
     fn gather_optional(
         &self,
         project: impl Fn(Point) -> Option<f64>,
@@ -1186,12 +1164,13 @@ impl CoordinateView {
         // (a NaN-only lane would collapse the two). Peak is the dense+mask
         // working set, not a 16 B Option lane overlapping a dense prefix.
         let capacity = self.len();
-        let mut values = Vec::new();
-        let mut present = Vec::new();
-        crate::boundary::try_reserve_pair(&mut values, &mut present, capacity)?;
+        std::alloc::Layout::array::<f64>(capacity)
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let mut values = Vec::with_capacity(capacity);
+        let mut present = Vec::with_capacity(capacity);
         let mut any = false;
         let mut all_present = true;
-        let result = self.try_for_each_point(&mut |coord| {
+        self.for_each_point(|coord| {
             let (value, is_present) = project(coord).map_or_else(
                 || {
                     all_present = false;
@@ -1202,25 +1181,22 @@ impl CoordinateView {
                     (value, true)
                 },
             );
-            match crate::boundary::try_push_pair(&mut values, &mut present, value, is_present) {
-                Ok(()) => ControlFlow::Continue(()),
-                Err(error) => ControlFlow::Break(error),
-            }
+            values.push(value);
+            present.push(is_present);
         });
-        if let ControlFlow::Break(error) = result {
-            return Err(error);
-        }
         if !any {
             return Ok(CoordinateColumnRef::Missing);
         }
         if all_present {
             return Ok(CoordinateColumnRef::Dense(values));
         }
-        let mut nullable = Vec::new();
-        crate::boundary::try_reserve_vec(&mut nullable, values.len())?;
-        for (value, is_present) in values.into_iter().zip(present) {
-            crate::boundary::try_push_vec(&mut nullable, is_present.then_some(value))?;
-        }
+        std::alloc::Layout::array::<Option<f64>>(values.len())
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        let nullable = values
+            .into_iter()
+            .zip(present)
+            .map(|(value, is_present)| is_present.then_some(value))
+            .collect();
         Ok(CoordinateColumnRef::Nullable(nullable))
     }
 }
