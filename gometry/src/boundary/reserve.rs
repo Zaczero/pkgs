@@ -112,37 +112,6 @@ pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
     Ok(())
 }
 
-/// Reserve two parallel output columns after checking both layouts.
-pub(crate) fn try_reserve_pair<T, U>(
-    left: &mut Vec<T>,
-    right: &mut Vec<U>,
-    additional: usize,
-) -> Result<()> {
-    check_vec_capacity::<T>(left.len(), additional)?;
-    check_vec_capacity::<U>(right.len(), additional)?;
-    left.reserve(additional);
-    right.reserve(additional);
-    Ok(())
-}
-
-/// Append one item to each parallel column after both resulting layouts fit.
-pub(crate) fn try_push_pair<T, U>(
-    left: &mut Vec<T>,
-    right: &mut Vec<U>,
-    left_value: T,
-    right_value: U,
-) -> Result<()> {
-    if left.len() == left.capacity() {
-        check_vec_capacity::<T>(left.len(), 1)?;
-    }
-    if right.len() == right.capacity() {
-        check_vec_capacity::<U>(right.len(), 1)?;
-    }
-    left.push(left_value);
-    right.push(right_value);
-    Ok(())
-}
-
 /// One generic CSR owner for ragged output. Every row end is monotonic and
 /// representable as `i64` before it is retained. Empty offsets mean the
 /// implicit initial zero; the finished zero-row representation is `[0]`.
@@ -214,10 +183,6 @@ impl<T> CsrBuilder<T> {
 
     pub(crate) const fn row_count(&self) -> usize {
         self.offsets.len().saturating_sub(1)
-    }
-
-    pub(crate) fn clear(&mut self) {
-        self.release();
     }
 
     pub(crate) const fn values_mut(&mut self) -> &mut Vec<T> {
@@ -787,16 +752,6 @@ mod tests {
     }
 
     #[test]
-    fn try_push_pair_keeps_parallel_columns_aligned() {
-        let mut left = Vec::new();
-        let mut right = Vec::new();
-        try_push_pair(&mut left, &mut right, 7_u8, 11_u16).expect("small pair must succeed");
-        try_push_pair(&mut left, &mut right, 13_u8, 17_u16).expect("small pair must succeed");
-        assert_eq!(left, [7, 13]);
-        assert_eq!(right, [11, 17]);
-    }
-
-    #[test]
     fn try_push_has_no_element_count_ceiling() {
         // Spot-check that ordinary growth has no advisory-hint ceiling.
         let mut v: Vec<u8> = Vec::new();
@@ -843,14 +798,6 @@ mod tests {
             assert!(values.is_empty());
             assert_eq!(offsets, [0]);
         }
-
-        let mut builder = CsrBuilder::<u8>::new();
-        builder.push_row([1]).expect("row");
-        builder.clear();
-        builder.push_row([2]).expect("reuse after clear");
-        let (values, offsets) = builder.finish();
-        assert_eq!(values, [2]);
-        assert_eq!(offsets, [0, 1]);
     }
 
     #[test]
