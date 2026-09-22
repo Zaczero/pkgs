@@ -157,7 +157,7 @@ fn record_payload_materialization() {
 }
 
 fn initial_offsets(rows: usize) -> Vec<i32> {
-    let mut offsets = Vec::with_capacity(rows + 1);
+    let mut offsets = Vec::with_capacity(rows.wrapping_add(1));
     offsets.push(0);
     offsets
 }
