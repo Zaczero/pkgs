@@ -986,11 +986,11 @@ impl PyGeometryArray {
             out.push_str(first);
             out.push(']');
         }
-        let _ = write!(out, " len={}", self.len());
+        write!(out, " len={}", self.len()).expect("writing a count to String");
         if let Some(mask) = self.missing() {
             let missing = mask.missing_count();
             if missing != 0 {
-                let _ = write!(out, " missing={missing}");
+                write!(out, " missing={missing}").expect("writing a count to String");
             }
         }
         if let Some(crs) = self.crs_str() {
@@ -998,7 +998,7 @@ impl PyGeometryArray {
             out.push_str(crs);
         }
         if let Some(epoch) = self.epoch() {
-            let _ = write!(out, " @{epoch}");
+            write!(out, " @{epoch}").expect("writing an epoch to String");
         }
         out.push('>');
         Ok(out)

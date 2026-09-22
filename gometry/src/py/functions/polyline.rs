@@ -199,7 +199,7 @@ fn python_str_repr(value: &str) -> PyResult<String> {
             0x20..=0x7E => out.push(char::from(byte)),
             _ => {
                 use std::fmt::Write as _;
-                let _ = write!(out, "\\x{byte:02x}");
+                write!(out, "\\x{byte:02x}").expect("writing hexadecimal to String");
             },
         }
     }

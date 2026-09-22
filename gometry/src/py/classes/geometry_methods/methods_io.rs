@@ -139,7 +139,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             out.push_str(crs);
         }
         if let Some(epoch) = self.epoch() {
-            let _ = write!(out, " @{epoch}");
+            write!(out, " @{epoch}").expect("writing an epoch to String");
         }
         out.push('>');
         Ok(out)
@@ -225,11 +225,12 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
                 }
                 let mut out = String::with_capacity(capacity);
                 for byte in wkb {
-                    let _ = if spec == "x" {
+                    if spec == "x" {
                         write!(out, "{byte:02x}")
                     } else {
                         write!(out, "{byte:02X}")
-                    };
+                    }
+                    .expect("writing hexadecimal to String");
                 }
                 return Ok(out);
             },

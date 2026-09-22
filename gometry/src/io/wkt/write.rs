@@ -91,12 +91,13 @@ impl WktNumberFormat {
                     // std omits the ".0" on integral values; zmij keeps it.
                     out.push_str(digits.strip_suffix(".0").unwrap_or(digits));
                 } else {
-                    let _ = write!(out, "{value}");
+                    write!(out, "{value}").expect("writing a number to String");
                 }
             },
             Self::Fixed(precision) | Self::Trimmed(precision) => {
                 let start = out.len();
-                let _ = write!(out, "{value:.*}", usize::from(precision));
+                write!(out, "{value:.*}", usize::from(precision))
+                    .expect("writing a number to String");
                 if matches!(self, Self::Trimmed(_))
                     && let Some(rendered) = out.get(start..)
                     && rendered.contains('.')
@@ -184,17 +185,18 @@ fn write_wkt(
     match shape {
         Shape::Point(point) => {
             let axes = wkt_output_axes(CoordinateAxes::from_point(*point), output_dimension);
-            let _ = write!(out, "POINT{} (", axes.wkt_tag());
+            write!(out, "POINT{} (", axes.wkt_tag()).expect("writing WKT to String");
             write_wkt_point(out, *point, axes, format);
             out.push(')');
             Ok(())
         },
         Shape::MultiPoint(points) => {
-            let _ = write!(
+            write!(
                 out,
                 "MULTIPOINT{} (",
                 wkt_output_axes(shape.axes(), output_dimension).wkt_tag()
-            );
+            )
+            .expect("writing WKT to String");
             for (index, member) in points.members().enumerate() {
                 if out.len() >= limit {
                     break;
@@ -222,14 +224,14 @@ fn write_wkt(
         },
         Shape::LineString(points) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
-            let _ = write!(out, "LINESTRING{} (", axes.wkt_tag());
+            write!(out, "LINESTRING{} (", axes.wkt_tag()).expect("writing WKT to String");
             write_wkt_ring(out, points, axes, format, limit);
             out.push(')');
             Ok(())
         },
         Shape::MultiLineString(lines) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
-            let _ = write!(out, "MULTILINESTRING{} (", axes.wkt_tag());
+            write!(out, "MULTILINESTRING{} (", axes.wkt_tag()).expect("writing WKT to String");
             for (index, member) in lines.members().enumerate() {
                 if out.len() >= limit {
                     break;
@@ -253,14 +255,14 @@ fn write_wkt(
         },
         Shape::Polygon(polygon) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
-            let _ = write!(out, "POLYGON{} (", axes.wkt_tag());
+            write!(out, "POLYGON{} (", axes.wkt_tag()).expect("writing WKT to String");
             write_wkt_polygon(out, polygon, axes, format, limit)?;
             out.push(')');
             Ok(())
         },
         Shape::MultiPolygon(polygons) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
-            let _ = write!(out, "MULTIPOLYGON{} (", axes.wkt_tag());
+            write!(out, "MULTIPOLYGON{} (", axes.wkt_tag()).expect("writing WKT to String");
             for (index, member) in polygons.members().enumerate() {
                 if out.len() >= limit {
                     break;

@@ -395,7 +395,7 @@ mod above_gate_parity_tests {
             if index != 0 {
                 wkt.push_str(", ");
             }
-            let _ = write!(wkt, "{x} {y}");
+            write!(wkt, "{x} {y}").expect("writing coordinates to String");
         }
         wkt.push_str(", 10 0))");
         wkt
