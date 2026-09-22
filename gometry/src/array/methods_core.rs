@@ -590,8 +590,9 @@ impl PyGeometryArray {
         if let Some(bounds) = self.total_bounds_cache.get() {
             return Ok(*bounds);
         }
+        // Bounds computation can reattach to Python; keep it outside the OnceLock initializer.
         let bounds = self.compute_total_bounds()?;
-        let _ = self.total_bounds_cache.set(bounds);
+        self.total_bounds_cache.get_or_init(|| bounds);
         Ok(bounds)
     }
     /// Per-geometry OGC type name (see `Geometry.geometry_type`), with

@@ -282,7 +282,7 @@ impl ShapeData {
     }
 
     fn seed_bounds(&self, bounds: Option<Bounds>) {
-        let _ = self.bounds.set(bounds);
+        self.bounds.get_or_init(|| bounds);
     }
 }
 

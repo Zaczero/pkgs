@@ -293,14 +293,9 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
     ) -> crate::error::Result<SegmentContact> {
         let first = self.to_geodesic_segment(first);
         let second = self.to_geodesic_segment(second);
-        if self.intersection.get().is_none() {
-            let solver = IntersectSolver::new(self.normalized())?;
-            let _ = self.intersection.set(solver);
-        }
         let solver = self
             .intersection
-            .get()
-            .expect("intersection solver is initialized");
+            .get_or_try_init(|| IntersectSolver::new(self.normalized()))?;
         let contact = geodesic_segment_contact(self.normalized(), solver, &first, &second)?;
         Ok(match contact {
             SegmentContact::Contact {
