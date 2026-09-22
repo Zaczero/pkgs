@@ -23,7 +23,7 @@ use crate::array::{
     missing, overlay_operator,
 };
 use crate::py::numpy::{false_bool_array, reject_masked_array};
-use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
+use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 
 pub(crate) enum FancyIndex {
     Empty,
@@ -374,7 +374,7 @@ impl RowGetItemContainer for PyGeometryArray {
                 .gather_logical_row_range(start as usize..stop.max(start) as usize)
                 .map_err(PyErr::from);
         }
-        self.gather_logical_rows(&collect_slice_rows(start, stop, step))
+        self.gather_logical_rows(&slice_row_indices(start, stop, step).collect::<Vec<_>>())
             .map_err(PyErr::from)
     }
 

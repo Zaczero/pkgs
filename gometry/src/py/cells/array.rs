@@ -37,7 +37,7 @@ use crate::py::numpy::{
     astype_readonly, bool_array, float64_array, int64_array, numpy_module, uint64_array,
     uint64_slice_array,
 };
-use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem};
+use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 use crate::py::vectors::Groups;
 
 /// An immutable array of one grid cell type backed by a shared ``uint64`` id
@@ -364,13 +364,7 @@ impl PyCellArray {
             )?;
             return Ok(self.with_selection(selection));
         }
-        let mut rows = Vec::new();
-        let mut i = start;
-        while (step > 0 && i < stop) || (step < 0 && i > stop) {
-            rows.push(i as usize);
-            i += step;
-        }
-        self.select_logical_rows(rows)
+        self.select_logical_rows(slice_row_indices(start, stop, step))
     }
 
     fn logical_contiguous_ids(&self) -> Option<&[u64]> {

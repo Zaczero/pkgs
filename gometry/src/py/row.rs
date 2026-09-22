@@ -123,14 +123,15 @@ pub(crate) fn rows_from_indices(
         .collect::<pyo3::PyResult<Vec<_>>>()
 }
 
-pub(crate) fn collect_slice_rows(start: isize, stop: isize, step: isize) -> Vec<usize> {
-    let mut rows = Vec::new();
-    let mut i = start;
-    while (step > 0 && i < stop) || (step < 0 && i > stop) {
-        rows.push(i as usize);
-        i += step;
-    }
-    rows
+pub(crate) fn slice_row_indices(
+    start: isize,
+    stop: isize,
+    step: isize,
+) -> impl Iterator<Item = usize> + Clone {
+    // A valid slice can overflow on the step after its last selected row.
+    std::iter::successors(Some(start), move |index| index.checked_add(step))
+        .take_while(move |&index| (step > 0 && index < stop) || (step < 0 && index > stop))
+        .map(|index| index as usize)
 }
 
 fn mask_rows<C: RowGetItemContainer>(

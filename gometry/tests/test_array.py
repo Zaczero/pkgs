@@ -494,6 +494,27 @@ def _indexing_receivers() -> list[tuple[object, object]]:
     ]
 
 
+@pytest.mark.parametrize(
+    'receiver', range(4), ids=['geometry', 'cells', 'edges', 'vertices']
+)
+@pytest.mark.parametrize(
+    'selector',
+    [
+        slice(1, None, sys.maxsize),
+        slice(2, None, sys.maxsize),
+        slice(None, None, sys.maxsize),
+        slice(None, None, -sys.maxsize - 1),
+        slice(1, None, 1 << 100),
+        slice(1, 1, sys.maxsize),
+    ],
+)
+def test_slice_with_extreme_step_matches_python(receiver: int, selector: slice) -> None:
+    array, identity = _indexing_receivers()[receiver]
+    for selected in (array, array[[2, 0, 1]], array[1:]):
+        expected = [identity(value) for value in list(selected)[selector]]
+        assert [identity(value) for value in selected[selector]] == expected
+
+
 def test_cell_array_slices_compose_logical_rows_with_physical_ids() -> None:
     source_cell = gm.H3Cell(13.4, 52.5, resolution=5)
     values = list(source_cell.grid_ring(1))[:5]
