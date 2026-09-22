@@ -607,9 +607,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     .map_err(|error| (index, error))?;
                 let row_cache = row_operation
                     .as_mut()
-                    .map(|operation| operation.frame_cache(index))
-                    .transpose()
-                    .map_err(|error| (index, error))?;
+                    .map(|operation| operation.frame_cache(index));
                 // An array-backed row already owns its frame products; only a
                 // row without them pays for a transient set, which has to
                 // outlive the branch that builds it.

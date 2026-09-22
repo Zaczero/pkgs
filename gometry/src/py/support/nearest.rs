@@ -46,7 +46,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
     model: crate::crs::MetricModel,
 ) -> PyResult<(PyGeometryArray, PyGeometryArray)> {
     let fixed_plan = fixed.plan_or_transient()?;
-    let fixed_cache = fixed.frame_cache()?;
+    let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
     if let crate::crs::MetricModel::Geodesic { crs, frame, state } = model {
         let rows = py.detach(move || {
@@ -74,7 +74,7 @@ pub(crate) fn fixed_geometry_array_nearest_points_admitted(
                             };
                             let row_index = row.logical();
                             let element = rows.prepared(row)?;
-                            let element_cache = rows.frame_cache(row_index)?;
+                            let element_cache = rows.frame_cache(row_index);
                             let common =
                                 crate::geometry::common_axes(fixed_plan.shape(), element.shape());
                             if fixed_is_left {
@@ -166,7 +166,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
         array.frame.clone()
     };
     let fixed_plan = fixed.plan_or_transient()?;
-    let fixed_cache = fixed.frame_cache()?;
+    let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
     let rows = py.detach(move || {
         let mut array_rows = array_owned.row_operation();
@@ -188,9 +188,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                     for row in array_rows.present_rows() {
                         let logical = row.logical();
                         let element = array_rows.prepared(row).map_err(|error| (logical, error))?;
-                        let element_cache = array_rows
-                            .frame_cache(logical)
-                            .map_err(|error| (logical, error))?;
+                        let element_cache = array_rows.frame_cache(logical);
                         let pair = if fixed_is_left {
                             fixed_plan
                                 .geodesic_nearest_points_cached_split(

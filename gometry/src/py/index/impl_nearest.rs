@@ -339,9 +339,7 @@ impl PySpatialIndex {
         metric: &crs::MetricModel,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
-        query_cache: &mut impl FnMut() -> crate::error::Result<
-            std::sync::Arc<crate::geometry::FrameDependentCaches>,
-        >,
+        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
         k: usize,
         max_distance: Option<NonNegative>,
         options: NearestOptions,
@@ -385,9 +383,7 @@ impl PySpatialIndex {
         metric: &crs::MetricModel,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
-        query_cache: &mut impl FnMut() -> crate::error::Result<
-            std::sync::Arc<crate::geometry::FrameDependentCaches>,
-        >,
+        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
         k: usize,
         max_distance: Option<NonNegative>,
         exclusive: bool,
@@ -400,7 +396,7 @@ impl PySpatialIndex {
         };
         let exclude = exclusive.then_some(query.shape());
         if let Some(pruner) = self.geodesic_pruner(metric, shape_pruner_point(query.shape())) {
-            let query_cache_owner = query_cache()?;
+            let query_cache_owner = query_cache();
             let mut rows = self.rows.operation();
             // Geodesic point query over an all-point index: prune with the
             // sound lower bound instead of Karney-evaluating every entry.
@@ -478,14 +474,12 @@ impl PySpatialIndex {
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
         visited: &mut NearestVisited,
-        query_cache: &mut impl FnMut() -> crate::error::Result<
-            std::sync::Arc<crate::geometry::FrameDependentCaches>,
-        >,
+        query_cache: &mut impl FnMut() -> std::sync::Arc<crate::geometry::FrameDependentCaches>,
         resolved: &crs::GeodesicMetric,
         query: &PreparedPlan,
     ) -> PyResult<Vec<NearestCandidate>> {
         visited.reset(self.rows.len())?;
-        let query_cache_owner = query_cache()?;
+        let query_cache_owner = query_cache();
         let mut rows = self.rows.operation();
         let mut exact = |idx| {
             if let Some(exclude) = exclude

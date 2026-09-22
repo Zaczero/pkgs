@@ -57,7 +57,7 @@ fn spatial_index_rows(
                 PyGeometryArray::missing_placeholder(),
                 placeholder_frame.clone(),
             ),
-            Some(item) => item.with_prepared_plan(item.plan_or_transient()?)?,
+            Some(item) => item.with_prepared_plan(item.plan_or_transient()?),
         })
     }))?;
     Ok(PySpatialIndex {

@@ -649,18 +649,15 @@ mod frame_cache_ownership_tests {
         let geometry =
             PyGeometry::with_frame(Shape::Point(Point::new_raw_xy(1.0, 2.0)), Frame::None);
         let clone = geometry.clone();
-        assert!(Arc::ptr_eq(
-            &geometry.frame_cache().unwrap(),
-            &clone.frame_cache().unwrap()
-        ));
+        assert!(Arc::ptr_eq(&geometry.frame_cache(), &clone.frame_cache()));
 
         let retagged = geometry.retag_frame(
             Frame::new(Some(crs_arc_static("EPSG:4326")), None).expect("valid static CRS"),
         );
         assert!(Arc::ptr_eq(&geometry.shape, &retagged.shape));
         assert!(Arc::ptr_eq(
-            &geometry.frame_cache().unwrap(),
-            &retagged.frame_cache().unwrap()
+            &geometry.frame_cache(),
+            &retagged.frame_cache()
         ));
         assert!(Arc::ptr_eq(
             &geometry.prepared_plan().unwrap(),
@@ -680,8 +677,8 @@ mod frame_cache_ownership_tests {
             &construction_retag.prepared_plan().unwrap()
         ));
         assert!(Arc::ptr_eq(
-            &geometry.frame_cache().unwrap(),
-            &construction_retag.frame_cache().unwrap()
+            &geometry.frame_cache(),
+            &construction_retag.frame_cache()
         ));
 
         let transformed = PyGeometry::with_frame(
@@ -690,8 +687,8 @@ mod frame_cache_ownership_tests {
         );
         assert!(!Arc::ptr_eq(&retagged.shape, &transformed.shape));
         assert!(!Arc::ptr_eq(
-            &retagged.frame_cache().unwrap(),
-            &transformed.frame_cache().unwrap()
+            &retagged.frame_cache(),
+            &transformed.frame_cache()
         ));
         assert!(!Arc::ptr_eq(
             &retagged.prepared_plan().unwrap(),
@@ -858,9 +855,7 @@ impl PyGeometry {
         }
     }
 
-    pub(crate) fn frame_cache(
-        &self,
-    ) -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>> {
+    pub(crate) fn frame_cache(&self) -> Arc<crate::geometry::FrameDependentCaches> {
         self.row_products.frame_cache(self.product_row)
     }
 
@@ -952,16 +947,16 @@ impl PyGeometry {
         Self::with_frame(shape, self.frame.clone())
     }
 
-    pub(crate) fn with_prepared_plan(&self, plan: Arc<PreparedPlan>) -> crate::error::Result<Self> {
+    pub(crate) fn with_prepared_plan(&self, plan: Arc<PreparedPlan>) -> Self {
         let plan = self
             .row_products
-            .install_prepared_plan(self.product_row, plan)?;
-        Ok(Self {
+            .install_prepared_plan(self.product_row, plan);
+        Self {
             shape: Arc::clone(plan.shape_arc()),
             row_products: self.row_products.clone(),
             product_row: self.product_row,
             frame: self.frame.clone(),
-        })
+        }
     }
 
     pub(crate) fn from_prepared_plan(plan: Arc<PreparedPlan>, frame: Frame) -> Self {

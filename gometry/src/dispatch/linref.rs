@@ -87,12 +87,12 @@ pub(crate) fn line_locate_input(
         (GeometryInput::One(line), GeometryInput::One(point)) => {
             let query = locate_query(point.shape.shape())?;
             let plan = line.plan_or_transient()?;
-            let located = locate.at(&plan, &*line.frame_cache()?, query, Lane::Scalar)?;
+            let located = locate.at(&plan, &*line.frame_cache(), query, Lane::Scalar)?;
             Ok(located.into_pyobject(py)?.unbind().into())
         },
         (GeometryInput::One(line), GeometryInput::Many(points)) => {
             let plan = line.plan_or_transient()?;
-            let cache = line.frame_cache()?;
+            let cache = line.frame_cache();
             let points = points.clone();
             detach_collect_f64(py, move || {
                 points
@@ -119,7 +119,7 @@ pub(crate) fn line_locate_input(
                         ArrayRow::Present(line) => {
                             let row = line.logical();
                             let line = rows.prepared(line)?;
-                            locate.at(&line, &*rows.frame_cache(row)?, query, Lane::Array(row))
+                            locate.at(&line, &*rows.frame_cache(row), query, Lane::Array(row))
                         },
                     })
                     .collect_rows()
@@ -162,7 +162,7 @@ pub(crate) fn line_locate_input(
                         let query = point.row().with_shape(locate_query)??;
                         let row = line.logical();
                         let line = rows.prepared(line)?;
-                        locate.at(&line, &*rows.frame_cache(row)?, query, Lane::Array(row))
+                        locate.at(&line, &*rows.frame_cache(row), query, Lane::Array(row))
                     })
                     .collect_rows()
             })
@@ -184,13 +184,8 @@ pub(crate) fn line_interpolate_points_scalar(
         .require_model(MetricOp::LineInterpolate)?
         .clone();
     let line = geometry.plan_or_transient()?;
-    let shapes = line_interpolate_points_shape(
-        &model,
-        &line,
-        &*geometry.frame_cache()?,
-        plan,
-        Lane::Scalar,
-    )?;
+    let shapes =
+        line_interpolate_points_shape(&model, &line, &*geometry.frame_cache(), plan, Lane::Scalar)?;
     Ok(PyGeometryArray::from_shapes(
         shapes,
         geometry.frame.clone(),

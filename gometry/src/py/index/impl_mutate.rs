@@ -43,11 +43,11 @@ impl PySpatialIndex {
                 .geometry_at(handle)
                 .map_err(crate::PyErr::from)?;
             let plan = self.rows.prepared_row(handle)?.into_owned_plan();
-            return Ok(crate::Typed(geometry.with_prepared_plan(plan)?));
+            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
         }
         let geometry = &self.rows.boxed[handle - packed_len];
         if let Some(plan) = geometry.cached_prepared_plan() {
-            return Ok(crate::Typed(geometry.with_prepared_plan(plan)?));
+            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
         }
         Ok(crate::Typed(crate::PyGeometry::with_frame(
             crate::ShapeData::new(geometry.shape.shape().clone()),
@@ -56,7 +56,7 @@ impl PySpatialIndex {
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
-        let geometry = geometry.with_prepared_plan(geometry.plan_or_transient()?)?;
+        let geometry = geometry.with_prepared_plan(geometry.plan_or_transient()?);
         // A non-empty index validates the frame WITHOUT mutating; an empty index
         // will adopt this geometry's frame, but only AFTER the geometry is proven
         // indexable below — so a failed empty insert never frame-locks a fresh
@@ -110,7 +110,7 @@ impl PySpatialIndex {
         let items = crate::try_collect_results(
             items
                 .into_iter()
-                .map(|item| Ok(item.with_prepared_plan(item.plan_or_transient()?)?)),
+                .map(|item| Ok(item.with_prepared_plan(item.plan_or_transient()?))),
         )?;
         let frame = index_metadata(&items)?;
         if let Some(frame) = &frame {
@@ -204,7 +204,7 @@ impl PySpatialIndex {
             entry_counts.push(cover.entries().len());
             let plan = array.prepared_row(offset, row)?.into_owned_plan();
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
-             items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
+            items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
         }
         self.insert_prepared_batch(
             items,

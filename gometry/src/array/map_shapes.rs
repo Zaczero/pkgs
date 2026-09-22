@@ -277,7 +277,7 @@ mod tests {
         let source = mixed_with_missing();
         // Warm source products so an aliasing implementation would be visible.
         let warmed0 = source.geometry_at(0).unwrap();
-        let before_cache = source.row_products.frame_cache(0).unwrap();
+        let before_cache = source.row_products.frame_cache(0);
         let result = source
             .map_shapes_shared(|shape| {
                 Ok((shape == &Shape::Point(Point::new_raw_xy(2.0, 0.0)))
@@ -295,7 +295,7 @@ mod tests {
         );
         assert!(!Arc::ptr_eq(
             &before_cache,
-            &result.row_products.frame_cache(0).unwrap()
+            &result.row_products.frame_cache(0)
         ));
         assert!(result.is_row_missing(1));
     }
@@ -303,7 +303,7 @@ mod tests {
     #[test]
     fn all_unchanged_map_starts_with_fresh_product_owner() {
         let source = mixed_with_missing();
-        let source_cache = source.row_products.frame_cache(0).unwrap();
+        let source_cache = source.row_products.frame_cache(0);
         let result = source
             .map_shapes_shared(|_| Ok(None))
             .expect("no-op shared map");
@@ -311,7 +311,7 @@ mod tests {
         assert_eq!(result.row_products.initialized_counts(), (0, 0, 0));
         assert!(!Arc::ptr_eq(
             &source_cache,
-            &result.row_products.frame_cache(0).unwrap()
+            &result.row_products.frame_cache(0)
         ));
     }
 
@@ -320,8 +320,8 @@ mod tests {
         let source = mixed_with_missing()
             .gather_logical_rows(&[2, 0, 2])
             .unwrap();
-        let source_unchanged = source.row_products.frame_cache(0).unwrap();
-        let source_changed = source.row_products.frame_cache(1).unwrap();
+        let source_unchanged = source.row_products.frame_cache(0);
+        let source_changed = source.row_products.frame_cache(1);
         let result = source
             .map_shapes_shared(|shape| {
                 Ok((shape == &Shape::Point(Point::new_raw_xy(0.0, 0.0)))
@@ -333,15 +333,15 @@ mod tests {
         assert_eq!(result.row_products.initialized_counts(), (0, 0, 0));
         assert!(!Arc::ptr_eq(
             &source_unchanged,
-            &result.row_products.frame_cache(0).unwrap()
+            &result.row_products.frame_cache(0)
         ));
         assert!(!Arc::ptr_eq(
             &source_unchanged,
-            &result.row_products.frame_cache(2).unwrap()
+            &result.row_products.frame_cache(2)
         ));
         assert!(!Arc::ptr_eq(
             &source_changed,
-            &result.row_products.frame_cache(1).unwrap()
+            &result.row_products.frame_cache(1)
         ));
     }
 

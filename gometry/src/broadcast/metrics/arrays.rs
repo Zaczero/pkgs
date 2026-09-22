@@ -424,7 +424,7 @@ pub(crate) fn array_crs_distances(
                     let crs = Arc::clone(crs);
                     let state = Arc::clone(state);
                     let right_shape = right.plan_or_transient()?;
-                    let right_cache = right.frame_cache()?;
+                    let right_cache = right.frame_cache();
                     move |points| {
                         let (xs, ys) = points
                             .geodesic_xy_lanes()
@@ -450,7 +450,7 @@ pub(crate) fn array_crs_distances(
             if let crs::MetricModel::Geodesic { crs, state, .. } = model {
                 let array = array.clone();
                 let right_shape = right.plan_or_transient()?;
-                let right_cache = right.frame_cache()?;
+                let right_cache = right.frame_cache();
                 let rows = py.detach(move || {
                     let mut rows = array.row_operation();
                     crs::with_resolved_ellipsoid_metric_at(
@@ -477,7 +477,7 @@ pub(crate) fn array_crs_distances(
                                     };
                                     let row_index = row.logical();
                                     let left = rows.prepared(row)?;
-                                    let left_cache = rows.frame_cache(row_index)?;
+                                    let left_cache = rows.frame_cache(row_index);
                                     crs::finite(
                                         left.geodesic_distance_cached(
                                             &left_cache,
@@ -601,9 +601,9 @@ pub(crate) fn array_crs_distances(
                                 pair_distance_geodesic(
                                     metric,
                                     left,
-                                    &*left_products.frame_cache(row)?,
+                                    &*left_products.frame_cache(row),
                                     right_data,
-                                    &*right_products.frame_cache(row)?,
+                                    &*right_products.frame_cache(row),
                                 )
                             },
                         )?,
@@ -748,9 +748,9 @@ pub(crate) fn array_crs_dwithin(
                                 pair_dwithin_geodesic(
                                     metric,
                                     left,
-                                    &*left_products.frame_cache(row)?,
+                                    &*left_products.frame_cache(row),
                                     right_data,
-                                    &*right_products.frame_cache(row)?,
+                                    &*right_products.frame_cache(row),
                                     distance,
                                 )
                             },
@@ -842,7 +842,7 @@ fn array_crs_dwithin_per_element_values(
             let model = resolve_metric(array.crs_str(), unit, operation)?;
             let resolved = crs::ResolvedMetric::from_model(&model)?;
             let right_plan = right.plan_or_transient()?;
-            let right_cache = right.frame_cache()?;
+            let right_cache = right.frame_cache();
             if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
                 ensure_geodesic_array_rows(array, metric.frame)?;
                 ensure_geodesic_shape(metric.frame, right_plan.shape())?;
@@ -891,7 +891,7 @@ fn array_crs_dwithin_per_element_values(
                             };
                             let row = left.logical();
                             let left = rows.prepared(left)?;
-                            let left_cache = rows.frame_cache(row)?;
+                            let left_cache = rows.frame_cache(row);
                             pair_dwithin_geodesic(
                                 metric,
                                 &left,
@@ -976,8 +976,8 @@ fn array_crs_dwithin_per_element_values(
                                 let right_row = right_row.row();
                                 let left = left_rows.prepared_at(row, left)?;
                                 let right_data = right_rows.prepared_at(row, right_row)?;
-                                let left_cache = left_rows.frame_cache(row)?;
-                                let right_cache = right_rows.frame_cache(row)?;
+                                let left_cache = left_rows.frame_cache(row);
+                                let right_cache = right_rows.frame_cache(row);
                                 pair_dwithin_geodesic(
                                     metric,
                                     &left,
@@ -1016,7 +1016,7 @@ pub(crate) fn array_crs_dwithin_scalar(
         let resolved = crs::ResolvedMetric::from_model(&model)?;
         let array_owned = array.clone();
         let other_shape = other.plan_or_transient()?;
-        let other_cache = other.frame_cache()?;
+        let other_cache = other.frame_cache();
         if let crs::ResolvedMetric::Geodesic(metric) = &resolved {
             ensure_geodesic_array_rows(array, metric.frame)?;
             ensure_geodesic_shape(metric.frame, other_shape.shape())?;
@@ -1046,7 +1046,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                         };
                         let row_index = row.logical();
                         let left = rows.prepared(row)?;
-                        let left_cache = rows.frame_cache(row_index)?;
+                        let left_cache = rows.frame_cache(row_index);
                         pair_dwithin_geodesic(
                             metric,
                             &left,
@@ -1138,7 +1138,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                     let crs = Arc::clone(&crs);
                     let state = Arc::clone(&state);
                     let other_shape = other.plan_or_transient()?;
-                    let other_cache = other.frame_cache()?;
+                    let other_cache = other.frame_cache();
                     move |points| {
                         let (xs, ys) = points
                             .geodesic_xy_lanes()
@@ -1161,7 +1161,7 @@ pub(crate) fn array_crs_dwithin_scalar(
             }
             let array_owned = array.clone();
             let other_shape = other.plan_or_transient()?;
-            let other_cache = other.frame_cache()?;
+            let other_cache = other.frame_cache();
             let row_count = array_owned.len();
             let rows = py.detach(move || {
                 crs::with_resolved_ellipsoid_metric_at(
@@ -1201,7 +1201,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                                 };
                                 let row_index = row.logical();
                                 let left = rows.prepared(row)?;
-                                let left_cache = rows.frame_cache(row_index)?;
+                                let left_cache = rows.frame_cache(row_index);
                                 left.geodesic_dwithin_cached(
                                     &left_cache,
                                     &other_shape,

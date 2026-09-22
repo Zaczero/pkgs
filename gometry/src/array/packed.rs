@@ -1683,7 +1683,7 @@ mod compact_nullable_tests {
             Frame::None,
         )
         .unwrap();
-        let source_line_cache = lines.row_products.frame_cache(0).unwrap();
+        let source_line_cache = lines.row_products.frame_cache(0);
         let lines = lines
             .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
             .unwrap();
@@ -1701,7 +1701,7 @@ mod compact_nullable_tests {
         ));
         assert!(Arc::ptr_eq(
             &source_line_cache,
-            &lines.row_products.frame_cache(0).unwrap(),
+            &lines.row_products.frame_cache(0),
         ));
 
         let polygons = PyGeometryArray::packed_polygons(
@@ -1722,7 +1722,7 @@ mod compact_nullable_tests {
             Frame::None,
         )
         .unwrap();
-        let source_polygon_cache = polygons.row_products.frame_cache(0).unwrap();
+        let source_polygon_cache = polygons.row_products.frame_cache(0);
         let polygons = polygons
             .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
             .unwrap();
@@ -1744,7 +1744,7 @@ mod compact_nullable_tests {
         ));
         assert!(Arc::ptr_eq(
             &source_polygon_cache,
-            &polygons.row_products.frame_cache(0).unwrap(),
+            &polygons.row_products.frame_cache(0),
         ));
     }
 
@@ -1799,13 +1799,13 @@ mod compact_nullable_tests {
             Frame::None,
         )
         .unwrap();
-        let source_cache = source.row_products.frame_cache(0).unwrap();
+        let source_cache = source.row_products.frame_cache(0);
         let computed = PyGeometryArray::from_shapes(
             vec![Shape::Point(Point::new_raw_xy(1.0, 2.0))],
             Frame::None,
         )
         .unwrap();
-        let computed_cache = computed.row_products.frame_cache(0).unwrap();
+        let computed_cache = computed.row_products.frame_cache(0);
         assert!(!Arc::ptr_eq(&source_cache, &computed_cache));
         assert!(
             !computed

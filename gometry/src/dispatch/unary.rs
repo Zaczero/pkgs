@@ -299,7 +299,7 @@ pub(crate) fn unary_scalar_linref_shape(
                     lane: Lane::Scalar,
                 },
                 model,
-                cache: &*geometry.frame_cache()?,
+                cache: &*geometry.frame_cache(),
             };
             let plan = geometry.plan_or_transient()?;
             py.detach(move || kernel(&plan, &row))
@@ -338,7 +338,7 @@ pub(crate) fn unary_array_linref_shapes(
                 let row_index = present.logical();
                 let shape = present.row();
                 let data = crate::array::PreparedRow::transient(shape)?;
-                let cache = rows.frame_cache(row_index)?;
+                let cache = rows.frame_cache(row_index);
                 let row = LinearReferenceRow {
                     op: CachelessRowContext {
                         frame: &frame,

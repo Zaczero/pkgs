@@ -546,8 +546,8 @@ where
                     let right_plan = right.plan_or_transient()?;
                     let row = GeodesicBinaryRow {
                         metric,
-                        left_cache: &*left.frame_cache()?,
-                        right_cache: &*right.frame_cache()?,
+                        left_cache: &*left.frame_cache(),
+                        right_cache: &*right.frame_cache(),
                     };
                     RawMetricBinary::Scalar(py.detach(|| geodesic(&left_plan, &right_plan, &row)))
                 },
@@ -584,7 +584,7 @@ where
                 | (One(fixed), Many(array), crate::crs::ResolvedMetric::Geodesic(metric)) => {
                     let scalar_left = matches!(left_input, One(_));
                     let fixed_plan = fixed.plan_or_transient()?;
-                    let fixed_cache = fixed.frame_cache()?;
+                    let fixed_cache = fixed.frame_cache();
                     let output_missing = array.missing().cloned();
                     let array = array.clone();
                     RawMetricBinary::Array(
@@ -600,7 +600,7 @@ where
                                     };
                                     let row_index = row.logical();
                                     let data = rows.prepared(row)?;
-                                    let row_cache = rows.frame_cache(row_index)?;
+                                    let row_cache = rows.frame_cache(row_index);
                                     let row = if scalar_left {
                                         GeodesicBinaryRow {
                                             metric,
@@ -666,8 +666,8 @@ where
                                         let row_index = a.logical();
                                         let a = left_rows.prepared(a)?;
                                         let b = right_rows.prepared(b)?;
-                                        let left_cache = left_rows.frame_cache(row_index)?;
-                                        let right_cache = right_rows.frame_cache(row_index)?;
+                                        let left_cache = left_rows.frame_cache(row_index);
+                                        let right_cache = right_rows.frame_cache(row_index);
                                         let row = GeodesicBinaryRow {
                                             metric,
                                             left_cache: &left_cache,

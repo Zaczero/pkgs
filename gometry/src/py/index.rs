@@ -543,9 +543,9 @@ impl<'a> IndexRowOperation<'a> {
             let _ = packed
                 .present_row_at(handle)?
                 .ok_or_else(|| Self::missing_handle(handle))?;
-            return packed.frame_cache(handle);
+            return Ok(packed.frame_cache(handle));
         }
-        self.rows.boxed[handle - packed_len].frame_cache()
+        Ok(self.rows.boxed[handle - packed_len].frame_cache())
     }
 }
 

@@ -209,7 +209,7 @@ fn interpolate_mixed_row_groups(
                         line_interpolate_points_shape(
                             model,
                             &line,
-                            &*rows.frame_cache(logical)?,
+                            &*rows.frame_cache(logical),
                             plan,
                             crate::dispatch::Lane::Array(logical),
                         )

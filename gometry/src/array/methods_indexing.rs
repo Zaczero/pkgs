@@ -1082,7 +1082,7 @@ mod replacement_tests {
                 )))))
             })
             .unwrap();
-        let source_frame = source.row_products.frame_cache(0).unwrap();
+        let source_frame = source.row_products.frame_cache(0);
         let source_unchanged_plan = source
             .row_products
             .prepared_plan(1, || {
@@ -1091,7 +1091,7 @@ mod replacement_tests {
                 )))))
             })
             .unwrap();
-        let source_unchanged_frame = source.row_products.frame_cache(1).unwrap();
+        let source_unchanged_frame = source.row_products.frame_cache(1);
         let source_owner = source.row_products.owner_weak();
         assert_eq!(source.row_products.owner_strong_count(), 1);
         Python::initialize();
@@ -1147,7 +1147,7 @@ mod replacement_tests {
             result_plan.shape(),
             &Shape::Point(Point::new_raw_xy(9.0, 9.0))
         );
-        result.row_products.frame_cache(0).unwrap();
+        result.row_products.frame_cache(0);
         let result_unchanged_plan = result
             .row_products
             .prepared_plan(1, || {
@@ -1156,7 +1156,7 @@ mod replacement_tests {
                 )))))
             })
             .unwrap();
-        result.row_products.frame_cache(1).unwrap();
+        result.row_products.frame_cache(1);
         assert_eq!(result.row_products.initialized_counts(), (1, 2, 2));
         assert_eq!(
             result_unchanged_plan.shape(),

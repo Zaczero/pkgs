@@ -131,7 +131,7 @@ pub(crate) fn dispatch_predicate(
         let geographic = match admission.domain {
             TopologyDomain::Cartesian => None,
             TopologyDomain::Geographic(frame) => {
-                Some((frame, left.frame_cache()?, right.frame_cache()?))
+                Some((frame, left.frame_cache(), right.frame_cache()))
             },
         };
         let value = py.detach(move || {

@@ -424,8 +424,7 @@ impl PySpatialIndex {
         &self,
         metric: &crs::GeodesicMetric,
         query: &PreparedPlan,
-        query_cache: &mut impl FnMut()
-            -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>>,
+        query_cache: &mut impl FnMut() -> Arc<crate::geometry::FrameDependentCaches>,
         k: usize,
         max_distance: Option<NonNegative>,
         exclude: Option<&Shape>,
@@ -434,7 +433,7 @@ impl PySpatialIndex {
         else {
             return Ok(None);
         };
-        let query_cache_owner = query_cache()?;
+        let query_cache_owner = query_cache();
         let Some((anchor, reach)) =
             crs::with_ellipsoid_metric_at(&metric.crs, &[], &metric.state, |ellipsoid| {
                 let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
@@ -754,8 +753,7 @@ impl PySpatialIndex {
         &self,
         row: ShapeRow<'_>,
         metric: &crs::GeodesicMetric,
-        query_cache: &mut impl FnMut()
-            -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>>,
+        query_cache: &mut impl FnMut() -> Arc<crate::geometry::FrameDependentCaches>,
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
@@ -776,7 +774,7 @@ impl PySpatialIndex {
             unreachable!("dwithin matcher is called only with a dwithin plan")
         };
         let query = crate::array::PreparedRow::transient_with_seed(row, seeded_bounds)?;
-        let query_cache = query_cache()?;
+        let query_cache = query_cache();
         let mut products = self.rows.operation();
         retain_row(matches, row_start, |idx| {
             let data = products.prepared(idx)?;
@@ -825,7 +823,7 @@ impl PySpatialIndex {
                 if end > row_start {
                     Some((
                         PreparedPlan::new(ShapeData::new(Shape::Point(point))),
-                        query_rows.frame_cache(row)?,
+                        query_rows.frame_cache(row),
                     ))
                 } else {
                     None
@@ -996,7 +994,7 @@ impl PySpatialIndex {
                 // `query OP item`: the query is the fixed left operand of the
                 // shared batch engine (prepared/cached exactly like the
                 // broadcast surfaces); candidate handles feed it directly.
-                let query_cache = geometry.frame_cache()?;
+                let query_cache = geometry.frame_cache();
                 let mut query_prepared = None;
                 retain_row(&mut matches, 0, |idx| match domain {
                     TopologyDomain::Cartesian => {
@@ -1059,7 +1057,7 @@ impl PySpatialIndex {
                             &data,
                             &*products.frame_cache(idx)?,
                             &query_plan,
-                            &*geometry.frame_cache()?,
+                            &*geometry.frame_cache(),
                             distance,
                         )
                         .map_err(Into::into)
@@ -1088,7 +1086,7 @@ impl PySpatialIndex {
         if let IndexPredicate::Topological(predicate) = predicate
             && distance.is_none()
         {
-            return self.topological_matches(&query_plan, &*geometry.frame_cache()?, predicate);
+            return self.topological_matches(&query_plan, &*geometry.frame_cache(), predicate);
         }
         let prepared = plan.row(
             self,
@@ -1233,7 +1231,7 @@ impl PySpatialIndex {
                     *distance,
                     metric,
                     |row, query, ids, row_start, products| {
-                        let query_cache = query_rows.frame_cache(row)?;
+                        let query_cache = query_rows.frame_cache(row);
                         retain_row(ids, row_start, |idx| {
                             let data = products.prepared(idx)?;
                             pair_dwithin_geodesic(
@@ -1331,7 +1329,7 @@ impl PySpatialIndex {
             let ids = builder.values_mut();
             match (&spec, model, predicate) {
                 (Some(spec), ..) => {
-                    let query_cache = query_rows.frame_cache(row)?;
+                    let query_cache = query_rows.frame_cache(row);
                     let mut query_prepared = None;
                     retain_row(ids, row_start, |idx| match domain {
                         TopologyDomain::Cartesian => {

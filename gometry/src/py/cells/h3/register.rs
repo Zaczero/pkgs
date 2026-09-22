@@ -80,7 +80,7 @@ pub(super) fn build_coverage(
             let annotated = h3_tile(
                 &cover_shape,
                 &authority,
-                &*geometry.frame_cache()?,
+                &*geometry.frame_cache(),
                 frame,
                 resolution,
                 max_cells,

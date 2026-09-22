@@ -534,8 +534,8 @@ pub(crate) fn nearest_points(
                             let row = left.logical();
                             let left = left_rows.prepared(left)?;
                             let right = right_rows.prepared(right)?;
-                            let left_cache = left_rows.frame_cache(row)?;
-                            let right_cache = right_rows.frame_cache(row)?;
+                            let left_cache = left_rows.frame_cache(row);
+                            let right_cache = right_rows.frame_cache(row);
                             let common = crate::geometry::common_axes(left.shape(), right.shape());
                             metric_nearest_points_resolved(
                                 &resolved,
