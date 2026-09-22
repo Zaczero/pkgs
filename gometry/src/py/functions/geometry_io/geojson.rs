@@ -509,7 +509,7 @@ fn decode_features_text(
             },
         }
         validate_text_side_data(&row)?;
-        crate::try_push_vec(&mut side_rows, (row.properties, row.id))?;
+        side_rows.push((row.properties, row.id));
     }
     let frame = Frame::new(crs, epoch)?;
     let geometries = shapes.finish(frame)?;
@@ -544,13 +544,12 @@ fn validate_text_side_data(row: &FeatureRow) -> crate::error::Result<()> {
 
 fn materialize_text_features(py: Python<'_>, output: TextFeatureOutput) -> PyResult<Py<PyAny>> {
     let geometries = output.geometries.into_pyobject(py)?.into_any();
-    let mut properties = Vec::new();
-    let mut ids = Vec::new();
-    crate::try_reserve_pair(&mut properties, &mut ids, output.side_rows.len())
-        .map_err(PyErr::from)?;
+    let mut properties = Vec::with_capacity(output.side_rows.len());
+    let mut ids = Vec::with_capacity(output.side_rows.len());
     for (property, id) in output.side_rows {
         let (property, id) = normalize_feature_side_data(py, property, id)?;
-        crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
+        properties.push(property);
+        ids.push(id);
     }
     finish_features(py, geometries, properties, ids)
 }
@@ -928,7 +927,8 @@ fn build_features(
         };
 
         let (property, id) = normalize_feature_side_data(py, row_properties, row_id)?;
-        crate::try_push_pair(&mut properties, &mut ids, property, id).map_err(PyErr::from)?;
+        properties.push(property);
+        ids.push(id);
     }
     let result = py.detach(move || -> crate::error::Result<PyGeometryArray> {
         let frame = Frame::new(crs, epoch)?;
@@ -1441,10 +1441,7 @@ impl RawJsonToPy<'_, '_> {
         }
         self.consume(b'}')?;
         let dict = PyDict::new(self.py);
-        let map = values;
-        let mut values = Vec::new();
-        crate::try_reserve_vec(&mut values, map.len())?;
-        values.extend(map);
+        let mut values: Vec<_> = values.into_iter().collect();
         values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         for (key, value) in values {
             dict.set_item(key, value)?;
@@ -1458,7 +1455,7 @@ impl RawJsonToPy<'_, '_> {
         let mut values = Vec::new();
         if self.current() != Some(b']') {
             loop {
-                crate::try_push(&mut values, self.parse_value(depth + 1)?)?;
+                values.push(self.parse_value(depth + 1)?);
                 self.skip_whitespace();
                 match self.current() {
                     Some(b',') => self.position += 1,
