@@ -147,11 +147,8 @@ fn admit_m_column(ms: Option<&MColumn>, xy_physical: usize, visible: usize) -> R
     }
 }
 
-fn try_rev_copy_slice(values: &[f64]) -> Result<Vec<f64>> {
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, values.len())?;
-    out.extend(values.iter().rev().copied());
-    Ok(out)
+fn reversed_column(values: &[f64]) -> Vec<f64> {
+    values.iter().rev().copied().collect()
 }
 
 /// Checked coordinate-row window into a [`CoordSeq`]'s physical columns.
@@ -366,9 +363,9 @@ impl CoordSeq {
 
     /// Gather a slice of `XY` (planar, Z/M-less) coordinates into columns.
     pub fn try_from_xy(points: &[XY]) -> Result<Self> {
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::boundary::try_reserve_pair(&mut xs, &mut ys, points.len())?;
+        ensure_coordseq_vertex_capacity(points.len())?;
+        let mut xs = Vec::with_capacity(points.len());
+        let mut ys = Vec::with_capacity(points.len());
         xs.extend(points.iter().map(|point| point.x));
         ys.extend(points.iter().map(|point| point.y));
         Self::try_from_vecs(xs, ys, None, None)
@@ -737,10 +734,10 @@ impl CoordSeq {
     /// Reverse the vertex order into newly frozen ordinate owners.
     pub fn reversed(&self) -> Result<Self> {
         Self::try_from_vecs(
-            try_rev_copy_slice(self.xs())?,
-            try_rev_copy_slice(self.ys())?,
-            self.zs().map(try_rev_copy_slice).transpose()?,
-            self.ms().map(try_rev_copy_slice).transpose()?,
+            reversed_column(self.xs()),
+            reversed_column(self.ys()),
+            self.zs().map(reversed_column),
+            self.ms().map(reversed_column),
         )
     }
 }
@@ -755,15 +752,15 @@ fn push_row(
     zs_src: Option<&[f64]>,
     ms_src: Option<&[f64]>,
     row: usize,
-) -> Result<()> {
-    crate::boundary::try_push_pair(&mut *xs, &mut *ys, xs_src[row], ys_src[row])?;
+) {
+    xs.push(xs_src[row]);
+    ys.push(ys_src[row]);
     if let (Some(out), Some(src)) = (zs.as_mut(), zs_src) {
-        crate::boundary::try_push_vec(out, src[row])?;
+        out.push(src[row]);
     }
     if let (Some(out), Some(src)) = (ms.as_mut(), ms_src) {
-        crate::boundary::try_push_vec(out, src[row])?;
+        out.push(src[row]);
     }
-    Ok(())
 }
 
 fn select_growable(
@@ -778,18 +775,18 @@ fn select_growable(
     let mut ys = Vec::new();
     let mut zs = zs_src.map(|_| Vec::new());
     let mut ms = ms_src.map(|_| Vec::new());
-    crate::boundary::try_reserve_vec(&mut xs, capacity)?;
-    crate::boundary::try_reserve_vec(&mut ys, capacity)?;
+    crate::boundary::reserve_hint(&mut xs, capacity);
+    crate::boundary::reserve_hint(&mut ys, capacity);
     if let Some(zs) = &mut zs {
-        crate::boundary::try_reserve_vec(zs, capacity)?;
+        crate::boundary::reserve_hint(zs, capacity);
     }
     if let Some(ms) = &mut ms {
-        crate::boundary::try_reserve_vec(ms, capacity)?;
+        crate::boundary::reserve_hint(ms, capacity);
     }
     for row in rows {
         push_row(
             &mut xs, &mut ys, &mut zs, &mut ms, xs_src, ys_src, zs_src, ms_src, row,
-        )?;
+        );
     }
     CoordSeq::try_from_vecs(xs, ys, zs, ms)
 }
@@ -1318,13 +1315,14 @@ mod select_soundness_tests {
     #[test]
     fn select_lying_under_yield_returns_true_length() {
         let seq = sample_seq();
-        // Claims 3, yields only [0, 2].
-        let out = seq
-            .select(LyingIter::under(vec![0, 2], 3))
-            .expect("selection");
-        assert_eq!(out.len(), 2);
-        assert_eq!(out.xs(), &[0.0, 2.0]);
-        assert_eq!(out.ys(), &[10.0, 12.0]);
+        for claimed in [3, usize::MAX] {
+            let out = seq
+                .select(LyingIter::under(vec![0, 2], claimed))
+                .expect("selection");
+            assert_eq!(out.len(), 2);
+            assert_eq!(out.xs(), &[0.0, 2.0]);
+            assert_eq!(out.ys(), &[10.0, 12.0]);
+        }
     }
 
     /// Over-yielding with a deflated `size_hint` must not write past the

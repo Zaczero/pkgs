@@ -32,11 +32,8 @@ impl CoordSeq {
     pub fn map_xy(&self, mut op: impl FnMut(f64, f64) -> (f64, f64)) -> Result<Self> {
         // Pre-sized output columns written by index (no push branch), so the
         // per-pair arithmetic vectorizes.
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::boundary::try_reserve_pair(&mut xs, &mut ys, self.len())?;
-        xs.resize(self.len(), 0.0);
-        ys.resize(self.len(), 0.0);
+        let mut xs = vec![0.0; self.len()];
+        let mut ys = vec![0.0; self.len()];
         for (((out_x, out_y), &x), &y) in xs
             .iter_mut()
             .zip(ys.iter_mut())
@@ -260,9 +257,8 @@ impl CoordSeq {
     where
         E: From<crate::error::Error>,
     {
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::boundary::try_reserve_pair(&mut xs, &mut ys, self.len()).map_err(E::from)?;
+        let mut xs = Vec::with_capacity(self.len());
+        let mut ys = Vec::with_capacity(self.len());
         for (&x, &y) in std::iter::zip(self.xs(), self.ys()) {
             let (x, y) = op(x, y)?;
             xs.push(x);
