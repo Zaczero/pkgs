@@ -27,7 +27,7 @@ use std::collections::BinaryHeap;
 
 use pyo3::exceptions::{PyMemoryError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyIterator, PySequence};
+use pyo3::types::{PyIterator, PySequence, PyString};
 
 use crate::error::{ResourceError, Result};
 
@@ -361,7 +361,7 @@ pub(crate) fn collect_sequence_items(sequence: &Bound<'_, PySequence>) -> PyResu
             let mut out = Vec::new();
             for (index, item) in iter.enumerate() {
                 check_python_signals(any.py(), index)?;
-                try_push(&mut out, item?.unbind())?;
+                out.push(item?.unbind());
             }
             return Ok(out);
         },
@@ -375,16 +375,14 @@ pub(crate) fn collect_sequence_items(sequence: &Bound<'_, PySequence>) -> PyResu
     // Legacy getitem-only sequences have no iterator attribute. Walk until
     // their protocol raises IndexError; the reported length remains advisory.
     let mut out = Vec::new();
-    let mut index = 0;
     loop {
-        check_python_signals(any.py(), index)?;
-        let item = match sequence.get_item(index) {
+        check_python_signals(any.py(), out.len())?;
+        let item = match sequence.get_item(out.len()) {
             Ok(item) => item,
             Err(error) if error.is_instance_of::<pyo3::exceptions::PyIndexError>(any.py()) => break,
             Err(error) => return Err(error),
         };
-        try_push(&mut out, item.unbind())?;
-        index = index.saturating_add(1);
+        out.push(item.unbind());
     }
     Ok(out)
 }
@@ -403,7 +401,7 @@ pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<crate:
                 check_python_signals(any.py(), index)?;
                 let item = item?;
                 let bytes = extract_bytes_payload(&item)?;
-                try_push(&mut out, bytes)?;
+                out.push(bytes);
             }
             return Ok(out);
         },
@@ -414,16 +412,14 @@ pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<crate:
                     .is_none() => {},
         Err(err) => return Err(err),
     }
-    let mut index = 0;
     loop {
-        check_python_signals(any.py(), index)?;
-        let item = match sequence.get_item(index) {
+        check_python_signals(any.py(), out.len())?;
+        let item = match sequence.get_item(out.len()) {
             Ok(item) => item,
             Err(error) if error.is_instance_of::<pyo3::exceptions::PyIndexError>(any.py()) => break,
             Err(error) => return Err(error),
         };
-        try_push(&mut out, extract_bytes_payload(&item)?)?;
-        index = index.saturating_add(1);
+        out.push(extract_bytes_payload(&item)?);
     }
     Ok(out)
 }
@@ -451,18 +447,19 @@ fn extract_bytes_payload(item: &Bound<'_, PyAny>) -> PyResult<crate::OwnedBytes>
 /// the result does not synchronize the source read.
 pub(crate) fn copy_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(bytes) = value.extract::<&[u8]>() {
-        let mut owned = try_vec_with_capacity(bytes.len())?;
-        owned.extend_from_slice(bytes);
-        return Ok(owned);
+        return Ok(bytes.to_vec());
     }
+    copy_exported_byte_buffer(value)
+}
+
+fn copy_exported_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
     if let Ok(buffer) = pyo3::buffer::PyBuffer::<u8>::get(value) {
         if buffer.item_size() != 1 {
             return Err(PyTypeError::new_err(
                 "expected a one-byte buffer (itemsize 1)",
             ));
         }
-        let mut owned = try_vec_with_capacity(buffer.item_count())?;
-        owned.resize(buffer.item_count(), 0);
+        let mut owned = vec![0; buffer.item_count()];
         buffer.copy_to_slice(value.py(), &mut owned)?;
         return Ok(owned);
     }
@@ -472,8 +469,7 @@ pub(crate) fn copy_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>
                 "expected a one-byte buffer (itemsize 1)",
             ));
         }
-        let mut signed = try_vec_with_capacity(buffer.item_count())?;
-        signed.resize(buffer.item_count(), 0);
+        let mut signed = vec![0; buffer.item_count()];
         buffer.copy_to_slice(value.py(), &mut signed)?;
         let (ptr, len, capacity) = signed.into_raw_parts();
         // SAFETY: i8 and u8 have the same layout and every byte is initialized.
@@ -496,11 +492,10 @@ pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyRes
     for (index, item) in iter.enumerate() {
         let item = item?;
         check_python_signals(values.py(), index)?;
-        let text: &str = item
-            .extract()
+        let text = item
+            .cast::<PyString>()
             .map_err(|_| PyTypeError::new_err(format!("{what} elements have the wrong type")))?;
-        let owned = text.to_owned();
-        try_push(&mut out, owned)?;
+        out.push(text.to_str()?.to_owned());
     }
     Ok(out)
 }
@@ -532,62 +527,7 @@ pub(crate) fn with_one_byte_buffer<R>(
     if let Ok(bytes) = value.extract::<&[u8]>() {
         return f(bytes);
     }
-    if let Ok(buffer) = pyo3::buffer::PyBuffer::<u8>::get(value) {
-        return with_u8_buffer_owned(&buffer, value.py(), f);
-    }
-    if let Ok(buffer) = pyo3::buffer::PyBuffer::<i8>::get(value) {
-        return with_i8_buffer_owned(&buffer, value.py(), f);
-    }
-    Err(PyTypeError::new_err(
-        "expected a one-byte buffer (bytes, bytearray, memoryview, or array.array)",
-    ))
-}
-
-/// Copy a `u8` `PyBuffer` into an exclusive `Vec<u8>`, then hand `&[u8]` to ``f``.
-///
-/// The slice always refers to the Rust-owned `Vec` — never to the Python
-/// exporter's memory — so later mutators of the original `bytearray` /
-/// writable `memoryview` cannot alias through this borrow. The copy itself is
-/// not atomic and does not synchronize a native writer; the producer must
-/// remain quiescent until it returns.
-fn with_u8_buffer_owned<R>(
-    buffer: &pyo3::buffer::PyBuffer<u8>,
-    py: Python<'_>,
-    f: impl FnOnce(&[u8]) -> PyResult<R>,
-) -> PyResult<R> {
-    if buffer.item_size() != 1 {
-        return Err(PyTypeError::new_err(
-            "expected a one-byte buffer (itemsize 1)",
-        ));
-    }
-    // Copy into exclusively owned Rust storage.
-    let mut owned = try_vec_with_capacity(buffer.item_count())?;
-    owned.resize(buffer.item_count(), 0);
-    buffer.copy_to_slice(py, &mut owned)?;
-    f(&owned)
-}
-
-/// Copy a signed one-byte `PyBuffer` into an exclusive `Vec<u8>`, then parse.
-fn with_i8_buffer_owned<R>(
-    buffer: &pyo3::buffer::PyBuffer<i8>,
-    py: Python<'_>,
-    f: impl FnOnce(&[u8]) -> PyResult<R>,
-) -> PyResult<R> {
-    if buffer.item_size() != 1 {
-        return Err(PyTypeError::new_err(
-            "expected a one-byte buffer (itemsize 1)",
-        ));
-    }
-    let mut signed = try_vec_with_capacity(buffer.item_count())?;
-    signed.resize(buffer.item_count(), 0);
-    buffer.copy_to_slice(py, &mut signed)?;
-    // Bit-preserving i8 → u8 on exclusive storage (no alias into Python
-    // memory). The types have identical layout, so this reuses the one
-    // allocated buffer instead of retaining two copies.
-    let (ptr, len, capacity) = signed.into_raw_parts();
-    // SAFETY: `i8` and `u8` are same-size, same-alignment byte types and every
-    // element is initialized by `copy_to_slice` above.
-    let owned = unsafe { Vec::from_raw_parts(ptr.cast(), len, capacity) };
+    let owned = copy_exported_byte_buffer(value)?;
     f(&owned)
 }
 
@@ -651,7 +591,7 @@ pub(crate) fn collect_py_iter<'py, T>(
 /// destructive second probe.
 pub(crate) fn collect_py_iter_from_iter<'py, T>(
     values: &Bound<'py, PyAny>,
-    mut iter: Bound<'py, PyIterator>,
+    iter: Bound<'py, PyIterator>,
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
 ) -> PyResult<Vec<T>> {
     let mut out = Vec::new();
@@ -659,31 +599,10 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
     if let Some(hint) = advisory_len(values)? {
         reserve_hint(&mut out, hint);
     }
-    let mut index = 0;
-    loop {
-        let item = match iter.next() {
-            None => break,
-            Some(Ok(item)) => item,
-            Some(Err(err)) => {
-                drop(out);
-                return Err(err);
-            },
-        };
-        check_python_signals(values.py(), index)?;
-        index = index.saturating_add(1);
-        // Reject an impossible element layout before mapping; valid-layout
-        // native growth follows Rust's process-fatal allocator contract.
-        if out.len() == out.capacity() {
-            check_vec_capacity::<T>(out.len(), 1).map_err(PyErr::from)?;
-            out.reserve(1);
-        }
-        match map(item) {
-            Ok(value) => out.push(value),
-            Err(err) => {
-                drop(out);
-                return Err(err);
-            },
-        }
+    for item in iter {
+        let item = item?;
+        check_python_signals(values.py(), out.len())?;
+        out.push(map(item)?);
     }
     Ok(out)
 }
@@ -715,27 +634,15 @@ pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<T>> {
-    let mut out = try_vec_with_capacity(expected)?;
+    std::alloc::Layout::array::<T>(expected)
+        .map_err(|_| crate::error::Error::from(ResourceError::SizeOverflow))?;
+    let mut out = Vec::with_capacity(expected);
     for index in 0..expected {
         check_python_signals(values.py(), index)?;
         let Some(item) = iter.next() else {
             break;
         };
-        let item = match item {
-            Ok(item) => item,
-            Err(err) => {
-                drop(out);
-                return Err(err);
-            },
-        };
-        let value = match map(item) {
-            Ok(value) => value,
-            Err(err) => {
-                drop(out);
-                return Err(err);
-            },
-        };
-        try_push(&mut out, value)?;
+        out.push(map(item?)?);
     }
     if out.len() != expected {
         let got = out.len();
@@ -771,21 +678,7 @@ pub(crate) fn collect_py_iter_at_most_from_iter<'py, T>(
         let Some(item) = iter.next() else {
             return Ok(out);
         };
-        let item = match item {
-            Ok(item) => item,
-            Err(err) => {
-                drop(out);
-                return Err(err);
-            },
-        };
-        let value = match map(item) {
-            Ok(value) => value,
-            Err(err) => {
-                drop(out);
-                return Err(err);
-            },
-        };
-        try_push(&mut out, value)?;
+        out.push(map(item?)?);
     }
     check_python_signals(values.py(), maximum)?;
     match iter.next() {
@@ -1085,5 +978,16 @@ mod tests {
             Ok(())
         })
         .expect("wrong item type test");
+    }
+
+    #[test]
+    fn string_collection_preserves_unicode_conversion_error() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| {
+            let values = py.eval(c"['valid', '\\ud800']", None, None).unwrap();
+            let error = collect_py_strings(&values, "code")
+                .expect_err("unpaired surrogate has no UTF-8 representation");
+            assert!(error.is_instance_of::<pyo3::exceptions::PyUnicodeEncodeError>(py));
+        });
     }
 }
