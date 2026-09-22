@@ -34,12 +34,17 @@ where
     pub(super) fn schedule(&mut self, key: K, at: Instant) {
         self.next_generation = self.next_generation.wrapping_add(1);
         if self.next_generation == 0 {
-            let mut generation = 0;
+            self.entries.sort_unstable_by_key(|entry| entry.generation);
+            let mut generation = 0_u32;
             for entry in &mut self.entries {
-                generation += 1;
+                generation = generation
+                    .checked_add(1)
+                    .expect("live deadlines fit generation space");
                 entry.generation = generation;
             }
-            self.next_generation = generation + 1;
+            self.next_generation = generation
+                .checked_add(1)
+                .expect("new deadline fits generation space");
         }
         let generation = self.next_generation;
         if let Some(entry) = self.entries.iter_mut().find(|entry| entry.key == key) {
@@ -144,5 +149,24 @@ mod tests {
 
         assert_eq!(deadlines.pop_expired(now), Some((2, now)));
         assert_eq!(deadlines.pop_expired(now), Some((1, now)));
+    }
+
+    #[test]
+    fn generation_wrap_preserves_ties_after_cancellation_and_rescheduling() {
+        let now = Instant::now();
+        let mut deadlines = DeadlineQueue::default();
+        for key in [10, 20, 30, 40] {
+            deadlines.schedule(key, now);
+        }
+        deadlines.cancel(10);
+        deadlines.schedule(20, now);
+        deadlines.set_next_generation(u32::MAX);
+        deadlines.schedule(50, now);
+
+        for key in [30, 40, 20, 50] {
+            assert_eq!(deadlines.next(), Some((key, now)));
+            assert_eq!(deadlines.pop_expired(now), Some((key, now)));
+        }
+        assert_eq!(deadlines.next(), None);
     }
 }
