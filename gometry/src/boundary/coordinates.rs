@@ -1220,9 +1220,9 @@ fn packed_polygon_point_at(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array::{RowSelection, ValidityMask};
+    use crate::array::RowSelection;
     use crate::geometry::{
-        CoordSeq, CsrOffsetColumn, LineSeq, Polygon, PolygonLevel, Ring, RingLevel, SharedSlice,
+        CsrOffsetColumn, LineSeq, Polygon, PolygonLevel, Ring, RingLevel, SharedSlice,
     };
     use crate::{Frame, PyGeometryArray};
 

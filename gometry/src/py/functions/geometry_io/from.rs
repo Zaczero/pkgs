@@ -1,7 +1,6 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::PyAny;
 
 use crate::py::functions::bulk_rows::{StreamedSridRow, batch_bulk_srid, stream_bulk_srid};
 use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};

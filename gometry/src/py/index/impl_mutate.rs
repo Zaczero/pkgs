@@ -324,7 +324,6 @@ mod tests {
     use rstar::AABB;
 
     use super::*;
-    use crate::boundary::Frame;
     use crate::geometry::{CoordSeq, LineSeq, Point, Shape, ShapeData};
     use crate::py::index::{DistanceUnit, NearestOptions, spatial_index};
 

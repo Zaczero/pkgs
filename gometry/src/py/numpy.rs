@@ -10,7 +10,7 @@ use pyo3::PyClass;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAny, PyModule, PyType};
+use pyo3::types::PyType;
 
 pub(crate) fn numpy_module(py: Python<'_>) -> PyResult<&Bound<'_, PyModule>> {
     static NUMPY: PyOnceLock<Py<PyModule>> = PyOnceLock::new();

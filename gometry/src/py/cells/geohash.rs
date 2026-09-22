@@ -2,7 +2,6 @@
 //! functions (`geohash_cover`/`geohash_cells`/`geohash_bounding_cell` + set algebra).
 
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
 
 mod cell;
 mod coverage;

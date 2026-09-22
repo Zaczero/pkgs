@@ -1,5 +1,4 @@
 use std::fmt;
-use std::mem::size_of;
 use std::num::NonZeroU32;
 
 use bitflags::bitflags;

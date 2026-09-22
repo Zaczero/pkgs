@@ -627,7 +627,6 @@ pub(crate) fn metric_hausdorff(
 #[cfg(test)]
 mod same_storage_metric_tests {
     use super::*;
-    use crate::geometry::Point;
 
     #[test]
     fn same_storage_hausdorff_returns_one_zero_per_row() {

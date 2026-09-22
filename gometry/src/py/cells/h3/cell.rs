@@ -7,8 +7,8 @@ use crate::py::cells::cell_ops::{
     cell_neighbors_array, cell_parent, cell_reduce, cell_richcmp,
 };
 use crate::py::cells::h3::{
-    CellIndex, LocalIJ, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3VertexArray, PyResult,
-    h3_cell_index, parse_h3_grid_k, parse_h3_resolution,
+    CellIndex, LocalIJ, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3VertexArray, h3_cell_index,
+    parse_h3_grid_k, parse_h3_resolution,
 };
 use crate::py::cells::{GridKind, PyCellArray, construct_h3_cell};
 use crate::py::errors::GeometryError;

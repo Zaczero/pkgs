@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
-use std::future::Future;
 use std::mem::replace;
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Arc;
@@ -950,7 +949,7 @@ fn missing_receive_state(
 
 #[cfg(test)]
 mod tests {
-    use std::future::{Future, pending};
+    use std::future::pending;
     use std::num::NonZeroU32;
     use std::pin::Pin;
     use std::sync::Arc;

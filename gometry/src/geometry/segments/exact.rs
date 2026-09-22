@@ -593,7 +593,6 @@ pub(in crate::geometry) fn ray_crossing_is_right(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::tessellation::exact::ExactDyadic;
 
     #[test]
     fn ray_filter_declines_wrong_nonzero_underflow_sign() {

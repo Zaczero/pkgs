@@ -1849,14 +1849,12 @@ fn owned_binary_view_row_is_valid(
     reason = "test shells are stack-owned; each CaptureLayout::new is live only for the assertion"
 )]
 mod layout_validation_tests {
-    use std::ptr;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use pyo3::ffi;
     use pyo3::prelude::Python;
 
     use super::*;
-    use crate::py::geoarrow::GeometryEncoding;
 
     // Global release counters are shared across the two capsule lifecycle
     // tests. Parallel nextest interleaves `before + N` assertions and flakes

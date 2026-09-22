@@ -93,7 +93,6 @@ impl HierarchicalCell for CellId {
 
 #[cfg(test)]
 mod tests {
-    use super::super::projection::MAX_LEVEL;
     use super::*;
     use crate::grid::cell_set::{CanonicalCellSet, intersects_any};
 

@@ -195,7 +195,6 @@ fn ring_classify_crossings_scalar(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::access::crossover::RAY_CROSSING;
     use crate::geometry::predicates::ring_contains_interior;
     use crate::geometry::{CoordSeq, REDUCE_SIMD_MIN};
 

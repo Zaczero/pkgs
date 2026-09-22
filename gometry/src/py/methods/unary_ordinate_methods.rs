@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::dispatch::kernels;
 use crate::{DefaultedF64Input, PyGeometry, PyGeometryArray};

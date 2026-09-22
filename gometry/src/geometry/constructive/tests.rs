@@ -1293,7 +1293,7 @@ mod winding_buffer_tests {
 #[cfg(test)]
 mod consecutive_dedup_tests {
     use super::*;
-    use crate::geometry::constructive::offset::{offset_line, offset_source};
+    use crate::geometry::constructive::offset::offset_source;
     use crate::geometry::constructive::strict_cycle;
     use crate::geometry::{CoordinateAxes, GeometryKind};
 
@@ -1472,7 +1472,6 @@ mod subdivide_columns_tests {
     use super::*;
     use crate::geographic::GeographicFrame;
     use crate::geometry::constructive::{densify_points_budgeted, segmentize_points_budgeted};
-    use crate::geometry::{ExpansionBudget, GeometryErrorKind};
 
     #[test]
     fn densify_xyzm_interpolates_every_ordinate_lane() {
@@ -1786,10 +1785,7 @@ mod subdivide_columns_tests {
 #[cfg(test)]
 mod expansion_budget_threading_tests {
     use super::*;
-    use crate::geometry::{
-        BufferCapStyle, BufferJoinStyle, ExpansionBudget, GENERATED_ITEM_LIMIT, SmoothMethod,
-    };
-    use crate::numeric::Positive;
+    use crate::geometry::{GENERATED_ITEM_LIMIT, SmoothMethod};
 
     fn exhausted(operation: &'static str, parameter: &'static str) -> ExpansionBudget {
         let mut budget = ExpansionBudget::new(operation, parameter);
@@ -1966,8 +1962,7 @@ mod expansion_budget_threading_tests {
 #[cfg(test)]
 mod winding_outcome_tests {
     use super::*;
-    use crate::geometry::ExpansionBudget;
-    use crate::geometry::constructive::{WalkJoinRule, convex_buffer_budgeted};
+    use crate::geometry::constructive::convex_buffer_budgeted;
 
     fn square() -> Polygon {
         Polygon::new(

@@ -1,7 +1,6 @@
 use super::*;
 use crate::error::ErrorKind;
 use crate::geometry::{LineSeq, constructive, overlay};
-use crate::{CoordSeq, Polygon, Ring};
 
 fn circle_points(center: Point, radius: f64) -> Vec<Point> {
     let mut points = Vec::with_capacity(64);

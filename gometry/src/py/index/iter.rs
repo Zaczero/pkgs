@@ -1,7 +1,5 @@
 //! Lazy handle iterator over a `SpatialIndex`, kept beside its pymethods.
 
-use std::mem::size_of_val;
-
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::{Py, PyRef, PyResult, Python, pyclass, pymethods};
 

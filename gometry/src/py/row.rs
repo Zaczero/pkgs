@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use pyo3::exceptions::{PyIndexError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PySequence, PySlice};
+use pyo3::types::{PySequence, PySlice};
 
 use crate::HeapSize;
 use crate::array::{

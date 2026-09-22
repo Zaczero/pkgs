@@ -1060,7 +1060,7 @@ mod replacement_tests {
     use super::*;
     use crate::PyGeometry;
     use crate::boundary::Frame;
-    use crate::geometry::{Point, Shape, ShapeData};
+    use crate::geometry::{Point, ShapeData};
 
     #[test]
     fn replacement_starts_with_fresh_products_and_releases_the_source_owner() {

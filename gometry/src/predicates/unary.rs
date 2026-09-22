@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::dispatch::{Operation, kernels};
 use crate::py::numpy::bool_array;

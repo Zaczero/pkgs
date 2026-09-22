@@ -1,5 +1,4 @@
 use std::hash::BuildHasher;
-use std::mem::{size_of, size_of_val};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use smol_str::SmolStr;

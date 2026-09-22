@@ -544,7 +544,7 @@ fn utm_zone(lon: f64, lat: f64) -> UtmZone {
 #[cfg(test)]
 mod metadata_tests {
     use super::*;
-    use crate::error::{Error, ErrorKind, ResourceError};
+    use crate::error::{ErrorKind, ResourceError};
 
     fn epsg_param(code: &str, value: f64, factor: f64) -> OperationParameterInfo {
         OperationParameterInfo {

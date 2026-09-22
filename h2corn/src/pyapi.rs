@@ -5,7 +5,6 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use bytes::Bytes;
-use pyo3::conversion::FromPyObjectOwned;
 use pyo3::exceptions::{PyOSError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
@@ -1000,13 +999,12 @@ pub(crate) fn serve_fds<'py>(
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
-    use std::time::Duration;
 
-    use pyo3::types::{PyAny, PyDict, PyModule, PyTuple};
+    use pyo3::types::PyTuple;
 
     use super::*;
     use crate::config::LogFormat;
-    use crate::proxy_protocol::{Cidr, TrustedPeer};
+    use crate::proxy_protocol::Cidr;
 
     fn config_stub(py: Python<'_>) -> Bound<'_, PyAny> {
         let builtins = PyModule::import(py, "builtins").expect("builtins imports");

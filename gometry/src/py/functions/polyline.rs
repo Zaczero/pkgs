@@ -9,7 +9,6 @@
 //! first, while gometry is always `(x, y)` = `(lon, lat)`.
 
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::boundary::geographic::{MAX_LATITUDE, MAX_LONGITUDE, MIN_LATITUDE, MIN_LONGITUDE};
 use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordinateAxes, GeometryKind, LineSeq, Point};

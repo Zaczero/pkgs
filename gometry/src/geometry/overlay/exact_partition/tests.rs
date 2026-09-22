@@ -595,7 +595,6 @@ fn occupied_area_owner_rounds_exact_selected_faces() {
     }
 }
 
-use super::super::noding::dedup_undirected_segments_sourced;
 use crate::geometry::generated_budget::PAIRWISE_WORK_LIMIT;
 
 /// One shared operand must select exactly the cells separate operands do.

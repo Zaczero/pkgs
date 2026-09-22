@@ -263,7 +263,6 @@ impl GeodesicPruner {
 #[cfg(test)]
 mod tests {
     use geographiclib_rs::{Geodesic, InverseGeodesic as _};
-    use rstar::AABB;
 
     use super::*;
 

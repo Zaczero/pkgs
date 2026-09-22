@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::{
     Frame, PyGeometry, PyGeometryArray, broadcast2_geometry, exact_geometry, exact_geometry_array,

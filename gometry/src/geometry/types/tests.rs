@@ -529,7 +529,6 @@ mod coordseq_xy_transform_carry_tests {
 
 #[cfg(test)]
 mod coordseq_m_storage_tests {
-    use std::sync::Arc;
 
     use super::*;
 
@@ -656,7 +655,6 @@ mod coordseq_m_storage_tests {
 #[cfg(test)]
 mod point_gather_tests {
     use super::*;
-    use crate::geometry::{LineSeq, Shape};
 
     fn repeated_xy_line() -> Shape {
         Shape::LineString(

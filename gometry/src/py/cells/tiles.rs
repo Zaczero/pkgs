@@ -1,7 +1,6 @@
 //! XYZ tiles: the Tile class and the top-level `tile_*` functions.
 
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
 
 mod cell;
 mod coverage;

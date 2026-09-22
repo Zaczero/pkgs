@@ -843,10 +843,8 @@ impl ExactSizeIterator for RowsIter<'_> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use super::*;
-    use crate::geometry::{CoordSeq, Point, Shape};
 
     /// Exhaust `ShapesIter` and assert every remaining `size_hint` equals the
     /// actual remaining yield count (TrustedLen contract).

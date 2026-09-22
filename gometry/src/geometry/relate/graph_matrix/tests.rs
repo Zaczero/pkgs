@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring};
+use crate::geometry::{LineSeq, Point};
 
 fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
     Polygon::new(

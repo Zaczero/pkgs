@@ -1,4 +1,3 @@
-use std::mem::size_of;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::num::NonZeroU16;
 use std::str;
@@ -587,9 +586,8 @@ mod tests {
     use tokio::io::{AsyncWriteExt as _, duplex};
 
     use super::*;
-    use crate::config::{ForwardedFields, ProxyConfig};
+    use crate::config::ForwardedFields;
     use crate::error::ErrorKind;
-    use crate::h2_frame::BufferedConnectionReader;
 
     #[test]
     fn trusted_peer_cidr_matches_ipv4_and_ipv6() {

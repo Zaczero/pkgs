@@ -8,8 +8,7 @@
 use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyFloat, PyInt};
-use pyo3::{Borrowed, FromPyObject};
+use pyo3::types::{PyFloat, PyInt};
 
 use crate::boundary::buffer_endian;
 use crate::boundary::buffer_endian::{buffer_to_column_f64, buffer_to_vec_f64};

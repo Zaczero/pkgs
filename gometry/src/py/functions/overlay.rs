@@ -6,7 +6,6 @@
 //! via `pub use overlay::*`.
 
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 pub(crate) use crate::geometry::OverlayOp;
 use crate::{

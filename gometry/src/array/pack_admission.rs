@@ -157,7 +157,6 @@ pub(crate) fn polygon_pack_axes(polygon: &Polygon) -> Option<CoordinateAxes> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordSeq, CoordinateAxes};
 
     fn seq(rows: &[[f64; 4]], axes: CoordinateAxes) -> CoordSeq {
         CoordSeq::try_from_vecs(

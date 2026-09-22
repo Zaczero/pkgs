@@ -6,7 +6,7 @@ mod websocket;
 mod writer;
 
 use std::collections::HashMap;
-use std::future::{Future, pending};
+use std::future::pending;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -2017,10 +2017,9 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    use tokio::io::{AsyncWrite, BufWriter};
+    use tokio::io::BufWriter;
 
     use super::*;
-    use crate::h2_frame::FrameHeader;
 
     const INITIAL_STREAM_WINDOW_SIZE: u32 = 8 << 20;
     const STREAM_WINDOW_UPDATE_THRESHOLD: u32 = INPUT_WINDOW_UPDATE_THRESHOLD;

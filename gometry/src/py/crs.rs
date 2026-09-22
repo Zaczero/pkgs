@@ -5,7 +5,7 @@
 
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyModule, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyDict, PyList, PyTuple};
 use serde_json::Value;
 
 use crate::py::errors::{CRSError, GeometryError};

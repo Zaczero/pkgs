@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::dispatch::{MetricOp, kernels};
 use crate::{DistanceUnit, PyGeometry, PyGeometryArray, finite_f64_required};

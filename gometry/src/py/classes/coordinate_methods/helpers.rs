@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyTuple};
+use pyo3::types::PyTuple;
 
 use crate::broadcast::{GeometryInput, classify_required};
 use crate::py::classes::coordinate_methods::{

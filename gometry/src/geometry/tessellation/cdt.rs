@@ -1223,7 +1223,6 @@ mod tests {
 #[cfg(test)]
 mod regressions {
     use super::*;
-    use crate::geometry::Point;
 
     fn pts(xy: &[(f64, f64)]) -> Vec<Point> {
         xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()

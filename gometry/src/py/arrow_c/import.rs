@@ -8,7 +8,7 @@ use std::ptr;
 use libc::ENOMEM;
 use pyo3::exceptions::{PyOSError, PyTypeError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyCapsule, PyString, PyTuple};
+use pyo3::types::{PyCapsule, PyString, PyTuple};
 
 use crate::py::arrow::NativeArrowAccumulator;
 use crate::py::arrow_c::{

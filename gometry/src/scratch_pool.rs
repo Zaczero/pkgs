@@ -1,6 +1,5 @@
 use std::cell::Cell;
 use std::collections::HashMap;
-use std::mem::size_of;
 use std::ops::{Deref, DerefMut};
 use std::thread::LocalKey;
 

@@ -1,15 +1,12 @@
-use std::ffi::{CStr, c_char, c_int};
 use std::ptr;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 
 use libc::{EINVAL, ENOMEM};
 use pyo3::exceptions::PyKeyboardInterrupt;
-use pyo3::ffi;
-use pyo3::types::{PyList, PyModule};
+use pyo3::types::PyList;
 
-use crate::PyGeometry;
-use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
+use crate::geometry::{LineSeq, Point, Polygon, Ring, Shape};
 use crate::py::arrow::ArrowEncoding;
 use crate::py::arrow_c::capsule_lifecycle::stream_from_export;
 use crate::py::arrow_c::*;

@@ -1,4 +1,3 @@
-use pyo3::PyErr;
 use pyo3::exceptions::{PyKeyError, PyValueError};
 use pyo3::prelude::*;
 use thiserror::Error;

@@ -5,7 +5,6 @@
 //! `geometry` validation kernels via `use super::*`.
 
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};

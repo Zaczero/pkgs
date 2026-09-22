@@ -6,7 +6,7 @@
 //! super::*`.
 
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::PyDict;
 use serde_json::Value;
 
 use crate::py::errors::{GeometryError, parse_error};

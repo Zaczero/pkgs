@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::PyDict;
 #[cfg(test)]
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::error::TryRecvError;

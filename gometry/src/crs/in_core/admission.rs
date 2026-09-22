@@ -372,7 +372,7 @@ fn literal_utm_zone(value: &str) -> Option<UtmZone> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::crs::{TransformOptions, runtime_state_snapshot};
+    use crate::crs::runtime_state_snapshot;
 
     #[test]
     fn admits_etrs89_utm_pair() {

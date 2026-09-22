@@ -344,7 +344,6 @@ mod ownership_tests {
 
     use super::*;
     use crate::HeapSize;
-    use crate::boundary::Frame;
     use crate::geometry::{Bounds, CoordSeq, CsrOffsetColumn, Point, PolygonLevel, RingLevel};
 
     fn points() -> PyGeometryArray {

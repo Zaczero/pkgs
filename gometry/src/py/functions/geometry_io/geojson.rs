@@ -4,7 +4,7 @@ use std::fmt;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedStr;
-use pyo3::types::{PyAny, PyBool, PyDict, PyFloat, PyInt, PyList, PyModule, PyString};
+use pyo3::types::{PyBool, PyDict, PyFloat, PyInt, PyList, PyString};
 use serde::de::{self, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
@@ -1637,7 +1637,6 @@ fn feature_value_array(
 #[cfg(test)]
 mod tests {
     use pyo3::exceptions::{PyKeyboardInterrupt, PyRuntimeError};
-    use pyo3::types::PyDict;
 
     use super::*;
 

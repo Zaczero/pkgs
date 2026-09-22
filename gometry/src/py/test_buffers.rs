@@ -29,8 +29,8 @@ use std::ffi::{c_int, c_void};
 use std::ptr;
 
 use pyo3::exceptions::{PyBufferError, PyValueError};
+use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::{Bound, ffi};
 
 /// Owned 1-D or 2-D `f64` buffer that exports a genuine indirect view.
 ///

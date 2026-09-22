@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::mem;
 use std::mem::take;
 use std::num::NonZeroUsize;

@@ -389,7 +389,6 @@ pub(super) fn admit(
 
 #[cfg(test)]
 mod tests {
-    use super::super::params::ProjectionFrame;
     use super::*;
 
     fn projected_fixture(lon_0: f64, lat_0: f64, k0: f64, x_0: f64, y_0: f64) -> Projected<Tmerc> {

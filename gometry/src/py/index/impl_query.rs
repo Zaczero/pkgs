@@ -1460,7 +1460,7 @@ mod tests {
     use super::*;
     use crate::array::BoundsSeed;
     use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel};
-    use crate::py::index::{Frame, spatial_index};
+    use crate::py::index::spatial_index;
 
     #[test]
     fn refinement_kind_gate_precedes_geographic_admission() {

@@ -251,7 +251,6 @@ fn encode_int(value: usize, prefix: u8, mask: u8, dst: &mut BytesMut) {
 
 #[cfg(test)]
 mod tests {
-    use bytes::BytesMut;
 
     use super::*;
 

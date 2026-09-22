@@ -379,7 +379,6 @@ impl ShardHandle {
         py: Python<'py>,
         awaitable: Py<PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        use pyo3::types::PyDict;
         let kwargs = PyDict::new(py);
         kwargs.set_item(pyo3::intern!(py, "loop"), self.event_loop.bind(py))?;
         self.ensure_future

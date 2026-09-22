@@ -9,7 +9,7 @@ use bytes::Bytes;
 use pyo3::exceptions::{PyRuntimeError, PyStopIteration};
 use pyo3::prelude::*;
 use pyo3::pybacked::{PyBackedBytes, PyBackedStr};
-use pyo3::types::{PyBool, PyBoolMethods, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
+use pyo3::types::{PyBool, PyByteArray, PyBytes, PyDict, PyInt, PyList, PyString};
 use pyo3::{PyTypeCheck, PyTypeInfo};
 use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 /// Everything only `http.response.zerocopysend` needs, which exists only on

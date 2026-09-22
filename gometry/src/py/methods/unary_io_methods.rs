@@ -1,5 +1,5 @@
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes};
+use pyo3::types::PyBytes;
 
 use crate::py::errors::require_epoch_drop;
 use crate::{PyGeometry, PyGeometryArray, PyValidationReport, RepairMethod};

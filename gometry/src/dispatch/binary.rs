@@ -5,7 +5,6 @@
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::array::{ArrayRow, ArrayRowOperation, ShapeRow, ValidityMask, missing};
 use crate::boundary::metadata::Frame;
@@ -1115,13 +1114,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::boundary::metadata::Frame;
     use crate::crs::RUNTIME_STATE_TEST_LOCK;
     use crate::dispatch::{MetricResolver, kernels};
-    use crate::geometry::{Point, Shape};
+    use crate::geometry::Point;
     use crate::py::errors::CRSError;
     use crate::py::numpy::bool_array;
-    use crate::test_support::binary_dispatch_counters;
     use crate::test_support::binary_dispatch_counters::Snapshot;
 
     struct RejectingFastPath;

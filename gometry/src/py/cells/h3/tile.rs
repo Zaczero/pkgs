@@ -464,7 +464,6 @@ pub(super) fn h3_cell_shape(cell: CellIndex) -> crate::error::Result<Shape> {
 #[cfg(test)]
 mod edge_trace_tests {
     use super::*;
-    use crate::geometry::CoordSeq;
     use crate::py::cells::coverage_ops::GridCoverError;
 
     #[test]

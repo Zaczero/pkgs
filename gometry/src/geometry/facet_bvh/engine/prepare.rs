@@ -468,9 +468,9 @@ impl HeapSize for PreparedLinework {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
+    use crate::error::ErrorKind;
     use crate::geometry::{
-        CoordinateAxes, LineSeq, MOrdinate, MultiLineString, MultiMember, Point, Shape, ZOrdinate,
+        CoordinateAxes, LineSeq, MOrdinate, MultiLineString, MultiMember, ZOrdinate,
     };
 
     fn line_xy(points: &[(f64, f64)]) -> LineSeq {

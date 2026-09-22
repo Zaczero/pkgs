@@ -173,7 +173,7 @@ use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::{PyAny, PyBool, PyDict, PyDictMethods, PyInt, PyList, PyModule, PyTuple};
+use pyo3::types::{PyAny, PyBool, PyDict, PyDictMethods, PyInt, PyList, PyTuple};
 pub(crate) use render::{
     geometry_array_svg_grid_html_masked, html_text_escape, render_shape_html, render_shape_svg,
 };
@@ -293,8 +293,6 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod above_gate_parity_tests {
     use std::fmt::Write as _;
-
-    use pyo3::types::{PyList, PyModule};
 
     use super::*;
 

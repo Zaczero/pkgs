@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use geodesic::{GeodesicPruner, GeodesicRowCaps};
 use pyo3::prelude::*;
-use pyo3::types::PyModule;
 use rstar::AABB;
 use str_tree::{StaticStrForest, StaticStrTree};
 

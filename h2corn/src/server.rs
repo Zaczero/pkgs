@@ -25,7 +25,7 @@ mod tests {
 }
 
 use std::collections::HashSet;
-use std::future::{Future, pending, poll_fn};
+use std::future::{pending, poll_fn};
 use std::io;
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::num::NonZeroU16;

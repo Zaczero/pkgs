@@ -2,7 +2,6 @@ mod http;
 mod parse;
 mod websocket;
 
-use std::future::Future;
 use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 use std::task::Poll;

@@ -5,9 +5,9 @@
 //! the crate root so every module reaches them through `use super::*`.
 use numpy::PyUntypedArray;
 use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError};
+use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
-use pyo3::{FromPyObject, ffi};
+use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyString};
 
 use crate::boundary::FloatInput;
 use crate::py::errors;

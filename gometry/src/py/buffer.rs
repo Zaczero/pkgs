@@ -2,8 +2,8 @@ use std::ffi::{CStr, c_int, c_void};
 use std::ptr;
 
 use pyo3::exceptions::PyBufferError;
+use pyo3::ffi;
 use pyo3::prelude::*;
-use pyo3::{Bound, ffi};
 
 struct TypedBufferBacking {
     dims: [isize; 2],

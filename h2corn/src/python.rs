@@ -152,10 +152,10 @@ use std::any::Any;
 use std::mem::MaybeUninit;
 use std::slice::from_raw_parts;
 
+use pyo3::IntoPyObjectExt as _;
 use pyo3::prelude::*;
 pub(crate) use pyo3::sync::PyOnceLock;
 pub(crate) use pyo3::types::{PyAny, PyBytes, PyDict, PyString};
-use pyo3::{IntoPyObject, IntoPyObjectExt as _};
 pub(crate) use pyo3::{Py, PyResult};
 
 // Re-export crate-root macros at the module path used by their recursive expansions.

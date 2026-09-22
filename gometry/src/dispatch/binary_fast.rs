@@ -1,5 +1,4 @@
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::broadcast::{
     GeometryInput, SimilarityOp, array_crs_distances, array_crs_dwithin, classify_required,

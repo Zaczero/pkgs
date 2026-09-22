@@ -801,7 +801,7 @@ fn pattern_bounds_gate(
     left: &GateOperand<'_>,
     right: &GateOperand<'_>,
 ) -> crate::error::Result<Option<bool>> {
-    use crate::geometry::{De9imInterval, Dimension, Loc, OperandShape, dimension};
+    use crate::geometry::{De9imInterval, Dimension, OperandShape, dimension};
     if !left.bounds_sound || !right.bounds_sound {
         return Ok(None);
     }
@@ -991,7 +991,7 @@ mod tests {
 
     use super::*;
     use crate::boundary::Frame;
-    use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, PreparedPlan, Ring, Shape};
+    use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
 
     fn degrees() -> crate::geographic::GeographicFrame {
         crate::crs::info("EPSG:4326")

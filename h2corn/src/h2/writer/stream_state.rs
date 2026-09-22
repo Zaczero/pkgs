@@ -433,7 +433,6 @@ pub(super) fn notify_response_abort(response_closes: &mut ResponseCloseBatch, st
 mod tests {
 
     use std::collections::VecDeque;
-    use std::mem::size_of;
 
     use super::{ReadyStreamQueue, StreamWriteState};
     use crate::h2::new_stream_map;

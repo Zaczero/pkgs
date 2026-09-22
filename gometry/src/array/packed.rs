@@ -1970,11 +1970,9 @@ mod compact_nullable_tests {
 
 #[cfg(test)]
 mod element_bounds_cache_tests {
-    use std::sync::Arc;
 
     use super::*;
     use crate::array::BoundsSeed;
-    use crate::geometry::Bounds;
     use crate::heap_size::HeapSize as _;
     use crate::test_support::allocation_count;
 

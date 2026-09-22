@@ -105,7 +105,6 @@ impl PyGeometryArray {
         &self,
         rows: impl Iterator<Item = usize> + Clone,
     ) -> crate::error::Result<GeometryArrayStorage> {
-        use crate::array::row_selection_from_logical_rows;
         Ok(match self.storage() {
             GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
                 let missing = self.missing().filter(|_| self.is_compact_nullable());

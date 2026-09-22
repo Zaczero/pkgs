@@ -919,7 +919,7 @@ fn polygon_shapes_from_parts(
 #[cfg(test)]
 mod demotion_tests {
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq, Point, Ring};
+    use crate::geometry::{Point, Ring};
 
     fn xy_line(points: &[(f64, f64)]) -> Shape {
         let coords = CoordSeq::try_from_points(

@@ -19,7 +19,7 @@ use std::sync::Arc;
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyList, PySequence};
-use pyo3::{IntoPyObjectExt as _, PyErr, ffi};
+use pyo3::{IntoPyObjectExt as _, ffi};
 
 use crate::array::PyGeometryArray;
 use crate::geometry::Shape;

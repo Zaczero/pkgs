@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use bytes::Bytes;
 use parking_lot::Mutex;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict};
+use pyo3::types::PyDict;
 use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc};
 

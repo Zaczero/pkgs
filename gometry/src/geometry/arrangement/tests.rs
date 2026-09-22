@@ -1,6 +1,6 @@
 use crate::geometry::arrangement::*;
 use crate::geometry::overlay::self_node_segments_sourced;
-use crate::geometry::{predicates, *};
+use crate::geometry::*;
 
 fn loop_segments(points: &[(f64, f64)]) -> Vec<Segment> {
     (0..points.len())

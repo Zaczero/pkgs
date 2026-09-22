@@ -283,8 +283,6 @@ mod tests {
             .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<XY>() + 1);
     }
 
-    use std::mem::size_of;
-
     #[test]
     fn core_accounting_includes_every_vector_and_map() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();

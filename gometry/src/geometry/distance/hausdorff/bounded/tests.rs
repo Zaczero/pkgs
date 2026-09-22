@@ -1,8 +1,8 @@
 use std::fmt::Write as _;
 
 use super::*;
+use crate::geometry::derived;
 use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
-use crate::geometry::{CoordSeq, LineSeq, Point, derived};
 
 fn line(vertices: &[(f64, f64)]) -> Shape {
     let points: Vec<_> = vertices

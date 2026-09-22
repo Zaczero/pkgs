@@ -450,10 +450,7 @@ impl HeapSize for PointBatchTester {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{
-        CoordWindow, LineSeq, MultiPolygon, SharedSlice, XY, ring_classify_point,
-    };
-    use crate::{CoordSeq, Ring};
+    use crate::geometry::{CoordWindow, LineSeq, MultiPolygon, ring_classify_point};
 
     fn winding_class(ring: &RingPointIndex, x: f64, y: f64) -> RingClass {
         match ring.winding_off_boundary(x, y) {

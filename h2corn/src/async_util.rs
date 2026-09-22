@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::io::{self, IoSlice};
 use std::time::Duration;
 

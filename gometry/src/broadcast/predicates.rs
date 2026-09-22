@@ -631,7 +631,7 @@ mod geographic_tests {
     use pyo3::types::PyAnyMethods as _;
 
     use super::*;
-    use crate::boundary::{Frame, crs_arc_static};
+    use crate::boundary::crs_arc_static;
     use crate::geometry::{CoordSeq, Polygon, Ring};
 
     #[test]

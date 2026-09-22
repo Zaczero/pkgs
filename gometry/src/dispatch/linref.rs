@@ -1,7 +1,6 @@
 use std::sync::Arc;
 
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 use crate::array::missing::union_many;
 use crate::array::{ArrayRow, PackedStorage, line_locate_point_on_lines};

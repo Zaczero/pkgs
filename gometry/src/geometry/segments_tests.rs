@@ -1,6 +1,6 @@
 use crate::geometry::segments::{
-    ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment, clip_segment_authority,
-    clip_segment_liang_barsky, compare_along_segment, segment_nearest_points,
+    ClipVerdict, EXACT_SELECTION_FALLBACKS, clip_segment_authority, clip_segment_liang_barsky,
+    compare_along_segment, segment_nearest_points,
 };
 use crate::geometry::tessellation::exact::{ExactDyadic, compare_ratios};
 use crate::geometry::*;

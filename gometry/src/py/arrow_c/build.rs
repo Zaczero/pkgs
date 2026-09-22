@@ -1,5 +1,4 @@
 use std::fmt::Write as _;
-use std::mem::size_of;
 use std::ptr;
 
 use serde_json::Number;

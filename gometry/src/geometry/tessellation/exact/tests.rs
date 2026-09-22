@@ -1,5 +1,4 @@
 use super::*;
-use crate::geometry::exact_arith::ExactSign;
 
 fn dyadic_orientation_sign(a: XY, b: XY, c: XY) -> ExactSign {
     let difference =

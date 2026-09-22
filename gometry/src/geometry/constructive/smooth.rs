@@ -460,7 +460,6 @@ fn smooth_polygon_rings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{CoordSeq, LineSeq};
 
     fn line(n: usize) -> Shape {
         let points: Vec<Point> = (0..n)

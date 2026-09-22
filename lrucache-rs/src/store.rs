@@ -16,10 +16,8 @@ use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 
 use hashbrown::HashTable;
-use pyo3::Py;
 use pyo3::ffi::Py_hash_t;
 use pyo3::prelude::*;
-use pyo3::types::PyAny;
 
 const INVALID: u32 = u32::MAX;
 

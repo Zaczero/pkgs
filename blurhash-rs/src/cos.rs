@@ -1,6 +1,5 @@
 use std::cell::RefCell;
 use std::f32::consts::PI;
-use std::mem::size_of;
 use std::rc::Rc;
 
 use arrayvec::ArrayVec;

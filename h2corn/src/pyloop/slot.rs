@@ -2,7 +2,6 @@
 //! driving the connection. Replaces the futures oneshot + `PyTaskCompleter`
 //! chain from pyo3-async-runtimes.
 
-use std::future::Future;
 use std::mem;
 use std::pin::Pin;
 use std::sync::Arc;

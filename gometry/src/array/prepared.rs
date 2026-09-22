@@ -803,7 +803,6 @@ impl PyGeometryArray {
 
 #[cfg(test)]
 mod frame_cache_row_tests {
-    use std::cell::Cell;
 
     use super::*;
     use crate::boundary::{Frame, crs_arc_static};
@@ -1454,12 +1453,11 @@ mod frame_cache_row_tests {
 
 #[cfg(test)]
 mod prepared_row_ownership_tests {
-    use std::sync::Arc;
 
     use super::*;
     use crate::array::{CoordSeq, CsrOffsetColumn, PolygonLevel, RingLevel};
     use crate::boundary::Frame;
-    use crate::geometry::{Point, Shape, uses_linear_plan_for_len};
+    use crate::geometry::{Point, uses_linear_plan_for_len};
 
     fn lines(vertices: usize) -> PyGeometryArray {
         let coords = CoordSeq::try_from_vecs(

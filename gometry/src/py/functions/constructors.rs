@@ -1,6 +1,6 @@
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyModule};
+use pyo3::types::PyAny;
 
 use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
 use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
