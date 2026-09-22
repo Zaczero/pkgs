@@ -247,24 +247,18 @@ unsafe fn stream_callback_error(
     let detail =
         unsafe { stream.as_mut() }.and_then(|stream| unsafe { stream_last_error_detail(stream) });
     if status == ENOMEM {
-        return native_stream_memory_error(py, detail.unwrap_or(fallback).as_bytes());
+        return native_stream_memory_error(py, detail.unwrap_or(fallback));
     }
     let detail = detail.map_or_else(|| fallback.to_owned(), str::to_owned);
     PyErr::from_type(py.get_type::<PyOSError>(), (status, detail))
 }
 
-/// Materialize a stream callback's borrowed diagnostic as a native
-/// `MemoryError` while retaining the provider text when Python can allocate a
-/// string for it. A Python-side materialization failure deliberately falls
-/// back to the compact native error rather than returning the secondary
-/// exception or allocating a Rust error message.
-fn native_stream_memory_error(py: Python<'_>, detail: &[u8]) -> PyErr {
-    let message = match PyString::from_bytes(py, detail) {
+/// Retain the stream producer's ENOMEM diagnostic, or the Python error raised
+/// while materializing its message.
+fn native_stream_memory_error(py: Python<'_>, detail: &str) -> PyErr {
+    let message = match PyString::from_bytes(py, detail.as_bytes()) {
         Ok(message) => message,
-        Err(error) => {
-            drop(error);
-            return crate::py::errors::native_memory_error();
-        },
+        Err(error) => return error,
     };
     // SAFETY: `message` is a live Python string and the public exception type
     // borrows it through the non-stealing setter until `PyErr::fetch` adopts
@@ -319,12 +313,13 @@ mod tests {
     use super::native_stream_memory_error;
 
     #[test]
-    fn failed_stream_detail_materialization_keeps_memory_error_identity() {
+    fn stream_memory_error_preserves_provider_detail() {
         Python::initialize();
         Python::attach(|py| {
-            let error = native_stream_memory_error(py, &[0xFF]);
+            let detail = "Arrow producer ran out of memory: π";
+            let error = native_stream_memory_error(py, detail);
             assert!(error.is_instance_of::<PyMemoryError>(py));
-            drop(error);
+            assert_eq!(error.value(py).to_string(), detail);
         });
     }
 }

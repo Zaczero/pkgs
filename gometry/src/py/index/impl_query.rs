@@ -2,7 +2,7 @@ use super::impl_nearest::{HeapNearest, NearestState, OneNearest};
 use crate::array::ValidityMask;
 use crate::geometry::{PreparedPlan, TopologyDomain};
 use crate::predicates::engine::{GateOperand, PredicateSpec, PreparedTopologyPair, row_kind_empty};
-use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error, native_memory_error};
+use crate::py::errors::{crs_mismatch_error, epoch_mismatch_error};
 use crate::py::index::{
     AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
     GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate, IndexRowOperation,
@@ -399,10 +399,10 @@ impl PySpatialIndex {
         }) {
             Ok(Ok(Some(caps))) => Some(Arc::new(caps)),
             Ok(Ok(None)) | Err(_) => None,
-            Ok(Err(())) => {
+            Ok(Err(error)) => {
                 drop(products);
                 drop(cache);
-                return Err(native_memory_error());
+                return Err(error.into());
             },
         };
         *cache = GeodesicCapsCache {

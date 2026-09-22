@@ -429,15 +429,14 @@ impl GeodesicRowCaps {
         shape: crs::EllipsoidShape,
         row_count: usize,
         live: impl Iterator<Item = (usize, Option<(Point, f64)>)>,
-    ) -> Result<Option<Self>, ()> {
+    ) -> crate::error::Result<Option<Self>> {
         let major = shape.semi_major.get();
         let flattening = shape.flattening;
         let one_minus_f = 1.0 - flattening;
         let mut anchors = Vec::new();
-        crate::boundary::try_reserve_vec(&mut anchors, row_count).map_err(|_| ())?;
-        anchors.resize(row_count, (Radians(0.0), Radians(0.0)));
         let mut reaches = Vec::new();
-        crate::boundary::try_reserve_vec(&mut reaches, row_count).map_err(|_| ())?;
+        crate::boundary::try_reserve_pair(&mut anchors, &mut reaches, row_count)?;
+        anchors.resize(row_count, (Radians(0.0), Radians(0.0)));
         reaches.resize(row_count, 0.0);
         for (handle, row) in live {
             let Some((anchor, reach)) = row else {
@@ -448,11 +447,15 @@ impl GeodesicRowCaps {
                 // its domain error instead of being silently pruned.
                 return Ok(None);
             }
-            anchors[handle] = (
+            *anchors
+                .get_mut(handle)
+                .expect("live handle is within row storage") = (
                 reduced_latitude(Degrees(anchor.y), one_minus_f),
                 Radians(anchor.x.to_radians()),
             );
-            reaches[handle] = reach;
+            *reaches
+                .get_mut(handle)
+                .expect("live handle is within row storage") = reach;
         }
         Ok(Some(Self {
             minor_radius: major * one_minus_f,

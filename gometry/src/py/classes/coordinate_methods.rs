@@ -4,7 +4,6 @@
 //! coordinate storage and helpers via `use super::*`.
 use pyo3::types::{PyAny, PyDict, PyList};
 
-use crate::py::errors;
 use crate::py::numpy::float64_matrix;
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{
@@ -49,13 +48,15 @@ impl PyCoordinates {
         missing: f64,
     ) -> PyResult<Py<PyAny>> {
         let layout = axes.unwrap_or_else(|| self.layout.unwrap_or_else(|| self.view.axes()));
-        let (order, n) = coordinate_axis_order(layout);
-        let dims = n;
+        let (order, dims) = coordinate_axis_order(layout);
+        let order = order
+            .get(..dims)
+            .expect("coordinate axes fit the fixed order");
         let rows = self.view.len();
         let data = if let Some(seq) = self.view.single_seq()
             && seq.len() == rows
         {
-            interleave_coordseq_ordered(seq, &order[..n], missing)?
+            interleave_coordseq_ordered(seq, order, missing)?
         } else {
             let mut data =
                 crate::try_vec_with_capacity(rows.checked_mul(dims).ok_or_else(|| {
@@ -63,21 +64,15 @@ impl PyCoordinates {
                         "coordinate matrix size overflows usize",
                     )
                 })?)?;
-            match self.view.try_for_each_point(&mut |coord| {
-                for &axis in &order[..n] {
-                    match crate::try_push(
-                        &mut data,
-                        coordinate_ordinate(coord, axis).unwrap_or(missing),
-                    ) {
-                        Ok(()) => {},
-                        Err(error) => return std::ops::ControlFlow::Break(error),
-                    }
-                }
-                std::ops::ControlFlow::Continue(())
-            }) {
-                std::ops::ControlFlow::Continue(()) => data,
-                std::ops::ControlFlow::Break(error) => return Err(error),
-            }
+            let _ = self.view.try_for_each_point(&mut |coord| {
+                data.extend(
+                    order
+                        .iter()
+                        .map(|&axis| coordinate_ordinate(coord, axis).unwrap_or(missing)),
+                );
+                std::ops::ControlFlow::<()>::Continue(())
+            });
+            data
         };
         float64_matrix(py, data, rows, dims)
     }
@@ -93,7 +88,7 @@ struct CoordinateCursor {
     len: usize,
     /// `None` when storage-shaped random access is O(1)/O(log); otherwise a
     /// one-shot materialization shared by every `scalar_row` call.
-    material: Option<std::sync::OnceLock<Option<Vec<crate::geometry::Point>>>>,
+    material: Option<std::sync::OnceLock<Vec<crate::geometry::Point>>>,
 }
 
 impl HeapSize for CoordinateCursor {
@@ -102,7 +97,7 @@ impl HeapSize for CoordinateCursor {
         let material_bytes = self
             .material
             .as_ref()
-            .and_then(|lock| lock.get().and_then(Option::as_ref))
+            .and_then(std::sync::OnceLock::get)
             .map_or(0, |points| {
                 points.len() * std::mem::size_of::<crate::geometry::Point>()
             });
@@ -119,26 +114,17 @@ impl RowContainer for CoordinateCursor {
 
     fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
         let point = if let Some(lock) = &self.material {
-            let points = lock.get_or_init(|| {
-                let Ok(mut out) = crate::try_vec_with_capacity(self.len) else {
-                    return None;
-                };
-                let result = self
-                    .view
-                    .try_for_each_point(&mut |coord| match crate::try_push(&mut out, coord) {
-                        Ok(()) => std::ops::ControlFlow::Continue(()),
-                        Err(_) => std::ops::ControlFlow::Break(()),
-                    });
-                if matches!(result, std::ops::ControlFlow::Break(())) {
-                    None
-                } else {
-                    Some(out)
-                }
-            });
-            let Some(points) = points else {
-                return Err(errors::native_memory_error());
-            };
-            points[row]
+            let points = lock.get_or_try_init(|| {
+                let mut out = crate::try_vec_with_capacity(self.len)?;
+                let _ = self.view.try_for_each_point(&mut |coord| {
+                    out.push(coord);
+                    std::ops::ControlFlow::<()>::Continue(())
+                });
+                Ok::<_, PyErr>(out)
+            })?;
+            *points
+                .get(row)
+                .expect("iterator index already range-checked")
         } else {
             self.view
                 .point_at(row)
