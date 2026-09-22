@@ -73,11 +73,13 @@ impl<'a> PointArena<'a> {
             self.unique[segments[1] as usize],
         );
         let crossing = crossing_point(first, second)?;
-        let exact = crossing.exact.map_or_else(std::cell::OnceCell::new, |point| {
-            #[cfg(test)]
-            update_partition_metrics(|metrics| metrics.declined_crossings += 1);
-            std::cell::OnceCell::from(Box::new(point))
-        });
+        let exact = crossing
+            .exact
+            .map_or_else(std::cell::OnceCell::new, |point| {
+                #[cfg(test)]
+                update_partition_metrics(|metrics| metrics.declined_crossings += 1);
+                std::cell::OnceCell::from(Box::new(point))
+            });
         self.push(NodeRecipe::Crossing { segments, exact }, crossing.point)
     }
 
