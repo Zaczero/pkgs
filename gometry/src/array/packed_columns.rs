@@ -608,7 +608,10 @@ impl PackedColumns<'_> {
         }
     }
 
-    pub(crate) fn map_rows<T>(&self, mut f: impl FnMut(PackedRow<'_>) -> T) -> Vec<T> {
+    pub(crate) fn collect_rows<T, C: FromIterator<T>>(
+        &self,
+        mut f: impl FnMut(PackedRow<'_>) -> T,
+    ) -> C {
         match self {
             Self::Points(columns) => {
                 columns
@@ -1802,7 +1805,9 @@ mod tests {
                 panic!("packed view resolution failed");
             };
             assert_eq!(columns.row_count(), 3);
-            assert_eq!(columns.map_rows(|row| row.index()), vec![0, 1, 2]);
+            assert_eq!(columns.collect_rows::<_, Vec<_>>(|row| row.index()), vec![
+                0, 1, 2
+            ]);
             drop(packed_column_kernels::bounds_values_from_columns(&columns));
         }
     }
@@ -1997,6 +2002,34 @@ mod tests {
             )
             .unwrap(),
         })
+    }
+
+    #[test]
+    fn selected_validation_and_total_bounds_do_not_stage_rows() {
+        let storage = gathered_lines(4);
+        let missing = ValidityMask::from_vec(4, vec![false, true, false, true]).unwrap();
+        for mask in [None, Some(&missing)] {
+            let columns = resolve_packed_columns(&storage, mask, PointRowLayout::Dense)
+                .expect("packed columns");
+            let (admission, admission_allocations) = allocation_count(|| {
+                packed_column_kernels::ensure_geographic_columns_present(
+                    &columns,
+                    crate::geographic::GeographicFrame::crs84(),
+                )
+            });
+            admission.unwrap();
+            let (bounds, bounds_allocations) =
+                allocation_count(|| packed_column_kernels::total_bounds_from_columns(&columns));
+            assert_eq!((admission_allocations, bounds_allocations), (0, 0));
+            assert_eq!(
+                bounds.unwrap().into_array(),
+                if mask.is_some() {
+                    [0.0, 0.0, 2.0, 1.0]
+                } else {
+                    [0.0, 0.0, 5.0, 4.0]
+                }
+            );
+        }
     }
 
     #[test]

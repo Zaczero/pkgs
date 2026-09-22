@@ -760,27 +760,19 @@ where
 /// than the placeholder payload, is the trust boundary.
 pub(crate) fn ensure_geographic_columns_present(
     columns: &PackedColumns<'_>,
-    missing: Option<&ValidityMask>,
     frame: crate::geographic::GeographicFrame,
 ) -> crate::error::Result<()> {
     let XyColumns { xs, ys } = columns.physical_xy();
-    for (row, window) in columns
-        .map_rows(|row| row.vertex_window())
-        .into_iter()
-        .enumerate()
-    {
-        if missing.is_some_and(|mask| mask.is_missing(row)) {
-            continue;
-        }
-        if let Some(window) = window {
+    columns.collect_rows(|row| {
+        if let Some(window) = row.vertex_window() {
             crate::crs::ensure_geographic_columns_in_frame(
                 frame,
                 column_window(xs, &window),
                 column_window(ys, &window),
             )?;
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Transform present packed points once, then rebuild the selected point
@@ -1049,20 +1041,19 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
     }
     let XyColumns { xs, ys } = columns.physical_xy();
     let mut total: Option<Bounds> = None;
-    for window in columns
-        .map_rows(|row| row.vertex_window())
-        .into_iter()
-        .flatten()
-    {
+    columns.collect_rows::<_, ()>(|row| {
+        let Some(window) = row.vertex_window() else {
+            return;
+        };
         let Some(bounds) = row_bounds(column_window(xs, &window), column_window(ys, &window))
         else {
-            continue;
+            return;
         };
         match &mut total {
             Some(current) => current.include_bounds(bounds),
             None => total = Some(bounds),
         }
-    }
+    });
     total
 }
 

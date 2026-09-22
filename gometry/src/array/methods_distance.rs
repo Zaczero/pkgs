@@ -3,7 +3,7 @@
     reason = "PyO3 special-method receivers must retain their binding-compatible ownership shape"
 )]
 
-use crate::array::packed_columns::XyColumns;
+use crate::array::packed_columns::{PackedColumnResult, XyColumns};
 use crate::array::{
     Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
     PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point, PointColumnBuilder,
@@ -96,33 +96,21 @@ where
         PackedColumns::Lines(line_columns) => {
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
-            let row_crosses_antimeridian = (domain.is_geographic()
-                && !longitude_span_cannot_cross_antimeridian(xs))
-            .then(|| {
-                columns.map_rows(|row| {
-                    if row.is_missing() {
-                        return false;
-                    }
-                    line_window_crosses_antimeridian(
-                        coords,
-                        row.vertex_window().expect("line rows have a vertex window"),
-                        domain,
-                    )
-                })
-            });
+            let may_cross_antimeridian =
+                domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
-            for result in columns.map_rows(|row| {
+            columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
                 let row_index = row.index();
                 if row.is_missing() {
-                    return Ok(Point::new_raw_xy(f64::NAN, f64::NAN));
+                    builder.push(Point::new_raw_xy(f64::NAN, f64::NAN));
+                    return Ok(());
                 }
                 let window = row.vertex_window().expect("line rows have a vertex window");
-                let crosses = row_crosses_antimeridian
-                    .as_ref()
-                    .is_some_and(|rows| rows[row_index]);
+                let crosses = may_cross_antimeridian
+                    && line_window_crosses_antimeridian(coords, window.clone(), domain);
                 let shape_window = window.clone();
-                packed_point_row(
+                let point = packed_point_row(
                     crosses,
                     move || {
                         Ok(Shape::LineString(LineSeq::row_view(
@@ -138,10 +126,10 @@ where
                 .map_err(|error| PackedColumnError::Row {
                     row: row_index,
                     error,
-                })
-            }) {
-                builder.push(result?);
-            }
+                })?;
+                builder.push(point);
+                Ok(())
+            })?;
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder
                     .finish_with_missing_placeholders()
@@ -154,36 +142,28 @@ where
             let coords = polygon_columns.coords();
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let ring_offsets = polygon_columns.ring_offsets();
-            let row_crosses_antimeridian = (domain.is_geographic()
-                && !longitude_span_cannot_cross_antimeridian(xs))
-            .then(|| {
-                columns.map_rows(|row| {
-                    if row.is_missing() {
-                        return false;
-                    }
-                    polygon_row_crosses_antimeridian(
-                        coords,
-                        ring_offsets,
-                        row.polygon_rings().expect("polygon rows have rings"),
-                        domain,
-                    )
-                })
-            });
+            let may_cross_antimeridian =
+                domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             let mut crossings = Vec::new();
-            for result in columns.map_rows(|row| {
+            columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
                 let row_index = row.index();
                 if row.is_missing() {
-                    return Ok(Point::new_raw_xy(f64::NAN, f64::NAN));
+                    builder.push(Point::new_raw_xy(f64::NAN, f64::NAN));
+                    return Ok(());
                 }
                 let rings = row.polygon_rings().expect("polygon rows have rings");
                 let shell = row.polygon_shell_window();
-                let crosses = row_crosses_antimeridian
-                    .as_ref()
-                    .is_some_and(|rows| rows[row_index]);
+                let crosses = may_cross_antimeridian
+                    && polygon_row_crosses_antimeridian(
+                        coords,
+                        ring_offsets,
+                        rings.clone(),
+                        domain,
+                    );
                 let shape_rings = rings.clone();
-                packed_point_row(
+                let point = packed_point_row(
                     crosses,
                     move || {
                         Ok(Shape::Polygon(GeometryArrayStorage::polygon_view(
@@ -200,10 +180,10 @@ where
                 .map_err(|error| PackedColumnError::Row {
                     row: row_index,
                     error,
-                })
-            }) {
-                builder.push(result?);
-            }
+                })?;
+                builder.push(point);
+                Ok(())
+            })?;
             Ok(PackedColumnOutput::Points(if has_missing {
                 builder
                     .finish_with_missing_placeholders()

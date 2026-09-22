@@ -150,7 +150,7 @@ impl PyGeometryArray {
         if present
             && let Some(values) = self.reduce_packed_columns_detached(py, move |columns| {
                 let column = ordinate(&columns).expect("checked ordinate presence");
-                Ok(columns.map_rows(|row| {
+                Ok(columns.collect_rows::<_, Vec<_>>(|row| {
                     if missing
                         .as_ref()
                         .is_some_and(|mask| mask.is_missing(row.index()))

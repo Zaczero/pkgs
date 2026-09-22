@@ -507,7 +507,7 @@ impl PyGeometryArray {
                 };
                 let geodesic = metric.geodesic;
                 self.reduce_packed_columns_detached(py, move |columns| {
-                    ensure_geographic_columns_present(&columns, missing.as_ref(), frame)
+                    ensure_geographic_columns_present(&columns, frame)
                         .map_err(PackedColumnError::Batch)?;
                     let values = match columns {
                         PackedColumns::Lines(line_columns) => {
