@@ -339,21 +339,15 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
     // Multi-leaf groups (polygons): reinterpret ring offsets as identity leaf
     // runs, reduce rings unscaled through the short/long selector, then fold
     // ring results by polygon offsets (missing → NaN; scale once per polygon).
-    let leaf_missing = runs
-        .group_missing
-        .map(|missing| {
-            let mut mask = Vec::new();
-            crate::try_reserve_vec(&mut mask, runs.n_leaves())?;
-            mask.resize(runs.n_leaves(), false);
-            for (group, is_missing) in missing.iter().enumerate() {
-                if is_missing {
-                    mask[runs.group_leaves(group)].fill(true);
-                }
+    let leaf_missing = runs.group_missing.and_then(|missing| {
+        let mut mask = vec![false; runs.n_leaves()];
+        for (group, is_missing) in missing.iter().enumerate() {
+            if is_missing {
+                mask[runs.group_leaves(group)].fill(true);
             }
-            ValidityMask::from_vec(runs.n_leaves(), mask)
-        })
-        .transpose()?
-        .flatten();
+        }
+        ValidityMask::from_vec(runs.n_leaves(), mask)
+    });
     let leaf_runs = SegmentedRuns {
         leaf_offsets: runs.leaf_offsets,
         group_offsets: None,

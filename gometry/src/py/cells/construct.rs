@@ -312,7 +312,7 @@ where
             );
         }
         return Ok(match missing {
-            Some(missing) => PyCellArray::from_ids_with_missing(kind, ids, missing)?,
+            Some(missing) => PyCellArray::from_ids_with_missing(kind, ids, missing),
             None => PyCellArray::from_ids(kind, ids),
         });
     }

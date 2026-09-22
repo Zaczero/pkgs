@@ -250,16 +250,12 @@ impl PyCellArray {
 
     /// Build with a parallel missing mask (one flag per id). Used by bulk
     /// factories that degrade missing geometry rows instead of rejecting them.
-    pub(crate) fn from_ids_with_missing(
-        kind: GridKind,
-        ids: Vec<u64>,
-        missing: Vec<bool>,
-    ) -> crate::error::Result<Self> {
-        let missing = crate::array::ValidityMask::from_vec(ids.len(), missing)?;
-        Ok(Self {
+    pub(crate) fn from_ids_with_missing(kind: GridKind, ids: Vec<u64>, missing: Vec<bool>) -> Self {
+        let missing = crate::array::ValidityMask::from_vec(ids.len(), missing);
+        Self {
             storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
-        })
+        }
     }
 
     /// Whether logical row `i` is a missing factory placeholder.
@@ -459,14 +455,14 @@ impl PyCellArray {
             .map(|logical| G::from_validated_id(self.id_at(logical)))
     }
 
-    fn missing_mask(&self) -> PyResult<Option<ValidityMask>> {
+    fn missing_mask(&self) -> Option<ValidityMask> {
         if matches!(self.selection_ref(), RowSelectionRef::Identity) {
-            return Ok(self.storage.missing.clone());
+            return self.storage.missing.clone();
         }
-        Ok(ValidityMask::from_missing_iter(
+        ValidityMask::from_missing_iter(
             self.len(),
             (0..self.len()).map(|row| self.is_row_missing(row)),
-        )?)
+        )
     }
 
     fn map_logical_cells<G, T>(&self, f: impl FnMut(G) -> T) -> Vec<T>
@@ -1244,7 +1240,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             coords,
             crate::Frame::Crs(crate::wgs84_crs()),
         )?;
-        Ok(match self.missing_mask()? {
+        Ok(match self.missing_mask() {
             None => result,
             Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
@@ -1306,7 +1302,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
             shapes,
             crate::Frame::Crs(crate::wgs84_crs()),
         )?;
-        Ok(match self.missing_mask()? {
+        Ok(match self.missing_mask() {
             None => result,
             Some(mask) => crate::PyGeometryArray::scatter_present_rows(&result, mask)?,
         })
@@ -1418,7 +1414,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
                 next.next().expect("present parent count matches")
             });
         }
-        let missing = self.missing_mask()?;
+        let missing = self.missing_mask();
         Ok(Self {
             storage: CellStorage::new(kind, ids, missing),
             selection: RowSelection::Identity,
@@ -1784,7 +1780,7 @@ pub(crate) fn _unpickle_cell_array_v1(
         let missing = crate::array::ValidityMask::from_missing_iter(
             bytes.len(),
             bytes.iter().map(|&value| value == 1),
-        )?;
+        );
         (logical_ids, missing)
     };
     Ok(PyCellArray {
@@ -1826,8 +1822,7 @@ mod tests {
             let missing =
                 PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![present, 0], vec![
                     false, true,
-                ])
-                .unwrap();
+                ]);
             match missing.neighbors(py) {
                 Ok(groups) => drop(groups),
                 Err(error) => panic!("{error}"),
@@ -1847,8 +1842,7 @@ mod tests {
 
         let cells = PyCellArray::from_ids_with_missing(GridKind::H3Cell, vec![1, 2, 3], vec![
             false, true, false,
-        ])
-        .unwrap();
+        ]);
         let arc = crate::heap_size::ARC_CONTROL_BYTES;
         assert_eq!(
             cells.heap_bytes(),

@@ -257,12 +257,9 @@ impl<'a> ArrayRowOperation<'a> {
     /// indexed and other arbitrary-order operations. Compact points build one
     /// directory for this operation; sequential callers should keep using
     /// [`Self::rows_with_missing`] so they can use the cheaper validity cursor.
-    pub(crate) fn present_row_at(
-        &mut self,
-        logical: usize,
-    ) -> crate::error::Result<Option<PresentRow<'a>>> {
+    pub(crate) fn present_row_at(&mut self, logical: usize) -> Option<PresentRow<'a>> {
         if logical >= self.array.len() {
-            return Ok(None);
+            return None;
         }
         if self.array.is_compact_nullable()
             && let Some(mask) = self.array.missing()
@@ -271,29 +268,22 @@ impl<'a> ArrayRowOperation<'a> {
                 GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
             )
         {
-            if self.compact_rank.is_none() {
-                self.compact_rank = Some(mask.full_rank()?);
-            }
-            let Some(present) = self
+            let present = self
                 .compact_rank
-                .as_ref()
-                .expect("compact rank was initialized")
-                .resolve(logical)
-            else {
-                return Ok(None);
-            };
-            return Ok(Some(PresentRow::new(
+                .get_or_insert_with(|| mask.full_rank())
+                .resolve(logical)?;
+            return Some(PresentRow::new(
                 self.array,
                 logical,
                 self.array.storage().row(present),
-            )));
+            ));
         }
-        Ok(match self.array.logical_row(logical) {
+        match self.array.logical_row(logical) {
             Some(LogicalRow::Missing { .. }) | None => None,
             Some(LogicalRow::Present { row, .. }) => {
                 Some(PresentRow::new(self.array, logical, row))
             },
-        })
+        }
     }
 
     pub(crate) fn prepared(
@@ -823,7 +813,6 @@ mod frame_cache_row_tests {
         let masked = PyGeometryArray::scatter_present_rows(
             &dense,
             crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false])
-                .unwrap()
                 .expect("validity length"),
         )
         .unwrap();
@@ -863,9 +852,7 @@ mod frame_cache_row_tests {
     fn arbitrary_present_row_resolution_keeps_logical_and_payload_identity() {
         let source = PyGeometryArray::scatter_present_rows(
             &points(),
-            crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false])
-                .unwrap()
-                .unwrap(),
+            crate::array::ValidityMask::from_vec(5, vec![false, true, false, true, false]).unwrap(),
         )
         .unwrap();
         let mut operation = source.row_operation();
@@ -873,7 +860,7 @@ mod frame_cache_row_tests {
         let actual = rows
             .iter()
             .map(|&logical| {
-                operation.present_row_at(logical).unwrap().map(|row| {
+                operation.present_row_at(logical).map(|row| {
                     let ShapeRow::Point(point) = row.row() else {
                         unreachable!("point fixture yields point rows")
                     };
@@ -897,7 +884,6 @@ mod frame_cache_row_tests {
         .unwrap()
         .with_missing_mask(Some(
             crate::array::ValidityMask::from_vec(3, vec![false, true, false])
-                .unwrap()
                 .expect("validity length"),
         ))
         .unwrap();
@@ -1263,7 +1249,6 @@ mod frame_cache_row_tests {
         .unwrap()
         .with_missing_mask(Some(
             crate::array::ValidityMask::from_vec(3, vec![false, true, false])
-                .unwrap()
                 .expect("validity length"),
         ))
         .unwrap();

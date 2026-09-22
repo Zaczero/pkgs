@@ -502,7 +502,7 @@ pub(crate) fn nearest_points(
                 .into_py_any(py)
         },
         (GeometryInput::Many(left), GeometryInput::Many(right)) => {
-            let missing = union_many([left.missing(), right.missing()])?;
+            let missing = union_many([left.missing(), right.missing()]);
             let left = left.clone();
             let right = right.clone();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;

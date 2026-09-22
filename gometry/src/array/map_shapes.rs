@@ -267,7 +267,7 @@ mod tests {
             .collect();
         PyGeometryArray::mixed_shapes(shapes, Frame::None)
             .unwrap()
-            .with_missing_mask(ValidityMask::from_sparse(3, &[1]).unwrap())
+            .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
             .unwrap()
     }
 

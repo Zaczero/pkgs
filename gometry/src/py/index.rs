@@ -504,7 +504,7 @@ impl<'a> IndexRowOperation<'a> {
             && let Some(packed) = &mut self.packed
         {
             return packed
-                .present_row_at(handle)?
+                .present_row_at(handle)
                 .map(|row| row.row())
                 .ok_or_else(|| Self::missing_handle(handle));
         }
@@ -520,7 +520,7 @@ impl<'a> IndexRowOperation<'a> {
             && let Some(packed) = &mut self.packed
         {
             let row = packed
-                .present_row_at(handle)?
+                .present_row_at(handle)
                 .ok_or_else(|| Self::missing_handle(handle))?;
             return packed.prepared(row);
         }
@@ -537,7 +537,7 @@ impl<'a> IndexRowOperation<'a> {
             && let Some(packed) = &mut self.packed
         {
             let _ = packed
-                .present_row_at(handle)?
+                .present_row_at(handle)
                 .ok_or_else(|| Self::missing_handle(handle))?;
             return Ok(packed.frame_cache(handle));
         }
@@ -604,9 +604,7 @@ impl IndexRows {
         let Some(missing) = crate::array::ValidityMask::from_missing_iter(
             self.len(),
             self.live.iter().map(|&live| live == 0),
-        )
-        .map_err(pyo3::PyErr::from)?
-        else {
+        ) else {
             return Ok(present);
         };
         Ok(PyGeometryArray::scatter_present_rows(&present, missing)?)

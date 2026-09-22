@@ -552,9 +552,7 @@ mod tests {
             let left = PyGeometryArray::from_shapes(vec![point.clone(), line.clone()], Frame::None)
                 .unwrap()
                 .with_missing_mask(Some(
-                    ValidityMask::from_vec(2, vec![false, true])
-                        .unwrap()
-                        .expect("one missing row"),
+                    ValidityMask::from_vec(2, vec![false, true]).expect("one missing row"),
                 ))
                 .unwrap();
             let right = PyGeometryArray::from_shapes(vec![point, line], Frame::None).unwrap();

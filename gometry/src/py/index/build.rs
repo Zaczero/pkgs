@@ -280,7 +280,7 @@ pub(crate) fn restore_spatial_index(
     let mut entries = Vec::with_capacity(values.len());
     let mut non_prunable_live = 0;
     for logical in 0..values.len() {
-        let geometry = if let Some(row) = row_operation.present_row_at(logical)? {
+        let geometry = if let Some(row) = row_operation.present_row_at(logical) {
             present = true;
             let plan = std::sync::Arc::new(crate::PreparedPlan::new(ShapeData::new(
                 row.row().with_shape(std::clone::Clone::clone)?,
@@ -396,7 +396,6 @@ mod ownership_tests {
         )
         .unwrap();
         let missing = crate::array::ValidityMask::from_vec(missing.len(), missing)
-            .unwrap()
             .expect("fixture contains a missing row");
         PyGeometryArray::scatter_present_rows(&source, missing).unwrap()
     }
@@ -409,7 +408,6 @@ mod ownership_tests {
         )
         .unwrap();
         let missing = crate::array::ValidityMask::from_vec(3, vec![false, true, false])
-            .unwrap()
             .expect("fixture contains a missing row");
         PyGeometryArray::scatter_present_rows(&source, missing).unwrap()
     }
@@ -593,9 +591,7 @@ mod ownership_tests {
                 Frame::None,
             )
             .unwrap(),
-            crate::array::ValidityMask::from_vec(2, vec![true, false])
-                .unwrap()
-                .unwrap(),
+            crate::array::ValidityMask::from_vec(2, vec![true, false]).unwrap(),
         )
         .unwrap();
         let restored = restore_spatial_index(&source, false).unwrap();

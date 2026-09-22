@@ -435,7 +435,7 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
             ],
             crate::boundary::Frame::None,
         )?;
-        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false])?
+        let mask = crate::array::ValidityMask::from_vec(3, vec![false, true, false])
             .expect("one missing row");
         let nullable = PyGeometryArray::scatter_present_rows(&present, mask)?;
         let gathered = nullable.gather_logical_rows(&[2, 1, 0])?;

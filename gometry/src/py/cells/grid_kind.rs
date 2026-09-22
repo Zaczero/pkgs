@@ -519,10 +519,8 @@ fn collect_ids_from_iter<'py>(
         }
         Ok::<_, PyErr>(())
     })?;
-    let missing = missing
-        .map(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing))
-        .transpose()?
-        .flatten();
+    let missing =
+        missing.and_then(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing));
     Ok(CollectedCellIds { ids, missing })
 }
 
@@ -581,10 +579,8 @@ fn collect_inferred_from_iter<'py>(
         }
     })?;
     debug_assert!(pending.is_empty());
-    let missing = missing
-        .map(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing))
-        .transpose()?
-        .flatten();
+    let missing =
+        missing.and_then(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing));
     Ok((kind, CollectedCellIds { ids, missing }))
 }
 

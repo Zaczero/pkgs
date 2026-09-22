@@ -724,13 +724,9 @@ mod owner_export_tests {
     fn validity_mask_length_checked_in_release() {
         ensure_python();
         let mut array = make_array(2, [OwnedBufferSlot::Null], Vec::new()).unwrap();
-        let short = crate::array::ValidityMask::from_vec(1, vec![true])
-            .unwrap()
-            .unwrap();
+        let short = crate::array::ValidityMask::from_vec(1, vec![true]).unwrap();
         assert!(apply_top_level_validity(&mut array, &short).is_err());
-        let mask = crate::array::ValidityMask::from_vec(2, vec![false, true])
-            .unwrap()
-            .unwrap();
+        let mask = crate::array::ValidityMask::from_vec(2, vec![false, true]).unwrap();
         apply_top_level_validity(&mut array, &mask).unwrap();
     }
 
@@ -740,7 +736,6 @@ mod owner_export_tests {
         let parent = crate::array::ValidityMask::from_vec(8, vec![
             false, false, false, true, false, true, false, false,
         ])
-        .unwrap()
         .unwrap();
         let window = parent.window(3, 3).unwrap();
         let (bitmap, offset) = window.arrow_bitmap();

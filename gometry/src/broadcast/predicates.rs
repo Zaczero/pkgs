@@ -299,7 +299,7 @@ where
     R: crate::broadcast::BulkElement,
     F: for<'a> Fn(PreparedTopologyPair<'a>) -> crate::error::Result<R> + Copy + Send + Sync,
 {
-    let missing = missing::union_many([left.missing(), right.missing()])?;
+    let missing = missing::union_many([left.missing(), right.missing()]);
     let output_missing = missing;
     let left = left.clone();
     let right = right.clone();

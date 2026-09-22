@@ -1542,7 +1542,6 @@ mod tests {
         let row = array
             .row_operation()
             .present_row_at(0)
-            .unwrap()
             .expect("polygon row")
             .row();
         let bounds = row.quick_bounds().expect("polygon bounds");

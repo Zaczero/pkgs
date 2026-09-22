@@ -10,7 +10,7 @@ use std::ptr;
 use std::sync::Arc;
 
 use pyo3::exceptions::PyTypeError;
-use pyo3::prelude::{Bound, PyAny, PyErr, PyResult};
+use pyo3::prelude::{Bound, PyAny, PyResult};
 
 use crate::array::missing::union_many;
 use crate::boundary::metadata;
@@ -1195,7 +1195,7 @@ fn merge_owned_row_missing(
         bit_offset,
         len,
     );
-    union_many([ancestor.as_ref(), own.as_ref()]).map_err(PyErr::from)
+    Ok(union_many([ancestor.as_ref(), own.as_ref()]))
 }
 
 fn owned_or_raw_row_valid(

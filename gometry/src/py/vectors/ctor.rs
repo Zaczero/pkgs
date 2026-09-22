@@ -291,7 +291,7 @@ mod self_intersection_csr_tests {
             Frame::None,
         )
         .unwrap()
-        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
+        .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]))
         .unwrap();
         let (shapes, offsets) = self_intersection_csr(&array, domain(&array))
             .expect("CSR walk")

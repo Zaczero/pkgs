@@ -1735,7 +1735,6 @@ mod tests {
     fn point_row_cursor_maps_present_ranks_only_for_compact_payloads() {
         let compact_map = RowSelection::gather_checked_native(vec![5_usize, 2, 5], 6).unwrap();
         let compact_mask = ValidityMask::from_vec(6, vec![true, false, true, true, false, false])
-            .unwrap()
             .expect("compact mask");
         let compact = PointRows::new(
             6,
@@ -1755,9 +1754,8 @@ mod tests {
         ]);
 
         let row_aligned_map = RowSelection::gather_checked_native(vec![2_usize, 0, 2], 3).unwrap();
-        let row_aligned_mask = ValidityMask::from_vec(3, vec![false, true, false])
-            .unwrap()
-            .expect("row-aligned mask");
+        let row_aligned_mask =
+            ValidityMask::from_vec(3, vec![false, true, false]).expect("row-aligned mask");
         let row_aligned = PointRows::new(
             3,
             row_aligned_map.as_deref(),
@@ -1771,9 +1769,7 @@ mod tests {
             (2, Some(2))
         ]);
 
-        let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1])
-            .unwrap()
-            .expect("compact mask");
+        let equal_length_compact_mask = ValidityMask::from_sparse(3, &[1]).expect("compact mask");
         let equal_length_compact_map =
             RowSelection::gather_checked_native(vec![0_usize, 1, 0], 2).unwrap();
         let equal_length_compact = PointRows::new(
@@ -1792,9 +1788,7 @@ mod tests {
 
     #[test]
     fn point_row_cursor_decodes_non_byte_aligned_validity_windows() {
-        let parent = ValidityMask::from_sparse(80, &[4, 7, 11, 19, 27, 32, 40, 63, 72])
-            .unwrap()
-            .unwrap();
+        let parent = ValidityMask::from_sparse(80, &[4, 7, 11, 19, 27, 32, 40, 63, 72]).unwrap();
         let window = parent.window(3, 65).expect("window contains missing rows");
         assert_eq!(window.arrow_bitmap().1, 3);
         let missing = [1_usize, 4, 8, 16, 24, 29, 37, 60];
@@ -1843,7 +1837,7 @@ mod tests {
             Vec::<(usize, Option<usize>)>::new()
         );
 
-        let all_missing = ValidityMask::from_vec(9, vec![true; 9]).unwrap().unwrap();
+        let all_missing = ValidityMask::from_vec(9, vec![true; 9]).unwrap();
         let row_aligned_missing = PointRows::new(
             9,
             RowSelectionRef::Identity,
@@ -1874,9 +1868,7 @@ mod tests {
             (3, Some(0))
         ]);
 
-        let row_aligned_mask = ValidityMask::from_vec(4, vec![false, true, false, false])
-            .unwrap()
-            .unwrap();
+        let row_aligned_mask = ValidityMask::from_vec(4, vec![false, true, false, false]).unwrap();
         let row_aligned_gather = PointRows::new(
             5,
             dense_map.as_deref(),

@@ -142,7 +142,7 @@ pub(crate) fn line_locate_input(
                     row_map.clone(),
                     array.len(),
                     queries,
-                    union_many([array.missing(), points.missing()])?,
+                    union_many([array.missing(), points.missing()]),
                     model.clone(),
                     normalized,
                 );

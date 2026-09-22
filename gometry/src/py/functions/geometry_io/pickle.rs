@@ -199,7 +199,7 @@ enum OffsetLevels<T = Vec<u8>> {
 }
 
 /// Decode a missing mask; any nonzero byte marks a missing row.
-fn pickled_missing_mask(bytes: &[u8]) -> crate::error::Result<Option<ValidityMask>> {
+fn pickled_missing_mask(bytes: &[u8]) -> Option<ValidityMask> {
     ValidityMask::from_missing_iter(bytes.len(), bytes.iter().map(|&byte| byte != 0))
 }
 
@@ -256,7 +256,7 @@ fn unpickle_geometry_array_detached(
                 "mixed-array pickle missing mask length differs from its rows",
             ));
         },
-        Some(bytes) => pickled_missing_mask(bytes)?,
+        Some(bytes) => pickled_missing_mask(bytes),
         None => None,
     };
     let mut shapes = Vec::new();
@@ -313,7 +313,7 @@ fn unpickle_packed_array_detached(
             PyGeometryArray::packed_polygons(seq, rings, polygons, frame)?
         },
     };
-    match missing.map(pickled_missing_mask).transpose()?.flatten() {
+    match missing.and_then(pickled_missing_mask) {
         Some(mask) => PyGeometryArray::scatter_present_rows(&present, mask),
         None => Ok(present),
     }

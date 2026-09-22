@@ -108,9 +108,7 @@ impl PyGeometryArray {
         Ok(match self.storage() {
             GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
                 let missing = self.missing().filter(|_| self.is_compact_nullable());
-                let rank = missing
-                    .map(|mask| mask.rank_for_rows(rows.clone()))
-                    .transpose()?;
+                let rank = missing.map(|mask| mask.rank_for_rows(rows.clone()));
                 let present = rows
                     .filter_map(|row| rank.as_ref().map_or(Some(row), |rank| rank.resolve(row)));
                 self.selected_point_present_rows(present)?

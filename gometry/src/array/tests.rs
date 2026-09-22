@@ -295,7 +295,7 @@ mod multipart_storage_tests {
             "MULTILINESTRING Z (EMPTY, (0 0 1, 1 1 2))"
         );
 
-        let masked = array.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]).unwrap());
+        let masked = array.with_missing_mask(ValidityMask::from_vec(2, vec![true, false]));
         let selected = masked.unwrap().gather_logical_rows(&[1, 0]).unwrap();
         assert!(!selected.is_row_missing(0));
         assert!(selected.is_row_missing(1));

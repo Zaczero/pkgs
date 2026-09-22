@@ -834,7 +834,7 @@ impl NativeCoordinates {
                 || m_index.is_some_and(|index| {
                     node.child(index).is_none_or(|child| child.missing_at(row))
                 })
-        })?;
+        });
         Ok(Self { coords, validity })
     }
 
@@ -892,7 +892,7 @@ impl NativeCoordinates {
         let validity = combined_validity(node.length, |row| {
             node.missing_at(row)
                 || (0..size).any(|offset| values_node.missing_at(row * size + offset))
-        })?;
+        });
         let coords = CoordSeq::from_shared_columns(
             SharedSlice::from_vec(xs),
             SharedSlice::from_vec(ys),
@@ -1055,9 +1055,8 @@ fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
 fn combined_validity(
     length: usize,
     missing: impl Fn(usize) -> bool,
-) -> DecodeResult<Option<crate::array::ValidityMask>> {
+) -> Option<crate::array::ValidityMask> {
     crate::array::ValidityMask::from_missing_iter(length, (0..length).map(missing))
-        .map_err(NativeArrowDecodeError::from)
 }
 
 fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
@@ -1135,9 +1134,8 @@ mod tests {
             children: Arc::new(vec![child]),
             schema_name: Arc::new(String::new()),
             field_names: Arc::new(Vec::new()),
-            effective_missing: missing.and_then(|missing| {
-                crate::array::ValidityMask::from_vec(missing.len(), missing).unwrap()
-            }),
+            effective_missing: missing
+                .and_then(|missing| crate::array::ValidityMask::from_vec(missing.len(), missing)),
         }
     }
 

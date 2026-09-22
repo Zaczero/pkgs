@@ -1276,9 +1276,7 @@ mod compact_nullable_tests {
             unreachable!()
         };
         let present_coords = Arc::clone(present_coords);
-        let mask = ValidityMask::from_vec(5, vec![true, false, true, false, true])
-            .unwrap()
-            .unwrap();
+        let mask = ValidityMask::from_vec(5, vec![true, false, true, false, true]).unwrap();
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert_eq!(array.len(), 5);
         let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
@@ -1308,9 +1306,7 @@ mod compact_nullable_tests {
         .unwrap();
         let compact = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(3, vec![false, true, false])
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(3, vec![false, true, false]).unwrap(),
         )
         .unwrap();
 
@@ -1329,9 +1325,7 @@ mod compact_nullable_tests {
                 .unwrap();
         let compact = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(3, vec![true, true, true])
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(3, vec![true, true, true]).unwrap(),
         )
         .unwrap();
 
@@ -1357,9 +1351,7 @@ mod compact_nullable_tests {
         .unwrap();
         let array = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(10_001, (0..10_001).map(|row| row == 9_999).collect())
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(10_001, (0..10_001).map(|row| row == 9_999).collect()).unwrap(),
         )
         .unwrap();
         let source_coords = match array.storage() {
@@ -1397,9 +1389,7 @@ mod compact_nullable_tests {
         .unwrap();
         let array = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(10_001, (0..10_001).map(|row| row == 9_999).collect())
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(10_001, (0..10_001).map(|row| row == 9_999).collect()).unwrap(),
         )
         .unwrap();
 
@@ -1423,9 +1413,7 @@ mod compact_nullable_tests {
             Frame::None,
         )
         .unwrap();
-        let mask = ValidityMask::from_vec(4, vec![true, false, false, true])
-            .unwrap()
-            .unwrap();
+        let mask = ValidityMask::from_vec(4, vec![true, false, false, true]).unwrap();
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords, offsets, ..
@@ -1486,9 +1474,7 @@ mod compact_nullable_tests {
             vec![false, false, true],
             vec![true, false, true, false],
         ] {
-            let mask = ValidityMask::from_vec(missing.len(), missing.clone())
-                .unwrap()
-                .unwrap();
+            let mask = ValidityMask::from_vec(missing.len(), missing.clone()).unwrap();
             let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
             let mut values = [10.0, 20.0].into_iter();
             let expected = missing
@@ -1520,9 +1506,7 @@ mod compact_nullable_tests {
             .unwrap();
             let array = PyGeometryArray::scatter_present_rows(
                 &present,
-                ValidityMask::from_vec(3, vec![true, false, true])
-                    .unwrap()
-                    .unwrap(),
+                ValidityMask::from_vec(3, vec![true, false, true]).unwrap(),
             )
             .unwrap();
             assert_eq!(array.uniform_axes().unwrap(), Some(axes));
@@ -1542,9 +1526,7 @@ mod compact_nullable_tests {
         .unwrap();
         let array = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(4, vec![true, false, true, false])
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(4, vec![true, false, true, false]).unwrap(),
         )
         .unwrap();
         let gathered = array.gather_logical_rows(&[3, 0, 1, 3]).unwrap();
@@ -1582,9 +1564,7 @@ mod compact_nullable_tests {
 
     #[test]
     fn line_and_polygon_gathers_keep_nested_csr_windows_and_missing_rows() {
-        let mask = ValidityMask::from_vec(5, vec![false, true, false, false, true])
-            .unwrap()
-            .unwrap();
+        let mask = ValidityMask::from_vec(5, vec![false, true, false, false, true]).unwrap();
         let lines = PyGeometryArray::packed_lines(
             CoordSeq::try_from_vecs(
                 vec![0.0, 1.0, 10.0, 11.0, 20.0, 21.0],
@@ -1684,7 +1664,7 @@ mod compact_nullable_tests {
         .unwrap();
         let source_line_cache = lines.row_products.frame_cache(0);
         let lines = lines
-            .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
+            .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]))
             .unwrap();
         let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords, offsets, ..
@@ -1723,7 +1703,7 @@ mod compact_nullable_tests {
         .unwrap();
         let source_polygon_cache = polygons.row_products.frame_cache(0);
         let polygons = polygons
-            .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]).unwrap())
+            .with_missing_mask(ValidityMask::from_vec(3, vec![false, true, false]))
             .unwrap();
         let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
@@ -1755,9 +1735,7 @@ mod compact_nullable_tests {
             ),
             row_map: RowSelection::Identity,
         }));
-        let mask = ValidityMask::from_vec(3, vec![false, true, false])
-            .unwrap()
-            .unwrap();
+        let mask = ValidityMask::from_vec(3, vec![false, true, false]).unwrap();
         let error = PyGeometryArray::from_result_storage(
             storage,
             Frame::None,
@@ -1781,9 +1759,7 @@ mod compact_nullable_tests {
         .unwrap();
         let source = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(2, vec![false, true])
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(2, vec![false, true]).unwrap(),
         )
         .unwrap();
         let result = source.scatter_present_result(source.clone()).unwrap();
@@ -1867,9 +1843,7 @@ mod compact_nullable_tests {
         .unwrap();
         let array = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(4, vec![true, false, true, false])
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(4, vec![true, false, true, false]).unwrap(),
         )
         .unwrap();
         let GeometryArrayStorage::Packed(PackedStorage::Polygons {
@@ -1914,9 +1888,7 @@ mod compact_nullable_tests {
             offsets: CsrOffsetColumn::try_new(vec![0, 2], 2).unwrap(),
             row_map: RowSelection::gather_checked_native(vec![0, 0, 0], 1).unwrap(),
         }));
-        let mask = ValidityMask::from_vec(4, vec![false, false, false, true])
-            .unwrap()
-            .unwrap();
+        let mask = ValidityMask::from_vec(4, vec![false, false, false, true]).unwrap();
         let result = PyGeometryArray::from_result_storage(
             storage,
             Frame::None,
@@ -1945,9 +1917,7 @@ mod compact_nullable_tests {
             polygon_offsets: CsrOffsetColumn::<PolygonLevel>::try_new(vec![0, 1], 1).unwrap(),
             row_map: RowSelection::gather_checked_native(vec![0, 0], 1).unwrap(),
         }));
-        let mask = ValidityMask::from_vec(3, vec![false, false, true])
-            .unwrap()
-            .unwrap();
+        let mask = ValidityMask::from_vec(3, vec![false, false, true]).unwrap();
         let result = PyGeometryArray::from_result_storage(
             storage,
             Frame::None,
@@ -2043,9 +2013,7 @@ mod element_bounds_cache_tests {
         let present = single_line();
         let array = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_vec(2, vec![false, true])
-                .unwrap()
-                .unwrap(),
+            ValidityMask::from_vec(2, vec![false, true]).unwrap(),
         )
         .unwrap();
         let bounds = array

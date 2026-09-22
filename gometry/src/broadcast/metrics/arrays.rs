@@ -81,7 +81,7 @@ pub(crate) fn array_crs_metric_float(
             let rights = Arc::clone(right.storage_arc());
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             operation.validate_model(&model)?;
-            let missing = missing::union_many([array.missing(), right.missing()])?;
+            let missing = missing::union_many([array.missing(), right.missing()]);
             if Arc::ptr_eq(&lefts, &rights)
                 && let Some(values) =
                     operation.try_same_storage_identity(&model, &lefts, missing.as_ref())?
@@ -204,7 +204,7 @@ where
         + Send
         + Sync,
 {
-    let missing = missing::union_many([array.missing(), right.missing()])?;
+    let missing = missing::union_many([array.missing(), right.missing()]);
     if !array.is_compact_nullable()
         && !right.is_compact_nullable()
         && let (Some(lefts), Some(rights)) =

@@ -296,7 +296,7 @@ mod tests {
     #[test]
     fn mixed_missing_row_is_empty_group() {
         let array = mixed_zm_and_xy_lines()
-            .with_missing_mask(ValidityMask::from_sparse(2, &[1]).unwrap())
+            .with_missing_mask(ValidityMask::from_sparse(2, &[1]))
             .unwrap();
         let builder = interpolate_mixed_row_groups(
             &array,

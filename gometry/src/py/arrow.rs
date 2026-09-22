@@ -341,7 +341,7 @@ impl NativeArrowAccumulator {
         let epoch = reconcile_arrow_epoch(metadata_epoch, epoch)?;
         let frame = Frame::new(crs, epoch)?;
         let storage = combine_native_storage(storage)?;
-        let missing = crate::array::ValidityMask::from_sparse(length, &missing_rows)?;
+        let missing = crate::array::ValidityMask::from_sparse(length, &missing_rows);
         let output = PyGeometryArray::from_result_storage(
             Arc::new(storage),
             frame,

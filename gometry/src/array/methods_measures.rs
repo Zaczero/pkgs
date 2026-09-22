@@ -789,7 +789,7 @@ mod geographic_masked_bounds_tests {
             Frame::new(Some(crs_arc_static("OGC:CRS84")), None).expect("valid test frame"),
         )
         .unwrap()
-        .with_missing_mask(ValidityMask::from_sparse(3, &[1]).unwrap())
+        .with_missing_mask(ValidityMask::from_sparse(3, &[1]))
         .unwrap();
 
         let values = Python::attach(|py| array.bounds_unary_packed(py))
@@ -821,9 +821,7 @@ mod geographic_masked_bounds_tests {
         let present = PyGeometryArray::from_shapes(vec![left, right], frame).unwrap();
         let masked = PyGeometryArray::scatter_present_rows(
             &present,
-            ValidityMask::from_sparse(3, &[1])
-                .unwrap()
-                .expect("one row is missing"),
+            ValidityMask::from_sparse(3, &[1]).expect("one row is missing"),
         )
         .unwrap();
 
@@ -1101,9 +1099,7 @@ mod concat_bulk_tests {
     fn nullable_concat_uses_logical_row_fallback() {
         let nullable = points()
             .with_missing_mask(Some(
-                ValidityMask::from_vec(3, vec![false, true, false])
-                    .unwrap()
-                    .unwrap(),
+                ValidityMask::from_vec(3, vec![false, true, false]).unwrap(),
             ))
             .unwrap();
         reset_bulk_observations();

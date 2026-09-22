@@ -701,10 +701,10 @@ impl PyGeometryArray {
     pub fn _with_missing(&self, mask: &Bound<'_, PyAny>) -> PyResult<Self> {
         let expected = self.len();
         let mask = crate::collect_bool_mask(mask, expected)?;
-        let incoming = ValidityMask::from_vec(expected, mask)?;
+        let incoming = ValidityMask::from_vec(expected, mask);
         // OR with existing bits (pandas GeometryExtensionArray semantics):
         // never unmask a row that already carries a missing placeholder.
-        let merged = missing::union_many([self.missing(), incoming.as_ref()])?;
+        let merged = missing::union_many([self.missing(), incoming.as_ref()]);
         self.clone().with_missing_mask(merged).map_err(PyErr::from)
     }
 

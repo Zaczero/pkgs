@@ -992,9 +992,7 @@ mod lonlat_points_tests {
     #[test]
     fn missing_row_is_not_validated_and_keeps_logical_index() {
         let present = packed_xy(vec![1.0], vec![2.0], Frame::None);
-        let mask = ValidityMask::from_vec(3, vec![true, false, true])
-            .unwrap()
-            .expect("mask");
+        let mask = ValidityMask::from_vec(3, vec![true, false, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert!(array.is_compact_nullable());
         let points = lonlat_points(&array).expect("present row is in domain");
@@ -1022,9 +1020,7 @@ mod lonlat_points_tests {
     #[test]
     fn compact_missing_domain_error_uses_logical_index() {
         let present = packed_xy(vec![0.0, 200.0], vec![0.0, 0.0], Frame::None);
-        let mask = ValidityMask::from_vec(4, vec![true, false, true, false])
-            .unwrap()
-            .expect("mask");
+        let mask = ValidityMask::from_vec(4, vec![true, false, true, false]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         match lonlat_points(&array) {
             Err(LonLatPointsError::Row(row, _)) => assert_eq!(row, 3),
@@ -1059,9 +1055,7 @@ mod lonlat_points_tests {
             Vec::new(),
             Frame::Crs(crs_arc_static(unavailable)),
         );
-        let mask = ValidityMask::from_vec(2, vec![true, true])
-            .unwrap()
-            .expect("mask");
+        let mask = ValidityMask::from_vec(2, vec![true, true]).expect("mask");
         let array = PyGeometryArray::scatter_present_rows(&present, mask).unwrap();
         assert!(array.is_compact_nullable());
         assert!(

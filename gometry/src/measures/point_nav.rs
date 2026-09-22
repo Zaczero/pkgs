@@ -620,17 +620,17 @@ enum PreparedPointOperand<'a> {
 }
 
 impl<'a> PointOperand<'a> {
-    fn prepare(self) -> crate::error::Result<PreparedPointOperand<'a>> {
+    fn prepare(self) -> PreparedPointOperand<'a> {
         match self {
-            Self::One(point) => Ok(PreparedPointOperand::One(point)),
-            Self::Compact(array) => Ok(PreparedPointOperand::Compact {
+            Self::One(point) => PreparedPointOperand::One(point),
+            Self::Compact(array) => PreparedPointOperand::Compact {
                 array,
                 rank: array
                     .missing()
                     .expect("compact point rows carry validity")
-                    .full_rank()?,
-            }),
-            Self::Many { points, .. } => Ok(PreparedPointOperand::Many(points)),
+                    .full_rank(),
+            },
+            Self::Many { points, .. } => PreparedPointOperand::Many(points),
         }
     }
 
@@ -688,10 +688,7 @@ fn dispatch_point_pair_rows<S: PointPairRowsSink>(
     right: PointOperand<'_>,
     sink: S,
 ) -> PyResult<S::Value> {
-    sink.run(
-        left.prepare().map_err(PyErr::from)?,
-        right.prepare().map_err(PyErr::from)?,
-    )
+    sink.run(left.prepare(), right.prepare())
 }
 
 fn input_len(input: GeometryInput<'_>) -> Option<usize> {
@@ -1605,9 +1602,9 @@ fn cross_track_point_rows_dispatch(
     len: usize,
     missing: Option<&ValidityMask>,
 ) -> PyResult<Vec<f64>> {
-    let points = points.prepare().map_err(PyErr::from)?;
-    let starts = starts.prepare().map_err(PyErr::from)?;
-    let ends = ends.prepare().map_err(PyErr::from)?;
+    let points = points.prepare();
+    let starts = starts.prepare();
+    let ends = ends.prepare();
     missing.map_or_else(
         || cross_track_point_rows::<false>(radius, frame, &points, &starts, &ends, len, None),
         |mask| {
@@ -1623,15 +1620,11 @@ const fn input_missing<'a>(input: &'a GeometryInput<'_>) -> Option<&'a ValidityM
     }
 }
 
-fn union_missing_masks(
-    inputs: &[&GeometryInput<'_>],
-) -> crate::error::Result<Option<ValidityMask>> {
+fn union_missing_masks(inputs: &[&GeometryInput<'_>]) -> Option<ValidityMask> {
     union_many(inputs.iter().map(|input| input_missing(input)))
 }
 
-fn union_point_operand_missing(
-    inputs: &[&PointOperand<'_>],
-) -> crate::error::Result<Option<ValidityMask>> {
+fn union_point_operand_missing(inputs: &[&PointOperand<'_>]) -> Option<ValidityMask> {
     union_many(inputs.iter().map(|input| input.missing()))
 }
 
@@ -1734,7 +1727,7 @@ impl<'a> PointBinaryPlan<'a> {
             },
         };
         let output_frame = left.frame().compatible(right.frame(), operation.name())?;
-        let missing = union_many([left.missing(), right.missing()])?;
+        let missing = union_many([left.missing(), right.missing()]);
         Ok(Self {
             left,
             right,
@@ -2402,7 +2395,7 @@ fn cross_track_broadcast(
             let (end_crs, end_epoch) = input_frame(&end_in);
             Frame::compatible_parts(point_crs, point_epoch, start_crs, start_epoch, OP.name())?;
             Frame::compatible_parts(point_crs, point_epoch, end_crs, end_epoch, OP.name())?;
-            let missing = union_missing_masks(&[&point_in, &start_in, &end_in])?;
+            let missing = union_missing_masks(&[&point_in, &start_in, &end_in]);
             if let (Some(points), Some(starts), Some(ends)) = (
                 input_point(&point_in),
                 input_point(&start_in),
@@ -2416,7 +2409,7 @@ fn cross_track_broadcast(
                 let radius = crs::geodesic_cross_track_radius_crs_at(&metric.crs, &metric.state)
                     .map_err(PyErr::from)
                     .map_err(row_zero)?;
-                let missing_for_rows = union_point_operand_missing(&[&points, &starts, &ends])?;
+                let missing_for_rows = union_point_operand_missing(&[&points, &starts, &ends]);
                 return float64_array(
                     py,
                     py.detach(move || {

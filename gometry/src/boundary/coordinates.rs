@@ -1352,7 +1352,7 @@ mod tests {
         );
 
         let masked = gathered
-            .with_missing_mask(ValidityMask::from_vec(2, vec![true, false]).unwrap())
+            .with_missing_mask(ValidityMask::from_vec(2, vec![true, false]))
             .unwrap();
         let masked_view = masked.coordinate_view();
         let masked_points = masked_view.collect_points();
