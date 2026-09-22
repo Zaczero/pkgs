@@ -919,7 +919,7 @@ fn geoparquet_meta_error(detail: impl std::fmt::Display) -> PyErr {
         crate::error::ParseFormat::GeoParquet,
     );
     Python::attach(|py| {
-        let _ = error.value(py).setattr("category", "metadata");
+        drop(error.value(py).setattr("category", "metadata"));
     });
     error
 }
@@ -927,14 +927,14 @@ fn geoparquet_meta_error(detail: impl std::fmt::Display) -> PyErr {
 fn geoparquet_layout_error(detail: impl std::fmt::Display) -> PyErr {
     let error = GeometryError::new_err(detail.to_string());
     Python::attach(|py| {
-        let _ = error.value(py).setattr("category", "layout");
+        drop(error.value(py).setattr("category", "layout"));
     });
     error
 }
 
 fn geoparquet_resource_error(error: PyErr) -> PyErr {
     Python::attach(|py| {
-        let _ = error.value(py).setattr("category", "resource");
+        drop(error.value(py).setattr("category", "resource"));
     });
     error
 }

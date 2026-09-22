@@ -451,7 +451,7 @@ fn layout_with_owned_content(
     schema_n_children: usize,
 ) -> PyResult<()> {
     try_with_stack_layout(array, format, schema_n_children, |layout| {
-        let _ = snapshot_native_buffers(layout)?;
+        drop(snapshot_native_buffers(layout)?);
         Ok(())
     })
 }
@@ -465,7 +465,7 @@ fn with_owned_content_layout<R>(
     f: impl FnOnce(&mut CaptureLayout<'_>) -> R,
 ) -> PyResult<R> {
     try_with_stack_layout(array, format, schema_n_children, |layout| {
-        let _ = snapshot_native_buffers(layout)?;
+        drop(snapshot_native_buffers(layout)?);
         Ok(f(layout))
     })
 }

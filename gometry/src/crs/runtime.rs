@@ -110,7 +110,7 @@ pub(crate) fn definition(value: &str) -> Result<SmolStr> {
     // Keep the existing eager-admission contract: malformed or unavailable
     // definitions fail at the public constructor, while the stored value stays
     // exactly the normalized caller input.
-    let _ = info_with_state(&normalized, &state)?;
+    drop(info_with_state(&normalized, &state)?);
     Ok(SmolStr::from(normalized))
 }
 

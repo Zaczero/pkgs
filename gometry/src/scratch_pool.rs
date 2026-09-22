@@ -70,9 +70,11 @@ impl<T: RetainScratch + 'static> ScratchPool<T> {
         let value = key.with(|pool| {
             let value = pool.value.take();
             let charge = pool.retained_charge.replace(0);
-            let _ = RETAINED_BYTES.try_with(|retained| {
-                retained.set(retained.get().saturating_sub(charge));
-            });
+            RETAINED_BYTES
+                .try_with(|retained| {
+                    retained.set(retained.get().saturating_sub(charge));
+                })
+                .unwrap_or(());
             value
         });
         ScratchLease {
@@ -113,33 +115,39 @@ impl<T: RetainScratch> Drop for ScratchLease<T> {
         let return_value = || {
             value.clear_for_reuse();
             let charge = value.retained_bytes();
-            let _ = self.key.try_with(|pool| {
-                let old_charge = pool.retained_charge.get();
-                // During TLS teardown either key can already be unavailable;
-                // leaving `value` local in that case drops it without updating
-                // a destroyed pool or aggregate.
-                let _ = RETAINED_BYTES.try_with(|retained| {
-                    // A nested checkout may have returned an inner value to this
-                    // pool while the outer lease was still live. Remove that
-                    // value before reserving the outer replacement.
-                    let Some(total) = retained
-                        .get()
-                        .saturating_sub(old_charge)
-                        .checked_add(charge)
-                    else {
-                        return;
-                    };
-                    if charge <= pool.retain_bytes && total <= SCRATCH_RETAIN_BYTES {
-                        let old_value = pool.value.replace(value);
-                        pool.retained_charge.set(charge);
-                        retained.set(total);
-                        drop(old_value);
-                    }
-                });
-            });
+            self.key
+                .try_with(|pool| {
+                    let old_charge = pool.retained_charge.get();
+                    // During TLS teardown either key can already be unavailable;
+                    // leaving `value` local in that case drops it without updating
+                    // a destroyed pool or aggregate.
+                    RETAINED_BYTES
+                        .try_with(|retained| {
+                            // A nested checkout may have returned an inner value to this
+                            // pool while the outer lease was still live. Remove that
+                            // value before reserving the outer replacement.
+                            let Some(total) = retained
+                                .get()
+                                .saturating_sub(old_charge)
+                                .checked_add(charge)
+                            else {
+                                return;
+                            };
+                            if charge <= pool.retain_bytes && total <= SCRATCH_RETAIN_BYTES {
+                                let old_value = pool.value.replace(value);
+                                pool.retained_charge.set(charge);
+                                retained.set(total);
+                                drop(old_value);
+                            }
+                        })
+                        .unwrap_or(());
+                })
+                .unwrap_or(());
         };
         if std::thread::panicking() {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(return_value));
+            drop(std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                return_value,
+            )));
         } else {
             return_value();
         }
@@ -164,7 +172,9 @@ impl RetainBudgetGuard {
 #[cfg(test)]
 impl Drop for RetainBudgetGuard {
     fn drop(&mut self) {
-        let _ = RETAINED_BYTES.try_with(|retained| retained.set(0));
+        RETAINED_BYTES
+            .try_with(|retained| retained.set(0))
+            .unwrap_or(());
     }
 }
 

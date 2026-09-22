@@ -209,20 +209,16 @@ pub(crate) fn invalid_geometry_issue(issue: &ValidationIssue, row: Option<usize>
             || issue.detail.clone(),
             |row| format!("geometry {row} is invalid: {}", issue.detail),
         );
-    let error = with_attrs(InvalidGeometryError::new_err(message), &[
+    with_attrs(InvalidGeometryError::new_err(message), &[
         ("row", Attr::OptionalCount(row)),
         ("path", Attr::OptionalStr(issue.path.as_deref())),
         ("code", Attr::Str(issue.code)),
         ("detail", Attr::Str(&issue.detail)),
-    ]);
-    Python::attach(|py| {
-        if let Some(point) = issue.location {
-            let _ = error.value(py).setattr("location", (point.x, point.y));
-        } else {
-            let _ = error.value(py).setattr("location", py.None());
-        }
-    });
-    error
+        (
+            "location",
+            Attr::OptionalPoint(issue.location.map(|point| (point.x, point.y))),
+        ),
+    ])
 }
 
 /// Tag a `ParseError`'s `.format` after the fact (for `map_err` over a
@@ -240,6 +236,7 @@ enum Attr<'a> {
     Float(f64),
     OptionalFloat(Option<f64>),
     OptionalCount(Option<usize>),
+    OptionalPoint(Option<(f64, f64)>),
 }
 
 /// Best-effort structured attributes on a fresh error: handlers read
@@ -249,7 +246,7 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
     Python::attach(|py| {
         let exception = err.value(py);
         for (name, attr) in attrs {
-            let _ = match attr {
+            drop(match attr {
                 Attr::Str(s) => exception.setattr(*name, *s),
                 Attr::OptionalStr(optional) => exception.setattr(*name, *optional),
                 Attr::Int(i) => exception.setattr(*name, *i),
@@ -257,7 +254,8 @@ fn with_attrs(err: PyErr, attrs: &[(&str, Attr<'_>)]) -> PyErr {
                 Attr::OptionalFloat(optional) => exception.setattr(*name, *optional),
                 Attr::Count(count) => exception.setattr(*name, *count),
                 Attr::OptionalCount(optional) => exception.setattr(*name, *optional),
-            };
+                Attr::OptionalPoint(optional) => exception.setattr(*name, *optional),
+            });
         }
     });
     err

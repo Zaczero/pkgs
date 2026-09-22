@@ -515,7 +515,7 @@ impl Drop for GridSourceAdmission {
         // execution diagnostic when the admission operation ends, including
         // native errors and early returns; it is never a public warning.
         if let Some(transformer) = &self.transformer {
-            let _ = transformer.execution().take_diagnostic();
+            drop(transformer.execution().take_diagnostic());
         }
     }
 }
