@@ -85,6 +85,16 @@ def test_extension_array_pickle_preserves_view_state_aliasing(
     assert canon(restored_view.geometry_array) == canon(replacement)
 
 
+def test_extension_array_pickle_preserves_readonly(points: gm.GeometryArray) -> None:
+    import pickle
+
+    values = GeometryExtensionArray(points)
+    values._readonly = True
+    restored = pickle.loads(pickle.dumps(values))
+    with pytest.raises(ValueError, match='read-only'):
+        restored[0] = gm.Point(9, 8, crs=4326)
+
+
 def test_geometry_array_to_pandas_series_and_frame(points: gm.GeometryArray) -> None:
     series = points.to_pandas(name='geom')
     assert isinstance(series.dtype, GeometryDtype)

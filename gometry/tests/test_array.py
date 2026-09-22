@@ -55,6 +55,16 @@ def test_packed_point_array_values_and_auto_packing() -> None:
         gm.distance(gm.points([0], [0], crs=4326), gm.points([0], [0], crs=3857))
 
 
+def test_mixed_coordinate_axes_report_each_row() -> None:
+    array = gm.GeometryArray([
+        gm.Point(1, 2, z=3),
+        gm.LineString([(4, 5), (6, 7)]),
+        gm.box(8, 9, 10, 11),
+        gm.Point(12, 13),
+    ])
+    assert array.has_z.tolist() == [True, False, False, False]
+
+
 def test_array_bounds_with_empty_rows_and_empty_arrays() -> None:
     arr = gm.GeometryArray([gm.from_wkt('POINT EMPTY'), gm.box(0, 0, 2, 3)])
     np.testing.assert_allclose(

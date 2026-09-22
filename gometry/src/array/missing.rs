@@ -131,9 +131,7 @@ impl ValidityBuilder {
             if required > bytes.len() {
                 let additional = required - bytes.len();
                 crate::boundary::try_reserve_vec(bytes, additional)?;
-                for _ in 0..additional {
-                    crate::try_push_vec(bytes, 0)?;
-                }
+                bytes.resize(required, 0);
             }
             let start = self.len;
             let first = start / 8;
@@ -148,9 +146,7 @@ impl ValidityBuilder {
                 bytes[first] |= high_mask & (u8::MAX << (start % 8));
             } else {
                 bytes[first] |= u8::MAX << (start % 8);
-                for byte in &mut bytes[first + 1..last] {
-                    *byte = u8::MAX;
-                }
+                bytes[first + 1..last].fill(u8::MAX);
                 let high = end % 8;
                 bytes[last] |= if high == 0 {
                     u8::MAX
@@ -161,6 +157,27 @@ impl ValidityBuilder {
         }
         self.len = end;
         self.valid_count = valid_count;
+        Ok(())
+    }
+
+    pub(crate) fn extend_missing(&mut self, count: usize) -> crate::error::Result<()> {
+        if count == 0 {
+            return Ok(());
+        }
+        let start = self.len;
+        let end = start
+            .checked_add(count)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        self.push(false)?;
+        let bytes = self.bytes.as_mut().expect("missing row initializes bitmap");
+        let required = end.div_ceil(8);
+        if required > bytes.len() {
+            crate::boundary::try_reserve_vec(bytes, required - bytes.len())?;
+            bytes.resize(required, 0);
+        }
+        bytes[start / 8] &= (1_u8 << (start % 8)) - 1;
+        bytes[start / 8 + 1..].fill(0);
+        self.len = end;
         Ok(())
     }
 
@@ -202,32 +219,45 @@ impl ValidityMask {
         len: usize,
         missing: impl IntoIterator<Item = bool>,
     ) -> crate::error::Result<Option<Self>> {
+        let mut rows = missing.into_iter().enumerate();
+        let Some((first, _)) = rows.find(|&(_, missing)| missing) else {
+            return Ok(None);
+        };
         let mut bytes = Vec::new();
         crate::try_reserve_vec(&mut bytes, len.div_ceil(8))?;
-        bytes.resize(len.div_ceil(8), 0);
-        let mut valid_count = 0;
-        let mut rows = 0;
-        for (row, is_missing) in missing.into_iter().enumerate() {
-            debug_assert!(row < len, "validity iterator exceeds declared length");
-            if !is_missing {
-                bytes[row / 8] |= 1 << (row % 8);
-                valid_count += 1;
+        bytes.resize(len.div_ceil(8), u8::MAX);
+        bytes[first / 8] &= !(1 << (first % 8));
+        let mut missing_count = 1;
+        for (row, is_missing) in rows {
+            if is_missing {
+                bytes[row / 8] &= !(1 << (row % 8));
+                missing_count += 1;
             }
-            rows = row + 1;
         }
-        debug_assert_eq!(
-            rows, len,
-            "validity iterator length must match declared length"
-        );
-        if valid_count == len {
-            return Ok(None);
+        if let Some(last) = bytes.last_mut() {
+            *last &= trailing_mask(len);
         }
         Ok(Some(Self {
             bytes: SharedSlice::from_vec(bytes),
             bit_offset: 0,
             len,
-            valid_count,
+            valid_count: len - missing_count,
         }))
+    }
+
+    /// Share an already bounded Arrow bitmap window.
+    pub(crate) fn from_bitmap(
+        bytes: SharedSlice<u8>,
+        bit_offset: usize,
+        len: usize,
+    ) -> Option<Self> {
+        let valid_count = count_valid(&bytes, bit_offset, len);
+        (valid_count != len).then_some(Self {
+            bytes,
+            bit_offset,
+            len,
+            valid_count,
+        })
     }
 
     #[expect(
@@ -288,21 +318,22 @@ impl ValidityMask {
     /// strategy for that batch. A short batch keeps the scalar prefix walk;
     /// larger or repeated-prefix batches build a 512-bit directory once and
     /// then scan at most one block for each query.
-    pub(crate) fn rank_for_rows(&self, rows: &[usize]) -> crate::error::Result<ValidityRank<'_>> {
-        let scalar_work = rows.iter().fold(0_usize, |work, &logical| {
+    pub(crate) fn rank_for_rows(
+        &self,
+        rows: impl IntoIterator<Item = usize>,
+    ) -> crate::error::Result<ValidityRank<'_>> {
+        let mut scalar_work = 0_usize;
+        let mut directory_work = self.bytes.len();
+        let mut row_count = 0_usize;
+        for logical in rows {
             if self.is_valid(logical) {
-                work.saturating_add(rank_scan_bytes(self.bit_offset, logical))
-            } else {
-                work
+                scalar_work = scalar_work.saturating_add(rank_scan_bytes(self.bit_offset, logical));
             }
-        });
-        let directory_work =
-            self.bytes
-                .len()
-                .saturating_add(rows.iter().fold(0_usize, |work, &logical| {
-                    work.saturating_add(rank_block_scan_bytes(self.bit_offset, logical))
-                }));
-        if rows.len() <= 1 || scalar_work <= directory_work {
+            directory_work =
+                directory_work.saturating_add(rank_block_scan_bytes(self.bit_offset, logical));
+            row_count = row_count.saturating_add(1);
+        }
+        if row_count <= 1 || scalar_work <= directory_work {
             return Ok(ValidityRank {
                 mask: self,
                 blocks: None,
@@ -366,30 +397,6 @@ impl ValidityMask {
             len,
             valid_count,
         })
-    }
-
-    /// Gather in exact row order, including reversed and duplicate rows.
-    pub(crate) fn try_gather(&self, rows: &[usize]) -> crate::error::Result<Option<Self>> {
-        let mut bytes = Vec::new();
-        crate::try_reserve_vec(&mut bytes, rows.len().div_ceil(8))?;
-        bytes.resize(rows.len().div_ceil(8), 0);
-        let mut valid_count = 0;
-        for (out, &row) in rows.iter().enumerate() {
-            // `is_valid` owns the bounds check.
-            if self.is_valid(row) {
-                bytes[out / 8] |= 1 << (out % 8);
-                valid_count += 1;
-            }
-        }
-        if valid_count == rows.len() {
-            return Ok(None);
-        }
-        Ok(Some(Self {
-            bytes: SharedSlice::from_vec(bytes),
-            bit_offset: 0,
-            len: rows.len(),
-            valid_count,
-        }))
     }
 
     /// Arrow-compatible owner and physical bit offset. The Arc keeps the bytes
@@ -490,6 +497,7 @@ impl HeapSize for ValidityMask {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct MissingIter<'a> {
     bytes: &'a [u8],
     byte: usize,
@@ -543,6 +551,7 @@ impl Iterator for MissingIter<'_> {
 
 impl ExactSizeIterator for MissingIter<'_> {}
 
+#[derive(Clone)]
 pub(crate) struct ValidityCursor<'a> {
     missing: MissingIter<'a>,
     logical: usize,
@@ -619,60 +628,52 @@ const fn trailing_mask(len: usize) -> u8 {
     }
 }
 
-/// Missing propagation is validity intersection (`present iff both present`).
+/// Missing propagation is validity intersection (`present iff all present`).
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "paired masks are row-aligned by construction; the Result is the allocation path"
-)]
-pub(crate) fn union_pair(
-    left: Option<&ValidityMask>,
-    right: Option<&ValidityMask>,
-) -> crate::error::Result<Option<ValidityMask>> {
-    match (left, right) {
-        (None, None) => Ok(None),
-        (Some(mask), None) | (None, Some(mask)) => Ok(Some(mask.clone())),
-        (Some(left), Some(right)) => {
-            assert_eq!(
-                left.len(),
-                right.len(),
-                "validity union requires row alignment"
-            );
-            ValidityMask::from_missing_iter(
-                left.len(),
-                left.iter()
-                    .zip(right.iter())
-                    .map(|(left, right)| left || right),
-            )
-        },
-    }
-}
-
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "unioned masks are row-aligned by construction; the Result is the allocation path"
+    reason = "masks are row-aligned by construction; the Result is the allocation path"
 )]
 pub(crate) fn union_many<'a>(
     masks: impl IntoIterator<Item = Option<&'a ValidityMask>>,
 ) -> crate::error::Result<Option<ValidityMask>> {
-    let mut collected = Vec::new();
-    for mask in masks.into_iter().flatten() {
-        crate::try_push_vec(&mut collected, mask)?;
-    }
-    let masks = collected;
-    let Some(first) = masks.first() else {
+    let mut masks = masks.into_iter().flatten().peekable();
+    let Some(first) = masks.next() else {
         return Ok(None);
     };
-    for mask in &masks[1..] {
+    if masks.peek().is_none() {
+        return Ok(Some(first.clone()));
+    }
+    let mut bytes = Vec::new();
+    crate::try_reserve_vec(&mut bytes, first.len().div_ceil(8))?;
+    bytes.resize(first.len().div_ceil(8), u8::MAX);
+    for mask in std::iter::once(first).chain(masks) {
         assert_eq!(
             first.len(),
             mask.len(),
             "validity union requires row alignment"
         );
+        let source = &mask.bytes[mask.bit_offset / 8..];
+        let shift = mask.bit_offset % 8;
+        if shift == 0 {
+            for (output, &input) in bytes.iter_mut().zip(source) {
+                *output &= input;
+            }
+        } else {
+            for (index, output) in bytes.iter_mut().enumerate() {
+                let low = source[index] >> shift;
+                let high = source.get(index + 1).copied().unwrap_or(0) << (8 - shift);
+                *output &= low | high;
+            }
+        }
     }
-    ValidityMask::from_missing_iter(
+    if let Some(last) = bytes.last_mut() {
+        *last &= trailing_mask(first.len());
+    }
+    Ok(ValidityMask::from_bitmap(
+        SharedSlice::from_vec(bytes),
+        0,
         first.len(),
-        (0..first.len()).map(|row| masks.iter().any(|mask| mask.is_missing(row))),
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -716,26 +717,32 @@ mod tests {
     }
 
     #[test]
-    fn validity_builder_bulk_present_run_matches_scalar_bits() {
+    fn validity_builder_bulk_runs_preserve_bits_and_counts() {
         use super::ValidityBuilder;
 
-        let mut builder = ValidityBuilder::new();
-        builder.push(false).unwrap();
-        builder.extend_present(17).unwrap();
-        builder.push(false).unwrap();
-        builder.extend_present(3).unwrap();
-        let mask = builder.finish().unwrap();
-        let mut expected = vec![true];
-        expected.extend([false; 17]);
-        expected.push(true);
-        expected.extend([false; 3]);
-        assert_eq!(mask.iter().collect::<Vec<_>>(), expected);
-        assert_eq!(mask.present_count(), 20);
+        for prefix in 0..16 {
+            for missing in [0, 1, 7, 8, 9, 31] {
+                let mut builder = ValidityBuilder::new();
+                builder.extend_present(prefix).unwrap();
+                builder.extend_missing(missing).unwrap();
+                builder.extend_present(17).unwrap();
+                builder.extend_missing(3).unwrap();
+                builder.push(true).unwrap();
+                let mask = builder.finish().unwrap();
+                let expected: Vec<_> = (0..prefix + missing + 21)
+                    .map(|row| {
+                        (prefix..prefix + missing).contains(&row)
+                            || (prefix + missing + 17..prefix + missing + 20).contains(&row)
+                    })
+                    .collect();
+                assert_eq!(mask.iter().collect::<Vec<_>>(), expected);
+                assert_eq!(mask.present_count(), prefix + 18);
+            }
+        }
     }
 
     use super::{
         RANK_BLOCK_BYTES, ValidityMask, count_valid_bytes, reset_count_valid_bytes, union_many,
-        union_pair,
     };
     use crate::heap_size::HeapSize as _;
 
@@ -757,7 +764,10 @@ mod tests {
             nested.arrow_bitmap().0.as_ptr()
         ));
 
-        let gathered = mask.try_gather(&[10, 0, 10, 1, 8]).unwrap().unwrap();
+        let gathered =
+            ValidityMask::from_missing_iter(5, [10, 0, 10, 1, 8].map(|row| mask.is_missing(row)))
+                .unwrap()
+                .unwrap();
         assert_eq!(gathered.iter().collect::<Vec<_>>(), [
             true, false, true, true, true
         ]);
@@ -797,7 +807,7 @@ mod tests {
         let rows: Vec<_> = (0..len).collect();
 
         reset_count_valid_bytes();
-        let rank = mask.rank_for_rows(&rows).unwrap();
+        let rank = mask.rank_for_rows(rows.iter().copied()).unwrap();
         let resolved = rows
             .iter()
             .map(|&row| rank.resolve(row))
@@ -826,7 +836,7 @@ mod tests {
             let mask = ValidityMask::from_sparse(len, &[len - 1]).unwrap().unwrap();
             let rows: Vec<_> = (0..len).collect();
             reset_count_valid_bytes();
-            let rank = mask.rank_for_rows(&rows).unwrap();
+            let rank = mask.rank_for_rows(rows.iter().copied()).unwrap();
             for &row in &rows {
                 let _ = rank.resolve(row);
             }
@@ -846,7 +856,7 @@ mod tests {
             .unwrap();
         let mask = source.window(7, 41).unwrap();
         let rows = [40, 0, 40, 1, 17, 39];
-        let rank = mask.rank_for_rows(&rows).unwrap();
+        let rank = mask.rank_for_rows(rows.iter().copied()).unwrap();
         let expected = rows
             .iter()
             .map(|&row| mask.is_valid(row).then(|| mask.present_before(row)))
@@ -870,12 +880,12 @@ mod tests {
         ])
         .unwrap()
         .unwrap();
-        let pair = union_pair(Some(&left), Some(&right)).unwrap().unwrap();
+        let pair = union_many([Some(&left), Some(&right)]).unwrap().unwrap();
         assert_eq!(pair.arrow_bitmap().0.as_ref(), &[0b1111_1001, 0]);
         assert_eq!(pair.iter().collect::<Vec<_>>(), [
             false, true, true, false, false, false, false, false, true
         ]);
-        assert_eq!(union_pair(Some(&left), None).unwrap(), Some(left.clone()));
+        assert_eq!(union_many([Some(&left), None]).unwrap(), Some(left.clone()));
         assert_eq!(
             union_many([Some(&left), None, Some(&right)]).unwrap(),
             Some(pair)
@@ -884,41 +894,41 @@ mod tests {
 
     #[test]
     fn union_handles_unaligned_windows_with_independent_missing_counts() {
-        let offset_one = ValidityMask::from_sparse(16, &[1, 4])
-            .unwrap()
-            .unwrap()
-            .window(1, 5)
-            .unwrap();
-        let offset_seven = ValidityMask::from_sparse(16, &[7, 9, 11])
-            .unwrap()
-            .unwrap()
-            .window(7, 5)
-            .unwrap();
-        let union = union_pair(Some(&offset_one), Some(&offset_seven))
-            .unwrap()
-            .unwrap();
-        assert_eq!(union.iter().collect::<Vec<_>>(), [
-            true, false, true, true, true
-        ]);
-        assert_eq!(union.missing_count(), 4);
-        assert_eq!(union.present_count(), 1);
-
-        let offset_nine = ValidityMask::from_sparse(16, &[9, 12])
-            .unwrap()
-            .unwrap()
-            .window(9, 5)
-            .unwrap();
-        let other = ValidityMask::from_vec(5, vec![false, false, true, false, false])
-            .unwrap()
-            .unwrap();
-        let union = union_pair(Some(&offset_nine), Some(&other))
-            .unwrap()
-            .unwrap();
-        assert_eq!(union.iter().collect::<Vec<_>>(), [
-            true, false, true, true, false
-        ]);
-        assert_eq!(union.missing_count(), 3);
-        assert_eq!(union.present_count(), 2);
+        for left_offset in 0..16 {
+            for right_offset in 0..16 {
+                for len in [1, 7, 8, 9, 15, 16, 17, 65] {
+                    let left = ValidityMask::from_missing_iter(
+                        left_offset + len,
+                        (0..left_offset + len)
+                            .map(|row| row < left_offset || (row - left_offset) % 3 == 0),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .window(left_offset, len)
+                    .unwrap();
+                    let right = ValidityMask::from_missing_iter(
+                        right_offset + len,
+                        (0..right_offset + len)
+                            .map(|row| row >= right_offset && (row - right_offset) % 5 == 0),
+                    )
+                    .unwrap()
+                    .unwrap()
+                    .window(right_offset, len)
+                    .unwrap();
+                    let union = union_many([Some(&left), None, Some(&right)])
+                        .unwrap()
+                        .unwrap();
+                    let expected: Vec<_> =
+                        (0..len).map(|row| row % 3 == 0 || row % 5 == 0).collect();
+                    assert_eq!(union.iter().collect::<Vec<_>>(), expected);
+                    assert_eq!(
+                        union.missing_count(),
+                        expected.iter().filter(|&&v| v).count()
+                    );
+                    assert_eq!(union.present_count(), len - union.missing_count());
+                }
+            }
+        }
     }
 
     #[test]
@@ -937,18 +947,7 @@ mod tests {
     fn empty_and_all_present_inputs_produce_no_mask() {
         assert!(ValidityMask::from_vec(0, Vec::new()).unwrap().is_none());
         assert!(ValidityMask::from_vec(5, vec![false; 5]).unwrap().is_none());
-        assert!(union_pair(None, None).unwrap().is_none());
         assert!(union_many([None, None]).unwrap().is_none());
-    }
-
-    #[test]
-    #[should_panic(expected = "validity union requires row alignment")]
-    fn union_pair_rejects_mismatched_lengths() {
-        let left = ValidityMask::from_vec(1, vec![true]).unwrap().unwrap();
-        let right = ValidityMask::from_vec(2, vec![true, false])
-            .unwrap()
-            .unwrap();
-        let _ = union_pair(Some(&left), Some(&right)).unwrap();
     }
 
     #[test]
@@ -998,7 +997,12 @@ mod tests {
         assert_eq!(window.heap_bytes(), parent_retained);
         assert_eq!(nested.heap_bytes(), parent_retained);
 
-        let gathered = parent.try_gather(&[2048, 2049, 2050]).unwrap().unwrap();
+        let gathered = ValidityMask::from_missing_iter(
+            3,
+            [2048, 2049, 2050].map(|row| parent.is_missing(row)),
+        )
+        .unwrap()
+        .unwrap();
         let (gathered_bitmap, _) = gathered.arrow_bitmap();
         assert!(!std::ptr::eq(
             parent_bitmap.as_ptr(),

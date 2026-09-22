@@ -930,10 +930,7 @@ impl Groups {
             let value = match &self.values {
                 GroupsValues::Int64(_) => {
                     let source = self.int64_row_slice(row);
-                    let mut values = crate::try_vec_with_capacity(source.len())?;
-                    for &value in source {
-                        crate::try_push(&mut values, value)?;
-                    }
+                    let values = crate::boundary::try_copy_slice(source)?;
                     values.into_py_any(py)?
                 },
                 GroupsValues::Geometry(_) => {
@@ -969,14 +966,11 @@ impl Groups {
         }
         match &self.values {
             GroupsValues::Int64(values) => {
-                let mut copied = crate::try_vec_with_capacity(end - start)?;
-                for &value in &values[start..end] {
-                    crate::try_push(&mut copied, value)?;
-                }
+                let copied = crate::boundary::try_copy_slice(&values[start..end])?;
                 let args = (copied, rebased).into_py_any(py)?;
                 Ok((
                     module
-                        .getattr(pyo3::intern!(py, "_unpickle_int64_groups"))?
+                        .getattr(pyo3::intern!(py, "_unpickle_int64_groups_v1"))?
                         .unbind(),
                     args,
                 ))
@@ -990,7 +984,7 @@ impl Groups {
                 let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
                 Ok((
                     module
-                        .getattr(pyo3::intern!(py, "_unpickle_geometry_groups"))?
+                        .getattr(pyo3::intern!(py, "_unpickle_geometry_groups_v1"))?
                         .unbind(),
                     args,
                 ))
@@ -1004,7 +998,7 @@ impl Groups {
                 let args = (Py::new(py, windowed)?, rebased).into_py_any(py)?;
                 Ok((
                     module
-                        .getattr(pyo3::intern!(py, "_unpickle_cell_groups"))?
+                        .getattr(pyo3::intern!(py, "_unpickle_cell_groups_v1"))?
                         .unbind(),
                     args,
                 ))
@@ -1018,7 +1012,7 @@ impl Groups {
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
-pub(crate) fn _unpickle_int64_groups(
+pub(crate) fn _unpickle_int64_groups_v1(
     ids: &Bound<'_, PyAny>,
     offsets: &Bound<'_, PyAny>,
 ) -> PyResult<Groups> {
@@ -1038,7 +1032,7 @@ pub(crate) fn _unpickle_int64_groups(
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
-pub(crate) fn _unpickle_geometry_groups(
+pub(crate) fn _unpickle_geometry_groups_v1(
     values: Py<PyGeometryArray>,
     offsets: &Bound<'_, PyAny>,
 ) -> PyResult<Groups> {
@@ -1059,7 +1053,7 @@ pub(crate) fn _unpickle_geometry_groups(
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
-pub(crate) fn _unpickle_cell_groups(
+pub(crate) fn _unpickle_cell_groups_v1(
     values: Py<PyCellArray>,
     offsets: &Bound<'_, PyAny>,
 ) -> PyResult<Groups> {
@@ -1180,8 +1174,8 @@ impl Int32Buffer {
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<Groups>()?;
     module.add_class::<GroupsIter>()?;
-    module.add_function(wrap_pyfunction!(_unpickle_int64_groups, module)?)?;
-    module.add_function(wrap_pyfunction!(_unpickle_geometry_groups, module)?)?;
-    module.add_function(wrap_pyfunction!(_unpickle_cell_groups, module)?)?;
+    module.add_function(wrap_pyfunction!(_unpickle_int64_groups_v1, module)?)?;
+    module.add_function(wrap_pyfunction!(_unpickle_geometry_groups_v1, module)?)?;
+    module.add_function(wrap_pyfunction!(_unpickle_cell_groups_v1, module)?)?;
     Ok(())
 }

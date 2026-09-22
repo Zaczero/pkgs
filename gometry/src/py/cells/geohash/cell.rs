@@ -39,7 +39,7 @@ crate::heapless!(PyGeohashCell);
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
-pub(super) fn _unpickle_geohash_cell(token: &str) -> PyResult<PyGeohashCell> {
+pub(super) fn _unpickle_geohash_cell_v1(token: &str) -> PyResult<PyGeohashCell> {
     Ok(PyGeohashCell {
         cell: parse_geohash_token(token)?,
     })
@@ -150,7 +150,7 @@ grid_cell_common_pymethods! {
         depth_name: "precision",
         parse_depth: parse_geohash_precision,
         parse_cell: geohash_cell_arg,
-        unpickle: "_unpickle_geohash_cell",
+        unpickle: "_unpickle_geohash_cell_v1",
         nbytes: std::mem::size_of::<u64>(),
         parent_text_signature: "($self, precision=None)",
         children_text_signature: "($self, precision=None)",

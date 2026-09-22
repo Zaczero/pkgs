@@ -747,18 +747,14 @@ impl Mesh {
         for (t, slot) in remap.iter_mut().enumerate() {
             if self.alive(t) {
                 *slot = triangles.len() / 3;
-                for vertex in self.triangle(t) {
-                    crate::try_push_vec(&mut triangles, vertex)?;
-                }
+                triangles.extend(self.triangle(t));
                 let base = t
                     .checked_mul(3)
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
                 let end = base
                     .checked_add(3)
                     .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                for slot in base..end {
-                    crate::try_push_vec(&mut old_slots, slot)?;
-                }
+                old_slots.extend(base..end);
             }
         }
         let mut halfedges = Vec::new();

@@ -1,7 +1,6 @@
 //! Native Arrow C Data Interface admission into owned Arrow batches.
 #![expect(
     clippy::type_complexity,
-    clippy::needless_range_loop,
     clippy::use_self,
     clippy::missing_const_for_fn,
     reason = "owned Arrow admission + recursive capture is intentionally explicit"
@@ -11,8 +10,9 @@ use std::ptr;
 use std::sync::Arc;
 
 use pyo3::exceptions::PyTypeError;
-use pyo3::prelude::{Bound, PyAny, PyResult};
+use pyo3::prelude::{Bound, PyAny, PyErr, PyResult};
 
+use crate::array::missing::union_many;
 use crate::boundary::metadata;
 use crate::collections::{HashMap, HashMapExt as _};
 use crate::py::arrow::WkbOffsetWidth;
@@ -804,12 +804,8 @@ struct NativeNode {
         reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
     )]
     field_names: Arc<Vec<String>>,
-    /// Combined ancestor + self missing mask (`true` = null).
-    #[expect(
-        clippy::rc_buffer,
-        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-    )]
-    effective_missing: Option<Arc<Vec<bool>>>,
+    /// Combined ancestor and self validity, sharing owned Arrow bitmap bytes.
+    effective_missing: Option<crate::array::ValidityMask>,
 }
 
 /// Classification resolved at the attached ingress boundary and carried with
@@ -872,9 +868,7 @@ impl NativeNode {
         debug_assert!(self.validity_offset < 8);
         self.effective_missing
             .as_ref()
-            .and_then(|missing| missing.get(index))
-            .copied()
-            .unwrap_or(false)
+            .is_some_and(|missing| missing.is_missing(index))
     }
 
     fn bytes_at(&self, index: usize) -> Option<&[u8]> {
@@ -936,14 +930,10 @@ impl NativeNode {
 
 /// Recursively snapshot one array node and its children while the array shell
 /// is live; formats come from the already-owned schema tree.
-#[expect(
-    clippy::rc_buffer,
-    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-)]
 fn build_owned_node_admitted(
     validated: &mut CaptureLayout,
     schema: &AdmittedArrowSchema,
-    effective_missing: Option<Arc<Vec<bool>>>,
+    effective_missing: Option<crate::array::ValidityMask>,
 ) -> PyResult<NativeNode> {
     let (buffers, _) = snapshot_native_buffers(validated)?;
     // Own-row nulls from owned validity, OR'd with any ancestor mask.
@@ -1052,16 +1042,12 @@ fn build_owned_node_admitted(
 /// and fixed-size lists expand it through their declared width.  Child-own
 /// nulls merge later via [`merge_owned_row_missing`] after the child has been
 /// snapshotted — never through producer memory.
-#[expect(
-    clippy::rc_buffer,
-    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-)]
 fn project_ancestor_missing(
     parent: &CaptureLayout,
     parent_buffers: &OwnedBufferSlots,
-    parent_effective: Option<&Arc<Vec<bool>>>,
+    parent_effective: Option<&crate::array::ValidityMask>,
     child_length: usize,
-) -> PyResult<Option<Arc<Vec<bool>>>> {
+) -> PyResult<Option<crate::array::ValidityMask>> {
     let Some(parent_missing) = parent_effective else {
         return Ok(None);
     };
@@ -1077,7 +1063,7 @@ fn project_ancestor_missing(
                     "Arrow struct child visible length does not match parent",
                 ));
             }
-            Ok(Some(Arc::clone(parent_missing)))
+            Ok(Some(parent_missing.clone()))
         },
         ArrowFormat::List | ArrowFormat::LargeList => {
             let OwnedBuffer::Bytes(offsets) = parent_buffers.get(1).ok_or_else(|| {
@@ -1116,9 +1102,8 @@ fn project_ancestor_missing(
                 usize::try_from(value)
                     .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))
             };
-            let mut missing = Vec::with_capacity(child_length);
-            missing.resize(child_length, false);
-            for (row, &is_missing) in parent_missing.iter().enumerate() {
+            let mut missing = crate::array::ValidityBuilder::with_capacity(child_length);
+            for (row, is_missing) in parent_missing.iter().enumerate() {
                 if !is_missing {
                     continue;
                 }
@@ -1132,18 +1117,16 @@ fn project_ancestor_missing(
                         "Arrow list offsets must be ordered",
                     ));
                 }
-                let range = missing.get_mut(start..end).ok_or_else(|| {
-                    arrow::geoarrow_parse_error(
+                if start < missing.len() || end > child_length {
+                    return Err(arrow::geoarrow_parse_error(
                         "Arrow list child offsets exceed the selected child length",
-                    )
-                })?;
-                range.fill(true);
+                    ));
+                }
+                missing.extend_present(start - missing.len())?;
+                missing.extend_missing(end - start)?;
             }
-            if missing.iter().any(|&is_missing| is_missing) {
-                Ok(Some(arc_from_vec(missing)))
-            } else {
-                Ok(None)
-            }
+            missing.extend_present(child_length - missing.len())?;
+            Ok(missing.finish())
         },
         ArrowFormat::FixedSizeList(width) => {
             let expected = parent.length.checked_mul(width).ok_or_else(|| {
@@ -1154,18 +1137,15 @@ fn project_ancestor_missing(
                     "Arrow fixed-size-list child visible length does not match parent",
                 ));
             }
-            let mut missing = Vec::with_capacity(child_length);
-            missing.resize(child_length, false);
-            for (row, &is_missing) in parent_missing.iter().enumerate() {
-                if !is_missing {
-                    continue;
+            let mut missing = crate::array::ValidityBuilder::with_capacity(child_length);
+            for is_missing in parent_missing.iter() {
+                if is_missing {
+                    missing.extend_missing(width)?;
+                } else {
+                    missing.extend_present(width)?;
                 }
-                let start = row.checked_mul(width).ok_or_else(|| {
-                    PyTypeError::new_err("Arrow fixed-size-list child offset overflows")
-                })?;
-                missing[start..start + width].fill(true);
             }
-            Ok(Some(arc_from_vec(missing)))
+            Ok(missing.finish())
         },
         ArrowFormat::Binary
         | ArrowFormat::LargeBinary
@@ -1176,45 +1156,46 @@ fn project_ancestor_missing(
 
 /// OR this node's owned validity nulls into an ancestor missing mask.
 /// Runs only after [`snapshot_native_buffers`] so content is owned.
-#[expect(
-    clippy::rc_buffer,
-    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-)]
 fn merge_owned_row_missing(
     array: &CaptureLayout,
     buffers: &OwnedBufferSlots,
-    ancestor: Option<Arc<Vec<bool>>>,
-) -> PyResult<Option<Arc<Vec<bool>>>> {
+    ancestor: Option<crate::array::ValidityMask>,
+) -> PyResult<Option<crate::array::ValidityMask>> {
     let len = array.length;
-    let mut missing = if let Some(a) = ancestor {
-        if a.len() != len {
+    if ancestor.as_ref().is_some_and(|mask| mask.len() != len) {
+        return Err(PyTypeError::new_err(
+            "Arrow ancestor missing length does not match child length",
+        ));
+    }
+    if matches!(array.null_count, NullCount::Known(0)) {
+        return Ok(ancestor);
+    }
+    let Some(OwnedBuffer::Bytes(bitmap)) = buffers.get(0) else {
+        if matches!(array.null_count, NullCount::Known(n) if n > 0) {
             return Err(PyTypeError::new_err(
-                "Arrow ancestor missing length does not match child length",
+                "Arrow validity bitmap is required when null_count > 0",
             ));
         }
-        let mut missing = Vec::with_capacity(len);
-        missing.extend_from_slice(a.as_slice());
-        missing
-    } else {
-        let mut missing = Vec::with_capacity(len);
-        missing.resize(len, false);
-        missing
+        return Ok(ancestor);
     };
-    let mut any = missing.iter().any(|&m| m);
-    for row in 0..len {
-        if missing[row] {
-            continue;
-        }
-        if !owned_or_raw_row_valid(array, buffers, row)? {
-            missing[row] = true;
-            any = true;
-        }
+    if bitmap.is_empty() {
+        return Ok(ancestor);
     }
-    if any {
-        Ok(Some(arc_from_vec(missing)))
-    } else {
-        Ok(None)
+    let bit_offset = array.offset % 8;
+    let end = bit_offset
+        .checked_add(len)
+        .ok_or_else(|| PyTypeError::new_err("Arrow validity index overflows"))?;
+    if end.div_ceil(8) > bitmap.len() {
+        return Err(PyTypeError::new_err(
+            "Arrow validity bitmap is shorter than declared",
+        ));
     }
+    let own = crate::array::ValidityMask::from_bitmap(
+        crate::geometry::SharedSlice::from_arc_vec(Arc::clone(bitmap)),
+        bit_offset,
+        len,
+    );
+    union_many([ancestor.as_ref(), own.as_ref()]).map_err(PyErr::from)
 }
 
 fn owned_or_raw_row_valid(

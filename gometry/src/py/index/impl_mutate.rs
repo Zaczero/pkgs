@@ -87,9 +87,12 @@ impl PySpatialIndex {
         let mut entries = Vec::new();
         crate::try_reserve_vec(&mut entries, cover.entries().len())?;
         let idx = self.rows.len();
-        for &envelope in cover.entries() {
-            crate::try_push_vec(&mut entries, IndexEntry { idx, envelope })?;
-        }
+        entries.extend(
+            cover
+                .entries()
+                .iter()
+                .map(|&envelope| IndexEntry { idx, envelope }),
+        );
         entry_counts[0] = entries.len();
         self.insert_prepared_rows(
             std::iter::once(geometry),
@@ -143,10 +146,7 @@ impl PySpatialIndex {
                     return Err(pyo3::PyErr::from(error));
                 }
             }
-            if let Err(error) = crate::try_push_vec(&mut entry_counts, cover.entries().len()) {
-                drop(items);
-                return Err(pyo3::PyErr::from(error));
-            }
+            entry_counts.push(cover.entries().len());
             non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
         }
         self.insert_prepared_batch(
@@ -201,19 +201,10 @@ impl PySpatialIndex {
                     return Err(pyo3::PyErr::from(error));
                 }
             }
-            if let Err(error) = crate::try_push_vec(&mut entry_counts, cover.entries().len()) {
-                drop(entries);
-                return Err(pyo3::PyErr::from(error));
-            }
+            entry_counts.push(cover.entries().len());
             let plan = array.prepared_row(offset, row)?.into_owned_plan();
             non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
-            if let Err(error) = crate::try_push_vec(
-                &mut items,
-                PyGeometry::from_prepared_plan(plan, array.frame.clone()),
-            ) {
-                drop(entries);
-                return Err(pyo3::PyErr::from(error));
-            }
+             items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
         }
         self.insert_prepared_batch(
             items,
@@ -247,9 +238,7 @@ impl PySpatialIndex {
         debug_assert_eq!(entry_counts.len(), count);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
         let mut handles = crate::try_vec_with_capacity(count)?;
-        for offset in 0..count {
-            crate::try_push(&mut handles, start + offset)?;
-        }
+        handles.extend((0..count).map(|offset| start + offset));
         self.insert_prepared_rows(
             items.into_iter(),
             entries,

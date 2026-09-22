@@ -160,7 +160,7 @@ fn replacement_from_coordinates_view(
             ms: seq
                 .ms()
                 .map(|values| {
-                    crate::geometry::try_copy_slice(values)
+                    crate::boundary::try_copy_slice(values)
                         .map(|values| ReplacementAxis::Replace(SharedSlice::from_vec(values)))
                         .map_err(PyErr::from)
                 })

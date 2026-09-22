@@ -437,7 +437,7 @@ where
     let eligible = fast_path.is_eligible(array, other, op_name, &admission.frame);
     let pair_missing = match other {
         GeometryInput::Many(right) => {
-            missing::union_pair(array.missing(), right.missing()).map_err(PyErr::from)?
+            missing::union_many([array.missing(), right.missing()]).map_err(PyErr::from)?
         },
         GeometryInput::One(_) => None,
     };
@@ -626,7 +626,7 @@ where
                     )
                 },
                 (Many(left), Many(right), crate::crs::ResolvedMetric::Planar { to_metre }) => {
-                    let missing = missing::union_pair(left.missing(), right.missing())?;
+                    let missing = missing::union_many([left.missing(), right.missing()])?;
                     let left = left.clone();
                     let right = right.clone();
                     RawMetricBinary::Array(
@@ -651,7 +651,7 @@ where
                     )
                 },
                 (Many(left), Many(right), crate::crs::ResolvedMetric::Geodesic(metric)) => {
-                    let missing = missing::union_pair(left.missing(), right.missing())?;
+                    let missing = missing::union_many([left.missing(), right.missing()])?;
                     let left = left.clone();
                     let right = right.clone();
                     RawMetricBinary::Array(
@@ -757,7 +757,7 @@ where
     )?;
     let missing = match admission.right {
         One(_) => None,
-        Many(right) => missing::union_pair(left.missing(), right.missing())?,
+        Many(right) => missing::union_many([left.missing(), right.missing()])?,
     };
     let mut scratch = MetricScratch::default();
     let result = {
@@ -1077,7 +1077,7 @@ where
     let shapes = result.map_err(rows_err)?;
     let output_missing = match right {
         One(_) => Ok(left.missing().cloned()),
-        Many(right) => missing::union_pair(left.missing(), right.missing()),
+        Many(right) => missing::union_many([left.missing(), right.missing()]),
     };
     let (shapes, output_missing) = output_missing.map(|mask| (shapes, mask))?;
     Ok(PyGeometryArray::from_shapes(shapes, frame.clone())?.with_missing_mask(output_missing)?)

@@ -1,7 +1,7 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::array::missing::union_pair;
+use crate::array::missing::union_many;
 use crate::{
     Bound, CollectRows as _, DistanceUnit, GeometryInput, IntoPyObject as _, Py, PyGeometry,
     PyResult, Python, classify_required, crs, exact_geometry_array,
@@ -502,7 +502,7 @@ pub(crate) fn nearest_points(
                 .into_py_any(py)
         },
         (GeometryInput::Many(left), GeometryInput::Many(right)) => {
-            let missing = union_pair(left.missing(), right.missing())?;
+            let missing = union_many([left.missing(), right.missing()])?;
             let left = left.clone();
             let right = right.clone();
             let resolved = crate::crs::ResolvedMetric::from_model(&model)?;

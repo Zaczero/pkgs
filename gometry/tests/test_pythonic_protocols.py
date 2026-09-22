@@ -330,7 +330,7 @@ def test_all_declared_native_sequences_are_registered_and_matchable() -> None:
         gm.geohash_cover(gm.box(0, 0, 1, 1, crs=4326), precision=3),
         gm.tile_cover(gm.box(0, 0, 1, 1, crs=4326), zoom=5),
     )
-    groups = _lib._unpickle_int64_groups([1, 2, 1, 2], [0, 2, 4])
+    groups = _lib._unpickle_int64_groups_v1([1, 2, 1, 2], [0, 2, 4])
     values = (
         gm.MultiPoint([(0, 0), (1, 1)]).parts,
         gm.MultiPoint([(0, 0), (1, 1)]).coords,
@@ -351,7 +351,7 @@ def test_all_declared_native_sequences_are_registered_and_matchable() -> None:
 
 
 def test_sequence_index_count_windows_across_native_views() -> None:
-    groups = _lib._unpickle_int64_groups([1, 2, 1, 2], [0, 2, 4])
+    groups = _lib._unpickle_int64_groups_v1([1, 2, 1, 2], [0, 2, 4])
     assert groups.index(groups[0]) == 0
     assert groups.index(groups[0], 1) == 1
     assert groups.count(groups[0]) == 2
@@ -398,9 +398,9 @@ def test_groups_copy_deepcopy_and_pickle_preserve_value_container_protocols() ->
     ])
     cell_values = gm.h3_cells([0.0, 1.0, 2.0, 3.0], [0.0, 1.0, 2.0, 3.0], resolution=1)
     groups = (
-        _lib._unpickle_int64_groups([1, 2, 3, 4], [0, 2, 4]),
-        _lib._unpickle_geometry_groups(geometry_values, [0, 2, 4]),
-        _lib._unpickle_cell_groups(cell_values, [0, 2, 4]),
+        _lib._unpickle_int64_groups_v1([1, 2, 3, 4], [0, 2, 4]),
+        _lib._unpickle_geometry_groups_v1(geometry_values, [0, 2, 4]),
+        _lib._unpickle_cell_groups_v1(cell_values, [0, 2, 4]),
     )
     for group in groups:
         for view in (group, group[1:], group[::2]):
@@ -478,7 +478,7 @@ def test_geometry_groups_range_and_strided_views_preserve_value_semantics() -> N
     values = gm.GeometryArray([
         gm.LineString([(float(row), 0.0), (float(row), 1.0)]) for row in range(8)
     ])
-    groups = _lib._unpickle_geometry_groups(values, [0, 2, 3, 6, 8])
+    groups = _lib._unpickle_geometry_groups_v1(values, [0, 2, 3, 6, 8])
 
     contiguous = groups[1:3]
     assert contiguous.values.to_wkt() == values[2:6].to_wkt()
@@ -492,7 +492,7 @@ def test_geometry_groups_range_and_strided_views_preserve_value_semantics() -> N
     ]
     assert strided.nbytes == strided.values.nbytes + strided.offsets.nbytes
 
-    framed = _lib._unpickle_geometry_groups(values.set_crs(4326), [0, 2, 3, 6, 8])
+    framed = _lib._unpickle_geometry_groups_v1(values.set_crs(4326), [0, 2, 3, 6, 8])
     assert groups != framed
     assert groups[0] not in framed
 
@@ -958,14 +958,14 @@ def test_cellarray_coordinates_and_groups_memory_protocols() -> None:
     )
     assert sys.getsizeof(intersections) > intersections.nbytes
 
-    grouped_lines = _lib._unpickle_geometry_groups(
+    grouped_lines = _lib._unpickle_geometry_groups_v1(
         gm.GeometryArray([
             gm.LineString([(float(i), 0.0), (float(i), 1.0), (float(i), 2.0)])
             for i in range(10)
         ]),
         [0, 10],
     )
-    grouped_ids = _lib._unpickle_int64_groups(list(range(10)), [0, 10])
+    grouped_ids = _lib._unpickle_int64_groups_v1(list(range(10)), [0, 10])
     assert (
         grouped_lines.nbytes
         == grouped_lines.values.nbytes + grouped_lines.offsets.nbytes
@@ -1085,17 +1085,17 @@ def test_every_geometry_leaf_and_result_container_supports_match() -> None:
         assert cls.__module__ == 'gometry'
 
 
-def test_python_result_types_pickle_through_top_level_identity() -> None:
+def test_python_result_types_pickle_preserves_fields() -> None:
     ring = gm.LineString([(0, 0), (1, 0), (1, 1), (0, 0)])
     values = (
-        gm.Features(gm.GeometryArray([gm.Point(0, 0)])),
-        gm.Point(0, 0).extremes(),
-        gm.polygonize_full([ring]),
+        gm.Features(gm.GeometryArray([gm.Point(2, 3)]), [{'name': 'sample'}], ['a']),
+        gm.LineString([(1, 2), (4, -3), (7, 8), (-5, 6)]).extremes(),
+        gm.polygonize_full([ring, gm.LineString([(5, 6), (7, 8)])]),
     )
     for value in values:
         restored = pickle.loads(pickle.dumps(value))
         assert type(restored) is type(value)
-        assert type(value).__module__ == 'gometry'
+        assert restored == value
 
 
 def test_linestring_and_nearestpoints_structural_match() -> None:

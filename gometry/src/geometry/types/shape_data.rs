@@ -635,6 +635,18 @@ mod footprint_tests {
         assert!(data.metric.get().is_some());
         assert!(data.heap_bytes() > cold);
     }
+
+    #[test]
+    fn nested_metric_product_initializes_once_and_reuses_storage() {
+        let plan = PreparedPlan::new(Shape::Point(Point::new_raw_xy(1.0, 2.0)));
+        plan.metric();
+        assert!(plan.metric.get().expect("sidecar").distance.get().is_none());
+        let first = std::ptr::from_ref(plan.distance_parts().expect("initialize distance parts"));
+        let second = std::ptr::from_ref(crate::test_support::assert_no_allocations(|| {
+            plan.distance_parts().expect("cached distance parts")
+        }));
+        assert_eq!(first, second);
+    }
 }
 
 #[cfg(test)]

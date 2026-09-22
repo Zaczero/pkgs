@@ -241,9 +241,7 @@ pub(crate) fn rdp_split(
 pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Result<Option<Vec<Point>>> {
     let mut ring = Vec::new();
     crate::try_reserve_vec(&mut ring, coords.len())?;
-    for point in coords.iter_coords() {
-        crate::try_push_vec(&mut ring, point)?;
-    }
+    ring.extend(coords.iter_coords());
     dedup_consecutive_points(&mut ring);
     if ring.len() > 1 && same_point(ring[0], ring[ring.len() - 1]) {
         ring.pop();
@@ -558,9 +556,7 @@ enum PolygonKeep {
 fn try_clone_ring_prefix(holes: &[Ring], end: usize) -> Result<Vec<Ring>> {
     let mut out = Vec::new();
     crate::try_reserve_vec(&mut out, end)?;
-    for hole in &holes[..end] {
-        crate::try_push_vec(&mut out, hole.clone())?;
-    }
+    out.extend(holes[..end].iter().cloned());
     Ok(out)
 }
 
@@ -888,10 +884,9 @@ impl Shape {
         candidate: impl Fn(XY, XY, XY) -> Result<Option<f64>>,
     ) -> Result<Self> {
         let mut segments = Vec::new();
+        crate::try_reserve_vec(&mut segments, self.segment_count())?;
         self.try_for_each_segment_chain(|chain| {
-            for segment in line_segments(chain) {
-                crate::try_push_vec(&mut segments, segment)?;
-            }
+            segments.extend(line_segments(chain));
             Ok::<_, crate::error::Error>(())
         })?;
         let mut vertex_cloud = Vec::new();
@@ -1019,9 +1014,7 @@ impl Shape {
                             } else {
                                 let mut members = Vec::new();
                                 crate::try_reserve_vec(&mut members, geometries.len())?;
-                                for part in &geometries.as_slice()[..index] {
-                                    crate::try_push_vec(&mut members, part.clone())?;
-                                }
+                                members.extend(geometries.as_slice()[..index].iter().cloned());
                                 crate::try_push_vec(&mut members, shape)?;
                                 out = Some(members);
                             }

@@ -50,7 +50,7 @@ fn mapping_view(slf: Bound<'_, PySpatialIndex>, class_name: &str) -> PyResult<Py
     reason = "the leading underscore is the Python convention for a module-private helper, and pickle stores these names in its stream, so the name is a wire contract rather than a Rust style choice"
 )]
 #[pyfunction]
-pub(crate) fn _unpickle_spatial_index(
+pub(crate) fn _unpickle_spatial_index_v1(
     values: &crate::PyGeometryArray,
     has_metadata: bool,
 ) -> PyResult<PySpatialIndex> {
@@ -154,7 +154,7 @@ impl PySpatialIndex {
     /// source rows and filtering them after reconstruction.
     pub(crate) fn __reduce__(&self, py: Python<'_>) -> PyResult<SpatialIndexReduce> {
         let callable = crate::gometry_lib_module(py)?
-            .getattr(pyo3::intern!(py, "_unpickle_spatial_index"))?
+            .getattr(pyo3::intern!(py, "_unpickle_spatial_index_v1"))?
             .unbind();
         let frame = self.metadata.clone().unwrap_or_default();
         let array = self.rows.pickle_array(frame)?;
@@ -394,9 +394,10 @@ impl PySpatialIndex {
         }
         if let Some(array) = exact_geometry_array(geom) {
             let array = array.clone();
-            if !array.is_compact_nullable() && array.storage().point_rows().is_some() {
-                let results = py.detach(move || {
-                    let points = array.storage().point_rows().expect("checked point storage");
+            if !array.is_compact_nullable()
+                && let Some(points) = array.storage().point_rows()
+            {
+                let results = py.detach(|| {
                     self.point_rows_matches(
                         &array,
                         &points,

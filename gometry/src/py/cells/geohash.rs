@@ -8,7 +8,7 @@ mod cell;
 mod coverage;
 mod functions;
 
-use cell::_unpickle_geohash_cell;
+use cell::_unpickle_geohash_cell_v1;
 pub(crate) use cell::{PyGeohashCell, geohash_cell_arg, parse_geohash_precision};
 use coverage::geohash_cover;
 use functions::{
@@ -19,7 +19,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(m;
         geohash_cells, geohash_cover, geohash_bounding_cell,
         geohash_union, geohash_intersection, geohash_difference,
-        _unpickle_geohash_cell,
+        _unpickle_geohash_cell_v1,
     );
     crate::add_classes!(m; PyGeohashCell);
     Ok(())

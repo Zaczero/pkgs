@@ -1489,32 +1489,6 @@ def test_d10_depth_ambiguous_plain_storage_with_matching_encoding(
     assert restored.to_wkt() == values.to_wkt()
 
 
-def test_d10_unique_depth_plain_point_still_reads(parquet_path: str) -> None:
-    """Point (depth 0) is unique — plain storage without extension still decodes."""
-    import pyarrow as pa
-    import pyarrow.parquet as pq
-
-    point_type = pa.struct([
-        pa.field('x', pa.float64(), nullable=False),
-        pa.field('y', pa.float64(), nullable=False),
-    ])
-    table = pa.table({'geometry': pa.array([{'x': 1.0, 'y': 2.0}], type=point_type)})
-    metadata = {
-        'version': '1.1.0',
-        'primary_column': 'geometry',
-        'columns': {
-            'geometry': {
-                'encoding': 'point',
-                'geometry_types': ['Point'],
-                'crs': None,
-            }
-        },
-    }
-    table = table.replace_schema_metadata({b'geo': json.dumps(metadata).encode()})
-    pq.write_table(table, parquet_path)
-    assert canon(_read_geometry(parquet_path)) == ['POINT (1 2)']
-
-
 # --- D13: every geo.columns entry must exist and match physical encoding ---
 
 

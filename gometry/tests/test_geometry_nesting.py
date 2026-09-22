@@ -146,7 +146,7 @@ def test_pickle_reconstruction_rejects_129() -> None:
     import gometry._lib as native
 
     with pytest.raises(gm.ParseError, match='nesting exceeds'):
-        native._unpickle_geometry(nested_wkb(129), None, None)
+        native._unpickle_geometry_v1(nested_wkb(129), None, None)
 
 
 def test_constructor_rejects_50000_without_process_crash() -> None:

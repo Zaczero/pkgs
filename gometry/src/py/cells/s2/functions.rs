@@ -86,7 +86,7 @@ pub(crate) fn s2_cells(
 /// Rebuild a pickled S2Cell from its 64-bit id (internal; see
 /// ``S2Cell.__reduce__``).
 #[pyfunction]
-pub(crate) fn _unpickle_s2_cell(
+pub(crate) fn _unpickle_s2_cell_v1(
     #[pyo3(from_py_with = crate::strict_u64)] id: u64,
 ) -> PyResult<PyS2Cell> {
     CellId::from_raw(id)

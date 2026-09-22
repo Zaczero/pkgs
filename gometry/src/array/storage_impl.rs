@@ -4,10 +4,10 @@
 )]
 use crate::HeapSize as _;
 use crate::array::{
-    Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, LineRows, PackedStorage, PointRows,
-    Polygon, Ring, RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window,
-    line_logical_len, packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len,
-    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
+    Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, PackedStorage, Polygon, Ring,
+    RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window, line_logical_len,
+    packed_lines_coord_len, packed_polygons_coord_len, packed_polygons_ring_len, physical_row,
+    point_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
 };
 use crate::error::Result;
 use crate::geometry::CoordWindow;
@@ -36,9 +36,7 @@ impl GeometryArrayStorage {
         crate::boundary::try_reserve_vec(&mut output, self.len())?;
         match self {
             Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. }) => {
-                for _ in 0..self.len() {
-                    crate::boundary::try_push_vec(&mut output, constant)?;
-                }
+                output.resize(self.len(), constant);
             },
             _ => {
                 for shape in self.iter_shapes() {
@@ -363,54 +361,15 @@ impl GeometryArrayStorage {
             let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
             Ring::try_from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
         };
-        Ok(Polygon::new(
-            ring(rings.start)?,
-            (rings.start + 1..rings.end)
-                .map(ring)
-                .collect::<crate::error::Result<_>>()?,
-        ))
+        let shell = ring(rings.start)?;
+        let mut holes = Vec::new();
+        crate::try_reserve_vec(&mut holes, rings.len() - 1)?;
+        for index in rings.start + 1..rings.end {
+            holes.push(ring(index)?);
+        }
+        Ok(Polygon::new(shell, holes))
     }
 
-    pub(crate) fn point_rows(&self) -> Option<PointRows<'_>> {
-        match self {
-            Self::Mixed(shapes) => shapes
-                .iter()
-                .map(|shape| match shape {
-                    Shape::Point(point) => Some(*point),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()
-                .map(PointRows::Gathered),
-            Self::Packed(PackedStorage::Points { coords, row_map }) => Some(PointRows::Packed {
-                coords,
-                row_map: row_map.as_deref(),
-            }),
-            Self::Packed(PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => None,
-        }
-    }
-
-    pub(crate) fn line_rows(&self) -> Option<LineRows<'_>> {
-        match self {
-            Self::Mixed(shapes) => shapes
-                .iter()
-                .map(|shape| match shape {
-                    Shape::LineString(seq) => Some(seq.clone()),
-                    _ => None,
-                })
-                .collect::<Option<Vec<_>>>()
-                .map(LineRows::Gathered),
-            Self::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => Some(LineRows::Packed {
-                coords,
-                offsets: offsets.as_slice(),
-                row_map: row_map.as_deref(),
-            }),
-            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. }) => None,
-        }
-    }
     /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
     /// ``None`` if every geometry is empty.
     ///

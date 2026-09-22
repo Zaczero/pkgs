@@ -413,7 +413,7 @@ def test_h3_compact_skips_missing_rows_without_folding_incomplete_parent() -> No
     parent = gm.H3Cell(21.0, 52.0, resolution=5)
     children = list(parent.children(6))
     present = [child.token for index, child in enumerate(children) if index != 1]
-    values = _lib._unpickle_cell_array(
+    values = _lib._unpickle_cell_array_v1(
         present,
         'h3',
         bytes([0, 1, 0, 0, 0, 0, 0]),

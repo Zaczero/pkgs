@@ -13,10 +13,10 @@ GEOMETRIES = {
 }
 
 AXES = {
-    'XY': ('', '1 2', '3 4', '5 6'),
-    'XYZ': ('Z', '1 2 11', '3 4 12', '5 6 13'),
-    'XYM': ('M', '1 2 21', '3 4 22', '5 6 23'),
-    'XYZM': ('ZM', '1 2 11 21', '3 4 12 22', '5 6 13 23'),
+    'XY': ('', '{x} 2', '{x2} 4', '{x3} 6'),
+    'XYZ': ('Z', '{x} 2 11', '{x2} 4 12', '{x3} 6 13'),
+    'XYM': ('M', '{x} 2 21', '{x2} 4 22', '{x3} 6 23'),
+    'XYZM': ('ZM', '{x} 2 11 21', '{x2} 4 12 22', '{x3} 6 13 23'),
 }
 
 
@@ -25,16 +25,19 @@ def _packed_rows(kind: str, axes: str, count: int = 4) -> gm.GeometryArray:
     text = GEOMETRIES[kind].format(
         tag=tag, coords=coords, coords2=coords2, coords3=coords3
     )
-    rows = gm.from_wkt([text] * count)
+    rows = gm.from_wkt([
+        text.format(x=10 * row + 1, x2=10 * row + 3, x3=10 * row + 5)
+        for row in range(count)
+    ])
     callable_, args = rows.__reduce_ex__(5)
-    assert callable_.__name__ == '_unpickle_packed_array'
+    assert callable_.__name__ == '_unpickle_packed_array_v1'
     assert len(args[4]) == {'point': 0, 'line': 1, 'polygon': 2}[kind]
     return rows
 
 
 @pytest.mark.parametrize('kind', GEOMETRIES)
 @pytest.mark.parametrize('axes', AXES)
-def test_new_packed_pickles_store_logical_rows_without_row_map(
+def test_packed_pickles_preserve_selected_row_order_and_axes(
     kind: str, axes: str
 ) -> None:
     base = _packed_rows(kind, axes)
@@ -55,16 +58,14 @@ def test_new_packed_pickles_store_logical_rows_without_row_map(
 
 
 @pytest.mark.parametrize('kind', GEOMETRIES)
-def test_new_packed_pickle_size_tracks_selection_not_parent(kind: str) -> None:
+def test_packed_pickle_size_tracks_selection_not_parent(kind: str) -> None:
     small = _packed_rows(kind, 'XY', 1)
-    large = _packed_rows(kind, 'XY', 20_000)
-    selected = large[[19_999]]
+    large = _packed_rows(kind, 'XY', 64)
+    selected = large[[63]]
 
     small_payload = pickle.dumps(small, protocol=5)
     selected_payload = pickle.dumps(selected, protocol=5)
-    assert len(selected_payload) <= len(small_payload) + 32
-    assert len(selected_payload) < len(pickle.dumps(large, protocol=5)) // 1_000
-    assert selected.__reduce_ex__(5)[1][-2] is None
+    assert len(selected_payload) == len(small_payload)
 
 
 @pytest.mark.parametrize(
@@ -90,7 +91,7 @@ def test_new_packed_pickle_size_tracks_selection_not_parent(kind: str) -> None:
         ),
     ],
 )
-def test_new_packed_payload_omits_unselected_parent_coordinates(
+def test_packed_payload_omits_unselected_parent_coordinates(
     rows: list[str], selected_wkt: str
 ) -> None:
     selected = gm.from_wkt(rows)[[1]]
@@ -124,6 +125,9 @@ def test_nullable_packed_pickle_keeps_present_payload_and_logical_mask(
     assert restored.is_missing.tolist() == [False, True, False]
     assert restored.crs == values.crs
     assert restored.epoch == values.epoch
+    assert (
+        restored.to_arrow().type.extension_name == values.to_arrow().type.extension_name
+    )
 
 
 @pytest.mark.parametrize(

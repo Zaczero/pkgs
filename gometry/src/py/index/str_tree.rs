@@ -6,6 +6,8 @@
 //! immutable runs, so rebuilding work is carried only by binary carries rather
 //! than by one tree rebuilt for every mutation.
 
+use std::sync::Arc;
+
 use rstar::{AABB, Envelope as _};
 
 use crate::HeapSize;
@@ -52,53 +54,13 @@ impl StaticStrTree {
         BUILD_WORK.with(std::cell::Cell::get)
     }
 
-    #[expect(
-        clippy::same_name_method,
-        reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
-    )]
-    pub(super) fn heap_bytes(&self) -> usize {
-        HeapSize::heap_bytes(self)
-    }
-
-    /// Clone the immutable tree through the crate's fallible allocation
-    /// boundary. The clone keeps the logical entries and levels but reserves
-    /// only their initialized lengths, not incidental source spare capacity.
-    pub(super) fn try_clone(&self) -> crate::error::Result<Self> {
-        let mut entries = Vec::new();
-        entries.try_reserve_exact(self.entries.len())?;
-        for &entry in &self.entries {
-            crate::try_push_vec(&mut entries, entry)?;
-        }
-
-        let mut levels = Vec::new();
-        levels.try_reserve_exact(self.levels.len())?;
-        for level in &self.levels {
-            let mut copied = Vec::new();
-            copied.try_reserve_exact(level.len())?;
-            for node in level {
-                crate::try_push_vec(&mut copied, node.clone())?;
-            }
-            crate::try_push_vec(&mut levels, copied)?;
-        }
-
-        Ok(Self {
-            entries,
-            levels,
-            initial_len: self.initial_len,
-        })
-    }
-
     /// Bulk-load with the STR layout. `total_rows` is the input row count —
     /// each `entry.idx` is a stable handle in `0..total_rows`. `total_rows`
     /// is the tree/overflow handle boundary and spans skipped rows too.
-    pub(super) fn build(entries: Vec<IndexEntry>, total_rows: usize) -> crate::error::Result<Self> {
-        Self::build_with_len(entries, total_rows)
-    }
-
-    fn build_with_len(
+    pub(super) fn build(
         mut entries: Vec<IndexEntry>,
         total_rows: usize,
-    ) -> crate::error::Result<Self> {
+    ) -> crate::error::Result<Arc<Self>> {
         let entry_count = entries.len();
         #[cfg(test)]
         BUILD_WORK.with(|work| work.set(work.get().saturating_add(entry_count)));
@@ -108,7 +70,7 @@ impl StaticStrTree {
             initial_len: total_rows,
         };
         if entry_count == 0 {
-            return Ok(tree);
+            return Ok(Arc::new(tree));
         }
         if u32::try_from(entry_count).is_err() {
             return Err(crate::error::ResourceError::SizeOverflow.into());
@@ -137,35 +99,37 @@ impl StaticStrTree {
         let mut level = Vec::new();
         crate::boundary::try_reserve_vec(&mut level, leaf_count)?;
         for (node, chunk) in entries.chunks(NODE_CAP).enumerate() {
-            crate::boundary::try_push_vec(&mut level, StrNode {
+            level.push(StrNode {
                 envelope: chunk
                     .iter()
                     .map(|entry| entry.envelope)
                     .reduce(|a, b| a.merged(&b))
                     .expect("chunks are non-empty"),
                 children: range_at(node, chunk.len()),
-            })?;
+            });
         }
-        tree.entries = entries;
+        let mut levels = Vec::new();
         while level.len() > NODE_CAP {
             let next_count = level.len().div_ceil(NODE_CAP);
             let mut next = Vec::new();
             crate::boundary::try_reserve_vec(&mut next, next_count)?;
             for (node, chunk) in level.chunks(NODE_CAP).enumerate() {
-                crate::boundary::try_push_vec(&mut next, StrNode {
+                next.push(StrNode {
                     envelope: chunk
                         .iter()
                         .map(|child| child.envelope)
                         .reduce(|a, b| a.merged(&b))
                         .expect("chunks are non-empty"),
                     children: range_at(node, chunk.len()),
-                })?;
+                });
             }
-            crate::boundary::try_push_vec(&mut tree.levels, level)?;
+            crate::boundary::try_push_vec(&mut levels, level)?;
             level = next;
         }
-        crate::boundary::try_push_vec(&mut tree.levels, level)?;
-        Ok(tree)
+        crate::boundary::try_push_vec(&mut levels, level)?;
+        tree.entries = entries;
+        tree.levels = levels;
+        Ok(Arc::new(tree))
     }
 
     /// Handles `0..initial_len()` belong to this tree; later handles are the
@@ -356,7 +320,7 @@ impl HeapSize for StaticStrTree {
 /// contributed.
 #[derive(Debug)]
 pub(super) struct StaticStrForest {
-    runs: Vec<Option<StaticStrTree>>,
+    runs: Vec<Option<Arc<StaticStrTree>>>,
     handle_start: usize,
     entry_counts: Vec<usize>,
     total_entries: usize,
@@ -384,22 +348,17 @@ impl StaticStrForest {
         HeapSize::heap_bytes(self)
     }
 
-    /// Fallible deep clone of the immutable runs and their physical-entry
-    /// accounting. No geodesic cache belongs here; it remains an index-level
+    /// Share immutable runs and copy their physical-entry accounting.
+    /// No geodesic cache belongs here; it remains an index-level
     /// cache and is intentionally rebuilt empty by [`PySpatialIndex`].
     pub(super) fn try_clone(&self) -> crate::error::Result<Self> {
         let mut runs = Vec::new();
         runs.try_reserve_exact(self.runs.len())?;
-        for run in &self.runs {
-            let copied = run.as_ref().map(StaticStrTree::try_clone).transpose()?;
-            crate::try_push_vec(&mut runs, copied)?;
-        }
+        runs.extend(self.runs.iter().cloned());
 
         let mut entry_counts = Vec::new();
         entry_counts.try_reserve_exact(self.entry_counts.len())?;
-        for &count in &self.entry_counts {
-            crate::try_push_vec(&mut entry_counts, count)?;
-        }
+        entry_counts.extend_from_slice(&self.entry_counts);
 
         Ok(Self {
             runs,
@@ -438,7 +397,7 @@ impl StaticStrForest {
         self.runs
             .iter()
             .enumerate()
-            .filter_map(|(rank, run)| run.as_ref().map(|run| (rank, run)))
+            .filter_map(|(rank, run)| run.as_deref().map(|run| (rank, run)))
     }
 
     pub(super) fn root_count(&self) -> usize {
@@ -541,9 +500,9 @@ impl StaticStrForest {
         }
 
         let rank_count = required_rank_count(self.runs.len(), total_entries);
-        let mut runs = Vec::new();
-        runs.try_reserve(rank_count)?;
-        runs.resize_with(rank_count, || None);
+        let mut pending: Vec<Option<Vec<IndexEntry>>> = Vec::new();
+        pending.try_reserve(rank_count)?;
+        pending.resize_with(rank_count, || None);
         let mut consumed = Vec::new();
         consumed.try_reserve(rank_count)?;
         consumed.resize(rank_count, false);
@@ -551,15 +510,15 @@ impl StaticStrForest {
         let mut offset = 0;
         while offset < entries.len() {
             let chunk_len = highest_power_of_two(entries.len() - offset);
-            let chunk = copy_entries(&entries[offset..offset + chunk_len])?;
-            let mut carry = StaticStrTree::build(chunk, total_rows)?;
+            let mut carry = crate::boundary::try_copy_slice(&entries[offset..offset + chunk_len])?;
             let mut rank = chunk_len.trailing_zeros() as usize;
             offset += chunk_len;
 
             loop {
-                debug_assert!(rank < runs.len());
-                if let Some(staged) = runs[rank].take() {
-                    carry = merge_trees(&staged, &carry, total_rows)?;
+                debug_assert!(rank < pending.len());
+                if let Some(staged) = pending[rank].take() {
+                    carry.try_reserve(staged.len())?;
+                    carry.extend_from_slice(&staged);
                     rank += 1;
                     continue;
                 }
@@ -568,15 +527,25 @@ impl StaticStrForest {
                     && let Some(existing) = self.runs[rank].as_ref()
                 {
                     consumed[rank] = true;
-                    carry = merge_trees(existing, &carry, total_rows)?;
+                    carry.try_reserve(existing.entry_count())?;
+                    carry.extend_from_slice(existing.entries());
                     rank += 1;
                     continue;
                 }
-                runs[rank] = Some(carry);
+                pending[rank] = Some(carry);
                 break;
             }
         }
 
+        let mut runs = Vec::new();
+        runs.try_reserve(rank_count)?;
+        for entries in pending {
+            runs.push(
+                entries
+                    .map(|entries| StaticStrTree::build(entries, total_rows))
+                    .transpose()?,
+            );
+        }
         Ok(PreparedForest {
             runs,
             consumed,
@@ -606,9 +575,7 @@ impl StaticStrForest {
             }
             self.runs = runs;
         }
-        for &count in entry_counts {
-            self.entry_counts.push(count);
-        }
+        self.entry_counts.extend_from_slice(entry_counts);
         self.total_entries = prepared.total_entries;
         self.live_entries += added_entries;
         debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
@@ -648,7 +615,7 @@ impl StaticStrForest {
         entries.try_reserve(remaining)?;
         for entry in self.live_entries(live) {
             if entry.idx != removed_handle {
-                crate::try_push_vec(&mut entries, *entry)?;
+                entries.push(*entry);
             }
         }
         debug_assert_eq!(entries.len(), remaining);
@@ -668,7 +635,7 @@ impl StaticStrForest {
 /// A fully constructed candidate run set. `runs` may contain `None` slots
 /// where an unchanged old run is filled during insertion publication.
 pub(super) struct PreparedForest {
-    runs: Vec<Option<StaticStrTree>>,
+    runs: Vec<Option<Arc<StaticStrTree>>>,
     consumed: Vec<bool>,
     total_entries: usize,
 }
@@ -687,32 +654,6 @@ fn required_rank_count(existing: usize, total_entries: usize) -> usize {
 fn highest_power_of_two(value: usize) -> usize {
     debug_assert!(value != 0);
     1_usize << (usize::BITS - 1 - value.leading_zeros())
-}
-
-fn copy_entries(entries: &[IndexEntry]) -> crate::error::Result<Vec<IndexEntry>> {
-    let mut copied = Vec::new();
-    copied.try_reserve(entries.len())?;
-    for &entry in entries {
-        crate::try_push_vec(&mut copied, entry)?;
-    }
-    Ok(copied)
-}
-
-fn merge_trees(
-    left: &StaticStrTree,
-    right: &StaticStrTree,
-    total_rows: usize,
-) -> crate::error::Result<StaticStrTree> {
-    let count = left
-        .entry_count()
-        .checked_add(right.entry_count())
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
-    let mut entries = Vec::new();
-    entries.try_reserve(count)?;
-    for &entry in left.entries().iter().chain(right.entries()) {
-        crate::try_push_vec(&mut entries, entry)?;
-    }
-    StaticStrTree::build(entries, total_rows)
 }
 
 /// The half-open child range of chunk `node` (every chunk before it is

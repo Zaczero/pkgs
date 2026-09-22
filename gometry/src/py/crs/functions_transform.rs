@@ -545,17 +545,15 @@ pub(crate) fn crs_transform_bounds(
         })?;
         let mut items = Vec::new();
         crate::try_push(&mut items, first)?;
-        for value in rest {
-            crate::try_push(&mut items, value)?;
-        }
+        crate::try_reserve_vec(&mut items, rest.len())?;
+        items.extend(rest);
         items
     } else {
         let rest = crate::collect_py_iter_from_iter(bounds, iter, Ok)?;
         let mut items = Vec::new();
         crate::try_push(&mut items, first)?;
-        for value in rest {
-            crate::try_push(&mut items, value)?;
-        }
+        crate::try_reserve_vec(&mut items, rest.len())?;
+        items.extend(rest);
         items
     };
     let source = crs_normalize(source)?;
@@ -623,9 +621,7 @@ pub(crate) fn crs_transform_bounds(
                         options,
                     )?;
                     for transformed in transformed {
-                        for value in <[f64; 4]>::from(transformed) {
-                            crate::try_push(&mut out, value)?;
-                        }
+                        out.extend_from_slice(&<[f64; 4]>::from(transformed));
                     }
                     Ok::<_, PyErr>((out, execution))
                 } else {
@@ -646,9 +642,7 @@ pub(crate) fn crs_transform_bounds(
                         options,
                     )?;
                     for transformed in transformed {
-                        for value in <[f64; 6]>::from(transformed) {
-                            crate::try_push(&mut out, value)?;
-                        }
+                        out.extend_from_slice(&<[f64; 6]>::from(transformed));
                     }
                     Ok::<_, PyErr>((out, execution))
                 }

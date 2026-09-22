@@ -400,9 +400,7 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
     let polygons = py.detach(move || {
         let mut refs = Vec::new();
         crate::boundary::try_reserve_vec(&mut refs, shapes.len())?;
-        for shape in &shapes {
-            crate::boundary::try_push_vec(&mut refs, shape)?;
-        }
+        refs.extend(&shapes);
         Shape::polygonize_all(&refs, false)
     })?;
     Ok(PyGeometryArray::from_shapes(polygons, metadata)?)
@@ -446,9 +444,7 @@ pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRe
     let full = py.detach(move || {
         let mut refs = Vec::new();
         crate::boundary::try_reserve_vec(&mut refs, shapes.len())?;
-        for shape in &shapes {
-            crate::boundary::try_push_vec(&mut refs, shape)?;
-        }
+        refs.extend(&shapes);
         Shape::polygonize_full_all(&refs, false)
     })?;
     crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())

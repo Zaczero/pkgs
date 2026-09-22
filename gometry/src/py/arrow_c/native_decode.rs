@@ -14,9 +14,9 @@ use crate::geometry::{
     Shape, SharedSlice, ZOrdinate, column_all_finite,
 };
 use crate::io;
+use crate::py::arrow;
 use crate::py::arrow::WkbOffsetWidth;
 use crate::py::geoarrow::GeometryEncoding;
-use crate::py::{arrow, arrow_c};
 
 /// Errors that can be produced after the Arrow producer has been released.
 /// Arrow structure errors retain the GeoArrow parse boundary; geometry and WKB
@@ -746,11 +746,7 @@ fn list_range(node: &NativeNode, index: usize) -> DecodeResult<std::ops::Range<u
 
 struct NativeCoordinates {
     coords: CoordSeq,
-    #[expect(
-        clippy::rc_buffer,
-        reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-    )]
-    validity: Option<Arc<Vec<bool>>>,
+    validity: Option<crate::array::ValidityMask>,
 }
 
 impl NativeCoordinates {
@@ -918,9 +914,7 @@ impl NativeCoordinates {
     fn is_valid(&self, index: usize) -> bool {
         self.validity
             .as_ref()
-            .and_then(|validity| validity.get(index))
-            .copied()
-            .unwrap_or(true)
+            .is_none_or(|validity| validity.is_valid(index))
     }
 
     fn point_shape(&self, index: usize, row: usize) -> DecodeResult<Shape> {
@@ -1058,24 +1052,12 @@ fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
     }
 }
 
-#[expect(
-    clippy::rc_buffer,
-    reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
-)]
 fn combined_validity(
     length: usize,
     missing: impl Fn(usize) -> bool,
-) -> DecodeResult<Option<Arc<Vec<bool>>>> {
-    let any = (0..length).any(&missing);
-    if !any {
-        return Ok(None);
-    }
-    let mut values = Vec::new();
-    reserve(&mut values, length)?;
-    for row in 0..length {
-        values.push(!missing(row));
-    }
-    Ok(Some(arrow_c::arc_from_vec(values)))
+) -> DecodeResult<Option<crate::array::ValidityMask>> {
+    crate::array::ValidityMask::from_missing_iter(length, (0..length).map(missing))
+        .map_err(NativeArrowDecodeError::from)
 }
 
 fn reserve<T>(values: &mut Vec<T>, capacity: usize) -> DecodeResult<()> {
@@ -1153,7 +1135,9 @@ mod tests {
             children: Arc::new(vec![child]),
             schema_name: Arc::new(String::new()),
             field_names: Arc::new(Vec::new()),
-            effective_missing: missing.map(Arc::new),
+            effective_missing: missing.and_then(|missing| {
+                crate::array::ValidityMask::from_vec(missing.len(), missing).unwrap()
+            }),
         }
     }
 

@@ -74,9 +74,9 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         }
         for hole in polygon.holes.iter() {
             if let Some(hole) = ring_without_antennas(hole)? {
-                for hole in split_pinched_ring(&hole)? {
-                    try_push_vec(&mut holes, hole)?;
-                }
+                let split = split_pinched_ring(&hole)?;
+                try_reserve_vec(&mut holes, split.len())?;
+                holes.extend(split);
             }
         }
         if shells.len() == 1 {
@@ -105,9 +105,8 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
                     lobe.holes = SharedSlice::from_vec(holes);
                 }
             }
-            for lobe in lobes {
-                try_push_vec(&mut cleaned, lobe)?;
-            }
+            try_reserve_vec(&mut cleaned, lobes.len())?;
+            cleaned.extend(lobes);
         }
     }
     polygon_parts_to_shape(cleaned)
@@ -142,9 +141,7 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
     }
     let mut points = Vec::new();
     try_reserve_vec(&mut points, ring.coord_count())?;
-    for point in ring.coords().iter_coords() {
-        try_push_vec(&mut points, point)?;
-    }
+    points.extend(ring.coords().iter_coords());
     if points.len() >= 2 && same_point(points[0], *points.last().expect("non-empty")) {
         points.pop();
     }
@@ -215,9 +212,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
     }
     let mut points = Vec::new();
     try_reserve_vec(&mut points, ring.coord_count())?;
-    for point in ring.coords().iter_coords() {
-        try_push_vec(&mut points, point)?;
-    }
+    points.extend(ring.coords().iter_coords());
     if points.len() >= 2 && same_point(points[0], *points.last().expect("non-empty")) {
         points.pop();
     }

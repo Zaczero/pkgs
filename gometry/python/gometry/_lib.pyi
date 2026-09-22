@@ -10944,10 +10944,8 @@ class CRS:
         """``copy.deepcopy`` returns the object itself: every field is immutable
         and holds no Python references, so there is nothing to copy.
         """
-    def __reduce__(self) -> tuple[type[CRS], tuple[str]]:
-        """Pickle support: a CRS is its definition string; the constructor
-        rebuilds everything else lazily.
-        """
+    def __reduce__(self) -> tuple[Callable[[str], CRS], tuple[str]]:
+        """Pickle support: retain the definition and rebuild derived metadata lazily."""
     def _repr_html_(self) -> str:
         """HTML preview for notebooks: a compact table of `info` fields."""
     def __new__(cls, value: CrsInput) -> Self:

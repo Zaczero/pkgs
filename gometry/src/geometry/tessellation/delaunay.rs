@@ -257,9 +257,7 @@ impl CertifiedDelaunay {
         let mut triangles = Vec::new();
         crate::try_reserve_vec(&mut triangles, self.topology.triangles.len())?;
         for &[a, b, c] in self.topology.triangles.as_chunks::<3>().0 {
-            for vertex in [a, c, b] {
-                crate::try_push_vec(&mut triangles, vertex)?;
-            }
+            triangles.extend_from_slice(&[a, c, b]);
         }
         let halfedges = delaunay_halfedges(&triangles)?;
         Ok(Triangulation {
@@ -313,9 +311,7 @@ fn try_hull_cycle(points: &[Point], corners: bool) -> Result<Vec<usize>> {
     let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
     let mut order = Vec::new();
     crate::try_reserve_vec(&mut order, points.len())?;
-    for site in 0..points.len() {
-        crate::try_push_vec(&mut order, site)?;
-    }
+    order.extend(0..points.len());
     order.sort_unstable_by(|&a, &b| {
         geometric_cmp(xy(a).x, xy(b).x).then_with(|| geometric_cmp(xy(a).y, xy(b).y))
     });
@@ -358,9 +354,8 @@ fn try_hull_cycle(points: &[Point], corners: bool) -> Result<Vec<usize>> {
     }
     lower.pop();
     upper.pop();
-    for site in upper {
-        crate::try_push_vec(&mut lower, site)?;
-    }
+    crate::try_reserve_vec(&mut lower, upper.len())?;
+    lower.extend(upper);
     if let Some(start) = lower
         .iter()
         .enumerate()
@@ -394,9 +389,7 @@ pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
 fn try_collinear_order(points: &[Point]) -> Result<Vec<usize>> {
     let mut order = Vec::new();
     crate::try_reserve_vec(&mut order, points.len())?;
-    for site in 0..points.len() {
-        crate::try_push_vec(&mut order, site)?;
-    }
+    order.extend(0..points.len());
     let (minx, maxx, miny, maxy) = points.iter().fold(
         (
             f64::INFINITY,
@@ -630,9 +623,7 @@ pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, V
     }
     let mut selected_values = Vec::new();
     crate::try_reserve_vec(&mut selected_values, selected.len())?;
-    for value in selected.into_values() {
-        crate::try_push_vec(&mut selected_values, value)?;
-    }
+    selected_values.extend(selected.into_values());
     let mut selected = selected_values;
     selected.sort_unstable_by(|(left, _), (right, _)| {
         left.x

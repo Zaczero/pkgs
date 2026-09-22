@@ -926,9 +926,7 @@ impl MultiPoint {
     pub(crate) fn try_to_vec(&self) -> Result<Vec<Point>> {
         let mut points = Vec::new();
         crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
-        for point in self.points() {
-            crate::try_push_vec(&mut points, point)?;
-        }
+        points.extend(self.points());
         Ok(points)
     }
 

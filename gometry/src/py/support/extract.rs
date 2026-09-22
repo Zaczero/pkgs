@@ -1,5 +1,5 @@
 use pyo3::pybacked::PyBackedBytes;
-use pyo3::types::{PyByteArray, PyBytes};
+use pyo3::types::PyBytes;
 
 use crate::boundary::FloatInput;
 use crate::geometry::{MOrdinate, ZOrdinate};
@@ -31,11 +31,11 @@ impl OwnedBytes {
     }
 }
 
-pub(crate) fn exact_backed_bytes(value: &Bound<'_, PyAny>) -> PyResult<Option<PyBackedBytes>> {
-    if value.cast::<PyBytes>().is_ok() || value.cast::<PyByteArray>().is_ok() {
-        return value.extract().map(Some).map_err(Into::into);
-    }
-    Ok(None)
+pub(crate) fn exact_backed_bytes(value: &Bound<'_, PyAny>) -> Option<PyBackedBytes> {
+    value
+        .cast::<PyBytes>()
+        .ok()
+        .map(|bytes| bytes.clone().into())
 }
 
 impl CoercedCollectedGeometryItems {
@@ -114,7 +114,7 @@ pub(crate) fn own_geometry_item(
     }
     if is_py_bytes_or_bytearray(item) {
         return Ok(OwnedGeometryItem::Wkb(
-            if let Some(bytes) = exact_backed_bytes(item)? {
+            if let Some(bytes) = exact_backed_bytes(item) {
                 OwnedBytes::Backed(bytes)
             } else {
                 OwnedBytes::Copied(copy_wkb_payload(item)?)

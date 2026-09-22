@@ -7,7 +7,7 @@ mod cell;
 mod coverage;
 mod functions;
 
-use cell::_unpickle_tile;
+use cell::_unpickle_tile_v1;
 pub(crate) use cell::{PyTile, parse_tile_zoom, tile_arg};
 use coverage::tile_cover;
 use functions::{tile_bounding_cell, tile_cells, tile_difference, tile_intersection, tile_union};
@@ -16,7 +16,7 @@ pub(super) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(m;
         tile_cells, tile_cover,
         tile_bounding_cell, tile_union, tile_intersection, tile_difference,
-        _unpickle_tile,
+        _unpickle_tile_v1,
     );
     crate::add_classes!(m; PyTile);
     Ok(())

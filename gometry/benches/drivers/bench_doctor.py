@@ -27,7 +27,7 @@ BUILD_INPUT_PATHS = (
     'Cargo.toml',
     'Cargo.lock',
 )
-SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v4'
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v5'
 BUILD_INFO_SCHEMA_VERSION = 3
 BUILD_INFO_KEYS = {
     'schema_version',
@@ -98,7 +98,6 @@ def _source_input_files(*, native_only: bool = False) -> list[tuple[str, Path]] 
     if not native_only:
         files.extend([
             ('gometry/rust-toolchain.toml', GOMETRY_ROOT / 'rust-toolchain.toml'),
-            ('gometry/Cargo.toml', GOMETRY_ROOT / 'Cargo.toml'),
             ('gometry/build.rs', GOMETRY_ROOT / 'build.rs'),
         ])
     for directory in ('native',) if native_only else ('src', 'native'):
@@ -107,7 +106,11 @@ def _source_input_files(*, native_only: bool = False) -> list[tuple[str, Path]] 
             return None
         for path in root.rglob('*'):
             relative = path.relative_to(REPO_ROOT).as_posix()
-            if _is_hidden_native_path(relative) or not path.is_file():
+            if (
+                path.name == 'Cargo.toml'
+                or _is_hidden_native_path(relative)
+                or not path.is_file()
+            ):
                 continue
             files.append((f'gometry/{path.relative_to(GOMETRY_ROOT)}', path))
     files.sort(key=lambda item: item[0])

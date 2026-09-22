@@ -40,7 +40,7 @@ def _assert_terminates(
     """Assert the child finishes (raises or returns) inside *timeout*.
 
     ``subprocess.run(..., timeout=)`` raises ``TimeoutExpired`` on hang — that
-    is the gate. Exit code may be non-zero (exception); only hang fails.
+    is the gate. A Python exception is allowed; an allocator abort is not.
     """
     try:
         completed = _run_child(script, timeout=timeout)

@@ -131,6 +131,13 @@ where
     Ok(out)
 }
 
+pub(crate) fn try_copy_slice<T: Copy>(values: &[T]) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    try_reserve_vec(&mut out, values.len())?;
+    out.extend_from_slice(values);
+    Ok(out)
+}
+
 /// Reserve two parallel output columns after checking both layouts.
 pub(crate) fn try_reserve_pair<T, U>(
     left: &mut Vec<T>,
@@ -426,7 +433,7 @@ pub(crate) fn collect_sequence_items(sequence: &Bound<'_, PySequence>) -> PyResu
 
 /// Collect a sequence of concrete byte payloads (pickle mixed rows). Each
 /// element must be `bytes` / a buffer; never `Vec<u8>` from a generic sequence.
-pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<u8>>> {
+pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<crate::OwnedBytes>> {
     let sequence = rows.cast::<PySequence>().map_err(|_| {
         PyTypeError::new_err("mixed geometry array pickle rows must be a sequence of bytes")
     })?;
@@ -463,16 +470,21 @@ pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<Vec<u8
     Ok(out)
 }
 
-fn extract_bytes_payload(item: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
+fn extract_bytes_payload(item: &Bound<'_, PyAny>) -> PyResult<crate::OwnedBytes> {
+    if let Some(bytes) = crate::exact_backed_bytes(item) {
+        return Ok(crate::OwnedBytes::Backed(bytes));
+    }
     // Shared one-byte buffer path (signed + unsigned); never generic
     // sequence-of-int extract (that path allocates from a lying `__len__`).
-    copy_one_byte_buffer(item).map_err(|error| {
-        if error.is_instance_of::<PyMemoryError>(item.py()) {
-            error
-        } else {
-            PyTypeError::new_err("mixed geometry array pickle rows must be bytes-like")
-        }
-    })
+    copy_one_byte_buffer(item)
+        .map(crate::OwnedBytes::Copied)
+        .map_err(|error| {
+            if error.is_instance_of::<PyMemoryError>(item.py()) {
+                error
+            } else {
+                PyTypeError::new_err("mixed geometry array pickle rows must be bytes-like")
+            }
+        })
 }
 
 /// Copy a one-byte Python buffer into exclusive Rust storage. This is the

@@ -790,9 +790,8 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
         let mut values = crate::vec_with_capacity_hint(1);
         crate::try_push(&mut values, first_item)?;
         let rest = crate::collect_py_iter_from_iter(member, iter, Ok::<_, PyErr>)?;
-        for item in rest {
-            crate::try_push(&mut values, item)?;
-        }
+        crate::try_reserve_vec(&mut values, rest.len())?;
+        values.extend(rest);
         return Ok(PolygonMember::Nested(values));
     };
     if !first.is_finite() {
@@ -812,9 +811,7 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
     )?;
     let mut values = crate::try_vec_with_capacity(1 + rest.len())?;
     crate::try_push(&mut values, first)?;
-    for value in rest {
-        crate::try_push(&mut values, value)?;
-    }
+    values.extend(rest);
     if values.len() < 2 {
         return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
     }

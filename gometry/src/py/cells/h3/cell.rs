@@ -584,7 +584,7 @@ grid_cell_common_pymethods! {
         depth_name: "resolution",
         parse_depth: parse_h3_depth,
         parse_cell: h3_cell_index,
-        unpickle: "_unpickle_h3_cell",
+        unpickle: "_unpickle_h3_cell_v1",
         nbytes: std::mem::size_of::<u64>(),
         parent_text_signature: "($self, resolution=None)",
         children_text_signature: "($self, resolution=None)",

@@ -2,6 +2,8 @@
     clippy::used_underscore_items,
     reason = "`_repr_html_` is IPython's display protocol name"
 )]
+use pyo3::types::PyAnyMethods as _;
+
 use crate::html_text_escape;
 use crate::py::crs::{Bound, Py, PyAny, PyBool, PyCrs, PyResult, Python, parse_crs};
 frozen_pymethods! {
@@ -113,13 +115,14 @@ impl PyCrs {
         Ok(html)
     }
 
-    /// Pickle support: a CRS is its definition string; the constructor
-    /// rebuilds everything else lazily.
-    fn __reduce__(&self, py: Python<'_>) -> (Py<PyAny>, (String,)) {
-        (
-            py.get_type::<PyCrs>().into_any().unbind(),
+    /// Pickle support: retain the definition and rebuild derived metadata lazily.
+    fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (String,))> {
+        Ok((
+            crate::gometry_lib_module(py)?
+                .getattr(pyo3::intern!(py, "_unpickle_crs_v1"))?
+                .unbind(),
             (self.definition.to_string(),),
-        )
+        ))
     }
 }
 }

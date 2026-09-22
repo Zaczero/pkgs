@@ -49,14 +49,6 @@ def _three_multipoints() -> gm.GeometryArray:
     ])
 
 
-def _three_plain_lines() -> gm.GeometryArray:
-    return gm.GeometryArray([
-        gm.from_wkt('LINESTRING (0 0, 10 0)'),
-        gm.from_wkt('LINESTRING (0 10, 10 10)'),
-        gm.from_wkt('LINESTRING (0 20, 10 20)'),
-    ])
-
-
 # (id, array_callable, match)
 WrongLength = tuple[str, Callable[[], Any], str]
 
@@ -83,12 +75,12 @@ WRONG_LENGTH_CASES: list[WrongLength] = [
     ),
     (
         'interpolate_m_start',
-        lambda: _three_plain_lines().interpolate_m([0.0, 1.0], [100.0, 100.0, 100.0]),
+        lambda: _three_lines().interpolate_m([0.0, 1.0], [100.0, 100.0, 100.0]),
         'start_m must be a float or a length-3',
     ),
     (
         'interpolate_m_end',
-        lambda: _three_plain_lines().interpolate_m([0.0, 0.0, 0.0], [100.0, 100.0]),
+        lambda: _three_lines().interpolate_m([0.0, 0.0, 0.0], [100.0, 100.0]),
         'end_m must be a float or a length-3',
     ),
     (
@@ -152,14 +144,6 @@ NON_FINITE_CASES: list[NonFinite] = [
         gm.GeometryError,
     ),
     (
-        'line_interpolate_nan_scalar',
-        lambda: _three_lines()[0].line_interpolate(NAN),
-        # array path is special-cased below
-        lambda: (_ for _ in ()).throw(AssertionError('use dedicated test')),
-        'distance must be finite',
-        gm.GeometryError,
-    ),
-    (
         'line_substring_start_nan',
         lambda: _three_lines()[0].line_substring(NAN, 5.0),
         lambda: _three_lines().line_substring([NAN, 0.0, 0.0], [5.0, 5.0, 5.0]),
@@ -182,28 +166,22 @@ NON_FINITE_CASES: list[NonFinite] = [
     ),
     (
         'interpolate_m_start_nan',
-        lambda: _three_plain_lines()[0].interpolate_m(NAN, 100.0),
-        lambda: _three_plain_lines().interpolate_m(
-            [NAN, 0.0, 0.0], [100.0, 100.0, 100.0]
-        ),
+        lambda: _three_lines()[0].interpolate_m(NAN, 100.0),
+        lambda: _three_lines().interpolate_m([NAN, 0.0, 0.0], [100.0, 100.0, 100.0]),
         'start_m must be finite',
         gm.GeometryError,
     ),
     (
         'interpolate_m_end_nan',
-        lambda: _three_plain_lines()[0].interpolate_m(0.0, NAN),
-        lambda: _three_plain_lines().interpolate_m(
-            [0.0, 0.0, 0.0], [100.0, NAN, 100.0]
-        ),
+        lambda: _three_lines()[0].interpolate_m(0.0, NAN),
+        lambda: _three_lines().interpolate_m([0.0, 0.0, 0.0], [100.0, NAN, 100.0]),
         'end_m must be finite',
         gm.GeometryError,
     ),
     (
         'interpolate_m_end_inf',
-        lambda: _three_plain_lines()[0].interpolate_m(0.0, POS_INF),
-        lambda: _three_plain_lines().interpolate_m(
-            [0.0, 0.0, 0.0], [100.0, POS_INF, 100.0]
-        ),
+        lambda: _three_lines()[0].interpolate_m(0.0, POS_INF),
+        lambda: _three_lines().interpolate_m([0.0, 0.0, 0.0], [100.0, POS_INF, 100.0]),
         'end_m must be finite',
         gm.GeometryError,
     ),
@@ -294,27 +272,23 @@ def test_non_finite_raises_scalar_and_array(
     match: str,
     err_type: type[BaseException] | tuple[type[BaseException], ...],
 ) -> None:
-    if case_id == 'line_interpolate_nan_scalar':
-        with pytest.raises(err_type, match=match):
-            scalar_call()
-        return
     with pytest.raises(err_type, match=match):
         scalar_call()
     with pytest.raises(err_type, match=match):
         array_call()
 
 
-def test_line_interpolate_non_finite_raises_on_both_surfaces() -> None:
+@pytest.mark.parametrize('bad', [NAN, POS_INF, NEG_INF], ids=['nan', 'inf', '-inf'])
+def test_line_interpolate_non_finite_raises_on_both_surfaces(bad: float) -> None:
     """A non-finite distance is a parameter error, so it raises on the scalar
     AND the array surface (the packed row loop clamps only in-range
     stationing; parameter validation happens at the lane boundary).
     """
     lines = _three_lines()
-    for bad in (NAN, POS_INF, NEG_INF):
-        with pytest.raises(gm.GeometryError, match='distance must be finite'):
-            lines[0].line_interpolate(bad)
-        with pytest.raises(gm.GeometryError, match='distance must be finite'):
-            lines.line_interpolate([1.0, bad, 2.0])
+    with pytest.raises(gm.GeometryError, match='at must be finite'):
+        lines[0].line_interpolate(bad)
+    with pytest.raises(gm.GeometryError, match='at must be finite'):
+        lines.line_interpolate([1.0, bad, 2.0])
 
 
 # (id, scalar_call, array_call, match)
@@ -392,7 +366,7 @@ def test_boundary_valid_values_still_work() -> None:
     lines = _three_lines()
     boxes = _three_boxes()
     mps = _three_multipoints()
-    plains = _three_plain_lines()
+    plains = _three_lines()
 
     assert len(lines.offset_curve(0.0)) == 3
     assert len(lines.line_interpolate(0.0)) == 3

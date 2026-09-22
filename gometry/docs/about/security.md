@@ -77,10 +77,9 @@ Callers parsing untrusted data **must bound input size at the trust boundary**
 before parsing, cap decompressed input separately, and bound batch and feature
 counts. Making every `Vec` / string allocation fallible under arbitrary rlimits
 is neither achievable nor required. A bare unsized stream with no `__len__` can
-also consume memory proportionally to its input. In particular, each
-[`Polygon(..., holes=stream)`][gometry.Polygon] hole owns `CoordSeq` columns backed by `Arc<[f64]>`;
-std has no fallible Arc-slice constructor, so under a hard `RLIMIT_AS` its inner
-allocation can abort before the outer fallible collector reports `MemoryError`.
+also consume memory proportionally to its input. Geometry coordinate storage
+and iterable collectors report recoverable allocation failures as `MemoryError`;
+that guarantee does not extend to every allocation in Python or native dependencies.
 
 Bare unsized and infinite input iterables are supported without an element
 ceiling. Sized inputs and lying-`__len__` inputs retain the catchable

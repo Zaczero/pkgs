@@ -50,7 +50,7 @@ crate::heapless!(PyTile);
 /// Rebuild a pickled Tile from its packed id (internal; see
 /// ``Tile.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_tile(
+pub(super) fn _unpickle_tile_v1(
     #[pyo3(from_py_with = crate::strict_u64)] id: u64,
 ) -> PyResult<PyTile> {
     Tile::from_id(id)
@@ -253,7 +253,7 @@ grid_cell_common_pymethods! {
         depth_name: "zoom",
         parse_depth: parse_tile_zoom,
         parse_cell: tile_arg,
-        unpickle: "_unpickle_tile",
+        unpickle: "_unpickle_tile_v1",
         nbytes: std::mem::size_of::<u64>(),
         parent_text_signature: "($self, zoom=None)",
         children_text_signature: "($self, zoom=None)",

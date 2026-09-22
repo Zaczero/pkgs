@@ -771,7 +771,7 @@ h3_index_array_common! {
         class_name: "H3VertexArray",
         collect: collect_h3_vertex_ids,
         parse: h3_vertex_index,
-        unpickle: "_unpickle_h3_vertex_array",
+        unpickle: "_unpickle_h3_vertex_array_v1",
         build_scalar: |id| PyH3Vertex {
             vertex: VertexIndex::try_from(id).expect("ids validated at construction"),
         },
@@ -786,7 +786,7 @@ h3_index_array_common! {
         class_name: "H3EdgeArray",
         collect: collect_h3_edge_ids,
         parse: h3_edge_index,
-        unpickle: "_unpickle_h3_edge_array",
+        unpickle: "_unpickle_h3_edge_array_v1",
         build_scalar: |id| PyH3Edge {
             edge: DirectedEdgeIndex::try_from(id).expect("ids validated at construction"),
         },
@@ -834,7 +834,7 @@ impl PyH3VertexArray {
 )]
 /// Rebuild a pickled `H3VertexArray` from its 64-bit indexes (internal).
 #[pyfunction]
-pub(super) fn _unpickle_h3_vertex_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3VertexArray> {
+pub(super) fn _unpickle_h3_vertex_array_v1(ids: &Bound<'_, PyAny>) -> PyResult<PyH3VertexArray> {
     let ids = crate::collect_u64_sequence(ids, "H3 vertex array pickle ids")?;
     validate_h3_index_ids::<VertexIndex>(&ids)?;
     Ok(PyH3VertexArray::from_ids(ids))
@@ -964,7 +964,7 @@ impl PyH3EdgeArray {
 )]
 /// Rebuild a pickled `H3EdgeArray` from its 64-bit indexes (internal).
 #[pyfunction]
-pub(super) fn _unpickle_h3_edge_array(ids: &Bound<'_, PyAny>) -> PyResult<PyH3EdgeArray> {
+pub(super) fn _unpickle_h3_edge_array_v1(ids: &Bound<'_, PyAny>) -> PyResult<PyH3EdgeArray> {
     let ids = crate::collect_u64_sequence(ids, "H3 edge array pickle ids")?;
     validate_h3_index_ids::<DirectedEdgeIndex>(&ids)?;
     Ok(PyH3EdgeArray::from_ids(ids))

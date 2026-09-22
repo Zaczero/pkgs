@@ -105,7 +105,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     s2::register_s2(m)?;
     geohash::register(m)?;
     tiles::register(m)?;
-    crate::add_functions!(m; array::_unpickle_cell_array);
+    crate::add_functions!(m; array::_unpickle_cell_array_v1);
     crate::add_classes!(m; PyCellArray, PyCellArrayIter);
     mark_sequence_flag::<PyGeometryArray>(m);
     mark_sequence_flag::<PyCellArray>(m);

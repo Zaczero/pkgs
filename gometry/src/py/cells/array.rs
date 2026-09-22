@@ -1075,7 +1075,7 @@ fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     )]
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (Py<PyAny>, String, Py<PyAny>))> {
         let callable = crate::gometry_lib_module(py)?
-            .getattr(pyo3::intern!(py, "_unpickle_cell_array"))?
+            .getattr(pyo3::intern!(py, "_unpickle_cell_array_v1"))?
             .unbind();
         let payload = if self.kind() == GridKind::GeohashCell {
             let tokens = dispatch_cell_grid!(self, G, {
@@ -1732,7 +1732,7 @@ impl PyCellArray {
 )]
 /// Rebuild a pickled CellArray from its public identities and logical mask.
 #[pyfunction]
-pub(crate) fn _unpickle_cell_array(
+pub(crate) fn _unpickle_cell_array_v1(
     ids: &Bound<'_, PyAny>,
     grid: &str,
     mask: &Bound<'_, PyAny>,

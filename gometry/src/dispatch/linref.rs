@@ -3,7 +3,7 @@ use std::sync::Arc;
 use pyo3::prelude::*;
 use pyo3::types::PyAny;
 
-use crate::array::missing::union_pair;
+use crate::array::missing::union_many;
 use crate::array::{ArrayRow, PackedStorage, line_locate_point_on_lines};
 use crate::boundary::metadata::Frame;
 use crate::broadcast::{
@@ -143,7 +143,7 @@ pub(crate) fn line_locate_input(
                     row_map.clone(),
                     array.len(),
                     queries,
-                    union_pair(array.missing(), points.missing())?,
+                    union_many([array.missing(), points.missing()])?,
                     model.clone(),
                     normalized,
                 );

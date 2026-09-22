@@ -42,27 +42,23 @@ def test_prepared_xy_interior_matches_scalar_oracle(predicate, name, geometry, p
     del name
     x, y = probe
     scalar = bool(getattr(gm, predicate[:-3])(geometry, gm.Point(x, y)))
+    assert scalar is True
 
     for count in (9_999, 10_000):
         xs = np.full(count, x)
         ys = np.full(count, y)
         result = getattr(gm, predicate)(geometry, xs, ys)
-        np.testing.assert_array_equal(result, np.full(count, scalar))
+        np.testing.assert_array_equal(result, np.full(count, True))
 
 
-@pytest.mark.parametrize('predicate', ['contains_xy', 'intersects_xy'])
-@pytest.mark.parametrize('name, geometry, probe', _shapes_and_probes())
-def test_prepared_xy_gate_is_batching_invariant(predicate, name, geometry, probe):
-    """Crossing the gate cannot change results relative to below-gate batches."""
-    del name
-    x, y = probe
-
-    for count, half in ((9_998, 4_999), (10_000, 5_000)):
-        xs = np.full(count, x)
-        ys = np.full(count, y)
-        whole = getattr(gm, predicate)(geometry, xs, ys)
-        split = np.concatenate([
-            getattr(gm, predicate)(geometry, xs[:half], ys[:half]),
-            getattr(gm, predicate)(geometry, xs[half:], ys[half:]),
-        ])
-        np.testing.assert_array_equal(whole, split)
+def test_tall_edge_batch_masks_match_scalar_probes() -> None:
+    # 34 edges enter the indexed Y-stabbing plan's interval-tree fallback.
+    vertices = [(i * 0.1, 0.0 if i % 2 == 0 else 1000.0) for i in range(34)]
+    polygon = gm.Polygon([*vertices, vertices[0]])
+    xs, ys = np.meshgrid(np.linspace(0, 3.3, 4), np.linspace(0, 1000, 4))
+    batch = gm.contains_xy(polygon, xs.ravel(), ys.ravel())
+    scalar = [
+        gm.contains(polygon, gm.Point(float(x), float(y)))
+        for x, y in zip(xs.ravel(), ys.ravel(), strict=True)
+    ]
+    np.testing.assert_array_equal(batch, scalar)

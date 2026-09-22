@@ -117,7 +117,7 @@ def test_geohash_cell_array_uses_tokens_for_input_and_pickle() -> None:
 
     cells = gm.CellArray([gm.GeohashCell('u33d')])
     callable_, args = cells.__reduce__()
-    assert callable_.__name__ == '_unpickle_cell_array'
+    assert callable_.__name__ == '_unpickle_cell_array_v1'
     assert args == (['u33d'], 'geohash', None)
     assert pickle.loads(pickle.dumps(cells)).token == ['u33d']
     with pytest.raises(TypeError):
@@ -370,7 +370,7 @@ def test_cell_array_children_rejects_target_below_any_present_depth(reverse) -> 
     cells = [gm.H3Cell(13.4, 52.5, resolution=5), gm.H3Cell(13.4, 52.5, resolution=7)]
     if reverse:
         cells.reverse()
-    array = _lib._unpickle_cell_array(
+    array = _lib._unpickle_cell_array_v1(
         [cell.token for cell in cells], 'h3', bytes([1, 0, 0])
     )
     with pytest.raises(
@@ -514,6 +514,17 @@ def test_cells_accept_packed_point_arrays(grid: GridCase) -> None:
     expected = grid.factory([13.4, 14.4], [52.5, 53.5], **kwargs)
     assert grid.factory(points, **kwargs) == expected
     assert grid.factory(points.to_crs(3857), **kwargs) == expected
+    selected = points[[1, 0, 1]]._with_missing([False, True, False])
+    for source in [selected, selected.to_crs(3857)]:
+        assert list(grid.factory(source, **kwargs)) == [expected[1], None, expected[1]]
+
+
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
+def test_cell_admission_error_keeps_logical_row_after_missing(grid: GridCase) -> None:
+    points = gm.points([0, 0], [0, 91], crs=4326)._with_missing([True, False])
+    with pytest.raises(gm.InvalidGeometryError, match='invalid longitude/latitude') as error:
+        grid.factory(points, **{grid.depth_kw: grid.depth})
+    assert error.value.__notes__ == ['while processing array element 1']
 
 
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
@@ -551,8 +562,8 @@ def test_cell_array_hierarchical_predicates_reject_other_grids(grid: GridCase) -
                 predicate(operand)
 
     grid_token = 'tile' if grid.name == 'tiles' else grid.name
-    masked = _lib._unpickle_cell_array([], grid_token, b'\x01')
-    incompatible_masked = _lib._unpickle_cell_array(
+    masked = _lib._unpickle_cell_array_v1([], grid_token, b'\x01')
+    incompatible_masked = _lib._unpickle_cell_array_v1(
         [],
         'tile' if other.name == 'tiles' else other.name,
         b'\x01',
@@ -568,8 +579,12 @@ def test_masked_cell_array_row_preserving_operations(grid: GridCase) -> None:
     """Missing rows remain aligned through every bulk row-preserving surface."""
     a = grid.make()
     grid_token = 'tile' if grid.name == 'tiles' else grid.name
-    values = _lib._unpickle_cell_array([a.token, a.token], grid_token, bytes([0, 1, 0]))
-    other = _lib._unpickle_cell_array([a.token, a.token], grid_token, bytes([0, 1, 0]))
+    values = _lib._unpickle_cell_array_v1(
+        [a.token, a.token], grid_token, bytes([0, 1, 0])
+    )
+    other = _lib._unpickle_cell_array_v1(
+        [a.token, a.token], grid_token, bytes([0, 1, 0])
+    )
 
     assert values.is_missing.tolist() == [False, True, False]
     np.testing.assert_array_equal(values.contains(other), [True, False, True])
@@ -601,7 +616,7 @@ def test_masked_cell_array_views_keep_mask_and_pickle_polarity() -> None:
     import pickle
 
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
-    values = _lib._unpickle_cell_array(
+    values = _lib._unpickle_cell_array_v1(
         [cell.token, cell.token], 'h3', bytes([0, 1, 0, 1])
     )
     for view, expected_mask in (

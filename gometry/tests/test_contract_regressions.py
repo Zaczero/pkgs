@@ -174,13 +174,13 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
     square_xs = doubles(0.0, 1.0, 1.0, 0.0)
     square_ys = doubles(0.0, 0.0, 1.0, 0.0)
     rejected = {
-        'mixed mask length': lambda: _lib._unpickle_geometry_array(
+        'mixed mask length': lambda: _lib._unpickle_geometry_array_v1(
             [gm.Point(0, 0).to_wkb()], None, None, bytes([0, 0])
         ),
-        'one-vertex line': lambda: _lib._unpickle_packed_array(
+        'one-vertex line': lambda: _lib._unpickle_packed_array_v1(
             square_xs, square_ys, None, None, (offsets(0, 1, 4),), None, None, None
         ),
-        'short ring': lambda: _lib._unpickle_packed_array(
+        'short ring': lambda: _lib._unpickle_packed_array_v1(
             doubles(0.0, 1.0),
             doubles(0.0, 0.0),
             None,
@@ -190,7 +190,7 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
             None,
             None,
         ),
-        'open ring': lambda: _lib._unpickle_packed_array(
+        'open ring': lambda: _lib._unpickle_packed_array_v1(
             doubles(0.0, 1.0, 1.0, 0.5),
             doubles(0.0, 0.0, 1.0, 1.0),
             None,
@@ -200,7 +200,7 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
             None,
             None,
         ),
-        'ring past columns': lambda: _lib._unpickle_packed_array(
+        'ring past columns': lambda: _lib._unpickle_packed_array_v1(
             square_xs,
             square_ys,
             None,
@@ -210,10 +210,10 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
             None,
             None,
         ),
-        'empty ring': lambda: _lib._unpickle_packed_array(
+        'empty ring': lambda: _lib._unpickle_packed_array_v1(
             b'', b'', None, None, (offsets(0, 0), offsets(0, 1)), None, None, None
         ),
-        'no-shell polygon': lambda: _lib._unpickle_packed_array(
+        'no-shell polygon': lambda: _lib._unpickle_packed_array_v1(
             b'', b'', None, None, (offsets(0), offsets(0, 0)), None, None, None
         ),
     }
@@ -223,7 +223,7 @@ def test_packed_pickle_rejects_payloads_that_would_panic() -> None:
         assert type(excinfo.value).__name__ != 'PanicException', name
 
     # Zero-row packed polygon remains valid: [0]/[0] offsets, empty columns.
-    empty = _lib._unpickle_packed_array(
+    empty = _lib._unpickle_packed_array_v1(
         b'', b'', None, None, (offsets(0), offsets(0)), None, None, None
     )
     assert len(empty) == 0
@@ -246,21 +246,21 @@ def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
 
     # Z closes in XY but not Z (1 != 2) — the audit repro.
     with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
-        _lib._unpickle_packed_array(
+        _lib._unpickle_packed_array_v1(
             xs, ys, f([1.0, 1.0, 1.0, 2.0]), None, (ring, poly), None, None, None
         )
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # M-only unclosed (first M != last M).
     with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
-        _lib._unpickle_packed_array(
+        _lib._unpickle_packed_array_v1(
             xs, ys, None, f([1.0, 1.0, 1.0, 2.0]), (ring, poly), None, None, None
         )
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # ZM unclosed on both extra ordinates.
     with pytest.raises(gm.GeometryError, match=r'closed|ring') as excinfo:
-        _lib._unpickle_packed_array(
+        _lib._unpickle_packed_array_v1(
             xs,
             ys,
             f([1.0, 1.0, 1.0, 2.0]),
@@ -274,7 +274,7 @@ def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
 
     # Genuinely closed 3D ring still unpickles into packed storage.
     zs_closed = f([1.0, 1.0, 1.0, 1.0])
-    ok_z = _lib._unpickle_packed_array(
+    ok_z = _lib._unpickle_packed_array_v1(
         xs, ys, zs_closed, None, (ring, poly), None, None, None
     )
     assert len(ok_z) == 1
@@ -283,7 +283,7 @@ def test_d05_polygon_pickle_rejects_active_ordinate_unclosed_rings() -> None:
     assert list(restored_z[0].exterior.coords.z) == [1.0, 1.0, 1.0, 1.0]
 
     # Native 2D closed ring still accepts.
-    ok_2d = _lib._unpickle_packed_array(
+    ok_2d = _lib._unpickle_packed_array_v1(
         xs, ys, None, None, (ring, poly), None, None, None
     )
     assert len(ok_2d) == 1
@@ -364,7 +364,7 @@ def _nullable_packed_linestring_arrow() -> gm.GeometryArray:
     arr = gm.from_arrow(batch)
     # Prove packed (not Mixed): drop_missing densifies to packed lines.
     callable_, args = arr.drop_missing().__reduce_ex__(5)
-    assert callable_.__name__ == '_unpickle_packed_array'
+    assert callable_.__name__ == '_unpickle_packed_array_v1'
     assert len(args[4]) == 1
     return arr
 
@@ -411,7 +411,7 @@ def _nullable_packed_polygon_arrow() -> gm.GeometryArray:
     batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
     arr = gm.from_arrow(batch)
     callable_, args = arr.drop_missing().__reduce_ex__(5)
-    assert callable_.__name__ == '_unpickle_packed_array'
+    assert callable_.__name__ == '_unpickle_packed_array_v1'
     assert len(args[4]) == 2
     return arr
 
@@ -565,14 +565,14 @@ def test_pickle_malformed_wkb_polygon_stays_mixed_not_packed() -> None:
     """
     # Closed 4-vertex polygon — would pack under pack_or_mixed.
     wkb = gm.Polygon([(0, 0), (1, 0), (1, 1), (0, 0)]).to_wkb()
-    arr = _lib._unpickle_geometry_array([wkb], None, None, None)
+    arr = _lib._unpickle_geometry_array_v1([wkb], None, None, None)
     assert len(arr) == 1
     assert arr[0] is not None
     assert arr[0].is_valid
     # Unpickler must force Mixed: reduce stays on the mixed WKB lane.
-    assert arr.__reduce_ex__(5)[0].__name__ == '_unpickle_geometry_array'
+    assert arr.__reduce_ex__(5)[0].__name__ == '_unpickle_geometry_array_v1'
     restored = pickle.loads(pickle.dumps(arr))
-    assert restored.__reduce_ex__(5)[0].__name__ == '_unpickle_geometry_array'
+    assert restored.__reduce_ex__(5)[0].__name__ == '_unpickle_geometry_array_v1'
     assert restored[0].is_valid
 
 
@@ -1265,7 +1265,7 @@ def test_wkb_structure_budget_rejects_empty_ring_amplification() -> None:
         (gm.ParseError, gm.InvalidGeometryError),
         match=r'ring|vertices|too short|count|coordinates',
     ):
-        _lib._unpickle_geometry_array([wkb], None, None, None)
+        _lib._unpickle_geometry_array_v1([wkb], None, None, None)
     # Legitimate multi-ring polygon still parses.
     ok = gm.Polygon(
         [(0, 0), (10, 0), (10, 10), (0, 10), (0, 0)],
@@ -1675,7 +1675,7 @@ def test_lying_len_mixed_pickle_rows_raises_cleanly() -> None:
     wkb = gm.Point(1, 2).to_wkb()
     lying = _LyingLenSequence([wkb], reported=(1 << 62))
     try:
-        out = _lib._unpickle_geometry_array(lying, None, None, None)
+        out = _lib._unpickle_geometry_array_v1(lying, None, None, None)
     except (ValueError, MemoryError, TypeError, OverflowError):
         out = None
     if out is not None:
@@ -1683,7 +1683,7 @@ def test_lying_len_mixed_pickle_rows_raises_cleanly() -> None:
         assert len(out) == 1
         assert out[0].to_wkt() == 'POINT (1 2)'
     # Positive control: concrete list of bytes still works.
-    ok = _lib._unpickle_geometry_array([wkb], None, None, None)
+    ok = _lib._unpickle_geometry_array_v1([wkb], None, None, None)
     assert len(ok) == 1
     assert ok[0].to_wkt() == 'POINT (1 2)'
 

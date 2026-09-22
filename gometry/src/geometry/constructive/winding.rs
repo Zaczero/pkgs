@@ -274,9 +274,7 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
 ) -> Result<Option<Shape>> {
     let mut operands = Vec::new();
     crate::try_reserve_vec(&mut operands, polygons.len())?;
-    for polygon in polygons {
-        crate::try_push_vec(&mut operands, polygon)?;
-    }
+    operands.extend(polygons);
     let normalized = normalize_polygon_union(&operands)?;
     erosion_normalized_budgeted(normalized, distance, rule, quadrant_segments, budget)
 }
@@ -374,22 +372,18 @@ fn erosion_normalized_budgeted(
 fn collection_polygon_operands(parts: &[Shape]) -> Result<Vec<&Polygon>> {
     let mut stack = Vec::new();
     crate::try_reserve_vec(&mut stack, parts.len())?;
-    for part in parts.iter().rev() {
-        crate::try_push_vec(&mut stack, part)?;
-    }
+    stack.extend(parts.iter().rev());
     let mut polygons = Vec::new();
     while let Some(part) = stack.pop() {
         match part {
             Shape::Polygon(polygon) => crate::try_push_vec(&mut polygons, polygon)?,
             Shape::MultiPolygon(more) => {
-                for polygon in more.iter() {
-                    crate::try_push_vec(&mut polygons, polygon)?;
-                }
+                crate::try_reserve_vec(&mut polygons, more.len())?;
+                polygons.extend(more.iter());
             },
             Shape::GeometryCollection(inner) => {
-                for nested in inner.iter().rev() {
-                    crate::try_push_vec(&mut stack, nested)?;
-                }
+                crate::try_reserve_vec(&mut stack, inner.len())?;
+                stack.extend(inner.iter().rev());
             },
             _ => {},
         }

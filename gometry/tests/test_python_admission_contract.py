@@ -522,7 +522,7 @@ def test_fixed_arity_sources_stop_after_one_excess_item() -> None:
 
 
 def test_groups_materialize_one_shot_row_needles_once() -> None:
-    groups = _lib._unpickle_int64_groups([1, 2, 3, 4], [0, 2, 4])
+    groups = _lib._unpickle_int64_groups_v1([1, 2, 3, 4], [0, 2, 4])
 
     assert iter([3, 4]) in groups
     assert groups.index(iter([3, 4])) == 1

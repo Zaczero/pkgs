@@ -383,9 +383,7 @@ impl LineSeq {
     /// [`crate::geometry::constructive::ring::normalized_line`]) — a rotation
     /// and/or reversal, so the vertex count is unchanged.
     pub(crate) fn normalized(&self) -> Result<Self> {
-        Ok(Self::from_proven(CoordSeq::try_from_points(
-            &normalized_line(self)?,
-        )?))
+        Ok(Self::from_proven(normalized_line(self.as_coords())?))
     }
 
     /// Repeated-vertex removal. The underlying pass keeps the first and last

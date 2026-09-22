@@ -89,7 +89,7 @@ grid_cell_common_pymethods! {
         depth_name: "level",
         parse_depth: parse_s2_level,
         parse_cell: s2_cell_id,
-        unpickle: "_unpickle_s2_cell",
+        unpickle: "_unpickle_s2_cell_v1",
         nbytes: std::mem::size_of::<u64>(),
         parent_text_signature: "($self, level=None)",
         children_text_signature: "($self, level=None)",

@@ -2,7 +2,7 @@
 use pyo3::IntoPyObjectExt as _;
 use pyo3::types::PyAny;
 
-use crate::array::missing::{union_many, union_pair};
+use crate::array::missing::union_many;
 use crate::array::{GeometryArrayStorage, PackedStorage, ValidityMask, ValidityRank};
 use crate::boundary::geographic;
 use crate::dispatch::MetricOp;
@@ -1737,7 +1737,7 @@ impl<'a> PointBinaryPlan<'a> {
             },
         };
         let output_frame = left.frame().compatible(right.frame(), operation.name())?;
-        let missing = union_pair(left.missing(), right.missing())?;
+        let missing = union_many([left.missing(), right.missing()])?;
         Ok(Self {
             left,
             right,

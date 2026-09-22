@@ -212,35 +212,38 @@ pub(crate) enum PackedStorage {
     },
 }
 
-pub(crate) enum PointRows<'a> {
+pub(crate) struct PointRows<'a>(PointRowSource<'a>);
+
+enum PointRowSource<'a> {
     Packed {
         coords: &'a CoordSeq,
         row_map: RowSelectionRef<'a>,
     },
-    Gathered(Vec<Point>),
+    Mixed(&'a [Shape]),
 }
 
 impl PointRows<'_> {
     pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::Packed { coords, row_map } => point_logical_len(coords, *row_map),
-            Self::Gathered(points) => points.len(),
+        match &self.0 {
+            PointRowSource::Packed { coords, row_map } => point_logical_len(coords, *row_map),
+            PointRowSource::Mixed(points) => points.len(),
         }
     }
-    /// Per-geometry emptiness test (see `Geometry.is_empty`).
-    ///
-    /// Returns
-    /// -------
-    /// numpy.ndarray
-    ///     One result per input geometry.
     pub(crate) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     pub(crate) fn get(&self, index: usize) -> Point {
-        match self {
-            Self::Packed { coords, row_map } => coords.point_at(physical_row(*row_map, index)),
-            Self::Gathered(points) => points[index],
+        match &self.0 {
+            PointRowSource::Packed { coords, row_map } => {
+                coords.point_at(physical_row(*row_map, index))
+            },
+            PointRowSource::Mixed(points) => {
+                let Shape::Point(point) = &points[index] else {
+                    unreachable!("point row admission excludes other shapes");
+                };
+                *point
+            },
         }
     }
 
@@ -250,13 +253,52 @@ impl PointRows<'_> {
     }
 }
 
-pub(crate) enum LineRows<'a> {
+pub(crate) struct LineRows<'a>(LineRowSource<'a>);
+
+enum LineRowSource<'a> {
     Packed {
         coords: &'a CoordSeq,
         offsets: &'a [i32],
         row_map: RowSelectionRef<'a>,
     },
-    Gathered(Vec<LineSeq>),
+    Mixed(&'a [Shape]),
+}
+
+impl GeometryArrayStorage {
+    pub(crate) fn point_rows(&self) -> Option<PointRows<'_>> {
+        match self {
+            Self::Mixed(shapes) => shapes
+                .iter()
+                .all(|shape| matches!(shape, Shape::Point(_)))
+                .then_some(PointRows(PointRowSource::Mixed(shapes))),
+            Self::Packed(PackedStorage::Points { coords, row_map }) => {
+                Some(PointRows(PointRowSource::Packed {
+                    coords,
+                    row_map: row_map.as_deref(),
+                }))
+            },
+            Self::Packed(PackedStorage::Lines { .. } | PackedStorage::Polygons { .. }) => None,
+        }
+    }
+
+    pub(crate) fn line_rows(&self) -> Option<LineRows<'_>> {
+        match self {
+            Self::Mixed(shapes) => shapes
+                .iter()
+                .all(|shape| matches!(shape, Shape::LineString(_)))
+                .then_some(LineRows(LineRowSource::Mixed(shapes))),
+            Self::Packed(PackedStorage::Lines {
+                coords,
+                offsets,
+                row_map,
+            }) => Some(LineRows(LineRowSource::Packed {
+                coords,
+                offsets: offsets.as_slice(),
+                row_map: row_map.as_deref(),
+            })),
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. }) => None,
+        }
+    }
 }
 
 pub(crate) fn physical_row<'a>(row_map: impl Into<RowSelectionRef<'a>>, logical: usize) -> usize {
@@ -474,21 +516,24 @@ pub(crate) fn polygon_rings_range<'a>(
 
 impl LineRows<'_> {
     pub(crate) fn len(&self) -> usize {
-        match self {
-            Self::Packed {
+        match &self.0 {
+            LineRowSource::Packed {
                 offsets, row_map, ..
             } => line_logical_len(offsets, *row_map),
-            Self::Gathered(lines) => lines.len(),
+            LineRowSource::Mixed(lines) => lines.len(),
         }
     }
 
     pub(crate) const fn is_packed_pair(&self, other: &Self) -> bool {
-        matches!((self, other), (Self::Packed { .. }, Self::Packed { .. }))
+        matches!(
+            (&self.0, &other.0),
+            (LineRowSource::Packed { .. }, LineRowSource::Packed { .. })
+        )
     }
 
     pub(crate) fn row_xy(&self, index: usize) -> (&[f64], &[f64]) {
-        match self {
-            Self::Packed {
+        match &self.0 {
+            LineRowSource::Packed {
                 coords,
                 offsets,
                 row_map,
@@ -499,8 +544,10 @@ impl LineRows<'_> {
                     column_window(coords.ys(), &window),
                 )
             },
-            Self::Gathered(lines) => {
-                let seq = &lines[index];
+            LineRowSource::Mixed(lines) => {
+                let Shape::LineString(seq) = &lines[index] else {
+                    unreachable!("line row admission excludes other shapes");
+                };
                 (seq.xs(), seq.ys())
             },
         }
@@ -509,8 +556,8 @@ impl LineRows<'_> {
     pub(crate) const fn packed_column_view(
         &self,
     ) -> Option<crate::geometry::PackedLineColumnView<'_>> {
-        match self {
-            Self::Packed {
+        match &self.0 {
+            LineRowSource::Packed {
                 coords,
                 offsets,
                 row_map,
@@ -519,7 +566,7 @@ impl LineRows<'_> {
                 offsets,
                 row_map: *row_map,
             }),
-            Self::Gathered(_) => None,
+            LineRowSource::Mixed(_) => None,
         }
     }
 }
@@ -837,6 +884,32 @@ mod tests {
         assert_eq!(row_map.as_deref().len(3), 2);
         assert_eq!(physical_row(row_map.as_deref(), 0), 2);
         assert_eq!(physical_row(row_map.as_deref(), 1), 0);
+    }
+
+    #[test]
+    fn mixed_row_views_borrow_without_allocating_and_reject_other_kinds() {
+        let coords =
+            CoordSeq::try_from_vecs(vec![2.0, 3.0], vec![4.0, 5.0], Some(vec![6.0, 7.0]), None)
+                .unwrap();
+        let point = Point::new_raw_xy(0.0, 1.0);
+        let points = GeometryArrayStorage::Mixed(vec![
+            Shape::Point(point),
+            Shape::Point(coords.point_at(1)),
+        ]);
+        let line = Shape::LineString(LineSeq::from_proven(coords.clone()));
+        let lines = GeometryArrayStorage::Mixed(vec![line.clone()]);
+        let other = GeometryArrayStorage::Mixed(vec![Shape::Point(point), line]);
+        let ((point_rows, line_rows), allocations) = crate::test_support::allocation_count(|| {
+            (points.point_rows().unwrap(), lines.line_rows().unwrap())
+        });
+        assert_eq!(allocations, 0);
+        assert_eq!(point_rows.len(), 2);
+        assert_eq!(point_rows.get(0), point);
+        assert_eq!(point_rows.get(1), coords.point_at(1));
+        assert_eq!(line_rows.row_xy(0), (coords.xs(), coords.ys()));
+        assert!(line_rows.packed_column_view().is_none());
+        assert!(other.point_rows().is_none());
+        assert!(other.line_rows().is_none());
     }
 
     #[test]

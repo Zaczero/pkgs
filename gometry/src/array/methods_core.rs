@@ -697,9 +697,7 @@ impl PyGeometryArray {
         self.flat_map_shapes_groups(py, |shape| {
             let mut parts = Vec::new();
             crate::boundary::try_reserve_vec(&mut parts, shape.part_count())?;
-            for part in shape.parts() {
-                crate::boundary::try_push_vec(&mut parts, part)?;
-            }
+            parts.extend(shape.parts());
             Ok(parts)
         })
     }
@@ -1252,15 +1250,10 @@ impl PyGeometryArray {
             return Some(crosses.map_err(PyErr::from));
         }
         if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
-            let mut values = crate::try_vec_with_capacity(self.len());
-            if let Ok(ref mut values) = values {
-                for _ in 0..self.len() {
-                    if let Err(error) = crate::try_push(values, false) {
-                        return Some(Err(error));
-                    }
-                }
-            }
-            return Some(values);
+            return Some(crate::try_vec_with_capacity(self.len()).map(|mut values| {
+                values.resize(self.len(), false);
+                values
+            }));
         }
         None
     }

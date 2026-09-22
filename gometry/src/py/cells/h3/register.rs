@@ -6,10 +6,11 @@ use crate::py::cells::coverage_ops::{
     GridCoverError, coverage_factory_shapes, envelope_window_shapes,
 };
 use crate::py::cells::h3::{
-    _unpickle_h3_cell, _unpickle_h3_edge, _unpickle_h3_edge_array, _unpickle_h3_vertex,
-    _unpickle_h3_vertex_array, PyH3Cell, PyH3Edge, PyH3EdgeArray, PyH3EdgeArrayIter, PyH3Vertex,
-    PyH3VertexArray, PyH3VertexArrayIter, Resolution, h3_base_cells, h3_bounding_cell, h3_cells,
-    h3_cover, h3_difference, h3_intersection, h3_pentagons, h3_tile, h3_union,
+    _unpickle_h3_cell_v1, _unpickle_h3_edge_array_v1, _unpickle_h3_edge_v1,
+    _unpickle_h3_vertex_array_v1, _unpickle_h3_vertex_v1, PyH3Cell, PyH3Edge, PyH3EdgeArray,
+    PyH3EdgeArrayIter, PyH3Vertex, PyH3VertexArray, PyH3VertexArrayIter, Resolution, h3_base_cells,
+    h3_bounding_cell, h3_cells, h3_cover, h3_difference, h3_intersection, h3_pentagons, h3_tile,
+    h3_union,
 };
 use crate::py::cells::{
     Bound, CellRule, GeometryError, H3_MAX_RESOLUTION, PyAny, PyGeometry, PyModule,
@@ -40,8 +41,8 @@ pub(in crate::py::cells) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(m;
         h3_cells, h3_cover, h3_bounding_cell,
         h3_pentagons, h3_base_cells, h3_union, h3_intersection,
-        h3_difference, _unpickle_h3_cell, _unpickle_h3_vertex,
-        _unpickle_h3_vertex_array, _unpickle_h3_edge, _unpickle_h3_edge_array,
+        h3_difference, _unpickle_h3_cell_v1, _unpickle_h3_vertex_v1,
+        _unpickle_h3_vertex_array_v1, _unpickle_h3_edge_v1, _unpickle_h3_edge_array_v1,
     );
     crate::add_classes!(
         m;

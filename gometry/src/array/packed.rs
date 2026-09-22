@@ -400,14 +400,19 @@ impl PyGeometryArray {
                     ));
                 }
             }
-            let mut present_rows = Vec::new();
-            crate::boundary::try_reserve_vec(&mut present_rows, mask.present_count())?;
-            for (logical, present) in mask.cursor() {
-                if present.is_some() {
-                    crate::try_push_vec(&mut present_rows, logical)?;
-                }
-            }
-            let storage = self.selected_storage(present_rows.iter().copied())?;
+            let storage = if matches!(
+                self.storage(),
+                GeometryArrayStorage::Packed(PackedStorage::Points { .. })
+            ) {
+                let source = self.missing().expect("compact nullable storage has a mask");
+                self.selected_point_present_rows(
+                    source.cursor().filter_map(|(logical, present)| {
+                        present.filter(|_| mask.is_valid(logical))
+                    }),
+                )?
+            } else {
+                self.selected_storage((0..mask.len()).filter(|&logical| !mask.is_missing(logical)))?
+            };
             return Self::from_selected_storage(
                 &self,
                 Arc::new(storage),
@@ -425,24 +430,6 @@ impl PyGeometryArray {
             StorageLayout::LogicalRows,
             0..self.len(),
         )
-    }
-
-    /// The mask entries for a row subset, in gather order.
-    pub(crate) fn gather_missing(
-        &self,
-        rows: &[usize],
-    ) -> crate::error::Result<Option<ValidityMask>> {
-        self.missing()
-            .map_or(Ok(None), |mask| mask.try_gather(rows))
-    }
-
-    /// The mask entries for a contiguous row range.
-    pub(crate) fn gather_missing_range(
-        &self,
-        rows: std::ops::Range<usize>,
-    ) -> Option<ValidityMask> {
-        self.missing()
-            .and_then(|mask| mask.window(rows.start, rows.len()))
     }
 
     /// Coordinate-free sentinel retained only to keep heterogeneous `Mixed`
@@ -477,7 +464,7 @@ impl PyGeometryArray {
         )
     }
 
-    fn gather_point_coords(
+    pub(super) fn gather_point_coords(
         coords: &CoordSeq,
         row_map: RowSelectionRef<'_>,
     ) -> crate::error::Result<CoordSeq> {
@@ -528,13 +515,7 @@ impl PyGeometryArray {
                 "logical nullable payload length must match the missing mask",
             ));
         }
-        let mut present_rows = Vec::new();
-        crate::boundary::try_reserve_vec(&mut present_rows, mask.present_count())?;
-        for (logical, present) in mask.cursor() {
-            if present.is_some() {
-                crate::try_push_vec(&mut present_rows, logical)?;
-            }
-        }
+        let present_rows = (0..mask.len()).filter(|&logical| !mask.is_missing(logical));
         match storage {
             GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
                 Self::compact_point_storage_from_logical(storage, mask)
@@ -550,7 +531,7 @@ impl PyGeometryArray {
                     row_map: row_selection_from_logical_rows(
                         row_map.as_deref(),
                         offsets.len().saturating_sub(1),
-                        present_rows.iter().copied(),
+                        present_rows,
                     )?,
                 });
                 Self::compact_storage_from_present(&selected, mask)
@@ -568,7 +549,7 @@ impl PyGeometryArray {
                     row_map: row_selection_from_logical_rows(
                         row_map.as_deref(),
                         polygon_offsets.len().saturating_sub(1),
-                        present_rows.iter().copied(),
+                        present_rows,
                     )?,
                 });
                 Self::compact_storage_from_present(&selected, mask)

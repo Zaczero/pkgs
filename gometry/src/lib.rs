@@ -108,8 +108,8 @@ pub(crate) use py::classes::{
 };
 use py::functions::polyline::from_polyline;
 use py::functions::{
-    _unpickle_geometry, _unpickle_geometry_array, _unpickle_packed_array,
-    _unpickle_validation_report, OverlayOp, PyValidationReport, coverage_clean,
+    _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1,
+    _unpickle_validation_report_v1, OverlayOp, PyValidationReport, coverage_clean,
     coverage_invalid_edges, coverage_is_valid, coverage_simplify, coverage_union, difference,
     from_features, from_geojson, from_wkb, from_wkt, intersection, intersection_all,
     osm_shortlink_encode, osm_shortlink_location, overlay_operator, pluscode_encode,
@@ -263,8 +263,8 @@ fn lib(m: &Bound<'_, PyModule>) -> PyResult<()> {
         from_wkt, from_wkb, from_geojson, from_features, to_feature, to_feature_collection,
         from_polyline, require,
         // Pickle payload rebuilders (private; see the `__reduce__` impls).
-        _unpickle_geometry, _unpickle_geometry_array, _unpickle_packed_array,
-        _unpickle_validation_report,
+        _unpickle_geometry_v1, _unpickle_geometry_array_v1, _unpickle_packed_array_v1,
+        _unpickle_validation_report_v1,
         // Token vocabularies for the stub-parity gate (private).
         _token_vocabulary,
     );

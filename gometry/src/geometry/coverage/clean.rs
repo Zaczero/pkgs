@@ -79,9 +79,7 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::SourceStaging);
     let mut shape_refs = Vec::new();
     crate::try_reserve_vec(&mut shape_refs, snapped.len())?;
-    for shape in &snapped {
-        crate::try_push_vec(&mut shape_refs, shape)?;
-    }
+    shape_refs.extend(&snapped);
     let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
@@ -199,9 +197,8 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             match row.shape {
                 Shape::Polygon(polygon) => crate::try_push_vec(&mut parts, polygon.clone())?,
                 Shape::MultiPolygon(polygons) => {
-                    for polygon in polygons {
-                        crate::try_push_vec(&mut parts, polygon.clone())?;
-                    }
+                    crate::try_reserve_vec(&mut parts, polygons.len())?;
+                    parts.extend(polygons.iter().cloned());
                 },
                 Shape::Empty(..) => {},
                 _ => unreachable!("coverage rows are polygonal"),

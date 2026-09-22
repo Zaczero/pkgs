@@ -22,7 +22,7 @@ use crate::array::{
     Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
     missing, overlay_operator,
 };
-use crate::py::numpy::{bool_slice_array, false_bool_array, reject_masked_array};
+use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, collect_slice_rows};
 
 pub(crate) enum FancyIndex {
@@ -681,8 +681,13 @@ impl PyGeometryArray {
         self.missing().map_or_else(
             || false_bool_array(py, self.len()),
             |mask| {
-                let values: Vec<bool> = mask.iter().collect();
-                bool_slice_array(py, &values)
+                let array = numpy::PyArray1::<bool>::zeros(py, self.len(), false);
+                let mut write = array.try_readwrite()?;
+                for (output, missing) in write.as_slice_mut()?.iter_mut().zip(mask.iter()) {
+                    *output = missing;
+                }
+                write.make_nonwriteable();
+                Ok(array.into_any().unbind())
             },
         )
     }
@@ -703,7 +708,7 @@ impl PyGeometryArray {
         let incoming = ValidityMask::from_vec(expected, mask)?;
         // OR with existing bits (pandas GeometryExtensionArray semantics):
         // never unmask a row that already carries a missing placeholder.
-        let merged = missing::union_pair(self.missing(), incoming.as_ref())?;
+        let merged = missing::union_many([self.missing(), incoming.as_ref()])?;
         self.clone().with_missing_mask(merged).map_err(PyErr::from)
     }
 

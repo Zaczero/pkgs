@@ -374,10 +374,9 @@ impl Shape {
         }
         if self.topological_dimension() >= Dimension::Curve {
             let mut segments: Vec<Segment> = Vec::new();
+            try_reserve_vec(&mut segments, self.segment_count())?;
             self.try_for_each_segment_chain(|chain| {
-                for segment in line_segments(chain) {
-                    try_push_vec(&mut segments, segment)?;
-                }
+                segments.extend(line_segments(chain));
                 Ok::<(), crate::error::Error>(())
             })?;
             let scale = weight_scale(

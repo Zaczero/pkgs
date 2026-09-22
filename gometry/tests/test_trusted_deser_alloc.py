@@ -47,19 +47,19 @@ def _call_no_panic(call):
 def test_d01_lying_len_cell_array_unpickle_no_panic():
     # Lying __len__ must not force Vec::with_capacity panic. Iteration via
     # getitem that immediately IndexErrors yields an empty cell array (safe).
-    out, err = _call_no_panic(lambda: _lib._unpickle_cell_array(Lying(), 'h3', None))
+    out, err = _call_no_panic(lambda: _lib._unpickle_cell_array_v1(Lying(), 'h3', None))
     if err is None:
         assert len(out) == 0
 
 
 def test_d01_lying_len_groups_no_panic():
     calls = [
-        lambda: _lib._unpickle_int64_groups(Lying(), [0]),
-        lambda: _lib._unpickle_spatial_index(
+        lambda: _lib._unpickle_int64_groups_v1(Lying(), [0]),
+        lambda: _lib._unpickle_spatial_index_v1(
             gm.GeometryArray([gm.Point(0, 0, crs=4326)]), Lying()
         ),
-        lambda: _lib._unpickle_h3_vertex_array(Lying()),
-        lambda: _lib._unpickle_h3_edge_array(Lying()),
+        lambda: _lib._unpickle_h3_vertex_array_v1(Lying()),
+        lambda: _lib._unpickle_h3_edge_array_v1(Lying()),
     ]
     for call in calls:
         _call_no_panic(call)
@@ -76,7 +76,7 @@ def test_cell_array_pickle_mask_is_zero_present_one_missing():
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
     mask = bytes([0, 1, 0])
     identities = [cell.id, cell.id]
-    arr = _lib._unpickle_cell_array(identities, 'h3', mask)
+    arr = _lib._unpickle_cell_array_v1(identities, 'h3', mask)
     _callable, args = arr.__reduce__()
     assert args == (identities, 'h3', mask)
     assert pickle.loads(pickle.dumps(arr)).is_missing.tolist() == [False, True, False]
@@ -85,11 +85,11 @@ def test_cell_array_pickle_mask_is_zero_present_one_missing():
 def test_cell_array_pickle_mask_rejects_non_bytes():
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
     with pytest.raises(ValueError, match='bytes or None'):
-        _lib._unpickle_cell_array([cell.id], 'h3', [0])
+        _lib._unpickle_cell_array_v1([cell.id], 'h3', [0])
 
 
 def test_cell_array_pickle_all_missing_roundtrip():
-    arr = _lib._unpickle_cell_array([], 'h3', bytes([1, 1, 1]))
+    arr = _lib._unpickle_cell_array_v1([], 'h3', bytes([1, 1, 1]))
     _callable, args = arr.__reduce__()
 
     assert len(arr) == 3
@@ -110,7 +110,7 @@ def test_cell_array_pickle_all_missing_roundtrip():
 def test_cell_array_pickle_mask_rejects_bad_values_and_counts(mask):
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
     with pytest.raises(ValueError, match='mask'):
-        _lib._unpickle_cell_array([cell.token], 'h3', mask)
+        _lib._unpickle_cell_array_v1([cell.token], 'h3', mask)
 
 
 def test_cell_array_pickle_invalid_huge_mask_rejected_without_panic():
@@ -121,7 +121,7 @@ def test_cell_array_pickle_invalid_huge_mask_rejected_without_panic():
     """
     cell = gm.H3Cell(13.4, 52.5, resolution=7)
     with pytest.raises(ValueError, match='present count'):
-        _lib._unpickle_cell_array(
+        _lib._unpickle_cell_array_v1(
             [cell.token], 'h3', bytes([0, 0]) + bytes([1]) * 10_000_000
         )
 
@@ -178,7 +178,7 @@ def test_d02_positive_dense_multilinestring_imports(pyarrow_or_skip):
 
 def test_d25_pickle_wkb_errors_stay_parse_errors():
     with pytest.raises(gm.ParseError) as wkb_exc:
-        _lib._unpickle_geometry(b'\x01', None, None)
+        _lib._unpickle_geometry_v1(b'\x01', None, None)
     assert type(wkb_exc.value) is gm.ParseError
     assert wkb_exc.value.format == 'wkb'
 
@@ -213,8 +213,8 @@ def test_d29_forged_has_metadata_false_still_enforces_crs():
     # private empty-index frame bit.
     arr = gm.GeometryArray([gm.Point(0, 0, crs=4326)])
     with pytest.raises(TypeError):
-        _lib._unpickle_spatial_index(arr, [0])  # type: ignore[call-arg]
-    idx = _lib._unpickle_spatial_index(arr, False)
+        _lib._unpickle_spatial_index_v1(arr, [0])  # type: ignore[call-arg]
+    idx = _lib._unpickle_spatial_index_v1(arr, False)
     with pytest.raises(gm.CRSMismatchError):
         idx.query(gm.Point(0, 0, crs=3857))
 
@@ -240,8 +240,8 @@ def test_d30_forged_valid_recomputed_false():
     bad = gm.from_wkt('POLYGON ((0 0,1 1,1 0,0 1,0 0))')
     assert bad.is_valid is False
     with pytest.raises(TypeError):
-        _lib._unpickle_validation_report(bad, None)  # type: ignore[call-arg]
-    report = _lib._unpickle_validation_report(bad)
+        _lib._unpickle_validation_report_v1(bad, None)  # type: ignore[call-arg]
+    report = _lib._unpickle_validation_report_v1(bad)
     assert report.valid is False
     assert report.valid == bad.is_valid
 
@@ -250,11 +250,11 @@ def test_d30_forged_nonfinite_diagnostic_not_accepted():
     # Exact audit repro: forged issue tuple with nonfinite location is rejected
     # at the signature — payload never carries diagnostics.
     with pytest.raises(TypeError):
-        _lib._unpickle_validation_report(  # type: ignore[call-arg]
+        _lib._unpickle_validation_report_v1(  # type: ignore[call-arg]
             gm.Point(0, 0),
             ('forged', (float('nan'), float('inf')), 'not-a-path'),
         )
-    report = _lib._unpickle_validation_report(gm.Point(0, 0))
+    report = _lib._unpickle_validation_report_v1(gm.Point(0, 0))
     assert report.valid is True
     assert report.location is None
 
@@ -277,29 +277,29 @@ def test_d32_empty_geometry_groups_unpickle():
     # Empty offsets is invalid CSR (must start with 0). Pre-fix release raised
     # BufferError / debug panic on len()-1; require a clean GeometryError.
     with pytest.raises(gm.GeometryError, match='invalid CSR offsets') as excinfo:
-        _lib._unpickle_geometry_groups(gm.GeometryArray([]), [])
+        _lib._unpickle_geometry_groups_v1(gm.GeometryArray([]), [])
     assert type(excinfo.value).__name__ != 'BufferError'
     assert type(excinfo.value).__name__ != 'PanicException'
 
     # Valid empty Groups: offsets=[0].
-    g = _lib._unpickle_geometry_groups(gm.GeometryArray([]), [0])
+    g = _lib._unpickle_geometry_groups_v1(gm.GeometryArray([]), [0])
     assert len(g) == 0
 
 
 def test_d32_empty_cell_groups_unpickle():
     with pytest.raises(gm.GeometryError, match='invalid CSR offsets') as excinfo:
-        _lib._unpickle_cell_groups(gm.CellArray([], type=gm.H3Cell), [])
+        _lib._unpickle_cell_groups_v1(gm.CellArray([], type=gm.H3Cell), [])
     assert type(excinfo.value).__name__ != 'BufferError'
     assert type(excinfo.value).__name__ != 'PanicException'
 
-    g = _lib._unpickle_cell_groups(gm.CellArray([], type=gm.H3Cell), [0])
+    g = _lib._unpickle_cell_groups_v1(gm.CellArray([], type=gm.H3Cell), [0])
     assert len(g) == 0
 
 
 def test_d32_positive_groups_roundtrip():
     arr = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
     # Build groups via a real op when available; else unpickle a valid CSR.
-    groups = _lib._unpickle_geometry_groups(arr, [0, 1, 2])
+    groups = _lib._unpickle_geometry_groups_v1(arr, [0, 1, 2])
     out = pickle.loads(pickle.dumps(groups))
     assert len(out) == 2
 

@@ -407,7 +407,7 @@ type ValidationReportPickleArgs = (Typed,);
 /// — forged `.valid` / nonfinite diagnostic locations in the payload are never
 /// trusted.
 #[pyfunction]
-pub(crate) fn _unpickle_validation_report(
+pub(crate) fn _unpickle_validation_report_v1(
     py: Python<'_>,
     geometry: &Bound<'_, PyAny>,
 ) -> PyResult<PyValidationReport> {
@@ -532,7 +532,7 @@ impl PyValidationReport {
     pub fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, ValidationReportPickleArgs)> {
         Ok((
             crate::gometry_lib_module(py)?
-                .getattr(pyo3::intern!(py, "_unpickle_validation_report"))?
+                .getattr(pyo3::intern!(py, "_unpickle_validation_report_v1"))?
                 .unbind(),
             (Typed(self.geometry.clone()),),
         ))

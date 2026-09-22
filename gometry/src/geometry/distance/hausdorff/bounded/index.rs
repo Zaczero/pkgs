@@ -11,6 +11,11 @@ use super::{
     point_segment_squared_f64, span_point, supporting_line_lower_squared, try_push_vec,
     try_reserve_vec,
 };
+use crate::scratch_pool::ScratchPool;
+
+thread_local! {
+    static NEAREST_STACK: ScratchPool<Vec<usize>> = const { ScratchPool::new(Vec::new()) };
+}
 
 #[derive(Debug)]
 pub(super) struct BoundaryEdge {
@@ -36,10 +41,13 @@ pub(super) struct IndexItem {
 #[derive(Clone, Copy, Debug)]
 pub(super) struct IndexNode {
     pub(super) bounds: FloatBox,
-    pub(super) left: Option<usize>,
-    pub(super) right: Option<usize>,
-    pub(super) start: usize,
-    pub(super) end: usize,
+    children: IndexChildren,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum IndexChildren {
+    Leaf { start: usize, end: usize },
+    Branch { left: usize, right: usize },
 }
 
 #[derive(Debug, Default)]
@@ -72,13 +80,10 @@ impl SupportIndex {
         }
         let mut order = Vec::new();
         try_reserve_vec(&mut order, items.len())?;
-        for index in 0..items.len() {
-            try_push_vec(&mut order, index)?;
-        }
-        let node_capacity = items
-            .len()
-            .checked_mul(2)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        order.extend(0..items.len());
+        // Splitting a range of at least five leaves at least two items per
+        // terminal node, so the binary tree never has more nodes than items.
+        let node_capacity = items.len();
         let mut index = Self {
             items,
             order,
@@ -98,10 +103,7 @@ impl SupportIndex {
         if end.saturating_sub(start) <= 4 {
             let node = IndexNode {
                 bounds,
-                left: None,
-                right: None,
-                start,
-                end,
+                children: IndexChildren::Leaf { start, end },
             };
             let index = self.nodes.len();
             try_push_vec(&mut self.nodes, node)?;
@@ -130,10 +132,7 @@ impl SupportIndex {
         let index = self.nodes.len();
         try_push_vec(&mut self.nodes, IndexNode {
             bounds,
-            left: Some(left),
-            right: Some(right),
-            start: 0,
-            end: 0,
+            children: IndexChildren::Branch { left, right },
         })?;
         Ok(index)
     }
@@ -164,7 +163,7 @@ impl SupportIndex {
         };
         let point_bounds = FloatBox::from_point(point)?;
         let mut best: Option<SquaredBounds> = None;
-        let mut stack = Vec::new();
+        let mut stack = ScratchPool::checkout(&NEAREST_STACK);
         try_push_vec(&mut stack, root)?;
         while let Some(node_index) = stack.pop() {
             let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
@@ -172,20 +171,23 @@ impl SupportIndex {
             if box_distance_lower(point_bounds, node.bounds) > best_upper {
                 continue;
             }
-            if let (Some(left), Some(right)) = (node.left, node.right) {
-                // Pop the nearer child first.
-                let left_lower = box_distance_lower(point_bounds, self.nodes[left].bounds);
-                let right_lower = box_distance_lower(point_bounds, self.nodes[right].bounds);
-                let (first, second) = if left_lower <= right_lower {
-                    (left, right)
-                } else {
-                    (right, left)
-                };
-                try_push_vec(&mut stack, second)?;
-                try_push_vec(&mut stack, first)?;
-                continue;
-            }
-            for order_index in &self.order[node.start..node.end] {
+            let (start, end) = match node.children {
+                IndexChildren::Branch { left, right } => {
+                    // Pop the nearer child first.
+                    let left_lower = box_distance_lower(point_bounds, self.nodes[left].bounds);
+                    let right_lower = box_distance_lower(point_bounds, self.nodes[right].bounds);
+                    let (first, second) = if left_lower <= right_lower {
+                        (left, right)
+                    } else {
+                        (right, left)
+                    };
+                    try_push_vec(&mut stack, second)?;
+                    try_push_vec(&mut stack, first)?;
+                    continue;
+                },
+                IndexChildren::Leaf { start, end } => (start, end),
+            };
+            for order_index in &self.order[start..end] {
                 let item = self.items[*order_index];
                 let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
                 if box_distance_lower(point_bounds, item.bounds) > best_upper {
@@ -239,7 +241,8 @@ impl SupportIndex {
             max_y: y,
         };
         let mut frontier = BinaryHeap::new();
-        frontier.try_reserve(self.nodes.len())?;
+        // Pending subtrees are disjoint and each contains at least one leaf.
+        frontier.try_reserve(self.nodes.len().div_ceil(2))?;
         let lower = |bounds| box_distance_lower(query, bounds).to_bits();
         frontier.push(std::cmp::Reverse((lower(self.nodes[root].bounds), root)));
         while let Some(std::cmp::Reverse((lower_bits, node_index))) = frontier.pop() {
@@ -249,13 +252,16 @@ impl SupportIndex {
                 break;
             }
             let node = self.nodes[node_index];
-            if let (Some(left), Some(right)) = (node.left, node.right) {
-                for child in [left, right] {
-                    frontier.push(std::cmp::Reverse((lower(self.nodes[child].bounds), child)));
-                }
-                continue;
-            }
-            for order_index in &self.order[node.start..node.end] {
+            let (start, end) = match node.children {
+                IndexChildren::Branch { left, right } => {
+                    for child in [left, right] {
+                        frontier.push(std::cmp::Reverse((lower(self.nodes[child].bounds), child)));
+                    }
+                    continue;
+                },
+                IndexChildren::Leaf { start, end } => (start, end),
+            };
+            for order_index in &self.order[start..end] {
                 let item = self.items[*order_index];
                 let squared = match item.primitive {
                     PrimitiveId::Span(index) => {
@@ -311,12 +317,15 @@ impl SupportIndex {
             if box_distance_lower(bounds, node.bounds) > threshold {
                 continue;
             }
-            if let (Some(left), Some(right)) = (node.left, node.right) {
-                try_push_vec(&mut stack, left)?;
-                try_push_vec(&mut stack, right)?;
-                continue;
-            }
-            for order_index in &self.order[node.start..node.end] {
+            let (start, end) = match node.children {
+                IndexChildren::Branch { left, right } => {
+                    try_push_vec(&mut stack, left)?;
+                    try_push_vec(&mut stack, right)?;
+                    continue;
+                },
+                IndexChildren::Leaf { start, end } => (start, end),
+            };
+            for order_index in &self.order[start..end] {
                 let item = self.items[*order_index];
                 if box_distance_lower(bounds, item.bounds) > threshold {
                     continue;

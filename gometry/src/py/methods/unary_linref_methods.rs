@@ -342,7 +342,7 @@ impl PyGeometry {
         }
         let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
         let distance = F64Param::Scalar(at);
-        distance.ensure_finite("distance")?;
+        distance.ensure_finite("at")?;
         let resolver = op.resolver_with_line_unit(unit, normalized);
         let value = crate::dispatch::unary_scalar_linref_shape(
             py,
@@ -550,7 +550,7 @@ impl PyGeometryArray {
         }
         let op = crate::dispatch::Operation::Metric(MetricOp::LineInterpolate);
         let distance = F64Param::parse_raw(at, "at", unary_len!(array, self))?;
-        distance.ensure_finite("distance")?;
+        distance.ensure_finite("at")?;
         let resolver = op.resolver_with_line_unit(unit, normalized);
         let model = resolver
             .resolve_ctx(&self.frame, &mut crate::dispatch::MetricScratch::default())?

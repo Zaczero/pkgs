@@ -274,6 +274,31 @@ containers. [`Coordinates`][gometry.Coordinates] and iterator types are not
 picklable. [`GeometryParts`][gometry.GeometryParts] is picklable as an immutable parent view; it is
 reconstructed from its geometry when unpickled.
 
+### Stored-format compatibility
+
+Gometry's custom pickle payloads identify their format in a versioned restoration
+function such as `_unpickle_geometry_v1`. The format version is independent of
+the package version and Python's pickle protocol. Readers retain released
+restoration functions and their payload meaning when internal storage changes;
+a new incompatible payload uses a new restoration function. An older reader
+rejects an unknown function instead of interpreting its payload as an older
+format. This is backward-read compatibility, not a promise that an older release
+can read every newer pickle.
+
+The durable state includes coordinate dimensions, CRS definitions, coordinate
+epochs, missing rows, group offsets, and spatial-index handles, including removed
+handles. Packed numeric columns use little-endian values with fixed-width
+offsets, independent of the host architecture. Derived indexes, prepared
+geometry, CRS caches, and validation verdicts are rebuilt, so numerical results
+and diagnostics can reflect bug fixes and updated CRS authority data.
+
+WKB, WKT, GeoJSON, GeoArrow, and GeoParquet retain their standard formats rather
+than acquiring a gometry-specific envelope. GeoParquet carries its own format
+version; unknown major versions are rejected. For storage shared with other
+applications, use [Arrow and GeoParquet](arrow.md) and check their documented
+CRS, epoch, and dimension support. Pickles require gometry and any optional
+packages used by the stored objects; only load pickles from trusted sources.
+
 ```python exec="on" source="block" result="text"
 import pickle
 

@@ -52,7 +52,7 @@ pub(crate) use nearest_helpers::{
     format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
-pub(crate) use pymethods::{_unpickle_spatial_index, PySpatialIndexIter};
+pub(crate) use pymethods::{_unpickle_spatial_index_v1, PySpatialIndexIter};
 /// metric `dwithin`.
 ///
 /// One parser owns the token vocabulary for
@@ -401,7 +401,7 @@ pub(crate) struct PySpatialIndex {
     // runs until the dead-entry invariant triggers compaction.
     rows: IndexRows,
     /// The immutable STR-packed bulk (build-time rows; tombstone removal).
-    bulk: StaticStrTree,
+    bulk: Arc<StaticStrTree>,
     /// Post-build inserts — immutable STR runs maintained by binary carries.
     overflow: StaticStrForest,
     /// Lazy per-row geodesic caps (anchor + proven aux reach), built on the
@@ -435,7 +435,7 @@ impl PySpatialIndex {
     pub(crate) fn try_clone(&self) -> crate::error::Result<Self> {
         Ok(Self {
             rows: self.rows.try_clone()?,
-            bulk: self.bulk.try_clone()?,
+            bulk: Arc::clone(&self.bulk),
             overflow: self.overflow.try_clone()?,
             geodesic_caps: std::sync::Mutex::default(),
             mutation_gen: self.mutation_gen,
@@ -562,17 +562,11 @@ impl IndexRows {
 
         let mut boxed = Vec::new();
         boxed.try_reserve_exact(self.boxed.len())?;
-        for geometry in &self.boxed {
-            // PyGeometry's shape, row products, and CRS frame are immutable
-            // Arc/SmolStr handles; cloning them does not allocate.
-            crate::try_push_vec(&mut boxed, geometry.clone())?;
-        }
+        boxed.extend(self.boxed.iter().cloned());
 
         let mut live = Vec::new();
         live.try_reserve_exact(self.live.len())?;
-        for &value in &self.live {
-            crate::try_push_vec(&mut live, value)?;
-        }
+        live.extend_from_slice(&self.live);
 
         Ok(Self {
             packed,
@@ -627,8 +621,6 @@ impl IndexRows {
     fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
         let mut shapes = Vec::new();
         crate::try_reserve_vec(&mut shapes, self.live_count)?;
-        let mut missing = Vec::new();
-        crate::try_reserve_vec(&mut missing, self.len())?;
         let mut rows = self.operation();
         for handle in 0..self.len() {
             if self.is_live(handle) {
@@ -637,14 +629,14 @@ impl IndexRows {
                     .with_shape(std::clone::Clone::clone)
                     .map_err(pyo3::PyErr::from)?;
                 crate::try_push_vec(&mut shapes, shape).map_err(pyo3::PyErr::from)?;
-                crate::try_push_vec(&mut missing, false).map_err(pyo3::PyErr::from)?;
-            } else {
-                crate::try_push_vec(&mut missing, true).map_err(pyo3::PyErr::from)?;
             }
         }
         let present = PyGeometryArray::from_shapes(shapes, frame)?;
-        let Some(missing) =
-            crate::array::ValidityMask::from_vec(self.len(), missing).map_err(pyo3::PyErr::from)?
+        let Some(missing) = crate::array::ValidityMask::from_missing_iter(
+            self.len(),
+            self.live.iter().map(|&live| live == 0),
+        )
+        .map_err(pyo3::PyErr::from)?
         else {
             return Ok(present);
         };
@@ -734,7 +726,7 @@ impl HeapSize for PySpatialIndex {
 /// Register the spatial-index free functions on the module. The `SpatialIndex`
 /// pyclass itself is registered with the core classes in the crate root.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-    crate::add_functions!(m; nearest, join, _unpickle_spatial_index);
+    crate::add_functions!(m; nearest, join, _unpickle_spatial_index_v1);
     crate::add_classes!(m; PySpatialIndex, PySpatialIndexIter);
     m.py()
         .import("collections.abc")?

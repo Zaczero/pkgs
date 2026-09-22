@@ -10,7 +10,7 @@ use crate::array::{
 use crate::error::ErrorKind;
 use crate::geometry::types::{checked_csr_window, ensure_coordseq_vertex_capacity};
 use crate::geometry::{
-    CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, LineSeq, Polygon, Ring,
+    CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, LineSeq, Polygon,
 };
 
 #[cfg(test)]
@@ -356,7 +356,7 @@ impl StreamingShapes {
         match shape {
             Shape::Point(point) => self.try_push_point_native(*point),
             Shape::LineString(line) => self.try_push_line_native(line),
-            Shape::Polygon(polygon) if polygon_stream_axes(polygon).is_some() => {
+            Shape::Polygon(polygon) if super::polygon_pack_axes(polygon).is_some() => {
                 self.try_push_polygon_native(polygon)
             },
             _ => Ok(false),
@@ -429,7 +429,7 @@ impl StreamingShapes {
     }
 
     fn try_push_polygon_native(&mut self, polygon: &Polygon) -> crate::error::Result<bool> {
-        let axes = polygon_stream_axes(polygon).expect("polygon admission checked");
+        let axes = super::polygon_pack_axes(polygon).expect("polygon admission checked");
         if matches!(self.state, StreamingState::Shapes(_))
             || !self.admit_kind(RowKind::Polygon(axes))
         {
@@ -525,9 +525,7 @@ impl StreamingShapes {
                     let coords = builder.finish()?;
                     let mut shapes = Vec::new();
                     crate::boundary::try_reserve_vec(&mut shapes, coords.len())?;
-                    for point in &coords {
-                        crate::try_push_vec(&mut shapes, Shape::Point(point))?;
-                    }
+                    shapes.extend(coords.iter().map(Shape::Point));
                     Ok(shapes)
                 },
                 StreamingState::Lines(builder) => builder.into_present_shapes(&self.validity),
@@ -612,7 +610,7 @@ impl StreamingShapes {
                         row_map: crate::array::RowSelection::Identity,
                     })
                 } else {
-                    GeometryArrayStorage::Mixed(line_shapes_from_parts(&coords, &offsets)?)
+                    GeometryArrayStorage::Mixed(line_shapes_from_parts(&coords, &offsets, None)?)
                 };
                 let layout = if matches!(storage, GeometryArrayStorage::Packed(_)) {
                     StorageLayout::LogicalRows
@@ -646,6 +644,7 @@ impl StreamingShapes {
                             &coords,
                             &ring_offsets,
                             &polygon_offsets,
+                            None,
                         )?)
                     };
                 let layout = if matches!(storage, GeometryArrayStorage::Packed(_)) {
@@ -749,25 +748,7 @@ impl StreamingLines {
 
     fn into_present_shapes(self, validity: &ValidityBuilder) -> crate::error::Result<Vec<Shape>> {
         let (coords, offsets) = self.into_parts()?;
-        let mut shapes = Vec::new();
-        crate::boundary::try_reserve_vec(&mut shapes, validity.present_count())?;
-        let mut present = 0;
-        for logical in 0..validity.len() {
-            if validity.is_present(logical) {
-                let start = offsets[logical] as usize;
-                let end = offsets[logical + 1] as usize;
-                let row = coords.view(CoordWindow::from_range(start..end, coords.len()));
-                let shape = if row.is_empty() {
-                    Shape::typed_empty(GeometryKind::LineString, coords.axes())
-                } else {
-                    Shape::LineString(LineSeq::from_proven(row))
-                };
-                crate::try_push_vec(&mut shapes, shape)?;
-                present += 1;
-            }
-        }
-        debug_assert_eq!(present, validity.present_count());
-        Ok(shapes)
+        line_shapes_from_parts(&coords, &offsets, Some(validity))
     }
 }
 
@@ -869,62 +850,36 @@ impl StreamingPolygons {
 
     fn into_present_shapes(self, validity: &ValidityBuilder) -> crate::error::Result<Vec<Shape>> {
         let (coords, ring_offsets, polygon_offsets) = self.into_parts()?;
-        let mut shapes = Vec::new();
-        crate::boundary::try_reserve_vec(&mut shapes, validity.present_count())?;
-        for logical in 0..validity.len() {
-            if !validity.is_present(logical) {
-                continue;
-            }
-            let rings = polygon_offsets[logical] as usize..polygon_offsets[logical + 1] as usize;
-            if rings.is_empty() {
-                crate::try_push_vec(
-                    &mut shapes,
-                    Shape::typed_empty(GeometryKind::Polygon, coords.axes()),
-                )?;
-                continue;
-            }
-            let ring = |index: usize| {
-                let start = ring_offsets[index] as usize;
-                let end = ring_offsets[index + 1] as usize;
-                Ring::try_from_closed(
-                    coords.view(CoordWindow::from_range(start..end, coords.len())),
-                )
-            };
-            let shell = ring(rings.start)?;
-            let mut holes = Vec::new();
-            crate::boundary::try_reserve_vec(&mut holes, rings.len() - 1)?;
-            for index in rings.start + 1..rings.end {
-                crate::try_push_vec(&mut holes, ring(index)?)?;
-            }
-            crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)))?;
-        }
-        Ok(shapes)
+        polygon_shapes_from_parts(&coords, &ring_offsets, &polygon_offsets, Some(validity))
     }
-}
-
-fn polygon_stream_axes(polygon: &Polygon) -> Option<CoordinateAxes> {
-    super::polygon_pack_axes(polygon)
 }
 
 fn line_shapes_from_parts(
     coords: &CoordSeq,
     offsets: &CsrOffsetColumn,
+    validity: Option<&ValidityBuilder>,
 ) -> crate::error::Result<Vec<Shape>> {
     let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, offsets.len().saturating_sub(1))?;
-    for [start, end] in offsets.array_windows::<2>() {
+    crate::boundary::try_reserve_vec(
+        &mut shapes,
+        validity.map_or_else(
+            || offsets.len().saturating_sub(1),
+            ValidityBuilder::present_count,
+        ),
+    )?;
+    for (logical, [start, end]) in offsets.array_windows::<2>().enumerate() {
+        if validity.is_some_and(|mask| !mask.is_present(logical)) {
+            continue;
+        }
         let row = coords.view(CoordWindow::from_range(
             *start as usize..*end as usize,
             coords.len(),
         ));
-        crate::try_push_vec(
-            &mut shapes,
-            if row.is_empty() {
-                Shape::typed_empty(GeometryKind::LineString, coords.axes())
-            } else {
-                Shape::LineString(LineSeq::from_proven(row))
-            },
-        )?;
+        shapes.push(if row.is_empty() {
+            Shape::typed_empty(GeometryKind::LineString, coords.axes())
+        } else {
+            Shape::LineString(LineSeq::from_proven(row))
+        });
     }
     Ok(shapes)
 }
@@ -933,29 +888,30 @@ fn polygon_shapes_from_parts(
     coords: &CoordSeq,
     ring_offsets: &CsrOffsetColumn<RingLevel>,
     polygon_offsets: &CsrOffsetColumn<PolygonLevel>,
+    validity: Option<&ValidityBuilder>,
 ) -> crate::error::Result<Vec<Shape>> {
     let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, polygon_offsets.len().saturating_sub(1))?;
-    for [start, end] in polygon_offsets.array_windows::<2>() {
-        let rings = *start as usize..*end as usize;
-        if rings.is_empty() {
-            crate::try_push_vec(
-                &mut shapes,
-                Shape::typed_empty(GeometryKind::Polygon, coords.axes()),
-            )?;
+    crate::boundary::try_reserve_vec(
+        &mut shapes,
+        validity.map_or_else(
+            || polygon_offsets.len().saturating_sub(1),
+            ValidityBuilder::present_count,
+        ),
+    )?;
+    for (logical, [start, end]) in polygon_offsets.array_windows::<2>().enumerate() {
+        if validity.is_some_and(|mask| !mask.is_present(logical)) {
             continue;
         }
-        let ring = |index: usize| {
-            let start = ring_offsets[index] as usize;
-            let end = ring_offsets[index + 1] as usize;
-            Ring::try_from_closed(coords.view(CoordWindow::from_range(start..end, coords.len())))
-        };
-        let shell = ring(rings.start)?;
-        let mut holes = Vec::new();
-        for index in rings.start + 1..rings.end {
-            crate::try_push_vec(&mut holes, ring(index)?)?;
+        let rings = *start as usize..*end as usize;
+        if rings.is_empty() {
+            shapes.push(Shape::typed_empty(GeometryKind::Polygon, coords.axes()));
+            continue;
         }
-        crate::try_push_vec(&mut shapes, Shape::Polygon(Polygon::new(shell, holes)))?;
+        shapes.push(Shape::Polygon(GeometryArrayStorage::polygon_view(
+            coords,
+            ring_offsets.as_slice(),
+            rings,
+        )?));
     }
     Ok(shapes)
 }

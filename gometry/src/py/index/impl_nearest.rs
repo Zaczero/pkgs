@@ -10,27 +10,32 @@ use crate::{try_push_heap, try_push_vec, try_reserve_heap, try_reserve_vec};
 
 #[derive(Default)]
 pub(crate) struct NearestVisited {
-    values: Vec<bool>,
+    values: Vec<usize>,
     touched: Vec<usize>,
 }
 
 impl NearestVisited {
     fn reset(&mut self, len: usize) -> PyResult<()> {
         for idx in self.touched.drain(..) {
-            self.values[idx] = false;
+            self.values[idx] = 0;
         }
-        let additional = len.saturating_sub(self.values.len());
+        let words = len.div_ceil(usize::BITS as usize);
+        let additional = words.saturating_sub(self.values.len());
         try_reserve_vec(&mut self.values, additional).map_err(pyo3::PyErr::from)?;
-        self.values.resize(len, false);
+        self.values.resize(words, 0);
         Ok(())
     }
 
     fn visit(&mut self, idx: usize) -> PyResult<bool> {
-        if self.values[idx] {
+        let word = idx / usize::BITS as usize;
+        let bit = 1_usize << (idx % usize::BITS as usize);
+        if self.values[word] & bit != 0 {
             return Ok(false);
         }
-        try_push_vec(&mut self.touched, idx).map_err(pyo3::PyErr::from)?;
-        self.values[idx] = true;
+        if self.values[word] == 0 {
+            try_push_vec(&mut self.touched, word).map_err(pyo3::PyErr::from)?;
+        }
+        self.values[word] |= bit;
         Ok(true)
     }
 }
@@ -667,6 +672,22 @@ mod tests {
         Frame, NearestCandidate, Point, PyGeometry, Shape, parse_max_distance, spatial_index,
     };
     use crate::test_support::allocation_count;
+
+    #[test]
+    fn visited_reset_preserves_unique_visits_across_word_boundaries_and_sizes() {
+        let mut visited = NearestVisited::default();
+        for len in [129, 1, 0, 65, 257, 63] {
+            visited.reset(len).unwrap();
+            for row in (0..len).rev() {
+                assert!(visited.visit(row).unwrap());
+                assert!(!visited.visit(row).unwrap());
+            }
+            visited.reset(len).unwrap();
+            for row in (0..len).step_by(7) {
+                assert!(visited.visit(row).unwrap());
+            }
+        }
+    }
 
     #[test]
     fn nearest_max_distance_rejects_nan_at_parser() {

@@ -7,7 +7,29 @@ use crate::array::{
 
 impl PyGeometryArray {
     pub(crate) fn gather_logical_rows(&self, rows: &[usize]) -> crate::error::Result<Self> {
-        self.select_logical_rows(rows.iter().copied(), self.gather_missing(rows)?)
+        let missing = self
+            .missing()
+            .map_or(Ok(None), |mask| -> crate::error::Result<_> {
+                let mut bytes = Vec::new();
+                crate::try_reserve_vec(&mut bytes, rows.len().div_ceil(8))?;
+                bytes.resize(rows.len().div_ceil(8), 0);
+                let mut valid_count = 0;
+                for (out, &row) in rows.iter().enumerate() {
+                    if mask.is_valid(row) {
+                        bytes[out / 8] |= 1 << (out % 8);
+                        valid_count += 1;
+                    }
+                }
+                if valid_count == rows.len() {
+                    return Ok(None);
+                }
+                Ok(ValidityMask::from_bitmap(
+                    crate::geometry::SharedSlice::from_vec(bytes),
+                    0,
+                    rows.len(),
+                ))
+            })?;
+        self.select_logical_rows(rows.iter().copied(), missing)
     }
 
     /// Gather a contiguous logical row range without allocating an index vector.
@@ -15,7 +37,9 @@ impl PyGeometryArray {
         &self,
         rows: std::ops::Range<usize>,
     ) -> crate::error::Result<Self> {
-        let missing = self.gather_missing_range(rows.clone());
+        let missing = self
+            .missing()
+            .and_then(|mask| mask.window(rows.start, rows.len()));
         if self.is_compact_nullable()
             && let Some(mask) = self.missing()
             && matches!(
@@ -24,7 +48,7 @@ impl PyGeometryArray {
             )
         {
             let present = mask.present_before(rows.start)..mask.present_before(rows.end);
-            let storage = self.selected_point_present_range(present)?;
+            let storage = self.selected_point_present_rows(present)?;
             return Self::from_selected_storage(
                 self,
                 Arc::new(storage),
@@ -81,48 +105,16 @@ impl PyGeometryArray {
         &self,
         rows: impl Iterator<Item = usize> + Clone,
     ) -> crate::error::Result<GeometryArrayStorage> {
-        use crate::array::{contiguous_physical_range, row_selection_from_logical_rows};
+        use crate::array::row_selection_from_logical_rows;
         Ok(match self.storage() {
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
+            GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
                 let missing = self.missing().filter(|_| self.is_compact_nullable());
-                let present = if let Some(mask) = missing {
-                    let logical_rows = rows.collect::<Vec<_>>();
-                    let rank = mask.rank_for_rows(&logical_rows)?;
-                    logical_rows
-                        .into_iter()
-                        .filter_map(|row| rank.resolve(row))
-                        .collect::<Vec<_>>()
-                } else {
-                    rows.collect::<Vec<_>>()
-                };
-                if present.is_empty() {
-                    GeometryArrayStorage::Packed(PackedStorage::Points {
-                        coords: Arc::new(
-                            crate::array::PointColumnBuilder::try_with_capacity(coords.axes(), 0)?
-                                .finish()?,
-                        ),
-                        row_map: RowSelection::Identity,
-                    })
-                } else if let Some(window) =
-                    contiguous_physical_range(row_map.as_deref(), present.iter().copied())
-                {
-                    GeometryArrayStorage::Packed(PackedStorage::Points {
-                        coords: Arc::new(coords.view(crate::geometry::CoordWindow::from_range(
-                            window,
-                            coords.len(),
-                        ))),
-                        row_map: RowSelection::Identity,
-                    })
-                } else {
-                    GeometryArrayStorage::Packed(PackedStorage::Points {
-                        coords: Arc::clone(coords),
-                        row_map: row_selection_from_logical_rows(
-                            row_map.as_deref(),
-                            coords.len(),
-                            present,
-                        )?,
-                    })
-                }
+                let rank = missing
+                    .map(|mask| mask.rank_for_rows(rows.clone()))
+                    .transpose()?;
+                let present = rows
+                    .filter_map(|row| rank.as_ref().map_or(Some(row), |rank| rank.resolve(row)));
+                self.selected_point_present_rows(present)?
             },
             GeometryArrayStorage::Packed(PackedStorage::Lines {
                 coords,
@@ -162,16 +154,16 @@ impl PyGeometryArray {
         })
     }
 
-    fn selected_point_present_range(
+    pub(super) fn selected_point_present_rows(
         &self,
-        present: std::ops::Range<usize>,
+        present: impl Iterator<Item = usize> + Clone,
     ) -> crate::error::Result<GeometryArrayStorage> {
         let GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) =
             self.storage()
         else {
-            unreachable!("compact point range selection requires packed points");
+            unreachable!("point row selection requires packed points");
         };
-        if present.is_empty() {
+        if present.clone().next().is_none() {
             return Ok(GeometryArrayStorage::Packed(PackedStorage::Points {
                 coords: Arc::new(
                     PointColumnBuilder::try_with_capacity(coords.axes(), 0)?.finish()?,

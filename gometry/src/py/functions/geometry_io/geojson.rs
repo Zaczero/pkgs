@@ -47,9 +47,7 @@ fn decode_geojson_value(
         let fixed = io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref());
         let features = geojson_feature_collection(&parsed)?
             .expect("type checked before detached FeatureCollection parse");
-        let mut declarations = Vec::new();
-        io::collect_geojson_legacy_crs(&parsed, &mut declarations);
-        io::reconcile_legacy_geojson_crs(&declarations, fixed)?;
+        io::GeoJsonCrs::new(fixed).reconcile_tree(&parsed)?;
         let geometries = feature_value_array(features, crs, epoch)?;
         return Ok(DecodedGeoJson::Array(geometries));
     }
@@ -239,7 +237,7 @@ pub(crate) fn from_geojson(
         return decoded_geojson_into_py(py, decoded);
     }
     if is_py_bytes_or_bytearray(data) {
-        let bytes = if let Some(bytes) = exact_backed_bytes(data)? {
+        let bytes = if let Some(bytes) = exact_backed_bytes(data) {
             OwnedBytes::Backed(bytes)
         } else {
             OwnedBytes::Copied(copy_one_byte_buffer(data)?)
@@ -272,7 +270,7 @@ pub(crate) fn from_geojson(
                     }
                     if is_py_bytes_or_bytearray(data) {
                         return Ok(OwnedGeoJsonRow::Bytes(
-                            if let Some(bytes) = exact_backed_bytes(data)? {
+                            if let Some(bytes) = exact_backed_bytes(data) {
                                 OwnedBytes::Backed(bytes)
                             } else {
                                 OwnedBytes::Copied(copy_one_byte_buffer(data)?)
@@ -306,7 +304,7 @@ pub(crate) fn from_geojson(
                 }
                 if is_py_bytes_or_bytearray(data) {
                     return Ok(OwnedGeoJsonRow::Bytes(
-                        if let Some(bytes) = exact_backed_bytes(data)? {
+                        if let Some(bytes) = exact_backed_bytes(data) {
                             OwnedBytes::Backed(bytes)
                         } else {
                             OwnedBytes::Copied(copy_one_byte_buffer(data)?)
@@ -493,18 +491,15 @@ fn decode_features_text(
         }
     };
 
-    let policy = io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref());
+    let mut declarations = io::GeoJsonCrs::new(io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref()));
     if let Some(legacy) = collection_legacy.as_ref() {
-        io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
+        declarations.reconcile_declaration(legacy)?;
     }
     let mut shapes = crate::array::StreamingShapes::new();
     let mut side_rows = Vec::new();
     for (row_index, meta) in rows_meta.into_iter().enumerate() {
-        let (row, nested) =
-            feature_row_from_meta(meta, feature_geometry_path(path_kind, row_index))?;
-        for legacy in &nested {
-            io::reconcile_legacy_geojson_crs(&[legacy], policy)?;
-        }
+        let row = feature_row_from_meta(meta, feature_geometry_path(path_kind, row_index))?;
+        row.reconcile_legacy_crs(&mut declarations)?;
         match &row.geometry {
             FeatureGeometryInput::Null => {
                 shapes.try_push_missing()?;
@@ -595,15 +590,13 @@ fn finish_features(
 
 fn reconcile_legacy_crs_detached(
     py: Python<'_>,
-    declarations: Vec<Value>,
-    crs: Option<Crs>,
+    row: &FeatureRow,
+    crs: Option<&str>,
 ) -> PyResult<()> {
-    py.detach(move || {
-        let policy = io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref());
-        for declaration in &declarations {
-            io::reconcile_legacy_geojson_crs(&[declaration], policy)?;
-        }
-        Ok::<_, crate::error::Error>(())
+    py.detach(|| {
+        row.reconcile_legacy_crs(&mut io::GeoJsonCrs::new(io::LegacyGeoJsonCrsPolicy::Fixed(
+            crs,
+        )))
     })?;
     Ok(())
 }
@@ -627,12 +620,28 @@ struct FeatureRow {
     geometry_path: String,
     properties: FeatureSideData,
     id: FeatureSideData,
+    legacy_crs: Option<Value>,
+}
+
+impl FeatureRow {
+    fn reconcile_legacy_crs(
+        &self,
+        declarations: &mut io::GeoJsonCrs<'_>,
+    ) -> crate::error::Result<()> {
+        if let Some(legacy) = &self.legacy_crs {
+            declarations.reconcile_declaration(legacy)?;
+        }
+        if let FeatureGeometryInput::Json(value) = &self.geometry {
+            declarations.reconcile_tree(value)?;
+        }
+        Ok(())
+    }
 }
 
 fn feature_row_from_meta(
     feature: FeatureRowMeta,
     geometry_path: String,
-) -> crate::error::Result<(FeatureRow, Vec<Value>)> {
+) -> crate::error::Result<FeatureRow> {
     let FeatureRowMeta::Mapping {
         kind,
         geometry,
@@ -648,34 +657,22 @@ fn feature_row_from_meta(
             "each feature must have type \"Feature\"",
         ));
     }
-    let mut nested_legacy_crs: Vec<Value> = Vec::new();
-    if let Some(legacy) = legacy_crs {
-        crate::try_push_vec(&mut nested_legacy_crs, legacy)?;
-    }
     let geometry = match geometry {
         FeatureGeometryValue::Missing => {
             return Err(io::IoError::geojson("each feature must have a geometry"));
         },
         FeatureGeometryValue::Null => FeatureGeometryInput::Null,
         FeatureGeometryValue::Value(raw) => {
-            let value = support::parse_geojson_text(raw.get())?;
-            let mut nested = Vec::new();
-            io::collect_geojson_legacy_crs(&value, &mut nested);
-            for legacy in nested {
-                crate::try_push_vec(&mut nested_legacy_crs, legacy.clone())?;
-            }
-            FeatureGeometryInput::Json(value)
+            FeatureGeometryInput::Json(support::parse_geojson_text(raw.get())?)
         },
     };
-    Ok((
-        FeatureRow {
-            geometry,
-            geometry_path,
-            properties: FeatureSideData::Json(properties),
-            id: FeatureSideData::Json(id),
-        },
-        nested_legacy_crs,
-    ))
+    Ok(FeatureRow {
+        geometry,
+        geometry_path,
+        properties: FeatureSideData::Json(properties),
+        id: FeatureSideData::Json(id),
+        legacy_crs,
+    })
 }
 
 fn build_python_features(
@@ -710,7 +707,10 @@ fn build_python_features(
                     .ok_or_else(|| feature_parse_error("feature collection requires features"))?;
                 if let Some(legacy) = data.get_item(pyo3::intern!(py, "crs"))? {
                     let legacy = py_to_json_value(&legacy)?;
-                    reconcile_legacy_crs_detached(py, vec![legacy], crs.clone())?;
+                    py.detach(|| {
+                        io::GeoJsonCrs::new(io::LegacyGeoJsonCrsPolicy::Fixed(crs.as_deref()))
+                            .reconcile_declaration(&legacy)
+                    })?;
                 }
                 let iter = crate::py_iter_or_error(&features, || {
                     feature_parse_error("feature collection features must be iterable")
@@ -720,12 +720,12 @@ fn build_python_features(
                     py,
                     iter.enumerate().map(move |(row, item)| {
                         let item = item?;
-                        let (feature, legacy) = python_feature_row(
+                        let feature = python_feature_row(
                             py,
                             &item,
                             feature_geometry_path(FeaturePathKind::Collection, row),
                         )?;
-                        reconcile_legacy_crs_detached(py, legacy, crs_for_rows.clone())?;
+                        reconcile_legacy_crs_detached(py, &feature, crs_for_rows.as_deref())?;
                         Ok(feature)
                     }),
                     crs,
@@ -733,12 +733,12 @@ fn build_python_features(
                 );
             },
             Some(PythonFeatureKind::Feature) => {
-                let (feature, legacy) = python_feature_row(
+                let feature = python_feature_row(
                     py,
                     &data,
                     feature_geometry_path(FeaturePathKind::Single, 0),
                 )?;
-                reconcile_legacy_crs_detached(py, legacy, crs.clone())?;
+                reconcile_legacy_crs_detached(py, &feature, crs.as_deref())?;
                 return build_features(py, std::iter::once(Ok(feature)), crs, epoch);
             },
             _ => {
@@ -758,12 +758,12 @@ fn build_python_features(
         py,
         iter.enumerate().map(move |(row, item)| {
             let item = item?;
-            let (feature, legacy) = python_feature_row(
+            let feature = python_feature_row(
                 py,
                 &item,
                 feature_geometry_path(FeaturePathKind::Sequence, row),
             )?;
-            reconcile_legacy_crs_detached(py, legacy, crs_for_rows.clone())?;
+            reconcile_legacy_crs_detached(py, &feature, crs_for_rows.as_deref())?;
             Ok(feature)
         }),
         crs,
@@ -795,7 +795,7 @@ fn python_feature_row(
     py: Python<'_>,
     feature: &Bound<'_, PyAny>,
     geometry_path: String,
-) -> PyResult<(FeatureRow, Vec<Value>)> {
+) -> PyResult<FeatureRow> {
     // keys()+seen copier (N4): accept keys()-only ducks, not only abc.Mapping.
     let feature = mapping_as_dict(feature)?
         .ok_or_else(|| feature_parse_error("each feature must be a mapping"))?;
@@ -829,30 +829,18 @@ fn python_feature_row(
         .get_item(pyo3::intern!(py, "crs"))?
         .map(|legacy| py_to_json_value(&legacy))
         .transpose()?;
-    let mut all_legacy_crs = Vec::new();
-    if let Some(legacy) = legacy_crs {
-        crate::try_push(&mut all_legacy_crs, legacy)?;
-    }
     let geometry = if geometry.is_none() {
         FeatureGeometryInput::Null
     } else {
-        let value = parse_geojson_geometry_value(&geometry)?;
-        let mut nested = Vec::new();
-        io::collect_geojson_legacy_crs(&value, &mut nested);
-        for legacy in nested {
-            crate::try_push(&mut all_legacy_crs, legacy.clone())?;
-        }
-        FeatureGeometryInput::Json(value)
+        FeatureGeometryInput::Json(parse_geojson_geometry_value(&geometry)?)
     };
-    Ok((
-        FeatureRow {
-            geometry,
-            geometry_path,
-            properties: FeatureSideData::Python(properties),
-            id: FeatureSideData::Python(id),
-        },
-        all_legacy_crs,
-    ))
+    Ok(FeatureRow {
+        geometry,
+        geometry_path,
+        properties: FeatureSideData::Python(properties),
+        id: FeatureSideData::Python(id),
+        legacy_crs,
+    })
 }
 
 fn python_feature_properties(
@@ -917,6 +905,7 @@ fn build_features(
             geometry_path,
             properties: row_properties,
             id: row_id,
+            ..
         } = row;
         let result = py.detach(move || -> crate::error::Result<_> {
             match geometry {
@@ -1457,13 +1446,7 @@ impl RawJsonToPy<'_, '_> {
         let map = values;
         let mut values = Vec::new();
         crate::try_reserve_vec(&mut values, map.len())?;
-        #[expect(
-            clippy::iter_over_hash_type,
-            reason = "the entries are sorted by key immediately before they are published"
-        )]
-        for value in map {
-            crate::try_push(&mut values, value)?;
-        }
+        values.extend(map);
         values.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         for (key, value) in values {
             dict.set_item(key, value)?;

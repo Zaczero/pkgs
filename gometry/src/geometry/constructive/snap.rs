@@ -1263,9 +1263,7 @@ impl Shape {
         fn dedup_line<C: Coordinates + ?Sized>(points: &C) -> Result<Vec<Point>> {
             let mut vertices = Vec::new();
             crate::try_reserve_vec(&mut vertices, points.coord_count())?;
-            for point in points.iter_coords() {
-                crate::try_push_vec(&mut vertices, point)?;
-            }
+            vertices.extend(points.iter_coords());
             dedup_consecutive_points(&mut vertices);
             Ok(vertices)
         }

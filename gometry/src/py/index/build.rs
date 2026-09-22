@@ -31,18 +31,18 @@ fn spatial_index_rows(
     let mut non_prunable_live = 0;
     for (idx, item) in items.iter().enumerate() {
         let Some(item) = item else {
-            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
+            live.push(0);
             continue;
         };
         let Some(bounds) = item.shape.bounds() else {
-            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
+            live.push(0);
             continue;
         };
         let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
             crate::try_push(&mut entries, IndexEntry { idx, envelope })?;
         }
-        crate::try_push_vec(&mut live, 1).map_err(pyo3::PyErr::from)?;
+        live.push(1);
         non_prunable_live += usize::from(!geodesic_prunable_point(&item.shape));
     }
     let live_count = live.iter().map(|&live| usize::from(live != 0)).sum();
@@ -97,7 +97,7 @@ fn packed_index_payload(
     let rows = array.row_operation();
     for logical_row in rows.rows_with_missing(|| ()) {
         let crate::array::ArrayRow::Present(row) = logical_row else {
-            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
+            live.push(0);
             continue;
         };
         let logical = row.logical();
@@ -107,16 +107,15 @@ fn packed_index_payload(
             .and_then(|bounds| bounds.get(logical).copied().flatten())
             .or_else(|| shape_row.quick_bounds());
         let Some(bounds) = bounds else {
-            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
+            live.push(0);
             continue;
         };
         match domain {
             TopologyDomain::Cartesian => {
-                crate::try_push_vec(&mut entries, IndexEntry {
+                entries.push(IndexEntry {
                     idx: logical,
                     envelope: bounds_envelope(bounds),
-                })
-                .map_err(pyo3::PyErr::from)?;
+                });
             },
             TopologyDomain::Geographic(_) => shape_row.try_with_shape(|shape| {
                 let cover = index_envelopes(shape, bounds, domain)?;
@@ -130,7 +129,7 @@ fn packed_index_payload(
                 Ok::<_, pyo3::PyErr>(())
             })?,
         }
-        crate::try_push_vec(&mut live, 1).map_err(pyo3::PyErr::from)?;
+        live.push(1);
         non_prunable_live += usize::from(!matches!(
             shape_row,
             crate::array::ShapeRow::Point(point)
@@ -269,8 +268,8 @@ pub(crate) fn restore_spatial_index(
         index.metadata = (has_metadata || has_present_rows).then(|| values.frame.clone());
         return Ok(index);
     }
-    let mut rows = crate::vec_with_capacity_hint(values.len());
-    let mut live = crate::vec_with_capacity_hint(values.len());
+    let mut rows = crate::try_vec_with_capacity(values.len())?;
+    let mut live = crate::try_vec_with_capacity(values.len())?;
     let mut present = false;
     let mut row_operation = values.row_operation();
     let domain = crate::geometry::topology_domain(&values.frame)?;
@@ -296,13 +295,13 @@ pub(crate) fn restore_spatial_index(
                 })?;
             }
             non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
-            crate::try_push_vec(&mut live, 1).map_err(pyo3::PyErr::from)?;
+            live.push(1);
             geometry
         } else {
-            crate::try_push_vec(&mut live, 0).map_err(pyo3::PyErr::from)?;
+            live.push(0);
             PyGeometry::with_frame(PyGeometryArray::missing_placeholder(), values.frame.clone())
         };
-        crate::try_push(&mut rows, geometry)?;
+        rows.push(geometry);
     }
     let total_rows = rows.len();
     let live_count = live.iter().filter(|&&live| live != 0).count();

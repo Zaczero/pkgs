@@ -14,7 +14,7 @@ use crate::py::cells::coverage_ops::{
 };
 use crate::py::cells::s2::PyS2Cell;
 use crate::py::cells::s2::functions::{
-    _unpickle_s2_cell, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
+    _unpickle_s2_cell_v1, s2_bounding_cell, s2_cells, s2_cover, s2_difference, s2_intersection,
     s2_union,
 };
 use crate::py::cells::s2::parse::S2LevelBudget;
@@ -449,7 +449,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_functions!(m;
         s2_cells, s2_cover, s2_union,
         s2_intersection, s2_difference, s2_bounding_cell,
-        _unpickle_s2_cell,
+        _unpickle_s2_cell_v1,
     );
     crate::add_classes!(m; PyS2Cell);
     Ok(())

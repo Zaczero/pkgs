@@ -112,7 +112,7 @@ impl PyH3Vertex {
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (u64,))> {
         Ok((
             crate::gometry_lib_module(py)?
-                .getattr(pyo3::intern!(py, "_unpickle_h3_vertex"))?
+                .getattr(pyo3::intern!(py, "_unpickle_h3_vertex_v1"))?
                 .unbind(),
             (self.vertex.into(),),
         ))
@@ -134,7 +134,7 @@ impl PyH3Vertex {
 /// Rebuild a pickled `H3Vertex` from its 64-bit index (internal; see
 /// ``H3Vertex.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_h3_vertex(
+pub(super) fn _unpickle_h3_vertex_v1(
     #[pyo3(from_py_with = crate::strict_u64)] id: u64,
 ) -> PyResult<PyH3Vertex> {
     Ok(PyH3Vertex {
@@ -316,7 +316,7 @@ fn reverse(&self) -> Self {
     fn __reduce__(&self, py: Python<'_>) -> PyResult<(Py<PyAny>, (u64,))> {
         Ok((
             crate::gometry_lib_module(py)?
-                .getattr(pyo3::intern!(py, "_unpickle_h3_edge"))?
+                .getattr(pyo3::intern!(py, "_unpickle_h3_edge_v1"))?
                 .unbind(),
             (self.edge.into(),),
         ))
@@ -358,7 +358,7 @@ pub(super) fn h3_edge_index(value: &Bound<'_, PyAny>) -> PyResult<DirectedEdgeIn
 /// Rebuild a pickled `H3Edge` from its 64-bit index (internal; see
 /// ``H3Edge.__reduce__``).
 #[pyfunction]
-pub(super) fn _unpickle_h3_edge(
+pub(super) fn _unpickle_h3_edge_v1(
     #[pyo3(from_py_with = crate::strict_u64)] id: u64,
 ) -> PyResult<PyH3Edge> {
     Ok(PyH3Edge {

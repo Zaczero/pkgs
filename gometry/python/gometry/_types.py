@@ -22,7 +22,7 @@ from __future__ import annotations
 import itertools
 import math
 import sys
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from typing import (
     Any,
     ClassVar,
@@ -711,14 +711,14 @@ class Features:
     def __reduce__(
         self,
     ) -> tuple[
-        type[Features],
+        Callable[..., Features],
         tuple[
             GeometryArray[Geometry | None],
             tuple[dict[str, Any] | None, ...],
             tuple[FeatureId, ...],
         ],
     ]:
-        return (type(self), (self.geometries, self.properties, self.ids))
+        return (_restore_features_v1, (self.geometries, self.properties, self.ids))
 
     def __iter__(
         self,
@@ -746,6 +746,14 @@ class Features:
         )
 
 
+def _restore_features_v1(
+    geometries: GeometryArray[Geometry | None],
+    properties: tuple[dict[str, Any] | None, ...],
+    ids: tuple[FeatureId, ...],
+) -> Features:
+    return Features(geometries, properties, ids)
+
+
 class Extremes(NamedTuple, Generic[_ExtremeT]):
     """The westmost/southmost/eastmost/northmost vertices of a geometry.
 
@@ -766,6 +774,15 @@ class Extremes(NamedTuple, Generic[_ExtremeT]):
 
     north: _ExtremeT
     """The vertex with the largest Y."""
+
+    def __reduce__(self) -> tuple[Callable[..., Extremes[_ExtremeT]], tuple[Any, ...]]:
+        return _restore_extremes_v1, tuple(self)
+
+
+def _restore_extremes_v1(
+    west: _ExtremeT, south: _ExtremeT, east: _ExtremeT, north: _ExtremeT
+) -> Extremes[_ExtremeT]:
+    return Extremes(west, south, east, north)
 
 
 class PolygonizeResult(NamedTuple):
@@ -788,6 +805,18 @@ class PolygonizeResult(NamedTuple):
 
     invalid_rings: Groups[GeometryArray[LineString]]
     """Invalid noded rings or duplicate edges, grouped by source row."""
+
+    def __reduce__(self) -> tuple[Callable[..., PolygonizeResult], tuple[Any, ...]]:
+        return _restore_polygonize_result_v1, tuple(self)
+
+
+def _restore_polygonize_result_v1(
+    polygons: GeometryArray[Polygon],
+    cut_edges: Groups[GeometryArray[LineString]],
+    dangles: Groups[GeometryArray[LineString]],
+    invalid_rings: Groups[GeometryArray[LineString]],
+) -> PolygonizeResult:
+    return PolygonizeResult(polygons, cut_edges, dangles, invalid_rings)
 
 
 class SupportsGeoInterface(Protocol):

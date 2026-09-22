@@ -123,11 +123,13 @@ def _is_missing_scalar(value: object) -> bool:
     return False
 
 
-def _unpickle_geometry_extension_array(
+def _unpickle_geometry_extension_array_v1(
     state: list[GeometryArray[Geometry | None]],
+    readonly: bool,
 ) -> GeometryExtensionArray:
     array = GeometryExtensionArray.__new__(GeometryExtensionArray)
     array._state = state
+    array._readonly = readonly
     return array
 
 
@@ -172,7 +174,7 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
         return twin
 
     def __reduce__(self):
-        return (_unpickle_geometry_extension_array, (self._state,))
+        return (_unpickle_geometry_extension_array_v1, (self._state, self._readonly))
 
     @property
     def geometry_array(self) -> GeometryArray[Geometry | None]:

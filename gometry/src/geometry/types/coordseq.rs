@@ -147,13 +147,6 @@ fn admit_m_column(ms: Option<&MColumn>, xy_physical: usize, visible: usize) -> R
     }
 }
 
-pub(crate) fn try_copy_slice(values: &[f64]) -> Result<Vec<f64>> {
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, values.len())?;
-    out.extend_from_slice(values);
-    Ok(out)
-}
-
 fn try_rev_copy_slice(values: &[f64]) -> Result<Vec<f64>> {
     let mut out = Vec::new();
     crate::boundary::try_reserve_vec(&mut out, values.len())?;
@@ -656,7 +649,9 @@ impl CoordSeq {
         if self.is_full_window(column) {
             Ok(column.clone())
         } else {
-            Ok(SharedSlice::from_vec(try_copy_slice(self.window(column))?))
+            Ok(SharedSlice::from_vec(crate::boundary::try_copy_slice(
+                self.window(column),
+            )?))
         }
     }
 

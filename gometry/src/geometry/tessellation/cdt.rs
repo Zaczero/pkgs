@@ -917,9 +917,7 @@ impl ConstrainedMesh {
         }
         let mut constraint_pieces = Vec::new();
         crate::try_reserve_vec(&mut constraint_pieces, self.source_pieces.len())?;
-        for piece in self.source_pieces.into_values() {
-            crate::try_push_vec(&mut constraint_pieces, piece)?;
-        }
+        constraint_pieces.extend(self.source_pieces.into_values());
         crate::geometry::try_sort_by(&mut constraint_pieces, compare_source_pieces)?;
         Ok(ConstrainedMeshPlan {
             vertices: points,

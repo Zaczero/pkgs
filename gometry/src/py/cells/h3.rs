@@ -24,14 +24,15 @@ use index::{collect_h3_index_ids, parse_h3_index};
 use register::{h3_resolution, h3_resolution_from_i64};
 pub(super) use register::{parse_h3_resolution, register};
 use set_algebra::{
-    _unpickle_h3_cell, h3_base_cells, h3_difference, h3_intersection, h3_pentagons, h3_union,
+    _unpickle_h3_cell_v1, h3_base_cells, h3_difference, h3_intersection, h3_pentagons, h3_union,
 };
 use tile::{h3_cell_shape, h3_tile};
 pub(crate) use types::PyH3Cell;
 use types::{PyH3Edge, PyH3Vertex, TiledCell, h3_cell_array, h3_latlng};
-use vertex_edge::{_unpickle_h3_edge, _unpickle_h3_vertex, h3_edge_index, h3_vertex_index};
+use vertex_edge::{_unpickle_h3_edge_v1, _unpickle_h3_vertex_v1, h3_edge_index, h3_vertex_index};
 use vertex_edge_array::{
-    _unpickle_h3_edge_array, _unpickle_h3_vertex_array, PyH3EdgeArrayIter, PyH3VertexArrayIter,
+    _unpickle_h3_edge_array_v1, _unpickle_h3_vertex_array_v1, PyH3EdgeArrayIter,
+    PyH3VertexArrayIter,
 };
 pub(crate) use vertex_edge_array::{PyH3EdgeArray, PyH3VertexArray};
 

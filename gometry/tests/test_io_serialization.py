@@ -427,7 +427,7 @@ def test_d2_hole_polygons_with_missing_stay_packed() -> None:
     arr = gm.from_geojson(fc)
     # Packed polygon payload — not the mixed WKB path.
     callable_, args = arr.__reduce__()
-    assert callable_.__name__ == '_unpickle_packed_array'
+    assert callable_.__name__ == '_unpickle_packed_array_v1'
     assert len(args[4]) == 2
     assert arr.to_wkt()[1] is None
     assert arr.is_missing.tolist() == [False, True, False]

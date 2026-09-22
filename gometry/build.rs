@@ -7,7 +7,7 @@ use std::{env, fs};
 
 use sha2::{Digest as _, Sha256};
 
-const SOURCE_INPUTS_FORMAT: &str = "sha256-path-nul-content-nul-v4";
+const SOURCE_INPUTS_FORMAT: &str = "sha256-path-nul-content-nul-v5";
 // The requested PEP 517 profile is not a Cargo-observed fact. Cargo reports
 // `PROFILE=release` for release-dist because it inherits the release profile.
 const RELEASE_ENV_VARS: &[&str] = &[
@@ -181,13 +181,9 @@ fn source_input_digests(manifest_dir: &Path) -> (String, String) {
             "gometry/rust-toolchain.toml".to_owned(),
             manifest_dir.join("rust-toolchain.toml"),
         ),
-        (
-            "gometry/Cargo.toml".to_owned(),
-            manifest_dir.join("Cargo.toml"),
-        ),
         ("gometry/build.rs".to_owned(), manifest_dir.join("build.rs")),
     ];
-    // Maturin normalizes the workspace manifest and pyproject.toml, omits the
+    // Maturin normalizes Cargo manifests and pyproject.toml, omits the
     // checkout-only Cargo config, and prunes unrelated workspace packages from
     // Cargo.lock when it builds from an sdist. Hash only inputs preserved
     // byte-for-byte across both checkout and sdist builds; dependency
@@ -244,6 +240,9 @@ fn collect_files(
     entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
     for entry in entries {
         let path = entry.path();
+        if path.file_name().is_some_and(|name| name == "Cargo.toml") {
+            continue;
+        }
         let logical = format!("{logical_root}/{}", entry.file_name().to_string_lossy());
         if skip_hidden_native
             && logical

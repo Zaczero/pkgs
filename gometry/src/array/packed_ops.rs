@@ -533,8 +533,8 @@ impl PyGeometryArray {
     }
 
     /// A packed point array's rows as ONE `Shape::MultiPoint` over the shared
-    /// coordinate columns — the zero-copy staging for whole-array dissolves
-    /// (`dissolve()`): the same kernel and output as N point rows, with no
+    /// coordinate columns — the zero-copy staging for whole-array unions
+    /// (`union_all()`): the same kernel and output as N point rows, with no
     /// per-row boxing or shape clones. `None` for non-point storage, masked
     /// arrays, or empty columns (callers fall back to the generic staging).
     pub(crate) fn packed_points_as_multipoint(&self) -> Result<Option<Shape>> {
@@ -552,18 +552,8 @@ impl PyGeometryArray {
         Ok(Some(if row_map.is_identity() {
             Shape::multi_point(coords.axes(), (**coords).clone())
         } else {
-            let map = row_map.as_deref();
-            let mut points = Vec::new();
-            let len = crate::array::point_logical_len(coords, map);
-            crate::boundary::try_reserve_vec(&mut points, len)?;
-            for logical in 0..len {
-                crate::boundary::try_push_vec(
-                    &mut points,
-                    coords.point_at(crate::array::physical_row(map, logical)),
-                )?;
-            }
             Shape::MultiPoint(crate::geometry::MultiPoint::from_coordseq(
-                CoordSeq::try_from_points(&points)?,
+                Self::gather_point_coords(coords, row_map.as_deref())?,
             )?)
         }))
     }

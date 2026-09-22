@@ -467,9 +467,8 @@ pub(crate) enum GeoJsonDecodeContext {
 
 /// One context-aware Shape+Frame coercer for foreign GeoJSON values.
 ///
-/// Collects every nested legacy ``crs`` declaration from the still-wrapped
-/// value, resolves them through
-/// [`reconcile_legacy_geojson_crs`](crate::io::reconcile_legacy_geojson_crs),
+/// Reconciles nested legacy ``crs`` declarations from the still-wrapped
+/// value through [`GeoJsonCrs`](crate::io::GeoJsonCrs),
 /// selects the shape payload per `context`, parses via `io::parse_geojson_at`,
 /// and returns `(Shape, Frame::new(resolved_crs, epoch))`. This is the sole
 /// Shape+Frame owner for GeoJSON coerce paths — there is no second validation
@@ -490,9 +489,9 @@ pub(crate) fn coerce_geojson_geometry_value_at(
     epoch: Option<f64>,
     base_path: &str,
 ) -> crate::error::Result<Option<(Shape, Frame)>> {
-    let mut declarations = Vec::new();
-    crate::io::collect_geojson_legacy_crs(value, &mut declarations);
-    let resolved = crate::io::reconcile_legacy_geojson_crs(&declarations, policy)?;
+    let mut declarations = crate::io::GeoJsonCrs::new(policy);
+    declarations.reconcile_tree(value)?;
+    let resolved = declarations.into_crs();
     let Some((geometry_value, path)) = select_geojson_geometry_value(value, context, base_path)?
     else {
         return Ok(None);

@@ -570,45 +570,6 @@ fn parse_geojson_multipolygon(value: &Value, path: &JsonPath<'_>) -> Result<Mult
     MultiPolygon::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
 
-/// Top-level legacy ``crs`` member on a `GeoJSON` object, if present.
-pub(crate) fn geojson_legacy_crs(value: &Value) -> Option<&Value> {
-    value.as_object()?.get("crs")
-}
-
-/// Collect every legacy ``crs`` declaration accepted in a GeoJSON tree:
-/// the object itself, Feature geometry slots, FeatureCollection members, and
-/// GeometryCollection children. Callers reconcile each entry against ``crs=``.
-pub(crate) fn collect_geojson_legacy_crs<'a>(value: &'a Value, out: &mut Vec<&'a Value>) {
-    let Some(object) = value.as_object() else {
-        return;
-    };
-    if let Some(crs) = geojson_legacy_crs(value) {
-        out.push(crs);
-    }
-    match object.get("type").and_then(Value::as_str) {
-        Some("Feature") => {
-            if let Some(geometry) = object.get("geometry") {
-                collect_geojson_legacy_crs(geometry, out);
-            }
-        },
-        Some("FeatureCollection") => {
-            if let Some(features) = object.get("features").and_then(Value::as_array) {
-                for feature in features {
-                    collect_geojson_legacy_crs(feature, out);
-                }
-            }
-        },
-        Some("GeometryCollection") => {
-            if let Some(geometries) = object.get("geometries").and_then(Value::as_array) {
-                for geometry in geometries {
-                    collect_geojson_legacy_crs(geometry, out);
-                }
-            }
-        },
-        _ => {},
-    }
-}
-
 /// Policy for reconciling nested legacy GeoJSON ``crs`` declarations against
 /// the caller's ``crs=``.
 ///
@@ -626,45 +587,72 @@ pub(crate) enum LegacyGeoJsonCrsPolicy<'a> {
     Fixed(Option<&'a str>),
 }
 
-/// Reconcile a collected set of legacy GeoJSON ``crs`` declarations under
-/// `policy`. Matching uses
-/// [`crs::same`](crate::crs::same) with
-/// [`CrsComparison::IgnoreAxisOrder`](crate::crs::CrsComparison::IgnoreAxisOrder)
-/// so ``OGC:CRS84`` and ``EPSG:4326`` agree. Returns the normalized definition
-/// CRS string (or ``None`` for CRS-free).
-pub(crate) fn reconcile_legacy_geojson_crs(
-    declarations: &[&Value],
-    policy: LegacyGeoJsonCrsPolicy<'_>,
-) -> Result<Option<String>> {
-    match policy {
-        LegacyGeoJsonCrsPolicy::Adopt(Some(target))
-        | LegacyGeoJsonCrsPolicy::Fixed(Some(target)) => {
-            for legacy in declarations {
-                validate_legacy_geojson_crs(Some(legacy), Some(target))?;
-            }
-            Ok(Some(target.to_owned()))
-        },
-        LegacyGeoJsonCrsPolicy::Adopt(None) => {
-            if declarations.is_empty() {
-                return Ok(None);
-            }
-            let Some(first) = parse_legacy_geojson_crs(declarations[0])? else {
-                return Err(IoError::geojson(
-                    "legacy GeoJSON CRS member is not supported",
-                ));
-            };
-            for legacy in declarations.iter().skip(1) {
-                validate_legacy_geojson_crs(Some(legacy), Some(first.as_str()))?;
-            }
-            Ok(Some(first))
-        },
-        LegacyGeoJsonCrsPolicy::Fixed(None) => {
-            if let Some(legacy) = declarations.first() {
-                // Any declaration conflicts with an explicit CRS-free frame.
-                validate_legacy_geojson_crs(Some(legacy), None)?;
-            }
-            Ok(None)
-        },
+pub(crate) struct GeoJsonCrs<'a> {
+    policy: LegacyGeoJsonCrsPolicy<'a>,
+    adopted: Option<String>,
+}
+
+impl<'a> GeoJsonCrs<'a> {
+    pub(crate) const fn new(policy: LegacyGeoJsonCrsPolicy<'a>) -> Self {
+        Self {
+            policy,
+            adopted: None,
+        }
+    }
+
+    pub(crate) fn reconcile_declaration(&mut self, legacy: &Value) -> Result<()> {
+        match self.policy {
+            LegacyGeoJsonCrsPolicy::Fixed(target) => {
+                validate_legacy_geojson_crs(Some(legacy), target)
+            },
+            LegacyGeoJsonCrsPolicy::Adopt(target) => {
+                if let Some(target) = target.or(self.adopted.as_deref()) {
+                    validate_legacy_geojson_crs(Some(legacy), Some(target))
+                } else {
+                    self.adopted = Some(parse_legacy_geojson_crs(legacy)?.ok_or_else(|| {
+                        IoError::geojson("legacy GeoJSON CRS member is not supported")
+                    })?);
+                    Ok(())
+                }
+            },
+        }
+    }
+
+    pub(crate) fn reconcile_tree(&mut self, value: &Value) -> Result<()> {
+        let Some(object) = value.as_object() else {
+            return Ok(());
+        };
+        if let Some(legacy) = object.get("crs") {
+            self.reconcile_declaration(legacy)?;
+        }
+        match object.get("type").and_then(Value::as_str) {
+            Some("Feature") => {
+                if let Some(geometry) = object.get("geometry") {
+                    self.reconcile_tree(geometry)?;
+                }
+            },
+            Some(kind @ ("FeatureCollection" | "GeometryCollection")) => {
+                let key = if kind == "FeatureCollection" {
+                    "features"
+                } else {
+                    "geometries"
+                };
+                if let Some(children) = object.get(key).and_then(Value::as_array) {
+                    for child in children {
+                        self.reconcile_tree(child)?;
+                    }
+                }
+            },
+            _ => {},
+        }
+        Ok(())
+    }
+
+    pub(crate) fn into_crs(self) -> Option<String> {
+        match self.policy {
+            LegacyGeoJsonCrsPolicy::Adopt(target) => target.map(str::to_owned).or(self.adopted),
+            LegacyGeoJsonCrsPolicy::Fixed(target) => target.map(str::to_owned),
+        }
     }
 }
 

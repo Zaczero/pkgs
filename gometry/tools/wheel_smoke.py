@@ -67,7 +67,7 @@ REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 MATURIN_VERSION = '1.14.1'
 RELEASE_PROFILE = 'release-dist'
 RELEASE_MATURIN_ARGS = f'--locked --profile {RELEASE_PROFILE}'
-SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v4'
+SOURCE_INPUTS_FORMAT = 'sha256-path-nul-content-nul-v5'
 BUILD_INFO_SCHEMA_VERSION = 3
 SOURCE_MANIFEST_NAME = 'gometry-source-manifest.json'
 RUNNER_RECEIPT_NAME = 'gometry-wheel-receipt.json'
@@ -377,7 +377,6 @@ def _source_input_records(
 ) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]]]:
     fixed = [
         ('gometry/rust-toolchain.toml', root / 'rust-toolchain.toml'),
-        ('gometry/Cargo.toml', root / 'Cargo.toml'),
         ('gometry/build.rs', root / 'build.rs'),
     ]
     source_files: list[tuple[str, Path]] = []
@@ -406,6 +405,8 @@ def _collect_source_files(
             f'cannot read build input directory {root}: {error}'
         ) from error
     for path in entries:
+        if path.name == 'Cargo.toml':
+            continue
         logical = f'{logical_root}/{path.name}'
         if skip_hidden_native and _is_hidden_native_path(logical):
             continue
@@ -2743,9 +2744,9 @@ expected_build_info_fields = {
 assert set(build_info) == expected_build_info_fields, set(build_info)
 expected_build_info = {
     'schema_version': 3,
-    'source_inputs_format': 'sha256-path-nul-content-nul-v4',
+    'source_inputs_format': 'sha256-path-nul-content-nul-v5',
     'source_inputs_sha256': os.environ['GOMETRY_SMOKE_EXPECTED_SOURCE_INPUTS_SHA256'],
-    'native_source_inputs_format': 'sha256-path-nul-content-nul-v4',
+    'native_source_inputs_format': 'sha256-path-nul-content-nul-v5',
     'native_source_inputs_sha256': os.environ[
         'GOMETRY_SMOKE_EXPECTED_NATIVE_SOURCE_INPUTS_SHA256'
     ],

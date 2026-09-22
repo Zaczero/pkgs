@@ -48,12 +48,21 @@ pub(crate) use py_crs::PyCrs;
 
 pub(crate) use crate::boundary::TransformOptionArgs;
 
+#[expect(
+    clippy::used_underscore_items,
+    reason = "the versioned pickle entry point is a persistent wire contract"
+)]
+#[pyfunction]
+fn _unpickle_crs_v1(definition: String) -> PyCrs {
+    PyCrs::from_definition(Crs::from(definition))
+}
+
 /// Register the CRS class and flat `crs_*` functions on the module.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     crate::add_classes!(m; PyCrs);
     crate::add_functions!(m;
         crs_apply, crs_cache_info, crs_clear_cache, crs_configure, crs_ellipsoids,
-        crs_engine, crs_grid,
+        crs_engine, crs_grid, _unpickle_crs_v1,
         crs_prime_meridians, crs_proj_operations, crs_reset,
         crs_roundtrip, crs_transform, crs_transform_bounds, crs_unit, crs_units,
         crs_search, crs_catalog, crs_authorities, crs_codes, crs_utm_zones, crs_celestial_bodies,

@@ -11,7 +11,7 @@ pub(crate) use geocode::{
     pluscode_recover, pluscode_shorten,
 };
 pub(crate) use geometry_io::{
-    _unpickle_geometry, _unpickle_geometry_array, _unpickle_packed_array, from_features,
+    _unpickle_geometry_array_v1, _unpickle_geometry_v1, _unpickle_packed_array_v1, from_features,
     from_geojson, from_wkb, from_wkt, reduce_geometry, reduce_geometry_array, to_feature,
     to_feature_collection,
 };

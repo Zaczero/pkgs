@@ -282,7 +282,7 @@ def test_installed_native_identity_keeps_real_engine_ownership_bounded() -> None
             assert identity['native_library_status'] == 'identified'
 
 
-def test_native_identity_walkers_drop_hidden_metadata_and_preserve_visible_inputs(
+def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
     tmp_path: Path,
 ) -> None:
     package = tmp_path / 'gometry'
@@ -307,8 +307,18 @@ def test_native_identity_walkers_drop_hidden_metadata_and_preserve_visible_input
     assert not any(wheel_smoke._is_hidden_native_path(name) for name, _ in files)
     before = wheel_smoke.source_input_digests(package)
     (package / 'native' / '.git').write_text('changed metadata\n')
+    (package / 'Cargo.toml').write_text(
+        '[package]\nname = "gometry"\nreadme = "README.md"\n'
+    )
+    (package / 'native' / 'visible' / 'Cargo.toml').write_text(
+        '[package]\nname = "native"\nreadme = "README.md"\n'
+    )
     after = wheel_smoke.source_input_digests(package)
     assert before == after
+    (package / 'native' / 'visible' / 'input.c').write_text('int changed = 1;\n')
+    changed = wheel_smoke.source_input_digests(package)
+    assert changed['source_inputs_sha256'] != before['source_inputs_sha256']
+    assert changed['native_source_inputs_sha256'] != before['native_source_inputs_sha256']
 
     bootstrap = tmp_path / 'bootstrap'
     final = tmp_path / 'final'

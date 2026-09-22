@@ -194,7 +194,7 @@ pub(crate) fn from_wkb(
         Ok(geometry)
     };
     if crate::is_one_byte_buffer(data) {
-        let bytes = if let Some(bytes) = exact_backed_bytes(data)? {
+        let bytes = if let Some(bytes) = exact_backed_bytes(data) {
             OwnedBytes::Backed(bytes)
         } else {
             OwnedBytes::Copied(copy_wkb_payload(data)?)
@@ -214,7 +214,7 @@ pub(crate) fn from_wkb(
                 if item.is_none() {
                     return Ok(None);
                 }
-                exact_backed_bytes(item)?.map_or_else(
+                exact_backed_bytes(item).map_or_else(
                     || copy_wkb_payload(item).map(|bytes| Some(OwnedBytes::Copied(bytes))),
                     |bytes| Ok(Some(OwnedBytes::Backed(bytes))),
                 )
@@ -243,7 +243,7 @@ pub(crate) fn from_wkb(
         "WKB import",
         "EWKB SRID",
         move |data, _row| {
-            exact_backed_bytes(data)?.map_or_else(
+            exact_backed_bytes(data).map_or_else(
                 || copy_wkb_payload(data).map(OwnedBytes::Copied),
                 |bytes| Ok(OwnedBytes::Backed(bytes)),
             )

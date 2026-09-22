@@ -81,7 +81,7 @@ pub(crate) fn array_crs_metric_float(
             let rights = Arc::clone(right.storage_arc());
             let model = resolve_metric(array.crs_str(), unit, operation.metric_op())?;
             operation.validate_model(&model)?;
-            let missing = missing::union_pair(array.missing(), right.missing())?;
+            let missing = missing::union_many([array.missing(), right.missing()])?;
             if Arc::ptr_eq(&lefts, &rights)
                 && let Some(values) =
                     operation.try_same_storage_identity(&model, &lefts, missing.as_ref())?
@@ -101,8 +101,6 @@ pub(crate) fn array_crs_metric_float(
                     return float64_array(
                         py,
                         py.detach(move || {
-                            let left_lines = lefts.line_rows().expect("checked above");
-                            let right_lines = rights.line_rows().expect("checked above");
                             let left_view = left_lines.packed_column_view().expect("checked above");
                             let right_view =
                                 right_lines.packed_column_view().expect("checked above");
@@ -113,8 +111,6 @@ pub(crate) fn array_crs_metric_float(
                 return float64_array(
                     py,
                     py.detach(move || {
-                        let left_lines = lefts.line_rows().expect("checked above");
-                        let right_lines = rights.line_rows().expect("checked above");
                         (0..left_lines.len())
                             .map(|index| {
                                 if missing.as_ref().is_some_and(|mask| mask.is_missing(index)) {
@@ -208,7 +204,7 @@ where
         + Send
         + Sync,
 {
-    let missing = missing::union_pair(array.missing(), right.missing())?;
+    let missing = missing::union_many([array.missing(), right.missing()])?;
     if !array.is_compact_nullable()
         && !right.is_compact_nullable()
         && let (Some(lefts), Some(rights)) =
