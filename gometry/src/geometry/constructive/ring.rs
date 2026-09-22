@@ -617,7 +617,7 @@ struct VwScoringFrame {
     area_tolerance: f64,
 }
 
-fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> Result<VwScoringFrame> {
+fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> VwScoringFrame {
     let ox = xs[0];
     let oy = ys[0];
     let mut max_abs_x = ox.abs();
@@ -636,24 +636,23 @@ fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> Result<V
             || max_abs_y > 1e8
             || !world_area_tol.is_normal());
     if !use_frame {
-        return Ok(VwScoringFrame {
+        return VwScoringFrame {
             xs: None,
             ys: None,
             area_tolerance: world_area_tol,
-        });
+        };
     }
     let Some(frame) =
         AxisFrame::from_origin_extents(Point::new_raw_xy(ox, oy), max_abs_x, max_abs_y)
     else {
-        return Ok(VwScoringFrame {
+        return VwScoringFrame {
             xs: None,
             ys: None,
             area_tolerance: world_area_tol,
-        });
+        };
     };
-    let mut fxs = Vec::new();
-    let mut fys = Vec::new();
-    crate::try_reserve_pair(&mut fxs, &mut fys, xs.len())?;
+    let mut fxs = Vec::with_capacity(xs.len());
+    let mut fys = Vec::with_capacity(xs.len());
     for index in 0..xs.len() {
         fxs.push(frame.frame_xy(xs[index], oy).x);
         fys.push(frame.frame_xy(ox, ys[index]).y);
@@ -665,29 +664,29 @@ fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> Result<V
     let exponent = power_of_two_exponent(frame.scale_x()) + power_of_two_exponent(frame.scale_y());
     let framed_area =
         0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent);
-    Ok(VwScoringFrame {
+    VwScoringFrame {
         xs: Some(fxs),
         ys: Some(fys),
         area_tolerance: framed_area,
-    })
+    }
 }
 
 /// Visvalingam-Whyatt keep mask. `distance_tolerance` is the public
 /// distance-scale threshold (same units as `simplify`/`coverage_simplify`);
 /// the area threshold is derived **after** any chain-wide power-of-two frame
 /// so huge inputs (tol² → +inf in world units) still compare correctly.
-/// Keep-mask, neighbor, generation, and heap scratch report allocation failure.
+/// Input columns are admitted coordinate windows whose length fits `i32`.
 pub(crate) fn vw_keep(
     xs: &[f64],
     ys: &[f64],
     distance_tolerance: f64,
     keep: &mut Vec<bool>,
-) -> Result<Option<usize>> {
+) -> Option<usize> {
     let count = xs.len();
     if count < 3 {
-        return Ok(None);
+        return None;
     }
-    let framed = vw_frame_columns(xs, ys, distance_tolerance)?;
+    let framed = vw_frame_columns(xs, ys, distance_tolerance);
     let xs = framed.xs.as_deref().unwrap_or(xs);
     let ys = framed.ys.as_deref().unwrap_or(ys);
     let area_tolerance = framed.area_tolerance;
@@ -695,19 +694,14 @@ pub(crate) fn vw_keep(
         0.5 * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a])).abs()
     };
     keep.clear();
-    crate::try_reserve_vec(keep, count)?;
+    keep.reserve(count);
     keep.resize(count, true);
-    let mut prev = Vec::new();
-    crate::try_reserve_vec(&mut prev, count)?;
-    prev.extend((0..count as u32).map(|index| index.saturating_sub(1)));
-    let mut next = Vec::new();
-    crate::try_reserve_vec(&mut next, count)?;
-    next.extend(1..=count as u32);
-    let mut current = Vec::new();
-    crate::try_reserve_vec(&mut current, count)?;
-    current.resize(count, 0_u64);
-    let mut heap: BinaryHeap<std::cmp::Reverse<(u64, u32)>> = BinaryHeap::new();
-    crate::try_reserve_heap(&mut heap, count)?;
+    let mut prev: Vec<_> = (0..count as u32)
+        .map(|index| index.saturating_sub(1))
+        .collect();
+    let mut next: Vec<_> = (1..=count as u32).collect();
+    let mut current = vec![0_u64; count];
+    let mut heap = BinaryHeap::with_capacity(count);
     // Interior indices 1..count-1: batch the initial heap fill with f64x8
     // shoelace crosses; neighbor refresh stays scalar (irregular indices)
     // and only re-queues vertices still below tolerance (cuts heap churn).
@@ -729,7 +723,7 @@ pub(crate) fn vw_keep(
             let vertex = index + lane;
             let bits = area_value.to_bits();
             current[vertex] = bits;
-            crate::try_push_heap(&mut heap, std::cmp::Reverse((bits, vertex as u32)))?;
+            heap.push(std::cmp::Reverse((bits, vertex as u32)));
         }
         index += REDUCE_LANES;
     }
@@ -741,7 +735,7 @@ pub(crate) fn vw_keep(
     {
         let bits = area(index - 1, index, index + 1).to_bits();
         *slot = bits;
-        crate::try_push_heap(&mut heap, std::cmp::Reverse((bits, index as u32)))?;
+        heap.push(std::cmp::Reverse((bits, index as u32)));
     }
     let tolerance_bits = area_tolerance.to_bits();
     while let Some(std::cmp::Reverse((bits, index))) = heap.pop() {
@@ -763,11 +757,11 @@ pub(crate) fn vw_keep(
             let bits = area(prev[neighbor] as usize, neighbor, next[neighbor] as usize).to_bits();
             current[neighbor] = bits;
             if bits < tolerance_bits {
-                crate::try_push_heap(&mut heap, std::cmp::Reverse((bits, neighbor as u32)))?;
+                heap.push(std::cmp::Reverse((bits, neighbor as u32)));
             }
         }
     }
-    Ok(Some(keep.iter().filter(|&&kept| kept).count()))
+    Some(keep.iter().filter(|&&kept| kept).count())
 }
 
 #[cfg(test)]
@@ -781,7 +775,7 @@ mod vw_frame_tests {
         // This calls the exact VW frame used by simplify. Its finite output
         // proves the residual is `x*s - origin*s`; `(x-origin)*s` overflows
         // before it can be scaled.
-        let framed = vw_frame_columns(&xs, &ys, 5e307).unwrap();
+        let framed = vw_frame_columns(&xs, &ys, 5e307);
         let (Some(fxs), Some(fys)) = (framed.xs.as_deref(), framed.ys.as_deref()) else {
             panic!("opposite-sign extreme coordinates require a VW frame");
         };

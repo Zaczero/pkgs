@@ -975,7 +975,7 @@ impl Shape {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
         let mut scratch = KeepScratch::default();
         self.simplify_raw(&mut scratch, &mut |xs, ys, scratch| {
-            vw_keep(xs, ys, tolerance, &mut scratch.keep)
+            Ok(vw_keep(xs, ys, tolerance, &mut scratch.keep))
         })
     }
 
@@ -1644,7 +1644,7 @@ mod keep_mask_scratch_tests {
             let mut keep = Vec::new();
             vw_keep(&xs, &ys, 1.0, &mut keep)
         };
-        let kept = run().unwrap();
+        let kept = run();
         assert_eq!(kept, Some(2));
     }
 
@@ -1664,10 +1664,10 @@ mod keep_mask_scratch_tests {
         );
 
         let mut keep = Vec::new();
-        vw_keep(&small.0, &small.1, 1.0, &mut keep).unwrap();
+        vw_keep(&small.0, &small.1, 1.0, &mut keep);
         let capacity = keep.capacity();
         let (xs, ys) = collinear_xy(capacity + 1);
-        assert_eq!(vw_keep(&xs, &ys, 1.0, &mut keep).unwrap(), Some(2));
+        assert_eq!(vw_keep(&xs, &ys, 1.0, &mut keep), Some(2));
     }
 }
 
