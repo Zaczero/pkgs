@@ -10,7 +10,7 @@ use crate::array::{
     point_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
 };
 use crate::error::Result;
-use crate::geometry::CoordWindow;
+use crate::geometry::{CoordWindow, GeometryKind};
 
 const fn coordseq_logical_bytes(coords: &CoordSeq, count: usize) -> usize {
     coords.axes().byte_width(count)
@@ -628,6 +628,14 @@ fn csr_windows_partition(boundaries: &[i32], len: usize) -> bool {
 }
 
 impl PackedStorage {
+    pub(crate) const fn kind(&self) -> GeometryKind {
+        match self {
+            Self::Points { .. } => GeometryKind::Point,
+            Self::Lines { .. } => GeometryKind::LineString,
+            Self::Polygons { .. } => GeometryKind::Polygon,
+        }
+    }
+
     pub(crate) fn axes(&self) -> CoordinateAxes {
         match self {
             Self::Points { coords, .. }
