@@ -5,6 +5,7 @@
 //! payload here. Output-producing kernels write logical rows once into their
 //! final coordinate and offset columns.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use crate::array::missing::MissingIter;
@@ -60,7 +61,6 @@ impl<'a> PointRows<'a> {
     ) -> Self {
         let selected_len = row_map.len(coords_len);
         let logical_len = missing.map_or(selected_len, ValidityMask::len);
-        debug_assert!(missing.is_none_or(|mask| mask.len() == logical_len));
         debug_assert!(
             !layout.is_compact() || missing.is_some(),
             "compact point rows require a validity mask"
@@ -215,21 +215,22 @@ impl PointColumns<'_> {
         })
     }
 
-    pub(crate) fn geodesic_xy_lanes(&self) -> crate::error::Result<(Vec<f64>, Vec<f64>)> {
+    pub(crate) fn geodesic_xy_lanes(&self) -> (Cow<'_, [f64]>, Cow<'_, [f64]>) {
         debug_assert!(
             self.missing.is_none(),
             "geodesic lanes require present rows"
         );
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::try_reserve_vec(&mut xs, self.len())?;
-        crate::try_reserve_vec(&mut ys, self.len())?;
+        if let Some(columns) = self.contiguous_xy() {
+            return (Cow::Borrowed(columns.xs), Cow::Borrowed(columns.ys));
+        }
+        let mut xs = Vec::with_capacity(self.len());
+        let mut ys = Vec::with_capacity(self.len());
         for (_, physical) in self.rows().cursor() {
             let physical = physical.expect("geodesic lanes require present rows");
-            crate::try_push_vec(&mut xs, self.coords.xs()[physical])?;
-            crate::try_push_vec(&mut ys, self.coords.ys()[physical])?;
+            xs.push(self.coords.xs()[physical]);
+            ys.push(self.coords.ys()[physical]);
         }
-        Ok((xs, ys))
+        (Cow::Owned(xs), Cow::Owned(ys))
     }
 
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = Point> + '_ {
@@ -1199,26 +1200,18 @@ fn transform_selected_coords(
     indices: impl IntoIterator<Item = usize>,
     capacity: usize,
 ) -> std::result::Result<CoordSeq, TransformFailure> {
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    let mut zs = coords.zs().map(|_| Vec::new());
-    let mut ms = coords.ms().map(|_| Vec::new());
-    crate::try_reserve_vec(&mut xs, capacity)?;
-    crate::try_reserve_vec(&mut ys, capacity)?;
-    if let Some(values) = zs.as_mut() {
-        crate::try_reserve_vec(values, capacity)?;
-    }
-    if let Some(values) = ms.as_mut() {
-        crate::try_reserve_vec(values, capacity)?;
-    }
+    let mut xs = Vec::with_capacity(capacity);
+    let mut ys = Vec::with_capacity(capacity);
+    let mut zs = coords.zs().map(|_| Vec::with_capacity(capacity));
+    let mut ms = coords.ms().map(|_| Vec::with_capacity(capacity));
     for physical in indices {
-        crate::try_push_vec(&mut xs, coords.xs()[physical])?;
-        crate::try_push_vec(&mut ys, coords.ys()[physical])?;
+        xs.push(coords.xs()[physical]);
+        ys.push(coords.ys()[physical]);
         if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
-            crate::try_push_vec(output, source[physical])?;
+            output.push(source[physical]);
         }
         if let (Some(output), Some(source)) = (ms.as_mut(), coords.ms()) {
-            crate::try_push_vec(output, source[physical])?;
+            output.push(source[physical]);
         }
     }
     let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
@@ -1698,6 +1691,40 @@ mod tests {
             None,
         )
         .expect("valid coordinates")
+    }
+
+    #[test]
+    fn geodesic_xy_lanes_borrow_contiguous_rows_and_copy_gathers() {
+        let coords = coords();
+        let gather = RowSelection::gather_checked_native(vec![4, 1, 4], coords.len()).unwrap();
+        for (selection, expected_xs, expected_ys, expected_allocations) in [
+            (
+                gather.as_deref(),
+                &[4.0, 1.0, 4.0][..],
+                &[4.0, 1.0, 4.0][..],
+                2,
+            ),
+            (RowSelectionRef::Identity, coords.xs(), coords.ys(), 0),
+            (
+                RowSelectionRef::Window { start: 2, len: 3 },
+                &[2.0, 3.0, 4.0][..],
+                &[0.0, 3.0, 4.0][..],
+                0,
+            ),
+            (
+                RowSelectionRef::Window { start: 6, len: 0 },
+                &[][..],
+                &[][..],
+                0,
+            ),
+        ] {
+            let columns =
+                resolve_point_columns(&coords, selection, None, PointRowLayout::RowAligned);
+            let ((xs, ys), allocations) = allocation_count(|| columns.geodesic_xy_lanes());
+            assert_eq!(allocations, expected_allocations);
+            assert_eq!(&*xs, expected_xs);
+            assert_eq!(&*ys, expected_ys);
+        }
     }
 
     #[test]

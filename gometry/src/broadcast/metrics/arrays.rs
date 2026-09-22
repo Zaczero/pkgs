@@ -406,9 +406,7 @@ pub(crate) fn array_crs_distances(
                     let state = Arc::clone(state);
                     let target = *target;
                     move |points| {
-                        let (xs, ys) = points
-                            .geodesic_xy_lanes()
-                            .map_err(PackedColumnError::Batch)?;
+                        let (xs, ys) = points.geodesic_xy_lanes();
                         crs::geodesic_point_distances(&crs, &xs, &ys, target, *frame, &state)
                             .map_err(PackedColumnError::Batch)
                     }
@@ -426,9 +424,7 @@ pub(crate) fn array_crs_distances(
                     let right_shape = right.prepared_plan();
                     let right_cache = right.frame_cache();
                     move |points| {
-                        let (xs, ys) = points
-                            .geodesic_xy_lanes()
-                            .map_err(PackedColumnError::Batch)?;
+                        let (xs, ys) = points.geodesic_xy_lanes();
                         geodesic_point_columns_to_shape_values(
                             &crs,
                             &xs,
@@ -1140,9 +1136,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                     let other_shape = other.prepared_plan();
                     let other_cache = other.frame_cache();
                     move |points| {
-                        let (xs, ys) = points
-                            .geodesic_xy_lanes()
-                            .map_err(PackedColumnError::Batch)?;
+                        let (xs, ys) = points.geodesic_xy_lanes();
                         geodesic_point_columns_dwithin_shape_values(
                             &crs,
                             &xs,
