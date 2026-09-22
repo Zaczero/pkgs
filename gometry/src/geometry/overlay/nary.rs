@@ -403,11 +403,12 @@ fn interacting_components(
     let count = bounds.len();
     let mut parent = Vec::with_capacity(count);
     parent.extend(0..count);
-    let _ = crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
-        let (a, b) = (root(&mut parent, left), root(&mut parent, right));
-        parent[a.max(b)] = a.min(b);
-        ControlFlow::Continue(())
-    })?;
+    let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+        crate::geometry::for_each_indexed_overlapping_bounds_pair(bounds, |left, right| {
+            let (a, b) = (root(&mut parent, left), root(&mut parent, right));
+            parent[a.max(b)] = a.min(b);
+            ControlFlow::Continue(())
+        })?;
     // Every root is its component's smallest index, so input 0 roots the left
     // operand's component.
     for node in 0..count {

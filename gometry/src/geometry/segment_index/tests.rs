@@ -102,11 +102,12 @@ mod sweep_characterization {
     /// Every candidate the sweep hands the exact kernels, for one pool.
     fn every_candidate(pool: &[Segment]) -> Vec<u64> {
         let mut seen = Vec::new();
-        let _ = for_each_candidate_pair(pool, single_chain, |a, b| {
-            seen.push(pair_key(a, b));
-            ControlFlow::Continue(())
-        })
-        .expect("sweep scratch allocation");
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_candidate_pair(pool, single_chain, |a, b| {
+                seen.push(pair_key(a, b));
+                ControlFlow::Continue(())
+            })
+            .expect("sweep scratch allocation");
         sorted_unique(seen)
     }
 
@@ -163,15 +164,17 @@ mod sweep_characterization {
     #[test]
     fn for_each_candidate_pair_stops_on_break() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let pool = structured_pool(20);
-        let mut visited = 0;
-        let flow = for_each_candidate_pair(&pool, single_chain, |_, _| {
-            visited += 1;
-            ControlFlow::Break(())
-        })
-        .expect("sweep scratch allocation");
-        assert_eq!(flow, ControlFlow::Break(()));
-        assert_eq!(visited, 1);
+        for count in [4, 20, 4096] {
+            let pool = structured_pool(count);
+            let mut visited = 0;
+            let flow = for_each_candidate_pair(&pool, single_chain, |_, _| {
+                visited += 1;
+                ControlFlow::Break(String::from("contact"))
+            })
+            .expect("sweep scratch allocation");
+            assert_eq!(flow, ControlFlow::Break(String::from("contact")));
+            assert_eq!(visited, 1);
+        }
     }
 }
 
@@ -204,12 +207,13 @@ mod indexed_bounds_characterization {
     fn indexed_pairs(rows: &[Option<Bounds>]) -> (Vec<(usize, usize)>, usize) {
         let mut pairs = Vec::new();
         let mut work = 0;
-        let _ = for_each_indexed_overlapping_bounds_pair(rows, |left, right| {
-            work += 1;
-            pairs.push((left, right));
-            ControlFlow::Continue(())
-        })
-        .unwrap();
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_indexed_overlapping_bounds_pair(rows, |left, right| {
+                work += 1;
+                pairs.push((left, right));
+                ControlFlow::Continue(())
+            })
+            .unwrap();
         pairs.sort_unstable();
         (pairs, work)
     }
@@ -240,10 +244,10 @@ mod indexed_bounds_characterization {
         let mut work = 0;
         let result = for_each_indexed_overlapping_bounds_pair(&rows, |_, _| {
             work += 1;
-            ControlFlow::Break(())
+            ControlFlow::Break(String::from("bounds contact"))
         })
         .unwrap();
-        assert!(result.is_break());
+        assert_eq!(result, ControlFlow::Break(String::from("bounds contact")));
         assert_eq!(work, 1);
     }
 
@@ -341,11 +345,12 @@ mod run_collapse_dispatch {
 
     fn visits(pool: &[Segment]) -> usize {
         let mut count = 0;
-        let _ = for_each_candidate_pair(pool, single_chain, |_left, _right| {
-            count += 1;
-            ControlFlow::Continue(())
-        })
-        .expect("sweep scratch allocation");
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_candidate_pair(pool, single_chain, |_left, _right| {
+                count += 1;
+                ControlFlow::Continue(())
+            })
+            .expect("sweep scratch allocation");
         count
     }
 
@@ -431,11 +436,12 @@ mod sweep_entry_scratch {
 
     fn bounds_pairs(bounds: &[Bounds]) -> Vec<(usize, usize)> {
         let mut pairs = Vec::new();
-        let _ = for_each_overlapping_bounds_pair(bounds, |left, right| {
-            pairs.push((left, right));
-            ControlFlow::Continue(())
-        })
-        .expect("bounds sweep scratch allocation");
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_overlapping_bounds_pair(bounds, |left, right| {
+                pairs.push((left, right));
+                ControlFlow::Continue(())
+            })
+            .expect("bounds sweep scratch allocation");
         pairs
     }
 
@@ -449,16 +455,18 @@ mod sweep_entry_scratch {
 
         let mut nested = Vec::new();
         let mut inner_visits = 0;
-        let _ = for_each_overlapping_bounds_pair(&bounds, |left, right| {
-            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
-                inner_visits += 1;
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_overlapping_bounds_pair(&bounds, |left, right| {
+                let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+                    for_each_candidate_pair(&segments, single_chain, |_, _| {
+                        inner_visits += 1;
+                        ControlFlow::Continue(())
+                    })
+                    .expect("inner candidate sweep");
+                nested.push((left, right));
                 ControlFlow::Continue(())
             })
-            .expect("inner candidate sweep");
-            nested.push((left, right));
-            ControlFlow::Continue(())
-        })
-        .expect("outer bounds sweep");
+            .expect("outer bounds sweep");
         assert_eq!(nested, expected);
         assert!(inner_visits > 0);
     }

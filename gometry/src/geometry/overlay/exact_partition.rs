@@ -2377,28 +2377,22 @@ pub(in crate::geometry) fn certify_emitted_incidence(items: &[([u32; 2], Segment
     let inventory = ExactSourceInventory::from_segments(&segments)?;
     let mut budget = ExpansionBudget::new("exact_partition", "Voronoi incidence");
     let partition = inventory.partition(&mut budget)?;
-    let _ = partition.local_topology()?;
-    let _ = for_each_candidate_pair(&segments, single_chain, |left, right| {
-        match crate::geometry::segment_contact_exact(segments[left], segments[right]) {
-            Contact::Disjoint => std::ops::ControlFlow::Continue(()),
-            Contact::Touch { point } => {
-                let mut shared = [0_u32; 2];
-                let mut shared_count = 0;
-                for id in items[left].0 {
-                    if items[right].0.contains(&id) {
-                        shared[shared_count] = id;
-                        shared_count += 1;
-                    }
-                }
-                if shared_count == 1 && PointKey::new(point) == coordinates[&shared[0]] {
-                    std::ops::ControlFlow::Continue(())
-                } else {
-                    std::ops::ControlFlow::Break(())
-                }
-            },
-            Contact::Cross | Contact::Collinear { .. } => std::ops::ControlFlow::Break(()),
-        }
-    })?;
+    drop(partition.local_topology()?);
+    if let ControlFlow::Break((first, second)) =
+        for_each_candidate_pair(&segments, single_chain, |left, right| {
+            let endpoints = |index: usize| {
+                let ([start, end], segment) = items[index];
+                [(NodeId(start), segment.start), (NodeId(end), segment.end)]
+            };
+            if emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break((left, right))
+            }
+        })?
+    {
+        return Err(GeometryErrorKind::ExactUnexpectedContact { first, second }.into());
+    }
     Ok(())
 }
 
@@ -2846,23 +2840,22 @@ impl ExactPartition<'_> {
         }
         Self::check_node_injectivity(&nodes, &self.round_nodes(&nodes))?;
         // A repeated node represents a live isolated point, not a new cut.
-        let mut contact = None;
-        let _ = for_each_candidate_pair(&segments, single_chain, |left, right| {
-            let endpoints = |index: usize| {
-                let segment = segments[index];
-                [
-                    (items[index][0], segment.start),
-                    (items[index][1], segment.end),
-                ]
-            };
-            if emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {
-                ControlFlow::Continue(())
-            } else {
-                contact = Some((left, right));
-                ControlFlow::Break(())
-            }
-        })?;
-        if let Some((first, second)) = contact {
+        if let ControlFlow::Break((first, second)) =
+            for_each_candidate_pair(&segments, single_chain, |left, right| {
+                let endpoints = |index: usize| {
+                    let segment = segments[index];
+                    [
+                        (items[index][0], segment.start),
+                        (items[index][1], segment.end),
+                    ]
+                };
+                if emitted_pair_preserves_incidence(endpoints(left), endpoints(right)) {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break((left, right))
+                }
+            })?
+        {
             return Err(GeometryErrorKind::ExactUnexpectedContact { first, second }.into());
         }
         Ok(segments)
