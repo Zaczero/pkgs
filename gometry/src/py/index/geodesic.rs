@@ -435,9 +435,7 @@ impl GeodesicRowCaps {
         let mut anchors = vec![(Radians(0.0), Radians(0.0)); row_count];
         let mut reaches = vec![0.0; row_count];
         for (handle, row) in live {
-            let Some((anchor, reach)) = row else {
-                return None;
-            };
+            let (anchor, reach) = row?;
             if !(-180.0..=180.0).contains(&anchor.x) || !(-90.0..=90.0).contains(&anchor.y) {
                 // Out-of-domain rows must reach the exact path so they raise
                 // its domain error instead of being silently pruned.
