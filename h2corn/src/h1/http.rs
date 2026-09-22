@@ -684,26 +684,25 @@ fn append_decimal_usize(dst: &mut ResponseBuf, value: usize) {
     dst.extend_from_slice(buf.format(value).as_bytes());
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a usize is at most 16 hex digits, so the 18-byte buffer cannot underflow"
-)]
 fn chunk_prefix(mut value: usize, buf: &mut [u8; 18]) -> &[u8] {
-    let mut cursor = buf.len();
-    buf[cursor - 1] = b'\n';
-    buf[cursor - 2] = b'\r';
-    cursor -= 2;
+    let (digits, terminator) = buf
+        .split_last_chunk_mut::<2>()
+        .expect("chunk prefix has CRLF space");
+    *terminator = *b"\r\n";
+    let mut slots = digits.iter_mut().rev();
     loop {
-        cursor -= 1;
         let digit = (value & 0xF) as u8;
-        buf[cursor] = if digit < 10 {
-            b'0' + digit
+        *slots.next().expect("usize fits sixteen hexadecimal digits") = if digit < 10 {
+            b'0'.wrapping_add(digit)
         } else {
-            b'A' + (digit - 10)
+            b'A'.wrapping_add(digit.wrapping_sub(10))
         };
         value >>= 4;
         if value == 0 {
-            return &buf[cursor..];
+            let start = slots.len();
+            return buf
+                .get(start..)
+                .expect("written suffix is inside chunk buffer");
         }
     }
 }
@@ -744,7 +743,7 @@ mod tests {
         }
 
         fn poll_flush(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            self.flushes += 1;
+            self.flushes = self.flushes.wrapping_add(1);
             Poll::Ready(Ok(()))
         }
 

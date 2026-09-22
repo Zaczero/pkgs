@@ -60,7 +60,7 @@ impl ProxyHeaderKind {
 impl ProxyHeaderSlots {
     pub(crate) const fn index(slot: Option<NonZeroU32>) -> Option<usize> {
         match slot {
-            Some(index) => Some(index.get() as usize - 1),
+            Some(index) => Some((index.get() as usize).wrapping_sub(1)),
             None => None,
         }
     }

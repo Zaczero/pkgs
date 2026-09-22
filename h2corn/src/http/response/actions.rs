@@ -124,7 +124,7 @@ impl ResponseBytePermit {
             return;
         }
         let released = u32::try_from(len).unwrap_or(u32::MAX).min(self.remaining);
-        self.remaining -= released;
+        self.remaining = self.remaining.wrapping_sub(released);
         self.permits.add_permits(released as usize);
     }
 }

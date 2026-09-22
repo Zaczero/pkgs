@@ -324,11 +324,11 @@ impl RapidResetGuard {
     /// Count one peer `RST_STREAM`; true when the flood threshold is breached.
     pub(super) fn note_reset(&mut self) -> bool {
         let now = TokioInstant::now();
-        if now - self.window_start >= RESET_RATE_WINDOW {
+        if now.duration_since(self.window_start) >= RESET_RATE_WINDOW {
             self.window_start = now;
             self.resets = 0;
         }
-        self.resets += 1;
+        self.resets = self.resets.saturating_add(1);
         self.resets > RESET_RATE_LIMIT
     }
 }
@@ -725,9 +725,9 @@ impl<R, W> H2ConnectionState<R, W> {
             .len()
             .checked_sub(self.retained_closed_streams)
             .expect("retained closed stream accounting cannot exceed the stream map")
-            + usize::from(self.pending_headers.as_ref().is_some_and(|pending| {
-                matches!(pending.target, HeaderBlockTarget::RequestHead { .. })
-            }))
+            .wrapping_add(usize::from(self.pending_headers.as_ref().is_some_and(
+                |pending| matches!(pending.target, HeaderBlockTarget::RequestHead { .. }),
+            )))
     }
 
     pub(super) fn wire_is_idle(&self) -> bool {
@@ -773,8 +773,12 @@ impl<R, W> H2ConnectionState<R, W> {
     pub(super) fn refresh_header_deadline(&mut self, stream_id: StreamId) {
         let key = RequestInputDeadlineKey::headers(stream_id);
         if let Some(timeout) = self.context.config.timeout_request_header {
-            self.request_deadlines
-                .schedule(key, TokioInstant::now() + timeout);
+            self.request_deadlines.schedule(
+                key,
+                TokioInstant::now()
+                    .checked_add(timeout)
+                    .expect("admitted request timeout fits monotonic clock"),
+            );
         } else {
             self.request_deadlines.cancel(key);
         }
@@ -794,9 +798,12 @@ impl<R, W> H2ConnectionState<R, W> {
             should_schedule,
             self.context.config.timeout_request_body_idle,
         ) {
-            (true, Some(timeout)) => self
-                .request_deadlines
-                .schedule(key, TokioInstant::now() + timeout),
+            (true, Some(timeout)) => self.request_deadlines.schedule(
+                key,
+                TokioInstant::now()
+                    .checked_add(timeout)
+                    .expect("admitted request timeout fits monotonic clock"),
+            ),
             _ => self.request_deadlines.cancel(key),
         }
     }
@@ -814,7 +821,9 @@ impl<R, W> H2ConnectionState<R, W> {
             entry.get_mut().mark_response_closed();
             match entry.get().closed_disposition(was_closed) {
                 ClosedStreamDisposition::Keep => {},
-                ClosedStreamDisposition::Retain => self.retained_closed_streams += 1,
+                ClosedStreamDisposition::Retain => {
+                    self.retained_closed_streams = self.retained_closed_streams.wrapping_add(1);
+                },
                 ClosedStreamDisposition::Remove => {
                     entry.remove();
                 },
@@ -832,7 +841,9 @@ impl<R, W> H2ConnectionState<R, W> {
                 let close = entry.get_mut().finish_request_input();
                 match entry.get().closed_disposition(was_closed) {
                     ClosedStreamDisposition::Keep => {},
-                    ClosedStreamDisposition::Retain => self.retained_closed_streams += 1,
+                    ClosedStreamDisposition::Retain => {
+                        self.retained_closed_streams = self.retained_closed_streams.wrapping_add(1);
+                    },
                     ClosedStreamDisposition::Remove => {
                         entry.remove();
                     },
@@ -1339,21 +1350,21 @@ mod tests {
         assert!(queued.queue.len() <= 32, "two MiB needs at most 32 chunks");
 
         stream.delivery.push(StreamInput::EndStream);
-        let mut consumed = 0;
+        let mut consumed = 0_usize;
         loop {
             let input = rx.recv().await.expect("input remains connected");
             match input {
                 StreamInput::Data { body, credit } => {
                     for byte in body {
                         assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
-                        consumed += 1;
+                        consumed = consumed.wrapping_add(1);
                     }
                     credit.expect("H2 data retains credit").release();
                 },
                 StreamInput::BufferedData { body, credit } => {
                     for byte in body {
                         assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
-                        consumed += 1;
+                        consumed = consumed.wrapping_add(1);
                     }
                     credit.expect("H2 data retains merged credit").release();
                 },
@@ -1361,7 +1372,7 @@ mod tests {
                     for body in bodies {
                         for byte in body {
                             assert_eq!(byte, if consumed & 1 == 0 { b'a' } else { b'b' });
-                            consumed += 1;
+                            consumed = consumed.wrapping_add(1);
                         }
                     }
                     credit.expect("H2 data retains merged credit").release();

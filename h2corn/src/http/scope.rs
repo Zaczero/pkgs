@@ -41,12 +41,12 @@ fn decode_path(raw_path: &str) -> Cow<'_, str> {
                 let out = out.get_or_insert_with(|| Vec::with_capacity(bytes.len()));
                 out.extend_from_slice(bytes.get(copied..index).unwrap_or_default());
                 out.push((high << 4) | low);
-                index += 3;
+                index = index.wrapping_add(3);
                 copied = index;
                 continue;
             }
         }
-        index += 1;
+        index = index.wrapping_add(1);
     }
     let Some(mut out) = out else {
         return Cow::Borrowed(raw_path);

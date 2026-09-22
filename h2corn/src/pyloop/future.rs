@@ -246,10 +246,10 @@ impl RustFuture {
             let mut index = 0;
             callbacks.retain(|_| {
                 let retain = snapshot.get(index).is_none_or(|entry| entry.1);
-                index += 1;
+                index = index.wrapping_add(1);
                 retain
             });
-            let removed = before - callbacks.len();
+            let removed = before.wrapping_sub(callbacks.len());
             if removed != 0 {
                 *callback_removal_revision = callback_removal_revision.wrapping_add(1);
             }

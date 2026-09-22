@@ -271,14 +271,14 @@ mod tests {
             _cx: &mut Context<'_>,
             bufs: &[io::IoSlice<'_>],
         ) -> Poll<io::Result<usize>> {
-            self.vectored_calls += 1;
+            self.vectored_calls = self.vectored_calls.wrapping_add(1);
             let mut remaining = 3;
-            let mut written = 0;
+            let mut written = 0_usize;
             for buf in bufs {
                 let take = remaining.min(buf.len());
                 self.bytes.extend_from_slice(&buf[..take]);
-                written += take;
-                remaining -= take;
+                written = written.wrapping_add(take);
+                remaining = remaining.wrapping_sub(take);
                 if remaining == 0 {
                     break;
                 }

@@ -29,15 +29,10 @@ impl DecodeEntry {
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a nibble indexes a 16-entry row, and the reserve above leaves one byte per decoded symbol"
-)]
 pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, DecoderError> {
     let mut state = 0_usize;
     let mut maybe_eos = true;
     let initial_len = buf.len();
-    let mut decoded_len = 0;
 
     buf.reserve(src.len().saturating_mul(8).div_ceil(MIN_CODE_BITS));
 
@@ -45,30 +40,35 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
     // from ptr/len/cap, and because the store lands in the same heap buffer the
     // optimizer cannot prove it does not alias the `BytesMut` header -- so all
     // three reload on every decoded symbol, twice per input byte.
-    let spare = buf.spare_capacity_mut();
+    let mut spare = buf.spare_capacity_mut().iter_mut();
+    let spare_len = spare.len();
     let result = (|| {
         for &byte in src {
-            let entry = DecodeEntry(DECODE_TABLE[state][usize::from(byte >> 4)]);
+            let entry = decode_entry(state, byte >> 4);
             let flags = entry.flags();
             if flags & ERROR != 0 {
                 return Err(DecoderError::InvalidHuffmanCode);
             }
             if flags & DECODED != 0 {
                 // The reserve bound leaves one uninitialized byte for every decoded symbol.
-                spare[decoded_len].write(entry.symbol());
-                decoded_len += 1;
+                spare
+                    .next()
+                    .expect("reserved Huffman output bound")
+                    .write(entry.symbol());
             }
             state = entry.next();
 
-            let entry = DecodeEntry(DECODE_TABLE[state][usize::from(byte & 0x0F)]);
+            let entry = decode_entry(state, byte & 0x0F);
             let flags = entry.flags();
             if flags & ERROR != 0 {
                 return Err(DecoderError::InvalidHuffmanCode);
             }
             if flags & DECODED != 0 {
                 // The reserve bound leaves one uninitialized byte for every decoded symbol.
-                spare[decoded_len].write(entry.symbol());
-                decoded_len += 1;
+                spare
+                    .next()
+                    .expect("reserved Huffman output bound")
+                    .write(entry.symbol());
             }
             state = entry.next();
             maybe_eos = flags & MAYBE_EOS != 0;
@@ -80,26 +80,34 @@ pub(crate) fn decode(src: &[u8], buf: &mut BytesMut) -> Result<BytesMut, Decoder
         Ok(())
     })();
 
+    let decoded_len = spare_len.wrapping_sub(spare.len());
     // SAFETY: `decoded_len` never exceeds the `MIN_CODE_BITS` reserve bound,
     // and every counted byte was written into the corresponding spare slot.
     unsafe {
-        buf.set_len(initial_len + decoded_len);
+        buf.set_len(initial_len.wrapping_add(decoded_len));
     }
     result?;
 
     Ok(buf.split())
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
+fn decode_entry(state: usize, nibble: u8) -> DecodeEntry {
+    DecodeEntry(
+        *DECODE_TABLE
+            .get(state)
+            .and_then(|row| row.get(usize::from(nibble)))
+            .expect("Huffman state and nibble fit the generated transition table"),
+    )
+}
+
 pub(crate) fn encoded_len(src: &[u8]) -> usize {
     let mut bit_len = 0_usize;
     for &byte in src {
-        bit_len += (ENCODE_TABLE[usize::from(byte)] >> ENCODE_LENGTH_SHIFT) as usize;
+        bit_len = bit_len
+            .checked_add((encode_entry(byte) >> ENCODE_LENGTH_SHIFT) as usize)
+            .expect("Huffman encoded bit length fits usize");
     }
-    (bit_len + 7) >> 3
+    bit_len.div_ceil(8)
 }
 
 #[cfg(test)]
@@ -107,34 +115,36 @@ pub(crate) fn encode(src: &[u8], dst: &mut BytesMut) {
     encode_with_len(src, encoded_len(src), dst);
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 pub(crate) fn encode_with_len(src: &[u8], encoded_len: usize, dst: &mut BytesMut) {
     dst.reserve(encoded_len);
 
     let mut bits: u64 = 0;
-    let mut bits_left = 40;
+    let mut bits_left = 40_usize;
 
     for &byte in src {
-        let packed = ENCODE_TABLE[usize::from(byte)];
+        let packed = encode_entry(byte);
         let code_bits = (packed >> ENCODE_LENGTH_SHIFT) as usize;
         let code = packed & ENCODE_CODE_MASK;
-        bits |= code << (bits_left - code_bits);
-        bits_left -= code_bits;
+        bits_left = bits_left.wrapping_sub(code_bits);
+        bits |= code << bits_left;
 
         while bits_left <= 32 {
             dst.extend_from_slice(&[(bits >> 32) as u8]);
             bits <<= 8;
-            bits_left += 8;
+            bits_left = bits_left.wrapping_add(8);
         }
     }
 
     if bits_left != 40 {
-        bits |= (1 << bits_left) - 1;
+        bits |= (1_u64 << bits_left).wrapping_sub(1);
         dst.extend_from_slice(&[(bits >> 32) as u8]);
     }
+}
+
+fn encode_entry(byte: u8) -> u64 {
+    *ENCODE_TABLE
+        .get(usize::from(byte))
+        .expect("every byte has a Huffman encoding")
 }
 
 #[cfg(test)]

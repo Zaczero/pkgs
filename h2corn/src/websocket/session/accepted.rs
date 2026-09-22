@@ -98,7 +98,9 @@ impl PingState {
     fn new(keep_alive: WebSocketKeepAlive) -> Self {
         Self {
             phase: PingPhase::Idle {
-                next_ping: TokioInstant::now() + keep_alive.interval,
+                next_ping: TokioInstant::now()
+                    .checked_add(keep_alive.interval)
+                    .expect("admitted ping interval fits monotonic clock"),
             },
             interval: keep_alive.interval,
             timeout: keep_alive.timeout,
@@ -124,10 +126,14 @@ impl PingState {
     fn on_ping_sent(&mut self) {
         self.phase = match self.timeout {
             Some(timeout) => PingPhase::AwaitingPong {
-                deadline: TokioInstant::now() + timeout,
+                deadline: TokioInstant::now()
+                    .checked_add(timeout)
+                    .expect("admitted ping timeout fits monotonic clock"),
             },
             None => PingPhase::Idle {
-                next_ping: TokioInstant::now() + self.interval,
+                next_ping: TokioInstant::now()
+                    .checked_add(self.interval)
+                    .expect("admitted ping interval fits monotonic clock"),
             },
         };
     }
@@ -138,7 +144,9 @@ impl PingState {
     fn on_pong(&mut self) {
         if matches!(self.phase, PingPhase::AwaitingPong { .. }) {
             self.phase = PingPhase::Idle {
-                next_ping: TokioInstant::now() + self.interval,
+                next_ping: TokioInstant::now()
+                    .checked_add(self.interval)
+                    .expect("admitted ping interval fits monotonic clock"),
             };
         }
     }
@@ -336,7 +344,7 @@ where
                 self.transport.flush_buffered_frames().await?;
             }
 
-            frames += 1;
+            frames = frames.wrapping_add(1);
             payload_bytes = payload_bytes.saturating_add(outbound.payload_len());
             if let ControlFlow::Break(result) = self.handle_outbound(outbound).await? {
                 return Ok(ControlFlow::Break(result));

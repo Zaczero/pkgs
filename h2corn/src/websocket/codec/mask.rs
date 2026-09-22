@@ -15,7 +15,7 @@ impl MaskKey {
     }
 
     const fn word(self, phase: usize) -> u32 {
-        let rotation = ((phase & 3) * u8::BITS as usize) as u32;
+        let rotation = (phase & 3).saturating_mul(u8::BITS as usize) as u32;
         if cfg!(target_endian = "little") {
             self.word.rotate_right(rotation)
         } else {
@@ -32,12 +32,11 @@ fn apply_u32_mask_phase(payload: &mut [u8], key: MaskKey, phase: usize) -> usize
         *word = (u32::from_ne_bytes(*word) ^ mask_word).to_ne_bytes();
     }
 
-    let suffix_phase = (phase + payload_len - suffix.len()) & 3;
-    let suffix_mask = key.word(suffix_phase).to_ne_bytes();
+    let suffix_mask = mask_word.to_ne_bytes();
     for (byte, mask_byte) in suffix.iter_mut().zip(suffix_mask) {
         *byte ^= mask_byte;
     }
-    (phase + payload_len) & 3
+    phase.wrapping_add(payload_len) & 3
 }
 
 pub(super) fn apply_websocket_mask_phase(payload: &mut [u8], key: MaskKey, phase: usize) -> usize {
@@ -47,20 +46,18 @@ pub(super) fn apply_websocket_mask_phase(payload: &mut [u8], key: MaskKey, phase
         for (byte, mask_byte) in payload.iter_mut().zip(mask) {
             *byte ^= mask_byte;
         }
-        return (phase + payload_len) & 3;
+        return phase.wrapping_add(payload_len) & 3;
     }
 
     let (prefix, lanes, suffix) = payload.as_simd_mut::<WS_MASK_LANES>();
     let lane_phase = apply_u32_mask_phase(prefix, key, phase);
     let repeated = Simd::<u32, { WS_MASK_LANES / 4 }>::splat(key.word(lane_phase)).to_ne_bytes();
-    let lanes_len = lanes.len();
     for lane in lanes {
         *lane ^= repeated;
     }
 
-    let suffix_phase = (lane_phase + lanes_len * WS_MASK_LANES) & 3;
-    apply_u32_mask_phase(suffix, key, suffix_phase);
-    (phase + payload_len) & 3
+    apply_u32_mask_phase(suffix, key, lane_phase);
+    phase.wrapping_add(payload_len) & 3
 }
 
 #[cfg(test)]
@@ -69,16 +66,16 @@ mod tests {
 
     fn apply_websocket_mask_scalar(payload: &mut [u8], mask: [u8; 4], phase: usize) -> usize {
         for (index, byte) in payload.iter_mut().enumerate() {
-            *byte ^= mask[(phase + index) & 3];
+            *byte ^= mask[phase.wrapping_add(index) & 3];
         }
-        (phase + payload.len()) & 3
+        phase.wrapping_add(payload.len()) & 3
     }
 
     fn copy_masked_scalar(payload: &[u8], mask: [u8; 4], phase: usize) -> Vec<u8> {
         payload
             .iter()
             .enumerate()
-            .map(|(index, byte)| byte ^ mask[(phase + index) & 3])
+            .map(|(index, byte)| byte ^ mask[phase.wrapping_add(index) & 3])
             .collect()
     }
 

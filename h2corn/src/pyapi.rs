@@ -1,6 +1,5 @@
 //! Python FFI entry: config extraction, serve_fds, and related helpers.
 
-use std::iter::repeat_with;
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -352,8 +351,12 @@ impl<'py> PyConfig<'py> {
 /// finite value too large to represent — all three of which a configuration
 /// file can contain — so the fallible conversion is the one to use.
 fn duration_from_seconds(name: &'static str, seconds: f64) -> PyResult<Duration> {
-    Duration::try_from_secs_f64(seconds)
-        .map_err(|_| into_pyerr(ConfigError::invalid_duration(name)))
+    let duration = Duration::try_from_secs_f64(seconds)
+        .map_err(|_| into_pyerr(ConfigError::invalid_duration(name)))?;
+    std::time::Instant::now()
+        .checked_add(duration)
+        .ok_or_else(|| into_pyerr(ConfigError::invalid_duration(name)))?;
+    Ok(duration)
 }
 
 fn optional_duration(name: &'static str, seconds: f64) -> PyResult<Option<Duration>> {
@@ -649,7 +652,7 @@ async fn start_secondary_lifespans(
             Ok((_, outcome)) => outcomes.push(outcome),
             Err(err) => {
                 let index = secondary_loop_index(&task_indices, &err);
-                if let Some(shard) = shards.get(index + 1) {
+                if let Some(shard) = shards.get(1..).and_then(|secondary| secondary.get(index)) {
                     outcomes.push((index, Arc::clone(shard), None, Err(err.into())));
                 }
             },
@@ -934,7 +937,6 @@ pub(crate) fn serve_fds<'py>(
         },
     };
     let mut shard_threads: Vec<ShardThread> = Vec::new();
-    let mut shards = vec![Arc::clone(&main_shard)];
     for index in 1..loop_count {
         let thread = match spawn_shard_thread(index, loop_factory) {
             Ok(thread) => thread,
@@ -946,17 +948,27 @@ pub(crate) fn serve_fds<'py>(
                 return Err(err);
             },
         };
-        shards.push(Arc::clone(thread.shard()));
         shard_threads.push(thread);
     }
     let secondary_apps = if lifespan_config.is_some() {
-        repeat_with(|| app.clone_ref(py))
-            .take(shards.len() - 1)
+        shard_threads
+            .iter()
+            .map(|_| app.clone_ref(py))
             .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
-    let app: AppRuntimeHandle = Arc::new(AppRuntime::new(app, shards.into_boxed_slice(), limits));
+    let app: AppRuntimeHandle = Arc::new(AppRuntime::new(
+        app,
+        std::iter::once(Arc::clone(&main_shard))
+            .chain(
+                shard_threads
+                    .iter()
+                    .map(|thread| Arc::clone(thread.shard())),
+            )
+            .collect(),
+        limits,
+    ));
 
     // The Python side awaits this duck future; it resolves when the server
     // future completes (shutdown or fatal error).
@@ -1003,6 +1015,21 @@ mod tests {
             .call1(("ConfigStub", PyTuple::empty(py), PyDict::new(py)))
             .expect("stub class is created");
         cls.call0().expect("stub config is instantiated")
+    }
+
+    #[test]
+    fn timeout_admission_rejects_duration_beyond_monotonic_deadline_range() {
+        Python::initialize();
+        Python::attach(|py| {
+            let seconds = 2.0_f64.powi(63);
+            Duration::try_from_secs_f64(seconds).expect("duration itself is representable");
+            let error = duration_from_seconds("timeout_read", seconds).unwrap_err();
+            assert!(error.is_instance_of::<pyo3::exceptions::PyValueError>(py));
+            assert_eq!(
+                duration_from_seconds("timeout_read", 60.0).unwrap(),
+                Duration::from_secs(60),
+            );
+        });
     }
 
     #[test]

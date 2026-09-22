@@ -536,7 +536,7 @@ where
 
     pub(crate) async fn read_at_least(&mut self, len: usize) -> Result<bool, H2CornError> {
         while self.buffer.len() < len {
-            self.buffer.reserve(len - self.buffer.len());
+            self.buffer.reserve(len.wrapping_sub(self.buffer.len()));
 
             let read = self.reader.read_buf(&mut self.buffer).await?;
             if read == 0 {
@@ -641,7 +641,7 @@ where
             })));
         };
 
-        let total_len = FRAME_HEADER_LEN + payload_len;
+        let total_len = FRAME_HEADER_LEN.wrapping_add(payload_len);
         if !self.read_at_least(total_len).await? {
             return Err(H2CornError::from(H2Error::FramePayloadClosed).into());
         }
@@ -676,7 +676,7 @@ where
             }
             let consumed = self.buffer.len().min(self.discard_payload_len);
             self.buffer.advance(consumed);
-            self.discard_payload_len -= consumed;
+            self.discard_payload_len = self.discard_payload_len.wrapping_sub(consumed);
         }
         Ok(())
     }
@@ -760,7 +760,7 @@ pub(crate) fn append_frame<const N: usize>(
     header: FrameHeader,
     payload: &[u8; N],
 ) {
-    dst.reserve(FRAME_HEADER_LEN + N);
+    dst.reserve(const { FRAME_HEADER_LEN + N });
     dst.extend_from_slice(&encode_frame_header(
         header,
         const { FramePayloadLen::constant(N) },
@@ -772,8 +772,8 @@ pub(crate) fn append_settings(dst: &mut BytesMut, settings: Settings) {
     // One entry per field of `Settings`, so the whole payload is bounded by a
     // constant and the narrowing below carries that proof.
     let payload_len = const { FramePayloadLen::constant(MAX_SETTINGS_ENTRIES * SETTING_ENTRY_LEN) }
-        .min_usize(settings.iter().count() * SETTING_ENTRY_LEN);
-    dst.reserve(FRAME_HEADER_LEN + payload_len.as_usize());
+        .min_usize(settings.iter().count().wrapping_mul(SETTING_ENTRY_LEN));
+    dst.reserve(FRAME_HEADER_LEN.wrapping_add(payload_len.as_usize()));
     dst.extend_from_slice(&encode_frame_header(
         FrameHeader {
             frame_type: FrameType::SETTINGS,
@@ -852,8 +852,8 @@ pub(crate) fn append_goaway(
     let debug = debug.get(..MAX_GOAWAY_DEBUG_LEN).unwrap_or(debug);
     let payload_len =
         const { FramePayloadLen::constant(GOAWAY_FIXED_PAYLOAD_LEN + MAX_GOAWAY_DEBUG_LEN) }
-            .min_usize(GOAWAY_FIXED_PAYLOAD_LEN + debug.len());
-    dst.reserve(GOAWAY_FRAME_PREFIX_LEN + debug.len());
+            .min_usize(GOAWAY_FIXED_PAYLOAD_LEN.wrapping_add(debug.len()));
+    dst.reserve(GOAWAY_FRAME_PREFIX_LEN.wrapping_add(debug.len()));
     dst.extend_from_slice(&encode_frame_header(
         FrameHeader {
             frame_type: FrameType::GOAWAY,

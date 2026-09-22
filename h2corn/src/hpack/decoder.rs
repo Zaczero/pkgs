@@ -236,7 +236,7 @@ fn dynamic_entry(
     table: &DynamicBuffer<HpackField>,
     index: usize,
 ) -> Result<&HpackField, DecoderError> {
-    let offset = index - static_table::DYNAMIC_INDEX_OFFSET;
+    let offset = index.wrapping_sub(static_table::DYNAMIC_INDEX_OFFSET);
     table
         .entry_from_end(offset)
         .ok_or(DecoderError::InvalidTableIndex)
@@ -268,7 +268,6 @@ fn get_indexed_name(
 }
 
 fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, DecoderError> {
-    const MAX_BYTES: usize = 5;
     const VARINT_MASK: u8 = 0b0111_1111;
     const VARINT_FLAG: u8 = 0b1000_0000;
 
@@ -277,34 +276,25 @@ fn decode_int<const PREFIX_SIZE: u8, B: Buf>(buf: &mut B) -> Result<usize, Decod
         return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
     }
 
-    let mask = u8::MAX >> (u8::BITS - u32::from(PREFIX_SIZE));
+    let mask = u8::MAX >> u8::BITS.wrapping_sub(u32::from(PREFIX_SIZE));
     let mut value = usize::from(buf.get_u8() & mask);
     if value < usize::from(mask) {
         return Ok(value);
     }
 
-    let mut bytes = 1_usize;
-    let mut shift = 0_u32;
-
-    while buf.has_remaining() {
+    for shift in [0, 7, 14, 21] {
+        if !buf.has_remaining() {
+            return Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow));
+        }
         let byte = buf.get_u8();
-        bytes += 1;
-        let addition = usize::from(byte & VARINT_MASK)
-            .checked_shl(shift)
-            .ok_or(DecoderError::IntegerOverflow)?;
-        value = value
-            .checked_add(addition)
-            .ok_or(DecoderError::IntegerOverflow)?;
+        let addition = usize::from(byte & VARINT_MASK) << shift;
+        value = value.wrapping_add(addition);
         if byte & VARINT_FLAG == 0 {
             return Ok(value);
         }
-        if bytes == MAX_BYTES {
-            return Err(DecoderError::IntegerOverflow);
-        }
-        shift += 7;
     }
 
-    Err(DecoderError::NeedMore(NeedMore::IntegerUnderflow))
+    Err(DecoderError::IntegerOverflow)
 }
 
 #[cfg(test)]

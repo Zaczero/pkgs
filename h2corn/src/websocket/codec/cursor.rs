@@ -8,7 +8,6 @@ use crate::websocket::codec::mask::{MaskKey, apply_websocket_mask_phase};
 #[derive(Debug, Default)]
 pub(super) struct SegmentCursor<const N: usize> {
     segments: InlineFifo<Bytes, N>,
-    offset: usize,
     len: usize,
 }
 
@@ -27,7 +26,7 @@ impl<const N: usize> SegmentCursor<N> {
             return;
         }
 
-        self.len += segment.len();
+        self.len = self.len.wrapping_add(segment.len());
         self.segments.push_back(segment);
     }
 
@@ -35,47 +34,39 @@ impl<const N: usize> SegmentCursor<N> {
         debug_assert!(len <= self.len);
         debug_assert!(len <= out.len());
 
-        let mut copied = 0;
-        for (index, segment) in self.segments.iter().enumerate() {
-            let start = if index == 0 { self.offset } else { 0 };
-            let remaining = len - copied;
-            let chunk_len = min(segment.len() - start, remaining);
-            let (Some(destination), Some(source)) = (
-                out.get_mut(copied..copied + chunk_len),
-                segment.get(start..start + chunk_len),
-            ) else {
-                return;
-            };
-            destination.copy_from_slice(source);
-            copied += chunk_len;
-            if copied == len {
+        let mut remaining = out.get_mut(..len).expect("prefix fits destination");
+        for segment in self.segments.iter() {
+            let count = min(segment.len(), remaining.len());
+            let (destination, rest) = remaining.split_at_mut(count);
+            destination.copy_from_slice(segment.get(..count).expect("prefix fits segment"));
+            remaining = rest;
+            if remaining.is_empty() {
                 return;
             }
         }
 
-        debug_assert_eq!(copied, len);
+        debug_assert!(remaining.is_empty());
     }
 
     pub(super) fn skip(&mut self, mut len: usize) {
         debug_assert!(len <= self.len);
-        self.len -= len;
+        self.len = self.len.wrapping_sub(len);
 
         while len != 0 {
             let available = {
                 let front = self
                     .segments
-                    .front()
+                    .front_mut()
                     .expect("segmented websocket input remains available while consuming");
-                front.len() - self.offset
+                if len < front.len() {
+                    front.advance(len);
+                    return;
+                }
+                front.len()
             };
-            if len < available {
-                self.offset += len;
-                return;
-            }
 
-            len -= available;
+            len = len.wrapping_sub(available);
             self.segments.pop_front();
-            self.offset = 0;
         }
     }
 
@@ -98,7 +89,7 @@ impl<const N: usize> SegmentCursor<N> {
         if self
             .segments
             .front()
-            .is_some_and(|segment| segment.len() - self.offset == len && segment.is_unique())
+            .is_some_and(|segment| segment.len() == len && segment.is_unique())
         {
             let segment = self
                 .segments
@@ -107,9 +98,7 @@ impl<const N: usize> SegmentCursor<N> {
             let mut payload = segment
                 .try_into_mut()
                 .expect("uniquely owned Bytes converts without copying");
-            payload.advance(self.offset);
-            self.offset = 0;
-            self.len -= len;
+            self.len = self.len.wrapping_sub(len);
             let phase = apply_websocket_mask_phase(payload.as_mut(), key, phase);
             return (payload, phase);
         }
@@ -117,27 +106,26 @@ impl<const N: usize> SegmentCursor<N> {
         let mut out = BytesMut::with_capacity(len);
         let mut remaining = len;
         let mut phase = phase;
-        self.len -= len;
+        self.len = self.len.wrapping_sub(len);
         while remaining != 0 {
             let front = self
                 .segments
-                .front()
+                .front_mut()
                 .expect("segmented websocket input remains available while draining");
-            let available = front.get(self.offset..).unwrap_or_default();
-            let take = min(available.len(), remaining);
+            let take = min(front.len(), remaining);
             let start = out.len();
-            out.extend_from_slice(available.get(..take).unwrap_or_default());
+            out.extend_from_slice(front.get(..take).expect("chunk fits front segment"));
+            front.advance(take);
+            let consumed_front = front.is_empty();
             phase = apply_websocket_mask_phase(
-                out.get_mut(start..start + take).unwrap_or_default(),
+                out.get_mut(start..)
+                    .expect("appended chunk starts within output"),
                 key,
                 phase,
             );
-            remaining -= take;
-            if take == available.len() {
+            remaining = remaining.wrapping_sub(take);
+            if consumed_front {
                 self.segments.pop_front();
-                self.offset = 0;
-            } else {
-                self.offset += take;
             }
         }
         (out, phase)

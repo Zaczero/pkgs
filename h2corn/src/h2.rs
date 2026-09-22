@@ -324,31 +324,32 @@ impl<R, W> H2ConnectionState<R, W> {
             .flatten();
 
         if !data.is_empty() {
-            match stream.body.record_chunk(data.len() as u64) {
-                RequestBodyProgress::Continue => {},
-                RequestBodyProgress::SizeLimitExceeded
-                | RequestBodyProgress::ContentLengthExceeded => {
-                    self.connection_window.release(data_len);
-                    stream.receive_window.release(data_len);
-                    stream
-                        .delivery
-                        .stop_with(StreamInput::Reset(ErrorCode::PROTOCOL_ERROR));
-                    self.request_deadlines
-                        .cancel(state::RequestInputDeadlineKey::body(stream_id));
-                    self.remove_stream(stream_id);
-                    return DataIngress::BodyLimitExceeded {
-                        connection_update: self
-                            .connection_window
-                            .take_update(connection_window_threshold),
-                    };
-                },
+            if matches!(
+                stream.body.record_chunk(data.len() as u64),
+                RequestBodyProgress::SizeLimitExceeded | RequestBodyProgress::ContentLengthExceeded
+            ) {
+                self.connection_window.release(data_len);
+                stream.receive_window.release(data_len);
+                stream
+                    .delivery
+                    .stop_with(StreamInput::Reset(ErrorCode::PROTOCOL_ERROR));
+                self.request_deadlines
+                    .cancel(state::RequestInputDeadlineKey::body(stream_id));
+                self.remove_stream(stream_id);
+                return DataIngress::BodyLimitExceeded {
+                    connection_update: self
+                        .connection_window
+                        .take_update(connection_window_threshold),
+                };
             }
             if stream.counts_toward_read_timeout
                 && let Some(timeout) = self.context.config.timeout_request_body_idle
             {
                 self.request_deadlines.schedule(
                     state::RequestInputDeadlineKey::body(stream_id),
-                    TokioInstant::now() + timeout,
+                    TokioInstant::now()
+                        .checked_add(timeout)
+                        .expect("admitted body-idle timeout fits monotonic clock"),
                 );
             }
             let credit = self.input_flow.credit(
@@ -370,11 +371,10 @@ impl<R, W> H2ConnectionState<R, W> {
             .connection_window
             .take_update(connection_window_threshold);
         let stream_update = if end_stream {
-            self.streams.get_mut(&stream_id).and_then(|stream| {
-                (!stream.state.request_is_closed())
-                    .then(|| stream.receive_window.take_update(stream_window_threshold))
-                    .flatten()
-            })
+            self.streams
+                .get_mut(&stream_id)
+                .filter(|stream| !stream.state.request_is_closed())
+                .and_then(|stream| stream.receive_window.take_update(stream_window_threshold))
         } else {
             open_stream_update
         };
@@ -583,7 +583,11 @@ where
         return Ok(());
     }
     *drain_state = ConnectionDrainState::Draining {
-        deadline: Some(Instant::now() + timeout_graceful_shutdown),
+        deadline: Some(
+            Instant::now()
+                .checked_add(timeout_graceful_shutdown)
+                .expect("admitted shutdown timeout fits monotonic clock"),
+        ),
     };
     writer
         .goaway(last_stream_id, ErrorCode::NO_ERROR, Vec::new(), false)
@@ -719,7 +723,11 @@ where
 
     let drain_state = if shutdown.borrow().kind().is_some() {
         ConnectionDrainState::Draining {
-            deadline: Some(Instant::now() + context.config.timeout_graceful_shutdown),
+            deadline: Some(
+                Instant::now()
+                    .checked_add(context.config.timeout_graceful_shutdown)
+                    .expect("admitted shutdown timeout fits monotonic clock"),
+            ),
         }
     } else {
         ConnectionDrainState::Accepting
@@ -1205,7 +1213,9 @@ where
     const FATAL_GOAWAY_LINGER: Duration = Duration::from_secs(1);
 
     state.writer.shutdown_write().await;
-    let deadline = TokioInstant::now() + FATAL_GOAWAY_LINGER;
+    let deadline = TokioInstant::now()
+        .checked_add(FATAL_GOAWAY_LINGER)
+        .expect("GOAWAY linger fits monotonic clock");
     loop {
         let buffered = state.reader.buffered().len();
         state.reader.consume(buffered);
@@ -1233,13 +1243,13 @@ where
             .await?;
     }
 
-    let mut consecutive_peer_frames = 0;
+    let mut consecutive_peer_frames = 0_usize;
     loop {
         state.request_tasks.reap_completed();
         let mut stop_after_flush = false;
         let event = ingest_connection_input(state).await?;
         if matches!(&event, IngestEvent::Frame(_)) {
-            consecutive_peer_frames += 1;
+            consecutive_peer_frames = consecutive_peer_frames.wrapping_add(1);
         } else {
             consecutive_peer_frames = 0;
         }
@@ -1441,7 +1451,11 @@ where
         .then_some(state.context.config.timeout_keep_alive)
         .flatten()
         .map(|timeout_duration| {
-            ConnectionDeadline::KeepAlive(TokioInstant::now() + timeout_duration)
+            ConnectionDeadline::KeepAlive(
+                TokioInstant::now()
+                    .checked_add(timeout_duration)
+                    .expect("admitted keep-alive timeout fits monotonic clock"),
+            )
         });
     let request_input_deadline = state.next_request_input_deadline();
     let response_stall_deadline = state.writer.next_response_stall_deadline();
@@ -1959,24 +1973,23 @@ where
 }
 
 fn parse_data_payload(payload: Bytes, flags: FrameFlags) -> Result<(Bytes, bool), H2CornError> {
-    let mut start = 0;
-    let mut end = payload.len();
-    if flags.contains(FrameFlags::PADDED) {
-        let Some((&padding, _)) = payload.split_first() else {
+    let data = if flags.contains(FrameFlags::PADDED) {
+        let Some((&padding, rest)) = payload.split_first() else {
             return H2Error::DataPaddedMissingPadding.err();
         };
-        let pad_len = usize::from(padding);
-        start += 1;
-        if pad_len > end.saturating_sub(start) {
+        let Some(data_len) = rest.len().checked_sub(usize::from(padding)) else {
             return H2Error::DataPaddingExceedsPayload.err();
-        }
-        end -= pad_len;
-    }
+        };
+        rest.get(..data_len)
+            .expect("padding was subtracted from this DATA payload")
+    } else {
+        payload.as_ref()
+    };
     Ok((
-        if start == 0 && end == payload.len() {
+        if data.len() == payload.len() {
             payload
         } else {
-            payload.slice(start..end)
+            payload.slice_ref(data)
         },
         flags.contains(FrameFlags::END_STREAM),
     ))
@@ -2049,33 +2062,25 @@ mod tests {
         }
     }
 
-    fn parse_window_updates(bytes: &[u8]) -> Vec<(u32, u32)> {
-        let mut cursor = 0;
+    fn parse_window_updates(mut bytes: &[u8]) -> Vec<(u32, u32)> {
         let mut updates = Vec::new();
 
-        while cursor + 9 <= bytes.len() {
-            let len = ((bytes[cursor] as usize) << 16)
-                | ((bytes[cursor + 1] as usize) << 8)
-                | bytes[cursor + 2] as usize;
-            let frame_type = bytes[cursor + 3];
-            let stream_id = u32::from_be_bytes([
-                bytes[cursor + 5],
-                bytes[cursor + 6],
-                bytes[cursor + 7],
-                bytes[cursor + 8],
-            ]) & h2_frame::STREAM_ID_MASK;
+        while !bytes.is_empty() {
+            let (&[a, b, c, frame_type, _, s0, s1, s2, s3], rest) = bytes
+                .split_first_chunk::<9>()
+                .expect("complete HTTP/2 header");
+            let len = u32::from_be_bytes([0, a, b, c]) as usize;
+            let (payload, rest) = rest.split_at_checked(len).expect("complete HTTP/2 payload");
+            let stream_id = u32::from_be_bytes([s0, s1, s2, s3]) & h2_frame::STREAM_ID_MASK;
 
             if frame_type == 8 && len == 4 {
-                let increment = u32::from_be_bytes([
-                    bytes[cursor + 9],
-                    bytes[cursor + 10],
-                    bytes[cursor + 11],
-                    bytes[cursor + 12],
-                ]) & h2_frame::MAX_FLOW_CONTROL_WINDOW;
+                let increment =
+                    u32::from_be_bytes(payload.try_into().expect("four-byte window update"))
+                        & h2_frame::MAX_FLOW_CONTROL_WINDOW;
                 updates.push((stream_id, increment));
             }
 
-            cursor += 9 + len;
+            bytes = rest;
         }
 
         updates

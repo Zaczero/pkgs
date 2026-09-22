@@ -162,7 +162,7 @@ fn find_dynamic(
         if entry.name() != name {
             continue;
         }
-        let index = static_table::DYNAMIC_INDEX_OFFSET + offset;
+        let index = static_table::DYNAMIC_INDEX_OFFSET.wrapping_add(offset);
         if entry.value() == value {
             return (Some(index), Some(index));
         }
@@ -184,8 +184,13 @@ fn should_index_header(
         return false;
     }
 
-    let size = 32 + name_len + value_len;
-    size <= max_size && size.saturating_mul(4) <= max_size.saturating_mul(3)
+    let Some(size) = name_len
+        .checked_add(value_len)
+        .and_then(|size| size.checked_add(32))
+    else {
+        return false;
+    };
+    size <= max_size.wrapping_sub(max_size.div_ceil(4))
 }
 
 fn encode_literal(name: LiteralName<'_>, value: &[u8], mode: LiteralMode, dst: &mut BytesMut) {
@@ -229,14 +234,14 @@ fn encode_string(value: &[u8], dst: &mut BytesMut) {
 
 fn encode_int(value: usize, prefix: u8, mask: u8, dst: &mut BytesMut) {
     debug_assert!((1..=8).contains(&prefix));
-    let max_prefix = (1_usize << usize::from(prefix)) - 1;
+    let max_prefix = (1_usize << usize::from(prefix)).wrapping_sub(1);
     if value < max_prefix {
         dst.extend_from_slice(&[(value as u8) | mask]);
         return;
     }
 
     dst.extend_from_slice(&[(max_prefix as u8) | mask]);
-    let mut remaining = value - max_prefix;
+    let mut remaining = value.wrapping_sub(max_prefix);
     while remaining >= 128 {
         dst.extend_from_slice(&[((remaining & 0x7F) as u8) | 0x80]);
         remaining >>= 7;

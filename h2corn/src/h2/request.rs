@@ -81,7 +81,7 @@ impl HeaderBudget {
 
     const fn account_field(&mut self) -> Result<(), RequestHeadError> {
         if let Some(max_fields) = self.limits.max_fields {
-            self.fields += 1;
+            self.fields = self.fields.saturating_add(1);
             if self.fields > max_fields.get() {
                 return Err(RequestHeadError::reject(
                     status_code::REQUEST_HEADER_FIELDS_TOO_LARGE,
@@ -581,39 +581,38 @@ pub(super) fn parse_header_block_fragment(
 ) -> Result<HeaderBlockFragment, H2CornError> {
     let header = frame.header;
     let payload = frame.payload;
-    let payload_bytes = payload.as_ref();
-    let mut payload_offset = 0;
+    let mut block = payload.as_ref();
     let padded = header.flags.contains(h2_frame::FrameFlags::PADDED);
     let priority = header.flags.contains(h2_frame::FrameFlags::PRIORITY);
 
     let pad_len = if padded {
-        let Some(&pad_len) = payload_bytes.first() else {
+        let Some((&pad_len, rest)) = block.split_first() else {
             return H2Error::HeadersPaddedMissingPadLength.err();
         };
-        payload_offset += 1;
+        block = rest;
         usize::from(pad_len)
     } else {
         0
     };
 
     if priority {
-        if payload_bytes.len() < payload_offset + 5 {
+        let Some((_, rest)) = block.split_first_chunk::<5>() else {
             return H2Error::HeadersPriorityTooShort.err();
-        }
-        payload_offset += 5;
+        };
+        block = rest;
     }
 
-    if payload_bytes.len() < payload_offset + pad_len {
+    let Some(block_len) = block.len().checked_sub(pad_len) else {
         return H2Error::HeadersPaddingExceedsPayload.err();
-    }
-    let block_end = payload_bytes.len() - pad_len;
+    };
+    let block = if block_len == payload.len() {
+        payload
+    } else {
+        payload.slice_ref(block.split_at(block_len).0)
+    };
 
     Ok(HeaderBlockFragment {
-        block: if payload_offset == 0 && block_end == payload.len() {
-            payload
-        } else {
-            payload.slice(payload_offset..block_end)
-        },
+        block,
         end_headers: header.flags.contains(h2_frame::FrameFlags::END_HEADERS),
         end_stream: header.flags.contains(h2_frame::FrameFlags::END_STREAM),
     })
@@ -723,6 +722,69 @@ mod tests {
             encoder.encode_field_bytes(name, value, &mut block);
         }
         block.freeze()
+    }
+
+    #[test]
+    fn header_fragment_excludes_priority_and_padding_at_empty_and_nonempty_boundaries() {
+        use crate::h2_frame::{FrameFlags, FrameHeader, FrameType, RawFrame, StreamId};
+
+        for (flags, payload, expected) in [
+            (0x05, &b"\x82"[..], &b"\x82"[..]),
+            (0x0D, &b"\x02\x82\0\0"[..], &b"\x82"[..]),
+            (0x2D, &b"\x02\0\0\0\x01\x10\x82\0\0"[..], &b"\x82"[..]),
+            (0x2D, &b"\x02\0\0\0\x01\x10\0\0"[..], &b""[..]),
+            (0x0D, &b"\0"[..], &b""[..]),
+        ] {
+            let fragment = super::parse_header_block_fragment(RawFrame {
+                header: FrameHeader {
+                    frame_type: FrameType::HEADERS,
+                    flags: FrameFlags::from_bits_retain(flags),
+                    stream_id: StreamId::new(1),
+                },
+                payload: Bytes::from_static(payload),
+            })
+            .unwrap();
+            assert_eq!(fragment.block.as_ref(), expected);
+            assert!(fragment.end_headers);
+            assert!(fragment.end_stream);
+        }
+    }
+
+    #[test]
+    fn header_fragment_rejects_truncated_prefixes_and_excess_padding() {
+        use crate::error::ErrorKind;
+        use crate::h2_frame::{FrameFlags, FrameHeader, FrameType, RawFrame, StreamId};
+
+        for (flags, payload, expected) in [
+            (0x08, &b""[..], H2Error::HeadersPaddedMissingPadLength),
+            (0x20, &b"\0\0\0\0"[..], H2Error::HeadersPriorityTooShort),
+            (0x28, &b"\0\0\0\0\0"[..], H2Error::HeadersPriorityTooShort),
+            (0x08, &b"\x01"[..], H2Error::HeadersPaddingExceedsPayload),
+            (
+                0x28,
+                &b"\x01\0\0\0\x01\x10"[..],
+                H2Error::HeadersPaddingExceedsPayload,
+            ),
+        ] {
+            let result = super::parse_header_block_fragment(RawFrame {
+                header: FrameHeader {
+                    frame_type: FrameType::HEADERS,
+                    flags: FrameFlags::from_bits_retain(flags),
+                    stream_id: StreamId::new(1),
+                },
+                payload: Bytes::from_static(payload),
+            });
+            let Err(error) = result else {
+                panic!("malformed HEADERS fragment was accepted");
+            };
+            let ErrorKind::H2(actual) = error.kind() else {
+                panic!("expected HTTP/2 protocol error, got {error:?}");
+            };
+            assert_eq!(
+                std::mem::discriminant(actual),
+                std::mem::discriminant(&expected)
+            );
+        }
     }
 
     #[test]

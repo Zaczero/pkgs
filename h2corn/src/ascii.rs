@@ -42,10 +42,12 @@ const fn fill_linear_range(
     last_byte: u8,
     first_value: u8,
 ) -> [u8; 256] {
-    let mut byte = first_byte;
-    while byte <= last_byte {
-        table[byte as usize] = first_value + (byte - first_byte);
-        byte += 1;
+    let mut byte = first_byte as usize;
+    while byte <= last_byte as usize {
+        table[byte] = first_value
+            .checked_add((byte as u8).wrapping_sub(first_byte))
+            .expect("linear lookup values fit one byte");
+        byte = byte.wrapping_add(1);
     }
     table
 }
@@ -60,10 +62,10 @@ const fn fill_constant_range(
     last_byte: u8,
     value: u8,
 ) -> [u8; 256] {
-    let mut byte = first_byte;
-    while byte <= last_byte {
-        table[byte as usize] = value;
-        byte += 1;
+    let mut byte = first_byte as usize;
+    while byte <= last_byte as usize {
+        table[byte] = value;
+        byte = byte.wrapping_add(1);
     }
     table
 }
@@ -73,10 +75,10 @@ const fn fill_constant_range(
     reason = "const evaluation bounds-checks these writes when the table is built"
 )]
 const fn fill_bytes<const N: usize>(mut table: [u8; 256], bytes: &[u8; N], value: u8) -> [u8; 256] {
-    let mut index = 0;
+    let mut index = 0_usize;
     while index < bytes.len() {
         table[bytes[index] as usize] = value;
-        index += 1;
+        index = index.wrapping_add(1);
     }
     table
 }

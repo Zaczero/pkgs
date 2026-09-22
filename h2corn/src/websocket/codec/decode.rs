@@ -82,7 +82,7 @@ impl WebSocketCodec {
                 self.segmented
                     .take_masked_chunk(take, current.mask, current.mask_phase);
             current.mask_phase = phase;
-            current.remaining -= chunk.len();
+            current.remaining = current.remaining.wrapping_sub(chunk.len());
 
             if self.current_frame_is_compressed(&current) {
                 M::push_decompress(inflater, chunk.as_ref(), max_message_size)?;
@@ -117,7 +117,7 @@ impl WebSocketCodec {
         };
         self.validate_frame_header_state(&header, max_message_size)?;
 
-        let mask_end = header.header_len + wire::CLIENT_MASK_LEN;
+        let mask_end = header.header_len.wrapping_add(wire::CLIENT_MASK_LEN);
         if self.segmented.len() < mask_end {
             return Ok(());
         }
@@ -319,7 +319,11 @@ mod tests {
     ) -> Vec<u8> {
         let mask = [1_u8, 2, 3, 4];
         let first = if fin { wire::FIN } else { 0x00 } | opcode | flags;
-        let mut out = Vec::with_capacity(payload.len() + wire::CLIENT_FRAME_PREFIX_MAX_LEN);
+        let mut out = Vec::with_capacity(
+            payload
+                .len()
+                .saturating_add(wire::CLIENT_FRAME_PREFIX_MAX_LEN),
+        );
         out.push(first);
         match payload.len() {
             len if len <= wire::INLINE_PAYLOAD_LEN_MAX => out.push(wire::MASK | len as u8),
@@ -368,7 +372,7 @@ mod tests {
 
     fn stored_permessage_deflate(payload: &[u8]) -> Vec<u8> {
         let len = u16::try_from(payload.len()).expect("test payload fits a stored DEFLATE block");
-        let mut out = Vec::with_capacity(payload.len() + 5);
+        let mut out = Vec::with_capacity(payload.len().saturating_add(5));
         // BFINAL=0, BTYPE=00, then the byte-aligned stored-block length.
         out.push(0);
         out.extend_from_slice(&len.to_le_bytes());

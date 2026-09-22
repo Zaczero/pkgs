@@ -317,7 +317,7 @@ impl HttpSendState {
         let admission = if accepted < 2 {
             inner.queue.push_back(event);
             inner.state.mode = HttpSendMode::Inline {
-                accepted: accepted + 1,
+                accepted: accepted.wrapping_add(1),
             };
             Admission::Buffered
         } else {

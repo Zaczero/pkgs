@@ -52,26 +52,24 @@ impl AppRuntime {
     }
 
     /// The caller's loop: lifespan, shutdown trigger, server-done future.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "a runtime is constructed with at least one shard"
-    )]
     pub(crate) fn main_shard(&self) -> Shard {
-        Arc::clone(&self.shards[0])
+        Arc::clone(self.shards.first().expect("runtime has a main shard"))
     }
 
     /// Round-robin shard pick; every Python object of one request binds to
     /// the picked shard so the request runs entirely on one loop.
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the modulo bounds the pick by the shard count"
-    )]
     pub(crate) fn pick_shard(&self) -> Shard {
         match self.shards.as_ref() {
             [single] => Arc::clone(single),
             shards => {
                 let index = self.next_shard.fetch_add(1, Ordering::Relaxed);
-                Arc::clone(&shards[index % shards.len()])
+                let count = std::num::NonZeroUsize::new(shards.len())
+                    .expect("runtime has at least one shard");
+                Arc::clone(
+                    shards
+                        .get(index % count)
+                        .expect("round-robin index fits shard count"),
+                )
             },
         }
     }
@@ -193,7 +191,7 @@ impl RuntimeLimits {
         let Some(limit) = self.max_requests else {
             return;
         };
-        if self.completed_tasks.fetch_add(1, Ordering::Relaxed) + 1 < limit.get() {
+        if self.completed_tasks.fetch_add(1, Ordering::Relaxed) < limit.get().wrapping_sub(1) {
             return;
         }
         // Past the threshold every completion takes this lock once and finds

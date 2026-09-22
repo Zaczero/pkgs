@@ -5146,7 +5146,7 @@ const fn pack_encode_table(source: &[(usize, u64); 257]) -> [u64; 257] {
         assert!(code_bits <= 30);
         assert!(code <= u32::MAX as u64);
         packed[index] = code | ((code_bits as u64) << 32);
-        index += 1;
+        index = index.wrapping_add(1);
     }
     packed
 }

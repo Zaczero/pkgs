@@ -64,7 +64,7 @@ impl WebSocketData {
     }
 
     pub(super) fn len(&self) -> usize {
-        self.header().len() + self.payload.len()
+        self.header().len().wrapping_add(self.payload.len())
     }
 }
 

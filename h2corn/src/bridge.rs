@@ -1063,7 +1063,7 @@ fn parse_header_iterable(
             field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
         })?;
         let mut fields = [None, None];
-        let mut field_count = 0;
+        let mut field_count = 0_usize;
         for field in pair {
             let field = field.map_err(|_| {
                 field_type_error(container, "headers", "two-item (bytes, bytes) pairs", &item)
@@ -1072,7 +1072,7 @@ fn parse_header_iterable(
                 *slot = Some(field);
             }
             if field_count < 3 {
-                field_count += 1;
+                field_count = field_count.wrapping_add(1);
             }
         }
         let [Some(name), Some(value)] = fields else {
@@ -1111,7 +1111,8 @@ fn parse_header_iterable(
 fn try_parse_exact_header_list(
     list: &Bound<'_, PyList>,
 ) -> Result<Option<ResponseHeaders>, H2CornError> {
-    let mut headers = ResponseHeaders::with_capacity(list.len() + RESPONSE_DEFAULT_BUILTIN_SLOTS);
+    let mut headers =
+        ResponseHeaders::with_capacity(list.len().saturating_add(RESPONSE_DEFAULT_BUILTIN_SLOTS));
     for item in list.iter() {
         let Ok(tuple) = item.cast_exact::<pyo3::types::PyTuple>() else {
             return Ok(None);

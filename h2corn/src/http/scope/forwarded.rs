@@ -27,7 +27,10 @@ impl ScopeHost<'_> {
             Self::Ip(ip) => {
                 let mut text = IpText::default();
                 write!(text, "{ip}").expect("an IP address fits in its fixed display buffer");
-                let written = text.bytes.get(..text.len).unwrap_or_default();
+                let written = text
+                    .bytes
+                    .get(..text.len)
+                    .expect("IP text length is within its buffer");
                 // SAFETY: `fmt::Write` appended only UTF-8 input from `IpAddr::fmt`.
                 f(unsafe { std::str::from_utf8_unchecked(written) })
             },
@@ -51,12 +54,13 @@ impl Default for IpText {
 
 impl Write for IpText {
     fn write_str(&mut self, value: &str) -> fmt::Result {
-        let end = self.len + value.len();
-        let Some(destination) = self.bytes.get_mut(self.len..end) else {
-            return Err(fmt::Error);
-        };
+        let destination = self
+            .bytes
+            .get_mut(self.len..)
+            .and_then(|remaining| remaining.get_mut(..value.len()))
+            .ok_or(fmt::Error)?;
         destination.copy_from_slice(value.as_bytes());
-        self.len = end;
+        self.len = self.len.wrapping_add(value.len());
         Ok(())
     }
 }
@@ -276,13 +280,18 @@ fn join_root_path<'a>(prefix: &'a str, root_path: &'a str) -> Cow<'a, str> {
             {
                 return Cow::Borrowed(original_root_path);
             }
-            let mut joined = String::with_capacity(root_path.len() + 1);
+            let mut joined = String::with_capacity(root_path.len().saturating_add(1));
             joined.push('/');
             joined.push_str(root_path);
             Cow::Owned(joined)
         },
         (false, false) => {
-            let mut joined = String::with_capacity(prefix.len() + root_path.len() + 1);
+            let mut joined = String::with_capacity(
+                prefix
+                    .len()
+                    .saturating_add(root_path.len())
+                    .saturating_add(1),
+            );
             joined.push_str(prefix);
             joined.push('/');
             joined.push_str(root_path);

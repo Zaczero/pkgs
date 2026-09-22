@@ -4,6 +4,7 @@ mod sink;
 use std::fmt::{self, Write as _};
 use std::io::{self, Write};
 use std::mem::MaybeUninit;
+use std::num::NonZeroU64;
 use std::str;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -29,12 +30,24 @@ const ACCESS_LOG_LINE_CAPACITY: usize = 128;
 const IPV4_CLIENT_WIDTH: usize = MAX_IPV4_CLIENT.len() - 2;
 /// Each unit with the scale it divides by. One table rather than two keeps a
 /// suffix from drifting away from the magnitude it names.
-const BYTE_UNITS: [(u64, &str); 5] = [
-    (1, "b"),
-    (1 << 10, "kib"),
-    (1 << 20, "mib"),
-    (1 << 30, "gib"),
-    (1 << 40, "tib"),
+const BYTE_UNITS: [(NonZeroU64, &str); 5] = [
+    (NonZeroU64::MIN, "b"),
+    (
+        NonZeroU64::new(1 << 10).expect("positive unit scale"),
+        "kib",
+    ),
+    (
+        NonZeroU64::new(1 << 20).expect("positive unit scale"),
+        "mib",
+    ),
+    (
+        NonZeroU64::new(1 << 30).expect("positive unit scale"),
+        "gib",
+    ),
+    (
+        NonZeroU64::new(1 << 40).expect("positive unit scale"),
+        "tib",
+    ),
 ];
 
 static ACCESS_LOG_MODE: LazyLock<AccessLogMode> = LazyLock::new(|| {
@@ -58,12 +71,13 @@ enum Decimals {
 }
 
 impl Decimals {
-    const fn factor(self) -> u64 {
-        match self {
+    const fn factor(self) -> NonZeroU64 {
+        NonZeroU64::new(match self {
             Self::None => 1,
             Self::One => 10,
             Self::Two => 100,
-        }
+        })
+        .expect("decimal scale is positive")
     }
 }
 
@@ -168,15 +182,12 @@ impl AccessLogBuf {
             return;
         }
 
-        let used = match self {
-            Self::Inline { len, .. } => usize::from(*len),
-            Self::Spilled(_) => unreachable!(),
+        let Self::Inline { bytes, len } = self else {
+            unreachable!();
         };
-        if used + value.len() <= ACCESS_LOG_LINE_CAPACITY {
-            let Self::Inline { bytes, len } = self else {
-                unreachable!();
-            };
-            let start = usize::from(*len);
+        let used = usize::from(*len);
+        if value.len() <= ACCESS_LOG_LINE_CAPACITY.wrapping_sub(used) {
+            let start = used;
             // SAFETY: the initialized prefix ends at `start`; `value.len()` is
             // bounded by the remaining inline capacity, so the destination is a
             // disjoint in-bounds range. `len` is published only after this copy.
@@ -187,14 +198,15 @@ impl AccessLogBuf {
                     value.len(),
                 );
             }
-            *len += value.len() as u8;
+            *len = len.wrapping_add(value.len() as u8);
             return;
         }
 
         // A first spill happens before the rest of the access-line fields are
         // formatted. Leave room for that suffix rather than immediately
         // reallocating and copying this prefix on the next append.
-        let capacity = (used + value.len())
+        let capacity = used
+            .saturating_add(value.len())
             .next_power_of_two()
             .max(ACCESS_LOG_LINE_CAPACITY * 2);
         let mut spilled = Vec::with_capacity(capacity);
@@ -885,10 +897,20 @@ fn write_duration_to(out: &mut impl fmt::Write, duration: Duration) -> fmt::Resu
     // a limit anyone can reach.
     if duration < Duration::from_secs(1) {
         let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
-        return write_scaled_to(out, micros, 1_000, "ms");
+        return write_scaled_to(
+            out,
+            micros,
+            const { NonZeroU64::new(1_000).expect("positive unit scale") },
+            "ms",
+        );
     }
     let millis = u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
-    write_scaled_to(out, millis, 1_000, "s")
+    write_scaled_to(
+        out,
+        millis,
+        const { NonZeroU64::new(1_000).expect("positive unit scale") },
+        "s",
+    )
 }
 
 fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
@@ -899,9 +921,9 @@ fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
 
     let (scale, unit) = BYTE_UNITS
         .into_iter()
-        .take_while(|(scale, _)| bytes >= *scale)
+        .take_while(|(scale, _)| bytes >= scale.get())
         .last()
-        .unwrap_or((1, "b"));
+        .unwrap_or((NonZeroU64::MIN, "b"));
     write_scaled_to(out, bytes, scale, unit)
 }
 
@@ -910,10 +932,14 @@ fn write_bytes_to(out: &mut impl fmt::Write, bytes: u64) -> fmt::Result {
 /// Deliberately `u64` rather than `u128`: dividing a 128-bit value by a runtime
 /// divisor compiles to a `__udivti3`/`__umodti3` *libcall*, tens of cycles
 /// each, and this runs two or three times for every logged request. Nothing
-/// here needs the range. `precision` is derived from `value / scale`, so
-/// `value * factor` is bounded by `1000 * scale`, and the largest scale in use
-/// is one tebibyte -- about 1.1e15, comfortably inside `u64`.
-fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str) -> fmt::Result {
+/// here needs the range. Scaling only the remainder avoids overflow even for
+/// `u64::MAX`; the largest scale is one tebibyte and the factor is at most 100.
+fn write_scaled_to(
+    out: &mut impl fmt::Write,
+    value: u64,
+    scale: NonZeroU64,
+    unit: &str,
+) -> fmt::Result {
     let whole = value / scale;
     let decimals = if whole >= 100 {
         Decimals::None
@@ -924,8 +950,11 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str
     };
 
     let factor = decimals.factor();
-    let scaled = (value * factor + (scale / 2)) / scale;
-    let integer = scaled / factor;
+    let scaled = (value % scale)
+        .wrapping_mul(factor.get())
+        .wrapping_add(scale.get() / 2)
+        / scale;
+    let integer = whole.wrapping_add(scaled / factor);
     let fractional = scaled % factor;
 
     write_integer(out, integer)?;
@@ -935,14 +964,14 @@ fn write_scaled_to(out: &mut impl fmt::Write, value: u64, scale: u64, unit: &str
             // `factor` is one, so `fractional` is zero and this arm is dead.
             Decimals::None => {},
             Decimals::One => {
-                out.write_char(char::from(b'0' + fractional as u8))?;
+                out.write_char(char::from(b'0'.wrapping_add(fractional as u8)))?;
             },
             Decimals::Two => {
                 let tens = (fractional / 10) as u8;
                 let ones = (fractional % 10) as u8;
-                out.write_char(char::from(b'0' + tens))?;
+                out.write_char(char::from(b'0'.wrapping_add(tens)))?;
                 if ones != 0 {
-                    out.write_char(char::from(b'0' + ones))?;
+                    out.write_char(char::from(b'0'.wrapping_add(ones)))?;
                 }
             },
         }
@@ -957,8 +986,8 @@ fn write_integer<T: Integer>(out: &mut impl fmt::Write, value: T) -> fmt::Result
 
 fn write_two_digits(out: &mut impl fmt::Write, value: u8) -> fmt::Result {
     debug_assert!(value < 100);
-    out.write_char(char::from(b'0' + value / 10))?;
-    out.write_char(char::from(b'0' + value % 10))
+    out.write_char(char::from(b'0'.wrapping_add(value / 10)))?;
+    out.write_char(char::from(b'0'.wrapping_add(value % 10)))
 }
 
 const fn status_style(status: HttpStatusCode) -> Style {
@@ -1278,6 +1307,7 @@ mod tests {
         assert_eq!(render(|out| append_bytes_to(out, 0)), "0b");
         assert_eq!(render(|out| append_bytes_to(out, 2150)), "2.1kib");
         assert_eq!(render(|out| append_bytes_to(out, 1_258_291)), "1.2mib");
+        assert_eq!(render(|out| append_bytes_to(out, u64::MAX)), "16777216tib");
     }
 
     #[test]

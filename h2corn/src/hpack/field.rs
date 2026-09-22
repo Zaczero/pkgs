@@ -48,7 +48,12 @@ impl HpackField {
 
     /// RFC 7541 §4.1 entry size: 32 + name length + value length.
     pub(crate) const fn table_size(&self) -> usize {
-        32 + self.name.len() + self.value.len()
+        self.name
+            .len()
+            .checked_add(self.value.len())
+            .expect("HPACK field storage size fits usize")
+            .checked_add(32)
+            .expect("HPACK entry storage size fits usize")
     }
 }
 

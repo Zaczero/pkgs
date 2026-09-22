@@ -46,41 +46,40 @@ pub(crate) const fn encode_remainder(b0: u8, b1: u8) -> [u8; 4] {
 }
 
 /// Decode unpadded URL-safe base64. `Err(())` means the input was not that.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "a u8 index cannot leave a 256-entry table"
-)]
 pub(crate) fn decode_url(src: &[u8]) -> Result<Vec<u8>, ()> {
-    let mut out = Vec::with_capacity((src.len() * 3) / 4 + 3);
-    let mut block = [0_u8; 4];
-    let mut used = 0;
-    for &byte in src {
-        let value = BASE64URL_VALUE[usize::from(byte)];
-        if value == INVALID_VALUE {
+    let (blocks, remainder) = src.as_chunks::<4>();
+    let extra = match remainder.len() {
+        0 => 0,
+        2 => 1,
+        3 => 2,
+        _ => return Err(()),
+    };
+    let mut out = Vec::with_capacity(blocks.len().saturating_mul(3).saturating_add(extra));
+    for block in blocks {
+        let [Ok(a), Ok(b), Ok(c), Ok(d)] = block.map(decode_sextet) else {
             return Err(());
-        }
-        if let Some(slot) = block.get_mut(used) {
-            *slot = value;
-        }
-        used += 1;
-        if used == 4 {
-            out.push((block[0] << 2) | (block[1] >> 4));
-            out.push((block[1] << 4) | (block[2] >> 2));
-            out.push((block[2] << 6) | block[3]);
-            used = 0;
-        }
+        };
+        out.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2), (c << 6) | d]);
     }
-    match used {
-        0 => {},
-        2 => out.push((block[0] << 2) | (block[1] >> 4)),
-        3 => {
-            out.push((block[0] << 2) | (block[1] >> 4));
-            out.push((block[1] << 4) | (block[2] >> 2));
+    match remainder {
+        [] => {},
+        &[a, b] => out.push((decode_sextet(a)? << 2) | (decode_sextet(b)? >> 4)),
+        &[a, b, c] => {
+            let (a, b, c) = (decode_sextet(a)?, decode_sextet(b)?, decode_sextet(c)?);
+            out.extend_from_slice(&[(a << 2) | (b >> 4), (b << 4) | (c >> 2)]);
         },
         // One leftover sextet cannot have come from any whole input byte.
         _ => return Err(()),
     }
     Ok(out)
+}
+
+fn decode_sextet(byte: u8) -> Result<u8, ()> {
+    BASE64URL_VALUE
+        .get(usize::from(byte))
+        .copied()
+        .filter(|&value| value != INVALID_VALUE)
+        .ok_or(())
 }
 
 #[cfg(test)]

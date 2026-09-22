@@ -331,7 +331,11 @@ where
                 self.streams
                     .get(&stream_id)
                     .and_then(StreamWriteState::pending_body_since)
-                    .map(|since| since + timeout)
+                    .map(|since| {
+                        since
+                            .checked_add(timeout)
+                            .expect("admitted response timeout fits monotonic clock")
+                    })
             });
         if let Some(deadline) = deadline {
             self.response_deadlines.schedule(stream_id, deadline);
@@ -469,13 +473,13 @@ where
         let next_initial_window = settings
             .initial_window_size
             .map_or(self.initial_stream_send_window, i64::from);
-        let delta = next_initial_window - self.initial_stream_send_window;
+        let delta = next_initial_window.wrapping_sub(self.initial_stream_send_window);
         let max_window = i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW);
         if delta > 0
             && self
                 .streams
                 .values()
-                .any(|stream| i64::from(stream.send_window) > max_window - delta)
+                .any(|stream| i64::from(stream.send_window) > max_window.wrapping_sub(delta))
         {
             return Err(InitialWindowAdjustmentOverflow);
         }
@@ -489,8 +493,9 @@ where
                           preflight above makes partial application impossible"
             )]
             for stream in self.streams.values_mut() {
-                stream.send_window = i32::try_from(i64::from(stream.send_window) + delta)
-                    .expect("peer SETTINGS preserve the signed 31-bit stream window");
+                stream.send_window =
+                    i32::try_from(i64::from(stream.send_window).wrapping_add(delta))
+                        .expect("peer SETTINGS preserve the signed 31-bit stream window");
             }
             self.initial_stream_send_window = next_initial_window;
         }
@@ -516,10 +521,11 @@ where
         increment: WindowIncrement,
     ) -> Result<(), WindowOverflow> {
         let increment = i64::from(increment.get());
-        if self.connection_send_window > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment {
+        let next = self.connection_send_window.wrapping_add(increment);
+        if next > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) {
             return Err(WindowOverflow);
         }
-        self.connection_send_window += increment;
+        self.connection_send_window = next;
         // Wake everything the shared window was holding back. A stream window
         // update reschedules its own stream below; the connection window has no
         // stream to name, so without this a stream parked for want of shared
@@ -552,17 +558,15 @@ where
         stream_id: StreamId,
         increment: WindowIncrement,
     ) -> Result<(), WindowOverflow> {
-        let increment = i64::from(increment.get());
+        let increment = increment.get() as i32;
         let stream = self
             .streams
             .entry(stream_id)
             .or_insert_with(|| StreamWriteState::new(self.initial_stream_send_window));
-        if i64::from(stream.send_window) > i64::from(h2_frame::MAX_FLOW_CONTROL_WINDOW) - increment
-        {
-            return Err(WindowOverflow);
-        }
-        stream.send_window = i32::try_from(i64::from(stream.send_window) + increment)
-            .expect("a checked window update preserves the signed 31-bit stream window");
+        stream.send_window = stream
+            .send_window
+            .checked_add(increment)
+            .ok_or(WindowOverflow)?;
         if stream.has_pending_output() && !stream.is_closed() {
             self.ready_streams.schedule(stream, stream_id, false);
         }
@@ -885,7 +889,9 @@ where
             notify_response_abort(context.response_closes, stream_id);
             return Err(error);
         }
-        *context.connection_send_window -= i64::from(payload.len().get());
+        *context.connection_send_window = context
+            .connection_send_window
+            .wrapping_sub(i64::from(payload.len().get()));
         if let Some(credit) = &mut credit {
             credit.release_written(payload.len().as_usize());
         }
@@ -1148,8 +1154,10 @@ where
         h2_frame::append_window_update(
             &mut frame_buf,
             None,
-            WindowIncrement::new(initial_connection_window - h2_frame::DEFAULT_WINDOW_SIZE)
-                .expect("increment is positive"),
+            WindowIncrement::new(
+                initial_connection_window.wrapping_sub(h2_frame::DEFAULT_WINDOW_SIZE),
+            )
+            .expect("increment is positive"),
         );
         write_frame_buf(&mut writer, &mut frame_buf).await?;
     }

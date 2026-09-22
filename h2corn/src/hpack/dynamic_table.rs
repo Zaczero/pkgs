@@ -25,17 +25,15 @@ impl<E> DynamicBuffer<E> {
     }
 
     pub(super) fn live(&self) -> &[(E, usize)] {
-        self.entries.get(self.start..).unwrap_or_default()
+        self.entries
+            .get(self.start..)
+            .expect("live entries start within the table")
     }
 
     /// Returns the entry at `offset` slots back from the most recent insertion,
     /// where `offset == 0` is the newest live entry.
     pub(super) fn entry_from_end(&self, offset: usize) -> Option<&E> {
-        let slot = self.entries.len().checked_sub(1)?.checked_sub(offset)?;
-        if slot < self.start {
-            return None;
-        }
-        self.entries.get(slot).map(|(entry, _)| entry)
+        self.live().iter().rev().nth(offset).map(|(entry, _)| entry)
     }
 
     pub(super) fn set_max_size(&mut self, max_size: usize) {
@@ -49,7 +47,7 @@ impl<E> DynamicBuffer<E> {
             return;
         }
         self.evict_to_fit(size);
-        self.size += size;
+        self.size = self.size.wrapping_add(size);
         self.entries.push((entry, size));
     }
 
@@ -60,13 +58,15 @@ impl<E> DynamicBuffer<E> {
     }
 
     fn evict_to_fit(&mut self, incoming: usize) {
-        while self.size + incoming > self.max_size {
-            let Some((_, size)) = self.entries.get(self.start) else {
-                self.clear();
-                return;
-            };
-            self.size -= size;
-            self.start += 1;
+        debug_assert!(incoming <= self.max_size);
+        let available = self.max_size.wrapping_sub(incoming);
+        while self.size > available {
+            let (_, size) = self
+                .entries
+                .get(self.start)
+                .expect("retained size belongs to live entries");
+            self.size = self.size.wrapping_sub(*size);
+            self.start = self.start.wrapping_add(1);
         }
         self.compact();
     }
@@ -80,7 +80,7 @@ impl<E> DynamicBuffer<E> {
             self.start = 0;
             return;
         }
-        if self.start >= 32 && self.start * 2 >= self.entries.len() {
+        if self.start >= 32 && self.start >= self.live().len() {
             self.entries.drain(..self.start);
             self.start = 0;
         }

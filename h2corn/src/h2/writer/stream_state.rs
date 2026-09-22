@@ -369,7 +369,7 @@ impl BodyItem {
 
 impl PendingChunk {
     pub(super) fn remaining_len(&self) -> usize {
-        self.len() - self.offset
+        self.len().wrapping_sub(self.offset)
     }
 
     fn len(&self) -> usize {
@@ -380,35 +380,28 @@ impl PendingChunk {
     }
 
     pub(super) fn remaining_slices(&self, additional_offset: usize, len: usize) -> (&[u8], &[u8]) {
-        let offset = self.offset + additional_offset;
-        match &self.data {
-            PendingChunkData::Plain(bytes) => (
-                bytes.as_ref().get(offset..offset + len).unwrap_or_default(),
-                &[],
-            ),
-            PendingChunkData::WebSocket(data) => {
-                let header = data.header();
-                if offset >= header.len() {
-                    let payload_offset = offset - header.len();
-                    return (
-                        data.payload()
-                            .get(payload_offset..payload_offset + len)
-                            .unwrap_or_default(),
-                        &[],
-                    );
-                }
-                let header_len = len.min(header.len() - offset);
-                let payload_len = len - header_len;
-                (
-                    header.get(offset..offset + header_len).unwrap_or_default(),
-                    data.payload().get(..payload_len).unwrap_or_default(),
-                )
-            },
+        let offset = self.offset.wrapping_add(additional_offset);
+        let (first, second): (&[u8], &[u8]) = match &self.data {
+            PendingChunkData::Plain(bytes) => (bytes.as_ref(), &[]),
+            PendingChunkData::WebSocket(data) => (data.header(), data.payload()),
+        };
+        if offset >= first.len() {
+            let remaining = second
+                .get(offset.wrapping_sub(first.len())..)
+                .expect("chunk offset fits its two buffers");
+            return (remaining.split_at(len).0, &[]);
         }
+        let remaining = first.get(offset..).expect("offset is inside first buffer");
+        let first_len = len.min(remaining.len());
+        (
+            remaining.split_at(first_len).0,
+            second.split_at(len.wrapping_sub(first_len)).0,
+        )
     }
 
     pub(super) fn consume(&mut self, len: usize) {
-        self.offset += len;
+        debug_assert!(len <= self.remaining_len());
+        self.offset = self.offset.wrapping_add(len);
         if let Some(credit) = &mut self.credit {
             credit.release_written(len);
         }

@@ -69,7 +69,13 @@ impl RequestInputShared {
     }
 
     pub(super) fn begin_wait(self: &Arc<Self>) -> HttpReceiveWaitGuard {
-        let ticket = self.started.fetch_add(1, Ordering::AcqRel) + 1;
+        let previous = self
+            .started
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |started| {
+                started.checked_add(1)
+            })
+            .expect("HTTP receive generation space exhausted");
+        let ticket = previous.wrapping_add(1);
         HttpReceiveWaitGuard {
             signal: Arc::clone(self),
             ticket,
@@ -253,6 +259,7 @@ impl PyHttpReceive {
 mod tests {
     use std::num::NonZeroU32;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering;
 
     use bytes::{Bytes, BytesMut};
     use tokio::sync::mpsc;
@@ -262,6 +269,20 @@ mod tests {
     };
     use crate::h2_frame::{ErrorCode, StreamId};
     use crate::runtime::{H2InputCreditQueue, StreamInput};
+
+    #[test]
+    fn receive_generation_exhaustion_does_not_wrap_ordering() {
+        let signal = Arc::new(RequestInputShared::default());
+        signal.started.store(u64::MAX, Ordering::Relaxed);
+        signal.queued.store(u64::MAX, Ordering::Relaxed);
+
+        let result = std::panic::catch_unwind(|| signal.begin_wait());
+
+        assert!(result.is_err());
+        assert_eq!(signal.started.load(Ordering::Relaxed), u64::MAX);
+        assert_eq!(signal.queued.load(Ordering::Relaxed), u64::MAX);
+        assert!(signal.pending_resolution().is_none());
+    }
 
     #[test]
     fn buffered_h2_input_maps_without_releasing_credit_early() {

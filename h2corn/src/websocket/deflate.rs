@@ -77,22 +77,23 @@ impl MessageDeflater {
 
         self.compressor.reset();
         self.out.clear();
-        self.out.reserve(payload.len() + FLATE_INITIAL_GROWTH_SLACK);
+        self.out
+            .reserve(payload.len().saturating_add(FLATE_INITIAL_GROWTH_SLACK));
 
         loop {
             let before = self.compressor.total_out();
             let status = self.compressor.compress_uninit(
                 payload
                     .get(self.compressor.total_in() as usize..)
-                    .unwrap_or_default(),
+                    .expect("compressor consumes only supplied payload"),
                 self.out.spare_capacity_mut(),
                 FlushCompress::Sync,
             )?;
-            let written = (self.compressor.total_out() - before) as usize;
+            let written = self.compressor.total_out().wrapping_sub(before) as usize;
             // SAFETY: `compress_uninit` writes exactly `written` initialized
             // bytes into the spare capacity returned by `BytesMut`.
             unsafe {
-                self.out.set_len(self.out.len() + written);
+                self.out.set_len(self.out.len().wrapping_add(written));
             }
             if self.compressor.total_in() as usize == payload.len() && status != Status::BufError {
                 break;
@@ -101,7 +102,7 @@ impl MessageDeflater {
         }
 
         if self.out.ends_with(TAIL) {
-            self.out.truncate(self.out.len() - TAIL.len());
+            self.out.truncate(self.out.len().wrapping_sub(TAIL.len()));
         }
         if self.out.len() >= payload.len() {
             return Ok(None);
@@ -169,18 +170,20 @@ impl MessageInflater {
                     flush,
                 )
                 .map_err(|_| WebSocketProtocolError::InvalidCompressedPayload)?;
-            let written = (self.decoder.total_out() - before) as usize;
+            let written = self.decoder.total_out().wrapping_sub(before) as usize;
             // SAFETY: `decompress_uninit` writes exactly `written`
             // initialized bytes into the spare capacity returned by
             // `BytesMut`.
             unsafe {
-                self.out.set_len(self.out.len() + written);
+                self.out.set_len(self.out.len().wrapping_add(written));
             }
             if max_message_size.is_some_and(|limit| self.out.len() > limit) {
                 return Err(WebSocketProtocolError::MessageTooLarge);
             }
-            let consumed = (self.decoder.total_in() - consumed_before) as usize;
-            *input = input.get(consumed..).unwrap_or_default();
+            let consumed = self.decoder.total_in().wrapping_sub(consumed_before) as usize;
+            *input = input
+                .get(consumed..)
+                .expect("decompressor consumes only supplied input");
             if input.is_empty() || status == Status::StreamEnd {
                 return Ok(status);
             }
@@ -301,12 +304,11 @@ impl ExtensionParameterValue<'_> {
 /// Select only an offer the server can actually honor. Invalid offers are not
 /// protocol errors: RFC 7692 lets a server decline one and select a later
 /// valid offer from the same header value.
-pub(crate) fn offers_compatible_permessage_deflate(value: &[u8]) -> bool {
-    let mut index = 0;
-    'offers: while index < value.len() {
-        skip_bws(value, &mut index);
-        let Some(name) = read_token(value, &mut index) else {
-            if !skip_malformed_offer(value, &mut index) {
+pub(crate) fn offers_compatible_permessage_deflate(mut value: &[u8]) -> bool {
+    'offers: while !value.is_empty() {
+        skip_bws(&mut value);
+        let Some(name) = read_token(&mut value) else {
+            if !skip_malformed_offer(&mut value) {
                 return false;
             }
             continue;
@@ -316,36 +318,35 @@ pub(crate) fn offers_compatible_permessage_deflate(value: &[u8]) -> bool {
         let mut seen = 0_u8;
 
         loop {
-            skip_bws(value, &mut index);
-            match value.get(index) {
-                Some(b';') => index += 1,
+            skip_bws(&mut value);
+            match value.first() {
+                Some(b';') => value = value.strip_prefix(b";").expect("semicolon prefix"),
                 Some(b',') | None => break,
                 _ => {
-                    if !skip_malformed_offer(value, &mut index) {
+                    if !skip_malformed_offer(&mut value) {
                         return false;
                     }
                     continue 'offers;
                 },
             }
-            skip_bws(value, &mut index);
-            let Some(parameter) = read_token(value, &mut index) else {
-                if !skip_malformed_offer(value, &mut index) {
+            skip_bws(&mut value);
+            let Some(parameter) = read_token(&mut value) else {
+                if !skip_malformed_offer(&mut value) {
                     return false;
                 }
                 continue 'offers;
             };
-            skip_bws(value, &mut index);
-            let has_value = value.get(index) == Some(&b'=');
-            let parameter_value = if has_value {
-                index += 1;
-                skip_bws(value, &mut index);
-                let parsed_value = if value.get(index) == Some(&b'"') {
-                    read_quoted_string(value, &mut index).map(ExtensionParameterValue::Quoted)
+            skip_bws(&mut value);
+            let parameter_value = if let Some(rest) = value.strip_prefix(b"=") {
+                value = rest;
+                skip_bws(&mut value);
+                let parsed_value = if value.first() == Some(&b'"') {
+                    read_quoted_string(&mut value).map(ExtensionParameterValue::Quoted)
                 } else {
-                    read_token(value, &mut index).map(ExtensionParameterValue::Token)
+                    read_token(&mut value).map(ExtensionParameterValue::Token)
                 };
                 let Some(parsed_value) = parsed_value else {
-                    if !skip_malformed_offer(value, &mut index) {
+                    if !skip_malformed_offer(&mut value) {
                         return false;
                     }
                     continue 'offers;
@@ -377,8 +378,8 @@ pub(crate) fn offers_compatible_permessage_deflate(value: &[u8]) -> bool {
         if target && compatible {
             return true;
         }
-        if value.get(index) == Some(&b',') {
-            index += 1;
+        if let Some(rest) = value.strip_prefix(b",") {
+            value = rest;
             continue;
         }
         return false;
@@ -392,26 +393,24 @@ fn valid_window_bits(value: ExtensionParameterValue<'_>) -> bool {
 
 fn quoted_window_bits_are_valid(value: &[u8]) -> bool {
     let mut unescaped = [0; 2];
-    let mut length = 0;
-    let mut index = 0;
-    while let Some(&byte) = value.get(index) {
-        index += 1;
+    let mut output = unescaped.iter_mut();
+    let mut input = value.iter().copied();
+    while let Some(byte) = input.next() {
         let byte = if byte == b'\\' {
-            let Some(&escaped) = value.get(index) else {
+            let Some(escaped) = input.next() else {
                 return false;
             };
-            index += 1;
             escaped
         } else {
             byte
         };
-        let Some(slot) = unescaped.get_mut(length) else {
+        let Some(slot) = output.next() else {
             return false;
         };
         *slot = byte;
-        length += 1;
     }
-    window_bits_are_valid(unescaped.get(..length).unwrap_or_default())
+    let length = 2_usize.wrapping_sub(output.len());
+    window_bits_are_valid(unescaped.split_at(length).0)
 }
 
 const fn window_bits_are_valid(value: &[u8]) -> bool {
@@ -422,9 +421,9 @@ const fn window_bits_are_valid(value: &[u8]) -> bool {
 ///
 /// The enclosing header value is an extension list; once one member cannot
 /// be parsed, discard that member and resume at the next list delimiter.
-fn skip_malformed_offer(value: &[u8], index: &mut usize) -> bool {
-    while let Some(&byte) = value.get(*index) {
-        *index += 1;
+const fn skip_malformed_offer(value: &mut &[u8]) -> bool {
+    while let Some((&byte, rest)) = value.split_first() {
+        *value = rest;
         if byte == b',' {
             return true;
         }
@@ -432,39 +431,38 @@ fn skip_malformed_offer(value: &[u8], index: &mut usize) -> bool {
     false
 }
 
-fn skip_bws(value: &[u8], index: &mut usize) {
-    while value
-        .get(*index)
-        .is_some_and(|byte| matches!(*byte, b' ' | b'\t'))
-    {
-        *index += 1;
-    }
+fn skip_bws(value: &mut &[u8]) {
+    let end = value
+        .iter()
+        .position(|byte| !matches!(*byte, b' ' | b'\t'))
+        .unwrap_or(value.len());
+    *value = value.split_at(end).1;
 }
 
-fn read_token<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
-    let start = *index;
-    while value
-        .get(*index)
-        .is_some_and(|byte| protocol_token_is_valid(&[*byte]))
-    {
-        *index += 1;
-    }
-    value.get(start..*index).filter(|token| !token.is_empty())
+fn read_token<'a>(value: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let end = value
+        .iter()
+        .position(|byte| !protocol_token_is_valid(&[*byte]))
+        .unwrap_or(value.len());
+    let (token, rest) = value.split_at(end);
+    *value = rest;
+    (!token.is_empty()).then_some(token)
 }
 
-fn read_quoted_string<'a>(value: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
-    let start = *index;
-    *index += 1;
-    while let Some(&byte) = value.get(*index) {
-        *index += 1;
+fn read_quoted_string<'a>(value: &mut &'a [u8]) -> Option<&'a [u8]> {
+    *value = value.strip_prefix(b"\"")?;
+    let content = *value;
+    while let Some((&byte, rest)) = value.split_first() {
+        let consumed = content.len().wrapping_sub(value.len());
+        *value = rest;
         match byte {
-            b'\"' => return value.get(start + 1..*index - 1),
+            b'\"' => return Some(content.split_at(consumed).0),
             b'\\' => {
-                let escaped = *value.get(*index)?;
+                let (&escaped, rest) = value.split_first()?;
                 if escaped.is_ascii_control() || escaped == 0x7F {
                     return None;
                 }
-                *index += 1;
+                *value = rest;
             },
             byte if byte.is_ascii_control() || byte == 0x7F => return None,
             _ => {},
@@ -524,7 +522,7 @@ mod tests {
     fn compressed_zeroes(len: usize) -> Vec<u8> {
         let mut compressor = Compress::new(Compression::default(), false);
         let source = vec![0_u8; len];
-        let mut out = vec![0_u8; len / 8 + 1024];
+        let mut out = vec![0_u8; (len / 8).saturating_add(1024)];
         let status = compressor
             .compress(&source, &mut out, FlushCompress::Sync)
             .expect("zeroes compress");

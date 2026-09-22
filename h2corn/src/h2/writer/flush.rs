@@ -87,26 +87,15 @@ struct FrameBatch<'a> {
 }
 
 impl<'a> FrameBatch<'a> {
-    fn push(&mut self, header: [u8; FRAME_HEADER_LEN], payload: &'a [u8]) {
-        self.headers.push(header);
-        if payload.is_empty() {
-            self.payload_counts.push(0);
-        } else {
-            self.payloads.push(payload);
-            self.payload_counts.push(1);
-        }
-    }
-
     fn push_pair(&mut self, header: [u8; FRAME_HEADER_LEN], first: &'a [u8], second: &'a [u8]) {
         self.headers.push(header);
-        let mut count = 0;
-        if !first.is_empty() {
-            self.payloads.push(first);
-            count += 1;
-        }
-        if !second.is_empty() {
-            self.payloads.push(second);
-            count += 1;
+        let mut count = 0_u8;
+        for payload in [first, second]
+            .into_iter()
+            .filter(|payload| !payload.is_empty())
+        {
+            self.payloads.push(payload);
+            count = count.wrapping_add(1);
         }
         self.payload_counts.push(count);
     }
@@ -119,13 +108,20 @@ pub(crate) enum FlushPassResult {
 }
 
 impl<W> FlushBodyParts<'_, W> {
+    fn consume_send_window(&mut self, stream: &mut StreamWriteState, bytes: usize) {
+        let bytes = i32::try_from(bytes)
+            .expect("one fair-write batch fits the signed 31-bit stream-window domain");
+        *self.connection_send_window = self.connection_send_window.wrapping_sub(i64::from(bytes));
+        stream.send_window = stream.send_window.wrapping_sub(bytes);
+    }
+
     const fn next_body_write_len(
         &mut self,
         limit: FramePayloadLen,
         remaining_len: usize,
     ) -> FramePayloadLen {
         let chunk_len = limit.min_usize(remaining_len).min_usize(self.stream_budget);
-        self.stream_budget -= chunk_len.as_usize();
+        self.stream_budget = self.stream_budget.wrapping_sub(chunk_len.as_usize());
         chunk_len
     }
 
@@ -260,9 +256,7 @@ where
     };
 
     if total != 0 || drained_segments != 0 {
-        *context.connection_send_window -= total as i64;
-        stream.send_window -= i32::try_from(total)
-            .expect("one fair-write batch fits the signed 31-bit stream-window domain");
+        context.consume_send_window(stream, total);
         // Only buffered chunks reach the batch, so every drained segment it
         // reports is one — a file segment stopped the collector before it.
         for _ in 0..drained_segments {
@@ -373,9 +367,7 @@ where
         };
 
         if total != 0 {
-            *context.connection_send_window -= total as i64;
-            stream.send_window -= i32::try_from(total)
-                .expect("one fair-write batch fits the signed 31-bit stream-window domain");
+            context.consume_send_window(stream, total);
             streamer.consume(total);
             stream.note_body_progress(context.now);
         }
@@ -451,10 +443,7 @@ where
     }
     drop(sendfile);
 
-    let chunk_len = i64::from(chunk_len.get());
-    *context.connection_send_window -= chunk_len;
-    stream.send_window -= i32::try_from(chunk_len)
-        .expect("one sendfile frame fits the signed 31-bit stream-window domain");
+    context.consume_send_window(stream, chunk_len.as_usize());
     stream.note_body_progress(context.now);
 
     if end_stream {
@@ -508,48 +497,56 @@ fn collect_data_frames<'a, W>(
     };
     'segments: for (segment, may_end) in segments {
         if segment.is_empty() {
-            batch.push(
+            batch.push_pair(
                 data_frame_header(FramePayloadLen::ZERO, may_end, stream_id),
                 &[],
+                &[],
             );
-            batch.drained_segments += 1;
+            batch.drained_segments = batch.drained_segments.wrapping_add(1);
             if may_end {
                 batch.ended_stream = true;
                 break;
             }
             continue;
         }
-        let mut pos = 0;
+        let mut pos = 0_usize;
         loop {
-            if *context.connection_send_window - batch.total as i64 <= 0 {
+            let connection_remaining = context
+                .connection_send_window
+                .wrapping_sub(batch.total as i64);
+            if connection_remaining <= 0 {
                 batch.connection_blocked = true;
                 batch.tail_consumed = pos;
                 break 'segments;
             }
             let Some(limit) = send_limit(
-                *context.connection_send_window - batch.total as i64,
-                i64::from(stream.send_window) - batch.total as i64,
+                connection_remaining,
+                i64::from(stream.send_window).wrapping_sub(batch.total as i64),
                 context.data_frame_size,
             ) else {
                 batch.tail_consumed = pos;
                 break 'segments;
             };
-            let chunk_len = context.next_body_write_len(limit, segment.len() - pos);
+            let chunk_len = context.next_body_write_len(limit, segment.len().wrapping_sub(pos));
             let chunk = chunk_len.as_usize();
-            let end_stream = may_end && pos + chunk == segment.len();
-            batch.push(
+            let end = pos.wrapping_add(chunk);
+            let end_stream = may_end && end == segment.len();
+            batch.push_pair(
                 data_frame_header(chunk_len, end_stream, stream_id),
-                segment.get(pos..pos + chunk).unwrap_or_default(),
+                segment
+                    .get(pos..end)
+                    .expect("frame chunk fits remaining segment"),
+                &[],
             );
-            batch.total += chunk;
-            pos += chunk;
+            batch.total = batch.total.wrapping_add(chunk);
+            pos = end;
             if end_stream {
-                batch.drained_segments += 1;
+                batch.drained_segments = batch.drained_segments.wrapping_add(1);
                 batch.ended_stream = true;
                 break 'segments;
             }
             if pos == segment.len() {
-                batch.drained_segments += 1;
+                batch.drained_segments = batch.drained_segments.wrapping_add(1);
                 if context.budget_exhausted() {
                     break 'segments;
                 }
@@ -587,11 +584,12 @@ fn collect_chunk_data_frames<'a, W>(
     'chunks: for chunk in chunks {
         let remaining_len = chunk.remaining_len();
         if remaining_len == 0 {
-            batch.push(
+            batch.push_pair(
                 data_frame_header(FramePayloadLen::ZERO, chunk.end_stream, stream_id),
                 &[],
+                &[],
             );
-            batch.drained_segments += 1;
+            batch.drained_segments = batch.drained_segments.wrapping_add(1);
             if chunk.end_stream {
                 batch.ended_stream = true;
                 break;
@@ -599,39 +597,43 @@ fn collect_chunk_data_frames<'a, W>(
             continue;
         }
 
-        let mut pos = 0;
+        let mut pos = 0_usize;
         loop {
-            if *context.connection_send_window - batch.total as i64 <= 0 {
+            let connection_remaining = context
+                .connection_send_window
+                .wrapping_sub(batch.total as i64);
+            if connection_remaining <= 0 {
                 batch.connection_blocked = true;
                 batch.tail_consumed = pos;
                 break 'chunks;
             }
             let Some(limit) = send_limit(
-                *context.connection_send_window - batch.total as i64,
-                i64::from(stream.send_window) - batch.total as i64,
+                connection_remaining,
+                i64::from(stream.send_window).wrapping_sub(batch.total as i64),
                 context.data_frame_size,
             ) else {
                 batch.tail_consumed = pos;
                 break 'chunks;
             };
-            let chunk_len = context.next_body_write_len(limit, remaining_len - pos);
+            let chunk_len = context.next_body_write_len(limit, remaining_len.wrapping_sub(pos));
             let taken = chunk_len.as_usize();
-            let end_stream = chunk.end_stream && pos + taken == remaining_len;
+            let end = pos.wrapping_add(taken);
+            let end_stream = chunk.end_stream && end == remaining_len;
             let (first, second) = chunk.remaining_slices(pos, taken);
             batch.push_pair(
                 data_frame_header(chunk_len, end_stream, stream_id),
                 first,
                 second,
             );
-            batch.total += taken;
-            pos += taken;
+            batch.total = batch.total.wrapping_add(taken);
+            pos = end;
             if end_stream {
-                batch.drained_segments += 1;
+                batch.drained_segments = batch.drained_segments.wrapping_add(1);
                 batch.ended_stream = true;
                 break 'chunks;
             }
             if pos == remaining_len {
-                batch.drained_segments += 1;
+                batch.drained_segments = batch.drained_segments.wrapping_add(1);
                 if context.budget_exhausted() {
                     break 'chunks;
                 }
@@ -658,19 +660,18 @@ where
     W: AsyncWrite + Unpin,
 {
     writer.flush().await?;
-    let mut slices: SmallVec<[io::IoSlice<'_>; 18]> = SmallVec::new();
-    let mut payload_index = 0;
+    let mut slices: SmallVec<[io::IoSlice<'_>; 18]> =
+        SmallVec::with_capacity(headers.len().saturating_add(payloads.len()));
+    let mut remaining = payloads;
     for (header, payload_count) in headers.iter().zip(payload_counts) {
         slices.push(io::IoSlice::new(header));
-        let span = payloads
-            .get(payload_index..payload_index + usize::from(*payload_count))
-            .unwrap_or_default();
+        let (span, rest) = remaining.split_at(usize::from(*payload_count));
+        remaining = rest;
         for payload in span {
             slices.push(io::IoSlice::new(payload));
         }
-        payload_index += usize::from(*payload_count);
     }
-    debug_assert_eq!(payload_index, payloads.len());
+    debug_assert!(remaining.is_empty());
     crate::async_util::write_all_vectored(writer.get_mut(), slices.as_mut_slice()).await?;
     Ok(())
 }
@@ -691,11 +692,10 @@ where
     let mut result = FlushPassResult::Continue;
     let data_frame_size = outbound_data_frame_size(peer_max_frame_size);
 
-    let mut ready_turns = ready_streams.len();
+    let ready_turns = ready_streams.len();
     let now = Instant::now();
 
-    while ready_turns > 0 {
-        ready_turns -= 1;
+    for _ in 0..ready_turns {
         let Some(stream_id) = ready_streams.pop_scheduled(streams) else {
             break;
         };
@@ -916,56 +916,33 @@ mod tests {
     }
 
     fn parse_data_stream_ids(bytes: &[u8]) -> Vec<u32> {
-        let mut cursor = 0;
-        let mut stream_ids = Vec::new();
-
-        while cursor + 9 <= bytes.len() {
-            let len = ((bytes[cursor] as usize) << 16)
-                | ((bytes[cursor + 1] as usize) << 8)
-                | bytes[cursor + 2] as usize;
-            let frame_type = bytes[cursor + 3];
-            let stream_id = u32::from_be_bytes([
-                bytes[cursor + 5],
-                bytes[cursor + 6],
-                bytes[cursor + 7],
-                bytes[cursor + 8],
-            ]) & h2_frame::STREAM_ID_MASK;
-
-            if frame_type == 0 {
-                stream_ids.push(stream_id);
-            }
-
-            cursor += 9 + len;
-        }
-
-        stream_ids
+        data_frames(bytes)
+            .map(|(_, _, stream_id)| stream_id)
+            .collect()
     }
 
     fn parse_data_frames(bytes: &[u8]) -> Vec<(usize, u8, u32)> {
-        let mut cursor = 0;
-        let mut frames = Vec::new();
+        data_frames(bytes)
+            .map(|(payload, flags, stream_id)| (payload.len(), flags, stream_id))
+            .collect()
+    }
 
-        while cursor + 9 <= bytes.len() {
-            let len = ((bytes[cursor] as usize) << 16)
-                | ((bytes[cursor + 1] as usize) << 8)
-                | bytes[cursor + 2] as usize;
-            let frame_type = bytes[cursor + 3];
-            let flags = bytes[cursor + 4];
-            let stream_id = u32::from_be_bytes([
-                bytes[cursor + 5],
-                bytes[cursor + 6],
-                bytes[cursor + 7],
-                bytes[cursor + 8],
-            ]) & h2_frame::STREAM_ID_MASK;
-
-            if frame_type == 0 {
-                frames.push((len, flags, stream_id));
+    fn data_frames(mut bytes: &[u8]) -> impl Iterator<Item = (&[u8], u8, u32)> {
+        std::iter::from_fn(move || {
+            while !bytes.is_empty() {
+                let (&[a, b, c, kind, flags, s0, s1, s2, s3], rest) = bytes
+                    .split_first_chunk::<9>()
+                    .expect("complete HTTP/2 frame header");
+                let len = u32::from_be_bytes([0, a, b, c]) as usize;
+                let (payload, rest) = rest.split_at_checked(len).expect("complete HTTP/2 payload");
+                bytes = rest;
+                if kind == 0 {
+                    let stream_id = u32::from_be_bytes([s0, s1, s2, s3]) & h2_frame::STREAM_ID_MASK;
+                    return Some((payload, flags, stream_id));
+                }
             }
-
-            cursor += 9 + len;
-        }
-
-        frames
+            None
+        })
     }
 
     fn binary_websocket_frame(payload: &'static [u8]) -> WebSocketData {
@@ -1147,18 +1124,9 @@ mod tests {
 
     /// Reconstruct the concatenated DATA payload bytes for one stream.
     fn parse_data_payload(bytes: &[u8]) -> Vec<u8> {
-        let mut cursor = 0;
-        let mut payload = Vec::new();
-        while cursor + 9 <= bytes.len() {
-            let len = ((bytes[cursor] as usize) << 16)
-                | ((bytes[cursor + 1] as usize) << 8)
-                | bytes[cursor + 2] as usize;
-            if bytes[cursor + 3] == 0 {
-                payload.extend_from_slice(&bytes[cursor + 9..cursor + 9 + len]);
-            }
-            cursor += 9 + len;
-        }
-        payload
+        data_frames(bytes)
+            .flat_map(|(payload, ..)| payload.iter().copied())
+            .collect()
     }
 
     /// A multi-chunk streamed body is emitted as one cross-chunk frame batch:

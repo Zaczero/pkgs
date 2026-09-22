@@ -341,9 +341,9 @@ fn reference_compress_sha1_block(state: &mut [u32; 5], block: [u32; 16]) {
         let word = if index < 16 {
             words[index]
         } else {
-            let word = (words[(index + 13) & 15]
-                ^ words[(index + 8) & 15]
-                ^ words[(index + 2) & 15]
+            let word = (words[index.wrapping_add(13) & 15]
+                ^ words[index.wrapping_add(8) & 15]
+                ^ words[index.wrapping_add(2) & 15]
                 ^ words[index & 15])
                 .rotate_left(1);
             words[index & 15] = word;

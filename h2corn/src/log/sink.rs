@@ -152,7 +152,7 @@ pub(crate) fn write_line(line: &[u8]) {
     };
 
     let mut pending = sink.pending.lock();
-    if !pending.lines.is_empty() && pending.lines.len() + line.len() > CAPACITY {
+    if !pending.lines.is_empty() && line.len() > CAPACITY.saturating_sub(pending.lines.len()) {
         drop(pending);
         sink.dropped.fetch_add(1, Ordering::Relaxed);
         return;
@@ -174,7 +174,9 @@ pub(crate) fn flush(timeout: Duration) {
     let Some(sink) = SINK.get() else {
         return;
     };
-    let deadline = Instant::now() + timeout;
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .expect("log flush timeout fits monotonic clock");
     let mut pending = sink.pending.lock();
     while !pending.lines.is_empty() || pending.writing {
         if sink.drained.wait_until(&mut pending, deadline).timed_out() {

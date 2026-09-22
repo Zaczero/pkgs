@@ -83,7 +83,7 @@ const fn request_header_name_bytes_are_valid(name: &[u8]) -> bool {
         {
             return false;
         }
-        index += 1;
+        index = index.wrapping_add(1);
     }
     !name.is_empty()
 }
@@ -425,7 +425,9 @@ impl TryFrom<BytesStr> for ConnectAuthority {
             |rest| {
                 rest.iter()
                     .position(|byte| *byte == b']')
-                    .is_some_and(|close| matches!(rest.get(close + 1..), Some([b':', ..])))
+                    .is_some_and(|close| {
+                        matches!(rest.get(close.wrapping_add(1)..), Some([b':', ..]))
+                    })
             },
         );
         if request_authority_is_valid(value.as_ref()) && has_port {

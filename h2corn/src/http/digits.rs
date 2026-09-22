@@ -21,7 +21,7 @@ pub(crate) fn two_digit_bytes(value: usize) -> [u8; 2] {
 pub(crate) fn three_digit_bytes(value: u16) -> [u8; 3] {
     debug_assert!((100..=999).contains(&value));
     let suffix = two_digit_bytes(usize::from(value % 100));
-    [b'0' + (value / 100) as u8, suffix[0], suffix[1]]
+    [b'0'.wrapping_add((value / 100) as u8), suffix[0], suffix[1]]
 }
 
 #[cfg(test)]

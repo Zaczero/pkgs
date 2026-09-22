@@ -225,7 +225,8 @@ pub(crate) fn own_serve_fds(
     fds: Vec<i64>,
     quiesce_fd: Option<i64>,
 ) -> Result<(Box<[ListenerFd]>, Option<QuiesceFd>), OwnFdsError> {
-    let mut unique = HashSet::with_capacity(fds.len() + usize::from(quiesce_fd.is_some()));
+    let mut unique =
+        HashSet::with_capacity(fds.len().saturating_add(usize::from(quiesce_fd.is_some())));
     let mut validated = Vec::with_capacity(fds.len());
     for fd in fds {
         let fd = i32::try_from(fd)
@@ -554,14 +555,19 @@ async fn accept_one(
     start_index: usize,
 ) -> io::Result<(usize, AcceptedConnection)> {
     poll_fn(|cx| {
-        for offset in 0..listeners.len() {
-            let index = (start_index + offset) % listeners.len();
-            let Some(listener) = listeners.get(index) else {
-                continue;
-            };
+        for (index, listener) in listeners
+            .iter()
+            .enumerate()
+            .skip(start_index)
+            .chain(listeners.iter().enumerate().take(start_index))
+        {
             match listener.poll_accept_item(cx) {
                 Poll::Ready(Ok(connection)) => {
-                    return Poll::Ready(Ok(((index + 1) % listeners.len(), connection)));
+                    let next = index.wrapping_add(1);
+                    return Poll::Ready(Ok((
+                        if next == listeners.len() { 0 } else { next },
+                        connection,
+                    )));
                 },
                 Poll::Ready(Err(err)) => return Poll::Ready(Err(err)),
                 Poll::Pending => {},

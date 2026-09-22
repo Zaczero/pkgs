@@ -51,7 +51,7 @@ impl<T, const N: usize> InlineFifo<T, N> {
 
     pub(crate) fn len(&self) -> usize {
         debug_assert!(self.front <= self.items.len());
-        self.items.len() - self.front
+        self.items.len().wrapping_sub(self.front)
     }
 
     pub(crate) fn front(&self) -> Option<&T> {
@@ -130,7 +130,7 @@ impl<T, const N: usize> InlineFifo<T, N> {
 
     fn advance_front(&mut self) {
         debug_assert!(!self.is_empty());
-        self.front += 1;
+        self.front = self.front.wrapping_add(1);
         if self.is_empty() {
             // Every slot has either been moved out or was already consumed.
             // Clearing MaybeUninit resets storage without running T's drop
@@ -244,7 +244,7 @@ mod tests {
                     0 => {
                         queue.push_back(next);
                         model.push_back(next);
-                        next += 1;
+                        next = next.wrapping_add(1);
                     },
                     1 => assert_eq!(queue.pop_front(), model.pop_front()),
                     2 => {

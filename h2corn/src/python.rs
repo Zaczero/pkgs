@@ -472,7 +472,7 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
         // SAFETY: `len <= I < N` by the macro contract and const assertion.
         unsafe { self.items.get_unchecked_mut(self.len) }.write(PendingDictItem { key, value });
         // Publish the new live prefix only after initialization completes.
-        self.len += 1;
+        self.len = self.len.wrapping_add(1);
     }
 
     pub(crate) const fn py(&self) -> Python<'py> {
@@ -490,7 +490,7 @@ impl<'py, const N: usize> PyDictScratch<'py, N> {
 impl<const N: usize> Drop for PyDictScratch<'_, N> {
     fn drop(&mut self) {
         while self.len != 0 {
-            self.len -= 1;
+            self.len = self.len.wrapping_sub(1);
             // SAFETY: `0..len` is exactly the initialized prefix. Decrementing
             // first ensures a panicking item destructor cannot be visited a
             // second time if cleanup resumes.
