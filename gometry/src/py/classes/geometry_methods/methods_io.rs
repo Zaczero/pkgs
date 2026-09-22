@@ -211,19 +211,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
             "x" | "X" => {
                 let shape = std::sync::Arc::clone(&self.shape);
                 let wkb = py.detach(move || io::to_wkb(shape.shape(), None, false))?;
-                let Some(capacity) = wkb.len().checked_mul(2) else {
-                    drop(wkb);
-                    return Err(errors::native_overflow_error(
-                        "hexadecimal WKB output size overflows usize",
-                    ));
-                };
-                if capacity > isize::MAX as usize {
-                    drop(wkb);
-                    return Err(errors::native_overflow_error(
-                        "hexadecimal WKB output exceeds String capacity",
-                    ));
-                }
-                let mut out = String::with_capacity(capacity);
+                let mut out = String::with_capacity(wkb.len().wrapping_mul(2));
                 for byte in wkb {
                     if spec == "x" {
                         write!(out, "{byte:02x}")

@@ -44,19 +44,9 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     crate::io::require_serializable_axes(shape)?;
     let prepared = geojson_output_shape(shape, domain)?;
     // Three zmij-formatted ordinates and their delimiters fit within 80 bytes.
-    let coordinate_bytes = prepared
-        .coord_count()
-        .checked_mul(80)
-        .ok_or_else(|| IoError::geojson("GeoJSON coordinate byte length overflows usize"))?;
-    let structural_bytes = text_structure_count(&prepared)
-        .and_then(|count| count.checked_mul(128))
-        .ok_or_else(|| IoError::geojson("GeoJSON structural byte length overflows usize"))?;
-    let capacity = coordinate_bytes
-        .checked_add(structural_bytes)
-        .ok_or_else(|| IoError::geojson("GeoJSON output length overflows usize"))?;
-    if capacity > isize::MAX as usize {
-        return Err(IoError::geojson("GeoJSON output exceeds String capacity"));
-    }
+    let coordinate_bytes = prepared.coord_count().wrapping_mul(80);
+    let structural_bytes = text_structure_count(&prepared).wrapping_mul(128);
+    let capacity = coordinate_bytes.wrapping_add(structural_bytes);
     let mut out = String::with_capacity(capacity);
     write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
     Ok(out)

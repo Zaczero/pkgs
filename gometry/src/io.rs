@@ -194,21 +194,23 @@ pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
 }
 
 /// Bracketed containers in a text encoding of `shape`: one for the geometry
-/// and one per member, ring, or nested geometry. `None` on overflow.
-pub(crate) fn text_structure_count(shape: &Shape) -> Option<usize> {
+/// and one per member, ring, or nested geometry.
+pub(crate) fn text_structure_count(shape: &Shape) -> usize {
     match shape {
-        Shape::MultiPoint(points) => points.member_count().checked_add(1),
-        Shape::MultiLineString(lines) => lines.member_count().checked_add(1),
-        Shape::Polygon(polygon) => polygon.holes.len().checked_add(1),
-        Shape::MultiPolygon(polygons) => polygons.iter().try_fold(1_usize, |total, polygon| {
-            total.checked_add(polygon.holes.len().checked_add(1)?)
-        }),
+        Shape::MultiPoint(points) => points.member_count().wrapping_add(1),
+        Shape::MultiLineString(lines) => lines.member_count().wrapping_add(1),
+        Shape::Polygon(polygon) => polygon.holes.len().wrapping_add(2),
+        Shape::MultiPolygon(polygons) => polygons
+            .iter()
+            .fold(polygons.member_count().wrapping_add(1), |total, polygon| {
+                total.wrapping_add(polygon.holes.len().wrapping_add(1))
+            }),
         Shape::GeometryCollection(geometries) => {
-            geometries.iter().try_fold(1_usize, |total, geometry| {
-                total.checked_add(text_structure_count(geometry)?)
+            geometries.iter().fold(1_usize, |total, geometry| {
+                total.wrapping_add(text_structure_count(geometry))
             })
         },
-        _ => Some(1),
+        Shape::Point(_) | Shape::LineString(_) | Shape::Empty(..) => 1,
     }
 }
 

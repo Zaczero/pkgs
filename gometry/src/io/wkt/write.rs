@@ -26,13 +26,7 @@ pub(crate) fn to_wkt_with_dimension(
     let body = format_wkt(shape, output_dimension, WktNumberFormat::Shortest)?;
     match wkt_srid_prefix(crs, include_srid)? {
         Some(prefix) => {
-            let length = prefix
-                .len()
-                .checked_add(body.len())
-                .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
-            if length > isize::MAX as usize {
-                return Err(IoError::wkt("WKT output exceeds String capacity"));
-            }
+            let length = prefix.len().wrapping_add(body.len());
             let mut output = String::with_capacity(length);
             output.push_str(&prefix);
             output.push_str(&body);
@@ -129,19 +123,9 @@ fn format_wkt(
         WktNumberFormat::Shortest => 1344,
         WktNumberFormat::Fixed(_) | WktNumberFormat::Trimmed(_) => 2304,
     };
-    let coordinate_bytes = shape
-        .coord_count()
-        .checked_mul(coordinate_bytes_per_coord)
-        .ok_or_else(|| IoError::wkt("WKT coordinate byte length overflows usize"))?;
-    let structural_bytes = text_structure_count(shape)
-        .and_then(|count| count.checked_mul(128))
-        .ok_or_else(|| IoError::wkt("WKT structural byte length overflows usize"))?;
-    let capacity = coordinate_bytes
-        .checked_add(structural_bytes)
-        .ok_or_else(|| IoError::wkt("WKT output length overflows usize"))?;
-    if capacity > isize::MAX as usize {
-        return Err(IoError::wkt("WKT output exceeds String capacity"));
-    }
+    let coordinate_bytes = shape.coord_count().wrapping_mul(coordinate_bytes_per_coord);
+    let structural_bytes = text_structure_count(shape).wrapping_mul(128);
+    let capacity = coordinate_bytes.wrapping_add(structural_bytes);
     let mut out = String::with_capacity(capacity);
     write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
     Ok(out)
@@ -153,12 +137,7 @@ fn format_wkt(
 /// error messages) that truncate anyway — a huge geometry pays for ~`limit`
 /// bytes, not its whole WKT.
 pub(crate) fn to_wkt_preview(shape: &Shape, limit: usize) -> Result<String> {
-    let capacity = limit
-        .checked_add(4096)
-        .ok_or_else(|| IoError::wkt("WKT preview length overflows usize"))?;
-    if capacity > isize::MAX as usize {
-        return Err(IoError::wkt("WKT preview exceeds String capacity"));
-    }
+    let capacity = limit.wrapping_add(4096);
     let mut out = String::with_capacity(capacity);
     write_wkt(&mut out, shape, None, WktNumberFormat::Shortest, limit)?;
     Ok(out)

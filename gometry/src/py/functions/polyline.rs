@@ -176,17 +176,8 @@ fn python_char_repr(byte: u8) -> String {
 
 /// Double-quoted string with Python-style `\xNN` for non-printables, matching
 /// sibling codec messages that echo the offending input.
-fn python_str_repr(value: &str) -> PyResult<String> {
-    let capacity = value
-        .len()
-        .checked_mul(4)
-        .and_then(|length| length.checked_add(2))
-        .ok_or_else(|| errors::native_overflow_error("polyline error text size overflows usize"))?;
-    if capacity > isize::MAX as usize {
-        return Err(errors::native_overflow_error(
-            "polyline error text exceeds String capacity",
-        ));
-    }
+fn python_str_repr(value: &str) -> String {
+    let capacity = value.len().wrapping_mul(4).wrapping_add(2);
     let mut out = String::with_capacity(capacity);
     out.push('"');
     for byte in value.bytes() {
@@ -204,7 +195,7 @@ fn python_str_repr(value: &str) -> PyResult<String> {
         }
     }
     out.push('"');
-    Ok(out)
+    out
 }
 
 /// One zig-zag value from the byte stream; `None` at clean end-of-input.
@@ -228,7 +219,7 @@ fn decode_value(bytes: &mut std::str::Bytes<'_>, source: &str) -> PyResult<Optio
             return Err(ParseError::new_err(format!(
                 "invalid polyline character {} in {}",
                 python_char_repr(byte),
-                python_str_repr(source)?,
+                python_str_repr(source),
             )));
         };
         bits |= i64::from(chunk & 0x1F) << shift;
