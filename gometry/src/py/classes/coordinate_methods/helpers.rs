@@ -3,8 +3,8 @@ use pyo3::types::PyTuple;
 
 use crate::broadcast::{GeometryInput, classify_required};
 use crate::py::classes::coordinate_methods::{
-    Arc, CoordSeq, CoordinateAxes, CoordinateAxis, Point, PyCoordinates, PyGeometryArray,
-    coordinates, point_tuple,
+    Arc, CoordinateAxes, CoordinateAxis, Point, PyCoordinates, PyGeometryArray, coordinates,
+    point_tuple,
 };
 use crate::py::errors::parameter_error;
 use crate::py::numpy::{
@@ -55,48 +55,54 @@ pub(crate) fn coordinate_ordinate(point: Point, axis: CoordinateAxis) -> Option<
     }
 }
 
-/// Row-major `(rows, dims)` interleave from one contiguous [`CoordSeq`].
-pub(crate) fn interleave_coordseq_ordered(
-    seq: &CoordSeq,
-    order: &[CoordinateAxis],
+/// Materialize a row-major matrix, interleaving contiguous columns directly.
+pub(crate) fn coordinate_matrix_data(
+    view: &coordinates::CoordinateView,
+    axes: CoordinateAxes,
     missing: f64,
-) -> PyResult<Vec<f64>> {
-    let rows = seq.len();
-    let dims = order.len();
-    let count = rows.checked_mul(dims).ok_or_else(|| {
-        pyo3::exceptions::PyOverflowError::new_err("coordinate matrix size overflows usize")
-    })?;
-    let mut data = crate::try_vec_with_capacity(count)?;
-    data.resize(count, 0.0);
+) -> Vec<f64> {
+    let (order, dims) = coordinate_axis_order(axes);
+    let order = &order[..dims];
+    let rows = view.len();
+    let count = rows.wrapping_mul(dims);
+    let Some(seq) = view.single_seq().filter(|seq| seq.len() == rows) else {
+        let mut data = Vec::with_capacity(count);
+        view.for_each_point(|coord| {
+            data.extend(
+                order
+                    .iter()
+                    .map(|&axis| coordinate_ordinate(coord, axis).unwrap_or(missing)),
+            );
+        });
+        return data;
+    };
+    let mut data = vec![0.0; count];
     let xs = seq.xs();
     let ys = seq.ys();
     let zs = seq.zs();
     let ms = seq.ms();
-    if dims == 2
-        && order.len() == 2
-        && let Some([first, second]) = order.first_chunk::<2>()
-        && *first == CoordinateAxis::X
-        && *second == CoordinateAxis::Y
-    {
-        for i in 0..rows {
-            let base = i * 2;
-            data[base] = xs[i];
-            data[base + 1] = ys[i];
+    if axes == CoordinateAxes::XY {
+        for (output, (&x, &y)) in data
+            .as_chunks_mut::<2>()
+            .0
+            .iter_mut()
+            .zip(xs.iter().zip(ys))
+        {
+            *output = [x, y];
         }
     } else {
-        for i in 0..rows {
-            let base = i * dims;
-            for (d, &axis) in order.iter().enumerate() {
-                data[base + d] = match axis {
-                    CoordinateAxis::X => xs[i],
-                    CoordinateAxis::Y => ys[i],
+        for (i, ((output, &x), &y)) in data.chunks_exact_mut(dims).zip(xs).zip(ys).enumerate() {
+            for (value, &axis) in output.iter_mut().zip(order) {
+                *value = match axis {
+                    CoordinateAxis::X => x,
+                    CoordinateAxis::Y => y,
                     CoordinateAxis::Z => zs.map_or(missing, |column| column[i]),
                     CoordinateAxis::M => ms.map_or(missing, |column| column[i]),
                 };
             }
         }
     }
-    Ok(data)
+    data
 }
 
 /// Format one coordinate as a Python tuple, honoring a fixed `select` layout
@@ -137,11 +143,7 @@ pub(crate) fn column_axis_to_py(
     let this = slf.borrow();
     match this.view.column(axis) {
         coordinates::CoordinateColumnRef::Missing => {
-            let mut values = crate::try_vec_with_capacity(this.view.len())?;
-            for _ in 0..this.view.len() {
-                crate::try_push(&mut values, f64::NAN)?;
-            }
-            float64_array(py, values)
+            float64_array(py, vec![f64::NAN; this.view.len()])
         },
         column => column_ref_to_py(py, owner, column),
     }
@@ -224,37 +226,10 @@ pub(crate) fn get_coordinates(
         GeometryInput::Many(&array)
     };
     let axes = axes.unwrap_or(CoordinateAxes::XY);
-    let (order, dims) = coordinate_axis_order(axes);
-    let order = &order[..dims];
+    let (_, dims) = coordinate_axis_order(axes);
     let view = coordinate_view_for_input(input);
     let rows = view.len();
-    // Coordinate matrix: always ride the SoA interleave when the view is one
-    // contiguous packed column, independent of `return_index`. The index
-    // column is built separately at coordinate-run altitude (`row_index_i64`).
-    let data = if let Some(seq) = view.single_seq()
-        && seq.len() == rows
-    {
-        interleave_coordseq_ordered(seq, order, f64::NAN)?
-    } else {
-        let mut data = crate::try_vec_with_capacity(rows.checked_mul(dims).ok_or_else(|| {
-            pyo3::exceptions::PyOverflowError::new_err("coordinate matrix size overflows usize")
-        })?)?;
-        match view.try_for_each_point(&mut |coord| {
-            for &axis in order {
-                match crate::try_push(
-                    &mut data,
-                    coordinate_ordinate(coord, axis).unwrap_or(f64::NAN),
-                ) {
-                    Ok(()) => {},
-                    Err(error) => return std::ops::ControlFlow::Break(error),
-                }
-            }
-            std::ops::ControlFlow::Continue(())
-        }) {
-            std::ops::ControlFlow::Continue(()) => data,
-            std::ops::ControlFlow::Break(error) => return Err(error),
-        }
-    };
+    let data = coordinate_matrix_data(&view, axes, f64::NAN);
     let matrix = float64_matrix(py, data, rows, dims)?;
     if return_index {
         let indexes = int64_array(py, view.row_index_i64())?;

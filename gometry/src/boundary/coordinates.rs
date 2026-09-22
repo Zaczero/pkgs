@@ -479,7 +479,6 @@ impl CoordinateView {
     }
 
     /// Flattened coordinates.
-    #[cfg(test)]
     pub fn collect_points(&self) -> Vec<Point> {
         let mut points = Vec::with_capacity(self.len());
         self.for_each_point(|coord| points.push(coord));

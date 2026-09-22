@@ -48,32 +48,9 @@ impl PyCoordinates {
         missing: f64,
     ) -> PyResult<Py<PyAny>> {
         let layout = axes.unwrap_or_else(|| self.layout.unwrap_or_else(|| self.view.axes()));
-        let (order, dims) = coordinate_axis_order(layout);
-        let order = order
-            .get(..dims)
-            .expect("coordinate axes fit the fixed order");
+        let (_, dims) = coordinate_axis_order(layout);
         let rows = self.view.len();
-        let data = if let Some(seq) = self.view.single_seq()
-            && seq.len() == rows
-        {
-            interleave_coordseq_ordered(seq, order, missing)?
-        } else {
-            let mut data =
-                crate::try_vec_with_capacity(rows.checked_mul(dims).ok_or_else(|| {
-                    pyo3::exceptions::PyOverflowError::new_err(
-                        "coordinate matrix size overflows usize",
-                    )
-                })?)?;
-            let _ = self.view.try_for_each_point(&mut |coord| {
-                data.extend(
-                    order
-                        .iter()
-                        .map(|&axis| coordinate_ordinate(coord, axis).unwrap_or(missing)),
-                );
-                std::ops::ControlFlow::<()>::Continue(())
-            });
-            data
-        };
+        let data = coordinate_matrix_data(&self.view, layout, missing);
         float64_matrix(py, data, rows, dims)
     }
 }
@@ -114,14 +91,7 @@ impl RowContainer for CoordinateCursor {
 
     fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
         let point = if let Some(lock) = &self.material {
-            let points = lock.get_or_try_init(|| {
-                let mut out = crate::try_vec_with_capacity(self.len)?;
-                let _ = self.view.try_for_each_point(&mut |coord| {
-                    out.push(coord);
-                    std::ops::ControlFlow::<()>::Continue(())
-                });
-                Ok::<_, PyErr>(out)
-            })?;
+            let points = lock.get_or_init(|| self.view.collect_points());
             *points
                 .get(row)
                 .expect("iterator index already range-checked")
@@ -187,8 +157,8 @@ mod set_coords;
 mod types;
 
 pub(crate) use helpers::{
-    column_axis_to_py, coordinate_axis_order, coordinate_ordinate, coordinate_tuple,
-    get_coordinates, interleave_coordseq_ordered,
+    column_axis_to_py, coordinate_axis_order, coordinate_matrix_data, coordinate_tuple,
+    get_coordinates,
 };
 pub(crate) use set_coords::{
     map_coordinates_callback, parse_coordinate_replacement, replace_shape_coordinates,
