@@ -20,7 +20,7 @@ pub(crate) fn gather_line_columns(
     offsets: &[i32],
     map: &[usize],
 ) -> Result<(CoordSeq, CsrOffsetColumn)> {
-    let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
+    let mut builder = PackedColumnBuilder::like(coords, 0);
     for &physical in map {
         let window = offsets[physical] as usize..offsets[physical + 1] as usize;
         builder.push_window(coords, window)?;
@@ -39,7 +39,7 @@ pub(crate) fn gather_polygon_columns(
     CsrOffsetColumn<RingLevel>,
     CsrOffsetColumn<PolygonLevel>,
 )> {
-    let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
+    let mut builder = PackedColumnBuilder::like(coords, 0);
     let mut polygon_builder = CsrOffsetBuilder::new();
     let mut ring_index = 0_usize;
     for &physical in map {

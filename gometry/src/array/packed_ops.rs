@@ -220,7 +220,7 @@ impl PyGeometryArray {
         offsets: &[i32],
         rows: impl Iterator<Item = PhysicalRow>,
     ) -> PyResult<Self> {
-        let mut builder = PackedColumnBuilder::try_like(coords, 0)?;
+        let mut builder = PackedColumnBuilder::like(coords, 0);
         for row in rows {
             let row = row.0;
             let window = offsets[row] as usize..offsets[row + 1] as usize;
@@ -275,7 +275,7 @@ impl PyGeometryArray {
     ) -> Result<Self> {
         let (xs, ys) = (coords.xs(), coords.ys());
         let rows = offsets.len() - 1;
-        let mut builder = PackedColumnBuilder::try_like(coords, xs.len())?;
+        let mut builder = PackedColumnBuilder::like(coords, xs.len());
         let mut keep: Vec<bool> = Vec::new();
         for row in 0..rows {
             let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
@@ -292,7 +292,7 @@ impl PyGeometryArray {
             }
             for (slot, &kept) in keep.iter().enumerate() {
                 if kept {
-                    builder.push_vertex(coords, start + slot)?;
+                    builder.push_vertex(coords, start + slot);
                 }
             }
             builder.close_row()?;

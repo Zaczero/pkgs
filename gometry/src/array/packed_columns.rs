@@ -300,7 +300,7 @@ impl<'a> LineColumns<'a> {
     /// reverse keeps sharing the source offset table via
     /// [`crate::array::reverse_coord_windows`] instead.
     pub(crate) fn reverse_selected(&self) -> crate::error::Result<(CoordSeq, CsrOffsetColumn)> {
-        let mut builder = PackedColumnBuilder::try_like(self.coords, self.selected_vertex_len())?;
+        let mut builder = PackedColumnBuilder::like(self.coords, self.selected_vertex_len());
         for logical in 0..self.rows() {
             builder.push_reversed_window(self.coords, self.row_window(logical))?;
         }
@@ -463,7 +463,7 @@ impl<'a> PolygonColumns<'a> {
         CsrOffsetColumn<RingLevel>,
         CsrOffsetColumn<PolygonLevel>,
     )> {
-        let mut builder = PackedColumnBuilder::try_like(self.coords, self.selected_vertex_len())?;
+        let mut builder = PackedColumnBuilder::like(self.coords, self.selected_vertex_len());
         let mut polygon_builder = CsrOffsetBuilder::new();
         let mut ring_index = 0_usize;
         for logical in 0..self.rows() {

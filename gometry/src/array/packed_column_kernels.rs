@@ -169,7 +169,7 @@ pub(crate) fn clip_lines_packed_xy(
     let (xs, ys) = (coords.xs(), coords.ys());
     let selected_len =
         crate::array::packed_lines_coord_len(line_columns.offsets(), line_columns.selection());
-    let mut builder = PackedColumnBuilder::try_like(coords, selected_len).map_err(batch_err)?;
+    let mut builder = PackedColumnBuilder::like(coords, selected_len);
 
     for row in 0..line_columns.rows() {
         if line_columns.is_missing(row) {
@@ -219,20 +219,14 @@ pub(crate) fn clip_lines_packed_xy(
                 continue;
             }
             if last_end.is_some_and(|last| same_point(last, clipped_start)) {
-                builder
-                    .push_xy(clipped_end.x, clipped_end.y)
-                    .map_err(batch_err)?;
+                builder.push_xy(clipped_end.x, clipped_end.y);
             } else {
                 part_count += 1;
                 if part_count > 1 {
                     return Ok(None);
                 }
-                builder
-                    .push_xy(clipped_start.x, clipped_start.y)
-                    .map_err(batch_err)?;
-                builder
-                    .push_xy(clipped_end.x, clipped_end.y)
-                    .map_err(batch_err)?;
+                builder.push_xy(clipped_start.x, clipped_start.y);
+                builder.push_xy(clipped_end.x, clipped_end.y);
             }
             last_end = Some(clipped_end);
         }
@@ -1101,7 +1095,7 @@ pub(crate) fn subdivide_line_columns(
     let coords = columns.coords();
     let rows = columns.rows();
     let selected_len = crate::array::packed_lines_coord_len(columns.offsets(), columns.selection());
-    let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
+    let mut builder = PackedColumnBuilder::like(coords, selected_len);
     for row in 0..rows {
         if columns.is_missing(row) {
             builder.close_row()?;
@@ -1132,7 +1126,7 @@ pub(crate) fn subdivide_polygon_columns(
         columns.polygon_offsets(),
         columns.selection(),
     );
-    let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
+    let mut builder = PackedColumnBuilder::like(coords, selected_len);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows());
     let mut output_rings = 0;
     for row in 0..columns.rows() {
@@ -1248,7 +1242,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
             let rows = line_columns.rows();
-            let mut builder = PackedColumnBuilder::try_like(coords, xs.len()).map_err(batch_err)?;
+            let mut builder = PackedColumnBuilder::like(coords, xs.len());
             for row in 0..rows {
                 if line_columns.is_missing(row) {
                     builder.close_row().map_err(batch_err)?;
@@ -1277,7 +1271,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let ring_offsets = polygon_columns.ring_offsets();
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let rows = polygon_columns.rows();
-            let mut builder = PackedColumnBuilder::try_like(coords, xs.len()).map_err(batch_err)?;
+            let mut builder = PackedColumnBuilder::like(coords, xs.len());
             let mut output_polygons = CsrOffsetBuilder::with_capacity(rows);
             let mut output_rings = 0;
             for row in 0..rows {
