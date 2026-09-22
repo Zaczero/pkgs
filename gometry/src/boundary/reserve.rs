@@ -160,16 +160,11 @@ impl<T> CsrBuilder<T> {
     }
 
     /// Reserve exact, already-validated capacities for values and rows.
-    pub(crate) fn with_capacity(value_capacity: usize, row_capacity: usize) -> Result<Self> {
-        let rows = row_capacity
-            .checked_add(1)
-            .ok_or(ResourceError::SizeOverflow)?;
-        std::alloc::Layout::array::<T>(value_capacity).map_err(|_| ResourceError::SizeOverflow)?;
-        std::alloc::Layout::array::<i64>(rows).map_err(|_| ResourceError::SizeOverflow)?;
-        Ok(Self {
+    pub(crate) fn with_capacity(value_capacity: usize, row_capacity: usize) -> Self {
+        Self {
             values: Vec::with_capacity(value_capacity),
-            offsets: Vec::with_capacity(rows),
-        })
+            offsets: Vec::with_capacity(row_capacity.wrapping_add(1)),
+        }
     }
 
     /// Reserve only a bounded initial chunk from advisory external hints.
@@ -188,8 +183,6 @@ impl<T> CsrBuilder<T> {
     }
 
     pub(crate) fn push_row(&mut self, values: impl IntoIterator<Item = T>) -> Result<()> {
-        let values = values.into_iter();
-        self.values.reserve(values.size_hint().0);
         self.values.extend(values);
         let end = self.values.len();
         self.push_end(end)
@@ -821,7 +814,7 @@ mod tests {
 
     #[test]
     fn csr_builder_preserves_empty_rows_and_checked_offsets() {
-        let mut builder = CsrBuilder::<u8>::with_capacity_hint(4, 3);
+        let mut builder = CsrBuilder::<u8>::with_capacity(4, 3);
         builder.push_row(std::iter::empty()).expect("empty row");
         builder.push_row([1, 2]).expect("values");
         builder
@@ -835,9 +828,6 @@ mod tests {
 
     #[test]
     fn csr_builder_rejects_non_monotonic_and_non_i64_offsets() {
-        assert!(CsrBuilder::<u8>::with_capacity(usize::MAX, 0).is_err());
-        assert!(CsrBuilder::<u8>::with_capacity(0, usize::MAX).is_err());
-
         let mut builder = CsrBuilder::<u8>::new();
         builder.push_end(3).expect("first end");
         assert!(builder.push_end(2).is_err());

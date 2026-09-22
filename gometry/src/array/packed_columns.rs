@@ -1121,7 +1121,7 @@ fn map_selected_points(
                 .filter(|&len| len >= 2)
                 .sum();
             let mut builder = CoordSeqBuilder::try_with_capacity(output_axes, capacity)?;
-            let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows()).map_err(batch_err)?;
+            let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows());
             for logical in 0..lines.rows() {
                 if !lines.is_missing(logical) {
                     let window = lines.row_window(logical);
@@ -1157,9 +1157,8 @@ fn map_selected_points(
                 })
                 .sum();
             let mut builder = CoordSeqBuilder::try_with_capacity(output_axes, capacity)?;
-            let mut rings = CsrOffsetBuilder::with_capacity(ring_count).map_err(batch_err)?;
-            let mut polygon_offsets =
-                CsrOffsetBuilder::with_capacity(polygons.rows()).map_err(batch_err)?;
+            let mut rings = CsrOffsetBuilder::with_capacity(ring_count);
+            let mut polygon_offsets = CsrOffsetBuilder::with_capacity(polygons.rows());
             let mut ring_count = 0;
             for logical in 0..polygons.rows() {
                 if !polygons.is_missing(logical) {
@@ -1301,7 +1300,7 @@ fn map_selected_to_crs(
             Ok(PackedColumnOutput::Points(coords))
         },
         PackedColumns::Lines(lines) => {
-            let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows()).map_err(batch_err)?;
+            let mut offsets = CsrOffsetBuilder::with_capacity(lines.rows());
             let mut coordinate_count = 0;
             for logical in 0..lines.rows() {
                 if !lines.is_missing(logical) {
@@ -1337,10 +1336,8 @@ fn map_selected_to_crs(
                 .filter(|&logical| !polygons.is_missing(logical))
                 .map(|logical| polygons.polygon_rings(logical).len())
                 .sum();
-            let mut rings =
-                CsrOffsetBuilder::with_capacity(selected_ring_count).map_err(batch_err)?;
-            let mut polygon_offsets =
-                CsrOffsetBuilder::with_capacity(polygons.rows()).map_err(batch_err)?;
+            let mut rings = CsrOffsetBuilder::with_capacity(selected_ring_count);
+            let mut polygon_offsets = CsrOffsetBuilder::with_capacity(polygons.rows());
             let mut ring_count = 0;
             let mut coordinate_count = 0;
             for logical in 0..polygons.rows() {

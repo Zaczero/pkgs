@@ -520,8 +520,7 @@ impl PyGeometryArray {
             }
         }
         let built = (|| -> Result<crate::CsrBuilder<Shape>, (Error, Option<usize>)> {
-            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(total, len)
-                .map_err(|error| (error, None))?;
+            let mut builder = crate::CsrBuilder::<Shape>::with_capacity(total, len);
             for logical_row in self.row_operation().rows_with_missing(|| ()) {
                 let (row, values) = match logical_row {
                     crate::array::ArrayRow::Missing { logical, .. } => (logical, None),

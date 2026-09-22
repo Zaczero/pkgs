@@ -429,7 +429,7 @@ fn packed_lines_storage(
     total_vertices: usize,
 ) -> DecodeResult<GeometryArrayStorage> {
     if missing.is_empty() {
-        let mut offsets = CsrOffsetBuilder::with_capacity(node.length)?;
+        let mut offsets = CsrOffsetBuilder::with_capacity(node.length);
         for row in 0..node.length {
             let range = list_range(node, row)?;
             offsets.push_end(range.end, i32::MAX as usize)?;
@@ -467,8 +467,8 @@ fn packed_polygon_storage(
 ) -> DecodeResult<GeometryArrayStorage> {
     let present_rows = node.length - missing.len();
     if missing.is_empty() && !needs_rebuild {
-        let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count)?;
-        let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows)?;
+        let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count);
+        let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows);
         let mut rings = 0_usize;
         for row in 0..node.length {
             let range = list_range(node, row)?;
@@ -496,8 +496,8 @@ fn packed_polygon_storage(
         .child(0)
         .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow polygon ring child is missing"))?;
     let mut builder = CoordSeqBuilder::try_with_capacity(coordinates.axes(), total_vertices)?;
-    let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count)?;
-    let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows)?;
+    let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count);
+    let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows);
     let mut rings = 0_usize;
     for row in 0..node.length {
         if node.missing_at(row) {

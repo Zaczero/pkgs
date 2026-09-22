@@ -702,7 +702,7 @@ impl StreamingLines {
         row_capacity: usize,
         leading_missing: usize,
     ) -> crate::error::Result<Self> {
-        let offsets = CsrOffsetBuilder::with_capacity(row_capacity)?;
+        let offsets = CsrOffsetBuilder::with_capacity(row_capacity);
         let mut out = Self {
             coords: crate::geometry::CoordSeqBuilder::try_with_capacity(axes, coordinate_capacity)?,
             offsets,
@@ -762,8 +762,8 @@ impl StreamingPolygons {
     ) -> crate::error::Result<Self> {
         let mut out = Self {
             coords: crate::geometry::CoordSeqBuilder::try_with_capacity(axes, coordinate_capacity)?,
-            ring_offsets: CsrOffsetBuilder::with_capacity(ring_capacity)?,
-            polygon_offsets: CsrOffsetBuilder::with_capacity(row_capacity)?,
+            ring_offsets: CsrOffsetBuilder::with_capacity(ring_capacity),
+            polygon_offsets: CsrOffsetBuilder::with_capacity(row_capacity),
         };
         for _ in 0..leading_missing {
             out.try_push_missing()?;

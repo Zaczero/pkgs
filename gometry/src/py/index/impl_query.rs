@@ -797,8 +797,7 @@ impl PySpatialIndex {
         predicate: Predicate,
     ) -> PyResult<RowMatches> {
         let domain = self.domain()?;
-        let mut builder =
-            CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
+        let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
         let mut queries = Vec::new();
         crate::try_reserve_vec(&mut queries, points.len())?;
         let mut query_rows = array.row_operation();
@@ -1271,8 +1270,7 @@ impl PySpatialIndex {
         // CSR-direct: every row appends into one flat ids buffer; candidate
         // collection orders the window and refinement compacts it in place —
         // no per-point `Vec`.
-        let mut builder =
-            CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
+        let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
         // Point queries never cross; geographic rows are refined by the
         // quotient-aware matrix path below.
         let domain = self.domain()?;
@@ -1404,8 +1402,7 @@ impl PySpatialIndex {
             },
             _ => None,
         };
-        let mut builder =
-            CsrBuilder::<usize>::with_capacity(0, points.len()).map_err(pyo3::PyErr::from)?;
+        let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
         let mut products = self.rows.operation();
         for (row, point) in points.iter().enumerate() {
             if missing.is_some_and(|mask| mask.is_missing(row)) {

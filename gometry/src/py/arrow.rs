@@ -494,7 +494,7 @@ fn combine_packed_parts(
         },
         NativePackedFamily::Lines(axes) => {
             let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
-            let mut offsets = CsrOffsetBuilder::with_capacity(total_rows)?;
+            let mut offsets = CsrOffsetBuilder::with_capacity(total_rows);
             for part in parts {
                 let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(
                     PackedStorage::Lines {
@@ -522,8 +522,8 @@ fn combine_packed_parts(
         },
         NativePackedFamily::Polygons(axes) => {
             let mut builder = CoordSeqBuilder::try_with_capacity(axes, total_vertices)?;
-            let mut ring_offsets = CsrOffsetBuilder::with_capacity(total_rings)?;
-            let mut polygon_offsets = CsrOffsetBuilder::with_capacity(total_rows)?;
+            let mut ring_offsets = CsrOffsetBuilder::with_capacity(total_rings);
+            let mut polygon_offsets = CsrOffsetBuilder::with_capacity(total_rows);
             let mut rings = 0_usize;
             for part in parts {
                 let NativeDecodedStorage::Packed(GeometryArrayStorage::Packed(

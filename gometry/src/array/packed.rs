@@ -592,7 +592,7 @@ impl PyGeometryArray {
             }) => {
                 let map = row_map.as_deref();
                 if row_map.is_identity() {
-                    let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len())?;
+                    let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len());
                     let mut present_row = 0;
                     for (_, present) in mask.cursor() {
                         if present.is_some() {
@@ -611,7 +611,7 @@ impl PyGeometryArray {
                     coords.axes(),
                     crate::array::packed_lines_coord_len(offsets.as_slice(), map),
                 )?;
-                let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len())?;
+                let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
                 for (_, present_index) in mask.cursor() {
                     if present_index.is_some() {
@@ -638,7 +638,7 @@ impl PyGeometryArray {
             }) => {
                 let map = row_map.as_deref();
                 if row_map.is_identity() {
-                    let mut logical_polygons = CsrOffsetBuilder::with_capacity(mask.len())?;
+                    let mut logical_polygons = CsrOffsetBuilder::with_capacity(mask.len());
                     let mut present_row = 0;
                     for (_, present) in mask.cursor() {
                         if present.is_some() {
@@ -664,8 +664,8 @@ impl PyGeometryArray {
                         map,
                     ),
                 )?;
-                let mut out_rings = CsrOffsetBuilder::with_capacity(mask.len())?;
-                let mut out_polygons = CsrOffsetBuilder::with_capacity(mask.len())?;
+                let mut out_rings = CsrOffsetBuilder::with_capacity(mask.len());
+                let mut out_polygons = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
                 let mut rings = 0;
                 for (_, present_index) in mask.cursor() {

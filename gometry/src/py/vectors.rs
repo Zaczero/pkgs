@@ -691,8 +691,7 @@ impl Groups {
                                         )
                                     })
                             })?;
-                            let mut builder = CsrBuilder::<i64>::with_capacity(value_count, count)
-                                .map_err(PyErr::from)?;
+                            let mut builder = CsrBuilder::<i64>::with_capacity(value_count, count);
                             for row in rows {
                                 for &value in this.int64_row_slice(row) {
                                     builder.values_mut().push(value);
@@ -723,8 +722,7 @@ impl Groups {
                                     })
                             })?;
                             let mut builder =
-                                CsrBuilder::<Shape>::with_capacity(value_count, count)
-                                    .map_err(PyErr::from)?;
+                                CsrBuilder::<Shape>::with_capacity(value_count, count);
                             for row in rows {
                                 let row_values =
                                     values.gather_logical_row_range(this.row_values_window(row))?;

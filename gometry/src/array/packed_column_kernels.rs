@@ -1133,7 +1133,7 @@ pub(crate) fn subdivide_polygon_columns(
         columns.selection(),
     );
     let mut builder = PackedColumnBuilder::try_like(coords, selected_len)?;
-    let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows())?;
+    let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows());
     let mut output_rings = 0;
     for row in 0..columns.rows() {
         if columns.is_missing(row) {
@@ -1286,7 +1286,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let rows = polygon_columns.rows();
             let mut builder = PackedColumnBuilder::try_like(coords, xs.len()).map_err(batch_err)?;
-            let mut output_polygons = CsrOffsetBuilder::with_capacity(rows).map_err(batch_err)?;
+            let mut output_polygons = CsrOffsetBuilder::with_capacity(rows);
             let mut output_rings = 0;
             for row in 0..rows {
                 if polygon_columns.is_missing(row) {

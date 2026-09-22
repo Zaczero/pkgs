@@ -76,10 +76,10 @@ impl CsrOffsetBuilder {
         Self::default()
     }
 
-    pub(crate) fn with_capacity(rows: usize) -> Result<Self> {
-        Ok(Self {
-            builder: crate::boundary::CsrBuilder::with_capacity(0, rows)?,
-        })
+    pub(crate) fn with_capacity(rows: usize) -> Self {
+        Self {
+            builder: crate::boundary::CsrBuilder::with_capacity(0, rows),
+        }
     }
 
     /// Append the end offset of the next row; `vertex_index` must not exceed
@@ -131,13 +131,11 @@ impl CsrOffsetBuilder {
         {
             return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
         }
-        let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, offsets.len())?;
+        let mut values = Vec::with_capacity(offsets.len());
         for offset in offsets {
-            crate::boundary::try_push_vec(
-                &mut values,
+            values.push(
                 i32::try_from(offset).map_err(|_| GeometryErrorKind::OffsetCapacityExceeded)?,
-            )?;
+            );
         }
         Ok(CsrOffsetColumn {
             offsets: SharedSlice::from_vec(values),

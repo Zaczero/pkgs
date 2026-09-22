@@ -422,8 +422,7 @@ impl PySpatialIndex {
                 )?;
                 let (ids, offsets) = py.detach(move || {
                     let row_count = array.len();
-                    let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count)
-                        .map_err(pyo3::PyErr::from)?;
+                    let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
                     let mut rows = array.row_operation();
                     for logical_row in rows.rows_with_missing(|| ()) {
                         if let crate::array::ArrayRow::Present(row) = logical_row {
@@ -451,8 +450,7 @@ impl PySpatialIndex {
                 PreparedIndexQuery::for_array(self, &array, Some(predicate), distance, unit)?;
             let (ids, offsets) = py.detach(move || {
                 let row_count = array.len();
-                let mut builder =
-                    CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
+                let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
                 let PreparedIndexQuery::Dwithin { resolved, .. } = &plan else {
                     unreachable!("dwithin array query constructs a dwithin plan")
                 };
@@ -699,8 +697,7 @@ impl PySpatialIndex {
             let geographic_envelopes =
                 matches!(plan, PreparedIndexQuery::Candidates) && domain.is_geographic();
             let row_count = array.len();
-            let mut builder =
-                CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
+            let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
             if envelope_only {
                 // Missing and empty rows carry no bounds and get an empty group.
                 let mut append = |bounds: Option<crate::Bounds>| -> PyResult<()> {
@@ -865,8 +862,7 @@ impl PySpatialIndex {
                         "nearest output size overflows usize",
                     )
                 })?;
-                let mut builder =
-                    CsrBuilder::<usize>::with_capacity(0, row_count).map_err(pyo3::PyErr::from)?;
+                let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
                 let mut distances = Vec::new();
                 if return_distance {
                     if let Err(error) =
