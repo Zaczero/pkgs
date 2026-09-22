@@ -16,21 +16,22 @@ pub(crate) const DECODE_OFFSET: u8 = 0xFE;
 // - DECODE_OFFSET: '-' or '=' offset (legacy) character
 pub(crate) const DECODE_LUT: [u8; 256] = {
     let mut lut = [DECODE_INVALID; 256];
-    lut[b'-' as usize] = DECODE_OFFSET;
-    lut[b'=' as usize] = DECODE_OFFSET;
+    *lut.get_mut(b'-' as usize).unwrap() = DECODE_OFFSET;
+    *lut.get_mut(b'=' as usize).unwrap() = DECODE_OFFSET;
 
     let mut i = 0;
-    while i < 64 {
+    while let Some(&byte) = CHARSET.get(i) {
         let t = i as u32;
         let x_chunk = (((t >> 1) & 1) | (((t >> 3) & 1) << 1) | (((t >> 5) & 1) << 2)) as u8;
         let y_chunk = ((t & 1) | (((t >> 2) & 1) << 1) | (((t >> 4) & 1) << 2)) as u8;
         let packed = x_chunk | (y_chunk << 3);
 
-        lut[CHARSET[i] as usize] = packed;
+        *lut.get_mut(byte as usize)
+            .expect("alphabet byte fits lookup table") = packed;
         i += 1;
     }
 
     // Resolve '@' for backwards compatibility.
-    lut[b'@' as usize] = lut[b'~' as usize];
+    *lut.get_mut(b'@' as usize).unwrap() = *lut.get(b'~' as usize).unwrap();
     lut
 };

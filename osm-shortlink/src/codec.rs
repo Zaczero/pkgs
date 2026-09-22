@@ -14,6 +14,10 @@ const MAX_ZOOM_BIT_COUNT: u8 = MAX_ZOOM + MIN_ZOOM_BIT_COUNT;
 const _: () = assert!(MAX_ZOOM_BIT_COUNT <= COORD_BITS);
 const _: () = assert!(MAX_ZOOM_BIT_COUNT.is_multiple_of(BITS_PER_DIGIT));
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the fixed shifts are all below the u64 lane width and implement Morton bit spreading"
+)]
 fn interleave_bits(x: u32, y: u32) -> u64 {
     let mut v = u64x2::from_array([u64::from(x), u64::from(y)]);
     v = (v | (v << 16)) & u64x2::splat(0x0000_FFFF_0000_FFFF);
@@ -54,16 +58,19 @@ pub(crate) fn encode(lon: f64, lat: f64, zoom: u8) -> Result<String, EncodeError
     let encoded_y = (wrapped_y * Y_SCALE) as u32;
     let cell = interleave_bits(encoded_x, encoded_y);
 
-    let bit_count = zoom + MIN_ZOOM_BIT_COUNT;
+    let bit_count = zoom.wrapping_add(MIN_ZOOM_BIT_COUNT);
     let padding = (bit_count % BITS_PER_DIGIT) as usize;
     let digit_count = bit_count.div_ceil(BITS_PER_DIGIT) as usize;
 
-    let mut out = String::with_capacity(digit_count + padding);
+    let mut out = String::with_capacity(digit_count.wrapping_add(padding));
 
     for i in 0..digit_count {
-        let shift = 58 - (i as u32 * 6);
+        let shift = 58_u32.wrapping_sub((i as u32).wrapping_mul(6));
         let digit = ((cell >> shift) & 0x3F) as usize;
-        out.push(CHARSET[digit] as char);
+        let Some(&byte) = CHARSET.get(digit) else {
+            unreachable!("six-bit digit indexes the 64-byte alphabet")
+        };
+        out.push(byte as char);
     }
     for _ in 0..padding {
         out.push('-');
@@ -79,7 +86,10 @@ pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
     let mut offset_bits = 0_u8;
 
     for c in s.bytes() {
-        let packed = DECODE_LUT[c as usize];
+        let packed = DECODE_LUT
+            .get(c as usize)
+            .copied()
+            .expect("every byte has a lookup entry");
         if unlikely(packed == DECODE_INVALID) {
             continue;
         }
@@ -87,7 +97,7 @@ pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
             offset_bits = if offset_bits == 0 {
                 BITS_PER_DIGIT - 1
             } else {
-                offset_bits - 1
+                offset_bits.wrapping_sub(1)
             };
             continue;
         }
@@ -98,19 +108,18 @@ pub(crate) fn decode(s: &str) -> Result<(f64, f64, u8), DecodeError> {
 
         x = (x << BITS_PER_DIGIT) | u32::from(packed & 0b111);
         y = (y << BITS_PER_DIGIT) | u32::from(packed >> 3);
-        z += BITS_PER_DIGIT;
+        z = z.wrapping_add(BITS_PER_DIGIT);
     }
 
-    if unlikely(z < MIN_ZOOM_BIT_COUNT + offset_bits) {
+    if unlikely(z < MIN_ZOOM_BIT_COUNT.wrapping_add(offset_bits)) {
         return Err(DecodeError::TooShort);
     }
 
-    let shift = COORD_BITS - z;
+    let shift = COORD_BITS.wrapping_sub(z);
     x <<= shift;
     y <<= shift;
 
-    z -= MIN_ZOOM_BIT_COUNT;
-    z -= offset_bits;
+    z = z.wrapping_sub(MIN_ZOOM_BIT_COUNT).wrapping_sub(offset_bits);
 
     Ok((
         (f64::from(x) * X_SCALE_INV) - 180.0,

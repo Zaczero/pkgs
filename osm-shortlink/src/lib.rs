@@ -1,5 +1,7 @@
 #![feature(likely_unlikely)]
 #![feature(portable_simd)]
+#![feature(const_index)]
+#![feature(const_trait_impl)]
 
 mod codec;
 mod constants;
