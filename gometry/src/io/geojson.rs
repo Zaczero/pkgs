@@ -351,9 +351,9 @@ fn parse_point(value: &Value, path: &JsonPath<'_>) -> Result<Point> {
         .map(Vec::as_slice)
         .ok_or_else(|| IoError::geojson("coordinate must be an array"))
         .map_err(|error| error.with_parse_path(&path.render()))?;
-    if pair.len() < 2 {
+    let Some([raw_x, raw_y]) = pair.first_chunk::<2>() else {
         return Err(IoError::geojson("coordinate requires x and y").with_parse_path(&path.render()));
-    }
+    };
     if pair.len() > 3 {
         return Err(IoError::geojson(
             "GeoJSON coordinates support XY or XYZ only; M coordinates are not supported",
@@ -367,9 +367,6 @@ fn parse_point(value: &Value, path: &JsonPath<'_>) -> Result<Point> {
                 .map_err(|error| error.with_parse_path(&path.index(2).render()))
         })
         .transpose()?;
-    let Some([raw_x, raw_y]) = pair.first_chunk::<2>() else {
-        return Err(IoError::geojson("coordinate requires x and y").with_parse_path(&path.render()));
-    };
     let x = json_number(raw_x, "x coordinate must be numeric")
         .map_err(|error| error.with_parse_path(&path.index(0).render()))?;
     let y = json_number(raw_y, "y coordinate must be numeric")
@@ -410,12 +407,13 @@ fn parse_points(value: &Value, path: &JsonPath<'_>) -> Result<CoordSeq> {
     let mut points = CoordSeqBuilder::with_capacity(axes, positions.len());
     points.push(first);
     for (index, position) in rest.iter().enumerate() {
-        let point = parse_point(position, &path.index(index + 1))?;
+        let position_path = path.index(index.wrapping_add(1));
+        let point = parse_point(position, &position_path)?;
         // See `geojson_mixed_axes_message`: no NaN-fill promotion — non-finite
         // coordinates are illegal and 0 would invent elevation.
         if CoordinateAxes::from_point(point) != axes {
             return Err(IoError::geojson(geojson_mixed_axes_message())
-                .with_parse_path(&path.index(index + 1).render()));
+                .with_parse_path(&position_path.render()));
         }
         points.push(point);
     }
@@ -428,14 +426,16 @@ fn parse_polygon(value: &Value, path: &JsonPath<'_>) -> Result<Polygon> {
         .map(Vec::as_slice)
         .ok_or_else(|| IoError::geojson("Polygon coordinates must be an array"))
         .map_err(|error| error.with_parse_path(&path.render()))?;
-    let Some(shell) = rings.first() else {
+    let Some((shell, remaining)) = rings.split_first() else {
         return Err(IoError::geojson("Polygon requires a shell").with_parse_path(&path.render()));
     };
     let shell = parse_geojson_ring(shell, &path.index(0))?;
-    let mut holes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut holes, rings.len().saturating_sub(1))?;
-    for (index, ring) in rings.iter().enumerate().skip(1) {
-        crate::boundary::try_push_vec(&mut holes, parse_geojson_ring(ring, &path.index(index))?)?;
+    let mut holes = Vec::with_capacity(remaining.len());
+    for (index, ring) in remaining.iter().enumerate() {
+        holes.push(parse_geojson_ring(
+            ring,
+            &path.index(index.wrapping_add(1)),
+        )?);
     }
     let polygon = Polygon::new(shell, holes);
     crate::io::polygon_output_axes_with(&polygon, |index, detail| {
@@ -455,7 +455,7 @@ fn parse_geojson_ring(value: &Value, path: &JsonPath<'_>) -> Result<Ring> {
     };
     let coords = ring.coords();
     let first = coords.point_at(0);
-    let last = coords.point_at(coords.len() - 1);
+    let last = coords.point_at(coords.len().wrapping_sub(1));
     // RFC 7946 §3.1.6: first and last position values must be identical on
     // every active ordinate (X/Y/Z/M), not just the planar XY pair.
     if !crate::geometry::same_active_position(first, last) {
@@ -472,24 +472,19 @@ fn parse_geojson_multipoint(value: &Value, path: &JsonPath<'_>) -> Result<MultiP
         .ok_or_else(|| IoError::geojson("MultiPoint coordinates must be an array"))
         .map_err(|error| error.with_parse_path(&path.render()))?;
     let mut axes = None;
-    let mut members = Vec::new();
-    crate::boundary::try_reserve_vec(&mut members, positions.len())?;
+    let mut members = Vec::with_capacity(positions.len());
     for (index, position) in positions.iter().enumerate() {
         if json_is_empty_array(position) {
-            crate::boundary::try_push_vec(&mut members, MultiMember::Empty)?;
+            members.push(MultiMember::Empty);
             continue;
         }
         let point = parse_point(position, &path.index(index))?;
         let point_axes = CoordinateAxes::from_point(point);
-        match axes {
-            None => axes = Some(point_axes),
-            Some(expected) if expected != point_axes => {
-                return Err(IoError::geojson(geojson_mixed_axes_message())
-                    .with_parse_path(&path.index(index).render()));
-            },
-            Some(_) => {},
+        if *axes.get_or_insert(point_axes) != point_axes {
+            return Err(IoError::geojson(geojson_mixed_axes_message())
+                .with_parse_path(&path.index(index).render()));
         }
-        crate::boundary::try_push_vec(&mut members, MultiMember::Value(point))?;
+        members.push(MultiMember::Value(point));
     }
     MultiPoint::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
@@ -501,31 +496,23 @@ fn parse_geojson_multilinestring(value: &Value, path: &JsonPath<'_>) -> Result<M
         .ok_or_else(|| IoError::geojson("MultiLineString coordinates must be an array"))
         .map_err(|error| error.with_parse_path(&path.render()))?;
     let mut axes = None;
-    let mut members = Vec::new();
-    crate::boundary::try_reserve_vec(&mut members, lines.len())?;
+    let mut members = Vec::with_capacity(lines.len());
     for (index, line) in lines.iter().enumerate() {
         let line_path = path.index(index);
         let points = parse_points(line, &line_path)?;
         if points.is_empty() {
-            crate::boundary::try_push_vec(&mut members, MultiMember::Empty)?;
+            members.push(MultiMember::Empty);
             continue;
         }
         let line_axes = points.axes();
-        match axes {
-            None => axes = Some(line_axes),
-            Some(expected) if expected != line_axes => {
-                return Err(IoError::geojson(geojson_mixed_axes_message())
-                    .with_parse_path(&line_path.render()));
-            },
-            Some(_) => {},
+        if *axes.get_or_insert(line_axes) != line_axes {
+            return Err(
+                IoError::geojson(geojson_mixed_axes_message()).with_parse_path(&line_path.render())
+            );
         }
-        crate::boundary::try_push_vec(
-            &mut members,
-            MultiMember::Value(
-                LineSeq::try_new(points)
-                    .map_err(|error| error.with_parse_path(&line_path.render()))?,
-            ),
-        )?;
+        members.push(MultiMember::Value(
+            LineSeq::try_new(points).map_err(|error| error.with_parse_path(&line_path.render()))?,
+        ));
     }
     MultiLineString::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
@@ -537,25 +524,20 @@ fn parse_geojson_multipolygon(value: &Value, path: &JsonPath<'_>) -> Result<Mult
         .ok_or_else(|| IoError::geojson("MultiPolygon coordinates must be an array"))
         .map_err(|error| error.with_parse_path(&path.render()))?;
     let mut axes = None;
-    let mut members = Vec::new();
-    crate::boundary::try_reserve_vec(&mut members, polygons.len())?;
+    let mut members = Vec::with_capacity(polygons.len());
     for (index, polygon) in polygons.iter().enumerate() {
         let polygon_path = path.index(index);
         if json_is_empty_array(polygon) {
-            crate::boundary::try_push_vec(&mut members, MultiMember::Empty)?;
+            members.push(MultiMember::Empty);
             continue;
         }
         let polygon = parse_polygon(polygon, &polygon_path)?;
         let polygon_axes = polygon.shell.coords().axes();
-        match axes {
-            None => axes = Some(polygon_axes),
-            Some(expected) if expected != polygon_axes => {
-                return Err(IoError::geojson(geojson_mixed_axes_message())
-                    .with_parse_path(&polygon_path.render()));
-            },
-            Some(_) => {},
+        if *axes.get_or_insert(polygon_axes) != polygon_axes {
+            return Err(IoError::geojson(geojson_mixed_axes_message())
+                .with_parse_path(&polygon_path.render()));
         }
-        crate::boundary::try_push_vec(&mut members, MultiMember::Value(polygon))?;
+        members.push(MultiMember::Value(polygon));
     }
     MultiPolygon::try_new(axes.unwrap_or(CoordinateAxes::XY), members)
 }
@@ -755,10 +737,14 @@ impl JsonPath<'_> {
     fn rendered_len(&self) -> usize {
         match self {
             Self::Root(path) => path.len(),
-            Self::Key { parent, key } => parent.rendered_len() + 1 + key.len(),
-            Self::Index { parent, index } => {
-                parent.rendered_len() + 3 + index.checked_ilog10().unwrap_or(0) as usize
-            },
+            Self::Key { parent, key } => parent
+                .rendered_len()
+                .wrapping_add(1)
+                .wrapping_add(key.len()),
+            Self::Index { parent, index } => parent
+                .rendered_len()
+                .wrapping_add(3)
+                .wrapping_add(index.checked_ilog10().unwrap_or(0) as usize),
         }
     }
 
@@ -834,17 +820,13 @@ fn parse_geojson_inner_impl(value: &Value, path: &JsonPath<'_>, depth: usize) ->
                     IoError::geojson("GeometryCollection requires geometries")
                         .with_parse_path(&geometries_path.render())
                 })?;
-            let mut parsed = Vec::new();
-            crate::boundary::try_reserve_vec(&mut parsed, geometries.len())?;
+            let mut parsed = Vec::with_capacity(geometries.len());
             for (index, geometry) in geometries.iter().enumerate() {
-                crate::boundary::try_push_vec(
-                    &mut parsed,
-                    parse_geojson_inner_impl(
-                        geometry,
-                        &geometries_path.index(index),
-                        depth.saturating_add(1),
-                    )?,
-                )?;
+                parsed.push(parse_geojson_inner_impl(
+                    geometry,
+                    &geometries_path.index(index),
+                    depth.wrapping_add(1),
+                )?);
             }
             Ok(Shape::geometry_collection(parsed)?)
         },
