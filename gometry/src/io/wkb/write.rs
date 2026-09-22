@@ -9,8 +9,7 @@ pub(crate) fn to_wkb(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Re
     // wire-alias table (CRS84→4326) cannot diverge between the two.
     let srid = extended_srid_code(crs, include_srid, "EWKB")?;
     let preflight = preflight_wkb(shape, srid.is_some())?;
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, preflight.length)?;
+    let mut out = Vec::with_capacity(preflight.length);
     preflight.write(&mut out, srid);
     Ok(out)
 }
@@ -22,7 +21,7 @@ pub(crate) fn to_wkb(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Re
 /// axes here, preserving row-level axis errors and notes.
 pub(crate) fn write_wkb_to_srid(out: &mut Vec<u8>, shape: &Shape, srid: Option<u32>) -> Result<()> {
     let preflight = preflight_wkb(shape, srid.is_some())?;
-    crate::boundary::try_reserve_vec(out, preflight.length)?;
+    out.reserve(preflight.length);
     preflight.write(out, srid);
     Ok(())
 }
@@ -56,16 +55,12 @@ fn write_columns(
     debug_assert_eq!(ys.len(), count);
     debug_assert!(zs.is_none_or(|z| z.len() == count));
     debug_assert!(ms.is_none_or(|m| m.len() == count));
-    let dimension = 2 + usize::from(zs.is_some()) + usize::from(ms.is_some());
-    let byte_len = count
-        .checked_mul(dimension)
-        .and_then(|bytes| bytes.checked_mul(size_of::<f64>()))
-        .expect("WKB coordinate byte length was preflighted");
-    let expected_end = out
-        .len()
-        .checked_add(byte_len)
-        .expect("WKB output length was preflighted");
-    debug_assert!(out.capacity() - out.len() >= byte_len);
+    let dimension = 2_usize
+        .wrapping_add(usize::from(zs.is_some()))
+        .wrapping_add(usize::from(ms.is_some()));
+    let byte_len = count.wrapping_mul(dimension).wrapping_mul(size_of::<f64>());
+    let expected_end = out.len().wrapping_add(byte_len);
+    debug_assert!(out.capacity().wrapping_sub(out.len()) >= byte_len);
     match (zs, ms) {
         (None, None) => {
             for (&x, &y) in std::iter::zip(xs, ys) {
@@ -226,12 +221,8 @@ impl<'a> WkbShape<'a> {
     }
 
     fn encoded_len(self, srid: bool) -> Result<usize> {
-        let header = WKB_HEADER_BASE
-            .checked_add(if srid { 4 } else { 0 })
-            .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
-        header
-            .checked_add(self.body.encoded_len(self.axes)?)
-            .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+        let header = WKB_HEADER_BASE.wrapping_add(if srid { 4 } else { 0 });
+        Ok(header.wrapping_add(self.body.encoded_len(self.axes)?))
     }
 
     fn write(self, out: &mut Vec<u8>, srid: Option<u32>) {
@@ -243,58 +234,40 @@ impl<'a> WkbShape<'a> {
 impl WkbBody<'_> {
     fn encoded_len(self, axes: CoordinateAxes) -> Result<usize> {
         match self {
-            Self::Point(_) | Self::EmptyPoint => wkb_coords_len(1, axes),
+            Self::Point(_) | Self::EmptyPoint => Ok(wkb_coords_len(1, axes)),
             Self::MultiPoint(points) => wkb_counted_body_len(points.member_count(), || {
-                let child = WKB_HEADER_BASE
-                    .checked_add(wkb_coords_len(1, axes)?)
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
-                points
-                    .member_count()
-                    .checked_mul(child)
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+                let child = WKB_HEADER_BASE.wrapping_add(wkb_coords_len(1, axes));
+                Ok(points.member_count().wrapping_mul(child))
             }),
-            Self::LineString(line) => WKB_COUNT
-                .checked_add(wkb_coords_len(line.len(), axes)?)
-                .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize")),
+            Self::LineString(line) => Ok(WKB_COUNT.wrapping_add(wkb_coords_len(line.len(), axes))),
             // Admitted homogeneous multipart members share the parent's axes,
             // so each child header and body is sized against that one layout.
             Self::MultiLineString(lines) => wkb_counted_body_len(lines.member_count(), || {
-                lines.members().try_fold(0_usize, |total, member| {
-                    let child = match member {
-                        MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
+                let prefix = WKB_HEADER_BASE.wrapping_add(WKB_COUNT);
+                Ok(lines.members().fold(0_usize, |total, member| {
+                    let body = match member {
+                        MultiMember::Empty => 0,
                         MultiMember::Value(index) => {
-                            WKB_HEADER_BASE.checked_add(WKB_COUNT).and_then(|prefix| {
-                                wkb_coords_len(lines.as_slice()[index].len(), axes)
-                                    .ok()
-                                    .and_then(|body| prefix.checked_add(body))
-                            })
+                            wkb_coords_len(lines.as_slice()[index].len(), axes)
                         },
-                    }
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
-                    total
-                        .checked_add(child)
-                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
-                })
+                    };
+                    total.wrapping_add(prefix).wrapping_add(body)
+                }))
             }),
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
             Self::MultiPolygon(polygons) => wkb_counted_body_len(polygons.member_count(), || {
                 polygons.members().try_fold(0_usize, |total, member| {
                     let child = match member {
-                        MultiMember::Empty => WKB_HEADER_BASE.checked_add(WKB_COUNT),
+                        MultiMember::Empty => WKB_HEADER_BASE.wrapping_add(WKB_COUNT),
                         MultiMember::Value(index) => WKB_HEADER_BASE
-                            .checked_add(wkb_polygon_body_len(&polygons.as_slice()[index], axes)?),
-                    }
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
-                    total
-                        .checked_add(child)
-                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+                            .wrapping_add(wkb_polygon_body_len(&polygons.as_slice()[index], axes)?),
+                    };
+                    Ok(total.wrapping_add(child))
                 })
             }),
             Self::GeometryCollection(geometries) => wkb_counted_body_len(geometries.len(), || {
                 geometries.iter().try_fold(0_usize, |total, geometry| {
-                    total
-                        .checked_add(WkbShape::classify(geometry).encoded_len(false)?)
-                        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+                    Ok(total.wrapping_add(WkbShape::classify(geometry).encoded_len(false)?))
                 })
             }),
             Self::EmptyMultiPoint
@@ -390,24 +363,19 @@ where
     F: FnOnce() -> Result<usize>,
 {
     checked_len(count)?;
-    WKB_COUNT
-        .checked_add(body()?)
-        .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
+    Ok(WKB_COUNT.wrapping_add(body()?))
 }
 
 fn wkb_polygon_body_len(polygon: &Polygon, axes: CoordinateAxes) -> Result<usize> {
-    let ring_count = polygon.holes.len() + 1;
+    let ring_count = polygon.holes.len().wrapping_add(1);
     wkb_counted_body_len(ring_count, || {
-        std::iter::once(&polygon.shell)
+        Ok(std::iter::once(&polygon.shell)
             .chain(polygon.holes.iter())
-            .try_fold(0_usize, |total, ring| {
-                let ring_len = WKB_COUNT
-                    .checked_add(wkb_coords_len(ring.coord_count(), axes)?)
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))?;
+            .fold(0_usize, |total, ring| {
                 total
-                    .checked_add(ring_len)
-                    .ok_or_else(|| IoError::wkb("WKB encoded length overflows usize"))
-            })
+                    .wrapping_add(WKB_COUNT)
+                    .wrapping_add(wkb_coords_len(ring.coord_count(), axes))
+            }))
     })
 }
 
@@ -432,7 +400,7 @@ fn write_wkb_header(
 }
 
 fn write_wkb_polygon(out: &mut Vec<u8>, polygon: &Polygon, axes: CoordinateAxes) {
-    write_u32(out, (polygon.holes.len() + 1) as u32);
+    write_u32(out, polygon.holes.len().wrapping_add(1) as u32);
     write_wkb_sequence(out, &polygon.shell, axes);
     for hole in polygon.holes.iter() {
         write_wkb_sequence(out, hole, axes);

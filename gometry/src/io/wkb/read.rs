@@ -38,10 +38,10 @@ fn parse_wkb_type(value: u32) -> Result<(u32, CoordinateAxes)> {
     let mut base = value & !(EWKB_Z_FLAG | EWKB_M_FLAG | EWKB_SRID_FLAG);
     let mut iso_z = false;
     let mut iso_m = false;
-    for index in [3_usize, 1, 2] {
-        let offset = ISO_DIM_OFFSET[index];
+    let [_, m_offset, z_offset, zm_offset] = ISO_DIM_OFFSET;
+    for (index, offset) in [(3, zm_offset), (1, m_offset), (2, z_offset)] {
         if base >= offset {
-            base -= offset;
+            base = base.wrapping_sub(offset);
             iso_z = (index >> 1) != 0;
             iso_m = (index & 1) != 0;
             break;
@@ -99,7 +99,7 @@ impl WkbReader<'_> {
     }
 
     /// Homogeneous multi members must carry the same axes as the outer type.
-    fn require_member_axes(&self, outer: CoordinateAxes, member: CoordinateAxes) -> Result<()> {
+    fn require_member_axes(outer: CoordinateAxes, member: CoordinateAxes) -> Result<()> {
         if outer == member {
             Ok(())
         } else {
@@ -109,25 +109,8 @@ impl WkbReader<'_> {
         }
     }
 
-    fn validate_coord_count(&self, count: usize, axes: CoordinateAxes) -> Result<()> {
-        // Encoding-true bound: each vertex costs `stride` payload bytes.
-        let stride = wkb_dimension(axes) * size_of::<f64>();
-        let required = count
-            .checked_mul(stride)
-            .ok_or_else(|| IoError::wkb("WKB coordinate count is too large"))?;
-        if required > self.remaining_bytes() {
-            return Err(IoError::wkb("WKB coordinate count exceeds remaining input"));
-        }
-        Ok(())
-    }
-
     fn validate_element_count(&self, count: usize) -> Result<()> {
         // Nested members: each costs at least a WKB header (byte order + type).
-        self.validate_count_bytes(count, WKB_HEADER_BASE, "element")
-    }
-
-    /// MultiPoint members compact into a `CoordSeq` — same remaining-byte bound.
-    fn validate_multipoint_member_count(&self, count: usize) -> Result<()> {
         self.validate_count_bytes(count, WKB_HEADER_BASE, "element")
     }
 
@@ -140,10 +123,7 @@ impl WkbReader<'_> {
 
     /// Encoding-true bound: `count * minimum_bytes` must fit in remaining input.
     fn validate_count_bytes(&self, count: usize, minimum_bytes: usize, kind: &str) -> Result<()> {
-        let required = count
-            .checked_mul(minimum_bytes)
-            .ok_or_else(|| IoError::wkb(format!("WKB {kind} count is too large")))?;
-        if required > self.remaining_bytes() {
+        if count > self.remaining_bytes().wrapping_div(minimum_bytes) {
             return Err(IoError::wkb(format!(
                 "WKB {kind} count exceeds remaining input"
             )));
@@ -167,9 +147,8 @@ fn decode_coordseq_axes<const BIG: bool>(bytes: &[u8], axes: CoordinateAxes) -> 
 /// `Option` at all — eight straight-line loop bodies, dispatched once.
 ///
 /// Vertex **count is derived from the byte span length** (no external
-/// `size_hint` / trusted-count parameter). Each column is then an exact final
-/// `Arc<[f64]>` sized from that proven count. Every WKB caller shares this
-/// decoder (no staging Vec / re-Arc).
+/// `size_hint` / trusted-count parameter). Each final column reserves that
+/// proven count once. Every WKB caller shares this decoder.
 fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
     bytes: &[u8],
 ) -> Result<CoordSeq> {
@@ -180,44 +159,30 @@ fn decode_coordseq<const BIG: bool, const Z: bool, const M: bool>(
             f64::from_le_bytes(array)
         }
     };
-    let stride = (2 + usize::from(Z) + usize::from(M)) * size_of::<f64>();
-    if stride == 0 || !bytes.len().is_multiple_of(stride) {
-        return Err(IoError::wkb(
-            "WKB coordinate run length is not a multiple of the vertex stride",
-        ));
-    }
+    let stride = 2_usize
+        .wrapping_add(usize::from(Z))
+        .wrapping_add(usize::from(M))
+        .wrapping_mul(size_of::<f64>());
+    debug_assert!(bytes.len().is_multiple_of(stride));
     // Count proven by byte length ÷ stride (no separate trusted count).
     let count = bytes.len() / stride;
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    let mut zs = Z.then(Vec::new);
-    let mut ms = M.then(Vec::new);
-    crate::boundary::try_reserve_vec(&mut xs, count)?;
-    crate::boundary::try_reserve_vec(&mut ys, count)?;
-    if let Some(column) = &mut zs {
-        crate::boundary::try_reserve_vec(column, count)?;
-    }
-    if let Some(column) = &mut ms {
-        crate::boundary::try_reserve_vec(column, count)?;
-    }
+    let mut xs = Vec::with_capacity(count);
+    let mut ys = Vec::with_capacity(count);
+    let mut zs = Z.then(|| Vec::with_capacity(count));
+    let mut ms = M.then(|| Vec::with_capacity(count));
     for vertex in bytes.chunks_exact(stride) {
         let (ordinates, _) = vertex.as_chunks::<{ size_of::<f64>() }>();
-        let Some(&[x_bytes, y_bytes]) = ordinates.first_chunk::<2>() else {
-            return Err(IoError::wkb(
-                "coordinate run is shorter than its declared stride",
-            ));
-        };
-        crate::boundary::try_push_vec(&mut xs, decode(x_bytes))?;
-        crate::boundary::try_push_vec(&mut ys, decode(y_bytes))?;
-        if let Some(column) = &mut zs
-            && let Some(&z_bytes) = ordinates.get(2)
-        {
-            crate::boundary::try_push_vec(column, decode(z_bytes))?;
+        let (&[x_bytes, y_bytes], remaining) = ordinates
+            .split_first_chunk::<2>()
+            .expect("every WKB vertex contains XY");
+        xs.push(decode(x_bytes));
+        ys.push(decode(y_bytes));
+        let mut remaining = remaining.iter();
+        if let Some(column) = &mut zs {
+            column.push(decode(*remaining.next().expect("WKB stride includes Z")));
         }
-        if let Some(column) = &mut ms
-            && let Some(&m_bytes) = ordinates.get(2 + usize::from(Z))
-        {
-            crate::boundary::try_push_vec(column, decode(m_bytes))?;
+        if let Some(column) = &mut ms {
+            column.push(decode(*remaining.next().expect("WKB stride includes M")));
         }
     }
     if !column_all_finite(&xs)
@@ -347,10 +312,32 @@ impl WkbReader<'_> {
         let shape = match geometry_type {
             WKB_POINT => self.read_point_shape(byte_order, axes)?,
             WKB_MULTIPOINT => {
-                let (members, effective, count) =
-                    self.read_nested_multipoint(byte_order, axes, srid, path, depth)?;
+                let (members, effective) = self.read_nested_typed(
+                    byte_order,
+                    geometry_type,
+                    srid,
+                    path,
+                    |shape| match shape {
+                        Shape::Point(point) => {
+                            Self::require_member_axes(axes, CoordinateAxes::from_point(point))?;
+                            Ok(MultiMember::Value(point))
+                        },
+                        Shape::Empty(GeometryKind::Point, empty_axes) => {
+                            Self::require_member_axes(axes, empty_axes)?;
+                            Ok(MultiMember::Empty)
+                        },
+                        Shape::MultiPoint(_)
+                        | Shape::LineString(_)
+                        | Shape::MultiLineString(_)
+                        | Shape::Polygon(_)
+                        | Shape::MultiPolygon(_)
+                        | Shape::GeometryCollection(_)
+                        | Shape::Empty(..) => Err(IoError::wkb("MULTIPOINT member must be Point")),
+                    },
+                    depth,
+                )?;
                 srid = effective;
-                if count == 0 {
+                if members.is_empty() {
                     Shape::typed_empty(GeometryKind::MultiPoint, axes)
                 } else {
                     Shape::MultiPoint(MultiPoint::try_new(axes, members)?)
@@ -368,29 +355,26 @@ impl WkbReader<'_> {
                 let (members, effective) = self.read_nested_typed(
                     byte_order,
                     geometry_type,
-                    axes,
                     srid,
                     path,
                     |shape| match shape {
                         Shape::LineString(points) => {
-                            let member_axes = points.axes();
-                            if axes != member_axes {
-                                return Err(IoError::wkb(
-                                    "WKB multi geometry member axes must match the outer type",
-                                ));
-                            }
+                            Self::require_member_axes(axes, points.axes())?;
                             Ok(MultiMember::Value(points))
                         },
                         Shape::Empty(GeometryKind::LineString, empty_axes) => {
-                            let member_axes = empty_axes;
-                            if axes != member_axes {
-                                return Err(IoError::wkb(
-                                    "WKB multi geometry member axes must match the outer type",
-                                ));
-                            }
+                            Self::require_member_axes(axes, empty_axes)?;
                             Ok(MultiMember::Empty)
                         },
-                        _ => Err(IoError::wkb("MULTILINESTRING member must be LineString")),
+                        Shape::Point(_)
+                        | Shape::MultiPoint(_)
+                        | Shape::MultiLineString(_)
+                        | Shape::Polygon(_)
+                        | Shape::MultiPolygon(_)
+                        | Shape::GeometryCollection(_)
+                        | Shape::Empty(..) => {
+                            Err(IoError::wkb("MULTILINESTRING member must be LineString"))
+                        },
                     },
                     depth,
                 )?;
@@ -406,31 +390,28 @@ impl WkbReader<'_> {
                 let (members, effective) = self.read_nested_typed(
                     byte_order,
                     geometry_type,
-                    axes,
                     srid,
                     path,
                     |shape| match shape {
                         Shape::Polygon(polygon) => {
-                            let member_axes = polygon.axes();
-                            if axes != member_axes {
-                                return Err(IoError::wkb(
-                                    "WKB multi geometry member axes must match the outer type",
-                                ));
-                            }
+                            Self::require_member_axes(axes, polygon.axes())?;
                             Ok(MultiMember::Value(polygon))
                         },
                         // Matching typed empty Polygon members remain explicit;
                         // validate their axes against the outer type.
                         Shape::Empty(GeometryKind::Polygon, empty_axes) => {
-                            let member_axes = empty_axes;
-                            if axes != member_axes {
-                                return Err(IoError::wkb(
-                                    "WKB multi geometry member axes must match the outer type",
-                                ));
-                            }
+                            Self::require_member_axes(axes, empty_axes)?;
                             Ok(MultiMember::Empty)
                         },
-                        _ => Err(IoError::wkb("MULTIPOLYGON member must be Polygon")),
+                        Shape::Point(_)
+                        | Shape::MultiPoint(_)
+                        | Shape::LineString(_)
+                        | Shape::MultiLineString(_)
+                        | Shape::MultiPolygon(_)
+                        | Shape::GeometryCollection(_)
+                        | Shape::Empty(..) => {
+                            Err(IoError::wkb("MULTIPOLYGON member must be Polygon"))
+                        },
                     },
                     depth,
                 )?;
@@ -466,7 +447,7 @@ impl WkbReader<'_> {
             .value
             .get(self.offset)
             .ok_or_else(|| IoError::wkb_at(self.offset, "unexpected end of WKB"))?;
-        self.offset += 1;
+        self.offset = self.offset.wrapping_add(1);
         Ok(value)
     }
 
@@ -495,7 +476,7 @@ impl WkbReader<'_> {
             .get(self.offset..)
             .and_then(<[u8]>::first_chunk::<N>)
             .ok_or_else(|| IoError::wkb_at(self.offset, "unexpected end of WKB"))?;
-        self.offset += N;
+        self.offset = self.offset.wrapping_add(N);
         Ok(out)
     }
 
@@ -541,19 +522,17 @@ impl WkbReader<'_> {
         axes: CoordinateAxes,
         count: usize,
     ) -> Result<CoordSeq> {
-        self.validate_coord_count(count, axes)?;
-        let stride = wkb_dimension(axes) * size_of::<f64>();
-        let byte_len = count
-            .checked_mul(stride)
-            .ok_or_else(|| IoError::wkb("WKB coordinate run is too large"))?;
-        // Split borrow: take the byte slice without holding `self` across decode.
-        let end = self
-            .offset
-            .checked_add(byte_len)
-            .filter(|&end| end <= self.value.len())
-            .ok_or_else(|| IoError::wkb("unexpected end of WKB"))?;
-        let bytes = &self.value[self.offset..end];
-        self.offset = end;
+        let stride = wkb_dimension(axes).wrapping_mul(size_of::<f64>());
+        if count > self.remaining_bytes().wrapping_div(stride) {
+            return Err(IoError::wkb("WKB coordinate count exceeds remaining input"));
+        }
+        let byte_len = count.wrapping_mul(stride);
+        let bytes = self
+            .value
+            .get(self.offset..)
+            .and_then(|remaining| remaining.get(..byte_len))
+            .expect("WKB coordinate span was admitted against remaining input");
+        self.offset = self.offset.wrapping_add(byte_len);
         // Dispatch ONCE on (byte order, axes) — the loop body is fully
         // monomorphized, so the hot loop re-tests neither.
         match byte_order {
@@ -593,9 +572,8 @@ impl WkbReader<'_> {
         // XY-open rings; reject Z/M-open; then pack. Winding/simplicity stay
         // for `Geometry.validate()`. Shell first, holes into final Vec.
         let shell = crate::io::admit_closed_ring(self.read_ring(byte_order, axes)?)?;
-        let mut holes = Vec::new();
-        crate::boundary::try_reserve_vec(&mut holes, ring_count - 1)?;
-        for _ in 0..ring_count - 1 {
+        let mut holes = Vec::with_capacity(ring_count.wrapping_sub(1));
+        for _ in 1..ring_count {
             holes.push(crate::io::admit_closed_ring(
                 self.read_ring(byte_order, axes)?,
             )?);
@@ -619,8 +597,7 @@ impl WkbReader<'_> {
     ) -> Result<(Vec<Shape>, Option<u32>)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_element_count(count)?;
-        let mut shapes = Vec::new();
-        crate::boundary::try_reserve_vec(&mut shapes, count)?;
+        let mut shapes = Vec::with_capacity(count);
         let mut effective = inherited;
         for index in 0..count {
             let node = WkbMemberPath {
@@ -628,7 +605,8 @@ impl WkbReader<'_> {
                 container,
                 index,
             };
-            let (shape, member_srid) = self.read_geometry(effective, Some(&node), depth + 1)?;
+            let (shape, member_srid) =
+                self.read_geometry(effective, Some(&node), depth.wrapping_add(1))?;
             effective = effective.or(member_srid);
             shapes.push(shape);
         }
@@ -646,7 +624,6 @@ impl WkbReader<'_> {
         &mut self,
         byte_order: WkbByteOrder,
         container: u32,
-        _outer_axes: CoordinateAxes,
         inherited: Option<u32>,
         parent: Option<&WkbMemberPath<'_>>,
         mut extract: impl FnMut(Shape) -> Result<MultiMember<T>>,
@@ -654,8 +631,7 @@ impl WkbReader<'_> {
     ) -> Result<(Vec<MultiMember<T>>, Option<u32>)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_element_count(count)?;
-        let mut items = Vec::new();
-        crate::boundary::try_reserve_vec(&mut items, count)?;
+        let mut items = Vec::with_capacity(count);
         let mut effective = inherited;
         let mut member_error = None;
         for index in 0..count {
@@ -664,7 +640,8 @@ impl WkbReader<'_> {
                 container,
                 index,
             };
-            let (shape, member_srid) = self.read_geometry(effective, Some(&node), depth + 1)?;
+            let (shape, member_srid) =
+                self.read_geometry(effective, Some(&node), depth.wrapping_add(1))?;
             effective = effective.or(member_srid);
             match extract(shape) {
                 Ok(item) => items.push(item),
@@ -680,58 +657,6 @@ impl WkbReader<'_> {
             return Err(error);
         }
         Ok((items, effective))
-    }
-
-    fn read_nested_multipoint(
-        &mut self,
-        byte_order: WkbByteOrder,
-        axes: CoordinateAxes,
-        inherited: Option<u32>,
-        parent: Option<&WkbMemberPath<'_>>,
-        depth: usize,
-    ) -> Result<(Vec<MultiMember<Point>>, Option<u32>, usize)> {
-        let count = self.read_u32(byte_order)? as usize;
-        self.validate_multipoint_member_count(count)?;
-        let mut members = Vec::new();
-        crate::boundary::try_reserve_vec(&mut members, count)?;
-        let mut effective = inherited;
-        let mut member_error = None;
-        for index in 0..count {
-            let node = WkbMemberPath {
-                parent,
-                container: WKB_MULTIPOINT,
-                index,
-            };
-            let (shape, member_srid) = self.read_geometry(effective, Some(&node), depth + 1)?;
-            effective = effective.or(member_srid);
-            match shape {
-                Shape::Point(point) => {
-                    let member_axes = CoordinateAxes::from_point(point);
-                    if let Err(error) = self.require_member_axes(axes, member_axes) {
-                        member_error.get_or_insert(error);
-                        continue;
-                    }
-                    members.push(MultiMember::Value(point));
-                },
-                // Matching typed empty Point members remain explicit.
-                Shape::Empty(GeometryKind::Point, empty_axes) => {
-                    let member_axes = empty_axes;
-                    if let Err(error) = self.require_member_axes(axes, member_axes) {
-                        member_error.get_or_insert(error);
-                    } else {
-                        members.push(MultiMember::Empty);
-                    }
-                },
-                _ => {
-                    member_error
-                        .get_or_insert_with(|| IoError::wkb("MULTIPOINT member must be Point"));
-                },
-            }
-        }
-        if let Some(error) = member_error {
-            return Err(error);
-        }
-        Ok((members, effective, count))
     }
 }
 

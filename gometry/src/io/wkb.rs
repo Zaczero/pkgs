@@ -15,11 +15,10 @@ const fn wkb_dimension(axes: CoordinateAxes) -> usize {
     axes.dimension()
 }
 
-fn wkb_coords_len(count: usize, axes: CoordinateAxes) -> Result<usize> {
+const fn wkb_coords_len(count: usize, axes: CoordinateAxes) -> usize {
     count
-        .checked_mul(wkb_dimension(axes))
-        .and_then(|bytes| bytes.checked_mul(size_of::<f64>()))
-        .ok_or_else(|| IoError::wkb("WKB coordinate byte length overflows usize"))
+        .wrapping_mul(wkb_dimension(axes))
+        .wrapping_mul(size_of::<f64>())
 }
 
 /// ISO 1000/2000/3000 dimension offsets indexed by `(z as usize) << 1 | (m as
