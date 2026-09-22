@@ -136,7 +136,7 @@ impl CoordinateReplacement {
                 }
                 Some(MColumn::Shared(values.clone()))
             },
-            ReplacementAxis::Carry => old.carried_ms().map_err(PyErr::from)?,
+            ReplacementAxis::Carry => old.carried_ms(),
         };
         CoordSeq::from_shared_columns(self.xs.clone(), self.ys.clone(), zs, ms).map_err(PyErr::from)
     }

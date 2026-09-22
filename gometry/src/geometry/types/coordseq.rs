@@ -89,25 +89,18 @@ impl MColumn {
         }
     }
 
-    fn carried(&self, xy_range: Range<usize>, xy_physical: usize) -> Result<Self> {
-        let visible = xy_range.end.saturating_sub(xy_range.start);
+    fn carried(&self, xy_range: Range<usize>, xy_physical: usize) -> Self {
         match self {
             Self::Shared(owner) if xy_range.start == 0 && xy_range.end == xy_physical => {
-                Ok(Self::Shared(owner.clone()))
+                Self::Shared(owner.clone())
             },
-            Self::Shared(owner) => {
-                local_m_covers(owner, xy_range.start, visible)?;
-                Ok(Self::Local {
-                    owner: owner.clone(),
-                    offset: xy_range.start,
-                })
+            Self::Shared(owner) => Self::Local {
+                owner: owner.clone(),
+                offset: xy_range.start,
             },
-            Self::Local { owner, offset } => {
-                local_m_covers(owner, *offset, visible)?;
-                Ok(Self::Local {
-                    owner: owner.clone(),
-                    offset: *offset,
-                })
+            Self::Local { owner, offset } => Self::Local {
+                owner: owner.clone(),
+                offset: *offset,
             },
         }
     }
@@ -669,16 +662,13 @@ impl CoordSeq {
     /// The M column carried without copying the payload: full Shared stays
     /// Shared; a Shared subrange becomes Local at `range.start`; Local keeps
     /// its existing offset. Visible length stays on `CoordSeq::range`.
-    pub(crate) fn carried_ms(&self) -> Result<Option<MColumn>> {
-        self.ms
-            .as_ref()
-            .map(|column| {
-                column.carried(
-                    self.range.start as usize..self.range.end as usize,
-                    self.xs.len(),
-                )
-            })
-            .transpose()
+    pub(crate) fn carried_ms(&self) -> Option<MColumn> {
+        self.ms.as_ref().map(|column| {
+            column.carried(
+                self.range.start as usize..self.range.end as usize,
+                self.xs.len(),
+            )
+        })
     }
 
     /// Reconstruct the `Point` at `index` (panics out of bounds, like slice

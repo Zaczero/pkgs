@@ -1115,12 +1115,12 @@ fn source_len(source: CoordRun<'_>) -> usize {
     }
 }
 
-fn source_carried_ms(source: CoordRun<'_>) -> Result<Option<MColumn>> {
+fn source_carried_ms(source: CoordRun<'_>) -> Option<MColumn> {
     match source {
-        CoordRun::Point(point) => Ok(point.m().map(|m| MColumn::Local {
+        CoordRun::Point(point) => point.m().map(|m| MColumn::Local {
             owner: SharedSlice::from_vec(vec![m]),
             offset: 0,
-        })),
+        }),
         CoordRun::Seq(seq) => seq.carried_ms(),
     }
 }
@@ -1133,25 +1133,19 @@ struct OutputCounts {
 }
 
 impl OutputCounts {
-    fn add(&mut self, source: CoordRun<'_>) -> Result<()> {
-        self.sequences = self.sequences.checked_add(1).ok_or_else(|| {
-            GeometryErrorKind::message("transform sequence count overflows usize")
-        })?;
+    fn add(&mut self, source: CoordRun<'_>) {
+        self.sequences = self.sequences.wrapping_add(1);
         let vertices = source_len(source);
         let total = match source_batch(source) {
             OutputBatch::Xy => &mut self.xy_vertices,
             OutputBatch::Xyz => &mut self.xyz_vertices,
         };
-        *total = total.checked_add(vertices).ok_or_else(|| {
-            GeometryErrorKind::message("transform coordinate count overflows usize")
-        })?;
-        Ok(())
+        *total = total.wrapping_add(vertices);
     }
 }
 
 /// One final contiguous coordinate batch. M is carried independently because
-/// it is never transformed; full columns remain Arc-shared and windows are
-/// copied by `carried_ms` before any fallible backend work is published.
+/// it is never transformed; full columns and windows keep their shared owners.
 struct OutputColumns {
     xs: Vec<f64>,
     ys: Vec<f64>,
@@ -1159,25 +1153,12 @@ struct OutputColumns {
 }
 
 impl OutputColumns {
-    fn try_with_capacity(capacity: usize, has_z: bool) -> Result<Self> {
-        let mut xs = Vec::new();
-        crate::try_reserve_vec(&mut xs, capacity)?;
-        let mut ys = Vec::new();
-        if let Err(error) = crate::try_reserve_vec(&mut ys, capacity) {
-            drop(xs);
-            return Err(error);
+    fn with_capacity(capacity: usize, has_z: bool) -> Self {
+        Self {
+            xs: Vec::with_capacity(capacity),
+            ys: Vec::with_capacity(capacity),
+            zs: has_z.then(|| Vec::with_capacity(capacity)),
         }
-        let zs = if has_z {
-            let mut values = Vec::new();
-            if let Err(error) = crate::try_reserve_vec(&mut values, capacity) {
-                drop((xs, ys));
-                return Err(error);
-            }
-            Some(values)
-        } else {
-            None
-        };
-        Ok(Self { xs, ys, zs })
     }
 
     fn append(&mut self, source: CoordRun<'_>) -> Range<usize> {
@@ -1221,34 +1202,39 @@ impl TransformOutputPlan {
     pub(crate) fn try_new(shapes: &[&Shape]) -> Result<Self> {
         let mut counts = OutputCounts::default();
         for shape in shapes {
-            shape.for_each_coord_run(&mut |source| counts.add(source))?;
+            let Ok(()) = shape.for_each_coord_run(&mut |source| {
+                counts.add(source);
+                Ok::<_, std::convert::Infallible>(())
+            });
         }
         types::ensure_coordseq_vertex_capacity(counts.xy_vertices)?;
         types::ensure_coordseq_vertex_capacity(counts.xyz_vertices)?;
         let mut plan = Self {
-            xy: OutputColumns::try_with_capacity(counts.xy_vertices, false)?,
-            xyz: OutputColumns::try_with_capacity(counts.xyz_vertices, true)?,
-            sequences: Vec::new(),
+            xy: OutputColumns::with_capacity(counts.xy_vertices, false),
+            xyz: OutputColumns::with_capacity(counts.xyz_vertices, true),
+            sequences: Vec::with_capacity(counts.sequences),
         };
-        crate::try_reserve_vec(&mut plan.sequences, counts.sequences)?;
         for (shape_index, shape) in shapes.iter().enumerate() {
-            shape.for_each_coord_run(&mut |source| plan.push_source(source, shape_index))?;
+            let Ok(()) = shape.for_each_coord_run(&mut |source| {
+                plan.push_source(source, shape_index);
+                Ok::<_, std::convert::Infallible>(())
+            });
         }
         Ok(plan)
     }
 
-    fn push_source(&mut self, source: CoordRun<'_>, shape: usize) -> Result<()> {
+    fn push_source(&mut self, source: CoordRun<'_>, shape: usize) {
         let batch = source_batch(source);
         let range = match batch {
             OutputBatch::Xy => self.xy.append(source),
             OutputBatch::Xyz => self.xyz.append(source),
         };
-        crate::try_push_vec(&mut self.sequences, OutputCoordSeq {
+        self.sequences.push(OutputCoordSeq {
             batch,
             range,
             shape,
-            ms: source_carried_ms(source)?,
-        })
+            ms: source_carried_ms(source),
+        });
     }
 
     pub(crate) fn execute_indexed(

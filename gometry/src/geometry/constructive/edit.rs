@@ -46,7 +46,7 @@ impl CoordSeq {
             crate::geometry::SharedSlice::from_vec(xs),
             crate::geometry::SharedSlice::from_vec(ys),
             self.carried_zs(),
-            self.carried_ms()?,
+            self.carried_ms(),
         )
     }
 
@@ -70,14 +70,8 @@ impl CoordSeq {
         }
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
-        let allocate = || -> Result<Vec<f64>> {
-            let mut values = Vec::new();
-            crate::try_reserve_vec(&mut values, n)?;
-            values.resize(n, 0.0);
-            Ok(values)
-        };
-        let mut out_x = (!x_identity).then(allocate).transpose()?;
-        let mut out_y = (!y_identity).then(allocate).transpose()?;
+        let mut out_x = (!x_identity).then(|| vec![0.0; n]);
+        let mut out_y = (!y_identity).then(|| vec![0.0; n]);
         if let (Some(out_x), Some(out_y)) = (out_x.as_mut(), out_y.as_mut()) {
             let (va, vb, vd, ve, vxo, vyo) = (
                 ReduceSimd::splat(a),
@@ -153,7 +147,7 @@ impl CoordSeq {
                     None => self.carried_ys(),
                 },
                 self.carried_zs(),
-                self.carried_ms()?,
+                self.carried_ms(),
             )
         }
     }
@@ -188,14 +182,8 @@ impl CoordSeq {
         }
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
-        let allocate = || -> Result<Vec<f64>> {
-            let mut values = Vec::new();
-            crate::try_reserve_vec(&mut values, n)?;
-            values.resize(n, 0.0);
-            Ok(values)
-        };
-        let mut out_x = (!x_identity).then(allocate).transpose()?;
-        let mut out_y = (!y_identity).then(allocate).transpose()?;
+        let mut out_x = (!x_identity).then(|| vec![0.0; n]);
+        let mut out_y = (!y_identity).then(|| vec![0.0; n]);
         for index in 0..n {
             if let Some(out_x) = out_x.as_mut() {
                 out_x[index] = affine_about_origin_ordinate(
@@ -218,7 +206,7 @@ impl CoordSeq {
                 None => self.carried_ys(),
             },
             self.carried_zs(),
-            self.carried_ms()?,
+            self.carried_ms(),
         )
     }
 
@@ -239,7 +227,7 @@ impl CoordSeq {
                 snap_column_simd(self.ys(), origin.1, size.1)?.into_vec(),
             ),
             self.carried_zs(),
-            self.carried_ms()?,
+            self.carried_ms(),
         )
     }
 
@@ -268,7 +256,7 @@ impl CoordSeq {
             crate::geometry::SharedSlice::from_vec(xs),
             crate::geometry::SharedSlice::from_vec(ys),
             self.carried_zs(),
-            self.carried_ms()?,
+            self.carried_ms(),
         )
         .map_err(E::from)
     }
@@ -337,7 +325,7 @@ impl CoordSeq {
             value.map(|value| crate::geometry::SharedSlice::from_vec(fill(value)))
         };
         let (out_zs, out_ms) = match axis {
-            OrdinateAxis::Z => (ordinate_column(value), self.carried_ms()?),
+            OrdinateAxis::Z => (ordinate_column(value), self.carried_ms()),
             OrdinateAxis::M => (
                 self.carried_zs(),
                 ordinate_column(value).map(crate::geometry::MColumn::Shared),
