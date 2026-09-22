@@ -2085,7 +2085,7 @@ mod tests {
                 packed_column_kernels::packed_per_row_self_origin_affine_columns(
                     PackedColumns::Lines(columns),
                     crate::array::OriginSpec::Center,
-                    [2.0, 0.0, 0.0, 2.0],
+                    crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 2.0]).unwrap(),
                 )
             else {
                 panic!("line affine must produce line columns");
@@ -2096,6 +2096,31 @@ mod tests {
             coords.heap_bytes()
         });
         assert_eq!(footprints.first(), footprints.last());
+    }
+
+    #[test]
+    fn selected_affine_does_not_allocate_per_row_coordinates() {
+        let counts = [2, 128].map(|rows| {
+            let storage = gathered_lines(rows);
+            let columns = resolve_packed_columns(&storage, None, PointRowLayout::Dense)
+                .expect("packed columns");
+            let (output, allocations) = allocation_count(|| {
+                packed_column_kernels::packed_per_row_self_origin_affine_columns(
+                    columns,
+                    crate::array::OriginSpec::Center,
+                    crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 2.0]).unwrap(),
+                )
+            });
+            let Ok(PackedColumnOutput::Lines { coords, offsets }) = output else {
+                panic!("line affine must produce line columns");
+            };
+            assert_eq!(coords.len(), rows.wrapping_mul(3));
+            assert_eq!(offsets.len(), rows.wrapping_add(1));
+            assert_eq!(coords.xs().first(), Some(&-1.0));
+            assert_eq!(coords.xs().last(), Some(&6.0));
+            allocations
+        });
+        assert_eq!(counts.first(), counts.last());
     }
 
     #[test]

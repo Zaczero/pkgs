@@ -13,7 +13,7 @@ mod snap;
 mod walk;
 mod winding;
 
-pub(crate) use edit::{affine_about_origin_ordinate, stable_affine_xy};
+pub(crate) use edit::{AffineLinear, OriginAffine, stable_affine_xy};
 pub(crate) use offset::{DEFAULT_MITER_LIMIT, reversed_points, sided_strip_parts};
 pub(in crate::geometry) use ring::{canonical_ring_seq, oriented_ring};
 pub(crate) use ring::{

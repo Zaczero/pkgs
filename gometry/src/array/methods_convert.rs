@@ -313,11 +313,9 @@ impl PyGeometryArray {
         angle: f64,
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, || {
-                let (sin, cos) = angle.sin_cos();
-                [cos, -sin, sin, cos]
-            })
-            .transpose()
+            let (sin, cos) = angle.sin_cos();
+            self.packed_self_origin_affine(py, spec, [cos, -sin, sin, cos])
+                .transpose()
         })
     }
 
@@ -328,7 +326,7 @@ impl PyGeometryArray {
         yfact: f64,
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, || [xfact, 0.0, 0.0, yfact])
+            self.packed_self_origin_affine(py, spec, [xfact, 0.0, 0.0, yfact])
                 .transpose()
         })
     }
@@ -340,7 +338,7 @@ impl PyGeometryArray {
         tan_y: f64,
     ) -> Option<PyResult<Self>> {
         Python::attach(|py| {
-            self.packed_self_origin_affine(py, spec, || [1.0, tan_x, tan_y, 1.0])
+            self.packed_self_origin_affine(py, spec, [1.0, tan_x, tan_y, 1.0])
                 .transpose()
         })
     }

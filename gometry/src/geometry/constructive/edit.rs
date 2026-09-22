@@ -20,6 +20,68 @@ use crate::geometry::{
     simd_xy_map_one_f64,
 };
 
+#[derive(Clone, Copy)]
+pub(crate) struct AffineLinear {
+    matrix: [f64; 4],
+    preserved: [bool; 2],
+}
+
+impl AffineLinear {
+    pub(crate) fn new(matrix: [f64; 4]) -> Result<Self> {
+        if !matrix.iter().all(|value| value.is_finite()) {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        let [m00, m01, m10, m11] = matrix;
+        Ok(Self {
+            matrix,
+            preserved: [
+                same_topological_coordinate(m00, 1.0) && same_topological_coordinate(m01, 0.0),
+                same_topological_coordinate(m10, 0.0) && same_topological_coordinate(m11, 1.0),
+            ],
+        })
+    }
+
+    pub(crate) const fn is_identity(self) -> bool {
+        let [preserve_x, preserve_y] = self.preserved;
+        preserve_x && preserve_y
+    }
+
+    pub(crate) fn at(self, origin: (f64, f64)) -> Result<OriginAffine> {
+        if !origin.0.is_finite() || !origin.1.is_finite() {
+            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
+        }
+        Ok(OriginAffine {
+            linear: self,
+            origin,
+        })
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct OriginAffine {
+    linear: AffineLinear,
+    origin: (f64, f64),
+}
+
+impl OriginAffine {
+    pub(crate) fn map_xy(self, x: f64, y: f64) -> Result<(f64, f64)> {
+        let [m00, m01, m10, m11] = self.linear.matrix;
+        let [preserve_x, preserve_y] = self.linear.preserved;
+        let (origin_x, origin_y) = self.origin;
+        let mapped_x = if preserve_x {
+            x
+        } else {
+            affine_about_origin_ordinate(m00, m01, origin_x, origin_x, origin_y, x, y)?
+        };
+        let mapped_y = if preserve_y {
+            y
+        } else {
+            affine_about_origin_ordinate(m10, m11, origin_y, origin_x, origin_y, x, y)?
+        };
+        Ok((mapped_x, mapped_y))
+    }
+}
+
 impl CoordSeq {
     /// `op` over every `(x, y)` pair, Z/M columns carried through untouched —
     /// the columnar form of a per-point XY map (no `Point` gather, no axes
@@ -155,45 +217,22 @@ impl CoordSeq {
     /// Exact origin-relative affine transform of the XY columns. Identity
     /// rows carry their source column unchanged; every other row is rounded
     /// from its exact five-product expression in [`ExactSum`].
-    #[expect(
-        clippy::many_single_char_names,
-        reason = "a, b, d, e are the stored affine matrix entries"
-    )]
-    #[expect(
-        clippy::float_cmp,
-        reason = "identity rows are exact unit coefficients; a tolerance would skip the exact five-product transform"
-    )]
-    pub(crate) fn try_affine_about_origin(
-        &self,
-        linear: [f64; 4],
-        origin: (f64, f64),
-    ) -> Result<Self> {
-        let [a, b, d, e] = linear;
-        if !linear.iter().all(|value| value.is_finite())
-            || !origin.0.is_finite()
-            || !origin.1.is_finite()
-        {
-            return Err(GeometryErrorKind::NonFiniteCoordinate.into());
-        }
-        let x_identity = a == 1.0 && same_topological_coordinate(b, 0.0);
-        let y_identity = same_topological_coordinate(d, 0.0) && e == 1.0;
-        if x_identity && y_identity {
+    pub(crate) fn try_affine_about_origin(&self, transform: OriginAffine) -> Result<Self> {
+        if transform.linear.is_identity() {
             return Ok(self.clone());
         }
+        let [x_identity, y_identity] = transform.linear.preserved;
         let n = self.len();
         let (xs, ys) = (self.xs(), self.ys());
-        let mut out_x = (!x_identity).then(|| vec![0.0; n]);
-        let mut out_y = (!y_identity).then(|| vec![0.0; n]);
-        for index in 0..n {
+        let mut out_x = (!x_identity).then(|| Vec::with_capacity(n));
+        let mut out_y = (!y_identity).then(|| Vec::with_capacity(n));
+        for (&x, &y) in xs.iter().zip(ys) {
+            let (x, y) = transform.map_xy(x, y)?;
             if let Some(out_x) = out_x.as_mut() {
-                out_x[index] = affine_about_origin_ordinate(
-                    a, b, origin.0, origin.0, origin.1, xs[index], ys[index],
-                )?;
+                out_x.push(x);
             }
             if let Some(out_y) = out_y.as_mut() {
-                out_y[index] = affine_about_origin_ordinate(
-                    d, e, origin.1, origin.0, origin.1, xs[index], ys[index],
-                )?;
+                out_y.push(y);
             }
         }
         Self::from_shared_columns(
@@ -706,10 +745,6 @@ impl Shape {
     /// Linear map about `origin` evaluated as `origin + M*(p - origin)` so
     /// extreme-but-finite centers do not overflow the expanded
     /// `xoff = ox - a*ox` form (which can produce `inf - inf` NaNs).
-    #[expect(
-        clippy::float_cmp,
-        reason = "identity rows are exact unit coefficients; a tolerance would skip the exact five-product transform"
-    )]
     fn affine_about_origin(
         &self,
         m00: f64,
@@ -718,29 +753,15 @@ impl Shape {
         m11: f64,
         origin: (f64, f64),
     ) -> Result<Self> {
-        let (ox, oy) = origin;
-        // Degenerate to identity when M = I (exact bit match — caller-built).
-        if same_topological_coordinate(m00, 1.0)
-            && same_topological_coordinate(m01, 0.0)
-            && same_topological_coordinate(m10, 0.0)
-            && same_topological_coordinate(m11, 1.0)
-        {
+        let linear = AffineLinear::new([m00, m01, m10, m11])?;
+        if linear.is_identity() {
             return Ok(self.clone());
         }
-        let linear = [m00, m01, m10, m11];
+        let transform = linear.at(origin)?;
         self.try_map_coordseqs(
-            |seq| seq.try_affine_about_origin(linear, origin),
+            |seq| seq.try_affine_about_origin(transform),
             |point| {
-                let x = if m00 == 1.0 && same_topological_coordinate(m01, 0.0) {
-                    point.x
-                } else {
-                    affine_about_origin_ordinate(m00, m01, ox, ox, oy, point.x, point.y)?
-                };
-                let y = if same_topological_coordinate(m10, 0.0) && m11 == 1.0 {
-                    point.y
-                } else {
-                    affine_about_origin_ordinate(m10, m11, oy, ox, oy, point.x, point.y)?
-                };
+                let (x, y) = transform.map_xy(point.x, point.y)?;
                 Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
             },
         )

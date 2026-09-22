@@ -1124,16 +1124,11 @@ pub(crate) fn subdivide_polygon_columns(
     })
 }
 
-#[expect(
-    clippy::float_cmp,
-    reason = "unit scale is the exact identity linear part; a tolerance would still apply the affine"
-)]
 pub(crate) fn packed_per_row_self_origin_affine_columns(
     columns: PackedColumns<'_>,
     spec: OriginSpec,
-    linear: [f64; 4],
+    linear: crate::geometry::AffineLinear,
 ) -> PackedColumnResult<PackedColumnOutput> {
-    let [m00, m01, m10, m11] = linear;
     match columns {
         PackedColumns::Points(point_columns) => match spec {
             OriginSpec::Centroid | OriginSpec::Center => {
@@ -1154,6 +1149,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 Ok(PackedColumnOutput::Points(coords))
             },
             OriginSpec::Fixed(pivot_x, pivot_y) => {
+                let transform = linear.at((pivot_x, pivot_y)).map_err(batch_err)?;
                 let rows = point_columns.rows();
                 let axes = point_columns.coords().axes();
                 let capacity = if rows.is_compact() {
@@ -1178,24 +1174,9 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         continue;
                     };
                     let point = point_columns.coords().point_at(physical);
-                    let x = if m00 == 1.0 && crate::geometry::same_topological_coordinate(m01, 0.0)
-                    {
-                        point.x
-                    } else {
-                        crate::geometry::affine_about_origin_ordinate(
-                            m00, m01, pivot_x, pivot_x, pivot_y, point.x, point.y,
-                        )
-                        .map_err(|error| row_err(logical, error))?
-                    };
-                    let y = if crate::geometry::same_topological_coordinate(m10, 0.0) && m11 == 1.0
-                    {
-                        point.y
-                    } else {
-                        crate::geometry::affine_about_origin_ordinate(
-                            m10, m11, pivot_y, pivot_x, pivot_y, point.x, point.y,
-                        )
-                        .map_err(|error| row_err(logical, error))?
-                    };
+                    let (x, y) = transform
+                        .map_xy(point.x, point.y)
+                        .map_err(|error| row_err(logical, error))?;
                     builder.push(
                         Point::new_axes(x, y, ZOrdinate(point.z()), MOrdinate(point.m()))
                             .map_err(|error| row_err(logical, error))?,
@@ -1229,8 +1210,9 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 }
                 let pivot = packed_line_row_pivot(spec, xs, ys, window.clone())
                     .map_err(|error| row_err(row, error))?;
+                let transform = linear.at(pivot).map_err(|error| row_err(row, error))?;
                 builder
-                    .push_affine_about_origin(coords, window, linear, pivot)
+                    .push_affine_about_origin(coords, window, transform)
                     .map_err(|error| row_err(row, error))?;
             }
             let cap = builder.vertex_len();
@@ -1263,10 +1245,11 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let rings = polygon_columns.polygon_rings(row);
                 let pivot = packed_polygon_row_pivot(spec, xs, ys, ring_offsets, rings.clone())
                     .map_err(|error| row_err(row, error))?;
+                let transform = linear.at(pivot).map_err(|error| row_err(row, error))?;
                 for ring in rings {
                     let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
                     builder
-                        .push_affine_about_origin(coords, window, linear, pivot)
+                        .push_affine_about_origin(coords, window, transform)
                         .map_err(|error| row_err(row, error))?;
                     output_rings += 1;
                 }

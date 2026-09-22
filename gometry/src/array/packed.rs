@@ -4,7 +4,7 @@ use crate::array::{
     ArrayRows, Bounds, CoordSeq, CoordinateAxes, Crs, CsrOffsetBuilder, CsrOffsetColumn,
     ElementBounds, Frame, GeometryArrayStorage, GeometryKind, InvalidGeometryError, LogicalRow,
     LogicalRows, OriginSpec, PackedColumns, PackedStorage, Point, PointColumnBuilder, PolygonLevel,
-    Py, PyAny, PyErr, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection,
+    Py, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, RingLevel, RowSelection,
     RowSelectionRef, Shape, StorageLayout, TotalBoundsCache, ValidityMask,
     packed_per_row_self_origin_affine_columns, physical_row, point_logical_len, prepared,
     row_map_is_identity, row_ord_extremes, row_selection_from_logical_rows,
@@ -1043,38 +1043,19 @@ impl PyGeometryArray {
         &self,
         py: Python<'_>,
         spec: OriginSpec,
-        matrix: impl FnOnce() -> [f64; 4],
+        matrix: [f64; 4],
     ) -> PyResult<Option<Self>> {
-        let matrix = matrix();
-        if !matrix.iter().all(|value| value.is_finite()) {
-            let error: crate::error::Error =
-                crate::geometry::GeometryErrorKind::NonFiniteCoordinate.into();
-            return Err(PyErr::from(error));
-        }
-        if affine_linear_is_identity(matrix) {
+        let linear = crate::geometry::AffineLinear::new(matrix)?;
+        if linear.is_identity() {
             return Ok(Some(self.clone()));
         }
-        self.packed_per_row_self_origin_affine(py, spec, || matrix)
-    }
-
-    /// Per-row self-origin affine for packed storage: each CSR window gets its
-    /// pivot from column kernels and uses the exact origin-relative evaluator.
-    /// Points are identity only for their own centroid/center; mixed storage
-    /// returns `None`.
-    pub(crate) fn packed_per_row_self_origin_affine(
-        &self,
-        py: Python<'_>,
-        spec: OriginSpec,
-        matrix: impl FnOnce() -> [f64; 4],
-    ) -> PyResult<Option<Self>> {
         if matches!(spec, OriginSpec::Centroid | OriginSpec::Center)
             && let Some(identity) = self.packed_points_identity()
         {
             return Ok(Some(identity));
         }
-        let matrix = matrix();
         self.map_packed_columns_detached(py, self.frame.clone(), move |columns| {
-            packed_per_row_self_origin_affine_columns(columns, spec, matrix)
+            packed_per_row_self_origin_affine_columns(columns, spec, linear)
         })
     }
 
@@ -1241,17 +1222,6 @@ impl PyGeometryArray {
             frame,
         )
     }
-}
-
-#[expect(
-    clippy::float_cmp,
-    reason = "exact identity linear coefficients may share storage"
-)]
-fn affine_linear_is_identity(matrix: [f64; 4]) -> bool {
-    matrix[0] == 1.0
-        && crate::geometry::same_topological_coordinate(matrix[1], 0.0)
-        && crate::geometry::same_topological_coordinate(matrix[2], 0.0)
-        && matrix[3] == 1.0
 }
 
 #[cfg(test)]

@@ -108,30 +108,36 @@ impl PackedColumnBuilder {
         }
     }
 
-    /// Exact affine-map one CSR window about `origin` without closing a row.
-    pub(crate) fn extend_affine_about_origin(
-        &mut self,
-        coords: &CoordSeq,
-        window: Range<usize>,
-        linear: [f64; 4],
-        origin: (f64, f64),
-    ) -> CrateResult<()> {
-        let transformed = coords
-            .view(CoordWindow::from_range(window, coords.len()))
-            .try_affine_about_origin(linear, origin)?;
-        self.extend_coords(&transformed);
-        Ok(())
-    }
-
-    /// Exact affine-map one CSR window about `origin`, then close the row.
+    /// Exact affine-map one CSR window, then close the row.
     pub(crate) fn push_affine_about_origin(
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
-        linear: [f64; 4],
-        origin: (f64, f64),
+        transform: crate::geometry::OriginAffine,
     ) -> CrateResult<()> {
-        self.extend_affine_about_origin(coords, window, linear, origin)?;
+        self.reserve_columns(window.len());
+        let previous_len = self.xs.len();
+        for (&x, &y) in column_window(coords.xs(), &window)
+            .iter()
+            .zip(column_window(coords.ys(), &window))
+        {
+            let (x, y) = match transform.map_xy(x, y) {
+                Ok(point) => point,
+                Err(error) => {
+                    self.xs.truncate(previous_len);
+                    self.ys.truncate(previous_len);
+                    return Err(error);
+                },
+            };
+            self.xs.push(x);
+            self.ys.push(y);
+        }
+        if let (Some(output), Some(source)) = (self.zs.as_mut(), coords.zs()) {
+            output.extend_from_slice(column_window(source, &window));
+        }
+        if let (Some(output), Some(source)) = (self.ms.as_mut(), coords.ms()) {
+            output.extend_from_slice(column_window(source, &window));
+        }
         self.offsets.push_end(self.xs.len(), i32::MAX as usize)?;
         Ok(())
     }
@@ -217,7 +223,35 @@ pub(crate) fn concat_packed_line_columns(
 
 #[cfg(test)]
 mod tests {
-    use super::{CoordSeq, CsrOffsetColumn, concat_packed_line_columns};
+    use super::{CoordSeq, CsrOffsetColumn, PackedColumnBuilder, concat_packed_line_columns};
+
+    #[test]
+    fn affine_error_preserves_completed_rows_and_all_ordinate_columns() {
+        let coords = CoordSeq::try_from_vecs(
+            vec![1.0, 2.0, f64::MAX],
+            vec![3.0, 4.0, 5.0],
+            Some(vec![6.0, 7.0, 8.0]),
+            Some(vec![9.0, 10.0, 11.0]),
+        )
+        .unwrap();
+        let mut builder = PackedColumnBuilder::like(&coords, 4, 2);
+        builder.push_window(&coords, 0..2).unwrap();
+        let transform = crate::geometry::AffineLinear::new([2.0, 0.0, 0.0, 1.0])
+            .unwrap()
+            .at((0.0, 0.0))
+            .unwrap();
+        assert!(
+            builder
+                .push_affine_about_origin(&coords, 1..3, transform)
+                .is_err()
+        );
+        let (output, offsets) = builder.finish(2).unwrap();
+        assert_eq!(output.xs(), &[1.0, 2.0]);
+        assert_eq!(output.ys(), &[3.0, 4.0]);
+        assert_eq!(output.zs().unwrap(), &[6.0, 7.0]);
+        assert_eq!(output.ms().unwrap(), &[9.0, 10.0]);
+        assert_eq!(offsets.as_slice(), &[0, 2]);
+    }
 
     #[test]
     fn concat_packed_line_columns_appends_coordinates_in_input_order() {

@@ -15,8 +15,8 @@ use crate::geometry::constructive::{
 use crate::geometry::overlay::{partition_calls, reset_partition_calls};
 use crate::geometry::{
     BufferCapStyle, BufferJoinStyle, CoordSeq, ExpansionBudget, GeometryErrorKind, LineSeq,
-    MAX_NESTING, MultiPolygon, Point, Polygon, Ring, Segment, Shape, XY,
-    affine_about_origin_ordinate, axis_pow2_scale, scaled_residual,
+    MAX_NESTING, MultiPolygon, Point, Polygon, Ring, Segment, Shape, XY, axis_pow2_scale,
+    scaled_residual,
 };
 
 #[test]
@@ -513,7 +513,7 @@ fn affine_scale_keeps_the_independent_reciprocal_axis() {
 #[test]
 fn affine_origin_row_uses_both_input_pivots() {
     assert_eq!(
-        affine_about_origin_ordinate(1.0, 0.0, 7.0, 2.0, 7.0, 3.0, 0.0).unwrap(),
+        super::edit::affine_about_origin_ordinate(1.0, 0.0, 7.0, 2.0, 7.0, 3.0, 0.0).unwrap(),
         8.0
     );
 }
