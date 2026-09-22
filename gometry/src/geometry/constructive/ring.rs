@@ -10,7 +10,6 @@ use crate::geometry::{
     ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, simd_map_f64,
     topology_coordinate_bits_simd, try_simd_map_f64, wrap_index,
 };
-use crate::try_reserve_vec;
 
 pub(crate) fn normalized_line(points: &CoordSeq) -> Result<CoordSeq> {
     let count = points.len();
@@ -344,9 +343,8 @@ fn rotated_ring_columns(
     let count = range.len() + usize::from(closed);
     // After reversal the ring still starts at the min vertex; the walk
     // direction flips. Emit per ordinate column in two contiguous chunks.
-    let rotate = |column: &[f64]| -> Result<Vec<f64>> {
-        let mut output = Vec::new();
-        try_reserve_vec(&mut output, count)?;
+    let rotate = |column: &[f64]| {
+        let mut output = Vec::with_capacity(count);
         if reverse {
             output.extend(column[range.start..=start].iter().rev().copied());
             output.extend(column[start + 1..range.end].iter().rev().copied());
@@ -358,13 +356,13 @@ fn rotated_ring_columns(
             let first = output[0];
             output.push(first);
         }
-        Ok(output)
+        output
     };
     CoordSeq::try_from_vecs(
-        rotate(ring.xs())?,
-        rotate(ring.ys())?,
-        ring.zs().map(rotate).transpose()?,
-        ring.ms().map(rotate).transpose()?,
+        rotate(ring.xs()),
+        rotate(ring.ys()),
+        ring.zs().map(rotate),
+        ring.ms().map(rotate),
     )
 }
 
@@ -513,9 +511,7 @@ pub(crate) fn snap_column_simd(
     size: f64,
 ) -> Result<Box<[f64]>, crate::error::Error> {
     let n = column.len();
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, n)?;
-    out.resize(n, 0.0_f64);
+    let mut out = vec![0.0_f64; n];
     let (vorigin, vsize) = (ReduceSimd::splat(origin), ReduceSimd::splat(size));
     let infinity = ReduceSimd::splat(f64::INFINITY);
     try_simd_map_f64::<crate::error::Error>(
