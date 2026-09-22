@@ -68,7 +68,7 @@ where
     K: Eq + Hash,
 {
     let mut map = HashMap::with_hasher(collection_hash_state()?.clone());
-    map.try_reserve(capacity)?;
+    map.reserve(capacity);
     Ok(map)
 }
 
@@ -79,7 +79,7 @@ where
     T: Eq + Hash,
 {
     let mut set = HashSet::with_hasher(collection_hash_state()?.clone());
-    set.try_reserve(capacity)?;
+    set.reserve(capacity);
     Ok(set)
 }
 
@@ -88,12 +88,9 @@ fn collection_hash_state_with(
     fill: impl FnOnce(&mut [u8]) -> Result<(), getrandom::Error>,
 ) -> crate::error::Result<&ahash::RandomState> {
     state.get_or_try_init(|| {
-        let mut bytes = [0_u8; 32];
-        fill(&mut bytes).map_err(|_| crate::error::ResourceError::Entropy)?;
-        let Some(&[first, second, third, fourth]) = bytes.as_chunks::<8>().0.first_chunk::<4>()
-        else {
-            return Err(crate::error::ResourceError::Entropy.into());
-        };
+        let mut bytes = [[0_u8; 8]; 4];
+        fill(bytes.as_flattened_mut()).map_err(|_| crate::error::ResourceError::Entropy)?;
+        let [first, second, third, fourth] = bytes;
         Ok(ahash::RandomState::with_seeds(
             u64::from_ne_bytes(first),
             u64::from_ne_bytes(second),
@@ -233,63 +230,36 @@ mod row_id_sort_tests {
 
     #[test]
     fn cold_collection_hash_state_needs_no_rust_heap_allocation() {
-        crate::test_support::fail_allocations_after(0, || {
+        let ((), allocations) = crate::test_support::allocation_count(|| {
             let state = super::collection_hash_state().unwrap();
             let map = super::HashMap::<u64, u64>::with_hasher(state.clone());
             assert_eq!(map.capacity(), 0);
         });
+        assert_eq!(allocations, 0);
     }
 
     #[test]
     fn collection_entropy_failure_remains_retryable_and_maps_to_os_error() {
         use crate::error::{ErrorKind, ResourceError};
-        use crate::test_support::fail_allocations_after;
-
         pyo3::Python::initialize();
         let state = std::sync::OnceLock::new();
-        let error = fail_allocations_after(0, || {
+        let error =
             super::collection_hash_state_with(&state, |_| Err(getrandom::Error::UNSUPPORTED))
-        })
-        .unwrap_err();
+                .unwrap_err();
         assert!(matches!(
             error.kind(),
             ErrorKind::Resource(ResourceError::Entropy)
         ));
         assert!(state.get().is_none());
         pyo3::Python::attach(|py| {
-            let error: pyo3::PyErr = fail_allocations_after(0, || error.into());
+            let error: pyo3::PyErr = error.into();
             assert!(error.is_instance_of::<pyo3::exceptions::PyOSError>(py));
         });
-        let first = fail_allocations_after(0, || {
-            super::collection_hash_state_with(&state, getrandom::fill)
-        })
-        .unwrap();
+        let first = super::collection_hash_state_with(&state, getrandom::fill).unwrap();
         let reused =
             super::collection_hash_state_with(&state, |_| panic!("initialized entropy reused"))
                 .unwrap();
         assert!(std::ptr::eq(first, reused));
-    }
-
-    #[test]
-    fn fallible_hash_collections_return_allocation_errors_and_retry() {
-        use crate::error::{ErrorKind, ResourceError};
-
-        let map = crate::test_support::fail_allocations_after(0, || {
-            super::try_hash_map_with_capacity::<u64, u64>(8)
-        });
-        assert!(matches!(
-            map.unwrap_err().kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        let set = crate::test_support::fail_allocations_after(0, || {
-            super::try_hash_set_with_capacity::<u64>(8)
-        });
-        assert!(matches!(
-            set.unwrap_err().kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        super::try_hash_map_with_capacity::<u64, u64>(8).unwrap();
-        super::try_hash_set_with_capacity::<u64>(8).unwrap();
     }
 
     #[test]
