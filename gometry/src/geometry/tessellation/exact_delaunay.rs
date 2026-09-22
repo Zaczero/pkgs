@@ -634,12 +634,12 @@ impl Mesh {
         let new_triangles = new_slots
             .checked_mul(3)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        self.free.try_reserve(cavity.len())?;
-        self.triangles.try_reserve(new_triangles)?;
-        self.halfedges.try_reserve(new_triangles)?;
-        self.stamp.try_reserve(new_slots)?;
+        self.free.reserve(cavity.len());
+        self.triangles.reserve(new_triangles);
+        self.halfedges.reserve(new_triangles);
+        self.stamp.reserve(new_slots);
         if split_hull.is_some() {
-            self.hull.try_reserve(1)?;
+            self.hull.reserve(1);
         }
         let mut slots = Vec::new();
         crate::try_reserve_vec(&mut slots, ordered.len())?;
@@ -728,7 +728,7 @@ impl Mesh {
             .checked_add(1)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
         if self.incident.len() < required {
-            self.incident.try_reserve(required - self.incident.len())?;
+            self.incident.reserve(required - self.incident.len());
             self.incident.resize(required, EMPTY);
         }
         Ok(())
