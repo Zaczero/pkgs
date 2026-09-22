@@ -157,13 +157,16 @@ impl Store {
 
         let idx = self.free.pop().expect("free list invariant violated");
         let prev_head = self.head;
-        self.nodes[idx as usize].write(Node {
-            hash,
-            key,
-            value,
-            prev: INVALID,
-            next: prev_head,
-        });
+        self.nodes
+            .get_mut(idx as usize)
+            .expect("free list index must name a node slot")
+            .write(Node {
+                hash,
+                key,
+                value,
+                prev: INVALID,
+                next: prev_head,
+            });
         if prev_head == INVALID {
             self.tail = idx;
         } else {
@@ -173,12 +176,18 @@ impl Store {
             }
         }
         self.head = idx;
-        self.len += 1;
+        self.len = self.len.wrapping_add(1);
 
         let nodes = &self.nodes;
         self.table.insert_unique(hash as u64, idx, move |stored| {
             // SAFETY: every index in the table corresponds to an occupied slot.
-            unsafe { nodes[*stored as usize].assume_init_ref() }.hash as u64
+            unsafe {
+                nodes
+                    .get(*stored as usize)
+                    .expect("table index must name a node slot")
+                    .assume_init_ref()
+            }
+            .hash as u64
         });
 
         Ok(Displaced {
@@ -213,7 +222,12 @@ impl Store {
             // SAFETY: walking the LRU chain visits each occupied slot exactly once.
             // The `_py` argument keeps us attached, so the inlined `drop` decrements
             // refcounts inline.
-            let node = unsafe { self.nodes[idx as usize].assume_init_read() };
+            let node = unsafe {
+                self.nodes
+                    .get(idx as usize)
+                    .expect("LRU link must name a node slot")
+                    .assume_init_read()
+            };
             let prev = node.prev;
             drop(node.key);
             drop(node.value);
@@ -256,7 +270,12 @@ impl Store {
                     return false;
                 }
                 // SAFETY: every index in the table corresponds to an occupied slot.
-                let node = unsafe { nodes[idx as usize].assume_init_ref() };
+                let node = unsafe {
+                    nodes
+                        .get(idx as usize)
+                        .expect("table index must name a node slot")
+                        .assume_init_ref()
+                };
                 match eq(&node.key) {
                     Ok(matched) => matched,
                     Err(e) => {
@@ -272,13 +291,23 @@ impl Store {
     /// SAFETY: caller must guarantee the slot at `idx` is occupied.
     unsafe fn node_ref(&self, idx: u32) -> &Node {
         // SAFETY: forwarded from the caller's guarantee.
-        unsafe { self.nodes[idx as usize].assume_init_ref() }
+        unsafe {
+            self.nodes
+                .get(idx as usize)
+                .expect("occupied index must name a node slot")
+                .assume_init_ref()
+        }
     }
 
     /// SAFETY: caller must guarantee the slot at `idx` is occupied.
     unsafe fn node_mut(&mut self, idx: u32) -> &mut Node {
         // SAFETY: forwarded from the caller's guarantee.
-        unsafe { self.nodes[idx as usize].assume_init_mut() }
+        unsafe {
+            self.nodes
+                .get_mut(idx as usize)
+                .expect("occupied index must name a node slot")
+                .assume_init_mut()
+        }
     }
 
     /// Splice an occupied slot out of the LRU chain.
@@ -315,10 +344,15 @@ impl Store {
             prev,
             next,
             ..
-        } = unsafe { self.nodes[idx as usize].assume_init_read() };
+        } = unsafe {
+            self.nodes
+                .get(idx as usize)
+                .expect("occupied index must name a node slot")
+                .assume_init_read()
+        };
         self.unlink(prev, next);
         self.free.push(idx);
-        self.len -= 1;
+        self.len = self.len.wrapping_sub(1);
         (key, value)
     }
 
@@ -375,7 +409,7 @@ impl<'a> Iterator for StoreIter<'a> {
         // SAFETY: `idx` walks the LRU chain through occupied slots only.
         let node = unsafe { self.store.node_ref(self.idx) };
         self.idx = node.prev;
-        self.remaining -= 1;
+        self.remaining = self.remaining.wrapping_sub(1);
         Some(&node.key)
     }
 
