@@ -25,6 +25,6 @@ pub(crate) use clean::{CoverageOverlapRule, coverage_clean, coverage_union_topo}
 pub(in crate::geometry) use simplify::{TopologyGuard, simplify_chain_guarded, triangle_area};
 pub(crate) use simplify::{vw_area_tolerance, *};
 pub(crate) use validate::{
-    coverage_invalid_edges, coverage_invalid_segments_prepared, coverage_is_valid, coverage_rows,
-    valid_coverage_rows,
+    coverage_invalid_edges, coverage_is_valid, coverage_rows, valid_coverage_rows,
+    visit_invalid_segments,
 };

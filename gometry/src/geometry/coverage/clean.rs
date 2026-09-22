@@ -1,6 +1,6 @@
 use crate::error::Result;
 use crate::geometry::coverage::{
-    HashMap, coverage_invalid_segments_prepared, coverage_rows, valid_coverage_rows,
+    HashMap, coverage_rows, valid_coverage_rows, visit_invalid_segments,
 };
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
@@ -43,53 +43,40 @@ pub(crate) fn coverage_clean<S: std::borrow::Borrow<Shape>>(
     #[cfg(test)]
     let admission_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::Admission);
-    let mut snapped = Vec::new();
-    crate::try_reserve_vec(&mut snapped, rows.len())?;
+    let mut snapped = Vec::with_capacity(rows.len());
     if grid_size > 0.0 {
         for row in rows {
-            crate::try_push_vec(
-                &mut snapped,
-                row.borrow().snap_to_grid_repaired(
-                    (grid_size, grid_size),
-                    (0.0, 0.0),
-                    crate::geometry::TopologyDomain::Cartesian,
-                )?,
-            )?;
+            snapped.push(row.borrow().snap_to_grid_repaired(
+                (grid_size, grid_size),
+                (0.0, 0.0),
+                crate::geometry::TopologyDomain::Cartesian,
+            )?);
         }
     } else {
-        for row in rows {
-            crate::try_push_vec(&mut snapped, row.borrow().clone())?;
-        }
+        snapped.extend(rows.iter().map(|row| row.borrow().clone()));
     }
     let prepared = coverage_rows(&snapped, gap_width)?;
     // Cleaning an already-valid coverage is an identity operation. Besides
     // avoiding needless partition work, this preserves coordinate bits, ring
     // presentation, and makes repeated cleaning exactly idempotent.
-    if coverage_invalid_segments_prepared(&prepared, gap_width)?
-        .iter()
-        .all(Vec::is_empty)
-    {
+    // Finish validation so errors from later rows precede partition construction.
+    if !visit_invalid_segments(&prepared, gap_width, |_, _| true)? {
         return Ok(snapped);
     }
+    drop(prepared);
 
     #[cfg(test)]
     drop(admission_phase);
     #[cfg(test)]
     let source_staging_phase =
         crate::test_support::allocation_phase(crate::test_support::AllocationPhase::SourceStaging);
-    let mut shape_refs = Vec::new();
-    crate::try_reserve_vec(&mut shape_refs, snapped.len())?;
-    shape_refs.extend(&snapped);
+    let shape_refs: Vec<_> = snapped.iter().collect();
     let inventory = ExactSourceInventory::from_shapes(&shape_refs)?;
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_clean", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
     #[cfg(test)]
     drop(source_staging_phase);
-    let mut row_areas = Vec::new();
-    crate::try_reserve_vec(&mut row_areas, prepared.len())?;
-    for row in &prepared {
-        crate::try_push_vec(&mut row_areas, row.shape.area())?;
-    }
+    let row_areas: Vec<_> = snapped.iter().map(Shape::area).collect();
     let declared_axes = snapped
         .iter()
         .fold(crate::geometry::CoordinateAxes::XY, |axes, shape| {
@@ -121,18 +108,17 @@ pub(crate) fn coverage_union_topo<S: std::borrow::Borrow<Shape>>(
     }) {
         return coverage_union_inner(coverage);
     }
-    let mut split_owned = Vec::new();
-    crate::try_reserve_vec(&mut split_owned, coverage.len())?;
+    let mut split_owned = Vec::with_capacity(coverage.len());
     for row in coverage {
         let shape = row.borrow();
         let split = if shape.bounds().is_some_and(|bounds| {
             crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
         }) {
-            Ok(shape.clone())
+            shape.clone()
         } else {
-            shape.split_antimeridian_in_frame(frame)
-        }?;
-        crate::try_push_vec(&mut split_owned, split)?;
+            shape.split_antimeridian_in_frame(frame)?
+        };
+        split_owned.push(split);
     }
     coverage_union_inner(&split_owned)
 }
@@ -141,11 +127,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
     // The fast dissolve is correct only for valid coverages. Validate at the
     // public kernel boundary instead of exposing an unchecked footgun.
     let prepared = valid_coverage_rows(coverage, "coverage_union")?;
-    let mut source_refs = Vec::new();
-    crate::try_reserve_vec(&mut source_refs, coverage.len())?;
-    for shape in coverage {
-        crate::try_push_vec(&mut source_refs, shape.borrow())?;
-    }
+    let source_refs: Vec<_> = coverage.iter().map(|shape| shape.borrow()).collect();
     // Preserve the singleton identity path: one polygon is already the union
     // (bit-identical presentation of the input).
     let mut sole: Option<&crate::geometry::Polygon> = None;
@@ -160,13 +142,14 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
                 sole = Some(polygon);
             },
             Shape::MultiPolygon(polygons) => {
+                let Some(polygon) = polygons.first() else {
+                    continue;
+                };
                 if polygons.len() > 1 || sole.is_some() {
                     multi = true;
                     break;
                 }
-                if let Some(polygon) = polygons.first() {
-                    sole = Some(polygon);
-                }
+                sole = Some(polygon);
             },
             // Empties contribute no regions; non-polygonal rows are rejected by
             // coverage_rows before we get here.
@@ -191,13 +174,11 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             Ok::<_, crate::error::Error>(ok && row.shape.validate()?.is_none())
         })?
     {
-        let mut parts = Vec::new();
-        crate::try_reserve_vec(&mut parts, prepared.rows.len())?;
+        let mut parts = Vec::with_capacity(prepared.rows.len());
         for row in &prepared.rows {
             match row.shape {
-                Shape::Polygon(polygon) => crate::try_push_vec(&mut parts, polygon.clone())?,
+                Shape::Polygon(polygon) => parts.push(polygon.clone()),
                 Shape::MultiPolygon(polygons) => {
-                    crate::try_reserve_vec(&mut parts, polygons.len())?;
                     parts.extend(polygons.iter().cloned());
                 },
                 Shape::Empty(..) => {},
@@ -211,10 +192,9 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             let axes = first.axes();
             parts.iter().any(|polygon| polygon.axes() != axes)
         }) {
-            let mut homogeneous = Vec::new();
-            crate::try_reserve_vec(&mut homogeneous, parts.len())?;
+            let mut homogeneous = Vec::with_capacity(parts.len());
             for polygon in parts {
-                crate::try_push_vec(&mut homogeneous, polygon.map_ring_seqs(CoordSeq::force_2d)?)?;
+                homogeneous.push(polygon.map_ring_seqs(CoordSeq::force_2d)?);
             }
             homogeneous
         } else {
@@ -244,11 +224,10 @@ fn dissolve_edge_incidences(
         (crate::geometry::Segment, usize),
     >,
 ) -> Result<Shape> {
-    let mut survivors = Vec::new();
-    crate::try_reserve_vec(&mut survivors, incidences.len())?;
+    let mut survivors = Vec::with_capacity(incidences.len());
     for (segment, count) in incidences.into_values() {
         if count == 1 {
-            crate::try_push_vec(&mut survivors, segment)?;
+            survivors.push(segment);
         }
     }
     if survivors.is_empty() {

@@ -104,27 +104,24 @@ pub(crate) fn coverage_invalid_segments<S: std::borrow::Borrow<Shape>>(
     gap_width: f64,
 ) -> Result<Vec<Vec<Segment>>> {
     let rows = coverage_rows(rows, gap_width)?;
-    coverage_invalid_segments_prepared(&rows, gap_width)
+    let mut invalid = vec![Vec::new(); rows.len()];
+    visit_invalid_segments(&rows, gap_width, |index, segment| {
+        invalid[index].push(segment);
+        true
+    })?;
+    Ok(invalid)
 }
 
 /// Validate already-prepared coverage rows, allowing check-and-do operations
-/// to reuse the same extracted boundary graph for their kernel.
-pub(crate) fn coverage_invalid_segments_prepared(
+/// to reuse the same extracted boundary graph for their kernel. The visitor
+/// returns whether to continue; the result reports whether any segment is invalid.
+pub(crate) fn visit_invalid_segments(
     rows: &[CoverageRow<'_>],
     gap_width: f64,
-) -> Result<Vec<Vec<Segment>>> {
+    report_invalid: impl FnMut(usize, Segment) -> bool,
+) -> Result<bool> {
     let occurrences = edge_row_occurrences(rows)?;
-    let mut invalid = vec![Vec::new(); rows.len()];
-    coverage_invalid_with_count(
-        rows,
-        |key| occurrences[&key],
-        gap_width,
-        |index, segment| {
-            invalid[index].push(segment);
-            true
-        },
-    )?;
-    Ok(invalid)
+    coverage_invalid_with_count(rows, |key| occurrences[&key], gap_width, report_invalid)
 }
 
 /// Core validator given a count lookup: matched interface when count==2.
@@ -344,13 +341,7 @@ pub(crate) fn coverage_is_valid<S: std::borrow::Borrow<Shape>>(
     gap_width: f64,
 ) -> Result<bool> {
     let rows = coverage_rows(rows, gap_width)?;
-    let occurrences = edge_row_occurrences(&rows)?;
-    Ok(!coverage_invalid_with_count(
-        &rows,
-        |key| occurrences[&key],
-        gap_width,
-        |_, _| false,
-    )?)
+    Ok(!visit_invalid_segments(&rows, gap_width, |_, _| false)?)
 }
 
 /// Per-row invalid boundary linework: the row's offending segments merged
