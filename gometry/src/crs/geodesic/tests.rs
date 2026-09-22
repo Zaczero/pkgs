@@ -673,43 +673,24 @@ fn point_segment_query_propagates_scratch_allocation_failure() {
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test retries geodesic-line cache insertion across every allocator prefix"
-)]
-fn geodesic_line_cache_allocation_failures_retry_without_publication() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
+fn geodesic_line_cache_reuses_a_published_line_without_allocating() {
+    use crate::test_support::allocation_count;
 
     let geodesic = Geodesic::wgs84();
     let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let segment = metric.make_segment(p(-1.0, 0.0), p(1.0, 0.0))?;
-    let reset = || {
-        GEODESIC_LINE_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            cache.clear();
-            cache.shrink_to_fit();
-        });
-    };
-    reset();
+    let segment = metric.make_segment(p(-1.0, 0.0), p(1.0, 0.0)).unwrap();
+    GEODESIC_LINE_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        cache.clear();
+        cache.shrink_to_fit();
+    });
     let run = || cached_geodesic_line(&geodesic, &segment);
-    let (expected, allocations) = allocation_count(&run);
-    let expected = expected?;
+    let expected = run();
     let (_, expected_lat, expected_lon, expected_azimuth, ..) =
         expected._gen_position(false, 1_000.0, super::GEODESIC_LINE_OUTMASK);
-    assert!(allocations > 0, "geodesic-line cache did not allocate");
-    for allowed in 0..allocations {
-        reset();
-        let result = fail_allocations_after(allowed, &run);
-        let error = result
-            .err()
-            .unwrap_or_else(|| panic!("line-cache prefix {allowed} unexpectedly succeeded"));
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        reset();
-        let actual = run()?;
+    for _ in 0..2 {
+        let (actual, allocations) = allocation_count(run);
+        assert_eq!(allocations, 0);
         let (_, actual_lat, actual_lon, actual_azimuth, ..) =
             actual._gen_position(false, 1_000.0, super::GEODESIC_LINE_OUTMASK);
         assert_eq!(
@@ -722,11 +703,9 @@ fn geodesic_line_cache_allocation_failures_retry_without_publication() -> Result
                 expected_lat.to_bits(),
                 expected_lon.to_bits(),
                 expected_azimuth.to_bits()
-            ),
-            "line-cache retry at {allowed}"
+            )
         );
     }
-    Ok(())
 }
 
 #[test]

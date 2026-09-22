@@ -230,7 +230,7 @@ impl GeodesicMetric for EllipsoidMetric<'_> {
         let geodesic_segment = self.to_geodesic_segment(segment);
         Ok(PreparedMetricSegment {
             source_segment: *segment,
-            inner: PreparedSegment::new(self.normalized(), &geodesic_segment)?,
+            inner: PreparedSegment::new(self.normalized(), &geodesic_segment),
             frame: self.frame,
             semi_major: self.geodesic.a,
         })
