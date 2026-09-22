@@ -491,7 +491,7 @@ impl PySpatialIndex {
         self.geodesic_capped_nearest_shared(
             order,
             exact,
-            HeapNearest::new(k, self.rows.len())?,
+            HeapNearest::new(k, self.__len__()),
             max_distance,
         )
     }
@@ -512,7 +512,7 @@ impl PySpatialIndex {
             }
             self.consider_nearest_candidate(idx, &mut exact, max_distance, &mut state)?;
         }
-        Ok(Some(state.finish()?))
+        Ok(Some(state.finish()))
     }
 
     pub(crate) fn geodesic_pruner(

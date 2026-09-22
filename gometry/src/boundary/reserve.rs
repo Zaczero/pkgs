@@ -23,8 +23,6 @@
 //! invents a list-vs-generator asymmetry. The collector's retained output
 //! grows proportionally (see [`collect_py_iter`]).
 
-use std::collections::BinaryHeap;
-
 use pyo3::exceptions::{PyMemoryError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PySequence, PyString};
@@ -142,22 +140,6 @@ pub(crate) fn try_push_pair<T, U>(
     }
     left.push(left_value);
     right.push(right_value);
-    Ok(())
-}
-
-/// Append one ordered work item after checking the heap element layout.
-pub(crate) fn try_push_heap<T: Ord>(heap: &mut BinaryHeap<T>, value: T) -> Result<()> {
-    if heap.len() == heap.capacity() {
-        check_vec_capacity::<T>(heap.len(), 1)?;
-    }
-    heap.push(value);
-    Ok(())
-}
-
-/// Reserve a known heap capacity after checking its element layout.
-pub(crate) fn try_reserve_heap<T>(heap: &mut BinaryHeap<T>, additional: usize) -> Result<()> {
-    check_vec_capacity::<T>(heap.len(), additional)?;
-    heap.reserve(additional);
     Ok(())
 }
 

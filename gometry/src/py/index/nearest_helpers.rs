@@ -2,7 +2,7 @@ use pyo3::IntoPyObjectExt as _;
 
 use crate::NonNegative;
 use crate::py::index::{
-    AABB, BinaryHeap, Ordering, Py, PyAny, PyErr, PyResult, Python, float64_array, int64_array,
+    AABB, BinaryHeap, Ordering, Py, PyAny, PyResult, Python, float64_array, int64_array,
 };
 use crate::py::vectors::Groups;
 /// A frontier node of the best-first nearest traversal — a bulk STR node, an
@@ -111,9 +111,9 @@ pub(crate) fn push_nearest_candidate(
     nearest: &mut BinaryHeap<NearestCandidate>,
     k: usize,
     candidate: NearestCandidate,
-) -> PyResult<()> {
+) {
     if nearest.len() < k {
-        crate::try_push_heap(nearest, candidate).map_err(PyErr::from)?;
+        nearest.push(candidate);
     } else if let Some(mut worst) = nearest.peek_mut() {
         // Replace-in-place via peek_mut (one sift) instead of pop+push (two).
         // Kept only when the public nearest row improves beyond noise.
@@ -121,7 +121,6 @@ pub(crate) fn push_nearest_candidate(
             *worst = candidate;
         }
     }
-    Ok(())
 }
 
 /// Squared box-to-box distance between two axis-aligned envelopes (0 when they
