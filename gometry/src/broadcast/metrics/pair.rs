@@ -247,21 +247,20 @@ fn transform_present(
     ys: &mut [f64],
     present: &[usize],
 ) -> Result<(), LonLatPointsError> {
-    let mut px = Vec::new();
-    let mut py = Vec::new();
-    crate::try_reserve_pair(&mut px, &mut py, present.len()).map_err(LonLatPointsError::Setup)?;
+    let mut px = Vec::with_capacity(present.len());
+    let mut py = Vec::with_capacity(present.len());
     for &row in present {
-        crate::try_push_pair(&mut px, &mut py, xs[row], ys[row])
-            .map_err(LonLatPointsError::Setup)?;
+        px.push(xs[row]);
+        py.push(ys[row]);
     }
     let plan =
         crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
     plan.transform_coordinates(&mut px, &mut py, crate::Zt::None)
         .map_err(LonLatPointsError::Setup)?;
-    for (index, &row) in present.iter().enumerate() {
-        lonlat_domain(row, px[index], py[index])?;
-        xs[row] = px[index];
-        ys[row] = py[index];
+    for ((&row, x), y) in present.iter().zip(px).zip(py) {
+        lonlat_domain(row, x, y)?;
+        xs[row] = x;
+        ys[row] = y;
     }
     Ok(())
 }
@@ -270,28 +269,28 @@ fn compact_lonlat_points(
     array: &PyGeometryArray,
 ) -> Result<LonLatPointRows<'_>, LonLatPointsError> {
     let projected_crs = array.crs_str().filter(|crs| !crs::is_wgs84_lonlat(crs));
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    let mut present = Vec::new();
-    crate::try_reserve_pair(&mut xs, &mut ys, array.len()).map_err(LonLatPointsError::Setup)?;
-    crate::try_reserve_vec(&mut present, array.len()).map_err(LonLatPointsError::Setup)?;
+    std::alloc::Layout::array::<f64>(array.len())
+        .map_err(|_| LonLatPointsError::Setup(crate::error::ResourceError::SizeOverflow.into()))?;
+    let mut xs = Vec::with_capacity(array.len());
+    let mut ys = Vec::with_capacity(array.len());
+    let mut present = Vec::with_capacity(array.len());
     for logical_row in array
         .row_operation()
         .rows_with_missing(|| (f64::NAN, f64::NAN))
     {
         match logical_row {
             ArrayRow::Missing { value, .. } => {
-                crate::try_push_pair(&mut xs, &mut ys, value.0, value.1)
-                    .map_err(LonLatPointsError::Setup)?;
+                xs.push(value.0);
+                ys.push(value.1);
             },
             ArrayRow::Present(row) => {
                 let logical = row.logical();
                 let crate::array::ShapeRow::Point(point) = row.row() else {
                     unreachable!("compact point storage yields point rows")
                 };
-                crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
-                    .map_err(LonLatPointsError::Setup)?;
-                crate::try_push_vec(&mut present, logical).map_err(LonLatPointsError::Setup)?;
+                xs.push(point.x);
+                ys.push(point.y);
+                present.push(logical);
             },
         }
     }
@@ -337,18 +336,16 @@ pub(crate) fn lonlat_points(
             return Ok(LonLatPointRows::Source(points));
         },
     };
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    crate::try_reserve_pair(&mut xs, &mut ys, points.len()).map_err(LonLatPointsError::Setup)?;
+    let mut xs = Vec::with_capacity(points.len());
+    let mut ys = Vec::with_capacity(points.len());
     for point in points.iter() {
-        crate::try_push_pair(&mut xs, &mut ys, point.x, point.y)
-            .map_err(LonLatPointsError::Setup)?;
+        xs.push(point.x);
+        ys.push(point.y);
     }
-    let mut present = Vec::new();
-    crate::try_reserve_vec(&mut present, points.len()).map_err(LonLatPointsError::Setup)?;
+    let mut present = Vec::with_capacity(points.len());
     for row in 0..points.len() {
         if !array.is_row_missing(row) {
-            crate::try_push_vec(&mut present, row).map_err(LonLatPointsError::Setup)?;
+            present.push(row);
         }
     }
     if !present.is_empty() {
