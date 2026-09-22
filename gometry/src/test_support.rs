@@ -331,11 +331,11 @@ impl Drop for PythonSignalTestGuard {
         Python::attach(|py| {
             // Clear a signal left by a failing assertion before restoring the
             // caller's handler, so it cannot poison the next embedded test.
-            let _ = py.check_signals();
+            drop(py.check_signals());
             if let Ok(signal) = py.import("signal")
                 && let Ok(sigint) = signal.getattr("SIGINT")
             {
-                let _ = signal.call_method1("signal", (sigint, self.previous_handler.bind(py)));
+                drop(signal.call_method1("signal", (sigint, self.previous_handler.bind(py))));
             }
         });
     }

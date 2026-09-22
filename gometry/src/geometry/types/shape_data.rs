@@ -684,12 +684,12 @@ mod frame_cache_tests {
             GeodesicPartsKey::new_at_generation("EPSG:4326", 6_378_137.0, 1.0 / 298.257_223_563, 5);
         let other_frame =
             GeodesicPartsKey::new_at_generation("EPSG:4267", 6_378_206.4, 1.0 / 294.978_698_2, 5);
-        let _ = cache.merge(first.clone(), |_| {});
+        drop(cache.merge(first.clone(), |_| {}));
         assert!(cache.get(&first).is_some());
-        let _ = cache.merge(next_generation.clone(), |_| {});
+        drop(cache.merge(next_generation.clone(), |_| {}));
         assert!(cache.get(&first).is_none());
         assert!(cache.get(&next_generation).is_some());
-        let _ = cache.merge(other_frame.clone(), |_| {});
+        drop(cache.merge(other_frame.clone(), |_| {}));
         assert!(cache.get(&next_generation).is_none());
         assert!(cache.get(&other_frame).is_some());
     }
@@ -984,7 +984,7 @@ mod frame_cache_tests {
         let cache = FrameDependentCaches::default();
         let key = GeodesicPartsKey::new_at_generation("TEST", 1.0, 0.0, 0);
         let key_heap = key.heap_bytes();
-        let _ = cache.merge(key, |_| {});
+        drop(cache.merge(key, |_| {}));
         // The key's existing string storage and the empty entry account for
         // all retained bytes; unlike the former Vec-backed LRU, the container
         // itself retains no additional heap allocation.
@@ -1005,7 +1005,7 @@ mod frame_cache_tests {
                             1.0 / 298.257_223_563,
                             generation + worker,
                         );
-                        let _ = cache.merge(key, |_| {});
+                        drop(cache.merge(key, |_| {}));
                     }
                 });
             }

@@ -1073,7 +1073,7 @@ mod row_selection_admission_tests {
     #[test]
     #[should_panic(expected = "logical row is outside selected row map")]
     fn logical_row_composition_rejects_identity_logical_end() {
-        let _ = row_selection_from_logical_rows(RowSelectionRef::Identity, 4, [4]).unwrap();
+        drop(row_selection_from_logical_rows(RowSelectionRef::Identity, 4, [4]).unwrap());
     }
 
     #[test]
@@ -1083,13 +1083,13 @@ mod row_selection_admission_tests {
             start: usize::MAX - 1,
             len: 1,
         };
-        let _ = row_selection_from_logical_rows(row_map, usize::MAX, [1]).unwrap();
+        drop(row_selection_from_logical_rows(row_map, usize::MAX, [1]).unwrap());
     }
 
     #[test]
     #[should_panic(expected = "physical row is outside backing storage")]
     fn logical_row_composition_rejects_gathered_physical_end() {
         let row_map = RowSelectionRef::Gather(&[4]);
-        let _ = row_selection_from_logical_rows(row_map, 4, [0]).unwrap();
+        drop(row_selection_from_logical_rows(row_map, 4, [0]).unwrap());
     }
 }

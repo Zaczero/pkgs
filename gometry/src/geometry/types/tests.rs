@@ -218,7 +218,7 @@ mod csr_offset_column_tests {
     #[test]
     fn csr_offset_rejects_overflow_at_freeze() {
         let overflow = (i32::MAX as usize).saturating_add(1);
-        let _ = CsrOffsetColumn::<()>::try_new(vec![0, overflow], overflow).unwrap_err();
+        drop(CsrOffsetColumn::<()>::try_new(vec![0, overflow], overflow).unwrap_err());
     }
 
     #[test]
@@ -585,7 +585,7 @@ mod coordseq_m_storage_tests {
         assert_eq!(inner.xs(), &[4.0]);
         assert_eq!(inner.ms(), Some(&[56.0][..]));
 
-        let (carried, allocations) = allocation_count(|| nested.carried_ms().unwrap());
+        let (_carried, allocations) = allocation_count(|| nested.carried_ms().unwrap());
         assert_eq!(allocations, 0);
 
         let mapped = nested.map_xy(|x, y| (x + 1.0, y + 1.0)).unwrap();
@@ -595,7 +595,6 @@ mod coordseq_m_storage_tests {
             &mapped.column_arcs().m_parts().unwrap().0.owner().unwrap(),
             &m.owner().unwrap(),
         ));
-        let _ = carried;
     }
 
     #[test]
@@ -612,7 +611,7 @@ mod coordseq_m_storage_tests {
         .view(CoordWindow::from_range(1..4, 6));
         let source_m = seq.column_arcs().m_parts().unwrap().0.owner().unwrap();
         assert_eq!(seq.ms(), Some(&[51.0, 52.0, 53.0][..]));
-        let (carried, allocations) = allocation_count(|| seq.carried_ms().unwrap());
+        let (_carried, allocations) = allocation_count(|| seq.carried_ms().unwrap());
         assert_eq!(allocations, 0);
 
         let mapped = seq.map_xy(|x, y| (x + 1.0, y)).unwrap();
@@ -622,7 +621,6 @@ mod coordseq_m_storage_tests {
             &mapped.column_arcs().m_parts().unwrap().0.owner().unwrap(),
             &source_m,
         ));
-        let _ = carried;
     }
 }
 

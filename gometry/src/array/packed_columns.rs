@@ -1727,7 +1727,7 @@ mod tests {
             };
             assert_eq!(columns.row_count(), 3);
             assert_eq!(columns.map_rows(|row| row.index()), vec![0, 1, 2]);
-            let _ = packed_column_kernels::bounds_values_from_columns(&columns).expect("bounds");
+            drop(packed_column_kernels::bounds_values_from_columns(&columns).expect("bounds"));
         }
     }
 

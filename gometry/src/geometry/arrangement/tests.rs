@@ -359,7 +359,9 @@ fn panicking_weight_callback_returns_cleared_leases() {
     let _budget = crate::scratch_pool::RetainBudgetGuard::new();
     let segments = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
     let result = std::panic::catch_unwind(|| {
-        let _ = Arrangement::<i32>::weighted(&segments, |_| panic!("weight failed"));
+        drop(Arrangement::<i32>::weighted(&segments, |_| {
+            panic!("weight failed")
+        }));
     });
     assert!(result.is_err());
     assert!(arrangement_spares().points.is_empty());

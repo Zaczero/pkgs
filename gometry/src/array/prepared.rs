@@ -905,8 +905,8 @@ mod frame_cache_row_tests {
         for row in operation.rows_with_missing(|| ()) {
             if let ArrayRow::Present(row) = row {
                 let logical = row.logical();
-                let _ = operation.prepared(row);
-                let _ = operation.frame_cache(logical);
+                drop(operation.prepared(row).expect("present fixture row"));
+                drop(operation.frame_cache(logical));
             }
         }
         assert_eq!(source.row_products.initialized_counts(), (1, 2, 2));
@@ -1057,8 +1057,8 @@ mod frame_cache_row_tests {
         let mut handle = products.operation();
         RowProducts::reset_directory_resolution_count();
         for row in 0..192 {
-            let _ = handle.frame_cache(row);
-            let _ = handle.frame_cache(row);
+            drop(handle.frame_cache(row));
+            drop(handle.frame_cache(row));
         }
         assert_eq!(RowProducts::directory_resolution_count(), 3);
     }
@@ -1077,7 +1077,7 @@ mod frame_cache_row_tests {
                 })
                 .unwrap(),
         );
-        let _ = handle.frame_cache(0);
+        drop(handle.frame_cache(0));
         assert_eq!(RowProducts::directory_resolution_count(), 1);
     }
 
@@ -1392,7 +1392,7 @@ mod frame_cache_row_tests {
     fn cold_owner_allocates_chunks_only_for_touched_rows() {
         let array = points();
         assert!(array.row_products.owner.chunks.lock().unwrap().is_empty());
-        let _ = array.row_products.frame_cache(0);
+        drop(array.row_products.frame_cache(0));
         assert_eq!(array.row_products.owner.chunks.lock().unwrap().len(), 1);
         let gathered = array.gather_logical_rows(&[2, 0]).unwrap();
         assert!(Arc::ptr_eq(
@@ -1484,7 +1484,7 @@ mod prepared_row_ownership_tests {
         let linear = lines(3);
         assert!(uses_linear_plan_for_len(2));
         assert!(linear.row_products.owner.chunks.lock().unwrap().is_empty());
-        let _ = linear.prepared_row(0, linear.storage().row(0)).unwrap();
+        drop(linear.prepared_row(0, linear.storage().row(0)).unwrap());
         assert!(linear.row_products.owner.chunks.lock().unwrap().is_empty());
 
         let nonlinear = lines(34);
@@ -1519,7 +1519,7 @@ mod prepared_row_ownership_tests {
         .unwrap();
         assert!(uses_linear_plan_for_len(4));
         assert!(!uses_linear_plan_for_len(33));
-        let _ = polygons.prepared_row(0, polygons.storage().row(0)).unwrap();
+        drop(polygons.prepared_row(0, polygons.storage().row(0)).unwrap());
         assert_eq!(polygons.row_products.owner.chunks.lock().unwrap().len(), 1);
     }
 
@@ -1635,9 +1635,11 @@ mod prepared_row_ownership_tests {
             let right_data = right
                 .warm_prepared_row_or_transient(0, right_row, right_bounds)
                 .unwrap();
-            let _ = left_data
-                .intersection(&right_data, crate::geometry::Strictness::Lenient)
-                .unwrap();
+            drop(
+                left_data
+                    .intersection(&right_data, crate::geometry::Strictness::Lenient)
+                    .unwrap(),
+            );
         }
 
         assert_eq!(crate::HeapSize::heap_bytes(&left), cold_left);

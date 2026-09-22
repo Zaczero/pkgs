@@ -957,7 +957,7 @@ mod tests {
         let right = ValidityMask::from_vec(2, vec![true, false])
             .unwrap()
             .unwrap();
-        let _ = union_many([Some(&left), Some(&right)]).unwrap();
+        drop(union_many([Some(&left), Some(&right)]).unwrap());
     }
 
     #[test]
