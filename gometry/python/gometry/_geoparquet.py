@@ -255,27 +255,13 @@ def _normalize_attribute_columns(
             or hasattr(values, '__arrow_c_stream__')
         ):
             normalized[name] = values
-        elif _attribute_column_is_authoritative(values):
-            # Exact built-ins and ecosystem arrays whose length is the buffer
-            # size (list/tuple/numpy/pandas) — hand to PyArrow natively so
-            # dtype/dictionary encoding is preserved. Never promote a lying
-            # custom ``__len__`` into an allocation wall.
+        elif hasattr(values, '__len__'):
+            # Preserve dtype and dictionary encoding for sized columns.
             normalized[name] = values
         else:
-            # Advisory-sized / unsized providers: grow fallibly via islice.
+            # The geometry row count bounds lengthless column iterators.
             normalized[name] = list(itertools.islice(values, row_count + 1))
     return normalized
-
-
-def _attribute_column_is_authoritative(values: Any) -> bool:
-    """True when ``len(values)`` is an exact buffer/collection size, not a hint."""
-    if isinstance(values, (list, tuple, dict, str, bytes, bytearray)):
-        return True
-    module = type(values).__module__ or ''
-    # NumPy ndarray and pandas arrays/Series/Index/Categorical: length is the
-    # storage size. Custom Mapping values with a lying __len__ stay fallible.
-    # Note: some pandas types report module ``'pandas'`` / ``'numpy'`` (bare).
-    return module in {'numpy', 'pandas'} or module.startswith(('numpy.', 'pandas.'))
 
 
 def _attributes_table(pa: Any, attributes: Any, row_count: int) -> Any | None:
@@ -894,27 +880,13 @@ def _validate_declared_geometry_columns(
     return frozenset(validated)
 
 
-def _iter_to_list(values: Iterable[object]) -> list[object]:
-    """Materialize an iterable without pre-sizing from untrusted ``__len__``.
-
-    CPython ``list(it)`` uses ``__length_hint__``/``__len__`` to reserve; a
-    lying ``sys.maxsize`` hint raises ``MemoryError`` before the first yield
-    (m08). Append-one-by-one ignores the hint.
-    """
-    # Deliberate: never ``list(values)`` (that pre-sizes from ``__len__``).
-    out: list[object] = []
-    for item in values:
-        out.append(item)  # noqa: PERF402
-    return out
-
-
 def _materialize_row_groups(row_groups: Iterable[int] | None) -> list[int] | None:
     """Materialize a one-shot row-group iterable before validate + use."""
     if row_groups is None:
         return None
     if isinstance(row_groups, (str, bytes)):
         raise TypeError('row_groups must be a sequence of non-negative integers')
-    return _iter_to_list(row_groups)  # type: ignore[return-value]
+    return list(row_groups)
 
 
 def _validate_attribute_columns(

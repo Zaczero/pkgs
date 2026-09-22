@@ -238,15 +238,6 @@ def test_iter_and_len_provider_errors_are_not_reclassified() -> None:
     with pytest.raises(RuntimeError, match='len provider boom'):
         gm.GeometryArray(RaisingLen())
 
-    class LyingLen:
-        def __len__(self):
-            return 1
-
-        def __iter__(self):
-            return iter([gm.Point(0, 0), gm.Point(1, 1)])
-
-    assert len(gm.GeometryArray(LyingLen())) == 2
-
 
 def test_missing_mask_preserves_iterator_acquisition_error() -> None:
     error = TypeError('provider not iterable sentinel')

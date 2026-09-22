@@ -278,8 +278,6 @@ class GeometryExtensionArray(_ExtensionArray):  # type: ignore[valid-type, misc]
                 positions
             )
         else:
-            # m08: never ``list(value)`` — CPython pre-sizes from ``__len__``
-            # and a lying ``sys.maxsize`` raises MemoryError before iteration.
             # Bound growth by the known selection size (plus one for mismatch).
             expected = len(positions)
             fill_values = []

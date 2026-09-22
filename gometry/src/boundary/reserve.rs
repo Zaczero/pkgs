@@ -1,27 +1,8 @@
-//! Checked layouts and bounded reservations for external counts and hints.
+//! Python collection admission and native capacity planning.
 //!
-//! Public Arrow lengths, Python `__len__` values, and multi-chunk coordinate
-//! totals are attacker-controlled. This module rejects arithmetic and Rust
-//! layout overflow before allocation; allocator exhaustion itself follows the
-//! process-fatal native contract.
-//!
-//! ## Hints vs validated totals
-//!
-//! - **Hints** (`reserve_hint`): Python `__len__` and similar presizing
-//!   guesses. Oversized hints are **clamped** (never a rejection that changes
-//!   validity).
-//! - **Validated totals** (`try_reserve_total` / `try_vec_with_capacity`):
-//!   checked sums of Arrow lengths and other exact, already-validated counts.
-//!   These use **uncapped** checked-layout reservation so multi-chunk import
-//!   cannot reject a total that single-chunk would accept.
-//!
-//! ## No artificial element-count caps
-//!
-//! Valid large finite inputs (lists, generators of the same length) must share
-//! one outcome: success or process-fatal native allocator exhaustion.
-//! Never reject with "too large to materialize" or a bare-stream ceiling; that
-//! invents a list-vs-generator asymmetry. The collector's retained output
-//! grows proportionally (see [`collect_py_iter`]).
+//! Python `__len__` supplies an exact count for preallocation. Lengthless
+//! iterables grow normally; receiver-sized inputs retain their cardinality
+//! checks. Provider exceptions propagate and native allocator exhaustion aborts.
 
 use pyo3::exceptions::{PyMemoryError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
@@ -29,11 +10,7 @@ use pyo3::types::{PyIterator, PySequence, PyString};
 
 use crate::error::{ResourceError, Result};
 
-/// Soft upper bound for a single **initial** reservation from an external
-/// length *hint* (`__len__`, etc.). Large enough to avoid thrash on typical
-/// batch sizes; small enough that a lying `sys.maxsize` / `i64::MAX` hint
-/// cannot force a multi-gigabyte empty `Vec` before the first item is
-/// yielded. Never promote a hint to an exact allocation or iteration count.
+/// Initial reservation bound for advisory Rust iterator and serde size hints.
 pub(crate) const MAX_RESERVE_HINT: usize = 1 << 12; // 4096 elements
 
 /// Check pending Python signals often enough that a native loop over a Python
@@ -74,8 +51,8 @@ pub(crate) fn py_iter_or_error<'py>(
 
 /// Read a Python size only when the object actually exposes ``__len__``.
 /// Missing length is normal for a one-shot iterator; an error from a supplied
-/// ``__len__`` belongs to the provider and must not be demoted to "no hint".
-pub(crate) fn advisory_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
+/// ``__len__`` belongs to the provider and must not be demoted to "no length".
+pub(crate) fn optional_len(value: &Bound<'_, PyAny>) -> PyResult<Option<usize>> {
     let Some(len) = value.getattr_opt(pyo3::intern!(value.py(), "__len__"))? else {
         return Ok(None);
     };
@@ -133,16 +110,6 @@ impl<T> CsrBuilder<T> {
         Self {
             values: Vec::with_capacity(value_capacity),
             offsets: Vec::with_capacity(row_capacity.wrapping_add(1)),
-        }
-    }
-
-    /// Reserve only a bounded initial chunk from advisory external hints.
-    /// Hints never affect validity; observed values retain ordinary growth.
-    #[cfg(test)]
-    pub(crate) fn with_capacity_hint(value_hint: usize, row_hint: usize) -> Self {
-        Self {
-            values: Vec::with_capacity(value_hint.min(MAX_RESERVE_HINT)),
-            offsets: Vec::with_capacity(row_hint.min(MAX_RESERVE_HINT) + 1),
         }
     }
 
@@ -234,23 +201,12 @@ pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
     Ok(vec)
 }
 
-/// Build an empty `Vec` from an untrusted length hint (clamped).
-pub(crate) fn vec_with_capacity_hint<T>(capacity: usize) -> Vec<T> {
-    let mut vec = Vec::new();
-    reserve_hint(&mut vec, capacity);
-    vec
-}
-
 /// Push one element while retaining a typed layout-overflow error.
 pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
     try_push_vec(vec, item).map_err(PyErr::from)
 }
 
-/// Collect a fixed-length bool mask without generic `Vec<bool>: FromPyObject`
-/// (which allocates from a lying `__len__` before any Rust length check).
-///
-/// Accepts any sequence of `expected_len` bools; length is taken from the
-/// array, not from the mask's `__len__` as a capacity hint for bulk extract.
+/// Collect a bool mask aligned to the receiver's row count.
 pub(crate) fn collect_bool_mask(
     mask: &Bound<'_, PyAny>,
     expected_len: usize,
@@ -274,41 +230,9 @@ pub(crate) fn collect_bool_mask(
     )
 }
 
-/// Collect sequence elements once (classify + materialize in one pass) without
-/// trusting a reported length. Never uses generic `Vec<T>: FromPyObject`.
+/// Collect sequence elements once for classification and materialization.
 pub(crate) fn collect_sequence_items(sequence: &Bound<'_, PySequence>) -> PyResult<Vec<Py<PyAny>>> {
-    // Prefer the iterator protocol so a lying `__len__` cannot force a huge
-    // empty allocation; observed elements drive real growth.
-    let any = sequence.as_any();
-    match any.try_iter() {
-        Ok(iter) => {
-            let mut out = Vec::new();
-            for (index, item) in iter.enumerate() {
-                check_python_signals(any.py(), index)?;
-                out.push(item?.unbind());
-            }
-            return Ok(out);
-        },
-        Err(err)
-            if err.is_instance_of::<pyo3::exceptions::PyTypeError>(any.py())
-                && any
-                    .getattr_opt(pyo3::intern!(any.py(), "__iter__"))?
-                    .is_none() => {},
-        Err(err) => return Err(err),
-    }
-    // Legacy getitem-only sequences have no iterator attribute. Walk until
-    // their protocol raises IndexError; the reported length remains advisory.
-    let mut out = Vec::new();
-    loop {
-        check_python_signals(any.py(), out.len())?;
-        let item = match sequence.get_item(out.len()) {
-            Ok(item) => item,
-            Err(error) if error.is_instance_of::<pyo3::exceptions::PyIndexError>(any.py()) => break,
-            Err(error) => return Err(error),
-        };
-        out.push(item.unbind());
-    }
-    Ok(out)
+    collect_py_iter(sequence.as_any(), |item| Ok(item.unbind()))
 }
 
 /// Collect a sequence of concrete byte payloads (pickle mixed rows). Each
@@ -317,43 +241,14 @@ pub(crate) fn collect_bytes_rows(rows: &Bound<'_, PyAny>) -> PyResult<Vec<crate:
     let sequence = rows.cast::<PySequence>().map_err(|_| {
         PyTypeError::new_err("mixed geometry array pickle rows must be a sequence of bytes")
     })?;
-    let any = sequence.as_any();
-    let mut out = Vec::new();
-    match any.try_iter() {
-        Ok(iter) => {
-            for (index, item) in iter.enumerate() {
-                check_python_signals(any.py(), index)?;
-                let item = item?;
-                let bytes = extract_bytes_payload(&item)?;
-                out.push(bytes);
-            }
-            return Ok(out);
-        },
-        Err(err)
-            if err.is_instance_of::<pyo3::exceptions::PyTypeError>(any.py())
-                && any
-                    .getattr_opt(pyo3::intern!(any.py(), "__iter__"))?
-                    .is_none() => {},
-        Err(err) => return Err(err),
-    }
-    loop {
-        check_python_signals(any.py(), out.len())?;
-        let item = match sequence.get_item(out.len()) {
-            Ok(item) => item,
-            Err(error) if error.is_instance_of::<pyo3::exceptions::PyIndexError>(any.py()) => break,
-            Err(error) => return Err(error),
-        };
-        out.push(extract_bytes_payload(&item)?);
-    }
-    Ok(out)
+    collect_py_iter(sequence.as_any(), |item| extract_bytes_payload(&item))
 }
 
 fn extract_bytes_payload(item: &Bound<'_, PyAny>) -> PyResult<crate::OwnedBytes> {
     if let Some(bytes) = crate::exact_backed_bytes(item) {
         return Ok(crate::OwnedBytes::Backed(bytes));
     }
-    // Shared one-byte buffer path (signed + unsigned); never generic
-    // sequence-of-int extract (that path allocates from a lying `__len__`).
+    // Require a byte buffer rather than accepting an arbitrary integer sequence.
     copy_one_byte_buffer(item)
         .map(crate::OwnedBytes::Copied)
         .map_err(|error| {
@@ -407,8 +302,8 @@ fn copy_exported_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<Vec<u8>> {
 /// Collect Python strings while preserving provider and type errors.
 pub(crate) fn collect_py_strings(values: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<String>> {
     let mut out = Vec::new();
-    if let Some(hint) = advisory_len(values)? {
-        reserve_hint(&mut out, hint);
+    if let Some(len) = optional_len(values)? {
+        out.reserve(len);
     }
     let iter = py_iter_or_error(values, || {
         PyTypeError::new_err(format!("{what} must be an iterable of strings"))
@@ -493,10 +388,7 @@ fn try_i64_item(value: &Bound<'_, PyAny>, what: &str) -> PyResult<i64> {
     }
 }
 
-/// THE mandatory entry for every Python-iterable → `Vec` boundary.
-///
-/// `__len__` is a clamped **hint** only. Callers that need a mapped type pass a
-/// closure; the identity map (`|item| Ok(item)`) materializes raw `Bound` items.
+/// Collect Python items with optional mapping and exact-length preallocation.
 ///
 /// There is no bare-stream element ceiling: a finite generator of N elements
 /// has the same validity as a list of N. Provider and mapping errors stop the
@@ -519,9 +411,8 @@ pub(crate) fn collect_py_iter_from_iter<'py, T>(
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
 ) -> PyResult<Vec<T>> {
     let mut out = Vec::new();
-    // Length is a clamped *hint* only — never a validity gate.
-    if let Some(hint) = advisory_len(values)? {
-        reserve_hint(&mut out, hint);
+    if let Some(len) = optional_len(values)? {
+        out.reserve(len);
     }
     for item in iter {
         let item = item?;
@@ -744,12 +635,6 @@ mod tests {
     }
 
     #[test]
-    fn vec_with_capacity_hint_clamps_absurd_counts() {
-        let v: Vec<u8> = vec_with_capacity_hint(usize::MAX / 8);
-        assert!(v.capacity() <= MAX_RESERVE_HINT);
-    }
-
-    #[test]
     fn csr_builder_preserves_empty_rows_and_checked_offsets() {
         let mut builder = CsrBuilder::<u8>::with_capacity(4, 3);
         builder.push_row(std::iter::empty()).expect("empty row");
@@ -780,14 +665,6 @@ mod tests {
             assert!(values.is_empty());
             assert_eq!(offsets, [0]);
         }
-    }
-
-    #[test]
-    fn csr_builder_treats_finite_hints_as_advisory() {
-        let builder = CsrBuilder::<u8>::with_capacity_hint(usize::MAX, usize::MAX);
-        let (values, offsets) = builder.finish();
-        assert!(values.is_empty());
-        assert_eq!(offsets, [0]);
     }
 
     #[test]

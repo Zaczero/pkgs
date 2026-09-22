@@ -191,9 +191,6 @@ pub(crate) fn array_getitem<C: RowGetItemContainer>(
         };
     }
     if let Ok(sequence) = index.cast::<PySequence>() {
-        // One-pass classify + collect: never classify with one `__len__` and
-        // then `Vec<T>: FromPyObject` with another (lying sequences can report
-        // len 1 at classify and sys.maxsize at extract → allocator abort).
         match classify_and_collect_fancy_index(py, sequence)? {
             CollectedFancyIndex::Empty => return C::container_to_py(py, container.empty()?),
             CollectedFancyIndex::Indices(indices) => {

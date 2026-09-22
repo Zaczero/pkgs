@@ -1,9 +1,4 @@
-"""Revert-sensitive regressions for trusted-deserialization + allocation-safety.
-
-Covers audit defects D01, D02, D25-D30, D32 from the systematic ingress matrix.
-Each negative test drives the audit's exact repro; each positive test proves
-honest pickles/imports still round-trip.
-"""
+"""Structural validation and round trips for trusted deserialization."""
 
 from __future__ import annotations
 
@@ -13,16 +8,6 @@ import gometry as gm
 import numpy as np
 import pytest
 from gometry import _lib
-
-
-class Lying:
-    """Sequence that lies about its length (D01)."""
-
-    def __len__(self):
-        return 1 << 62
-
-    def __getitem__(self, i):
-        raise IndexError
 
 
 def _assert_not_panic(exc: BaseException) -> None:
@@ -37,32 +22,6 @@ def _call_no_panic(call):
     except BaseException as exc:
         _assert_not_panic(exc)
         return None, exc
-
-
-# ---------------------------------------------------------------------------
-# D01 — lying __len__ must not PanicException
-# ---------------------------------------------------------------------------
-
-
-def test_d01_lying_len_cell_array_unpickle_no_panic():
-    # Lying __len__ must not force Vec::with_capacity panic. Iteration via
-    # getitem that immediately IndexErrors yields an empty cell array (safe).
-    out, err = _call_no_panic(lambda: _lib._unpickle_cell_array_v1(Lying(), 'h3', None))
-    if err is None:
-        assert len(out) == 0
-
-
-def test_d01_lying_len_groups_no_panic():
-    calls = [
-        lambda: _lib._unpickle_int64_groups_v1(Lying(), [0]),
-        lambda: _lib._unpickle_spatial_index_v1(
-            gm.GeometryArray([gm.Point(0, 0, crs=4326)]), Lying()
-        ),
-        lambda: _lib._unpickle_h3_vertex_array_v1(Lying()),
-        lambda: _lib._unpickle_h3_edge_array_v1(Lying()),
-    ]
-    for call in calls:
-        _call_no_panic(call)
 
 
 def test_d01_positive_cell_array_roundtrip():

@@ -795,11 +795,6 @@ pub(crate) fn float_values(
         // raw `to_vec` reinterprets bytes and silently corrupts.
         return buffer_to_vec_f64(py, &buffer);
     }
-    // Fallible element-by-element collect via the reservation keystone.
-    // Never `extract::<Vec<f64>>()` — that path allocates from a lying
-    // `__len__` before any length check and panics on capacity overflow.
-    // Unknown cardinality: `collect_py_iter` / try_push → MemoryError on
-    // unbounded growth, never hang-then-abort (D11 part 1).
     let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
     collect_py_iter_from_iter(value, iter, |item| kind.item(name, &item))
 }
@@ -881,16 +876,13 @@ pub(crate) fn coordinate_sequence_len_hint(
         return if array.ndim() == 0 {
             Ok(None)
         } else {
-            crate::advisory_len(value)
+            crate::optional_len(value)
         };
     }
     if value.cast::<PyInt>().is_ok() || value.cast::<PyFloat>().is_ok() {
         return Ok(None);
     }
-    if let Some(length) = crate::advisory_len(value)? {
-        return Ok(Some(length));
-    }
-    Ok(None)
+    crate::optional_len(value)
 }
 
 /// Parse a finite scalar or sequence. When `expected` is `Some` and `value` is

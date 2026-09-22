@@ -298,11 +298,9 @@ impl PyGeometryArray {
             let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
             let policy_crs = explicit_crs.clone();
             let parse_crs = explicit_crs.clone();
-            let _ = crate::advisory_len(values)?;
             let iter = values.try_iter()?;
-            let py = values.py();
             return stream_bulk_owned(
-                py,
+                values,
                 iter,
                 explicit_crs,
                 explicit_epoch,

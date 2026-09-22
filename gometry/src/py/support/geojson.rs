@@ -34,11 +34,7 @@ pub(crate) fn is_wkt_string(text: &str) -> bool {
 /// object as a sequence (which over-rejects keys()-only mappings with
 /// ``KeyError: 0``).
 ///
-/// ``__len__`` is advisory only (ingress carrier 3): it may size a reservation
-/// hint but never becomes a hard cap or exact iteration count. Progress is
-/// bounded by the **N4** seen-set: a key that *repeats* is rejected immediately
-/// (a valid mapping has distinct keys), which terminates ``itertools.repeat``
-/// key streams without promoting ``__len__`` into authority.
+/// Duplicate keys are rejected instead of silently overwriting earlier values.
 ///
 /// Exact ``dict`` inputs take a shallow ``copy()`` so callers never share
 /// identity with the returned mapping (feature properties contract).
@@ -60,7 +56,6 @@ pub(crate) fn mapping_as_dict<'py>(
     let keys = keys_attr.call0()?;
 
     let py = value.py();
-    // `__len__` is advisory only — not consulted as an iteration ceiling.
     let dict = PyDict::new(py);
     // try_iter uses PyObject_GetIter: accepts ``__iter__`` *and* legacy
     // ``__getitem__``-sequence keys (same as builtin dict(mapping)).

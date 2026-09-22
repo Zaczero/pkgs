@@ -138,8 +138,6 @@ pub(crate) fn _unpickle_geometry_array_v1(
     epoch: Option<f64>,
     missing: Option<&[u8]>,
 ) -> PyResult<PyGeometryArray> {
-    // Collect bytes rows manually: generic `Vec<Vec<u8>>` extraction allocates
-    // from a lying `__len__` before any Rust check (allocator abort).
     let rows = crate::collect_bytes_rows(rows)?;
     py.detach(move || unpickle_geometry_array_detached(rows, crs, epoch, missing))
         .map_err(PyErr::from)

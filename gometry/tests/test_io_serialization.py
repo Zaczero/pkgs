@@ -7,15 +7,10 @@ from __future__ import annotations
 
 import json
 import struct
-from typing import TYPE_CHECKING
 
 import gometry as gm
 import numpy as np
 import pytest
-
-if TYPE_CHECKING:
-    from collections.abc import Iterator
-
 
 # ---------------------------------------------------------------------------
 # A1 — uniform untrusted ring admission (WKT / WKB)
@@ -257,33 +252,6 @@ def test_b2_geojson_and_geoparquet_absent_crs_agree(tmp_path) -> None:
     assert geoms.crs == 'OGC:CRS84'
     assert gm.equals(gj, geoms[0])
     assert gm.distance(gj, geoms[0]) == 0.0
-
-
-# ---------------------------------------------------------------------------
-# B3 — mapping __len__ is advisory, never a hard key cap
-# ---------------------------------------------------------------------------
-
-
-def test_b3_mapping_len_underreport_still_admits_all_keys() -> None:
-    class UnderLenMap:
-        def keys(self) -> Iterator[str]:
-            return iter(['a', 'b', 'c'])
-
-        def __len__(self) -> int:
-            return 1
-
-        def __getitem__(self, key: str) -> int:
-            return {'a': 1, 'b': 2, 'c': 3}[key]
-
-    # Feature properties path uses mapping_as_dict; under-reported __len__
-    # must not reject the extra keys.
-    feature = {
-        'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [0.0, 0.0]},
-        'properties': UnderLenMap(),
-    }
-    feats = gm.from_features(feature)
-    assert feats.properties[0] == {'a': 1, 'b': 2, 'c': 3}
 
 
 # ---------------------------------------------------------------------------

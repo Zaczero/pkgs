@@ -433,10 +433,7 @@ def test_gometry_extension_array_from_geopandas(points: gm.GeometryArray) -> Non
     assert restored is series.array.geometry_array
 
 
-def test_extension_setitem_lying_len_does_not_memory_error() -> None:
-    """m08: multi-position setitem must not pre-size from a lying ``__len__``."""
-    import sys
-
+def test_extension_setitem_iterable_values() -> None:
     arr = gm.GeometryArray([
         gm.Point(0, 0, crs=4326),
         gm.Point(1, 1, crs=4326),
@@ -444,22 +441,12 @@ def test_extension_setitem_lying_len_does_not_memory_error() -> None:
     ])
     data = GeometryExtensionArray(arr)
 
-    class _LieValues:
-        def __iter__(self):
-            yield gm.Point(9, 9, crs=4326)
-            yield gm.Point(8, 8, crs=4326)
-
-        def __len__(self) -> int:
-            return sys.maxsize
-
-    data[[0, 1]] = _LieValues()
+    data[[0, 1]] = iter([gm.Point(9, 9, crs=4326), gm.Point(8, 8, crs=4326)])
     assert data.geometry_array.to_wkt()[:2] == ['POINT (9 9)', 'POINT (8 8)']
     assert data.geometry_array.crs == 'EPSG:4326'
 
-    # Positive: honest sequence of matching length still works.
     data[[0, 1]] = [gm.Point(3, 3, crs=4326), gm.Point(4, 4, crs=4326)]
     assert data.geometry_array.to_wkt()[:2] == ['POINT (3 3)', 'POINT (4 4)']
 
-    # Length mismatch still raises ValueError (not MemoryError).
     with pytest.raises(ValueError, match='cannot set'):
         data[[0, 1]] = [gm.Point(0, 0, crs=4326)]

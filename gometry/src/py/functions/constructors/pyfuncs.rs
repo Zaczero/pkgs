@@ -219,10 +219,7 @@ pub(super) fn points(
 /// buffer (NumPy/memoryview) — builds final Arc columns without the
 /// intermediate `CoordinateInput` `Vec` bounce.
 ///
-/// Returns `None` for scalars (broadcast), bare iterators, and sequences that
-/// only expose a lying `__len__` — those stay on the iterator-safe path. Only
-/// `PyBuffer<f64>` item counts are trusted as authoritative (ingress threat
-/// model: advisory sizes must not become allocation/length authority).
+/// Returns `None` for scalars and sequences without f64 buffers.
 fn try_points_from_arc_columns(
     py: Python<'_>,
     x: &Bound<'_, PyAny>,
@@ -239,7 +236,6 @@ fn try_points_from_arc_columns(
     if let Some(value) = m {
         numpy::reject_masked_array(value)?;
     }
-    // Real buffers only — never promote Sequence.__len__ to authority.
     let Ok(x_buffer) = PyBuffer::<f64>::get(x) else {
         return Ok(None);
     };

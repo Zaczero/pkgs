@@ -121,8 +121,7 @@ def mapping_as_dict(value: Any) -> dict[Any, Any]:
 
     Matches ``dict(value)`` key enumeration: iterate ``keys()`` through the
     iterator protocol (accepts ``__iter__`` *and* legacy ``__getitem__``
-    sequences), then ``value[key]``. Rejects repeated keys; ``__len__`` is
-    advisory and never limits a provider's key stream. Honest ``dict``
+    sequences), then ``value[key]``. Rejects repeated keys. Exact ``dict``
     instances take a shallow-copy fast path.
     """
     if type(value) is dict:

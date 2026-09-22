@@ -42,7 +42,7 @@ struct BulkState {
 /// frame admission, and storage growth detached. `own_row` must snapshot any
 /// Python-backed payload before `parse_row` receives it.
 pub(crate) fn stream_bulk_owned<'py, T, Own, Parse>(
-    py: Python<'py>,
+    values: &Bound<'py, PyAny>,
     iter: impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
     fallback: Option<Crs>,
     explicit_epoch: Option<f64>,
@@ -55,9 +55,11 @@ where
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
     Parse: Fn(T, usize) -> crate::error::Result<StreamedShape> + Send + Sync,
 {
+    let py = values.py();
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let mut own_row = own_row;
     let mut state = BulkState {
-        rows: crate::array::StreamingShapes::new(),
+        rows: crate::array::StreamingShapes::with_capacity(0, row_capacity),
         first_crs: SharedRowCrs::Unseen,
         first_epoch: None,
         have_present_row: false,

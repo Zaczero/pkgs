@@ -361,7 +361,7 @@ def test_f1_from_features_accepts_keys_only_mapping() -> None:
 
 
 # ---------------------------------------------------------------------------
-# F2 — Python twin: legacy getitem keys + advisory __len__
+# F2 — Python twin: legacy getitem keys
 # ---------------------------------------------------------------------------
 
 
@@ -383,21 +383,6 @@ def test_f2_mapping_duck_legacy_getitem_keys_features() -> None:
     assert dict(MappingDuck()) == {'name': 'ok'}
     features = gm.Features(gm.GeometryArray([gm.Point(0, 0)]), properties=MappingDuck())
     assert features.properties[0]['name'] == 'ok'
-
-
-def test_f2_lying_short_len_remains_advisory() -> None:
-    class ShortLen:
-        def __len__(self):
-            return 1
-
-        def keys(self):
-            return ('a', 'b', 'c')
-
-        def __getitem__(self, k):
-            return k
-
-    features = gm.Features(gm.GeometryArray([gm.Point(0, 0)]), properties=ShortLen())
-    assert features.properties[0] == {'a': 'a', 'b': 'b', 'c': 'c'}
 
 
 def test_n4_geoparquet_and_viz_repeated_key_attributes() -> None:

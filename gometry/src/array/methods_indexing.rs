@@ -230,17 +230,14 @@ impl FancyIndexCollector {
     }
 }
 
-/// Classify and materialize a fancy-index sequence without trusting its length.
+/// Classify and materialize a fancy-index sequence in one pass.
 ///
 /// A list is first snapshotted into an immutable tuple, then its slots are
-/// scanned by the generic classifier. Other executable providers still collect
-/// items once with fallible reservation so a lying `__len__` cannot
-/// allocator-abort.
+/// scanned by the generic classifier. Other providers collect their items once.
 pub(crate) fn classify_and_collect_fancy_index(
     py: Python<'_>,
     sequence: &Bound<'_, PySequence>,
 ) -> PyResult<CollectedFancyIndex> {
-    // Trusted-shape fast lane: exact builtins are ABI-honest length sources.
     let any = sequence.as_any();
     if let Ok(list) = any.cast::<PyList>() {
         let snapshot = list.to_tuple();

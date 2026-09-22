@@ -6,7 +6,7 @@ use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBool, PyInt, PyList, PyString, PyTuple, PyType};
+use pyo3::types::{PyBool, PyInt, PyString, PyType};
 
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
@@ -477,15 +477,6 @@ pub(super) struct CollectedCellIds {
     pub(super) missing: Option<crate::array::ValidityMask>,
 }
 
-fn cell_id_buffer(values: &Bound<'_, PyAny>) -> Vec<u64> {
-    let capacity = values
-        .cast::<PyList>()
-        .map(|values| values.len())
-        .or_else(|_| values.cast::<PyTuple>().map(|values| values.len()))
-        .unwrap_or_default();
-    Vec::with_capacity(capacity)
-}
-
 pub(super) fn append_cell_row(
     ids: &mut Vec<u64>,
     missing: &mut Option<Vec<bool>>,
@@ -512,7 +503,7 @@ fn collect_ids_from_iter<'py>(
     kind: GridKind,
     mismatch: impl Fn(GridKind) -> PyErr,
 ) -> PyResult<CollectedCellIds> {
-    let mut ids = cell_id_buffer(values);
+    let mut ids = Vec::with_capacity(crate::optional_len(values)?.unwrap_or_default());
     let mut missing = None;
     crate::collect_py_iter_from_iter(values, iter, |item| {
         if item.is_none() {
@@ -539,7 +530,7 @@ fn collect_inferred_from_iter<'py>(
     values: &Bound<'py, PyAny>,
     iter: Bound<'py, pyo3::types::PyIterator>,
 ) -> PyResult<(GridKind, CollectedCellIds)> {
-    let mut ids = cell_id_buffer(values);
+    let mut ids = Vec::with_capacity(crate::optional_len(values)?.unwrap_or_default());
     let mut missing = None;
     let mut kind: Option<GridKind> = None;
     let mut pending = Vec::new();

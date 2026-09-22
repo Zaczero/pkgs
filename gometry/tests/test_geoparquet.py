@@ -2310,10 +2310,7 @@ def test_d12_d14_public_roundtrips_wkb_and_native(parquet_path: str) -> None:
         assert col['bbox'] == [1.0, 2.0, 3.0, 4.0]
 
 
-def test_from_geoparquet_lying_len_columns_and_row_groups(parquet_path: str) -> None:
-    """m08: lying ``__len__`` must not MemoryError before iterating columns/row_groups."""
-    import sys
-
+def test_from_geoparquet_iterable_columns_and_row_groups(parquet_path: str) -> None:
     import pyarrow as pa
 
     values = gm.GeometryArray([
@@ -2329,31 +2326,15 @@ def test_from_geoparquet_lying_len_columns_and_row_groups(parquet_path: str) -> 
         row_group_size=1,
     )
 
-    class _LieColumns:
-        def __iter__(self):
-            yield 'id'
-
-        def __len__(self) -> int:
-            return sys.maxsize
-
-    class _LieRowGroups:
-        def __iter__(self):
-            yield 0
-            yield 2
-
-        def __len__(self) -> int:
-            return sys.maxsize
-
     restored, attrs = gm.from_geoparquet(
         parquet_path,
-        columns=_LieColumns(),
-        row_groups=_LieRowGroups(),
+        columns=iter(['id']),
+        row_groups=iter([0, 2]),
     )
     assert restored.to_wkt() == ['POINT (1 2)', 'POINT (5 6)']
     assert attrs.column_names == ['id']
     assert attrs['id'].to_pylist() == [10, 30]
 
-    # Positive: honest sequences still work.
     restored2, attrs2 = gm.from_geoparquet(
         parquet_path, columns=['id'], row_groups=[0, 2]
     )

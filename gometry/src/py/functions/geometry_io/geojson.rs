@@ -288,7 +288,7 @@ pub(crate) fn from_geojson(
         }
         let crs_for_rows = crs.clone();
         let array = stream_bulk_owned(
-            py,
+            data,
             iter,
             crs,
             parsed_epoch,

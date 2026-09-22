@@ -80,8 +80,8 @@ fn parse_search_paths(value: Option<&Bound<'_, PyAny>>) -> PyResult<Option<Vec<S
     // Keep the specialized loop so provider exceptions remain distinguishable
     // from values that simply are not string/path-like entries.
     let mut paths = Vec::new();
-    if let Some(hint) = crate::advisory_len(value)? {
-        crate::reserve_hint(&mut paths, hint);
+    if let Some(len) = crate::optional_len(value)? {
+        paths.reserve(len);
     }
     let mut iter = crate::py_iter_or_error(value, || {
         PyTypeError::new_err(

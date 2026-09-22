@@ -275,7 +275,7 @@ pub(crate) fn restore_spatial_index(
     let mut present = false;
     let mut row_operation = values.row_operation();
     let domain = crate::geometry::topology_domain(&values.frame)?;
-    let mut entries = crate::vec_with_capacity_hint(values.len());
+    let mut entries = Vec::with_capacity(values.len());
     let mut non_prunable_live = 0;
     for logical in 0..values.len() {
         let geometry = if let Some(row) = row_operation.present_row_at(logical)? {

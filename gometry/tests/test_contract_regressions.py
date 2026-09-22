@@ -5,7 +5,6 @@ their corresponding fixes.
 
 from __future__ import annotations
 
-import collections.abc
 import errno
 import json
 import pickle
@@ -1221,31 +1220,6 @@ def test_from_arrow_untrusted_length_raises_clean_not_panic() -> None:
     ), type(err)
 
 
-def test_geometry_array_untrusted_len_raises_clean_not_panic() -> None:
-    """GeometryArray(values) must not panic on ``__len__ = sys.maxsize``.
-
-    Untrusted ``__len__`` hints are clamped (never a product validity cap);
-    growth is fallible. Accept either a clean error or an empty array from the
-    empty iterator — never PanicException / capacity overflow.
-    """
-    import sys
-
-    class HugeLenEmptyIter:
-        def __len__(self) -> int:
-            return sys.maxsize
-
-        def __iter__(self):
-            return iter(())
-
-    try:
-        out = gm.GeometryArray(HugeLenEmptyIter())
-    except (MemoryError, ValueError, OverflowError, gm.GeometryError, TypeError):
-        # Clean domain error path — never PanicException (that would not match).
-        return
-    # Clamp path: reserve was bounded and the empty iterator produced empty.
-    assert len(out) == 0
-
-
 def test_wkb_structure_budget_rejects_empty_ring_amplification() -> None:
     """200k empty rings fail structurally (min ring vertices / encoding bound).
 
@@ -1290,31 +1264,6 @@ class _StreamOnly:
 
     def __arrow_c_stream__(self, requested_schema=None):
         return self._obj.__arrow_c_stream__(requested_schema)
-
-
-class _LyingLenSequence(collections.abc.Sequence):
-    """Sequence whose ``__len__`` is a deliberate lie (sys.maxsize).
-
-    Registers as ``collections.abc.Sequence`` so PyO3 ``PySequence`` extract
-    would allocate from the lying length via generic ``Vec<T>: FromPyObject``;
-    the real payload is tiny and only reachable via ``__getitem__``.
-    """
-
-    __slots__ = ('_items', '_reported')
-
-    def __init__(self, items: list, reported: int | None = None) -> None:
-        self._items = items
-        self._reported = reported if reported is not None else (1 << 62)
-
-    def __len__(self) -> int:
-        return self._reported
-
-    def __getitem__(self, index):
-        if isinstance(index, slice):
-            return [self[i] for i in range(*index.indices(len(self._items)))]
-        if index < 0 or index >= len(self._items):
-            raise IndexError(index)
-        return self._items[index]
 
 
 def test_multichunk_point_import_matches_single_chunk() -> None:
@@ -1646,137 +1595,11 @@ def test_zero_chunk_tagged_int64_geoarrow_rejected() -> None:
         gm.from_arrow(pa.array([1, 2, 3], type=ext))
 
 
-@pytest.mark.parametrize('reported', [0, 1, 1 << 62])
-def test_with_missing_uses_actual_mask_values(reported: int) -> None:
-    arr = gm.points([0.0, 1.0], [0.0, 1.0])
-    mask = _LyingLenSequence([True, False], reported=reported)
-    result = arr._with_missing(mask)
-    assert result.is_missing.tolist() == [True, False]
-    assert result[1] == gm.Point(1.0, 1.0)
-
-
-def test_lying_len_fancy_index_raises_cleanly() -> None:
-    """Fancy index must not abort when classification/extraction lengths diverge."""
-    arr = gm.points([0.0, 1.0, 2.0], [0.0, 0.0, 0.0])
-    # Report maxsize but only one getitem works. One-pass collect uses try_iter
-    # (getitem until IndexError) or rejects absurd len — never FromPyObject abort.
-    lying = _LyingLenSequence([0], reported=(1 << 62))
-    try:
-        out = arr[lying]
-    except (ValueError, MemoryError, TypeError, OverflowError, IndexError):
-        return
-    assert len(out) == 1
-    assert out[0].to_wkt() == 'POINT (0 0)'
-
-
-def test_lying_len_mixed_pickle_rows_raises_cleanly() -> None:
-    """Mixed unpickler must not abort on a lying outer sequence of rows."""
-    wkb = gm.Point(1, 2).to_wkb()
-    lying = _LyingLenSequence([wkb], reported=(1 << 62))
-    try:
-        out = _lib._unpickle_geometry_array_v1(lying, None, None, None)
-    except (ValueError, MemoryError, TypeError, OverflowError):
-        out = None
-    if out is not None:
-        # Safe success: iterator path ignored lying ``__len__``.
-        assert len(out) == 1
-        assert out[0].to_wkt() == 'POINT (1 2)'
-    # Positive control: concrete list of bytes still works.
-    ok = _lib._unpickle_geometry_array_v1([wkb], None, None, None)
-    assert len(ok) == 1
-    assert ok[0].to_wkt() == 'POINT (1 2)'
-
-
-# ---------------------------------------------------------------------------
-# R01/R02: reservation keystone on ordinary sequences / iterators
-# (lying collections.abc.Sequence.__len__ + unbounded-iterator bounds)
-# ---------------------------------------------------------------------------
-
-
-def _assert_no_capacity_panic(exc: BaseException) -> None:
-    assert type(exc).__name__ != 'PanicException', f'Rust panic: {exc!r}'
-    assert 'capacity overflow' not in str(exc).lower(), f'capacity panic: {exc!r}'
-
-
-def test_r01_lying_len_coordinate_lanes_no_panic() -> None:
-    """R01: coordinate/string lanes must not PanicException on lying ``__len__``.
-
-    Generic ``Vec<T>: FromPyObject`` allocated from ``__len__`` before any
-    length check. Real short payloads succeed (iterator walks until IndexError)
-    or raise a typed error — never capacity overflow.
-    """
-    xs = _LyingLenSequence([0.0, 1.0])
-    ys = [0.0, 1.0]
-    pts = gm.points(xs, ys)
-    assert len(pts) == 2
-    assert pts[0].to_wkt() == 'POINT (0 0)'
-    assert pts[1].to_wkt() == 'POINT (1 1)'
-
-    moved = gm.Point(0, 0).set_coordinates(x=_LyingLenSequence([1.0]), y=[2.0])
-    assert moved.to_wkt() == 'POINT (1 2)'
-
-    out = gm.crs_transform(4326, 3857, xs, ys)
-    assert len(out) == 2
-
-    cells = gm.h3_cells(xs, ys, resolution=1)
-    assert len(cells) == 2
-
-    polys = gm.pluscode_polygon(_LyingLenSequence(['8FVC9G8F+6X']))
-    assert len(polys) == 1
-    assert polys[0].geometry_type == 'Polygon'
-
-
-def test_r01_lying_len_rejects_without_panic_on_type_mismatch() -> None:
-    """Lying-len sequence of wrong element type still raises typed, not panic."""
-    bad = _LyingLenSequence(['not-a-float', 'still-not'])
-    with pytest.raises((
-        TypeError,
-        ValueError,
-        gm.GeometryError,
-        MemoryError,
-    )) as exc_info:
-        gm.points(bad, [0.0, 1.0])
-    _assert_no_capacity_panic(exc_info.value)
-
-
-def test_r02_geometry_array_and_from_wkt_fallible_collect() -> None:
-    """R02: GeometryArray / from_wkt use fallible collect (no abort on huge hint)."""
-    # Honest finite iterators.
+def test_geometry_array_and_from_wkt_accept_iterators() -> None:
     arr = gm.GeometryArray(iter([gm.Point(0, 0), gm.Point(1, 1)]))
     assert len(arr) == 2
     wkt_arr = gm.from_wkt(iter(['POINT (0 0)', 'POINT (1 1)']))
     assert len(wkt_arr) == 2
-
-    # Lying-len Sequence of WKT strings succeeds on real elements.
-    lying_wkt = _LyingLenSequence(['POINT (0 0)', 'POINT (1 1)'])
-    try:
-        out = gm.from_wkt(lying_wkt)
-    except (
-        TypeError,
-        ValueError,
-        MemoryError,
-        OverflowError,
-        gm.GeometryError,
-        gm.ParseError,
-    ) as exc:
-        _assert_no_capacity_panic(exc)
-    else:
-        assert len(out) == 2
-
-    # Huge empty __len__ hint: clamp + empty result or clean MemoryError.
-    class HugeEmpty:
-        def __len__(self) -> int:
-            return 1 << 62
-
-        def __iter__(self):
-            return iter(())
-
-    try:
-        empty = gm.GeometryArray(HugeEmpty())
-    except (MemoryError, ValueError, OverflowError, TypeError) as exc:
-        _assert_no_capacity_panic(exc)
-    else:
-        assert len(empty) == 0
 
 
 def test_r02_dissolve_stops_after_expected_plus_one() -> None:

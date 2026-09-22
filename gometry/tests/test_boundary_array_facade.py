@@ -96,23 +96,6 @@ def test_drop_missing_preserves_frame_on_present_rows() -> None:
     assert str(dense.crs).startswith('EPSG:4326') or dense.crs.to_epsg() == 4326
 
 
-# --- C1: lying __len__ must not MemoryError before first yield ---------------
-
-
-def test_collect_hint_lying_len_does_not_preallocate_wall() -> None:
-    class HugeLen:
-        def __len__(self) -> int:
-            return 10**15
-
-        def __iter__(self):
-            yield gm.Point(0, 0)
-            yield gm.Point(1, 1)
-
-    # Construction must succeed: advisory length is a clamped initial chunk.
-    arr = gm.GeometryArray(HugeLen())
-    assert len(arr) == 2
-
-
 # --- C5: typed empty coordinates retain axes ---------------------------------
 
 
