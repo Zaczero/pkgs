@@ -29,10 +29,9 @@ fn allocation_fits<T>(len: usize, components: usize) -> bool {
 
 pub(crate) fn precompute_cos_axis(len: usize, components: usize) -> Vec<f32> {
     let len_f = len as f32;
-    let mut out = vec![0.0_f32; len * components];
-    for p in 0..len {
+    let mut out = vec![0.0_f32; len.saturating_mul(components)];
+    for (p, row) in out.chunks_exact_mut(components).enumerate() {
         let p_f = p as f32;
-        let row = &mut out[p * components..(p + 1) * components];
         for (c, slot) in row.iter_mut().enumerate() {
             *slot = (PI * p_f * (c as f32) / len_f).cos();
         }
@@ -87,16 +86,17 @@ pub(crate) fn cos_axis_simd_cached(len: usize, components: usize) -> Rc<[V4]> {
         let blocks = components.div_ceil(LANES);
         let len_f = len as f32;
 
-        let mut out = Vec::with_capacity(len * blocks);
+        let mut out = Vec::with_capacity(len.wrapping_mul(blocks));
         for p in 0..len {
             let p_f = p as f32;
             for block in 0..blocks {
-                let start = block * LANES;
-                let lanes = (components - start).min(LANES);
+                let start = block.wrapping_mul(LANES);
+                let lanes = components.wrapping_sub(start).min(LANES);
                 let mut v = [0.0_f32; LANES];
                 for (lane, slot) in v.iter_mut().enumerate().take(lanes) {
-                    let c = start + lane;
-                    *slot = (PI * p_f * (c as f32) / len_f).cos();
+                    let c = start.wrapping_add(lane);
+                    let cosine = (PI * p_f * (c as f32) / len_f).cos();
+                    *slot = cosine;
                 }
                 out.push(V4::from_array(v));
             }

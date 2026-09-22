@@ -98,33 +98,52 @@ fn accumulate_factors_with_blocks<const BLOCKS: usize>(
     //   C[i,j] = sum_y cos_y[y,j] * (sum_x cos_x[x,i] * pixel[x,y])
     //
     // This computes all coefficients in a single image scan.
-    for y in 0..height {
+    let rgb_row_len = width.wrapping_mul(3);
+    for (rgb_row, cos_y_row) in rgb
+        .chunks_exact(rgb_row_len)
+        .zip(cos_y.chunks_exact(y_components))
+        .take(height)
+    {
         let mut row = row_vectors();
 
-        let rgb_row = &rgb[y * width * 3..(y + 1) * width * 3];
         for (cos_x_pixel, pixel) in cos_x_pixels.iter().zip(rgb_row.as_chunks::<3>().0) {
-            let r = srgb::srgb_u8_to_linear(pixel[0]);
-            let g = srgb::srgb_u8_to_linear(pixel[1]);
-            let b = srgb::srgb_u8_to_linear(pixel[2]);
+            let &[r, g, b] = pixel;
+            let r = srgb::srgb_u8_to_linear(r);
+            let g = srgb::srgb_u8_to_linear(g);
+            let b = srgb::srgb_u8_to_linear(b);
 
             let r_v = V4::splat(r);
             let g_v = V4::splat(g);
             let b_v = V4::splat(b);
 
-            for (k, &basis_x) in cos_x_pixel.iter().enumerate() {
-                row[RED][k] += basis_x * r_v;
-                row[GREEN][k] += basis_x * g_v;
-                row[BLUE][k] += basis_x * b_v;
+            let [red, green, blue] = &mut row;
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "this accumulates the separable BlurHash cosine basis"
+            )]
+            for (((red, green), blue), &basis_x) in
+                red.iter_mut().zip(green).zip(blue).zip(cos_x_pixel)
+            {
+                *red += basis_x * r_v;
+                *green += basis_x * g_v;
+                *blue += basis_x * b_v;
             }
         }
 
-        let cos_y_row = &cos_y[y * y_components..(y + 1) * y_components];
         for (j, &cos_y_value) in cos_y_row.iter().enumerate() {
             let cos_y_vector = V4::splat(cos_y_value);
-            let base = j * BLOCKS;
-            for channel in [RED, GREEN, BLUE] {
-                for k in 0..BLOCKS {
-                    factors[channel][base + k] += row[channel][k] * cos_y_vector;
+            let base = j.wrapping_mul(BLOCKS);
+            let end = base.wrapping_add(BLOCKS);
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "this accumulates the separable BlurHash cosine basis"
+            )]
+            for (target, source) in factors.iter_mut().zip(&row) {
+                let target = target
+                    .get_mut(base..end)
+                    .expect("component row fits admitted grid");
+                for (target, &source) in target.iter_mut().zip(source) {
+                    *target += source * cos_y_vector;
                 }
             }
         }
@@ -142,40 +161,71 @@ fn scale_factors(factors: &mut ComponentGrid, pixel_count: usize) {
     let inv_wh = 1.0_f32 / pixel_count as f32;
     let scale_ac = inv_wh * 2.0;
     for j in 0..factors.y_components {
-        let base = j * factors.blocks;
+        let base = j.wrapping_mul(factors.blocks);
         for block in 0..factors.blocks {
             let scale = if unlikely(j == 0 && block == 0) {
                 V4::from_array([inv_wh, scale_ac, scale_ac, scale_ac])
             } else {
                 V4::splat(scale_ac)
             };
-            let idx = base + block;
-            factors.vectors[RED][idx] *= scale;
-            factors.vectors[GREEN][idx] *= scale;
-            factors.vectors[BLUE][idx] *= scale;
+            let idx = base.wrapping_add(block);
+            scale_component(&mut factors.vectors[RED], idx, scale);
+            scale_component(&mut factors.vectors[GREEN], idx, scale);
+            scale_component(&mut factors.vectors[BLUE], idx, scale);
         }
     }
+}
+
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "scaling a decoded floating-point component is the operation's numerical contract"
+)]
+fn scale_component(channel: &mut [V4], index: usize, scale: V4) {
+    let Some(value) = channel.get_mut(index) else {
+        unreachable!("validated component index fits vector storage")
+    };
+    *value *= scale;
 }
 
 fn max_ac_value(factors: &ComponentGrid) -> f32 {
     let mut maximum_value = 0.0_f32;
     for j in 0..factors.y_components {
-        let base = j * factors.blocks;
+        let base = j.wrapping_mul(factors.blocks);
         for block in 0..factors.blocks {
-            let idx = base + block;
-            let r = factors.vectors[RED][idx].to_array();
-            let g = factors.vectors[GREEN][idx].to_array();
-            let b = factors.vectors[BLUE][idx].to_array();
+            let idx = base.wrapping_add(block);
+            let Some(red) = factors.vectors[RED].get(idx) else {
+                unreachable!("validated component index fits red storage")
+            };
+            let Some(green) = factors.vectors[GREEN].get(idx) else {
+                unreachable!("validated component index fits green storage")
+            };
+            let Some(blue) = factors.vectors[BLUE].get(idx) else {
+                unreachable!("validated component index fits blue storage")
+            };
+            let r = red.to_array();
+            let g = green.to_array();
+            let b = blue.to_array();
 
             let start_lane = usize::from(j == 0 && block == 0);
-            let lanes = if block + 1 == factors.blocks {
-                factors.x_components - block * LANES
+            let lanes = if block.wrapping_add(1) == factors.blocks {
+                factors.x_components.wrapping_sub(block.wrapping_mul(LANES))
             } else {
                 LANES
             };
-            for lane in start_lane..lanes {
-                maximum_value =
-                    maximum_value.max(r[lane].abs().max(g[lane].abs()).max(b[lane].abs()));
+            for ((&red, &green), &blue) in r
+                .get(start_lane..lanes)
+                .expect("active lanes fit the SIMD block")
+                .iter()
+                .zip(
+                    g.get(start_lane..lanes)
+                        .expect("active lanes fit the SIMD block"),
+                )
+                .zip(
+                    b.get(start_lane..lanes)
+                        .expect("active lanes fit the SIMD block"),
+                )
+            {
+                maximum_value = maximum_value.max(red.abs().max(green.abs()).max(blue.abs()));
             }
         }
     }
@@ -183,7 +233,7 @@ fn max_ac_value(factors: &ComponentGrid) -> f32 {
 }
 
 fn encode_factors(factors: &ComponentGrid) -> String {
-    let num_components = factors.x_components * factors.y_components;
+    let num_components = factors.x_components.wrapping_mul(factors.y_components);
     let maximum_value = max_ac_value(factors);
     let (quantised_max_value, maximum_value) = if num_components > 1 {
         let quantised = ((maximum_value * 166.0 - 0.5).floor() as i32).clamp(0, 82) as u32;
@@ -192,17 +242,24 @@ fn encode_factors(factors: &ComponentGrid) -> String {
         (0, 1.0)
     };
 
-    let total_len = 1 + 1 + 4 + 2 * (num_components - 1);
+    let total_len = num_components
+        .wrapping_sub(1)
+        .wrapping_mul(2)
+        .wrapping_add(6);
     let mut out = Vec::with_capacity(total_len);
 
-    let size_flag =
-        ((factors.x_components - 1) + (factors.y_components - 1) * MAX_COMPONENTS) as u32;
+    let size_flag = (factors.x_components.wrapping_sub(1).wrapping_add(
+        factors
+            .y_components
+            .wrapping_sub(1)
+            .wrapping_mul(MAX_COMPONENTS),
+    )) as u32;
     base83::push_base83::<1>(&mut out, size_flag);
     base83::push_base83::<1>(&mut out, quantised_max_value);
 
-    let dc_r = factors.vectors[RED][0].to_array()[0];
-    let dc_g = factors.vectors[GREEN][0].to_array()[0];
-    let dc_b = factors.vectors[BLUE][0].to_array()[0];
+    let dc_r = component_lane(&factors.vectors[RED], 0, 0);
+    let dc_g = component_lane(&factors.vectors[GREEN], 0, 0);
+    let dc_b = component_lane(&factors.vectors[BLUE], 0, 0);
     let dc_value = (u32::from(srgb::linear_to_srgb_u8(dc_r)) << 16)
         | (u32::from(srgb::linear_to_srgb_u8(dc_g)) << 8)
         | u32::from(srgb::linear_to_srgb_u8(dc_b));
@@ -216,11 +273,11 @@ fn encode_factors(factors: &ComponentGrid) -> String {
 
             let block = i / LANES;
             let lane = i % LANES;
-            let idx = j * factors.blocks + block;
+            let idx = j.wrapping_mul(factors.blocks).wrapping_add(block);
 
-            let r = factors.vectors[RED][idx].to_array()[lane] / maximum_value;
-            let g = factors.vectors[GREEN][idx].to_array()[lane] / maximum_value;
-            let b = factors.vectors[BLUE][idx].to_array()[lane] / maximum_value;
+            let r = component_lane(&factors.vectors[RED], idx, lane) / maximum_value;
+            let g = component_lane(&factors.vectors[GREEN], idx, lane) / maximum_value;
+            let b = component_lane(&factors.vectors[BLUE], idx, lane) / maximum_value;
 
             let quant_r = (sign_pow_05(r) * 9.0 + 9.5).floor() as i32;
             let quant_g = (sign_pow_05(g) * 9.0 + 9.5).floor() as i32;
@@ -230,11 +287,23 @@ fn encode_factors(factors: &ComponentGrid) -> String {
             let quant_g = quant_g.clamp(0, 18) as u32;
             let quant_b = quant_b.clamp(0, 18) as u32;
 
-            let ac_value = quant_r * 19 * 19 + quant_g * 19 + quant_b;
+            let ac_value = quant_r
+                .wrapping_mul(19)
+                .wrapping_mul(19)
+                .wrapping_add(quant_g.wrapping_mul(19))
+                .wrapping_add(quant_b);
             base83::push_base83::<2>(&mut out, ac_value);
         }
     }
 
     // Safety: all bytes are ASCII (base83).
     unsafe { String::from_utf8_unchecked(out) }
+}
+
+fn component_lane(channel: &[V4], index: usize, lane: usize) -> f32 {
+    channel
+        .get(index)
+        .and_then(|vector| vector.as_array().get(lane))
+        .copied()
+        .expect("validated component coordinates fit vector storage")
 }

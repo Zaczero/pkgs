@@ -1,4 +1,5 @@
 use std::hint::unlikely;
+use std::num::NonZeroU32;
 
 const CHARSET: &[u8; 83] =
     b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz#$%*+,-.:;=?@[]^_{|}~";
@@ -6,26 +7,26 @@ const CHARSET: &[u8; 83] =
 const INVALID: u8 = 0xFF;
 const DECODE: [u8; 256] = {
     let mut table = [INVALID; 256];
-    let mut i = 0;
-    while i < 83 {
-        table[CHARSET[i] as usize] = i as u8;
-        i += 1;
+    let mut i = 0_usize;
+    while let Some(&byte) = CHARSET.get(i) {
+        let Some(slot) = table.get_mut(byte as usize) else {
+            unreachable!()
+        };
+        *slot = i as u8;
+        i = i.wrapping_add(1);
     }
     table
 };
-const POW83: [u32; 5] = {
-    let mut out = [0_u32; 5];
-    out[0] = 1;
-    let mut i = 1;
-    while i < out.len() {
-        out[i] = out[i - 1] * 83;
-        i += 1;
-    }
-    out
-};
+const POW83: [NonZeroU32; 5] = [
+    NonZeroU32::new(1).unwrap(),
+    NonZeroU32::new(83).unwrap(),
+    NonZeroU32::new(6_889).unwrap(),
+    NonZeroU32::new(571_787).unwrap(),
+    NonZeroU32::new(47_458_321).unwrap(),
+];
 
-pub(crate) const fn decode_byte(b: u8) -> Option<u8> {
-    let v = DECODE[b as usize];
+pub(crate) fn decode_byte(b: u8) -> Option<u8> {
+    let v = DECODE.get(b as usize).copied().unwrap_or(INVALID);
     if unlikely(v == INVALID) {
         None
     } else {
@@ -34,20 +35,22 @@ pub(crate) const fn decode_byte(b: u8) -> Option<u8> {
 }
 
 pub(crate) fn decode_array<const LENGTH: usize>(bytes: &[u8; LENGTH]) -> Option<u32> {
-    let mut value = 0;
+    const { assert!(LENGTH <= POW83.len(), "base83 field exceeds u32 range") };
+    let mut value = 0_u32;
     for &b in bytes {
         let digit = u32::from(decode_byte(b)?);
-        value = value * 83 + digit;
+        value = value.wrapping_mul(83).wrapping_add(digit);
     }
     Some(value)
 }
 
 pub(crate) fn push_base83<const LENGTH: usize>(out: &mut Vec<u8>, value: u32) {
-    let mut i = LENGTH;
-    while i > 0 {
-        i -= 1;
-        let divisor = POW83[i];
+    const { assert!(LENGTH <= POW83.len(), "base83 field exceeds u32 range") };
+    for &divisor in POW83.iter().take(LENGTH).rev() {
         let digit = (value / divisor) % 83;
-        out.push(CHARSET[digit as usize]);
+        let Some(&byte) = CHARSET.get(digit as usize) else {
+            unreachable!("base83 remainder indexes the alphabet")
+        };
+        out.push(byte);
     }
 }

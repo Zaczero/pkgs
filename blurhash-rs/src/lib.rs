@@ -1,3 +1,5 @@
+#![feature(const_index)]
+#![feature(const_trait_impl)]
 #![feature(likely_unlikely)]
 #![feature(portable_simd)]
 
