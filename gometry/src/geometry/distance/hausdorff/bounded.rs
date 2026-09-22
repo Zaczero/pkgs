@@ -1808,7 +1808,7 @@ impl PatchQueue {
         } else {
             0
         };
-        crate::try_push_heap(&mut self.heap, QueueEntry { key, order, record })?;
+        self.heap.push(QueueEntry { key, order, record });
 
         Ok(())
     }

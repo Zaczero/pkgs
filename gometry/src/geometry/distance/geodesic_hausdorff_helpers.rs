@@ -255,7 +255,7 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
     if initial.upper <= completion_limit(metric, cmax.max(best.lower)) {
         return Ok(best);
     }
-    crate::boundary::try_push_heap(&mut scratch.outer, initial)?;
+    scratch.outer.push(initial);
     while let Some(interval) = scratch.outer.pop() {
         #[cfg(test)]
         geodesic_hausdorff_counters::interval_pop();
@@ -309,10 +309,10 @@ pub(crate) fn geodesic_max_min_on_source_segment<M: GeodesicMetric>(
         #[cfg(test)]
         geodesic_hausdorff_counters::interval_split();
         if left.upper > completion_limit(metric, cmax.max(best.lower)) {
-            crate::boundary::try_push_heap(&mut scratch.outer, left)?;
+            scratch.outer.push(left);
         }
         if right.upper > completion_limit(metric, cmax.max(best.lower)) {
-            crate::boundary::try_push_heap(&mut scratch.outer, right)?;
+            scratch.outer.push(right);
         }
     }
     Ok(best)

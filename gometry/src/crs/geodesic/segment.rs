@@ -876,7 +876,7 @@ fn search_point_segment(
         },
         _ => {
             scratch.clear();
-            crate::boundary::try_push_heap(&mut scratch.inner, initial)?;
+            scratch.inner.push(initial);
             let mut minimum = endpoint_minimum;
             let mut lower = 0.0;
             while let Some(interval) = scratch.inner.pop() {
@@ -953,10 +953,10 @@ fn search_point_segment(
                     right_value: interval.right_value,
                 };
                 if interval_may_contain_answer(left.lower, query, minimum.distance) {
-                    crate::boundary::try_push_heap(&mut scratch.inner, left)?;
+                    scratch.inner.push(left);
                 }
                 if interval_may_contain_answer(right.lower, query, minimum.distance) {
-                    crate::boundary::try_push_heap(&mut scratch.inner, right)?;
+                    scratch.inner.push(right);
                 }
                 if let Some(next) = scratch.inner.peek()
                     && minimum.distance - next.lower
