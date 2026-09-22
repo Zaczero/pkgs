@@ -280,9 +280,9 @@ impl<'a> TopologyGuard<'a> {
         Ok(vertex_cloud)
     }
 
-    fn segment_index(&self) -> Result<&SegmentIndex> {
+    fn segment_index(&self) -> &SegmentIndex {
         self.segment_index
-            .get_or_try_init(|| SegmentIndex::build(self.segments))
+            .get_or_init(|| SegmentIndex::build(self.segments))
     }
 
     fn vertex_tree(&self) -> &BulkRTree<[f64; 2]> {
@@ -318,7 +318,7 @@ impl<'a> TopologyGuard<'a> {
             end: next,
         };
         let contact = self
-            .segment_index()?
+            .segment_index()
             .intersecting_candidates(shortcut)
             .any(|entry| {
                 let chain_segment = if chain_segments.is_empty() {

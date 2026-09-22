@@ -50,28 +50,25 @@ impl HeapSize for SegmentIndex {
 }
 
 impl SegmentIndex {
-    pub(crate) fn build(segments: &[Segment]) -> crate::error::Result<Self> {
+    pub(crate) fn build(segments: &[Segment]) -> Self {
         Self::build_from_iter(segments.iter().copied())
     }
 
     /// Build straight from a segment iterator — entries are gathered once for
     /// the bulk load, with no caller-side `Vec<Segment>` staging.
-    pub(crate) fn build_from_iter(
-        segments: impl IntoIterator<Item = Segment>,
-    ) -> crate::error::Result<Self> {
-        let segments = segments.into_iter();
-        let mut entries = Vec::new();
-        crate::try_reserve_vec(&mut entries, segments.size_hint().0)?;
-        for (ordinal, segment) in segments.enumerate() {
-            crate::try_push_vec(&mut entries, SegmentEntry {
+    pub(crate) fn build_from_iter(segments: impl IntoIterator<Item = Segment>) -> Self {
+        let entries = segments
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, segment)| SegmentEntry {
                 segment,
                 ordinal,
                 envelope: segment_envelope(segment),
-            })?;
-        }
-        Ok(Self {
+            })
+            .collect();
+        Self {
             tree: BulkRTree::bulk_load_with_params(entries),
-        })
+        }
     }
 
     pub(crate) fn nearest_segment_ordinal_if(
@@ -153,16 +150,11 @@ pub(crate) struct PointSetIndex {
 }
 
 impl PointSetIndex {
-    pub(crate) fn build(points: impl IntoIterator<Item = Point>) -> crate::error::Result<Self> {
-        let points = points.into_iter();
-        let mut coords = Vec::new();
-        crate::try_reserve_vec(&mut coords, points.size_hint().0)?;
-        for point in points {
-            crate::try_push_vec(&mut coords, [point.x, point.y])?;
-        }
-        Ok(Self {
+    pub(crate) fn build(points: impl IntoIterator<Item = Point>) -> Self {
+        let coords = points.into_iter().map(|point| [point.x, point.y]).collect();
+        Self {
             tree: BulkRTree::bulk_load_with_params(coords),
-        })
+        }
     }
 
     /// The nearest indexed point (INCLUDING a coincident one, distance 0) with
@@ -213,7 +205,7 @@ mod query_tests {
                 end: crate::geometry::XY::new(1.0, 1.0),
             },
         ];
-        let index = SegmentIndex::build(&segments).unwrap();
+        let index = SegmentIndex::build(&segments);
         assert!(index.covers_point(Point::new_raw_xy(0.5, 0.0)));
     }
 
@@ -224,7 +216,7 @@ mod query_tests {
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(0.0, 1.0),
         ];
-        let index = PointSetIndex::build(points.iter().copied()).unwrap();
+        let index = PointSetIndex::build(points.iter().copied());
         let (other, _) = index.nearest_other(points[0]).unwrap();
         assert!(!same_point(other, points[0]));
     }

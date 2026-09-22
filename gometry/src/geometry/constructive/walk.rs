@@ -643,7 +643,7 @@ impl ShellCoverageIndex {
     fn new(shell: &Ring) -> Result<Self> {
         Ok(Self {
             point_index: PolygonPointIndex::build_shell(shell)?,
-            boundary: SegmentIndex::build_from_iter(line_segments(shell))?,
+            boundary: SegmentIndex::build_from_iter(line_segments(shell)),
         })
     }
 

@@ -146,7 +146,7 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
     let segments: Vec<Segment> = (0..ring.len())
         .map(|index| ring_segment(ring, index))
         .collect();
-    let index = SegmentIndex::build(&segments)?;
+    let index = SegmentIndex::build(&segments);
     for left in 0..segments.len() {
         for entry in index.intersecting_candidates(segments[left]) {
             let right = entry.ordinal;
@@ -197,7 +197,7 @@ pub(crate) fn validate_hole_interactions(shell: &[Point], holes: &[Vec<Point>]) 
     for (index, hole) in holes.iter().enumerate() {
         push_ring_segments(hole, EarcutRingId::Hole(index), &mut segments, &mut owners);
     }
-    let index = SegmentIndex::build(&segments)?;
+    let index = SegmentIndex::build(&segments);
     for left in 0..segments.len() {
         for entry in index.intersecting_candidates(segments[left]) {
             let right = entry.ordinal;

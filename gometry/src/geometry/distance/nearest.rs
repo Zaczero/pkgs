@@ -27,7 +27,7 @@ pub(crate) fn nearest_probe_to_parts(
             .nearest_to_points(probe.probe_points(), best)?,
     };
     if !target.point_only.is_empty() {
-        if let Some(index) = target.point_index()? {
+        if let Some(index) = target.point_index() {
             // Indexed: each probe point's nearest target point in O(log points).
             for probe_point in probe.probe_points() {
                 if let Some((target_point, distance_squared)) = index.nearest(probe_point) {
@@ -208,21 +208,13 @@ impl DistanceParts {
     /// The cached R-tree over this side's isolated points, built on first use
     /// once the point count clears the crossover (`None` below it — a short
     /// brute scan wins under the rstar bulk-load setup cost).
-    pub(crate) fn point_index(&self) -> crate::error::Result<Option<&PointSetIndex>> {
-        if let Some(index) = self.point_index.get() {
-            return Ok(index.as_ref());
-        }
-        let index = if self.point_only.len() >= POINT_INDEX_MIN_POINTS {
-            Some(PointSetIndex::build(self.point_only.iter().copied())?)
-        } else {
-            None
-        };
-        let _ = self.point_index.set(index);
-        Ok(self
-            .point_index
-            .get()
-            .expect("point index was published")
-            .as_ref())
+    pub(crate) fn point_index(&self) -> Option<&PointSetIndex> {
+        self.point_index
+            .get_or_init(|| {
+                (self.point_only.len() >= POINT_INDEX_MIN_POINTS)
+                    .then(|| PointSetIndex::build(self.point_only.iter().copied()))
+            })
+            .as_ref()
     }
 }
 

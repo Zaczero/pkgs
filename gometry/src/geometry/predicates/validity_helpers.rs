@@ -168,7 +168,7 @@ fn minimum_clearance_witness_indexed(
     segments: &[IndexedSegment],
 ) -> crate::error::Result<Option<([VertexProvenance; 2], f64)>> {
     let first_point_index_by_xy = first_point_index_by_xy(points)?;
-    let vertex_index = PointSetIndex::build(points.iter().copied())?;
+    let vertex_index = PointSetIndex::build(points.iter().copied());
     let mut witness = None;
     let mut clearance_squared = f64::INFINITY;
     for (point_index, point) in points.iter().enumerate() {
@@ -189,7 +189,7 @@ fn minimum_clearance_witness_indexed(
             ));
         }
     }
-    let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy))?;
+    let segment_index = SegmentIndex::build_from_iter(segments.iter().map(|segment| segment.xy));
     for (point_index, point) in points.iter().enumerate() {
         // Untrustworthy best must not prune the R-tree (would hide nearer segments).
         let probe_best = if clearance_squared.is_normal() {

@@ -92,7 +92,7 @@ pub(in crate::geometry) fn simplified_polygon_delta_is_simple(
     if chords.is_empty() {
         return Ok(true);
     }
-    let index = SegmentIndex::build(&chains.segments)?;
+    let index = SegmentIndex::build(&chains.segments);
     Ok(chords.iter().all(|&ordinal| {
         let chord = chains.at(ordinal);
         index.intersecting_candidates(chord.segment).all(|entry| {

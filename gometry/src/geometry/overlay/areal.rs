@@ -245,7 +245,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         &probes,
         &mut ranges,
         &mut boxes,
-    )?;
+    );
     let windings = arrangement.face_windings(&seeds);
     scratch.segments = segments;
     scratch.tags = tags;
@@ -271,7 +271,7 @@ fn outside_winding_seeds_with_scratch(
     probes: &[XY],
     ranges: &mut Vec<(u32, u32)>,
     boxes: &mut Vec<Bounds>,
-) -> Result<Vec<[i32; 2]>> {
+) -> Vec<[i32; 2]> {
     // Loops are contiguous runs of the soup: recover each loop's segment
     // range and bbox in one pass (the arm choice needs the longest run).
     let loop_count = loop_component.len();
@@ -304,7 +304,7 @@ fn outside_winding_seeds_with_scratch(
         .unwrap_or(0) as usize;
     let brute = probes.len() * longest <= 64 * segments.len() + 256 * probes.len();
     if brute {
-        return Ok(probes
+        return probes
             .iter()
             .enumerate()
             .map(|(component, &probe)| {
@@ -322,13 +322,13 @@ fn outside_winding_seeds_with_scratch(
                 }
                 seed
             })
-            .collect());
+            .collect();
     }
-    let index = SegmentIndex::build(segments)?;
+    let index = SegmentIndex::build(segments);
     let ray_end = segments.iter().fold(f64::NEG_INFINITY, |end, segment| {
         end.max(segment.start.x).max(segment.end.x)
     }) + 1.0;
-    Ok(probes
+    probes
         .iter()
         .enumerate()
         .map(|(component, &probe)| {
@@ -345,7 +345,7 @@ fn outside_winding_seeds_with_scratch(
             }
             seed
         })
-        .collect())
+        .collect()
 }
 
 /// One segment's signed contribution to the rightward-ray winding number
