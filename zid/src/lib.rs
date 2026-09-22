@@ -27,11 +27,11 @@ fn zids(py: Python<'_>, n: usize) -> PyResult<Bound<'_, PyList>> {
         return Err(ZidError::TooManyZIDsAtOnce { attempted: n }.into_pyerr());
     }
 
-    let (time, start_seq) = reserve_sequences((n - 1) as u16);
+    let (time, start_seq) = reserve_sequences(n.wrapping_sub(1) as u16);
 
     PyList::new(
         py,
-        (0..n).map(|i| zid_from_time_and_sequence(time, (u32::from(start_seq) + i as u32) as u16)),
+        (0..n).map(|i| zid_from_time_and_sequence(time, start_seq.wrapping_add(i as u16))),
     )
 }
 
