@@ -148,7 +148,7 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
 ) -> Result<Vec<usize>> {
     let floor = if cyclic { 4 } else { 2 };
     if count <= floor {
-        return identity_indices(count);
+        return Ok((0..count).collect());
     }
     // Lazy min-heap over a doubly linked interior walk: each removal
     // re-evaluates only its two neighbors (generation stamps invalidate
@@ -165,23 +165,14 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
             bits ^ (1 << 63)
         }
     };
-    let mut prev = Vec::new();
-    crate::try_reserve_vec(&mut prev, count)?;
-    prev.extend((0..count).map(|index| index.wrapping_sub(1)));
-    let mut next = Vec::new();
-    crate::try_reserve_vec(&mut next, count)?;
-    next.extend(1..=count);
-    let mut generation = Vec::new();
-    crate::try_reserve_vec(&mut generation, count)?;
-    generation.resize(count, 0_u32);
-    let mut removed = Vec::new();
-    crate::try_reserve_vec(&mut removed, count)?;
-    removed.resize(count, false);
-    let mut heap: BinaryHeap<Reverse<(u64, usize, u32)>> = BinaryHeap::new();
-    crate::try_reserve_heap(&mut heap, count)?;
+    let mut prev: Vec<_> = (0..count).map(|index| index.wrapping_sub(1)).collect();
+    let mut next: Vec<_> = (1..=count).collect();
+    let mut generation = vec![0_usize; count];
+    let mut removed = vec![false; count];
+    let mut heap = BinaryHeap::with_capacity(count);
     for index in 1..count - 1 {
         if let Some(importance) = candidate(xy(index - 1), xy(index), xy(index + 1))? {
-            crate::try_push_heap(&mut heap, Reverse((total_order_key(importance), index, 0)))?;
+            heap.push(Reverse((total_order_key(importance), index, 0)));
         }
     }
     let mut live = count;
@@ -204,31 +195,25 @@ pub(in crate::geometry) fn simplify_chain_guarded_with_segments(
             if neighbor == 0 || neighbor == count - 1 {
                 continue;
             }
-            generation[neighbor] += 1;
+            // A vertex is refreshed at most once per removal, fewer than count times.
+            generation[neighbor] = generation[neighbor].wrapping_add(1);
             if let Some(importance) =
                 candidate(xy(prev[neighbor]), xy(neighbor), xy(next[neighbor]))?
             {
-                crate::try_push_heap(
-                    &mut heap,
-                    Reverse((total_order_key(importance), neighbor, generation[neighbor])),
-                )?;
+                heap.push(Reverse((
+                    total_order_key(importance),
+                    neighbor,
+                    generation[neighbor],
+                )));
             }
         }
     }
-    let mut kept = Vec::new();
-    crate::try_reserve_vec(&mut kept, live)?;
+    let mut kept = Vec::with_capacity(live);
     let mut cursor = 0;
     while cursor < count {
         kept.push(cursor);
         cursor = next[cursor];
     }
-    Ok(kept)
-}
-
-fn identity_indices(count: usize) -> Result<Vec<usize>> {
-    let mut kept = Vec::new();
-    crate::try_reserve_vec(&mut kept, count)?;
-    kept.extend(0..count);
     Ok(kept)
 }
 
@@ -619,7 +604,7 @@ pub(crate) fn coverage_simplify<S: std::borrow::Borrow<Shape>>(
         .map(|chain| {
             if !simplify_boundary && !chain.shared {
                 return Ok(SimplifiedChain {
-                    kept: identity_indices(chain.points.len())?,
+                    kept: (0..chain.points.len()).collect(),
                 });
             }
             let cyclic = chain.points.len() > 1
