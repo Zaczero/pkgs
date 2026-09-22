@@ -32,21 +32,18 @@ impl<'a> DecodeCursor<'a> {
 fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, PolylineError> {
     let start = cursor.index;
     let mut value = 0_u32;
-    let mut shift = 0;
+    let mut shift = 0_u32;
 
     loop {
-        if cursor.index == cursor.bytes.len() {
+        let index = cursor.index;
+        let Some(&byte) = cursor.bytes.get(index) else {
             return Err(PolylineError::UnterminatedPolylineValue { index: start });
-        }
-        let byte = cursor.bytes[cursor.index];
-        cursor.index += 1;
+        };
+        cursor.index = index.wrapping_add(1);
 
         let b = byte.wrapping_sub(ASCII_OFFSET);
         if b > MAX_CHUNK {
-            return Err(PolylineError::InvalidPolylineByte {
-                index: cursor.index - 1,
-                byte,
-            });
+            return Err(PolylineError::InvalidPolylineByte { index, byte });
         }
 
         if shift == MAX_SHIFT && b > 0b11 {
@@ -59,7 +56,7 @@ fn decode_next_value(cursor: &mut DecodeCursor<'_>) -> Result<i32, PolylineError
             break;
         }
 
-        shift += CHUNK_BITS;
+        shift = shift.wrapping_add(CHUNK_BITS);
     }
 
     Ok(zigzag_decode(value))

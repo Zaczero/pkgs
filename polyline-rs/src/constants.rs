@@ -8,24 +8,13 @@ pub(crate) const CHUNK_MASK: u8 = 0b1_1111;
 pub(crate) const CONTINUATION_BIT: u8 = 0x20;
 
 const SCALE_TABLE_LEN: usize = 16;
-const SCALES: [f64; SCALE_TABLE_LEN] = {
-    let mut table = [1.0; SCALE_TABLE_LEN];
-    let mut index = 1;
-    while index < table.len() {
-        table[index] = table[index - 1] * 10.0;
-        index += 1;
-    }
-    table
-};
-const INV_SCALES: [f64; SCALE_TABLE_LEN] = {
-    let mut table = [1.0; SCALE_TABLE_LEN];
-    let mut index = 1;
-    while index < table.len() {
-        table[index] = 1.0 / SCALES[index];
-        index += 1;
-    }
-    table
-};
+const SCALES: [f64; SCALE_TABLE_LEN] = [
+    1.0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11, 1e12, 1e13, 1e14, 1e15,
+];
+const INV_SCALES: [f64; SCALE_TABLE_LEN] = [
+    1.0, 1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8, 1e-9, 1e-10, 1e-11, 1e-12, 1e-13, 1e-14,
+    1e-15,
+];
 
 fn cached_precision_value(table: &[f64; SCALE_TABLE_LEN], precision: i32) -> Option<f64> {
     let index = usize::try_from(precision).ok()?;
@@ -37,5 +26,6 @@ pub(crate) fn scale_for_precision(precision: i32) -> f64 {
 }
 
 pub(crate) fn inv_scale_for_precision(precision: i32) -> f64 {
-    cached_precision_value(&INV_SCALES, precision).unwrap_or_else(|| 10_f64.powi(-precision))
+    cached_precision_value(&INV_SCALES, precision)
+        .unwrap_or_else(|| 10_f64.powi(precision.saturating_neg()))
 }

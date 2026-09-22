@@ -23,10 +23,10 @@ fn encode_value(out: &mut Vec<u8>, delta: i32) {
     let mut value = zigzag_encode(delta);
     while value >= u32::from(CONTINUATION_BIT) {
         let chunk = ((value as u8) & CHUNK_MASK) | CONTINUATION_BIT;
-        out.push(chunk + ASCII_OFFSET);
+        out.push(chunk.wrapping_add(ASCII_OFFSET));
         value >>= CHUNK_BITS;
     }
-    out.push(value as u8 + ASCII_OFFSET);
+    out.push((value as u8).wrapping_add(ASCII_OFFSET));
 }
 
 pub(crate) fn encode<const LATLON: bool>(
@@ -35,7 +35,7 @@ pub(crate) fn encode<const LATLON: bool>(
 ) -> PyResult<String> {
     let scale = scale_for_precision(precision);
 
-    let capacity = coordinates.len().map_or(0, |n| n * 12);
+    let capacity = coordinates.len().map_or(0, |n| n.saturating_mul(12));
     let mut out = Vec::with_capacity(capacity);
     let mut last_lat = 0;
     let mut last_lon = 0;
@@ -54,12 +54,12 @@ pub(crate) fn encode<const LATLON: bool>(
         // non-exact coordinate toward zero by up to one full grid unit.
         // `f64::round` (half away from zero) matches the C/C++ references.
         let lat = (lat_f * scale).round() as i64;
-        let delta_lat = (lat - last_lat) as i32;
+        let delta_lat = lat.wrapping_sub(last_lat) as i32;
         encode_value(&mut out, delta_lat);
         last_lat = lat;
 
         let lon = (lon_f * scale).round() as i64;
-        let delta_lon = (lon - last_lon) as i32;
+        let delta_lon = lon.wrapping_sub(last_lon) as i32;
         encode_value(&mut out, delta_lon);
         last_lon = lon;
     }
