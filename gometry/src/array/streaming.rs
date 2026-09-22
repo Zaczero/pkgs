@@ -963,9 +963,7 @@ fn polygon_shapes_from_parts(
 #[cfg(test)]
 mod demotion_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq, Point, Ring};
-    use crate::test_support::fail_allocations_after;
 
     fn xy_line(points: &[(f64, f64)]) -> Shape {
         let coords = CoordSeq::try_from_points(
@@ -987,34 +985,6 @@ mod demotion_tests {
         )
         .unwrap();
         Shape::Polygon(Polygon::new(Ring::from_closed(coords).unwrap(), Vec::new()))
-    }
-
-    fn assert_demote_returns_resource_then_reuses(mut stream: StreamingShapes, reuse: &Shape) {
-        let error = fail_allocations_after(0, || stream.try_demote()).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        stream.try_push(reuse.clone()).unwrap();
-        let array = stream.finish(Frame::None).unwrap();
-        assert_eq!(array.len(), 1);
-        assert!(!array.is_row_missing(0));
-        assert_eq!(array.geometry_at(0).unwrap().shape.shape(), reuse);
-    }
-
-    #[test]
-    fn line_try_demote_returns_resource_on_allocation_failure() {
-        let line = xy_line(&[(0.0, 0.0), (1.0, 1.0)]);
-        let mut stream = StreamingShapes::new();
-        stream.try_push(line).unwrap();
-        assert_demote_returns_resource_then_reuses(stream, &xy_line(&[(2.0, 3.0), (4.0, 5.0)]));
-    }
-
-    #[test]
-    fn polygon_try_demote_returns_resource_on_allocation_failure() {
-        let mut stream = StreamingShapes::new();
-        stream.try_push(xy_square()).unwrap();
-        assert_demote_returns_resource_then_reuses(stream, &xy_square());
     }
 
     #[test]

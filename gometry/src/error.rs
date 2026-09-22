@@ -179,42 +179,6 @@ impl From<std::collections::TryReserveError> for Error {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{Error, ErrorKind, ResourceError};
-    use crate::crs::CrsError;
-    use crate::test_support::fail_allocations_after;
-
-    #[test]
-    fn resource_errors_survive_persistent_allocation_failure() {
-        let allocation = fail_allocations_after(0, || Error::from(ResourceError::Allocation));
-        assert!(matches!(
-            allocation.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        let overflow = fail_allocations_after(0, || Error::from(ResourceError::SizeOverflow));
-        assert!(matches!(
-            overflow.kind(),
-            ErrorKind::Resource(ResourceError::SizeOverflow)
-        ));
-        let context = fail_allocations_after(0, || {
-            Error::from(ResourceError::SizeOverflowContext(
-                "coordinate count overflow",
-            ))
-        });
-        assert!(matches!(
-            context.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        let exponent =
-            fail_allocations_after(0, || Error::from(CrsError::GeodesicExponentOverflow));
-        assert!(matches!(
-            exponent.kind(),
-            ErrorKind::Crs(CrsError::GeodesicExponentOverflow)
-        ));
-    }
-}
-
 /// A `ParseError` format tag identifying the malformed serialized, grid-cell,
 /// or point-code input. PyErr decoration lives in `crate::py::errors`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

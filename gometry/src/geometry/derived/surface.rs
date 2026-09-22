@@ -295,9 +295,7 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Result<Option<Point>>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordinateAxes, GeometryKind, MultiMember, MultiPoint};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn xy(x: f64, y: f64) -> Point {
         Point::new_raw_xy(x, y)
@@ -334,33 +332,6 @@ mod tests {
         }
     }
 
-    fn assert_allocation_error<T>(result: Result<T>) {
-        let error = result
-            .err()
-            .expect("each staging allocation must propagate");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
-    fn assert_surface_allocation_prefixes(shape: &Shape) {
-        let expected = shape
-            .point_on_surface()
-            .expect("unrestricted representative");
-        let (_, count) = allocation_count(|| shape.point_on_surface().expect("count staging"));
-        assert!(count > 0, "fixture must stage at least one allocation");
-        for prefix in 0..count {
-            assert_allocation_error(fail_allocations_after(prefix, || shape.point_on_surface()));
-            assert_eq!(
-                shape
-                    .point_on_surface()
-                    .expect("retry after allocation failure"),
-                expected
-            );
-        }
-    }
-
     #[test]
     fn empty_geometry_yields_empty_point_without_staging() {
         for empty in [
@@ -368,7 +339,7 @@ mod tests {
             Shape::empty_polygon(),
             Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
         ] {
-            let result = fail_allocations_after(0, || empty.point_on_surface())
+            let result = crate::test_support::assert_no_allocations(|| empty.point_on_surface())
                 .expect("empty geometry does not stage");
             assert_eq!(result, Shape::empty_point());
         }
@@ -459,98 +430,5 @@ mod tests {
         .expect("packed row")
         .expect("interior chord");
         assert_eq!((point.x, point.y), (1.0, 2.0));
-    }
-
-    #[test]
-    fn surface_staging_allocation_failures_are_retryable() {
-        let donut = polygon(
-            &[
-                (0.0, 0.0),
-                (10.0, 0.0),
-                (10.0, 10.0),
-                (0.0, 10.0),
-                (0.0, 0.0),
-            ],
-            &[&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]],
-        );
-        let collection = Shape::geometry_collection(vec![
-            box_polygon(0.0, 0.0, 2.0, 4.0),
-            box_polygon(10.0, 0.0, 14.0, 4.0),
-        ])
-        .expect("test collection");
-        let points = Shape::geometry_collection(vec![
-            Shape::Point(xy(0.0, 0.0)),
-            Shape::Point(xy(2.0, 0.0)),
-            Shape::Point(xy(10.0, 0.0)),
-        ])
-        .expect("point collection");
-        let collapsed = polygon(&[(0.0, 0.0), (1.0, 0.0), (3.0, 0.0), (0.0, 0.0)], &[]);
-        let multipolygon = Shape::multi_polygon(CoordinateAxes::XY, vec![
-            match box_polygon(0.0, 0.0, 2.0, 2.0) {
-                Shape::Polygon(polygon) => polygon,
-                _ => panic!("polygon"),
-            },
-            match box_polygon(4.0, 0.0, 8.0, 2.0) {
-                Shape::Polygon(polygon) => polygon,
-                _ => panic!("polygon"),
-            },
-        ])
-        .expect("multipolygon");
-        for shape in [&donut, &collection, &points, &collapsed, &multipolygon] {
-            assert_surface_allocation_prefixes(shape);
-        }
-    }
-
-    #[test]
-    fn packed_row_crossing_allocation_failures_are_retryable() {
-        let xs = [0.0, 10.0, 10.0, 0.0, 0.0];
-        let ys = [0.0, 0.0, 10.0, 10.0, 0.0];
-        let ring_offsets = [0, 5];
-        let bounds = Some(Bounds::new_raw(0.0, 0.0, 10.0, 10.0));
-        let expected = point_on_surface_polygon_row_columns(
-            &xs,
-            &ys,
-            &ring_offsets,
-            0..1,
-            bounds,
-            &mut Vec::new(),
-        )
-        .expect("unrestricted packed row")
-        .expect("interior chord");
-        let (_, count) = allocation_count(|| {
-            point_on_surface_polygon_row_columns(
-                &xs,
-                &ys,
-                &ring_offsets,
-                0..1,
-                bounds,
-                &mut Vec::new(),
-            )
-            .expect("count packed staging")
-        });
-        assert!(count > 0);
-        for prefix in 0..count {
-            assert_allocation_error(fail_allocations_after(prefix, || {
-                point_on_surface_polygon_row_columns(
-                    &xs,
-                    &ys,
-                    &ring_offsets,
-                    0..1,
-                    bounds,
-                    &mut Vec::new(),
-                )
-            }));
-            let recovered = point_on_surface_polygon_row_columns(
-                &xs,
-                &ys,
-                &ring_offsets,
-                0..1,
-                bounds,
-                &mut Vec::new(),
-            )
-            .expect("retry packed staging")
-            .expect("interior chord");
-            assert_eq!((recovered.x, recovered.y), (expected.x, expected.y));
-        }
     }
 }

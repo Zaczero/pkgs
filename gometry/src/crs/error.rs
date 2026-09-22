@@ -237,7 +237,6 @@ pub(crate) fn preserve_resource_error(
 mod tests {
     use super::CrsError;
     use crate::error::{Error, ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
 
     #[test]
     fn display_annotation_matches_each_transform_stage() {
@@ -321,7 +320,7 @@ mod tests {
     fn display_annotation_reuses_error_storage_without_allocation() {
         const DEFINITION: &str = "{\"type\":\"ProjectedCRS\"}";
         let mut error: Error = CrsError::transform(DEFINITION, "EPSG:4326", "projection failed");
-        fail_allocations_after(0, || {
+        crate::test_support::assert_no_allocations(|| {
             error.annotate_crs_display(DEFINITION, Some("Local conformal CRS"));
         });
 
@@ -345,7 +344,7 @@ mod tests {
         );
 
         let mut resource = Error::from(ResourceError::SizeOverflow);
-        fail_allocations_after(0, || {
+        crate::test_support::assert_no_allocations(|| {
             resource.annotate_crs_display(DEFINITION, Some("Local conformal CRS"));
         });
         assert!(matches!(

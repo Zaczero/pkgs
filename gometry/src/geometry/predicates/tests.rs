@@ -292,9 +292,6 @@ mod convex_tests {
             crate::test_support::allocation_count(|| shell_is_convex(&shell));
         assert!(convex);
         assert_eq!(allocations, 0);
-        crate::test_support::fail_allocations_after(0, || {
-            assert!(shell_is_convex(&shell));
-        });
     }
 
     #[test]

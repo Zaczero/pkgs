@@ -36,21 +36,9 @@ impl AllocationPhase {
 thread_local! {
     static COUNT_ALLOCATIONS: Cell<bool> = const { Cell::new(false) };
     static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
-    static FAIL_AFTER: Cell<Option<usize>> = const { Cell::new(None) };
     static ALLOCATION_PHASE: Cell<Option<AllocationPhase>> = const { Cell::new(None) };
     static PHASE_ALLOCATIONS: Cell<[usize; AllocationPhase::COUNT]> =
         const { Cell::new([0; AllocationPhase::COUNT]) };
-}
-
-fn reject_allocation() -> bool {
-    FAIL_AFTER.with(|remaining| match remaining.get() {
-        None => false,
-        Some(0) => true,
-        Some(count) => {
-            remaining.set(Some(count - 1));
-            false
-        },
-    })
 }
 
 fn count_allocation() {
@@ -70,22 +58,16 @@ fn count_allocation() {
     });
 }
 
-// SAFETY: requests either fail with null or delegate to System unchanged.
+// SAFETY: every request delegates to System with unchanged allocation arguments.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         count_allocation();
-        if reject_allocation() {
-            return std::ptr::null_mut();
-        }
         // SAFETY: `layout` is supplied by the `GlobalAlloc` caller unchanged.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         count_allocation();
-        if reject_allocation() {
-            return std::ptr::null_mut();
-        }
         // SAFETY: `layout` is supplied by the `GlobalAlloc` caller unchanged.
         unsafe { System.alloc_zeroed(layout) }
     }
@@ -97,9 +79,6 @@ unsafe impl GlobalAlloc for CountingAllocator {
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         count_allocation();
-        if reject_allocation() {
-            return std::ptr::null_mut();
-        }
         // SAFETY: `GlobalAlloc` supplies the original allocation arguments.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -113,25 +92,6 @@ impl Drop for AllocationCountGuard {
     }
 }
 
-/// Keep allocation rejection active across a callback boundary.
-///
-/// Most tests should use [`fail_allocations_after`]. A foreign callback test
-/// can retain this guard in its producer state so the next allocation after
-/// the callback returns is the deliberately rejected operation.
-pub(crate) struct AllocationFailureGuard(Option<usize>);
-
-impl AllocationFailureGuard {
-    pub(crate) fn new(count: usize) -> Self {
-        Self(FAIL_AFTER.with(|remaining| remaining.replace(Some(count))))
-    }
-}
-
-impl Drop for AllocationFailureGuard {
-    fn drop(&mut self) {
-        FAIL_AFTER.with(|remaining| remaining.set(self.0));
-    }
-}
-
 /// Count allocation requests from one test operation on the current thread.
 pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     ALLOCATIONS.with(|allocations| allocations.set(0));
@@ -142,6 +102,12 @@ pub(crate) fn allocation_count<T>(operation: impl FnOnce() -> T) -> (T, usize) {
     let result = operation();
     drop(guard);
     (result, ALLOCATIONS.with(Cell::get))
+}
+
+pub(crate) fn assert_no_allocations<T>(operation: impl FnOnce() -> T) -> T {
+    let (result, allocations) = allocation_count(operation);
+    assert_eq!(allocations, 0);
+    result
 }
 
 /// Attribute subsequent counted allocations to one production phase.
@@ -160,14 +126,6 @@ impl Drop for AllocationPhaseGuard {
 /// Return allocation requests attributed to the six coverage lifecycle phases.
 pub(crate) fn allocation_phase_counts() -> [usize; AllocationPhase::COUNT] {
     PHASE_ALLOCATIONS.with(Cell::get)
-}
-
-/// Reject this thread's allocations persistently after the allowed prefix.
-pub(crate) fn fail_allocations_after<T>(count: usize, operation: impl FnOnce() -> T) -> T {
-    let guard = AllocationFailureGuard::new(count);
-    let result = operation();
-    drop(guard);
-    result
 }
 
 /// Counters for the binary admission contract. They are deliberately test-only:

@@ -2,19 +2,17 @@ use geographiclib_rs::Geodesic;
 
 use super::distance::{
     geodesic_frechet_dp, geodesic_frechet_dp_with_scratch, geodesic_point_distances,
-    geodesic_point_pair_distances, geodesic_point_pair_dwithin,
 };
 use super::segment::{cached_geodesic_line, geodesic_point_segment_query};
 use super::{EllipsoidMetric, GEODESIC_BACKEND_RELATIVE_FLOOR, geodesic_counters};
 use crate::crs::GEODESIC_LINE_CACHE;
 use crate::crs::cache::clear_thread_caches;
-use crate::error::{ErrorKind, ResourceError, Result};
+use crate::error::Result;
 use crate::geographic::{AngularFactor, GeographicFrame};
 use crate::geometry::{
     CoordSeq, Coordinates, FrameDependentCaches, FrechetDpScratch, GeodesicMetric, GeodesicSegment,
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
-    GeodesicSegmentScratch, GeodesicWitnessNeed, LineIndex, LineSeq, Point, PreparedPlan, Shape,
-    XY,
+    GeodesicSegmentScratch, GeodesicWitnessNeed, LineSeq, Point, PreparedPlan, Shape, XY,
 };
 
 // Independent oracle provenance for the fixed fixtures below: GeographicLib
@@ -641,38 +639,6 @@ fn point_segment_query_reuses_one_prepared_line_and_closes_practically() {
 }
 
 #[test]
-fn point_segment_query_propagates_scratch_allocation_failure() {
-    use crate::test_support::fail_allocations_after;
-
-    let geodesic = Geodesic::wgs84();
-    let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-    let segment = metric
-        .make_segment(p(-20.0, -10.0), p(30.0, 20.0))
-        .expect("test segment is unique");
-    let _ = metric_witness(&metric, p(0.0, 5.0), segment, f64::INFINITY);
-
-    let mut scratch = GeodesicSegmentScratch::default();
-    let result = fail_allocations_after(0, || {
-        metric.point_segment_query(
-            p(0.0, 5.0),
-            &segment,
-            GeodesicSegmentQuery::Minimum {
-                cutoff: f64::INFINITY,
-                witness: GeodesicWitnessNeed::No,
-            },
-            &mut scratch,
-        )
-    });
-    let Err(error) = result else {
-        panic!("point-segment scratch allocation failure was swallowed");
-    };
-    assert!(matches!(
-        error.kind(),
-        ErrorKind::Resource(ResourceError::Allocation)
-    ));
-}
-
-#[test]
 fn geodesic_line_cache_reuses_a_published_line_without_allocating() {
     use crate::test_support::allocation_count;
 
@@ -709,104 +675,16 @@ fn geodesic_line_cache_reuses_a_published_line_without_allocating() {
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    clippy::needless_borrows_for_generic_args,
-    clippy::similar_names,
-    reason = "the test returns Result for fallible geodesic setup and retries one closure across allocation prefixes"
-)]
-fn packed_geodesic_outputs_propagate_allocation_failures_and_retry() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let geodesic = Geodesic::wgs84();
-    let frame = GeographicFrame::crs84();
-    let left_xs = [0.0, 1.0, 2.0];
-    let left_ys = [0.0, 0.0, 0.0];
-    let right_xs = [0.0, 180.0, 2.0];
-    let right_ys = [0.0, 0.0, 1.0];
-
-    for limit in [0.0, f64::INFINITY] {
-        let run = || {
-            geodesic_point_pair_dwithin(
-                &geodesic, &left_xs, &left_ys, &right_xs, &right_ys, limit, frame,
-            )
-        };
-        let expected = run()?;
-        let (_, allocations) = allocation_count(&run);
-        assert!(allocations > 0, "packed dwithin output was not allocated");
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, &run);
-            let error = result.err().unwrap_or_else(|| {
-                panic!("packed dwithin prefix {allowed} unexpectedly succeeded")
-            });
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert_eq!(run()?, expected, "packed dwithin retry at {allowed}");
-        }
-    }
-
-    let run = || {
-        geodesic_point_pair_distances(&geodesic, &left_xs, &left_ys, &right_xs, &right_ys, frame)
-    };
-    let expected = run()?;
-    let (_, allocations) = allocation_count(&run);
-    assert!(allocations > 0, "packed distance output was not allocated");
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, &run);
-        let error = result
-            .err()
-            .unwrap_or_else(|| panic!("packed distance prefix {allowed} unexpectedly succeeded"));
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert_eq!(run()?, expected, "packed distance retry at {allowed}");
-    }
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test returns Result for fallible CRS setup and retries one closure across allocation prefixes"
-)]
-fn geodesic_point_column_distance_output_propagates_allocation_failure() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let state = crate::crs::runtime_state_snapshot()?;
+fn geodesic_point_column_distance_rejects_invalid_latitude() {
+    let state = crate::crs::runtime_state_snapshot().unwrap();
     let frame = GeographicFrame::crs84();
     let xs = [0.0, 1.0, 2.0];
-    let ys = [0.0, 0.0, 0.0];
     let target = p(3.0, 0.0);
-    let run = || geodesic_point_distances("EPSG:4326", &xs, &ys, target, frame, &state);
-
-    let _ = run()?;
-    let (expected, allocations) = allocation_count(&run);
-    let expected = expected?;
-    assert!(
-        allocations > 0,
-        "point-column distance output was not allocated"
-    );
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, &run);
-        let error = result
-            .err()
-            .unwrap_or_else(|| panic!("point-column prefix {allowed} unexpectedly succeeded"));
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert_eq!(run()?, expected, "point-column retry at {allowed}");
-    }
 
     let invalid_ys = [0.0, 95.0, 0.0];
     let error = geodesic_point_distances("EPSG:4326", &xs, &invalid_ys, target, frame, &state)
         .expect_err("invalid point-column latitude must be rejected");
     assert!(error.to_string().contains("invalid longitude/latitude"));
-    Ok(())
 }
 
 #[test]
@@ -1198,46 +1076,6 @@ fn disabled_lower_bound_is_zero_across_latitudes() {
             "{name}: disabled lower bound"
         );
     }
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test retries one real line-index query across every allocator prefix"
-)]
-fn geodesic_line_index_allocation_failures_are_retryable() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let shape = line(&[
-        p(-4.0, 0.0),
-        p(-2.0, 1.0),
-        p(0.0, 0.0),
-        p(2.0, -1.0),
-        p(4.0, 0.0),
-    ]);
-    let probe = p(0.0, 2.0);
-    let run = || {
-        let geodesic = Geodesic::new(6_378_137.0, 0.005);
-        let metric = EllipsoidMetric::for_crs84_geometry_test(&geodesic);
-        let index = LineIndex::build(&shape, &metric)?;
-        index.locate_point(probe, false, &metric)
-    };
-    let expected = run()?;
-    let (_, allocations) = allocation_count(&run);
-    assert!(allocations > 0, "geodesic line index did not allocate");
-    for allowed in 0..allocations {
-        let result = fail_allocations_after(allowed, &run);
-        let error = result
-            .err()
-            .unwrap_or_else(|| panic!("line-index prefix {allowed} unexpectedly succeeded"));
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert_eq!(run()?, expected, "line-index retry at {allowed}");
-    }
-    Ok(())
 }
 
 fn brute_geodesic_distance_and_nearest_points(

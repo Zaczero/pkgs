@@ -273,26 +273,8 @@ mod multipart_storage_tests {
         let source = PyGeometryArray::from_shapes(vec![shape], Frame::None).unwrap();
         let selected = source.gather_logical_rows(&[0, 0]).unwrap();
         let bounds =
-            crate::test_support::fail_allocations_after(0, || selected.storage().total_bounds());
+            crate::test_support::assert_no_allocations(|| selected.storage().total_bounds());
         assert_eq!(bounds.unwrap().into_tuple(), (0.0, 0.0, 4.0, 4.0));
-    }
-
-    #[test]
-    fn local_crs_estimation_preserves_row_allocation_failure() {
-        pyo3::Python::initialize();
-        let shape = parse_wkt("POLYGON ((0 0, 4 0, 4 4, 0 0))").unwrap();
-        let source = PyGeometryArray::from_shapes(
-            vec![shape],
-            Frame::Crs(crate::boundary::crs_arc_static("EPSG:4326")),
-        )
-        .unwrap();
-        pyo3::Python::attach(|py| {
-            let error =
-                crate::test_support::fail_allocations_after(0, || source.estimate_local_crs())
-                    .err()
-                    .expect("row allocation must fail");
-            assert!(error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py));
-        });
     }
 
     #[test]

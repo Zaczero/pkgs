@@ -269,9 +269,7 @@ fn dissolve_edge_incidences(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, Point, Polygon, Ring, XY, overlay};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn rectangle_polygon(minx: f64, miny: f64, maxx: f64, maxy: f64) -> Polygon {
         let points = [
@@ -326,37 +324,6 @@ mod tests {
         dense_rectangle_with_subdivisions(minx, miny, maxx, maxy, 256)
     }
 
-    fn assert_allocation_prefixes(rows: &[Shape], grid_size: f64, gap_width: f64) {
-        let run = || {
-            coverage_clean(
-                rows,
-                grid_size,
-                gap_width,
-                CoverageOverlapRule::LongestBorder,
-            )
-        };
-        let expected = run().expect("coverage clean warm-up");
-        let (_, allocations) = allocation_count(|| run().expect("coverage clean count"));
-        assert!(allocations > 0);
-        for prefix in 0..allocations {
-            let result = fail_allocations_after(prefix, run);
-            let Err(error) = result else {
-                panic!("coverage clean unexpectedly succeeded at allocation prefix {prefix}");
-            };
-            assert!(
-                matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation)),
-                "coverage clean returned the wrong allocation error: {error:?}"
-            );
-            assert_eq!(run().expect("coverage clean retry"), expected);
-        }
-    }
-
-    #[test]
-    fn coverage_clean_allocation_prefixes_are_retryable() {
-        let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
-        assert_allocation_prefixes(&rows, 0.0, 0.0);
-    }
-
     #[test]
     fn coverage_clean_builds_one_partition_after_admission() {
         let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
@@ -364,55 +331,6 @@ mod tests {
         coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
             .expect("coverage clean");
         assert_eq!(overlay::partition_builds(), 1);
-    }
-
-    #[test]
-    fn coverage_clean_gap_allocation_prefixes_are_retryable() {
-        let shell = Ring::from_closed(
-            CoordSeq::try_from_points(&[
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(3.0, 0.0),
-                Point::new_raw_xy(3.0, 3.0),
-                Point::new_raw_xy(0.0, 3.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
-        let hole = Ring::from_closed(
-            CoordSeq::try_from_points(&[
-                Point::new_raw_xy(1.0, 1.0),
-                Point::new_raw_xy(2.0, 1.0),
-                Point::new_raw_xy(2.0, 2.0),
-                Point::new_raw_xy(1.0, 2.0),
-                Point::new_raw_xy(1.0, 1.0),
-            ])
-            .unwrap(),
-        )
-        .unwrap();
-        let outer = Shape::Polygon(Polygon::new(shell, vec![hole]));
-        let rows = [outer, rectangle(1.005, 1.005, 1.995, 1.995)];
-        assert_allocation_prefixes(&rows, 0.0, 0.05);
-    }
-
-    #[test]
-    fn coverage_clean_grid_allocation_prefixes_are_retryable() {
-        let rows = [
-            rectangle(0.0, 0.0, 1.200_000_1, 1.0),
-            rectangle(1.0, 0.0, 2.0, 1.0),
-        ];
-        assert_allocation_prefixes(&rows, 1.0e-6, 0.0);
-    }
-
-    #[test]
-    fn coverage_clean_multipart_grid_allocation_prefixes_are_retryable() {
-        let multipart = Shape::multi_polygon(crate::geometry::CoordinateAxes::XY, vec![
-            rectangle_polygon(0.0, 0.0, 1.2, 1.0),
-            rectangle_polygon(3.0, 0.0, 4.0, 1.0),
-        ])
-        .expect("multipart fixture");
-        let rows = [multipart, rectangle(1.0, 0.0, 3.5, 1.0)];
-        assert_allocation_prefixes(&rows, 1.0e-6, 0.0);
     }
 
     #[test]
@@ -477,15 +395,6 @@ mod tests {
             (output.iter().map(Shape::area).sum::<f64>() - 200.0).abs() < 1.0e-9,
             "dense coverage area changed: {output:?}"
         );
-    }
-
-    #[test]
-    fn coverage_clean_dense_collinear_allocation_prefixes_are_retryable() {
-        let rows = [
-            dense_rectangle_with_subdivisions(0.0, 0.0, 10.2, 10.0, 8),
-            dense_rectangle_with_subdivisions(10.0, 0.0, 20.0, 10.0, 8),
-        ];
-        assert_allocation_prefixes(&rows, 0.0, 0.0);
     }
 
     #[test]

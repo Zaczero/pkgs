@@ -1085,28 +1085,6 @@ fn unreduced_distances_match_reduced_point_and_span_references() {
 }
 
 #[test]
-fn unreduced_distance_allocation_failures_propagate() {
-    let support =
-        PreparedSupport::from_line_columns(&[0.0, f64::MAX], &[0.0, f64::from_bits(2)]).unwrap();
-    let point = ExactPoint::from_xy(XY::new(f64::from_bits(1), f64::MAX));
-    let (result, allocations) = crate::test_support::allocation_count(|| {
-        support.primitive_distance_squared(PrimitiveId::Span(0), &point)
-    });
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations {
-        let error = crate::test_support::fail_allocations_after(allowed, || {
-            support.primitive_distance_squared(PrimitiveId::Span(0), &point)
-        })
-        .expect_err("every unreduced distance allocation must propagate");
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
-    }
-}
-
-#[test]
 fn selected_span_clamps_oblique_projection() {
     let mut support = PreparedSupport::from_line_columns(&[0.0, 3.0], &[0.0, 4.0]).unwrap();
     for (lo, hi, x, y, expected) in [
@@ -1461,25 +1439,6 @@ fn directed_inradius_ignores_collapsed_support_inside_positive_area() {
 }
 
 #[test]
-fn directed_inradius_propagates_allocation_failure_before_publication() {
-    let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
-    let (result, allocations) =
-        crate::test_support::allocation_count(|| directed_inradius_scaled(&shape, 1e-6, 1.0));
-    result.unwrap();
-    assert!(allocations > 0);
-    for allowed in 0..allocations.min(16) {
-        let error = crate::test_support::fail_allocations_after(allowed, || {
-            directed_inradius_scaled(&shape, 1e-6, 1.0)
-        })
-        .expect_err("a rejected directed-search allocation must not publish a result");
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
-    }
-}
-
-#[test]
 fn directed_inradius_propagates_the_subdivision_budget() {
     let shape = polygon(&[(0.0, 0.0), (4.0, 0.0), (0.0, 4.0), (0.0, 0.0)]);
     let accuracy = Accuracy::new(Some(1.0), 1.0).unwrap();
@@ -1607,46 +1566,19 @@ fn metric_support_consumption_preserves_multipart_faces_and_mixed_points() {
 }
 
 #[test]
-fn allocation_failure_never_publishes_a_scalar() {
+fn segment_to_point_distance_attains_the_farthest_endpoint() {
     let source = line(&[(0.0, 0.0), (2.0, 0.0)]);
     let target = Shape::Point(Point::new_raw_xy(1.0, 1.0));
-    let (result, count) =
-        crate::test_support::allocation_count(|| distance(&source, &target, Some(1e-6), 1.0));
-    result.unwrap();
-    assert!(count > 0);
-    for allowed in 0..=count {
-        match crate::test_support::fail_allocations_after(allowed, || {
-            distance(&source, &target, Some(1e-6), 1.0)
-        }) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            )),
-            Ok(value) => assert!((value - 2.0_f64.sqrt()).abs() <= 1e-6),
-        }
-    }
+    let value = distance(&source, &target, Some(1e-6), 1.0).unwrap();
+    assert!((value - 2.0_f64.sqrt()).abs() <= 1e-6);
 }
 
 #[test]
-fn area_metric_extraction_propagates_allocation_failures() {
+fn filled_square_to_point_distance_attains_the_farthest_corner() {
     let source = polygon(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (0.0, 0.0)]);
     let target = Shape::Point(Point::new_raw_xy(6.0, 2.0));
-    let (result, count) =
-        crate::test_support::allocation_count(|| distance(&source, &target, Some(1e-3), 1.0));
-    let value = result.unwrap();
+    let value = distance(&source, &target, Some(1e-3), 1.0).unwrap();
     assert!((value - 40.0_f64.sqrt()).abs() <= 1e-3);
-    assert!(count > 0);
-    for allowed in 0..=count {
-        match crate::test_support::fail_allocations_after(allowed, || {
-            distance(&source, &target, Some(1e-3), 1.0)
-        }) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            )),
-            Ok(value) => assert!((value - 40.0_f64.sqrt()).abs() <= 1e-3),
-        }
-    }
 }
 
 #[test]

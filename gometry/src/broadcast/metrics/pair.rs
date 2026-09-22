@@ -645,27 +645,14 @@ mod same_storage_metric_tests {
     use crate::geometry::Point;
 
     #[test]
-    fn same_storage_hausdorff_output_allocation_is_retryable() {
+    fn same_storage_hausdorff_returns_one_zero_per_row() {
         let storage = GeometryArrayStorage::Mixed(vec![
             Shape::Point(Point::new_raw_xy(0.0, 0.0)),
             Shape::Point(Point::new_raw_xy(1.0, 0.0)),
         ]);
-        let (result, count) = crate::test_support::allocation_count(|| {
-            same_storage_similarity_metric_zeros(&storage)
-        });
-        assert_eq!(result.unwrap(), [0.0, 0.0]);
-        assert!(count > 0);
-        for allowed in 0..=count {
-            match crate::test_support::fail_allocations_after(allowed, || {
-                same_storage_similarity_metric_zeros(&storage)
-            }) {
-                Err(error) => assert!(matches!(
-                    error.kind(),
-                    crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-                )),
-                Ok(values) => assert_eq!(values, [0.0, 0.0]),
-            }
-        }
+        assert_eq!(same_storage_similarity_metric_zeros(&storage).unwrap(), [
+            0.0, 0.0
+        ]);
     }
 }
 

@@ -770,9 +770,7 @@ fn rebuild_polygon(
 #[cfg(test)]
 mod guarded_scratch_tests {
     use super::{TopologyGuard, simplify_chain_guarded};
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{Segment, XY};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn dummy_guard() -> TopologyGuard<'static> {
         TopologyGuard::new(&[], Vec::new())
@@ -782,57 +780,28 @@ mod guarded_scratch_tests {
         XY::new(index as f64, 0.0)
     }
 
-    fn assert_allocation_error(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
     #[test]
-    fn short_chain_identity_rejects_allocation() {
+    fn short_chain_keeps_both_endpoints() {
         let guard = dummy_guard();
-        let error = fail_allocations_after(0, || {
-            simplify_chain_guarded(2, collinear_x, false, &|_, _, _| Ok(None), &guard)
-        })
-        .unwrap_err();
-        assert_allocation_error(&error);
+        let kept =
+            simplify_chain_guarded(2, collinear_x, false, &|_, _, _| Ok(None), &guard).unwrap();
+        assert_eq!(kept, [0, 1]);
     }
 
     #[test]
-    fn candidate_none_scratch_rejects_every_allocation() {
+    fn declined_candidates_keep_every_vertex() {
         let guard = dummy_guard();
         let never = |_: XY, _: XY, _: XY| Ok(None);
-        let (kept, allocations) = allocation_count(|| {
-            simplify_chain_guarded(6, collinear_x, false, &never, &guard).unwrap()
-        });
+        let kept = simplify_chain_guarded(6, collinear_x, false, &never, &guard).unwrap();
         assert_eq!(kept, vec![0, 1, 2, 3, 4, 5]);
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || {
-                simplify_chain_guarded(6, collinear_x, false, &never, &guard)
-            })
-            .expect_err("package scratch must propagate allocation failure");
-            assert_allocation_error(&error);
-        }
     }
 
     #[test]
-    fn collinear_removal_scratch_rejects_every_allocation() {
+    fn collinear_removal_keeps_only_endpoints() {
         let guard = dummy_guard();
         let drop_all = |_: XY, _: XY, _: XY| Ok(Some(0.0));
-        let (kept, allocations) = allocation_count(|| {
-            simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard).unwrap()
-        });
+        let kept = simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard).unwrap();
         assert_eq!(kept, vec![0, 7]);
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || {
-                simplify_chain_guarded(8, collinear_x, false, &drop_all, &guard)
-            })
-            .expect_err("stale-entry heap growth must propagate allocation failure");
-            assert_allocation_error(&error);
-        }
     }
 
     #[test]

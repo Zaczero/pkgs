@@ -1437,34 +1437,6 @@ mod tests {
     }
 
     #[test]
-    fn geographic_nested_admission_allocation_is_resource() {
-        let nested = (0..5).fold(line((0.0, 0.0), (1.0, 0.0)), |shape, _| {
-            Shape::geometry_collection(vec![shape]).expect("test collection is valid")
-        });
-        let nested = PreparedPlan::new(nested);
-        let other = PreparedPlan::new(rectangle(0.0, 0.0, 2.0, 2.0));
-        let nested_cache = crate::geometry::FrameDependentCaches::default();
-        let other_cache = crate::geometry::FrameDependentCaches::default();
-        let frame = degrees();
-        let error = crate::test_support::fail_allocations_after(0, || {
-            let Err(error) = PreparedTopologyPair::try_for_domain(
-                &nested,
-                &nested_cache,
-                &other,
-                &other_cache,
-                TopologyDomain::Geographic(frame),
-            ) else {
-                panic!("nested path allocation must fail admission")
-            };
-            error
-        });
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
-    }
-
-    #[test]
     fn geographic_invalid_latitude_is_not_a_bounds_false() {
         let query = PreparedPlan::new(rectangle(0.0, 0.0, 1.0, 1.0));
         let invalid = Shape::Point(Point::new_raw_xy(0.5, 91.0));

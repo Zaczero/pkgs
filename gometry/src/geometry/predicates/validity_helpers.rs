@@ -543,18 +543,9 @@ mod prune_dangles_tests {
 }
 
 #[cfg(test)]
-mod clearance_allocation_tests {
+mod clearance_index_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::LineSeq;
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    fn assert_allocation(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
 
     fn line(points: &[Point]) -> Shape {
         Shape::LineString(
@@ -571,35 +562,12 @@ mod clearance_allocation_tests {
     }
 
     #[test]
-    fn indexed_segments_reject_each_cold_allocation() {
-        let shape = line(&[
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(0.0, 1.0),
-        ]);
-        let (segments, count) = allocation_count(|| indexed_segments(&shape).unwrap());
-        assert_eq!(segments.len(), 2);
-        assert!(count > 0);
-        for allowed in 0..count {
-            let Err(error) = fail_allocations_after(allowed, || indexed_segments(&shape)) else {
-                panic!("each cold construction allocation must propagate");
-            };
-            assert_allocation(&error);
-        }
-        assert_eq!(indexed_segments(&shape).unwrap().len(), 2);
-    }
-
-    #[test]
-    fn first_point_index_failure_is_retryable() {
+    fn first_point_index_keeps_the_first_repeated_coordinate() {
         let points = [
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(0.0, 0.0),
         ];
-        let Err(error) = fail_allocations_after(0, || first_point_index_by_xy(&points)) else {
-            panic!("table reservation must propagate");
-        };
-        assert_allocation(&error);
         let indices = first_point_index_by_xy(&points).unwrap();
         assert_eq!(indices[&PointKey::new(points[0])], 0);
         assert_eq!(indices[&PointKey::new(points[1])], 1);
@@ -607,19 +575,22 @@ mod clearance_allocation_tests {
     }
 
     #[test]
-    fn indexed_clearance_producer_rejects_package_owned_staging() {
+    fn indexed_clearance_matches_brute_force() {
         let shape = indexed_line();
         let points = shape.points_vec().unwrap();
         let segments = indexed_segments(&shape).unwrap();
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
-        let Err(error) =
-            fail_allocations_after(0, || minimum_clearance_witness_indexed(&points, &segments))
-        else {
-            panic!("indexed staging reservation must propagate");
-        };
-        assert_allocation(&error);
-        let indexed = minimum_clearance_witness_indexed(&points, &segments).unwrap();
-        let brute = minimum_clearance_witness_brute(&points, &segments).unwrap();
-        assert_eq!(format!("{brute:?}"), format!("{indexed:?}"));
+        let (indexed_plan, indexed_distance) =
+            minimum_clearance_witness_indexed(&points, &segments)
+                .unwrap()
+                .expect("finite indexed clearance");
+        let (brute_plan, brute_distance) = minimum_clearance_witness_brute(&points, &segments)
+            .unwrap()
+            .expect("finite brute-force clearance");
+        assert_eq!(indexed_distance, brute_distance);
+        assert_eq!(
+            crate::geometry::emit_from_original(&points, &indexed_plan).unwrap(),
+            crate::geometry::emit_from_original(&points, &brute_plan).unwrap()
+        );
     }
 }

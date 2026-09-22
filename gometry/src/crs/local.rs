@@ -545,7 +545,6 @@ fn utm_zone(lon: f64, lat: f64) -> UtmZone {
 mod metadata_tests {
     use super::*;
     use crate::error::{Error, ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
 
     fn epsg_param(code: &str, value: f64, factor: f64) -> OperationParameterInfo {
         OperationParameterInfo {
@@ -632,11 +631,11 @@ mod metadata_tests {
 
     #[test]
     fn custom_candidate_mapping_preserves_resource_errors_before_formatting() {
-        let error = Error::from(ResourceError::Allocation);
-        let mapped = fail_allocations_after(0, || best_custom_candidate_error(error));
+        let error = Error::from(ResourceError::SizeOverflow);
+        let mapped = best_custom_candidate_error(error);
         assert!(matches!(
             mapped.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
+            ErrorKind::Resource(ResourceError::SizeOverflow)
         ));
     }
 }

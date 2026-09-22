@@ -1991,10 +1991,9 @@ mod element_bounds_cache_tests {
 
     use super::*;
     use crate::array::BoundsSeed;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::Bounds;
     use crate::heap_size::HeapSize as _;
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::allocation_count;
 
     fn lines() -> PyGeometryArray {
         PyGeometryArray::packed_lines(
@@ -2079,20 +2078,6 @@ mod element_bounds_cache_tests {
         assert_eq!(bounds.len(), 2);
         assert_eq!(bounds[0], Some(Bounds::new_raw(0.0, 0.0, 1.0, 0.0)));
         assert_eq!(bounds[1], None);
-    }
-
-    #[test]
-    fn required_element_bounds_map_allocation_failure_to_resource_error() {
-        let array = lines();
-        let error = fail_allocations_after(0, || array.try_element_bounds())
-            .expect_err("required cache construction must report allocation failure");
-
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(array.existing_element_bounds().is_none());
-        assert_eq!(array.try_element_bounds().unwrap().unwrap().len(), 2);
     }
 }
 

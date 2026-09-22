@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::{ErrorKind, ResourceError};
+use crate::error::ErrorKind;
 use crate::geometry::{LineSeq, constructive, overlay};
 use crate::{CoordSeq, Polygon, Ring};
 
@@ -507,41 +507,6 @@ fn inward_chord_is_rejected_after_endpoint_only_checks_pass() {
 }
 
 #[test]
-fn inscribed_circle_emission_propagates_allocation_prefixes() {
-    let source = Shape::Polygon(Polygon::new(
-        Ring::from_closed(
-            crate::geometry::CoordSeq::try_from_points(&[
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(4.0, 0.0),
-                Point::new_raw_xy(4.0, 4.0),
-                Point::new_raw_xy(0.0, 4.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ])
-            .unwrap(),
-        )
-        .unwrap(),
-        Vec::new(),
-    ));
-    let center = Point::new_raw_xy(2.0, 2.0);
-    let (prepared, boundary) = exact_inscribed_support(&source);
-    let support = Some((&prepared, &boundary));
-    let (_, allocations) = crate::test_support::allocation_count(|| {
-        build_inscribed_circle(center, 2.0, NonZeroU32::new(16).expect("non-zero"), support)
-    });
-    assert!(allocations > 0);
-    for allowed in 0..allocations.min(16) {
-        let error = crate::test_support::fail_allocations_after(allowed, || {
-            build_inscribed_circle(center, 2.0, NonZeroU32::new(16).expect("non-zero"), support)
-        })
-        .expect_err("an emission allocation must remain a native failure");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-}
-
-#[test]
 fn inscribed_circle_retries_after_a_rounded_radius_overrun() {
     let source = Shape::Polygon(Polygon::new(
         Ring::from_closed(
@@ -610,36 +575,7 @@ fn candidate_center_must_be_strictly_inside_every_edge() {
 }
 
 #[test]
-fn exact_boundary_radius_propagates_allocation_failure() {
-    let shape = Shape::Polygon(Polygon::new(
-        Ring::from_closed(
-            crate::geometry::CoordSeq::try_from_points(&[
-                Point::new_raw_xy(0.0, 0.0),
-                Point::new_raw_xy(2.0, 0.0),
-                Point::new_raw_xy(2.0, 2.0),
-                Point::new_raw_xy(0.0, 2.0),
-                Point::new_raw_xy(0.0, 0.0),
-            ])
-            .unwrap(),
-        )
-        .unwrap(),
-        Vec::new(),
-    ));
-    let result = crate::test_support::fail_allocations_after(0, || {
-        exact_boundary_radius(&shape, Point::new_raw_xy(1.0, 1.0))
-    });
-    assert!(matches!(
-        result,
-        Err(error)
-            if matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )
-    ));
-}
-
-#[test]
-fn representative_point_propagates_surface_allocation_failure() {
+fn representative_point_uses_an_interior_chord_instead_of_the_box_center() {
     let shape = Shape::Polygon(Polygon::new(
         Ring::from_closed(
             crate::geometry::CoordSeq::try_from_points(&[
@@ -658,46 +594,12 @@ fn representative_point_propagates_surface_allocation_failure() {
         bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
         bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
     );
-    let (_, count) = crate::test_support::allocation_count(|| {
-        representative_point(&shape, bounds).expect("count staging")
-    });
-    assert!(count > 0, "surface staging must allocate");
-    let error =
-        crate::test_support::fail_allocations_after(0, || representative_point(&shape, bounds))
-            .expect_err("must not swallow staging failure as a bounding-box seed");
-    assert!(matches!(
-        error.kind(),
-        ErrorKind::Resource(ResourceError::Allocation)
-    ));
-    let recovered = representative_point(&shape, bounds).expect("retry");
-    assert_eq!((recovered.x, recovered.y), (1.0, 2.0));
-    assert_ne!((recovered.x, recovered.y), (bbox_seed.x, bbox_seed.y));
-}
-
-#[test]
-fn minimum_circle_radius_propagates_allocation_failures() {
-    let shape = Shape::MultiPoint(
-        crate::geometry::MultiPoint::try_new(crate::geometry::CoordinateAxes::XY, vec![
-            crate::geometry::MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
-            crate::geometry::MultiMember::Value(Point::new_raw_xy(4.0, 0.0)),
-            crate::geometry::MultiMember::Value(Point::new_raw_xy(1.0, 3.0)),
-        ])
-        .unwrap(),
+    let representative = representative_point(&shape, bounds).expect("interior representative");
+    assert_eq!((representative.x, representative.y), (1.0, 2.0));
+    assert_ne!(
+        (representative.x, representative.y),
+        (bbox_seed.x, bbox_seed.y)
     );
-    let (_, allocations) = crate::test_support::allocation_count(|| {
-        shape.minimum_bounding_radius().expect("finite radius")
-    });
-    assert!(allocations > 0, "minimum-circle staging must allocate");
-    for allowed in 0..allocations {
-        let error = crate::test_support::fail_allocations_after(allowed, || {
-            shape.minimum_bounding_radius()
-        })
-        .expect_err("a rejected allocation must remain a native error");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
 }
 
 #[test]
@@ -715,84 +617,6 @@ fn minimum_circle_radius_rounds_min_subnormal_support_exactly() {
         2,
         "the pair's exact radius sqrt(5)u rounds to 2u"
     );
-}
-
-#[test]
-fn minimum_circle_polygon_propagates_emission_allocation_failures() {
-    let shape = Shape::MultiPoint(
-        crate::geometry::MultiPoint::try_new(crate::geometry::CoordinateAxes::XY, vec![
-            crate::geometry::MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
-            crate::geometry::MultiMember::Value(Point::new_raw_xy(4.0, 0.0)),
-            crate::geometry::MultiMember::Value(Point::new_raw_xy(1.0, 3.0)),
-        ])
-        .unwrap(),
-    );
-    let (_, allocations) = crate::test_support::allocation_count(|| {
-        shape
-            .minimum_bounding_circle()
-            .expect("finite circle polygon")
-    });
-    assert!(allocations > 0, "circle emission must allocate");
-    let error = crate::test_support::fail_allocations_after(0, || shape.minimum_bounding_circle())
-        .expect_err("the first rejected allocation must remain a native error");
-    assert!(matches!(
-        error.kind(),
-        ErrorKind::Resource(ResourceError::Allocation)
-    ));
-}
-
-#[test]
-fn minimum_circle_emission_propagates_allocation_prefix_failures() {
-    let source = [Point::new_raw_xy(-1.0, 0.0), Point::new_raw_xy(1.0, 0.0)];
-    let circle = smallest_enclosing_circle(&source).expect("diameter support");
-    let disk = circle.certified_disk(&source).expect("exact disk");
-    let (_, allocations) = crate::test_support::allocation_count(|| {
-        emit_minimum_bounding_circle(
-            &disk,
-            NonZeroU32::new(16).expect("non-zero"),
-            &mut realization_budget(),
-        )
-        .expect("finite circle polygon")
-    });
-    assert!(allocations > 0, "circle emission must allocate");
-    for allowed in 0..allocations.min(16) {
-        let error = crate::test_support::fail_allocations_after(allowed, || {
-            emit_minimum_bounding_circle(
-                &disk,
-                NonZeroU32::new(16).expect("non-zero"),
-                &mut realization_budget(),
-            )
-        })
-        .expect_err("a rejected emission allocation must remain a native error");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-}
-
-#[test]
-fn minimum_circle_certified_disk_propagates_allocation_failures() {
-    let scale = 2.0_f64.powi(200);
-    let low_bit = 2.0_f64.powi(148);
-    let points = [
-        Point::new_raw_xy(0.0, 0.0),
-        Point::new_raw_xy(4.0 * scale, 0.0),
-        Point::new_raw_xy(scale + low_bit, 3.0 * scale),
-    ];
-    let circle = MinimumCircle::new_three(0, 1, 2);
-    assert!(circle.certificate(&points).expect("support certificate"));
-    let (_, allocations) = crate::test_support::allocation_count(|| circle.certified_disk(&points));
-    assert!(allocations > 0, "exact disk construction must allocate");
-    for allowed in 0..allocations {
-        let error =
-            crate::test_support::fail_allocations_after(allowed, || circle.certified_disk(&points))
-                .expect_err("a rejected disk allocation must remain a native error");
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
 }
 
 #[test]

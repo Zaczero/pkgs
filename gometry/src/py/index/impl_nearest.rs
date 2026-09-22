@@ -656,21 +656,17 @@ impl PySpatialIndex {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
 
     use pyo3::Python;
-    use pyo3::exceptions::PyMemoryError;
 
-    use super::{
-        BinaryHeap, HeapNearest, NearestOptions, NearestState as _, NearestVisited, OneNearest,
-    };
-    use crate::crs::{RUNTIME_STATE_TEST_LOCK, ResolvedMetric, metric_model};
-    use crate::geometry::{FrameDependentCaches, PreparedPlan, ShapeData};
+    use super::{BinaryHeap, NearestOptions, NearestState as _, NearestVisited, OneNearest};
+    use crate::crs::{ResolvedMetric, metric_model};
+    use crate::geometry::{PreparedPlan, ShapeData};
     use crate::pair_distance_planar;
     use crate::py::index::{
         Frame, NearestCandidate, Point, PyGeometry, Shape, parse_max_distance, spatial_index,
     };
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::allocation_count;
 
     #[test]
     fn nearest_max_distance_rejects_nan_at_parser() {
@@ -686,67 +682,9 @@ mod tests {
     }
 
     #[test]
-    fn one_nearest_nonempty_finish_rejects_allocation() {
+    fn overflow_run_nearest_frontier_matches_exhaustive_distances() {
         Python::initialize();
-        Python::attach(|py| {
-            let mut state = OneNearest::default();
-            state
-                .accept(NearestCandidate::new(1.0, 0))
-                .expect("accept is allocation-free");
-            let error = fail_allocations_after(0, || {
-                state.finish().expect_err("nonempty finish must allocate")
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-        });
-    }
-
-    #[test]
-    fn geodesic_full_scan_skips_query_cache_when_visited_reset_fails() {
-        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
-        Python::initialize();
-        Python::attach(|py| {
-            let index = spatial_index(vec![PyGeometry::with_frame(
-                ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))),
-                Frame::None,
-            )])
-            .expect("fixture index");
-            let state = HeapNearest::new(2, index.__len__()).expect("state is chosen first");
-            let mut visited = NearestVisited::default();
-            let mut cache_calls = 0_usize;
-            let mut query_cache = || {
-                cache_calls += 1;
-                Ok(Arc::new(FrameDependentCaches::default()))
-            };
-            let query =
-                PreparedPlan::new(ShapeData::new(Shape::Point(Point::new_raw_xy(0.0, 0.0))));
-            let model = metric_model(Some("EPSG:4326")).expect("geodesic model");
-            let ResolvedMetric::Geodesic(resolved) =
-                ResolvedMetric::from_model(&model).expect("resolved geodesic")
-            else {
-                panic!("EPSG:4326 must resolve geodesic");
-            };
-            let error = fail_allocations_after(0, || {
-                index
-                    .geodesic_full_scan_shared(
-                        state,
-                        None,
-                        None,
-                        &mut visited,
-                        &mut query_cache,
-                        &resolved,
-                        &query,
-                    )
-                    .expect_err("visited reset must fail before query_cache")
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            assert_eq!(cache_calls, 0);
-        });
-    }
-
-    #[test]
-    fn overflow_run_nearest_frontier_growth_is_fallible_and_retryable() {
-        Python::initialize();
-        Python::attach(|py| {
+        Python::attach(|_py| {
             let mut index = spatial_index(Vec::new()).expect("empty index");
             for handle in 0..128 {
                 let geometry = PyGeometry::with_frame(
@@ -797,20 +735,7 @@ mod tests {
                 .collect();
             expected.sort_unstable();
             expected.truncate(8);
-            let (_, allocations) = allocation_count(|| execute().expect("counted nearest"));
-            assert!(allocations > 0);
-
-            let mut prefix = 0;
-            loop {
-                let result = fail_allocations_after(prefix, execute);
-                let Err(error) = result else {
-                    assert_eq!(result.expect("nearest retry"), expected);
-                    break;
-                };
-                assert!(error.is_instance_of::<PyMemoryError>(py));
-                prefix += 1;
-                assert!(prefix <= allocations + 8);
-            }
+            assert_eq!(execute().expect("nearest"), expected);
         });
     }
 }

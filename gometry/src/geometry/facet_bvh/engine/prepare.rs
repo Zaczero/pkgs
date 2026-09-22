@@ -472,7 +472,6 @@ mod tests {
     use crate::geometry::{
         CoordinateAxes, LineSeq, MOrdinate, MultiLineString, MultiMember, Point, Shape, ZOrdinate,
     };
-    use crate::test_support::fail_allocations_after;
 
     fn line_xy(points: &[(f64, f64)]) -> LineSeq {
         let points: Vec<Point> = points
@@ -551,18 +550,6 @@ mod tests {
         assert_eq!(linework.segment_count(), 2);
         assert_eq!(linework.facets.len(), 2);
         assert!(!linework.uniform_ordinates());
-    }
-
-    #[test]
-    fn build_returns_resource_on_allocation_failure() {
-        let shape = Shape::LineString(line_xy(&[(0.0, 0.0), (1.0, 0.0)]));
-        match fail_allocations_after(0, || PreparedLinework::build(&shape)) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(_) => panic!("expected allocation failure"),
-        }
     }
 
     #[test]

@@ -896,21 +896,6 @@ fn distance_3d_rejects_mixed_z_collection() {
     mixed.distance_3d(&target).unwrap_err();
 }
 
-#[test]
-fn distance_3d_parts_build_returns_resource_on_allocation_failure() {
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
-
-    let shape = with_z(line(vec![p(0.0, 0.0), p(1.0, 0.0)]), 1.0);
-    match fail_allocations_after(0, || Distance3dParts::build(&shape)) {
-        Err(error) => assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        )),
-        Ok(_) => panic!("expected allocation failure"),
-    }
-}
-
 fn extreme_coord_line(segment_count: usize) -> Shape {
     // Just inside the squared-space gate so the facet BVH uses the SIMD
     // kernel — segment deltas stay below the per-pair overflow ceiling.

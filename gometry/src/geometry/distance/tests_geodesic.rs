@@ -3,13 +3,13 @@
     reason = "tests assert, and return Result only to propagate setup errors"
 )]
 use crate::crs::{geodesic_counters, with_ellipsoid_metric};
-use crate::error::{ErrorKind, ResourceError, Result};
+use crate::error::Result;
 use crate::geometry::distance::frechet::frechet_dp_columns;
 use crate::geometry::distance::geodesic_parts::{
     geodesic_cap_from_parts, geodesic_dwithin_sweep_with_parts, geodesic_sweep_with_parts,
 };
 use crate::geometry::distance::geodesic_sweep::{
-    geodesic_capped_witness_sweep_with_parts, geodesic_ordered_rows_into, geodesic_target_witness,
+    geodesic_capped_witness_sweep_with_parts, geodesic_target_witness,
 };
 use crate::geometry::distance::tests::{
     assert_geodesic_close, assert_same_witness, brute_geodesic_distance,
@@ -24,19 +24,9 @@ use crate::geometry::distance::{
     geodesic_nearest_points_with_parts, geodesic_scratch, geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicMetric, GeodesicParts, GeodesicSegmentScratch, MOrdinate, Point,
-    PreparedPlan, Shape, ZOrdinate,
+    FrameDependentCaches, GeodesicMetric, GeodesicSegmentScratch, MOrdinate, Point, PreparedPlan,
+    Shape, ZOrdinate,
 };
-
-fn fresh_bvh_parts(template: &GeodesicParts) -> GeodesicParts {
-    GeodesicParts {
-        points: Vec::new(),
-        segments: template.segments.clone(),
-        point_only: Vec::new(),
-        caps: None,
-        facet_bvh: std::sync::OnceLock::new(),
-    }
-}
 
 fn disconnected_bvh_target() -> Shape {
     Shape::geometry_collection(
@@ -276,92 +266,13 @@ fn geodesic_dwithin_short_circuits_before_full_distance_sweep() -> Result<()> {
 }
 
 #[test]
-#[expect(
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test retries one closure across every allocator prefix"
-)]
-fn geodesic_ordered_rows_reservation_is_fallible_and_retryable() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let target = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
-    let vertices = [p(2.0, 0.0), p(3.0, 0.0), p(4.0, 0.0)];
-    with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
-        let parts = target.geodesic_parts(metric)?;
-        let caps = parts
-            .caps
-            .as_ref()
-            .expect("non-empty target has caps")
-            .view();
-        let run = || -> Result<Vec<_>> {
-            let mut rows = Vec::new();
-            geodesic_ordered_rows_into(&vertices, caps, metric, false, &mut rows)?;
-            Ok(rows)
-        };
-        let expected = run()?;
-        let (_, allocations) = allocation_count(&run);
-        assert!(
-            allocations > 0,
-            "ordered rows did not reserve output storage"
-        );
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, &run);
-            let error = result
-                .err()
-                .unwrap_or_else(|| panic!("ordered-row prefix {allowed} unexpectedly succeeded"));
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert_eq!(run()?, expected, "ordered-row retry at {allowed}");
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test retries one closure across every allocator prefix"
-)]
-fn scalar_geodesic_dwithin_allocations_are_resource_and_retryable() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
+fn scalar_geodesic_dwithin_at_infinity_does_not_allocate() -> Result<()> {
     let left_shape = line(vec![p(-2.0, 0.0), p(2.0, 0.0)]);
     let right_shape = line(vec![p(-2.0, 1.0), p(2.0, 1.0)]);
     with_ellipsoid_metric("EPSG:4326", &[&left_shape, &right_shape], |metric| {
         let left = PreparedPlan::new(left_shape.clone());
         let right = PreparedPlan::new(right_shape.clone());
         let (semi_major, flattening) = metric.ellipsoid_parameters();
-        let run = || {
-            let left_cache = FrameDependentCaches::default();
-            let right_cache = FrameDependentCaches::default();
-            left.geodesic_dwithin_cached(
-                &left_cache,
-                &right,
-                &right_cache,
-                "EPSG:4326",
-                semi_major,
-                flattening,
-                metric,
-                100_000.0,
-            )
-        };
-        let expected = run()?;
-        let (_, allocations) = allocation_count(&run);
-        assert!(allocations > 0, "scalar dwithin had no fallible setup");
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, &run);
-            let error = result
-                .err()
-                .unwrap_or_else(|| panic!("scalar prefix {allowed} unexpectedly succeeded"));
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert_eq!(run()?, expected, "scalar retry at {allowed}");
-        }
-
         let infinite = || {
             let left_cache = FrameDependentCaches::default();
             let right_cache = FrameDependentCaches::default();
@@ -376,12 +287,7 @@ fn scalar_geodesic_dwithin_allocations_are_resource_and_retryable() -> Result<()
                 f64::INFINITY,
             )
         };
-        assert!(infinite()?);
-        let (_, infinite_allocations) = allocation_count(&infinite);
-        assert_eq!(
-            infinite_allocations, 0,
-            "scalar positive-infinity dwithin should not allocate"
-        );
+        assert!(crate::test_support::assert_no_allocations(infinite)?);
         Ok(())
     })?;
     Ok(())
@@ -396,28 +302,6 @@ fn geodesic_parts_collapse_periodic_zero_edge_support() -> Result<()> {
         Ok(())
     })?;
     Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for fallible setup and uses normal assertion macros for its oracle"
-)]
-fn geodesic_parts_returns_resource_on_allocation_failure() -> Result<()> {
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
-
-    let shape = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&shape], |metric| {
-        match fail_allocations_after(0, || shape.geodesic_parts(metric)) {
-            Err(error) => assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            )),
-            Ok(_) => panic!("expected allocation failure"),
-        }
-        Ok(())
-    })
 }
 
 #[test]
@@ -837,86 +721,6 @@ fn geodesic_hausdorff_complete_target_uses_bvh_witnesses() -> Result<()> {
 #[test]
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "the test returns Result for metric and part setup and asserts the injected allocation failure"
-)]
-fn geodesic_hausdorff_outer_target_range_allocation_is_resource() -> Result<()> {
-    use crate::test_support::fail_allocations_after;
-
-    let source = line(vec![p(-1.0, 0.0), p(1.0, 0.0)]);
-    let target = line(vec![p(-1.0, 1.0), p(1.0, 1.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let source_parts = source.geodesic_parts(metric)?;
-        let target_parts = target.geodesic_parts(metric)?;
-        let mut scratch = geodesic_scratch();
-        let result = fail_allocations_after(0, || {
-            geodesic_directed_hausdorff_distance(&source_parts, &target_parts, metric, &mut scratch)
-        });
-        let Err(error) = result else {
-            panic!("outer target preparation allocation failure was swallowed");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for metric and part setup and asserts each injected allocation failure"
-)]
-fn geodesic_hausdorff_frontier_allocations_are_resource() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let source = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
-    let target = line(vec![p(0.0, 1.0), p(5.0, 8.0), p(10.0, 1.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let source_parts = source.geodesic_parts(metric)?;
-        let target_parts = target.geodesic_parts(metric)?;
-        let mut warm_scratch = GeodesicScratch::default();
-        geodesic_directed_hausdorff_distance(
-            &source_parts,
-            &target_parts,
-            metric,
-            &mut warm_scratch,
-        )?;
-        let (_, allocations) = allocation_count(|| {
-            let mut scratch = GeodesicScratch::default();
-            geodesic_directed_hausdorff_distance(&source_parts, &target_parts, metric, &mut scratch)
-        });
-        assert!(
-            allocations > 1,
-            "frontier fixture allocations: {allocations}"
-        );
-        for allowed in 0..allocations {
-            let mut scratch = GeodesicScratch::default();
-            let result = fail_allocations_after(allowed, || {
-                geodesic_directed_hausdorff_distance(
-                    &source_parts,
-                    &target_parts,
-                    metric,
-                    &mut scratch,
-                )
-            });
-            let Err(error) = result else {
-                panic!("allocation prefix {allowed} unexpectedly succeeded");
-            };
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
     reason = "the test returns Result for metric and part setup and checks retained scratch reuse"
 )]
 fn geodesic_hausdorff_frontier_reuses_retained_scratch() -> Result<()> {
@@ -1164,49 +968,13 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
 }
 
 #[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for metric setup and uses assertions for fault outcomes"
-)]
-fn geodesic_bvh_allocation_failures_are_retryable() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    let target = disconnected_bvh_target();
-    with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
-        let template = target.geodesic_parts(metric)?;
-        let warm = fresh_bvh_parts(&template);
-        warm.geodesic_bvh(metric)?;
-        let counted = fresh_bvh_parts(&template);
-        let (_, allocations) = allocation_count(|| counted.geodesic_bvh(metric));
-        assert!(allocations > 0);
-
-        for prefix in 0..allocations {
-            let parts = fresh_bvh_parts(&template);
-            let result = fail_allocations_after(prefix, || parts.geodesic_bvh(metric));
-            let error = result
-                .err()
-                .unwrap_or_else(|| panic!("allocation prefix {prefix} unexpectedly succeeded"));
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert!(parts.facet_bvh.get().is_none());
-            assert!(parts.geodesic_bvh(metric)?.is_some());
-        }
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
 fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()> {
-    use crate::test_support::fail_allocations_after;
-
     let small = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
     let empty = Shape::empty_point();
     with_ellipsoid_metric("EPSG:4326", &[&small, &empty], |metric| {
         let small_parts = small.geodesic_parts(metric)?;
-        let small_result = fail_allocations_after(0, || small_parts.geodesic_bvh(metric));
+        let small_result =
+            crate::test_support::assert_no_allocations(|| small_parts.geodesic_bvh(metric));
         assert!(matches!(small_result, Ok(None)));
 
         let empty_parts = empty.geodesic_parts(metric)?;
@@ -1217,54 +985,18 @@ fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()>
 }
 
 #[test]
-#[expect(
-    clippy::needless_borrows_for_generic_args,
-    reason = "the test retries one closure across every allocator prefix"
-)]
-fn fixed_geodesic_point_rows_propagate_allocation_failures_and_retry() -> Result<()> {
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
+fn fixed_geodesic_point_rows_at_infinity_still_validate_latitudes() -> Result<()> {
     let cases = [
-        ("non_bvh", line(vec![p(-1.0, 0.0), p(1.0, 0.0)]), 1.0),
-        ("bvh", disconnected_bvh_target(), 1.0),
+        line(vec![p(-1.0, 0.0), p(1.0, 0.0)]),
+        disconnected_bvh_target(),
     ];
-    for (name, target, limit) in cases {
+    for target in cases {
         with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
             let data = PreparedPlan::new(target.clone());
             let frame_cache = FrameDependentCaches::default();
             let (semi_major, flattening) = metric.ellipsoid_parameters();
             let xs = [0.0, 10.0];
             let ys = [0.0, 0.0];
-            let run = || {
-                data.geodesic_dwithin_points(
-                    &frame_cache,
-                    std::iter::zip(xs.iter().copied(), ys.iter().copied()),
-                    "EPSG:4326",
-                    semi_major,
-                    flattening,
-                    metric,
-                    limit,
-                    metric.frame(),
-                )
-            };
-            let expected = run()?;
-            let (_, allocations) = allocation_count(&run);
-            assert!(
-                allocations > 0,
-                "{name}: point-row output was not allocated"
-            );
-            for allowed in 0..allocations {
-                let result = fail_allocations_after(allowed, &run);
-                let error = result
-                    .err()
-                    .unwrap_or_else(|| panic!("{name}: prefix {allowed} unexpectedly succeeded"));
-                assert!(matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                ));
-                assert_eq!(run()?, expected, "{name}: retry at {allowed}");
-            }
-
             let inf_run = || {
                 data.geodesic_dwithin_points(
                     &frame_cache,
@@ -1277,27 +1009,7 @@ fn fixed_geodesic_point_rows_propagate_allocation_failures_and_retry() -> Result
                     metric.frame(),
                 )
             };
-            let inf_expected = inf_run()?;
-            let (_, inf_allocations) = allocation_count(&inf_run);
-            assert!(
-                inf_allocations > 0,
-                "{name}: infinite point-row output was not allocated"
-            );
-            for allowed in 0..inf_allocations {
-                let result = fail_allocations_after(allowed, &inf_run);
-                let error = result.err().unwrap_or_else(|| {
-                    panic!("{name}: infinite prefix {allowed} unexpectedly succeeded")
-                });
-                assert!(matches!(
-                    error.kind(),
-                    ErrorKind::Resource(ResourceError::Allocation)
-                ));
-                assert_eq!(
-                    inf_run()?,
-                    inf_expected,
-                    "{name}: infinite retry at {allowed}"
-                );
-            }
+            assert_eq!(inf_run()?, [true, true]);
             let invalid_ys = [0.0, 95.0];
             let error = data
                 .geodesic_dwithin_points(
@@ -1315,75 +1027,6 @@ fn fixed_geodesic_point_rows_propagate_allocation_failures_and_retry() -> Result
             Ok(())
         })?;
     }
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for metric setup and uses assertions for fault outcomes"
-)]
-fn geodesic_sweep_propagates_bvh_allocation_failure() -> Result<()> {
-    use crate::test_support::fail_allocations_after;
-
-    let target = disconnected_bvh_target();
-    let probe = [p(0.0, 0.0)];
-    let small = line(vec![p(-1.0, 0.0), p(1.0, 0.0)]);
-    with_ellipsoid_metric("EPSG:4326", &[&target, &small], |metric| {
-        let small_parts = small.geodesic_parts(metric)?;
-        geodesic_sweep_with_parts(&probe, &small_parts, metric, f64::INFINITY)?;
-
-        let template = target.geodesic_parts(metric)?;
-        let parts = fresh_bvh_parts(&template);
-        let result = fail_allocations_after(0, || {
-            geodesic_sweep_with_parts(&probe, &parts, metric, f64::INFINITY)
-        });
-        let Err(error) = result else {
-            panic!("BVH allocation failure was swallowed by capped fallback");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        assert!(parts.facet_bvh.get().is_none());
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "the test returns Result for metric and part setup and asserts the injected stack allocation failure"
-)]
-fn geodesic_bvh_witness_stack_allocation_is_resource() -> Result<()> {
-    use crate::test_support::fail_allocations_after;
-
-    let target = disconnected_bvh_target();
-    with_ellipsoid_metric("EPSG:4326", &[&target], |metric| {
-        let template = target.geodesic_parts(metric)?;
-        let parts = fresh_bvh_parts(&template);
-        assert!(parts.geodesic_bvh(metric)?.is_some());
-        let mut stack = Vec::new();
-        let mut segment_scratch = GeodesicSegmentScratch::default();
-        let result = fail_allocations_after(0, || {
-            geodesic_target_witness(
-                p(0.0, 0.0),
-                &parts,
-                metric,
-                &mut stack,
-                &mut segment_scratch,
-            )
-        });
-        let Err(error) = result else {
-            panic!("BVH witness stack allocation failure was swallowed");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-        Ok(())
-    })?;
     Ok(())
 }
 

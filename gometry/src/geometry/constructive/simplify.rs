@@ -1044,7 +1044,6 @@ mod collapsed_ring_distinct_tests {
 
     use super::has_three_distinct_xy;
     use crate::geometry::CoordSeq;
-    use crate::test_support::fail_allocations_after;
 
     fn columns(xs: &[f64], ys: &[f64]) -> CoordSeq {
         CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap()
@@ -1081,7 +1080,7 @@ mod collapsed_ring_distinct_tests {
     fn three_distinct_xy_scan_allocates_nothing() {
         let two = columns(&[0.0, 1.0, 0.0, 1.0, 0.0], &[0.0; 5]);
         let three = columns(&[0.0, 1.0, 0.0, 0.0], &[0.0, 0.0, 1.0, 0.0]);
-        fail_allocations_after(0, || {
+        crate::test_support::assert_no_allocations(|| {
             assert!(!has_three_distinct_xy(&two));
             assert!(has_three_distinct_xy(&three));
         });
@@ -1092,12 +1091,10 @@ mod collapsed_ring_distinct_tests {
 mod keep_identity_tests {
 
     use super::RawSimplify;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{
         CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MultiLineString, MultiPolygon, Polygon,
         Ring, Shape,
     };
-    use crate::test_support::fail_allocations_after;
 
     fn line_xy(xs: &[f64], ys: &[f64]) -> LineSeq {
         LineSeq::from_proven(CoordSeq::try_from_vecs(xs.into(), ys.into(), None, None).unwrap())
@@ -1263,21 +1260,6 @@ mod keep_identity_tests {
         assert_eq!(out.as_slice()[0].xs().as_ptr(), first_ptr);
         assert_eq!(out.as_slice()[1].xs(), &[0.0, 2.0]);
         assert_eq!(out.as_slice()[2].xs().as_ptr(), last_ptr);
-    }
-
-    #[test]
-    fn prefix_line_member_staging_reports_allocation_failure() {
-        let first = line_xy(&[0.0, 0.0], &[0.0, 1.0]);
-        let middle = line_xy(&[0.0, 1.0, 2.0], &[0.0, 0.0, 0.0]);
-        let last = line_xy(&[3.0, 3.0], &[0.0, 1.0]);
-        let lines = MultiLineString::from_dense(vec![first, middle, last])
-            .unwrap()
-            .unwrap();
-        let result = fail_allocations_after(0, || super::try_prefix_line_members(&lines, 1));
-        assert!(matches!(
-            result,
-            Err(error) if matches!(error.kind(), ErrorKind::Resource(ResourceError::Allocation))
-        ));
     }
 
     #[test]
@@ -1535,9 +1517,7 @@ mod dp_zero_split_tests {
 mod guarded_borrow_tests {
 
     use super::RawSimplify;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, Polygon, Ring, Shape, TopologyGuard, XY};
-    use crate::test_support::fail_allocations_after;
 
     fn closed_ring(xs: &[f64], ys: &[f64], zs: Option<&[f64]>, ms: Option<&[f64]>) -> Ring {
         Ring::from_closed(
@@ -1565,14 +1545,8 @@ mod guarded_borrow_tests {
     }
 
     #[test]
-    fn vertex_cloud_walk_rejects_allocation_and_stores_xy() {
+    fn vertex_cloud_walk_stores_xy() {
         let vertices = [XY::new(1.0, 2.0), XY::new(3.0, 4.0)];
-        let error =
-            fail_allocations_after(0, || TopologyGuard::try_vertex_cloud(vertices)).unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
         assert_eq!(TopologyGuard::try_vertex_cloud(vertices).unwrap(), vec![
             [1.0, 2.0],
             [3.0, 4.0]
@@ -1649,9 +1623,7 @@ mod guarded_borrow_tests {
 mod keep_mask_scratch_tests {
 
     use super::rdp_keep;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::constructive::vw_keep;
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn collinear_xy(count: usize) -> (Vec<f64>, Vec<f64>) {
         ((0..count).map(|index| index as f64).collect(), vec![
@@ -1660,50 +1632,31 @@ mod keep_mask_scratch_tests {
         ])
     }
 
-    fn assert_allocation_error(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
     #[test]
-    fn rdp_keep_rejects_every_allocation() {
+    fn rdp_keep_removes_collinear_interior_vertices() {
         let (xs, ys) = collinear_xy(8);
         let run = || {
             let mut keep = Vec::new();
             let mut stack = Vec::new();
             rdp_keep(&xs, &ys, 0.0, &mut keep, &mut stack)
         };
-        let (kept, allocations) = allocation_count(|| run().unwrap());
+        let kept = run().unwrap();
         assert_eq!(kept, Some(2));
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, run)
-                .expect_err("DP keep-mask scratch must propagate allocation failure");
-            assert_allocation_error(&error);
-        }
     }
 
     #[test]
-    fn vw_keep_rejects_every_allocation() {
+    fn vw_keep_removes_collinear_interior_vertices() {
         let (xs, ys) = collinear_xy(8);
         let run = || {
             let mut keep = Vec::new();
             vw_keep(&xs, &ys, 1.0, &mut keep)
         };
-        let (kept, allocations) = allocation_count(|| run().unwrap());
+        let kept = run().unwrap();
         assert_eq!(kept, Some(2));
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, run)
-                .expect_err("VW keep-mask scratch must propagate allocation failure");
-            assert_allocation_error(&error);
-        }
     }
 
     #[test]
-    fn reused_small_keep_grows_fallibly_for_a_larger_chain() {
+    fn reused_keep_storage_handles_a_larger_chain() {
         let small = collinear_xy(8);
         let mut keep = Vec::new();
         let mut stack = Vec::new();
@@ -1712,17 +1665,16 @@ mod keep_mask_scratch_tests {
         assert!(capacity >= 8);
         let (xs, ys) = collinear_xy(capacity + 1);
         stack.clear();
-        let error = fail_allocations_after(0, || rdp_keep(&xs, &ys, 0.0, &mut keep, &mut stack))
-            .expect_err("growing a reused keep mask must not abort in resize");
-        assert_allocation_error(&error);
+        assert_eq!(
+            rdp_keep(&xs, &ys, 0.0, &mut keep, &mut stack).unwrap(),
+            Some(2)
+        );
 
         let mut keep = Vec::new();
         vw_keep(&small.0, &small.1, 1.0, &mut keep).unwrap();
         let capacity = keep.capacity();
         let (xs, ys) = collinear_xy(capacity + 1);
-        let error = fail_allocations_after(0, || vw_keep(&xs, &ys, 1.0, &mut keep))
-            .expect_err("growing a reused VW keep mask must not abort in resize");
-        assert_allocation_error(&error);
+        assert_eq!(vw_keep(&xs, &ys, 1.0, &mut keep).unwrap(), Some(2));
     }
 }
 

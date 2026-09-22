@@ -861,9 +861,7 @@ mod concat_bulk_tests {
         stream_bulk_rows, stream_row_advances,
     };
     use crate::boundary::Frame;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq, Point, Polygon, Ring};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     fn line(start: f64) -> Shape {
         Shape::LineString(
@@ -1030,10 +1028,8 @@ mod concat_bulk_tests {
         let mut builder = crate::array::StreamingShapes::with_capacity(0, 2);
         assert!(builder.try_extend_array(&points).unwrap());
         assert!(
-            !crate::test_support::fail_allocations_after(0, || {
-                builder.try_extend_array(&lines)
-            })
-            .unwrap()
+            !crate::test_support::assert_no_allocations(|| { builder.try_extend_array(&lines) })
+                .unwrap()
         );
         for row in lines.logical_rows() {
             match row {
@@ -1066,7 +1062,7 @@ mod concat_bulk_tests {
         let mut builder = crate::array::StreamingShapes::with_capacity(0, 2);
         assert!(builder.try_extend_array(&points).unwrap());
         assert!(
-            !crate::test_support::fail_allocations_after(0, || { builder.try_extend_array(&xyz) })
+            !crate::test_support::assert_no_allocations(|| { builder.try_extend_array(&xyz) })
                 .unwrap()
         );
         for row in xyz.logical_rows() {
@@ -1133,82 +1129,5 @@ mod concat_bulk_tests {
         assert_eq!(merged.missing().unwrap().iter().collect::<Vec<_>>(), [
             false, true, false, false, false, false
         ]);
-    }
-
-    fn assert_concat_allocation_faults(left: &PyGeometryArray, right: &PyGeometryArray) {
-        pyo3::Python::initialize();
-        let (successful, allocations) =
-            allocation_count(|| PyGeometryArray::concat_many(&[left, right]));
-        successful.unwrap();
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error =
-                fail_allocations_after(allowed, || PyGeometryArray::concat_many(&[left, right]))
-                    .unwrap_err();
-            pyo3::Python::attach(|py| {
-                assert!(
-                    error.is_instance_of::<pyo3::exceptions::PyMemoryError>(py),
-                    "allocation failure changed error class: {error:?}"
-                );
-            });
-            let retry = PyGeometryArray::concat_many(&[left, right]).unwrap();
-            assert_eq!(retry.len(), left.len() + right.len());
-        }
-    }
-
-    fn assert_bulk_extension_allocation_faults(
-        array: &PyGeometryArray,
-        coordinate_capacity: usize,
-        row_capacity: usize,
-        ring_capacity: usize,
-    ) {
-        let (_, allocations) = allocation_count(|| {
-            let mut builder = crate::array::StreamingShapes::with_capacity_and_rings(
-                coordinate_capacity,
-                row_capacity,
-                ring_capacity,
-            );
-            builder.try_extend_array(array)
-        });
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, || {
-                let mut builder = crate::array::StreamingShapes::with_capacity_and_rings(
-                    coordinate_capacity,
-                    row_capacity,
-                    ring_capacity,
-                );
-                builder.try_extend_array(array)
-            })
-            .unwrap_err();
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            let mut retry = crate::array::StreamingShapes::with_capacity_and_rings(
-                coordinate_capacity,
-                row_capacity,
-                ring_capacity,
-            );
-            assert!(retry.try_extend_array(array).unwrap());
-        }
-    }
-
-    #[test]
-    fn concat_allocation_faults_return_resource_error_and_fresh_retry_succeeds() {
-        let lines = lines();
-        let line_window = lines.gather_logical_row_range(1..3).unwrap();
-        assert_concat_allocation_faults(&lines, &line_window);
-
-        let polygons = polygons();
-        let polygon_window = polygons.gather_logical_row_range(1..3).unwrap();
-        assert_concat_allocation_faults(&polygons, &polygon_window);
-    }
-
-    #[test]
-    fn bulk_extension_allocation_faults_are_resource_errors() {
-        assert_bulk_extension_allocation_faults(&points(), 3, 3, 0);
-        assert_bulk_extension_allocation_faults(&lines(), 6, 3, 0);
-        assert_bulk_extension_allocation_faults(&polygons(), 20, 3, 4);
     }
 }

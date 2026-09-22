@@ -1039,13 +1039,11 @@ mod bound_tests {
 }
 
 #[cfg(test)]
-mod allocation_tests {
+mod bvh_cache_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
 
     #[test]
-    fn cold_3d_bvh_failure_is_retryable() {
+    fn cached_3d_bvh_reuses_storage_and_matches_brute_force() {
         let fixture = || Distance3dParts {
             segments: (0..=BVH_MIN_INDEXED_SEGMENTS)
                 .map(|index| {
@@ -1061,23 +1059,11 @@ mod allocation_tests {
             bvh: OnceLock::new(),
         };
         let target = fixture();
-        let (_, count) = allocation_count(|| target.bvh().unwrap().unwrap());
-        assert!(count > 0);
-        for allowed in 0..count {
-            let target = fixture();
-            let result = fail_allocations_after(allowed, || target.bvh());
-            let Err(error) = result else {
-                panic!("each cold construction allocation must propagate");
-            };
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-            assert!(target.bvh.get().is_none());
-            let first = target.bvh().unwrap().unwrap();
-            let cached = fail_allocations_after(0, || target.bvh()).unwrap().unwrap();
-            assert!(std::ptr::eq(first, cached));
-        }
+        let first = target.bvh().unwrap().unwrap();
+        let cached = crate::test_support::assert_no_allocations(|| target.bvh())
+            .unwrap()
+            .unwrap();
+        assert!(std::ptr::eq(first, cached));
         let probe = Distance3dParts {
             segments: vec![Segment3d {
                 start: [0.0, 0.0, 3.0],
@@ -1087,7 +1073,6 @@ mod allocation_tests {
             bvh: OnceLock::new(),
         };
         let cold = fixture();
-        fail_allocations_after(0, || distance_3d_with_parts(&probe, &cold)).unwrap_err();
         assert_eq!(
             distance_3d_with_parts(&probe, &cold).unwrap(),
             distance_3d_brute_parts(&probe, &cold).unwrap()

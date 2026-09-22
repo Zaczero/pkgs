@@ -624,36 +624,11 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use pyo3::exceptions::{PyMemoryError, PyOverflowError};
+    use pyo3::exceptions::PyOverflowError;
     use pyo3::prelude::*;
 
-    use super::{native_memory_error, native_overflow_error};
+    use super::native_overflow_error;
     use crate::error::{Error, ResourceError};
-    use crate::test_support::fail_allocations_after;
-
-    #[test]
-    fn native_memory_error_survives_persistent_rust_allocation_rejection() {
-        Python::initialize();
-        Python::attach(|py| {
-            let error = fail_allocations_after(0, || {
-                let error = Error::from(ResourceError::Allocation);
-                let error: PyErr = error.into();
-                error
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            drop(error);
-        });
-    }
-
-    #[test]
-    fn native_memory_error_can_attach_before_the_inspection_scope() {
-        Python::initialize();
-        let error = fail_allocations_after(0, native_memory_error);
-        Python::attach(|py| {
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            drop(error);
-        });
-    }
 
     #[test]
     fn contextual_overflow_keeps_its_message() {

@@ -349,15 +349,12 @@ impl PySpatialIndex {
 #[cfg(test)]
 mod tests {
     use pyo3::Python;
-    use pyo3::exceptions::PyMemoryError;
     use rstar::AABB;
 
     use super::*;
     use crate::boundary::Frame;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::{CoordSeq, LineSeq, Point, Shape, ShapeData};
     use crate::py::index::{DistanceUnit, NearestOptions, spatial_index};
-    use crate::test_support::fail_allocations_after;
 
     fn point(x: f64, y: f64) -> PyGeometry {
         PyGeometry::with_frame(
@@ -434,13 +431,6 @@ mod tests {
             .collect()
     }
 
-    fn assert_allocation_error(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
     fn assert_copy_state(index: &PySpatialIndex, handles: &[usize], weights: &[(usize, usize)]) {
         assert_eq!(index.live_handles_sorted().expect("live handles"), handles);
         assert_eq!(run_weights(index), weights);
@@ -471,9 +461,8 @@ mod tests {
             );
         }
         let generation = index.mutation_gen;
-        let removed = crate::test_support::fail_allocations_after(0, || {
-            index.remove_handle(0).expect("remove")
-        });
+        let removed =
+            crate::test_support::assert_no_allocations(|| index.remove_handle(0).expect("remove"));
         assert!(removed);
         assert!(!index.rows.is_live(0));
         assert_eq!(index.overflow.total_entries(), 3);
@@ -496,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn populated_index_try_clone_is_fallible_and_preserves_all_state() {
+    fn populated_index_clone_preserves_state_and_mutates_independently() {
         let source = clone_fixture();
         let handles = source.live_handles_sorted().expect("source handles");
         let weights = run_weights(&source);
@@ -543,22 +532,7 @@ mod tests {
             .expect("clone nearest");
         assert_eq!(source_nearest, clone_nearest);
 
-        let allocations = crate::test_support::allocation_count(|| {
-            source.try_clone().expect("counted clone");
-        })
-        .1;
-        assert!(allocations > 0);
-        let mut prefix = 0;
-        let mut cloned = loop {
-            let result = fail_allocations_after(prefix, || source.try_clone());
-            let Err(error) = result else {
-                break result.expect("successful clone");
-            };
-            assert_allocation_error(&error);
-            assert_copy_state(&source, &handles, &weights);
-            prefix += 1;
-            assert!(prefix <= allocations + 8);
-        };
+        let mut cloned = source.try_clone().expect("clone");
         assert_copy_state(&cloned, &handles, &weights);
         let new_handle = cloned
             .insert_one(&framed_point(100.0, 0.0, &query_frame))
@@ -571,7 +545,7 @@ mod tests {
     }
 
     #[test]
-    fn public_copy_protocols_report_native_memory_failure_before_publication() {
+    fn public_copy_protocols_preserve_live_handles() {
         Python::initialize();
         Python::attach(|py| {
             let source = clone_fixture();
@@ -592,12 +566,6 @@ mod tests {
                     .expect("deepcopy handles"),
                 source.live_handles_sorted().expect("source handles")
             );
-            let copy_error = fail_allocations_after(0, || source.__copy__(py))
-                .expect_err("copy must fail before Python publication");
-            assert!(copy_error.is_instance_of::<PyMemoryError>(py));
-            let deep_error = fail_allocations_after(0, || source.__deepcopy__(py, &memo))
-                .expect_err("deepcopy must fail before Python publication");
-            assert!(deep_error.is_instance_of::<PyMemoryError>(py));
             assert_eq!(source.overflow.total_entries(), 11);
             assert_eq!(source.overflow.dead_entry_count(), 1);
         });

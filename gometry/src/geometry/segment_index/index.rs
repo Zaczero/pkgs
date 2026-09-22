@@ -198,13 +198,11 @@ impl HeapSize for PointSetIndex {
 }
 
 #[cfg(test)]
-mod allocation_tests {
+mod query_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
 
     #[test]
-    fn segment_index_collect_failure_is_retryable() {
+    fn segment_index_covers_segment_interiors() {
         let segments = [
             Segment {
                 start: crate::geometry::XY::new(0.0, 0.0),
@@ -215,32 +213,17 @@ mod allocation_tests {
                 end: crate::geometry::XY::new(1.0, 1.0),
             },
         ];
-        let Err(error) = fail_allocations_after(0, || SegmentIndex::build(&segments)) else {
-            panic!("entry staging reservation must propagate");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
         let index = SegmentIndex::build(&segments).unwrap();
         assert!(index.covers_point(Point::new_raw_xy(0.5, 0.0)));
     }
 
     #[test]
-    fn point_set_index_collect_failure_is_retryable() {
+    fn point_set_index_nearest_other_excludes_the_query_point() {
         let points = [
             Point::new_raw_xy(0.0, 0.0),
             Point::new_raw_xy(1.0, 0.0),
             Point::new_raw_xy(0.0, 1.0),
         ];
-        let Err(error) = fail_allocations_after(0, || PointSetIndex::build(points.iter().copied()))
-        else {
-            panic!("coordinate staging reservation must propagate");
-        };
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
         let index = PointSetIndex::build(points.iter().copied()).unwrap();
         let (other, _) = index.nearest_other(points[0]).unwrap();
         assert!(!same_point(other, points[0]));

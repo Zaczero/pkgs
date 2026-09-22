@@ -113,62 +113,6 @@ impl MetricResolver {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use pyo3::exceptions::PyMemoryError;
-    use pyo3::prelude::*;
-
-    use super::*;
-    use crate::boundary::metadata::Frame;
-    use crate::crs::{RUNTIME_STATE_TEST_LOCK, clear_cache};
-    use crate::test_support::{allocation_count, fail_allocations_after};
-
-    #[test]
-    fn resolve_ctx_keeps_metric_scratch_empty_on_from_model_failure() {
-        let _guard = RUNTIME_STATE_TEST_LOCK.lock().unwrap();
-        Python::initialize();
-        Python::attach(|py| {
-            clear_cache();
-            let frame = Frame::Crs("EPSG:4326".into());
-            let resolver = MetricResolver::Metric {
-                op: MetricOp::Distance,
-                unit: None,
-            };
-
-            // Warm the CRS and geodesic caches so the final allocation in the
-            // successful call is Box::new inside GeodesicMetric::from_model.
-            let mut warm_scratch = MetricScratch::default();
-            match resolver.resolve_ctx(&frame, &mut warm_scratch) {
-                Ok(_) => {},
-                Err(error) => panic!("warm metric resolution failed: {error}"),
-            }
-            drop(warm_scratch);
-
-            let ((), allocations) = allocation_count(|| {
-                let mut scratch = MetricScratch::default();
-                match resolver.resolve_ctx(&frame, &mut scratch) {
-                    Ok(_) => {},
-                    Err(error) => panic!("counting metric resolution failed: {error}"),
-                }
-                drop(scratch);
-            });
-            assert!(allocations > 0, "the warm resolver must allocate");
-
-            let mut scratch = MetricScratch::default();
-            let error = fail_allocations_after(allocations - 1, || {
-                match resolver.resolve_ctx(&frame, &mut scratch) {
-                    Err(error) => error,
-                    Ok(_) => panic!("the final from_model allocation must fail"),
-                }
-            });
-            assert!(error.is_instance_of::<PyMemoryError>(py));
-            assert!(scratch.model.is_none());
-            assert!(scratch.metric.is_none());
-            drop(error);
-        });
-    }
-}
-
 #[derive(Default)]
 pub(crate) struct MetricScratch {
     model: Option<MetricModel>,

@@ -1621,7 +1621,7 @@ mod tests {
         let right_view = right.coordinate_view();
         assert_eq!(left_view.len(), 10);
         assert_eq!(right_view.len(), 10);
-        let equal = crate::test_support::fail_allocations_after(0, || {
+        let equal = crate::test_support::assert_no_allocations(|| {
             left_view.equal_visible(&right_view, None, None)
         });
         assert!(equal);

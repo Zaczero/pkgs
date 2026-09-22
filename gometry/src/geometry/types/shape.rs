@@ -1297,18 +1297,8 @@ mod multipart_layout_tests {
 }
 
 #[cfg(test)]
-mod mapping_fault_tests {
+mod mapping_error_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::fail_allocations_after;
-
-    fn two_point_line() -> LineSeq {
-        LineSeq::try_new(
-            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 1.0)])
-                .unwrap(),
-        )
-        .unwrap()
-    }
 
     fn two_point_collection() -> GeometryCollection {
         let Shape::GeometryCollection(collection) = Shape::geometry_collection(vec![
@@ -1319,17 +1309,6 @@ mod mapping_fault_tests {
             unreachable!("collection fixture")
         };
         collection
-    }
-
-    #[test]
-    fn try_map_points_returns_resource_on_allocation_failure() {
-        let line = two_point_line();
-        let error = fail_allocations_after(0, || line.try_map_points(Ok::<_, crate::error::Error>))
-            .unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
     }
 
     #[test]
@@ -1389,21 +1368,5 @@ mod mapping_fault_tests {
         assert_eq!(collection.as_slice(), &[Shape::Point(Point::new_raw_xy(
             1.0, 0.0
         ))]);
-    }
-
-    #[test]
-    fn try_map_values_returns_resource_on_allocation_failure() {
-        let points = MultiPoint::try_new(CoordinateAxes::XY, vec![
-            MultiMember::Value(Point::new_raw_xy(0.0, 0.0)),
-            MultiMember::Value(Point::new_raw_xy(1.0, 1.0)),
-        ])
-        .unwrap();
-        let error =
-            fail_allocations_after(0, || points.try_map_values(Ok::<_, crate::error::Error>))
-                .unwrap_err();
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
     }
 }

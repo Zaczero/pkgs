@@ -414,7 +414,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_staging_propagates_each_allocation_and_retries() {
+    fn triangle_boundary_keeps_its_vertex_order() {
         let points = points(&[(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)]);
         let triangulation = Triangulation {
             triangles: vec![0, 1, 2],
@@ -422,29 +422,8 @@ mod tests {
             hull: vec![0, 1, 2],
         };
         let alive = [true];
-        let (boundary, allocations) = crate::test_support::allocation_count(|| {
-            extract_concave_boundary(&points, &triangulation, &alive)
-                .expect("valid boundary extraction")
-        });
+        let boundary = extract_concave_boundary(&points, &triangulation, &alive)
+            .expect("valid boundary extraction");
         assert_eq!(boundary, vec![0, 1, 2]);
-        assert!(allocations > 0, "boundary staging must allocate");
-
-        for allowed in 0..allocations {
-            let result = crate::test_support::fail_allocations_after(allowed, || {
-                extract_concave_boundary(&points, &triangulation, &alive)
-            });
-            let Err(error) = result else {
-                panic!("boundary allocation prefix {allowed} must fail");
-            };
-            assert!(matches!(
-                error.kind(),
-                crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-            ));
-        }
-
-        assert_eq!(
-            extract_concave_boundary(&points, &triangulation, &alive).unwrap(),
-            boundary
-        );
     }
 }

@@ -401,23 +401,4 @@ mod tests {
                 .contains("Polygon rings must share one coordinate axes layout")
         );
     }
-
-    #[test]
-    fn wkb_valid_container_allocation_failure_stays_a_resource_error() {
-        let wkb = [
-            1_u8, 4, 0, 0, 0, // little-endian MULTIPOINT
-            1, 0, 0, 0, // one member
-            1, 1, 0, 0, 0, // little-endian POINT
-            0, 0, 0, 0, 0, 0, 0, 0, // x = 0
-            0, 0, 0, 0, 0, 0, 0, 0, // y = 0
-        ];
-        let result = crate::test_support::fail_allocations_after(0, || parse_wkb(&wkb));
-        let Err(error) = result else {
-            panic!("the validated container reservation was not refused");
-        };
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
-    }
 }

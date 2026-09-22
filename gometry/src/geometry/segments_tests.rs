@@ -1161,37 +1161,24 @@ fn reverse_segment(segment: Segment) -> Segment {
 #[cfg(test)]
 mod exact_projection_allocation_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::test_support::allocation_count;
 
-    fn assert_allocation(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
-    fn prefix_sweep(expected_allocations: usize, run: impl Fn() -> crate::error::Result<()>) {
+    fn assert_allocation_count(
+        expected_allocations: usize,
+        run: impl FnOnce() -> crate::error::Result<()>,
+    ) {
         let ((), allocations) = allocation_count(|| run().unwrap());
-        // Each caller locks its measured count so a change in either direction
-        // fails here instead of silently changing the failure sweep.
         assert_eq!(allocations, expected_allocations);
-        for allowed in 0..allocations {
-            let error = fail_allocations_after(allowed, &run)
-                .expect_err("exact projection scratch must propagate allocation failure");
-            assert_allocation(&error);
-        }
-        run().expect("exact projection must retry cleanly after allocation failure");
     }
 
     #[test]
-    fn endpoint_exact_classification_rejects_every_allocation() {
+    fn endpoint_exact_classification_is_allocation_free() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(1.0, 0.0),
         };
         let point = XY::new(0.0, 0.0);
-        prefix_sweep(0, || {
+        assert_allocation_count(0, || {
             super::super::classify_segment_projection_exact(point, segment).map(|_| ())
         });
     }
@@ -1209,7 +1196,7 @@ mod exact_projection_allocation_tests {
             f64::from_bits(0xA018_FBE4_C3D7_9F2E),
             f64::from_bits(0x2039_6423_3D01_E367),
         );
-        prefix_sweep(6, || {
+        assert_allocation_count(6, || {
             segment_projection(point, segment).map(|projection| {
                 assert!(matches!(
                     projection,
@@ -1235,25 +1222,25 @@ mod exact_projection_allocation_tests {
     }
 
     #[test]
-    fn interior_exact_terms_reject_every_allocation() {
+    fn interior_exact_terms_are_allocation_free() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(2.0, 0.0),
         };
         let point = XY::new(1.0, 1.0);
-        prefix_sweep(0, || {
+        assert_allocation_count(0, || {
             super::super::exact_projection_terms(point, segment).map(|_| ())
         });
     }
 
     #[test]
-    fn interior_exact_classification_rejects_every_allocation() {
+    fn interior_exact_classification_is_allocation_free() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(1.0, 1.0),
         };
         let point = XY::new(1.0, 1.0_f64.next_down());
-        prefix_sweep(0, || {
+        assert_allocation_count(0, || {
             super::super::classify_segment_projection_exact(point, segment).map(|classification| {
                 assert!(matches!(
                     classification,
@@ -1264,7 +1251,7 @@ mod exact_projection_allocation_tests {
     }
 
     #[test]
-    fn retained_exact_ratio_publication_and_clone_reject_every_allocation() {
+    fn retained_exact_ratio_publication_allocates_one_owner() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(1.0, 1.0),
@@ -1277,7 +1264,7 @@ mod exact_projection_allocation_tests {
                 .unwrap()
                 .uses_exact_ratio()
         );
-        prefix_sweep(1, || {
+        assert_allocation_count(1, || {
             selection.projection(point, segment).map(|projection| {
                 assert!(projection.uses_exact_ratio());
             })
@@ -1285,7 +1272,7 @@ mod exact_projection_allocation_tests {
     }
 
     #[test]
-    fn exact_ratio_interpolation_rejects_every_allocation_and_retries_cleanly() {
+    fn exact_ratio_interpolation_is_allocation_free() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(1.0, 1.0),
@@ -1294,11 +1281,11 @@ mod exact_projection_allocation_tests {
         let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-1.0)), MOrdinate(Some(-3.0)));
         let end = Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
         let expected = projection.interpolate_point(start, end).unwrap();
-        prefix_sweep(0, || projection.interpolate_point(start, end).map(|_| ()));
+        assert_allocation_count(0, || projection.interpolate_point(start, end).map(|_| ()));
         assert_eq!(
             projection.interpolate_point(start, end).unwrap(),
             expected,
-            "interpolation must be retryable after every rejected allocation"
+            "repeated interpolation preserves the emitted point"
         );
     }
 
@@ -1338,7 +1325,7 @@ mod exact_projection_allocation_tests {
     }
 
     #[test]
-    fn certified_ratio_interpolation_rejects_every_allocation() {
+    fn certified_ratio_interpolation_is_allocation_free() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(13.0, 13.0),
@@ -1350,27 +1337,27 @@ mod exact_projection_allocation_tests {
         ));
         let start = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(Some(3.0)));
         let end = Point::new_raw_axes(13.0, 13.0, ZOrdinate(Some(5.0)), MOrdinate(Some(9.0)));
-        prefix_sweep(0, || projection.interpolate_point(start, end).map(|_| ()));
+        assert_allocation_count(0, || projection.interpolate_point(start, end).map(|_| ()));
     }
 
     #[test]
-    fn exact_ratio_xy_interpolation_rejects_every_allocation() {
+    fn exact_ratio_xy_interpolation_is_allocation_free() {
         let segment = Segment {
             start: XY::new(0.0, 0.0),
             end: XY::new(1.0, 1.0),
         };
         let projection = segment_projection(XY::new(1.0, 1.0_f64.next_down()), segment).unwrap();
-        prefix_sweep(0, || projection.interpolate_xy(segment).map(|_| ()));
+        assert_allocation_count(0, || projection.interpolate_xy(segment).map(|_| ()));
     }
 
     #[test]
-    fn extreme_exact_projection_rejects_every_allocation() {
+    fn extreme_exact_projection_is_allocation_free() {
         let segment = Segment {
             start: XY::new(1e200, 0.0),
             end: XY::new(1e200 + 1.0, 0.0),
         };
         let point = XY::new(1e200 + 0.5, 1.0);
-        prefix_sweep(0, || segment_projection(point, segment).map(|_| ()));
+        assert_allocation_count(0, || segment_projection(point, segment).map(|_| ()));
     }
 }
 

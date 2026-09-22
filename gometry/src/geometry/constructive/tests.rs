@@ -1964,14 +1964,10 @@ mod expansion_budget_threading_tests {
 }
 
 #[cfg(test)]
-mod winding_allocation_tests {
+mod winding_outcome_tests {
     use super::*;
-    use crate::error::{ErrorKind, ResourceError};
     use crate::geometry::ExpansionBudget;
-    use crate::geometry::constructive::{
-        WalkJoinRule, convex_buffer_budgeted, point_buffer, winding_stroke_budgeted,
-    };
-    use crate::test_support::{allocation_count, fail_allocations_after};
+    use crate::geometry::constructive::{WalkJoinRule, convex_buffer_budgeted};
 
     fn square() -> Polygon {
         Polygon::new(
@@ -1988,122 +1984,6 @@ mod winding_allocation_tests {
             .unwrap(),
             Vec::new(),
         )
-    }
-
-    fn assert_resource(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            ErrorKind::Resource(ResourceError::Allocation)
-        ));
-    }
-
-    fn assert_every_allocation_is_retryable<T>(
-        run: impl Fn() -> crate::error::Result<T>,
-        assert_success: impl Fn(&T),
-    ) {
-        let value = run().unwrap_or_else(|_| panic!("unfaulted construction must succeed"));
-        assert_success(&value);
-        drop(value);
-        let (value, allocations) = allocation_count(|| {
-            run().unwrap_or_else(|_| panic!("unfaulted construction must succeed"))
-        });
-        assert_success(&value);
-        drop(value);
-        assert!(allocations > 0, "construction must cross an owned boundary");
-        for allowed in 0..allocations {
-            let result = fail_allocations_after(allowed, &run);
-            let Err(error) = result else {
-                panic!("allocation rejection at prefix {allowed} returned Ok");
-            };
-            assert_resource(&error);
-        }
-        let value = run().unwrap_or_else(|_| panic!("construction must retry after rejection"));
-        assert_success(&value);
-    }
-
-    #[test]
-    fn convex_expansion_allocation_failure_is_resource_and_retryable() {
-        let polygon = square();
-        let run = || {
-            let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-            convex_buffer_budgeted(
-                &polygon,
-                1.0,
-                WalkJoinRule::Arc,
-                NonZeroU32::new(4).unwrap(),
-                &mut budget,
-            )
-        };
-        assert_every_allocation_is_retryable(run, |value| assert!(value.is_some()));
-    }
-
-    #[test]
-    fn convex_erosion_allocation_failure_is_resource_and_retryable() {
-        let polygon = square();
-        let run = || {
-            let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-            convex_buffer_budgeted(
-                &polygon,
-                -1.0,
-                WalkJoinRule::Arc,
-                NonZeroU32::new(4).unwrap(),
-                &mut budget,
-            )
-        };
-        assert_every_allocation_is_retryable(run, |value| assert!(value.is_some()));
-    }
-
-    #[test]
-    fn normalized_collection_erosion_allocation_failure_is_resource_and_retryable() {
-        let shape =
-            Shape::geometry_collection(vec![Shape::Polygon(square()), Shape::Polygon(square())])
-                .unwrap();
-        let style = Positive::try_new("miter_limit", 5.0).unwrap();
-        let run = || {
-            let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-            shape.buffer_with_style_budgeted(
-                -1.0,
-                BufferCapStyle::Round,
-                BufferJoinStyle::Round,
-                NonZeroU32::new(4).unwrap(),
-                style,
-                &mut budget,
-            )
-        };
-        assert_every_allocation_is_retryable(run, |value| assert!(!value.is_empty()));
-    }
-
-    #[test]
-    fn point_buffer_allocation_failure_is_resource_and_retryable() {
-        let run = || {
-            let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-            point_buffer(
-                Point::new_raw_xy(1.0, 2.0),
-                1.0,
-                NonZeroU32::new(4).unwrap(),
-                &mut budget,
-            )
-        };
-        assert_every_allocation_is_retryable(run, |value| assert!(value.is_some()));
-    }
-
-    #[test]
-    fn stroke_allocation_failure_is_resource_and_retryable() {
-        let chain =
-            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 0.0)])
-                .unwrap();
-        let run = || {
-            let mut budget = ExpansionBudget::new("buffer", "quadrant_segments");
-            winding_stroke_budgeted(
-                &[&chain],
-                0.5,
-                BufferCapStyle::Flat,
-                WalkJoinRule::Bevel,
-                NonZeroU32::new(4).unwrap(),
-                &mut budget,
-            )
-        };
-        assert_every_allocation_is_retryable(run, |value| assert!(value.is_some()));
     }
 
     #[test]

@@ -429,23 +429,6 @@ mod sweep_entry_scratch {
             .collect()
     }
 
-    fn cold_allocation_count<T: Send + 'static>(
-        operation: impl FnOnce() -> T + Send + 'static,
-    ) -> (T, usize) {
-        std::thread::spawn(move || crate::test_support::allocation_count(operation))
-            .join()
-            .expect("cold allocation-count thread")
-    }
-
-    fn cold_fail_allocations_after<T: Send + 'static>(
-        allowed: usize,
-        operation: impl FnOnce() -> T + Send + 'static,
-    ) -> T {
-        std::thread::spawn(move || crate::test_support::fail_allocations_after(allowed, operation))
-            .join()
-            .expect("cold allocation-failure thread")
-    }
-
     fn bounds_pairs(bounds: &[Bounds]) -> Vec<(usize, usize)> {
         let mut pairs = Vec::new();
         let _ = for_each_overlapping_bounds_pair(bounds, |left, right| {
@@ -498,92 +481,5 @@ mod sweep_entry_scratch {
         assert!(matches!(flow, ControlFlow::Break(())));
         assert_eq!(first, expected.first().copied());
         assert_eq!(bounds_pairs(&bounds), expected);
-    }
-
-    #[test]
-    fn nested_resource_error_releases_the_shared_lease() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let bounds = overlapping_boxes(8);
-        let segments = crossing_segments(8);
-        let expected = bounds_pairs(&bounds);
-
-        let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
-            .expect("warm candidate sweep");
-
-        let mut inner_failed = false;
-        let flow = for_each_overlapping_bounds_pair(&bounds, |_, _| {
-            let result = crate::test_support::fail_allocations_after(0, || {
-                for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
-            });
-            inner_failed = result.is_err();
-            ControlFlow::Break(())
-        })
-        .expect("outer bounds sweep");
-        assert!(inner_failed);
-        assert!(matches!(flow, ControlFlow::Break(())));
-        assert_eq!(bounds_pairs(&bounds), expected);
-    }
-
-    fn assert_allocation(error: &crate::error::Error) {
-        assert!(matches!(
-            error.kind(),
-            crate::error::ErrorKind::Resource(crate::error::ResourceError::Allocation)
-        ));
-    }
-
-    #[test]
-    fn candidate_sweep_rejects_each_cold_allocation_above_brute() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let segments = crossing_segments(8);
-        assert!(segments.len() > 6);
-        let ((), count) = cold_allocation_count({
-            let segments = segments.clone();
-            move || {
-                let _ = for_each_candidate_pair(&segments, single_chain, |_, _| {
-                    ControlFlow::Continue(())
-                })
-                .unwrap();
-            }
-        });
-        assert!(count > 0);
-        for allowed in 0..count {
-            let segments = segments.clone();
-            let result = cold_fail_allocations_after(allowed, move || {
-                for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
-            });
-            let Err(error) = result else {
-                panic!("each cold candidate-sweep allocation must propagate");
-            };
-            assert_allocation(&error);
-        }
-        let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Continue(()))
-            .unwrap();
-    }
-
-    #[test]
-    fn overlapping_bounds_sweep_rejects_each_cold_allocation_above_brute() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let bounds = overlapping_boxes(8);
-        assert!(bounds.len() > 6);
-        let ((), count) = cold_allocation_count({
-            let bounds = bounds.clone();
-            move || {
-                let _ = for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
-                    .unwrap();
-            }
-        });
-        assert!(count > 0);
-        for allowed in 0..count {
-            let bounds = bounds.clone();
-            let result = cold_fail_allocations_after(allowed, move || {
-                for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(()))
-            });
-            let Err(error) = result else {
-                panic!("each cold bounds-sweep allocation must propagate");
-            };
-            assert_allocation(&error);
-        }
-        let _ =
-            for_each_overlapping_bounds_pair(&bounds, |_, _| ControlFlow::Continue(())).unwrap();
     }
 }

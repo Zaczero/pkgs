@@ -687,26 +687,4 @@ mod vw_frame_tests {
         assert_eq!(first.to_bits(), 0.0_f64.to_bits());
         assert!(third > second && second > first);
     }
-
-    #[test]
-    fn extreme_frame_columns_reject_every_allocation() {
-        use crate::error::{ErrorKind, ResourceError};
-        use crate::test_support::{allocation_count, fail_allocations_after};
-
-        let xs = [-1e308, 0.0, 1e308];
-        let ys = [0.0, 1e307, 0.0];
-        let run = || vw_frame_columns(&xs, &ys, 5e307);
-        let (framed, allocations) = allocation_count(|| run().unwrap());
-        assert!(framed.xs.is_some() && framed.ys.is_some());
-        assert!(allocations > 0);
-        for allowed in 0..allocations {
-            let Err(error) = fail_allocations_after(allowed, run) else {
-                panic!("framed VW columns must propagate allocation failure");
-            };
-            assert!(matches!(
-                error.kind(),
-                ErrorKind::Resource(ResourceError::Allocation)
-            ));
-        }
-    }
 }

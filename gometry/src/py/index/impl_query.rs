@@ -1468,7 +1468,6 @@ mod tests {
     use crate::array::BoundsSeed;
     use crate::geometry::{CoordSeq, CsrOffsetColumn, LineSeq, PolygonLevel, RingLevel};
     use crate::py::index::{Frame, spatial_index};
-    use crate::test_support::fail_allocations_after;
 
     #[test]
     fn refinement_kind_gate_precedes_geographic_admission() {
@@ -1561,9 +1560,10 @@ mod tests {
             .expect("polygon row")
             .row();
         let bounds = row.quick_bounds().expect("polygon bounds");
-        let prepared =
-            fail_allocations_after(0, || plan.row(&index, row, BoundsSeed::Value(Some(bounds))))
-                .expect("seeded projected candidate preparation must not allocate");
+        let prepared = crate::test_support::assert_no_allocations(|| {
+            plan.row(&index, row, BoundsSeed::Value(Some(bounds)))
+        })
+        .expect("seeded projected candidate preparation must not allocate");
         assert_eq!(prepared.bounds, Some(bounds));
     }
     #[test]
