@@ -31,8 +31,7 @@ pub(crate) fn geodesic_point_pair_distances(
         .min(right_xs.len())
         .min(right_ys.len());
     let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, 0, frame);
-    let mut values = Vec::new();
-    crate::boundary::try_reserve_vec(&mut values, output_len)?;
+    let mut values = Vec::with_capacity(output_len);
     for ((&lx, &ly), (&rx, &ry)) in std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
@@ -41,7 +40,7 @@ pub(crate) fn geodesic_point_pair_distances(
             metric.segment_length(Point::new_raw_xy(lx, ly), Point::new_raw_xy(rx, ry)),
             GeodesicCalculation::Distance,
         )?;
-        crate::try_push_vec(&mut values, value)?;
+        values.push(value);
     }
     Ok(values)
 }
@@ -83,23 +82,18 @@ pub(crate) fn geodesic_point_pair_dwithin(
         .min(left_ys.len())
         .min(right_xs.len())
         .min(right_ys.len());
-    let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, 0, frame);
-    let mut values = Vec::new();
-    crate::boundary::try_reserve_vec(&mut values, output_len)?;
     if distance.is_infinite() && distance.is_sign_positive() {
-        for _ in 0..output_len {
-            crate::try_push_vec(&mut values, true)?;
-        }
-        return Ok(values);
+        return Ok(vec![true; output_len]);
     }
+    let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, 0, frame);
+    let mut values = Vec::with_capacity(output_len);
     for ((&lx, &ly), (&rx, &ry)) in std::iter::zip(
         std::iter::zip(left_xs, left_ys),
         std::iter::zip(right_xs, right_ys),
     ) {
-        crate::try_push_vec(
-            &mut values,
+        values.push(
             metric.segment_length(Point::new_raw_xy(lx, ly), Point::new_raw_xy(rx, ry)) <= distance,
-        )?;
+        );
     }
     Ok(values)
 }
@@ -136,14 +130,13 @@ pub(crate) fn geodesic_point_distances(
     let output_len = xs.len().min(ys.len());
     with_geodesic_at(crs, state, |geodesic| {
         let metric = EllipsoidMetric::for_geodesic_at_frame(geodesic, state.generation, frame);
-        let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, output_len)?;
+        let mut values = Vec::with_capacity(output_len);
         for (&x, &y) in std::iter::zip(xs, ys) {
             let value = finite(
                 metric.segment_length(Point::new_raw_xy(x, y), target),
                 GeodesicCalculation::Distance,
             )?;
-            crate::try_push_vec(&mut values, value)?;
+            values.push(value);
         }
         Ok(values)
     })

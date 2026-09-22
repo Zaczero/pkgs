@@ -374,19 +374,19 @@ pub(crate) fn lru_resolve<E>(
     make: impl FnOnce() -> Result<E>,
 ) -> Result<usize> {
     if let Some(index) = cache.iter().position(&matches) {
-        if index + 1 == cache.len() {
+        if index.wrapping_add(1) == cache.len() {
             return Ok(index);
         }
         let entry = cache.remove(index);
         cache.push(entry);
-        return Ok(cache.len() - 1);
+        return Ok(cache.len().wrapping_sub(1));
     }
     let entry = make()?;
     if cache.len() == capacity {
         cache.remove(0);
     }
-    crate::boundary::try_push_vec(cache, entry)?;
-    Ok(cache.len() - 1)
+    cache.push(entry);
+    Ok(cache.len().wrapping_sub(1))
 }
 
 pub(super) fn with_proj_pipeline_at<R>(

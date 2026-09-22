@@ -55,16 +55,10 @@ impl BoundsSamplePlan {
         let (windows, source_full_longitude) = source_windows(bounds.0, bounds.2, source_domain)?;
         let source_latitude_bounds =
             admitted_source_latitude_bounds(source_domain, bounds.1, bounds.3)?;
-        let edge_points = densify as usize + 2;
-        let capacity = windows
-            .len()
-            .checked_mul(4)
-            .and_then(|value| value.checked_mul(edge_points))
-            .ok_or_else(|| GeometryErrorKind::message("bounds sample count overflows usize"))?;
-        let mut x = Vec::new();
-        let mut y = Vec::new();
-        crate::try_reserve_vec(&mut x, capacity)?;
-        crate::try_reserve_vec(&mut y, capacity)?;
+        let edge_points = (densify as usize).wrapping_add(2);
+        let capacity = windows.len().wrapping_mul(4).wrapping_mul(edge_points);
+        let mut x = Vec::with_capacity(capacity);
+        let mut y = Vec::with_capacity(capacity);
         for [west, east] in windows.iter().copied() {
             let (south, north) = (bounds.1, bounds.3);
             push_edge_2d(&mut x, &mut y, (west, south), (east, south), edge_points);
@@ -96,18 +90,11 @@ impl BoundsSamplePlan {
         let (windows, source_full_longitude) = source_windows(bounds.0, bounds.3, source_domain)?;
         let source_latitude_bounds =
             admitted_source_latitude_bounds(source_domain, bounds.1, bounds.4)?;
-        let edge_points = densify as usize + 2;
-        let capacity = windows
-            .len()
-            .checked_mul(12)
-            .and_then(|value| value.checked_mul(edge_points))
-            .ok_or_else(|| GeometryErrorKind::message("bounds sample count overflows usize"))?;
-        let mut x = Vec::new();
-        let mut y = Vec::new();
-        let mut z = Vec::new();
-        crate::try_reserve_vec(&mut x, capacity)?;
-        crate::try_reserve_vec(&mut y, capacity)?;
-        crate::try_reserve_vec(&mut z, capacity)?;
+        let edge_points = (densify as usize).wrapping_add(2);
+        let capacity = windows.len().wrapping_mul(12).wrapping_mul(edge_points);
+        let mut x = Vec::with_capacity(capacity);
+        let mut y = Vec::with_capacity(capacity);
+        let mut z = Vec::with_capacity(capacity);
         for [west, east] in windows.iter().copied() {
             let (south, north) = (bounds.1, bounds.4);
             for (x0, x1, y0, y1, z0, z1) in [
@@ -314,10 +301,7 @@ fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Erro
 
 fn source_windows(west: f64, east: f64, domain: TopologyDomain) -> Result<(Vec<[f64; 2]>, bool)> {
     let TopologyDomain::Geographic(frame) = domain else {
-        let mut windows = Vec::new();
-        crate::try_reserve_vec(&mut windows, 1)?;
-        windows.push([west, east]);
-        return Ok((windows, false));
+        return Ok((vec![[west, east]], false));
     };
     let axis = frame.longitude();
     let raw_span = east - west;
@@ -330,8 +314,7 @@ fn source_windows(west: f64, east: f64, domain: TopologyDomain) -> Result<(Vec<[
         .canonicalize(east)
         .map_err(|error| CrsError::invalid(error.to_string()))?
         .get();
-    let mut windows = Vec::new();
-    crate::try_reserve_vec(&mut windows, 2)?;
+    let mut windows = Vec::with_capacity(2);
     if full {
         windows.push([-axis.half_period(), axis.half_period()]);
         return Ok((windows, true));

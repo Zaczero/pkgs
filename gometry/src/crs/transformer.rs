@@ -422,8 +422,7 @@ impl TransformPlan {
         rows: &[B],
         mut transform: impl FnMut(B, BoundsExecutor<'_>) -> Result<O>,
     ) -> Result<Vec<O>> {
-        let mut output = Vec::new();
-        crate::try_reserve_vec(&mut output, rows.len())?;
+        let mut output = Vec::with_capacity(rows.len());
         if rows.is_empty() {
             return Ok(output);
         }
