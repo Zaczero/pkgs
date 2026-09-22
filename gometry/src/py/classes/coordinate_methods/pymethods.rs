@@ -69,46 +69,39 @@ impl PyCoordinates {
                 // materialization): membership in the slice's arithmetic
                 // progression is a cheap test per flat position; descending
                 // slices collect ascending and reverse at the end.
-                let mut tuples = crate::try_vec_with_capacity(count)?;
+                let mut tuples = Vec::with_capacity(count);
                 if count > 0 {
                     use std::ops::ControlFlow;
-                    let (first, last, stride) = if step > 0 {
-                        (start, start + step * (count as isize - 1), step)
+                    let first = if step > 0 {
+                        start
                     } else {
-                        (start + step * (count as isize - 1), start, -step)
-                    };
-                    let mut error = None;
-                    let mut position: isize = -1;
+                        start.wrapping_add(step.wrapping_mul(count.wrapping_sub(1) as isize))
+                    } as usize;
+                    let stride = step.unsigned_abs();
+                    let mut position = 0_usize;
                     // Track the next selected position in the arithmetic
                     // progression instead of testing `(position - first) % stride`
                     // per coordinate — the modulo compiled to a per-row `idiv`.
                     let mut next = first;
-                    let _ = self.view.try_for_each_point(&mut |coord| {
-                        position += 1;
-                        if error.is_some() || position > last {
-                            return ControlFlow::Break(());
-                        }
-                        if position != next {
+                    if let ControlFlow::Break(result) = self.view.try_for_each_point(&mut |coord| {
+                        let current = position;
+                        position = position.wrapping_add(1);
+                        if current != next {
                             return ControlFlow::Continue(());
                         }
-                        next += stride;
                         match self.tuple(py, coord) {
-                            Ok(tuple) => match crate::try_push(&mut tuples, tuple) {
-                                Ok(()) if tuples.len() == count => ControlFlow::Break(()),
-                                Ok(()) => ControlFlow::Continue(()),
-                                Err(err) => {
-                                    error = Some(err);
-                                    ControlFlow::Break(())
-                                },
+                            Ok(tuple) => {
+                                tuples.push(tuple);
+                                if tuples.len() == count {
+                                    return ControlFlow::Break(Ok(()));
+                                }
+                                next = next.wrapping_add(stride);
+                                ControlFlow::Continue(())
                             },
-                            Err(err) => {
-                                error = Some(err);
-                                ControlFlow::Break(())
-                            },
+                            Err(err) => ControlFlow::Break(Err(err)),
                         }
-                    });
-                    if let Some(err) = error {
-                        return Err(err);
+                    }) {
+                        result?;
                     }
                     if step < 0 {
                         tuples.reverse();
