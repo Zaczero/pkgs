@@ -534,7 +534,11 @@ impl Mesh {
         // The cavity: every triangle reachable from the seeds across edges
         // whose far triangle's circumcircle strictly contains p. The seeds
         // themselves are in by construction (p is inside or on them).
-        self.epoch += 1;
+        self.epoch = self.epoch.wrapping_add(1);
+        if self.epoch == 0 {
+            self.stamp.fill(0);
+            self.epoch = 1;
+        }
         let epoch = self.epoch;
         let mut cavity = Vec::with_capacity(self.triangle_count());
         let mut stack = seeds;
@@ -960,5 +964,33 @@ mod tests {
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &pts);
         assert_eq!(mesh.triangles.len() / 3, 2 * 7 - 4 - 2);
+    }
+
+    #[test]
+    fn cavity_stamp_rollover_keeps_unvisited_neighbor_reachable() {
+        let pts = points(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0), (1.0, 0.5)]);
+        let xy = |site: usize| pts[site].xy();
+        let seed = || {
+            let mut mesh = Mesh::seed(&[0, 1, 2, 3], pts.len());
+            mesh.try_legalize(&xy).unwrap();
+            mesh
+        };
+        let mut ordinary = seed();
+        let mut wrapped = seed();
+        wrapped.epoch = u32::MAX;
+        wrapped.stamp.fill(1);
+        let located = ordinary.locate(&xy, 0, xy(4));
+        assert!(matches!(located, Located::Inside(_)));
+        ordinary.try_insert_with(&xy, 4, located, None).unwrap();
+        wrapped.try_insert_with(&xy, 4, located, None).unwrap();
+        let ordinary = ordinary.finish(xy).unwrap();
+        let wrapped = wrapped.finish(xy).unwrap();
+        assert_delaunay(&ordinary, &pts);
+        assert_delaunay(&wrapped, &pts);
+        assert_eq!(
+            triangle_set(&ordinary.triangles),
+            triangle_set(&wrapped.triangles)
+        );
+        assert_eq!(ordinary.cocircular, wrapped.cocircular);
     }
 }
