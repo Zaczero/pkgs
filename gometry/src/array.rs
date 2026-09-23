@@ -25,14 +25,14 @@ pub(crate) use crate::geometry::{
 pub(crate) use crate::py::errors::{CRSError, GeometryError, InvalidGeometryError};
 use crate::py::numpy::bool_array;
 use crate::{
-    Arc, ArrowEncoding, Bounds, CoercedCollectedGeometryItems, CoordSeq, CoordinateAxes, Crs,
-    DefaultedF64Input, DistanceUnit, F64Param, Frame, FrameAdoption, FrameEdit, GeometryKind,
-    GeometryTransformFrame, HeapSize, I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point,
-    Polygon, PyCoordinates, PyCrs, PyGeometry, PyTypeError, PyValidationReport, PyValueError,
-    RepairMethod, Ring, SVG_ARRAY_PREVIEW, Shape, SimplifyMethod, SpatialCurve,
-    TransformOptionArgs, Typed, VoronoiClipInput, cdt_refinement_values,
-    coerce_collected_geometry_items, coordinate_epoch_option, coordinates, crs, crs_arc, crs_label,
-    curves, exact_geometry, exact_geometry_array, expected_geometry_or_array, geometry,
+    Arc, ArrowEncoding, Bounds, CoordSeq, CoordinateAxes, Crs, DefaultedF64Input, DistanceUnit,
+    F64Param, Frame, FrameAdoption, FrameEdit, GeometryKind, GeometryTransformFrame, HeapSize,
+    I64Param, InterpolatePlan, OriginSpec, OverlayOp, Point, Polygon, PyCoordinates, PyCrs,
+    PyGeometry, PyTypeError, PyValidationReport, PyValueError, RepairMethod, Ring,
+    SVG_ARRAY_PREVIEW, Shape, SimplifyMethod, SpatialCurve, TransformOptionArgs, Typed,
+    VoronoiClipInput, cdt_refinement_values, coerce_collected_geometry_items,
+    coordinate_epoch_option, coordinates, crs, crs_arc, crs_label, curves, exact_geometry,
+    exact_geometry_array, expected_geometry_or_array, geometry,
     geometry_array_svg_grid_html_masked, io, line_interpolate_points_coordseq,
     line_interpolate_points_shape, line_locate_coordseq, map_coordinates_callback,
     non_negative_int, note_array_row, overlay_operator, owned_voronoi_boundary,

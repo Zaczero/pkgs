@@ -13,10 +13,6 @@ use crate::py::support::{
     float_values_exact, is_mapping_like, is_py_bytes_or_bytearray, parse_geojson_geometry_value,
 };
 
-pub(crate) enum CoercedCollectedGeometryItems {
-    Items(Vec<PyGeometry>),
-}
-
 pub(crate) enum OwnedBytes {
     Backed(PyBackedBytes),
     Copied(Vec<u8>),
@@ -38,13 +34,6 @@ pub(crate) fn exact_backed_bytes(value: &Bound<'_, PyAny>) -> Option<PyBackedByt
         .map(|bytes| bytes.clone().into())
 }
 
-impl CoercedCollectedGeometryItems {
-    pub(crate) fn into_items(self) -> Vec<PyGeometry> {
-        let Self::Items(items) = self;
-        items
-    }
-}
-
 /// One canonical boundary representation for APIs that reduce a geometry,
 /// ``GeometryArray``, or general iterable to present geometry items.
 ///
@@ -55,7 +44,7 @@ impl CoercedCollectedGeometryItems {
 pub(crate) enum GeometryValues<'a> {
     One(&'a PyGeometry),
     Array(&'a PyGeometryArray),
-    Collected(CoercedCollectedGeometryItems),
+    Collected(Vec<PyGeometry>),
 }
 
 impl<'a> GeometryValues<'a> {
@@ -65,14 +54,12 @@ impl<'a> GeometryValues<'a> {
             Some(GeometryInput::Many(array)) => Ok(Self::Array(array)),
             None => {
                 let iter = values.try_iter()?;
-                Ok(Self::Collected(CoercedCollectedGeometryItems::Items(
-                    coerce_geometry_iter(
-                        values.py(),
-                        iter,
-                        true,
-                        crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
-                    )?,
-                )))
+                Ok(Self::Collected(coerce_geometry_iter(
+                    values.py(),
+                    iter,
+                    true,
+                    crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
+                )?))
             },
         }
     }
@@ -82,7 +69,7 @@ impl<'a> GeometryValues<'a> {
             Self::One(geometry) => Ok(vec![geometry.clone()]),
             Self::Array(array) if array.has_missing() => Err(missing_geometry_items_error()),
             Self::Array(array) => array.items(),
-            Self::Collected(items) => Ok(items.into_items()),
+            Self::Collected(items) => Ok(items),
         }
     }
 }
@@ -205,9 +192,9 @@ pub(crate) fn coerce_collected_geometry_items(
     items: &[Bound<'_, PyAny>],
     note_rows: bool,
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
-) -> PyResult<CoercedCollectedGeometryItems> {
+) -> PyResult<Vec<PyGeometry>> {
     let Some(first) = items.first() else {
-        return Ok(CoercedCollectedGeometryItems::Items(Vec::new()));
+        return Ok(Vec::new());
     };
     if items.iter().any(|item| item.is_none()) {
         return Err(missing_geometry_items_error());
@@ -244,7 +231,7 @@ pub(crate) fn coerce_collected_geometry_items(
             });
         },
     };
-    Ok(CoercedCollectedGeometryItems::Items(parsed))
+    Ok(parsed)
 }
 
 pub(crate) fn extract_points(

@@ -221,8 +221,7 @@ pub(crate) fn build_spatial_index(
             &raw_items,
             true,
             crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
-        )?
-        .into_items();
+        )?;
         return py.detach(move || spatial_index(items));
     }
     let present = raw_items
@@ -234,8 +233,7 @@ pub(crate) fn build_spatial_index(
         &present,
         true,
         crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
-    )?
-    .into_items();
+    )?;
     let metadata = index_metadata(&present)?;
     let mut present = present.into_iter();
     let rows = raw_items

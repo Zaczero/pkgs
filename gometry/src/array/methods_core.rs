@@ -4,17 +4,17 @@ use pyo3::PyErr;
 use pyo3::types::PyList;
 
 use crate::array::{
-    ArrayRow, Bound, Bounds, CRSError, CoercedCollectedGeometryItems, CoordSeq,
-    CoordinateReplacement, Crs, CsrOffsetColumn, Frame, FrameAdoption, GeometryArrayStorage,
-    GeometryKind, InvalidGeometryError, PackedStorage, Py, PyAny, PyAnyMethods as _, PyCoordinates,
-    PyCrs, PyDict, PyDictMethods as _, PyGeometry, PyGeometryArray, PyListMethods as _, PyRef,
-    PyResult, PyTuple, PyTypeError, PyTypeMethods as _, Python, Result, RingLevel,
-    SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_collected_geometry_items, coordinate_epoch_option,
-    crs, crs_arc, exact_geometry, geometry, geometry_array_svg_grid_html_masked, line_is_ccw,
-    line_is_closed, line_is_simple, line_is_valid, line_logical_len, map_coordinates_callback,
-    parse_coordinate_replacement, parse_crs, physical_row, polygon_is_valid, polygon_logical_len,
-    polygon_rings_range, pymethods, replace_shape_coordinates, require_geojson_crs,
-    slice_replacement_for_shape, total_bounds_from_columns,
+    ArrayRow, Bound, Bounds, CRSError, CoordSeq, CoordinateReplacement, Crs, CsrOffsetColumn,
+    Frame, FrameAdoption, GeometryArrayStorage, GeometryKind, InvalidGeometryError, PackedStorage,
+    Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
+    PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError, PyTypeMethods as _,
+    Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array,
+    coerce_collected_geometry_items, coordinate_epoch_option, crs, crs_arc, exact_geometry,
+    geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed, line_is_simple,
+    line_is_valid, line_logical_len, map_coordinates_callback, parse_coordinate_replacement,
+    parse_crs, physical_row, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
+    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
+    total_bounds_from_columns,
 };
 use crate::boundary::metadata;
 use crate::boundary::metadata::FrameError;
@@ -358,7 +358,7 @@ impl PyGeometryArray {
         drop(present);
         let py = values.py();
         let result = py.detach(move || -> Result<Self> {
-            let CoercedCollectedGeometryItems::Items(mut items) = coerced;
+            let mut items = coerced;
             let frame = Frame::resolve_items(
                 &mut items,
                 FrameAdoption {
