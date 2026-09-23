@@ -14,7 +14,7 @@ pub(crate) const GEODESIC_CAP_GROUP: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RowProbe {
     pub(crate) bound: f64,
-    pub(crate) vertex: u32,
+    pub(crate) vertex: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -129,9 +129,9 @@ pub(crate) fn geodesic_ordered_rows_into(
     rows: &mut Vec<RowProbe>,
 ) -> Result<()> {
     rows.clear();
-    // The loop emits exactly `vertices.len()` rows, so this checked
-    // reservation makes the following appends allocation-free.
-    crate::boundary::try_reserve_vec(rows, vertices.len())?;
+    // The loop emits exactly `vertices.len()` rows, so reserve once before
+    // publishing the ordered probe records.
+    rows.reserve(vertices.len());
     for (index, &vertex) in vertices.iter().enumerate() {
         let bound = match metric.point_distance_lower_bound(vertex, caps.anchor) {
             Ok(bound) => (bound - caps.global_reach).max(0.0),
@@ -142,10 +142,10 @@ pub(crate) fn geodesic_ordered_rows_into(
                 return Err(error);
             },
         };
-        crate::boundary::try_push_vec(rows, RowProbe {
+        rows.push(RowProbe {
             bound,
-            vertex: index as u32,
-        })?;
+            vertex: index,
+        });
     }
     if deterministic_ties {
         rows.sort_unstable_by(|left, right| {
@@ -201,7 +201,7 @@ fn geodesic_capped_distance_sweep_core(
         if row_bound > best {
             break;
         }
-        let vertex = vertices[vertex_index as usize];
+        let vertex = vertices[vertex_index];
         for (
             group_index,
             &CapGroup {
@@ -279,7 +279,7 @@ pub(crate) fn geodesic_capped_dwithin_with_parts(
         if row_bound > distance {
             break;
         }
-        let vertex = vertices[vertex_index as usize];
+        let vertex = vertices[vertex_index];
         for (
             group_index,
             &CapGroup {
@@ -371,7 +371,7 @@ pub(crate) fn geodesic_target_witness(
     segment_scratch: &mut GeodesicSegmentScratch,
 ) -> Result<Option<GeodesicWitnessCandidate>> {
     let width = target_parts.segments.len() + target_parts.point_only.len();
-    if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
+    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         #[cfg(test)]
         geodesic_hausdorff_counters::bvh_target_query();
         return bvh.witness_point(
@@ -474,7 +474,7 @@ fn geodesic_capped_witness_sweep_core(
         if row_bound > best_distance {
             break;
         }
-        let vertex = vertices[vertex_index as usize];
+        let vertex = vertices[vertex_index];
         for (
             group_index,
             &CapGroup {
@@ -493,7 +493,7 @@ fn geodesic_capped_witness_sweep_core(
             let chunk = &segments[first..segments.len().min(first + GEODESIC_CAP_GROUP)];
             for (offset, &segment) in chunk.iter().enumerate() {
                 let edge_index = first + offset;
-                let order = order_offset + vertex_index as usize * width + edge_index;
+                let order = order_offset + vertex_index * width + edge_index;
                 let best_distance = witness_refine_limit(best.as_ref(), order);
                 let bound =
                     metric.point_distance_lower_bound(vertex, segment.start)? - segment.length;
@@ -535,7 +535,7 @@ fn geodesic_capped_witness_sweep_core(
             }
         }
         for (point_index, &point) in point_only.iter().enumerate() {
-            let order = order_offset + vertex_index as usize * width + segments.len() + point_index;
+            let order = order_offset + vertex_index * width + segments.len() + point_index;
             let best_distance = witness_refine_limit(best.as_ref(), order);
             if metric.point_distance_lower_bound(vertex, point)? > best_distance {
                 continue;
@@ -575,12 +575,12 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
     let mut scratch = geodesic_scratch();
     let scratch = &mut *scratch;
     let width = target_parts.segments.len() + target_parts.point_only.len();
-    if let Some(bvh) = target_parts.geodesic_bvh(metric)? {
+    if let Some(bvh) = target_parts.geodesic_bvh(metric) {
         let mut best = best;
         for (vertex_index, &vertex) in vertices.iter().enumerate() {
             best = bvh.witness_point(
                 vertex,
-                vertex_index as u32,
+                vertex_index,
                 target_parts,
                 metric,
                 &mut scratch.stack,
@@ -607,18 +607,15 @@ pub(crate) fn geodesic_witness_sweep_with_parts(
 }
 
 impl GeodesicParts {
-    pub(crate) fn geodesic_bvh(
-        &self,
-        metric: &impl GeodesicMetric,
-    ) -> Result<Option<&GeodesicFacetBvh>> {
+    pub(crate) fn geodesic_bvh(&self, metric: &impl GeodesicMetric) -> Option<&GeodesicFacetBvh> {
         self.facet_bvh
-            .get_or_try_init(|| {
+            .get_or_init(|| {
                 if self.segments.len() >= BVH_MIN_INDEXED_SEGMENTS {
                     GeodesicFacetBvh::build(&self.segments, metric)
                 } else {
-                    Ok(None)
+                    None
                 }
             })
-            .map(|bvh| bvh.as_ref())
+            .as_ref()
     }
 }

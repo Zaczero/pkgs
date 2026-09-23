@@ -65,12 +65,10 @@ impl GeodesicFacetBvh {
     pub(super) fn build(
         segments: &[GeodesicSegment],
         metric: &impl GeodesicMetric,
-    ) -> Result<Option<Self>> {
-        let Some(segment_count) = u32::try_from(segments.len()).ok() else {
-            return Ok(None);
-        };
+    ) -> Option<Self> {
+        let segment_count = u32::try_from(segments.len()).ok()?;
         if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
-            return Ok(None);
+            return None;
         }
         let leaf_count = geodesic_leaf_count(segments.len());
         let node_count = 2 * leaf_count - 1;
@@ -82,13 +80,10 @@ impl GeodesicFacetBvh {
             segment_ids: vec![0; segments.len()].into_boxed_slice(),
         };
         let mut aux_cache = HashMap::with_capacity(segments.len().wrapping_add(1));
-        let mut ids = Vec::new();
-        crate::try_reserve_vec(&mut ids, segments.len())?;
+        let mut ids = Vec::with_capacity(segments.len());
         for (index, segment) in segments.iter().enumerate() {
             let start_aux = cached_auxiliary_unit(&mut aux_cache, segment.start.xy(), metric);
             let end_aux = cached_auxiliary_unit(&mut aux_cache, segment.end.xy(), metric);
-            // `ids` receives exactly one entry per segment after the exact
-            // reservation above.
             ids.push(SegmentBuild {
                 index: index as u32,
                 centroid: [
@@ -113,7 +108,7 @@ impl GeodesicFacetBvh {
         debug_assert_eq!(next, node_count);
         debug_assert_eq!(next_leaf, leaf_count);
         debug_assert_eq!(next_segment_id, segments.len());
-        Ok(Some(tree))
+        Some(tree)
     }
 
     fn fill_node(
@@ -207,7 +202,7 @@ impl GeodesicFacetBvh {
         mut best: f64,
     ) -> Result<f64> {
         stack.clear();
-        crate::try_push_vec(stack, 0)?;
+        stack.push(0);
         while let Some(node) = stack.pop() {
             let node = node as usize;
             if self.bound(point, node, metric)? > best {
@@ -257,7 +252,7 @@ impl GeodesicFacetBvh {
     pub(super) fn witness_point(
         &self,
         vertex: Point,
-        vertex_index: u32,
+        vertex_index: usize,
         parts: &GeodesicParts,
         metric: &impl GeodesicMetric,
         stack: &mut Vec<u32>,
@@ -268,7 +263,7 @@ impl GeodesicFacetBvh {
         width: usize,
     ) -> Result<Option<GeodesicWitnessCandidate>> {
         stack.clear();
-        crate::try_push_vec(stack, 0)?;
+        stack.push(0);
         while let Some(node) = stack.pop() {
             let node = node as usize;
             let best_distance = best
@@ -283,7 +278,7 @@ impl GeodesicFacetBvh {
                     for edge_index in self.leaf_segment_ids(leaf) {
                         let edge_index = *edge_index as usize;
                         let segment = parts.segments[edge_index];
-                        let order = order_offset + vertex_index as usize * width + edge_index;
+                        let order = order_offset + vertex_index * width + edge_index;
                         let best_distance = witness_refine_limit(best.as_ref(), order);
                         let bound = metric.point_distance_lower_bound(vertex, segment.start)?
                             - segment.length;
@@ -331,10 +326,8 @@ impl GeodesicFacetBvh {
         }
         if !parts.point_only.is_empty() {
             for (point_index, &point) in parts.point_only.iter().enumerate() {
-                let order = order_offset
-                    + vertex_index as usize * width
-                    + parts.segments.len()
-                    + point_index;
+                let order =
+                    order_offset + vertex_index * width + parts.segments.len() + point_index;
                 let best_distance = witness_refine_limit(best.as_ref(), order);
                 if metric.point_distance_lower_bound(vertex, point)? > best_distance {
                     continue;
@@ -372,7 +365,7 @@ impl GeodesicFacetBvh {
             return Ok(!parts.segments.is_empty() || !parts.point_only.is_empty());
         }
         stack.clear();
-        crate::try_push_vec(stack, 0)?;
+        stack.push(0);
         while let Some(node) = stack.pop() {
             let node = node as usize;
             if self.bound(point, node, metric)? > limit {
@@ -412,8 +405,8 @@ impl GeodesicFacetBvh {
                 },
                 BvhNode::Internal(first_child) => {
                     let first_child = first_child as u32;
-                    crate::try_push_vec(stack, first_child)?;
-                    crate::try_push_vec(stack, first_child + 1)?;
+                    stack.push(first_child);
+                    stack.push(first_child + 1);
                 },
             }
         }
@@ -439,11 +432,11 @@ impl GeodesicFacetBvh {
         let left_bound = self.bound(point, left, metric)?;
         let right_bound = self.bound(point, right, metric)?;
         if left_bound < right_bound {
-            crate::try_push_vec(stack, first_child + 1)?;
-            crate::try_push_vec(stack, first_child)?;
+            stack.push(first_child + 1);
+            stack.push(first_child);
         } else {
-            crate::try_push_vec(stack, first_child)?;
-            crate::try_push_vec(stack, first_child + 1)?;
+            stack.push(first_child);
+            stack.push(first_child + 1);
         }
         Ok(())
     }

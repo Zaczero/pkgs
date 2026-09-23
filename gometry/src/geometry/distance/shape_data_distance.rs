@@ -223,7 +223,7 @@ impl PreparedPlan {
                 bvh,
                 &mut stack,
             )?;
-            crate::try_push_vec(&mut distances, distance)?;
+            distances.push(distance);
         }
         Ok(distances)
     }
@@ -307,7 +307,7 @@ impl PreparedPlan {
             let present = !self.shape().is_empty();
             let mut matches = Vec::new();
             for _ in probes {
-                crate::try_push_vec(&mut matches, present)?;
+                matches.push(present);
             }
             return Ok(matches);
         }
@@ -328,7 +328,7 @@ impl PreparedPlan {
                 bvh,
                 &mut stack,
             )?;
-            crate::try_push_vec(&mut matches, matched)?;
+            matches.push(matched);
         }
         Ok(matches)
     }
@@ -409,11 +409,10 @@ impl PreparedPlan {
             metric.runtime_generation(),
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
-        let bvh = parts.geodesic_bvh(metric)?;
+        let bvh = parts.geodesic_bvh(metric);
         let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
-        let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, probe_count)?;
+        let mut values = Vec::with_capacity(probe_count);
         for (x, y) in probes {
             let value = geodesic_point_distance_with_parts_and_scratch(
                 Point::new_raw_xy(x, y),
@@ -423,7 +422,7 @@ impl PreparedPlan {
                 &mut scratch,
                 Some(&mut stack),
             )?;
-            crate::try_push_vec(&mut values, value)?;
+            values.push(value);
         }
         Ok(values)
     }
@@ -448,10 +447,9 @@ impl PreparedPlan {
         if distance.is_infinite() && distance.is_sign_positive() {
             ensure_geodesic_linework(self.shape(), metric)?;
             let present = !self.shape().is_empty();
-            let mut values = Vec::new();
-            crate::boundary::try_reserve_vec(&mut values, probe_count)?;
+            let mut values = Vec::with_capacity(probe_count);
             for _ in 0..probe_count {
-                crate::try_push_vec(&mut values, present)?;
+                values.push(present);
             }
             return Ok(values);
         }
@@ -462,11 +460,10 @@ impl PreparedPlan {
             metric.runtime_generation(),
         );
         let parts = self.geodesic_parts(frame_cache, key, metric)?;
-        let bvh = parts.geodesic_bvh(metric)?;
+        let bvh = parts.geodesic_bvh(metric);
         let mut scratch = distance::geodesic_scratch();
         let mut stack = Vec::new();
-        let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, probe_count)?;
+        let mut values = Vec::with_capacity(probe_count);
         for (x, y) in probes {
             let value = geodesic_point_dwithin_with_parts_and_scratch(
                 Point::new_raw_xy(x, y),
@@ -477,7 +474,7 @@ impl PreparedPlan {
                 &mut scratch,
                 Some(&mut stack),
             )?;
-            crate::try_push_vec(&mut values, value)?;
+            values.push(value);
         }
         Ok(values)
     }

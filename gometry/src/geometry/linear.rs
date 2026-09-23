@@ -171,8 +171,8 @@ impl Shape {
                 },
             );
         }
-        let left = Distance3dParts::build(self)?;
-        let right = Distance3dParts::build(other)?;
+        let left = Distance3dParts::build(self);
+        let right = Distance3dParts::build(other);
         distance_3d_with_parts(&left, &right)
     }
 

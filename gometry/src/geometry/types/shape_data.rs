@@ -355,22 +355,18 @@ impl PreparedPlan {
             .map(Box::as_ref)
     }
 
-    pub(crate) fn distance_3d_parts(&self) -> Result<&crate::geometry::Distance3dParts> {
+    pub(crate) fn distance_3d_parts(&self) -> &crate::geometry::Distance3dParts {
         if let Some(parts) = self
             .metric
             .get()
             .and_then(|metric| metric.distance_3d.get())
         {
-            return Ok(parts.as_ref());
+            return parts.as_ref();
         }
         self.metric()
             .distance_3d
-            .get_or_try_init(|| {
-                Ok::<_, crate::error::Error>(Box::new(crate::geometry::Distance3dParts::build(
-                    self.shape(),
-                )?))
-            })
-            .map(Box::as_ref)
+            .get_or_init(|| Box::new(crate::geometry::Distance3dParts::build(self.shape())))
+            .as_ref()
     }
 
     pub(crate) fn line_index(&self) -> Result<&LineIndex> {

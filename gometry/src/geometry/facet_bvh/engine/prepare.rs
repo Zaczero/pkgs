@@ -65,16 +65,16 @@ fn push_chain_facets(
     }
     let segments = vertices - 1;
     packed_index_count(global_segments, segments)?;
-    crate::boundary::try_reserve_vec(facets, segments.div_ceil(FACET_SEGMENTS))?;
+    facets.reserve(segments.div_ceil(FACET_SEGMENTS));
     let mut offset = 0;
     while offset < segments {
         let count = (segments - offset).min(FACET_SEGMENTS);
         debug_assert!(u32::try_from(offset).is_ok(), "CoordSeq window is u32");
-        crate::try_push_vec(facets, Facet {
+        facets.push(Facet {
             chain,
             first_vertex: offset as u32,
             segment_count: count as u8,
-        })?;
+        });
         offset += count;
     }
     Ok(segments)
@@ -122,8 +122,8 @@ impl PreparedLinework {
                 Some(axes) if axes != chain_axes => uniform_ordinates = false,
                 _ => {},
             }
-            crate::try_push_vec(&mut chain_vertex_offsets, global_vertices)?;
-            crate::try_push_vec(&mut chains, chain.clone())?;
+            chain_vertex_offsets.push(global_vertices);
+            chains.push(chain.clone());
             global_vertices = global_vertices
                 .checked_add(vertices)
                 .ok_or(ResourceError::SizeOverflow)?;
