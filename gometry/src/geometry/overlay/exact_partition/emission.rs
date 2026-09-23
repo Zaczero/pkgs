@@ -1000,7 +1000,15 @@ impl GlobalFaces {
                 span_slots[span as usize] = slot;
             }
         }
-        let mut source_darts = Vec::new();
+        // Every selected boundary dart and retained line source is appended
+        // once; chord joins only change grouping. Production line spans are
+        // unique, while duplicate test inputs merely over-reserve this hint.
+        let source_dart_capacity = walks.iter().fold(lines.len(), |count, walk| {
+            count
+                .checked_add(walk.len())
+                .expect("boundary plan source dart count fits usize")
+        });
+        let mut source_darts = Vec::with_capacity(source_dart_capacity);
         let mut make_chord = |slot: u32| -> Result<PlannedChord> {
             let start = source_darts.len();
             source_darts.push(slot);
