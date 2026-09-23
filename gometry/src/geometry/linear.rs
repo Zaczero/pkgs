@@ -211,27 +211,25 @@ impl Shape {
         // multipart behavior). Segment lengths are evaluated ONCE into a
         // prefix buffer (was twice — total pass then assign pass — which
         // doubled every geodesic inverse on a geographic CRS).
-        let mut segment_lengths: Vec<f64> = Vec::new();
-        let mut part_seg_ends: Vec<usize> = Vec::new();
-        crate::boundary::try_reserve_vec(&mut part_seg_ends, parts.len())?;
+        let segment_count = parts.iter().map(|part| part.len().saturating_sub(1)).sum();
+        let mut segment_lengths = Vec::with_capacity(segment_count);
+        let mut part_seg_ends = Vec::with_capacity(parts.len());
         let mut total = 0.0_f64;
         for part in &parts {
             for [start, end] in part.segment_pairs() {
                 let length = segment_length(start, end);
                 total += length;
-                crate::try_push_vec(&mut segment_lengths, length)?;
+                segment_lengths.push(length);
             }
             part_seg_ends.push(segment_lengths.len());
         }
         let span = end_m - start_m;
         let mut traveled = 0.0;
-        let mut measured = Vec::new();
-        crate::boundary::try_reserve_vec(&mut measured, parts.len())?;
+        let mut measured = Vec::with_capacity(parts.len());
         let mut seg_cursor = 0_usize;
         for (part_index, part) in parts.iter().enumerate() {
             let part_end = part_seg_ends[part_index];
-            let mut measures = Vec::new();
-            crate::boundary::try_reserve_vec(&mut measures, part.len())?;
+            let mut measures = Vec::with_capacity(part.len());
             for index in 0..part.len() {
                 if index > 0 {
                     traveled += segment_lengths[seg_cursor];
@@ -275,8 +273,7 @@ impl Shape {
             Self::LineString(_) => Self::LineString(measured.into_iter().next().expect("one part")),
             Self::MultiLineString(lines) => {
                 let mut measured = measured.into_iter();
-                let mut members = Vec::new();
-                crate::boundary::try_reserve_vec(&mut members, lines.member_count())?;
+                let mut members = Vec::with_capacity(lines.member_count());
                 for member in lines.members() {
                     let member = match member {
                         crate::geometry::MultiMember::Empty => {
@@ -420,8 +417,7 @@ impl MeasuredLineIndex {
             },
             _ => return Err(MeasuredLineAdmission::NotLineal.into()),
         };
-        let mut owned = Vec::new();
-        crate::boundary::try_reserve_vec(&mut owned, parts.len())?;
+        let mut owned = Vec::with_capacity(parts.len());
         owned.extend(parts.iter().map(|line| line.as_coords().clone()));
         let parts = owned.into_boxed_slice();
         let mut first = None;
@@ -674,8 +670,7 @@ pub(super) fn split_line_by_points<C: Coordinates + ?Sized>(
     crate::geometry::try_sort_by(&mut cuts, |left, right| {
         Ok(left.0.cmp(&right.0).then(left.1.cmp_along(&right.1)?))
     })?;
-    let mut keep: Vec<(usize, SegmentProjection)> = Vec::new();
-    crate::try_reserve_vec(&mut keep, cuts.len())?;
+    let mut keep: Vec<(usize, SegmentProjection)> = Vec::with_capacity(cuts.len());
     for cut in cuts {
         if let Some(previous) = keep.last()
             && previous.0 == cut.0

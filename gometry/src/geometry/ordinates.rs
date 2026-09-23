@@ -10,8 +10,6 @@ use crate::geometry::{
     point_on_segment, point_segment_distance_and_projection, same_point, scaled_residual,
     segment_projection,
 };
-use crate::{try_push_vec, try_reserve_vec};
-
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact vertex
 /// matches — the overwhelmingly common case (engine output keeps input
@@ -45,8 +43,7 @@ impl OrdinateSource {
                 .ok_or(crate::error::ResourceError::SizeOverflow)
         })?;
         let vertices = crate::collections::try_hash_map_with_capacity(total_coords)?;
-        let mut segments = Vec::new();
-        try_reserve_vec(&mut segments, total_coords)?;
+        let segments = Vec::with_capacity(total_coords);
         Ok(Self {
             vertices,
             segments,
@@ -54,23 +51,22 @@ impl OrdinateSource {
         })
     }
 
-    fn add_source_edge(&mut self, start: Point, end: Point) -> Result<()> {
-        add_vertex(&mut self.vertices, start)?;
-        add_vertex(&mut self.vertices, end)?;
+    fn add_source_edge(&mut self, start: Point, end: Point) {
+        add_vertex(&mut self.vertices, start);
+        add_vertex(&mut self.vertices, end);
         if start.z().is_some() || start.m().is_some() || end.z().is_some() || end.m().is_some() {
-            try_push_vec(&mut self.segments, canonical_segment(start, end))?;
+            self.segments.push(canonical_segment(start, end));
         }
-        Ok(())
     }
 
     fn build_direct(inputs: &[&Shape]) -> Result<Self> {
         let mut result = Self::new(inputs)?;
         for shape in inputs {
             match shape {
-                Shape::Point(point) => add_vertex(&mut result.vertices, *point)?,
+                Shape::Point(point) => add_vertex(&mut result.vertices, *point),
                 Shape::MultiPoint(points) => {
                     for point in points.points() {
-                        add_vertex(&mut result.vertices, point)?;
+                        add_vertex(&mut result.vertices, point);
                     }
                 },
                 _ => {},
@@ -78,12 +74,11 @@ impl OrdinateSource {
             if !(shape.has_z() || shape.has_m()) {
                 continue;
             }
-            shape.try_for_each_vertex_pair(|start, end| {
+            shape.for_each_vertex_pair(|start, end| {
                 if !same_point(start, end) {
-                    result.add_source_edge(start, end)?;
+                    result.add_source_edge(start, end);
                 }
-                Ok::<(), crate::error::Error>(())
-            })?;
+            });
         }
         Ok(result)
     }
@@ -166,10 +161,10 @@ impl AxisValue {
     }
 }
 
-fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) -> Result<()> {
+fn add_vertex(vertices: &mut HashMap<PointKey, Vec<Point>>, point: Point) {
     let key = PointKey::new(point);
     let values = vertices.entry(key).or_default();
-    try_push_vec(values, point)
+    values.push(point);
 }
 
 fn canonical_segment(start: Point, end: Point) -> (Point, Point) {
@@ -337,13 +332,15 @@ pub(super) fn carry_each(
     let declared_axes = inputs
         .iter()
         .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
-    let mut carried = Vec::new();
-    try_reserve_vec(&mut carried, outputs.len())?;
+    let mut carried = Vec::with_capacity(outputs.len());
     for output in &outputs {
-        try_push_vec(
-            &mut carried,
-            carry_or_degrade(output, &source, declared_axes, operation, strict)?,
-        )?;
+        carried.push(carry_or_degrade(
+            output,
+            &source,
+            declared_axes,
+            operation,
+            strict,
+        )?);
     }
     Ok(carried)
 }

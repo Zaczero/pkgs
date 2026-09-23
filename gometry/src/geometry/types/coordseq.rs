@@ -909,10 +909,10 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
     debug_assert_eq!(left.axes(), right.axes());
     let len = left.len() + right.len();
     ensure_coordseq_vertex_capacity(len)?;
-    let xs = concat_f64_slices(left.xs(), right.xs())?;
-    let ys = concat_f64_slices(left.ys(), right.ys())?;
+    let xs = concat_f64_slices(left.xs(), right.xs());
+    let ys = concat_f64_slices(left.ys(), right.ys());
     let zs = match (left.zs(), right.zs()) {
-        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs)?),
+        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs)),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
@@ -924,7 +924,7 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
         },
     };
     let ms = match (left.ms(), right.ms()) {
-        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms)?),
+        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms)),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
@@ -941,12 +941,11 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
 /// Two-slice join into mutable storage whose original capacity is retained by
 /// the final shared owner.
 #[cfg(test)]
-fn concat_f64_slices(left: &[f64], right: &[f64]) -> Result<Vec<f64>> {
-    let mut values = Vec::new();
-    crate::boundary::try_reserve_vec(&mut values, left.len() + right.len())?;
+fn concat_f64_slices(left: &[f64], right: &[f64]) -> Vec<f64> {
+    let mut values = Vec::with_capacity(left.len() + right.len());
     values.extend_from_slice(left);
     values.extend_from_slice(right);
-    Ok(values)
+    values
 }
 
 /// The two-point sequence of a witness line, keeping the ordinate columns

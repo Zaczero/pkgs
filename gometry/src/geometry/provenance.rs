@@ -30,8 +30,7 @@ pub(crate) fn emit_from_original(
     original: &[Point],
     plan: &[VertexProvenance],
 ) -> Result<Vec<Point>> {
-    let mut output = Vec::new();
-    crate::try_reserve_vec(&mut output, plan.len())?;
+    let mut output = Vec::with_capacity(plan.len());
     for vertex in plan {
         let point = match vertex {
             VertexProvenance::Input(index) => original[*index],

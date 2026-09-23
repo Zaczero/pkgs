@@ -342,8 +342,8 @@ impl SegmentProjection {
 
 /// Stable sort by a fallible comparison; the first error ends it. Runs of
 /// `RUN` items sort by insertion in place. Longer inputs merge those runs as
-/// a permutation through two fallibly reserved index buffers, then apply it
-/// in place, so no item is cloned and nothing allocates infallibly.
+/// a permutation through two index buffers, then apply it in place, so no item
+/// is cloned.
 pub(in crate::geometry) fn try_sort_by<T>(
     items: &mut [T],
     mut compare: impl FnMut(&T, &T) -> Result<Ordering>,
@@ -362,10 +362,8 @@ pub(in crate::geometry) fn try_sort_by<T>(
     if len <= RUN {
         return Ok(());
     }
-    let mut order = Vec::new();
-    let mut merged = Vec::new();
-    crate::try_reserve_vec(&mut order, len)?;
-    crate::try_reserve_vec(&mut merged, len)?;
+    let mut order = Vec::with_capacity(len);
+    let mut merged = Vec::with_capacity(len);
     order.extend(0..len);
     merged.resize(len, 0);
     let mut width = RUN;
@@ -431,11 +429,9 @@ pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Poin
     // Vertex-pair lists are hoisted once per side; this lane carries FULL
     // ordinates so witness feet interpolate Z/M like the vertices they
     // sit between (the planar `Segment` is XY-only by design).
-    let mut left_pairs = Vec::new();
-    crate::try_reserve_vec(&mut left_pairs, left.segment_count())?;
+    let mut left_pairs = Vec::with_capacity(left.segment_count());
     left.for_each_vertex_pair(|start, end| left_pairs.push((start, end)));
-    let mut right_pairs = Vec::new();
-    crate::try_reserve_vec(&mut right_pairs, right.segment_count())?;
+    let mut right_pairs = Vec::with_capacity(right.segment_count());
     right.for_each_vertex_pair(|start, end| right_pairs.push((start, end)));
 
     let mut missing = false;
