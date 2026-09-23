@@ -12,7 +12,6 @@ use crate::geometry::{
     Bounds, CompiledPattern, GeographicPrepared, Loc, PreparedPlan, Shape, TopologyDomain,
     graph_relate_data, line_scalar_prefers_direct_polygon_relate,
 };
-use crate::try_push_vec;
 
 #[derive(Clone, Copy)]
 pub(crate) enum PreparedTopologyPair<'a> {
@@ -529,8 +528,9 @@ pub(crate) fn scalar_vs_shapes<'a>(
                 })
             };
             // Point rows probe the scalar once each: index it for a batch.
-            let mut point_tester_ready = elements.len() < 2;
-            let mut results = Vec::new();
+            let element_count = elements.len();
+            let mut point_tester_ready = element_count < 2;
+            let mut results = Vec::with_capacity(element_count);
             for (index, row) in elements {
                 let mut evaluate = || -> crate::error::Result<bool> {
                     if row_is_missing(index) {
@@ -569,8 +569,8 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     };
                     topology_pair_after_gates(spec, &operands)
                 };
-                try_push_vec(&mut results, evaluate().map_err(|error| (index, error))?)
-                    .map_err(|error| (index, error))?;
+                let verdict = evaluate().map_err(|error| (index, error))?;
+                results.push(verdict);
             }
             Ok(results)
         },
@@ -578,14 +578,14 @@ pub(crate) fn scalar_vs_shapes<'a>(
             let (scalar_kind, _) = row_kind_empty(ShapeRow::Shape(scalar.shape()));
             let scalar_prepared = OnceCell::new();
             let scalar_geographic_graph = OnceCell::new();
-            let mut results = Vec::new();
+            let mut results = Vec::with_capacity(elements.len());
             for (index, row) in elements {
                 if row_is_missing(index) {
-                    try_push_vec(&mut results, false).map_err(|error| (index, error))?;
+                    results.push(false);
                     continue;
                 }
                 let Some(row) = row else {
-                    try_push_vec(&mut results, false).map_err(|error| (index, error))?;
+                    results.push(false);
                     continue;
                 };
                 let (row_kind, _) = row_kind_empty(row);
@@ -595,7 +595,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     (row_kind, scalar_kind)
                 };
                 if let Some(verdict) = spec.predicate.kind_gate(left_kind, right_kind) {
-                    try_push_vec(&mut results, verdict).map_err(|error| (index, error))?;
+                    results.push(verdict);
                     continue;
                 }
                 let element = row_operation
@@ -638,7 +638,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     .pre_topology(&left, &right)
                     .map_err(|error| (index, error))?
                 {
-                    try_push_vec(&mut results, verdict).map_err(|error| (index, error))?;
+                    results.push(verdict);
                     continue;
                 }
                 if spec.predicate == Predicate::Intersects
@@ -653,11 +653,10 @@ pub(crate) fn scalar_vs_shapes<'a>(
                             .get_or_try_init(|| prepared.graph())
                             .map_err(|error| (index, error))?
                             .as_ref();
-                        try_push_vec(
-                            &mut results,
-                            crate::geometry::graph_intersects_bounds(scalar_graph, bounds),
-                        )
-                        .map_err(|error| (index, error))?;
+                        results.push(crate::geometry::graph_intersects_bounds(
+                            scalar_graph,
+                            bounds,
+                        ));
                         continue;
                     }
                 }
@@ -678,11 +677,9 @@ pub(crate) fn scalar_vs_shapes<'a>(
                         right_graph: scalar_graph,
                     }
                 };
-                try_push_vec(
-                    &mut results,
-                    topology_scalar_pair(spec, &operands).map_err(|error| (index, error))?,
-                )
-                .map_err(|error| (index, error))?;
+                let verdict =
+                    topology_scalar_pair(spec, &operands).map_err(|error| (index, error))?;
+                results.push(verdict);
             }
             Ok(results)
         },
