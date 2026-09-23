@@ -8,8 +8,7 @@ use super::{
     BinaryHeap, ExactPoint, ExactSign, FloatBox, HULL_SEPARATION_LIMIT, NEAREST_CANDIDATE_LIMIT,
     NOMINATED_SITE_COUNT, PreparedSupport, Rational, Result, SquaredBounds, SupportSpan, Tightness,
     XY, box_distance_lower, exact, line_filter_enabled, nonnegative_upper_bound,
-    point_segment_squared_f64, span_point, supporting_line_lower_squared, try_push_vec,
-    try_reserve_vec,
+    point_segment_squared_f64, span_point, supporting_line_lower_squared,
 };
 use crate::scratch_pool::ScratchPool;
 
@@ -60,26 +59,21 @@ pub(super) struct SupportIndex {
 
 impl SupportIndex {
     pub(super) fn build(spans: &[SupportSpan], points: &[ExactPoint]) -> Result<Self> {
-        let item_count = spans
-            .len()
-            .checked_add(points.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut items = Vec::new();
-        try_reserve_vec(&mut items, item_count)?;
+        let item_count = spans.len().wrapping_add(points.len());
+        let mut items = Vec::with_capacity(item_count);
         for (index, span) in spans.iter().enumerate() {
-            try_push_vec(&mut items, IndexItem {
+            items.push(IndexItem {
                 primitive: PrimitiveId::Span(index),
                 bounds: span.bounds,
-            })?;
+            });
         }
         for (index, point) in points.iter().enumerate() {
-            try_push_vec(&mut items, IndexItem {
+            items.push(IndexItem {
                 primitive: PrimitiveId::Point(index),
                 bounds: FloatBox::from_point(point)?,
-            })?;
+            });
         }
-        let mut order = Vec::new();
-        try_reserve_vec(&mut order, items.len())?;
+        let mut order = Vec::with_capacity(items.len());
         order.extend(0..items.len());
         // Splitting a range of at least five leaves at least two items per
         // terminal node, so the binary tree never has more nodes than items.
@@ -87,18 +81,17 @@ impl SupportIndex {
         let mut index = Self {
             items,
             order,
-            nodes: Vec::new(),
+            nodes: Vec::with_capacity(node_capacity),
             root: None,
         };
-        try_reserve_vec(&mut index.nodes, node_capacity)?;
         if !index.items.is_empty() {
-            index.root = Some(index.build_range(0, index.order.len())?);
+            index.root = Some(index.build_range(0, index.order.len()));
         }
 
         Ok(index)
     }
 
-    pub(super) fn build_range(&mut self, start: usize, end: usize) -> Result<usize> {
+    pub(super) fn build_range(&mut self, start: usize, end: usize) -> usize {
         let bounds = self.range_bounds(start, end);
         if end.saturating_sub(start) <= 4 {
             let node = IndexNode {
@@ -106,8 +99,8 @@ impl SupportIndex {
                 children: IndexChildren::Leaf { start, end },
             };
             let index = self.nodes.len();
-            try_push_vec(&mut self.nodes, node)?;
-            return Ok(index);
+            self.nodes.push(node);
+            return index;
         }
 
         let split_x = (bounds.max_x - bounds.min_x) >= (bounds.max_y - bounds.min_y);
@@ -127,14 +120,14 @@ impl SupportIndex {
             left_key.total_cmp(&right_key).then_with(|| left.cmp(right))
         });
         let middle = start + (end - start) / 2;
-        let left = self.build_range(start, middle)?;
-        let right = self.build_range(middle, end)?;
+        let left = self.build_range(start, middle);
+        let right = self.build_range(middle, end);
         let index = self.nodes.len();
-        try_push_vec(&mut self.nodes, IndexNode {
+        self.nodes.push(IndexNode {
             bounds,
             children: IndexChildren::Branch { left, right },
-        })?;
-        Ok(index)
+        });
+        index
     }
 
     pub(super) fn range_bounds(&self, start: usize, end: usize) -> FloatBox {
@@ -164,7 +157,7 @@ impl SupportIndex {
         let point_bounds = FloatBox::from_point(point)?;
         let mut best: Option<SquaredBounds> = None;
         let mut stack = ScratchPool::checkout(&NEAREST_STACK);
-        try_push_vec(&mut stack, root)?;
+        stack.push(root);
         while let Some(node_index) = stack.pop() {
             let best_upper = best.as_ref().map_or(f64::INFINITY, |best| best.upper_f64);
             let node = self.nodes[node_index];
@@ -181,8 +174,8 @@ impl SupportIndex {
                     } else {
                         (right, left)
                     };
-                    try_push_vec(&mut stack, second)?;
-                    try_push_vec(&mut stack, first)?;
+                    stack.push(second);
+                    stack.push(first);
                     continue;
                 },
                 IndexChildren::Leaf { start, end } => (start, end),
@@ -228,8 +221,8 @@ impl SupportIndex {
         support: &PreparedSupport,
         point: &ExactPoint,
     ) -> Result<Vec<PrimitiveId>> {
-        let mut nominated: Vec<(f64, PrimitiveId)> = Vec::new();
-        try_reserve_vec(&mut nominated, NOMINATED_SITE_COUNT + 1)?;
+        let mut nominated: Vec<(f64, PrimitiveId)> =
+            Vec::with_capacity(NOMINATED_SITE_COUNT.wrapping_add(1));
         let Some(root) = self.root else {
             return Ok(Vec::new());
         };
@@ -281,8 +274,7 @@ impl SupportIndex {
                 }
             }
         }
-        let mut primitives = Vec::new();
-        try_reserve_vec(&mut primitives, nominated.len())?;
+        let mut primitives = Vec::with_capacity(nominated.len());
         primitives.extend(nominated.into_iter().map(|(_, primitive)| primitive));
         Ok(primitives)
     }
@@ -307,10 +299,9 @@ impl SupportIndex {
         if !threshold.is_finite() {
             return Ok(false);
         }
-        let mut candidates = Vec::new();
-        try_reserve_vec(&mut candidates, NEAREST_CANDIDATE_LIMIT)?;
+        let mut candidates = Vec::with_capacity(NEAREST_CANDIDATE_LIMIT);
         let mut stack = Vec::new();
-        try_push_vec(&mut stack, root)?;
+        stack.push(root);
         while let Some(node_index) = stack.pop() {
             let node = self.nodes[node_index];
             if box_distance_lower(bounds, node.bounds) > threshold {
@@ -318,8 +309,8 @@ impl SupportIndex {
             }
             let (start, end) = match node.children {
                 IndexChildren::Branch { left, right } => {
-                    try_push_vec(&mut stack, left)?;
-                    try_push_vec(&mut stack, right)?;
+                    stack.push(left);
+                    stack.push(right);
                     continue;
                 },
                 IndexChildren::Leaf { start, end } => (start, end),
@@ -348,8 +339,7 @@ impl SupportIndex {
         }
         // Whole source segments and outward point boxes enclose the
         // candidates, so separating the box from their hull suffices.
-        let mut hull_points = Vec::new();
-        try_reserve_vec(&mut hull_points, 4 * candidates.len())?;
+        let mut hull_points = Vec::with_capacity(candidates.len().wrapping_mul(4));
         for item in &candidates {
             match item.primitive {
                 PrimitiveId::Span(index) => {
@@ -376,10 +366,8 @@ pub(super) fn forms_monotone_chain(
     support: &PreparedSupport,
     candidates: &[IndexItem],
 ) -> Result<bool> {
-    let mut spans = Vec::new();
-    let mut ends = Vec::new();
-    try_reserve_vec(&mut spans, candidates.len())?;
-    try_reserve_vec(&mut ends, candidates.len())?;
+    let mut spans = Vec::with_capacity(candidates.len());
+    let mut ends = Vec::with_capacity(candidates.len());
     for item in candidates {
         let PrimitiveId::Span(index) = item.primitive else {
             return Ok(false);
@@ -390,9 +378,7 @@ pub(super) fn forms_monotone_chain(
     }
     // `links[i][end]` is the span sharing endpoint `end` (0 at `t_lo`) of span
     // `i`; an endpoint shared three ways is a branch, not a chain.
-    let mut links = Vec::new();
-    try_reserve_vec(&mut links, ends.len())?;
-    links.resize(ends.len(), [None::<usize>; 2]);
+    let mut links = vec![[None::<usize>; 2]; ends.len()];
     for first in 0..ends.len() {
         for second in first + 1..ends.len() {
             for first_end in 0..2 {
@@ -414,8 +400,7 @@ pub(super) fn forms_monotone_chain(
     };
     // Walk from the free end, recording each span with whether the walk runs
     // against its `t_lo -> t_hi` carrier.
-    let mut walk = Vec::new();
-    try_reserve_vec(&mut walk, ends.len())?;
+    let mut walk = Vec::with_capacity(ends.len());
     let mut current = start;
     let mut reversed = links[start][0].is_some();
     loop {

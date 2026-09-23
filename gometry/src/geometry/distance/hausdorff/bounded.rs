@@ -11,7 +11,6 @@ use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rationa
 use crate::geometry::{
     CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape, XY,
 };
-use crate::{try_push_vec, try_reserve_vec};
 
 mod index;
 mod instrumentation;
@@ -51,9 +50,8 @@ impl PreparedSupport {
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         if !shape.has_area_parts() {
-            let mut spans = Vec::new();
+            let mut spans = Vec::with_capacity(shape.segment_count());
             let mut points = Vec::new();
-            try_reserve_vec(&mut spans, shape.segment_count())?;
             shape.try_for_each_vertex_pair(|start, end| -> crate::error::Result<()> {
                 push_raw_segment(
                     Segment {
@@ -64,9 +62,11 @@ impl PreparedSupport {
                     &mut points,
                 )
             })?;
-            for point in shape.point_only_points() {
-                try_push_vec(&mut points, ExactPoint::from_xy(point.xy()))?;
-            }
+            shape.for_each_component(&mut |component| {
+                if let crate::geometry::Component::Point(point) = component {
+                    points.push(ExactPoint::from_xy(point.xy()));
+                }
+            });
             return Self::from_parts(spans, points, Vec::new());
         }
         let inventory = ExactSourceInventory::from_shapes(&[shape])?;
@@ -90,11 +90,10 @@ impl PreparedSupport {
 
     fn from_line_columns(xs: &[f64], ys: &[f64]) -> Result<Self> {
         debug_assert_eq!(xs.len(), ys.len());
-        let mut spans = Vec::new();
+        let mut spans = Vec::with_capacity(xs.len().saturating_sub(1));
         let mut points = Vec::new();
-        try_reserve_vec(&mut spans, xs.len().saturating_sub(1))?;
         if xs.len() == 1 {
-            try_push_vec(&mut points, ExactPoint::from_xy(XY::new(xs[0], ys[0])))?;
+            points.push(ExactPoint::from_xy(XY::new(xs[0], ys[0])));
         }
         for index in 1..xs.len() {
             push_raw_segment(
@@ -128,38 +127,27 @@ impl PreparedSupport {
                 "exact metric boundary incidence is not aligned with support",
             ));
         }
-        let mut spans = Vec::new();
-        try_reserve_vec(&mut spans, metric_spans.len())?;
+        let mut spans = Vec::with_capacity(metric_spans.len());
         for span in metric_spans {
-            try_push_vec(&mut spans, support_span(span)?)?;
+            spans.push(support_span(span)?);
         }
 
-        let mut points = Vec::new();
-        try_reserve_vec(&mut points, metric_points.len())?;
+        let mut points = Vec::with_capacity(metric_points.len());
         for point in metric_points {
-            try_push_vec(
-                &mut points,
-                ExactPoint::from_homogeneous(point.homogeneous)?,
-            )?;
+            points.push(ExactPoint::from_homogeneous(point.homogeneous)?);
         }
 
-        let mut faces = Vec::new();
-        try_reserve_vec(&mut faces, metric_faces.len())?;
+        let mut faces = Vec::with_capacity(metric_faces.len());
         for face in metric_faces {
-            let mut cycles = Vec::new();
-            try_reserve_vec(&mut cycles, face.len())?;
+            let mut cycles = Vec::with_capacity(face.len());
             for cycle in face {
-                let mut points = Vec::new();
-                try_reserve_vec(&mut points, cycle.len())?;
+                let mut points = Vec::with_capacity(cycle.len());
                 for point in cycle {
-                    try_push_vec(
-                        &mut points,
-                        ExactPoint::from_homogeneous(point.homogeneous)?,
-                    )?;
+                    points.push(ExactPoint::from_homogeneous(point.homogeneous)?);
                 }
-                try_push_vec(&mut cycles, points)?;
+                cycles.push(points);
             }
-            try_push_vec(&mut faces, cycles)?;
+            faces.push(cycles);
         }
 
         let mut prepared = Self::from_parts(spans, points, faces)?;
@@ -182,11 +170,11 @@ impl PreparedSupport {
                 for index in 0..cycle.len() {
                     let start = &cycle[index];
                     let end = &cycle[(index + 1) % cycle.len()];
-                    try_push_vec(&mut boundary_edges, BoundaryEdge {
+                    boundary_edges.push(BoundaryEdge {
                         start: start.try_clone()?,
                         end: end.try_clone()?,
                         bounds: FloatBox::from_point(start)?.include(FloatBox::from_point(end)?),
-                    })?;
+                    });
                 }
             }
         }
@@ -220,83 +208,74 @@ impl PreparedSupport {
     /// already exclude shared/internal face edges and lower-dimensional
     /// support hidden by a positive-area face.
     pub(in crate::geometry) fn boundary_clone(&self) -> Result<Self> {
-        let mut spans = Vec::new();
-        try_reserve_vec(
-            &mut spans,
+        let mut spans = Vec::with_capacity(
             self.boundary_spans
                 .as_ref()
                 .map_or(self.spans.len(), |flags| {
                     flags.iter().filter(|&&selected| selected).count()
                 }),
-        )?;
+        );
         for (index, span) in self.spans.iter().enumerate() {
             let selected = self
                 .boundary_spans
                 .as_ref()
                 .is_none_or(|flags| flags[index]);
             if selected {
-                try_push_vec(&mut spans, span.try_clone()?)?;
+                spans.push(span.try_clone()?);
             }
         }
 
-        let mut points = Vec::new();
-        try_reserve_vec(
-            &mut points,
+        let mut points = Vec::with_capacity(
             self.boundary_points
                 .as_ref()
                 .map_or(self.points.len(), |flags| {
                     flags.iter().filter(|&&selected| selected).count()
                 }),
-        )?;
+        );
         for (index, point) in self.points.iter().enumerate() {
             let selected = self
                 .boundary_points
                 .as_ref()
                 .is_none_or(|flags| flags[index]);
             if selected {
-                try_push_vec(&mut points, point.try_clone()?)?;
+                points.push(point.try_clone()?);
             }
         }
         Self::from_parts(spans, points, Vec::new())
     }
 
     fn initial_patches(&self) -> Result<Vec<SourcePatch>> {
-        let mut patches = Vec::new();
         let capacity = self
             .spans
             .len()
-            .checked_add(usize::from(!self.faces.is_empty()))
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        try_reserve_vec(&mut patches, capacity)?;
+            .wrapping_add(usize::from(!self.faces.is_empty()));
+        let mut patches = Vec::with_capacity(capacity);
         for (index, span) in self.spans.iter().enumerate() {
-            try_push_vec(&mut patches, SourcePatch::Span {
+            patches.push(SourcePatch::Span {
                 span: index,
                 lo: span.t_lo.try_clone()?,
                 hi: span.t_hi.try_clone()?,
-            })?;
+            });
         }
         if let Some(bounds) = self.area_bounds
             && !self.faces.is_empty()
         {
-            try_push_vec(&mut patches, SourcePatch::Box(bounds))?;
+            patches.push(SourcePatch::Box(bounds));
         }
         Ok(patches)
     }
 
     fn inradius_initial_patches(&self) -> Result<Vec<SourcePatch>> {
         if self.has_positive_area()? {
-            let mut patches = Vec::new();
-            try_reserve_vec(&mut patches, 1)?;
-            if let Some(bounds) = self.area_bounds {
-                try_push_vec(&mut patches, SourcePatch::Box(bounds))?;
-            }
-            return Ok(patches);
+            return Ok(self
+                .area_bounds
+                .map_or_else(Vec::new, |bounds| vec![SourcePatch::Box(bounds)]));
         }
 
         let mut patches = self.initial_patches()?;
-        try_reserve_vec(&mut patches, self.points.len())?;
+        patches.reserve(self.points.len());
         for index in 0..self.points.len() {
-            try_push_vec(&mut patches, SourcePatch::Point(index))?;
+            patches.push(SourcePatch::Point(index));
         }
         Ok(patches)
     }
@@ -501,9 +480,10 @@ fn push_raw_segment(
     points: &mut Vec<ExactPoint>,
 ) -> Result<()> {
     if source.start == source.end {
-        return try_push_vec(points, ExactPoint::from_xy(source.start));
+        points.push(ExactPoint::from_xy(source.start));
+        return Ok(());
     }
-    try_push_vec(spans, SupportSpan {
+    spans.push(SupportSpan {
         source,
         carrier: ExactCarrier::from_segment(source)?,
         t_lo: Rational::zero(),
@@ -515,7 +495,8 @@ fn push_raw_segment(
             min_y: source.start.y.min(source.end.y),
             max_y: source.start.y.max(source.end.y),
         },
-    })
+    });
+    Ok(())
 }
 
 fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
@@ -1236,25 +1217,24 @@ impl SourcePatch {
     }
 
     fn corners(&self, source: &PreparedSupport) -> Result<Vec<ExactPoint>> {
-        let mut corners = Vec::new();
-        match self {
+        Ok(match self {
             Self::Span { span, lo, hi } => {
-                try_reserve_vec(&mut corners, 2)?;
-                try_push_vec(&mut corners, span_point(&source.spans[*span], lo)?)?;
-                try_push_vec(&mut corners, span_point(&source.spans[*span], hi)?)?;
+                vec![
+                    span_point(&source.spans[*span], lo)?,
+                    span_point(&source.spans[*span], hi)?,
+                ]
             },
             Self::Box(bounds) => {
-                try_reserve_vec(&mut corners, 4)?;
-                for (x, y) in bounds.corners() {
-                    try_push_vec(&mut corners, ExactPoint::from_xy(XY::new(x, y)))?;
-                }
+                let mut corners = Vec::with_capacity(4);
+                corners.extend(
+                    bounds
+                        .corners()
+                        .map(|(x, y)| ExactPoint::from_xy(XY::new(x, y))),
+                );
+                corners
             },
-            Self::Point(point) => {
-                try_reserve_vec(&mut corners, 1)?;
-                try_push_vec(&mut corners, source.points[*point].try_clone()?)?;
-            },
-        }
-        Ok(corners)
+            Self::Point(point) => vec![source.points[*point].try_clone()?],
+        })
     }
 
     fn split(self, budget: &mut ExpansionBudget) -> Result<Option<Vec<Self>>> {
@@ -1270,19 +1250,18 @@ impl SourcePatch {
             Self::Span { span, lo, hi } => {
                 budget.add(2)?;
                 let midpoint = lo.try_midpoint(&hi)?;
-                let mut children = Vec::new();
-                try_reserve_vec(&mut children, 2)?;
-                try_push_vec(&mut children, Self::Span {
-                    span,
-                    lo: lo.try_clone()?,
-                    hi: midpoint.try_clone()?,
-                })?;
-                try_push_vec(&mut children, Self::Span {
-                    span,
-                    lo: midpoint,
-                    hi,
-                })?;
-                Ok(Some(children))
+                Ok(Some(vec![
+                    Self::Span {
+                        span,
+                        lo: lo.try_clone()?,
+                        hi: midpoint.try_clone()?,
+                    },
+                    Self::Span {
+                        span,
+                        lo: midpoint,
+                        hi,
+                    },
+                ]))
             },
             Self::Box(bounds) => match strategy {
                 BoxSplitStrategy::FourWay => Self::split_box_four_way(bounds, budget),
@@ -1305,8 +1284,7 @@ impl SourcePatch {
         }
         let count = (1 + usize::from(split_x)) * (1 + usize::from(split_y));
         budget.add(count)?;
-        let mut children = Vec::new();
-        try_reserve_vec(&mut children, count)?;
+        let mut children = Vec::with_capacity(count);
         let xs = if split_x {
             [(bounds.min_x, mid_x), (mid_x, bounds.max_x)]
         } else {
@@ -1319,15 +1297,12 @@ impl SourcePatch {
         };
         for &(min_x, max_x) in &xs[..if split_x { 2 } else { 1 }] {
             for &(min_y, max_y) in &ys[..if split_y { 2 } else { 1 }] {
-                try_push_vec(
-                    &mut children,
-                    Self::Box(FloatBox {
-                        min_x,
-                        max_x,
-                        min_y,
-                        max_y,
-                    }),
-                )?;
+                children.push(Self::Box(FloatBox {
+                    min_x,
+                    max_x,
+                    min_y,
+                    max_y,
+                }));
             }
         }
         Ok(Some(children))
@@ -1357,51 +1332,29 @@ impl SourcePatch {
             BoxSplitAxis::Y => BoxSplitAxis::X,
         };
         budget.add(2)?;
-        let mut children = Vec::new();
-        try_reserve_vec(&mut children, 2)?;
-        match axis {
-            BoxSplitAxis::X => {
-                try_push_vec(
-                    &mut children,
-                    Self::Box(FloatBox {
-                        min_x: bounds.min_x,
-                        max_x: mid_x,
-                        min_y: bounds.min_y,
-                        max_y: bounds.max_y,
-                    }),
-                )?;
-                try_push_vec(
-                    &mut children,
-                    Self::Box(FloatBox {
-                        min_x: mid_x,
-                        max_x: bounds.max_x,
-                        min_y: bounds.min_y,
-                        max_y: bounds.max_y,
-                    }),
-                )?;
-            },
-            BoxSplitAxis::Y => {
-                try_push_vec(
-                    &mut children,
-                    Self::Box(FloatBox {
-                        min_x: bounds.min_x,
-                        max_x: bounds.max_x,
-                        min_y: bounds.min_y,
-                        max_y: mid_y,
-                    }),
-                )?;
-                try_push_vec(
-                    &mut children,
-                    Self::Box(FloatBox {
-                        min_x: bounds.min_x,
-                        max_x: bounds.max_x,
-                        min_y: mid_y,
-                        max_y: bounds.max_y,
-                    }),
-                )?;
-            },
-        }
-        Ok(Some(children))
+        let (first, second) = match axis {
+            BoxSplitAxis::X => (
+                FloatBox {
+                    max_x: mid_x,
+                    ..bounds
+                },
+                FloatBox {
+                    min_x: mid_x,
+                    ..bounds
+                },
+            ),
+            BoxSplitAxis::Y => (
+                FloatBox {
+                    max_y: mid_y,
+                    ..bounds
+                },
+                FloatBox {
+                    min_y: mid_y,
+                    ..bounds
+                },
+            ),
+        };
+        Ok(Some(vec![Self::Box(first), Self::Box(second)]))
     }
 }
 
@@ -2044,8 +1997,8 @@ fn add_parallel_probe(
         return Ok(());
     }
     let left_value = carrier_line_value(left, point)?;
-    try_push_vec(right_values, left_value.try_subtract(separation)?)?;
-    try_push_vec(left_values, left_value)?;
+    right_values.push(left_value.try_subtract(separation)?);
+    left_values.push(left_value);
     Ok(())
 }
 
@@ -2056,11 +2009,10 @@ fn parallel_strip_upper(
     nominated: &[PrimitiveId],
     context: &SearchContext<'_>,
 ) -> Result<Option<Rational>> {
-    let mut span_indices = Vec::new();
-    try_reserve_vec(&mut span_indices, nominated.len())?;
+    let mut span_indices = Vec::with_capacity(nominated.len());
     for &primitive in nominated {
         if let PrimitiveId::Span(index) = primitive {
-            try_push_vec(&mut span_indices, index)?;
+            span_indices.push(index);
         }
     }
     if span_indices.len() < 2 {
@@ -2074,11 +2026,7 @@ fn parallel_strip_upper(
             .faces
             .iter()
             .flat_map(|face| face.iter().map(Vec::len))
-            .try_fold(0_usize, |count, length| {
-                count
-                    .checked_add(length)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)
-            })?
+            .fold(0_usize, usize::wrapping_add)
     } else {
         corners.len()
     };
@@ -2086,10 +2034,8 @@ fn parallel_strip_upper(
     // One probe buffer pair for the whole sweep: every parallel span pair
     // holds the same `probe_count` values, and the pair loop is quadratic in
     // the span count, so allocating per pair allocated quadratically.
-    let mut left_values = Vec::new();
-    let mut right_values = Vec::new();
-    try_reserve_vec(&mut left_values, probe_count)?;
-    try_reserve_vec(&mut right_values, probe_count)?;
+    let mut left_values = Vec::with_capacity(probe_count);
+    let mut right_values = Vec::with_capacity(probe_count);
     for (left_offset, &left_index) in span_indices.iter().enumerate() {
         for &right_index in &span_indices[(left_offset + 1)..] {
             let left = &target.spans[left_index];
@@ -2789,11 +2735,7 @@ fn line_columns_with_accuracy(
         &mut context,
         || {
             let line = |xs: &[f64], ys: &[f64]| -> Result<Shape> {
-                let mut points = Vec::new();
-                try_reserve_vec(&mut points, xs.len())?;
-                for (&x, &y) in xs.iter().zip(ys) {
-                    try_push_vec(&mut points, XY::new(x, y))?;
-                }
+                let points: Vec<_> = xs.iter().zip(ys).map(|(&x, &y)| XY::new(x, y)).collect();
                 Ok(Shape::LineString(LineSeq::try_new(CoordSeq::try_from_xy(
                     &points,
                 )?)?))
