@@ -1,9 +1,7 @@
 use crate::error::Result;
-use crate::geometry::area::ring_area_sign;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    AreaSign, CoordSeq, Coordinates as _, HashMap, HashSet, PointKey, Polygon, RepairMethod, Ring,
-    Shape, SharedSlice, XY, cmp_area_keys_then_closed, polygon_parts_to_shape, ring_decision_area,
+    CoordSeq, Coordinates as _, Polygon, RepairMethod, Ring, Shape, XY, polygon_parts_to_shape,
     same_point, wrap_index,
 };
 ///
@@ -31,129 +29,15 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
         let Some(shell) = ring_without_antennas(&polygon.shell)? else {
             continue;
         };
-        // The boolean fold can also merge lobes that touch at one vertex
-        // into a single pinched ring (invalid OGC shell) — split every
-        // pinch back into its loops; lobes are disjoint by construction,
-        // so each shell loop is its own part.
-        // A pinched shell splits into loops; the face walk traverses the
-        // boundary with the face consistently on one side, so loops winding
-        // WITH the dominant loop are sibling lobes and loops winding
-        // AGAINST it are holes touching the shell at the pinch.
-        let loops = split_pinched_ring(&shell)?;
-        let dominant = loops
-            .iter()
-            .map(|ring| (ring, ring_decision_area(ring.coords())))
-            .max_by(|(left, left_area), (right, right_area)| {
-                cmp_area_keys_then_closed(
-                    left_area.magnitude().get(),
-                    right_area.magnitude().get(),
-                    left.coords(),
-                    right.coords(),
-                )
-            })
-            .map_or(AreaSign::Zero, |(_, decision)| decision.sign());
-        let mut shells = Vec::with_capacity(loops.len());
-        let mut holes = Vec::with_capacity(loops.len());
-        for ring in loops {
-            if ring_area_sign(ring.coords()) == dominant {
-                shells.push(ring);
-            } else {
-                holes.push(ring);
-            }
-        }
+        let mut holes = Vec::with_capacity(polygon.holes.len());
         for hole in polygon.holes.iter() {
             if let Some(hole) = ring_without_antennas(hole)? {
-                let split = split_pinched_ring(&hole)?;
-                holes.reserve(split.len());
-                holes.extend(split);
+                holes.push(hole);
             }
         }
-        if shells.len() == 1 {
-            cleaned.push(Polygon::new(
-                shells.into_iter().next().expect("one shell"),
-                holes,
-            ));
-        } else {
-            // Re-attach each hole to the lobe that contains it.
-            let mut lobes: Vec<_> = shells
-                .into_iter()
-                .map(|shell| (Polygon::new(shell, Vec::new()), Vec::new()))
-                .collect();
-            for hole in holes {
-                let anchor = hole.coords().first_coord().expect("non-empty ring");
-                if let Some((_, assigned)) =
-                    lobes.iter_mut().find(|(lobe, _)| lobe.covers_point(anchor))
-                {
-                    assigned.push(hole);
-                }
-            }
-            cleaned.reserve(lobes.len());
-            for (mut lobe, holes) in lobes {
-                if !holes.is_empty() {
-                    lobe.holes = SharedSlice::from_vec(holes);
-                }
-                cleaned.push(lobe);
-            }
-        }
+        cleaned.push(Polygon::new(shell, holes));
     }
     polygon_parts_to_shape(cleaned)
-}
-
-/// Split a ring that touches itself at single vertices (a pinch) into its
-/// constituent loops: each revisited vertex closes the loop opened at its
-/// first occurrence. A valid ring comes back unchanged as one loop.
-pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
-    // CLEAN fast path (the overwhelmingly common case): no repeated
-    // vertex besides the closure means the ring IS its own single loop —
-    // detect with one presized pass and return it untouched, skipping loop
-    // extraction and the column rebuild entirely.
-    let count = {
-        let coords = ring.coords();
-        let (xs, ys) = (coords.xs(), coords.ys());
-        let (_, xs) = xs.split_last().expect("ring has a closing coordinate");
-        let (_, ys) = ys.split_last().expect("ring has a closing coordinate");
-        // PointKey identity is CONSERVATIVE here (canonicalizes ±0.0 and
-        // ignores Z/M): a false duplicate just routes through the exact
-        // splitter below, which then splits nothing — never the reverse.
-        let mut seen: HashSet<PointKey> = crate::collections::try_hash_set_with_capacity(xs.len())?;
-        if xs
-            .iter()
-            .zip(ys)
-            .all(|(&x, &y)| seen.insert(PointKey::new(XY::new(x, y))))
-        {
-            return Ok(vec![ring.clone()]);
-        }
-        xs.len()
-    };
-    let mut points = ring.coords().iter_coords();
-    points.next_back().expect("ring has a closing coordinate");
-    let mut loops = Vec::with_capacity(count);
-    let mut stack = Vec::with_capacity(count);
-    let mut open: HashMap<PointKey, usize> = crate::collections::try_hash_map_with_capacity(count)?;
-    for point in points {
-        let key = PointKey::new(point);
-        if let Some(&start) = open.get(&key) {
-            let extracted = stack.split_off(start);
-            for vertex in &extracted {
-                open.remove(&PointKey::new(*vertex));
-            }
-            if extracted.len() >= 3 {
-                loops.push(extracted);
-            }
-        }
-        open.insert(key, stack.len());
-        stack.push(point);
-    }
-    if stack.len() >= 3 {
-        loops.push(stack);
-    }
-    let mut result = Vec::with_capacity(loops.len());
-    for mut points in loops {
-        let first = points[0];
-        points.push(first);
-        result.push(Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?);
-    }
-    Ok(result)
 }
 
 /// Strip zero-area antennas from a closed ring: any vertex whose circular
