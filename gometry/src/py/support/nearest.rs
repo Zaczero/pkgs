@@ -164,6 +164,9 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
     let fixed_plan = fixed.prepared_plan();
     let fixed_cache = fixed.frame_cache();
     let array_owned = array.clone();
+    let present_count = array
+        .missing()
+        .map_or(array.len(), ValidityMask::present_count);
     let rows = py.detach(move || {
         let mut array_rows = array_owned.row_operation();
         crate::crs::with_resolved_ellipsoid_metric_at(
@@ -180,7 +183,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                     metric,
                 )?;
                 let present = (|| -> Result<Vec<Shape>, (usize, crate::error::Error)> {
-                    let mut shapes = Vec::new();
+                    let mut shapes = Vec::with_capacity(present_count);
                     for row in array_rows.present_rows() {
                         let logical = row.logical();
                         let element = array_rows.prepared(row).map_err(|error| (logical, error))?;
@@ -217,7 +220,7 @@ pub(crate) fn fixed_geometry_array_shortest_line_geodesic(
                             crate::geometry::common_axes(fixed_plan.shape(), element.shape()),
                         )
                         .map_err(|error| (logical, error))?;
-                        crate::try_push_vec(&mut shapes, line).map_err(|error| (logical, error))?;
+                        shapes.push(line);
                     }
                     Ok(shapes)
                 })();

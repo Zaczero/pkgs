@@ -472,9 +472,7 @@ mod ownership_tests {
         assert_eq!(point(3), Point::new_raw_xy(10.0, 0.0));
 
         let mut hits = Vec::new();
-        index
-            .collect_intersecting(&AABB::from_point([0.0, 0.0]), &mut hits)
-            .unwrap();
+        index.collect_intersecting(&AABB::from_point([0.0, 0.0]), &mut hits);
         assert_eq!(hits, [1]);
     }
 

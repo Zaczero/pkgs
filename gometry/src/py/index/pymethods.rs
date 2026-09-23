@@ -22,14 +22,13 @@ fn append_nearest_candidates(
     distances: &mut Vec<f64>,
     candidates: Vec<NearestCandidate>,
     return_distance: bool,
-) -> PyResult<()> {
+) {
     for candidate in candidates {
         builder.values_mut().push(candidate.idx);
         if return_distance {
-            crate::try_push_vec(distances, candidate.distance).map_err(pyo3::PyErr::from)?;
+            distances.push(candidate.distance);
         }
     }
-    Ok(())
 }
 
 #[path = "iter.rs"]
@@ -701,7 +700,7 @@ impl PySpatialIndex {
                 // Missing and empty rows carry no bounds and get an empty group.
                 let mut append = |bounds: Option<crate::Bounds>| -> PyResult<()> {
                     if let Some(bounds) = bounds {
-                        self.envelope_candidates_append(bounds, builder.values_mut())?;
+                        self.envelope_candidates_append(bounds, builder.values_mut());
                     }
                     let end = builder.len();
                     builder.push_end(end).map_err(pyo3::PyErr::from)
@@ -731,7 +730,7 @@ impl PySpatialIndex {
                             crate::array::BoundsSeed::Unset => row.quick_bounds(),
                             crate::array::BoundsSeed::Value(bounds) => bounds,
                         } {
-                            self.envelope_candidates_append(bounds, ids)?;
+                            self.envelope_candidates_append(bounds, ids);
                         }
                     } else if geographic_envelopes {
                         if let Some(bounds) = match seeded {
@@ -892,7 +891,7 @@ impl PySpatialIndex {
                                     &mut distances,
                                     candidates,
                                     return_distance,
-                                )?;
+                                );
                             }
                             let end = builder.len();
                             builder.push_end(end).map_err(pyo3::PyErr::from)?;
@@ -922,7 +921,7 @@ impl PySpatialIndex {
                                     &mut distances,
                                     candidates,
                                     return_distance,
-                                )?;
+                                );
                             }
                             let end = builder.len();
                             builder.push_end(end).map_err(pyo3::PyErr::from)?;
