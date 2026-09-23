@@ -80,12 +80,15 @@ fn try_is_simple_packed(
         Err(error) => return Some(Err(error.into())),
     };
     if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
-        for result in array.present_shape_rows() {
-            let (_, shape) = match result {
-                Ok(row) => row,
+        for row in array.row_operation().present_rows() {
+            let crossing = match row
+                .row()
+                .with_shape(|shape| crate::geometry::crosses_antimeridian_in_frame(shape, frame))
+            {
+                Ok(crossing) => crossing,
                 Err(error) => return Some(Err(error.into())),
             };
-            if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
+            if crossing {
                 return None;
             }
         }

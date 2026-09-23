@@ -256,24 +256,28 @@ pub(crate) fn present_polylines_of(
     factor: f64,
 ) -> PyResult<Vec<(usize, String)>> {
     require_polyline_crs(array.crs_str())?;
-    array
-        .present_shape_rows()
-        .map(|result| {
-            let (row, shape) = result.map_err(PyErr::from)?;
-            let encode = || -> PyResult<String> {
+    let present_count = array
+        .missing()
+        .map_or(array.len(), crate::array::ValidityMask::present_count);
+    let mut output = Vec::with_capacity(present_count);
+    for row in array.row_operation().present_rows() {
+        let logical = row.logical();
+        let encoded = row
+            .row()
+            .with_shape(|shape| {
                 if shape.has_z() || shape.has_m() {
                     return Err(crate::geometry::GeometryErrorKind::ordinate_dropped(
                         "to_polyline",
                     )
                     .into());
                 }
-                encode_shape(&shape, factor)
-            };
-            encode()
-                .map(|encoded| (row, encoded))
-                .map_err(|err| note_array_row(err, row))
-        })
-        .collect::<pyo3::PyResult<Vec<_>>>()
+                encode_shape(shape, factor)
+            })
+            .map_err(PyErr::from)?
+            .map_err(|error| note_array_row(error, logical))?;
+        output.push((logical, encoded));
+    }
+    Ok(output)
 }
 
 /// Encode one geometry (must be a `LineString` or `Point`).

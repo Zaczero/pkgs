@@ -284,10 +284,13 @@ fn require_array_contract(
     }
     let domain = geometry::topology_domain(&array.frame)?;
     let first_issue = |array: &PyGeometryArray| -> crate::error::Result<_> {
-        for row in array.present_shape_rows() {
-            let (row, shape) = row?;
-            if let Some(issue) = geometry::validate_shape_in_frame(&shape, domain)? {
-                return Ok(Some((row, issue)));
+        for row in array.row_operation().present_rows() {
+            let logical = row.logical();
+            if let Some(issue) = row
+                .row()
+                .try_with_shape(|shape| geometry::validate_shape_in_frame(shape, domain))?
+            {
+                return Ok(Some((logical, issue)));
             }
         }
         Ok(None)
