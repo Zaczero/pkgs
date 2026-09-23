@@ -405,15 +405,23 @@ mod tests {
 /// planar envelope bound is unsound here). Gives a sound lower bound on the
 /// geodesic distance from any query cap to any point of the row.
 #[derive(Debug)]
+enum RowCapStorage {
+    Dense {
+        anchors: Vec<(Radians, Radians)>,
+        reaches: Vec<f64>,
+    },
+    Sparse(crate::collections::IndexMap<usize, ((Radians, Radians), f64)>),
+}
+
+const MAX_SPARSE_ROW_CAP_ENTRIES: usize = 64;
+
+#[derive(Debug)]
 pub(crate) struct GeodesicRowCaps {
     minor_radius: f64,
     /// Slack for the backend's distance accuracy, as in [`GeodesicPruner`].
     backend_floor: f64,
     one_minus_f: f64,
-    /// `(β, λ radians)` anchor per row.
-    anchors: Vec<(Radians, Radians)>,
-    /// Aux reach upper bound (meters) per row.
-    reaches: Vec<f64>,
+    rows: RowCapStorage,
 }
 
 impl GeodesicRowCaps {
@@ -423,40 +431,47 @@ impl GeodesicRowCaps {
     /// run inside a metric scope). `None` outside the bound's proof domain
     /// (callers fall back to the exact full scan).
     /// Per-handle caps for live index rows only. Tombstoned slots keep
-    /// placeholders — `lower_bound` is only called for live handles.
+    /// no storage. Handles remain stable across index mutation.
     pub(crate) fn from_live_handles(
         shape: crs::EllipsoidShape,
         row_count: usize,
+        live_row_count: usize,
+        live_entry_count: usize,
         live: impl Iterator<Item = (usize, Option<(Point, f64)>)>,
     ) -> Option<Self> {
         let major = shape.semi_major.get();
         let flattening = shape.flattening;
         let one_minus_f = 1.0 - flattening;
-        let mut anchors = vec![(Radians(0.0), Radians(0.0)); row_count];
-        let mut reaches = vec![0.0; row_count];
-        for (handle, row) in live {
-            let (anchor, reach) = row?;
-            if !(-180.0..=180.0).contains(&anchor.x) || !(-90.0..=90.0).contains(&anchor.y) {
-                // Out-of-domain rows must reach the exact path so they raise
-                // its domain error instead of being silently pruned.
-                return None;
+        let rows = if live_entry_count <= MAX_SPARSE_ROW_CAP_ENTRIES
+            && live_entry_count <= row_count / 4
+        {
+            let mut rows = crate::collections::IndexMap::default();
+            rows.reserve(live_row_count);
+            for (handle, row) in live {
+                let (anchor, reach) = row?;
+                rows.insert(handle, row_cap(anchor, reach, one_minus_f)?);
             }
-            *anchors
-                .get_mut(handle)
-                .expect("live handle is within row storage") = (
-                reduced_latitude(Degrees(anchor.y), one_minus_f),
-                Radians(anchor.x.to_radians()),
-            );
-            *reaches
-                .get_mut(handle)
-                .expect("live handle is within row storage") = reach;
-        }
+            RowCapStorage::Sparse(rows)
+        } else {
+            let mut anchors = vec![(Radians(0.0), Radians(0.0)); row_count];
+            let mut reaches = vec![0.0; row_count];
+            for (handle, row) in live {
+                let (anchor, reach) = row?;
+                let ((beta, lon), reach) = row_cap(anchor, reach, one_minus_f)?;
+                *anchors
+                    .get_mut(handle)
+                    .expect("live handle is within row storage") = (beta, lon);
+                *reaches
+                    .get_mut(handle)
+                    .expect("live handle is within row storage") = reach;
+            }
+            RowCapStorage::Dense { anchors, reaches }
+        };
         Some(Self {
             minor_radius: major * one_minus_f,
             backend_floor: crate::geometry::GeodesicNumericalPolicy::new(major).backend_floor(),
             one_minus_f,
-            anchors,
-            reaches,
+            rows,
         })
     }
 
@@ -481,7 +496,20 @@ impl GeodesicRowCaps {
         query_reach: f64,
         handle: usize,
     ) -> f64 {
-        let (beta, lon) = self.anchors[handle];
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "Dense cap arrays span the index's stable handle range"
+        )]
+        let ((beta, lon), reach) = match &self.rows {
+            RowCapStorage::Dense { anchors, reaches } => (anchors[handle], reaches[handle]),
+            RowCapStorage::Sparse(rows) => {
+                let Some(&cap) = rows.get(&handle) else {
+                    // A missing cap cannot safely exclude a live row.
+                    return 0.0;
+                };
+                cap
+            },
+        };
         let delta = (query.1.0 - lon.0).abs();
         let gap = if delta >= std::f64::consts::TAU {
             delta - std::f64::consts::TAU
@@ -490,13 +518,86 @@ impl GeodesicRowCaps {
         };
         let gap = Radians(gap.min(std::f64::consts::TAU - gap));
         let sigma = central_angle(query.0, beta, gap);
-        (self.minor_radius * sigma.0 - self.reaches[handle] - query_reach - self.backend_floor)
-            .max(0.0)
+        (self.minor_radius * sigma.0 - reach - query_reach - self.backend_floor).max(0.0)
     }
 }
 
 impl HeapSize for GeodesicRowCaps {
     fn heap_bytes(&self) -> usize {
-        self.anchors.heap_bytes() + self.reaches.heap_bytes()
+        match &self.rows {
+            RowCapStorage::Dense { anchors, reaches } => {
+                anchors.heap_bytes().saturating_add(reaches.heap_bytes())
+            },
+            RowCapStorage::Sparse(rows) => crate::scratch_pool::hash_map_retained_bytes(rows),
+        }
+    }
+}
+
+fn row_cap(anchor: Point, reach: f64, one_minus_f: f64) -> Option<((Radians, Radians), f64)> {
+    if !(-180.0..=180.0).contains(&anchor.x) || !(-90.0..=90.0).contains(&anchor.y) {
+        // Out-of-domain rows must reach the exact path so they raise its
+        // domain error instead of being silently pruned.
+        return None;
+    }
+    Some((
+        (
+            reduced_latitude(Degrees(anchor.y), one_minus_f),
+            Radians(anchor.x.to_radians()),
+        ),
+        reach,
+    ))
+}
+
+#[cfg(test)]
+mod row_cap_storage_tests {
+    use super::*;
+
+    #[test]
+    fn sparse_caps_keep_duplicate_window_handles_and_fail_open() {
+        let shape = crs::EllipsoidShape::new(6_378_137.0, 1.0 / 298.257_223_563)
+            .expect("valid WGS84 ellipsoid");
+        let anchor = Point::new_raw_xy(10.0, 20.0);
+        let aliases = |count| std::iter::repeat_n((7, Some((anchor, 100.0))), count);
+
+        // One live row may occur in many geographic cover windows. Count
+        // those staged entries for the cutover, but retain only its stable key.
+        let sparse = GeodesicRowCaps::from_live_handles(shape, 256, 1, 64, aliases(64))
+            .expect("all row caps are in domain");
+        let RowCapStorage::Sparse(sparse_rows) = &sparse.rows else {
+            panic!("64 staged entries at one-quarter density use sparse storage");
+        };
+        assert_eq!(sparse_rows.len(), 1);
+
+        // The next alias crosses the bounded sparse-entry cutover even though
+        // the distinct live-row count remains one.
+        let by_entry_count = GeodesicRowCaps::from_live_handles(shape, 512, 1, 65, aliases(65))
+            .expect("all row caps are in domain");
+        assert!(matches!(&by_entry_count.rows, RowCapStorage::Dense { .. }));
+
+        // A small historical table stays dense above one-quarter density.
+        let by_density = GeodesicRowCaps::from_live_handles(shape, 16, 1, 5, aliases(5))
+            .expect("all row caps are in domain");
+        assert!(matches!(&by_density.rows, RowCapStorage::Dense { .. }));
+
+        let query = sparse
+            .query_anchor(Point::new_raw_xy(-20.0, 30.0))
+            .expect("query is in domain");
+        let bound = sparse.lower_bound(query, 50.0, 7);
+        assert!(bound > 0.0);
+        assert_eq!(by_entry_count.lower_bound(query, 50.0, 7), bound);
+        assert_eq!(by_density.lower_bound(query, 50.0, 7), bound);
+        assert_eq!(sparse.lower_bound(query, 50.0, 8), 0.0);
+
+        let invalid = Point::new_raw_xy(181.0, 0.0);
+        assert!(
+            GeodesicRowCaps::from_live_handles(
+                shape,
+                256,
+                1,
+                1,
+                std::iter::once((7, Some((invalid, 100.0)))),
+            )
+            .is_none()
+        );
     }
 }

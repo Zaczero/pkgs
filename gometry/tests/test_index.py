@@ -1754,6 +1754,60 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
             ]
 
 
+def test_sparse_geodesic_caps_follow_live_handles_through_mutation_and_clone() -> None:
+    longitudes = [float(index - 20) for index in range(40)] + [-180.0, 180.0]
+    points = gm.points(longitudes, [0.0] * len(longitudes), crs=4326)
+    index = gm.SpatialIndex(points)
+    live_handles = [0, 40, 41]
+    for handle in range(len(points)):
+        if handle not in live_handles:
+            assert index.remove(handle)
+
+    query = gm.Point(180.0, 0.0, crs=4326)
+    clone = copy.copy(index)
+
+    def assert_matches(candidate: gm.SpatialIndex, handles: list[int]) -> None:
+        rows = [(handle, candidate.get(handle)) for handle in handles]
+        assert all(row is not None for _, row in rows)
+        measured = sorted(
+            ((handle, gm.distance(query, row)) for handle, row in rows if row is not None),
+            key=lambda item: (item[1], item[0]),
+        )
+        got_ids, got_distances = candidate.nearest(
+            query, k=len(handles), return_distance=True
+        )
+        assert ids(got_ids) == [handle for handle, _ in measured]
+        np.testing.assert_allclose(
+            floats(got_distances), [distance for _, distance in measured], atol=1e-9
+        )
+
+        radius = 25_000.0
+        expected = [
+            handle
+            for handle, row in rows
+            if row is not None and gm.dwithin(query, row, radius)
+        ]
+        assert ids(candidate.query(query, predicate='dwithin', distance=radius)) == expected
+
+    assert_matches(index, live_handles)
+    assert_matches(clone, live_handles)
+
+    assert index.remove(40)
+    assert index.insert(gm.Point(179.95, 0.0, crs=4326)) == len(points)
+    assert_matches(index, [0, 41, 42])
+    assert_matches(clone, live_handles)
+
+    bad_query = gm.Point(0.0, 95.0, crs=4326)
+    domain_error = (
+        r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = '
+        r'\(lon, lat\) — use swap_xy\(\) for latitude-first data'
+    )
+    with pytest.raises(gm.InvalidGeometryError, match=domain_error):
+        index.query(bad_query, predicate='dwithin', distance=1.0)
+    with pytest.raises(gm.InvalidGeometryError, match=domain_error):
+        index.nearest(bad_query)
+
+
 def test_mutation_keeps_handles_stable_through_self_join() -> None:
     idx = gm.SpatialIndex([
         gm.box(0, 0, 2, 2),
