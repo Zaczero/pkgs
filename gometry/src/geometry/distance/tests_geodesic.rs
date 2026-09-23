@@ -705,7 +705,7 @@ fn geodesic_hausdorff_complete_target_uses_bvh_witnesses() -> Result<()> {
     let target = dense_line(0.0, 0.0, 65);
     with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
         let target_parts = target.geodesic_parts(metric)?;
-        assert!(target_parts.geodesic_bvh(metric)?.is_some());
+        assert!(target_parts.geodesic_bvh(metric).is_some());
         geodesic_hausdorff_counters::reset();
         let witness = directed_geodesic_witness(&source, &target, metric);
         let stats = geodesic_hausdorff_counters::snapshot();
@@ -776,7 +776,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
         with_ellipsoid_metric("EPSG:4326", &[&probes, &target], |metric| {
             let target_parts = target.geodesic_parts(metric)?;
             assert_eq!(
-                target_parts.geodesic_bvh(metric)?.is_some(),
+                target_parts.geodesic_bvh(metric).is_some(),
                 expect_bvh,
                 "{name} bvh presence"
             );
@@ -898,7 +898,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
         for (name, target, expected_z, expected_m) in cases {
             let target_parts = target.geodesic_parts(metric)?;
             assert!(
-                target_parts.geodesic_bvh(metric)?.is_some(),
+                target_parts.geodesic_bvh(metric).is_some(),
                 "{name} bvh presence"
             );
             let vertices = [probe];
@@ -975,10 +975,10 @@ fn geodesic_bvh_none_remains_for_empty_and_below_threshold_parts() -> Result<()>
         let small_parts = small.geodesic_parts(metric)?;
         let small_result =
             crate::test_support::assert_no_allocations(|| small_parts.geodesic_bvh(metric));
-        assert!(matches!(small_result, Ok(None)));
+        assert!(small_result.is_none());
 
         let empty_parts = empty.geodesic_parts(metric)?;
-        assert!(matches!(empty_parts.geodesic_bvh(metric), Ok(None)));
+        assert!(empty_parts.geodesic_bvh(metric).is_none());
         Ok(())
     })?;
     Ok(())

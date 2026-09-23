@@ -824,8 +824,8 @@ pub(crate) fn binary_distance_3d(
     if left.axes_all_z() && right.axes_all_z() {
         return Ok(scale_length(
             crate::geometry::distance_3d_with_parts(
-                left.distance_3d_parts()?,
-                right.distance_3d_parts()?,
+                left.distance_3d_parts(),
+                right.distance_3d_parts(),
             )?,
             to_metre,
         ));

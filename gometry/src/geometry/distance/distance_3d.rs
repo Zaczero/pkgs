@@ -208,135 +208,125 @@ pub(crate) fn aabb3_distance_lower_bound(a: Aabb3d, b: Aabb3d) -> f64 {
     downward_scale(scale, downward_sqrt(squared))
 }
 
-fn push_segments_3d(coords: &CoordSeq, out: &mut Vec<Segment3d>) -> crate::error::Result<()> {
+fn push_segments_3d(coords: &CoordSeq, out: &mut Vec<Segment3d>) {
     let p3 = |index: usize| {
         let point = coords.point_at(index);
         [point.x, point.y, point.z().expect("Z column present")]
     };
     match coords.len() {
-        0 => Ok(()),
+        0 => {},
         1 => {
             let point = p3(0);
-            crate::try_push_vec(out, Segment3d {
+            out.push(Segment3d {
                 start: point,
                 end: point,
                 aabb: segment_aabb3(point, point),
-            })
+            });
         },
         n => {
             for index in 0..n - 1 {
                 let (start, end) = (p3(index), p3(index + 1));
-                crate::try_push_vec(out, Segment3d {
+                out.push(Segment3d {
                     start,
                     end,
                     aabb: segment_aabb3(start, end),
-                })?;
+                });
             }
-            Ok(())
         },
     }
 }
 
-fn collect_segments_3d(shape: &Shape, out: &mut Vec<Segment3d>) -> crate::error::Result<()> {
+fn collect_segments_3d(shape: &Shape, out: &mut Vec<Segment3d>) {
     match shape {
         Shape::Point(point) => {
             let p = [point.x, point.y, point.z().expect("Z present")];
-            crate::try_push_vec(out, Segment3d {
+            out.push(Segment3d {
                 start: p,
                 end: p,
                 aabb: segment_aabb3(p, p),
-            })
+            });
         },
         Shape::MultiPoint(coords) => {
             for index in 0..coords.len() {
                 let point = coords.point_at(index);
                 let p = [point.x, point.y, point.z().expect("Z present")];
-                crate::try_push_vec(out, Segment3d {
+                out.push(Segment3d {
                     start: p,
                     end: p,
                     aabb: segment_aabb3(p, p),
-                })?;
+                });
             }
-            Ok(())
         },
         Shape::LineString(coords) => push_segments_3d(coords, out),
         Shape::MultiLineString(lines) => {
             for line in lines {
-                push_segments_3d(line, out)?;
+                push_segments_3d(line, out);
             }
-            Ok(())
         },
         Shape::Polygon(polygon) => {
-            push_segments_3d(polygon.shell.coords(), out)?;
+            push_segments_3d(polygon.shell.coords(), out);
             for hole in polygon.holes.iter() {
-                push_segments_3d(hole.coords(), out)?;
+                push_segments_3d(hole.coords(), out);
             }
-            Ok(())
         },
         Shape::MultiPolygon(polygons) => {
             for polygon in polygons {
-                push_segments_3d(polygon.shell.coords(), out)?;
+                push_segments_3d(polygon.shell.coords(), out);
                 for hole in polygon.holes.iter() {
-                    push_segments_3d(hole.coords(), out)?;
+                    push_segments_3d(hole.coords(), out);
                 }
             }
-            Ok(())
         },
         Shape::GeometryCollection(parts) => {
             for part in parts {
-                collect_segments_3d(part, out)?;
+                collect_segments_3d(part, out);
             }
-            Ok(())
         },
-        Shape::Empty(..) => Ok(()),
+        Shape::Empty(..) => {},
     }
 }
 
 impl Distance3dParts {
-    pub(crate) fn build(shape: &Shape) -> crate::error::Result<Self> {
-        let mut segments = Vec::new();
-        collect_segments_3d(shape, &mut segments)?;
-        Ok(Self {
+    pub(crate) fn build(shape: &Shape) -> Self {
+        let mut segments = Vec::with_capacity(shape.coord_count());
+        collect_segments_3d(shape, &mut segments);
+        Self {
             segments,
             bvh: OnceLock::new(),
-        })
+        }
     }
 
-    fn bvh(&self) -> crate::error::Result<Option<&SegmentBvh3d>> {
+    fn bvh(&self) -> Option<&SegmentBvh3d> {
         self.bvh
-            .get_or_try_init(|| {
+            .get_or_init(|| {
                 if self.segments.len() < BVH_MIN_INDEXED_SEGMENTS {
-                    Ok(None)
+                    None
                 } else {
                     SegmentBvh3d::build(&self.segments)
                 }
             })
-            .map(Option::as_ref)
+            .as_ref()
     }
 }
 
 impl SegmentBvh3d {
-    fn build(segments: &[Segment3d]) -> crate::error::Result<Option<Self>> {
+    fn build(segments: &[Segment3d]) -> Option<Self> {
         let Ok(segment_count) = u32::try_from(segments.len()) else {
-            return Ok(None);
+            return None;
         };
         if segment_count == 0 || segment_count > BvhCode::LEAF_BIT / 2 {
-            return Ok(None);
+            return None;
         }
-        let mut ids = Vec::new();
-        crate::try_reserve_vec(&mut ids, segments.len())?;
+        let mut ids = Vec::with_capacity(segments.len());
         ids.extend(0..segment_count);
         let node_count = 2 * segment_count as usize - 1;
-        let mut aabbs = Vec::new();
-        crate::try_reserve_vec(&mut aabbs, node_count)?;
-        aabbs.resize(node_count, [0.0; 6]);
-        let mut codes = Vec::new();
-        crate::try_reserve_vec(&mut codes, node_count)?;
-        codes.resize(node_count, 0);
-        let mut tree = Self { aabbs, codes };
+        let mut tree = Self {
+            aabbs: vec![[0.0; 6]; node_count],
+            codes: vec![0; node_count],
+        };
         let mut next = 1;
         tree.fill_node(0, &mut next, segments, &mut ids);
-        Ok(Some(tree))
+        Some(tree)
     }
 
     fn fill_node(
@@ -479,7 +469,7 @@ pub(crate) fn distance_3d_with_parts(
         (right, left)
     };
     let mut best = f64::INFINITY;
-    if let Some(bvh) = target.bvh()? {
+    if let Some(bvh) = target.bvh() {
         return bvh.distance_to_parts(probe, &target.segments, best);
     }
     for &left_segment in &probe.segments {
@@ -1059,10 +1049,8 @@ mod bvh_cache_tests {
             bvh: OnceLock::new(),
         };
         let target = fixture();
-        let first = target.bvh().unwrap().unwrap();
-        let cached = crate::test_support::assert_no_allocations(|| target.bvh())
-            .unwrap()
-            .unwrap();
+        let first = target.bvh().unwrap();
+        let cached = crate::test_support::assert_no_allocations(|| target.bvh()).unwrap();
         assert!(std::ptr::eq(first, cached));
         let probe = Distance3dParts {
             segments: vec![Segment3d {

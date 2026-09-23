@@ -186,10 +186,9 @@ pub(crate) fn geodesic_directed_hausdorff_distance<M: GeodesicMetric>(
     metric: &M,
     scratch: &mut GeodesicScratch,
 ) -> Result<GeodesicHausdorffWitness> {
-    let mut target_prepared = Vec::new();
-    crate::boundary::try_reserve_vec(&mut target_prepared, target_parts.segments.len())?;
+    let mut target_prepared = Vec::with_capacity(target_parts.segments.len());
     for &segment in &target_parts.segments {
-        crate::try_push_vec(&mut target_prepared, metric.prepare_segment(&segment)?)?;
+        target_prepared.push(metric.prepare_segment(&segment)?);
     }
 
     let mut best = None;
