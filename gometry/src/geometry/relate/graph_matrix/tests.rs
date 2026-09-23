@@ -161,11 +161,11 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
 fn assert_areal_fast_path(name: &str, left: &Shape, right: &Shape) {
     let expected = graph_relate_shapes(left, right).unwrap();
     let fast = try_areal_relate(left, right)
-        .expect("areal fast-path allocation")
+        .expect("areal fast-path topology")
         .expect("areal fast-path admission");
     assert_eq!(fast.0, expected.0, "{name}: forward");
     let reverse = try_areal_relate(right, left)
-        .expect("reverse areal fast-path allocation")
+        .expect("reverse areal fast-path topology")
         .expect("reverse areal fast-path admission");
     assert_eq!(reverse.0, expected.transpose().0, "{name}: reverse");
 }
@@ -632,7 +632,7 @@ fn direct_areal_relation_declines_unsupported_operands() {
     ] {
         assert!(
             try_areal_relate(left, right)
-                .expect("areal admission allocation")
+                .expect("areal relation topology")
                 .is_none(),
             "{name}: admission"
         );
@@ -1005,7 +1005,7 @@ fn geographic_areal_relation_uses_the_safe_cartesian_fold() {
         let expected = geographic_graph_oracle(&left, &right, frame);
         assert_eq!(
             areal_fold(&left, &right, frame)
-                .expect("safe geographic areal allocation")
+                .expect("safe geographic areal topology")
                 .expect("safe geographic areal admission")
                 .0,
             expected.0,
@@ -1058,7 +1058,7 @@ fn geographic_areal_relation_declines_quotient_aliases() {
     ] {
         assert!(
             areal_fold(&left, &ordinary, frame)
-                .expect("geographic admission allocation")
+                .expect("geographic areal relation")
                 .is_none(),
             "{name}: fold admission"
         );
