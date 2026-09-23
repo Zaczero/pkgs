@@ -3,7 +3,7 @@ use ahash::HashMapExt as _;
 
 use crate::boundary::geographic::invalid_lonlat_error;
 use crate::collections::HashSet;
-use crate::error::{ResourceError, Result};
+use crate::error::Result;
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
 #[cfg(test)]
@@ -830,11 +830,7 @@ fn chart_ring(points: &[XY], shift: f64) -> crate::error::Result<Option<Ring>> {
     if points.len() < 3 {
         return Ok(None);
     }
-    let coordinate_count = points
-        .len()
-        .checked_add(1)
-        .ok_or(ResourceError::SizeOverflow)?;
-    let mut coords = Vec::with_capacity(coordinate_count);
+    let mut coords = Vec::with_capacity(points.len().saturating_add(1));
     for point in points {
         coords.push(XY::new(point.x + shift, point.y).point());
     }
