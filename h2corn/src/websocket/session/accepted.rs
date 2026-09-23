@@ -72,17 +72,17 @@ impl AcceptedOutboundEvent {
 
 /// Where the keepalive is in its cycle.
 ///
-/// One ping is outstanding at a time, so exactly one deadline exists at a
-/// time. Holding "when to ping next" and "when the pong is overdue" as two
+/// One ping is outstanding at a time, so at most one timer exists at a time.
+/// Holding "when to ping next" and "when the pong is overdue" as two
 /// independent instants let the next ping re-arm the deadline the previous one
 /// was being judged by: with the interval shorter than the timeout — the
 /// obvious reading of those two knobs — a peer that never answered was never
 /// timed out, because the deadline moved forward with every ping.
 enum PingPhase {
-    /// Nothing outstanding; the next ping goes out at this instant.
-    Idle { next_ping: TokioInstant },
-    /// A ping is outstanding and has to be answered by this instant.
-    AwaitingPong { deadline: TokioInstant },
+    /// Nothing outstanding; `None` means the next ping has no representable timer.
+    Idle { next_ping: Option<TokioInstant> },
+    /// A ping is outstanding; `None` means its timeout has no representable timer.
+    AwaitingPong { deadline: Option<TokioInstant> },
 }
 
 /// Keepalive schedule for one accepted session. Constructed only when
@@ -95,12 +95,10 @@ struct PingState {
 }
 
 impl PingState {
-    fn new(keep_alive: WebSocketKeepAlive) -> Self {
+    fn new(keep_alive: WebSocketKeepAlive, now: TokioInstant) -> Self {
         Self {
             phase: PingPhase::Idle {
-                next_ping: TokioInstant::now()
-                    .checked_add(keep_alive.interval)
-                    .expect("admitted ping interval fits monotonic clock"),
+                next_ping: now.checked_add(keep_alive.interval),
             },
             interval: keep_alive.interval,
             timeout: keep_alive.timeout,
@@ -109,31 +107,27 @@ impl PingState {
 
     const fn ping_at(&self) -> Option<TokioInstant> {
         match self.phase {
-            PingPhase::Idle { next_ping } => Some(next_ping),
+            PingPhase::Idle { next_ping } => next_ping,
             PingPhase::AwaitingPong { .. } => None,
         }
     }
 
     const fn pong_at(&self) -> Option<TokioInstant> {
         match self.phase {
-            PingPhase::AwaitingPong { deadline } => Some(deadline),
+            PingPhase::AwaitingPong { deadline } => deadline,
             PingPhase::Idle { .. } => None,
         }
     }
 
     /// Without a timeout there is no way to tell an outstanding ping from an
     /// answered one, so the schedule simply continues.
-    fn on_ping_sent(&mut self) {
+    fn on_ping_sent(&mut self, now: TokioInstant) {
         self.phase = match self.timeout {
             Some(timeout) => PingPhase::AwaitingPong {
-                deadline: TokioInstant::now()
-                    .checked_add(timeout)
-                    .expect("admitted ping timeout fits monotonic clock"),
+                deadline: now.checked_add(timeout),
             },
             None => PingPhase::Idle {
-                next_ping: TokioInstant::now()
-                    .checked_add(self.interval)
-                    .expect("admitted ping interval fits monotonic clock"),
+                next_ping: now.checked_add(self.interval),
             },
         };
     }
@@ -141,12 +135,10 @@ impl PingState {
     /// Any pong answers the outstanding ping — h2corn's pings carry no payload
     /// to match against, and a peer that is talking is a peer that is alive.
     /// An unsolicited pong does not postpone the next keepalive.
-    fn on_pong(&mut self) {
+    fn on_pong(&mut self, now: TokioInstant) {
         if matches!(self.phase, PingPhase::AwaitingPong { .. }) {
             self.phase = PingPhase::Idle {
-                next_ping: TokioInstant::now()
-                    .checked_add(self.interval)
-                    .expect("admitted ping interval fits monotonic clock"),
+                next_ping: now.checked_add(self.interval),
             };
         }
     }
@@ -199,7 +191,9 @@ where
             state: AcceptedWebSocketState::default(),
             rx_bytes: 0,
             tx_bytes: 0,
-            ping: config.keep_alive.map(PingState::new),
+            ping: config
+                .keep_alive
+                .map(|keep_alive| PingState::new(keep_alive, TokioInstant::now())),
             pending_inbound: None,
         }
     }
@@ -478,7 +472,7 @@ where
     async fn send_ping_and_arm_timeout(&mut self) -> Result<(), H2CornError> {
         send_encoded_frame(self.transport, 0x9, &[], FrameFlushMode::Immediate, false).await?;
         if let Some(ping) = &mut self.ping {
-            ping.on_ping_sent();
+            ping.on_ping_sent(TokioInstant::now());
         }
         Ok(())
     }
@@ -627,7 +621,7 @@ where
             },
             DecodedFrame::Pong => {
                 if let Some(ping) = &mut self.ping {
-                    ping.on_pong();
+                    ping.on_pong(TokioInstant::now());
                 }
                 Ok(ControlFlow::Continue(()))
             },
@@ -773,5 +767,104 @@ async fn sleep_until_or_pending(deadline: Option<TokioInstant>) {
         sleep_until(deadline).await;
     } else {
         pending::<()>().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use tokio::time::Instant;
+
+    use super::{PingPhase, PingState};
+    use crate::config::WebSocketKeepAlive;
+
+    fn instant_without_one_second_of_headroom(base: Instant) -> Instant {
+        let mut fits = 0_u64;
+        let mut overflows = u64::MAX;
+        while fits.abs_diff(overflows) > 1 {
+            let candidate = fits.midpoint(overflows);
+            if base.checked_add(Duration::from_secs(candidate)).is_some() {
+                fits = candidate;
+            } else {
+                overflows = candidate;
+            }
+        }
+        base.checked_add(Duration::from_secs(fits))
+            .expect("last whole-second instant fits")
+    }
+
+    #[test]
+    fn finite_ping_timeout_and_pong_rearm_keep_their_deadlines() {
+        let now = Instant::now();
+        let interval = Duration::from_secs(3);
+        let timeout = Duration::from_secs(7);
+        let mut ping = PingState::new(
+            WebSocketKeepAlive {
+                interval,
+                timeout: Some(timeout),
+            },
+            now,
+        );
+
+        let first_ping = now.checked_add(interval).expect("test ping interval fits");
+        assert_eq!(ping.ping_at(), Some(first_ping));
+        assert_eq!(ping.pong_at(), None);
+
+        ping.on_ping_sent(first_ping);
+        let pong_deadline = first_ping.checked_add(timeout).expect("test timeout fits");
+        assert_eq!(ping.ping_at(), None);
+        assert_eq!(ping.pong_at(), Some(pong_deadline));
+
+        let reply_at = first_ping
+            .checked_add(Duration::from_secs(2))
+            .expect("test reply instant fits");
+        ping.on_pong(reply_at);
+        assert_eq!(
+            ping.ping_at(),
+            Some(
+                reply_at
+                    .checked_add(interval)
+                    .expect("rearmed interval fits")
+            )
+        );
+        assert_eq!(ping.pong_at(), None);
+    }
+
+    #[test]
+    fn unrepresentable_ping_and_pong_deadlines_leave_no_timer() {
+        let now = Instant::now();
+        let later = instant_without_one_second_of_headroom(now);
+        let timeout = Duration::from_secs(1);
+        assert!(now.checked_add(timeout).is_some());
+        assert!(later.checked_add(timeout).is_none());
+
+        let idle = PingState::new(
+            WebSocketKeepAlive {
+                interval: timeout,
+                timeout: None,
+            },
+            later,
+        );
+        assert_eq!(idle.ping_at(), None);
+
+        let mut awaiting_pong = PingState::new(
+            WebSocketKeepAlive {
+                interval: Duration::from_secs(1),
+                timeout: Some(timeout),
+            },
+            now,
+        );
+        awaiting_pong.on_ping_sent(later);
+        assert!(matches!(awaiting_pong.phase, PingPhase::AwaitingPong {
+            deadline: None
+        }));
+        assert_eq!(awaiting_pong.ping_at(), None);
+        assert_eq!(awaiting_pong.pong_at(), None);
+
+        awaiting_pong.on_pong(later);
+        assert!(matches!(awaiting_pong.phase, PingPhase::Idle {
+            next_ping: None
+        }));
     }
 }

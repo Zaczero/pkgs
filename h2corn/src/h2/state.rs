@@ -335,7 +335,8 @@ impl RapidResetGuard {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ConnectionDrainState {
     Accepting,
-    Draining { deadline: Option<Instant> },
+    PeerDraining,
+    ServerDraining { deadline: Option<Instant> },
 }
 
 /// HTTP/2 connection-preface progress. A connection cannot be both awaiting
@@ -349,10 +350,28 @@ pub(super) enum ClientPrefaceState {
 }
 
 impl ConnectionDrainState {
-    pub(super) const fn deadline(self) -> Option<Instant> {
+    pub(super) const fn server_deadline(self) -> Option<Instant> {
         match self {
-            Self::Accepting => None,
-            Self::Draining { deadline } => deadline,
+            Self::ServerDraining { deadline } => deadline,
+            Self::Accepting | Self::PeerDraining => None,
+        }
+    }
+
+    pub(super) const fn uses_keep_alive_timeout(self) -> bool {
+        matches!(self, Self::Accepting | Self::PeerDraining)
+    }
+
+    pub(super) fn should_stop(
+        self,
+        has_outstanding_local_work: bool,
+        now: impl FnOnce() -> Instant,
+    ) -> bool {
+        match self {
+            Self::Accepting => false,
+            Self::PeerDraining => !has_outstanding_local_work,
+            Self::ServerDraining { deadline } => {
+                !has_outstanding_local_work || deadline.is_some_and(|deadline| now() >= deadline)
+            },
         }
     }
 }
@@ -772,12 +791,8 @@ impl<R, W> H2ConnectionState<R, W> {
     pub(super) fn refresh_header_deadline(&mut self, stream_id: StreamId) {
         let key = RequestInputDeadlineKey::headers(stream_id);
         if let Some(timeout) = self.context.config.timeout_request_header {
-            self.request_deadlines.schedule(
-                key,
-                TokioInstant::now()
-                    .checked_add(timeout)
-                    .expect("admitted request timeout fits monotonic clock"),
-            );
+            self.request_deadlines
+                .reschedule_after(key, TokioInstant::now(), timeout);
         } else {
             self.request_deadlines.cancel(key);
         }
@@ -797,12 +812,10 @@ impl<R, W> H2ConnectionState<R, W> {
             should_schedule,
             self.context.config.timeout_request_body_idle,
         ) {
-            (true, Some(timeout)) => self.request_deadlines.schedule(
-                key,
-                TokioInstant::now()
-                    .checked_add(timeout)
-                    .expect("admitted request timeout fits monotonic clock"),
-            ),
+            (true, Some(timeout)) => {
+                self.request_deadlines
+                    .reschedule_after(key, TokioInstant::now(), timeout);
+            },
             _ => self.request_deadlines.cancel(key),
         }
     }
@@ -873,11 +886,8 @@ impl<R, W> H2ConnectionState<R, W> {
         if self.drain_state == ConnectionDrainState::Accepting {
             return false;
         }
-        !self.has_outstanding_local_work()
-            || self
-                .drain_state
-                .deadline()
-                .is_some_and(|deadline| Instant::now() >= deadline)
+        self.drain_state
+            .should_stop(self.has_outstanding_local_work(), Instant::now)
     }
 
     pub(super) fn should_refuse_new_streams(&self) -> bool {
@@ -954,14 +964,16 @@ mod tests {
     use std::pin::Pin;
     use std::sync::Arc;
     use std::task::{Context, Poll, Waker};
+    use std::time::{Duration, Instant};
 
     use bytes::Bytes;
     use tokio::sync::{mpsc, oneshot};
 
     use super::{
-        ClosedStreamDisposition, INPUT_CHUNK_MAX_BYTES, INPUT_COPY_MAX_FRAGMENT_BYTES,
-        InboundStream, InputDelivery, ReceiveWindowState, RequestInputClose, RequestInputDeadline,
-        RequestInputDeadlineKey, RequestTaskCancellation, RequestTasks,
+        ClosedStreamDisposition, ConnectionDrainState, INPUT_CHUNK_MAX_BYTES,
+        INPUT_COPY_MAX_FRAGMENT_BYTES, InboundStream, InputDelivery, ReceiveWindowState,
+        RequestInputClose, RequestInputDeadline, RequestInputDeadlineKey, RequestTaskCancellation,
+        RequestTasks,
     };
     use crate::h2_frame::{STREAM_ID_MASK, StreamId, WindowIncrement};
     use crate::runtime::{H2InputCreditQueue, StreamInput};
@@ -1004,6 +1016,41 @@ mod tests {
             },
             other => panic!("expected HTTP data batch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn server_drain_without_deadline_stops_after_local_work_without_keepalive() {
+        let now = Instant::now();
+        let drain = ConnectionDrainState::ServerDraining { deadline: None };
+
+        assert!(!drain.uses_keep_alive_timeout());
+        assert!(!drain.should_stop(true, || now));
+        assert!(drain.should_stop(false, || now));
+
+        let future = now
+            .checked_add(Duration::from_secs(3600))
+            .expect("test deadline fits");
+        let timed_drain = ConnectionDrainState::ServerDraining {
+            deadline: Some(future),
+        };
+        assert!(!timed_drain.should_stop(true, || now));
+        assert!(
+            ConnectionDrainState::ServerDraining {
+                deadline: Some(now)
+            }
+            .should_stop(true, || now)
+        );
+    }
+
+    #[test]
+    fn peer_drain_keeps_idle_timeout_separate_from_server_grace() {
+        let now = Instant::now();
+        let peer_drain = ConnectionDrainState::PeerDraining;
+
+        assert!(peer_drain.uses_keep_alive_timeout());
+        assert!(!peer_drain.should_stop(true, || now));
+        assert!(peer_drain.should_stop(false, || now));
+        assert!(!ConnectionDrainState::Accepting.should_stop(false, || now));
     }
 
     #[test]

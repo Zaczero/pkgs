@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tokio::time::Instant;
 
 /// A lazily allocated, generation-stamped deadline index.
@@ -59,6 +61,16 @@ where
                 at,
                 generation,
             });
+        }
+    }
+
+    /// Replace `key` when its relative deadline is representable, or remove
+    /// its previous deadline when the monotonic clock cannot represent it.
+    pub(super) fn reschedule_after(&mut self, key: K, now: Instant, timeout: Duration) {
+        if let Some(at) = now.checked_add(timeout) {
+            self.schedule(key, at);
+        } else {
+            self.cancel(key);
         }
     }
 
@@ -167,6 +179,48 @@ mod tests {
             assert_eq!(deadlines.next(), Some((key, now)));
             assert_eq!(deadlines.pop_expired(now), Some((key, now)));
         }
+        assert_eq!(deadlines.next(), None);
+    }
+
+    fn instant_without_one_second_of_headroom(base: Instant) -> Instant {
+        let mut fits = 0_u64;
+        let mut overflows = u64::MAX;
+        while fits.abs_diff(overflows) > 1 {
+            let candidate = fits.midpoint(overflows);
+            if base.checked_add(Duration::from_secs(candidate)).is_some() {
+                fits = candidate;
+            } else {
+                overflows = candidate;
+            }
+        }
+        base.checked_add(Duration::from_secs(fits))
+            .expect("last whole-second instant fits")
+    }
+
+    #[test]
+    fn unrepresentable_reschedule_cancels_the_previous_deadline() {
+        let now = Instant::now();
+        let timeout = Duration::from_secs(1);
+        let later = instant_without_one_second_of_headroom(now);
+        assert!(now.checked_add(timeout).is_some());
+        assert!(later.checked_add(timeout).is_none());
+        let old_panic = std::panic::catch_unwind(|| {
+            later
+                .checked_add(timeout)
+                .expect("old at-use deadline path")
+        })
+        .expect_err("old at-use deadline path must panic");
+        drop(old_panic);
+
+        let mut deadlines = DeadlineQueue::default();
+        let ordinary_timeout = Duration::from_secs(3);
+        let expected = now
+            .checked_add(ordinary_timeout)
+            .expect("ordinary test deadline fits");
+        deadlines.reschedule_after(1_u32, now, ordinary_timeout);
+        assert_eq!(deadlines.next(), Some((1, expected)));
+
+        deadlines.reschedule_after(1, later, timeout);
         assert_eq!(deadlines.next(), None);
     }
 }
