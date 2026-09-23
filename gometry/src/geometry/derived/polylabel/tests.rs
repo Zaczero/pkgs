@@ -275,8 +275,8 @@ fn zero_radius_boundary_point_uses_closed_membership() {
     let Shape::Point(point) = result else {
         panic!("degenerate maximum circle must emit its point center");
     };
-    assert!(shape.covers_point(point).unwrap());
-    assert!(!shape.contains_point(point).unwrap());
+    assert!(shape.covers_point(point));
+    assert!(!shape.contains_point(point));
 }
 
 #[test]
@@ -346,7 +346,7 @@ fn source_tangent_does_not_enter_inscribed_circle() {
         .unwrap(),
         Vec::new(),
     ));
-    assert!(source.contains_point(center).unwrap());
+    assert!(source.contains_point(center));
     assert!(!source_boundary_enters_candidate(&source, &points, true).unwrap());
 }
 
@@ -429,7 +429,7 @@ fn source_hole_inside_candidate_is_rejected_without_boundary_contact() {
         ],
     ));
     let candidate = circle_points(Point::new_raw_xy(5.0, 3.0), 3.0);
-    assert!(source.contains_point(Point::new_raw_xy(5.0, 3.0)).unwrap());
+    assert!(source.contains_point(Point::new_raw_xy(5.0, 3.0)));
     assert!(source_boundary_enters_candidate(&source, &candidate, true).unwrap());
 }
 
@@ -467,12 +467,8 @@ fn enclosed_hole_cycle_is_rejected_even_when_candidate_endpoints_are_covered() {
         Point::new_raw_xy(25.0, 50.0),
         Point::new_raw_xy(40.0, 35.0),
     ];
-    assert!(
-        source
-            .contains_point(Point::new_raw_xy(40.0, 50.0))
-            .unwrap()
-    );
-    assert!(!source_vertex_outside_candidate(&source, &candidate).unwrap());
+    assert!(source.contains_point(Point::new_raw_xy(40.0, 50.0)));
+    assert!(!source_vertex_outside_candidate(&source, &candidate));
     assert!(source_hole_is_enclosed(&source, &candidate, true));
 }
 
@@ -500,8 +496,8 @@ fn inward_chord_is_rejected_after_endpoint_only_checks_pass() {
         Point::new_raw_xy(1.5, 4.0),
         Point::new_raw_xy(4.0, 1.5),
     ];
-    assert!(source.contains_point(Point::new_raw_xy(4.0, 4.0)).unwrap());
-    assert!(!source_vertex_outside_candidate(&source, &candidate).unwrap());
+    assert!(source.contains_point(Point::new_raw_xy(4.0, 4.0)));
+    assert!(!source_vertex_outside_candidate(&source, &candidate));
     assert!(source_boundary_enters_candidate(&source, &candidate, true).unwrap());
 }
 

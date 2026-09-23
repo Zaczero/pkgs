@@ -617,7 +617,7 @@ impl ShellCoverageIndex {
         })
     }
 
-    fn covers_xy(&self, x: f64, y: f64) -> Result<bool> {
+    fn covers_xy(&self, x: f64, y: f64) -> bool {
         self.point_index.covers_point(Point::new_raw_xy(x, y))
     }
 
@@ -631,7 +631,7 @@ impl ShellCoverageIndex {
             return Ok(true);
         }
         for point in points {
-            if !self.covers_xy(point.x, point.y)? {
+            if !self.covers_xy(point.x, point.y) {
                 return Ok(false);
             }
         }
@@ -671,7 +671,7 @@ impl ShellCoverageIndex {
                     start: previous_point,
                     end: *point,
                 });
-                if !self.covers_xy(midpoint.x, midpoint.y)? {
+                if !self.covers_xy(midpoint.x, midpoint.y) {
                     return Ok(false);
                 }
                 previous_projection = projection;
@@ -889,11 +889,10 @@ mod tests {
             Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
             Vec::new(),
         ));
-        assert!(hole.iter().all(|point| {
-            shell_shape
-                .covers_point(Point::new_raw_xy(point.x, point.y))
-                .unwrap()
-        }));
+        assert!(
+            hole.iter()
+                .all(|point| { shell_shape.covers_point(Point::new_raw_xy(point.x, point.y)) })
+        );
         let polygon = assemble_region_polygons(vec![shell, hole]).unwrap();
 
         assert_eq!(polygon.len(), 1);
@@ -942,11 +941,11 @@ mod tests {
         // The second negative ring is inside the first. A completed polygon
         // would exclude it, but assembly owns each negative ring against the
         // shell before those holes become polygon state.
-        assert!(inner_hole.iter().all(|point| {
-            !holed_shell
-                .covers_point(Point::new_raw_xy(point.x, point.y))
-                .unwrap()
-        }));
+        assert!(
+            inner_hole
+                .iter()
+                .all(|point| { !holed_shell.covers_point(Point::new_raw_xy(point.x, point.y)) })
+        );
 
         let polygons = assemble_region_polygons(vec![shell, outer_hole, inner_hole]).unwrap();
 

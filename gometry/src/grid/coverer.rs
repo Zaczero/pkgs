@@ -382,7 +382,7 @@ impl AreaRectClassifier {
             f64::midpoint(bounds.minx(), bounds.maxx()),
             f64::midpoint(bounds.miny(), bounds.maxy()),
         );
-        if self.tester.covers_point(center)? {
+        if self.tester.covers_point(center) {
             Ok(RectClass::Interior)
         } else if touches_closed {
             Ok(RectClass::Boundary)

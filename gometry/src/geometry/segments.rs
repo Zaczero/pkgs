@@ -562,7 +562,7 @@ fn nearest_point_with_segments(
     geometry: &Shape,
     pairs: &[(Point, Point)],
 ) -> Result<Option<NearestPointResult>> {
-    if geometry.contains_point(point)? {
+    if geometry.contains_point(point) {
         return Ok(Some(NearestPointResult {
             point,
             distance_key: point_pair_distance_key(point.xy(), point.xy()),

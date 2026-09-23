@@ -293,7 +293,7 @@ pub(crate) fn segment_offends_row(
     // Overlap or inexact contact: the midpoint of a matched interface would
     // coincide with the neighbor's own segment — an unmatched one touching
     // (or entering) the neighbor is a T-join, sliver, or true overlap.
-    if other.shape.covers_point(midpoint)? {
+    if other.shape.covers_point(midpoint) {
         return Ok(true);
     }
     // Proper crossing without containment (the bowtie-style overlap whose

@@ -190,17 +190,9 @@ fn classify_relate(ctx: &RelateCoverContext, id: CellId) -> CellClass {
     }
     let covered = vertices
         .iter()
-        .filter(|vertex| {
-            ctx.tester
-                .covers_point(**vertex)
-                .expect("test source admits")
-        })
+        .filter(|vertex| ctx.tester.covers_point(**vertex))
         .count();
-    let center_hit = covered < 4
-        && ctx
-            .tester
-            .covers_point(cell.center_lonlat())
-            .expect("test source admits");
+    let center_hit = covered < 4 && ctx.tester.covers_point(cell.center_lonlat());
     if rect.crosses_seam() || rect.is_full_lng() {
         // Mirror production: fail-open Boundary for outer, but certify
         // Interior when every positive-width lon window is covered.
@@ -481,8 +473,8 @@ fn bowtie_polygon_keeps_both_filled_lobes_in_s2_cover() {
     ));
     let left_lobe = Point::new_raw_xy(0.5, 1.5);
     let right_lobe = Point::new_raw_xy(1.5, 0.5);
-    assert!(source.covers_point(left_lobe).unwrap());
-    assert!(source.covers_point(right_lobe).unwrap());
+    assert!(source.covers_point(left_lobe));
+    assert!(source.covers_point(right_lobe));
 
     let covering = fixed(8).cover_identity(&source).expect("bowtie cover");
     let outer = covering.outer();
@@ -1017,7 +1009,7 @@ fn fixed_level_box_covering_is_complete_and_exact() {
     for &id in &interior {
         assert!(has(&outer, id));
         let center = Cell::from_id(id).center_lonlat();
-        assert!(source.covers_point(center).unwrap());
+        assert!(source.covers_point(center));
     }
     // The exact covering is materially tighter than the bbox: cells
     // far outside the box never appear.
@@ -1230,15 +1222,9 @@ fn polar_kite_interior_certificates_are_sound() {
         .expect("small fixed-level covering is within budget");
     for id in covering.interior() {
         let cell = Cell::from_id(id);
-        assert!(
-            source.covers_point(cell.center_lonlat()).unwrap(),
-            "{id:?} center"
-        );
+        assert!(source.covers_point(cell.center_lonlat()), "{id:?} center");
         for vertex in cell.vertices_lonlat() {
-            assert!(
-                source.covers_point(vertex).unwrap(),
-                "{id:?} vertex {vertex:?}"
-            );
+            assert!(source.covers_point(vertex), "{id:?} vertex {vertex:?}");
         }
         // Edge midpoints are also exact cell points (children's shared
         // corners): sample via the four children's vertices.
@@ -1246,7 +1232,7 @@ fn polar_kite_interior_certificates_are_sound() {
             for child in children {
                 for vertex in Cell::from_id(child).vertices_lonlat() {
                     assert!(
-                        source.covers_point(vertex).unwrap(),
+                        source.covers_point(vertex),
                         "{id:?} child vertex {vertex:?}"
                     );
                 }

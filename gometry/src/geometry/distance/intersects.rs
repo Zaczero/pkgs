@@ -47,8 +47,8 @@ pub(crate) fn squared_space_safe(parts: &DistanceParts) -> bool {
 /// `Shape`s (raycast over rings), so callers can answer containment before
 /// paying to build lazy linework; a negative answer still needs the boundary
 /// crossing test.
-pub(crate) fn area_overlap_probe(left: &Shape, right: &Shape) -> crate::error::Result<bool> {
-    Ok(quick_area_overlap(left, right)?.is_some())
+pub(crate) fn area_overlap_probe(left: &Shape, right: &Shape) -> bool {
+    quick_area_overlap(left, right).is_some()
 }
 
 /// The isolated-point and segment-contact halves of the parts oracle, for
@@ -62,16 +62,16 @@ pub(crate) fn parts_boundary_contact(
     left_parts: &DistanceParts,
     right: &Shape,
     right_parts: &DistanceParts,
-) -> crate::error::Result<bool> {
+) -> bool {
     for &point in &left_parts.point_only {
-        if parts_covers_point(right, right_parts, point)? {
-            return Ok(true);
+        if parts_covers_point(right, right_parts, point) {
+            return true;
         }
     }
     for &point in &right_parts.point_only {
-        if parts_covers_point(left, left_parts, point)? {
-            return Ok(true);
+        if parts_covers_point(left, left_parts, point) {
+            return true;
         }
     }
-    Ok(parts_segments_cross(left_parts, right_parts))
+    parts_segments_cross(left_parts, right_parts)
 }

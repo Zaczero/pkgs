@@ -1126,9 +1126,9 @@ fn overlay_lines(
             any_line |= line;
             odd_lines ^= line;
         }
-        let result_covers = polygon_indexes.iter().try_fold(false, |covered, polygon| {
-            Ok::<_, crate::error::Error>(covered || polygon.covers_point(midpoint)?)
-        })?;
+        let result_covers = polygon_indexes
+            .iter()
+            .any(|polygon| polygon.covers_point(midpoint));
         let keep = match op {
             OverlayOp::Intersection => all_covered && !result_covers,
             OverlayOp::Union => any_line && !result_covers,
@@ -1190,9 +1190,9 @@ fn overlay_points(
                 membership.iter().filter(|&&present| present).count() % 2 == 1
             },
         };
-        let covered = polygon_indexes.iter().try_fold(false, |covered, polygon| {
-            Ok::<_, crate::error::Error>(covered || polygon.covers_point(point)?)
-        })?;
+        let covered = polygon_indexes
+            .iter()
+            .any(|polygon| polygon.covers_point(point));
         if keep
             && !covered
             && !lines.iter().any(|line| {

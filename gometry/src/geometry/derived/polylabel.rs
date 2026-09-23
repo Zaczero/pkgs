@@ -1190,13 +1190,13 @@ fn source_hole_is_enclosed(shape: &Shape, candidate: &[Point], counter_clockwise
 }
 
 #[cfg(test)]
-fn source_vertex_outside_candidate(shape: &Shape, candidate: &[Point]) -> Result<bool> {
+fn source_vertex_outside_candidate(shape: &Shape, candidate: &[Point]) -> bool {
     for &point in candidate {
-        if !shape.covers_point(point)? {
-            return Ok(true);
+        if !shape.covers_point(point) {
+            return true;
         }
     }
-    Ok(false)
+    false
 }
 
 pub(crate) fn polylabel_center_radius(
@@ -1211,7 +1211,7 @@ pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Sha
     // A zero or subnormal clearance cannot support a stable fixed-resolution
     // ring; closed membership, not the rounded radius, decides whether the
     // emitted point belongs to source.
-    if center.x.is_finite() && center.y.is_finite() && shape.covers_point(center)? {
+    if center.x.is_finite() && center.y.is_finite() && shape.covers_point(center) {
         Ok(Shape::Point(center))
     } else {
         Err(crate::geometry::GeometryErrorKind::unrepresentable_output(
@@ -1536,7 +1536,7 @@ impl<'a> PolylabelField<'a> {
         // so few probes.
         let inside = match inherited_sign {
             Some(inside) => inside,
-            None => self.shape.contains_point(center)?,
+            None => self.shape.contains_point(center),
         };
         let signed = if inside { distance } else { -distance };
         let cell_radius = self

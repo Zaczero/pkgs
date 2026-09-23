@@ -25,7 +25,7 @@ impl PreparedPlan {
         // else by construction).
         let bounds = self.bounds().zip(other.bounds());
         let overlapping = bounds.is_some_and(|(left, right)| left.intersects(right));
-        if overlapping && quick_area_overlap(self.shape(), other.shape())?.is_some() {
+        if overlapping && quick_area_overlap(self.shape(), other.shape()).is_some() {
             return Ok(0.0);
         }
         // Puntal-vs-(few-segment lineal/areal): the disjoint distance is the min
@@ -50,7 +50,7 @@ impl PreparedPlan {
         let self_parts = self.distance_parts()?;
         let other_parts = other.distance_parts()?;
         if overlapping
-            && parts_boundary_contact(self.shape(), self_parts, other.shape(), other_parts)?
+            && parts_boundary_contact(self.shape(), self_parts, other.shape(), other_parts)
         {
             return Ok(0.0);
         }
@@ -79,7 +79,7 @@ impl PreparedPlan {
         }
         // Disjoint boxes cannot intersect — see `distance`.
         let overlapping = bounds.is_some_and(|(left, right)| left.intersects(right));
-        if overlapping && quick_area_overlap(self.shape(), other.shape())?.is_some() {
+        if overlapping && quick_area_overlap(self.shape(), other.shape()).is_some() {
             return Ok(true);
         }
         // Puntal brute finished through the same helper as distance.
@@ -98,7 +98,7 @@ impl PreparedPlan {
         let self_parts = self.distance_parts()?;
         let other_parts = other.distance_parts()?;
         if overlapping
-            && parts_boundary_contact(self.shape(), self_parts, other.shape(), other_parts)?
+            && parts_boundary_contact(self.shape(), self_parts, other.shape(), other_parts)
         {
             return Ok(true);
         }
@@ -237,10 +237,10 @@ impl PreparedPlan {
         bvh: Option<&FacetBvh>,
         stack: &mut Vec<u32>,
     ) -> Result<f64> {
-        let covered = match tester {
-            None => parts_covers_point(shape, parts, point)?,
-            Some(tester) => tester.covers_point(point)?,
-        };
+        let covered = tester.map_or_else(
+            || parts_covers_point(shape, parts, point),
+            |tester| tester.covers_point(point),
+        );
         if covered {
             return Ok(0.0);
         }
@@ -343,10 +343,10 @@ impl PreparedPlan {
         bvh: Option<&FacetBvh>,
         stack: &mut Vec<u32>,
     ) -> Result<bool> {
-        let covered = match tester {
-            None => parts_covers_point(shape, parts, point)?,
-            Some(tester) => tester.covers_point(point)?,
-        };
+        let covered = tester.map_or_else(
+            || parts_covers_point(shape, parts, point),
+            |tester| tester.covers_point(point),
+        );
         if covered {
             return Ok(true);
         }
@@ -505,9 +505,14 @@ impl PreparedPlan {
         // the common area-overlap case never builds `distance_parts`. The
         // boundary-crossing test — and ONLY it — pays to build the prepared
         // linework, and only when containment is negative.
-        if area_overlap_probe(left, right)? {
+        if area_overlap_probe(left, right) {
             return Ok(true);
         }
-        parts_boundary_contact(left, self.distance_parts()?, right, other.distance_parts()?)
+        Ok(parts_boundary_contact(
+            left,
+            self.distance_parts()?,
+            right,
+            other.distance_parts()?,
+        ))
     }
 }

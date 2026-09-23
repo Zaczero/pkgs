@@ -1918,7 +1918,7 @@ pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<b
     let mut budget = ExpansionBudget::new("intersects", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     for [x, y] in bounds.corners() {
-        if crate::geometry::cartesian_point_location(shape, Point::new_raw_xy(x, y))?
+        if crate::geometry::cartesian_point_location(shape, Point::new_raw_xy(x, y))
             != Loc::Exterior
         {
             return Ok(true);

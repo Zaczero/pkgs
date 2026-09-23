@@ -14,11 +14,9 @@
 use std::cmp::Ordering;
 use std::ops::Range;
 
-use crate::error::Result;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{Loc, Point, Polygon, Ring, Shape, XY, point_on_segment, same_point};
-use crate::try_reserve_vec;
 
 /// Whether a stored ring supplies areal winding or collapsed line support.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -74,84 +72,74 @@ impl<'a> SourceSupport<'a> {
         }
     }
 
-    fn from_shape(shape: &'a Shape) -> Result<Self> {
+    fn from_shape(shape: &'a Shape) -> Self {
         let mut source = Self::new();
-        source.append_shape(shape)?;
-        Ok(source)
+        source.append_shape(shape);
+        source
     }
 
-    fn append_shape(&mut self, shape: &'a Shape) -> Result<()> {
+    fn append_shape(&mut self, shape: &'a Shape) {
         match shape {
             Shape::Point(point) => {
-                try_reserve_vec(&mut self.points, 1)?;
                 self.points.push(point.xy());
             },
             Shape::MultiPoint(points) => {
-                for point in points.points() {
-                    try_reserve_vec(&mut self.points, 1)?;
-                    self.points.push(point.xy());
-                }
+                self.points.reserve(points.len());
+                self.points.extend(points.points().map(|point| point.xy()));
             },
-            Shape::LineString(line) => self.append_curve(line.as_coords())?,
+            Shape::LineString(line) => self.append_curve(line.as_coords()),
             Shape::MultiLineString(lines) => {
                 for line in lines {
-                    self.append_curve(line.as_coords())?;
+                    self.append_curve(line.as_coords());
                 }
             },
-            Shape::Polygon(polygon) => self.append_polygon(polygon)?,
+            Shape::Polygon(polygon) => self.append_polygon(polygon),
             Shape::MultiPolygon(polygons) => {
                 for polygon in polygons {
-                    self.append_polygon(polygon)?;
+                    self.append_polygon(polygon);
                 }
             },
             Shape::GeometryCollection(geometries) => {
                 for geometry in geometries {
-                    self.append_shape(geometry)?;
+                    self.append_shape(geometry);
                 }
             },
             Shape::Empty(..) => {},
         }
-        Ok(())
     }
 
-    fn append_polygon(&mut self, polygon: &'a Polygon) -> Result<()> {
+    fn append_polygon(&mut self, polygon: &'a Polygon) {
         let first = self.rings.len();
+        self.rings.reserve(polygon.holes.len().wrapping_add(1));
         for ring in polygon.rings() {
-            try_reserve_vec(&mut self.rings, 1)?;
             self.rings.push(RingView {
                 xs: ring.xs(),
                 ys: ring.ys(),
                 kind: ring_kind(ring),
             });
         }
-        try_reserve_vec(&mut self.polygons, 1)?;
         self.polygons.push(first..self.rings.len());
-        Ok(())
     }
 
-    fn append_curve(&mut self, curve: &'a crate::geometry::CoordSeq) -> Result<()> {
-        try_reserve_vec(&mut self.curves, 1)?;
+    fn append_curve(&mut self, curve: &'a crate::geometry::CoordSeq) {
         self.curves.push(CurveView {
             xs: curve.xs(),
             ys: curve.ys(),
         });
         if !has_nonzero_segment(curve.xs(), curve.ys()) {
+            self.points.reserve(curve.len());
             for (&x, &y) in curve.xs().iter().zip(curve.ys()) {
-                try_reserve_vec(&mut self.points, 1)?;
                 self.points.push(XY::new(x, y));
             }
         }
-        Ok(())
     }
 
-    fn location(&self, point: Point) -> Result<Loc> {
+    fn location(&self, point: Point) -> Loc {
         let query = point.xy();
-        let mut windings = Vec::new();
-        try_reserve_vec(&mut windings, self.rings.len())?;
+        let mut windings = Vec::with_capacity(self.rings.len());
         let mut incident = false;
         for ring in &self.rings {
             let probe = ring_probe_columns(ring.xs, ring.ys, query);
-            try_reserve_vec(&mut windings, 1)?;
             windings.push(if ring.kind == RingKind::Winding {
                 probe.winding
             } else {
@@ -165,22 +153,14 @@ impl<'a> SourceSupport<'a> {
             .iter()
             .any(|&candidate| same_point(candidate, query));
         let mut collapsed_points = Vec::new();
-        let collapsed_capacity = self
-            .rings
-            .iter()
-            .filter(|ring| ring.kind == RingKind::Collapsed)
-            .try_fold(0_usize, |count, ring| {
-                count
-                    .checked_add(segment_count(ring.xs, ring.ys))
-                    .ok_or(crate::error::ResourceError::SizeOverflow)
-            })?;
-        try_reserve_vec(&mut collapsed_points, collapsed_capacity)?;
         let mut rays = Vec::new();
-        try_reserve_vec(&mut rays, self.ray_capacity()?)?;
         for (ring_id, ring) in self.rings.iter().enumerate() {
             for_each_ring_segment(ring.xs, ring.ys, |start, end| {
                 if same_point(start, end) {
-                    if ring.kind == RingKind::Collapsed && same_point(start, query) {
+                    if ring.kind == RingKind::Collapsed
+                        && same_point(start, query)
+                        && collapsed_points.last().copied() != Some(ring_id)
+                    {
                         collapsed_points.push(ring_id);
                     }
                     return;
@@ -236,11 +216,11 @@ impl<'a> SourceSupport<'a> {
         }
 
         if !incident {
-            return Ok(self.location_without_contact(&windings, query, explicit_point));
+            return self.location_without_contact(&windings, query, explicit_point);
         }
 
         rays.sort_unstable_by(|left, right| compare_rays(query, left.end, right.end));
-        let groups = ray_groups(query, &rays)?;
+        let groups = ray_groups(query, &rays);
         let endpoint_parity = self.curve_endpoint_parity(query);
         let mut state = LocalStar {
             source: self,
@@ -255,15 +235,13 @@ impl<'a> SourceSupport<'a> {
         state.location()
     }
 
-    fn area_covers(&self, point: Point) -> Result<bool> {
+    fn area_covers(&self, point: Point) -> bool {
         let query = point.xy();
-        let mut windings = Vec::new();
-        try_reserve_vec(&mut windings, self.rings.len())?;
+        let mut windings = Vec::with_capacity(self.rings.len());
         let mut incident = false;
         for ring in &self.rings {
             let probe = ring_probe_columns(ring.xs, ring.ys, query);
             incident |= probe.incident;
-            try_reserve_vec(&mut windings, 1)?;
             windings.push(if ring.kind == RingKind::Winding {
                 probe.winding
             } else {
@@ -271,11 +249,10 @@ impl<'a> SourceSupport<'a> {
             });
         }
         if !incident {
-            return Ok(self.area_occupied(&windings));
+            return self.area_occupied(&windings);
         }
 
         let mut rays = Vec::new();
-        try_reserve_vec(&mut rays, self.ray_capacity()?)?;
         for (ring_id, ring) in self.rings.iter().enumerate() {
             for_each_ring_segment(ring.xs, ring.ys, |start, end| {
                 if same_point(start, end) || !point_on_segment(query.point(), start, end) {
@@ -300,10 +277,10 @@ impl<'a> SourceSupport<'a> {
             });
         }
         if rays.is_empty() {
-            return Ok(false);
+            return false;
         }
         rays.sort_unstable_by(|left, right| compare_rays(query, left.end, right.end));
-        let groups = ray_groups(query, &rays)?;
+        let groups = ray_groups(query, &rays);
         let mut star = LocalStar {
             source: self,
             query,
@@ -314,7 +291,7 @@ impl<'a> SourceSupport<'a> {
             explicit_point: false,
             collapsed_points: Vec::new(),
         };
-        Ok(matches!(star.location()?, Loc::Interior | Loc::Boundary))
+        matches!(star.location(), Loc::Interior | Loc::Boundary)
     }
 
     fn location_without_contact(&self, windings: &[i64], query: XY, explicit_point: bool) -> Loc {
@@ -381,29 +358,6 @@ impl<'a> SourceSupport<'a> {
                     ^ same_point(XY::new(last_x, last_y), query))
         })
     }
-
-    fn ray_capacity(&self) -> Result<usize> {
-        let mut count = 0_usize;
-        for ring in &self.rings {
-            count = count
-                .checked_add(
-                    segment_count(ring.xs, ring.ys)
-                        .checked_mul(2)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
-                )
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        }
-        for curve in &self.curves {
-            count = count
-                .checked_add(
-                    segment_count(curve.xs, curve.ys)
-                        .checked_mul(2)
-                        .ok_or(crate::error::ResourceError::SizeOverflow)?,
-                )
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        }
-        Ok(count)
-    }
 }
 
 struct LocalStar<'a, 'b> {
@@ -418,21 +372,17 @@ struct LocalStar<'a, 'b> {
 }
 
 impl LocalStar<'_, '_> {
-    fn location(&mut self) -> Result<Loc> {
+    fn location(&mut self) -> Loc {
         if self.groups.is_empty() {
-            return Ok(self.location_without_rays());
+            return self.location_without_rays();
         }
-        let mut seed = Vec::new();
-        try_reserve_vec(&mut seed, self.source.rings.len())?;
-        for ring in &self.source.rings {
-            try_reserve_vec(&mut seed, 1)?;
-            seed.push(if ring.kind == RingKind::Winding {
+        for (winding, ring) in self.windings.iter_mut().zip(&self.source.rings) {
+            *winding = if ring.kind == RingKind::Winding {
                 formal_ring_winding(ring.xs, ring.ys, self.query)
             } else {
                 0
-            });
+            };
         }
-        self.windings = seed;
 
         let seed_group = self.groups.iter().position(|group| {
             let ray = &self.rays[group.start];
@@ -450,14 +400,12 @@ impl LocalStar<'_, '_> {
                 })
                 .unwrap_or(0)
         };
-        let mut sector_area = Vec::new();
-        try_reserve_vec(&mut sector_area, self.groups.len())?;
+        let mut sector_area = Vec::with_capacity(self.groups.len());
         let mut ray_polygon_support = false;
         let mut curve_ray = false;
         let mut residual_collapsed_degree = 0_usize;
         let mut ring_support = Vec::new();
         if !self.collapsed_points.is_empty() {
-            try_reserve_vec(&mut ring_support, self.source.rings.len())?;
             ring_support.resize(self.source.rings.len(), false);
             for (ring, &winding) in self.windings.iter().enumerate() {
                 ring_support[ring] |= winding != 0;
@@ -474,11 +422,12 @@ impl LocalStar<'_, '_> {
             }
         }
 
+        let mut group_values = Vec::new();
         for offset in 0..self.groups.len() {
             let group_index = (first + offset) % self.groups.len();
             let group = &self.groups[group_index];
             let before_area = self.source.area_occupied(&self.windings);
-            let before = self.group_ring_values(group)?;
+            self.group_ring_values(group, &mut group_values);
             let group_curve = self.rays[group.start..group.end]
                 .iter()
                 .any(|ray| ray.curve);
@@ -493,9 +442,9 @@ impl LocalStar<'_, '_> {
                 }
             }
             let after_area = self.source.area_occupied(&self.windings);
-            try_reserve_vec(&mut sector_area, 1)?;
             sector_area.push(before_area);
-            let group_support = self.polygon_ray_support(group, &before, before_area, after_area);
+            let group_support =
+                self.polygon_ray_support(group, &group_values, before_area, after_area);
             ray_polygon_support |= group_support;
             if group_support && !group_curve {
                 residual_collapsed_degree += 1;
@@ -504,29 +453,29 @@ impl LocalStar<'_, '_> {
 
         let any_area = sector_area.iter().copied().any(|occupied| occupied);
         if any_area {
-            return Ok(if sector_area.iter().copied().all(|occupied| occupied) {
+            return if sector_area.iter().copied().all(|occupied| occupied) {
                 Loc::Interior
             } else {
                 Loc::Boundary
-            });
+            };
         }
         let line = curve_ray || ray_polygon_support;
         if line {
-            return Ok(line_location(
+            return line_location(
                 curve_ray,
                 ray_polygon_support,
                 self.endpoint_parity,
                 residual_collapsed_degree,
-            ));
+            );
         }
         if !ring_support.is_empty() && self.collapsed_point_support(&ring_support) {
-            return Ok(Loc::Interior);
+            return Loc::Interior;
         }
-        Ok(if self.explicit_point {
+        if self.explicit_point {
             Loc::Interior
         } else {
             Loc::Exterior
-        })
+        }
     }
 
     fn location_without_rays(&self) -> Loc {
@@ -547,9 +496,8 @@ impl LocalStar<'_, '_> {
         })
     }
 
-    fn group_ring_values(&self, group: &RayGroup) -> Result<Vec<(usize, i64)>> {
-        let mut values = Vec::new();
-        try_reserve_vec(&mut values, group.end - group.start)?;
+    fn group_ring_values(&self, group: &RayGroup, values: &mut Vec<(usize, i64)>) {
+        values.clear();
         for ray in &self.rays[group.start..group.end] {
             let Some((ring, _)) = ray.ring else {
                 continue;
@@ -559,7 +507,6 @@ impl LocalStar<'_, '_> {
             }
             values.push((ring, self.windings[ring]));
         }
-        Ok(values)
     }
 
     fn ring_value(
@@ -643,9 +590,8 @@ fn line_location(
     }
 }
 
-fn ray_groups(query: XY, rays: &[Ray]) -> Result<Vec<RayGroup>> {
+fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
     let mut groups = Vec::new();
-    try_reserve_vec(&mut groups, rays.len())?;
     let mut start = 0;
     while start < rays.len() {
         let mut end = start + 1;
@@ -657,7 +603,7 @@ fn ray_groups(query: XY, rays: &[Ray]) -> Result<Vec<RayGroup>> {
         groups.push(RayGroup { start, end });
         start = end;
     }
-    Ok(groups)
+    groups
 }
 
 fn compare_rays(query: XY, left: XY, right: XY) -> Ordering {
@@ -771,10 +717,6 @@ fn has_nonzero_segment(xs: &[f64], ys: &[f64]) -> bool {
         .any(|([ax, bx], [ay, by])| *ax != *bx || *ay != *by)
 }
 
-fn segment_count(xs: &[f64], ys: &[f64]) -> usize {
-    xs.len().min(ys.len()).saturating_sub(1)
-}
-
 fn ring_has_point(xs: &[f64], ys: &[f64], point: XY) -> bool {
     let query = point.point();
     let mut hit = false;
@@ -816,12 +758,12 @@ fn for_each_xy_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) {
 }
 
 /// Cartesian location for any source shape.
-pub(crate) fn cartesian_point_location(shape: &Shape, point: Point) -> Result<Loc> {
-    SourceSupport::from_shape(shape)?.location(point)
+pub(crate) fn cartesian_point_location(shape: &Shape, point: Point) -> Loc {
+    SourceSupport::from_shape(shape).location(point)
 }
 
-pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> Result<bool> {
-    SourceSupport::from_shape(shape)?.area_covers(point)
+pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> bool {
+    SourceSupport::from_shape(shape).area_covers(point)
 }
 
 /// Cartesian location over polygons given as ring views, shell first — the
@@ -829,15 +771,13 @@ pub(crate) fn cartesian_area_covers_point(shape: &Shape, point: Point) -> Result
 pub(crate) fn cartesian_polygon_views_location<'a, P: IntoIterator<Item = RingView<'a>>>(
     polygons: impl IntoIterator<Item = P>,
     point: Point,
-) -> Result<Loc> {
+) -> Loc {
     let mut source = SourceSupport::new();
     for rings in polygons {
         let first = source.rings.len();
         for ring in rings {
-            try_reserve_vec(&mut source.rings, 1)?;
             source.rings.push(ring);
         }
-        try_reserve_vec(&mut source.polygons, 1)?;
         source.polygons.push(first..source.rings.len());
     }
     source.location(point)
@@ -852,14 +792,36 @@ mod tests {
     }
 
     fn location(wkt: &str, x: f64, y: f64) -> Loc {
-        cartesian_point_location(&shape(wkt), Point::new_raw_xy(x, y)).unwrap()
+        cartesian_point_location(&shape(wkt), Point::new_raw_xy(x, y))
+    }
+
+    #[test]
+    fn nonincident_line_query_has_no_contact_scratch_allocation() {
+        let shape = Shape::LineString(crate::geometry::LineSeq::from_proven(
+            crate::geometry::CoordSeq::try_from_vecs(
+                (0..=4096).map(f64::from).collect(),
+                (0..=4096).map(|index| f64::from(index % 2)).collect(),
+                None,
+                None,
+            )
+            .unwrap(),
+        ));
+        let source = SourceSupport::from_shape(&shape);
+        let (location, allocations) = crate::test_support::allocation_count(|| {
+            source.location(Point::new_raw_xy(2048.25, 0.4))
+        });
+        assert_eq!(location, Loc::Exterior);
+        assert_eq!(allocations, 0);
     }
 
     #[test]
     fn twice_wound_nonzero_ring_has_areal_support() {
         let twice = "POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))";
         assert_eq!(location(twice, 2.0, 2.0), Loc::Interior);
-        assert!(cartesian_area_covers_point(&shape(twice), Point::new_raw_xy(2.0, 2.0)).unwrap());
+        assert!(cartesian_area_covers_point(
+            &shape(twice),
+            Point::new_raw_xy(2.0, 2.0)
+        ));
     }
 
     #[test]
@@ -874,7 +836,7 @@ mod tests {
         let cancelled = "POLYGON ((0 0,2 0,2 2,0 2,0 0,0 2,2 2,2 0,0 0))";
         let shape = shape(cancelled);
         assert_eq!(location(cancelled, 1.0, 1.0), Loc::Exterior);
-        assert!(!shape.contains_point(Point::new_raw_xy(1.0, 1.0)).unwrap());
+        assert!(!shape.contains_point(Point::new_raw_xy(1.0, 1.0)));
         assert!(!crate::geometry::cartesian_support_nonempty(&shape).unwrap());
     }
 
@@ -922,7 +884,7 @@ mod tests {
         assert!(erased_left.equals(&erased_right).unwrap());
 
         let twice = shape("POLYGON ((0 0,4 0,4 4,0 4,0 0,4 0,4 4,0 4,0 0))");
-        assert!(twice.contains_point(Point::new_raw_xy(2.0, 2.0)).unwrap());
+        assert!(twice.contains_point(Point::new_raw_xy(2.0, 2.0)));
         assert_eq!(
             crate::geometry::occupied_cartesian_area(&twice).unwrap(),
             16.0
@@ -936,8 +898,8 @@ mod tests {
     #[test]
     fn exact_cells_trim_collapsed_shells_by_areal_and_point_holes() {
         let trimmed = shape("POLYGON ((0 0,10 0,5 0,0 0),(2 -1,8 -1,8 1,2 1,2 -1))");
-        assert!(trimmed.contains_point(Point::new_raw_xy(1.0, 0.0)).unwrap());
-        assert!(!trimmed.contains_point(Point::new_raw_xy(5.0, 0.0)).unwrap());
+        assert!(trimmed.contains_point(Point::new_raw_xy(1.0, 0.0)));
+        assert!(!trimmed.contains_point(Point::new_raw_xy(5.0, 0.0)));
         assert!(trimmed.intersects(&shape("POINT (1 0)")).unwrap());
         assert!(!trimmed.intersects(&shape("POINT (5 0)")).unwrap());
         let crossing = trimmed
@@ -949,19 +911,15 @@ mod tests {
         assert!(crossing.is_empty(), "{crossing:?}");
 
         let erased = shape("POLYGON ((1 1,1 1,1 1,1 1),(1 1,1 1,1 1,1 1))");
-        assert!(!erased.contains_point(Point::new_raw_xy(1.0, 1.0)).unwrap());
+        assert!(!erased.contains_point(Point::new_raw_xy(1.0, 1.0)));
         assert!(!erased.intersects(&shape("POINT (1 1)")).unwrap());
         assert!(!crate::geometry::cartesian_support_nonempty(&erased).unwrap());
 
         let boundary_erased = shape("POLYGON ((1 1,1 1,1 1,1 1),(1 1,3 1,3 3,1 3,1 1))");
-        assert!(
-            !boundary_erased
-                .contains_point(Point::new_raw_xy(1.0, 1.0))
-                .unwrap()
-        );
+        assert!(!boundary_erased.contains_point(Point::new_raw_xy(1.0, 1.0)));
         let survivor = shape("POLYGON ((1 1,1 1,1 1,1 1))");
         let members = Shape::geometry_collection(vec![boundary_erased, survivor]).unwrap();
-        assert!(members.contains_point(Point::new_raw_xy(1.0, 1.0)).unwrap());
+        assert!(members.contains_point(Point::new_raw_xy(1.0, 1.0)));
         assert!(members.intersects(&shape("POINT (1 1)")).unwrap());
     }
 

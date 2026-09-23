@@ -1268,7 +1268,7 @@ fn classify_ids(
 
     for probe in &mut probes {
         if probe.covered.is_none() {
-            probe.covered = Some(ctx.tester.covers_point(probe.point)?);
+            probe.covered = Some(ctx.tester.covers_point(probe.point));
             stats.unique_local_point_probe();
         }
     }

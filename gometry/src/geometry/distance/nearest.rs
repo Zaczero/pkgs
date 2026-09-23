@@ -123,12 +123,12 @@ pub(crate) fn parts_boundary_witness(
         return Ok(Some(point.point()));
     }
     for &point in &left_parts.point_only {
-        if parts_covers_point(right, right_parts, point)? {
+        if parts_covers_point(right, right_parts, point) {
             return Ok(Some(point));
         }
     }
     for &point in &right_parts.point_only {
-        if parts_covers_point(left, left_parts, point)? {
+        if parts_covers_point(left, left_parts, point) {
             return Ok(Some(point));
         }
     }

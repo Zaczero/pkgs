@@ -466,7 +466,7 @@ impl PreparedPlan {
         const SCANS_BEFORE_INDEXING: u32 = 3;
         let topology = self.topology();
         if let Some(Some(tester)) = topology.point_tester.get() {
-            return tester.location(point);
+            return Ok(tester.location(point));
         }
         if topology
             .point_scans
@@ -474,9 +474,12 @@ impl PreparedPlan {
             >= SCANS_BEFORE_INDEXING
             && let Some(tester) = self.point_tester()?
         {
-            return tester.location(point);
+            return Ok(tester.location(point));
         }
-        crate::geometry::cartesian_point_location(self.shape(), point)
+        Ok(crate::geometry::cartesian_point_location(
+            self.shape(),
+            point,
+        ))
     }
 
     /// The indexed point tester of a polygonal shape, built on first use.

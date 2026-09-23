@@ -11,11 +11,11 @@ use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
 impl Shape {
     /// Strict point membership used by coordinate operations and geometry
     /// algorithms. Topological predicates use the complete relation matrix.
-    pub fn contains_point(&self, point: Point) -> Result<bool> {
+    pub fn contains_point(&self, point: Point) -> bool {
         self.point_membership::<false>(point)
     }
 
-    pub fn covers_point(&self, point: Point) -> Result<bool> {
+    pub fn covers_point(&self, point: Point) -> bool {
         self.point_membership::<true>(point)
     }
 
@@ -24,13 +24,13 @@ impl Shape {
     /// `contains` in the three arms where they differ — the const flag
     /// keeps a single exhaustive match, so a new `Shape` variant cannot
     /// update one predicate and silently miss its twin.
-    fn point_membership<const BOUNDARY: bool>(&self, point: Point) -> Result<bool> {
-        let location = cartesian_point_location(self, point)?;
-        Ok(if BOUNDARY {
+    fn point_membership<const BOUNDARY: bool>(&self, point: Point) -> bool {
+        let location = cartesian_point_location(self, point);
+        if BOUNDARY {
             location != Loc::Exterior
         } else {
             location == Loc::Interior
-        })
+        }
     }
 
     pub fn contains(&self, other: &Self) -> Result<bool> {
@@ -104,7 +104,7 @@ impl Shape {
 
     /// Boundary-inclusive point-in-AREA test: `covers_point` restricted to
     /// the polygon parts (1D/0D parts cannot contain a disjoint component).
-    pub(crate) fn area_covers_point(&self, point: Point) -> Result<bool> {
+    pub(crate) fn area_covers_point(&self, point: Point) -> bool {
         crate::geometry::cartesian_area_covers_point(self, point)
     }
 
