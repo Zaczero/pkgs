@@ -1,12 +1,10 @@
-use ahash::HashSetExt as _;
-
 use crate::NonNegative;
 use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
-    BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind,
-    GeometryKind, HashSet, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point, PointKey,
-    Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
+    Bounds, BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT,
+    GeometryErrorKind, GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point,
+    PointKey, Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
     axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
     interpolate_subdivision_ordinate, line_segments, point_distance,
     point_segment_distance_and_projection, points_dwithin, repair_shape_in_frame, same_point,
@@ -33,31 +31,25 @@ pub(crate) struct SnapReference {
 }
 
 impl SnapReference {
-    pub(crate) fn build(reference_points: &[XY], tolerance: f64) -> crate::error::Result<Self> {
+    pub(crate) fn build(reference_points: &[XY], tolerance: f64) -> Self {
         let limit = tolerance * tolerance;
         let storage = if reference_points.len() >= SNAP_INDEX_MIN_POINTS {
-            let mut entries = Vec::new();
-            crate::try_reserve_vec(&mut entries, reference_points.len())?;
+            let mut entries = Vec::with_capacity(reference_points.len());
             for (ordinal, point) in reference_points.iter().enumerate() {
                 entries.push(rstar::primitives::GeomWithData::new(
                     [point.x, point.y],
                     ordinal,
                 ));
             }
-            // RTree owns this vector after the dependency's infallible bulk
-            // build; caller-owned entry reservation remains fallible here.
             SnapReferenceStorage::Indexed(BulkRTree::bulk_load_with_params(entries))
         } else {
-            let mut points = Vec::new();
-            crate::try_reserve_vec(&mut points, reference_points.len())?;
-            points.extend_from_slice(reference_points);
-            SnapReferenceStorage::Linear(points)
+            SnapReferenceStorage::Linear(reference_points.to_vec())
         };
-        Ok(Self {
+        Self {
             storage,
             tolerance,
             limit: limit.is_finite().then_some(limit),
-        })
+        }
     }
 
     /// Snap one vertex: XY moves to the nearest in-tolerance reference
@@ -170,7 +162,7 @@ impl SnapReference {
                 let mut point = projection.interpolate_point(start, end)?;
                 point.x = reference.x;
                 point.y = reference.y;
-                crate::try_push_vec(&mut candidates, (projection, ordinal, point))?;
+                candidates.push((projection, ordinal, point));
             }
             Ok(())
         };
@@ -223,8 +215,7 @@ impl SnapReference {
         // reference points (e.g. 0.5 and 0.5000000000005) even at tolerance 0.
         #[expect(clippy::float_cmp, reason = "exact projected-position identity")]
         candidates.dedup_by(|right, left| right.2.x == left.2.x && right.2.y == left.2.y);
-        let mut output = Vec::new();
-        crate::try_reserve_vec(&mut output, candidates.len())?;
+        let mut output = Vec::with_capacity(candidates.len());
         for (_, _, point) in candidates {
             output.push(point);
         }
@@ -250,29 +241,26 @@ fn outward_padded_bounds(
 }
 
 fn try_unique_xy_points(shape: &Shape) -> crate::error::Result<Vec<XY>> {
-    let mut seen = HashSet::new();
-    seen.reserve(shape.coord_count());
+    let mut seen = crate::collections::try_hash_set_with_capacity(shape.coord_count())?;
     let mut points = Vec::with_capacity(shape.coord_count());
-    shape.try_for_each_point(|point| {
+    shape.for_each_point(|point| {
         let point = point.xy();
         if seen.insert(PointKey::new(point)) {
             points.push(point);
         }
-        Ok::<_, crate::error::Error>(())
-    })?;
+    });
     Ok(points)
 }
 
 pub(crate) fn snap_points_to_reference<C: Coordinates + ?Sized>(
     points: &C,
     reference: &SnapReference,
-) -> crate::error::Result<Vec<Point>> {
-    let mut output = Vec::new();
-    crate::try_reserve_vec(&mut output, points.coord_count())?;
+) -> Vec<Point> {
+    let mut output = Vec::with_capacity(points.coord_count());
     for point in points.iter_coords() {
         output.push(reference.snap_point(point));
     }
-    Ok(output)
+    output
 }
 
 pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
@@ -280,34 +268,32 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
     reference: &SnapReference,
 ) -> crate::error::Result<Vec<Point>> {
     if points.coord_count() < 2 {
-        return snap_points_to_reference(points, reference);
+        return Ok(snap_points_to_reference(points, reference));
     }
 
-    let mut result = Vec::new();
-    crate::try_reserve_vec(&mut result, points.coord_count())?;
-    try_push_distinct_point(&mut result, reference.snap_point(points.nth_coord(0)))?;
+    let mut result = Vec::with_capacity(points.coord_count());
+    push_distinct_point(&mut result, reference.snap_point(points.nth_coord(0)));
 
     for [start, end] in points.segment_pairs() {
         for point in reference.insertions(start, end)? {
-            try_push_distinct_point(&mut result, point)?;
+            push_distinct_point(&mut result, point);
         }
-        try_push_distinct_point(&mut result, reference.snap_point(end))?;
+        push_distinct_point(&mut result, reference.snap_point(end));
     }
     if result.len() == 1 {
-        let mut endpoints = Vec::new();
-        crate::try_reserve_vec(&mut endpoints, 2)?;
-        endpoints.push(reference.snap_point(points.nth_coord(0)));
-        endpoints.push(reference.snap_point(points.nth_coord(points.coord_count() - 1)));
-        return Ok(endpoints);
+        result.clear();
+        result.extend([
+            reference.snap_point(points.nth_coord(0)),
+            reference.snap_point(points.nth_coord(points.coord_count() - 1)),
+        ]);
     }
     Ok(result)
 }
 
-fn try_push_distinct_point(points: &mut Vec<Point>, point: Point) -> crate::error::Result<()> {
+fn push_distinct_point(points: &mut Vec<Point>, point: Point) {
     if points.last().is_none_or(|last| !same_point(*last, point)) {
-        crate::try_push_vec(points, point)?;
+        points.push(point);
     }
-    Ok(())
 }
 
 pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
@@ -421,7 +407,7 @@ pub(crate) fn segmentize_points_budgeted(
             let plan = geodesic_segment_plan(geodesic, frame, points, segment_index)?;
             let steps = segmentize_steps(plan.solution.3, max_segment_length);
             if steps.max(1) > 1 {
-                crate::boundary::try_push_vec(&mut solutions, plan)?;
+                solutions.push(plan);
             }
             Ok(steps)
         })?;
@@ -833,27 +819,15 @@ struct SubdivisionColumns<'a> {
 }
 
 impl<'a> SubdivisionColumns<'a> {
-    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Result<Self> {
-        let mut xs = Vec::new();
-        crate::try_reserve_vec(&mut xs, total)?;
-        let mut ys = Vec::new();
-        crate::try_reserve_vec(&mut ys, total)?;
-        let mut zs = points.zs().map(|_| Vec::new());
-        if let Some(column) = &mut zs {
-            crate::try_reserve_vec(column, total)?;
-        }
-        let mut ms = points.ms().map(|_| Vec::new());
-        if let Some(column) = &mut ms {
-            crate::try_reserve_vec(column, total)?;
-        }
-        Ok(Self {
+    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Self {
+        Self {
             points,
             emission,
-            xs,
-            ys,
-            zs,
-            ms,
-        })
+            xs: Vec::with_capacity(total),
+            ys: Vec::with_capacity(total),
+            zs: points.zs().map(|_| Vec::with_capacity(total)),
+            ms: points.ms().map(|_| Vec::with_capacity(total)),
+        }
     }
 
     fn finish(self) -> Result<CoordSeq> {
@@ -960,10 +934,10 @@ fn collect_steps(
     points: &CoordSeq,
     mut steps_for: impl FnMut(usize, Segment) -> Result<usize>,
 ) -> Result<Vec<usize>> {
-    let mut steps = Vec::new();
+    let mut steps = Vec::with_capacity(points.len().saturating_sub(1));
     for (segment_index, segment) in line_segments(points).enumerate() {
         let step_count = steps_for(segment_index, segment)?;
-        crate::boundary::try_push_vec(&mut steps, step_count)?;
+        steps.push(step_count);
     }
     Ok(steps)
 }
@@ -1026,7 +1000,7 @@ fn subdivide_columns_from_steps_uncommitted<'a>(
         // the input IS the output, share it.
         return Ok((points.clone(), 0));
     }
-    let mut output = SubdivisionColumns::new(points, emission, total)?;
+    let mut output = SubdivisionColumns::new(points, emission, total);
     emit_subdivision(steps, &mut output)?;
     output.emission.assert_exhausted();
     let output = output.finish()?;
@@ -1036,39 +1010,51 @@ fn subdivide_columns_from_steps_uncommitted<'a>(
 impl Shape {
     pub fn snap(&self, reference: &Self, tolerance: f64) -> Result<Self> {
         let tolerance = NonNegative::try_new("tolerance", tolerance)?.get();
+        let reference_bounds = reference.bounds();
         // Boxes farther apart than the tolerance snap to the identity: no
         // reference vertex can be within tolerance of any vertex OR segment
         // (both sit inside their bounds), so the scans cannot change a thing.
-        if self
-            .bounds()
-            .zip(reference.bounds())
-            .is_some_and(|(left, right)| {
-                bounds_distance_squared(left, right) > tolerance * tolerance
-            })
-        {
+        if self.outside_snap_range(reference_bounds, tolerance) {
             return Ok(self.clone());
         }
         let reference_points = try_unique_xy_points(reference)?;
         if reference_points.is_empty() {
             return Ok(self.clone());
         }
-        let engine = SnapReference::build(&reference_points, tolerance)?;
+        let engine = SnapReference::build(&reference_points, tolerance);
+        drop(reference_points);
+        self.snap_using_reference(reference_bounds, &engine)
+    }
+
+    fn outside_snap_range(&self, reference_bounds: Option<Bounds>, tolerance: f64) -> bool {
+        self.bounds()
+            .zip(reference_bounds)
+            .is_some_and(|(left, right)| {
+                bounds_distance_squared(left, right) > tolerance * tolerance
+            })
+    }
+
+    fn snap_using_reference(
+        &self,
+        reference_bounds: Option<Bounds>,
+        engine: &SnapReference,
+    ) -> Result<Self> {
         Ok(match self {
             Self::Point(point) => Self::Point(engine.snap_point(*point)),
             Self::MultiPoint(points) => {
                 Self::MultiPoint(points.map_values(|point| engine.snap_point(point))?)
             },
             Self::LineString(points) => Self::LineString(LineSeq::try_new(
-                CoordSeq::try_from_points(&snap_line_to_reference(points, &engine)?)?,
+                CoordSeq::try_from_points(&snap_line_to_reference(points, engine)?)?,
             )?),
             Self::MultiLineString(lines) => {
                 Self::MultiLineString(lines.try_map_values(lines.axes(), |line| {
                     LineSeq::try_new(CoordSeq::try_from_points(&snap_line_to_reference(
-                        line, &engine,
+                        line, engine,
                     )?)?)
                 })?)
             },
-            Self::Polygon(polygon) => polygon.snap_to_reference(&engine)?.map_or_else(
+            Self::Polygon(polygon) => polygon.snap_to_reference(engine)?.map_or_else(
                 || Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
                 Self::Polygon,
             ),
@@ -1078,15 +1064,21 @@ impl Shape {
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
                         MultiMember::Value(index) => Ok(polygons.as_slice()[index]
-                            .snap_to_reference(&engine)?
+                            .snap_to_reference(engine)?
                             .map_or(MultiMember::Empty, MultiMember::Value)),
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries.try_map_members(|geometry| geometry.snap(reference, tolerance))?,
-            ),
+            Self::GeometryCollection(geometries) => {
+                Self::GeometryCollection(geometries.try_map_members(|geometry| {
+                    if geometry.outside_snap_range(reference_bounds, engine.tolerance) {
+                        Ok(geometry.clone())
+                    } else {
+                        geometry.snap_using_reference(reference_bounds, engine)
+                    }
+                })?)
+            },
             Self::Empty(..) => self.clone(),
         })
     }
@@ -1132,8 +1124,7 @@ impl Shape {
                 Self::LineString(LineSeq::try_new(seq_fn(points)?).map_err(E::from)?)
             },
             Self::MultiLineString(lines) => {
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, lines.member_count()).map_err(E::from)?;
+                let mut members = Vec::with_capacity(lines.member_count());
                 for member in lines.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
@@ -1141,7 +1132,7 @@ impl Shape {
                             LineSeq::try_new(seq_fn(&lines.as_slice()[index])?).map_err(E::from)?,
                         ),
                     };
-                    crate::try_push_vec(&mut members, member).map_err(E::from)?;
+                    members.push(member);
                 }
                 let axes = members
                     .iter()
@@ -1154,8 +1145,7 @@ impl Shape {
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, polygons.member_count()).map_err(E::from)?;
+                let mut members = Vec::with_capacity(polygons.member_count());
                 for member in polygons.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
@@ -1163,7 +1153,7 @@ impl Shape {
                             polygons.as_slice()[index].try_map_ring_seqs(seq_fn)?,
                         ),
                     };
-                    crate::try_push_vec(&mut members, member).map_err(E::from)?;
+                    members.push(member);
                 }
                 let axes = members
                     .iter()
@@ -1260,27 +1250,35 @@ impl Shape {
     /// drop collapsed parts, and degrade below-minimum linework/rings to
     /// the representable empty.
     fn collapse_snapped(self) -> Result<Self> {
-        fn dedup_line<C: Coordinates + ?Sized>(points: &C) -> Result<Vec<Point>> {
-            let mut vertices = Vec::new();
-            crate::try_reserve_vec(&mut vertices, points.coord_count())?;
+        fn dedup_line<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
+            let mut vertices = Vec::with_capacity(points.coord_count());
             vertices.extend(points.iter_coords());
             dedup_consecutive_points(&mut vertices);
-            Ok(vertices)
+            vertices
         }
         fn dedup_ring(ring: &Ring) -> Result<Option<Ring>> {
-            let mut vertices = dedup_line(ring)?;
+            let mut vertices = dedup_line(ring);
             // Re-close: the closure duplicate just got deduped away.
             if let Some(first) = vertices.first().copied()
                 && (!same_point(first, *vertices.last().expect("non-empty")) || vertices.len() == 1)
             {
-                crate::try_push_vec(&mut vertices, first)?;
+                vertices.push(first);
             }
             // A ring needs three distinct vertices plus the closure.
             Ok(Ring::from_closed(CoordSeq::try_from_points(&vertices)?))
         }
+        fn dedup_holes(polygon: &Polygon) -> Result<Vec<Ring>> {
+            let mut holes = Vec::with_capacity(polygon.holes.len());
+            for hole in polygon.holes.iter() {
+                if let Some(hole) = dedup_ring(hole)? {
+                    holes.push(hole);
+                }
+            }
+            Ok(holes)
+        }
         Ok(match self {
             Self::LineString(points) => {
-                let vertices = dedup_line(&points)?;
+                let vertices = dedup_line(&points);
                 if vertices.len() >= 2 {
                     Self::LineString(LineSeq::try_new(CoordSeq::try_from_points(&vertices)?)?)
                 } else {
@@ -1288,13 +1286,12 @@ impl Shape {
                 }
             },
             Self::MultiLineString(lines) => {
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, lines.member_count())?;
+                let mut members = Vec::with_capacity(lines.member_count());
                 for member in lines.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
                         MultiMember::Value(index) => {
-                            let vertices = dedup_line(&lines.as_slice()[index])?;
+                            let vertices = dedup_line(&lines.as_slice()[index]);
                             if vertices.len() >= 2 {
                                 MultiMember::Value(LineSeq::try_new(CoordSeq::try_from_points(
                                     &vertices,
@@ -1304,26 +1301,16 @@ impl Shape {
                             }
                         },
                     };
-                    crate::try_push_vec(&mut members, member)?;
+                    members.push(member);
                 }
                 Self::MultiLineString(MultiLineString::from_values(lines.axes(), members)?)
             },
             Self::Polygon(polygon) => match dedup_ring(&polygon.shell)? {
-                Some(shell) => {
-                    let mut holes = Vec::new();
-                    crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
-                    for hole in polygon.holes.iter() {
-                        if let Some(hole) = dedup_ring(hole)? {
-                            crate::try_push_vec(&mut holes, hole)?;
-                        }
-                    }
-                    Self::Polygon(Polygon::new(shell, holes))
-                },
+                Some(shell) => Self::Polygon(Polygon::new(shell, dedup_holes(&polygon)?)),
                 None => Self::typed_empty(GeometryKind::Polygon, polygon.axes()),
             },
             Self::MultiPolygon(polygons) => {
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, polygons.member_count())?;
+                let mut members = Vec::with_capacity(polygons.member_count());
                 for member in polygons.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
@@ -1331,20 +1318,13 @@ impl Shape {
                             let polygon = &polygons.as_slice()[index];
                             match dedup_ring(&polygon.shell)? {
                                 Some(shell) => {
-                                    let mut holes = Vec::new();
-                                    crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
-                                    for hole in polygon.holes.iter() {
-                                        if let Some(hole) = dedup_ring(hole)? {
-                                            crate::try_push_vec(&mut holes, hole)?;
-                                        }
-                                    }
-                                    MultiMember::Value(Polygon::new(shell, holes))
+                                    MultiMember::Value(Polygon::new(shell, dedup_holes(polygon)?))
                                 },
                                 None => MultiMember::Empty,
                             }
                         },
                     };
-                    crate::try_push_vec(&mut members, member)?;
+                    members.push(member);
                 }
                 Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
             },
@@ -1431,6 +1411,30 @@ mod snap_reference_tests {
     use super::*;
     use crate::geometry::{MOrdinate, ZOrdinate};
 
+    #[test]
+    fn collection_children_share_reference_without_moving_disjoint_members() {
+        let reference = Shape::geometry_collection(
+            (0..=SNAP_INDEX_MIN_POINTS)
+                .map(|index| Shape::Point(Point::new_raw_xy(index as f64, 0.0)))
+                .collect(),
+        )
+        .unwrap();
+        let far = Shape::Point(Point::new_raw_xy(-1000.0, -1000.0));
+        let near = Shape::Point(Point::new_raw_xy(0.25, 0.0));
+        let source = Shape::geometry_collection(vec![
+            near.clone(),
+            Shape::geometry_collection(vec![far.clone(), near]).unwrap(),
+        ])
+        .unwrap();
+        let expected = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(0.0, 0.0)),
+            Shape::geometry_collection(vec![far, Shape::Point(Point::new_raw_xy(0.0, 0.0))])
+                .unwrap(),
+        ])
+        .unwrap();
+        assert_eq!(source.snap(&reference, 0.5).unwrap(), expected);
+    }
+
     fn line_reference_points(count: usize) -> Vec<XY> {
         (0..count).map(|index| XY::new(index as f64, 0.0)).collect()
     }
@@ -1440,8 +1444,8 @@ mod snap_reference_tests {
         let linear_points = line_reference_points(SNAP_INDEX_MIN_POINTS - 1);
         let mut indexed_points = linear_points.clone();
         indexed_points.push(XY::new(30.0, 10.0));
-        let linear = SnapReference::build(&linear_points, 0.5).unwrap();
-        let indexed = SnapReference::build(&indexed_points, 0.5).unwrap();
+        let linear = SnapReference::build(&linear_points, 0.5);
+        let indexed = SnapReference::build(&indexed_points, 0.5);
         assert!(matches!(
             &linear.storage,
             SnapReferenceStorage::Linear(points) if points.len() == SNAP_INDEX_MIN_POINTS - 1
@@ -1466,7 +1470,7 @@ mod snap_reference_tests {
             (0..(SNAP_INDEX_MIN_POINTS - points.len()))
                 .map(|index| XY::new(10.0 + index as f64, 10.0)),
         );
-        let reference = SnapReference::build(&points, 1.0).unwrap();
+        let reference = SnapReference::build(&points, 1.0);
         let source = Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(7.0)), MOrdinate(Some(11.0)));
         let snapped = reference.snap_point(source);
         assert_eq!(snapped.x.to_bits(), 1.0_f64.to_bits());
@@ -1481,7 +1485,7 @@ mod snap_reference_tests {
         points.extend(
             (0..(SNAP_INDEX_MIN_POINTS - 1)).map(|index| XY::new(10.0 + index as f64, 10.0)),
         );
-        let reference = SnapReference::build(&points, 1.0).unwrap();
+        let reference = SnapReference::build(&points, 1.0);
         let insertions = reference
             .insertions(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 0.0))
             .unwrap();
@@ -1497,7 +1501,7 @@ mod snap_reference_tests {
             tiny_points.extend(
                 (0..(SNAP_INDEX_MIN_POINTS - 1)).map(|index| XY::new(10.0 + index as f64, 10.0)),
             );
-            let tiny_reference = SnapReference::build(&tiny_points, tolerance).unwrap();
+            let tiny_reference = SnapReference::build(&tiny_points, tolerance);
             assert_eq!(
                 tiny_reference
                     .snap_point(Point::new_raw_xy(0.0, 0.0))
@@ -1511,7 +1515,7 @@ mod snap_reference_tests {
         huge_points.extend(
             (1..SNAP_INDEX_MIN_POINTS).map(|index| XY::new(1.0e307 + index as f64 * 1.0e306, 0.0)),
         );
-        let huge_reference = SnapReference::build(&huge_points, 1.0e308).unwrap();
+        let huge_reference = SnapReference::build(&huge_points, 1.0e308);
         assert_eq!(
             huge_reference
                 .snap_point(Point::new_raw_xy(0.0, 0.0))
@@ -1535,7 +1539,7 @@ mod snap_reference_tests {
             MOrdinate(Some(extent)),
         );
         let zero_reference =
-            SnapReference::build(&[XY::new(zero_t, zero_tolerance)], zero_tolerance).unwrap();
+            SnapReference::build(&[XY::new(zero_t, zero_tolerance)], zero_tolerance);
         let zero_inserted = zero_reference
             .insertions(zero_source_start, zero_source_end)
             .unwrap();
@@ -1551,7 +1555,7 @@ mod snap_reference_tests {
             Point::new_raw_axes(0.0, 0.0, ZOrdinate(Some(-large)), MOrdinate(Some(-large)));
         let one_source_end =
             Point::new_raw_axes(1.0, 1.0, ZOrdinate(Some(large)), MOrdinate(Some(large)));
-        let one_reference = SnapReference::build(&[XY::new(1.0, previous)], 1.0e-16).unwrap();
+        let one_reference = SnapReference::build(&[XY::new(1.0, previous)], 1.0e-16);
         let one_inserted = one_reference
             .insertions(one_source_start, one_source_end)
             .unwrap();
