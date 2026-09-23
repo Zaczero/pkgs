@@ -1083,7 +1083,7 @@ impl Shape {
                 if members.is_empty() {
                     Self::typed_empty(GeometryKind::MultiPoint, points.axes())
                 } else {
-                    Self::MultiPoint(MultiPoint::from_values(points.axes(), members)?)
+                    Self::MultiPoint(MultiPoint::try_new(points.axes(), members)?)
                 }
             },
             Self::LineString(points) => Self::LineString(points.remove_repeated_points(tolerance)?),
@@ -1111,7 +1111,7 @@ impl Shape {
                         )),
                     })
                     .collect::<Result<Vec<_>>>()?;
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
+                Self::MultiPolygon(MultiPolygon::try_new(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries

@@ -149,7 +149,7 @@ impl Shape {
                     for line in chains {
                         proven.push(LineSeq::from_proven(line));
                     }
-                    Self::narrow_lines(lines.axes(), proven)?
+                    Self::narrow_lines(lines.axes(), proven)
                 }
             },
         };
@@ -176,8 +176,8 @@ impl Shape {
             opposite_lines.push(LineSeq::from_proven(line));
         }
         let result_parts = vec![
-            Self::multi_line_string(CoordinateAxes::XY, same_lines)?,
-            Self::multi_line_string(CoordinateAxes::XY, opposite_lines)?,
+            Self::multi_line_string(CoordinateAxes::XY, same_lines),
+            Self::multi_line_string(CoordinateAxes::XY, opposite_lines),
         ];
         let result = Self::geometry_collection(result_parts)?;
         carry_ordinates(result, &[self, other], "shared_paths", false)

@@ -47,9 +47,7 @@ mod fixture_conversions {
 
     impl From<Vec<LineSeq>> for MultiLineString {
         fn from(lines: Vec<LineSeq>) -> Self {
-            Self::from_dense(lines)
-                .expect("test multilinestring allocation")
-                .expect("test multilinestring payload is nonempty")
+            Self::from_dense(lines).expect("test multilinestring payload is nonempty")
         }
     }
 
@@ -61,9 +59,7 @@ mod fixture_conversions {
 
     impl From<Vec<Polygon>> for MultiPolygon {
         fn from(polygons: Vec<Polygon>) -> Self {
-            Self::from_dense(polygons)
-                .expect("test multipolygon allocation")
-                .expect("test multipolygon payload is nonempty")
+            Self::from_dense(polygons).expect("test multipolygon payload is nonempty")
         }
     }
 

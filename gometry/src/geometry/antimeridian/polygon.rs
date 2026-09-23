@@ -39,7 +39,7 @@ impl Shape {
                 if pieces.is_empty() {
                     Ok(self.clone())
                 } else {
-                    Self::multi_line_string(
+                    Ok(Self::multi_line_string(
                         CoordinateAxes::XY,
                         pieces
                             .into_iter()
@@ -48,7 +48,7 @@ impl Shape {
                             // pieces of at least two vertices each.
                             .map(|coords| coords.map(LineSeq::from_proven))
                             .collect::<Result<Vec<_>>>()?,
-                    )
+                    ))
                 }
             },
             Self::MultiLineString(lines) => {
@@ -80,7 +80,7 @@ impl Shape {
             },
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, PoleClosure::Auto)?;
-                Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
+                Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.member_count());
@@ -132,7 +132,7 @@ impl Shape {
         match self {
             Self::Polygon(polygon) => {
                 let polygons = split_polygon(self, polygon, closure)?;
-                Ok(Self::narrow_polygons(polygon.axes(), polygons)?)
+                Ok(Self::narrow_polygons(polygon.axes(), polygons))
             },
             Self::MultiPolygon(polygons) => {
                 let mut split = Vec::with_capacity(polygons.member_count());
@@ -419,12 +419,12 @@ fn split_polygon_inner(polygon: &Polygon, preferred: PoleClosure) -> Result<Vec<
         let axes = polygon.shell.coords().axes();
         let shell_only = Polygon::new(polygon.shell.clone(), stationary_holes);
         let shell_parts = split_polygon_inner(&shell_only, preferred)?;
-        let mut result = shape_from_polygons(shell_parts, axes)?;
+        let mut result = Shape::narrow_polygons(axes, shell_parts);
         for hole in crossing_holes {
             let hole_axes = hole.coords().axes();
             let hole_closure = pole_closure_for_ring(&hole);
             let hole_parts = split_polygon_inner(&Polygon::new(hole, Vec::new()), hole_closure)?;
-            let hole_shape = shape_from_polygons(hole_parts, hole_axes)?;
+            let hole_shape = Shape::narrow_polygons(hole_axes, hole_parts);
             result = result.difference(&hole_shape, Strictness::Strict)?;
         }
         return polygons_from_shape(result);
@@ -490,10 +490,6 @@ fn pole_closure_for_ring(ring: &Ring) -> PoleClosure {
         (false, true) => PoleClosure::South,
         _ => PoleClosure::Auto,
     }
-}
-
-fn shape_from_polygons(polygons: Vec<Polygon>, axes: CoordinateAxes) -> Result<Shape> {
-    Shape::narrow_polygons(axes, polygons)
 }
 
 fn polygons_from_shape(shape: Shape) -> Result<Vec<Polygon>> {

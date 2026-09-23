@@ -646,9 +646,10 @@ fn keep_multi_lines(
     }
     Ok(match out {
         None => RawSimplify::Unchanged,
-        Some(members) => RawSimplify::Changed(Shape::MultiLineString(
-            MultiLineString::from_values(lines.axes(), members)?,
-        )),
+        Some(members) => RawSimplify::Changed(Shape::MultiLineString(MultiLineString::try_new(
+            lines.axes(),
+            members,
+        )?)),
     })
 }
 
@@ -699,7 +700,7 @@ fn keep_multi_polygons(
     }
     Ok(match out {
         None => RawSimplify::Unchanged,
-        Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::from_values(
+        Some(members) => RawSimplify::Changed(Shape::MultiPolygon(MultiPolygon::try_new(
             polygons.axes(),
             members,
         )?)),
@@ -787,7 +788,7 @@ impl Shape {
                 if members.is_empty() {
                     Self::empty_polygon()
                 } else {
-                    Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
+                    Self::MultiPolygon(MultiPolygon::try_new(polygons.axes(), members)?)
                 }
             },
             Self::GeometryCollection(parts) => Self::GeometryCollection(
@@ -1205,11 +1206,8 @@ mod keep_identity_tests {
         let last = line_xy(&[3.0, 3.0], &[0.0, 1.0]);
         let first_ptr = first.xs().as_ptr();
         let last_ptr = last.xs().as_ptr();
-        let shape = Shape::MultiLineString(
-            MultiLineString::from_dense(vec![first, middle, last])
-                .unwrap()
-                .unwrap(),
-        );
+        let shape =
+            Shape::MultiLineString(MultiLineString::from_dense(vec![first, middle, last]).unwrap());
         let Shape::MultiLineString(out) = shape.simplify_dp(0.0, true).unwrap() else {
             panic!("multilinestring remains");
         };
@@ -1277,11 +1275,7 @@ mod keep_identity_tests {
             closed_ring(&[10.0, 11.0, 10.5, 10.0], &[0.0, 0.0, 0.1, 0.0]),
             Vec::new(),
         );
-        let shape = Shape::MultiPolygon(
-            MultiPolygon::from_dense(vec![kept, sliver])
-                .unwrap()
-                .unwrap(),
-        );
+        let shape = Shape::MultiPolygon(MultiPolygon::from_dense(vec![kept, sliver]).unwrap());
         let Shape::MultiPolygon(out) = shape.simplify_dp_raw(1.0).unwrap() else {
             panic!("multipolygon remains");
         };

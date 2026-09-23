@@ -69,7 +69,7 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
                     lines.push(line);
                 }
             }
-            Shape::multi_line_string(polygon.shell.coords().axes(), lines)?
+            Shape::multi_line_string(polygon.shell.coords().axes(), lines)
         },
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::with_capacity(polygons.member_count());
@@ -242,7 +242,7 @@ pub(in crate::geometry) fn winding_buffer_budgeted(
     if parts.is_empty() {
         return Ok(None);
     }
-    Ok(Some(polygon_parts_to_shape(parts)?))
+    Ok(Some(polygon_parts_to_shape(parts)))
 }
 
 /// Erosion (negative buffer) of polygonal input — first normalize the complete
@@ -329,7 +329,7 @@ fn erosion_normalized_budgeted(
         return Ok(Some(Shape::empty_polygon()));
     }
     if distance == 0.0 {
-        return Ok(Some(polygon_parts_to_shape(polygons)?));
+        return Ok(Some(polygon_parts_to_shape(polygons)));
     }
     let mut loops: Vec<LoopColumns> = Vec::new();
     for polygon in &polygons {
@@ -347,7 +347,7 @@ fn erosion_normalized_budgeted(
         }
     }
     let parts = winding_region(&loops, |winding| winding <= -1)?;
-    Ok(Some(polygon_parts_to_shape(parts)?))
+    Ok(Some(polygon_parts_to_shape(parts)))
 }
 
 /// Borrow every polygonal member of a collection without turning lineal or
@@ -430,7 +430,7 @@ pub(in crate::geometry) fn winding_stroke_budgeted(
     if parts.is_empty() {
         return Ok(None);
     }
-    Ok(Some(polygon_parts_to_shape(parts)?))
+    Ok(Some(polygon_parts_to_shape(parts)))
 }
 
 /// One stroke loop as a directly valid polygon: close the columns into a
@@ -506,7 +506,7 @@ pub(in crate::geometry) fn winding_collection_budgeted(
     if pieces.is_empty() {
         return Ok(None);
     }
-    Ok(Some(polygon_parts_to_shape(pieces)?))
+    Ok(Some(polygon_parts_to_shape(pieces)))
 }
 
 // Direct constructive tests characterize these algorithms without an FFI

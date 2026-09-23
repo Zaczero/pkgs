@@ -712,13 +712,13 @@ fn rebuild_row(
     };
     match shape {
         Shape::Polygon(polygon) => Ok(Shape::Polygon(rebuild_polygon(polygon, &mut rebuild_ring)?)),
-        Shape::MultiPolygon(polygons) => Shape::multi_polygon(
+        Shape::MultiPolygon(polygons) => Ok(Shape::multi_polygon(
             polygons.axes(),
             polygons
                 .iter()
                 .map(|polygon| rebuild_polygon(polygon, &mut rebuild_ring))
                 .collect::<Result<Vec<_>>>()?,
-        ),
+        )),
         other => Ok(other.clone()),
     }
 }

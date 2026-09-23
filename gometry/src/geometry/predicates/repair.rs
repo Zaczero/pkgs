@@ -96,7 +96,7 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
             }
         }
     }
-    polygon_parts_to_shape(cleaned)
+    Ok(polygon_parts_to_shape(cleaned))
 }
 
 /// Split a ring that touches itself at single vertices (a pinch) into its

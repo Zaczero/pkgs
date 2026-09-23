@@ -363,23 +363,20 @@ impl Shape {
 
     /// A dense `MULTILINESTRING`, or `MULTILINESTRING EMPTY` carrying
     /// `empty_axes` when there are no members.
-    pub(crate) fn multi_line_string(
-        empty_axes: CoordinateAxes,
-        values: Vec<LineSeq>,
-    ) -> Result<Self> {
-        Ok(MultiLineString::from_dense(values)?.map_or_else(
+    pub(crate) fn multi_line_string(empty_axes: CoordinateAxes, values: Vec<LineSeq>) -> Self {
+        MultiLineString::from_dense(values).map_or_else(
             || Self::Empty(GeometryKind::MultiLineString, empty_axes),
             Self::MultiLineString,
-        ))
+        )
     }
 
     /// A dense `MULTIPOLYGON`, or `MULTIPOLYGON EMPTY` carrying `empty_axes`
     /// when there are no members.
-    pub(crate) fn multi_polygon(empty_axes: CoordinateAxes, values: Vec<Polygon>) -> Result<Self> {
-        Ok(MultiPolygon::from_dense(values)?.map_or_else(
+    pub(crate) fn multi_polygon(empty_axes: CoordinateAxes, values: Vec<Polygon>) -> Self {
+        MultiPolygon::from_dense(values).map_or_else(
             || Self::Empty(GeometryKind::MultiPolygon, empty_axes),
             Self::MultiPolygon,
-        ))
+        )
     }
 
     /// The narrowest shape for a point decomposition: `POINT EMPTY` for none,
@@ -397,25 +394,20 @@ impl Shape {
 
     /// The narrowest shape for a lineal decomposition: `LINESTRING EMPTY` for
     /// none, the bare linestring for one, a dense multilinestring otherwise.
-    pub(crate) fn narrow_lines(empty_axes: CoordinateAxes, values: Vec<LineSeq>) -> Result<Self> {
+    pub(crate) fn narrow_lines(empty_axes: CoordinateAxes, values: Vec<LineSeq>) -> Self {
         match <[LineSeq; 1]>::try_from(values) {
-            Ok([line]) => Ok(Self::LineString(line)),
-            Err(values) if values.is_empty() => {
-                Ok(Self::Empty(GeometryKind::LineString, empty_axes))
-            },
+            Ok([line]) => Self::LineString(line),
+            Err(values) if values.is_empty() => Self::Empty(GeometryKind::LineString, empty_axes),
             Err(values) => Self::multi_line_string(empty_axes, values),
         }
     }
 
     /// The narrowest shape for a polygonal decomposition: `POLYGON EMPTY` for
     /// none, the bare polygon for one, a dense multipolygon otherwise.
-    pub(crate) fn narrow_polygons(
-        empty_axes: CoordinateAxes,
-        values: Vec<Polygon>,
-    ) -> Result<Self> {
+    pub(crate) fn narrow_polygons(empty_axes: CoordinateAxes, values: Vec<Polygon>) -> Self {
         match <[Polygon; 1]>::try_from(values) {
-            Ok([polygon]) => Ok(Self::Polygon(polygon)),
-            Err(values) if values.is_empty() => Ok(Self::Empty(GeometryKind::Polygon, empty_axes)),
+            Ok([polygon]) => Self::Polygon(polygon),
+            Err(values) if values.is_empty() => Self::Empty(GeometryKind::Polygon, empty_axes),
             Err(values) => Self::multi_polygon(empty_axes, values),
         }
     }

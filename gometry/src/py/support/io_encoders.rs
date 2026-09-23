@@ -40,8 +40,11 @@ pub(crate) fn wrapped_box(
     if west <= east {
         return Ok(Shape::Polygon(box_polygon(west, south, east, north)?));
     }
-    Shape::multi_polygon(crate::geometry::CoordinateAxes::XY, vec![
-        box_polygon(west, south, 180.0, north)?,
-        box_polygon(-180.0, south, east, north)?,
-    ])
+    Ok(Shape::multi_polygon(
+        crate::geometry::CoordinateAxes::XY,
+        vec![
+            box_polygon(west, south, 180.0, north)?,
+            box_polygon(-180.0, south, east, north)?,
+        ],
+    ))
 }

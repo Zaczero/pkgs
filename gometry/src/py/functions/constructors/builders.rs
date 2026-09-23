@@ -487,7 +487,7 @@ pub(crate) fn build_multi_line_string(
             };
             crate::try_push(&mut lines, line)?;
         }
-        let shape = Shape::multi_line_string(axes, lines).map_err(PyErr::from)?;
+        let shape = Shape::multi_line_string(axes, lines);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
@@ -552,7 +552,7 @@ pub(crate) fn build_multi_polygon(
             };
             crate::try_push(&mut polygons, polygon)?;
         }
-        let shape = Shape::multi_polygon(axes, polygons).map_err(PyErr::from)?;
+        let shape = Shape::multi_polygon(axes, polygons);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }

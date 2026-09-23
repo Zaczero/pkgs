@@ -563,7 +563,6 @@ mod winding_buffer_tests {
                 ring(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]),
                 Vec::new(),
             )])
-            .unwrap()
             .unwrap(),
         );
         let mut nested = degenerate;
@@ -999,9 +998,7 @@ mod winding_buffer_tests {
         let left = rectangle(0.0, 2.0);
         let right = rectangle(2.0, 4.0);
         let multipart = Shape::MultiPolygon(
-            MultiPolygon::from_dense(vec![left.clone(), right.clone()])
-                .unwrap()
-                .unwrap(),
+            MultiPolygon::from_dense(vec![left.clone(), right.clone()]).unwrap(),
         );
         let union = Shape::Polygon(left)
             .union(&Shape::Polygon(right), crate::geometry::Strictness::Lenient)
@@ -1079,11 +1076,7 @@ mod winding_buffer_tests {
             ring(&[(3.0, 3.0), (7.0, 3.0), (7.0, 7.0), (3.0, 7.0), (3.0, 3.0)]),
             Vec::new(),
         );
-        let source = Shape::MultiPolygon(
-            MultiPolygon::from_dense(vec![frame, filler])
-                .unwrap()
-                .unwrap(),
-        );
+        let source = Shape::MultiPolygon(MultiPolygon::from_dense(vec![frame, filler]).unwrap());
 
         let normalized = source.buffer(0.0).unwrap();
 
@@ -1111,9 +1104,7 @@ mod winding_buffer_tests {
         };
         let matches_union = |left: Polygon, right: Polygon| {
             let multipart = Shape::MultiPolygon(
-                MultiPolygon::from_dense(vec![left.clone(), right.clone()])
-                    .unwrap()
-                    .unwrap(),
+                MultiPolygon::from_dense(vec![left.clone(), right.clone()]).unwrap(),
             );
             let union = Shape::Polygon(left)
                 .union(&Shape::Polygon(right), crate::geometry::Strictness::Lenient)
@@ -1917,7 +1908,6 @@ mod expansion_budget_threading_tests {
             straight_line(),
             straight_line(),
         ])
-        .unwrap()
         .segmentize_budgeted(
             0.5,
             crate::geometry::SegmentPlacement::Planar,
