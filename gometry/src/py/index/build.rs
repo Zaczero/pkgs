@@ -5,9 +5,19 @@ use crate::py::index::{
     StaticStrForest, StaticStrTree, bounds_envelope, exact_geometry, exact_geometry_array,
     geodesic_prunable_point, index_envelopes,
 };
-pub(crate) fn spatial_index(items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
+pub(crate) fn spatial_index(mut items: Vec<PyGeometry>) -> PyResult<PySpatialIndex> {
     let metadata = index_metadata(&items)?;
-    spatial_index_rows(items.into_iter().map(Some).collect(), metadata)
+    let scan = scan_spatial_index_rows(items.iter().map(Some), metadata.as_ref())?;
+    for item in &mut items {
+        *item = item.with_prepared_plan(item.prepared_plan());
+    }
+    finish_spatial_index(items, scan, metadata)
+}
+
+struct IndexScan {
+    entries: Vec<IndexEntry>,
+    live: Vec<u8>,
+    non_prunable_live: usize,
 }
 
 /// Build over a sparse row table. ``None`` rows retain their input position as
@@ -17,15 +27,37 @@ fn spatial_index_rows(
     items: Vec<Option<PyGeometry>>,
     metadata: Option<Frame>,
 ) -> PyResult<PySpatialIndex> {
+    let scan = scan_spatial_index_rows(items.iter().map(Option::as_ref), metadata.as_ref())?;
+    let placeholder_frame = metadata.clone().unwrap_or_default();
+    let rows = items
+        .into_iter()
+        .map(|item| {
+            item.map_or_else(
+                || {
+                    PyGeometry::with_frame(
+                        PyGeometryArray::missing_placeholder(),
+                        placeholder_frame.clone(),
+                    )
+                },
+                |item| item.with_prepared_plan(item.prepared_plan()),
+            )
+        })
+        .collect();
+    finish_spatial_index(rows, scan, metadata)
+}
+
+fn scan_spatial_index_rows<'a>(
+    items: impl ExactSizeIterator<Item = Option<&'a PyGeometry>>,
+    metadata: Option<&Frame>,
+) -> PyResult<IndexScan> {
     let domain = metadata
-        .as_ref()
         .map(crate::geometry::topology_domain)
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
     let mut entries = Vec::new();
     let mut live = Vec::with_capacity(items.len());
     let mut non_prunable_live = 0_usize;
-    for (idx, item) in items.iter().enumerate() {
+    for (idx, item) in items.enumerate() {
         let Some(item) = item else {
             live.push(0);
             continue;
@@ -42,39 +74,36 @@ fn spatial_index_rows(
         non_prunable_live =
             non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(&item.shape)));
     }
-    let live_count = live.iter().map(|&live| usize::from(live != 0)).sum();
+    Ok(IndexScan {
+        entries,
+        live,
+        non_prunable_live,
+    })
+}
+
+fn finish_spatial_index(
+    rows: Vec<PyGeometry>,
+    scan: IndexScan,
+    metadata: Option<Frame>,
+) -> PyResult<PySpatialIndex> {
     // `total_rows` spans every input row (incl. skipped empties) so the
     // tombstone bitmap and tree/overflow handle boundary stay aligned to the
     // boxed row positions the query results index into.
-    let total_rows = items.len();
-    let placeholder_frame = metadata.clone().unwrap_or_default();
-    let rows = items
-        .into_iter()
-        .map(|item| {
-            item.map_or_else(
-                || {
-                    PyGeometry::with_frame(
-                        PyGeometryArray::missing_placeholder(),
-                        placeholder_frame.clone(),
-                    )
-                },
-                |item| item.with_prepared_plan(item.prepared_plan()),
-            )
-        })
-        .collect();
+    let total_rows = rows.len();
+    let live_count = scan.live.iter().filter(|&&live| live != 0).count();
     Ok(PySpatialIndex {
         rows: IndexRows {
             packed: None,
             boxed: rows,
-            live,
+            live: scan.live,
             live_count,
         },
-        bulk: StaticStrTree::build(entries, total_rows).map_err(pyo3::PyErr::from)?,
+        bulk: StaticStrTree::build(scan.entries, total_rows).map_err(pyo3::PyErr::from)?,
         overflow: StaticStrForest::new(total_rows),
         geodesic_caps: std::sync::Mutex::default(),
         mutation_gen: 0,
         metadata,
-        non_prunable_live,
+        non_prunable_live: scan.non_prunable_live,
     })
 }
 
