@@ -1310,14 +1310,14 @@ mod consecutive_dedup_tests {
     #[test]
     fn strict_cycle_collapses_consecutive_duplicates() {
         let ring = closed_ring(&[(0.0, 0.0), (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]);
-        let strict = strict_cycle(&ring, false).unwrap().expect("valid ring");
+        let strict = strict_cycle(&ring, false).expect("valid ring");
         assert_eq!(strict.len(), 4);
     }
 
     #[test]
     fn strict_cycle_rejects_degenerate_after_dedup() {
         let ring = closed_ring(&[(0.0, 0.0), (0.0, 0.0), (1.0, 0.0), (1.0, 0.0), (0.0, 0.0)]);
-        assert!(strict_cycle(&ring, false).unwrap().is_none());
+        assert!(strict_cycle(&ring, false).is_none());
     }
 
     #[test]

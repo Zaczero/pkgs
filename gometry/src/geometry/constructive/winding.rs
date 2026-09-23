@@ -131,7 +131,7 @@ pub(crate) fn convex_buffer_budgeted(
         return Ok(None);
     }
     if distance > 0.0 {
-        let Some(strict) = strict_cycle(polygon.shell.coords(), false)? else {
+        let Some(strict) = strict_cycle(polygon.shell.coords(), false) else {
             return Ok(None);
         };
         let Some((mut xs, mut ys)) =
@@ -160,7 +160,7 @@ fn convex_erosion_certified(
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
     // CW shell walk so the right-side offset goes inward (mirrors erosion_loops).
-    let Some(strict) = strict_cycle(polygon.shell.coords(), true)? else {
+    let Some(strict) = strict_cycle(polygon.shell.coords(), true) else {
         return Ok(None);
     };
     let Some((xs, ys)) = raw_offset_loop(&strict, distance, rule, quadrant_segments, budget)?
@@ -293,12 +293,12 @@ fn normalize_polygon_union(polygons: &[&Polygon]) -> Result<Vec<Polygon>> {
     crate::try_reserve_vec(&mut groups, polygons.len())?;
     for polygon in polygons {
         let start = loops.len();
-        let Some(shell) = strict_cycle(polygon.shell.coords(), true)? else {
+        let Some(shell) = strict_cycle(polygon.shell.coords(), true) else {
             continue;
         };
         loops.push(cycle_columns(&shell));
         for hole in polygon.holes.iter() {
-            let Some(hole) = strict_cycle(hole.coords(), false)? else {
+            let Some(hole) = strict_cycle(hole.coords(), false) else {
                 continue;
             };
             loops.push(cycle_columns(&hole));
@@ -595,7 +595,7 @@ pub(crate) fn expansion_loops(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<()>> {
-    let Some(shell) = strict_cycle(polygon.shell.coords(), false)? else {
+    let Some(shell) = strict_cycle(polygon.shell.coords(), false) else {
         return Ok(None);
     };
     let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
@@ -604,7 +604,7 @@ pub(crate) fn expansion_loops(
     crate::try_push_vec(loops, raw)?;
     for hole in polygon.holes.iter() {
         // Degenerate (zero-area) holes do not affect the buffer.
-        let Some(ring) = strict_cycle(hole.coords(), true)? else {
+        let Some(ring) = strict_cycle(hole.coords(), true) else {
             continue;
         };
         let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
@@ -626,7 +626,7 @@ pub(crate) fn erosion_loops(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<()>> {
-    let Some(shell) = strict_cycle(polygon.shell.coords(), true)? else {
+    let Some(shell) = strict_cycle(polygon.shell.coords(), true) else {
         return Ok(None);
     };
     let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
@@ -636,7 +636,7 @@ pub(crate) fn erosion_loops(
     // negative-winding region's boundary in the final pass).
     extend_cleaned(loops, &raw)?;
     for hole in polygon.holes.iter() {
-        let Some(ring) = strict_cycle(hole.coords(), false)? else {
+        let Some(ring) = strict_cycle(hole.coords(), false) else {
             continue;
         };
         // Grown holes never invert; their self-crossings (reflex

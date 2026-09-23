@@ -37,10 +37,9 @@ fn subdivision_work() -> (usize, usize) {
 
 /// The Douglas-Peucker keep mask over raw columns: `keep` and `stack` are
 /// cleared and refilled (reusable across packed-array rows); `Ok(Some(kept_count))`
-/// unless the chain is too short to simplify. Keep-mask and split-stack
-/// growth report allocation failure. The packed-array lane appends kept
-/// vertices straight into new CSR columns from this mask. `stack` must stay
-/// batch-local — never a receiver cache or lock (free-threading).
+/// unless the chain is too short to simplify. The packed-array lane appends
+/// kept vertices straight into new CSR columns from this mask. `stack` must
+/// stay batch-local — never a receiver cache or lock (free-threading).
 pub(crate) fn rdp_keep(
     xs: &[f64],
     ys: &[f64],
@@ -54,13 +53,13 @@ pub(crate) fn rdp_keep(
     }
     let tolerance_squared = tolerance * tolerance;
     keep.clear();
-    crate::try_reserve_vec(keep, count)?;
+    keep.reserve(count);
     keep.resize(count, false);
     keep[0] = true;
     keep[count - 1] = true;
     let mut kept = 2_usize;
     stack.clear();
-    crate::try_push_vec(stack, (0_usize, count - 1))?;
+    stack.push((0_usize, count - 1));
     while let Some((start, end)) = stack.pop() {
         if end - start < 2 {
             continue;
@@ -68,8 +67,8 @@ pub(crate) fn rdp_keep(
         if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared)? {
             keep[farthest] = true;
             kept += 1;
-            crate::try_push_vec(stack, (start, farthest))?;
-            crate::try_push_vec(stack, (farthest, end))?;
+            stack.push((start, farthest));
+            stack.push((farthest, end));
         }
     }
     Ok(Some(kept))
@@ -238,30 +237,28 @@ pub(crate) fn rdp_split(
 /// oriented CCW (`clockwise = false`, shells) or CW (holes), so the ring
 /// interior side is consistent for the offset walk. `None` below 3 strict
 /// vertices.
-pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Result<Option<Vec<Point>>> {
-    let mut ring = Vec::new();
-    crate::try_reserve_vec(&mut ring, coords.len())?;
+pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Option<Vec<Point>> {
+    let mut ring = Vec::with_capacity(coords.len());
     ring.extend(coords.iter_coords());
     dedup_consecutive_points(&mut ring);
     if ring.len() > 1 && same_point(ring[0], ring[ring.len() - 1]) {
         ring.pop();
     }
     if ring.len() < 3 {
-        return Ok(None);
+        return None;
     }
     if open_point_cycle_winding(&ring).reverse_for_clockwise(clockwise) {
         ring.reverse();
     }
-    let mut strict = Vec::new();
-    crate::try_reserve_vec(&mut strict, ring.len())?;
+    let mut strict = Vec::with_capacity(ring.len());
     for index in 0..ring.len() {
         let previous = ring[wrap_index(index + ring.len() - 1, ring.len())];
         let next = ring[wrap_index(index + 1, ring.len())];
         if orientation(previous, ring[index], next) != Orientation::Collinear {
-            crate::try_push_vec(&mut strict, ring[index])?;
+            strict.push(ring[index]);
         }
     }
-    Ok((strict.len() >= 3).then_some(strict))
+    (strict.len() >= 3).then_some(strict)
 }
 
 /// Raw offset loop of a strictly-turning cycle walked with the interior on
@@ -320,9 +317,8 @@ pub(crate) const fn axis_halves(bounds: Bounds, split_x: bool, cut: f64) -> [Bou
 /// median. The source values, rather than a rounded child, own this decision:
 /// a dense cluster beside a remote vertex therefore gets a finite complexity
 /// split without a second median retry.
-fn source_median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Result<Option<f64>> {
-    let mut ordinates = Vec::new();
-    crate::try_reserve_vec(&mut ordinates, shape.coord_count())?;
+fn source_median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Option<f64> {
+    let mut ordinates = Vec::with_capacity(shape.coord_count());
     shape.for_each_point(|point| {
         ordinates.push(if split_x { point.x } else { point.y });
     });
@@ -333,7 +329,7 @@ fn source_median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Result<Opt
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    Ok((1..ordinates.len())
+    (1..ordinates.len())
         .filter_map(|index| {
             if ordinates[index - 1] >= ordinates[index] {
                 return None;
@@ -342,7 +338,7 @@ fn source_median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Result<Opt
             (low < cut && cut < high).then_some((index.abs_diff(middle), index, cut))
         })
         .min_by_key(|&(distance, index, _)| (distance, index))
-        .map(|(_, _, cut)| cut))
+        .map(|(_, _, cut)| cut)
 }
 
 pub(crate) fn split(
@@ -358,15 +354,14 @@ pub(crate) fn split(
         terminal: bool,
     }
 
-    let mut work = Vec::new();
+    let mut work = Vec::with_capacity(1);
     let mut staged = Vec::new();
     let shape_bounds = shape.bounds();
-    crate::try_reserve_vec(&mut work, 1)?;
-    crate::try_push_vec(&mut work, WorkItem {
+    work.push(WorkItem {
         shape,
         bounds: shape_bounds,
         terminal: false,
-    })?;
+    });
     while let Some(item) = work.pop() {
         #[cfg(test)]
         SUBDIVISION_WORK.with(|work| {
@@ -377,16 +372,16 @@ pub(crate) fn split(
             continue;
         }
         if item.terminal || item.shape.coord_count() <= max_vertices {
-            crate::try_push_vec(&mut staged, item.shape)?;
+            staged.push(item.shape);
             continue;
         }
         let Some(bounds) = item.bounds else {
-            crate::try_push_vec(&mut staged, item.shape)?;
+            staged.push(item.shape);
             continue;
         };
 
-        let x_cut = source_median_cut(&item.shape, true, bounds)?;
-        let y_cut = source_median_cut(&item.shape, false, bounds)?;
+        let x_cut = source_median_cut(&item.shape, true, bounds);
+        let y_cut = source_median_cut(&item.shape, false, bounds);
         let x_longer = (bounds.maxx() - bounds.minx()) >= (bounds.maxy() - bounds.miny());
         let candidate = if x_longer {
             x_cut
@@ -398,7 +393,7 @@ pub(crate) fn split(
                 .or_else(|| x_cut.map(|cut| (true, cut)))
         };
         let Some((split_x, cut)) = candidate else {
-            crate::try_push_vec(&mut staged, item.shape)?;
+            staged.push(item.shape);
             continue;
         };
         let halves = axis_halves(bounds, split_x, cut);
@@ -413,7 +408,7 @@ pub(crate) fn split(
         if children.iter().all(Shape::is_empty) {
             // A cut that cannot be represented by the exact arrangement must
             // not silently lose the source support.
-            crate::try_push_vec(&mut staged, item.shape)?;
+            staged.push(item.shape);
             continue;
         }
         #[cfg(test)]
@@ -447,11 +442,11 @@ pub(crate) fn split(
                 progressed |= progress;
             }
             let terminal = child.coord_count() <= max_vertices || !progress;
-            crate::try_push_vec(&mut work, WorkItem {
+            work.push(WorkItem {
                 shape: child,
                 bounds: child_bounds,
                 terminal,
-            })?;
+            });
         }
         #[cfg(test)]
         if progressed {
@@ -461,7 +456,7 @@ pub(crate) fn split(
             });
         }
     }
-    crate::try_reserve_vec(out, staged.len())?;
+    out.reserve(staged.len());
     out.append(&mut staged);
     Ok(())
 }
@@ -553,11 +548,8 @@ enum PolygonKeep {
     New(Polygon),
 }
 
-fn try_clone_ring_prefix(holes: &[Ring], end: usize) -> Result<Vec<Ring>> {
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, end)?;
-    out.extend(holes[..end].iter().cloned());
-    Ok(out)
+fn clone_ring_prefix(holes: &[Ring], end: usize) -> Vec<Ring> {
+    holes[..end].to_vec()
 }
 
 fn keep_polygon(
@@ -570,31 +562,27 @@ fn keep_polygon(
         RingKeep::Same => None,
         RingKeep::New(shell) => Some(shell),
     };
-    let mut holes_out = if new_shell.is_some() {
-        let mut holes = Vec::new();
-        crate::try_reserve_vec(&mut holes, polygon.holes.len())?;
-        Some(holes)
-    } else {
-        None
-    };
+    let mut holes_out = new_shell
+        .is_some()
+        .then(|| Vec::with_capacity(polygon.holes.len()));
     for (index, hole) in polygon.holes.iter().enumerate() {
         match keep_ring(hole, scratch, keep_mask)? {
             RingKeep::Same => {
                 if let Some(holes) = holes_out.as_mut() {
-                    crate::try_push_vec(holes, hole.clone())?;
+                    holes.push(hole.clone());
                 }
             },
             RingKeep::Drop => {
                 if holes_out.is_none() {
-                    holes_out = Some(try_clone_ring_prefix(&polygon.holes, index)?);
+                    holes_out = Some(clone_ring_prefix(&polygon.holes, index));
                 }
             },
             RingKeep::New(ring) => {
                 if let Some(holes) = holes_out.as_mut() {
-                    crate::try_push_vec(holes, ring)?;
+                    holes.push(ring);
                 } else {
-                    let mut holes = try_clone_ring_prefix(&polygon.holes, index)?;
-                    crate::try_push_vec(&mut holes, ring)?;
+                    let mut holes = clone_ring_prefix(&polygon.holes, index);
+                    holes.push(ring);
                     holes_out = Some(holes);
                 }
             },
@@ -608,20 +596,17 @@ fn keep_polygon(
     }))
 }
 
-fn try_prefix_line_members(
-    lines: &MultiLineString,
+fn prefix_members<T: Clone>(
+    values: &[T],
+    members: impl ExactSizeIterator<Item = MultiMember<usize>>,
     end: usize,
-) -> Result<Vec<MultiMember<LineSeq>>> {
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, lines.member_count())?;
-    for member in lines.members().take(end) {
-        let item = match member {
-            MultiMember::Empty => MultiMember::Empty,
-            MultiMember::Value(value) => MultiMember::Value(lines.as_slice()[value].clone()),
-        };
-        crate::try_push_vec(&mut out, item)?;
-    }
-    Ok(out)
+) -> Vec<MultiMember<T>> {
+    let mut out = Vec::with_capacity(members.len());
+    out.extend(members.take(end).map(|member| match member {
+        MultiMember::Empty => MultiMember::Empty,
+        MultiMember::Value(value) => MultiMember::Value(values[value].clone()),
+    }));
+    out
 }
 
 fn keep_multi_lines(
@@ -634,7 +619,7 @@ fn keep_multi_lines(
         match member {
             MultiMember::Empty => {
                 if let Some(members) = out.as_mut() {
-                    crate::try_push_vec(members, MultiMember::Empty)?;
+                    members.push(MultiMember::Empty);
                 }
             },
             MultiMember::Value(value) => {
@@ -642,21 +627,16 @@ fn keep_multi_lines(
                 match kept_coords(line, scratch, keep_mask)? {
                     None => {
                         if let Some(members) = out.as_mut() {
-                            crate::try_push_vec(members, MultiMember::Value(line.clone()))?;
+                            members.push(MultiMember::Value(line.clone()));
                         }
                     },
                     Some(coords) => {
                         if let Some(members) = out.as_mut() {
-                            crate::try_push_vec(
-                                members,
-                                MultiMember::Value(LineSeq::from_proven(coords)),
-                            )?;
+                            members.push(MultiMember::Value(LineSeq::from_proven(coords)));
                         } else {
-                            let mut members = try_prefix_line_members(lines, index)?;
-                            crate::try_push_vec(
-                                &mut members,
-                                MultiMember::Value(LineSeq::from_proven(coords)),
-                            )?;
+                            let mut members =
+                                prefix_members(lines.as_slice(), lines.members(), index);
+                            members.push(MultiMember::Value(LineSeq::from_proven(coords)));
                             out = Some(members);
                         }
                     },
@@ -672,22 +652,6 @@ fn keep_multi_lines(
     })
 }
 
-fn try_prefix_polygon_members(
-    polygons: &MultiPolygon,
-    end: usize,
-) -> Result<Vec<MultiMember<Polygon>>> {
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, polygons.member_count())?;
-    for member in polygons.members().take(end) {
-        let item = match member {
-            MultiMember::Empty => MultiMember::Empty,
-            MultiMember::Value(value) => MultiMember::Value(polygons.as_slice()[value].clone()),
-        };
-        crate::try_push_vec(&mut out, item)?;
-    }
-    Ok(out)
-}
-
 fn keep_multi_polygons(
     polygons: &MultiPolygon,
     scratch: &mut KeepScratch,
@@ -698,7 +662,7 @@ fn keep_multi_polygons(
         match member {
             MultiMember::Empty => {
                 if let Some(members) = out.as_mut() {
-                    crate::try_push_vec(members, MultiMember::Empty)?;
+                    members.push(MultiMember::Empty);
                 }
             },
             MultiMember::Value(value) => {
@@ -706,24 +670,26 @@ fn keep_multi_polygons(
                 match keep_polygon(polygon, scratch, keep_mask)? {
                     PolygonKeep::Same => {
                         if let Some(members) = out.as_mut() {
-                            crate::try_push_vec(members, MultiMember::Value(polygon.clone()))?;
+                            members.push(MultiMember::Value(polygon.clone()));
                         }
                     },
                     PolygonKeep::Empty => {
                         if let Some(members) = out.as_mut() {
-                            crate::try_push_vec(members, MultiMember::Empty)?;
+                            members.push(MultiMember::Empty);
                         } else {
-                            let mut members = try_prefix_polygon_members(polygons, index)?;
-                            crate::try_push_vec(&mut members, MultiMember::Empty)?;
+                            let mut members =
+                                prefix_members(polygons.as_slice(), polygons.members(), index);
+                            members.push(MultiMember::Empty);
                             out = Some(members);
                         }
                     },
                     PolygonKeep::New(polygon) => {
                         if let Some(members) = out.as_mut() {
-                            crate::try_push_vec(members, MultiMember::Value(polygon))?;
+                            members.push(MultiMember::Value(polygon));
                         } else {
-                            let mut members = try_prefix_polygon_members(polygons, index)?;
-                            crate::try_push_vec(&mut members, MultiMember::Value(polygon))?;
+                            let mut members =
+                                prefix_members(polygons.as_slice(), polygons.members(), index);
+                            members.push(MultiMember::Value(polygon));
                             out = Some(members);
                         }
                     },
@@ -1003,17 +969,16 @@ impl Shape {
                     match geometry.simplify_raw(scratch, keep_mask)? {
                         RawSimplify::Unchanged => {
                             if let Some(members) = out.as_mut() {
-                                crate::try_push_vec(members, geometry.clone())?;
+                                members.push(geometry.clone());
                             }
                         },
                         RawSimplify::Changed(shape) => {
                             if let Some(members) = out.as_mut() {
-                                crate::try_push_vec(members, shape)?;
+                                members.push(shape);
                             } else {
-                                let mut members = Vec::new();
-                                crate::try_reserve_vec(&mut members, geometries.len())?;
+                                let mut members = Vec::with_capacity(geometries.len());
                                 members.extend(geometries.as_slice()[..index].iter().cloned());
-                                crate::try_push_vec(&mut members, shape)?;
+                                members.push(shape);
                                 out = Some(members);
                             }
                         },
