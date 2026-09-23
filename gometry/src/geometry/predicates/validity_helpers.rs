@@ -147,7 +147,7 @@ pub(crate) fn minimum_clearance_witness(
     if points.len() < 2 {
         return Ok(None);
     }
-    let segments = indexed_segments(shape)?;
+    let segments = indexed_segments(shape);
     let witness = if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
         minimum_clearance_witness_indexed(&points, &segments)?
     } else {
@@ -346,44 +346,43 @@ fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<Poi
     Ok(indices)
 }
 
-fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> {
+fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
     fn line_segments_with_indices<C: Coordinates + ?Sized>(
         coords: &C,
         cursor: &mut usize,
         out: &mut Vec<IndexedSegment>,
-    ) -> crate::error::Result<()> {
+    ) {
         let base = *cursor;
         for index in 0..coords.coord_count().saturating_sub(1) {
             let start = coords.nth_coord(index);
             let end = coords.nth_coord(index + 1);
-            crate::try_push_vec(out, IndexedSegment {
+            out.push(IndexedSegment {
                 xy: Segment {
                     start: start.xy(),
                     end: end.xy(),
                 },
                 start: base + index,
                 end: base + index + 1,
-            })?;
+            });
         }
         *cursor += coords.coord_count();
-        Ok(())
     }
 
-    let mut out = Vec::new();
-    crate::try_reserve_vec(&mut out, shape.segment_count())?;
+    let mut out = Vec::with_capacity(shape.segment_count());
     let mut cursor = 0;
-    shape.try_for_each_component(&mut |component| match component {
+    shape.for_each_component(&mut |component| match component {
         // A puntal member owns one coordinate index and no segment.
         Component::Point(_) => {
             cursor += 1;
-            Ok(())
         },
         Component::LineString(line) => line_segments_with_indices(line, &mut cursor, &mut out),
-        Component::Polygon(polygon) => polygon
-            .rings()
-            .try_for_each(|ring| line_segments_with_indices(ring, &mut cursor, &mut out)),
-    })?;
-    Ok(out)
+        Component::Polygon(polygon) => {
+            for ring in polygon.rings() {
+                line_segments_with_indices(ring, &mut cursor, &mut out);
+            }
+        },
+    });
+    out
 }
 
 pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {
@@ -575,7 +574,7 @@ mod clearance_index_tests {
     fn indexed_clearance_matches_brute_force() {
         let shape = indexed_line();
         let points = shape.points_vec();
-        let segments = indexed_segments(&shape).unwrap();
+        let segments = indexed_segments(&shape);
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
         let (indexed_plan, indexed_distance) =
             minimum_clearance_witness_indexed(&points, &segments)

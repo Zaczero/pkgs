@@ -123,8 +123,7 @@ pub(crate) struct PolygonPointIndex {
 impl PolygonPointIndex {
     pub(crate) fn build(polygon: &Polygon) -> Result<Self> {
         let mut index = Self::build_shell(&polygon.shell)?;
-        let mut hole_rings = Vec::new();
-        crate::try_reserve_vec(&mut hole_rings, polygon.holes.len())?;
+        let mut hole_rings = Vec::with_capacity(polygon.holes.len());
         for hole in polygon.holes.iter() {
             let ring = RingPointIndex::build(hole.coords())?;
             index.winding_rings &= ring.kind == crate::geometry::RingKind::Winding;

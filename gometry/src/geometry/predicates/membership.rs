@@ -208,10 +208,8 @@ pub(in crate::geometry) fn polygon_rings_issue(
     // point per hole decides each relation. Shell containment is O(H);
     // hole–hole nesting visits only OVERLAPPING bounds pairs via the shared
     // sweep (never all-pairs compares of provably disjoint holes).
-    let mut hole_bounds: Vec<Bounds> = Vec::new();
-    let mut probes: Vec<Point> = Vec::new();
-    crate::try_reserve_vec(&mut hole_bounds, polygon.holes.len())?;
-    crate::try_reserve_vec(&mut probes, polygon.holes.len())?;
+    let mut hole_bounds: Vec<Bounds> = Vec::with_capacity(polygon.holes.len());
+    let mut probes: Vec<Point> = Vec::with_capacity(polygon.holes.len());
     for (index, hole) in polygon.holes.iter().enumerate() {
         let probe = ring_probe_point(hole.coords(), polygon.shell.coords());
         if ring_classify_point(polygon.shell.coords(), probe) != RingClass::Interior {
@@ -289,8 +287,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
             .checked_add(polygon.rings().count())
             .ok_or(crate::error::ResourceError::SizeOverflow)
     })?;
-    let mut member_of = Vec::new();
-    crate::try_reserve_vec(&mut member_of, ring_count)?;
+    let mut member_of = Vec::with_capacity(ring_count);
     for (member, polygon) in polygons.iter().enumerate() {
         for ring in
             std::iter::once(polygon.shell.coords()).chain(polygon.holes.iter().map(Ring::coords))
@@ -298,7 +295,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
             if chains.push_line(ring)?.is_none() {
                 return Ok(None);
             }
-            crate::try_push_vec(&mut member_of, member)?;
+            member_of.push(member);
         }
     }
     let as_member = |seg: &IndexedSegment| IndexedSegment {
@@ -327,8 +324,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
     // inside another's hole is valid). Only OVERLAPPING member bounds are
     // visited — the shared bounds sweep replaces the O(N²) all-pairs
     // compare that paid even for provably disjoint multipolygon parts.
-    let mut member_bounds = Vec::new();
-    crate::try_reserve_vec(&mut member_bounds, polygons.len())?;
+    let mut member_bounds = Vec::with_capacity(polygons.len());
     for polygon in polygons {
         let bounds = Bounds::from_coords(polygon.shell.coords()).unwrap_or_else(|| {
             Bounds::new_raw(
@@ -338,7 +334,7 @@ pub(in crate::geometry) fn multi_polygon_members_issue(
                 f64::NEG_INFINITY,
             )
         });
-        crate::try_push_vec(&mut member_bounds, bounds)?;
+        member_bounds.push(bounds);
     }
     let mut nest_issue: Option<ValidationIssue> = None;
     let _ = for_each_overlapping_bounds_pair(&member_bounds, |index, other_index| {
