@@ -39,8 +39,7 @@ fn selected_f64_column_le_bytes(
     let byte_len = len
         .checked_mul(size_of::<f64>())
         .ok_or_else(|| pickle_size_overflow("coordinate byte length overflows usize"))?;
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, byte_len)?;
+    let mut out = Vec::with_capacity(byte_len);
     for logical in 0..len {
         out.extend_from_slice(&values[selection.physical(logical)].to_le_bytes());
     }
@@ -55,8 +54,7 @@ fn selected_f64_windows_le_bytes(
     let byte_len = value_count
         .checked_mul(size_of::<f64>())
         .ok_or_else(|| pickle_size_overflow("coordinate byte length overflows usize"))?;
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, byte_len)?;
+    let mut out = Vec::with_capacity(byte_len);
     for window in windows {
         for &value in &values[window] {
             out.extend_from_slice(&value.to_le_bytes());
@@ -75,8 +73,7 @@ fn rebased_i32_offsets_le_bytes(
     let byte_len = offset_count
         .checked_mul(size_of::<i32>())
         .ok_or_else(|| pickle_size_overflow("offset byte length overflows usize"))?;
-    let mut out = Vec::new();
-    crate::boundary::try_reserve_vec(&mut out, byte_len)?;
+    let mut out = Vec::with_capacity(byte_len);
     out.extend_from_slice(&0_i32.to_le_bytes());
     let mut total = 0_usize;
     for length in lengths {
@@ -210,8 +207,7 @@ fn pickled_csr_offsets<Level>(
     end_cap: usize,
 ) -> crate::error::Result<CsrOffsetColumn<Level>> {
     let chunks = bytes.as_chunks::<4>().0;
-    let mut offsets = Vec::new();
-    crate::boundary::try_reserve_vec(&mut offsets, chunks.len())?;
+    let mut offsets = Vec::with_capacity(chunks.len());
     offsets.extend(chunks.iter().map(|chunk| i32::from_le_bytes(*chunk)));
     CsrOffsetColumn::try_from_shared_i32(SharedSlice::from_vec(offsets), end_cap)
 }
@@ -223,17 +219,16 @@ fn pickled_coordseq(
     zs: Option<&[u8]>,
     ms: Option<&[u8]>,
 ) -> crate::error::Result<CoordSeq> {
-    let column = |bytes: &[u8]| -> crate::error::Result<Vec<f64>> {
+    let column = |bytes: &[u8]| {
         let chunks = bytes.as_chunks::<8>().0;
-        let mut values = Vec::new();
-        crate::boundary::try_reserve_vec(&mut values, chunks.len())?;
+        let mut values = Vec::with_capacity(chunks.len());
         values.extend(chunks.iter().map(|chunk| f64::from_le_bytes(*chunk)));
-        Ok(values)
+        values
     };
-    let xs = column(xs)?;
-    let ys = column(ys)?;
-    let zs = zs.map(column).transpose()?;
-    let ms = ms.map(column).transpose()?;
+    let xs = column(xs);
+    let ys = column(ys);
+    let zs = zs.map(column);
+    let ms = ms.map(column);
     // `from_owned_columns` leaves equal column lengths to its caller.
     if xs.len() != ys.len()
         || zs.as_ref().is_some_and(|column| column.len() != xs.len())
@@ -259,15 +254,14 @@ fn unpickle_geometry_array_detached(
         Some(bytes) => pickled_missing_mask(bytes),
         None => None,
     };
-    let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, rows.len())?;
+    let mut shapes = Vec::with_capacity(rows.len());
     for (row, wkb) in rows.iter().enumerate() {
         let shape = if mask.as_ref().is_some_and(|mask| mask.is_missing(row)) {
             PyGeometryArray::missing_placeholder()
         } else {
             crate::io::parse_wkb(wkb.as_slice())?.shape
         };
-        crate::boundary::try_push_vec(&mut shapes, shape)?;
+        shapes.push(shape);
     }
     PyGeometryArray::mixed_shapes(shapes, pickled_frame(crs, epoch)?)?.with_missing_mask(mask)
 }
@@ -393,7 +387,7 @@ pub(crate) fn reduce_geometry_array(
                 rows: pickle_rows(storage.as_ref(), missing.as_ref(), point_layout)?,
                 crs,
                 epoch,
-                missing: missing.as_ref().map(try_missing_bytes).transpose()?,
+                missing: missing.as_ref().map(missing_bytes),
             })
         })
         .map_err(PyErr::from)?;
@@ -431,7 +425,7 @@ fn pickle_rows(
             let row_aligned =
                 !point_layout.is_compact() && mask.len() == selection.len(coords.len());
             let columns = if row_aligned {
-                let indices = selected_storage_indices(selection, coords.len(), Some(mask))?;
+                let indices = selected_storage_indices(selection, coords.len(), Some(mask));
                 if !points_are_finite(coords, RowSelectionRef::Gather(&indices)) {
                     return mixed();
                 }
@@ -455,7 +449,7 @@ fn pickle_rows(
             }),
             mask,
         ) => {
-            let windows = selected_line_windows(offsets, row_map.as_deref(), mask)?;
+            let windows = selected_line_windows(offsets, row_map.as_deref(), mask);
             if !columns_are_finite(coords, &windows) {
                 return mixed();
             }
@@ -480,19 +474,14 @@ fn pickle_rows(
                 row_map.as_deref(),
                 polygon_offsets.len().saturating_sub(1),
                 mask,
-            )?;
-            let mut windows = Vec::new();
-            let mut polygon_ring_counts = Vec::new();
-            crate::boundary::try_reserve_vec(&mut windows, rows.len())?;
-            crate::boundary::try_reserve_vec(&mut polygon_ring_counts, rows.len())?;
+            );
+            let mut windows = Vec::with_capacity(rows.len());
+            let mut polygon_ring_counts = Vec::with_capacity(rows.len());
             for &row in &rows {
                 let rings = row_map.as_deref().csr_window(polygon_offsets, row);
-                crate::boundary::try_push_vec(&mut polygon_ring_counts, rings.len())?;
+                polygon_ring_counts.push(rings.len());
                 for ring in rings {
-                    crate::boundary::try_push_vec(
-                        &mut windows,
-                        ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize,
-                    )?;
+                    windows.push(ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize);
                 }
             }
             if !columns_are_finite(coords, &windows) {
@@ -515,64 +504,60 @@ fn pickle_rows(
     }
 }
 
-fn try_missing_bytes(mask: &ValidityMask) -> crate::error::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut bytes, mask.len())?;
+fn missing_bytes(mask: &ValidityMask) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(mask.len());
     for missing in mask.iter() {
-        crate::boundary::try_push_vec(&mut bytes, u8::from(missing))?;
+        bytes.push(u8::from(missing));
     }
-    Ok(bytes)
+    bytes
 }
 
 fn selected_storage_rows(
     row_map: RowSelectionRef<'_>,
     physical_rows: usize,
     missing: Option<&ValidityMask>,
-) -> crate::error::Result<Vec<usize>> {
+) -> Vec<usize> {
     let logical_rows = row_map.len(physical_rows);
-    let mut rows = Vec::new();
-    crate::boundary::try_reserve_vec(&mut rows, logical_rows)?;
+    let mut rows = Vec::with_capacity(logical_rows);
     for logical in 0..logical_rows {
         if missing.is_some_and(|mask| mask.len() == logical_rows && mask.is_missing(logical)) {
             continue;
         }
-        crate::boundary::try_push_vec(&mut rows, logical)?;
+        rows.push(logical);
     }
-    Ok(rows)
+    rows
 }
 
 fn selected_line_windows(
     offsets: &[i32],
     row_map: RowSelectionRef<'_>,
     missing: Option<&ValidityMask>,
-) -> crate::error::Result<Vec<std::ops::Range<usize>>> {
+) -> Vec<std::ops::Range<usize>> {
     let logical_rows = row_map.len(offsets.len().saturating_sub(1));
-    let mut windows = Vec::new();
-    crate::boundary::try_reserve_vec(&mut windows, logical_rows)?;
+    let mut windows = Vec::with_capacity(logical_rows);
     for logical in 0..logical_rows {
         if missing.is_some_and(|mask| mask.len() == logical_rows && mask.is_missing(logical)) {
             continue;
         }
-        crate::boundary::try_push_vec(&mut windows, row_map.csr_window(offsets, logical))?;
+        windows.push(row_map.csr_window(offsets, logical));
     }
-    Ok(windows)
+    windows
 }
 
 fn selected_storage_indices(
     row_map: RowSelectionRef<'_>,
     physical_rows: usize,
     missing: Option<&ValidityMask>,
-) -> crate::error::Result<Vec<usize>> {
-    let mut indices = Vec::new();
+) -> Vec<usize> {
     let logical_rows = row_map.len(physical_rows);
-    crate::boundary::try_reserve_vec(&mut indices, logical_rows)?;
+    let mut indices = Vec::with_capacity(logical_rows);
     for logical in 0..logical_rows {
         if missing.is_some_and(|mask| mask.len() == logical_rows && mask.is_missing(logical)) {
             continue;
         }
-        crate::boundary::try_push_vec(&mut indices, row_map.physical(logical))?;
+        indices.push(row_map.physical(logical));
     }
-    Ok(indices)
+    indices
 }
 
 fn points_are_finite(coords: &CoordSeq, selection: RowSelectionRef<'_>) -> bool {
@@ -672,12 +657,11 @@ fn wkb_rows_for_mask(
         ) => storage.len() != mask.len(),
         GeometryArrayStorage::Mixed(_) => false,
     });
-    let mut rows = Vec::new();
-    crate::boundary::try_reserve_vec(&mut rows, row_count)?;
+    let mut rows = Vec::with_capacity(row_count);
     let mut present = 0;
     for logical in 0..row_count {
         if missing.is_some_and(|mask| mask.is_missing(logical)) {
-            crate::boundary::try_push_vec(&mut rows, Vec::new())?;
+            rows.push(Vec::new());
             continue;
         }
         let payload_row = if compact { present } else { logical };
@@ -685,7 +669,7 @@ fn wkb_rows_for_mask(
         let wkb = storage
             .row(payload_row)
             .try_with_shape(|shape| crate::io::to_wkb(shape, None, false))?;
-        crate::boundary::try_push_vec(&mut rows, wkb)?;
+        rows.push(wkb);
     }
     Ok(rows)
 }
@@ -704,10 +688,9 @@ fn materialize_array_pickle_payload(
     let missing = missing.as_deref().map(bytes);
     let (name, args) = match rows {
         PickleRows::Mixed(rows) => {
-            let mut py_rows = Vec::new();
-            crate::boundary::try_reserve_vec(&mut py_rows, rows.len()).map_err(PyErr::from)?;
+            let mut py_rows = Vec::with_capacity(rows.len());
             for row in rows {
-                crate::boundary::try_push_vec(&mut py_rows, bytes(&row)).map_err(PyErr::from)?;
+                py_rows.push(bytes(&row));
             }
             (
                 "_unpickle_geometry_array_v1",
