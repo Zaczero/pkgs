@@ -205,7 +205,7 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
         // flipping sign when that ordinal owned the reverse of the noded
         // representative. Exact undirected dedup keeps `atomic` unique-sized
         // so stacked multiparts never re-expand into O(E) weighted pieces.
-        Arrangement::<[i32; 2]>::weighted(&atomic, |piece| {
+        Arrangement::<[i32; 2]>::weighted(atomic.iter().copied(), |piece| {
             let mut weight = [0_i32, 0_i32];
             for &(ordinal, reversed) in &sources[piece] {
                 let unit = if tags[ordinal as usize] == 0 {

@@ -16,13 +16,13 @@ impl Arrangement<i32> {
     /// to materialize every face's ring.
     #[cfg(test)]
     pub(crate) fn new(segments: &[Segment]) -> Result<Self> {
-        Self::weighted(segments, |_| 1)
+        Self::weighted(segments.iter().copied(), |_| 1)
     }
 
     /// [`Arrangement::new`] with every [`Face::ring`] materialized — for
     /// consumers that read the faces themselves (coverage cleaning) rather
     /// than a winding-selected region boundary.
-    pub(crate) fn new_with_rings(segments: &[Segment]) -> Result<Self> {
+    pub(crate) fn new_with_rings(segments: impl ExactSizeIterator<Item = Segment>) -> Result<Self> {
         Self::build::<true>(segments, |_| 1)
     }
 
@@ -243,12 +243,15 @@ impl<W: WindingWeight> Arrangement<W> {
     /// source segment's winding weight (a binary overlay tags operands
     /// with per-operand units). Face rings are not collected (see
     /// [`Arrangement::new`]).
-    pub(crate) fn weighted(segments: &[Segment], weight_of: impl Fn(usize) -> W) -> Result<Self> {
+    pub(crate) fn weighted(
+        segments: impl ExactSizeIterator<Item = Segment>,
+        weight_of: impl Fn(usize) -> W,
+    ) -> Result<Self> {
         Self::build::<false>(segments, weight_of)
     }
 
     pub(crate) fn build<const RINGS: bool>(
-        segments: &[Segment],
+        segments: impl ExactSizeIterator<Item = Segment>,
         weight_of: impl Fn(usize) -> W,
     ) -> Result<Self> {
         let mut spares = arrangement_spares();

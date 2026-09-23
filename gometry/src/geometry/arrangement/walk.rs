@@ -104,18 +104,18 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
 /// no edge map at all.
 #[expect(clippy::type_complexity, reason = "private construction plumbing")]
 pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
-    segments: &[Segment],
+    segments: impl ExactSizeIterator<Item = Segment>,
     weight_of: impl Fn(usize) -> W,
     // Recycled buffers (cleared here): capacity survives across rows.
     mut ids: HashMap<PointKey, u32>,
     mut points: Vec<XY>,
     mut edges: Vec<(u32, u32, W)>,
 ) -> Result<(HashMap<PointKey, u32>, Vec<XY>, Vec<(u32, u32, W)>)> {
+    ids.clear();
+    let segment_count = segments.len();
     // Worst case every segment contributes two unique endpoints
     // (disconnected soups); chains share and stay under it.
-    ids.clear();
-    let endpoint_count = segments
-        .len()
+    let endpoint_count = segment_count
         .checked_mul(2)
         .ok_or(ResourceError::SizeOverflow)?;
     ids.reserve(endpoint_count);
@@ -133,9 +133,9 @@ pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
         }
     };
     edges.clear();
-    edges.reserve(segments.len());
+    edges.reserve(segment_count);
     let mut previous: Option<(PointKey, u32)> = None;
-    for (index, segment) in segments.iter().enumerate() {
+    for (index, segment) in segments.enumerate() {
         if same_point(segment.start, segment.end) {
             continue;
         }
