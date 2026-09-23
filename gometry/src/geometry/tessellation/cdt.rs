@@ -260,18 +260,14 @@ impl ConstrainedMesh {
         let Some(mesh) = Mesh::try_delaunay(points)? else {
             return Ok(None);
         };
-        let mut constrained = Vec::new();
-        crate::try_reserve_vec(&mut constrained, mesh.halfedges.len())?;
-        constrained.resize(mesh.halfedges.len(), false);
-        let mut source_constraints = Vec::new();
-        crate::try_reserve_vec(&mut source_constraints, sources.len())?;
-        source_constraints.extend_from_slice(sources);
+        let constrained = vec![false; mesh.halfedges.len()];
+        let source_constraints = sources.to_vec();
         let source_pieces = crate::collections::try_hash_map_with_capacity(sources.len())?;
-        let mut provenance = Vec::new();
-        crate::try_reserve_vec(&mut provenance, occurrences.len())?;
-        for &occurrence in occurrences {
-            crate::try_push_vec(&mut provenance, NodeProvenance::SourceSite { occurrence })?;
-        }
+        let provenance = occurrences
+            .iter()
+            .copied()
+            .map(|occurrence| NodeProvenance::SourceSite { occurrence })
+            .collect();
         let mut this = Self {
             mesh,
             constrained,
@@ -307,7 +303,7 @@ impl ConstrainedMesh {
         if u == v {
             return Ok(());
         }
-        if let Some(slot) = self.mesh.edge_slot(u, v)? {
+        if let Some(slot) = self.mesh.edge_slot(u, v) {
             self.source_pieces
                 .entry(ordered(u, v))
                 .or_insert(SourcePiece {
@@ -323,10 +319,9 @@ impl ConstrainedMesh {
         // Walk the fan around `u` to find the triangle the segment leaves
         // through, or a vertex it passes through exactly.
         let (pu, pv) = (xy(u), xy(v));
-        let mut crossing: Vec<usize> = Vec::new();
-        crate::try_reserve_vec(&mut crossing, self.mesh.triangle_count())?;
+        let mut crossing: Vec<usize> = Vec::with_capacity(self.mesh.triangle_count());
         let mut start = None;
-        for slot in self.mesh.outgoing(u)? {
+        for slot in self.mesh.outgoing(u) {
             let a = self.mesh.triangles[next_halfedge(slot)];
             let b = self.mesh.triangles[prev_halfedge(slot)];
             // Segment u->v exits triangle (u, a, b) through edge a->b when v
@@ -378,7 +373,7 @@ impl ConstrainedMesh {
                     "constraint walk left the triangulation",
                 ));
             }
-            crate::try_push_vec(&mut crossing, edge)?;
+            crossing.push(edge);
             let apex = self.mesh.triangles[prev_halfedge(twin)];
             if apex == v {
                 break;
@@ -393,7 +388,7 @@ impl ConstrainedMesh {
                 }
                 // Passes exactly through `apex`: constrain u->apex by flipping
                 // what we have so far, then continue from apex.
-                self.flip_until_clear(xy, u, apex, crossing)?;
+                self.flip_until_clear(xy, u, apex, crossing);
                 let split = exact::ExactRational::from_segment(
                     self.source(source).start.xy(),
                     self.source(source).end.xy(),
@@ -413,7 +408,7 @@ impl ConstrainedMesh {
                 prev_halfedge(twin)
             };
         }
-        self.flip_until_clear(xy, u, v, crossing)?;
+        self.flip_until_clear(xy, u, v, crossing);
         Ok(())
     }
 
@@ -424,17 +419,13 @@ impl ConstrainedMesh {
     }
 
     /// Flip the crossed edges until none cross `u -> v`, then mark the edge.
-    #[expect(
-        clippy::panic_in_result_fn,
-        reason = "the existing million-step guard is a topology convergence invariant, not an allocation outcome"
-    )]
     fn flip_until_clear(
         &mut self,
         xy: &impl Fn(usize) -> XY,
         u: usize,
         v: usize,
         mut crossing: Vec<usize>,
-    ) -> Result<()> {
+    ) {
         let (pu, pv) = (xy(u), xy(v));
         let mut guard = 0_usize;
         while let Some(edge) = crossing.pop() {
@@ -452,7 +443,7 @@ impl ConstrainedMesh {
                 != exact::orient2d(xy(c), xy(d), xy(b))
                 && exact::orient2d(xy(a), xy(b), xy(c)) != exact::orient2d(xy(a), xy(b), xy(d));
             if !convex {
-                try_insert_front(&mut crossing, edge)?;
+                crossing.insert(0, edge);
                 continue;
             }
             let new_edge = self.mesh.flip_carrying(edge, &mut self.constrained, false);
@@ -469,15 +460,14 @@ impl ConstrainedMesh {
                     && exact::orient2d(xy(na), xy(nb), pu) != exact::orient2d(xy(na), xy(nb), pv)
             };
             if still_crosses {
-                try_insert_front(&mut crossing, new_edge)?;
+                crossing.insert(0, new_edge);
             }
         }
         let slot = self
             .mesh
-            .edge_slot(u, v)?
+            .edge_slot(u, v)
             .expect("the constraint is an edge once nothing crosses it");
         self.mark(slot);
-        Ok(())
     }
 
     fn mark(&mut self, slot: usize) {
@@ -490,7 +480,7 @@ impl ConstrainedMesh {
 
     /// Faces inside the constraint polygon: the hull faces are outside, and
     /// crossing a constraint toggles, crossing anything else does not.
-    pub(super) fn inside_faces(&self) -> Result<Vec<bool>> {
+    pub(super) fn inside_faces(&self) -> Vec<bool> {
         #[cfg(test)]
         update_work(|counters| counters.inside_label_passes += 1);
         let count = self.mesh.triangle_count();
@@ -520,12 +510,10 @@ impl ConstrainedMesh {
                 }
             }
         }
-        let mut inside = Vec::new();
-        crate::try_reserve_vec(&mut inside, count)?;
-        for value in label {
-            crate::try_push_vec(&mut inside, value.unwrap_or(false))?;
-        }
-        Ok(inside)
+        label
+            .into_iter()
+            .map(|value| value.unwrap_or(false))
+            .collect()
     }
 
     /// Ruppert refinement of the inside faces to `min_angle` degrees and/or
@@ -541,7 +529,7 @@ impl ConstrainedMesh {
     ) -> Result<bool> {
         let mut inserted = 0_usize;
         loop {
-            let inside = self.inside_faces()?;
+            let inside = self.inside_faces();
             let xy = |site: usize, points: &[Point]| points[site].xy();
             let mut bad = None;
             #[cfg(test)]
@@ -630,10 +618,10 @@ impl ConstrainedMesh {
                 pairs.insert(ordered(site, piece.end_site));
                 self.source_pieces.reserve(2);
             }
-            crate::try_reserve_vec(points, 1)?;
-            crate::try_reserve_vec(&mut self.provenance, 1)?;
+            points.reserve(1);
+            self.provenance.reserve(1);
             points.push(Point::new_raw_xy(candidate.x, candidate.y));
-            self.mesh.admit_vertex(site)?;
+            self.mesh.admit_vertex(site);
             self.provenance.push(match &source {
                 Some((piece, parameter)) => NodeProvenance::ConstraintSplit {
                     source: piece.source,
@@ -642,11 +630,10 @@ impl ConstrainedMesh {
                 None => NodeProvenance::Generated,
             });
             let xy2 = |s: usize| points[s].xy();
-            let mut skip = Vec::new();
-            crate::try_reserve_vec(&mut skip, self.constrained.len())?;
+            let mut skip = Vec::with_capacity(self.constrained.len());
             skip.extend_from_slice(&self.constrained);
             self.mesh.insert_constrained(&xy2, site, located, &skip)?;
-            self.remark(&pairs)?;
+            self.remark(&pairs);
             if let Some((piece, parameter)) = source {
                 self.source_pieces
                     .remove(&ordered(piece.start_site, piece.end_site));
@@ -785,13 +772,10 @@ impl ConstrainedMesh {
 
     /// Re-derive the per-slot flags from the constrained vertex pairs after
     /// an insertion has renumbered the cavity's slots.
-    fn remark(&mut self, pairs: &HashSet<(usize, usize)>) -> Result<()> {
+    fn remark(&mut self, pairs: &HashSet<(usize, usize)>) {
         #[cfg(test)]
         update_work(|counters| counters.flag_remark_passes += 1);
-        let mut constrained = Vec::new();
-        crate::try_reserve_vec(&mut constrained, self.mesh.halfedges.len())?;
-        constrained.resize(self.mesh.halfedges.len(), false);
-        self.constrained = constrained;
+        self.constrained = vec![false; self.mesh.halfedges.len()];
         for e in 0..self.mesh.halfedges.len() {
             if !self.mesh.alive(e / 3) {
                 continue;
@@ -803,21 +787,19 @@ impl ConstrainedMesh {
                 self.constrained[e] = true;
             }
         }
-        Ok(())
     }
 
     fn validate_source_chains(&self, points: &[Point]) -> Result<()> {
         let one = exact::ExactRational::one();
         let constrained = self.constrained_pairs()?;
         for source in &self.source_constraints {
-            let mut pieces = Vec::new();
-            crate::try_reserve_vec(&mut pieces, self.source_pieces.len())?;
+            let mut pieces = Vec::with_capacity(self.source_pieces.len());
             for piece in self
                 .source_pieces
                 .values()
                 .filter(|piece| piece.source == source.id)
             {
-                crate::try_push_vec(&mut pieces, piece)?;
+                pieces.push(piece);
             }
             if pieces.is_empty() {
                 return Err(GeometryErrorKind::triangulation(format!(
@@ -901,16 +883,14 @@ impl ConstrainedMesh {
         force_xy: bool,
     ) -> Result<ConstrainedMeshPlan> {
         self.validate_source_chains(&points)?;
-        let inside = self.inside_faces()?;
-        let mut faces = Vec::new();
-        crate::try_reserve_vec(&mut faces, self.mesh.triangle_count())?;
+        let inside = self.inside_faces();
+        let mut faces = Vec::with_capacity(self.mesh.triangle_count());
         for (t, &kept) in inside.iter().enumerate() {
             if kept && self.mesh.alive(t) {
-                crate::try_push_vec(&mut faces, self.mesh.triangle(t))?;
+                faces.push(self.mesh.triangle(t));
             }
         }
-        let mut constraint_pieces = Vec::new();
-        crate::try_reserve_vec(&mut constraint_pieces, self.source_pieces.len())?;
+        let mut constraint_pieces = Vec::with_capacity(self.source_pieces.len());
         constraint_pieces.extend(self.source_pieces.into_values());
         crate::geometry::try_sort_by(&mut constraint_pieces, compare_source_pieces)?;
         Ok(ConstrainedMeshPlan {
@@ -946,12 +926,6 @@ fn compare_source_pieces(left: &SourcePiece, right: &SourcePiece) -> Result<std:
         .start_site
         .cmp(&right.start_site)
         .then_with(|| left.end_site.cmp(&right.end_site)))
-}
-
-fn try_insert_front<T>(items: &mut Vec<T>, item: T) -> Result<()> {
-    crate::try_reserve_vec(items, 1)?;
-    items.insert(0, item);
-    Ok(())
 }
 
 /// Whether `p`, collinear with `a -> b`, lies strictly between them.
@@ -1019,10 +993,10 @@ mod tests {
         ]);
         let mesh = ConstrainedMesh::build(&pts, &[[0, 2]]).unwrap();
         assert!(
-            mesh.mesh.edge_slot(0, 2).unwrap().is_some(),
+            mesh.mesh.edge_slot(0, 2).is_some(),
             "the constraint 0-2 is an edge"
         );
-        let slot = mesh.mesh.edge_slot(0, 2).unwrap().unwrap();
+        let slot = mesh.mesh.edge_slot(0, 2).unwrap();
         assert!(mesh.constrained[slot]);
     }
 
@@ -1109,7 +1083,7 @@ mod tests {
         };
         let edges: Vec<[usize; 2]> = ring(0).into_iter().chain(ring(4)).collect();
         let mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
-        let inside = mesh.inside_faces().unwrap();
+        let inside = mesh.inside_faces();
         let xy = |s: usize| pts[s].xy();
         for (t, &kept) in inside.iter().enumerate() {
             if !mesh.mesh.alive(t) {
@@ -1132,7 +1106,7 @@ mod tests {
             mesh.refine(&mut pts, None, Some(25.0), 10_000).unwrap(),
             "a generous budget completes"
         );
-        let inside = mesh.inside_faces().unwrap();
+        let inside = mesh.inside_faces();
         for (t, &kept) in inside.iter().enumerate() {
             if kept && mesh.mesh.alive(t) {
                 let [a, b, c] = mesh.mesh.triangle(t);
@@ -1187,7 +1161,7 @@ mod tests {
         let next = 1.0_f64.next_up();
         let pts = points(&[(1.0, 0.0), (next, 1.0), (0.0, 0.5)]);
         let mesh = ConstrainedMesh::build(&pts, &[[0, 1], [1, 2], [2, 0]]).unwrap();
-        let edge = mesh.mesh.edge_slot(0, 1).unwrap().unwrap();
+        let edge = mesh.mesh.edge_slot(0, 1).unwrap();
         let xy = |site: usize| pts[site].xy();
         assert_eq!(
             mesh.locate_split(&xy, edge, XY::new(1.0, 0.5)),
@@ -1231,7 +1205,7 @@ mod regressions {
         (0..n).map(|i| [i, (i + 1) % n]).collect()
     }
     fn inside_count(cdt: &ConstrainedMesh) -> usize {
-        let inside = cdt.inside_faces().unwrap();
+        let inside = cdt.inside_faces();
         (0..cdt.mesh.triangle_count())
             .filter(|&t| cdt.mesh.alive(t) && inside[t])
             .count()

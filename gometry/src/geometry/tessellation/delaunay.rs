@@ -209,9 +209,8 @@ impl CertifiedDelaunay {
         &self.topology.hull
     }
 
-    pub(super) fn primal_edges(&self) -> Result<Vec<CertifiedPrimalEdge>> {
-        let mut edges = Vec::new();
-        crate::try_reserve_vec(&mut edges, self.topology.halfedges.len())?;
+    pub(super) fn primal_edges(&self) -> Vec<CertifiedPrimalEdge> {
+        let mut edges = Vec::with_capacity(self.topology.halfedges.len());
         for (slot, &reverse) in self.topology.halfedges.iter().enumerate() {
             if reverse != EMPTY && slot > reverse {
                 continue;
@@ -241,7 +240,7 @@ impl CertifiedDelaunay {
                 opposite,
             } => (sites, 1, [face, usize::MAX], opposite),
         });
-        Ok(edges)
+        edges
     }
 
     pub(super) fn collinear_order(&self) -> Option<&[usize]> {
@@ -254,16 +253,25 @@ impl CertifiedDelaunay {
     /// The public layout: faces run clockwise, which is what every
     /// triangulation consumer outside this module has always read.
     pub(super) fn into_topology(self) -> Result<Triangulation> {
-        let mut triangles = Vec::new();
-        crate::try_reserve_vec(&mut triangles, self.topology.triangles.len())?;
-        for &[a, b, c] in self.topology.triangles.as_chunks::<3>().0 {
-            triangles.extend_from_slice(&[a, c, b]);
+        let Self {
+            topology:
+                Triangulation {
+                    mut triangles,
+                    halfedges: previous_halfedges,
+                    hull,
+                },
+            cocircular_halfedges,
+        } = self;
+        drop(previous_halfedges);
+        drop(cocircular_halfedges);
+        for face in triangles.as_chunks_mut::<3>().0 {
+            face.swap(1, 2);
         }
         let halfedges = delaunay_halfedges(&triangles)?;
         Ok(Triangulation {
             triangles,
             halfedges,
-            hull: self.topology.hull,
+            hull,
         })
     }
 }
@@ -271,10 +279,9 @@ impl CertifiedDelaunay {
 pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
     // Every site by its input index; duplicates and collinear input are the
     // engine's to settle exactly.
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, sites.len())?;
+    let mut points = Vec::with_capacity(sites.len());
     for site in sites {
-        crate::try_push_vec(&mut points, site.point)?;
+        points.push(site.point);
     }
     let mut mesh = exact_delaunay::exact_delaunay(&points)?;
     if mesh.triangles.is_empty() {
@@ -288,10 +295,9 @@ pub(super) fn certified_delaunay(sites: &[Site]) -> Result<CertifiedDelaunay> {
 }
 
 pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> {
-    let mut sites = Vec::new();
-    crate::try_reserve_vec(&mut sites, points.len())?;
+    let mut sites = Vec::with_capacity(points.len());
     for (id, &point) in points.iter().enumerate() {
-        crate::try_push_vec(&mut sites, Site { id, point })?;
+        sites.push(Site { id, point });
     }
     certified_delaunay(&sites)?.into_topology()
 }
@@ -300,31 +306,24 @@ pub(crate) fn delaunay_triangulation(points: &[Point]) -> Result<Triangulation> 
 /// site index. With `corners` only strict corners survive, which is the seed
 /// the engine fans from; without it collinear boundary sites stay on the
 /// cycle, and a wholly collinear input yields its collinear order instead.
-#[cfg(test)]
 fn hull_cycle(points: &[Point], corners: bool) -> Vec<usize> {
-    try_hull_cycle(points, corners)
-        .unwrap_or_else(|_| unreachable!("exact hull construction allocation failed"))
-}
-
-fn try_hull_cycle(points: &[Point], corners: bool) -> Result<Vec<usize>> {
     let xy = |site: usize| points[site].xy();
     let orient = |a: usize, b: usize, c: usize| exact::orient2d(xy(a), xy(b), xy(c));
-    let mut order = Vec::new();
-    crate::try_reserve_vec(&mut order, points.len())?;
+    let mut order = Vec::with_capacity(points.len());
     order.extend(0..points.len());
     order.sort_unstable_by(|&a, &b| {
         geometric_cmp(xy(a).x, xy(b).x).then_with(|| geometric_cmp(xy(a).y, xy(b).y))
     });
     if !corners {
         let Some(&last) = order.last() else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
         if order.len() < 3
             || order
                 .iter()
                 .all(|&site| orient(order[0], last, site) == ExactSign::Zero)
         {
-            return try_collinear_order(points);
+            return collinear_order(points);
         }
     }
     let pops = |sign: ExactSign| {
@@ -334,27 +333,25 @@ fn try_hull_cycle(points: &[Point], corners: bool) -> Result<Vec<usize>> {
             sign == ExactSign::Negative
         }
     };
-    let mut lower: Vec<usize> = Vec::new();
-    crate::try_reserve_vec(&mut lower, order.len())?;
+    let mut lower: Vec<usize> = Vec::with_capacity(order.len());
     for &site in &order {
         while lower.len() >= 2 && pops(orient(lower[lower.len() - 2], lower[lower.len() - 1], site))
         {
             lower.pop();
         }
-        crate::try_push_vec(&mut lower, site)?;
+        lower.push(site);
     }
-    let mut upper: Vec<usize> = Vec::new();
-    crate::try_reserve_vec(&mut upper, order.len())?;
+    let mut upper: Vec<usize> = Vec::with_capacity(order.len());
     for &site in order.iter().rev() {
         while upper.len() >= 2 && pops(orient(upper[upper.len() - 2], upper[upper.len() - 1], site))
         {
             upper.pop();
         }
-        crate::try_push_vec(&mut upper, site)?;
+        upper.push(site);
     }
     lower.pop();
     upper.pop();
-    crate::try_reserve_vec(&mut lower, upper.len())?;
+    lower.reserve(upper.len());
     lower.extend(upper);
     if let Some(start) = lower
         .iter()
@@ -364,31 +361,20 @@ fn try_hull_cycle(points: &[Point], corners: bool) -> Result<Vec<usize>> {
     {
         lower.rotate_left(start);
     }
-    Ok(lower)
+    lower
 }
 
-#[cfg(test)]
 pub(super) fn exact_corner_hull_cycle(points: &[Point]) -> Vec<usize> {
     hull_cycle(points, true)
 }
 
-pub(super) fn try_exact_corner_hull_cycle(points: &[Point]) -> Result<Vec<usize>> {
-    try_hull_cycle(points, true)
-}
-
-pub(super) fn try_exact_hull_cycle(points: &[Point]) -> Result<Vec<usize>> {
-    try_hull_cycle(points, false)
-}
-
-#[cfg(test)]
 pub(super) fn exact_hull_cycle(points: &[Point]) -> Vec<usize> {
     hull_cycle(points, false)
 }
 
 /// Collinear sites in order along their longer extent.
-fn try_collinear_order(points: &[Point]) -> Result<Vec<usize>> {
-    let mut order = Vec::new();
-    crate::try_reserve_vec(&mut order, points.len())?;
+fn collinear_order(points: &[Point]) -> Vec<usize> {
+    let mut order = Vec::with_capacity(points.len());
     order.extend(0..points.len());
     let (minx, maxx, miny, maxy) = points.iter().fold(
         (
@@ -417,7 +403,7 @@ fn try_collinear_order(points: &[Point]) -> Result<Vec<usize>> {
                 .then_with(|| geometric_cmp(points[left].x, points[right].x))
         });
     }
-    Ok(order)
+    order
 }
 
 /// Geometric coordinate order: values that compare equal, including mixed
@@ -437,9 +423,7 @@ fn geometric_cmp(left: f64, right: f64) -> Ordering {
 
 /// Twin slots for a flat triangle list by directed-edge lookup.
 fn delaunay_halfedges(triangles: &[usize]) -> Result<Vec<usize>> {
-    let mut halfedges = Vec::new();
-    crate::try_reserve_vec(&mut halfedges, triangles.len())?;
-    halfedges.resize(triangles.len(), EMPTY);
+    let mut halfedges = vec![EMPTY; triangles.len()];
     let mut directed = crate::collections::try_hash_map_with_capacity(triangles.len())?;
     for index in 0..triangles.len() {
         let start = triangles[index];
@@ -486,7 +470,7 @@ fn constrained_triangle_plan<'a>(
 ) -> Result<cdt::ConstrainedMeshPlan> {
     let mut ring_list = Vec::new();
     for ring in rings {
-        crate::try_push_vec(&mut ring_list, ring)?;
+        ring_list.push(ring);
     }
     let rings = ring_list;
     let force_xy = refinement.active();
@@ -544,10 +528,7 @@ fn publish_constrained_plan(
 ) -> Result<Vec<Point>> {
     plan.validate_certificate()?;
     let faces = &plan.faces;
-    let capacity = faces
-        .len()
-        .checked_mul(4)
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let capacity = faces.len().wrapping_mul(4);
     for &[a, b, c] in faces {
         validate_refined_triangle(
             plan.vertices[a],
@@ -559,8 +540,7 @@ fn publish_constrained_plan(
     budget.check_additional(capacity)?;
     #[cfg(test)]
     note_constrained_output_reserve();
-    let mut output = Vec::new();
-    crate::try_reserve_vec(&mut output, capacity)?;
+    let mut output = Vec::with_capacity(capacity);
     for &[a, b, c] in faces {
         let [a, b, c, _] = selected_triangle_points(&plan.vertices, [a, b, c], plan.force_xy);
         match orientation(a.xy(), b.xy(), c.xy()) {
@@ -621,8 +601,7 @@ pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, V
             .entry(PointKey::new(point))
             .or_insert((point, occurrence));
     }
-    let mut selected_values = Vec::new();
-    crate::try_reserve_vec(&mut selected_values, selected.len())?;
+    let mut selected_values = Vec::with_capacity(selected.len());
     selected_values.extend(selected.into_values());
     let mut selected = selected_values;
     selected.sort_unstable_by(|(left, _), (right, _)| {
@@ -632,11 +611,11 @@ pub(super) fn selected_source_sites(points: Vec<Point>) -> Result<(Vec<Point>, V
     });
     let mut sites = Vec::new();
     let mut occurrences = Vec::new();
-    crate::try_reserve_vec(&mut sites, selected.len())?;
-    crate::try_reserve_vec(&mut occurrences, selected.len())?;
+    sites.reserve(selected.len());
+    occurrences.reserve(selected.len());
     for (point, occurrence) in selected {
-        crate::try_push_vec(&mut sites, point)?;
-        crate::try_push_vec(&mut occurrences, occurrence)?;
+        sites.push(point);
+        occurrences.push(occurrence);
     }
     Ok((sites, occurrences))
 }
@@ -649,11 +628,10 @@ fn constrained_source_plan(
             .checked_add(ring.coord_count())
             .ok_or(crate::error::ResourceError::SizeOverflow)
     })?;
-    let mut source_points = Vec::new();
-    crate::try_reserve_vec(&mut source_points, capacity)?;
+    let mut source_points = Vec::with_capacity(capacity);
     for ring in rings {
         for index in 0..ring.coord_count() {
-            crate::try_push_vec(&mut source_points, ring.nth_coord(index))?;
+            source_points.push(ring.nth_coord(index));
         }
     }
     let (vertices, occurrences) = selected_source_sites(source_points)?;
@@ -661,8 +639,7 @@ fn constrained_source_plan(
     for (site, point) in vertices.iter().enumerate() {
         indices.insert(PointKey::new(*point), site);
     }
-    let mut sources = Vec::new();
-    crate::try_reserve_vec(&mut sources, capacity)?;
+    let mut sources = Vec::with_capacity(capacity);
     let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
     for ring in rings {
         for index in 0..ring.coord_count().saturating_sub(1) {
@@ -678,13 +655,13 @@ fn constrained_source_plan(
             let start_site = indices[&PointKey::new(start)];
             let end_site = indices[&PointKey::new(end)];
             let id = sources.len();
-            crate::try_push_vec(&mut sources, cdt::SourceConstraint {
+            sources.push(cdt::SourceConstraint {
                 id,
                 start: vertices[start_site],
                 end: vertices[end_site],
                 start_site,
                 end_site,
-            })?;
+            });
         }
     }
     Ok((vertices, occurrences, sources))

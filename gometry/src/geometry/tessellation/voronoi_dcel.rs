@@ -1454,7 +1454,7 @@ pub(super) fn build(
         ));
     }
     let complex = delaunay_complex(mesh, sites)?;
-    let primal_edges = mesh.primal_edges()?;
+    let primal_edges = mesh.primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget)?;
     let rect = clip_rectangle(&clip)?;
     let scaffold = build_scaffold(&rect, &clip, budget)?;

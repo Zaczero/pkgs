@@ -665,7 +665,7 @@ fn grafted_clip_subdivision(sites: &[Site], clip_polygon: &Polygon) -> ExactSubd
     let clip = normalize_clip(sites, VoronoiBoundary::Polygon(clip_polygon), &mut budget).unwrap();
     let mesh = certified_delaunay(sites).unwrap();
     let complex = delaunay_complex(&mesh, sites).unwrap();
-    let primal_edges = mesh.primal_edges().unwrap();
+    let primal_edges = mesh.primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
     let rect = clip_rectangle(&clip).unwrap();
     let scaffold = build_scaffold(&rect, &clip, &mut budget).unwrap();
@@ -778,7 +778,7 @@ fn node_polygon(sites: &[Site], polygon: &Polygon, budget: &mut ExpansionBudget)
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(sites).unwrap();
     let complex = delaunay_complex(&mesh, sites).unwrap();
-    let primal_edges = mesh.primal_edges().unwrap();
+    let primal_edges = mesh.primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget).unwrap();
     let scaffold = build_scaffold(&rect, &clip, budget).unwrap();
     let separators =
@@ -822,7 +822,7 @@ fn canonical_separator_emitter_keeps_one_sorted_directed_edge_per_dual() {
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let complex = delaunay_complex(&mesh, &sites).unwrap();
-    let primal_edges = mesh.primal_edges().unwrap();
+    let primal_edges = mesh.primal_edges();
     let separators =
         emit_clipped_separators(&sites, &primal_edges, &complex, &rect, &mut budget).unwrap();
     let expected = primal_edges
@@ -853,14 +853,9 @@ fn hull_center_outside_clip_aabb_keeps_the_enter_exit_chord() {
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let complex = delaunay_complex(&mesh, &sites).unwrap();
-    let separators = emit_clipped_separators(
-        &sites,
-        &mesh.primal_edges().unwrap(),
-        &complex,
-        &rect,
-        &mut budget,
-    )
-    .unwrap();
+    let separators =
+        emit_clipped_separators(&sites, &mesh.primal_edges(), &complex, &rect, &mut budget)
+            .unwrap();
     let pair = [SiteId(0), SiteId(1)];
     let chord = separators
         .iter()
@@ -879,7 +874,7 @@ fn hull_center_outside_clip_aabb_keeps_the_enter_exit_chord() {
     let center = complex.center(0);
     assert!(!in_rectangle(&rect, center).unwrap());
     let adjacency =
-        certified_site_adjacency(&mesh.primal_edges().unwrap(), sites.len(), &mut budget).unwrap();
+        certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut budget).unwrap();
     let scaffold = build_scaffold(&rect, &clip, &mut budget).unwrap();
     let atoms = node_scaffold_and_separators(
         scaffold,
@@ -934,8 +929,7 @@ fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let adjacency =
-        certified_site_adjacency(&mesh.primal_edges().unwrap(), sites.len(), &mut fail_budget)
-            .unwrap();
+        certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut fail_budget).unwrap();
     let scaffold = build_scaffold(&rect, &clip, &mut fail_budget).unwrap();
     assert!(
         node_scaffold_and_separators(
@@ -1043,7 +1037,7 @@ fn interior_first_separator_order_emits_one_full_chain() {
     let mut budget = ExpansionBudget::new("test", "interior-first chain");
     let atoms = node_polygon(&sites, &polygon, &mut budget);
     let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
-    let primal_edges = certified_delaunay(&sites).unwrap().primal_edges().unwrap();
+    let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
     graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
     let assembled = assemble_edges(&subdivision, &mut budget).unwrap();
@@ -1350,7 +1344,7 @@ fn crossed_component_keeps_distinct_faces_with_the_same_owner() {
     let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
     let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
     assert_boundary_walk_euler(&subdivision);
-    let primal_edges = certified_delaunay(&sites).unwrap().primal_edges().unwrap();
+    let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
     graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
     assert_boundary_walk_euler(&subdivision);
@@ -1389,7 +1383,7 @@ fn isolated_component_exterior_inherits_the_containing_face() {
     let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
     let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
     assert_boundary_walk_euler(&subdivision);
-    let primal_edges = certified_delaunay(&sites).unwrap().primal_edges().unwrap();
+    let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
     let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
     graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
     assert_boundary_walk_euler(&subdivision);

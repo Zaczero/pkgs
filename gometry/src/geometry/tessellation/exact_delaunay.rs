@@ -77,7 +77,7 @@ pub(super) fn exact_delaunay(points: &[Point]) -> Result<ExactMesh> {
         return Ok(ExactMesh {
             triangles: Vec::new(),
             halfedges: Vec::new(),
-            hull: super::try_exact_hull_cycle(points)?,
+            hull: super::exact_hull_cycle(points),
             cocircular: Vec::new(),
         });
     };
@@ -85,15 +85,14 @@ pub(super) fn exact_delaunay(points: &[Point]) -> Result<ExactMesh> {
 }
 
 impl Mesh {
-    /// Fallible exact Delaunay construction. Every allocation needed before
-    /// constrained or unconstrained publication is returned to its caller.
+    /// Exact Delaunay construction for constrained and unconstrained publication.
     pub(super) fn try_delaunay(points: &[Point]) -> Result<Option<Self>> {
-        let hull = super::try_exact_corner_hull_cycle(points)?;
+        let hull = super::exact_corner_hull_cycle(points);
         if hull.len() < 3 {
             return Ok(None);
         }
         let xy = |site: usize| points[site].xy();
-        let mut mesh = Self::try_seed(&hull, points.len())?;
+        let mut mesh = Self::seed(&hull, points.len());
         mesh.try_legalize(&xy)?;
 
         // Interior sites: not on the hull, not an exact duplicate of a site
@@ -107,11 +106,10 @@ impl Mesh {
             hull_sites.insert(site);
         }
         let (min, max) = bounds(points);
-        let mut interior = Vec::new();
-        crate::try_reserve_vec(&mut interior, points.len())?;
+        let mut interior = Vec::with_capacity(points.len());
         for site in 0..points.len() {
             if !hull_sites.contains(&site) && placed.insert(key(xy(site))) {
-                crate::try_push_vec(&mut interior, (hilbert16(xy(site), min, max), site))?;
+                interior.push((hilbert16(xy(site), min, max), site));
             }
         }
         interior.sort_unstable();
@@ -210,16 +208,11 @@ pub(super) struct Mesh {
 }
 
 impl Mesh {
-    fn try_seed(hull: &[usize], vertex_count: usize) -> Result<Self> {
+    fn seed(hull: &[usize], vertex_count: usize) -> Self {
         let count = hull.len() - 2;
-        let slots = count
-            .checked_mul(3)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut triangles = Vec::new();
-        crate::try_reserve_vec(&mut triangles, slots)?;
-        let mut halfedges = Vec::new();
-        crate::try_reserve_vec(&mut halfedges, slots)?;
-        halfedges.resize(slots, EMPTY);
+        let slots = count.wrapping_mul(3);
+        let mut triangles = Vec::with_capacity(slots);
+        let mut halfedges = vec![EMPTY; slots];
         for (t, index) in (1..hull.len() - 1).enumerate() {
             triangles.extend([hull[0], hull[index], hull[index + 1]]);
             // Fan triangles share the spoke `hull[0]..hull[index + 1]`: slot 2
@@ -230,29 +223,21 @@ impl Mesh {
                 halfedges[3 * (t + 1)] = 3 * t + 2;
             }
         }
-        let mut incident = Vec::new();
-        crate::try_reserve_vec(&mut incident, vertex_count)?;
-        incident.resize(vertex_count, EMPTY);
+        let mut incident = vec![EMPTY; vertex_count];
         for (slot, &v) in triangles.iter().enumerate() {
             if incident[v] == EMPTY {
                 incident[v] = slot;
             }
         }
-        let mut hull_copy = Vec::new();
-        crate::try_reserve_vec(&mut hull_copy, hull.len())?;
-        hull_copy.extend_from_slice(hull);
-        let mut stamp = Vec::new();
-        crate::try_reserve_vec(&mut stamp, count)?;
-        stamp.resize(count, 0);
-        Ok(Self {
+        Self {
             triangles,
             halfedges,
-            hull: hull_copy,
+            hull: hull.to_vec(),
             incident,
             free: Vec::new(),
-            stamp,
+            stamp: vec![0; count],
             epoch: 0,
-        })
+        }
     }
 
     pub(super) const fn triangle_count(&self) -> usize {
@@ -265,30 +250,29 @@ impl Mesh {
 
     /// Every halfedge slot leaving `u`, walking its fan both ways so a hull
     /// vertex's open fan is covered too.
-    pub(super) fn outgoing(&self, u: usize) -> Result<Vec<usize>> {
+    pub(super) fn outgoing(&self, u: usize) -> Vec<usize> {
         let start = self.incident[u];
-        let mut slots = Vec::new();
-        crate::try_reserve_vec(&mut slots, self.triangle_count())?;
+        let mut slots = Vec::with_capacity(self.triangle_count());
         if start == EMPTY || !self.alive(start / 3) || self.triangles[start] != u {
             // The remembered slot died in a cavity: fall back to a scan.
             for e in 0..self.triangles.len() {
                 if self.alive(e / 3) && self.triangles[e] == u {
-                    crate::try_push_vec(&mut slots, e)?;
+                    slots.push(e);
                 }
             }
-            return Ok(slots);
+            return slots;
         }
         // Counter-clockwise: across the edge into `u`.
         let mut e = start;
         loop {
-            crate::try_push_vec(&mut slots, e)?;
+            slots.push(e);
             let twin = self.halfedges[prev_halfedge(e)];
             if twin == EMPTY {
                 break;
             }
             e = twin;
             if e == start {
-                return Ok(slots);
+                return slots;
             }
         }
         // Clockwise from the start: across the edge out of `u`.
@@ -302,26 +286,24 @@ impl Mesh {
             if e == start {
                 break;
             }
-            crate::try_push_vec(&mut slots, e)?;
+            slots.push(e);
         }
-        Ok(slots)
+        slots
     }
 
     /// The slot of the edge between `u` and `v` in either direction, if it
     /// is an edge; a hull edge exists as one halfedge only.
-    pub(super) fn edge_slot(&self, u: usize, v: usize) -> Result<Option<usize>> {
-        if let Some(slot) = self.directed_slot(u, v)? {
-            return Ok(Some(slot));
+    pub(super) fn edge_slot(&self, u: usize, v: usize) -> Option<usize> {
+        if let Some(slot) = self.directed_slot(u, v) {
+            return Some(slot);
         }
         self.directed_slot(v, u)
     }
 
-    fn directed_slot(&self, u: usize, v: usize) -> Result<Option<usize>> {
-        self.outgoing(u).map(|slots| {
-            slots
-                .into_iter()
-                .find(|&e| self.triangles[next_halfedge(e)] == v)
-        })
+    fn directed_slot(&self, u: usize, v: usize) -> Option<usize> {
+        self.outgoing(u)
+            .into_iter()
+            .find(|&e| self.triangles[next_halfedge(e)] == v)
     }
 
     /// Lawson legalization of every interior edge: flip while the twin's apex
@@ -331,11 +313,10 @@ impl Mesh {
     /// by a flip names whatever edge now lives there; re-checking a legal
     /// edge is harmless, and every edge a flip disturbed is pushed again.
     fn try_legalize(&mut self, xy: &impl Fn(usize) -> XY) -> Result<()> {
-        let mut stack = Vec::new();
-        crate::try_reserve_vec(&mut stack, self.halfedges.len())?;
+        let mut stack = Vec::with_capacity(self.halfedges.len());
         for (e, &twin) in self.halfedges.iter().enumerate() {
             if twin != EMPTY && twin > e {
-                crate::try_push_vec(&mut stack, e)?;
+                stack.push(e);
             }
         }
         while let Some(e) = stack.pop() {
@@ -356,7 +337,7 @@ impl Mesh {
                 next_halfedge(h),
                 prev_halfedge(h),
             ] {
-                crate::try_push_vec(&mut stack, edge)?;
+                stack.push(edge);
             }
         }
         Ok(())
@@ -531,40 +512,37 @@ impl Mesh {
         located: Located,
         skip: Option<&[bool]>,
     ) -> Result<usize> {
-        let p = xy(site);
         // A site on a hull edge splits that edge: the cavity boundary is then
         // an open chain from the edge's end to its start, the site joins the
         // hull between them, and the two chain ends become hull edges.
-        let mut split_hull: Option<(usize, usize)> = None;
-        let mut seeds = Vec::new();
-        crate::try_reserve_vec(&mut seeds, 2)?;
-        match located {
+        let (split_hull, seeds) = match located {
             Located::OnVertex => return Ok(self.any_alive()),
-            Located::Inside(t) => crate::try_push_vec(&mut seeds, t)?,
+            Located::Inside(t) => (None, vec![t]),
             Located::OnEdge(e) => {
                 let twin = self.halfedges[e];
                 if twin == EMPTY {
-                    split_hull = Some((self.triangles[e], self.triangles[next_halfedge(e)]));
-                    crate::try_push_vec(&mut seeds, e / 3)?;
+                    (
+                        Some((self.triangles[e], self.triangles[next_halfedge(e)])),
+                        vec![e / 3],
+                    )
                 } else {
-                    crate::try_push_vec(&mut seeds, e / 3)?;
-                    crate::try_push_vec(&mut seeds, twin / 3)?;
+                    (None, vec![e / 3, twin / 3])
                 }
             },
-        }
+        };
+        let p = xy(site);
         // The cavity: every triangle reachable from the seeds across edges
         // whose far triangle's circumcircle strictly contains p. The seeds
         // themselves are in by construction (p is inside or on them).
         self.epoch += 1;
         let epoch = self.epoch;
-        let mut cavity = Vec::new();
-        crate::try_reserve_vec(&mut cavity, self.triangle_count())?;
+        let mut cavity = Vec::with_capacity(self.triangle_count());
         let mut stack = seeds;
         for &t in &stack {
             self.stamp[t] = epoch;
         }
         while let Some(t) = stack.pop() {
-            crate::try_push_vec(&mut cavity, t)?;
+            cavity.push(t);
             for i in 0..3 {
                 let e = 3 * t + i;
                 let twin = self.halfedges[e];
@@ -578,7 +556,7 @@ impl Mesh {
                 let [a, b, c] = self.triangle(n);
                 if exact::incircle(xy(a), xy(b), xy(c), p)? == ExactSign::Positive {
                     self.stamp[n] = epoch;
-                    crate::try_push_vec(&mut stack, n)?;
+                    stack.push(n);
                 }
             }
         }
@@ -586,11 +564,8 @@ impl Mesh {
         // outside the cavity (or the hull). Each becomes one new triangle
         // with the site as its third vertex, in the boundary's own order.
         let mut boundary: Vec<(usize, usize, usize)> = Vec::new(); // (a, b, twin slot)
-        let boundary_capacity = cavity
-            .len()
-            .checked_mul(3)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        crate::try_reserve_vec(&mut boundary, boundary_capacity)?;
+        let boundary_capacity = cavity.len().wrapping_mul(3);
+        boundary.reserve(boundary_capacity);
         for &t in &cavity {
             for i in 0..3 {
                 let e = 3 * t + i;
@@ -600,7 +575,7 @@ impl Mesh {
                     continue; // the split edge is not a boundary: the site lies on it
                 }
                 if twin == EMPTY || self.stamp[twin / 3] != epoch {
-                    crate::try_push_vec(&mut boundary, (ends.0, ends.1, twin))?;
+                    boundary.push((ends.0, ends.1, twin));
                 }
             }
         }
@@ -608,8 +583,7 @@ impl Mesh {
         // so on. A closed cycle around an interior site; for a hull split, an
         // open chain from the split edge's end around to its start.
         let start = split_hull.map_or(boundary[0].0, |(_, b)| b);
-        let mut ordered = Vec::new();
-        crate::try_reserve_vec(&mut ordered, boundary.len())?;
+        let mut ordered = Vec::with_capacity(boundary.len());
         let mut at = start;
         for _ in 0..boundary.len() {
             let (index, &(a, b, twin)) = boundary
@@ -617,7 +591,7 @@ impl Mesh {
                 .enumerate()
                 .find(|(_, entry)| entry.0 == at)
                 .expect("a cavity boundary is one chain");
-            crate::try_push_vec(&mut ordered, (a, b, twin))?;
+            ordered.push((a, b, twin));
             boundary.swap_remove(index);
             at = b;
         }
@@ -625,15 +599,9 @@ impl Mesh {
             split_hull.is_some_and(|(a, _)| a == at) || at == start,
             "the cavity boundary closed"
         );
-        let free_after_cavity = self
-            .free
-            .len()
-            .checked_add(cavity.len())
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let free_after_cavity = self.free.len().wrapping_add(cavity.len());
         let new_slots = ordered.len().saturating_sub(free_after_cavity);
-        let new_triangles = new_slots
-            .checked_mul(3)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let new_triangles = new_slots.wrapping_mul(3);
         self.free.reserve(cavity.len());
         self.triangles.reserve(new_triangles);
         self.halfedges.reserve(new_triangles);
@@ -641,8 +609,7 @@ impl Mesh {
         if split_hull.is_some() {
             self.hull.reserve(1);
         }
-        let mut slots = Vec::new();
-        crate::try_reserve_vec(&mut slots, ordered.len())?;
+        let mut slots = Vec::with_capacity(ordered.len());
         for &t in &cavity {
             self.triangles[3 * t] = EMPTY;
             self.free.push(t);
@@ -652,7 +619,7 @@ impl Mesh {
         // the previous.
         let count = ordered.len();
         for _ in 0..count {
-            crate::try_push_vec(&mut slots, self.take_slot())?;
+            slots.push(self.take_slot());
         }
         let mut first = 0;
         for (k, &(a, b, twin)) in ordered.iter().enumerate() {
@@ -723,42 +690,30 @@ impl Mesh {
 
     /// Grow the incidence table for sites appended after construction
     /// (refinement vertices).
-    pub(super) fn admit_vertex(&mut self, site: usize) -> Result<()> {
-        let required = site
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    pub(super) fn admit_vertex(&mut self, site: usize) {
+        let required = site.wrapping_add(1);
         if self.incident.len() < required {
             self.incident.reserve(required - self.incident.len());
             self.incident.resize(required, EMPTY);
         }
-        Ok(())
     }
 
     /// Compact out the dead slots, remap twins, and flag cocircular edges
     /// with one exact pass over the finished mesh.
     pub(super) fn finish(self, xy: impl Fn(usize) -> XY) -> Result<ExactMesh> {
-        let mut remap = Vec::new();
-        crate::try_reserve_vec(&mut remap, self.triangle_count())?;
-        remap.resize(self.triangle_count(), EMPTY);
-        let mut triangles = Vec::new();
-        crate::try_reserve_vec(&mut triangles, self.triangles.len())?;
-        let mut old_slots = Vec::new();
-        crate::try_reserve_vec(&mut old_slots, self.triangles.len())?;
+        let mut remap = vec![EMPTY; self.triangle_count()];
+        let mut triangles = Vec::with_capacity(self.triangles.len());
+        let mut old_slots = Vec::with_capacity(self.triangles.len());
         for (t, slot) in remap.iter_mut().enumerate() {
             if self.alive(t) {
                 *slot = triangles.len() / 3;
                 triangles.extend(self.triangle(t));
-                let base = t
-                    .checked_mul(3)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
-                let end = base
-                    .checked_add(3)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                let base = t.wrapping_mul(3);
+                let end = base.wrapping_add(3);
                 old_slots.extend(base..end);
             }
         }
-        let mut halfedges = Vec::new();
-        crate::try_reserve_vec(&mut halfedges, old_slots.len())?;
+        let mut halfedges = Vec::with_capacity(old_slots.len());
         for &old in &old_slots {
             let twin = self.halfedges[old];
             let twin = if twin == EMPTY {
@@ -769,11 +724,9 @@ impl Mesh {
                     .and_then(|slot| slot.checked_add(twin % 3))
                     .ok_or(crate::error::ResourceError::SizeOverflow)?
             };
-            crate::try_push_vec(&mut halfedges, twin)?;
+            halfedges.push(twin);
         }
-        let mut cocircular = Vec::new();
-        crate::try_reserve_vec(&mut cocircular, halfedges.len())?;
-        cocircular.resize(halfedges.len(), false);
+        let mut cocircular = vec![false; halfedges.len()];
         for e in 0..halfedges.len() {
             let twin = halfedges[e];
             if twin == EMPTY || twin < e {
