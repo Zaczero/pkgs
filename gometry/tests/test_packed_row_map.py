@@ -435,6 +435,50 @@ def test_packed_row_map_sort_by_curve_matches_mixed_oracle(
     assert canon(sorted_arr) == canon(oracle)
 
 
+@pytest.mark.parametrize(
+    ('rows', 'bounds'),
+    [
+        (
+            [gm.Point(0, 0), gm.Point(100, 100), gm.Point(10, 10)],
+            (0, 0, 10, 10),
+        ),
+        (
+            [
+                gm.LineString([(0, 0), (1, 1)]),
+                gm.LineString([(100, 100), (101, 101)]),
+                gm.LineString([(10, 10), (11, 11)]),
+            ],
+            (0, 0, 11, 11),
+        ),
+        (
+            [
+                gm.box(0, 0, 1, 1),
+                gm.box(100, 100, 101, 101),
+                gm.box(10, 10, 11, 11),
+            ],
+            (0, 0, 11, 11),
+        ),
+        (
+            [
+                gm.Point(0, 0),
+                gm.LineString([(100, 100), (101, 101)]),
+                gm.Point(10, 10),
+            ],
+            (0, 0, 10, 10),
+        ),
+    ],
+    ids=['points', 'lines', 'polygons', 'mixed'],
+)
+def test_nullable_spatial_keys_ignore_hidden_payload(
+    rows: list[gm.Geometry], bounds: tuple[int, int, int, int]
+) -> None:
+    masked = gm.GeometryArray(rows)._with_missing([False, True, False])
+    for selected in (masked, masked[::-1], masked[[2, 1, 0]]):
+        assert selected.spatial_key().tolist() == selected.spatial_key(
+            bounds=bounds
+        ).tolist()
+
+
 def _point_gather_array() -> tuple[gm.GeometryArray, gm.GeometryArray]:
     points = gm.GeometryArray([
         gm.Point(0.0, 0.0, crs='EPSG:4326'),

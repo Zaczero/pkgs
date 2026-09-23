@@ -81,7 +81,7 @@ impl<'a> GeometryValues<'a> {
         match self {
             Self::One(geometry) => Ok(vec![geometry.clone()]),
             Self::Array(array) if array.has_missing() => Err(missing_geometry_items_error()),
-            Self::Array(array) => Ok(array.items()?.into_owned()),
+            Self::Array(array) => array.items(),
             Self::Collected(items) => Ok(items.into_items()),
         }
     }
@@ -196,7 +196,7 @@ fn coerce_geometry_iter<'py>(
                 });
             },
         };
-        crate::try_push(&mut output, geometry)?;
+        output.push(geometry);
     }
     Ok(output)
 }
@@ -213,10 +213,10 @@ pub(crate) fn coerce_collected_geometry_items(
         return Err(missing_geometry_items_error());
     }
     let py = first.py();
-    let mut owned = crate::try_vec_with_capacity(items.len())?;
+    let mut owned = Vec::with_capacity(items.len());
     for (row, item) in items.iter().enumerate() {
         match own_geometry_item(item, policy) {
-            Ok(item) => crate::try_push(&mut owned, item)?,
+            Ok(item) => owned.push(item),
             Err(error) => {
                 return Err(if note_rows {
                     crate::note_array_row(error, row)
@@ -227,10 +227,10 @@ pub(crate) fn coerce_collected_geometry_items(
         }
     }
     let parsed = py.detach(move || {
-        let mut output = Vec::new();
+        let mut output = Vec::with_capacity(owned.len());
         for (row, item) in owned.into_iter().enumerate() {
             let geometry = parse_owned_geometry_item(item, policy).map_err(|error| (row, error))?;
-            crate::try_push_vec(&mut output, geometry).map_err(|error| (row, error))?;
+            output.push(geometry);
         }
         Ok::<_, (usize, crate::error::Error)>(output)
     });
@@ -269,17 +269,12 @@ pub(crate) fn extract_points(
     })?;
     let z = optional_coordinates(z, coordinates.len(), "z")?;
     let m = optional_coordinates(m, coordinates.len(), "m")?;
-    let mut points = crate::try_vec_with_capacity(coordinates.len())?;
+    let mut points = Vec::with_capacity(coordinates.len());
     for (idx, coordinate) in coordinates.into_iter().enumerate() {
-        if coordinate.len() < 2 {
+        let [x, y, rest @ ..] = coordinate.as_slice() else {
             return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
-        }
-        if coordinate.len() > 4 {
-            return Err(InvalidGeometryError::new_err(
-                "coordinate has too many ordinates",
-            ));
-        }
-        if coordinate.len() > 2 && (z.is_some() || m.is_some()) {
+        };
+        if !rest.is_empty() && (z.is_some() || m.is_some()) {
             return Err(InvalidGeometryError::new_err(
                 "inline Z/M coordinates cannot be combined with z/m arrays",
             ));
@@ -287,23 +282,20 @@ pub(crate) fn extract_points(
         if coordinate.iter().any(|value| !value.is_finite()) {
             return Err(InvalidGeometryError::new_err("coordinates must be finite"));
         }
-        crate::try_push(
-            &mut points,
-            Point::new_raw_axes(
-                coordinate[0],
-                coordinate[1],
-                ZOrdinate(
-                    z.as_ref()
-                        .map(|values| values[idx])
-                        .or_else(|| coordinate.get(2).copied()),
-                ),
-                MOrdinate(
-                    m.as_ref()
-                        .map(|values| values[idx])
-                        .or_else(|| coordinate.get(3).copied()),
-                ),
+        points.push(Point::new_raw_axes(
+            *x,
+            *y,
+            ZOrdinate(
+                z.as_ref()
+                    .and_then(|values| values.get(idx).copied())
+                    .or_else(|| rest.first().copied()),
             ),
-        )?;
+            MOrdinate(
+                m.as_ref()
+                    .and_then(|values| values.get(idx).copied())
+                    .or_else(|| rest.get(1).copied()),
+            ),
+        ));
     }
     ensure_homogeneous_axes(&points)?;
     Ok(points)
@@ -331,22 +323,17 @@ pub(crate) fn extract_coordinate_or_empty(value: &Bound<'_, PyAny>) -> PyResult<
     if coordinate.is_empty() {
         return Ok(None);
     }
-    if coordinate.len() < 2 {
+    let [x, y, rest @ ..] = coordinate.as_slice() else {
         return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
-    }
-    if coordinate.len() > 4 {
-        return Err(InvalidGeometryError::new_err(
-            "coordinate has too many ordinates",
-        ));
-    }
+    };
     if coordinate.iter().any(|value| !value.is_finite()) {
         return Err(InvalidGeometryError::new_err("coordinates must be finite"));
     }
     Ok(Some(Point::new_raw_axes(
-        coordinate[0],
-        coordinate[1],
-        ZOrdinate(coordinate.get(2).copied()),
-        MOrdinate(coordinate.get(3).copied()),
+        *x,
+        *y,
+        ZOrdinate(rest.first().copied()),
+        MOrdinate(rest.get(1).copied()),
     )))
 }
 
@@ -384,14 +371,14 @@ pub(crate) fn extract_polygons(value: &Bound<'_, PyAny>) -> PyResult<Vec<Polygon
             ));
         }
         let rings = crate::collect_py_iter(&item, Ok)?;
-        let Some(shell) = rings.first() else {
+        let Some((shell, remaining)) = rings.split_first() else {
             return Err(InvalidGeometryError::new_err(
                 "multi_polygon member requires a shell",
             ));
         };
-        let mut holes = crate::try_vec_with_capacity(rings.len().saturating_sub(1))?;
-        for ring in &rings[1..] {
-            crate::try_push(&mut holes, Ring::closed(extract_points(ring, None, None)?)?)?;
+        let mut holes = Vec::with_capacity(remaining.len());
+        for ring in remaining {
+            holes.push(Ring::closed(extract_points(ring, None, None)?)?);
         }
         Ok(Polygon::new(
             Ring::closed(extract_points(shell, None, None)?)?,
@@ -423,11 +410,6 @@ pub(crate) fn optional_coordinates(
             ))
         },
     )?;
-    if values.len() != expected_len {
-        return Err(InvalidGeometryError::new_err(format!(
-            "{name} must have the same length as x/y coordinates"
-        )));
-    }
     Ok(Some(values))
 }
 

@@ -267,21 +267,21 @@ impl PyGeometryArray {
         let level = input::validate_curve_level(level)?;
         let bounds = match parse_curve_bounds(bounds)? {
             Some(bounds) => Some(bounds),
-            None if self.has_missing() => self.try_drop_missing()?.storage().total_bounds(),
+            None if self.has_missing()
+                && matches!(self.storage(), GeometryArrayStorage::Mixed(_)) =>
+            {
+                self.try_drop_missing()?.storage().total_bounds()
+            },
             None => self.storage().total_bounds(),
         };
         if self.len() == 0 {
             return Ok(Vec::new());
         }
         let Some(bounds) = bounds else {
-            let mut keys = crate::try_vec_with_capacity(self.len())?;
-            for _ in 0..self.len() {
-                keys.push(u64::MAX);
-            }
-            return Ok(keys);
+            return Ok(vec![u64::MAX; self.len()]);
         };
         let frame = curves::CurveFrame::new(bounds, level);
-        let mut keys = crate::try_vec_with_capacity(self.len())?;
+        let mut keys = Vec::with_capacity(self.len());
         for row in self.row_operation().rows_with_missing(|| u64::MAX) {
             let key = match row {
                 ArrayRow::Missing { value, .. } => value,
@@ -302,14 +302,14 @@ impl PyGeometryArray {
         self.gather_logical_rows(&order)
     }
 
-    pub fn items(&self) -> PyResult<std::borrow::Cow<'_, [PyGeometry]>> {
+    pub fn items(&self) -> PyResult<Vec<PyGeometry>> {
         // Mixed no longer stores PyGeometry; materialize through the array
         // geometry_at cache so repeated items()/arr[i] share ShapeData.
-        let mut items = crate::try_vec_with_capacity(self.len())?;
+        let mut items = Vec::with_capacity(self.len());
         for index in 0..self.len() {
             items.push(self.geometry_at(index).map_err(crate::PyErr::from)?);
         }
-        Ok(std::borrow::Cow::Owned(items))
+        Ok(items)
     }
 
     /// Map each row's shape to a `Vec<Shape>` and collect into a per-row
