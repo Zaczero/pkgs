@@ -392,23 +392,20 @@ impl AreaRectClassifier {
     }
 }
 
-fn area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::error::Error> {
-    if polygons.is_empty() {
-        Ok(None)
-    } else {
-        Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons).map(Some)
-    }
+fn area_shape(polygons: Vec<Polygon>) -> Option<Shape> {
+    (!polygons.is_empty())
+        .then(|| Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons))
 }
 
 fn dissolved_area_shape(polygons: Vec<Polygon>) -> Result<Option<Shape>, crate::error::Error> {
     if polygons.len() <= 1 {
-        return area_shape(polygons);
+        return Ok(area_shape(polygons));
     }
     let parts: Vec<_> = polygons.into_iter().map(Shape::Polygon).collect();
     let dissolved = Shape::union_all(&parts, Strictness::Strict)?;
     let mut polygons = Vec::new();
     collect_area(&dissolved, &mut polygons);
-    area_shape(polygons)
+    Ok(area_shape(polygons))
 }
 
 /// Extract and dissolve the polygonal members of an arbitrary source.

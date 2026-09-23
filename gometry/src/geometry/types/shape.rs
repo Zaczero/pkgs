@@ -699,13 +699,6 @@ macro_rules! impl_multipart {
                 })
             }
 
-            pub(crate) fn from_values(
-                axes: CoordinateAxes,
-                members: Vec<MultiMember<$member>>,
-            ) -> Result<Self> {
-                Self::try_new(axes, members)
-            }
-
             /// Replace stored values one-for-one while retaining the admitted
             /// member layout, including explicit EMPTY positions.
             pub(crate) fn with_values(&self, values: Vec<$member>) -> Self {
@@ -728,20 +721,18 @@ macro_rules! impl_multipart {
             /// external members are admitted through [`Self::try_new`], which
             /// checks. Returns `None` for an empty payload — that is
             /// `Shape::Empty`, not a multipart with no members.
-            pub(crate) fn from_dense(values: Vec<$member>) -> Result<Option<Self>> {
-                let Some(first) = values.first() else {
-                    return Ok(None);
-                };
+            pub(crate) fn from_dense(values: Vec<$member>) -> Option<Self> {
+                let first = values.first()?;
                 let axes = shape_member_axes(first);
                 debug_assert!(
                     values.iter().all(|value| shape_member_axes(value) == axes),
                     "from_dense requires an axis-homogeneous payload",
                 );
-                Ok(Some(Self {
+                Some(Self {
                     axes,
                     values: SharedSlice::from_vec(values),
                     members: MultipartMembers::Dense,
-                }))
+                })
             }
 
             pub(crate) const fn axes(&self) -> CoordinateAxes {
@@ -839,13 +830,6 @@ impl MultiPoint {
             coords: points.finish()?,
             members,
         })
-    }
-
-    pub(crate) fn from_values(
-        axes: CoordinateAxes,
-        members: Vec<MultiMember<Point>>,
-    ) -> Result<Self> {
-        Self::try_new(axes, members)
     }
 
     pub(crate) fn from_coordseq(coords: CoordSeq) -> Result<Self> {
@@ -1191,6 +1175,117 @@ mod multipart_layout_tests {
             shape = Shape::geometry_collection(vec![shape]).expect("test depth is within limit");
         }
         shape
+    }
+
+    fn xyz_point(x: f64, y: f64, z: f64) -> Point {
+        Point::new_raw_axes(
+            x,
+            y,
+            crate::geometry::ZOrdinate(Some(z)),
+            crate::geometry::MOrdinate(None),
+        )
+    }
+
+    fn xyz_line() -> LineSeq {
+        let points = [xyz_point(0.0, 0.0, 1.0), xyz_point(1.0, 1.0, 2.0)];
+        LineSeq::try_new(CoordSeq::try_from_points(&points).expect("XYZ points"))
+            .expect("valid line")
+    }
+
+    fn xyz_polygon() -> Polygon {
+        let points = [
+            xyz_point(0.0, 0.0, 1.0),
+            xyz_point(1.0, 0.0, 2.0),
+            xyz_point(0.0, 1.0, 3.0),
+            xyz_point(0.0, 0.0, 1.0),
+        ];
+        let shell = crate::geometry::Ring::try_from_closed(
+            CoordSeq::try_from_points(&points).expect("XYZ ring coordinates"),
+        )
+        .expect("closed ring");
+        Polygon::new(shell, Vec::new())
+    }
+
+    #[test]
+    fn dense_shapes_infer_member_axes_and_keep_declared_empty_axes() {
+        let Shape::MultiLineString(lines) =
+            Shape::multi_line_string(CoordinateAxes::XY, vec![xyz_line()])
+        else {
+            unreachable!("nonempty dense line payload");
+        };
+        assert_eq!(lines.axes(), CoordinateAxes::XYZ);
+        assert_eq!(
+            Shape::multi_line_string(CoordinateAxes::XYZM, Vec::new()),
+            Shape::typed_empty(GeometryKind::MultiLineString, CoordinateAxes::XYZM)
+        );
+        assert_eq!(
+            Shape::narrow_lines(CoordinateAxes::XYZM, Vec::new()),
+            Shape::typed_empty(GeometryKind::LineString, CoordinateAxes::XYZM)
+        );
+
+        let Shape::MultiPolygon(polygons) =
+            Shape::multi_polygon(CoordinateAxes::XY, vec![xyz_polygon()])
+        else {
+            unreachable!("nonempty dense polygon payload");
+        };
+        assert_eq!(polygons.axes(), CoordinateAxes::XYZ);
+        assert_eq!(
+            Shape::multi_polygon(CoordinateAxes::XYZM, Vec::new()),
+            Shape::typed_empty(GeometryKind::MultiPolygon, CoordinateAxes::XYZM)
+        );
+        assert_eq!(
+            Shape::narrow_polygons(CoordinateAxes::XYZM, Vec::new()),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XYZM)
+        );
+    }
+
+    #[test]
+    fn sparse_shapes_keep_empty_positions_and_member_admission_errors() {
+        let lines = MultiLineString::try_new(CoordinateAxes::XYZ, vec![
+            MultiMember::Empty,
+            MultiMember::Value(xyz_line()),
+            MultiMember::Empty,
+        ])
+        .expect("sparse lines");
+        assert!(matches!(&lines.members, MultipartMembers::Sparse(_)));
+        assert_eq!(lines.members().collect::<Vec<_>>(), [
+            MultiMember::Empty,
+            MultiMember::Value(0),
+            MultiMember::Empty,
+        ]);
+
+        let polygons = MultiPolygon::try_new(CoordinateAxes::XYZ, vec![
+            MultiMember::Empty,
+            MultiMember::Value(xyz_polygon()),
+            MultiMember::Empty,
+        ])
+        .expect("sparse polygons");
+        assert!(matches!(&polygons.members, MultipartMembers::Sparse(_)));
+        assert_eq!(polygons.members().collect::<Vec<_>>(), [
+            MultiMember::Empty,
+            MultiMember::Value(0),
+            MultiMember::Empty,
+        ]);
+
+        let error =
+            MultiLineString::try_new(CoordinateAxes::XY, vec![MultiMember::Value(xyz_line())])
+                .expect_err("axes mismatch is still admitted as an error");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::CoordinateAxesMismatch {
+                declared: CoordinateAxes::XY,
+                got: CoordinateAxes::XYZ,
+            })
+        ));
+
+        let error = MultiPolygon::try_new(CoordinateAxes::XYZ, Vec::new())
+            .expect_err("a multipart without any members is not admitted");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::EmptyGeometrySequence {
+                operation: "geometry payload",
+            })
+        ));
     }
 
     #[test]

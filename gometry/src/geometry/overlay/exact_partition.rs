@@ -958,7 +958,7 @@ impl ExactSourceInventory {
         let mut items = Vec::with_capacity(partition.spans.len());
         items.extend(partition.spans.iter().map(|span| [span.start, span.end]));
         if items.is_empty() {
-            return Shape::multi_line_string(declared_axes, Vec::new());
+            return Ok(Shape::multi_line_string(declared_axes, Vec::new()));
         }
         // Certifies the rounded chords; the points below read the same rounding.
         partition.round_incident_items(&items)?;
@@ -984,7 +984,7 @@ impl ExactSourceInventory {
             ];
             lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
         }
-        Shape::multi_line_string(axes, lines)
+        Ok(Shape::multi_line_string(axes, lines))
     }
 
     pub(in crate::geometry) fn polygonize_diagnostics(
@@ -1486,7 +1486,7 @@ impl ExactSourceInventory {
                 declared_axes,
             ));
         }
-        Shape::narrow_lines(line_axes, lines)
+        Ok(Shape::narrow_lines(line_axes, lines))
     }
 
     fn node_parts_to_shape_resolved(
@@ -1556,18 +1556,15 @@ impl ExactSourceInventory {
         let point_part = (!points.is_empty())
             .then(|| Shape::narrow_points(point_axes, points))
             .transpose()?;
-        let line_part = (!lines.is_empty())
-            .then(|| {
-                let mut proven = Vec::with_capacity(lines.len());
-                for line in lines {
-                    proven.push(LineSeq::from_proven(line));
-                }
-                Shape::narrow_lines(line_axes, proven)
-            })
-            .transpose()?;
-        let polygon_part = (!polygons.is_empty())
-            .then(|| Shape::narrow_polygons(polygon_axes, polygons))
-            .transpose()?;
+        let line_part = (!lines.is_empty()).then(|| {
+            let mut proven = Vec::with_capacity(lines.len());
+            for line in lines {
+                proven.push(LineSeq::from_proven(line));
+            }
+            Shape::narrow_lines(line_axes, proven)
+        });
+        let polygon_part =
+            (!polygons.is_empty()).then(|| Shape::narrow_polygons(polygon_axes, polygons));
         let mut output = Vec::with_capacity(3);
         output.extend([point_part, line_part, polygon_part].into_iter().flatten());
         match <[Shape; 1]>::try_from(output) {

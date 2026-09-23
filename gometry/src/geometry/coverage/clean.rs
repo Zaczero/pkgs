@@ -201,7 +201,7 @@ fn coverage_union_inner<S: std::borrow::Borrow<Shape>>(coverage: &[S]) -> Result
             parts
         };
         return carry_overlay_ordinates(
-            polygon_parts_to_shape(parts)?,
+            polygon_parts_to_shape(parts),
             &source_refs,
             OverlayOp::Union,
             false,
@@ -239,7 +239,7 @@ fn dissolve_edge_incidences(
     let mut budget = crate::geometry::ExpansionBudget::new("coverage_union", "exact partition");
     let mut partition = inventory.partition(&mut budget)?;
     let parts = inventory.linework_polygons(&mut partition, true)?;
-    polygon_parts_to_shape(parts)
+    Ok(polygon_parts_to_shape(parts))
 }
 
 #[cfg(test)]

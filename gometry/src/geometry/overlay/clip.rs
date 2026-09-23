@@ -12,7 +12,9 @@ use crate::geometry::{
     simd_select_indices,
 };
 pub(crate) fn clip_polygonal(polygons: &[Polygon], rect: Bounds) -> crate::error::Result<Shape> {
-    polygon_parts_to_shape(clip_polygonal_parts(polygons, rect)?)
+    Ok(polygon_parts_to_shape(clip_polygonal_parts(
+        polygons, rect,
+    )?))
 }
 
 /// Polygon clipping is an exact partition intersection. Degenerate closed
@@ -72,19 +74,19 @@ pub(crate) fn line_parts_to_shape(mut parts: Vec<Vec<Point>>) -> crate::error::R
         1 => Ok(Shape::LineString(LineSeq::from_proven(
             CoordSeq::try_from_points(&parts.remove(0))?,
         ))),
-        _ => Shape::multi_line_string(
+        _ => Ok(Shape::multi_line_string(
             axes,
             parts
                 .into_iter()
                 .map(|part| CoordSeq::try_from_points(&part).and_then(LineSeq::try_new))
                 .collect::<crate::error::Result<Vec<_>>>()?,
-        ),
+        )),
     }
 }
 
 /// Collapse a polygonal decomposition to its narrowest shape: `POLYGON EMPTY`
 /// for none, the bare polygon for one, a multipolygon otherwise.
-pub(crate) fn polygon_parts_to_shape(parts: Vec<Polygon>) -> crate::error::Result<Shape> {
+pub(crate) fn polygon_parts_to_shape(parts: Vec<Polygon>) -> Shape {
     Shape::narrow_polygons(CoordinateAxes::XY, parts)
 }
 

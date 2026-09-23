@@ -5,7 +5,7 @@ use crate::geometry::*;
 fn ogc_mod2_multiline_point_relations_have_known_answers() {
     let point = Point::new_raw_xy;
     let multiline = Shape::MultiLineString(
-        MultiLineString::from_values(CoordinateAxes::XY, vec![
+        MultiLineString::try_new(CoordinateAxes::XY, vec![
             MultiMember::Value(
                 LineSeq::try_new(
                     CoordSeq::try_from_points(&[point(0.0, 0.0), point(4.0, 0.0)]).unwrap(),

@@ -250,7 +250,7 @@ mod binary_areal_overlay_tests {
 
     fn multiline(lines: &[&[(f64, f64)]]) -> Shape {
         Shape::MultiLineString(
-            MultiLineString::from_values(
+            MultiLineString::try_new(
                 CoordinateAxes::XY,
                 lines
                     .iter()
@@ -263,7 +263,7 @@ mod binary_areal_overlay_tests {
 
     fn disjoint_multiline(count: usize, offset: f64) -> Shape {
         Shape::MultiLineString(
-            MultiLineString::from_values(
+            MultiLineString::try_new(
                 CoordinateAxes::XY,
                 (0..count)
                     .map(|index| {
@@ -750,8 +750,7 @@ mod binary_areal_overlay_tests {
                 OverlayOp::Intersection,
             )
             .unwrap(),
-        )
-        .unwrap();
+        );
         let concave_left_shape = Shape::Polygon(concave_left);
         let concave_right_shape = Shape::Polygon(concave_right);
         let exact = intersection(&concave_left_shape, &concave_right_shape);
@@ -1201,7 +1200,7 @@ mod binary_areal_overlay_tests {
         assert_eq!(scalar_result.points_vec()[0].z(), Some(12.0));
 
         let repeated_line = Shape::MultiLineString(
-            MultiLineString::from_values(CoordinateAxes::XYZ, vec![MultiMember::Value(
+            MultiLineString::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(
                 LineSeq::try_new(
                     CoordSeq::try_from_points(&[
                         Point::new_axes(0.0, 0.0, ZOrdinate(Some(1.0)), MOrdinate(None)).unwrap(),
@@ -1870,7 +1869,7 @@ mod binary_areal_overlay_tests {
             )
             .expect("line coordinate sequence must contain at least two vertices")
         };
-        let lines = MultiLineString::from_values(CoordinateAxes::XYZM, vec![
+        let lines = MultiLineString::try_new(CoordinateAxes::XYZM, vec![
             MultiMember::Value(line(1.0, 10.0, 1.0)),
             MultiMember::Value(
                 LineSeq::try_new(

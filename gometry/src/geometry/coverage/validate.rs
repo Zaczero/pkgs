@@ -367,7 +367,7 @@ pub(crate) fn coverage_invalid_edges<S: std::borrow::Borrow<Shape>>(
                 segment.end.point(),
             )?);
         }
-        output.push(Shape::multi_line_string(CoordinateAxes::XY, lines)?.line_merge()?);
+        output.push(Shape::multi_line_string(CoordinateAxes::XY, lines).line_merge()?);
     }
     Ok(output)
 }

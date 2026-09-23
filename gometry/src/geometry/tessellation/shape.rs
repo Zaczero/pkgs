@@ -491,7 +491,7 @@ impl Shape {
             // a `MultiLineString` when there are holes / parts) — no per-vertex
             // `Point` round-trip through `to_vec` + column rebuild.
             Self::Polygon(polygon) => {
-                rings_to_boundary(polygon.rings().map(Ring::as_line).collect(), polygon.axes())?
+                rings_to_boundary(polygon.rings().map(Ring::as_line).collect(), polygon.axes())
             },
             Self::MultiPolygon(polygons) => rings_to_boundary(
                 polygons
@@ -500,7 +500,7 @@ impl Shape {
                     .map(Ring::as_line)
                     .collect(),
                 polygons.axes(),
-            )?,
+            ),
             Self::GeometryCollection(geometries) => {
                 let mut boundaries = Vec::new();
                 for geometry in geometries {

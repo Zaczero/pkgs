@@ -156,8 +156,7 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
             "a coverage needs at least one cell to dissolve into a polygon",
         ));
     }
-    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
-        .map_err(PyErr::from)?;
+    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
     Ok(PyGeometry::typed_wgs84(shape))
 }
 
@@ -168,8 +167,7 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     let outline = Shape::multi_line_string(
         crate::geometry::CoordinateAxes::XY,
         outline.into_iter().map(LineSeq::from_proven).collect(),
-    )
-    .map_err(PyErr::from)?;
+    );
     let polygons: Vec<_> = Shape::build_area_all(&[&outline], true)?
         .into_iter()
         .filter_map(|shape| match shape {
@@ -180,8 +178,7 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
     if polygons.is_empty() {
         return Ok(None);
     }
-    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons)
-        .map_err(PyErr::from)?;
+    let shape = Shape::narrow_polygons(crate::geometry::CoordinateAxes::XY, polygons);
     Ok(Some(PyGeometry::typed_wgs84(shape)))
 }
 

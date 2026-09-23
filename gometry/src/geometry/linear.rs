@@ -287,7 +287,7 @@ impl Shape {
                         members.push(member);
                     }
                 }
-                Self::MultiLineString(MultiLineString::from_values(output_axes, members)?)
+                Self::MultiLineString(MultiLineString::try_new(output_axes, members)?)
             },
             _ => unreachable!("linework returns only line strings"),
         })

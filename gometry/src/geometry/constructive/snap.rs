@@ -1068,7 +1068,7 @@ impl Shape {
                             .map_or(MultiMember::Empty, MultiMember::Value)),
                     })
                     .collect::<Result<Vec<_>>>()?;
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
+                Self::MultiPolygon(MultiPolygon::try_new(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => {
                 Self::GeometryCollection(geometries.try_map_members(|geometry| {
@@ -1141,7 +1141,7 @@ impl Shape {
                         MultiMember::Empty => None,
                     })
                     .unwrap_or_else(|| lines.axes());
-                Self::MultiLineString(MultiLineString::from_values(axes, members).map_err(E::from)?)
+                Self::MultiLineString(MultiLineString::try_new(axes, members).map_err(E::from)?)
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
@@ -1162,7 +1162,7 @@ impl Shape {
                         MultiMember::Empty => None,
                     })
                     .unwrap_or_else(|| polygons.axes());
-                Self::MultiPolygon(MultiPolygon::from_values(axes, members).map_err(E::from)?)
+                Self::MultiPolygon(MultiPolygon::try_new(axes, members).map_err(E::from)?)
             },
             Self::GeometryCollection(geometries) => Self::GeometryCollection(
                 geometries
@@ -1303,7 +1303,7 @@ impl Shape {
                     };
                     members.push(member);
                 }
-                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members)?)
+                Self::MultiLineString(MultiLineString::try_new(lines.axes(), members)?)
             },
             Self::Polygon(polygon) => match dedup_ring(&polygon.shell)? {
                 Some(shell) => Self::Polygon(Polygon::new(shell, dedup_holes(&polygon)?)),
@@ -1326,7 +1326,7 @@ impl Shape {
                     };
                     members.push(member);
                 }
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
+                Self::MultiPolygon(MultiPolygon::try_new(polygons.axes(), members)?)
             },
             Self::GeometryCollection(geometries) => {
                 return geometries.try_filter_map_owned_members(|geometry| {

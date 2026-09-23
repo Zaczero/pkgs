@@ -265,11 +265,9 @@ pub(crate) fn build_certified_overlay_shape_with_axes(
         for line in lines {
             proven.push(LineSeq::from_proven(line));
         }
-        Some(Shape::narrow_lines(axes, proven)?)
+        Some(Shape::narrow_lines(axes, proven))
     };
-    let polygon_part = (!polygons.is_empty())
-        .then(|| Shape::narrow_polygons(axes, polygons))
-        .transpose()?;
+    let polygon_part = (!polygons.is_empty()).then(|| Shape::narrow_polygons(axes, polygons));
     let mut parts = Vec::with_capacity(3);
     parts.extend([point_part, line_part, polygon_part].into_iter().flatten());
     match <[Shape; 1]>::try_from(parts) {
@@ -326,15 +324,14 @@ pub(crate) fn build_overlay_shape_from_chains(
         for line in lines {
             proven.push(LineSeq::from_proven(line));
         }
-        Some(Shape::narrow_lines(CoordinateAxes::XY, proven)?)
+        Some(Shape::narrow_lines(CoordinateAxes::XY, proven))
     };
 
     let point_part = (!surviving.is_empty())
         .then(|| Shape::narrow_points(CoordinateAxes::XY, surviving))
         .transpose()?;
-    let polygon_part = (!polygons.is_empty())
-        .then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons))
-        .transpose()?;
+    let polygon_part =
+        (!polygons.is_empty()).then(|| Shape::narrow_polygons(CoordinateAxes::XY, polygons));
 
     let mut parts = Vec::with_capacity(3);
     parts.extend([point_part, line_part, polygon_part].into_iter().flatten());

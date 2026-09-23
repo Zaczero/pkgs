@@ -221,7 +221,7 @@ impl Shape {
                 if repaired.is_empty() && !lines.is_empty() {
                     Err(GeometryErrorKind::UnrepairableMultiLineString.into())
                 } else {
-                    Ok(Self::MultiLineString(MultiLineString::from_values(
+                    Ok(Self::MultiLineString(MultiLineString::try_new(
                         lines.axes(),
                         repaired,
                     )?))

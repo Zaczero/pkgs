@@ -504,7 +504,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let tester = PointBatchTester::new(&Shape::MultiPolygon(
-            MultiPolygon::from_dense(parts).unwrap().unwrap(),
+            MultiPolygon::from_dense(parts).unwrap(),
         ))
         .unwrap();
         assert!(tester.uses_indexed_plan());

@@ -411,6 +411,6 @@ impl ExactSourceInventory {
             holes.extend(rings);
             polygons.push(Polygon::new(shell, holes));
         }
-        Shape::narrow_polygons(axes, polygons)
+        Ok(Shape::narrow_polygons(axes, polygons))
     }
 }
