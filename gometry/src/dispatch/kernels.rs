@@ -218,7 +218,7 @@ pub(crate) fn unary_point_on_surface(
         data.shape(),
         ctx.domain,
         DerivedPointStrategy::Interior,
-        Shape::point_on_surface,
+        |shape| Ok(shape.point_on_surface()),
     )
 }
 

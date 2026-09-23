@@ -589,7 +589,7 @@ fn representative_point_uses_an_interior_chord_instead_of_the_box_center() {
         bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
         bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
     );
-    let representative = representative_point(&shape, bounds).expect("interior representative");
+    let representative = representative_point(&shape, bounds);
     assert_eq!((representative.x, representative.y), (1.0, 2.0));
     assert_ne!(
         (representative.x, representative.y),
