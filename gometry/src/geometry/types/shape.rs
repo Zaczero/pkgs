@@ -5,8 +5,8 @@ use crate::HeapSize;
 use crate::error::Result;
 use crate::geometry::GeometryKind;
 use crate::geometry::types::{
-    CoordIter, CoordSeq, CoordWindow, CoordinateAxes, Coordinates, GeometryErrorKind, Point,
-    Polygon, SharedSlice, SharedSliceIter, coordseq,
+    CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, Coordinates,
+    GeometryErrorKind, Point, Polygon, SharedSlice, SharedSliceIter, coordseq,
 };
 
 /// Maximum number of nested `GeometryCollection` containers in one shape.
@@ -377,11 +377,7 @@ impl GeometryCollection {
         E: From<crate::error::Error>,
         F: FnMut(&Shape) -> std::result::Result<Shape, E>,
     {
-        let members = self
-            .members
-            .iter()
-            .map(&mut map)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let members = map_collection_members(self.members.iter(), &mut map)?;
         Self::from_members(
             NonEmptyVec::try_from_vec(members).map_err(E::from)?,
             self.depth.get() as usize,
@@ -395,11 +391,7 @@ impl GeometryCollection {
         F: FnMut(Shape) -> std::result::Result<Shape, E>,
     {
         let limit = self.depth.get() as usize;
-        let members = self
-            .members
-            .into_iter()
-            .map(&mut map)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let members = map_collection_members(self.members.into_iter(), &mut map)?;
         Self::from_members(NonEmptyVec::try_from_vec(members).map_err(E::from)?, limit)
             .map_err(E::from)
     }
@@ -414,10 +406,9 @@ impl GeometryCollection {
     {
         let limit = self.depth();
         let mut members = Vec::new();
-        crate::boundary::try_reserve_vec(&mut members, self.members.len())?;
         for shape in self.members {
             if let Some(mapped) = map(shape)? {
-                crate::try_push_vec(&mut members, mapped)?;
+                members.push(mapped);
             }
         }
         if members.is_empty() {
@@ -447,6 +438,20 @@ impl GeometryCollection {
     pub(crate) fn len(&self) -> usize {
         self.members.len()
     }
+}
+
+fn map_collection_members<I, E>(
+    members: I,
+    mut map: impl FnMut(I::Item) -> std::result::Result<Shape, E>,
+) -> std::result::Result<Vec<Shape>, E>
+where
+    I: ExactSizeIterator,
+{
+    let mut mapped = Vec::with_capacity(members.len());
+    for member in members {
+        mapped.push(map(member)?);
+    }
+    Ok(mapped)
 }
 
 impl Deref for GeometryCollection {
@@ -504,30 +509,45 @@ enum MultipartMembers {
 }
 
 impl MultipartMembers {
-    fn from_indices(indices: Vec<MultiMember<usize>>) -> Result<Self> {
-        if indices.is_empty() {
+    fn try_collect<T, O>(
+        members: Vec<MultiMember<T>>,
+        make_values: impl FnOnce(usize) -> O,
+        mut push_value: impl FnMut(&mut O, T) -> Result<()>,
+    ) -> Result<(O, Self)> {
+        let present = members
+            .iter()
+            .filter(|member| matches!(member, MultiMember::Value(_)))
+            .count();
+        let mut values = make_values(present);
+        let mut indices = (present < members.len()).then(|| Vec::with_capacity(members.len()));
+        let mut next_value = 0_usize;
+        for member in members {
+            match member {
+                MultiMember::Empty => {
+                    if let Some(indices) = indices.as_mut() {
+                        indices.push(MultiMember::Empty);
+                    }
+                },
+                MultiMember::Value(value) => {
+                    push_value(&mut values, value)?;
+                    if let Some(indices) = indices.as_mut() {
+                        indices.push(MultiMember::Value(next_value));
+                    }
+                    next_value = next_value.wrapping_add(1);
+                },
+            }
+        }
+        let layout = if let Some(indices) = indices {
+            Self::Sparse(SharedSlice::from_vec(indices))
+        } else if present == 0 {
             return Err(GeometryErrorKind::EmptyGeometrySequence {
                 operation: "geometry payload",
             }
             .into());
-        }
-        let mut expected = 0;
-        let mut has_empty = false;
-        let mut indices = indices;
-        for member in &mut indices {
-            match member {
-                MultiMember::Empty => has_empty = true,
-                MultiMember::Value(index) => {
-                    *index = expected;
-                    expected += 1;
-                },
-            }
-        }
-        Ok(if has_empty {
-            Self::Sparse(SharedSlice::from_vec(indices))
         } else {
             Self::Dense
-        })
+        };
+        Ok((values, layout))
     }
 
     fn len(&self, value_len: usize) -> usize {
@@ -672,56 +692,25 @@ macro_rules! impl_multipart {
                 axes: CoordinateAxes,
                 members: Vec<MultiMember<$member>>,
             ) -> Result<Self> {
-                let member_len = members.len();
-                let mut values = Vec::new();
-                crate::boundary::try_reserve_vec(&mut values, member_len)?;
-                let mut indices = Vec::new();
-                let mut sparse = false;
-                for member in members {
-                    match member {
-                        MultiMember::Empty => {
-                            if !sparse {
-                                crate::boundary::try_reserve_vec(&mut indices, member_len)?;
-                                for index in 0..values.len() {
-                                    crate::try_push_vec(&mut indices, MultiMember::Value(index))?;
-                                }
-                                sparse = true;
+                let (values, members) = MultipartMembers::try_collect(
+                    members,
+                    Vec::with_capacity,
+                    |values: &mut Vec<$member>, value| {
+                        let got = shape_member_axes(&value);
+                        if got != axes {
+                            return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                                declared: axes,
+                                got,
                             }
-                            crate::try_push_vec(&mut indices, MultiMember::Empty)?;
-                        },
-                        MultiMember::Value(value) => {
-                            let got = shape_member_axes(&value);
-                            if got != axes {
-                                return Err(GeometryErrorKind::CoordinateAxesMismatch {
-                                    declared: axes,
-                                    got,
-                                }
-                                .into());
-                            }
-                            if sparse {
-                                crate::try_push_vec(
-                                    &mut indices,
-                                    MultiMember::Value(values.len()),
-                                )?;
-                            }
-                            crate::try_push_vec(&mut values, value)?;
-                        },
-                    }
-                }
-                let members = if sparse {
-                    MultipartMembers::from_indices(indices)?
-                } else if values.is_empty() {
-                    return Err(GeometryErrorKind::EmptyGeometrySequence {
-                        operation: "geometry payload",
-                    }
-                    .into());
-                } else {
-                    MultipartMembers::Dense
-                };
-                let values = SharedSlice::from_vec(values);
+                            .into());
+                        }
+                        values.push(value);
+                        Ok(())
+                    },
+                )?;
                 Ok(Self {
                     axes,
-                    values,
+                    values: SharedSlice::from_vec(values),
                     members,
                 })
             }
@@ -795,32 +784,27 @@ macro_rules! impl_multipart {
             where
                 E: From<crate::error::Error>,
             {
-                if matches!(self.members, MultipartMembers::Dense) {
-                    let values = self
-                        .values
-                        .iter()
-                        .map(&mut map)
-                        .collect::<Result<Vec<_>, E>>()?;
-                    assert!(
-                        values.iter().all(|value| shape_member_axes(value) == axes),
-                        "homogeneous nonempty multipart payload"
-                    );
-                    return Ok(Self {
-                        axes,
-                        values: SharedSlice::from_vec(values),
-                        members: MultipartMembers::Dense,
-                    });
+                let mut values = Vec::with_capacity(self.values.len());
+                for value in self.values.iter() {
+                    values.push(map(value)?);
                 }
-                let members = self
-                    .members()
-                    .map(|member| match member {
-                        MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => {
-                            map(&self.values[index]).map(MultiMember::Value)
-                        },
-                    })
-                    .collect::<Result<Vec<_>, E>>()?;
-                Self::from_values(axes, members).map_err(E::from)
+                if let Some(value) = values
+                    .iter()
+                    .find(|value| shape_member_axes(*value) != axes)
+                {
+                    return Err(E::from(
+                        GeometryErrorKind::CoordinateAxesMismatch {
+                            declared: axes,
+                            got: shape_member_axes(value),
+                        }
+                        .into(),
+                    ));
+                }
+                Ok(Self {
+                    axes,
+                    values: SharedSlice::from_vec(values),
+                    members: self.members.clone(),
+                })
             }
 
             pub(crate) fn with_axes(&self, axes: CoordinateAxes) -> Self {
@@ -845,54 +829,23 @@ impl_multipart!(MultiPolygon, Polygon);
 
 impl MultiPoint {
     pub(crate) fn try_new(axes: CoordinateAxes, members: Vec<MultiMember<Point>>) -> Result<Self> {
-        let member_len = members.len();
-        let mut points = Vec::new();
-        crate::boundary::try_reserve_vec(&mut points, member_len)?;
-        let mut indices = Vec::new();
-        let mut sparse = false;
-        for member in members {
-            match member {
-                MultiMember::Empty => {
-                    if !sparse {
-                        crate::boundary::try_reserve_vec(&mut indices, member_len)?;
-                        for index in 0..points.len() {
-                            crate::try_push_vec(&mut indices, MultiMember::Value(index))?;
-                        }
-                        sparse = true;
+        let (points, members) = MultipartMembers::try_collect(
+            members,
+            |present| CoordSeqBuilder::with_capacity(axes, present),
+            |points, point| {
+                if point.axes() != axes {
+                    return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                        declared: axes,
+                        got: point.axes(),
                     }
-                    crate::try_push_vec(&mut indices, MultiMember::Empty)?;
-                },
-                MultiMember::Value(point) => {
-                    if point.axes() != axes {
-                        return Err(GeometryErrorKind::CoordinateAxesMismatch {
-                            declared: axes,
-                            got: point.axes(),
-                        }
-                        .into());
-                    }
-                    if sparse {
-                        crate::try_push_vec(&mut indices, MultiMember::Value(points.len()))?;
-                    }
-                    crate::try_push_vec(&mut points, point)?;
-                },
-            }
-        }
-        let members = if sparse {
-            MultipartMembers::from_indices(indices)?
-        } else if points.is_empty() {
-            return Err(GeometryErrorKind::EmptyGeometrySequence {
-                operation: "geometry payload",
-            }
-            .into());
-        } else {
-            MultipartMembers::Dense
-        };
-        Ok(Self {
-            coords: if points.is_empty() {
-                CoordSeq::empty(axes)
-            } else {
-                CoordSeq::try_from_points(&points)?
+                    .into());
+                }
+                points.push(point);
+                Ok(())
             },
+        )?;
+        Ok(Self {
+            coords: points.finish()?,
             members,
         })
     }
@@ -1274,11 +1227,6 @@ mod multipart_layout_tests {
 
     #[test]
     fn dense_and_sparse_members_are_canonical() {
-        assert!(matches!(
-            MultipartMembers::from_indices(vec![MultiMember::Value(0), MultiMember::Value(1)])
-                .expect("identity members"),
-            MultipartMembers::Dense
-        ));
         let dense = MultiPoint::try_new(CoordinateAxes::XY, vec![
             MultiMember::Value(Point::new_raw_xy(1.0, 2.0)),
             MultiMember::Value(Point::new_raw_xy(3.0, 4.0)),
@@ -1309,6 +1257,40 @@ mod multipart_layout_tests {
             unreachable!("sparse fixture must retain member metadata");
         };
         assert!(sparse.members.heap_bytes() >= std::mem::size_of_val(&**members));
+    }
+
+    #[test]
+    fn sparse_value_mapping_reuses_member_layout() {
+        let line = LineSeq::segment(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 1.0))
+            .expect("finite line");
+        let source = MultiLineString::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(line.clone()),
+            MultiMember::Empty,
+            MultiMember::Value(line),
+        ])
+        .expect("sparse lines");
+        let mut mapped_count = 0;
+        let mapped = source
+            .try_map_values(CoordinateAxes::XY, |line| {
+                mapped_count += 1;
+                Ok::<_, crate::error::Error>(line.clone())
+            })
+            .expect("identity mapping");
+        assert_eq!(mapped_count, 2);
+        assert_eq!(
+            mapped.members().collect::<Vec<_>>(),
+            source.members().collect::<Vec<_>>()
+        );
+        let (MultipartMembers::Sparse(source_layout), MultipartMembers::Sparse(mapped_layout)) =
+            (&source.members, &mapped.members)
+        else {
+            unreachable!("sparse mapping retains member positions");
+        };
+        assert!(std::ptr::eq(
+            source_layout.as_slice().as_ptr(),
+            mapped_layout.as_slice().as_ptr()
+        ));
     }
 
     #[test]
