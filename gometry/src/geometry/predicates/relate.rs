@@ -66,10 +66,10 @@ impl LineworkChains {
         first
             .checked_add(count_u32)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        crate::try_reserve_vec(&mut self.segments, count)?;
-        crate::try_reserve_vec(&mut self.line_of, count)?;
-        crate::try_reserve_vec(&mut self.spans, 1)?;
-        crate::try_reserve_vec(&mut self.runs, count)?;
+        self.segments.reserve(count);
+        self.line_of.reserve(count);
+        self.spans.reserve(1);
+        self.runs.reserve(count);
         let [min_x, min_y, max_x, max_y] = crate::geometry::xy_bounds_columns(xs, ys);
         self.bounds.include_xy(XY::new(min_x, min_y));
         self.bounds.include_xy(XY::new(max_x, max_y));
@@ -95,15 +95,15 @@ impl LineworkChains {
             if sx == 0 && sy == 0 {
                 continue; // zero-length: removable stutter, never staged
             }
-            crate::try_push_vec(&mut self.segments, Segment {
+            self.segments.push(Segment {
                 start: Point::new_raw_xy(x0, y0).into(),
                 end: Point::new_raw_xy(x1, y1).into(),
-            })?;
-            crate::try_push_vec(&mut self.line_of, line)?;
-            let ordinal = first
-                .checked_add(staged)
-                .ok_or(crate::error::ResourceError::SizeOverflow)?;
-            staged += 1;
+            });
+            self.line_of.push(line);
+            // The checked first + count above admits every possible staged
+            // ordinal, including when zero-length stutters are elided.
+            let ordinal = first.wrapping_add(staged);
+            staged = staged.wrapping_add(1);
             let chained = ordinal > run_start
                 && (sx == 0 || sign_x == 0 || sx == sign_x)
                 && (sy == 0 || sign_y == 0 || sy == sign_y);
@@ -116,38 +116,29 @@ impl LineworkChains {
                 }
                 continue;
             }
-            self.close_run(run_start, ordinal, sign_x, sign_y)?;
+            self.close_run(run_start, ordinal, sign_x, sign_y);
             run_start = ordinal;
             (sign_x, sign_y) = (sx, sy);
         }
-        let staged_end = first
-            .checked_add(staged)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        self.close_run(run_start, staged_end, sign_x, sign_y)?;
-        crate::try_push_vec(&mut self.spans, LineSpan {
+        let staged_end = first.wrapping_add(staged);
+        self.close_run(run_start, staged_end, sign_x, sign_y);
+        self.spans.push(LineSpan {
             first,
             count: staged,
             closed,
-        })?;
+        });
         Ok(Some(()))
     }
 
-    fn close_run(
-        &mut self,
-        start: u32,
-        end: u32,
-        sign_x: i8,
-        sign_y: i8,
-    ) -> crate::error::Result<()> {
+    fn close_run(&mut self, start: u32, end: u32, sign_x: i8, sign_y: i8) {
         if end > start {
-            crate::try_push_vec(&mut self.runs, MonotoneRun {
+            self.runs.push(MonotoneRun {
                 start,
                 end,
                 sign_x,
                 sign_y,
-            })?;
+            });
         }
-        Ok(())
     }
 
     /// Run the candidate sweep over the staged linework, reusing the runs and
