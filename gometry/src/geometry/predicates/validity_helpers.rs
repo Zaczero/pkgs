@@ -143,7 +143,7 @@ pub(crate) struct MinimumClearanceWitness {
 pub(crate) fn minimum_clearance_witness(
     shape: &Shape,
 ) -> crate::error::Result<Option<MinimumClearanceWitness>> {
-    let points = shape.points_vec()?;
+    let points = shape.points_vec();
     if points.len() < 2 {
         return Ok(None);
     }
@@ -574,7 +574,7 @@ mod clearance_index_tests {
     #[test]
     fn indexed_clearance_matches_brute_force() {
         let shape = indexed_line();
-        let points = shape.points_vec().unwrap();
+        let points = shape.points_vec();
         let segments = indexed_segments(&shape).unwrap();
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
         let (indexed_plan, indexed_distance) =

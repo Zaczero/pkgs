@@ -495,29 +495,29 @@ impl Shape {
         }
     }
 
-    fn point_only_points(&self) -> Result<Vec<Point>> {
+    fn point_only_points(&self) -> Vec<Point> {
         let mut points = Vec::new();
-        self.append_point_only(&mut points)?;
-        Ok(points)
+        self.append_point_only(&mut points);
+        points
     }
 
-    fn append_point_only(&self, out: &mut Vec<Point>) -> Result<()> {
+    fn append_point_only(&self, out: &mut Vec<Point>) {
         match self {
-            Self::Point(point) => crate::try_push_vec(out, *point),
+            Self::Point(point) => out.push(*point),
             Self::MultiPoint(points) => {
-                crate::boundary::try_reserve_vec(out, points.coord_count())?;
-                for point in points {
-                    crate::try_push_vec(out, point)?;
-                }
-                Ok(())
+                out.reserve(points.coord_count());
+                out.extend(points);
             },
             Self::GeometryCollection(geometries) => {
                 for geometry in geometries {
-                    geometry.append_point_only(out)?;
+                    geometry.append_point_only(out);
                 }
-                Ok(())
             },
-            _ => Ok(()),
+            Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::Empty(..) => {},
         }
     }
 
@@ -976,10 +976,9 @@ mod point_only_collection_tests {
         let mut output = Vec::with_capacity(3);
         output.push(Point::new_raw_xy(0.0, 0.0));
 
-        let (result, allocations) =
+        let ((), allocations) =
             crate::test_support::allocation_count(|| shape.append_point_only(&mut output));
 
-        result.unwrap();
         assert_eq!(allocations, 0);
         assert_eq!(output.len(), 3);
     }

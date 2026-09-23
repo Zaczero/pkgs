@@ -1016,7 +1016,6 @@ mod tests {
         .unwrap();
         let knot = result
             .points_vec()
-            .unwrap()
             .into_iter()
             .find(|point| point.x == 1.0 && point.y == 0.0)
             .expect("the source knot remains on the selected boundary");

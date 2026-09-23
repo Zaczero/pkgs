@@ -391,7 +391,7 @@ pub(crate) fn geodesic_by_identity(
     if shape.is_empty() {
         return rebuild(Vec::new());
     }
-    let original = shape.points_vec()?;
+    let original = shape.points_vec();
     let source = crs.unwrap_or("EPSG:4326");
     let local = crate::crs::estimate_local_crs_at(&[shape], source, state)?;
     let projected = crate::crs::transform_at(shape, source, &local.definition, state)

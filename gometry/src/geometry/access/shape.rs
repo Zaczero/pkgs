@@ -303,19 +303,18 @@ impl Shape {
     /// Append every vertex to `out` without allocating a boxed iterator — the
     /// non-boxing counterpart to `points().collect()`. Reserve in the caller
     /// when the count is known.
-    pub fn collect_points_into(&self, out: &mut Vec<Point>) -> Result<()> {
-        self.try_for_each_point(|point| crate::try_push_vec(out, point))
+    pub fn collect_points_into(&self, out: &mut Vec<Point>) {
+        self.for_each_point(|point| out.push(point));
     }
 
     /// Materialize every vertex into a pre-sized `Vec`, avoiding the
     /// boxed-`dyn` iterator allocation of the historical `points()`. Prefer
     /// it for hot paths (distance worksets, geodesic/Hausdorff distance,
     /// min-clearance) that need an owned vertex buffer.
-    pub fn points_vec(&self) -> Result<Vec<Point>> {
-        let mut points = Vec::new();
-        crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
-        self.collect_points_into(&mut points)?;
-        Ok(points)
+    pub fn points_vec(&self) -> Vec<Point> {
+        let mut points = Vec::with_capacity(self.coord_count());
+        self.collect_points_into(&mut points);
+        points
     }
 
     /// Distinct vertices in first-occurrence order.

@@ -51,10 +51,7 @@ pub(crate) fn geodesic_scratch() -> crate::scratch_pool::ScratchLease<GeodesicSc
     crate::scratch_pool::ScratchPool::checkout(&GEODESIC_SCRATCH)
 }
 
-pub(crate) fn collect_point_only_into(
-    shape: &Shape,
-    out: &mut Vec<Point>,
-) -> crate::error::Result<()> {
+pub(crate) fn collect_point_only_into(shape: &Shape, out: &mut Vec<Point>) {
     out.clear();
-    shape.append_point_only(out)
+    shape.append_point_only(out);
 }

@@ -1025,7 +1025,7 @@ mod binary_areal_overlay_tests {
         let boundary = point(2.0, 0.0);
         let boundary_result = point_intersection(&boundary, &z_polygon, Strictness::Lenient);
         assert_eq!(boundary_result.coordinate_axes(), "XYZ");
-        let boundary_point = boundary_result.points_vec().unwrap()[0];
+        let boundary_point = boundary_result.points_vec()[0];
         assert_eq!(boundary_point.z(), Some(12.0));
 
         let interior_point = point(1.0, 1.0);
@@ -1045,7 +1045,7 @@ mod binary_areal_overlay_tests {
         )
         .unwrap();
         assert_eq!(lenient.coordinate_axes(), "XY", "{lenient:?}");
-        let kept = lenient.points_vec().unwrap()[0];
+        let kept = lenient.points_vec()[0];
         assert_eq!((kept.x, kept.y), (1e-10, 2.0));
         assert_eq!(kept.z(), None);
 
@@ -1074,7 +1074,7 @@ mod binary_areal_overlay_tests {
         )
         .unwrap();
         assert_eq!(boundary_result.coordinate_axes(), "XYZ");
-        assert_eq!(boundary_result.points_vec().unwrap()[0].z(), Some(12.0));
+        assert_eq!(boundary_result.points_vec()[0].z(), Some(12.0));
 
         let mixed = Shape::MultiPoint(
             vec![
@@ -1094,7 +1094,6 @@ mod binary_areal_overlay_tests {
         assert_eq!(
             mixed_lenient
                 .points_vec()
-                .unwrap()
                 .into_iter()
                 .map(|point| (point.x, point.y, point.z()))
                 .collect::<Vec<_>>(),
@@ -1133,7 +1132,6 @@ mod binary_areal_overlay_tests {
             assert_eq!(
                 result
                     .points_vec()
-                    .unwrap()
                     .into_iter()
                     .map(|point| (point.x, point.y))
                     .collect::<Vec<_>>(),
@@ -1167,7 +1165,6 @@ mod binary_areal_overlay_tests {
             assert_eq!(
                 result
                     .points_vec()
-                    .unwrap()
                     .into_iter()
                     .map(|point| (point.x, point.y))
                     .collect::<Vec<_>>(),
@@ -1193,7 +1190,7 @@ mod binary_areal_overlay_tests {
         let z_polygon = z_square(0.0, 0.0, 4.0, 4.0, 10.0);
         let result = point_intersection(&points, &z_polygon, Strictness::Strict);
         assert_eq!(result.coordinate_axes(), "XYZ");
-        assert_eq!(result.points_vec().unwrap()[0].z(), Some(12.0));
+        assert_eq!(result.points_vec()[0].z(), Some(12.0));
         let z_multipolygon = match &z_polygon {
             Shape::Polygon(polygon) => Shape::MultiPolygon(vec![polygon.clone()].into()),
             _ => unreachable!("z_square returns a polygon"),
@@ -1201,7 +1198,7 @@ mod binary_areal_overlay_tests {
         let scalar = point(2.0, 0.0);
         let scalar_result = point_intersection(&scalar, &z_multipolygon, Strictness::Strict);
         assert_eq!(scalar_result.coordinate_axes(), "XYZ");
-        assert_eq!(scalar_result.points_vec().unwrap()[0].z(), Some(12.0));
+        assert_eq!(scalar_result.points_vec()[0].z(), Some(12.0));
 
         let repeated_line = Shape::MultiLineString(
             MultiLineString::from_values(CoordinateAxes::XYZ, vec![MultiMember::Value(
@@ -1798,12 +1795,7 @@ mod binary_areal_overlay_tests {
         );
         let intersection = left.intersection(&xy, Strictness::Lenient).unwrap();
         assert_eq!(intersection.coordinate_axes(), "XYZ");
-        let first = intersection
-            .points_vec()
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
+        let first = intersection.points_vec().into_iter().next().unwrap();
         assert_eq!(first.z().unwrap().to_bits(), (-0.0_f64).to_bits());
         assert!(first.m().is_none());
 
@@ -1840,7 +1832,6 @@ mod binary_areal_overlay_tests {
         let signature = |shape: &Shape| {
             let mut points = shape
                 .points_vec()
-                .unwrap()
                 .into_iter()
                 .map(|point| {
                     (
@@ -1920,7 +1911,7 @@ mod binary_areal_overlay_tests {
         )
         .unwrap();
         assert!(matches!(result, Shape::LineString(_)), "{result:?}");
-        assert_eq!(result.points_vec().unwrap().len(), 2, "{result:?}");
+        assert_eq!(result.points_vec().len(), 2, "{result:?}");
     }
 
     #[test]

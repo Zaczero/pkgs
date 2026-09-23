@@ -645,7 +645,7 @@ mod point_gather_tests {
     fn collect_points_into_preserves_prefix_order_and_repeated_vertices() {
         let shape = repeated_xy_line();
         let mut out = vec![Point::new_raw_xy(-1.0, -1.0)];
-        shape.collect_points_into(&mut out).unwrap();
+        shape.collect_points_into(&mut out);
         assert_eq!(out, [
             Point::new_raw_xy(-1.0, -1.0),
             Point::new_raw_xy(0.0, 0.0),
@@ -669,6 +669,6 @@ mod point_gather_tests {
         );
         let unique = shape.unique_points().unwrap();
         assert_eq!(unique.axes(), CoordinateAxes::XYZM);
-        assert_eq!(unique.points_vec().unwrap(), [a, b, c, d]);
+        assert_eq!(unique.points_vec(), [a, b, c, d]);
     }
 }

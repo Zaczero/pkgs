@@ -344,8 +344,8 @@ pub(super) fn brute_geodesic_distance(
     right: &Shape,
     metric: &impl GeodesicMetric,
 ) -> f64 {
-    let left_points = left.points_vec().unwrap();
-    let right_points = right.points_vec().unwrap();
+    let left_points = left.points_vec();
+    let right_points = right.points_vec();
     if left_points.is_empty() || right_points.is_empty() {
         return f64::INFINITY;
     }
@@ -366,8 +366,8 @@ pub(super) fn brute_geodesic_distance(
     }) {
         return 0.0;
     }
-    let left_point_only = left.point_only_points().unwrap();
-    let right_point_only = right.point_only_points().unwrap();
+    let left_point_only = left.point_only_points();
+    let right_point_only = right.point_only_points();
     let mut best = f64::INFINITY;
     best = brute_directed_geodesic_distance(
         &left_points,
@@ -419,8 +419,8 @@ pub(super) fn brute_geodesic_nearest_points(
     right: &Shape,
     metric: &impl GeodesicMetric,
 ) -> Option<(Point, Point)> {
-    let left_points = left.points_vec().unwrap();
-    let right_points = right.points_vec().unwrap();
+    let left_points = left.points_vec();
+    let right_points = right.points_vec();
     if left_points.is_empty() || right_points.is_empty() {
         return None;
     }
@@ -454,8 +454,8 @@ pub(super) fn brute_geodesic_nearest_points(
             }
         }
     }
-    let left_point_only = left.point_only_points().unwrap();
-    let right_point_only = right.point_only_points().unwrap();
+    let left_point_only = left.point_only_points();
+    let right_point_only = right.point_only_points();
     let mut best = f64::INFINITY;
     let mut pair: Option<(Point, Point)> = None;
     for &probe in &left_points {

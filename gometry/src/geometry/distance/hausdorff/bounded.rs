@@ -64,7 +64,7 @@ impl PreparedSupport {
                     &mut points,
                 )
             })?;
-            for point in shape.point_only_points()? {
+            for point in shape.point_only_points() {
                 try_push_vec(&mut points, ExactPoint::from_xy(point.xy()))?;
             }
             return Self::from_parts(spans, points, Vec::new());

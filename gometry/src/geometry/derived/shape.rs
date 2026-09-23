@@ -24,7 +24,7 @@ impl Shape {
         if self.is_empty() {
             return Ok(Self::empty_polygon());
         }
-        let points = self.points_vec()?;
+        let points = self.points_vec();
         let open: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
             .map(|index| points[index])

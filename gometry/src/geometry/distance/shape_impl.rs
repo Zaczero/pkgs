@@ -15,7 +15,7 @@ impl Shape {
     /// sweep.
     pub(crate) fn distance_parts(&self) -> Result<DistanceParts> {
         Ok(DistanceParts {
-            point_only: self.point_only_points()?,
+            point_only: self.point_only_points(),
             linework: PreparedLinework::build(self)?,
             // Deferred: the two column scans are paid on first DISTANCE use, not
             // at build — the CONTACT path (overlaps/touches/…) never reads it.
@@ -29,23 +29,19 @@ impl Shape {
     /// validation happens before any allocation is cached by `ShapeData`.
     pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
         ensure_geodesic_linework(self, metric)?;
-        let mut points = Vec::new();
-        crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
-        self.collect_points_into(&mut points)?;
+        let mut points = self.points_vec();
         let mut point_only = Vec::new();
-        collect_point_only_into(self, &mut point_only)?;
+        collect_point_only_into(self, &mut point_only);
         let segment_count = self.segment_count();
-        crate::boundary::try_reserve_vec(&mut point_only, segment_count)?;
-        let mut segments = Vec::new();
-        crate::boundary::try_reserve_vec(&mut segments, segment_count)?;
-        let mut caps_accum = GeodesicSweepCapsAccum::try_new(segment_count)?;
+        let mut segments = Vec::with_capacity(segment_count);
+        let mut caps_accum = GeodesicSweepCapsAccum::new(segment_count);
         self.try_for_each_vertex_pair(|start, end| {
             let segment = metric.make_segment(start, end)?;
             if segment.length == 0.0 {
                 if points.last().is_some_and(|point| *point == end) {
                     points.pop();
                 }
-                crate::try_push_vec(&mut point_only, start)?;
+                point_only.push(start);
                 return Ok::<_, crate::error::Error>(());
             }
             caps_accum.push_segment(&segment, metric);

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use crate::geometry::distance::{
-    collect_point_only_into, geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts,
-    geodesic_scratch, geodesic_witness_sweep_with_parts,
+    geodesic_capped_dwithin_with_parts, geodesic_capped_sweep_with_parts, geodesic_scratch,
+    geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
     FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey,
@@ -47,11 +47,11 @@ pub(crate) fn geodesic_cap_streaming(
         reach = reach.max(from_anchor + length);
         Ok::<_, crate::error::Error>(())
     })?;
-    let mut point_only = Vec::new();
-    collect_point_only_into(shape, &mut point_only)?;
-    for point in point_only {
-        reach = reach.max(metric.segment_length(anchor, point));
-    }
+    shape.for_each_component(&mut |component| {
+        if let crate::geometry::Component::Point(point) = component {
+            reach = reach.max(metric.segment_length(anchor, point));
+        }
+    });
     Ok(Some((anchor, reach)))
 }
 
