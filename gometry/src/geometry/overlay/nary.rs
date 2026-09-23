@@ -14,7 +14,7 @@ use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeometryErrorKind, GeometryKind, HashMap, HashSet, Point, PointKey, Segment, Shape,
     TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates, ordered_edge, point_on_segment,
-    same_point, segment_midpoint,
+    segment_midpoint,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -852,32 +852,23 @@ fn shape_polygon_loops(inputs: &GeographicInputs<'_>) -> Vec<(Vec<f64>, Vec<f64>
 
 fn push_polygon_loops(polygon: &crate::geometry::Polygon, out: &mut Vec<(Vec<f64>, Vec<f64>)>) {
     for ring in polygon.rings() {
-        if let Some(loop_columns) = ring_loop_columns(ring) {
-            out.push(loop_columns);
-        }
+        out.push(ring_loop_columns(ring));
     }
 }
 
-/// One ring as open `(xs, ys)` columns — the closing repeat dropped, and
-/// nothing shorter than a triangle.
-fn ring_loop_columns(ring: &crate::geometry::Ring) -> Option<(Vec<f64>, Vec<f64>)> {
-    let mut points = Vec::with_capacity(ring.coord_count());
-    points.extend(ring.iter_coords());
-    if points.len() > 1 && same_point(points[0], *points.last().expect("non-empty ring")) {
-        points.pop();
-    }
-    if points.len() < 3 {
-        return None;
-    }
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    xs.reserve(points.len());
-    ys.reserve(points.len());
-    for point in points {
-        xs.push(point.x);
-        ys.push(point.y);
-    }
-    Some((xs, ys))
+/// One admitted ring as open `(xs, ys)` columns, without its closing repeat.
+fn ring_loop_columns(ring: &crate::geometry::Ring) -> (Vec<f64>, Vec<f64>) {
+    let (_, xs) = ring
+        .coords()
+        .xs()
+        .split_last()
+        .expect("ring has a closing coordinate");
+    let (_, ys) = ring
+        .coords()
+        .ys()
+        .split_last()
+        .expect("ring has a closing coordinate");
+    (xs.to_vec(), ys.to_vec())
 }
 
 fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> {
@@ -885,9 +876,7 @@ fn source_polygon_loops(sources: &[TopologyGraph]) -> Vec<(Vec<f64>, Vec<f64>)> 
     for source in sources {
         for support in &source.area_support {
             for ring in support.source().rings() {
-                if let Some(columns) = ring_loop_columns(ring) {
-                    loops.push(columns);
-                }
+                loops.push(ring_loop_columns(ring));
             }
         }
     }
@@ -1118,33 +1107,33 @@ fn overlay_lines(
             continue;
         }
         let midpoint = segment_midpoint(edge.segment);
-        let mut covered = Vec::with_capacity(sources.len());
-        let mut line_membership = Vec::with_capacity(sources.len());
+        let mut all_covered = true;
+        let mut other_covered = false;
+        let mut any_line = false;
+        let mut first_line = false;
+        let mut odd_lines = false;
         for (source_row, source) in sources.iter().enumerate() {
-            covered.push(
-                source.locate_edge_piece(edge.segment) != TopologyLocation::Exterior
-                    || graph.edge_has_line_source_for_row(edge, source_row as u32),
-            );
-            line_membership.push(
-                source.has_line_support(midpoint.xy())
-                    || graph.edge_has_line_source_for_row(edge, source_row as u32),
-            );
+            let covered = source.locate_edge_piece(edge.segment) != TopologyLocation::Exterior
+                || graph.edge_has_line_source_for_row(edge, source_row as u32);
+            let line = source.has_line_support(midpoint.xy())
+                || graph.edge_has_line_source_for_row(edge, source_row as u32);
+            all_covered &= covered;
+            if source_row == 0 {
+                first_line = line;
+            } else {
+                other_covered |= covered;
+            }
+            any_line |= line;
+            odd_lines ^= line;
         }
         let result_covers = polygon_indexes.iter().try_fold(false, |covered, polygon| {
             Ok::<_, crate::error::Error>(covered || polygon.covers_point(midpoint)?)
         })?;
         let keep = match op {
-            OverlayOp::Intersection => covered.iter().all(|&present| present) && !result_covers,
-            OverlayOp::Union => line_membership.iter().any(|&present| present) && !result_covers,
-            OverlayOp::Difference => {
-                line_membership.first().copied().unwrap_or(false)
-                    && covered[1..].iter().all(|&present| !present)
-                    && !result_covers
-            },
-            OverlayOp::SymmetricDifference => {
-                line_membership.iter().filter(|&&present| present).count() % 2 == 1
-                    && !result_covers
-            },
+            OverlayOp::Intersection => all_covered && !result_covers,
+            OverlayOp::Union => any_line && !result_covers,
+            OverlayOp::Difference => first_line && !other_covered && !result_covers,
+            OverlayOp::SymmetricDifference => odd_lines && !result_covers,
         };
         if keep {
             lines.push(CoordSeq::try_from_xy(&[
