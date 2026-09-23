@@ -2088,15 +2088,12 @@ fn certified_line_serialization_keeps_bends_and_protected_vertices() {
     assert!(points.is_empty());
     assert!(polygons.is_empty());
     assert_eq!(lines.len(), 1);
-    let mut coordinates: Vec<_> = lines[0]
+    let coordinates: Vec<_> = lines[0]
         .xs()
         .iter()
         .copied()
         .zip(lines[0].ys().iter().copied())
         .collect();
-    if coordinates[0] != (0.0, 0.0) {
-        coordinates.reverse();
-    }
     assert_eq!(coordinates, [
         (0.0, 0.0),
         (1.0, 0.0),
