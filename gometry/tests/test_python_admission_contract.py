@@ -399,6 +399,12 @@ def test_list_and_tuple_keep_distinct_mixed_provider_admission_order() -> None:
         assert tuple_provider.calls == 0
 
 
+def test_mixed_mask_and_oversized_integer_stays_a_type_error() -> None:
+    array = gm.GeometryArray([gm.Point(0, 0), gm.Point(1, 1)])
+    with pytest.raises(TypeError, match='indices must be'):
+        array[[True, 1 << 100]]
+
+
 def test_list_fancy_index_snapshots_before_ordered_provider_mutation() -> None:
     array = gm.GeometryArray([gm.Point(0, 10), gm.Point(1, 11), gm.Point(2, 12)])
     selectors: list[object] = []

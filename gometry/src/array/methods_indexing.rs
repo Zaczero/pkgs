@@ -25,13 +25,6 @@ use crate::array::{
 use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 
-pub(crate) enum FancyIndex {
-    Empty,
-    Mask,
-    Indices,
-    Invalid,
-}
-
 pub(crate) enum NumpyFancyIndex {
     Scalar(isize),
     Mask(Vec<bool>),
@@ -106,11 +99,7 @@ where
     let array = native_numpy_array::<T>(index)?;
     let readonly = array.try_readonly()?;
     let values = readonly.as_array();
-    let mut out = crate::try_vec_with_capacity(values.len())?;
-    for value in values.iter().copied() {
-        out.push(value);
-    }
-    Ok(out)
+    Ok(values.iter().copied().collect())
 }
 
 pub(crate) fn numpy_integer_fancy_index<T>(
@@ -132,9 +121,9 @@ where
             .expect("zero-dimensional NumPy arrays have one element");
         return Ok(NumpyFancyIndex::Scalar(numpy_index_value(value, label)?));
     }
-    let mut out = crate::try_vec_with_capacity(values.len())?;
+    let mut out = Vec::with_capacity(values.len());
     for value in values.iter().copied() {
-        crate::try_push(&mut out, numpy_index_value(value, label)?)?;
+        out.push(numpy_index_value(value, label)?);
     }
     Ok(NumpyFancyIndex::Indices(out))
 }
@@ -159,19 +148,15 @@ pub(crate) enum CollectedFancyIndex {
     Invalid,
 }
 
-struct FancyIndexCollector {
-    kind: FancyIndex,
-    indices: Vec<isize>,
-    mask: Vec<bool>,
+enum FancyIndexCollector {
+    Empty,
+    Indices(Vec<isize>),
+    Mask(Vec<bool>),
 }
 
 impl FancyIndexCollector {
     const fn new() -> Self {
-        Self {
-            kind: FancyIndex::Empty,
-            indices: Vec::new(),
-            mask: Vec::new(),
-        }
+        Self::Empty
     }
 
     fn push<'py>(
@@ -181,18 +166,23 @@ impl FancyIndexCollector {
         item_count: usize,
     ) -> PyResult<bool> {
         if bound.cast_exact::<PyBool>().is_ok() {
-            self.kind = match self.kind {
-                FancyIndex::Empty | FancyIndex::Mask => FancyIndex::Mask,
-                _ => FancyIndex::Invalid,
-            };
-            if matches!(self.kind, FancyIndex::Invalid) {
+            if matches!(self, Self::Indices(_)) {
                 return Ok(false);
             }
-            if self.mask.is_empty() {
-                crate::try_reserve_vec(&mut self.mask, item_count)?;
-            }
-            self.mask.push(bound.extract::<bool>()?);
-            return Ok(true);
+            let value = bound.extract::<bool>()?;
+            return match self {
+                Self::Empty => {
+                    let mut mask = Vec::with_capacity(item_count);
+                    mask.push(value);
+                    *self = Self::Mask(mask);
+                    Ok(true)
+                },
+                Self::Mask(mask) => {
+                    mask.push(value);
+                    Ok(true)
+                },
+                Self::Indices(_) => unreachable!("mixed indices decline before boolean extraction"),
+            };
         }
 
         let integer = match crate::py_index_object("index", bound) {
@@ -204,28 +194,32 @@ impl FancyIndexCollector {
             },
             Err(error) => return Err(error),
         };
-        self.kind = match self.kind {
-            FancyIndex::Empty | FancyIndex::Indices => FancyIndex::Indices,
-            _ => FancyIndex::Invalid,
-        };
-        if matches!(self.kind, FancyIndex::Invalid) {
+        if matches!(self, Self::Mask(_)) {
             return Ok(false);
         }
-        crate::try_push(
-            &mut self.indices,
-            integer
-                .extract::<isize>()
-                .map_err(|_| PyIndexError::new_err("index is too large"))?,
-        )?;
-        Ok(true)
+        let value = integer
+            .extract::<isize>()
+            .map_err(|_| PyIndexError::new_err("index is too large"))?;
+        match self {
+            Self::Empty => {
+                let mut indices = Vec::with_capacity(item_count);
+                indices.push(value);
+                *self = Self::Indices(indices);
+                Ok(true)
+            },
+            Self::Indices(indices) => {
+                indices.push(value);
+                Ok(true)
+            },
+            Self::Mask(_) => unreachable!("mixed masks decline before integer extraction"),
+        }
     }
 
     fn finish(self) -> CollectedFancyIndex {
-        match self.kind {
-            FancyIndex::Empty => CollectedFancyIndex::Empty,
-            FancyIndex::Indices => CollectedFancyIndex::Indices(self.indices),
-            FancyIndex::Mask => CollectedFancyIndex::Mask(self.mask),
-            FancyIndex::Invalid => CollectedFancyIndex::Invalid,
+        match self {
+            Self::Empty => CollectedFancyIndex::Empty,
+            Self::Indices(indices) => CollectedFancyIndex::Indices(indices),
+            Self::Mask(mask) => CollectedFancyIndex::Mask(mask),
         }
     }
 }
@@ -296,7 +290,7 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
         let py = tuple.py();
         let true_ptr = PyBool::new(py, true).as_ptr();
         let false_ptr = PyBool::new(py, false).as_ptr();
-        let mut mask = crate::try_vec_with_capacity(len)?;
+        let mut mask = Vec::with_capacity(len);
         for i in 0..len {
             // SAFETY: `i` is in `0..len` for this exact tuple.
             let item = unsafe { tuple.get_item_unchecked(i) };
@@ -312,7 +306,7 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
         return Ok(CollectedFancyIndex::Mask(mask));
     }
     if first.cast::<PyInt>().is_ok() {
-        let mut indices = crate::try_vec_with_capacity(len)?;
+        let mut indices = Vec::with_capacity(len);
         for i in 0..len {
             // SAFETY: `i` is in `0..len` for this exact tuple.
             let item = unsafe { tuple.get_item_unchecked(i) };
@@ -323,7 +317,7 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
                 let sequence = tuple.cast::<PySequence>()?.clone();
                 return classify_and_collect_generic_sequence(tuple.py(), &sequence);
             }
-            crate::try_push(&mut indices, crate::py_isize_required("index", &item)?)?;
+            indices.push(crate::py_isize_required("index", &item)?);
         }
         return Ok(CollectedFancyIndex::Indices(indices));
     }
@@ -421,8 +415,7 @@ impl PyGeometryArray {
                 source_rows,
             );
         }
-        let mut rows = Vec::new();
-        crate::boundary::try_reserve_vec(&mut rows, mask.present_count())?;
+        let mut rows = Vec::with_capacity(mask.present_count());
         rows.extend(
             mask.iter()
                 .enumerate()
@@ -830,7 +823,7 @@ impl PyGeometryArray {
             return Ok(self.clone());
         }
         let n = self.len();
-        let mut rows: Vec<(usize, Option<Shape>)> = crate::try_vec_with_capacity(positions.len())?;
+        let mut rows: Vec<(usize, Option<Shape>)> = Vec::with_capacity(positions.len());
         for (position, value) in positions.into_iter().zip(values) {
             if position < 0 || position as usize >= n {
                 return Err(PyIndexError::new_err(format!(
@@ -853,8 +846,7 @@ impl PyGeometryArray {
             self.frame.compatible(&geometry.frame, "_replace_at")?;
             rows.push((row, Some(geometry.shape.shape().clone())));
         }
-        let mut selected = crate::try_vec_with_capacity(n)?;
-        selected.resize(n, None);
+        let mut selected = vec![None; n];
         for (index, (row, _)) in rows.iter().enumerate() {
             selected[*row] = Some(index);
         }
@@ -1048,6 +1040,35 @@ impl PyGeometryArray {
             }
         }
         builder.finish(self.frame.clone()).map_err(PyErr::from)
+    }
+}
+
+#[cfg(test)]
+mod fancy_index_tests {
+    use super::*;
+    use crate::test_support::allocation_count;
+
+    #[test]
+    fn known_length_integer_indices_reserve_once() {
+        Python::initialize();
+        Python::attach(|py| {
+            let allocations = [2_usize, 128].map(|rows| {
+                let tuple = PyTuple::new(py, 0..rows).unwrap();
+                let (result, allocations) =
+                    allocation_count(|| classify_and_collect_stable_tuple(py, &tuple));
+                let CollectedFancyIndex::Indices(indices) = result.unwrap() else {
+                    panic!("integer tuple snapshot must produce integer indices");
+                };
+                assert!(
+                    indices
+                        .iter()
+                        .copied()
+                        .eq(0..isize::try_from(rows).unwrap())
+                );
+                allocations
+            });
+            assert!(allocations[1] <= allocations[0]);
+        });
     }
 }
 

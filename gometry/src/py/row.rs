@@ -142,10 +142,10 @@ fn mask_rows<C: RowGetItemContainer>(
     if mask.len() != len {
         return Err(C::mask_length_error(mask.len(), len, numpy));
     }
-    let mut rows = crate::try_vec_with_capacity(mask.len())?;
+    let mut rows = Vec::with_capacity(mask.len());
     for (row, keep) in mask.into_iter().enumerate() {
         if keep {
-            crate::try_push(&mut rows, row)?;
+            rows.push(row);
         }
     }
     Ok(rows)
