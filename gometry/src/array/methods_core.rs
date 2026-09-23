@@ -916,8 +916,11 @@ impl PyGeometryArray {
             // Only a crossing row needs the shapes; scan for one first so the
             // ordinary case leaves the columnar fold below its inputs.
             let mut crossing = false;
-            for row in self.present_shape_rows() {
-                if crate::geometry::crosses_antimeridian_in_frame(&row?.1, frame) {
+            let row_operation = self.row_operation();
+            for row in row_operation.present_rows() {
+                if row.row().with_shape(|shape| {
+                    crate::geometry::crosses_antimeridian_in_frame(shape, frame)
+                })? {
                     crossing = true;
                     break;
                 }
