@@ -391,8 +391,7 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircl
 
     let hash_state = crate::collections::collection_hash_state()?;
     let mut state = hash_state.hash_one((points.len(), "minimum_enclosing_circle"));
-    let mut order = Vec::new();
-    crate::try_reserve_vec(&mut order, points.len())?;
+    let mut order = Vec::with_capacity(points.len());
     order.extend(0..points.len());
     for index in (1..order.len()).rev() {
         state = state
@@ -468,8 +467,7 @@ fn certify_minimum_circle_polygon(
         return Err(unrepresentable_minimum_circle());
     }
 
-    let mut vertices = Vec::new();
-    crate::try_reserve_vec(&mut vertices, expected_length)?;
+    let mut vertices = Vec::with_capacity(expected_length);
     for point in shell.coords().iter_coords() {
         if !point.x.is_finite() || !point.y.is_finite() {
             return Err(unrepresentable_minimum_circle());
@@ -585,8 +583,7 @@ fn tangent_circle_polygon(
         }
     };
 
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, vertices)?;
+    let mut points = Vec::with_capacity(vertices);
     for step in 0..steps {
         let quadrant = step / quadrants;
         let local_step = step % quadrants;
@@ -615,13 +612,13 @@ fn tangent_circle_polygon(
         if !x.is_finite() || !y.is_finite() {
             return Err(unrepresentable_minimum_circle());
         }
-        crate::try_push_vec(&mut points, Point::new_raw_xy(x, y))?;
+        points.push(Point::new_raw_xy(x, y));
     }
     let first = points
         .first()
         .copied()
         .ok_or_else(unrepresentable_minimum_circle)?;
-    crate::try_push_vec(&mut points, first)?;
+    points.push(first);
     let seq = CoordSeq::try_from_points(&points)?;
     Ok(Shape::Polygon(Polygon::new(
         Ring::try_from_closed(seq)?,
@@ -824,12 +821,12 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     // representative point is the answer. Build the original-frame field only
     // on this rare branch.
     let Some(frame) = normalized_polylabel_frame(shape, bounds)? else {
-        return representative_point(shape, bounds);
+        return Ok(representative_point(shape, bounds));
     };
     // Without an interior no cell ever beats the boundary, and refinement
     // would run to `tolerance` along the whole outline.
     if !has_interior(shape) {
-        return representative_point(shape, bounds);
+        return Ok(representative_point(shape, bounds));
     }
     let normalized_bounds = frame
         .shape
@@ -837,7 +834,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
         .expect("non-empty normalized polygon retains bounds");
     let mut field = PolylabelField::new(&frame.shape, frame.max_inradius, Some(frame.frame))?;
     if field.is_empty() {
-        return representative_point(shape, bounds);
+        return Ok(representative_point(shape, bounds));
     }
 
     // Tolerance remains in public Euclidean coordinates.  The framed field
@@ -846,7 +843,7 @@ pub(crate) fn polylabel_point(shape: &Shape, tolerance: Option<f64>) -> Result<P
     let tolerance = tolerance.unwrap_or(frame.default_tolerance);
 
     let mut best = field.cell(
-        representative_point(&frame.shape, normalized_bounds)?,
+        representative_point(&frame.shape, normalized_bounds),
         0.0,
         None,
     )?;
@@ -1288,8 +1285,7 @@ fn build_inscribed_circle_once(
     quadrant_segments: NonZeroU32,
     support: Option<(&PreparedSupport, &PreparedSupport)>,
 ) -> Result<Shape> {
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, steps)?;
+    let mut points = Vec::with_capacity(steps);
     let quadrant = quadrant_segments.get() as usize;
     for step in 0..steps {
         let (unit_x, unit_y) = if step.is_multiple_of(quadrant) {
@@ -1312,8 +1308,7 @@ fn build_inscribed_circle_once(
         }
         points.push(Point::new_raw_xy(x, y));
     }
-    let mut closed = Vec::new();
-    crate::try_reserve_vec(&mut closed, vertices)?;
+    let mut closed = Vec::with_capacity(vertices);
     closed.extend_from_slice(&points);
     closed.push(points[0]);
     let seq = CoordSeq::try_from_points(&closed)?;
@@ -1369,13 +1364,13 @@ fn has_interior(shape: &Shape) -> bool {
     }
 }
 
-pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Result<Point> {
-    match shape.point_on_surface()? {
-        Shape::Point(point) => Ok(point),
-        _ => Ok(Point::new_raw_xy(
+pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
+    match shape.point_on_surface() {
+        Shape::Point(point) => point,
+        _ => Point::new_raw_xy(
             bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
             bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
-        )),
+        ),
     }
 }
 

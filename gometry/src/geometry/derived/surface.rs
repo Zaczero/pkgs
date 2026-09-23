@@ -1,4 +1,3 @@
-use crate::error::Result;
 use crate::geometry::{
     Bounds, CoordSeq, LineSeq, Point, Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, column_mean2,
     held_axis_interpolate, interpolate_segment_point, line_length, line_length_columns,
@@ -7,22 +6,17 @@ use crate::geometry::{
 
 /// Collect horizontal-bisector chord crossings for one ring's coordinate
 /// columns.
-fn push_chord_crossings(
-    xs: &[f64],
-    ys: &[f64],
-    mid: f64,
-    crossings: &mut Vec<f64>,
-) -> Result<bool> {
+fn push_chord_crossings(xs: &[f64], ys: &[f64], mid: f64, crossings: &mut Vec<f64>) -> bool {
     for index in 1..ys.len() {
         let (y0, y1) = (ys[index - 1], ys[index]);
         if (y0 <= mid) != (y1 <= mid) {
             let Some(x) = held_axis_interpolate(y0, xs[index - 1], y1, xs[index], mid) else {
-                return Ok(false);
+                return false;
             };
-            crate::try_push_vec(crossings, x)?;
+            crossings.push(x);
         }
     }
-    Ok(true)
+    true
 }
 
 /// Finish the scanline interior point from sorted even-odd chord crossings.
@@ -48,16 +42,16 @@ fn point_on_surface_polygon_columns(
     rings: std::ops::Range<usize>,
     bounds: Bounds,
     crossings: &mut Vec<f64>,
-) -> Result<Option<Point>> {
+) -> Option<Point> {
     let mid = f64::midpoint(bounds.miny(), bounds.maxy());
     for ring_index in rings {
         let start = ring_offsets[ring_index] as usize;
         let end = ring_offsets[ring_index + 1] as usize;
-        if !push_chord_crossings(&xs[start..end], &ys[start..end], mid, crossings)? {
-            return Ok(None);
+        if !push_chord_crossings(&xs[start..end], &ys[start..end], mid, crossings) {
+            return None;
         }
     }
-    Ok(point_from_chord_crossings(crossings, mid))
+    point_from_chord_crossings(crossings, mid)
 }
 
 /// Degenerate polygon fallback: arc-length midpoint of the longest boundary
@@ -90,26 +84,15 @@ pub(crate) fn point_on_surface_polygon_row_columns(
     rings: std::ops::Range<usize>,
     bounds: Option<Bounds>,
     crossings: &mut Vec<f64>,
-) -> Result<Option<Point>> {
+) -> Option<Point> {
     crossings.clear();
     if let Some(bounds) = bounds
-        && let Some(point) = point_on_surface_polygon_columns(
-            xs,
-            ys,
-            ring_offsets,
-            rings.clone(),
-            bounds,
-            crossings,
-        )?
+        && let Some(point) =
+            point_on_surface_polygon_columns(xs, ys, ring_offsets, rings.clone(), bounds, crossings)
     {
-        return Ok(Some(point));
+        return Some(point);
     }
-    Ok(point_on_surface_polygon_boundary_columns(
-        xs,
-        ys,
-        ring_offsets,
-        rings,
-    ))
+    point_on_surface_polygon_boundary_columns(xs, ys, ring_offsets, rings)
 }
 
 /// Interior representative of borrowed polygon components: the midpoint of
@@ -122,11 +105,9 @@ pub(crate) fn point_on_surface_polygon_row_columns(
 /// engine (degenerate zero-area input where the bisector finds no chord).
 pub(crate) fn polygonal_surface_point<'a>(
     polygons: impl Iterator<Item = &'a Polygon> + Clone,
-) -> Result<Option<Point>> {
+) -> Option<Point> {
     let mut polygon_bounds = polygons.clone().filter_map(Polygon::bounds);
-    let Some(mut bounds) = polygon_bounds.next() else {
-        return Ok(None);
-    };
+    let mut bounds = polygon_bounds.next()?;
     for polygon_bounds in polygon_bounds {
         bounds.include_bounds(polygon_bounds);
     }
@@ -136,12 +117,12 @@ pub(crate) fn polygonal_surface_point<'a>(
     // no per-segment struct or visitor indirection on the 2n-compare loop.
     for polygon in polygons {
         for ring in polygon.rings() {
-            if !push_chord_crossings(ring.xs(), ring.ys(), mid, &mut crossings)? {
-                return Ok(None);
+            if !push_chord_crossings(ring.xs(), ring.ys(), mid, &mut crossings) {
+                return None;
             }
         }
     }
-    Ok(point_from_chord_crossings(&mut crossings, mid))
+    point_from_chord_crossings(&mut crossings, mid)
 }
 
 /// Column kernel for lineal `point_on_surface`: arc-length midpoint of one
@@ -225,31 +206,30 @@ fn gather_surface_components<'a>(
     polygons: &mut Vec<&'a Polygon>,
     lines: &mut Vec<&'a CoordSeq>,
     points: &mut Vec<Point>,
-) -> Result<()> {
+) {
     for part in parts {
         match part {
-            Shape::Point(point) => crate::try_push_vec(points, *point)?,
+            Shape::Point(point) => points.push(*point),
             Shape::MultiPoint(seq) => {
-                crate::try_reserve_vec(points, seq.xs().len())?;
+                points.reserve(seq.xs().len());
                 points.extend(seq.iter());
             },
-            Shape::LineString(seq) => crate::try_push_vec(lines, seq.as_coords())?,
+            Shape::LineString(seq) => lines.push(seq.as_coords()),
             Shape::MultiLineString(seqs) => {
-                crate::try_reserve_vec(lines, seqs.as_slice().len())?;
+                lines.reserve(seqs.as_slice().len());
                 lines.extend(seqs.iter().map(LineSeq::as_coords));
             },
-            Shape::Polygon(polygon) => crate::try_push_vec(polygons, polygon)?,
+            Shape::Polygon(polygon) => polygons.push(polygon),
             Shape::MultiPolygon(polys) => {
-                crate::try_reserve_vec(polygons, polys.as_slice().len())?;
+                polygons.reserve(polys.as_slice().len());
                 polygons.extend(polys.iter());
             },
             Shape::GeometryCollection(inner) => {
-                gather_surface_components(inner, polygons, lines, points)?;
+                gather_surface_components(inner, polygons, lines, points);
             },
             Shape::Empty(..) => {},
         }
     }
-    Ok(())
 }
 
 /// Interior point of an arbitrary (possibly nested, mixed, or degenerate)
@@ -257,14 +237,14 @@ fn gather_surface_components<'a>(
 /// through to its boundary linework, then to its vertices. Reused for bare
 /// degenerate polygons too (via `from_ref`), which the scanline kernel leaves
 /// to this boundary path.
-pub(crate) fn collection_surface_point(parts: &[Shape]) -> Result<Option<Point>> {
+pub(crate) fn collection_surface_point(parts: &[Shape]) -> Option<Point> {
     let mut polygons: Vec<&Polygon> = Vec::new();
     let mut lines: Vec<&CoordSeq> = Vec::new();
     let mut points: Vec<Point> = Vec::new();
-    gather_surface_components(parts, &mut polygons, &mut lines, &mut points)?;
+    gather_surface_components(parts, &mut polygons, &mut lines, &mut points);
     if !polygons.is_empty() {
-        if let Some(point) = polygonal_surface_point(polygons.iter().copied())? {
-            return Ok(Some(point));
+        if let Some(point) = polygonal_surface_point(polygons.iter().copied()) {
+            return Some(point);
         }
         // Degenerate areal: its boundary rings carry the representative point.
         if let Some(point) = lineal_surface_point(
@@ -272,24 +252,22 @@ pub(crate) fn collection_surface_point(parts: &[Shape]) -> Result<Option<Point>>
                 .iter()
                 .flat_map(|polygon| polygon.rings().map(Ring::coords)),
         ) {
-            return Ok(Some(point));
+            return Some(point);
         }
     }
     if !lines.is_empty()
         && let Some(point) = lineal_surface_point(lines.iter().copied())
     {
-        return Ok(Some(point));
+        return Some(point);
     }
     if points.is_empty() {
-        return Ok(None);
+        return None;
     }
-    let mut xs = Vec::new();
-    let mut ys = Vec::new();
-    crate::try_reserve_vec(&mut xs, points.len())?;
-    crate::try_reserve_vec(&mut ys, points.len())?;
+    let mut xs = Vec::with_capacity(points.len());
+    let mut ys = Vec::with_capacity(points.len());
     xs.extend(points.iter().map(|point| point.x));
     ys.extend(points.iter().map(|point| point.y));
-    Ok(multipoint_surface_point(&xs, &ys))
+    multipoint_surface_point(&xs, &ys)
 }
 
 #[cfg(test)]
@@ -326,7 +304,7 @@ mod tests {
     }
 
     fn surface_xy(shape: &Shape) -> (f64, f64) {
-        match shape.point_on_surface().expect("representative point") {
+        match shape.point_on_surface() {
             Shape::Point(point) => (point.x, point.y),
             other => panic!("expected a point, got {other:?}"),
         }
@@ -339,8 +317,7 @@ mod tests {
             Shape::empty_polygon(),
             Shape::typed_empty(GeometryKind::GeometryCollection, CoordinateAxes::XY),
         ] {
-            let result = crate::test_support::assert_no_allocations(|| empty.point_on_surface())
-                .expect("empty geometry does not stage");
+            let result = crate::test_support::assert_no_allocations(|| empty.point_on_surface());
             assert_eq!(result, Shape::empty_point());
         }
     }
@@ -427,7 +404,6 @@ mod tests {
             Some(Bounds::new_raw(0.0, 0.0, 2.0, 4.0)),
             &mut crossings,
         )
-        .expect("packed row")
         .expect("interior chord");
         assert_eq!((point.x, point.y), (1.0, 2.0));
     }

@@ -253,7 +253,7 @@ impl PyGeometryArray {
                 frame,
                 domain,
                 DerivedPointStrategy::Interior,
-                Shape::point_on_surface,
+                |shape| Ok(shape.point_on_surface()),
                 |_, xs, ys, window| {
                     packed_surface_point(crate::geometry::point_on_surface_line_columns(
                         column_window(xs, &window),
@@ -272,7 +272,7 @@ impl PyGeometryArray {
                         rings,
                         row_bounds,
                         crossings,
-                    )?)
+                    ))
                 },
             )
         })? {
@@ -283,7 +283,7 @@ impl PyGeometryArray {
                 shape,
                 domain,
                 DerivedPointStrategy::Interior,
-                Shape::point_on_surface,
+                |shape| Ok(shape.point_on_surface()),
             )?)
         })
     }

@@ -67,20 +67,20 @@ impl Shape {
     /// A representative point guaranteed to lie *on* the geometry — for a
     /// polygon an interior point, not a boundary vertex. Empty geometries
     /// yield an empty geometry.
-    pub fn point_on_surface(&self) -> Result<Self> {
+    pub fn point_on_surface(&self) -> Self {
         if self.is_empty() {
-            return Ok(Self::empty_point());
+            return Self::empty_point();
         }
         // Polygonal input takes the own scanline kernel: one half-open chord
         // scan at the bbox bisector is enough to find a representative without
         // converting the geometry or allocating per edge.
         let polygonal = match self {
-            Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon))?,
-            Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter())?,
+            Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon)),
+            Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter()),
             _ => None,
         };
         if let Some(point) = polygonal {
-            return Ok(Self::Point(point));
+            return Self::Point(point);
         }
         // Lineal and puntal representatives are own columnar kernels too — a
         // line's arc-length midpoint and a multipoint's nearest-centroid vertex
@@ -97,9 +97,9 @@ impl Shape {
             // the scanline could not find) fall to the same dimensional
             // cascade: highest dimension first, areal degeneracy down to its
             // boundary linework and vertices.
-            _ => collection_surface_point(std::slice::from_ref(self))?,
+            _ => collection_surface_point(std::slice::from_ref(self)),
         };
-        native.map_or_else(|| Ok(Self::empty_point()), |point| Ok(Self::Point(point)))
+        native.map_or_else(Self::empty_point, Self::Point)
     }
 
     pub fn envelope(&self) -> Result<Self> {
