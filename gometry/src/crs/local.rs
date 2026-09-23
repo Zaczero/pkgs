@@ -281,7 +281,9 @@ fn best_custom_candidate(
     let candidates = [candidate];
     for candidate in candidates {
         if candidate_fits(&candidate, &extent.samples, state)? {
-            return Ok(LocalCrsDefinition::custom(normalize(&candidate)?));
+            return Ok(LocalCrsDefinition::custom(
+                normalize(&candidate)?.into_owned(),
+            ));
         }
     }
     Err(CrsError::invalid(

@@ -479,7 +479,11 @@ pub(crate) fn operations_info_with_state(
         let index = lru_resolve(
             &mut cache,
             CRS_OPERATIONS_CACHE_CAPACITY,
-            |item| item.source == source && item.target == target && item.options == *options,
+            |item| {
+                item.source.as_str() == source.as_ref()
+                    && item.target.as_str() == target.as_ref()
+                    && item.options == *options
+            },
             || {
                 let items = operations_info_uncached(&source, &target, options, state)?;
                 Ok(CachedCrsOperations {

@@ -255,34 +255,34 @@ pub(crate) fn same_with_state(
     // Order the pair so (A,B) and (B,A) share one cache entry (comparison is
     // commutative for both exact and ignore-axis-order modes).
     let (left, right) = if left <= right {
-        (left.into(), right.into())
+        (left, right)
     } else {
-        (right.into(), left.into())
-    };
-    let key = CrsComparisonKey {
-        left,
-        right,
-        mode: comparison,
+        (right, left)
     };
     let hit = CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        let Some(index) = cache.iter().position(|item| item.key == key) else {
-            return false;
-        };
+        let (index, value) = cache.iter().enumerate().find_map(|(index, item)| {
+            (item.key.left.as_str() == left.as_ref()
+                && item.key.right.as_str() == right.as_ref()
+                && item.key.mode == comparison)
+                .then_some((index, item.value))
+        })?;
         if index + 1 != cache.len() {
             let entry = cache.remove(index);
             cache.push(entry);
         }
-        true
+        Some(value)
     });
-    if hit {
-        return CRS_COMPARISON_CACHE.with(|items| {
-            let cache = items.borrow();
-            Ok(cache[cache.len() - 1].value)
-        });
+    if let Some(value) = hit {
+        return Ok(value);
     }
-    let value = crs_same_uncached(&key.left, &key.right, key.mode, state)?;
+    let value = crs_same_uncached(&left, &right, comparison, state)?;
     ensure_thread_caches_current(state);
+    let key = CrsComparisonKey {
+        left: left.into(),
+        right: right.into(),
+        mode: comparison,
+    };
     CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
         let index = lru_resolve(
@@ -381,3 +381,26 @@ where
 pub(crate) static PROJ_OPERATION_CATALOG: OnceLock<Vec<ProjOperationCatalogInfo>> = OnceLock::new();
 pub(crate) static ELLIPSOID_CATALOG: OnceLock<Vec<EllipsoidCatalogInfo>> = OnceLock::new();
 pub(crate) static PRIME_MERIDIAN_CATALOG: OnceLock<Vec<PrimeMeridianCatalogInfo>> = OnceLock::new();
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn warm_comparison_of_an_authored_crs_allocates_nothing() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK
+            .lock()
+            .expect("runtime test lock");
+        let state = runtime_state_snapshot().expect("runtime snapshot");
+        let definition = "+proj=longlat +datum=WGS84 +no_defs +type=crs";
+        assert!(
+            same_with_state(definition, definition, CrsComparison::Exact, &state)
+                .expect("first comparison")
+        );
+        let (same, allocations) = crate::test_support::allocation_count(|| {
+            same_with_state(definition, definition, CrsComparison::Exact, &state)
+        });
+        assert!(same.expect("cached comparison"));
+        assert_eq!(allocations, 0);
+    }
+}

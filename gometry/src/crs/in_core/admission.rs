@@ -166,7 +166,7 @@ fn resolve_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<
         let index = lru_resolve(
             &mut cache,
             CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY,
-            |item| item.definition == normalized,
+            |item| item.definition.as_str() == normalized.as_ref(),
             || {
                 let descriptor = admit_in_core_descriptor(&normalized, state)?;
                 Ok(CachedInCoreDescriptor {

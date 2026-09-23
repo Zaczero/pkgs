@@ -55,8 +55,8 @@ pub(crate) fn info_with_state(
             CRS_INFO_CACHE_CAPACITY,
             |item| item.definition == normalized,
             || {
-                let info_crs = normalized.clone();
-                let cache_crs = normalized.clone();
+                let info_crs = normalized.as_ref().to_owned();
+                let cache_crs = info_crs.clone();
                 let info = ProjObject::new_with_state(&normalized, state)?.info(info_crs)?;
                 Ok(CachedCrsInfo {
                     definition: cache_crs,
@@ -122,7 +122,7 @@ fn factors_batch_with_state(
         let index = lru_resolve(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
-            |item| item.definition == target,
+            |item| item.definition.as_str() == target.as_ref(),
             || projection_factors_object(&target, state),
         )?;
         longitudes
@@ -168,7 +168,7 @@ fn factor_columns_with_state(
         let index = lru_resolve(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
-            |item| item.definition == target,
+            |item| item.definition.as_str() == target.as_ref(),
             || projection_factors_object(&target, state),
         )?;
         cache[index]
@@ -232,8 +232,8 @@ pub(crate) fn operation_info_with_state(
     state: &RuntimeState,
 ) -> Result<OperationInfo> {
     let (source, target) = normalize_pair(source, target)?;
-    let source_info = source.clone();
-    let target_info = target.clone();
+    let source_info = source.as_ref().to_owned();
+    let target_info = target.as_ref().to_owned();
     let execution = TransformExecution::default();
     with_proj_pipeline_at(&source, &target, options, state, &execution, |pipeline| {
         let info = pipeline.operation_info(
@@ -290,8 +290,8 @@ pub(crate) fn operation_info_at_with_state(
         return operation_info_with_state(source, target, options, state);
     }
     let (source, target) = normalize_pair(source, target)?;
-    let source_info = source.clone();
-    let target_info = target.clone();
+    let source_info = source.as_ref().to_owned();
+    let target_info = target.as_ref().to_owned();
     let execution = TransformExecution::default();
     with_proj_diagnostic_pipeline_at(&source, &target, options, state, &execution, |pipeline| {
         let info = pipeline.operation_info_at(

@@ -56,25 +56,34 @@ const unsafe extern "C" fn bare_resource(
     name
 }
 
-pub(crate) fn normalize(value: &str) -> Result<String> {
+pub(crate) fn normalize(value: &str) -> Result<std::borrow::Cow<'_, str>> {
     let trimmed = value.trim();
-    if let Some((authority, code)) = trimmed.split_once(':')
+    if let Some((authority, digits)) = trimmed.split_once(':')
         && authority.eq_ignore_ascii_case("EPSG")
     {
-        let code = code.parse::<u32>().map_err(|_| {
+        let code = digits.parse::<u32>().map_err(|_| {
             CrsError::invalid(
                 "invalid EPSG code: expected an unsigned 32-bit decimal code".to_owned(),
             )
         })?;
-        return Ok(format!("EPSG:{code}"));
+        if authority == "EPSG"
+            && digits.bytes().all(|digit| digit.is_ascii_digit())
+            && (digits.len() == 1 || !digits.starts_with('0'))
+        {
+            return Ok(std::borrow::Cow::Borrowed(trimmed));
+        }
+        return Ok(std::borrow::Cow::Owned(format!("EPSG:{code}")));
     }
     Ok(match trimmed {
-        "CRS84" => "OGC:CRS84".to_owned(),
-        _ => trimmed.to_owned(),
+        "CRS84" => std::borrow::Cow::Borrowed("OGC:CRS84"),
+        _ => std::borrow::Cow::Borrowed(trimmed),
     })
 }
 
-pub(crate) fn normalize_pair(source: &str, target: &str) -> Result<(String, String)> {
+pub(crate) fn normalize_pair<'a>(
+    source: &'a str,
+    target: &'a str,
+) -> Result<(std::borrow::Cow<'a, str>, std::borrow::Cow<'a, str>)> {
     let source = normalize(source)?;
     let target = normalize(target)?;
     Ok((source, target))
@@ -111,7 +120,7 @@ pub(crate) fn definition(value: &str) -> Result<SmolStr> {
     // definitions fail at the public constructor, while the stored value stays
     // exactly the normalized caller input.
     drop(info_with_state(&normalized, &state)?);
-    Ok(SmolStr::from(normalized))
+    Ok(SmolStr::from(normalized.as_ref()))
 }
 
 pub(crate) fn configure_runtime(

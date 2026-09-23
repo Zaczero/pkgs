@@ -854,9 +854,11 @@ pub(crate) fn geoarrow_parse_error(message: impl Into<String>) -> PyErr {
 }
 
 pub(crate) fn normalize_geoarrow_crs(reference: &str) -> PyResult<String> {
-    crate::crs::normalize(reference).map_err(|error| {
-        geoarrow_parse_error(format!("invalid GeoArrow extension metadata: {error}"))
-    })
+    crate::crs::normalize(reference)
+        .map_err(|error| {
+            geoarrow_parse_error(format!("invalid GeoArrow extension metadata: {error}"))
+        })
+        .map(std::borrow::Cow::into_owned)
 }
 
 /// Private Python entry: parse GeoArrow extension metadata bytes → (crs, epoch).
@@ -1397,11 +1399,13 @@ fn normalize_geoparquet_crs_typed(
     reference: &str,
     column_name: &str,
 ) -> Result<String, GeoParquetAdmissionError> {
-    crate::crs::normalize(reference).map_err(|error| {
-        GeoParquetAdmissionError::Metadata(format!(
-            "invalid GeoParquet column '{column_name}': {error}"
-        ))
-    })
+    crate::crs::normalize(reference)
+        .map_err(|error| {
+            GeoParquetAdmissionError::Metadata(format!(
+                "invalid GeoParquet column '{column_name}': {error}"
+            ))
+        })
+        .map(std::borrow::Cow::into_owned)
 }
 
 pub(crate) fn arrow_type_is_large_binary(
