@@ -465,13 +465,9 @@ mod tests {
         assert_copy_state(&counted, &handles, &weights);
         let spatial_query = AABB::from_corners([11.5, -1.0], [19.5, 1.0]);
         let mut source_hits = Vec::new();
-        source
-            .collect_intersecting(&spatial_query, &mut source_hits)
-            .expect("source query");
+        source.collect_intersecting(&spatial_query, &mut source_hits);
         let mut clone_hits = Vec::new();
-        counted
-            .collect_intersecting(&spatial_query, &mut clone_hits)
-            .expect("clone query");
+        counted.collect_intersecting(&spatial_query, &mut clone_hits);
         assert_eq!(source_hits, clone_hits);
 
         let query_frame = Frame::new(Some(crate::boundary::crs_arc_static("EPSG:4326")), None)

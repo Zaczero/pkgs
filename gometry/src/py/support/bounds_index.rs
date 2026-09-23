@@ -87,13 +87,10 @@ pub(crate) fn index_envelopes(
     domain: TopologyDomain,
 ) -> pyo3::PyResult<EnvelopeCover> {
     let planar = bounds_envelope(bounds);
-    let mut whole = Vec::new();
-    match domain {
-        TopologyDomain::Cartesian => crate::try_push_vec(&mut whole, planar)?,
-        TopologyDomain::Geographic(frame) => {
-            whole = geographic_index_envelopes(shape, frame)?;
-        },
-    }
+    let whole = match domain {
+        TopologyDomain::Cartesian => vec![planar],
+        TopologyDomain::Geographic(frame) => geographic_index_envelopes(shape, frame)?,
+    };
     // Coordinate bounds describe a part's ground faithfully only where the
     // frame had nothing to add about the whole shape. A seam-crossing or
     // pole-enclosing geometry gets windows coordinate bounds cannot express —
@@ -102,14 +99,14 @@ pub(crate) fn index_envelopes(
     if whole.len() != 1 || whole[0] != planar {
         return Ok(EnvelopeCover::Whole(whole));
     }
-    match part_cover(shape, planar)? {
-        Some(parts) => Ok(EnvelopeCover::Scattered { whole, parts }),
-        None => Ok(EnvelopeCover::Whole(whole)),
-    }
+    Ok(match part_cover(shape, planar) {
+        Some(parts) => EnvelopeCover::Scattered { whole, parts },
+        None => EnvelopeCover::Whole(whole),
+    })
 }
 
 /// A cover of `shape`'s parts, or `None` where splitting it up buys nothing.
-fn part_cover(shape: &Shape, whole: AABB<[f64; 2]>) -> pyo3::PyResult<Option<Vec<AABB<[f64; 2]>>>> {
+fn part_cover(shape: &Shape, whole: AABB<[f64; 2]>) -> Option<Vec<AABB<[f64; 2]>>> {
     if !matches!(
         shape,
         Shape::MultiPoint(_)
@@ -117,15 +114,15 @@ fn part_cover(shape: &Shape, whole: AABB<[f64; 2]>) -> pyo3::PyResult<Option<Vec
             | Shape::MultiPolygon(_)
             | Shape::GeometryCollection(_)
     ) {
-        return Ok(None);
+        return None;
     }
     let mut cover = Vec::new();
-    for_each_part(shape, &mut |part| admit(&mut cover, part))?;
+    for_each_part(shape, &mut |part| admit(&mut cover, part));
     // The extra entries and descents have to buy something. Adjacent parts
     // merge back into one window, and a compact geometry then covers exactly
     // what its single box already did.
     let covered: f64 = cover.iter().map(margin).sum();
-    Ok((cover.len() > 1 && covered < margin(&whole)).then_some(cover))
+    (cover.len() > 1 && covered < margin(&whole)).then_some(cover)
 }
 
 /// Fold `part` into `cover`, holding it to [`MAX_COVER_WINDOWS`] windows.
@@ -133,7 +130,7 @@ fn part_cover(shape: &Shape, whole: AABB<[f64; 2]>) -> pyo3::PyResult<Option<Vec
 /// A merge spending no more margin than the two windows already spend is free:
 /// overlapping and adjacent parts collapse into one window and distant parts
 /// stay apart. Once the cover is full the cheapest merge is taken instead.
-fn admit(cover: &mut Vec<AABB<[f64; 2]>>, part: AABB<[f64; 2]>) -> pyo3::PyResult<()> {
+fn admit(cover: &mut Vec<AABB<[f64; 2]>>, part: AABB<[f64; 2]>) {
     let part_margin = margin(&part);
     let mut free = None;
     let mut cheapest: Option<(usize, f64)> = None;
@@ -150,14 +147,14 @@ fn admit(cover: &mut Vec<AABB<[f64; 2]>>, part: AABB<[f64; 2]>) -> pyo3::PyResul
     }
     if let Some(index) = free {
         cover[index] = cover[index].merged(&part);
-        return Ok(());
+        return;
     }
     if cover.len() < MAX_COVER_WINDOWS {
-        return Ok(crate::try_push_vec(cover, part)?);
+        cover.push(part);
+        return;
     }
     let (index, _) = cheapest.expect("a full cover holds a window to merge into");
     cover[index] = cover[index].merged(&part);
-    Ok(())
 }
 
 /// Half the perimeter — the standard R-tree margin. Unlike area it stays
@@ -170,20 +167,17 @@ fn margin(envelope: &AABB<[f64; 2]>) -> f64 {
 }
 
 /// Every part of `shape` that occupies ground, as its own window.
-fn for_each_part(
-    shape: &Shape,
-    visit: &mut impl FnMut(AABB<[f64; 2]>) -> pyo3::PyResult<()>,
-) -> pyo3::PyResult<()> {
+fn for_each_part(shape: &Shape, visit: &mut impl FnMut(AABB<[f64; 2]>)) {
     match shape {
         Shape::MultiPoint(points) => {
             for point in points {
-                visit(bounds_envelope(Bounds::from_point(point)))?;
+                visit(bounds_envelope(Bounds::from_point(point)));
             }
         },
         Shape::MultiLineString(lines) => {
             for line in lines.iter() {
                 if let Some(bounds) = Bounds::from_coords(line) {
-                    visit(bounds_envelope(bounds))?;
+                    visit(bounds_envelope(bounds));
                 }
             }
         },
@@ -191,22 +185,21 @@ fn for_each_part(
             for polygon in polygons.iter() {
                 // The shell bounds the polygon; its holes lie inside.
                 if let Some(bounds) = Bounds::from_coords(polygon.shell.coords()) {
-                    visit(bounds_envelope(bounds))?;
+                    visit(bounds_envelope(bounds));
                 }
             }
         },
         Shape::GeometryCollection(members) => {
             for member in members {
-                for_each_part(member, visit)?;
+                for_each_part(member, visit);
             }
         },
         _ => {
             if let Some(bounds) = shape.bounds() {
-                visit(bounds_envelope(bounds))?;
+                visit(bounds_envelope(bounds));
             }
         },
     }
-    Ok(())
 }
 
 fn geographic_view_py_error(error: GeographicViewError) -> pyo3::PyErr {
@@ -222,7 +215,6 @@ fn geographic_index_envelopes(
     let mut south = f64::INFINITY;
     let mut north = f64::NEG_INFINITY;
     let mut full_longitude = false;
-    let mut allocation_error = None;
     view.for_each_coordinate(|coordinate| {
         south = south.min(coordinate.latitude().get());
         north = north.max(coordinate.latitude().get());
@@ -237,19 +229,10 @@ fn geographic_index_envelopes(
         let interval =
             CircularInterval::try_arc(frame.longitude(), coordinate.longitude().get(), 0.0)
                 .expect("admitted longitude makes a point interval");
-        if let Err(error) = crate::try_push_vec(&mut intervals, interval) {
-            allocation_error = Some(error);
-        }
+        intervals.push(interval);
     });
-    if let Some(error) = allocation_error {
-        return Err(error.into());
-    }
-    let mut edge_error = None;
     shape.for_each_segment_chain(|chain| {
         for &[left, right] in chain.xs().array_windows::<2>() {
-            if edge_error.is_some() {
-                break;
-            }
             let delta = frame
                 .longitude()
                 .shortest_edge(left, right)
@@ -262,14 +245,9 @@ fn geographic_index_envelopes(
             };
             let interval = CircularInterval::try_arc(frame.longitude(), start, sweep)
                 .expect("a shortest edge is a valid circular arc");
-            if let Err(error) = crate::try_push_vec(&mut intervals, interval) {
-                edge_error = Some(error);
-            }
+            intervals.push(interval);
         }
     });
-    if let Some(error) = edge_error {
-        return Err(error.into());
-    }
     if intervals.is_empty() {
         return Ok(Vec::new());
     }
@@ -290,24 +268,21 @@ fn geographic_index_envelopes(
     } else {
         union_circular_intervals(frame.longitude(), intervals)
     };
-    let mut envelopes = Vec::new();
+    let mut envelopes = Vec::with_capacity(2);
     let mut push = |window: [f64; 2]| {
-        crate::try_push_vec(
-            &mut envelopes,
-            AABB::from_bounds([window[0], south], [window[1], north]),
-        )
+        envelopes.push(AABB::from_bounds([window[0], south], [window[1], north]));
     };
     match longitude.windows(frame.longitude()) {
-        Some(LongitudeWindows::One(window)) => push(window)?,
+        Some(LongitudeWindows::One(window)) => push(window),
         Some(LongitudeWindows::Two(left, right)) => {
-            push(left)?;
-            push(right)?;
+            push(left);
+            push(right);
         },
         Some(LongitudeWindows::Full) => {
             push([
                 -frame.longitude().half_period(),
                 frame.longitude().half_period(),
-            ])?;
+            ]);
         },
         None => {},
     }

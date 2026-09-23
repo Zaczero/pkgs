@@ -185,15 +185,15 @@ impl StaticStrTree {
         live: &[u8],
         query: &AABB<[f64; 2]>,
         out: &mut Vec<usize>,
-    ) -> crate::error::Result<()> {
+    ) {
         self.descend(
             |envelope| intersects(envelope, query),
             |entries| {
                 append_live(entries, live, out, |entry| {
                     intersects(&entry.envelope, query)
-                })
+                });
             },
-        )
+        );
     }
 
     /// Append the live handles whose envelope lies within squared distance
@@ -205,15 +205,15 @@ impl StaticStrTree {
         point: [f64; 2],
         max_distance_2: f64,
         out: &mut Vec<usize>,
-    ) -> crate::error::Result<()> {
+    ) {
         self.descend(
             |envelope| distance_2(envelope, &point) <= max_distance_2,
             |entries| {
                 append_live(entries, live, out, |entry| {
                     distance_2(&entry.envelope, &point) <= max_distance_2
-                })
+                });
             },
-        )
+        );
     }
 
     /// Depth-first descent: `enter` prunes nodes and `leaf` receives the
@@ -222,15 +222,14 @@ impl StaticStrTree {
     fn descend(
         &self,
         enter: impl Fn(&AABB<[f64; 2]>) -> bool,
-        mut leaf: impl FnMut(&[IndexEntry]) -> crate::error::Result<()>,
-    ) -> crate::error::Result<()> {
+        mut leaf: impl FnMut(&[IndexEntry]),
+    ) {
         let level = self.root_level();
         for root in self.roots() {
             if enter(&root.envelope) {
-                self.visit(level, root, &enter, &mut leaf)?;
+                self.visit(level, root, &enter, &mut leaf);
             }
         }
-        Ok(())
     }
 
     fn visit(
@@ -238,38 +237,37 @@ impl StaticStrTree {
         level: usize,
         node: &StrNode,
         enter: &impl Fn(&AABB<[f64; 2]>) -> bool,
-        leaf: &mut impl FnMut(&[IndexEntry]) -> crate::error::Result<()>,
-    ) -> crate::error::Result<()> {
+        leaf: &mut impl FnMut(&[IndexEntry]),
+    ) {
         if level == 0 {
-            return leaf(self.leaf_entries(node));
+            leaf(self.leaf_entries(node));
+            return;
         }
         let children =
             &self.levels[level - 1][node.children.start as usize..node.children.end as usize];
         for child in children {
             if enter(&child.envelope) {
-                self.visit(level - 1, child, enter, leaf)?;
+                self.visit(level - 1, child, enter, leaf);
             }
         }
-        Ok(())
     }
 }
 
 /// Append the handle of each live entry of one leaf that `keep` accepts. A
-/// leaf holds at most [`NODE_CAP`] entries, so one fallible reservation
-/// covers the whole leaf and the pushes stay in capacity.
+/// leaf holds at most [`NODE_CAP`] entries, so one reservation covers the
+/// whole leaf and the pushes stay in capacity.
 fn append_live(
     entries: &[IndexEntry],
     live: &[u8],
     out: &mut Vec<usize>,
     keep: impl Fn(&IndexEntry) -> bool,
-) -> crate::error::Result<()> {
-    crate::try_reserve_vec(out, entries.len())?;
+) {
+    out.reserve(entries.len());
     for entry in entries {
         if live[entry.idx] != 0 && keep(entry) {
             out.push(entry.idx);
         }
     }
-    Ok(())
 }
 
 fn intersects(left: &AABB<[f64; 2]>, right: &AABB<[f64; 2]>) -> bool {
@@ -419,11 +417,10 @@ impl StaticStrForest {
         live: &[u8],
         query: &AABB<[f64; 2]>,
         out: &mut Vec<usize>,
-    ) -> crate::error::Result<()> {
+    ) {
         for run in self.runs.iter().filter_map(Option::as_ref) {
-            run.append_intersecting(live, query, out)?;
+            run.append_intersecting(live, query, out);
         }
-        Ok(())
     }
 
     pub(super) fn append_within_distance_2(
@@ -432,11 +429,10 @@ impl StaticStrForest {
         point: [f64; 2],
         max_distance_2: f64,
         out: &mut Vec<usize>,
-    ) -> crate::error::Result<()> {
+    ) {
         for run in self.runs.iter().filter_map(Option::as_ref) {
-            run.append_within_distance_2(live, point, max_distance_2, out)?;
+            run.append_within_distance_2(live, point, max_distance_2, out);
         }
-        Ok(())
     }
 
     /// Admit the persistent count-column layout before reserving storage.
@@ -698,7 +694,7 @@ mod tests {
                 AABB::from_point([73.0, 131.0]),
             ] {
                 let mut hits = Vec::new();
-                tree.append_intersecting(&live, &query, &mut hits).unwrap();
+                tree.append_intersecting(&live, &query, &mut hits);
                 assert_eq!(
                     sorted(hits),
                     brute(&entries, &removed, |entry| entry
@@ -709,8 +705,7 @@ mod tests {
             let point = [120.0, 90.0];
             for radius_2 in [0.0, 100.0, 10_000.0] {
                 let mut near = Vec::new();
-                tree.append_within_distance_2(&live, point, radius_2, &mut near)
-                    .unwrap();
+                tree.append_within_distance_2(&live, point, radius_2, &mut near);
                 assert_eq!(
                     sorted(near),
                     brute(&entries, &removed, |entry| entry
@@ -735,8 +730,7 @@ mod tests {
             &[1, 1],
             &AABB::from_corners([-1.0e308, -1.0e308], [-9.0e307, -9.0e307]),
             &mut negative_hits,
-        )
-        .unwrap();
+        );
         assert_eq!(negative_hits, [0]);
     }
 
@@ -846,9 +840,7 @@ mod tests {
         ];
         for query in intersects_queries {
             let mut actual = Vec::new();
-            forest
-                .append_intersecting(&live, &query, &mut actual)
-                .expect("forest intersection traversal");
+            forest.append_intersecting(&live, &query, &mut actual);
             actual.sort_unstable();
             let mut expected: Vec<_> = entries
                 .iter()
@@ -861,9 +853,7 @@ mod tests {
 
         for (point, radius_2) in [([2.0, 0.0], 4.0), ([29.0, 0.0], 1.0), ([100.0, 0.0], 1.0)] {
             let mut actual = Vec::new();
-            forest
-                .append_within_distance_2(&live, point, radius_2, &mut actual)
-                .expect("forest distance traversal");
+            forest.append_within_distance_2(&live, point, radius_2, &mut actual);
             actual.sort_unstable();
             let mut expected: Vec<_> = entries
                 .iter()

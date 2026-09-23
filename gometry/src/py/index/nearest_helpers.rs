@@ -210,20 +210,16 @@ pub(crate) fn format_nearest(
     candidates: Vec<NearestCandidate>,
     return_distance: bool,
 ) -> PyResult<Py<PyAny>> {
-    let mut ids = crate::try_vec_with_capacity(candidates.len())?;
-    let mut distances = if return_distance {
-        crate::try_vec_with_capacity(candidates.len())?
-    } else {
-        Vec::new()
-    };
+    let mut ids = Vec::with_capacity(candidates.len());
+    let mut distances = return_distance.then(|| Vec::with_capacity(candidates.len()));
     for candidate in candidates {
-        crate::try_push(&mut ids, candidate.idx as i64)?;
-        if return_distance {
-            crate::try_push(&mut distances, candidate.distance)?;
+        ids.push(candidate.idx as i64);
+        if let Some(distances) = &mut distances {
+            distances.push(candidate.distance);
         }
     }
     let ids = int64_array(py, ids)?;
-    if return_distance {
+    if let Some(distances) = distances {
         let distances = float64_array(py, distances)?;
         return (ids, distances).into_py_any(py);
     }
