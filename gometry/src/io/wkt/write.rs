@@ -116,15 +116,20 @@ fn format_wkt(
     output_dimension: Option<WktDimension>,
     format: WktNumberFormat,
 ) -> Result<String> {
-    // Four shortest plain f64 values fit within 1,315 bytes, while four
-    // precision-255 fixed values fit within 2,271 bytes. Structural tokens
-    // cover the remaining delimiters, including empty nested geometries.
-    let coordinate_bytes_per_coord = match format {
-        WktNumberFormat::Shortest => 1344,
-        WktNumberFormat::Fixed(_) | WktNumberFormat::Trimmed(_) => 2304,
+    // Reserve for ordinary decimal spelling; extreme plain floats and long
+    // fixed representations grow normally instead of retaining their
+    // worst-case capacity in every row result.
+    let bytes_per_ordinate = match format {
+        WktNumberFormat::Shortest => 24,
+        WktNumberFormat::Fixed(precision) | WktNumberFormat::Trimmed(precision) => {
+            usize::from(precision).wrapping_add(24)
+        },
     };
+    let coordinate_bytes_per_coord = wkt_output_axes(shape.axes(), output_dimension)
+        .dimension()
+        .wrapping_mul(bytes_per_ordinate);
     let coordinate_bytes = shape.coord_count().wrapping_mul(coordinate_bytes_per_coord);
-    let structural_bytes = text_structure_count(shape).wrapping_mul(128);
+    let structural_bytes = text_structure_count(shape).wrapping_mul(32);
     let capacity = coordinate_bytes.wrapping_add(structural_bytes);
     let mut out = String::with_capacity(capacity);
     write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
