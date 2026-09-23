@@ -577,10 +577,6 @@ fn overlay_polygons(
     } else {
         unwrap_geographic_area_edges(graph, graph.frame, &area_edges)
     };
-    let mut segments = Vec::with_capacity(arranged_edges.len());
-    for &(_, segment) in &arranged_edges {
-        segments.push(segment);
-    }
     let mut edge_by_endpoints: HashMap<(PointKey, PointKey), usize> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
     edge_by_endpoints.reserve(arranged_edges.len());
@@ -596,7 +592,8 @@ fn overlay_polygons(
     // The joint graph already split every area edge at every source contact.
     // The arrangement below is therefore the one and only face assembly for
     // both binary and aggregate overlays.
-    let arrangement = Arrangement::new_with_rings(&segments)?;
+    let arrangement =
+        Arrangement::new_with_rings(arranged_edges.into_iter().map(|(_, segment)| segment))?;
     let mut selected = Vec::with_capacity(arrangement.faces.len());
     let mut area_membership = Vec::new();
     for face in &arrangement.faces {

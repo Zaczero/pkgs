@@ -289,7 +289,7 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
             .any(|face| face.area_sign == AreaSign::Positive)
     );
 
-    let mut rings = Arrangement::new_with_rings(&segments).unwrap();
+    let mut rings = Arrangement::new_with_rings(segments.iter().copied()).unwrap();
     assert!(
         rings
             .faces
@@ -297,6 +297,25 @@ fn winding_faces_keep_only_exact_sign_but_ring_faces_keep_magnitude() {
             .all(|face| { open_xy_cycle_decision(&face.ring).magnitude().get() > 0.0 })
     );
     assert_eq!(winding.face_windings(&[0]), rings.face_windings(&[0]));
+}
+
+#[test]
+fn weighted_iterator_keeps_source_ordinals_when_skipping_zero_length_edges() {
+    let mut segments = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
+    segments.insert(1, Segment {
+        start: XY::new(9.0, 9.0),
+        end: XY::new(9.0, 9.0),
+    });
+    let mut arrangement = Arrangement::<i32>::weighted(segments.into_iter(), |index| {
+        assert!(matches!(index, 0 | 2 | 3 | 4));
+        1
+    })
+    .unwrap();
+
+    assert_eq!(arrangement.faces.len(), 2);
+    let windings = arrangement.face_windings(&[0]);
+    assert!(windings.contains(&0));
+    assert!(windings.contains(&1));
 }
 
 #[test]
@@ -359,9 +378,10 @@ fn panicking_weight_callback_returns_cleared_leases() {
     let _budget = crate::scratch_pool::RetainBudgetGuard::new();
     let segments = loop_segments(&[(0.0, 0.0), (2.0, 0.0), (1.0, 1.0)]);
     let result = std::panic::catch_unwind(|| {
-        drop(Arrangement::<i32>::weighted(&segments, |_| {
-            panic!("weight failed")
-        }));
+        drop(Arrangement::<i32>::weighted(
+            segments.iter().copied(),
+            |_| panic!("weight failed"),
+        ));
     });
     assert!(result.is_err());
     assert!(arrangement_spares().points.is_empty());
@@ -421,7 +441,7 @@ fn connected_chord_bridge_dfs_undo_keeps_south_body() {
     ));
     let sources: Vec<Segment> = raw.iter().map(|entry| entry.0).collect();
     let (atomic, provenance) = self_node_segments_sourced(sources).expect("noded sources");
-    let arrangement = Arrangement::<[i32; 2]>::build::<true>(&atomic, |piece| {
+    let arrangement = Arrangement::<[i32; 2]>::build::<true>(atomic.iter().copied(), |piece| {
         let mut weight = [0, 0];
         for &(ordinal, reversed) in provenance.owners(piece) {
             let unit = raw[ordinal as usize].1;
