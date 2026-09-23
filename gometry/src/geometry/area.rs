@@ -59,7 +59,7 @@ impl ExactRationalArea {
             denominator = denominator.neg();
         }
 
-        let common = self.denominator.try_gcd(&denominator)?;
+        let common = self.denominator.gcd(&denominator);
         let left_scale = self.denominator.try_exact_quotient(&common)?;
         let right_scale = denominator.try_exact_quotient(&common)?;
         let left = self.numerator.try_product(&right_scale)?;
@@ -71,7 +71,7 @@ impl ExactRationalArea {
         // rather than the product of every face denominator. This is the
         // rational-sum contract: every update remains an exact reduced
         // fraction, and only the final quotient is rounded.
-        let reduction = next_numerator.clone().abs().try_gcd(&next_denominator)?;
+        let reduction = next_numerator.clone().abs().gcd(&next_denominator);
         self.numerator = next_numerator.try_exact_quotient(&reduction)?;
         self.denominator = next_denominator.try_exact_quotient(&reduction)?;
         Ok(())

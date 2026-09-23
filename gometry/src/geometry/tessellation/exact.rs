@@ -20,7 +20,6 @@ use crate::geometry::GENERATED_ITEM_LIMIT;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::{GeometryErrorKind, Point, Result, XY};
-use crate::try_reserve_vec;
 
 mod dyadic;
 mod predicates;
@@ -107,7 +106,7 @@ impl ExactRational {
         };
         // A power-of-two denominator shares only a power of two with the
         // numerator, so reducing it is an exponent shift; this yields exactly
-        // what `try_gcd` would, including its unit-numerator shortcut.
+        // what `gcd` would, including its unit-numerator shortcut.
         if denominator.limbs.as_slice() == [1] {
             let unit_numerator = numerator.limbs.as_slice() == [1] && numerator.exponent == 0;
             if !unit_numerator && denominator.exponent != 0 {
@@ -128,7 +127,7 @@ impl ExactRational {
                 denominator,
             });
         }
-        let common = numerator.try_gcd(&denominator)?;
+        let common = numerator.gcd(&denominator);
         Ok(Self {
             numerator: numerator.try_exact_quotient(&common)?,
             denominator: denominator.try_exact_quotient(&common)?,

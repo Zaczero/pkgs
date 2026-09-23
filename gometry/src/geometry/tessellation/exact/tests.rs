@@ -39,7 +39,7 @@ fn long_division_reconstructs_the_dividend() {
         (&[1, 2], &[1, 2, 3]),
     ];
     for (dividend, divisor) in cases {
-        let (quotient, remainder) = ExactDyadic::try_div_rem_unsigned(dividend, divisor).unwrap();
+        let (quotient, remainder) = ExactDyadic::div_rem_unsigned(dividend, divisor);
         assert_eq!(
             ExactDyadic::compare_unsigned(&remainder, divisor),
             Ordering::Less,
@@ -79,7 +79,7 @@ fn power_of_two_denominators_reduce_as_the_gcd_would() {
     for numerator in &numerators {
         for exponent in [-6, -1, 0, 1, 6] {
             let denominator = small(1, exponent);
-            let common = numerator.try_gcd(&denominator).unwrap();
+            let common = numerator.gcd(&denominator);
             let expected = (
                 numerator.try_exact_quotient(&common).unwrap(),
                 denominator.try_exact_quotient(&common).unwrap(),
@@ -103,7 +103,7 @@ fn gcd_and_exact_quotient_agree_across_the_inline_and_heap_paths() {
         |value: u128, exponent: i64| ExactDyadic::try_from_u128(false, value, exponent).unwrap();
     let left = prime.try_product(&small(3, 5)).unwrap();
     let right = prime.try_product(&small(5, -3)).unwrap();
-    let gcd = left.try_gcd(&right).unwrap();
+    let gcd = left.gcd(&right);
     assert_eq!(
         gcd.cmp(&prime.try_product(&small(1, -3)).unwrap()),
         Ordering::Equal
@@ -114,7 +114,7 @@ fn gcd_and_exact_quotient_agree_across_the_inline_and_heap_paths() {
     );
     // A three-limb operand takes the long-division path to the same gcd.
     let wide = left.try_product(&prime).unwrap();
-    assert_eq!(wide.try_gcd(&right).unwrap().cmp(&gcd), Ordering::Equal);
+    assert_eq!(wide.gcd(&right).cmp(&gcd), Ordering::Equal);
     assert_eq!(
         wide.try_exact_quotient(&gcd)
             .unwrap()
@@ -597,6 +597,21 @@ fn exact_sum_spills_only_when_an_inline_result_carries() {
     let (sum, allocations) = allocation_count(|| left.clone().try_add(carry.clone()).unwrap());
     assert_eq!(allocations, 1);
     assert_eq!(sum, ExactDyadic::from_parts(false, vec![1], 128));
+}
+
+#[test]
+fn trimmed_heap_product_clones_without_a_second_allocation() {
+    use crate::test_support::allocation_count;
+
+    let left = ExactDyadic::from_parts(false, vec![1, 1], 0);
+    let right = ExactDyadic::from_parts(false, vec![3], 0);
+    let (product, allocations) = allocation_count(|| left.try_product(&right).unwrap());
+    assert_eq!(allocations, 1);
+    assert_eq!(product, ExactDyadic::from_parts(false, vec![3, 3], 0));
+
+    let (clone, allocations) = allocation_count(|| product.clone());
+    assert_eq!(allocations, 0);
+    assert_eq!(clone, product);
 }
 
 #[test]

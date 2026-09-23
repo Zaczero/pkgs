@@ -8,7 +8,7 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::ops::{Deref, DerefMut};
 
-use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY, try_reserve_vec};
+use super::{ExactPoint, ExactSign, GeometryErrorKind, ResourceError, Result, XY};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct ExactDyadic {
@@ -48,7 +48,10 @@ impl Clone for CompactLimbs {
                 limbs: *limbs,
                 len: *len,
             },
-            Self::Heap(limbs) => Self::from_vec(limbs.clone()),
+            Self::Heap(limbs) if limbs.len() <= INLINE_DYADIC_LIMBS => {
+                Self::inline_from_slice(limbs)
+            },
+            Self::Heap(limbs) => Self::Heap(limbs.clone()),
         }
     }
 }
@@ -82,28 +85,39 @@ impl CompactLimbs {
         }
     }
 
-    pub(in crate::geometry) fn try_with_capacity(required: usize) -> Result<Self> {
+    pub(in crate::geometry) fn with_capacity(required: usize) -> Self {
         if required <= INLINE_DYADIC_LIMBS {
-            return Ok(Self::Inline {
+            return Self::Inline {
                 limbs: [0; INLINE_DYADIC_LIMBS],
                 len: 0,
-            });
+            };
         }
-        let mut limbs = Vec::new();
-        try_reserve_vec(&mut limbs, required)?;
-        Ok(Self::Heap(limbs))
+        Self::Heap(Vec::with_capacity(required))
+    }
+
+    fn inline_from_slice(limbs: &[u64]) -> Self {
+        debug_assert!(limbs.len() <= INLINE_DYADIC_LIMBS);
+        let mut inline = [0; INLINE_DYADIC_LIMBS];
+        inline[..limbs.len()].copy_from_slice(limbs);
+        Self::Inline {
+            limbs: inline,
+            len: limbs.len() as u8,
+        }
     }
 
     pub(in crate::geometry) fn from_vec(limbs: Vec<u64>) -> Self {
         if limbs.len() <= INLINE_DYADIC_LIMBS {
-            let mut inline = [0; INLINE_DYADIC_LIMBS];
-            inline[..limbs.len()].copy_from_slice(&limbs);
-            Self::Inline {
-                limbs: inline,
-                len: limbs.len() as u8,
-            }
+            Self::inline_from_slice(&limbs)
         } else {
             Self::Heap(limbs)
+        }
+    }
+
+    fn shrink_inline(&mut self) {
+        if let Self::Heap(limbs) = self
+            && limbs.len() <= INLINE_DYADIC_LIMBS
+        {
+            *self = Self::inline_from_slice(limbs);
         }
     }
 
@@ -313,6 +327,7 @@ impl ExactDyadic {
             self.limbs.pop();
         }
         if self.limbs.is_empty() {
+            self.limbs = CompactLimbs::zero();
             self.negative = false;
             self.exponent = 0;
             return Ok(());
@@ -324,6 +339,7 @@ impl ExactDyadic {
             .expect("a nonzero limb survives trailing trim")
             .trailing_zeros();
         if zero_words == 0 && zero_bits == 0 {
+            self.limbs.shrink_inline();
             return Ok(());
         }
         let exponent = i128::from(self.exponent)
@@ -345,6 +361,7 @@ impl ExactDyadic {
             }
         }
         debug_assert_eq!(self.limbs[0] & 1, 1);
+        self.limbs.shrink_inline();
         Ok(())
     }
 
@@ -449,10 +466,7 @@ impl ExactDyadic {
         debug_assert_eq!(borrow, 0);
     }
 
-    pub(in crate::geometry) fn try_add_aligned(
-        left: Aligned<'_>,
-        right: Aligned<'_>,
-    ) -> Result<CompactLimbs> {
+    pub(in crate::geometry) fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> CompactLimbs {
         let length = left.len.max(right.len);
         if length <= INLINE_DYADIC_LIMBS {
             // The extra limb is needed only when the final word carries. The
@@ -465,29 +479,28 @@ impl ExactDyadic {
                 *word = sum as u64;
                 carry = sum >> 64;
             }
-            let result_length = length + usize::from(carry != 0);
+            let result_length = length.wrapping_add(usize::from(carry != 0));
             if carry != 0 {
                 words[length] = carry as u64;
             }
-            let mut result = CompactLimbs::try_with_capacity(result_length)?;
+            let mut result = CompactLimbs::with_capacity(result_length);
             for &word in &words[..result_length] {
                 result.push(word);
             }
-            return Ok(result);
+            return result;
         }
-        let needed = length.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-        let mut result = CompactLimbs::try_with_capacity(needed)?;
+        let mut result = CompactLimbs::with_capacity(length.wrapping_add(1));
         Self::write_sum_aligned(left, right, &mut result);
-        Ok(result)
+        result
     }
 
-    pub(in crate::geometry) fn try_subtract_aligned(
+    pub(in crate::geometry) fn subtract_aligned(
         larger: Aligned<'_>,
         smaller: Aligned<'_>,
-    ) -> Result<CompactLimbs> {
-        let mut result = CompactLimbs::try_with_capacity(larger.len)?;
+    ) -> CompactLimbs {
+        let mut result = CompactLimbs::with_capacity(larger.len);
         Self::write_diff_aligned(larger, smaller, &mut result);
-        Ok(result)
+        result
     }
 
     pub(in crate::geometry) fn compare_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Ordering {
@@ -531,6 +544,23 @@ impl ExactDyadic {
         }
     }
 
+    fn from_odd_u128(negative: bool, magnitude: u128, exponent: i64) -> Self {
+        debug_assert!(magnitude & 1 != 0);
+        let (low, high) = (magnitude as u64, (magnitude >> 64) as u64);
+        Self {
+            negative,
+            limbs: if high == 0 {
+                CompactLimbs::single(low)
+            } else {
+                CompactLimbs::Inline {
+                    limbs: [low, high],
+                    len: 2,
+                }
+            },
+            exponent,
+        }
+    }
+
     /// A normalized value from a `u128` magnitude: trailing zero bits move
     /// into the exponent, leaving the odd lowest limb every value carries.
     pub(in crate::geometry) fn try_from_u128(
@@ -542,22 +572,10 @@ impl ExactDyadic {
             return Ok(Self::zero());
         }
         let zeros = magnitude.trailing_zeros();
-        let magnitude = magnitude >> zeros;
-        let (low, high) = (magnitude as u64, (magnitude >> 64) as u64);
-        Ok(Self {
-            negative,
-            limbs: if high == 0 {
-                CompactLimbs::single(low)
-            } else {
-                CompactLimbs::Inline {
-                    limbs: [low, high],
-                    len: 2,
-                }
-            },
-            exponent: exponent
-                .checked_add(i64::from(zeros))
-                .ok_or(ResourceError::SizeOverflow)?,
-        })
+        let exponent = exponent
+            .checked_add(i64::from(zeros))
+            .ok_or(ResourceError::SizeOverflow)?;
+        Ok(Self::from_odd_u128(negative, magnitude >> zeros, exponent))
     }
 
     pub(in crate::geometry) fn try_combine_refs(
@@ -590,11 +608,11 @@ impl ExactDyadic {
         let left = Aligned::new(&left.limbs, left_shift);
         let right = Aligned::new(&right.limbs, right_shift);
         let (negative, limbs) = if left_negative == right_negative {
-            (left_negative, Self::try_add_aligned(left, right)?)
+            (left_negative, Self::add_aligned(left, right))
         } else {
             match Self::compare_aligned(left, right) {
-                Ordering::Greater => (left_negative, Self::try_subtract_aligned(left, right)?),
-                Ordering::Less => (right_negative, Self::try_subtract_aligned(right, left)?),
+                Ordering::Greater => (left_negative, Self::subtract_aligned(left, right)),
+                Ordering::Less => (right_negative, Self::subtract_aligned(right, left)),
                 Ordering::Equal => return Ok(Self::zero()),
             }
         };
@@ -722,11 +740,8 @@ impl ExactDyadic {
         } else {
             (&other.limbs, &self.limbs)
         };
-        let needed = short
-            .len()
-            .checked_add(long.len())
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut limbs = CompactLimbs::try_with_capacity(needed)?;
+        let needed = short.len().wrapping_add(long.len());
+        let mut limbs = CompactLimbs::with_capacity(needed);
         Self::write_product(short, long, &mut limbs);
         let mut result = Self {
             negative: self.negative != other.negative,
@@ -756,19 +771,13 @@ impl ExactDyadic {
     /// Quotient and remainder of trimmed magnitudes, one 64-bit digit at a
     /// time (Knuth, Algorithm D): the divisor is normalized so its top bit is
     /// set, which keeps every estimated digit at most two above the true one.
-    pub(in crate::geometry) fn try_div_rem_unsigned(
+    pub(in crate::geometry) fn div_rem_unsigned(
         dividend: &[u64],
         divisor: &[u64],
-    ) -> Result<(Vec<u64>, Vec<u64>)> {
+    ) -> (Vec<u64>, Vec<u64>) {
         debug_assert!(divisor.last().is_some_and(|&high| high != 0));
-        let copy = |limbs: &[u64]| -> Result<Vec<u64>> {
-            let mut out = Vec::new();
-            try_reserve_vec(&mut out, limbs.len())?;
-            out.extend_from_slice(limbs);
-            Ok(out)
-        };
         if Self::compare_unsigned(dividend, divisor) == Ordering::Less {
-            return Ok((Vec::new(), copy(dividend)?));
+            return (Vec::new(), dividend.to_vec());
         }
         let trim = |limbs: &mut Vec<u64>| {
             while limbs.last() == Some(&0) {
@@ -777,7 +786,7 @@ impl ExactDyadic {
         };
         if let [digit] = *divisor {
             let digit = u128::from(digit);
-            let mut quotient = copy(dividend)?;
+            let mut quotient = dividend.to_vec();
             let mut remainder = 0_u128;
             for limb in quotient.iter_mut().rev() {
                 let value = (remainder << 64) | u128::from(*limb);
@@ -788,16 +797,15 @@ impl ExactDyadic {
             let remainder = if remainder == 0 {
                 Vec::new()
             } else {
-                copy(&[remainder as u64])?
+                vec![remainder as u64]
             };
-            return Ok((quotient, remainder));
+            return (quotient, remainder);
         }
         let n = divisor.len();
         let m = dividend.len();
         let shift = divisor[n - 1].leading_zeros();
-        let shifted = |limbs: &[u64], extra: usize| -> Result<Vec<u64>> {
-            let mut out = Vec::new();
-            try_reserve_vec(&mut out, limbs.len() + extra)?;
+        let shifted = |limbs: &[u64], extra: usize| -> Vec<u64> {
+            let mut out = Vec::with_capacity(limbs.len().wrapping_add(extra));
             let mut carry = 0_u64;
             for &limb in limbs {
                 out.push((limb << shift) | carry);
@@ -806,13 +814,11 @@ impl ExactDyadic {
             if extra > 0 {
                 out.push(carry);
             }
-            Ok(out)
+            out
         };
-        let v = shifted(divisor, 0)?;
-        let mut u = shifted(dividend, 1)?;
-        let mut quotient = Vec::new();
-        try_reserve_vec(&mut quotient, m - n + 1)?;
-        quotient.resize(m - n + 1, 0);
+        let v = shifted(divisor, 0);
+        let mut u = shifted(dividend, 1);
+        let mut quotient = vec![0; m.wrapping_sub(n).wrapping_add(1)];
         let (top, next) = (u128::from(v[n - 1]), u128::from(v[n - 2]));
         for j in (0..=m - n).rev() {
             let numerator = (u128::from(u[j + n]) << 64) | u128::from(u[j + n - 1]);
@@ -863,7 +869,7 @@ impl ExactDyadic {
             }
         }
         trim(&mut u);
-        Ok((quotient, u))
+        (quotient, u)
     }
 
     /// Greatest common divisor in the exact dyadic domain.
@@ -871,18 +877,18 @@ impl ExactDyadic {
     /// `trim` keeps each nonzero limb bank odd, so the common power-of-two
     /// factor is the smaller exponent and the odd banks can use ordinary
     /// integer Euclid. The result is positive and exact.
-    pub(in crate::geometry) fn try_gcd(&self, other: &Self) -> Result<Self> {
+    pub(in crate::geometry) fn gcd(&self, other: &Self) -> Self {
         if self.is_zero() {
-            return Ok(other.clone().abs());
+            return other.clone().abs();
         }
         if other.is_zero() {
-            return Ok(self.clone().abs());
+            return self.clone().abs();
         }
         if self.limbs.as_slice() == [1] && self.exponent == 0 {
-            return Ok(self.clone().abs());
+            return self.clone().abs();
         }
         if other.limbs.as_slice() == [1] && other.exponent == 0 {
-            return Ok(other.clone().abs());
+            return other.clone().abs();
         }
         let exponent = self.exponent.min(other.exponent);
         if let (Some(mut left), Some(mut right)) = (self.small_magnitude(), other.small_magnitude())
@@ -895,28 +901,23 @@ impl ExactDyadic {
                 }
                 right -= left;
                 if right == 0 {
-                    return Self::try_from_u128(false, left, exponent);
+                    return Self::from_odd_u128(false, left, exponent);
                 }
                 right >>= right.trailing_zeros();
             }
         }
-        let mut left = Vec::new();
-        try_reserve_vec(&mut left, self.limbs.len())?;
-        left.extend_from_slice(&self.limbs);
-        let mut right = Vec::new();
-        try_reserve_vec(&mut right, other.limbs.len())?;
-        right.extend_from_slice(&other.limbs);
+        let mut left = self.limbs.to_vec();
+        let mut right = other.limbs.to_vec();
         while !right.is_empty() {
-            let (_, remainder) = Self::try_div_rem_unsigned(&left, &right)?;
+            let (_, remainder) = Self::div_rem_unsigned(&left, &right);
             left = right;
             right = remainder;
         }
-        let value = Self {
+        Self {
             negative: false,
             limbs: CompactLimbs::from_vec(left),
             exponent,
-        };
-        Ok(value)
+        }
     }
 
     /// Divide two exact dyadics when the quotient is itself dyadic.
@@ -959,7 +960,7 @@ impl ExactDyadic {
                 exponent,
             );
         }
-        let (limbs, remainder) = Self::try_div_rem_unsigned(&self.limbs, &divisor.limbs)?;
+        let (limbs, remainder) = Self::div_rem_unsigned(&self.limbs, &divisor.limbs);
         if !remainder.is_empty() {
             return Err(crate::geometry::GeometryErrorKind::Invalid(
                 "exact dyadic quotient has a remainder".into(),
