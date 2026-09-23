@@ -112,8 +112,16 @@ impl ExactRational {
             let unit_numerator = numerator.limbs.as_slice() == [1] && numerator.exponent == 0;
             if !unit_numerator && denominator.exponent != 0 {
                 let shift = numerator.exponent.min(denominator.exponent);
-                numerator.exponent -= shift;
-                denominator.exponent -= shift;
+                let numerator_exponent = numerator
+                    .exponent
+                    .checked_sub(shift)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                let denominator_exponent = denominator
+                    .exponent
+                    .checked_sub(shift)
+                    .ok_or(ResourceError::SizeOverflow)?;
+                numerator.exponent = numerator_exponent;
+                denominator.exponent = denominator_exponent;
             }
             return Ok(Self {
                 numerator,
@@ -2139,15 +2147,7 @@ pub(in crate::geometry) fn round_ratio(
                 encoded_exponent as i64 - 1075
             }
         };
-        let midpoint_order =
-            if let Some(order) = residual.cmp_magnitude_scaled(denominator, spacing_exponent - 1) {
-                order
-            } else {
-                let spacing = ExactDyadic::from_f64(upper - lower);
-                let scaled_spacing = spacing.try_product(denominator)?;
-                let twice_residual = residual.try_product(&ExactDyadic::from_f64(2.0))?;
-                twice_residual.cmp_magnitude(&scaled_spacing)
-            };
+        let midpoint_order = residual.cmp_magnitude_scaled(denominator, spacing_exponent - 1);
         let rounded = match midpoint_order {
             Ordering::Less => lower,
             Ordering::Equal if low & 1 == 0 => lower,

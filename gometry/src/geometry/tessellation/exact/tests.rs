@@ -18,7 +18,7 @@ fn long_division_reconstructs_the_dividend() {
             limbs: CompactLimbs::from_vec(limbs.to_vec()),
             exponent: 0,
         };
-        value.trim();
+        value.try_trim().unwrap();
         value
     };
     let cases: [(&[u64], &[u64]); 9] = [
@@ -60,8 +60,9 @@ fn long_division_reconstructs_the_dividend() {
 
 #[test]
 fn power_of_two_denominators_reduce_as_the_gcd_would() {
-    let small = |value: u128, exponent: i64| ExactDyadic::from_u128(false, value, exponent);
-    let prime = ExactDyadic::from_u128(false, 0xFFFF_FFFF_FFFF_FFC5, 0);
+    let small =
+        |value: u128, exponent: i64| ExactDyadic::try_from_u128(false, value, exponent).unwrap();
+    let prime = ExactDyadic::try_from_u128(false, 0xFFFF_FFFF_FFFF_FFC5, 0).unwrap();
     let numerators = [
         small(1, 0),
         small(1, -4),
@@ -97,8 +98,9 @@ fn power_of_two_denominators_reduce_as_the_gcd_would() {
 fn gcd_and_exact_quotient_agree_across_the_inline_and_heap_paths() {
     // The largest prime below 2^64, so every product crosses into a second
     // or third limb.
-    let prime = ExactDyadic::from_u128(false, 0xFFFF_FFFF_FFFF_FFC5, 0);
-    let small = |value: u128, exponent: i64| ExactDyadic::from_u128(false, value, exponent);
+    let prime = ExactDyadic::try_from_u128(false, 0xFFFF_FFFF_FFFF_FFC5, 0).unwrap();
+    let small =
+        |value: u128, exponent: i64| ExactDyadic::try_from_u128(false, value, exponent).unwrap();
     let left = prime.try_product(&small(3, 5)).unwrap();
     let right = prime.try_product(&small(5, -3)).unwrap();
     let gcd = left.try_gcd(&right).unwrap();
@@ -506,6 +508,66 @@ fn inline_and_spilled_dyadics_have_one_numeric_identity() {
             .unwrap()
             .to_bits()
     );
+}
+
+#[test]
+fn extreme_exponents_compare_without_scanning_implicit_zero_limbs() {
+    let high = ExactDyadic::from_parts(false, vec![1], i64::MAX);
+    let low = ExactDyadic::from_parts(false, vec![1], i64::MIN);
+    assert_eq!(high.cmp(&low), Ordering::Greater);
+    assert_eq!(low.cmp_magnitude(&high), Ordering::Less);
+    assert_eq!(high.clone().neg().cmp(&low.clone().neg()), Ordering::Less);
+
+    let higher_at_the_same_top_bit =
+        ExactDyadic::from_parts(false, vec![1, 1 << 63], i64::MAX - 127);
+    assert_eq!(high.cmp(&higher_at_the_same_top_bit), Ordering::Less);
+    assert_eq!(high.cmp_magnitude_scaled(&low, i64::MAX), Ordering::Greater);
+    assert_eq!(low.cmp_magnitude_scaled(&high, i64::MAX), Ordering::Less);
+    let extended = ExactDyadic::from_parts(false, vec![1, 1], i64::MAX);
+    assert_eq!(extended.cmp_magnitude_scaled(&high, 64), Ordering::Greater);
+}
+
+#[test]
+fn exact_dyadic_arithmetic_rejects_unrepresentable_exponents() {
+    let high = ExactDyadic::from_parts(false, vec![1], i64::MAX);
+    let two = ExactDyadic::from_parts(false, vec![1], 1);
+    for result in [
+        high.try_product(&two),
+        ExactDyadic::try_add_refs(&high, &high),
+        ExactDyadic::try_from_u128(false, 2, i64::MAX),
+    ] {
+        assert!(matches!(
+            result.unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+    }
+    assert!(matches!(
+        ExactRational::new(high, ExactDyadic::from_parts(false, vec![1], i64::MIN))
+            .unwrap_err()
+            .kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
+    ));
+    assert!(matches!(
+        ExactRational::new(
+            ExactDyadic::from_parts(false, vec![1], i64::MIN),
+            ExactDyadic::from_parts(false, vec![1], i64::MAX)
+        )
+        .unwrap_err()
+        .kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
+    ));
+
+    let mut untrimmed = ExactDyadic {
+        negative: false,
+        limbs: CompactLimbs::from_vec(vec![0, 1]),
+        exponent: i64::MAX,
+    };
+    assert!(matches!(
+        untrimmed.try_trim().unwrap_err().kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
+    ));
+    assert_eq!(untrimmed.exponent, i64::MAX);
+    assert_eq!(untrimmed.limbs.as_slice(), &[0, 1]);
 }
 
 #[test]

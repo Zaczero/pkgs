@@ -302,25 +302,37 @@ impl ExactDyadic {
             limbs: CompactLimbs::single(significand),
             exponent,
         };
-        value.trim();
+        value
+            .try_trim()
+            .expect("finite binary64 values have representable exponents");
         value
     }
 
-    pub(in crate::geometry) fn trim(&mut self) {
+    pub(in crate::geometry) fn try_trim(&mut self) -> Result<()> {
         while self.limbs.last() == Some(&0) {
             self.limbs.pop();
         }
         if self.limbs.is_empty() {
             self.negative = false;
             self.exponent = 0;
-            return;
+            return Ok(());
         }
         let zero_words = self.limbs.iter().take_while(|&&limb| limb == 0).count();
+        let zero_bits = self
+            .limbs
+            .get(zero_words)
+            .expect("a nonzero limb survives trailing trim")
+            .trailing_zeros();
+        if zero_words == 0 && zero_bits == 0 {
+            return Ok(());
+        }
+        let exponent = i128::from(self.exponent)
+            .wrapping_add((zero_words as i128).wrapping_mul(64))
+            .wrapping_add(i128::from(zero_bits));
+        self.exponent = i64::try_from(exponent).map_err(|_| ResourceError::SizeOverflow)?;
         if zero_words != 0 {
             self.limbs.remove_prefix(zero_words);
-            self.exponent += 64 * zero_words as i64;
         }
-        let zero_bits = self.limbs[0].trailing_zeros();
         if zero_bits != 0 {
             let mut carry = 0_u64;
             for limb in self.limbs.iter_mut().rev() {
@@ -328,12 +340,12 @@ impl ExactDyadic {
                 *limb = (*limb >> zero_bits) | carry;
                 carry = next;
             }
-            self.exponent += i64::from(zero_bits);
             while self.limbs.last() == Some(&0) {
                 self.limbs.pop();
             }
         }
         debug_assert_eq!(self.limbs[0] & 1, 1);
+        Ok(())
     }
 
     pub(in crate::geometry) const fn is_zero(&self) -> bool {
@@ -521,14 +533,18 @@ impl ExactDyadic {
 
     /// A normalized value from a `u128` magnitude: trailing zero bits move
     /// into the exponent, leaving the odd lowest limb every value carries.
-    pub(in crate::geometry) fn from_u128(negative: bool, magnitude: u128, exponent: i64) -> Self {
+    pub(in crate::geometry) fn try_from_u128(
+        negative: bool,
+        magnitude: u128,
+        exponent: i64,
+    ) -> Result<Self> {
         if magnitude == 0 {
-            return Self::zero();
+            return Ok(Self::zero());
         }
         let zeros = magnitude.trailing_zeros();
         let magnitude = magnitude >> zeros;
         let (low, high) = (magnitude as u64, (magnitude >> 64) as u64);
-        Self {
+        Ok(Self {
             negative,
             limbs: if high == 0 {
                 CompactLimbs::single(low)
@@ -538,8 +554,10 @@ impl ExactDyadic {
                     len: 2,
                 }
             },
-            exponent: exponent + i64::from(zeros),
-        }
+            exponent: exponent
+                .checked_add(i64::from(zeros))
+                .ok_or(ResourceError::SizeOverflow)?,
+        })
     }
 
     pub(in crate::geometry) fn try_combine_refs(
@@ -551,10 +569,8 @@ impl ExactDyadic {
         let exponent = left.exponent.min(right.exponent);
         let left_negative = left.negative;
         let right_negative = right.negative ^ negate_right;
-        let left_shift =
-            usize::try_from(left.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
-        let right_shift =
-            usize::try_from(right.exponent - exponent).map_err(|_| ResourceError::SizeOverflow)?;
+        let left_shift = left.exponent.abs_diff(exponent) as usize;
+        let right_shift = right.exponent.abs_diff(exponent) as usize;
         // One limb each, aligned within 63 bits: both magnitudes stay below
         // 2^127, so their sum or difference is exact in u128.
         if let ([left_limb], [right_limb]) = (left.limbs.as_slice(), right.limbs.as_slice())
@@ -563,13 +579,13 @@ impl ExactDyadic {
         {
             let left_value = u128::from(*left_limb) << left_shift;
             let right_value = u128::from(*right_limb) << right_shift;
-            return Ok(if left_negative == right_negative {
-                Self::from_u128(left_negative, left_value + right_value, exponent)
+            return if left_negative == right_negative {
+                Self::try_from_u128(left_negative, left_value + right_value, exponent)
             } else if left_value >= right_value {
-                Self::from_u128(left_negative, left_value - right_value, exponent)
+                Self::try_from_u128(left_negative, left_value - right_value, exponent)
             } else {
-                Self::from_u128(right_negative, right_value - left_value, exponent)
-            });
+                Self::try_from_u128(right_negative, right_value - left_value, exponent)
+            };
         }
         let left = Aligned::new(&left.limbs, left_shift);
         let right = Aligned::new(&right.limbs, right_shift);
@@ -587,7 +603,7 @@ impl ExactDyadic {
             limbs,
             exponent,
         };
-        result.trim();
+        result.try_trim()?;
         Ok(result)
     }
 
@@ -622,29 +638,47 @@ impl ExactDyadic {
     /// Compare `self` with `other * 2^shift` by magnitude without constructing
     /// the scalar product. The ratio-rounding residual uses this for the exact
     /// power-of-two gap between adjacent binary64 values.
-    pub(in crate::geometry) fn cmp_magnitude_scaled(
-        &self,
-        other: &Self,
-        shift: i64,
-    ) -> Option<Ordering> {
+    pub(in crate::geometry) fn cmp_magnitude_scaled(&self, other: &Self, shift: i64) -> Ordering {
+        self.cmp_magnitude_at(
+            other,
+            i128::from(other.exponent).wrapping_add(i128::from(shift)),
+        )
+    }
+
+    fn cmp_magnitude_at(&self, other: &Self, other_exponent: i128) -> Ordering {
         if self.is_zero() {
-            return Some(if other.is_zero() {
+            return if other.is_zero() {
                 Ordering::Equal
             } else {
                 Ordering::Less
-            });
+            };
         }
         if other.is_zero() {
-            return Some(Ordering::Greater);
+            return Ordering::Greater;
         }
-        let other_exponent = other.exponent.checked_add(shift)?;
-        let exponent = self.exponent.min(other_exponent);
-        let left_shift = usize::try_from(self.exponent.checked_sub(exponent)?).ok()?;
-        let right_shift = usize::try_from(other_exponent.checked_sub(exponent)?).ok()?;
-        Some(Self::compare_aligned(
+        let left_exponent = i128::from(self.exponent);
+        if left_exponent == other_exponent {
+            return Self::compare_unsigned(&self.limbs, &other.limbs);
+        }
+        let top_bit = |limbs: &CompactLimbs, exponent: i128| {
+            let high = limbs.last().expect("nonzero dyadic has a highest limb");
+            exponent
+                .wrapping_add((limbs.len().wrapping_sub(1) as i128).wrapping_mul(64))
+                .wrapping_add(i128::from(64_u32.wrapping_sub(high.leading_zeros())))
+        };
+        let top = top_bit(&self.limbs, left_exponent).cmp(&top_bit(&other.limbs, other_exponent));
+        if top != Ordering::Equal {
+            return top;
+        }
+        let exponent = left_exponent.min(other_exponent);
+        let left_shift = usize::try_from(left_exponent.abs_diff(exponent))
+            .expect("equal top bits require a representable limb span");
+        let right_shift = usize::try_from(other_exponent.abs_diff(exponent))
+            .expect("equal top bits require a representable limb span");
+        Self::compare_aligned(
             Aligned::new(&self.limbs, left_shift),
             Aligned::new(&other.limbs, right_shift),
-        ))
+        )
     }
 
     pub(in crate::geometry) fn write_product(short: &[u64], long: &[u64], out: &mut CompactLimbs) {
@@ -672,12 +706,16 @@ impl ExactDyadic {
         if self.is_zero() || other.is_zero() {
             return Ok(Self::zero());
         }
+        let exponent = self
+            .exponent
+            .checked_add(other.exponent)
+            .ok_or(ResourceError::SizeOverflow)?;
         if let ([left], [right]) = (self.limbs.as_slice(), other.limbs.as_slice()) {
-            return Ok(Self::from_u128(
+            return Self::try_from_u128(
                 self.negative != other.negative,
                 u128::from(*left) * u128::from(*right),
-                self.exponent + other.exponent,
-            ));
+                exponent,
+            );
         }
         let (short, long) = if self.limbs.len() <= other.limbs.len() {
             (&self.limbs, &other.limbs)
@@ -693,9 +731,9 @@ impl ExactDyadic {
         let mut result = Self {
             negative: self.negative != other.negative,
             limbs,
-            exponent: self.exponent + other.exponent,
+            exponent,
         };
-        result.trim();
+        result.try_trim()?;
         Ok(result)
     }
 
@@ -857,7 +895,7 @@ impl ExactDyadic {
                 }
                 right -= left;
                 if right == 0 {
-                    return Ok(Self::from_u128(false, left, exponent));
+                    return Self::try_from_u128(false, left, exponent);
                 }
                 right >>= right.trailing_zeros();
             }
@@ -915,11 +953,11 @@ impl ExactDyadic {
                 )
                 .into());
             }
-            return Ok(Self::from_u128(
+            return Self::try_from_u128(
                 self.negative != divisor.negative,
                 dividend / magnitude,
                 exponent,
-            ));
+            );
         }
         let (limbs, remainder) = Self::try_div_rem_unsigned(&self.limbs, &divisor.limbs)?;
         if !remainder.is_empty() {
@@ -944,11 +982,7 @@ impl ExactDyadic {
                 Ordering::Greater
             };
         }
-        let exponent = self.exponent.min(other.exponent);
-        let order = Self::compare_aligned(
-            Aligned::new(&self.limbs, (self.exponent - exponent) as usize),
-            Aligned::new(&other.limbs, (other.exponent - exponent) as usize),
-        );
+        let order = self.cmp_magnitude_at(other, i128::from(other.exponent));
         if self.negative {
             order.reverse()
         } else {
@@ -957,11 +991,7 @@ impl ExactDyadic {
     }
 
     pub(in crate::geometry) fn cmp_magnitude(&self, other: &Self) -> Ordering {
-        let exponent = self.exponent.min(other.exponent);
-        Self::compare_aligned(
-            Aligned::new(&self.limbs, (self.exponent - exponent) as usize),
-            Aligned::new(&other.limbs, (other.exponent - exponent) as usize),
-        )
+        self.cmp_magnitude_at(other, i128::from(other.exponent))
     }
 }
 
