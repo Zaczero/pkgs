@@ -265,14 +265,14 @@ def test_c11_parent_forged_n_buffers_rejects_stream() -> None:
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
     def get_schema(_stream: int, out_schema: int) -> int:
+        # The source capsule owns these borrowed pointers. Keep it live through
+        # import and make the shallow copy non-owning to avoid releasing it.
+        ctypes.memmove(
+            out_schema,
+            ctypes.byref(src_schema),
+            ctypes.sizeof(src_schema),
+        )
         out = ArrowSchema.from_address(out_schema)
-        out.format = src_schema.format
-        out.name = src_schema.name
-        out.metadata = src_schema.metadata
-        out.flags = src_schema.flags
-        out.n_children = src_schema.n_children
-        out.children = src_schema.children
-        out.dictionary = src_schema.dictionary
         out.release = release_fn
         out.private_data = None
         return 0
