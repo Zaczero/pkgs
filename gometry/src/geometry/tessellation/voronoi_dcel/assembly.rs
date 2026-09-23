@@ -54,13 +54,11 @@ pub(super) fn simple_ring(
     mut vertices: Vec<VertexId>,
     mut edges: Vec<EdgeId>,
 ) -> Result<ExactSimpleRing> {
-    let mut points = Vec::with_capacity(vertices.len() - 1);
-    points.extend(
+    let orientation = exact::cycle_orientation(
         vertices[..vertices.len() - 1]
             .iter()
-            .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()),
-    );
-    let orientation = exact::cycle_orientation(&points)?;
+            .map(|vertex| &subdivision.vertices[vertex.0 as usize].point),
+    )?;
     canonicalize_ring(&mut vertices, &mut edges);
     Ok(ExactSimpleRing {
         face,

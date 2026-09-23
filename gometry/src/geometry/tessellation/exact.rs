@@ -1259,11 +1259,21 @@ pub(super) fn angle_ccw_cmp(
 /// accumulated interval contains the exact signed area; a sign is returned only
 /// when it excludes zero. Declining falls through to the exact accumulation,
 /// which is also the only path that can report the zero-orientation error.
-fn cycle_orientation_filtered(open_cycle: &[ExactPoint]) -> Option<ExactSign> {
+fn cycle_pairs<'a>(
+    open_cycle: impl Iterator<Item = &'a ExactPoint> + Clone,
+) -> impl Iterator<Item = (&'a ExactPoint, &'a ExactPoint)> {
+    let mut shifted = open_cycle.clone();
+    let first = shifted
+        .next()
+        .expect("exact cycle has at least three vertices");
+    open_cycle.zip(shifted.chain(std::iter::once(first)))
+}
+
+fn cycle_orientation_filtered<'a>(
+    open_cycle: impl Iterator<Item = &'a ExactPoint> + Clone,
+) -> Option<ExactSign> {
     let mut total = Interval::exact(0.0);
-    for index in 0..open_cycle.len() {
-        let left = &open_cycle[index];
-        let right = &open_cycle[(index + 1) % open_cycle.len()];
+    for (left, right) in cycle_pairs(open_cycle) {
         if !left.is_finite() || !right.is_finite() {
             return None;
         }
@@ -1281,11 +1291,16 @@ fn cycle_orientation_filtered(open_cycle: &[ExactPoint]) -> Option<ExactSign> {
     total.sign()
 }
 
-pub(super) fn cycle_orientation(open_cycle: &[ExactPoint]) -> Result<ExactSign> {
+pub(super) fn cycle_orientation<'a, I>(open_cycle: I) -> Result<ExactSign>
+where
+    I: IntoIterator<Item = &'a ExactPoint>,
+    I::IntoIter: Clone + ExactSizeIterator,
+{
+    let open_cycle = open_cycle.into_iter();
     if open_cycle.len() < 3 {
         return Err(GeometryErrorKind::voronoi("exact cycle has fewer than three vertices").into());
     }
-    if let Some(sign) = cycle_orientation_filtered(open_cycle) {
+    if let Some(sign) = cycle_orientation_filtered(open_cycle.clone()) {
         if VERIFY_INTERVALS {
             let exact = cycle_orientation_exact(open_cycle)?;
             if sign != exact {
@@ -1300,12 +1315,14 @@ pub(super) fn cycle_orientation(open_cycle: &[ExactPoint]) -> Result<ExactSign> 
     cycle_orientation_exact(open_cycle)
 }
 
-fn cycle_orientation_exact(open_cycle: &[ExactPoint]) -> Result<ExactSign> {
+fn cycle_orientation_exact<'a>(
+    open_cycle: impl Iterator<Item = &'a ExactPoint> + Clone,
+) -> Result<ExactSign> {
     let mut numerator = ExactDyadic::zero();
     let mut denominator = ExactDyadic::from_f64(1.0);
-    for index in 0..open_cycle.len() {
-        let left = open_cycle[index].coords()?;
-        let right = open_cycle[(index + 1) % open_cycle.len()].coords()?;
+    for (left, right) in cycle_pairs(open_cycle) {
+        let left = left.coords()?;
+        let right = right.coords()?;
         let term_n = left
             .x
             .try_product(&right.y)?

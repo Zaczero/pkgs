@@ -279,19 +279,14 @@ pub(super) fn graft_components(
     subdivision.labels.reserve(boundary_faces);
     let mut exterior = Vec::with_capacity(components);
     exterior.resize(components, None);
-    let mut points = Vec::new();
     for face in 0..boundary_faces {
         let walk = &topology.face_slots
             [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
         budget.add(walk.len())?;
-        points.clear();
-        points.reserve(walk.len());
-        points.extend(walk.iter().map(|&slot| {
-            subdivision.vertices[topology.owners[slot as usize] as usize]
-                .point
-                .clone()
-        }));
-        let sign = exact::cycle_orientation(&points)?;
+        let sign =
+            exact::cycle_orientation(walk.iter().map(|&slot| {
+                &subdivision.vertices[topology.owners[slot as usize] as usize].point
+            }))?;
         let component = topology.component_of[topology.owners[walk[0] as usize] as usize] as usize;
         if sign == ExactSign::Negative
             && exterior[component]
