@@ -1754,6 +1754,151 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
             ]
 
 
+def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone() -> None:
+    # Line rows disable the all-point envelope pruner; the seam-crossing row
+    # also appears through multiple geographic cover windows.
+    live_coordinates = [
+        [(-40.0, 20.0), (-39.9, 20.1)],
+        [(179.8, 0.0), (-179.8, 0.0)],
+        [(179.0, 0.5), (179.1, 0.6)],
+        [(-179.2, -0.5), (-179.1, -0.4)],
+    ]
+    query = gm.Point(180.0, 0.0, crs=4326)
+    radius = 300_000.0
+
+    def sparse_index(history: int) -> tuple[gm.SpatialIndex, tuple[int, ...]]:
+        handles = (0, history - 3, history - 2, history - 1)
+        rows = [
+            gm.LineString(
+                [
+                    (-120.0 + position * 0.015, -70.0 + (position % 100) * 0.1),
+                    (-119.99 + position * 0.015, -69.98 + (position % 100) * 0.1),
+                ],
+                crs=4326,
+            )
+            for position in range(history)
+        ]
+        for handle, coordinates in zip(handles, live_coordinates, strict=True):
+            rows[handle] = gm.LineString(coordinates, crs=4326)
+
+        candidate = gm.SpatialIndex(rows)
+        live = set(handles)
+        for handle in range(history):
+            if handle not in live:
+                assert candidate.remove(handle)
+        return candidate, handles
+
+    def scalar_answers(
+        candidate: gm.SpatialIndex,
+        handles: tuple[int, ...],
+    ) -> tuple[list[tuple[int, float]], list[int]]:
+        rows = [(handle, candidate.get(handle)) for handle in handles]
+        assert all(row is not None for _, row in rows)
+        distances = sorted(
+            (
+                (handle, gm.distance(query, row))
+                for handle, row in rows
+                if row is not None
+            ),
+            key=lambda item: (item[1], item[0]),
+        )
+        within = [
+            handle
+            for handle, row in rows
+            if row is not None and gm.dwithin(query, row, radius)
+        ]
+        return distances, within
+
+    def check_nearest(
+        candidate: gm.SpatialIndex,
+        handles: tuple[int, ...],
+        distances: list[tuple[int, float]],
+    ) -> int:
+        size_before = candidate.__sizeof__()
+        got_ids, got_distances = candidate.nearest(
+            query, k=len(handles), return_distance=True
+        )
+        size_growth = candidate.__sizeof__() - size_before
+        assert ids(got_ids) == [handle for handle, _ in distances]
+        np.testing.assert_allclose(
+            floats(got_distances),
+            [distance for _, distance in distances],
+            atol=1e-9,
+        )
+        return size_growth
+
+    def check_dwithin(
+        candidate: gm.SpatialIndex,
+        expected: list[int],
+    ) -> int:
+        size_before = candidate.__sizeof__()
+        got = candidate.query(query, predicate='dwithin', distance=radius)
+        size_growth = candidate.__sizeof__() - size_before
+        assert ids(got) == expected
+        return size_growth
+
+    small_history = 512
+    large_history = 4096
+    small, small_handles = sparse_index(small_history)
+    large, large_handles = sparse_index(large_history)
+    small_clone = copy.copy(small)
+    large_clone = copy.copy(large)
+
+    small_distances, small_within = scalar_answers(small, small_handles)
+    large_distances, large_within = scalar_answers(large, large_handles)
+    small_clone_distances, small_clone_within = scalar_answers(
+        small_clone, small_handles
+    )
+    large_clone_distances, large_clone_within = scalar_answers(
+        large_clone, large_handles
+    )
+
+    small_nearest_growth = check_nearest(small, small_handles, small_distances)
+    large_nearest_growth = check_nearest(large, large_handles, large_distances)
+    small_dwithin_growth = check_dwithin(small_clone, small_clone_within)
+    large_dwithin_growth = check_dwithin(large_clone, large_clone_within)
+
+    seam_handle = large_handles[1]
+    assert large.remove(seam_handle)
+    inserted = large.insert(
+        gm.LineString([(179.95, -0.05), (-179.95, 0.05)], crs=4326)
+    )
+    assert inserted == large_history
+    changed_handles = (
+        large_handles[0],
+        large_handles[2],
+        large_handles[3],
+        inserted,
+    )
+    changed_distances, changed_within = scalar_answers(large, changed_handles)
+    check_nearest(large, changed_handles, changed_distances)
+    check_dwithin(large, changed_within)
+
+    check_nearest(large_clone, large_handles, large_clone_distances)
+    check_dwithin(large_clone, large_clone_within)
+
+    bad_query = gm.Point(0.0, 95.0, crs=4326)
+    domain_error = (
+        r'invalid longitude/latitude \(0, 95\); coordinates are \(x, y\) = '
+        r'\(lon, lat\) — use swap_xy\(\) for latitude-first data'
+    )
+    with pytest.raises(gm.InvalidGeometryError, match=domain_error):
+        large.query(bad_query, predicate='dwithin', distance=1.0)
+    with pytest.raises(gm.InvalidGeometryError, match=domain_error):
+        large.nearest(bad_query)
+
+    # History differs eightfold with the same four live lines. Allow a 2x
+    # cache-growth range for row-cache details; dense cap arrays track history.
+    assert (
+        0 < large_nearest_growth < 2 * small_nearest_growth
+        and 0 < large_dwithin_growth < 2 * small_dwithin_growth
+    ), (
+        f"cap-cache growth followed history: nearest {small_nearest_growth} "
+        f"to {large_nearest_growth}, dwithin {small_dwithin_growth} "
+        f"to {large_dwithin_growth}"
+    )
+
+
 def test_mutation_keeps_handles_stable_through_self_join() -> None:
     idx = gm.SpatialIndex([
         gm.box(0, 0, 2, 2),

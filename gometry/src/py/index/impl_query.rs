@@ -353,16 +353,20 @@ impl PySpatialIndex {
             return Ok(None);
         };
         let mut products = self.rows.operation();
-        let mut live = Vec::with_capacity(self.rows.len());
+        let live_row_count = self.rows.live_count();
+        let mut live = Vec::with_capacity(live_row_count);
         for entry in self.live_entries() {
             let data = products.prepared(entry.idx)?;
             let cache = products.frame_cache(entry.idx)?;
             live.push((entry.idx, data, cache));
         }
+        let live_entry_count = live.len();
         let built = match crs::with_ellipsoid_metric_at(crs, &[], runtime_state, |ellipsoid| {
             Ok(GeodesicRowCaps::from_live_handles(
                 shape,
                 self.rows.len(),
+                live_row_count,
+                live_entry_count,
                 live.iter().map(|(idx, data, cache)| {
                     let (semi_major, flattening) = ellipsoid.ellipsoid_parameters();
                     (
