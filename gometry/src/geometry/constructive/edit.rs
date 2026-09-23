@@ -12,12 +12,11 @@ use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_view_error};
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
-    LineSeq, MOrdinate, MultiLineString, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon,
-    ReduceSimd, Shape, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
-    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
-    column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
-    line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
-    simd_xy_map_one_f64,
+    LineSeq, MOrdinate, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon, ReduceSimd, Shape,
+    Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates, clip_multipoint_columns,
+    clip_polygonal, clipped_line_parts, clipped_linestring, column_all_finite,
+    compare_point_slices, compare_points, compare_polygons, compare_shapes, line_parts_to_shape,
+    same_topological_coordinate, set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
 };
 
 #[derive(Clone, Copy)]
@@ -785,57 +784,35 @@ impl Shape {
         match self {
             Self::Point(point) => Ok(Self::Point(transform(*point)?)),
             Self::MultiPoint(points) => Ok(Self::MultiPoint(points.try_map_values(transform)?)),
-            Self::LineString(points) => Ok(Self::LineString(points.try_map_points(transform)?)),
+            Self::LineString(points) => Ok(Self::LineString(LineSeq::from_proven(
+                points.as_coords().try_map_points(transform)?,
+            ))),
             Self::MultiLineString(lines) => {
-                let members = lines
-                    .members()
-                    .map(|member| match member {
-                        crate::geometry::MultiMember::Empty => {
-                            Ok(crate::geometry::MultiMember::Empty)
-                        },
-                        crate::geometry::MultiMember::Value(index) => {
-                            let points = lines.as_slice()[index]
-                                .iter()
-                                .map(transform)
-                                .collect::<Result<Vec<_>, _>>()?;
-                            Ok(crate::geometry::MultiMember::Value(LineSeq::from_proven(
-                                CoordSeq::try_from_points(&points)?,
-                            )))
-                        },
+                let values = lines
+                    .as_slice()
+                    .iter()
+                    .map(|line| {
+                        line.as_coords()
+                            .try_map_points(transform)
+                            .map(LineSeq::from_proven)
                     })
                     .collect::<Result<Vec<_>, crate::error::Error>>()?;
-                let axes = members
-                    .iter()
-                    .find_map(|member| match member {
-                        crate::geometry::MultiMember::Value(line) => Some(line.axes()),
-                        crate::geometry::MultiMember::Empty => None,
-                    })
-                    .unwrap_or_else(|| lines.axes());
-                Ok(Self::MultiLineString(MultiLineString::try_new(
-                    axes, members,
-                )?))
+                let axes = values
+                    .first()
+                    .map_or_else(|| lines.axes(), |line| line.axes());
+                Ok(Self::MultiLineString(lines.try_with_values(axes, values)?))
             },
             Self::Polygon(polygon) => Ok(Self::Polygon(polygon.map_points(transform)?)),
             Self::MultiPolygon(polygons) => {
-                let members = polygons
-                    .members()
-                    .map(|member| match member {
-                        crate::geometry::MultiMember::Empty => {
-                            Ok(crate::geometry::MultiMember::Empty)
-                        },
-                        crate::geometry::MultiMember::Value(index) => polygons.as_slice()[index]
-                            .map_points(transform)
-                            .map(crate::geometry::MultiMember::Value),
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let axes = members
+                let values = polygons
+                    .as_slice()
                     .iter()
-                    .find_map(|member| match member {
-                        crate::geometry::MultiMember::Value(polygon) => Some(polygon.axes()),
-                        crate::geometry::MultiMember::Empty => None,
-                    })
-                    .unwrap_or_else(|| polygons.axes());
-                Ok(Self::MultiPolygon(MultiPolygon::try_new(axes, members)?))
+                    .map(|polygon| polygon.map_points(transform))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let axes = values
+                    .first()
+                    .map_or_else(|| polygons.axes(), Polygon::axes);
+                Ok(Self::MultiPolygon(polygons.try_with_values(axes, values)?))
             },
             Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
                 geometries.try_map_members(|geometry| geometry.map_points(transform))?,

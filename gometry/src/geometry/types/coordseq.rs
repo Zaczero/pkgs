@@ -354,6 +354,28 @@ impl CoordSeq {
         builder.finish()
     }
 
+    /// Map stored points directly into new columns, inferring axes from the
+    /// first output. Callback errors precede column validation.
+    pub(crate) fn try_map_points<E>(
+        &self,
+        mut map: impl FnMut(Point) -> Result<Point, E>,
+    ) -> Result<Self, E>
+    where
+        E: From<crate::error::Error>,
+    {
+        let mut points = self.iter();
+        let Some(first) = points.next() else {
+            return Ok(Self::empty(self.axes()));
+        };
+        let first = map(first)?;
+        let mut builder = CoordSeqBuilder::with_capacity(first.axes(), self.len());
+        builder.push(first);
+        for point in points {
+            builder.try_push(map(point))?;
+        }
+        builder.finish().map_err(E::from)
+    }
+
     /// Gather a slice of `XY` (planar, Z/M-less) coordinates into columns.
     pub fn try_from_xy(points: &[XY]) -> Result<Self> {
         ensure_coordseq_vertex_capacity(points.len())?;

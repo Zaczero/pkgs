@@ -210,22 +210,6 @@ impl LineSeq {
     pub(crate) const fn as_coords(&self) -> &CoordSeq {
         &self.0
     }
-
-    /// Per-vertex map. The vertex count is unchanged, so the invariant holds
-    /// without a recheck.
-    pub(crate) fn try_map_points<E>(
-        &self,
-        map: impl FnMut(Point) -> Result<Point, E>,
-    ) -> Result<Self, E>
-    where
-        E: From<crate::error::Error>,
-    {
-        let points = self
-            .iter()
-            .map(map)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        Ok(Self(CoordSeq::try_from_points(&points).map_err(E::from)?))
-    }
 }
 
 impl Deref for LineSeq {
@@ -788,17 +772,24 @@ macro_rules! impl_multipart {
                 for value in self.values.iter() {
                     values.push(map(value)?);
                 }
+                self.try_with_values(axes, values).map_err(E::from)
+            }
+
+            pub(crate) fn try_with_values(
+                &self,
+                axes: CoordinateAxes,
+                values: Vec<$member>,
+            ) -> Result<Self> {
+                debug_assert_eq!(values.len(), self.values.len());
                 if let Some(value) = values
                     .iter()
                     .find(|value| shape_member_axes(*value) != axes)
                 {
-                    return Err(E::from(
-                        GeometryErrorKind::CoordinateAxesMismatch {
-                            declared: axes,
-                            got: shape_member_axes(value),
-                        }
-                        .into(),
-                    ));
+                    return Err(GeometryErrorKind::CoordinateAxesMismatch {
+                        declared: axes,
+                        got: shape_member_axes(value),
+                    }
+                    .into());
                 }
                 Ok(Self {
                     axes,
@@ -972,38 +963,15 @@ impl MultiPoint {
 
     pub(crate) fn try_map_values<E>(
         &self,
-        mut map: impl FnMut(Point) -> Result<Point, E>,
+        map: impl FnMut(Point) -> Result<Point, E>,
     ) -> Result<Self, E>
     where
         E: From<crate::error::Error>,
     {
-        if matches!(self.members, MultipartMembers::Dense) {
-            let points = self
-                .points()
-                .map(&mut map)
-                .collect::<std::result::Result<Vec<_>, _>>()?;
-            return Ok(Self {
-                coords: CoordSeq::try_from_points(&points).map_err(E::from)?,
-                members: MultipartMembers::Dense,
-            });
-        }
-        let members = self
-            .members()
-            .map(|member| match member {
-                MultiMember::Empty => Ok(MultiMember::Empty),
-                MultiMember::Value(index) => {
-                    map(self.coords.point_at(index)).map(MultiMember::Value)
-                },
-            })
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let axes = members
-            .iter()
-            .find_map(|member| match member {
-                MultiMember::Value(point) => Some(point.axes()),
-                MultiMember::Empty => None,
-            })
-            .unwrap_or_else(|| self.axes());
-        Self::from_values(axes, members).map_err(E::from)
+        Ok(Self {
+            coords: self.coords.try_map_points(map)?,
+            members: self.members.clone(),
+        })
     }
 
     pub(crate) fn quantize(&self, precision: i32) -> Result<Self> {
@@ -1290,6 +1258,66 @@ mod multipart_layout_tests {
         assert!(std::ptr::eq(
             source_layout.as_slice().as_ptr(),
             mapped_layout.as_slice().as_ptr()
+        ));
+    }
+
+    #[test]
+    fn sparse_point_and_line_maps_keep_member_layout_when_axes_change() {
+        let point = Point::new_raw_xy(1.0, 2.0);
+        let source_points = MultiPoint::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(point),
+        ])
+        .unwrap();
+        let mapped_points = source_points
+            .try_map_values(|point| {
+                Ok::<_, crate::error::Error>(Point::new_raw_axes(
+                    point.x,
+                    point.y,
+                    crate::geometry::ZOrdinate(Some(3.0)),
+                    crate::geometry::MOrdinate(None),
+                ))
+            })
+            .unwrap();
+        assert_eq!(mapped_points.axes(), CoordinateAxes::XYZ);
+        let (MultipartMembers::Sparse(before_points), MultipartMembers::Sparse(after_points)) =
+            (&source_points.members, &mapped_points.members)
+        else {
+            unreachable!("point mapping keeps sparse positions");
+        };
+        assert!(std::ptr::eq(
+            before_points.as_slice().as_ptr(),
+            after_points.as_slice().as_ptr()
+        ));
+
+        let line = LineSeq::segment(point, Point::new_raw_xy(2.0, 3.0)).unwrap();
+        let source_lines = MultiLineString::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(line),
+        ])
+        .unwrap();
+        let mapped_lines = Shape::MultiLineString(source_lines.clone())
+            .map_points(&|point| {
+                Ok(Point::new_raw_axes(
+                    point.x,
+                    point.y,
+                    crate::geometry::ZOrdinate(Some(3.0)),
+                    crate::geometry::MOrdinate(None),
+                ))
+            })
+            .unwrap();
+        let Shape::MultiLineString(mapped_lines) = mapped_lines else {
+            unreachable!("point mapping keeps multiline shape");
+        };
+        assert_eq!(mapped_lines.axes(), CoordinateAxes::XYZ);
+        let (MultipartMembers::Sparse(before_lines), MultipartMembers::Sparse(after_lines)) =
+            (&source_lines.members, &mapped_lines.members)
+        else {
+            unreachable!("line mapping keeps sparse positions");
+        };
+        assert!(std::ptr::eq(
+            before_lines.as_slice().as_ptr(),
+            after_lines.as_slice().as_ptr()
         ));
     }
 

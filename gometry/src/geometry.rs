@@ -522,16 +522,13 @@ impl Shape {
     }
 
     fn linework(&self) -> Result<Vec<&CoordSeq>> {
-        let mut parts = Vec::new();
-        match self.lineal().ok_or(GeometryErrorKind::LineStringRequired)? {
-            Lineal::LineString(points) => crate::try_push_vec(&mut parts, points.as_coords())?,
-            Lineal::MultiLineString(lines) => {
-                crate::boundary::try_reserve_vec(&mut parts, lines.as_slice().len())?;
-                parts.extend(lines.iter().map(LineSeq::as_coords));
+        Ok(
+            match self.lineal().ok_or(GeometryErrorKind::LineStringRequired)? {
+                Lineal::LineString(points) => vec![points.as_coords()],
+                Lineal::MultiLineString(lines) => lines.iter().map(LineSeq::as_coords).collect(),
+                Lineal::Empty => Vec::new(),
             },
-            Lineal::Empty => {},
-        }
-        Ok(parts)
+        )
     }
 
     pub(crate) fn single_linework(&self) -> Result<&CoordSeq> {
@@ -684,14 +681,9 @@ impl Polygon {
         E: From<crate::error::Error>,
     {
         let shell = Ring::try_from_closed(transform(self.shell.coords())?)?;
-        let mut holes = Vec::new();
-        crate::try_reserve_vec(&mut holes, self.holes.len()).map_err(E::from)?;
+        let mut holes = Vec::with_capacity(self.holes.len());
         for hole in self.holes.iter() {
-            crate::try_push_vec(
-                &mut holes,
-                Ring::try_from_closed(transform(hole.coords())?)?,
-            )
-            .map_err(E::from)?;
+            holes.push(Ring::try_from_closed(transform(hole.coords())?)?);
         }
         let holes = SharedSlice::from_vec(holes);
         Ok(Self { shell, holes })
@@ -734,11 +726,10 @@ impl Polygon {
         let Some(shell) = closed(transform(self.shell.coords())?) else {
             return Ok(None);
         };
-        let mut holes = Vec::new();
-        crate::try_reserve_vec(&mut holes, self.holes.len())?;
+        let mut holes = Vec::with_capacity(self.holes.len());
         for hole in self.holes.iter() {
             if let Some(hole) = closed(transform(hole.coords())?) {
-                crate::try_push_vec(&mut holes, hole)?;
+                holes.push(hole);
             }
         }
         Ok(Some(Self {
@@ -758,10 +749,9 @@ impl Polygon {
 
     fn orient(&self, exterior_cw: bool) -> Result<Self> {
         let shell = constructive::oriented_ring(&self.shell, exterior_cw)?;
-        let mut holes = Vec::new();
-        crate::try_reserve_vec(&mut holes, self.holes.len())?;
+        let mut holes = Vec::with_capacity(self.holes.len());
         for hole in self.holes.iter() {
-            crate::try_push_vec(&mut holes, constructive::oriented_ring(hole, !exterior_cw)?)?;
+            holes.push(constructive::oriented_ring(hole, !exterior_cw)?);
         }
         Ok(Self::new(shell, holes))
     }
@@ -770,13 +760,12 @@ impl Polygon {
         // Canonical winding follows RFC 7946 (GeoJSON): exterior CCW, holes
         // CW. Rings rotate min-vertex-first; holes sort ascending like every
         // other canonical sequence.
-        let mut holes = Vec::new();
-        crate::try_reserve_vec(&mut holes, self.holes.len())?;
+        let mut holes = Vec::with_capacity(self.holes.len());
         for hole in self.holes.iter() {
-            crate::try_push_vec(
-                &mut holes,
-                Ring::try_from_closed(constructive::canonical_ring_seq(hole.coords(), true)?)?,
-            )?;
+            holes.push(Ring::try_from_closed(constructive::canonical_ring_seq(
+                hole.coords(),
+                true,
+            )?)?);
         }
         holes.sort_unstable_by(compare_point_slices);
         Ok(Self::new(
@@ -810,14 +799,7 @@ impl Polygon {
     where
         F: Fn(Point) -> Result<Point> + ?Sized,
     {
-        self.try_map_ring_seqs(|ring| {
-            let mut points = Vec::new();
-            crate::try_reserve_vec(&mut points, ring.len())?;
-            for point in ring {
-                crate::try_push_vec(&mut points, transform(point)?)?;
-            }
-            CoordSeq::try_from_points(&points)
-        })
+        self.try_map_ring_seqs(|ring| ring.try_map_points(transform))
     }
 
     /// Snap every ring onto the reference; `None` when the shell collapses.

@@ -3,11 +3,6 @@ use std::sync::Arc;
 use crate::geometry::types::*;
 use crate::test_support::allocation_count;
 
-// Test fixtures only. These panic on an empty payload, which is exactly what a
-// test wants and exactly what production must not have: gating them on
-// `cfg(test)` means a production caller reaching for `.into()` fails to
-// compile and is pushed to `Shape::multi_point`/`narrow_points`, which admit
-// the empty case as `Shape::Empty`.
 /// Test fixtures only. These panic on an empty payload, which is exactly what
 /// a test wants and exactly what production must not have: keeping them in the
 /// test tree means a production caller reaching for `.into()` fails to compile
@@ -315,6 +310,43 @@ mod coordseq_builder_tests {
                 got: CoordinateAxes::XYZ,
             })
         ));
+    }
+
+    #[test]
+    fn point_mapping_publishes_directly_into_coordinate_columns() {
+        let source = CoordSeq::try_from_points(
+            &(0..256)
+                .map(|index| Point::new_raw_xy(f64::from(index), 0.0))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let (mapped, allocations) =
+            allocation_count(|| source.try_map_points(Ok::<_, crate::error::Error>).unwrap());
+        assert_eq!(mapped, source);
+        assert_eq!(allocations, 4, "two columns and their shared owners");
+    }
+
+    #[test]
+    fn point_mapping_callback_error_precedes_axes_validation() {
+        let source =
+            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 1.0)])
+                .unwrap();
+        let mut first = true;
+        let error = source
+            .try_map_points(|point| {
+                if std::mem::take(&mut first) {
+                    Ok(Point::new_raw_axes(
+                        point.x,
+                        point.y,
+                        ZOrdinate(Some(1.0)),
+                        MOrdinate(None),
+                    ))
+                } else {
+                    Err(GeometryErrorKind::message("second callback"))
+                }
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("second callback"));
     }
 
     #[test]
