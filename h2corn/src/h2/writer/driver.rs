@@ -322,22 +322,14 @@ where
     }
 
     fn refresh_response_deadline(&mut self, stream_id: StreamId) {
-        let deadline = self
-            .config
-            .http2
-            .timeout_response_stall
-            .and_then(|timeout| {
-                self.streams
-                    .get(&stream_id)
-                    .and_then(StreamWriteState::pending_body_since)
-                    .map(|since| {
-                        since
-                            .checked_add(timeout)
-                            .expect("admitted response timeout fits monotonic clock")
-                    })
-            });
-        if let Some(deadline) = deadline {
-            self.response_deadlines.schedule(stream_id, deadline);
+        let timeout = self.config.http2.timeout_response_stall;
+        let since = self
+            .streams
+            .get(&stream_id)
+            .and_then(StreamWriteState::pending_body_since);
+        if let (Some(timeout), Some(since)) = (timeout, since) {
+            self.response_deadlines
+                .reschedule_after(stream_id, since, timeout);
         } else {
             self.response_deadlines.cancel(stream_id);
         }

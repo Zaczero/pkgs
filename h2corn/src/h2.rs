@@ -345,11 +345,10 @@ impl<R, W> H2ConnectionState<R, W> {
             if stream.counts_toward_read_timeout
                 && let Some(timeout) = self.context.config.timeout_request_body_idle
             {
-                self.request_deadlines.schedule(
+                self.request_deadlines.reschedule_after(
                     state::RequestInputDeadlineKey::body(stream_id),
-                    TokioInstant::now()
-                        .checked_add(timeout)
-                        .expect("admitted body-idle timeout fits monotonic clock"),
+                    TokioInstant::now(),
+                    timeout,
                 );
             }
             let credit = self.input_flow.credit(
@@ -582,12 +581,8 @@ where
     if *drain_state != ConnectionDrainState::Accepting {
         return Ok(());
     }
-    *drain_state = ConnectionDrainState::Draining {
-        deadline: Some(
-            Instant::now()
-                .checked_add(timeout_graceful_shutdown)
-                .expect("admitted shutdown timeout fits monotonic clock"),
-        ),
+    *drain_state = ConnectionDrainState::ServerDraining {
+        deadline: Instant::now().checked_add(timeout_graceful_shutdown),
     };
     writer
         .goaway(last_stream_id, ErrorCode::NO_ERROR, Vec::new(), false)
@@ -722,12 +717,8 @@ where
         init_writer(writer, Arc::clone(&context.config), peer_settings).await?;
 
     let drain_state = if shutdown.borrow().kind().is_some() {
-        ConnectionDrainState::Draining {
-            deadline: Some(
-                Instant::now()
-                    .checked_add(context.config.timeout_graceful_shutdown)
-                    .expect("admitted shutdown timeout fits monotonic clock"),
-            ),
+        ConnectionDrainState::ServerDraining {
+            deadline: Instant::now().checked_add(context.config.timeout_graceful_shutdown),
         }
     } else {
         ConnectionDrainState::Accepting
@@ -1443,25 +1434,21 @@ where
     }
 
     let continue_writing = state.writer.has_ready_streams();
-    // Once the server has assigned a graceful-drain deadline, that deadline is
-    // the sole bound for retained local request work. Keep-alive still bounds
-    // ordinary idle connections and peer-initiated GOAWAY drains (which have
-    // no server deadline).
-    let keep_alive_deadline = (state.drain_state.deadline().is_none() && state.wire_is_idle())
+    // A server drain owns its shutdown bound even when it cannot be represented.
+    // Keep-alive remains available to ordinary idle and peer-drained connections.
+    let keep_alive_deadline = (state.drain_state.uses_keep_alive_timeout() && state.wire_is_idle())
         .then_some(state.context.config.timeout_keep_alive)
         .flatten()
-        .map(|timeout_duration| {
-            ConnectionDeadline::KeepAlive(
-                TokioInstant::now()
-                    .checked_add(timeout_duration)
-                    .expect("admitted keep-alive timeout fits monotonic clock"),
-            )
+        .and_then(|timeout_duration| {
+            TokioInstant::now()
+                .checked_add(timeout_duration)
+                .map(ConnectionDeadline::KeepAlive)
         });
     let request_input_deadline = state.next_request_input_deadline();
     let response_stall_deadline = state.writer.next_response_stall_deadline();
     let drain_deadline = state
         .drain_state
-        .deadline()
+        .server_deadline()
         .map(TokioInstant::from_std)
         .map(ConnectionDeadline::Drain);
     let mut next_deadline = earlier_deadline(drain_deadline, keep_alive_deadline);
@@ -1880,7 +1867,7 @@ where
         Err(failure) => return state.peer_failure(failure).await,
     };
     if state.drain_state == ConnectionDrainState::Accepting {
-        state.drain_state = ConnectionDrainState::Draining { deadline: None };
+        state.drain_state = ConnectionDrainState::PeerDraining;
     }
     Ok(())
 }
