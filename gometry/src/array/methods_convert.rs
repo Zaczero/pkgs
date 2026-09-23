@@ -59,13 +59,17 @@ fn verify_planar_segmentize_array(
             Ok(())
         },
         GeometryArrayStorage::Mixed(_) => {
-            for row_result in result.present_shape_rows() {
-                let (row, shape) = row_result.map_err(PyErr::from)?;
-                crate::geometry::verify_planar_segmentize_shape(
-                    &shape,
-                    max_segment_length.get(row) / to_metre,
-                )
-                .map_err(|error| note_array_row(error.into(), row))?;
+            for row in result.row_operation().present_rows() {
+                let logical = row.logical();
+                row.row()
+                    .with_shape(|shape| {
+                        crate::geometry::verify_planar_segmentize_shape(
+                            shape,
+                            max_segment_length.get(logical) / to_metre,
+                        )
+                    })
+                    .map_err(PyErr::from)?
+                    .map_err(|error| note_array_row(error.into(), logical))?;
             }
             Ok(())
         },

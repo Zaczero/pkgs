@@ -911,9 +911,12 @@ impl PyGeometryArray {
             if !same_frame {
                 return Ok(false);
             }
-            for row in array.present_shape_rows() {
-                let (_, shape) = row.map_err(PyErr::from)?;
-                if &shape == expected.shape() {
+            for row in array.row_operation().present_rows() {
+                if row
+                    .row()
+                    .with_shape(|shape| shape == expected.shape())
+                    .map_err(PyErr::from)?
+                {
                     return Ok(true);
                 }
             }
@@ -967,13 +970,20 @@ impl PyGeometryArray {
 
     pub fn __repr__(&self) -> PyResult<String> {
         let mut out = String::from("<GeometryArray");
-        let kinds = self.present_shape_rows().map(|row| {
-            row.map(|(_, shape)| shape.geometry_type())
-                .map_err(PyErr::from)
-        }).collect::<PyResult<Vec<_>>>()?;
-        if let Some(first) = kinds.first()
-            && kinds.iter().all(|kind| kind == first)
-        {
+        let mut first = None;
+        let mut uniform = true;
+        for row in self.row_operation().present_rows() {
+            let kind = row
+                .row()
+                .with_shape(Shape::geometry_type)
+                .map_err(PyErr::from)?;
+            if let Some(previous) = first {
+                uniform &= previous == kind;
+            } else {
+                first = Some(kind);
+            }
+        }
+        if uniform && let Some(first) = first {
             out.push('[');
             out.push_str(first);
             out.push(']');

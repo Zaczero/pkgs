@@ -424,9 +424,8 @@ impl PyGeometryArray {
             GeometryArrayStorage::Packed(_) => false,
             GeometryArrayStorage::Mixed(_) => {
                 let mut axes = None;
-                for row in self.present_shape_rows() {
-                    let (_, shape) = row?;
-                    let Some(row) = shape.earcut_packed_axes() else {
+                for row in self.row_operation().present_rows() {
+                    let Some(row) = row.row().with_shape(Shape::earcut_packed_axes)? else {
                         return Ok(false);
                     };
                     match axes {
@@ -622,9 +621,11 @@ impl PyGeometryArray {
             let array = self.clone();
             py.detach(move || {
                 let mut shapes = Vec::new();
-                for row in array.present_shape_rows() {
-                    let (_, line) = row?;
-                    shapes.extend(line.split(&splitter_shape, tolerance)?);
+                for row in array.row_operation().present_rows() {
+                    shapes.extend(
+                        row.row()
+                            .try_with_shape(|line| line.split(&splitter_shape, tolerance))?,
+                    );
                 }
                 Ok::<_, Error>(shapes)
             })?
