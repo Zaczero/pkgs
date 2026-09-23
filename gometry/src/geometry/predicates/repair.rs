@@ -6,7 +6,6 @@ use crate::geometry::{
     Shape, SharedSlice, XY, cmp_area_keys_then_closed, polygon_parts_to_shape, ring_decision_area,
     same_point, wrap_index,
 };
-use crate::{try_push_vec, try_reserve_vec};
 ///
 /// `Linework` is the original stored ring's directed winding modulo two on the
 /// exact noded partition, so opposite occurrences cancel and duplicate
@@ -15,27 +14,19 @@ use crate::{try_push_vec, try_reserve_vec};
 /// regions as union(shells) − union(holes); collapsed rings contribute their
 /// closed line support to the exact source fold before polygon repair.
 pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Result<Shape> {
-    let area: Vec<Polygon> = match method {
-        RepairMethod::Linework | RepairMethod::Structure => {
-            let empty: &[Polygon] = &[];
-            let inventory = ExactSourceInventory::from_polygon_operands(polygons, empty)?;
-            let mut budget = crate::geometry::ExpansionBudget::new("repair", "exact partition");
-            let partition = inventory.partition(&mut budget)?;
-            let (_, _, parts) = if method == RepairMethod::Linework {
-                inventory.repair_parts(&partition)?
-            } else {
-                inventory.structure_parts(&partition)?
-            };
-            parts
-        },
+    let empty: &[Polygon] = &[];
+    let inventory = ExactSourceInventory::from_polygon_operands(polygons, empty)?;
+    let mut budget = crate::geometry::ExpansionBudget::new("repair", "exact partition");
+    let partition = inventory.partition(&mut budget)?;
+    let (_, _, parts) = match method {
+        RepairMethod::Linework => inventory.repair_parts(&partition)?,
+        RepairMethod::Structure => inventory.structure_parts(&partition)?,
     };
-    let parts: Vec<Polygon> = area;
     // The face walk keeps zero-area antennas (a spike that re-enters at a
     // noded vertex is traversed once per side, leaving an `A, B, A`
     // backtrack in the boundary) — strip them so the rebuilt rings are
     // OGC-valid; an antenna encloses nothing, so the area is unchanged.
-    let mut cleaned = Vec::new();
-    try_reserve_vec(&mut cleaned, parts.len())?;
+    let mut cleaned = Vec::with_capacity(parts.len());
     for polygon in parts {
         let Some(shell) = ring_without_antennas(&polygon.shell)? else {
             continue;
@@ -61,52 +52,48 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
                 )
             })
             .map_or(AreaSign::Zero, |(_, decision)| decision.sign());
-        let mut shells = Vec::new();
-        let mut holes = Vec::new();
-        try_reserve_vec(&mut shells, loops.len())?;
-        try_reserve_vec(&mut holes, loops.len())?;
+        let mut shells = Vec::with_capacity(loops.len());
+        let mut holes = Vec::with_capacity(loops.len());
         for ring in loops {
             if ring_area_sign(ring.coords()) == dominant {
-                try_push_vec(&mut shells, ring)?;
+                shells.push(ring);
             } else {
-                try_push_vec(&mut holes, ring)?;
+                holes.push(ring);
             }
         }
         for hole in polygon.holes.iter() {
             if let Some(hole) = ring_without_antennas(hole)? {
                 let split = split_pinched_ring(&hole)?;
-                try_reserve_vec(&mut holes, split.len())?;
+                holes.reserve(split.len());
                 holes.extend(split);
             }
         }
         if shells.len() == 1 {
-            try_push_vec(
-                &mut cleaned,
-                Polygon::new(shells.into_iter().next().expect("one shell"), holes),
-            )?;
+            cleaned.push(Polygon::new(
+                shells.into_iter().next().expect("one shell"),
+                holes,
+            ));
         } else {
             // Re-attach each hole to the lobe that contains it.
-            let mut lobes = Vec::new();
-            try_reserve_vec(&mut lobes, shells.len())?;
-            for shell in shells {
-                try_push_vec(&mut lobes, Polygon::new(shell, Vec::new()))?;
-            }
-            let mut lobe_holes = Vec::new();
-            try_reserve_vec(&mut lobe_holes, lobes.len())?;
-            lobe_holes.resize_with(lobes.len(), Vec::new);
+            let mut lobes: Vec<_> = shells
+                .into_iter()
+                .map(|shell| (Polygon::new(shell, Vec::new()), Vec::new()))
+                .collect();
             for hole in holes {
                 let anchor = hole.coords().first_coord().expect("non-empty ring");
-                if let Some(index) = lobes.iter().position(|lobe| lobe.covers_point(anchor)) {
-                    try_push_vec(&mut lobe_holes[index], hole)?;
+                if let Some((_, assigned)) =
+                    lobes.iter_mut().find(|(lobe, _)| lobe.covers_point(anchor))
+                {
+                    assigned.push(hole);
                 }
             }
-            for (lobe, holes) in lobes.iter_mut().zip(lobe_holes) {
+            cleaned.reserve(lobes.len());
+            for (mut lobe, holes) in lobes {
                 if !holes.is_empty() {
                     lobe.holes = SharedSlice::from_vec(holes);
                 }
+                cleaned.push(lobe);
             }
-            try_reserve_vec(&mut cleaned, lobes.len())?;
-            cleaned.extend(lobes);
         }
     }
     polygon_parts_to_shape(cleaned)
@@ -118,36 +105,30 @@ pub(crate) fn polygonal_repair(polygons: &[Polygon], method: RepairMethod) -> Re
 pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
     // CLEAN fast path (the overwhelmingly common case): no repeated
     // vertex besides the closure means the ring IS its own single loop —
-    // detect with one presized pass and return it untouched, skipping the
-    // `Vec<Point>` staging and the column rebuild entirely.
-    {
+    // detect with one presized pass and return it untouched, skipping loop
+    // extraction and the column rebuild entirely.
+    let count = {
         let coords = ring.coords();
         let (xs, ys) = (coords.xs(), coords.ys());
-        let count = xs.len();
-        let closed =
-            count >= 2 && same_point(XY::new(xs[0], ys[0]), XY::new(xs[count - 1], ys[count - 1]));
-        let scan = if closed { count - 1 } else { count };
+        let (_, xs) = xs.split_last().expect("ring has a closing coordinate");
+        let (_, ys) = ys.split_last().expect("ring has a closing coordinate");
         // PointKey identity is CONSERVATIVE here (canonicalizes ±0.0 and
         // ignores Z/M): a false duplicate just routes through the exact
         // splitter below, which then splits nothing — never the reverse.
-        let mut seen: HashSet<PointKey> = crate::collections::try_hash_set_with_capacity(scan)?;
-        if (0..scan).all(|index| seen.insert(PointKey::new(XY::new(xs[index], ys[index])))) {
-            let mut result = Vec::new();
-            try_push_vec(&mut result, ring.clone())?;
-            return Ok(result);
+        let mut seen: HashSet<PointKey> = crate::collections::try_hash_set_with_capacity(xs.len())?;
+        if xs
+            .iter()
+            .zip(ys)
+            .all(|(&x, &y)| seen.insert(PointKey::new(XY::new(x, y))))
+        {
+            return Ok(vec![ring.clone()]);
         }
-    }
-    let mut points = Vec::new();
-    try_reserve_vec(&mut points, ring.coord_count())?;
-    points.extend(ring.coords().iter_coords());
-    if points.len() >= 2 && same_point(points[0], *points.last().expect("non-empty")) {
-        points.pop();
-    }
-    let count = points.len();
-    let mut loops = Vec::new();
-    try_reserve_vec(&mut loops, count)?;
-    let mut stack = Vec::new();
-    try_reserve_vec(&mut stack, count)?;
+        xs.len()
+    };
+    let mut points = ring.coords().iter_coords();
+    points.next_back().expect("ring has a closing coordinate");
+    let mut loops = Vec::with_capacity(count);
+    let mut stack = Vec::with_capacity(count);
     let mut open: HashMap<PointKey, usize> = crate::collections::try_hash_map_with_capacity(count)?;
     for point in points {
         let key = PointKey::new(point);
@@ -157,24 +138,20 @@ pub(crate) fn split_pinched_ring(ring: &Ring) -> Result<Vec<Ring>> {
                 open.remove(&PointKey::new(*vertex));
             }
             if extracted.len() >= 3 {
-                try_push_vec(&mut loops, extracted)?;
+                loops.push(extracted);
             }
         }
         open.insert(key, stack.len());
-        try_push_vec(&mut stack, point)?;
+        stack.push(point);
     }
     if stack.len() >= 3 {
-        try_push_vec(&mut loops, stack)?;
+        loops.push(stack);
     }
-    let mut result = Vec::new();
-    try_reserve_vec(&mut result, loops.len())?;
+    let mut result = Vec::with_capacity(loops.len());
     for mut points in loops {
         let first = points[0];
-        try_push_vec(&mut points, first)?;
-        try_push_vec(
-            &mut result,
-            Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?,
-        )?;
+        points.push(first);
+        result.push(Ring::try_from_closed(CoordSeq::try_from_points(&points)?)?);
     }
     Ok(result)
 }
@@ -190,13 +167,9 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
     {
         let coords = ring.coords();
         let (xs, ys) = (coords.xs(), coords.ys());
-        let mut len = xs.len();
-        if len >= 2 && same_point(XY::new(xs[0], ys[0]), XY::new(xs[len - 1], ys[len - 1])) {
-            len -= 1;
-        }
-        if len < 3 {
-            return Ok(None);
-        }
+        let (_, xs) = xs.split_last().expect("ring has a closing coordinate");
+        let (_, ys) = ys.split_last().expect("ring has a closing coordinate");
+        let len = xs.len();
         let clean = (0..len).all(|index| {
             let prev = wrap_index(index + len - 1, len);
             let next = wrap_index(index + 1, len);
@@ -206,12 +179,10 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
             return Ok(Some(ring.clone()));
         }
     }
-    let mut points = Vec::new();
-    try_reserve_vec(&mut points, ring.coord_count())?;
-    points.extend(ring.coords().iter_coords());
-    if points.len() >= 2 && same_point(points[0], *points.last().expect("non-empty")) {
-        points.pop();
-    }
+    let mut points = Vec::with_capacity(ring.coord_count());
+    let mut source = ring.coords().iter_coords();
+    source.next_back().expect("ring has a closing coordinate");
+    points.extend(source);
     loop {
         if points.len() < 3 {
             return Ok(None);
@@ -243,8 +214,7 @@ pub(crate) fn ring_without_antennas(ring: &Ring) -> Result<Option<Ring>> {
             break;
         }
     }
-    if let Some(&first) = points.first() {
-        try_push_vec(&mut points, first)?;
-    }
+    let first = *points.first().expect("surviving ring has vertices");
+    points.push(first);
     Ok(Ring::from_closed(CoordSeq::try_from_points(&points)?))
 }
