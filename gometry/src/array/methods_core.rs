@@ -919,11 +919,6 @@ impl PyGeometryArray {
     pub(crate) fn compute_total_bounds(
         &self,
     ) -> crate::error::Result<Option<(f64, f64, f64, f64)>> {
-        if self.has_missing() {
-            // Aggregates skip missing rows; the placeholder is a NaN point
-            // that would poison the column min/max fold.
-            return self.try_drop_missing()?.compute_total_bounds();
-        }
         let domain = crate::geometry::topology_domain(&self.frame).ok();
         if let Some(crate::geometry::TopologyDomain::Geographic(frame)) = domain {
             // Only a crossing row needs the shapes; scan for one first so the
@@ -964,7 +959,20 @@ impl PyGeometryArray {
         }) {
             return Ok(Some(bounds.into_tuple()));
         }
-        Ok(self.storage().total_bounds().map(Bounds::into_tuple))
+        // Mixed storage can retain shapes beneath missing rows. The packed
+        // column reducer above already skips those rows when it applies.
+        let bounds = if self.has_missing() {
+            self.row_operation()
+                .present_rows()
+                .filter_map(|row| row.row().quick_bounds())
+                .reduce(|mut total, bounds| {
+                    total.include_bounds(bounds);
+                    total
+                })
+        } else {
+            self.storage().total_bounds()
+        };
+        Ok(bounds.map(Bounds::into_tuple))
     }
 
     pub(crate) fn is_empty_unary_packed(&self) -> PyResult<Vec<bool>> {

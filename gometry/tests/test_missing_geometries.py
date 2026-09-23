@@ -271,6 +271,74 @@ def test_with_missing_length_mismatch_uses_value_error() -> None:
         arr._with_missing([True])
 
 
+@pytest.mark.parametrize(
+    ('rows', 'expected'),
+    [
+        pytest.param(
+            [gm.Point(0, 0), gm.Point(100, 100), gm.Point(10, 10)],
+            (0.0, 0.0, 10.0, 10.0),
+            id='points',
+        ),
+        pytest.param(
+            [
+                gm.LineString([(0, 0), (1, 1)]),
+                gm.LineString([(100, 100), (101, 101)]),
+                gm.LineString([(10, 10), (11, 11)]),
+            ],
+            (0.0, 0.0, 11.0, 11.0),
+            id='lines',
+        ),
+        pytest.param(
+            [
+                gm.box(0, 0, 1, 1),
+                gm.box(100, 100, 101, 101),
+                gm.box(10, 10, 11, 11),
+            ],
+            (0.0, 0.0, 11.0, 11.0),
+            id='polygons',
+        ),
+        pytest.param(
+            [
+                gm.Point(0, 0),
+                gm.LineString([(100, 100), (101, 101)]),
+                gm.Point(10, 10),
+            ],
+            (0.0, 0.0, 10.0, 10.0),
+            id='mixed',
+        ),
+    ],
+)
+def test_masked_total_bounds_excludes_hidden_payload(
+    rows: list[gm.Geometry], expected: tuple[float, float, float, float]
+) -> None:
+    masked = gm.GeometryArray(rows)._with_missing([False, True, False])
+    for selected in (masked, masked[::-1], masked[[2, 1, 0]]):
+        assert selected.total_bounds == expected
+    assert gm.GeometryArray(rows)._with_missing([True, True, True]).total_bounds is None
+
+
+@pytest.mark.parametrize(
+    'hidden',
+    [
+        pytest.param(gm.LineString([(100, 50), (101, 51)], crs=4326), id='packed'),
+        pytest.param(gm.Point(100, 50, crs=4326), id='mixed'),
+    ],
+)
+def test_masked_geographic_total_bounds_keep_antimeridian_crossing(
+    hidden: gm.Geometry,
+) -> None:
+    array = gm.GeometryArray(
+        [
+            gm.LineString([(170, 10), (-170, 20)], crs=4326),
+            hidden,
+            gm.LineString([(1, 2), (3, 4)], crs=4326),
+        ],
+        crs=4326,
+    )._with_missing([False, True, False])
+    for selected in (array, array[::-1], array[[2, 1, 0]]):
+        assert selected.total_bounds == (1.0, 2.0, -170.0, 20.0)
+
+
 def _masked_semantics_array(layout: str) -> gm.GeometryArray:
     if layout == 'points':
         return gm.points([0.0, 9.0, 2.0], [0.0, 9.0, 2.0])._with_missing([
