@@ -1507,6 +1507,7 @@ pub(super) fn build(
     let rect = clip_rectangle(&clip)?;
     let scaffold = build_scaffold(&rect, &clip, budget)?;
     let separators = emit_clipped_separators(sites, &primal_edges, &complex, &rect, budget)?;
+    drop((complex, primal_edges));
     let atoms = node_scaffold_and_separators(
         scaffold, separators, sites, &adjacency, &clip, &rect, budget,
     )?;

@@ -1,6 +1,5 @@
 use crate::error::Result;
 use crate::geometry::tessellation::{CertifiedDelaunay, EMPTY, Site, exact};
-use crate::{try_push_vec, try_reserve_vec};
 
 /// The sites that survive snapping at `radius`: a site within the radius of
 /// an earlier survivor joins it, any other site survives. The sites arrive
@@ -29,7 +28,7 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
             }
         }
         if !snapped {
-            try_push_vec(&mut survivors, *site)?;
+            survivors.push(*site);
         }
     }
     Ok(survivors)
@@ -73,8 +72,7 @@ pub(super) fn delaunay_complex(
     sites: &[Site],
 ) -> Result<DelaunayComplex> {
     let triangles = mesh.triangles();
-    let mut parents = Vec::new();
-    try_reserve_vec(&mut parents, triangles.len())?;
+    let mut parents = Vec::with_capacity(triangles.len());
     parents.extend(0..triangles.len());
     for (edge, &reverse) in mesh.halfedges().iter().enumerate() {
         if reverse == EMPTY || edge > reverse {
@@ -97,11 +95,8 @@ pub(super) fn delaunay_complex(
     // component's id never reaches the output: rings start at their rounded
     // lexicographic minimum and edges sort canonically. Any face of the fan
     // defines the exact circumcenter, since all of them are cocircular.
-    let mut component_of_root = Vec::new();
-    try_reserve_vec(&mut component_of_root, triangles.len())?;
-    component_of_root.resize(triangles.len(), usize::MAX);
-    let mut centers = Vec::new();
-    try_reserve_vec(&mut centers, triangles.len())?;
+    let mut component_of_root = vec![usize::MAX; triangles.len()];
+    let mut centers = Vec::with_capacity(triangles.len());
     for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
         if component_of_root[root] == usize::MAX {

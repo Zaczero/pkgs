@@ -1,3 +1,4 @@
+use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
@@ -11,7 +12,6 @@ use crate::geometry::{
     GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring,
     Segment, Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
 };
-use crate::{NonNegative, try_push_vec, try_reserve_vec};
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
 /// closed triangle ring is charged before its `Shape` is built.
@@ -48,7 +48,7 @@ impl<'budget> BudgetedTriangleSink<'budget> {
     pub(super) fn emit(&mut self, a: Point, b: Point, c: Point) -> Result<()> {
         self.budget.check_additional(4)?;
         let shape = try_triangle_shape(a, b, c)?;
-        try_push_vec(&mut self.shapes, shape)?;
+        self.shapes.push(shape);
         self.budget.add(4).map(|_| ())
     }
 
@@ -73,7 +73,7 @@ impl<'budget> BudgetedPackedTriangleSink<'budget> {
 
     pub(super) fn emit(&mut self, a: Point, b: Point, c: Point) -> Result<()> {
         self.budget.check_additional(4)?;
-        try_reserve_vec(&mut self.vertices, 4)?;
+        self.vertices.reserve(4);
         self.vertices.extend_from_slice(&[a, b, c, a]);
         self.budget.add(4).map(|_| ())
     }
@@ -105,16 +105,12 @@ impl Shape {
             )
             .into());
         }
-        let mut shapes = Vec::new();
-        crate::try_reserve_vec(&mut shapes, vertices.len() / 4)?;
+        let mut shapes = Vec::with_capacity(vertices.len() / 4);
         for ring in vertices.as_chunks::<4>().0 {
-            crate::try_push_vec(
-                &mut shapes,
-                Self::Polygon(Polygon::new(
-                    Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
-                    Vec::new(),
-                )),
-            )?;
+            shapes.push(Self::Polygon(Polygon::new(
+                Ring::try_from_closed(CoordSeq::try_from_points(ring)?)?,
+                Vec::new(),
+            )));
         }
         Ok(shapes)
     }
@@ -132,10 +128,7 @@ impl Shape {
         // XY-unique vertices keeping FULL ordinates (first-seen Z/M): triangle
         // corners are input vertices, so carrying their Z/M here preserves it
         // directly — no post-hoc XY re-lookup (the old `carry_each` step).
-        let capacity = self.coord_count();
-        let mut source_points = Vec::new();
-        crate::try_reserve_vec(&mut source_points, capacity)?;
-        self.try_for_each_point(|point| crate::try_push_vec(&mut source_points, point))?;
+        let source_points = self.points_vec();
         let (points, _) = selected_source_sites(source_points)?;
         if points.len() < 3 {
             return Ok(Vec::new());
@@ -156,10 +149,9 @@ impl Shape {
         // The triangulation's indexed faces are input-sized working state; the
         // closed-ring vertices below are the generated output. Charge their
         // exact count before reserving or emitting any of them.
-        let mut sites = Vec::new();
-        crate::try_reserve_vec(&mut sites, points.len())?;
+        let mut sites = Vec::with_capacity(points.len());
         for (id, &point) in points.iter().enumerate() {
-            crate::try_push_vec(&mut sites, Site { id, point })?;
+            sites.push(Site { id, point });
         }
         let triangulation = certified_delaunay(&sites)?;
         let capacity = triangulation
@@ -168,13 +160,10 @@ impl Shape {
             .checked_mul(4)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
         budget.check_additional(capacity)?;
-        let mut vertices = Vec::new();
         #[cfg(test)]
         note_delaunay_output_reserve();
-        crate::try_reserve_vec(&mut vertices, capacity)?;
-        let mut triangles = Vec::new();
-        crate::try_reserve_vec(&mut triangles, triangulation.triangles().len())?;
-        triangles.extend_from_slice(triangulation.triangles());
+        let mut vertices = Vec::with_capacity(capacity);
+        let mut triangles = triangulation.triangles().to_vec();
         triangles.sort_unstable_by_key(|triangle| {
             let mut key = *triangle;
             key.sort_unstable();
@@ -373,12 +362,10 @@ impl Shape {
             }
         }
         if self.topological_dimension() >= Dimension::Curve {
-            let mut segments: Vec<Segment> = Vec::new();
-            try_reserve_vec(&mut segments, self.segment_count())?;
-            self.try_for_each_segment_chain(|chain| {
+            let mut segments: Vec<Segment> = Vec::with_capacity(self.segment_count());
+            self.for_each_segment_chain(|chain| {
                 segments.extend(line_segments(chain));
-                Ok::<(), crate::error::Error>(())
-            })?;
+            });
             let scale = weight_scale(
                 segments
                     .iter()
@@ -406,8 +393,7 @@ impl Shape {
                 return Ok(points);
             }
         }
-        let mut atoms: Vec<Point> = Vec::new();
-        self.try_for_each_point(|point| try_push_vec(&mut atoms, point))?;
+        let atoms = self.points_vec();
         Ok(sample_weighted(
             count,
             seed,
@@ -516,13 +502,13 @@ impl Shape {
                 polygons.axes(),
             )?,
             Self::GeometryCollection(geometries) => {
-                let boundaries: Vec<_> = geometries
-                    .iter()
-                    .map(|geometry| geometry.boundary())
-                    .collect::<Result<Vec<_>>>()?
-                    .into_iter()
-                    .filter(|boundary| !boundary.is_empty())
-                    .collect();
+                let mut boundaries = Vec::new();
+                for geometry in geometries {
+                    let boundary = geometry.boundary()?;
+                    if !boundary.is_empty() {
+                        boundaries.push(boundary);
+                    }
+                }
                 if boundaries.is_empty() {
                     Self::typed_empty(GeometryKind::GeometryCollection, self.axes())
                 } else {
@@ -638,8 +624,7 @@ impl Shape {
 
 impl Shape {
     fn voronoi_sites(&self, tolerance: f64) -> Result<Vec<Site>> {
-        let mut points = Vec::new();
-        try_reserve_vec(&mut points, self.coord_count())?;
+        let mut points = Vec::with_capacity(self.coord_count());
         self.for_each_point(|point| points.push(point.to_xy()));
         canonical_voronoi_sites(points, tolerance)
     }
@@ -669,14 +654,11 @@ pub(super) fn canonical_voronoi_sites(mut points: Vec<Point>, tolerance: f64) ->
             .then_with(|| left.y.total_cmp(&right.y))
     });
     points.dedup_by(|left, right| PointKey::new(*left) == PointKey::new(*right));
-    let mut sites = Vec::new();
-    try_reserve_vec(&mut sites, points.len())?;
-    sites.extend(
-        points
-            .into_iter()
-            .enumerate()
-            .map(|(id, point)| Site { id, point }),
-    );
+    let sites = points
+        .into_iter()
+        .enumerate()
+        .map(|(id, point)| Site { id, point })
+        .collect();
     if tolerance == 0.0 {
         return Ok(sites);
     }
