@@ -594,21 +594,17 @@ mod tests {
         let ipv4 = parse_trusted_peer("10.0.0.0/24").unwrap();
         let ipv6 = parse_trusted_peer("2001:db8::/32").unwrap();
 
-        match ipv4 {
-            TrustedPeer::Cidr(cidr) => {
-                assert!(cidr.contains("10.0.0.42".parse().unwrap()));
-                assert!(!cidr.contains("10.0.1.42".parse().unwrap()));
-            },
-            _ => panic!("expected IPv4 CIDR"),
-        }
+        let TrustedPeer::Cidr(cidr) = ipv4 else {
+            panic!("expected IPv4 CIDR");
+        };
+        assert!(cidr.contains("10.0.0.42".parse().unwrap()));
+        assert!(!cidr.contains("10.0.1.42".parse().unwrap()));
 
-        match ipv6 {
-            TrustedPeer::Cidr(cidr) => {
-                assert!(cidr.contains("2001:db8::1".parse().unwrap()));
-                assert!(!cidr.contains("2001:db9::1".parse().unwrap()));
-            },
-            _ => panic!("expected IPv6 CIDR"),
-        }
+        let TrustedPeer::Cidr(cidr) = ipv6 else {
+            panic!("expected IPv6 CIDR");
+        };
+        assert!(cidr.contains("2001:db8::1".parse().unwrap()));
+        assert!(!cidr.contains("2001:db9::1".parse().unwrap()));
     }
 
     #[test]

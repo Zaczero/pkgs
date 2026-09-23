@@ -679,7 +679,10 @@ fn inspect_response_headers_with<const CONTENT_LENGTH: bool>(
             ResponseHeaderKind::ContentLength if CONTENT_LENGTH => {
                 scan.observe_content_length(value.as_bytes());
             },
-            _ => {},
+            ResponseHeaderKind::Connection
+            | ResponseHeaderKind::ContentLength
+            | ResponseHeaderKind::Other
+            | ResponseHeaderKind::TransferEncoding => {},
         }
     }
 
@@ -879,7 +882,9 @@ fn append_default_response_headers(
             ResponseHeaderKind::Server => scan.flags.insert(ResponseScanFlags::HAS_SERVER),
             ResponseHeaderKind::Date => scan.flags.insert(ResponseScanFlags::HAS_DATE),
             ResponseHeaderKind::ContentLength => scan.observe_content_length(header.value.as_ref()),
-            _ => {},
+            ResponseHeaderKind::Connection
+            | ResponseHeaderKind::Other
+            | ResponseHeaderKind::TransferEncoding => {},
         }
         headers.push((
             ResponseHeaderName::from_configured(Bytes::clone(&header.name), header.kind),

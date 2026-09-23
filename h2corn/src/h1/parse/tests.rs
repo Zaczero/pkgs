@@ -650,10 +650,11 @@ async fn read_chunked_body_accepts_empty_trailer_block() {
     .expect("empty trailer block is accepted");
     writer.await.expect("writer task finishes");
 
-    match rx.try_recv().expect("body chunk is forwarded") {
-        StreamInput::Data { body, credit: None } => assert_eq!(body.as_ref(), b"abc"),
-        _ => panic!("expected body data event"),
-    }
+    let StreamInput::Data { body, credit: None } = rx.try_recv().expect("body chunk is forwarded")
+    else {
+        panic!("expected body data event");
+    };
+    assert_eq!(body.as_ref(), b"abc");
     rx.try_recv().unwrap_err();
 }
 

@@ -248,6 +248,15 @@ impl HeaderParseState {
             return Ok(());
         };
 
+        self.apply_known_header(known_name, value, index)
+    }
+
+    fn apply_known_header(
+        &mut self,
+        known_name: KnownRequestHeaderName,
+        value: &[u8],
+        index: usize,
+    ) -> Result<(), H2CornError> {
         self.header_meta.observe_known_header_slice(
             known_name,
             value,
@@ -323,7 +332,31 @@ impl HeaderParseState {
                     return Http1Error::MalformedHeaderLine.err();
                 }
             },
-            _ => {},
+            KnownRequestHeaderName::Accept
+            | KnownRequestHeaderName::AcceptEncoding
+            | KnownRequestHeaderName::AcceptLanguage
+            | KnownRequestHeaderName::Authorization
+            | KnownRequestHeaderName::CacheControl
+            | KnownRequestHeaderName::ContentType
+            | KnownRequestHeaderName::Cookie
+            | KnownRequestHeaderName::Forwarded
+            | KnownRequestHeaderName::IfModifiedSince
+            | KnownRequestHeaderName::IfNoneMatch
+            | KnownRequestHeaderName::KeepAlive
+            | KnownRequestHeaderName::Origin
+            | KnownRequestHeaderName::Pragma
+            | KnownRequestHeaderName::ProxyConnection
+            | KnownRequestHeaderName::Referer
+            | KnownRequestHeaderName::SecWebSocketVersion
+            | KnownRequestHeaderName::SecWebSocketKey
+            | KnownRequestHeaderName::SecWebSocketProtocol
+            | KnownRequestHeaderName::SecWebSocketExtensions
+            | KnownRequestHeaderName::UserAgent
+            | KnownRequestHeaderName::XForwardedFor
+            | KnownRequestHeaderName::XForwardedProto
+            | KnownRequestHeaderName::XForwardedHost
+            | KnownRequestHeaderName::XForwardedPort
+            | KnownRequestHeaderName::XForwardedPrefix => {},
         }
         Ok(())
     }
@@ -481,7 +514,17 @@ fn parse_headers_or_reject(
                 ErrorKind::Http1(Http1Error::UnsupportedTransferCoding) => {
                     status_code::NOT_IMPLEMENTED
                 },
-                _ => status_code::BAD_REQUEST,
+                ErrorKind::Python(_)
+                | ErrorKind::Io(_)
+                | ErrorKind::Join(_)
+                | ErrorKind::Config(_)
+                | ErrorKind::Asgi(_)
+                | ErrorKind::Http1(_)
+                | ErrorKind::HttpResponse(_)
+                | ErrorKind::H2(_)
+                | ErrorKind::Pathsend(_)
+                | ErrorKind::Proxy(_)
+                | ErrorKind::WebSocket(_) => status_code::BAD_REQUEST,
             });
         }
     }
