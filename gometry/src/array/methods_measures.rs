@@ -1,4 +1,3 @@
-use pyo3::exceptions::PyOverflowError;
 use pyo3::types::PyDict;
 
 use crate::array::packed_columns::XyColumns;
@@ -86,9 +85,9 @@ impl PyGeometryArray {
         if others.is_empty() {
             return Ok(self.clone());
         }
-        let mut borrowed = crate::try_vec_with_capacity(others.len())?;
+        let mut borrowed = Vec::with_capacity(others.len());
         for (offset, item) in others.iter().enumerate() {
-            let index = offset + 1;
+            let index = offset.wrapping_add(1);
             let other = item.extract::<pyo3::PyRef<'_, Self>>().map_err(|_| {
                 pyo3::exceptions::PyTypeError::new_err(format!(
                     "concat arguments must be GeometryArray, got {}",
@@ -100,17 +99,7 @@ impl PyGeometryArray {
             self.ensure_concat_frame(&other, index)?;
             borrowed.push(other);
         }
-        let mut arrays = crate::try_vec_with_capacity(
-            borrowed
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| PyOverflowError::new_err("too many arrays to concatenate"))?,
-        )?;
-        arrays.push(self);
-        for array in &borrowed {
-            arrays.push(&**array);
-        }
-        Self::concat_many(&arrays)
+        self.concat_admitted(borrowed.iter().map(|array| &**array))
     }
 
     /// Per-row smallest Z ordinate (``nan`` where a geometry carries no Z).
@@ -681,37 +670,26 @@ impl PyGeometryArray {
         Ok(())
     }
 
-    fn concat_many(arrays: &[&Self]) -> PyResult<Self> {
-        let first = arrays
-            .first()
-            .expect("concat_many always receives the method receiver");
-        for (index, other) in arrays[1..].iter().enumerate() {
-            first.ensure_concat_frame(other, index + 1)?;
-        }
-
-        let total_rows = arrays.iter().try_fold(0_usize, |total, array| {
-            total
-                .checked_add(array.len())
-                .ok_or_else(|| PyOverflowError::new_err("concatenated row count overflows usize"))
-        })?;
-        let coordinate_capacity = arrays
-            .iter()
-            .map(|array| coordinate_payload_len(array).unwrap_or(0))
-            .try_fold(0_usize, |total, value| total.checked_add(value))
-            .ok_or_else(|| {
-                PyOverflowError::new_err("concatenated coordinate count overflows usize")
-            })?;
-        let ring_capacity = arrays
-            .iter()
-            .map(|array| ring_payload_len(array).unwrap_or(0))
-            .try_fold(0_usize, |total, value| total.checked_add(value))
-            .ok_or_else(|| PyOverflowError::new_err("concatenated ring count overflows usize"))?;
+    // The public argument loop admits frames in order so an earlier frame
+    // mismatch wins over a later argument's type error.
+    fn concat_admitted<'a>(
+        &'a self,
+        others: impl Iterator<Item = &'a Self> + Clone,
+    ) -> PyResult<Self> {
+        let arrays = || std::iter::once(self).chain(others.clone());
+        let total_rows = arrays().map(Self::len).fold(0_usize, usize::wrapping_add);
+        let coordinate_capacity = arrays()
+            .filter_map(coordinate_payload_len)
+            .fold(0_usize, usize::wrapping_add);
+        let ring_capacity = arrays()
+            .filter_map(ring_payload_len)
+            .fold(0_usize, usize::wrapping_add);
         let mut builder = crate::array::StreamingShapes::with_capacity_and_rings(
             coordinate_capacity,
             total_rows,
             ring_capacity,
         );
-        for array in arrays {
+        for array in std::iter::once(self).chain(others) {
             if builder.try_extend_array(array).map_err(PyErr::from)? {
                 continue;
             }
@@ -726,7 +704,7 @@ impl PyGeometryArray {
                 }
             }
         }
-        builder.finish(first.frame.clone()).map_err(PyErr::from)
+        builder.finish(self.frame.clone()).map_err(PyErr::from)
     }
 }
 
@@ -941,7 +919,9 @@ mod concat_bulk_tests {
         let points = points();
         let point_window = points.gather_logical_row_range(1..3).unwrap();
         reset_bulk_observations();
-        let merged = PyGeometryArray::concat_many(&[&points, &point_window]).unwrap();
+        let merged = points
+            .concat_admitted(std::iter::once(&point_window))
+            .unwrap();
         assert_bulk_counts();
         let GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) = merged.storage()
         else {
@@ -952,7 +932,9 @@ mod concat_bulk_tests {
         let lines = lines();
         let line_window = lines.gather_logical_row_range(1..3).unwrap();
         reset_bulk_observations();
-        let merged = PyGeometryArray::concat_many(&[&lines, &line_window]).unwrap();
+        let merged = lines
+            .concat_admitted(std::iter::once(&line_window))
+            .unwrap();
         assert_bulk_counts();
         let GeometryArrayStorage::Packed(PackedStorage::Lines {
             coords, offsets, ..
@@ -968,7 +950,9 @@ mod concat_bulk_tests {
         let polygons = polygons();
         let polygon_window = polygons.gather_logical_row_range(1..3).unwrap();
         reset_bulk_observations();
-        let merged = PyGeometryArray::concat_many(&[&polygons, &polygon_window]).unwrap();
+        let merged = polygons
+            .concat_admitted(std::iter::once(&polygon_window))
+            .unwrap();
         assert_bulk_counts();
         let GeometryArrayStorage::Packed(PackedStorage::Polygons {
             coords,
@@ -1070,7 +1054,7 @@ mod concat_bulk_tests {
         let lines = lines();
         let gathered = lines.gather_logical_rows(&[2, 0, 2]).unwrap();
         reset_bulk_observations();
-        let merged = PyGeometryArray::concat_many(&[&gathered]).unwrap();
+        let merged = gathered.concat_admitted(std::iter::empty()).unwrap();
         assert_eq!(stream_bulk_extensions(), 0);
         assert_eq!(stream_bulk_rows(), 0);
         assert_eq!(stream_row_advances(), 3);
@@ -1094,7 +1078,7 @@ mod concat_bulk_tests {
             ))
             .unwrap();
         reset_bulk_observations();
-        let merged = PyGeometryArray::concat_many(&[&nullable]).unwrap();
+        let merged = nullable.concat_admitted(std::iter::empty()).unwrap();
         assert_eq!(stream_bulk_extensions(), 0);
         assert_eq!(stream_bulk_rows(), 0);
         assert_eq!(stream_row_advances(), 3);
@@ -1109,7 +1093,7 @@ mod concat_bulk_tests {
 
         let dense = points();
         reset_bulk_observations();
-        let merged = PyGeometryArray::concat_many(&[&nullable, &dense]).unwrap();
+        let merged = nullable.concat_admitted(std::iter::once(&dense)).unwrap();
         assert_eq!(stream_bulk_extensions(), 1);
         assert_eq!(stream_bulk_rows(), 3);
         assert_eq!(stream_row_advances(), 3);
