@@ -167,7 +167,7 @@ impl SimilarityOp {
         if has_areal_support && matches!(model, crs::MetricModel::Planar { .. }) {
             return Ok(None);
         }
-        Ok(Some(same_storage_similarity_metric_zeros(storage)?))
+        Ok(Some(same_storage_similarity_metric_zeros(storage)))
     }
 
     pub(crate) fn has_empty_line(&self, left: &LineRows<'_>, right: &LineRows<'_>) -> bool {
@@ -183,9 +183,7 @@ impl SimilarityOp {
         len: usize,
         scale: f64,
     ) -> crate::error::Result<Vec<f64>> {
-        let mut values = Vec::new();
-        crate::try_reserve_vec(&mut values, len)?;
-        values.resize(len, 0.0);
+        let mut values = vec![0.0; len];
         match self {
             Self::Hausdorff { max_error } => {
                 crate::geometry::hausdorff_distance_line_columns_batch(

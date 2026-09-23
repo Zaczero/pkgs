@@ -508,9 +508,7 @@ pub(crate) fn array_crs_distances(
                     let packed_planar = Some(move |a, b| Ok(point_distance(a, b) * to_metre.get()));
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            let mut values = Vec::new();
-                            crate::boundary::try_reserve_vec(&mut values, lx.len())?;
-                            values.resize(lx.len(), 0.0);
+                            let mut values = vec![0.0; lx.len()];
                             pair_map4_guarded_f64(
                                 lx,
                                 ly,
@@ -642,9 +640,7 @@ pub(crate) fn array_crs_dwithin(
                     let packed_planar = Some(move |a, b| Ok(points_dwithin(a, b, limit)));
                     let packed_columns =
                         Some(move |lx: &[f64], ly: &[f64], rx: &[f64], ry: &[f64]| {
-                            let mut out = Vec::new();
-                            crate::boundary::try_reserve_vec(&mut out, lx.len())?;
-                            out.resize(lx.len(), false);
+                            let mut out = vec![false; lx.len()];
                             // A positive-subnormal limit square quantizes the
                             // boundary; keep the packed lane in distance space
                             // until the square is a normal f64.
@@ -793,17 +789,9 @@ fn try_collect_dwithin_rows(
     row_count: usize,
     values: impl IntoIterator<Item = crate::error::Result<bool>>,
 ) -> crate::error::Result<Vec<bool>, (usize, crate::error::Error)> {
-    let mut output = Vec::new();
-    crate::boundary::try_reserve_vec(&mut output, row_count).map_err(|error| (0, error))?;
+    let mut output = Vec::with_capacity(row_count);
     for (row, value) in values.into_iter().enumerate() {
-        let value = match value {
-            Ok(value) => value,
-            Err(error) => {
-                drop(output);
-                return Err((row, error));
-            },
-        };
-        crate::try_push_vec(&mut output, value).map_err(|error| (row, error))?;
+        output.push(value.map_err(|error| (row, error))?);
     }
     Ok(output)
 }

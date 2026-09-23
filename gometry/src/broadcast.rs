@@ -104,7 +104,7 @@ impl<T, I: Iterator<Item = Result<T, crate::error::Error>>> CollectRows<T> for I
         let mut out = Vec::new();
         for (row, result) in self.enumerate() {
             match result {
-                Ok(value) => crate::try_push_vec(&mut out, value).map_err(|error| (row, error))?,
+                Ok(value) => out.push(value),
                 Err(error) => return Err((row, error)),
             }
         }

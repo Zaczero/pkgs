@@ -542,11 +542,8 @@ pub(crate) fn pair_dwithin_geodesic(
 
 /// Element-wise zero metric for array-vs-self when both operands share one
 /// `Arc<GeometryArrayStorage>`.
-pub(crate) fn same_storage_similarity_metric_zeros(
-    storage: &GeometryArrayStorage,
-) -> crate::error::Result<Vec<f64>> {
-    let mut values = Vec::new();
-    crate::try_reserve_vec(&mut values, storage.len())?;
+pub(crate) fn same_storage_similarity_metric_zeros(storage: &GeometryArrayStorage) -> Vec<f64> {
+    let mut values = Vec::with_capacity(storage.len());
     match storage {
         GeometryArrayStorage::Packed(PackedStorage::Lines {
             offsets, row_map, ..
@@ -592,7 +589,7 @@ pub(crate) fn same_storage_similarity_metric_zeros(
             }
         },
     }
-    Ok(values)
+    values
 }
 
 /// CRS-aware continuous Hausdorff distance: planar coordinate/native units under
@@ -634,9 +631,7 @@ mod same_storage_metric_tests {
             Shape::Point(Point::new_raw_xy(0.0, 0.0)),
             Shape::Point(Point::new_raw_xy(1.0, 0.0)),
         ]);
-        assert_eq!(same_storage_similarity_metric_zeros(&storage).unwrap(), [
-            0.0, 0.0
-        ]);
+        assert_eq!(same_storage_similarity_metric_zeros(&storage), [0.0, 0.0]);
     }
 }
 

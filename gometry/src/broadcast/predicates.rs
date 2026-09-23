@@ -186,7 +186,11 @@ pub(crate) fn splitter_points_from_array(splitters: &PyGeometryArray) -> Result<
     {
         let map = row_map.as_deref();
         let logical_len = crate::array::point_logical_len(coords, map);
-        crate::try_reserve_vec(&mut points, logical_len)?;
+        points.reserve(
+            splitters
+                .missing()
+                .map_or(logical_len, crate::array::ValidityMask::present_count),
+        );
         points.extend(
             (0..logical_len)
                 .filter(|&logical| !splitters.is_row_missing(logical))
@@ -197,7 +201,7 @@ pub(crate) fn splitter_points_from_array(splitters: &PyGeometryArray) -> Result<
     for row in splitters.row_operation().present_rows() {
         // A compact nullable point column still yields point rows directly.
         if let crate::array::ShapeRow::Point(point) = row.row() {
-            crate::try_push_vec(&mut points, point)?;
+            points.push(point);
             continue;
         }
         row.row().try_with_shape(|shape| {
