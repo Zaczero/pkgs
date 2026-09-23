@@ -530,7 +530,8 @@ impl PyGeometryArray {
         let packed = py
             .detach(move || {
                 let mut columns = Vec::new();
-                let mut group_offsets = vec![0_i64];
+                let mut group_offsets = Vec::with_capacity(array.len().wrapping_add(1));
+                group_offsets.push(0_i64);
                 for logical_row in array.row_operation().rows_with_missing(|| ()) {
                     let (row, n_lines) = match logical_row {
                         ArrayRow::Missing { logical, .. } => (logical, 0_usize),
@@ -662,10 +663,13 @@ impl PyGeometryArray {
         // One vertex scan per present row feeds all four direction columns;
         // empty rows degrade to an empty point per column (the geometry-lane
         // sentinel) and missing rows stay missing via the scatter machinery.
-        let mut columns: [Vec<Shape>; 4] = std::array::from_fn(|_| Vec::new());
-        for row in self.present_shape_rows() {
-            let (_, shape) = row?;
-            match shape.extremes() {
+        let present_count = self
+            .missing()
+            .map_or(self.len(), crate::array::ValidityMask::present_count);
+        let mut columns: [Vec<Shape>; 4] =
+            std::array::from_fn(|_| Vec::with_capacity(present_count));
+        for row in self.row_operation().present_rows() {
+            match row.row().with_shape(Shape::extremes).map_err(PyErr::from)? {
                 Some(points) => {
                     for (column, point) in columns.iter_mut().zip(points) {
                         column.push(Shape::Point(point));
