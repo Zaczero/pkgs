@@ -1413,16 +1413,7 @@ def test_r14_zero_batch_binary_with_illegal_child_rejected() -> None:
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
     def get_schema(_stream: int, out_schema: int) -> int:
-        out = ArrowSchema.from_address(out_schema)
-        out.format = root.format
-        out.name = root.name
-        out.metadata = root.metadata
-        out.flags = root.flags
-        out.n_children = root.n_children
-        out.children = root.children
-        out.dictionary = root.dictionary
-        out.release = release_fn
-        out.private_data = None
+        ctypes.memmove(out_schema, ctypes.byref(root), ctypes.sizeof(root))
         return 0
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
@@ -2246,16 +2237,11 @@ def test_f5_arrow_c_child_index_out_of_range_rejects() -> None:
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
     def get_schema(_stream: int, out_schema: int) -> int:
-        out = ArrowSchema.from_address(out_schema)
-        out.format = root_schema.format
-        out.name = root_schema.name
-        out.metadata = root_schema.metadata
-        out.flags = root_schema.flags
-        out.n_children = root_schema.n_children
-        out.children = root_schema.children
-        out.dictionary = root_schema.dictionary
-        out.release = release_fn
-        out.private_data = None
+        ctypes.memmove(
+            out_schema,
+            ctypes.byref(root_schema),
+            ctypes.sizeof(root_schema),
+        )
         return 0
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
@@ -2369,16 +2355,11 @@ def test_f5_arrow_c_null_child_pointer_rejects() -> None:
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
     def get_schema(_stream: int, out_schema: int) -> int:
-        out = ArrowSchema.from_address(out_schema)
-        out.format = root_schema.format
-        out.name = root_schema.name
-        out.metadata = root_schema.metadata
-        out.flags = root_schema.flags
-        out.n_children = root_schema.n_children
-        out.children = root_schema.children
-        out.dictionary = root_schema.dictionary
-        out.release = release_fn
-        out.private_data = None
+        ctypes.memmove(
+            out_schema,
+            ctypes.byref(root_schema),
+            ctypes.sizeof(root_schema),
+        )
         return 0
 
     @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
