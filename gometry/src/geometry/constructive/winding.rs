@@ -12,11 +12,11 @@ use crate::geometry::constructive::{
 };
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    BufferCapStyle, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HashSet, LineSeq, MultiPoint, Orientation, Point, Polygon, Ring, Shape, XY, axis_pow2_scale,
-    canonical_f64_bits, column_all_finite, dedup_consecutive_points, interpolate_f64,
-    line_is_simple, orientation, polygon_parts_to_shape, power_of_two_exponent, ring_winding,
-    same_point, same_topological_coordinate, scale_by_power_of_two, scaled_residual,
+    BufferCapStyle, CoordSeq, CoordWindow, Coordinates as _, ExpansionBudget, GeometryErrorKind,
+    GeometryKind, HashSet, LineSeq, MultiPoint, Orientation, Point, Polygon, Ring, Shape, XY,
+    axis_pow2_scale, canonical_f64_bits, column_all_finite, dedup_consecutive_points,
+    interpolate_f64, line_is_simple, orientation, polygon_parts_to_shape, power_of_two_exponent,
+    ring_winding, same_point, same_topological_coordinate, scale_by_power_of_two, scaled_residual,
     shell_is_convex,
 };
 
@@ -35,23 +35,18 @@ pub(crate) fn polygon_encloses_no_area(polygon: &Polygon) -> bool {
 /// collapses to a thinner, wrong region). Rings are stored closed, so the
 /// final vertex repeats the first; a coincident-point ring collapses to a
 /// disk all the same.
-pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> Result<CoordSeq> {
+pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> CoordSeq {
     let n = ring.len();
     let take = if n >= 2 && ring.first() == ring.last() {
         n - 1
     } else {
         n
     };
-    let mut points = Vec::new();
-    crate::try_reserve_vec(&mut points, take)?;
-    for index in 0..take {
-        crate::try_push_vec(&mut points, ring.point_at(index))?;
-    }
-    CoordSeq::try_from_points(&points)
+    ring.view(CoordWindow::from_range(0..take, n))
 }
 
 fn ring_as_open_linework(ring: &CoordSeq) -> Result<Option<LineSeq>> {
-    let line = ring_as_open_line(ring)?;
+    let line = ring_as_open_line(ring);
     match line.len() {
         0 => Ok(None),
         1 => {
@@ -68,18 +63,16 @@ fn ring_as_open_linework(ring: &CoordSeq) -> Result<Option<LineSeq>> {
 pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
     Ok(match shape {
         Shape::Polygon(polygon) if polygon_encloses_no_area(polygon) => {
-            let mut lines = Vec::new();
-            crate::try_reserve_vec(&mut lines, polygon.rings().count())?;
+            let mut lines = Vec::with_capacity(polygon.rings().count());
             for ring in polygon.rings() {
                 if let Some(line) = ring_as_open_linework(ring.coords())? {
-                    crate::try_push_vec(&mut lines, line)?;
+                    lines.push(line);
                 }
             }
             Shape::multi_line_string(polygon.shell.coords().axes(), lines)?
         },
         Shape::MultiPolygon(polygons) => {
-            let mut members = Vec::new();
-            crate::try_reserve_vec(&mut members, polygons.member_count())?;
+            let mut members = Vec::with_capacity(polygons.member_count());
             for member in polygons.members() {
                 let shape = match member {
                     crate::geometry::MultiMember::Empty => {
@@ -89,7 +82,7 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
                         &Shape::Polygon(polygons.as_slice()[index].clone()),
                     )?,
                 };
-                crate::try_push_vec(&mut members, shape)?;
+                members.push(shape);
             }
             Shape::geometry_collection(members)?
         },
@@ -268,10 +261,7 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
     quadrant_segments: std::num::NonZeroU32,
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
-    let mut operands = Vec::new();
-    crate::try_reserve_vec(&mut operands, polygons.len())?;
-    operands.extend(polygons);
-    let normalized = normalize_polygon_union(&operands)?;
+    let normalized = normalize_polygon_union(polygons.iter())?;
     erosion_normalized_budgeted(normalized, distance, rule, quadrant_segments, budget)
 }
 
@@ -283,14 +273,14 @@ pub(in crate::geometry) fn winding_erosion_budgeted(
 /// preserves self-crossing ring semantics. All canonicalized source rings are
 /// then selected by polygon group in one arrangement, so overlapping
 /// components cannot cancel and a shared edge is one boundary before erosion.
-fn normalize_polygon_union(polygons: &[&Polygon]) -> Result<Vec<Polygon>> {
-    if polygons.is_empty() {
+fn normalize_polygon_union<'a>(
+    polygons: impl ExactSizeIterator<Item = &'a Polygon>,
+) -> Result<Vec<Polygon>> {
+    if polygons.len() == 0 {
         return Ok(Vec::new());
     }
-    let mut loops = Vec::new();
-    let mut groups = Vec::new();
-    crate::try_reserve_vec(&mut loops, polygons.len())?;
-    crate::try_reserve_vec(&mut groups, polygons.len())?;
+    let mut loops = Vec::with_capacity(polygons.len());
+    let mut groups = Vec::with_capacity(polygons.len());
     for polygon in polygons {
         let start = loops.len();
         let Some(shell) = strict_cycle(polygon.shell.coords(), true) else {
@@ -304,7 +294,7 @@ fn normalize_polygon_union(polygons: &[&Polygon]) -> Result<Vec<Polygon>> {
             loops.push(cycle_columns(&hole));
         }
         let end = loops.len();
-        crate::try_push_vec(&mut groups, start..end)?;
+        groups.push(start..end);
     }
     if loops.is_empty() {
         return Ok(Vec::new());
@@ -364,26 +354,25 @@ fn erosion_normalized_budgeted(
 /// puntal members into erosion operands. An explicit stack keeps the
 /// collection traversal independent of nesting depth while preserving input
 /// order for budget and error determinism.
-fn collection_polygon_operands(parts: &[Shape]) -> Result<Vec<&Polygon>> {
-    let mut stack = Vec::new();
-    crate::try_reserve_vec(&mut stack, parts.len())?;
+fn collection_polygon_operands(parts: &[Shape]) -> Vec<&Polygon> {
+    let mut stack = Vec::with_capacity(parts.len());
     stack.extend(parts.iter().rev());
     let mut polygons = Vec::new();
     while let Some(part) = stack.pop() {
         match part {
-            Shape::Polygon(polygon) => crate::try_push_vec(&mut polygons, polygon)?,
+            Shape::Polygon(polygon) => polygons.push(polygon),
             Shape::MultiPolygon(more) => {
-                crate::try_reserve_vec(&mut polygons, more.len())?;
+                polygons.reserve(more.len());
                 polygons.extend(more.iter());
             },
             Shape::GeometryCollection(inner) => {
-                crate::try_reserve_vec(&mut stack, inner.len())?;
+                stack.reserve(inner.len());
                 stack.extend(inner.iter().rev());
             },
             _ => {},
         }
     }
-    Ok(polygons)
+    polygons
 }
 
 /// Stroke buffer of lineal input through the winding engine: every chain
@@ -492,8 +481,8 @@ pub(in crate::geometry) fn winding_collection_budgeted(
     budget: &mut ExpansionBudget,
 ) -> Result<Option<Shape>> {
     if distance <= 0.0 {
-        let polygons = collection_polygon_operands(parts)?;
-        let normalized = normalize_polygon_union(&polygons)?;
+        let polygons = collection_polygon_operands(parts);
+        let normalized = normalize_polygon_union(polygons.iter().copied())?;
         return erosion_normalized_budgeted(normalized, -distance, rule, quadrant_segments, budget);
     }
     let mut loops: Vec<LoopColumns> = Vec::new();
@@ -601,7 +590,7 @@ pub(crate) fn expansion_loops(
     let Some(raw) = raw_offset_loop(&shell, distance, rule, quadrant_segments, budget)? else {
         return Ok(None);
     };
-    crate::try_push_vec(loops, raw)?;
+    loops.push(raw);
     for hole in polygon.holes.iter() {
         // Degenerate (zero-area) holes do not affect the buffer.
         let Some(ring) = strict_cycle(hole.coords(), true) else {
@@ -644,7 +633,7 @@ pub(crate) fn erosion_loops(
         let Some(raw) = raw_offset_loop(&ring, distance, rule, quadrant_segments, budget)? else {
             return Ok(None);
         };
-        crate::try_push_vec(loops, raw)?;
+        loops.push(raw);
     }
     Ok(Some(()))
 }
@@ -671,7 +660,7 @@ pub(crate) fn stroke_loops(
         };
     }
     let mut points = crate::scratch_pool::ScratchPool::checkout(&GATHER);
-    crate::try_reserve_vec(&mut points, chain.len())?;
+    points.reserve(chain.len());
     points.extend(chain.iter_coords());
     dedup_consecutive_points(&mut points);
 
@@ -708,8 +697,8 @@ pub(crate) fn stroke_loops(
                 else {
                     return Ok(None);
                 };
-                crate::try_push_vec(loops, right)?;
-                crate::try_push_vec(loops, left)?;
+                loops.push(right);
+                loops.push(left);
                 return Ok(Some(clean));
             }
             let Some((columns, clean)) =
@@ -717,7 +706,7 @@ pub(crate) fn stroke_loops(
             else {
                 return Ok(None);
             };
-            crate::try_push_vec(loops, columns)?;
+            loops.push(columns);
             Ok(Some(clean))
         },
     }
@@ -941,8 +930,7 @@ pub(crate) fn raw_closed_stroke_loops(
     let Some(right_plan) = WalkPlan::new(chain, true, distance, rule)? else {
         return Ok(None);
     };
-    let mut backward = Vec::new();
-    crate::try_reserve_vec(&mut backward, chain.len())?;
+    let mut backward = Vec::with_capacity(chain.len());
     backward.push(chain[0]);
     backward.extend(chain[1..].iter().rev().copied());
     let Some(left_plan) = WalkPlan::new(&backward, true, distance, rule)? else {
@@ -991,7 +979,7 @@ pub(crate) fn raw_stroke_loop(
         };
     }
     let mut backward = crate::scratch_pool::ScratchPool::checkout(&BACKWARD);
-    crate::try_reserve_vec(&mut backward, chain.len())?;
+    backward.reserve(chain.len());
     backward.extend(chain.iter().rev().copied());
     let Some(left_plan) = WalkPlan::new(backward.as_slice(), false, distance, rule)? else {
         return Ok(None);

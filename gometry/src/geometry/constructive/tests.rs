@@ -522,6 +522,7 @@ fn affine_origin_row_uses_both_input_pivots() {
 mod winding_buffer_tests {
     use super::*;
     use crate::geometry::Coordinates as _;
+    use crate::geometry::constructive::winding::ring_as_open_line;
 
     fn ring(points: &[(f64, f64)]) -> Ring {
         Ring::from_closed(
@@ -534,6 +535,25 @@ mod winding_buffer_tests {
             .unwrap(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn open_degenerate_ring_preserves_ordinates_without_allocating() {
+        let source = CoordSeq::try_from_vecs(
+            vec![1.0, 2.0, 3.0, 1.0],
+            vec![4.0, 5.0, 6.0, 4.0],
+            Some(vec![7.0, 8.0, 9.0, 7.0]),
+            Some(vec![10.0, 11.0, 12.0, 10.0]),
+        )
+        .unwrap();
+        let (open, allocations) =
+            crate::test_support::allocation_count(|| ring_as_open_line(&source));
+        assert_eq!(allocations, 0);
+        drop(source);
+        assert_eq!(open.xs(), &[1.0, 2.0, 3.0]);
+        assert_eq!(open.ys(), &[4.0, 5.0, 6.0]);
+        assert_eq!(open.zs().unwrap(), &[7.0, 8.0, 9.0]);
+        assert_eq!(open.ms().unwrap(), &[10.0, 11.0, 12.0]);
     }
 
     #[test]
