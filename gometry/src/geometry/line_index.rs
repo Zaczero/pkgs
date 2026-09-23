@@ -265,21 +265,11 @@ pub(crate) struct LineIndex {
 }
 
 impl LineIndex {
-    fn try_storage(upper: usize) -> Result<(Vec<OrdinateSegment>, Vec<f64>)> {
-        let prefix_len = upper
-            .checked_add(1)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let mut segments = Vec::new();
-        let mut prefix = Vec::new();
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut segments, upper) {
-            drop(prefix);
-            return Err(error);
-        }
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut prefix, prefix_len) {
-            drop(segments);
-            return Err(error);
-        }
-        Ok((segments, prefix))
+    fn storage(upper: usize) -> (Vec<OrdinateSegment>, Vec<f64>) {
+        (
+            Vec::with_capacity(upper),
+            Vec::with_capacity(upper.saturating_add(1)),
+        )
     }
 
     /// Build over `shape`'s linework. `LineStringRequired` for non-lineal
@@ -290,8 +280,8 @@ impl LineIndex {
         let lines = shape.linework()?;
         let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = shape.segment_count();
-        let (mut segments, mut prefix) = Self::try_storage(upper)?;
-        crate::boundary::try_push_vec(&mut prefix, 0.0)?;
+        let (mut segments, mut prefix) = Self::storage(upper);
+        prefix.push(0.0);
         let mut total = 0.0;
         let mut last = first;
         for line in &lines {
@@ -317,8 +307,8 @@ impl LineIndex {
                         "line index total length must be finite",
                     ));
                 }
-                crate::boundary::try_push_vec(&mut segments, OrdinateSegment { start, end })?;
-                crate::boundary::try_push_vec(&mut prefix, total)?;
+                segments.push(OrdinateSegment { start, end });
+                prefix.push(total);
             }
         }
         // The walks fall back to the linework's last vertex (zero-length tail
@@ -345,8 +335,8 @@ impl LineIndex {
     pub(crate) fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
         let first = coords.first().ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = coords.len().saturating_sub(1);
-        let (mut segments, mut prefix) = Self::try_storage(upper)?;
-        crate::boundary::try_push_vec(&mut prefix, 0.0)?;
+        let (mut segments, mut prefix) = Self::storage(upper);
+        prefix.push(0.0);
         let mut total = 0.0;
         let mut last = first;
         for [start, end] in coords.segment_pairs() {
@@ -366,8 +356,8 @@ impl LineIndex {
                     "line index total length must be finite",
                 ));
             }
-            crate::boundary::try_push_vec(&mut segments, OrdinateSegment { start, end })?;
-            crate::boundary::try_push_vec(&mut prefix, total)?;
+            segments.push(OrdinateSegment { start, end });
+            prefix.push(total);
         }
         let last = coords.last().unwrap_or(last);
         let segments = segments.into_boxed_slice();
@@ -486,8 +476,8 @@ impl LineIndex {
                     )
                 }
             };
-            try_push_distinct_point(&mut result, at(from))?;
-            try_push_distinct_point(&mut result, at(to))?;
+            push_distinct_point(&mut result, at(from));
+            push_distinct_point(&mut result, at(to));
         }
 
         Ok(match result.len() {
@@ -526,7 +516,7 @@ impl LineIndex {
             #[derive(Clone, Copy)]
             struct BoundEntry {
                 bound: f64,
-                index: u32,
+                index: usize,
             }
             impl PartialEq for BoundEntry {
                 fn eq(&self, other: &Self) -> bool {
@@ -548,21 +538,17 @@ impl LineIndex {
                         .then_with(|| other.index.cmp(&self.index))
                 }
             }
-            let mut entries = Vec::new();
-            crate::boundary::try_reserve_vec(&mut entries, self.segments.len())?;
+            let mut entries = Vec::with_capacity(self.segments.len());
             for (index, (segment, &offset)) in
                 std::iter::zip(&self.segments, &self.prefix).enumerate()
             {
                 let length = self.prefix[index + 1] - offset;
                 let bound = metric.locate_bound(probe, segment.start, segment.end, length)?;
-                crate::boundary::try_push_vec(&mut entries, BoundEntry {
-                    bound,
-                    index: index as u32,
-                })?;
+                entries.push(BoundEntry { bound, index });
             }
             // O(n) heapify; pop ascending-bound until the ceiling is met.
             let mut order = std::collections::BinaryHeap::from(entries);
-            let mut best_index = u32::MAX;
+            let mut best_index = usize::MAX;
             while let Some(BoundEntry { bound, index }) = order.pop() {
                 if bound > best_distance {
                     break;
@@ -574,9 +560,9 @@ impl LineIndex {
                 if skippable_tie {
                     continue;
                 }
-                let segment = self.segments[index as usize];
-                let offset = self.prefix[index as usize];
-                let length = self.prefix[index as usize + 1] - offset;
+                let segment = self.segments[index];
+                let offset = self.prefix[index];
+                let length = self.prefix[index.wrapping_add(1)] - offset;
                 let Some((distance, along)) = metric.locate(
                     probe,
                     segment.start,
@@ -642,14 +628,13 @@ impl HeapSize for LineIndex {
     }
 }
 
-fn try_push_distinct_point(points: &mut Vec<Point>, point: Point) -> Result<()> {
+fn push_distinct_point(points: &mut Vec<Point>, point: Point) {
     if points
         .last()
         .is_none_or(|last| !crate::geometry::same_point(*last, point))
     {
-        crate::boundary::try_push_vec(points, point)?;
+        points.push(point);
     }
-    Ok(())
 }
 
 #[cfg(test)]
