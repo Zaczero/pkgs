@@ -567,8 +567,8 @@ pub(crate) fn emit_cap<S: WalkSink>(
 
 /// Clean one raw offset loop in its own arrangement and append its
 /// surviving `winding <= -1` pieces to `loops` — oriented CW (each piece
-/// arrives as a CCW shell from the polygonizer; `reverse` keeps the
-/// subtracting orientation the final pass expects). Under erosion the
+/// arrives as a CCW shell from the polygonizer; reversing its open vertices
+/// keeps the subtracting orientation the final pass expects). Under erosion the
 /// pieces ARE the shrunk-shell lobes and stay in the same CW form.
 pub(crate) fn extend_cleaned(
     loops: &mut Vec<(Vec<f64>, Vec<f64>)>,
@@ -578,18 +578,10 @@ pub(crate) fn extend_cleaned(
         // Shrinking a simply-connected region cannot create nested
         // structure — each surviving piece is a bare shell.
         debug_assert!(piece.holes.is_empty());
-        let mut xs = Vec::new();
-        let mut ys = Vec::new();
-        crate::try_reserve_vec(&mut xs, piece.shell.coords().len())?;
-        crate::try_reserve_vec(&mut ys, piece.shell.coords().len())?;
-        xs.extend_from_slice(piece.shell.coords().xs());
-        ys.extend_from_slice(piece.shell.coords().ys());
-        // Drop the closing duplicate and orient CW.
-        xs.pop();
-        ys.pop();
-        xs.reverse();
-        ys.reverse();
-        crate::try_push_vec(loops, (xs, ys))?;
+        let shell = piece.shell.coords();
+        let xs = shell.xs().iter().rev().skip(1).copied().collect();
+        let ys = shell.ys().iter().rev().skip(1).copied().collect();
+        loops.push((xs, ys));
     }
     Ok(())
 }
