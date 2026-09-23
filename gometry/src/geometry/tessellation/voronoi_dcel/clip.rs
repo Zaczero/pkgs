@@ -6,7 +6,7 @@
 
 use super::{
     ExactSign, ExpansionBudget, NormalizedClip, Ordering, Result, Site, SiteId, XY, exact, lex_xy,
-    try_dedup_by, try_push_vec, try_reserve_vec, try_sort_by, voronoi_error,
+    try_dedup_by, try_sort_by, voronoi_error,
 };
 
 pub(super) fn orient_separator(
@@ -50,7 +50,7 @@ pub(super) fn bisector_frame_intersections(
                 exact::FrameHit::Parallel => {},
                 exact::FrameHit::Point(hit) => {
                     if between(&hit, &frame[side], &frame[(side + 1) % 4])? {
-                        try_push_vec(&mut hits, (side as u8, hit))?;
+                        hits.push((side as u8, hit));
                     }
                 },
             }
@@ -105,7 +105,7 @@ pub(super) fn frame_intersections(
             && exact::segment_intersection(&frame[side], &frame[(side + 1) % 4], &hit, &hit)?
                 .is_point()
         {
-            try_push_vec(&mut hits, (side as u8, hit))?;
+            hits.push((side as u8, hit));
         }
     }
     try_sort_by(&mut hits, |left, right| {
@@ -189,8 +189,7 @@ pub(super) fn separator_rectangle_hits(
 ) -> Result<Vec<exact::ExactPoint>> {
     let certified = bisector_frame_intersections(pair, rect)?;
     budget.add(certified.len().saturating_add(8))?;
-    let mut hits = Vec::new();
-    try_reserve_vec(&mut hits, certified.len().saturating_add(8))?;
+    let mut hits = Vec::with_capacity(certified.len().saturating_add(8));
     hits.extend(certified.into_iter().map(|(_, point)| point));
     for side in 0..4 {
         let start = &rect[side];
@@ -216,7 +215,7 @@ pub(super) fn clip_segment_to_rectangle(
     budget.add(4)?;
     let mut points = separator_rectangle_hits(pair, line, rect, budget)?;
     budget.add(2)?;
-    try_reserve_vec(&mut points, 2)?;
+    points.reserve(2);
     if in_rectangle(rect, start)? {
         points.push(start.clone());
     }
@@ -281,8 +280,7 @@ pub(super) fn clip_hull_ray_to_rectangle(
         &exact::ExactPoint::from_xy(sites[opposite].point.xy()),
     )?;
     budget.add(hits.len().saturating_add(1))?;
-    let mut points = Vec::new();
-    try_reserve_vec(&mut points, hits.len().saturating_add(1))?;
+    let mut points = Vec::with_capacity(hits.len().saturating_add(1));
     if in_rectangle(rect, center)? {
         points.push(center.clone());
     }

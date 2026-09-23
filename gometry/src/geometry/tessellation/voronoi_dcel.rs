@@ -36,7 +36,6 @@ use crate::geometry::{
 use crate::geometry::{
     GENERATED_ITEM_LIMIT, tessellation::certified_delaunay, tessellation::shape,
 };
-use crate::{try_push_vec, try_reserve_vec};
 
 macro_rules! dense_id {
     ($name:ident) => {
@@ -230,7 +229,9 @@ fn embedding_failure() -> crate::error::Error {
 /// so exact boxes that meet have rounded boxes that meet, and an exact point in
 /// an exact box rounds into its rounded box. A point without a finite rounding
 /// has no box, and a missing box meets every box.
-fn rounded_box(points: &[exact::ExactPoint]) -> Result<Option<Bounds>> {
+fn rounded_box<'a>(
+    points: impl IntoIterator<Item = &'a exact::ExactPoint>,
+) -> Result<Option<Bounds>> {
     let mut bounds: Option<Bounds> = None;
     for point in points {
         let Some(point) = point.finite_rounding()? else {
@@ -256,12 +257,12 @@ impl BoxIndex {
     fn build(boxes: &[Option<Bounds>]) -> Result<Self> {
         let mut bounded = Vec::new();
         let mut unbounded = Vec::new();
-        try_reserve_vec(&mut bounded, boxes.len())?;
+        bounded.reserve(boxes.len());
         for (item, bounds) in boxes.iter().enumerate() {
             if bounds.is_some() {
                 bounded.push(item as u32);
             } else {
-                try_push_vec(&mut unbounded, item as u32)?;
+                unbounded.push(item as u32);
             }
         }
         let index = YStabbingIndex::build(bounded, |&item| {
@@ -298,9 +299,10 @@ impl BoxIndex {
     }
 }
 
-fn budgeted_try_push<T>(values: &mut Vec<T>, value: T, budget: &mut ExpansionBudget) -> Result<()> {
+fn budgeted_push<T>(values: &mut Vec<T>, value: T, budget: &mut ExpansionBudget) -> Result<()> {
     budget.add(1)?;
-    try_push_vec(values, value)
+    values.push(value);
+    Ok(())
 }
 
 fn exact_cycle_error() -> crate::error::Error {
@@ -322,18 +324,19 @@ fn indexed_exact_segment_candidates(
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<[usize; 2]>> {
     let segment_count = cycles.iter().map(|cycle| cycle.len()).sum();
-    let mut boxes = Vec::new();
-    try_reserve_vec(&mut boxes, segment_count)?;
+    let mut boxes = Vec::with_capacity(segment_count);
     for cycle in cycles {
         for edge in 0..cycle.len() {
-            let ends = [cycle[edge].clone(), cycle[(edge + 1) % cycle.len()].clone()];
-            boxes.push(rounded_box(&ends)?);
+            boxes.push(rounded_box([
+                &cycle[edge],
+                &cycle[(edge + 1) % cycle.len()],
+            ])?);
         }
     }
     let mut candidates = Vec::new();
     let mut failure = Ok(());
     let _ = for_each_indexed_overlapping_bounds_pair(&boxes, |left, right| {
-        failure = budgeted_try_push(&mut candidates, [left, right], budget);
+        failure = budgeted_push(&mut candidates, [left, right], budget);
         if failure.is_err() {
             ControlFlow::Break(())
         } else {
@@ -345,7 +348,7 @@ fn indexed_exact_segment_candidates(
         if bounds.is_none() {
             for right in 0..segment_count {
                 if left != right {
-                    budgeted_try_push(&mut candidates, [left.min(right), left.max(right)], budget)?;
+                    budgeted_push(&mut candidates, [left.min(right), left.max(right)], budget)?;
                 }
             }
         }
@@ -363,8 +366,7 @@ fn validate_exact_cycles(
     if cycles.is_empty() || shell >= cycles.len() || cycles.iter().any(|cycle| cycle.len() < 3) {
         return Err(exact_cycle_error());
     }
-    let mut offsets = Vec::new();
-    try_reserve_vec(&mut offsets, cycles.len())?;
+    let mut offsets = Vec::with_capacity(cycles.len());
     offsets.extend(cycles.iter().scan(0_usize, |offset, cycle| {
         let current = *offset;
         *offset = offset.saturating_add(cycle.len());
@@ -409,7 +411,7 @@ fn validate_exact_cycles(
                     offsets[left_ring] + left_edge,
                     offsets[right_ring] + right_edge,
                 ];
-                budgeted_try_push(
+                budgeted_push(
                     &mut contacts,
                     ExactCycleContact {
                         segments,
@@ -439,11 +441,7 @@ fn validate_exact_cycles(
                             {
                                 continue;
                             }
-                            budgeted_try_push(
-                                &mut touch.directions[slot],
-                                direction.clone(),
-                                budget,
-                            )?;
+                            budgeted_push(&mut touch.directions[slot], direction.clone(), budget)?;
                         }
                     }
                 } else {
@@ -455,15 +453,11 @@ fn validate_exact_cycles(
                     {
                         for (index, direction) in segment.into_iter().enumerate() {
                             if endpoint.is_none_or(|endpoint| index != endpoint) {
-                                budgeted_try_push(
-                                    &mut directions[slot],
-                                    direction.clone(),
-                                    budget,
-                                )?;
+                                budgeted_push(&mut directions[slot], direction.clone(), budget)?;
                             }
                         }
                     }
-                    budgeted_try_push(
+                    budgeted_push(
                         &mut pair_touches,
                         ExactPairTouch {
                             rings: [left_ring, right_ring],
@@ -477,11 +471,7 @@ fn validate_exact_cycles(
         }
     }
     for touch in &pair_touches {
-        let mut rays = Vec::new();
-        try_reserve_vec(
-            &mut rays,
-            touch.directions[0].len() + touch.directions[1].len(),
-        )?;
+        let mut rays = Vec::with_capacity(touch.directions[0].len() + touch.directions[1].len());
         rays.extend(
             touch.directions[0]
                 .iter()
@@ -505,19 +495,17 @@ fn validate_exact_cycles(
             return Err(exact_cycle_error());
         }
     }
-    let mut touch_points = Vec::new();
-    try_reserve_vec(&mut touch_points, pair_touches.len())?;
+    let mut touch_points = Vec::with_capacity(pair_touches.len());
     touch_points.extend(pair_touches.iter().map(|touch| touch.point.clone()));
     try_sort_by(&mut touch_points, exact::ExactPoint::compare_lex)?;
     try_dedup_by(&mut touch_points, exact::ExactPoint::same_position)?;
-    let mut parents = Vec::new();
-    try_reserve_vec(&mut parents, cycles.len() + touch_points.len())?;
+    let mut parents = Vec::with_capacity(cycles.len() + touch_points.len());
     parents.extend(0..cycles.len() + touch_points.len());
     let mut incidences = Vec::new();
     for touch in &pair_touches {
         let point = position_of(&touch_points, &touch.point)?.expect("touch point was interned");
         for ring in touch.rings {
-            budgeted_try_push(&mut incidences, (point, ring), budget)?;
+            budgeted_push(&mut incidences, (point, ring), budget)?;
         }
     }
     incidences.sort_unstable();
@@ -587,8 +575,8 @@ fn open_ring(ring: &Ring) -> Result<(Vec<exact::ExactPoint>, Vec<XY>)> {
     let open = ring.len() - 1;
     let mut exact_points = Vec::new();
     let mut fixed = Vec::new();
-    try_reserve_vec(&mut exact_points, open)?;
-    try_reserve_vec(&mut fixed, open)?;
+    exact_points.reserve(open);
+    fixed.reserve(open);
     for point in ring.iter().take(open) {
         let point = point.xy();
         let exact = exact::ExactPoint::from_xy(point);
@@ -645,8 +633,7 @@ fn normalize_clip<'a>(
             if !polygon_is_valid(polygon)? {
                 return Err(voronoi_error("Voronoi clip polygon is invalid"));
             }
-            let mut clip_rings = Vec::new();
-            try_reserve_vec(&mut clip_rings, 1 + polygon.holes.len())?;
+            let mut clip_rings = Vec::with_capacity(1 + polygon.holes.len());
             for (ring_index, ring) in std::iter::once(&polygon.shell)
                 .chain(polygon.holes.iter())
                 .enumerate()
@@ -667,8 +654,8 @@ fn normalize_clip<'a>(
             try_sort_by(&mut clip_rings[1..], |(left, _), (right, _)| {
                 compare_exact_sequences(left, right)
             })?;
-            try_reserve_vec(&mut rings, clip_rings.len())?;
-            try_reserve_vec(&mut fixed, clip_rings.len())?;
+            rings.reserve(clip_rings.len());
+            fixed.reserve(clip_rings.len());
             for (points, coordinates) in clip_rings {
                 rings.push(points);
                 fixed.push(coordinates);
@@ -676,28 +663,24 @@ fn normalize_clip<'a>(
             Some(polygon)
         },
         VoronoiBoundary::Envelope | VoronoiBoundary::Padded => {
-            let mut points = Vec::new();
-            try_reserve_vec(&mut points, sites.len())?;
+            let mut points = Vec::with_capacity(sites.len());
             points.extend(sites.iter().map(|site| site.point));
             let rectangle =
                 exact::rectangular_boundary(&points, matches!(boundary, VoronoiBoundary::Padded))?;
-            let mut corners = Vec::new();
-            try_reserve_vec(&mut corners, rectangle.len())?;
+            let mut corners = Vec::with_capacity(rectangle.len());
             for corner in &rectangle {
                 corners.push(corner.round_nearest_even()?);
             }
-            let mut ring = Vec::new();
-            try_reserve_vec(&mut ring, rectangle.len())?;
+            let mut ring = Vec::with_capacity(rectangle.len());
             ring.extend(rectangle);
-            try_reserve_vec(&mut rings, 1)?;
-            try_reserve_vec(&mut fixed, 1)?;
+            rings.reserve(1);
+            fixed.reserve(1);
             rings.push(ring);
             fixed.push(corners);
             None
         },
     };
-    let mut open = Vec::new();
-    try_reserve_vec(&mut open, rings.len())?;
+    let mut open = Vec::with_capacity(rings.len());
     open.extend(rings.iter().map(Vec::as_slice));
     let contacts = validate_exact_cycles(&open, 0, budget)?.contacts;
     Ok(NormalizedClip {
@@ -736,9 +719,7 @@ fn certified_site_adjacency(
             .saturating_add(1)
             .saturating_add(edges.len().saturating_mul(2)),
     )?;
-    let mut degrees = Vec::new();
-    try_reserve_vec(&mut degrees, site_count)?;
-    degrees.resize(site_count, 0_usize);
+    let mut degrees = vec![0_usize; site_count];
     for edge in edges {
         let sites = match *edge {
             CertifiedPrimalEdge::Interior { sites, .. }
@@ -747,8 +728,7 @@ fn certified_site_adjacency(
         degrees[sites[0]] = degrees[sites[0]].saturating_add(1);
         degrees[sites[1]] = degrees[sites[1]].saturating_add(1);
     }
-    let mut offsets = Vec::new();
-    try_reserve_vec(&mut offsets, site_count + 1)?;
+    let mut offsets = Vec::with_capacity(site_count + 1);
     offsets.push(0_u32);
     for degree in degrees {
         let next = (offsets.last().copied().unwrap_or(0) as usize)
@@ -757,11 +737,9 @@ fn certified_site_adjacency(
         offsets.push(u32::try_from(next).map_err(|_| voronoi_error("too many site adjacencies"))?);
     }
     let neighbor_count = offsets.last().copied().unwrap_or(0) as usize;
-    let mut neighbors = Vec::new();
-    try_reserve_vec(&mut neighbors, neighbor_count)?;
+    let mut neighbors = Vec::with_capacity(neighbor_count);
     neighbors.resize(neighbor_count, SiteId(0));
-    let mut cursors = Vec::new();
-    try_reserve_vec(&mut cursors, site_count)?;
+    let mut cursors = Vec::with_capacity(site_count);
     cursors.extend(offsets[..site_count].iter().map(|offset| *offset as usize));
     for edge in edges {
         let sites = match *edge {
@@ -866,20 +844,11 @@ pub(super) enum EmbeddedEdges {
 }
 
 pub(super) fn empty_packed_edges() -> Result<EmbeddedEdges> {
-    let mut ends = Vec::new();
-    try_push_vec(&mut ends, 0)?;
+    let ends = vec![0];
     Ok(EmbeddedEdges::Packed {
         coords: CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
         offsets: CsrOffsetColumn::try_new(ends, 0)?,
     })
-}
-
-/// A fallibly allocated copy of `values`.
-fn copied<T: Copy>(values: &[T]) -> Result<Vec<T>> {
-    let mut copy = Vec::new();
-    try_reserve_vec(&mut copy, values.len())?;
-    copy.extend_from_slice(values);
-    Ok(copy)
 }
 
 fn pack_separator_chains(
@@ -889,10 +858,9 @@ fn pack_separator_chains(
     let vertices: usize = chains.iter().map(|chain| chain.vertices.len()).sum();
     let mut xs = Vec::new();
     let mut ys = Vec::new();
-    try_reserve_vec(&mut xs, vertices)?;
-    try_reserve_vec(&mut ys, vertices)?;
-    let mut ends = Vec::new();
-    try_reserve_vec(&mut ends, chains.len().saturating_add(1))?;
+    xs.reserve(vertices);
+    ys.reserve(vertices);
+    let mut ends = Vec::with_capacity(chains.len().saturating_add(1));
     ends.push(0);
     for chain in chains {
         for &vertex in chain.vertices.iter() {
@@ -938,8 +906,8 @@ impl EmbeddedEdges {
                     .map(|&[start, end]| {
                         let range = start as usize..end as usize;
                         LineSeq::try_new(CoordSeq::try_from_vecs(
-                            copied(&coords.xs()[range.clone()])?,
-                            copied(&coords.ys()[range])?,
+                            coords.xs()[range.clone()].to_vec(),
+                            coords.ys()[range].to_vec(),
                             None,
                             None,
                         )?)
@@ -950,8 +918,8 @@ impl EmbeddedEdges {
                 .into_iter()
                 .map(|[a, b]| {
                     LineSeq::try_new(CoordSeq::try_from_vecs(
-                        copied(&[a.x, b.x])?,
-                        copied(&[a.y, b.y])?,
+                        vec![a.x, b.x],
+                        vec![a.y, b.y],
                         None,
                         None,
                     )?)
@@ -970,9 +938,9 @@ impl EmbeddedEdges {
                 let mut xs = Vec::new();
                 let mut ys = Vec::new();
                 let mut ends = Vec::new();
-                try_reserve_vec(&mut xs, vertices)?;
-                try_reserve_vec(&mut ys, vertices)?;
-                try_reserve_vec(&mut ends, segments.len() + 1)?;
+                xs.reserve(vertices);
+                ys.reserve(vertices);
+                ends.reserve(segments.len() + 1);
                 for [a, b] in &segments {
                     xs.extend([a.x, b.x]);
                     ys.extend([a.y, b.y]);
@@ -1050,7 +1018,7 @@ fn sort_fan(
     };
 
     order.clear();
-    try_reserve_vec(order, incident.len())?;
+    order.reserve(incident.len());
     order.extend_from_slice(incident);
     try_sort_by(order, |&left, &right| compare(left, right))?;
     for &[left, right] in order.array_windows::<2>() {
@@ -1088,13 +1056,12 @@ fn embed(
         }
         Ok(None)
     };
-    let mut live = Vec::new();
-    try_reserve_vec(&mut live, subdivision.vertices.len())?;
+    let mut live = Vec::with_capacity(subdivision.vertices.len());
     live.resize(subdivision.vertices.len(), false);
     let mut live_edges = Vec::new();
     for part in &parts {
         for ring in std::iter::once(&part.shell).chain(&part.holes) {
-            try_reserve_vec(&mut live_edges, ring.edges.len())?;
+            live_edges.reserve(ring.edges.len());
             live_edges.extend_from_slice(&ring.edges);
             for vertex in &ring.vertices {
                 live[vertex.0 as usize] = true;
@@ -1102,7 +1069,7 @@ fn embed(
         }
     }
     for chain in chains {
-        try_reserve_vec(&mut live_edges, chain.edges.len())?;
+        live_edges.reserve(chain.edges.len());
         live_edges.extend_from_slice(&chain.edges);
         for vertex in &chain.vertices {
             live[vertex.0 as usize] = true;
@@ -1110,7 +1077,7 @@ fn embed(
     }
     for (edge_index, edge) in subdivision.edges.iter().enumerate() {
         if !edge.clip_sources.is_empty() {
-            try_push_vec(&mut live_edges, EdgeId(edge_index as u32))?;
+            live_edges.push(EdgeId(edge_index as u32));
             live[edge.endpoints[0].0 as usize] = true;
             live[edge.endpoints[1].0 as usize] = true;
         }
@@ -1123,8 +1090,7 @@ fn embed(
         live[vertex] = true;
     }
     let mut points = Vec::new();
-    let mut exact_to_embedded = Vec::new();
-    try_reserve_vec(&mut exact_to_embedded, subdivision.vertices.len())?;
+    let mut exact_to_embedded = Vec::with_capacity(subdivision.vertices.len());
     exact_to_embedded.resize(subdivision.vertices.len(), None);
     for (index, vertex) in subdivision.vertices.iter().enumerate() {
         if !live[index] {
@@ -1135,10 +1101,9 @@ fn embed(
             .map_or_else(|| vertex.point.round_nearest_even(), Ok)?;
         let embedded = EmbeddedVertexId(points.len() as u32);
         exact_to_embedded[index] = Some(embedded);
-        budgeted_try_push(&mut points, point, budget)?;
+        budgeted_push(&mut points, point, budget)?;
     }
-    let mut keys = Vec::new();
-    try_reserve_vec(&mut keys, points.len())?;
+    let mut keys = Vec::with_capacity(points.len());
     keys.extend(points.iter().map(|&point| PointKey::new(point)));
     keys.sort_unstable();
     if keys.array_windows::<2>().any(|[a, b]| a == b) {
@@ -1197,16 +1162,13 @@ fn embed(
         if edge.separator.is_some() {
             let [start, end] = edge.endpoints.map(embedded_point);
             let (start, end) = (start?, end?);
-            try_push_vec(&mut marked, [start, end])?;
-            try_push_vec(
-                &mut marked_boxes,
-                Some(Bounds::new_raw(
-                    start.x.min(end.x),
-                    start.y.min(end.y),
-                    start.x.max(end.x),
-                    start.y.max(end.y),
-                )),
-            )?;
+            marked.push([start, end]);
+            marked_boxes.push(Some(Bounds::new_raw(
+                start.x.min(end.x),
+                start.y.min(end.y),
+                start.x.max(end.x),
+                start.y.max(end.y),
+            )));
         }
     }
     let marked_index = BoxIndex::build(&marked_boxes)?;
@@ -1225,7 +1187,7 @@ fn embed(
     let mut emitted_incidence = Vec::new();
     for &edge_id in &live_edges {
         let edge = &subdivision.edges[edge_id.0 as usize];
-        budgeted_try_push(
+        budgeted_push(
             &mut emitted_incidence,
             ([edge.endpoints[0].0, edge.endpoints[1].0], Segment {
                 start: embedded_point(edge.endpoints[0])?,
@@ -1242,9 +1204,7 @@ fn embed(
         }
     })?;
     budget.add(live_edges.len().saturating_mul(2))?;
-    let mut incidence_offsets = Vec::new();
-    try_reserve_vec(&mut incidence_offsets, subdivision.vertices.len() + 1)?;
-    incidence_offsets.resize(subdivision.vertices.len() + 1, 0_usize);
+    let mut incidence_offsets = vec![0_usize; subdivision.vertices.len() + 1];
     for &edge_id in &live_edges {
         for endpoint in subdivision.edges[edge_id.0 as usize].endpoints {
             incidence_offsets[endpoint.0 as usize + 1] += 1;
@@ -1255,10 +1215,9 @@ fn embed(
             .checked_add(incidence_offsets[index - 1])
             .ok_or_else(|| voronoi_error("too many live edge incidences"))?;
     }
-    let mut incident_edges = Vec::new();
-    try_reserve_vec(&mut incident_edges, live_edges.len().saturating_mul(2))?;
+    let mut incident_edges = Vec::with_capacity(live_edges.len().saturating_mul(2));
     incident_edges.resize(live_edges.len().saturating_mul(2), EdgeId(0));
-    let mut cursors = copied(&incidence_offsets[..subdivision.vertices.len()])?;
+    let mut cursors = incidence_offsets[..subdivision.vertices.len()].to_vec();
     for &edge_id in &live_edges {
         for endpoint in subdivision.edges[edge_id.0 as usize].endpoints {
             let cursor = &mut cursors[endpoint.0 as usize];
@@ -1319,16 +1278,14 @@ fn embed(
     // the canonical form both lanes publish.
     let closed_ring = |vertices: &[VertexId], orientation: ExactSign| -> Result<Ring> {
         let open = vertices.len() - 1;
-        let mut coordinates = Vec::new();
-        try_reserve_vec(&mut coordinates, vertices.len())?;
+        let mut coordinates = Vec::with_capacity(vertices.len());
         for vertex in &vertices[..open] {
             let embedded = exact_to_embedded[vertex.0 as usize]
                 .ok_or_else(|| voronoi_error("non-live exact vertex was rendered"))?;
             let point = points[embedded.0 as usize];
             coordinates.push(Point::new_raw_xy(point.x, point.y));
         }
-        let mut rounded = Vec::new();
-        try_reserve_vec(&mut rounded, open)?;
+        let mut rounded = Vec::with_capacity(open);
         rounded.extend(
             coordinates
                 .iter()
@@ -1346,8 +1303,7 @@ fn embed(
         coordinates.push(coordinates[0]);
         Ring::closed(coordinates)
     };
-    let mut labelled = Vec::new();
-    try_reserve_vec(&mut labelled, parts.len())?;
+    let mut labelled = Vec::with_capacity(parts.len());
     for part in parts {
         if walk_label(subdivision, part.face).owner != Some(part.owner) {
             return Err(voronoi_error("embedded cell lost its exact face owner"));
@@ -1364,12 +1320,10 @@ fn embed(
         }
         labelled.push((part.owner, polygon));
     }
-    let mut polygons = Vec::new();
-    try_reserve_vec(&mut polygons, labelled.len())?;
+    let mut polygons = Vec::with_capacity(labelled.len());
     polygons.extend(labelled.iter().map(|(_, polygon)| polygon.clone()));
     let embedded_ring = |ring: &[exact::ExactPoint]| -> Result<Ring> {
-        let mut coordinates = Vec::new();
-        try_reserve_vec(&mut coordinates, ring.len() + 1)?;
+        let mut coordinates = Vec::with_capacity(ring.len() + 1);
         for point in ring {
             let vertex = vertex_at(point)?
                 .ok_or_else(|| voronoi_error("generated clip vertex is not live"))?;
@@ -1405,15 +1359,13 @@ fn embed(
         ));
     }
     if !labelled.is_empty() {
-        let mut shape_rows = Vec::new();
-        try_reserve_vec(&mut shape_rows, polygons.len())?;
+        let mut shape_rows = Vec::with_capacity(polygons.len());
         shape_rows.extend(polygons.iter().cloned().map(Shape::Polygon));
         if !coverage_is_valid(&shape_rows, 0.0)? {
             return Err(embedding_failure());
         }
         budget.add(shape_rows.len())?;
-        let mut row_boxes = Vec::new();
-        try_reserve_vec(&mut row_boxes, shape_rows.len())?;
+        let mut row_boxes = Vec::with_capacity(shape_rows.len());
         row_boxes.extend(shape_rows.iter().map(Shape::bounds));
         let row_index = BoxIndex::build(&row_boxes)?;
         let clip_boundary_segments = match &comparison_clip {
@@ -1623,7 +1575,7 @@ fn rounded_segment_covered_by_clip(
         return Ok(false);
     }
     events.clear();
-    try_reserve_vec(events, 2)?;
+    events.reserve(2);
     events.extend([start.clone(), end.clone()]);
     for ring in exact_rings {
         for edge in 0..ring.len() {
@@ -1634,9 +1586,9 @@ fn rounded_segment_covered_by_clip(
                 &ring[(edge + 1) % ring.len()],
             )? {
                 exact::SegmentIntersection::None => {},
-                exact::SegmentIntersection::Point(point) => try_push_vec(events, point)?,
+                exact::SegmentIntersection::Point(point) => events.push(point),
                 exact::SegmentIntersection::Overlap { start, end } => {
-                    try_reserve_vec(events, 2)?;
+                    events.reserve(2);
                     events.extend([start, end]);
                 },
             }
@@ -1717,7 +1669,7 @@ pub(super) fn build_collinear_polygons(
         for point in &ring {
             let rounded = point.round_nearest_even()?;
             if vertices.last() != Some(&rounded) {
-                budgeted_try_push(&mut vertices, rounded, budget)?;
+                budgeted_push(&mut vertices, rounded, budget)?;
             }
         }
         while vertices.len() > 1 && vertices.first() == vertices.last() {
@@ -1735,19 +1687,19 @@ pub(super) fn build_collinear_polygons(
             .unwrap_or(0);
         vertices.rotate_left(least);
         let first = vertices[0];
-        budgeted_try_push(&mut vertices, first, budget)?;
+        budgeted_push(&mut vertices, first, budget)?;
         let strip = Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_xy(&vertices)?)?,
             Vec::new(),
         );
         match clip.source {
-            None => budgeted_try_push(&mut cells, strip, budget)?,
+            None => budgeted_push(&mut cells, strip, budget)?,
             Some(polygon) => {
                 let clipped = Shape::Polygon(strip)
                     .intersection(&Shape::Polygon(polygon.clone()), Strictness::Strict)?;
                 for part in clipped.parts() {
                     if let Shape::Polygon(part) = part {
-                        budgeted_try_push(&mut cells, part, budget)?;
+                        budgeted_push(&mut cells, part, budget)?;
                     }
                 }
             },
@@ -1770,11 +1722,11 @@ fn clip_to_half_plane(
         let start_side = exact::signed_line_product(line, start)?;
         let end_side = exact::signed_line_product(line, end)?;
         if start_side == keep || start_side == ExactSign::Zero {
-            budgeted_try_push(&mut kept, start.clone(), budget)?;
+            budgeted_push(&mut kept, start.clone(), budget)?;
         }
         if start_side != ExactSign::Zero && end_side != ExactSign::Zero && start_side != end_side {
             let support = exact::ExactLine::through_points(start, end)?;
-            budgeted_try_push(&mut kept, exact::line_intersection(line, &support)?, budget)?;
+            budgeted_push(&mut kept, exact::line_intersection(line, &support)?, budget)?;
         }
     }
     Ok(kept)
@@ -1820,10 +1772,10 @@ pub(super) fn build_collinear_edges(
                 let start_sign = exact::signed_line_product(&line, start)?;
                 let end_sign = exact::signed_line_product(&line, end)?;
                 if start_sign == ExactSign::Zero {
-                    budgeted_try_push(&mut events, start.clone(), budget)?;
+                    budgeted_push(&mut events, start.clone(), budget)?;
                 }
                 if end_sign == ExactSign::Zero {
-                    budgeted_try_push(&mut events, end.clone(), budget)?;
+                    budgeted_push(&mut events, end.clone(), budget)?;
                 }
                 if start_sign != ExactSign::Zero
                     && end_sign != ExactSign::Zero
@@ -1832,7 +1784,7 @@ pub(super) fn build_collinear_edges(
                     let support = exact::ExactLine::through_points(start, end)?;
                     let hit = exact::line_intersection(&line, &support)?;
                     if exact::segment_intersection(start, end, &hit, &hit)?.is_point() {
-                        budgeted_try_push(&mut events, hit, budget)?;
+                        budgeted_push(&mut events, hit, budget)?;
                     }
                 }
             }
@@ -1847,11 +1799,11 @@ pub(super) fn build_collinear_edges(
             }
             if point_covered_by_clip(&from.midpoint(to)?, &clip.rings)? {
                 if current.is_empty() {
-                    budgeted_try_push(&mut current, from.clone(), budget)?;
+                    budgeted_push(&mut current, from.clone(), budget)?;
                 }
-                budgeted_try_push(&mut current, to.clone(), budget)?;
+                budgeted_push(&mut current, to.clone(), budget)?;
             } else if current.len() >= 2 {
-                budgeted_try_push(
+                budgeted_push(
                     &mut exact_chains,
                     ([left, right], std::mem::take(&mut current)),
                     budget,
@@ -1861,7 +1813,7 @@ pub(super) fn build_collinear_edges(
             }
         }
         if current.len() >= 2 {
-            budgeted_try_push(&mut exact_chains, ([left, right], current), budget)?;
+            budgeted_push(&mut exact_chains, ([left, right], current), budget)?;
         }
     }
     let separator_points = exact_chains
@@ -1869,18 +1821,17 @@ pub(super) fn build_collinear_edges(
         .map(|(_, chain)| chain.len())
         .sum::<usize>();
     budget.add(separator_points.saturating_mul(clip_segments))?;
-    let mut split_rings = Vec::new();
-    try_reserve_vec(&mut split_rings, clip.rings.len())?;
+    let mut split_rings = Vec::with_capacity(clip.rings.len());
     for ring in &clip.rings {
         let mut split_ring = Vec::new();
         for edge in 0..ring.len() {
             let start = &ring[edge];
             let end = &ring[(edge + 1) % ring.len()];
             let mut events = Vec::new();
-            budgeted_try_push(&mut events, start.clone(), budget)?;
+            budgeted_push(&mut events, start.clone(), budget)?;
             for point in exact_chains.iter().flat_map(|(_, chain)| chain) {
                 if exact::segment_intersection(start, end, point, point)?.is_point() {
-                    budgeted_try_push(&mut events, point.clone(), budget)?;
+                    budgeted_push(&mut events, point.clone(), budget)?;
                 }
             }
             sort_unique_along(start, end, &mut events)?;
@@ -1890,16 +1841,15 @@ pub(super) fn build_collinear_edges(
                     None => false,
                 };
                 if !repeated {
-                    budgeted_try_push(&mut split_ring, point, budget)?;
+                    budgeted_push(&mut split_ring, point, budget)?;
                 }
             }
         }
-        budgeted_try_push(&mut split_rings, split_ring, budget)?;
+        budgeted_push(&mut split_rings, split_ring, budget)?;
     }
-    let mut split_fixed = Vec::new();
-    try_reserve_vec(&mut split_fixed, clip.fixed.len())?;
+    let mut split_fixed = Vec::with_capacity(clip.fixed.len());
     for ring in &clip.fixed {
-        split_fixed.push(copied(ring)?);
+        split_fixed.push(ring.clone());
     }
     let split_clip = NormalizedClip {
         rings: split_rings,
@@ -1907,11 +1857,9 @@ pub(super) fn build_collinear_edges(
         source: clip.source,
         contacts: Vec::new(),
     };
-    let mut exact_points = Vec::new();
-    try_reserve_vec(
-        &mut exact_points,
+    let mut exact_points = Vec::with_capacity(
         separator_points.saturating_add(split_clip.rings.iter().map(Vec::len).sum()),
-    )?;
+    );
     exact_points.extend(
         exact_chains
             .iter()
@@ -1941,14 +1889,14 @@ pub(super) fn build_collinear_edges(
         }
         let mut chain_edges = Vec::new();
         let mut chain_vertices = Vec::new();
-        try_reserve_vec(&mut chain_edges, chain.len() - 1)?;
-        try_reserve_vec(&mut chain_vertices, chain.len())?;
+        chain_edges.reserve(chain.len() - 1);
+        chain_vertices.reserve(chain.len());
         for point in &chain {
             chain_vertices.push(vertex_id(point)?);
         }
         for &[left, right] in chain_vertices.array_windows::<2>() {
             chain_edges.push(EdgeId(edges.len() as u32));
-            try_push_vec(&mut edges, AtomicEdge {
+            edges.push(AtomicEdge {
                 endpoints: [left, right],
                 forward: Transition {
                     frame_delta: 0,
@@ -1961,20 +1909,19 @@ pub(super) fn build_collinear_edges(
                 separator: Some(separator),
                 clip_sources: Vec::new(),
                 frame_side: None,
-            })?;
+            });
         }
-        try_push_vec(&mut chains, ExactEdgeChain {
+        chains.push(ExactEdgeChain {
             separator,
             vertices: chain_vertices,
             edges: chain_edges,
-        })?;
+        });
     }
     let mut clip_source = 0_u32;
     for ring in &split_clip.rings {
         for edge in 0..ring.len() {
-            let mut clip_sources = Vec::new();
-            try_push_vec(&mut clip_sources, ClipSegmentId(clip_source))?;
-            budgeted_try_push(
+            let clip_sources = vec![ClipSegmentId(clip_source)];
+            budgeted_push(
                 &mut edges,
                 AtomicEdge {
                     endpoints: [
@@ -1997,8 +1944,7 @@ pub(super) fn build_collinear_edges(
                 .ok_or_else(|| voronoi_error("too many split clip atoms"))?;
         }
     }
-    let mut vertices = Vec::new();
-    try_reserve_vec(&mut vertices, exact_points.len())?;
+    let mut vertices = Vec::with_capacity(exact_points.len());
     vertices.extend(
         exact_points
             .into_iter()
@@ -2026,13 +1972,13 @@ pub(super) fn build_collinear_edges(
     };
     let mut comparison_rings = Vec::new();
     let mut comparison_rounded_rings = Vec::new();
-    try_reserve_vec(&mut comparison_rings, 1 + polygon.holes.len())?;
-    try_reserve_vec(&mut comparison_rounded_rings, 1 + polygon.holes.len())?;
+    comparison_rings.reserve(1 + polygon.holes.len());
+    comparison_rounded_rings.reserve(1 + polygon.holes.len());
     for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
         let mut exact_ring = Vec::new();
         let mut rounded = Vec::new();
-        try_reserve_vec(&mut exact_ring, ring.len())?;
-        try_reserve_vec(&mut rounded, ring.len())?;
+        exact_ring.reserve(ring.len());
+        rounded.reserve(ring.len());
         for point in ring {
             rounded.push(point.xy());
             exact_ring.push(exact::ExactPoint::from_xy(point.xy()));
@@ -2046,11 +1992,7 @@ pub(super) fn build_collinear_edges(
     };
     let ends = offsets.as_slice();
     let clip_segments = split_clip.rings.iter().map(Vec::len).sum::<usize>();
-    let mut events = Vec::new();
-    try_reserve_vec(
-        &mut events,
-        clip_segments.saturating_mul(2).saturating_add(2),
-    )?;
+    let mut events = Vec::with_capacity(clip_segments.saturating_mul(2).saturating_add(2));
     let output_segments = ends
         .array_windows::<2>()
         .map(|&[start, end]| end.saturating_sub(start).saturating_sub(1) as usize)
@@ -2141,11 +2083,8 @@ impl Tagged {
 }
 
 /// The ring's vertices, without their edge tags.
-fn untag(ring: Vec<Tagged>) -> Result<Vec<DualVertex>> {
-    let mut vertices = Vec::new();
-    try_reserve_vec(&mut vertices, ring.len())?;
-    vertices.extend(ring.into_iter().map(|tagged| tagged.vertex));
-    Ok(vertices)
+fn untag(ring: Vec<Tagged>) -> Vec<DualVertex> {
+    ring.into_iter().map(|tagged| tagged.vertex).collect()
 }
 
 fn reverse_tagged(ring: &mut [Tagged]) {
@@ -2201,12 +2140,11 @@ struct DualRings {
 #[cfg(test)]
 mod convex_cell_certificate;
 
-fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> Result<IncidentFaces> {
+fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentFaces {
     let triangles = mesh.triangles();
     let halfedges = mesh.halfedges();
     let flat = |edge: usize| triangles[edge / 3][edge % 3];
-    let mut start_edge = Vec::new();
-    try_reserve_vec(&mut start_edge, site_count)?;
+    let mut start_edge = Vec::with_capacity(site_count);
     start_edge.resize(site_count, usize::MAX);
     for edge in 0..halfedges.len() {
         let endpoint = flat(dual_next_halfedge(edge));
@@ -2216,8 +2154,8 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> Result<In
     }
     let mut offsets = Vec::new();
     let mut boundaries = Vec::new();
-    try_reserve_vec(&mut offsets, site_count + 1)?;
-    try_reserve_vec(&mut boundaries, site_count)?;
+    offsets.reserve(site_count + 1);
+    boundaries.reserve(site_count);
     offsets.push(0);
     for site in 0..site_count {
         let start = start_edge[site];
@@ -2228,8 +2166,8 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> Result<In
     let total = offsets.last().copied().unwrap_or(0);
     let mut faces = Vec::new();
     let mut neighbors = Vec::new();
-    try_reserve_vec(&mut faces, total)?;
-    try_reserve_vec(&mut neighbors, total)?;
+    faces.reserve(total);
+    neighbors.reserve(total);
     faces.resize(total, 0);
     neighbors.resize(total, 0);
     for site in 0..site_count {
@@ -2245,12 +2183,12 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> Result<In
             }),
         );
     }
-    Ok(IncidentFaces {
+    IncidentFaces {
         offsets,
         faces,
         neighbors,
         boundaries,
-    })
+    }
 }
 
 struct IncidentFaces {
@@ -2345,8 +2283,7 @@ fn dual_close_hull_chain(
             leaving,
         })
     };
-    let mut ring = Vec::new();
-    try_reserve_vec(&mut ring, faces.len() + 6)?;
+    let mut ring = Vec::with_capacity(faces.len() + 6);
     ring.push(generated(&entry_ray.1, EdgeTag::Bisector(entry_site))?);
     ring.extend(
         faces
@@ -2534,8 +2471,7 @@ fn dual_clip_convex(
             let hit = exact::line_intersection(&boundary, &edge)?;
             Ok(hit.is_finite().then_some(hit))
         };
-        let mut next = Vec::new();
-        try_reserve_vec(&mut next, current.len() + 1)?;
+        let mut next = Vec::with_capacity(current.len() + 1);
         let mut previous = current.len() - 1;
         let mut previous_in = inside(dual_vertex_point(&current[previous].vertex, centers))?;
         for index in 0..current.len() {
@@ -2545,16 +2481,16 @@ fn dual_clip_convex(
                 let tag = current[previous].leaving;
                 let previous_point = dual_vertex_point(&current[previous].vertex, centers);
                 if let Some(hit) = crossing(previous_point, tag, this_point)? {
-                    try_push_vec(&mut next, Tagged {
+                    next.push(Tagged {
                         vertex: DualVertex::Generated(Box::new(hit)),
                         // Entering: the rest of the original edge follows.
                         // Leaving: the new edge runs along this side.
                         leaving: if this_in { tag } else { EdgeTag::Axis },
-                    })?;
+                    });
                 }
             }
             if this_in {
-                try_push_vec(&mut next, current[index].clone_tagged())?;
+                next.push(current[index].clone_tagged());
             }
             (previous, previous_in) = (index, this_in);
         }
@@ -2572,8 +2508,7 @@ fn dual_build_rings(
     budget: &mut ExpansionBudget,
 ) -> Result<DualRings> {
     let centers = &complex.centers;
-    let mut site_points = Vec::new();
-    try_reserve_vec(&mut site_points, sites.len())?;
+    let mut site_points = Vec::with_capacity(sites.len());
     site_points.extend(
         sites
             .iter()
@@ -2588,8 +2523,7 @@ fn dual_build_rings(
     let frame = if let Some(frame) = exact::enclosing_frame_binary64(frame_inputs())? {
         frame
     } else {
-        let mut inputs = Vec::new();
-        try_reserve_vec(&mut inputs, frame_inputs().count())?;
+        let mut inputs = Vec::with_capacity(frame_inputs().count());
         inputs.extend(frame_inputs().cloned());
         exact::enclosing_frame(&inputs)?
     };
@@ -2620,9 +2554,8 @@ fn dual_build_rings(
     let triangles = mesh.triangles();
     let halfedges = mesh.halfedges();
     let flat = |edge: usize| triangles[edge / 3][edge % 3];
-    let incidence = dual_incident_faces(mesh, sites.len())?;
-    let mut rings = Vec::new();
-    try_reserve_vec(&mut rings, sites.len())?;
+    let incidence = dual_incident_faces(mesh, sites.len());
+    let mut rings = Vec::with_capacity(sites.len());
 
     for site in 0..sites.len() {
         let faces = &incidence.faces[incidence.offsets[site]..incidence.offsets[site + 1]];
@@ -2688,8 +2621,7 @@ fn dual_build_rings(
             // faces counter-clockwise, and every center strictly inside the
             // rectangle means the clip is the identity; the embedding's
             // certificate still proves the rounded cell.
-            let mut ring: Vec<Tagged> = Vec::new();
-            try_reserve_vec(&mut ring, faces.len() + 6)?;
+            let mut ring: Vec<Tagged> = Vec::with_capacity(faces.len() + 6);
             let mut interior = interior_bounds.is_some();
             for (&face, &neighbor) in faces.iter().zip(neighbors) {
                 let component = complex.component_of_face(face);
@@ -2726,7 +2658,7 @@ fn dual_build_rings(
                     walk_clockwise = Some(clockwise);
                     clockwise
                 };
-                let mut ring = untag(ring)?;
+                let mut ring = untag(ring);
                 if clockwise {
                     ring.reverse();
                 }
@@ -2754,7 +2686,7 @@ fn dual_build_rings(
             ));
         }
         budget.add(clipped.len())?;
-        rings.push(untag(clipped)?);
+        rings.push(untag(clipped));
     }
     Ok(DualRings {
         rings,
@@ -2850,14 +2782,12 @@ fn dual_embed(
     // center must carry that id, or the cancellation certificate sees one
     // edge under two names.
     let total: usize = rings.rings.iter().map(Vec::len).sum();
-    let mut center_rounded: Vec<Option<(XY, u32)>> = Vec::new();
-    try_reserve_vec(&mut center_rounded, rings.centers.len())?;
+    let mut center_rounded: Vec<Option<(XY, u32)>> = Vec::with_capacity(rings.centers.len());
     center_rounded.resize(rings.centers.len(), None);
     // Distinct vertices are the centers plus a boundary's worth of generated
     // points; sizing for every ring reference would triple the table.
     let mut interned = try_hash_map_with_capacity(rings.centers.len())?;
-    let mut vertex_xy: Vec<XY> = Vec::new();
-    try_reserve_vec(&mut vertex_xy, rings.centers.len())?;
+    let mut vertex_xy: Vec<XY> = Vec::with_capacity(rings.centers.len());
     vertex_xy.resize(rings.centers.len(), XY::new(0.0, 0.0));
     fn resolve<'r>(
         vertex: &'r DualVertex,
@@ -2891,7 +2821,7 @@ fn dual_embed(
                 let id = if let DualVertex::Center(component) = *vertex {
                     component
                 } else {
-                    try_push_vec(vertex_xy, xy)?;
+                    vertex_xy.push(xy);
                     u32::try_from(vertex_xy.len() - 1).map_err(|_| embedding_failure())?
                 };
                 slot.insert((point, id));
@@ -2907,9 +2837,9 @@ fn dual_embed(
     let mut offsets = Vec::new();
     let mut rounded_all: Vec<XY> = Vec::new();
     let mut ids_all: Vec<u32> = Vec::new();
-    try_reserve_vec(&mut offsets, rings.rings.len() + 1)?;
-    try_reserve_vec(&mut rounded_all, total)?;
-    try_reserve_vec(&mut ids_all, total)?;
+    offsets.reserve(rings.rings.len() + 1);
+    rounded_all.reserve(total);
+    ids_all.reserve(total);
     offsets.push(0);
     for ring in &rings.rings {
         for vertex in ring {
@@ -2926,8 +2856,7 @@ fn dual_embed(
         offsets.push(rounded_all.len());
     }
     budget.add(rounded_all.len())?;
-    let mut polygons = Vec::new();
-    try_reserve_vec(&mut polygons, rings.rings.len())?;
+    let mut polygons = Vec::with_capacity(rings.rings.len());
     for site_index in 0..rings.rings.len() {
         let rounded = &mut rounded_all[offsets[site_index]..offsets[site_index + 1]];
         // The ring starts at its lexicographically smallest rounded vertex,
@@ -2942,14 +2871,12 @@ fn dual_embed(
         let site_xy = sites[site_index].point.xy();
         let closed = rounded.iter().chain(std::iter::once(&rounded[0]));
         if !certify_convex_cell(rounded, site_xy) {
-            let mut rounded_ring = Vec::new();
-            try_reserve_vec(&mut rounded_ring, rounded.len())?;
+            let mut rounded_ring = Vec::with_capacity(rounded.len());
             rounded_ring.extend(rounded.iter().map(|&xy| exact::ExactPoint::from_xy(xy)));
             if exact::cycle_orientation(&rounded_ring)? != ExactSign::Positive {
                 return Err(embedding_failure());
             }
-            let mut points = Vec::new();
-            try_reserve_vec(&mut points, rounded.len() + 1)?;
+            let mut points = Vec::with_capacity(rounded.len() + 1);
             points.extend(closed.clone().map(|xy| Point::new_raw_xy(xy.x, xy.y)));
             if !polygon_is_valid(&Polygon::new(Ring::closed(points)?, Vec::new()))? {
                 return Err(embedding_failure());
@@ -2987,8 +2914,7 @@ fn dual_embed(
     // Each directed edge packs as (smaller id, larger id, forward?), so equal
     // undirected edges are adjacent after one integer sort and a run of two
     // with opposite directions cancels.
-    let mut directed: Vec<u64> = Vec::new();
-    try_reserve_vec(&mut directed, total)?;
+    let mut directed: Vec<u64> = Vec::with_capacity(total);
     for site_index in 0..rings.rings.len() {
         let ids = &ids_all[offsets[site_index]..offsets[site_index + 1]];
         for index in 0..ids.len() {
@@ -3007,8 +2933,7 @@ fn dual_embed(
     // side 0: y == miny, 1: x == maxx, 2: y == maxy, 3: x == minx
     let mut sides: [Vec<(f64, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
     // Each interior edge takes two directed entries.
-    let mut internal_edges = Vec::new();
-    try_reserve_vec(&mut internal_edges, directed.len() / 2)?;
+    let mut internal_edges = Vec::with_capacity(directed.len() / 2);
     let mut cursor = 0;
     while cursor < directed.len() {
         let key = directed[cursor] >> 1;
@@ -3058,7 +2983,7 @@ fn dual_embed(
         } else {
             (a.y.min(b.y), a.y.max(b.y))
         };
-        try_push_vec(&mut sides[side], (lo, hi))?;
+        sides[side].push((lo, hi));
     }
     for (index, side) in sides.iter_mut().enumerate() {
         side.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
@@ -3079,8 +3004,7 @@ fn dual_embed(
         }
     }
     let edges = EmbeddedEdges::Segments(internal_edges);
-    let mut clip_coordinates = Vec::new();
-    try_reserve_vec(&mut clip_coordinates, clip.fixed[0].len() + 1)?;
+    let mut clip_coordinates = Vec::with_capacity(clip.fixed[0].len() + 1);
     clip_coordinates.extend(
         clip.fixed[0]
             .iter()

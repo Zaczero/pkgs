@@ -8,9 +8,9 @@ use super::{
     AtomSeed, AtomicEdge, CertifiedPrimalEdge, ClipSegmentId, ClippedSeparator, DelaunayComplex,
     ExactSign, ExpansionBudget, NodedAtoms, NodedVertex, NormalizedClip, Ordering, OwnerTransition,
     PointKey, PrimitiveOwner, Result, ScaffoldPrimitive, Site, SiteAdjacency, SiteId, Transition,
-    VertexId, XY, budgeted_try_push, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact,
-    nearest_site_walk, orient_separator, sort_unique_along, try_dedup_by, try_push_vec,
-    try_reserve_vec, try_sort_by, voronoi_error,
+    VertexId, XY, budgeted_push, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact,
+    nearest_site_walk, orient_separator, sort_unique_along, try_dedup_by, try_sort_by,
+    voronoi_error,
 };
 
 pub(super) fn coincident_frame_owner(
@@ -58,8 +58,7 @@ pub(super) fn build_scaffold(
     };
     let scaffold_count = 4_usize.saturating_add(clip_rings.iter().map(Vec::len).sum::<usize>());
     budget.add(scaffold_count)?;
-    let mut scaffold = Vec::new();
-    try_reserve_vec(&mut scaffold, scaffold_count)?;
+    let mut scaffold = Vec::with_capacity(scaffold_count);
     for side in 0..4 {
         scaffold.push(ScaffoldPrimitive {
             line: exact::ExactLine::through_points(&rect[side], &rect[(side + 1) % 4])?,
@@ -101,7 +100,7 @@ pub(super) fn build_scaffold(
                 .iter_mut()
                 .find(|primitive| primitive.clip_source == Some(ClipSegmentId(segment as u32)))
                 .ok_or_else(|| voronoi_error("validated clip contact has no source segment"))?;
-            budgeted_try_push(&mut primitive.events, contact.point.clone(), budget)?;
+            budgeted_push(&mut primitive.events, contact.point.clone(), budget)?;
         }
     }
     register_frame_clip_contacts(&mut scaffold, budget)?;
@@ -114,7 +113,7 @@ pub(super) fn build_scaffold(
             ));
         }
         budget.add(2)?;
-        try_reserve_vec(&mut primitive.events, 2)?;
+        primitive.events.reserve(2);
         primitive
             .events
             .extend([primitive.start.clone(), primitive.end.clone()]);
@@ -191,10 +190,9 @@ pub(super) fn emit_clipped_separators(
             ));
         }
         budget.add(2)?;
-        let mut events = Vec::new();
-        try_reserve_vec(&mut events, 2)?;
+        let mut events = Vec::with_capacity(2);
         events.extend([start.clone(), end.clone()]);
-        budgeted_try_push(
+        budgeted_push(
             &mut separators,
             ClippedSeparator {
                 pair: ids,
@@ -226,8 +224,7 @@ pub(super) fn fixed_coordinates(
     sites: &[Site],
     clip: &NormalizedClip<'_>,
 ) -> Result<Vec<Option<XY>>> {
-    let mut fixed = Vec::new();
-    try_reserve_vec(&mut fixed, points.len())?;
+    let mut fixed = Vec::with_capacity(points.len());
     fixed.resize(points.len(), None);
     for candidate in sites
         .iter()
@@ -300,7 +297,7 @@ pub(super) fn emit_atom_windows(
                 "exact primitive has unordered duplicate events",
             ));
         }
-        budgeted_try_push(
+        budgeted_push(
             seeds,
             AtomSeed {
                 start: left.clone(),
@@ -334,8 +331,8 @@ pub(super) fn register_frame_clip_contacts(
             )? {
                 exact::SegmentIntersection::None => {},
                 exact::SegmentIntersection::Point(point) => {
-                    budgeted_try_push(&mut frame_prim.events, point.clone(), budget)?;
-                    budgeted_try_push(&mut clip_prim.events, point, budget)?;
+                    budgeted_push(&mut frame_prim.events, point.clone(), budget)?;
+                    budgeted_push(&mut clip_prim.events, point, budget)?;
                 },
                 exact::SegmentIntersection::Overlap { start, end } => {
                     push_split_events(
@@ -360,9 +357,9 @@ pub(super) fn push_split_events(
     budget: &mut ExpansionBudget,
 ) -> Result<()> {
     budget.add(4)?;
-    try_reserve_vec(left, 2)?;
+    left.reserve(2);
     left.extend([start.clone(), end.clone()]);
-    try_reserve_vec(right, 2)?;
+    right.reserve(2);
     right.extend([start, end]);
     Ok(())
 }
@@ -387,8 +384,8 @@ pub(super) fn node_scaffold_and_separators(
             )? {
                 exact::SegmentIntersection::None => {},
                 exact::SegmentIntersection::Point(point) => {
-                    budgeted_try_push(&mut separator.events, point.clone(), budget)?;
-                    budgeted_try_push(&mut primitive.events, point, budget)?;
+                    budgeted_push(&mut separator.events, point.clone(), budget)?;
+                    budgeted_push(&mut primitive.events, point, budget)?;
                 },
                 exact::SegmentIntersection::Overlap { start, end } => {
                     push_split_events(
@@ -436,8 +433,7 @@ pub(super) fn node_scaffold_and_separators(
             budget,
         )?;
     }
-    let mut event_points = Vec::new();
-    try_reserve_vec(&mut event_points, seeds.len().saturating_mul(2))?;
+    let mut event_points = Vec::with_capacity(seeds.len().saturating_mul(2));
     for seed in &seeds {
         event_points.extend([seed.start.clone(), seed.end.clone()]);
     }
@@ -463,8 +459,7 @@ pub(super) fn node_scaffold_and_separators(
         clip_source: Option<ClipSegmentId>,
         frame_side: Option<u8>,
     }
-    let mut mapped = Vec::new();
-    try_reserve_vec(&mut mapped, seeds.len())?;
+    let mut mapped = Vec::with_capacity(seeds.len());
     for seed in seeds {
         let mut endpoints = [vertex_id(&seed.start)?, vertex_id(&seed.end)?];
         if endpoints[0] == endpoints[1] {
@@ -496,8 +491,7 @@ pub(super) fn node_scaffold_and_separators(
     try_sort_by(&mut mapped, |left, right| {
         Ok(left.endpoints.cmp(&right.endpoints))
     })?;
-    let mut vertices = Vec::new();
-    try_reserve_vec(&mut vertices, event_points.len())?;
+    let mut vertices = Vec::with_capacity(event_points.len());
     vertices.extend(
         event_points
             .into_iter()
@@ -532,7 +526,7 @@ pub(super) fn node_scaffold_and_separators(
                 separator = Some(value);
             }
             if let Some(value) = seed.clip_source {
-                try_push_vec(&mut clip_sources, value)?;
+                clip_sources.push(value);
             }
             if let Some(value) = seed.frame_side {
                 if frame_side.is_some_and(|existing| existing != value) {
@@ -610,7 +604,7 @@ pub(super) fn node_scaffold_and_separators(
         clip_sources.sort_unstable();
         clip_sources.dedup();
         if frame_delta != 0 || clip_delta != 0 || separator.is_some() {
-            budgeted_try_push(
+            budgeted_push(
                 &mut edges,
                 AtomicEdge {
                     endpoints: mapped[start].endpoints,

@@ -5,8 +5,8 @@
 
 use super::{
     BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, ExpansionBudget, Ordering,
-    Result, SiteId, VertexId, budgeted_try_push, exact, rounded_box, selected_cell_label,
-    try_push_vec, try_reserve_vec, try_sort_by, validate_exact_cycles, voronoi_error, walk_label,
+    Result, SiteId, VertexId, budgeted_push, exact, rounded_box, selected_cell_label, try_sort_by,
+    validate_exact_cycles, voronoi_error, walk_label,
 };
 
 pub(super) struct ExactSimpleRing {
@@ -54,8 +54,7 @@ pub(super) fn simple_ring(
     mut vertices: Vec<VertexId>,
     mut edges: Vec<EdgeId>,
 ) -> Result<ExactSimpleRing> {
-    let mut points = Vec::new();
-    try_reserve_vec(&mut points, vertices.len() - 1)?;
+    let mut points = Vec::with_capacity(vertices.len() - 1);
     points.extend(
         vertices[..vertices.len() - 1]
             .iter()
@@ -81,29 +80,25 @@ pub(super) fn split_boundary_face(
         ..topology.face_starts[boundary_face.0 as usize + 1] as usize];
     let owner = |slot: u32| VertexId(topology.owners[slot as usize]);
     let edge = |slot: u32| EdgeId(subdivision.edge_of_slot[slot as usize]);
-    let mut distinct = Vec::new();
-    try_reserve_vec(&mut distinct, walk.len())?;
+    let mut distinct = Vec::with_capacity(walk.len());
     distinct.extend(walk.iter().map(|&slot| owner(slot)));
     distinct.sort_unstable();
     if distinct.array_windows::<2>().all(|[a, b]| a != b) {
         let mut vertices = Vec::new();
         let mut edges = Vec::new();
-        try_reserve_vec(&mut vertices, walk.len() + 1)?;
-        try_reserve_vec(&mut edges, walk.len())?;
+        vertices.reserve(walk.len() + 1);
+        edges.reserve(walk.len());
         vertices.extend(walk.iter().map(|&slot| owner(slot)));
         vertices.push(vertices[0]);
         edges.extend(walk.iter().map(|&slot| edge(slot)));
-        return try_push_vec(
-            result,
-            simple_ring(subdivision, boundary_face, vertices, edges)?,
-        );
+        result.push(simple_ring(subdivision, boundary_face, vertices, edges)?);
+        return Ok(());
     }
     let mut path = Vec::new();
     let mut path_edges = Vec::new();
-    try_reserve_vec(&mut path, walk.len())?;
-    try_reserve_vec(&mut path_edges, walk.len())?;
-    let mut positions = Vec::new();
-    try_reserve_vec(&mut positions, subdivision.vertices.len())?;
+    path.reserve(walk.len());
+    path_edges.reserve(walk.len());
+    let mut positions = Vec::with_capacity(subdivision.vertices.len());
     positions.resize(subdivision.vertices.len(), None);
     for step in 0..=walk.len() {
         let vertex = owner(walk[step % walk.len()]);
@@ -111,8 +106,8 @@ pub(super) fn split_boundary_face(
         if let Some(position) = positions[vertex.0 as usize] {
             let mut vertices = Vec::new();
             let mut edges = Vec::new();
-            try_reserve_vec(&mut vertices, path.len() - position + 1)?;
-            try_reserve_vec(&mut edges, path_edges.len() - position + 1)?;
+            vertices.reserve(path.len() - position + 1);
+            edges.reserve(path_edges.len() - position + 1);
             vertices.extend_from_slice(&path[position..]);
             vertices.push(vertex);
             edges.extend_from_slice(&path_edges[position..]);
@@ -125,10 +120,7 @@ pub(super) fn split_boundary_face(
             }
             path.truncate(position + 1);
             path_edges.truncate(position);
-            try_push_vec(
-                result,
-                simple_ring(subdivision, boundary_face, vertices, edges)?,
-            )?;
+            result.push(simple_ring(subdivision, boundary_face, vertices, edges)?);
         } else {
             positions[vertex.0 as usize] = Some(path.len());
             path.push(vertex);
@@ -163,18 +155,16 @@ pub(super) fn assemble_owner_parts(
     let mut negatives = Vec::new();
     for (index, ring) in rings.iter().enumerate() {
         match ring.orientation {
-            ExactSign::Positive => try_push_vec(&mut positives, index)?,
-            ExactSign::Negative => try_push_vec(&mut negatives, index)?,
+            ExactSign::Positive => positives.push(index),
+            ExactSign::Negative => negatives.push(index),
             ExactSign::Zero => {},
         }
     }
-    let mut ring_points = Vec::new();
-    try_reserve_vec(&mut ring_points, rings.len())?;
+    let mut ring_points = Vec::with_capacity(rings.len());
     for ring in &rings {
         let count = ring.vertices.len().saturating_sub(1);
         budget.add(count)?;
-        let mut points = Vec::new();
-        try_reserve_vec(&mut points, count)?;
+        let mut points = Vec::with_capacity(count);
         points.extend(
             ring.vertices[..count]
                 .iter()
@@ -182,8 +172,7 @@ pub(super) fn assemble_owner_parts(
         );
         ring_points.push(points);
     }
-    let mut ring_boxes = Vec::new();
-    try_reserve_vec(&mut ring_boxes, rings.len())?;
+    let mut ring_boxes = Vec::with_capacity(rings.len());
     for points in &ring_points {
         ring_boxes.push(rounded_box(points)?);
     }
@@ -220,12 +209,10 @@ pub(super) fn assemble_owner_parts(
             Ok(())
         })?;
     }
-    let mut holes_by_shell = Vec::new();
-    try_reserve_vec(&mut holes_by_shell, positives.len())?;
+    let mut holes_by_shell = Vec::with_capacity(positives.len());
     holes_by_shell.resize_with(positives.len(), Vec::new);
     // The slot of each positive ring among `positives`.
-    let mut shell_slot = Vec::new();
-    try_reserve_vec(&mut shell_slot, rings.len())?;
+    let mut shell_slot = Vec::with_capacity(rings.len());
     shell_slot.resize(rings.len(), usize::MAX);
     for (slot, &positive) in positives.iter().enumerate() {
         shell_slot[positive] = slot;
@@ -242,7 +229,7 @@ pub(super) fn assemble_owner_parts(
                     .saturating_mul(ring_points[other].len()),
             )?;
             if nested(&ring_points[negative], &ring_points[other])? {
-                try_push_vec(&mut candidates, shell_slot[other])?;
+                candidates.push(shell_slot[other]);
             }
             Ok(())
         })?;
@@ -278,16 +265,14 @@ pub(super) fn assemble_owner_parts(
             }
             parent = candidate;
         }
-        try_push_vec(&mut holes_by_shell[parent], negative)?;
+        holes_by_shell[parent].push(negative);
     }
-    let mut taken = Vec::new();
-    try_reserve_vec(&mut taken, rings.len())?;
+    let mut taken = Vec::with_capacity(rings.len());
     taken.extend(rings.into_iter().map(Some));
     let mut rings = taken;
     for (slot, positive) in positives.into_iter().enumerate() {
         let shell = rings[positive].take().unwrap();
-        let mut holes = Vec::new();
-        try_reserve_vec(&mut holes, holes_by_shell[slot].len())?;
+        let mut holes = Vec::with_capacity(holes_by_shell[slot].len());
         holes.extend(
             holes_by_shell[slot]
                 .iter()
@@ -300,11 +285,9 @@ pub(super) fn assemble_owner_parts(
         {
             return Err(voronoi_error("exact ring escaped its owner group"));
         }
-        let mut edge_ids: Vec<EdgeId> = Vec::new();
-        try_reserve_vec(
-            &mut edge_ids,
+        let mut edge_ids: Vec<EdgeId> = Vec::with_capacity(
             shell.edges.len() + holes.iter().map(|hole| hole.edges.len()).sum::<usize>(),
-        )?;
+        );
         edge_ids.extend(
             shell
                 .edges
@@ -317,11 +300,9 @@ pub(super) fn assemble_owner_parts(
                 "exact face shell and holes share an atomic edge",
             ));
         }
-        let mut exact_rings = Vec::new();
-        try_reserve_vec(&mut exact_rings, 1 + holes.len())?;
+        let mut exact_rings = Vec::with_capacity(1 + holes.len());
         for ring in std::iter::once(&shell).chain(holes.iter()) {
-            let mut points = Vec::new();
-            try_reserve_vec(&mut points, ring.vertices.len() - 1)?;
+            let mut points = Vec::with_capacity(ring.vertices.len() - 1);
             points.extend(
                 ring.vertices[..ring.vertices.len() - 1]
                     .iter()
@@ -329,11 +310,10 @@ pub(super) fn assemble_owner_parts(
             );
             exact_rings.push(points);
         }
-        let mut exact_ring_refs = Vec::new();
-        try_reserve_vec(&mut exact_ring_refs, exact_rings.len())?;
+        let mut exact_ring_refs = Vec::with_capacity(exact_rings.len());
         exact_ring_refs.extend(exact_rings.iter().map(Vec::as_slice));
         validate_exact_cycles(&exact_ring_refs, 0, budget)?;
-        budgeted_try_push(
+        budgeted_push(
             parts,
             ExactCellPart {
                 owner,
@@ -351,8 +331,7 @@ pub(super) fn assemble_cells(
     subdivision: &ExactSubdivision,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<ExactCellPart>> {
-    let mut selected = Vec::new();
-    try_reserve_vec(&mut selected, subdivision.labels.len())?;
+    let mut selected = Vec::with_capacity(subdivision.labels.len());
     for (index, label) in subdivision.labels.iter().enumerate() {
         if !selected_cell_label(*label) {
             continue;
@@ -411,15 +390,15 @@ pub(super) fn walk_separator_from(
     let mut current = start;
     let mut vertices = Vec::new();
     let mut chain_edges = Vec::new();
-    try_push_vec(&mut vertices, current)?;
+    vertices.push(current);
     while let Some(&(_, slot, next)) = incident_at(incidence, current)
         .iter()
         .find(|&&(_, slot, _)| !used[slot])
     {
         used[slot] = true;
-        try_push_vec(&mut chain_edges, group[slot].1)?;
+        chain_edges.push(group[slot].1);
         current = next;
-        try_push_vec(&mut vertices, current)?;
+        vertices.push(current);
     }
     if vertices.len() < 2 {
         return Err(voronoi_error("empty Voronoi edge chain"));
@@ -432,11 +411,12 @@ pub(super) fn walk_separator_from(
         chain_edges.reverse();
     }
     budget.add(vertices.len())?;
-    try_push_vec(result, ExactEdgeChain {
+    result.push(ExactEdgeChain {
         separator,
         vertices,
         edges: chain_edges,
-    })
+    });
+    Ok(())
 }
 
 pub(super) fn assemble_separator_group(
@@ -446,8 +426,7 @@ pub(super) fn assemble_separator_group(
     budget: &mut ExpansionBudget,
     result: &mut Vec<ExactEdgeChain>,
 ) -> Result<()> {
-    let mut incidence = Vec::new();
-    try_reserve_vec(&mut incidence, group.len().saturating_mul(2))?;
+    let mut incidence = Vec::with_capacity(group.len().saturating_mul(2));
     for (slot, (_, edge_id)) in group.iter().enumerate() {
         let [left, right] = subdivision.edges[edge_id.0 as usize].endpoints;
         incidence.extend([(left, slot, right), (right, slot, left)]);
@@ -459,8 +438,7 @@ pub(super) fn assemble_separator_group(
     {
         return Err(voronoi_error("Voronoi separator branches"));
     }
-    let mut used = Vec::new();
-    try_reserve_vec(&mut used, group.len())?;
+    let mut used = Vec::with_capacity(group.len());
     used.resize(group.len(), false);
     let end_of_path = |vertex: VertexId| incident_at(&incidence, vertex).len() == 1;
     for (slot, (_, edge_id)) in group.iter().enumerate() {
@@ -495,8 +473,7 @@ pub(super) fn assemble_edges(
     subdivision: &ExactSubdivision,
     budget: &mut ExpansionBudget,
 ) -> Result<Vec<ExactEdgeChain>> {
-    let mut forward_slot = Vec::new();
-    try_reserve_vec(&mut forward_slot, subdivision.edges.len())?;
+    let mut forward_slot = Vec::with_capacity(subdivision.edges.len());
     forward_slot.resize(subdivision.edges.len(), u32::MAX);
     for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
         let atomic = &subdivision.edges[edge as usize];
@@ -521,7 +498,7 @@ pub(super) fn assemble_edges(
             BoundaryFaceId(subdivision.topology.face_of[twin]),
         );
         if selected_cell_label(left) || selected_cell_label(right) {
-            try_push_vec(&mut selected, (separator, EdgeId(index as u32)))?;
+            selected.push((separator, EdgeId(index as u32)));
         }
     }
     selected.sort_unstable();

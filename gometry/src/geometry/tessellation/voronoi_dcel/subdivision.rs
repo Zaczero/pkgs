@@ -7,7 +7,7 @@
 use super::{
     AtomicEdge, BoundaryFaceId, ExactSign, ExpansionBudget, IndexedTopology,
     IndexedTopologyScratch, NodedAtoms, Ordering, OwnerTransition, Result, Site, SiteAdjacency,
-    SiteId, Transition, VecDeque, XY, exact, nearest_site_walk, try_reserve_vec, voronoi_error,
+    SiteId, Transition, VecDeque, XY, exact, nearest_site_walk, voronoi_error,
 };
 
 pub(super) struct ExactVertex {
@@ -276,9 +276,8 @@ pub(super) fn graft_components(
         .copied()
         .max()
         .map_or(0, |id| id as usize + 1);
-    try_reserve_vec(&mut subdivision.labels, boundary_faces)?;
-    let mut exterior = Vec::new();
-    try_reserve_vec(&mut exterior, components)?;
+    subdivision.labels.reserve(boundary_faces);
+    let mut exterior = Vec::with_capacity(components);
     exterior.resize(components, None);
     let mut points = Vec::new();
     for face in 0..boundary_faces {
@@ -286,7 +285,7 @@ pub(super) fn graft_components(
             [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
         budget.add(walk.len())?;
         points.clear();
-        try_reserve_vec(&mut points, walk.len())?;
+        points.reserve(walk.len());
         points.extend(walk.iter().map(|&slot| {
             subdivision.vertices[topology.owners[slot as usize] as usize]
                 .point
