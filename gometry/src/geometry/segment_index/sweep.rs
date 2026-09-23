@@ -6,7 +6,6 @@ use std::ops::ControlFlow;
 
 use crate::error::{ResourceError, Result};
 use crate::geometry::{Bounds, PointKey, Segment, XY};
-use crate::try_reserve_vec;
 
 fn u32_ordinal(value: usize) -> Result<u32> {
     u32::try_from(value).map_err(|_| ResourceError::SizeOverflow.into())
@@ -35,10 +34,8 @@ pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair<B>(
     bounds: &[Option<Bounds>],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
-    let mut ordinals = Vec::new();
-    let mut present = Vec::new();
-    try_reserve_vec(&mut ordinals, bounds.len())?;
-    try_reserve_vec(&mut present, bounds.len())?;
+    let mut ordinals = Vec::with_capacity(bounds.len());
+    let mut present = Vec::with_capacity(bounds.len());
     for (ordinal, bounds) in bounds.iter().enumerate() {
         if let Some(bounds) = bounds {
             ordinals.push(ordinal);
@@ -143,7 +140,7 @@ fn try_overlapping_bounds_sweep<B>(
 ) -> Result<ControlFlow<B>> {
     let count = bounds.len();
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
-    try_reserve_vec(&mut entries, count)?;
+    entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
     let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
     for (ordinal, b) in bounds.iter().enumerate() {
@@ -209,8 +206,8 @@ fn try_overlapping_bounds_sweep<B>(
 /// count therefore takes the pruning wherever it exists — a straight 254-segment
 /// pair drops from 252 candidates to 0 — and pays the run machinery only when it
 /// buys something. Below [`SWEEP_MIN_ITEMS`] the brute double loop wins.
-/// Scratch growth is [`ResourceError`]; visit `Break` is
-/// `Ok(ControlFlow::Break(value))`.
+/// Unrepresentable ordinals and band-CSR sizes are [`ResourceError`]; visit
+/// `Break` is `Ok(ControlFlow::Break(value))`.
 pub(in crate::geometry) fn for_each_candidate_pair<B>(
     pool: &[Segment],
     chain_of: impl Fn(usize) -> u32,
@@ -272,7 +269,7 @@ fn try_candidate_pairs_over_runs<B>(
     let (min_x, min_y, max_x, max_y) = (bounds.minx(), bounds.miny(), bounds.maxx(), bounds.maxy());
     let swapped = wider_axis_swapped(min_x, max_x, min_y, max_y);
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
-    try_reserve_vec(&mut entries, runs.len())?;
+    entries.reserve(runs.len());
     for (ordinal, run) in runs.iter().enumerate() {
         // Length-exact run window: first/last via slice pattern (elision).
         let segs = &pool[run.start as usize..run.end as usize];
@@ -352,30 +349,23 @@ pub(in crate::geometry) fn monotone_runs(
             }
             continue;
         }
-        push_run(runs, start, index_u32, sign_x, sign_y)?;
+        push_run(runs, start, index_u32, sign_x, sign_y);
         start = index_u32;
         (sign_x, sign_y) = (sx, sy);
         if degenerate {
-            let end = index_u32
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
-            push_run(runs, start, end, 0, 0)?;
+            let end = index_u32.wrapping_add(1);
+            push_run(runs, start, end, 0, 0);
             start = end;
             (sign_x, sign_y) = (0, 0);
         }
     }
-    push_run(runs, start, len, sign_x, sign_y)
+    push_run(runs, start, len, sign_x, sign_y);
+    Ok(())
 }
 
-fn push_run(
-    runs: &mut Vec<MonotoneRun>,
-    start: u32,
-    end: u32,
-    sign_x: i8,
-    sign_y: i8,
-) -> Result<()> {
+fn push_run(runs: &mut Vec<MonotoneRun>, start: u32, end: u32, sign_x: i8, sign_y: i8) {
     if end > start {
-        try_reserve_vec(runs, 1)?;
+        runs.reserve(1);
         runs.push(MonotoneRun {
             start,
             end,
@@ -383,7 +373,6 @@ fn push_run(
             sign_y,
         });
     }
-    Ok(())
 }
 
 pub(in crate::geometry) fn sign_of(value: f64) -> i8 {
@@ -566,9 +555,7 @@ fn try_banded_windows<B>(
         |cross: f64| -> usize { (((cross - cross_lo) / band_height) as usize).min(bands - 1) };
     // Entries are already in sweep order, so every band row is too.
     let start_len = bands.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
-    let mut starts = Vec::new();
-    try_reserve_vec(&mut starts, start_len)?;
-    starts.resize(start_len, 0_usize);
+    let mut starts = vec![0_usize; start_len];
     for entry in entries {
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
             starts[band + 1] = starts[band + 1]
@@ -581,12 +568,9 @@ fn try_banded_windows<B>(
             .checked_add(starts[band])
             .ok_or(ResourceError::SizeOverflow)?;
     }
-    let mut cursor = Vec::new();
-    try_reserve_vec(&mut cursor, start_len)?;
+    let mut cursor = Vec::with_capacity(start_len);
     cursor.extend_from_slice(&starts);
-    let mut slots = Vec::new();
-    try_reserve_vec(&mut slots, starts[bands])?;
-    slots.resize(starts[bands], 0_usize);
+    let mut slots = vec![0_usize; starts[bands]];
     for (position, entry) in entries.iter().enumerate() {
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
             slots[cursor[band]] = position;
