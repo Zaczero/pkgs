@@ -102,10 +102,8 @@ impl<T> YStabbingIndex<T> {
         items: Vec<T>,
         mut envelope: impl FnMut(&T) -> (f64, f64, f64, f64),
     ) -> Result<Self> {
-        let mut spans = Vec::new();
-        let mut x_spans = Vec::new();
-        crate::try_reserve_vec(&mut spans, items.len())?;
-        crate::try_reserve_vec(&mut x_spans, items.len())?;
+        let mut spans = Vec::with_capacity(items.len());
+        let mut x_spans = Vec::with_capacity(items.len());
         for item in &items {
             let (min_x, max_x, min_y, max_y) = envelope(item);
             spans.push((min_y, max_y));
@@ -291,8 +289,7 @@ impl EdgeYIndex {
     /// Items in the shared plan are edge ids (`0..edge_count`).
     pub(crate) fn build(ys: &[f64]) -> Result<Self> {
         let edge_count = ys.len().saturating_sub(1);
-        let mut spans = Vec::new();
-        crate::try_reserve_vec(&mut spans, edge_count)?;
+        let mut spans = Vec::with_capacity(edge_count);
         spans.extend((0..edge_count).map(|e| {
             let (a, b) = (ys[e], ys[e + 1]);
             (a.min(b), a.max(b))
@@ -309,8 +306,7 @@ impl EdgeYIndex {
     /// does not need to repeat the first coordinate.
     pub(crate) fn build_closed(ys: &[f64]) -> Result<Self> {
         let edge_count = ys.len();
-        let mut spans = Vec::new();
-        crate::try_reserve_vec(&mut spans, edge_count)?;
+        let mut spans = Vec::with_capacity(edge_count);
         spans.extend((0..edge_count).map(|edge| {
             let next = if edge + 1 < edge_count { edge + 1 } else { 0 };
             let (a, b) = (ys[edge], ys[next]);
@@ -490,7 +486,7 @@ fn choose_plan(spans: &[(f64, f64)]) -> Result<YPlan> {
     if let Some((min_y, inv_band_height, band_count, total_refs)) = try_dense_sizing(spans) {
         return build_dense(spans, min_y, inv_band_height, band_count, total_refs);
     }
-    build_itree(spans)
+    Ok(build_itree(spans))
 }
 
 fn build_dense(
@@ -500,15 +496,12 @@ fn build_dense(
     band_count: std::num::NonZeroUsize,
     total_refs: usize,
 ) -> Result<YPlan> {
-    let n = spans.len();
     let band_count_value = band_count.get();
     let offset_count = band_count_value
         .checked_add(1)
         .ok_or(crate::error::ResourceError::SizeOverflow)?;
     // Two-pass CSR with checked counts (sizing already proved fit).
-    let mut band_offsets = Vec::new();
-    crate::try_reserve_vec(&mut band_offsets, offset_count)?;
-    band_offsets.resize(offset_count, 0_u32);
+    let mut band_offsets = vec![0_u32; offset_count];
     for &(lo, hi) in spans {
         let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
         let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
@@ -524,12 +517,9 @@ fn build_dense(
             .expect("dense band offsets checked at sizing");
     }
     debug_assert_eq!(band_offsets[band_count_value] as usize, total_refs);
-    let mut cursor = Vec::new();
-    crate::try_reserve_vec(&mut cursor, band_offsets.len())?;
+    let mut cursor = Vec::with_capacity(band_offsets.len());
     cursor.extend_from_slice(&band_offsets);
-    let mut band_items = Vec::new();
-    crate::try_reserve_vec(&mut band_items, total_refs)?;
-    band_items.resize(total_refs, 0_u32);
+    let mut band_items = vec![0_u32; total_refs];
     for (idx, &(lo, hi)) in spans.iter().enumerate() {
         let b0 = band_of(lo, min_y, inv_band_height, band_count_value);
         let b1 = band_of(hi, min_y, inv_band_height, band_count_value);
@@ -540,7 +530,6 @@ fn build_dense(
             *c += 1;
         }
     }
-    let _ = n;
     Ok(YPlan::DenseBands {
         min_y,
         inv_band_height,
@@ -550,17 +539,16 @@ fn build_dense(
     })
 }
 
-fn build_itree(spans: &[(f64, f64)]) -> Result<YPlan> {
+fn build_itree(spans: &[(f64, f64)]) -> YPlan {
     let n = spans.len();
     if n == 0 {
-        return Ok(YPlan::IntervalTree {
+        return YPlan::IntervalTree {
             nodes: Vec::new(),
             root: NIL,
-        });
+        };
     }
     // Indices sorted by lo (then hi, then id for stability).
-    let mut order = Vec::new();
-    crate::try_reserve_vec(&mut order, n)?;
+    let mut order = Vec::with_capacity(n);
     order.extend(0..n as u32);
     order.sort_unstable_by(|&a, &b| {
         let (alo, ahi) = spans[a as usize];
@@ -569,10 +557,9 @@ fn build_itree(spans: &[(f64, f64)]) -> Result<YPlan> {
             .then_with(|| ahi.total_cmp(&bhi))
             .then_with(|| a.cmp(&b))
     });
-    let mut nodes = Vec::new();
-    crate::try_reserve_vec(&mut nodes, n)?;
+    let mut nodes = Vec::with_capacity(n);
     let root = build_itree_node(&mut order, spans, &mut nodes);
-    Ok(YPlan::IntervalTree { nodes, root })
+    YPlan::IntervalTree { nodes, root }
 }
 
 /// Median-of-sorted-lo recursive build. Returns node index (`NIL` if empty).

@@ -107,7 +107,7 @@ mod sweep_characterization {
                 seen.push(pair_key(a, b));
                 ControlFlow::Continue(())
             })
-            .expect("sweep scratch allocation");
+            .expect("sweep indexes fit their structural widths");
         sorted_unique(seen)
     }
 
@@ -171,7 +171,7 @@ mod sweep_characterization {
                 visited += 1;
                 ControlFlow::Break(String::from("contact"))
             })
-            .expect("sweep scratch allocation");
+            .expect("sweep indexes fit their structural widths");
             assert_eq!(flow, ControlFlow::Break(String::from("contact")));
             assert_eq!(visited, 1);
         }
@@ -350,13 +350,13 @@ mod run_collapse_dispatch {
                 count += 1;
                 ControlFlow::Continue(())
             })
-            .expect("sweep scratch allocation");
+            .expect("sweep indexes fit their structural widths");
         count
     }
 
     fn runs_of(pool: &[Segment]) -> usize {
         let mut runs = Vec::new();
-        monotone_runs(pool, &single_chain, &mut runs).expect("run scratch allocation");
+        monotone_runs(pool, &single_chain, &mut runs).expect("run indexes fit u32");
         runs.len()
     }
 
@@ -441,7 +441,7 @@ mod sweep_entry_scratch {
                 pairs.push((left, right));
                 ControlFlow::Continue(())
             })
-            .expect("bounds sweep scratch allocation");
+            .expect("bounds sweep indexes fit their structural widths");
         pairs
     }
 
