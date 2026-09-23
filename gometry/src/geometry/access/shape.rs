@@ -335,12 +335,11 @@ impl Shape {
         let mut seen = std::collections::HashSet::<Point>::new();
         seen.reserve(capacity);
         let mut unique = Vec::with_capacity(capacity);
-        self.try_for_each_point(|point| {
+        self.for_each_point(|point| {
             if seen.insert(point) {
                 unique.push(point);
             }
-            Ok::<_, crate::error::Error>(())
-        })?;
+        });
         let Some(first) = unique.first().copied() else {
             return Ok(Self::multi_point(
                 self.axes(),
@@ -353,8 +352,7 @@ impl Shape {
                 CoordSeq::try_from_points(&unique)?,
             ));
         }
-        let mut members = Vec::new();
-        crate::try_reserve_vec(&mut members, unique.len())?;
+        let mut members = Vec::with_capacity(unique.len());
         members.extend(unique.into_iter().map(Self::Point));
         Self::geometry_collection(members)
     }

@@ -100,8 +100,7 @@ impl Shape {
     pub(crate) fn try_unique_xy_points(&self) -> crate::error::Result<Vec<Point>> {
         let capacity = self.coord_count();
         let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
-        let mut unique = Vec::new();
-        crate::try_reserve_vec(&mut unique, capacity)?;
+        let mut unique = Vec::with_capacity(capacity);
         self.for_each_point(|point| {
             if seen.insert(PointKey::new(point)) {
                 unique.push(point.to_xy());
