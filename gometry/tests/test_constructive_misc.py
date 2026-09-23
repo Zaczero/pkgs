@@ -529,6 +529,36 @@ def test_dissolve_preserves_hashable_and_unhashable_key_grouping_order() -> None
         array[:2].dissolve(by=[BrokenEquality(), BrokenEquality()])
 
 
+def test_dissolve_nullable_rows_skip_keys_without_hashing_them() -> None:
+    class BrokenHash:
+        def __hash__(self) -> int:
+            raise RuntimeError('missing key was hashed')
+
+    array = gm.GeometryArray([
+        gm.box(0, 0, 1, 1),
+        None,
+        gm.box(1, 0, 2, 1),
+        gm.box(4, 0, 5, 1),
+    ])
+    first_key = ('first',)
+    geometries, groups = array.dissolve(
+        by=[first_key, BrokenHash(), first_key, 'last']
+    )
+    assert groups[0] is first_key
+    assert groups[1] == 'last'
+    assert geometries.to_wkt() == [
+        'POLYGON ((0 0, 2 0, 2 1, 0 1, 0 0))',
+        'POLYGON ((4 0, 5 0, 5 1, 4 1, 4 0))',
+    ]
+
+
+def test_dissolve_all_missing_rows_produces_no_groups() -> None:
+    array = gm.GeometryArray([None, None])
+    geometries, groups = array.dissolve(by=[0, 1])
+    assert len(geometries) == 0
+    assert groups == []
+
+
 def test_swap_xy_exchanges_axes_and_keeps_zm() -> None:
     assert gm.Point(52.0, 21.0).swap_xy().to_wkt() == 'POINT (21 52)'
     swapped = gm.LineString([(1, 2), (3, 4)], z=[9, 8], m=[1, 2]).swap_xy()

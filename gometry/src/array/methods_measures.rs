@@ -300,26 +300,19 @@ impl PyGeometryArray {
                 }
             ))
         })?;
-        if let Some(mask) = self.missing() {
-            // Missing rows leave the group-by entirely (their keys too) —
-            // SQL/pandas aggregation semantics.
-            let dense = self.try_drop_missing()?;
-            let mut kept = crate::try_vec_with_capacity(keys.len())?;
-            for (key, missing) in keys.iter().zip(mask.iter()) {
-                if !missing {
-                    kept.push(key.clone());
-                }
-            }
-            let kept_list = pyo3::types::PyList::new(py, &kept)?;
-            return dense.dissolve(py, kept_list.as_any());
-        }
         let strictness = crate::geometry::Strictness::Lenient;
-        let mut groups: Vec<Py<PyAny>> = crate::try_vec_with_capacity(keys.len())?;
-        let mut group_shapes: Vec<Vec<Shape>> = crate::try_vec_with_capacity(keys.len())?;
+        let mut groups: Vec<Py<PyAny>> = Vec::new();
+        let mut group_shapes: Vec<Vec<Shape>> = Vec::new();
         let hash_groups = PyDict::new(py);
-        let mut unhashable_groups: Vec<usize> = crate::try_vec_with_capacity(keys.len())?;
-        for (key, row) in keys.iter().zip(self.present_shape_rows()) {
-            let (_, shape) = row.map_err(PyErr::from)?;
+        let mut unhashable_groups: Vec<usize> = Vec::new();
+        for (key, row) in keys
+            .iter()
+            .zip(self.row_operation().rows_with_missing(|| ()))
+        {
+            let crate::array::ArrayRow::Present(row) = row else {
+                continue;
+            };
+            let shape = row.row().with_shape(Clone::clone).map_err(PyErr::from)?;
             let hashable = match key.hash() {
                 Ok(_) => true,
                 Err(error) if error.is_instance_of::<PyTypeError>(py) => false,
@@ -357,9 +350,7 @@ impl PyGeometryArray {
             } else {
                 let index = groups.len();
                 groups.push(key.clone().unbind());
-                let mut values = crate::try_vec_with_capacity(1)?;
-                values.push(shape);
-                group_shapes.push(values);
+                group_shapes.push(vec![shape]);
                 if hashable {
                     hash_groups.set_item(key, index)?;
                 } else {
