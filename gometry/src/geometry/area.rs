@@ -475,30 +475,6 @@ fn shoelace_shifted_roundoff(
     product_scale * EPSILON * operations
 }
 
-fn closed_ring_sum_columns(xs: &[f64], ys: &[f64], pairs: usize) -> ExactSum {
-    let mut sum = ExactSum::zero();
-    for index in 0..pairs {
-        sum.add_cross(xs[index], ys[index], xs[index + 1], ys[index + 1]);
-    }
-    sum
-}
-
-fn closed_ring_sum<C: Coordinates + ?Sized>(points: &C) -> ExactSum {
-    if let Some((xs, ys)) = points.xy_columns() {
-        return closed_ring_sum_columns(xs, ys, points.coord_count().saturating_sub(1));
-    }
-    let mut sum = ExactSum::zero();
-    let mut coords = points.iter_coords();
-    let Some(mut prev) = coords.next() else {
-        return sum;
-    };
-    for next in coords {
-        sum.add_cross(prev.x, prev.y, next.x, next.y);
-        prev = next;
-    }
-    sum
-}
-
 fn open_cycle_sum_columns(xs: &[f64], ys: &[f64]) -> ExactSum {
     let mut sum = ExactSum::zero();
     let count = xs.len();
@@ -536,15 +512,6 @@ fn open_cycle_sum<C: Coordinates + ?Sized>(points: &C) -> ExactSum {
 
 fn unsigned_area(sum: &ExactSum) -> AreaMeasure {
     AreaMeasure(sum.round_to_area().abs())
-}
-
-#[cfg(test)]
-pub(crate) fn ring_area_measure_columns(xs: &[f64], ys: &[f64], pairs: usize) -> AreaMeasure {
-    unsigned_area(&closed_ring_sum_columns(xs, ys, pairs))
-}
-
-pub(crate) fn ring_area_measure<C: Coordinates + ?Sized>(points: &C) -> AreaMeasure {
-    unsigned_area(&closed_ring_sum(points))
 }
 
 /// Polygon area in one common, power-of-two-normalized frame for the shell
@@ -738,13 +705,6 @@ fn fast_ring_area_columns(xs: &[f64], ys: &[f64], pairs: usize) -> Option<(f64, 
     Some((measured, error))
 }
 
-pub(crate) fn ring_decision_area<C: Coordinates + ?Sized>(points: &C) -> RingDecisionArea {
-    RingDecisionArea {
-        sign: ring_area_sign(points),
-        magnitude: ring_area_measure(points),
-    }
-}
-
 /// The exact sign of a closed ring's area, with none of the magnitude work.
 pub(crate) fn ring_area_sign<C: Coordinates + ?Sized>(points: &C) -> AreaSign {
     let pairs = points.coord_count().saturating_sub(1);
@@ -807,24 +767,6 @@ pub(crate) fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
     unsigned_area(&open_cycle_sum(points))
 }
 
-fn cmp_closed_ring_magnitude<C: Coordinates + ?Sized>(left: &C, right: &C) -> std::cmp::Ordering {
-    closed_ring_sum(left).compare_unsigned(&closed_ring_sum(right))
-}
-
-/// Float order when it distinguishes; original-coordinate ExactSum on a tie
-/// (including `0`/`0` and `∞`/`∞`).
-pub(crate) fn cmp_area_keys_then_closed<C: Coordinates + ?Sized>(
-    left_key: f64,
-    right_key: f64,
-    left: &C,
-    right: &C,
-) -> std::cmp::Ordering {
-    match left_key.total_cmp(&right_key) {
-        std::cmp::Ordering::Equal => cmp_closed_ring_magnitude(left, right),
-        ordering => ordering,
-    }
-}
-
 pub(crate) fn cmp_area_keys_then_open_columns(
     left_key: f64,
     right_key: f64,
@@ -843,6 +785,21 @@ pub(crate) fn cmp_area_keys_then_open_columns(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Independent binary64 shoelace reference after translating to one vertex.
+    fn shifted_scalar_area_reference(xs: &[f64], ys: &[f64]) -> f64 {
+        let pairs = xs.len().saturating_sub(1);
+        if pairs == 0 {
+            return 0.0;
+        }
+        let (ox, oy) = (xs[0], ys[0]);
+        xs.array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
+                area + ((x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy))
+            })
+            / 2.0
+    }
 
     #[test]
     fn rational_area_accumulator_rounds_selected_fraction_once() {
@@ -1080,21 +1037,6 @@ mod tests {
         );
     }
 
-    /// Independent origin-shifted scalar shoelace reference for area tests.
-    fn shifted_scalar_area(xs: &[f64], ys: &[f64]) -> f64 {
-        let pairs = xs.len().saturating_sub(1);
-        if pairs == 0 {
-            return 0.0;
-        }
-        let (ox, oy) = (xs[0], ys[0]);
-        xs.array_windows::<2>()
-            .zip(ys.array_windows::<2>())
-            .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
-                area + ((x0 - ox) * (y1 - oy) - (x1 - ox) * (y0 - oy))
-            })
-            / 2.0
-    }
-
     #[test]
     fn packed_polygon_measure_preserves_extreme_semantic_values() {
         let mixed_xs = [0.0, f64::from_bits(1), 2.0_f64.powi(-20), 0.0];
@@ -1152,150 +1094,6 @@ mod tests {
     }
 
     #[test]
-    fn exact_ring_area_matches_independent_reference_on_long_ring() {
-        let xs: Vec<f64> = vec![
-            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0,
-        ];
-        let ys: Vec<f64> = vec![
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-        ];
-        let pairs = xs.len() - 1;
-        let winding = closed_columns_winding(&xs, &ys, pairs);
-        assert_eq!(winding, RingWinding::CounterClockwise);
-        let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-        // The independent fold is a semantic reference, not a component-layout
-        // or SIMD representation contract.
-        let scalar_reference = shifted_scalar_area(&xs, &ys);
-        assert!(scalar_reference > 0.0);
-        assert_eq!(measure.to_bits(), scalar_reference.to_bits());
-    }
-
-    #[test]
-    fn exact_product_tails_keep_a_closed_near_collinear_ring() {
-        // Every rounded cross term is zero, so this input proves the exact
-        // original-coordinate product sum is used rather than merely
-        // exercising the fast filtered sign path. Its stored-double twice-area
-        // is 2^-54.
-        let e = 2.0_f64.powi(-27);
-        let xs = [0.0, 1.0, 1.0 - e, 0.0];
-        let ys = [0.0, 1.0 + e, 1.0, 0.0];
-        let pairs = xs.len() - 1;
-        let rounded_terms: Vec<f64> = xs[..pairs]
-            .iter()
-            .zip(&xs[1..])
-            .zip(ys[..pairs].iter().zip(&ys[1..]))
-            .map(|((&x0, &x1), (&y0, &y1))| x0 * y1 - x1 * y0)
-            .collect();
-        assert_eq!(rounded_terms, [0.0, 0.0, 0.0]);
-        assert_eq!(
-            exact_ring_area_sign_columns(&xs, &ys, pairs),
-            AreaSign::Positive
-        );
-        assert_eq!(
-            ring_area_measure_columns(&xs, &ys, pairs).get().to_bits(),
-            2.0_f64.powi(-55).to_bits()
-        );
-    }
-
-    #[test]
-    fn exact_ring_area_matches_shifted_reference_on_long_ring() {
-        // A long stored ring exercises exact accumulation independently of the
-        // internal measurement crossover.
-        let k = 128;
-        let mut xs: Vec<f64> = (0..k)
-            .map(|i| (f64::from(i) * std::f64::consts::TAU / f64::from(k)).cos() * 100.0)
-            .collect();
-        let mut ys: Vec<f64> = (0..k)
-            .map(|i| (f64::from(i) * std::f64::consts::TAU / f64::from(k)).sin() * 100.0)
-            .collect();
-        xs.push(xs[0]);
-        ys.push(ys[0]);
-        let pairs = xs.len() - 1;
-        let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-        let scalar = shifted_scalar_area(&xs, &ys).abs();
-        assert!(
-            (measure - scalar).abs() <= 1e-6 * scalar,
-            "measure={measure} scalar={scalar}"
-        );
-    }
-
-    #[test]
-    fn exact_ring_area_large_absolute_coords_matches_reference() {
-        // ~200 m² irregular building at UTM-scale easting/northing. Naive
-        // shoelace cross-products (~2.6e12) cancel to ~200 with ~1e-4 absolute
-        // error; origin-shifted measurement recovers the true area.
-        let xs = [500_000.1_f64, 500_020.3, 500_019.7, 500_000.5, 500_000.1];
-        let ys = [
-            5_200_000.2_f64,
-            5_200_000.1,
-            5_200_010.4,
-            5_200_010.3,
-            5_200_000.2,
-        ];
-        let pairs = xs.len() - 1;
-        let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-        let reference = shifted_scalar_area(&xs, &ys).abs();
-        let naive = xs
-            .array_windows::<2>()
-            .zip(ys.array_windows::<2>())
-            .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
-                area + (x0 * y1 - x1 * y0)
-            })
-            .abs()
-            / 2.0;
-        assert!(
-            (measure - reference).abs() <= 1e-12 * reference.max(1.0),
-            "measure={measure} reference={reference} naive={naive}"
-        );
-        // The unshifted fold loses ~1e-4 absolute on these stored values.
-        assert!(
-            (naive - reference).abs() > 1e-5,
-            "naive={naive} measure={measure} reference={reference}"
-        );
-        assert!(
-            (naive - reference).abs() > (measure - reference).abs() * 1e6,
-            "naive={naive} measure={measure} reference={reference}"
-        );
-    }
-
-    #[test]
-    fn exact_ring_area_large_absolute_long_ring_matches_reference() {
-        // UTM-scale circle. Original-coordinate ExactSum agrees with an
-        // independent shifted reference; unshifted products diverge.
-        let k = 128;
-        let ox = 500_000.0_f64;
-        let oy = 5_200_000.0_f64;
-        let r = 10.0_f64;
-        let mut xs: Vec<f64> = (0..k)
-            .map(|i| ox + (f64::from(i) * std::f64::consts::TAU / f64::from(k)).cos() * r)
-            .collect();
-        let mut ys: Vec<f64> = (0..k)
-            .map(|i| oy + (f64::from(i) * std::f64::consts::TAU / f64::from(k)).sin() * r)
-            .collect();
-        xs.push(xs[0]);
-        ys.push(ys[0]);
-        let pairs = xs.len() - 1;
-        let measure = ring_area_measure_columns(&xs, &ys, pairs).get();
-        let shifted = shifted_scalar_area(&xs, &ys).abs();
-        let naive = xs
-            .array_windows::<2>()
-            .zip(ys.array_windows::<2>())
-            .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
-                area + (x0 * y1 - x1 * y0)
-            })
-            .abs()
-            / 2.0;
-        assert!(
-            (measure - shifted).abs() <= 1e-12 * shifted.max(1.0),
-            "measure={measure} shifted={shifted}"
-        );
-        assert!(
-            (naive - shifted).abs() > (measure - shifted).abs(),
-            "naive={naive} measure={measure} shifted={shifted}"
-        );
-    }
-
-    #[test]
     fn packed_polygon_area_fuses_short_rings_without_losing_holes() {
         let xs = [
             500_000.0, 500_010.0, 500_010.0, 500_000.0, 500_000.0, 500_002.0, 500_002.0, 500_008.0,
@@ -1332,47 +1130,8 @@ mod tests {
     }
 
     #[test]
-    fn equal_float_keys_defer_to_exact_ring_order() {
-        let width = 2.0_f64.powi(1023);
-        let inset = 2.0_f64.powi(971);
-        let outer = [
-            XY::new(0.0, 0.0),
-            XY::new(width, 0.0),
-            XY::new(width, 8.0),
-            XY::new(0.0, 8.0),
-            XY::new(0.0, 0.0),
-        ];
-        let inner = [
-            XY::new(inset, 1.0),
-            XY::new(width - inset, 1.0),
-            XY::new(width - inset, 7.0),
-            XY::new(inset, 7.0),
-            XY::new(inset, 1.0),
-        ];
-        let outer_key = ring_area_measure(&outer[..]).get();
-        let inner_key = ring_area_measure(&inner[..]).get();
-        assert!(outer_key.is_infinite() && inner_key.is_infinite());
-        assert_eq!(outer_key.total_cmp(&inner_key), std::cmp::Ordering::Equal);
-        assert_eq!(
-            cmp_area_keys_then_closed(outer_key, inner_key, &outer[..], &inner[..]),
-            std::cmp::Ordering::Greater
-        );
-    }
-
-    #[test]
-    fn thin_triangle_original_coords_round_to_known_area() {
-        // Exact Σ = -2^-54 on the stored vertices; |Σ|/2 is exactly 2^-55.
+    fn thin_open_cycle_and_closed_polygon_round_to_known_area() {
         let tiny = 2.0_f64.powi(-54);
-        let closed = [
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(0.0, 1.0),
-            Point::new_raw_xy(tiny, 1.0),
-            Point::new_raw_xy(1.0, 0.0),
-        ];
-        assert_eq!(
-            ring_area_measure(&closed[..]).get().to_bits(),
-            2.0_f64.powi(-55).to_bits()
-        );
         let open = [XY::new(1.0, 0.0), XY::new(0.0, 1.0), XY::new(tiny, 1.0)];
         assert_eq!(
             open_xy_cycle_magnitude(&open).get().to_bits(),
@@ -1387,22 +1146,97 @@ mod tests {
             open_point_cycle_magnitude(&open_points).get().to_bits(),
             2.0_f64.powi(-55).to_bits()
         );
+
+        // The middle rounded cross product is zero, while the exact doubled
+        // area is 2^-54. The packed owner must take its exact fallback.
+        let closed_xs = [0.0, 1.0, 0.999_999_992_549_419_4, 0.0];
+        let closed_ys = [0.0, 1.000_000_007_450_580_6, 1.0, 0.0];
+        assert_eq!(
+            polygon_area_measure_columns(&closed_xs, &closed_ys, &[0, 4], 0..1).to_bits(),
+            2.0_f64.powi(-55).to_bits()
+        );
     }
 
     #[test]
-    fn subnormal_ring_original_coords_round_to_least_subnormal() {
-        // Unit-width rectangle of height 2^-1074 has exact area 2^-1074.
+    fn least_subnormal_rectangle_survives_scalar_polygon_area() {
         let tiny = f64::from_bits(1);
-        let points = [
-            Point::new_raw_xy(0.0, 0.0),
-            Point::new_raw_xy(1.0, 0.0),
-            Point::new_raw_xy(1.0, tiny),
-            Point::new_raw_xy(0.0, tiny),
-            Point::new_raw_xy(0.0, 0.0),
+        let xs = [0.0, 1.0, 1.0, 0.0, 0.0];
+        let ys = [0.0, 0.0, tiny, tiny, 0.0];
+        let area = polygon_area_measure_with(|visit| visit(&xs, &ys, false));
+        assert_eq!(area.to_bits(), tiny.to_bits());
+    }
+
+    #[test]
+    fn utm_scale_irregular_polygon_area_matches_shifted_reference() {
+        // Translating before the independent binary64 fold avoids catastrophic
+        // cancellation at UTM coordinates; the raw-coordinate fold below must
+        // visibly lose precision on this four-edge ring.
+        let xs = [500_000.1_f64, 500_020.3, 500_019.7, 500_000.5, 500_000.1];
+        let ys = [
+            5_200_000.2_f64,
+            5_200_000.1,
+            5_200_010.4,
+            5_200_010.3,
+            5_200_000.2,
         ];
-        assert_eq!(
-            ring_area_measure(&points[..]).get().to_bits(),
-            tiny.to_bits()
+        let area = polygon_area_measure_with(|visit| visit(&xs, &ys, false));
+        let reference = shifted_scalar_area_reference(&xs, &ys).abs();
+        let unshifted = xs
+            .array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
+                area + (x0 * y1 - x1 * y0)
+            })
+            .abs()
+            / 2.0;
+        assert!(
+            (area - reference).abs() <= 1e-12 * reference.max(1.0),
+            "area={area} reference={reference}"
+        );
+        assert!(
+            (unshifted - reference).abs() > 1e-5,
+            "unshifted={unshifted} reference={reference}"
+        );
+        assert!(
+            (unshifted - reference).abs() > (area - reference).abs() * 1e6,
+            "unshifted={unshifted} area={area} reference={reference}"
+        );
+    }
+
+    #[test]
+    fn long_utm_circle_area_matches_shifted_reference() {
+        // The 128-edge ring declines the packed short-ring fold and exercises
+        // the shared-frame fallback at UTM coordinate magnitudes.
+        let k = 128;
+        let ox = 500_000.0_f64;
+        let oy = 5_200_000.0_f64;
+        let radius = 10.0_f64;
+        let mut xs: Vec<f64> = (0..k)
+            .map(|i| ox + (f64::from(i) * std::f64::consts::TAU / f64::from(k)).cos() * radius)
+            .collect();
+        let mut ys: Vec<f64> = (0..k)
+            .map(|i| oy + (f64::from(i) * std::f64::consts::TAU / f64::from(k)).sin() * radius)
+            .collect();
+        xs.push(xs[0]);
+        ys.push(ys[0]);
+        let offsets = [0, xs.len() as i32];
+        let area = polygon_area_measure_columns(&xs, &ys, &offsets, 0..1);
+        let reference = shifted_scalar_area_reference(&xs, &ys).abs();
+        let unshifted = xs
+            .array_windows::<2>()
+            .zip(ys.array_windows::<2>())
+            .fold(0.0_f64, |area, ([x0, x1], [y0, y1])| {
+                area + (x0 * y1 - x1 * y0)
+            })
+            .abs()
+            / 2.0;
+        assert!(
+            (area - reference).abs() <= 1e-12 * reference.max(1.0),
+            "area={area} reference={reference}"
+        );
+        assert!(
+            (unshifted - reference).abs() > (area - reference).abs(),
+            "unshifted={unshifted} area={area} reference={reference}"
         );
     }
 }

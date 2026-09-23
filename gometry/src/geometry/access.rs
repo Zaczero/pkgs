@@ -28,8 +28,8 @@ pub(crate) use shape::*;
 pub(super) const SIMD_VECTOR_BITS: usize = 512;
 
 /// `f64` lane count for the reduction kernels (`column_minmax`, `line_length`,
-/// `ring_area_measure`, …), derived: `SIMD_VECTOR_BITS / f64_bits` = `512 / 64` =
-/// **8**.
+/// `polygon_area_measure_columns`, …), derived: `SIMD_VECTOR_BITS / f64_bits` =
+/// `512 / 64` = **8**.
 pub(crate) const REDUCE_LANES: usize = SIMD_VECTOR_BITS / (8 * size_of::<f64>());
 pub(crate) type ReduceSimd = Simd<f64, REDUCE_LANES>;
 
