@@ -32,10 +32,9 @@ pub(crate) fn geodesic_cap_streaming(
 ) -> Result<Option<(Point, f64)>> {
     ensure_geodesic_linework(shape, metric)?;
     let mut anchor = None;
-    shape.for_each_point(|point| {
-        if anchor.is_none() {
-            anchor = Some(point);
-        }
+    shape.any_point(|point| {
+        anchor = Some(point);
+        true
     });
     let Some(anchor) = anchor else {
         return Ok(None);

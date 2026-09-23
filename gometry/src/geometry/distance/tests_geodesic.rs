@@ -1295,6 +1295,7 @@ fn fused_geodesic_cap_and_parts_agree() -> Result<()> {
     let cases = [
         ("line", line(vec![p(-1.0, 0.0), p(1.0, 0.0)])),
         ("multipoint", multipoint(vec![p(0.0, 0.0), p(1.0, 1.0)])),
+        ("empty", Shape::empty_point()),
     ];
     for (name, shape) in cases {
         with_ellipsoid_metric("EPSG:4326", &[&shape], |metric| {
