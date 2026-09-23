@@ -7,7 +7,6 @@
 //! host-endian. Callers that want host-native values must normalize.
 
 use std::ffi::CStr;
-use std::mem::MaybeUninit;
 
 use pyo3::buffer::PyBuffer;
 use pyo3::prelude::*;
@@ -115,28 +114,17 @@ pub(crate) fn buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> Py
     if cells.len() != len {
         return buffer_to_vec_f64(py, buffer);
     }
-    let mut values = Vec::<MaybeUninit<f64>>::new();
-    crate::try_reserve_vec(&mut values, len).map_err(pyo3::PyErr::from)?;
-    // SAFETY: the fallible reservation above guarantees `capacity >= len`, and
-    // `MaybeUninit<f64>` has no initialization requirement, so every slot in
-    // `0..len` is a valid value of the element type. Setting the length here
-    // avoids a second, infallible resize through the allocator.
-    unsafe {
-        values.set_len(len);
-    }
+    let mut values = vec![0.0; len];
     if buffer_format_is_native_endian(buffer.format()) {
-        for (dst, cell) in values.iter_mut().zip(cells.iter()) {
-            dst.write(cell.get());
+        for (value, cell) in values.iter_mut().zip(cells.iter()) {
+            *value = cell.get();
         }
     } else {
-        for (dst, cell) in values.iter_mut().zip(cells.iter()) {
-            dst.write(swap_f64_endian(cell.get()));
+        for (value, cell) in values.iter_mut().zip(cells.iter()) {
+            *value = swap_f64_endian(cell.get());
         }
     }
-    let (ptr, len, capacity) = values.into_raw_parts();
-    // SAFETY: every slot was written above and `MaybeUninit<f64>` is
-    // layout-compatible with `f64`.
-    Ok(unsafe { Vec::from_raw_parts(ptr.cast(), len, capacity) })
+    Ok(values)
 }
 
 /// Copy buffer elements to a `Vec<f64>` in host-native order (byteswaps when
@@ -146,8 +134,7 @@ pub(crate) fn buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> Py
 /// exporter must remain quiescent until the copy returns; retaining the
 /// `PyBuffer` pins its allocation but does not exclude native writers.
 pub(crate) fn buffer_to_vec_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
-    let mut values = crate::try_vec_with_capacity(buffer.item_count())?;
-    values.resize(buffer.item_count(), 0.0);
+    let mut values = vec![0.0; buffer.item_count()];
     buffer.copy_to_slice(py, &mut values)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
@@ -163,8 +150,7 @@ pub(crate) fn buffer_to_vec_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
 /// exporter must remain quiescent until the copy returns; retaining the
 /// `PyBuffer` pins its allocation but does not exclude native writers.
 pub(crate) fn buffer_to_vec_u64(py: Python<'_>, buffer: &PyBuffer<u64>) -> PyResult<Vec<u64>> {
-    let mut values = crate::try_vec_with_capacity(buffer.item_count())?;
-    values.resize(buffer.item_count(), 0);
+    let mut values = vec![0; buffer.item_count()];
     buffer.copy_to_slice(py, &mut values)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in &mut values {
