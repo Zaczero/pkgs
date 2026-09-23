@@ -733,6 +733,22 @@ macro_rules! impl_multipart {
                 Self::try_new(axes, members)
             }
 
+            /// Replace stored values one-for-one while retaining the admitted
+            /// member layout, including explicit EMPTY positions.
+            pub(crate) fn with_values(&self, values: Vec<$member>) -> Self {
+                debug_assert_eq!(values.len(), self.values.len());
+                debug_assert!(
+                    values
+                        .iter()
+                        .all(|value| shape_member_axes(value) == self.axes)
+                );
+                Self {
+                    axes: self.axes,
+                    values: SharedSlice::from_vec(values),
+                    members: self.members.clone(),
+                }
+            }
+
             /// A dense multipart from members that are all present, declaring
             /// the axes of the first. Axis-homogeneity is a payload invariant
             /// (the DbC boundary rule [`CoordSeq::try_from_points`] follows);
@@ -943,11 +959,23 @@ impl MultiPoint {
         self.coords.point_at(index)
     }
 
-    pub(crate) fn try_to_vec(&self) -> Result<Vec<Point>> {
-        let mut points = Vec::new();
-        crate::boundary::try_reserve_vec(&mut points, self.coord_count())?;
+    pub(crate) fn to_vec(&self) -> Vec<Point> {
+        let mut points = Vec::with_capacity(self.coord_count());
         points.extend(self.points());
-        Ok(points)
+        points
+    }
+
+    pub(crate) fn with_values(&self, values: &[Point]) -> Result<Self> {
+        debug_assert_eq!(values.len(), self.coords.len());
+        let coords = if values.is_empty() {
+            CoordSeq::empty(self.axes())
+        } else {
+            CoordSeq::try_from_points(values)?
+        };
+        Ok(Self {
+            coords,
+            members: self.members.clone(),
+        })
     }
 
     pub(crate) fn xs(&self) -> &[f64] {

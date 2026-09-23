@@ -556,12 +556,8 @@ impl Shape {
             .point_set()
             .ok_or(GeometryErrorKind::PointSplitterRequired)?
         {
-            PointSet::Point(point) => {
-                let mut points = Vec::new();
-                crate::try_push_vec(&mut points, point)?;
-                Ok(points)
-            },
-            PointSet::MultiPoint(points) => points.try_to_vec(),
+            PointSet::Point(point) => Ok(vec![point]),
+            PointSet::MultiPoint(points) => Ok(points.to_vec()),
             // An empty point set contributes no split locations.
             PointSet::Empty => Ok(Vec::new()),
         }

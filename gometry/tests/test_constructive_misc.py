@@ -740,6 +740,20 @@ def test_normalize_is_the_smallest_presentation() -> None:
             'MULTILINESTRING ((3 3, 4 4), (1 1, 0 0))',
             'MULTILINESTRING ((0 0, 1 1), (3 3, 4 4))',
         ),
+        (
+            'MULTIPOINT ((3 0), EMPTY, (1 0), EMPTY, (2 0))',
+            'MULTIPOINT ((1 0), EMPTY, (2 0), EMPTY, (3 0))',
+        ),
+        (
+            'MULTILINESTRING ((3 0, 4 0), EMPTY, (1 0, 2 0), EMPTY)',
+            'MULTILINESTRING ((1 0, 2 0), EMPTY, (3 0, 4 0), EMPTY)',
+        ),
+        (
+            'MULTIPOLYGON (((3 0, 4 0, 4 1, 3 1, 3 0)), EMPTY, '
+            '((1 0, 2 0, 2 1, 1 1, 1 0)), EMPTY)',
+            'MULTIPOLYGON (((1 0, 2 0, 2 1, 1 1, 1 0)), EMPTY, '
+            '((3 0, 4 0, 4 1, 3 1, 3 0)), EMPTY)',
+        ),
         ('LINESTRING (9 9, 0 0)', 'LINESTRING (0 0, 9 9)'),
         ('LINESTRING (5 1, 3 7, 0 0, 5 1)', 'LINESTRING (0 0, 3 7, 5 1, 0 0)'),
         (

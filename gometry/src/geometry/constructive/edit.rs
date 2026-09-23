@@ -1285,83 +1285,32 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => {
-                let mut values = points.try_to_vec()?;
+                let mut values = points.to_vec();
                 values.sort_unstable_by(compare_points);
-                let mut values = values.into_iter();
-                let mut members = Vec::new();
-                crate::boundary::try_reserve_vec(&mut members, points.member_count())?;
-                for member in points.members() {
-                    let mapped = match member {
-                        crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
-                        crate::geometry::MultiMember::Value(_) => {
-                            crate::geometry::MultiMember::Value(values.next().ok_or_else(|| {
-                                GeometryErrorKind::message(
-                                    "present MultiPoint member missing a sorted value",
-                                )
-                            })?)
-                        },
-                    };
-                    crate::try_push_vec(&mut members, mapped)?;
-                }
-                Self::MultiPoint(MultiPoint::from_values(points.axes(), members)?)
+                Self::MultiPoint(points.with_values(&values)?)
             },
             Self::LineString(points) => Self::LineString(points.normalized()?),
             Self::MultiLineString(lines) => {
-                let mut values = Vec::new();
-                crate::try_reserve_vec(&mut values, lines.len())?;
+                let mut values = Vec::with_capacity(lines.len());
                 for line in lines.iter() {
-                    crate::try_push_vec(&mut values, line.normalized()?)?;
+                    values.push(line.normalized()?);
                 }
                 values.sort_unstable_by(compare_point_slices);
-                let mut values = values.into_iter();
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, lines.member_count())?;
-                for member in lines.members() {
-                    let mapped = match member {
-                        crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
-                        crate::geometry::MultiMember::Value(_) => {
-                            crate::geometry::MultiMember::Value(values.next().ok_or_else(|| {
-                                GeometryErrorKind::message(
-                                    "present MultiLineString member missing a normalized value",
-                                )
-                            })?)
-                        },
-                    };
-                    crate::try_push_vec(&mut members, mapped)?;
-                }
-                Self::MultiLineString(MultiLineString::from_values(lines.axes(), members)?)
+                Self::MultiLineString(lines.with_values(values))
             },
             Self::Polygon(polygon) => Self::Polygon(polygon.normalize()?),
             Self::MultiPolygon(polygons) => {
-                let mut values = Vec::new();
-                crate::try_reserve_vec(&mut values, polygons.len())?;
+                let mut values = Vec::with_capacity(polygons.len());
                 for polygon in polygons.iter() {
-                    crate::try_push_vec(&mut values, polygon.normalize()?)?;
+                    values.push(polygon.normalize()?);
                 }
                 values.sort_unstable_by(compare_polygons);
-                let mut values = values.into_iter();
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, polygons.member_count())?;
-                for member in polygons.members() {
-                    let mapped = match member {
-                        crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
-                        crate::geometry::MultiMember::Value(_) => {
-                            crate::geometry::MultiMember::Value(values.next().ok_or_else(|| {
-                                GeometryErrorKind::message(
-                                    "present MultiPolygon member missing a normalized value",
-                                )
-                            })?)
-                        },
-                    };
-                    crate::try_push_vec(&mut members, mapped)?;
-                }
-                Self::MultiPolygon(MultiPolygon::from_values(polygons.axes(), members)?)
+                Self::MultiPolygon(polygons.with_values(values))
             },
             Self::GeometryCollection(geometries) => {
-                let mut members = Vec::new();
-                crate::try_reserve_vec(&mut members, geometries.len())?;
+                let mut members = Vec::with_capacity(geometries.len());
                 for geometry in geometries {
-                    crate::try_push_vec(&mut members, geometry.normalize()?)?;
+                    members.push(geometry.normalize()?);
                 }
                 members.sort_unstable_by(compare_shapes);
                 Self::GeometryCollection(geometries.try_rebuild_members(members)?)
