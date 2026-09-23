@@ -74,7 +74,7 @@ pub(crate) use constructive::{
     voronoi_edges_flatten, voronoi_flatten,
 };
 pub(crate) use extract::{
-    GeometryValues, OwnedBytes, coerce_collected_geometry_items, copy_wkb_payload,
+    GeometryValues, OwnedBytes, coerce_present_geometry_items, copy_wkb_payload,
     ensure_homogeneous_axes, exact_backed_bytes, extract_coordinate, extract_coordinate_or_empty,
     extract_lines, extract_points, extract_polygons, geometry_items, missing_geometry_items_error,
     optional_coordinates, own_geometry_item, parse_owned_geometry_item,

@@ -8,9 +8,9 @@ use crate::array::{
     Frame, FrameAdoption, GeometryArrayStorage, GeometryKind, InvalidGeometryError, PackedStorage,
     Py, PyAny, PyAnyMethods as _, PyCoordinates, PyCrs, PyDict, PyDictMethods as _, PyGeometry,
     PyGeometryArray, PyListMethods as _, PyRef, PyResult, PyTuple, PyTypeError, PyTypeMethods as _,
-    Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array,
-    coerce_collected_geometry_items, coordinate_epoch_option, crs, crs_arc, exact_geometry,
-    geometry, geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed, line_is_simple,
+    Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items,
+    coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
+    geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed, line_is_simple,
     line_is_valid, line_logical_len, map_coordinates_callback, parse_coordinate_replacement,
     parse_crs, physical_row, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
     replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
@@ -339,23 +339,15 @@ impl PyGeometryArray {
         // present items participate in coercion and frame resolution. The
         // native row builder restores their logical positions on publication.
         let mut mask = Vec::with_capacity(raw_items.len());
-        let mut present = Vec::with_capacity(raw_items.len());
-        for item in &raw_items {
-            let missing = item.is_none();
-            mask.push(missing);
-            if !missing {
-                present.push(item.clone());
-            }
-        }
+        mask.extend(raw_items.iter().map(|item| item.is_none()));
         let explicit_crs = parse_crs(crs)?;
         let explicit_epoch = coordinate_epoch_option("epoch", epoch)?;
-        let coerced = coerce_collected_geometry_items(
-            &present,
+        let coerced = coerce_present_geometry_items(
+            raw_items.iter().filter(|item| !item.is_none()),
             false,
             crate::io::LegacyGeoJsonCrsPolicy::Adopt(explicit_crs.as_deref()),
         )?;
         drop(raw_items);
-        drop(present);
         let py = values.py();
         let result = py.detach(move || -> Result<Self> {
             let mut items = coerced;

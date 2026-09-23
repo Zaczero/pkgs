@@ -23,9 +23,8 @@ fn spatial_index_rows(
         .transpose()?
         .unwrap_or(TopologyDomain::Cartesian);
     let mut entries = Vec::new();
-    let mut live = Vec::new();
-    crate::try_reserve_vec(&mut live, items.len()).map_err(pyo3::PyErr::from)?;
-    let mut non_prunable_live = 0;
+    let mut live = Vec::with_capacity(items.len());
+    let mut non_prunable_live = 0_usize;
     for (idx, item) in items.iter().enumerate() {
         let Some(item) = item else {
             live.push(0);
@@ -37,10 +36,11 @@ fn spatial_index_rows(
         };
         let cover = index_envelopes(item.shape.shape(), bounds, domain)?;
         for &envelope in cover.entries() {
-            crate::try_push(&mut entries, IndexEntry { idx, envelope })?;
+            entries.push(IndexEntry { idx, envelope });
         }
         live.push(1);
-        non_prunable_live += usize::from(!geodesic_prunable_point(&item.shape));
+        non_prunable_live =
+            non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(&item.shape)));
     }
     let live_count = live.iter().map(|&live| usize::from(live != 0)).sum();
     // `total_rows` spans every input row (incl. skipped empties) so the
@@ -86,7 +86,7 @@ fn packed_index_payload(
 ) -> PyResult<(Vec<IndexEntry>, Vec<u8>, usize)> {
     let mut entries = Vec::with_capacity(array.len());
     let mut live = Vec::with_capacity(array.len());
-    let mut non_prunable_live = 0;
+    let mut non_prunable_live = 0_usize;
     let element_bounds = (!matches!(
         array.storage(),
         GeometryArrayStorage::Packed(crate::array::PackedStorage::Points { .. })
@@ -126,11 +126,11 @@ fn packed_index_payload(
             })?,
         }
         live.push(1);
-        non_prunable_live += usize::from(!matches!(
+        non_prunable_live = non_prunable_live.wrapping_add(usize::from(!matches!(
             shape_row,
             crate::array::ShapeRow::Point(point)
                 if (-180.0..=180.0).contains(&point.x) && (-90.0..=90.0).contains(&point.y)
-        ));
+        )));
     }
     Ok((entries, live, non_prunable_live))
 }
@@ -176,9 +176,7 @@ pub(crate) fn build_spatial_index(
     values: &Bound<'_, PyAny>,
 ) -> PyResult<PySpatialIndex> {
     if let Some(geometry) = exact_geometry(values) {
-        let mut items = Vec::new();
-        crate::try_push(&mut items, geometry.clone())?;
-        return spatial_index(items);
+        return spatial_index(vec![geometry.clone()]);
     }
     if let Some(array) = exact_geometry_array(values) {
         let array = array.clone();
@@ -217,20 +215,15 @@ pub(crate) fn build_spatial_index(
 
     let raw_items = crate::collect_py_iter(values, Ok)?;
     if raw_items.iter().all(|item| !item.is_none()) {
-        let items = crate::coerce_collected_geometry_items(
-            &raw_items,
+        let items = crate::coerce_present_geometry_items(
+            raw_items.iter(),
             true,
             crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
         )?;
         return py.detach(move || spatial_index(items));
     }
-    let present = raw_items
-        .iter()
-        .filter(|item| !item.is_none())
-        .cloned()
-        .collect::<Vec<_>>();
-    let present = crate::coerce_collected_geometry_items(
-        &present,
+    let present = crate::coerce_present_geometry_items(
+        raw_items.iter().filter(|item| !item.is_none()),
         true,
         crate::io::LegacyGeoJsonCrsPolicy::Adopt(None),
     )?;
@@ -264,13 +257,13 @@ pub(crate) fn restore_spatial_index(
         index.metadata = (has_metadata || has_present_rows).then(|| values.frame.clone());
         return Ok(index);
     }
-    let mut rows = crate::try_vec_with_capacity(values.len())?;
-    let mut live = crate::try_vec_with_capacity(values.len())?;
+    let mut rows = Vec::with_capacity(values.len());
+    let mut live = Vec::with_capacity(values.len());
     let mut present = false;
     let mut row_operation = values.row_operation();
     let domain = crate::geometry::topology_domain(&values.frame)?;
     let mut entries = Vec::with_capacity(values.len());
-    let mut non_prunable_live = 0;
+    let mut non_prunable_live = 0_usize;
     for logical in 0..values.len() {
         let geometry = if let Some(row) = row_operation.present_row_at(logical) {
             present = true;
@@ -285,12 +278,13 @@ pub(crate) fn restore_spatial_index(
             })?;
             let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
-                crate::try_push(&mut entries, IndexEntry {
+                entries.push(IndexEntry {
                     idx: logical,
                     envelope,
-                })?;
+                });
             }
-            non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
+            non_prunable_live = non_prunable_live
+                .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
             live.push(1);
             geometry
         } else {

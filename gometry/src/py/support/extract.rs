@@ -188,20 +188,22 @@ fn coerce_geometry_iter<'py>(
     Ok(output)
 }
 
-pub(crate) fn coerce_collected_geometry_items(
-    items: &[Bound<'_, PyAny>],
+pub(crate) fn coerce_present_geometry_items<'a, 'py>(
+    items: impl Iterator<Item = &'a Bound<'py, PyAny>> + Clone,
     note_rows: bool,
     policy: crate::io::LegacyGeoJsonCrsPolicy<'_>,
-) -> PyResult<Vec<PyGeometry>> {
-    let Some(first) = items.first() else {
+) -> PyResult<Vec<PyGeometry>>
+where
+    'py: 'a,
+{
+    let Some(first) = items.clone().next() else {
         return Ok(Vec::new());
     };
-    if items.iter().any(|item| item.is_none()) {
-        return Err(missing_geometry_items_error());
-    }
     let py = first.py();
-    let mut owned = Vec::with_capacity(items.len());
-    for (row, item) in items.iter().enumerate() {
+    // Callers replay collected objects, not Python providers, when counting
+    // the present rows for this reservation.
+    let mut owned = Vec::with_capacity(items.clone().count());
+    for (row, item) in items.enumerate() {
         match own_geometry_item(item, policy) {
             Ok(item) => owned.push(item),
             Err(error) => {
