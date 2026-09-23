@@ -202,7 +202,7 @@ impl ConstrainedMeshPlan {
                     "constrained mesh certificate has an unordered source chain",
                 ));
             }
-            cursor = piece.hi.try_clone()?;
+            cursor = piece.hi.clone();
         }
         if source_id + usize::from(!self.constraint_pieces.is_empty())
             != self.source_constraints.len()
@@ -340,7 +340,7 @@ impl ConstrainedMesh {
                     self.source(source).end.xy(),
                     xy(a),
                 )?;
-                self.insert_constraint(xy, u, a, source, lo, split.try_clone()?)?;
+                self.insert_constraint(xy, u, a, source, lo, split.clone())?;
                 self.insert_constraint(xy, a, v, source, split, hi)?;
                 return Ok(());
             }
@@ -350,7 +350,7 @@ impl ConstrainedMesh {
                     self.source(source).end.xy(),
                     xy(b),
                 )?;
-                self.insert_constraint(xy, u, b, source, lo, split.try_clone()?)?;
+                self.insert_constraint(xy, u, b, source, lo, split.clone())?;
                 self.insert_constraint(xy, b, v, source, split, hi)?;
                 return Ok(());
             }
@@ -399,7 +399,7 @@ impl ConstrainedMesh {
                     self.source(source).end.xy(),
                     pa,
                 )?;
-                self.insert_constraint(xy, u, apex, source, lo, split.try_clone()?)?;
+                self.insert_constraint(xy, u, apex, source, lo, split.clone())?;
                 self.insert_constraint(xy, apex, v, source, split, hi)?;
                 return Ok(());
             }
@@ -637,7 +637,7 @@ impl ConstrainedMesh {
             self.provenance.push(match &source {
                 Some((piece, parameter)) => NodeProvenance::ConstraintSplit {
                     source: piece.source,
-                    parameter: parameter.try_clone()?,
+                    parameter: parameter.clone(),
                 },
                 None => NodeProvenance::Generated,
             });
@@ -656,7 +656,7 @@ impl ConstrainedMesh {
                         start_site: piece.start_site,
                         end_site: site,
                         lo: piece.lo,
-                        hi: parameter.try_clone()?,
+                        hi: parameter.clone(),
                     });
                 self.source_pieces
                     .insert(ordered(site, piece.end_site), SourcePiece {
@@ -709,8 +709,8 @@ impl ConstrainedMesh {
                 source: piece.source,
                 start_site: piece.start_site,
                 end_site: piece.end_site,
-                lo: piece.lo.try_clone()?,
-                hi: piece.hi.try_clone()?,
+                lo: piece.lo.clone(),
+                hi: piece.hi.clone(),
             };
             return Ok(Some(PreparedSplit {
                 candidate,
@@ -882,7 +882,7 @@ impl ConstrainedMesh {
                         source.id
                     )));
                 }
-                cursor = piece.hi.try_clone()?;
+                cursor = piece.hi.clone();
             }
             if cursor.try_cmp(&one)? != std::cmp::Ordering::Equal {
                 return Err(GeometryErrorKind::triangulation(format!(

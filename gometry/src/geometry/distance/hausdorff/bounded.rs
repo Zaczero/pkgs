@@ -171,8 +171,8 @@ impl PreparedSupport {
                     let start = &cycle[index];
                     let end = &cycle[(index + 1) % cycle.len()];
                     boundary_edges.push(BoundaryEdge {
-                        start: start.try_clone()?,
-                        end: end.try_clone()?,
+                        start: start.clone(),
+                        end: end.clone(),
                         bounds: FloatBox::from_point(start)?.include(FloatBox::from_point(end)?),
                     });
                 }
@@ -221,7 +221,7 @@ impl PreparedSupport {
                 .as_ref()
                 .is_none_or(|flags| flags[index]);
             if selected {
-                spans.push(span.try_clone()?);
+                spans.push(span.clone());
             }
         }
 
@@ -238,13 +238,13 @@ impl PreparedSupport {
                 .as_ref()
                 .is_none_or(|flags| flags[index]);
             if selected {
-                points.push(point.try_clone()?);
+                points.push(point.clone());
             }
         }
         Self::from_parts(spans, points, Vec::new())
     }
 
-    fn initial_patches(&self) -> Result<Vec<SourcePatch>> {
+    fn initial_patches(&self) -> Vec<SourcePatch> {
         let capacity = self
             .spans
             .len()
@@ -253,8 +253,8 @@ impl PreparedSupport {
         for (index, span) in self.spans.iter().enumerate() {
             patches.push(SourcePatch::Span {
                 span: index,
-                lo: span.t_lo.try_clone()?,
-                hi: span.t_hi.try_clone()?,
+                lo: span.t_lo.clone(),
+                hi: span.t_hi.clone(),
             });
         }
         if let Some(bounds) = self.area_bounds
@@ -262,7 +262,7 @@ impl PreparedSupport {
         {
             patches.push(SourcePatch::Box(bounds));
         }
-        Ok(patches)
+        patches
     }
 
     fn inradius_initial_patches(&self) -> Result<Vec<SourcePatch>> {
@@ -272,7 +272,7 @@ impl PreparedSupport {
                 .map_or_else(Vec::new, |bounds| vec![SourcePatch::Box(bounds)]));
         }
 
-        let mut patches = self.initial_patches()?;
+        let mut patches = self.initial_patches();
         patches.reserve(self.points.len());
         for index in 0..self.points.len() {
             patches.push(SourcePatch::Point(index));
@@ -367,17 +367,14 @@ impl PreparedSupport {
         Ok(false)
     }
 
-    fn first_boundary_point(&self) -> Result<Option<ExactPoint>> {
+    fn first_boundary_point(&self) -> Option<ExactPoint> {
         if let Some(span) = self.spans.first() {
-            return Ok(Some(span.start.try_clone()?));
+            return Some(span.start.clone());
         }
         if let Some(point) = self.points.first() {
-            return Ok(Some(point.try_clone()?));
+            return Some(point.clone());
         }
-        self.boundary_edges
-            .first()
-            .map(|edge| edge.start.try_clone())
-            .transpose()
+        self.boundary_edges.first().map(|edge| edge.start.clone())
     }
 
     fn source_box_witness(
@@ -461,19 +458,6 @@ impl PreparedSupport {
     }
 }
 
-impl SupportSpan {
-    fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            source: self.source,
-            carrier: self.carrier.try_clone()?,
-            t_lo: self.t_lo.try_clone()?,
-            t_hi: self.t_hi.try_clone()?,
-            start: self.start.try_clone()?,
-            bounds: self.bounds,
-        })
-    }
-}
-
 fn push_raw_segment(
     source: Segment,
     spans: &mut Vec<SupportSpan>,
@@ -503,13 +487,10 @@ fn support_span(span: ExactMetricSpan) -> Result<SupportSpan> {
     let start = ExactPoint::from_homogeneous(span.start.homogeneous)?;
     let end = ExactPoint::from_homogeneous(span.end.homogeneous)?;
     let mut t_lo = Rational::new(
-        span.start_parameter[0].try_clone()?,
-        span.start_parameter[1].try_clone()?,
+        span.start_parameter[0].clone(),
+        span.start_parameter[1].clone(),
     )?;
-    let mut t_hi = Rational::new(
-        span.end_parameter[0].try_clone()?,
-        span.end_parameter[1].try_clone()?,
-    )?;
+    let mut t_hi = Rational::new(span.end_parameter[0].clone(), span.end_parameter[1].clone())?;
     if t_lo.try_cmp(&t_hi)? == Ordering::Greater {
         std::mem::swap(&mut t_lo, &mut t_hi);
     }
@@ -763,7 +744,7 @@ fn square_f64(value: f64) -> Result<Rational> {
 
 #[cfg(test)]
 fn dyadic_as_f64(value: &ExactDyadic) -> Result<f64> {
-    Rational::from_dyadic(value.try_clone()?).round()
+    Rational::from_dyadic(value.clone()).round()
 }
 
 #[cfg(test)]
@@ -944,10 +925,10 @@ fn between(value: &Rational, left: &Rational, right: &Rational) -> Result<bool> 
 
 fn segment_box_intersection(edge: &BoundaryEdge, bounds: FloatBox) -> Result<Option<ExactPoint>> {
     if point_in_box(&edge.start, bounds)? {
-        return Ok(Some(edge.start.try_clone()?));
+        return Ok(Some(edge.start.clone()));
     }
     if point_in_box(&edge.end, bounds)? {
-        return Ok(Some(edge.end.try_clone()?));
+        return Ok(Some(edge.end.clone()));
     }
     let dx = edge.end.x.try_subtract(&edge.start.x)?;
     let dy = edge.end.y.try_subtract(&edge.start.y)?;
@@ -1075,8 +1056,8 @@ fn exact_segment_enters_candidate(
 ) -> Result<bool> {
     let zero = Rational::zero();
     let one = Rational::one();
-    let mut lower = zero.try_clone()?;
-    let mut upper = one.try_clone()?;
+    let mut lower = zero.clone();
+    let mut upper = one;
     let mut lower_closed = true;
     let mut upper_closed = true;
     let source_x = end.x.try_subtract(&start.x)?;
@@ -1158,7 +1139,7 @@ impl SourcePatch {
                 Ok(Some(span_point(&source.spans[*span], &midpoint)?))
             },
             Self::Box(bounds) => source.source_box_witness(*bounds, center_first),
-            Self::Point(point) => Ok(Some(source.points[*point].try_clone()?)),
+            Self::Point(point) => Ok(Some(source.points[*point].clone())),
         }
     }
 
@@ -1191,7 +1172,7 @@ impl SourcePatch {
                 let radius = half_x.try_square()?.try_add(&half_y.try_square()?)?;
                 Ok((center, radius))
             },
-            Self::Point(point) => Ok((source.points[*point].try_clone()?, Rational::zero())),
+            Self::Point(point) => Ok((source.points[*point].clone(), Rational::zero())),
         }
     }
 
@@ -1233,7 +1214,7 @@ impl SourcePatch {
                 );
                 corners
             },
-            Self::Point(point) => vec![source.points[*point].try_clone()?],
+            Self::Point(point) => vec![source.points[*point].clone()],
         })
     }
 
@@ -1253,8 +1234,8 @@ impl SourcePatch {
                 Ok(Some(vec![
                     Self::Span {
                         span,
-                        lo: lo.try_clone()?,
-                        hi: midpoint.try_clone()?,
+                        lo,
+                        hi: midpoint.clone(),
                     },
                     Self::Span {
                         span,
@@ -1534,7 +1515,7 @@ impl SqrtInterval {
         if squared.try_cmp(&square_f64(f64::MAX)?)? == Ordering::Greater {
             return Self::overflow(squared, error);
         }
-        let value = squared.try_clone()?;
+        let value = squared.clone();
         let rounded = value.round_sqrt()?;
         if rounded.is_infinite() {
             return Self::overflow(squared, error);
@@ -1577,7 +1558,7 @@ impl SqrtInterval {
         if squared.try_cmp(&square_f64(f64::MAX)?)? == Ordering::Greater {
             return Ok(Some(f64::MAX));
         }
-        let value = squared.try_clone()?.round_sqrt()?;
+        let value = squared.clone().round_sqrt()?;
         Ok(value.is_finite().then_some(value))
     }
 
@@ -1630,8 +1611,7 @@ impl SqrtInterval {
             return Ok(());
         };
         loop {
-            let width =
-                Rational::from_dyadic(upper.try_clone()?.try_subtract(self.lower.try_clone()?)?);
+            let width = Rational::from_dyadic(upper.clone().try_subtract(self.lower.clone())?);
             if width.try_cmp(error)? != Ordering::Greater {
                 self.upper = Some(upper);
                 return Ok(());
@@ -1639,15 +1619,15 @@ impl SqrtInterval {
 
             let midpoint = self
                 .lower
-                .try_clone()?
-                .try_add(upper.try_clone()?)?
+                .clone()
+                .try_add(upper.clone())?
                 .try_product(&ExactDyadic::from_f64(0.5))?;
-            let midpoint_rational = Rational::from_dyadic(midpoint.try_clone()?);
+            let midpoint_rational = Rational::from_dyadic(midpoint.clone());
             let midpoint_squared = midpoint_rational.try_square()?;
 
             match squared.try_cmp(&midpoint_squared)? {
                 Ordering::Equal => {
-                    self.lower = midpoint.try_clone()?;
+                    self.lower = midpoint.clone();
                     upper = midpoint;
                 },
                 Ordering::Greater => {
@@ -1660,14 +1640,11 @@ impl SqrtInterval {
         }
     }
 
-    fn upper_rational(&self) -> Result<Option<Rational>> {
+    fn upper_rational(&self) -> Option<Rational> {
         if let Some(value) = &self.upper {
-            return Ok(Some(Rational::from_dyadic(value.try_clone()?)));
+            return Some(Rational::from_dyadic(value.clone()));
         }
-        self.overflow_upper
-            .as_ref()
-            .map(Rational::try_clone)
-            .transpose()
+        self.overflow_upper.clone()
     }
 }
 
@@ -1839,9 +1816,7 @@ impl<'a> SearchContext<'a> {
             Some(current) => squared.try_cmp(current)? == Ordering::Greater,
         };
         if replace {
-            // Clone before publishing either field: an allocation failure
-            // cannot leave a clearance paired with a different witness.
-            let witness = witness.try_clone()?;
+            let witness = witness.clone();
             self.lower_squared = Some(squared);
             self.lower_witness = Some(witness);
         }
@@ -1907,10 +1882,10 @@ fn sqrt_upper(squared: &Rational, context: &SearchContext<'_>) -> Result<SqrtInt
 
 fn sum_upper(left: &SqrtInterval, right: &SqrtInterval) -> Result<Option<Rational>> {
     if let (Some(left), Some(right)) = (&left.upper, &right.upper) {
-        let sum = left.try_clone()?.try_add(right.try_clone()?)?;
+        let sum = left.clone().try_add(right.clone())?;
         return Ok(Some(Rational::from_dyadic(sum)));
     }
-    let (Some(left), Some(right)) = (left.upper_rational()?, right.upper_rational()?) else {
+    let (Some(left), Some(right)) = (left.upper_rational(), right.upper_rational()) else {
         return Ok(None);
     };
     Ok(Some(left.try_add(&right)?))
@@ -2096,7 +2071,7 @@ fn parallel_strip_upper(
                 .try_quotient(&left.carrier.norm_squared)?;
             let half = separation_squared.try_quotient(&Rational::from_f64(4.0))?;
             let squared = context.scaled_squared(&half)?;
-            let Some(upper) = sqrt_upper(&squared, context)?.upper_rational()? else {
+            let Some(upper) = sqrt_upper(&squared, context)?.upper_rational() else {
                 continue;
             };
 
@@ -2123,7 +2098,7 @@ fn patch_upper(
         // boundary no nearer than the center's depth, so the point is within
         // the radius less that depth of the target.
         radius_interval
-            .upper_rational()?
+            .upper_rational()
             .map_or(Ok(None), |radius| {
                 let depth = sqrt_upper(&context.scaled_squared(&boundary.lower)?, context)?;
                 let depth = Rational::from_dyadic(depth.lower);
@@ -2142,7 +2117,7 @@ fn patch_upper(
     let site_squared = fixed_site_squared(patch, source, target, &nominated, context.tightness())?;
     if let Some(site_squared) = &site_squared {
         let squared = context.scaled_squared(site_squared)?;
-        let fixed = sqrt_upper(&squared, context)?.upper_rational()?;
+        let fixed = sqrt_upper(&squared, context)?.upper_rational();
         let replaces = match (&best, &fixed) {
             (_, None) => false,
             (None, Some(_)) => true,
@@ -2269,16 +2244,11 @@ fn candidate_certified(
 }
 
 fn queue_upper(queue: &PatchQueue, context: &SearchContext<'_>) -> Result<Option<Rational>> {
-    let Some(lower) = context
-        .lower_squared
-        .as_ref()
-        .map(Rational::try_clone)
-        .transpose()?
-    else {
+    let Some(lower) = context.lower_squared.clone() else {
         return Ok(None);
     };
     let interval = sqrt_upper(&lower, context)?;
-    let Some(witness_upper) = interval.upper_rational()? else {
+    let Some(witness_upper) = interval.upper_rational() else {
         return Ok(None);
     };
     if queue.is_empty() {
@@ -2299,7 +2269,7 @@ fn run_direction(
     context: &mut SearchContext<'_>,
 ) -> Result<Rational> {
     let mut queue = PatchQueue::new(context.exact_upper);
-    for patch in source.initial_patches()? {
+    for patch in source.initial_patches() {
         if let Some(record) = build_patch(patch, source, target, context)? {
             queue.push(record)?;
         }
@@ -2411,7 +2381,7 @@ fn movement_lower_squared(
     let witness_interval = SqrtInterval::from_squared_with_error(witness_squared, None)?;
     let movement_interval = SqrtInterval::from_squared_with_error(movement_squared, None)?;
     let witness_lower = Rational::from_dyadic(witness_interval.lower);
-    let Some(movement_upper) = movement_interval.upper_rational()? else {
+    let Some(movement_upper) = movement_interval.upper_rational() else {
         return Ok(Rational::zero());
     };
     if witness_lower.try_cmp(&movement_upper)? != Ordering::Greater {
@@ -2441,10 +2411,9 @@ fn directed_candidate(
     };
 
     let center_exact = if witness_squared.is_zero() {
-        match source.first_boundary_point()? {
-            Some(point) => point,
-            None => witness.try_clone()?,
-        }
+        source
+            .first_boundary_point()
+            .unwrap_or_else(|| witness.clone())
     } else {
         ExactPoint {
             x: Rational::from_f64(witness.x.round()?),
@@ -2468,7 +2437,7 @@ fn directed_candidate(
 
     let movement_squared = exact_point_distance_squared(witness, &center_exact)?;
     let movement_lower = movement_lower_squared(witness_squared, &movement_squared)?;
-    let mut certified_squared = center_squared.try_clone()?;
+    let mut certified_squared = center_squared.clone();
     if movement_lower.try_cmp(&certified_squared)? == Ordering::Less {
         certified_squared = movement_lower;
     }
@@ -2494,10 +2463,10 @@ fn directed_candidate(
 
     #[cfg(test)]
     let proof = DirectedCandidateProof {
-        witness: witness.try_clone()?,
-        witness_squared: witness_squared.try_clone()?,
+        witness: witness.clone(),
+        witness_squared: witness_squared.clone(),
         certified_squared,
-        upper: upper.try_clone()?,
+        upper: upper.clone(),
     };
     Ok(Some(DirectedCandidate {
         center,
@@ -2766,7 +2735,7 @@ pub(crate) fn line_columns_batch(
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(in crate::geometry) struct ExactPoint {
     x: Rational,
     y: Rational,
@@ -2783,15 +2752,8 @@ impl ExactPoint {
     fn from_homogeneous(value: [ExactDyadic; 3]) -> crate::error::Result<Self> {
         let [x, y, w] = value;
         Ok(Self {
-            x: Rational::new(x, w.try_clone()?)?,
+            x: Rational::new(x, w.clone())?,
             y: Rational::new(y, w)?,
-        })
-    }
-
-    fn try_clone(&self) -> crate::error::Result<Self> {
-        Ok(Self {
-            x: self.x.try_clone()?,
-            y: self.y.try_clone()?,
         })
     }
 

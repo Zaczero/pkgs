@@ -80,7 +80,7 @@ impl ExactSign {
 /// vertex a rounded source authority. Every constructor reduces the ratio, so
 /// repeated midpoint splits stay linear in their binary parameter depth rather
 /// than multiplying equivalent denominators.
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(in crate::geometry) struct ExactRational {
     numerator: ExactDyadic,
     denominator: ExactDyadic,
@@ -167,19 +167,12 @@ impl ExactRational {
         self.numerator.sign()
     }
 
-    pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            numerator: self.numerator.try_clone()?,
-            denominator: self.denominator.try_clone()?,
-        })
-    }
-
     pub(in crate::geometry) fn try_add(&self, other: &Self) -> Result<Self> {
         if self.denominator.is_one() && other.denominator.is_one() {
             let numerator = if self.numerator.is_zero() {
-                other.numerator.try_clone()?
+                other.numerator.clone()
             } else if other.numerator.is_zero() {
-                self.numerator.try_clone()?
+                self.numerator.clone()
             } else {
                 ExactDyadic::try_combine_refs(&self.numerator, &other.numerator, false)?
             };
@@ -236,7 +229,7 @@ impl ExactRational {
     pub(in crate::geometry) fn try_midpoint(&self, other: &Self) -> Result<Self> {
         let numerator = self.try_add(other)?;
         Self::new(
-            numerator.numerator.try_clone()?,
+            numerator.numerator.clone(),
             numerator
                 .denominator
                 .try_product(&ExactDyadic::from_f64(2.0))?,
@@ -347,8 +340,8 @@ fn try_support_circle(support: &[XY]) -> Result<ExactSupportCircle> {
             let bx = ExactDyadic::from_f64(b.x);
             let by = ExactDyadic::from_f64(b.y);
             let center = ExactPoint::homogeneous(
-                ax.try_clone()?.try_add(bx.try_clone()?)?,
-                ay.try_clone()?.try_add(by.try_clone()?)?,
+                ax.try_add(bx)?,
+                ay.try_add(by)?,
                 ExactDyadic::from_f64(2.0),
             );
             let (radius_numerator, radius_denominator) = try_radius_squared(&center, *a)?;
@@ -392,9 +385,9 @@ pub(in crate::geometry) fn try_support_circle_components(
     let circle = try_support_circle(support)?;
     let center = circle.center.coords()?;
     Ok((
-        center.x.try_clone()?,
-        center.y.try_clone()?,
-        center.w.try_clone()?,
+        center.x.clone(),
+        center.y.clone(),
+        center.w.clone(),
         circle.radius_numerator,
         circle.radius_denominator,
     ))
@@ -405,8 +398,8 @@ fn try_orient_source_center(a: XY, b: XY, center: &ExactPoint) -> Result<ExactSi
     let ay = ExactDyadic::from_f64(a.y);
     let bx = ExactDyadic::from_f64(b.x);
     let by = ExactDyadic::from_f64(b.y);
-    let edge_x = bx.try_subtract(ax.try_clone()?)?;
-    let edge_y = by.try_subtract(ay.try_clone()?)?;
+    let edge_x = bx.try_subtract(ax.clone())?;
+    let edge_y = by.try_subtract(ay.clone())?;
     let center = center.coords()?;
     let center_x = ExactDyadic::try_subtract_refs(&center.x, &ax.try_product(&center.w)?)?;
     let center_y = ExactDyadic::try_subtract_refs(&center.y, &ay.try_product(&center.w)?)?;
@@ -2044,8 +2037,8 @@ fn exact_ratio_bracket(
 
 fn round_ratio_binary(numerator: &ExactDyadic, denominator: &ExactDyadic) -> Result<f64> {
     let sign = numerator.sign().quotient(denominator.sign());
-    let numerator = numerator.try_clone()?.abs();
-    let denominator = denominator.try_clone()?.abs();
+    let numerator = numerator.clone().abs();
+    let denominator = denominator.clone().abs();
     if numerator.is_zero() {
         return Ok(0.0);
     }

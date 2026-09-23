@@ -83,11 +83,7 @@ fn power_of_two_denominators_reduce_as_the_gcd_would() {
                 numerator.try_exact_quotient(&common).unwrap(),
                 denominator.try_exact_quotient(&common).unwrap(),
             );
-            let reduced = ExactRational::new(
-                numerator.try_clone().unwrap(),
-                denominator.try_clone().unwrap(),
-            )
-            .unwrap();
+            let reduced = ExactRational::new(numerator.clone(), denominator).unwrap();
             assert_eq!(
                 (reduced.numerator, reduced.denominator),
                 expected,

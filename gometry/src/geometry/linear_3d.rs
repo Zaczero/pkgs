@@ -18,9 +18,9 @@ fn exact_point(point: [f64; 3]) -> [ExactDyadic; 3] {
 
 fn exact_sub(left: &[ExactDyadic; 3], right: &[ExactDyadic; 3]) -> Result<[ExactDyadic; 3]> {
     Ok([
-        left[0].try_clone()?.try_subtract(right[0].try_clone()?)?,
-        left[1].try_clone()?.try_subtract(right[1].try_clone()?)?,
-        left[2].try_clone()?.try_subtract(right[2].try_clone()?)?,
+        left[0].clone().try_subtract(right[0].clone())?,
+        left[1].clone().try_subtract(right[1].clone())?,
+        left[2].clone().try_subtract(right[2].clone())?,
     ])
 }
 

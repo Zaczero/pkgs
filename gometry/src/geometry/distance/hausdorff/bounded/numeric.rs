@@ -52,7 +52,7 @@ impl Accuracy {
         candidate: f64,
     ) -> Result<Rational> {
         match &self.error {
-            ErrorBound::Absolute(error) => error.try_clone(),
+            ErrorBound::Absolute(error) => Ok(error.clone()),
             ErrorBound::Relative(relative) => {
                 // Derive the allowance from a proven lower bracket L, not
                 // from the returned approximation: L <= H makes r*L <= r*H.
@@ -127,7 +127,7 @@ impl FloatBox {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct SupportSpan {
     pub(super) source: Segment,
     pub(super) carrier: ExactCarrier,
@@ -137,7 +137,7 @@ pub(super) struct SupportSpan {
     pub(super) bounds: FloatBox,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct ExactCarrier {
     pub(super) ax: Rational,
     pub(super) ay: Rational,
@@ -146,24 +146,12 @@ pub(super) struct ExactCarrier {
     pub(super) norm_squared: Rational,
 }
 
-impl ExactCarrier {
-    pub(super) fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            ax: self.ax.try_clone()?,
-            ay: self.ay.try_clone()?,
-            dx: self.dx.try_clone()?,
-            dy: self.dy.try_clone()?,
-            norm_squared: self.norm_squared.try_clone()?,
-        })
-    }
-}
-
 /// An exact ratio kept unreduced across transient distance calculations.
 ///
 /// The denominator is always positive. Deferring normalization until a value
 /// crosses back into the certificate path avoids paying for greatest-common-
 /// divisor work on every losing nearest-support candidate.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(super) struct UnreducedRatio {
     pub(super) numerator: ExactDyadic,
     pub(super) denominator: ExactDyadic,
@@ -197,7 +185,7 @@ impl UnreducedRatio {
 
     pub(super) fn from_rational(value: &Rational) -> Result<Self> {
         let (numerator, denominator) = value.parts();
-        Self::new(numerator.try_clone()?, denominator.try_clone()?)
+        Self::new(numerator.clone(), denominator.clone())
     }
 
     pub(super) fn try_difference(left: &Rational, right: &Rational) -> Result<Self> {
@@ -208,42 +196,35 @@ impl UnreducedRatio {
         self.numerator.is_zero()
     }
 
-    pub(super) fn try_clone(&self) -> Result<Self> {
-        Ok(Self {
-            numerator: self.numerator.try_clone()?,
-            denominator: self.denominator.try_clone()?,
-        })
-    }
-
     pub(super) fn to_rational(&self) -> Result<Rational> {
-        Rational::new(self.numerator.try_clone()?, self.denominator.try_clone()?)
+        Rational::new(self.numerator.clone(), self.denominator.clone())
     }
 
     pub(super) fn try_add(&self, other: &Self) -> Result<Self> {
         if self.is_zero() {
-            return other.try_clone();
+            return Ok(other.clone());
         }
         if other.is_zero() {
-            return self.try_clone();
+            return Ok(self.clone());
         }
         if self.denominator == other.denominator {
             return Self::new(
                 ExactDyadic::try_add_refs(&self.numerator, &other.numerator)?,
-                self.denominator.try_clone()?,
+                self.denominator.clone(),
             );
         }
         if self.denominator.is_one() {
             let scaled = self.numerator.try_product(&other.denominator)?;
             return Self::new(
                 ExactDyadic::try_add_refs(&scaled, &other.numerator)?,
-                other.denominator.try_clone()?,
+                other.denominator.clone(),
             );
         }
         if other.denominator.is_one() {
             let scaled = other.numerator.try_product(&self.denominator)?;
             return Self::new(
                 ExactDyadic::try_add_refs(&self.numerator, &scaled)?,
-                self.denominator.try_clone()?,
+                self.denominator.clone(),
             );
         }
         Self::new(
@@ -256,33 +237,33 @@ impl UnreducedRatio {
 
     pub(super) fn try_subtract(&self, other: &Self) -> Result<Self> {
         if self.is_zero() {
-            let mut result = other.try_clone()?;
+            let mut result = other.clone();
             if !result.is_zero() {
                 result.numerator = result.numerator.neg();
             }
             return Ok(result);
         }
         if other.is_zero() {
-            return self.try_clone();
+            return Ok(self.clone());
         }
         if self.denominator == other.denominator {
             return Self::new(
                 ExactDyadic::try_subtract_refs(&self.numerator, &other.numerator)?,
-                self.denominator.try_clone()?,
+                self.denominator.clone(),
             );
         }
         if self.denominator.is_one() {
             let scaled = self.numerator.try_product(&other.denominator)?;
             return Self::new(
                 ExactDyadic::try_subtract_refs(&scaled, &other.numerator)?,
-                other.denominator.try_clone()?,
+                other.denominator.clone(),
             );
         }
         if other.denominator.is_one() {
             let scaled = other.numerator.try_product(&self.denominator)?;
             return Self::new(
                 ExactDyadic::try_subtract_refs(&self.numerator, &scaled)?,
-                self.denominator.try_clone()?,
+                self.denominator.clone(),
             );
         }
         Self::new(
@@ -298,9 +279,9 @@ impl UnreducedRatio {
             return Ok(Self::zero());
         }
         let denominator = if self.denominator.is_one() {
-            other.denominator.try_clone()?
+            other.denominator.clone()
         } else if other.denominator.is_one() {
-            self.denominator.try_clone()?
+            self.denominator.clone()
         } else {
             self.denominator.try_product(&other.denominator)?
         };
@@ -368,7 +349,7 @@ impl SquaredBounds {
     pub(super) fn exact(value: Rational) -> Result<Self> {
         let upper_f64 = nonnegative_upper_bound(&value)?;
         Ok(Self {
-            lower: value.try_clone()?,
+            lower: value.clone(),
             upper: value,
             upper_f64,
         })

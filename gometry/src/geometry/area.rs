@@ -71,10 +71,7 @@ impl ExactRationalArea {
         // rather than the product of every face denominator. This is the
         // rational-sum contract: every update remains an exact reduced
         // fraction, and only the final quotient is rounded.
-        let reduction = next_numerator
-            .try_clone()?
-            .abs()
-            .try_gcd(&next_denominator)?;
+        let reduction = next_numerator.clone().abs().try_gcd(&next_denominator)?;
         self.numerator = next_numerator.try_exact_quotient(&reduction)?;
         self.denominator = next_denominator.try_exact_quotient(&reduction)?;
         Ok(())
@@ -93,7 +90,7 @@ impl ExactRationalArea {
     }
 
     pub(in crate::geometry) fn round_abs_half(&self) -> Result<f64> {
-        let numerator = self.numerator.try_clone()?.abs();
+        let numerator = self.numerator.clone().abs();
         let denominator = self.denominator.try_product(&ExactDyadic::from_f64(2.0))?;
         match round_ratio(&numerator, &denominator) {
             Ok(value) => Ok(value),

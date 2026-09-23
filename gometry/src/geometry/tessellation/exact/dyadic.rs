@@ -30,16 +30,27 @@ pub(in crate::geometry) struct ExactDyadic {
 /// Every observed value used at most one trimmed limb in ordinary Cartesian
 /// relation, overlay, and polygonize workloads. Two inline limbs also cover
 /// the untrimmed sum/product of two observed one-limb operands; larger exact
-/// values retain the old fallible heap representation.
+/// values spill to a heap vector.
 pub(in crate::geometry) const INLINE_DYADIC_LIMBS: usize = 2;
 
-#[derive(Clone)]
 pub(in crate::geometry) enum CompactLimbs {
     Inline {
         limbs: [u64; INLINE_DYADIC_LIMBS],
         len: u8,
     },
     Heap(Vec<u64>),
+}
+
+impl Clone for CompactLimbs {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Inline { limbs, len } => Self::Inline {
+                limbs: *limbs,
+                len: *len,
+            },
+            Self::Heap(limbs) => Self::from_vec(limbs.clone()),
+        }
+    }
 }
 
 impl fmt::Debug for CompactLimbs {
@@ -156,21 +167,6 @@ impl CompactLimbs {
             },
             Self::Heap(limbs) => {
                 limbs.drain(..count);
-            },
-        }
-    }
-
-    pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
-        match self {
-            Self::Inline { limbs, len } => Ok(Self::Inline {
-                limbs: *limbs,
-                len: *len,
-            }),
-            Self::Heap(limbs) => {
-                let mut clone = Vec::new();
-                try_reserve_vec(&mut clone, limbs.len())?;
-                clone.extend_from_slice(limbs);
-                Ok(Self::from_vec(clone))
             },
         }
     }
@@ -506,10 +502,10 @@ impl ExactDyadic {
 
     pub(in crate::geometry) fn try_add_refs(left: &Self, right: &Self) -> Result<Self> {
         if left.is_zero() {
-            return right.try_clone();
+            return Ok(right.clone());
         }
         if right.is_zero() {
-            return left.try_clone();
+            return Ok(left.clone());
         }
         Self::try_combine_refs(left, right, false)
     }
@@ -601,14 +597,14 @@ impl ExactDyadic {
 
     pub(in crate::geometry) fn try_subtract_refs(left: &Self, right: &Self) -> Result<Self> {
         if left.is_zero() {
-            let mut result = right.try_clone()?;
+            let mut result = right.clone();
             if !result.is_zero() {
                 result.negative = !result.negative;
             }
             return Ok(result);
         }
         if right.is_zero() {
-            return left.try_clone();
+            return Ok(left.clone());
         }
         Self::try_combine_refs(left, right, true)
     }
@@ -839,16 +835,16 @@ impl ExactDyadic {
     /// integer Euclid. The result is positive and exact.
     pub(in crate::geometry) fn try_gcd(&self, other: &Self) -> Result<Self> {
         if self.is_zero() {
-            return other.try_clone().map(Self::abs);
+            return Ok(other.clone().abs());
         }
         if other.is_zero() {
-            return self.try_clone().map(Self::abs);
+            return Ok(self.clone().abs());
         }
         if self.limbs.as_slice() == [1] && self.exponent == 0 {
-            return self.try_clone().map(Self::abs);
+            return Ok(self.clone().abs());
         }
         if other.limbs.as_slice() == [1] && other.exponent == 0 {
-            return other.try_clone().map(Self::abs);
+            return Ok(other.clone().abs());
         }
         let exponent = self.exponent.min(other.exponent);
         if let (Some(mut left), Some(mut right)) = (self.small_magnitude(), other.small_magnitude())
@@ -898,7 +894,7 @@ impl ExactDyadic {
             return Ok(Self::zero());
         }
         if divisor.limbs.as_slice() == [1] {
-            let mut value = self.try_clone()?;
+            let mut value = self.clone();
             value.negative = self.negative != divisor.negative;
             value.exponent = self
                 .exponent
@@ -936,15 +932,6 @@ impl ExactDyadic {
             negative: self.negative != divisor.negative,
             limbs: CompactLimbs::from_vec(limbs),
             exponent,
-        };
-        Ok(value)
-    }
-
-    pub(in crate::geometry) fn try_clone(&self) -> Result<Self> {
-        let value = Self {
-            negative: self.negative,
-            limbs: self.limbs.try_clone()?,
-            exponent: self.exponent,
         };
         Ok(value)
     }

@@ -1346,11 +1346,7 @@ fn endpoint_near_miss_five_nodes_four_spans() {
         }
         p
     };
-    let den = p54
-        .try_clone()
-        .unwrap()
-        .try_add(q_num.try_clone().unwrap())
-        .unwrap();
+    let den = p54.clone().try_add(q_num).unwrap();
     // The crossing lies on y = x at 2^54 / (2^54 + 1).
     assert_exact_at(&partition, crossing_node(&partition), [&p54, &den], [
         &p54, &den,

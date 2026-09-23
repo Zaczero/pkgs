@@ -816,7 +816,7 @@ impl ExactSourceInventory {
                 // The parameter from the unique segment's start, and from its
                 // end for a source stored in reverse.
                 let [num, den] = parameter_along(partition.unique[unique as usize], &point)?;
-                let from_end = den.try_clone()?.try_subtract(num.try_clone()?)?;
+                let from_end = den.clone().try_subtract(num.clone())?;
                 for &(source, reversed) in self.provenance.owners(unique as usize) {
                     let points = self.source_points.get(source as usize).ok_or_else(|| {
                         GeometryErrorKind::Invalid(
@@ -2540,14 +2540,6 @@ fn walk_exact_chain(
     Ok((nodes, chain_spans))
 }
 
-fn try_clone_point(point: &[ExactDyadic; 3]) -> Result<[ExactDyadic; 3]> {
-    Ok([
-        point[0].try_clone()?,
-        point[1].try_clone()?,
-        point[2].try_clone()?,
-    ])
-}
-
 impl ExactPartition<'_> {
     pub(in crate::geometry) const fn node_count(&self) -> usize {
         self.points.len()
@@ -2575,7 +2567,7 @@ impl ExactPartition<'_> {
     fn exact_owned(&self, node: NodeId) -> Result<[ExactDyadic; 3]> {
         match self.exact(node)? {
             Cow::Owned(point) => Ok(point),
-            Cow::Borrowed(point) => try_clone_point(point),
+            Cow::Borrowed(point) => Ok(point.clone()),
         }
     }
 

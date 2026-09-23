@@ -47,7 +47,7 @@ pub(in crate::geometry) fn crossing_homogeneous(
     Ok([
         coordinate(a.start.x, &rx)?,
         coordinate(a.start.y, &ry)?,
-        den.try_clone()?,
+        den.clone(),
     ])
 }
 

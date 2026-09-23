@@ -692,9 +692,9 @@ fn minimum_circle_certificate_does_not_assume_radius_denominator_is_center_weigh
     let disk = circle.certified_disk(&source).expect("exact disk");
     let two = ExactDyadic::from_f64(2.0);
     let equivalent = CertifiedDisk {
-        center_x: disk.center_x.try_clone().expect("center x"),
-        center_y: disk.center_y.try_clone().expect("center y"),
-        center_w: disk.center_w.try_clone().expect("center weight"),
+        center_x: disk.center_x.clone(),
+        center_y: disk.center_y.clone(),
+        center_w: disk.center_w.clone(),
         radius_squared_numerator: disk
             .radius_squared_numerator
             .try_product(&two)

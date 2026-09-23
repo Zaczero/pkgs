@@ -263,7 +263,7 @@ fn ordinary_hausdorff_keeps_external_line_support_with_filled_area() {
 
     let mut budget = ExpansionBudget::new("hausdorff", "support");
     let prepared = PreparedSupport::from_shape(&mixed, &mut budget).unwrap();
-    assert!(prepared.initial_patches().unwrap().iter().any(|patch| {
+    assert!(prepared.initial_patches().iter().any(|patch| {
         matches!(
             patch,
             SourcePatch::Span { span, .. }
@@ -301,7 +301,7 @@ fn misaligned_metric_boundary_incidence_is_rejected_before_consumption() {
 
 fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
     let interval = SqrtInterval::from_squared(squared).expect("sqrt interval");
-    let lower = Rational::from_dyadic(interval.lower.try_clone().expect("lower clone"))
+    let lower = Rational::from_dyadic(interval.lower.clone())
         .try_square()
         .expect("lower square");
     assert_ne!(
@@ -311,7 +311,7 @@ fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
     );
     let lower_value = dyadic_as_f64(&interval.lower).expect("lower binary64");
     if let Some(upper) = &interval.upper {
-        let upper_squared = Rational::from_dyadic(upper.try_clone().expect("upper clone"))
+        let upper_squared = Rational::from_dyadic(upper.clone())
             .try_square()
             .expect("upper square");
         assert_ne!(
@@ -335,7 +335,6 @@ fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
         );
         let upper = interval
             .upper_rational()
-            .expect("overflow upper")
             .expect("finite exact overflow upper");
         let upper_squared = upper.try_square().expect("overflow upper square");
         assert_ne!(
@@ -620,7 +619,7 @@ fn aabb_lower_squared(point: &ExactPoint, bounds: FloatBox) -> Result<Rational> 
     } else if point.x.try_cmp(&max_x)? == Ordering::Greater {
         point.x.try_subtract(&max_x)?
     } else {
-        zero.try_clone()?
+        zero.clone()
     };
     let dy = if point.y.try_cmp(&min_y)? == Ordering::Less {
         min_y.try_subtract(&point.y)?
@@ -1679,7 +1678,6 @@ fn overflowed_exact_point_distance_can_certify_maximum_with_large_error() {
     let interval = SqrtInterval::from_squared_with_error(&scaled_squared, Some(&error)).unwrap();
     let upper = interval
         .upper_rational()
-        .unwrap()
         .expect("finite exact overflow upper");
     let initial_upper = scaled_squared.try_quotient(&maximum).unwrap();
     let initial_gap = initial_upper.try_subtract(&maximum).unwrap();

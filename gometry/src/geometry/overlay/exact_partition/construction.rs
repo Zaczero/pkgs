@@ -189,11 +189,9 @@ pub(super) fn parameter_along(
         (x, segment.start.x, segment.end.x)
     };
     let start = ExactDyadic::from_f64(start);
-    let direction = ExactDyadic::from_f64(end).try_subtract(start.try_clone()?)?;
+    let direction = ExactDyadic::from_f64(end).try_subtract(start.clone())?;
     Ok([
-        coordinate
-            .try_clone()?
-            .try_subtract(start.try_product(w)?)?,
+        coordinate.clone().try_subtract(start.try_product(w)?)?,
         w.try_product(&direction)?,
     ])
 }
@@ -241,7 +239,7 @@ pub(super) fn interpolate_ordinate(
     }
     let start = ExactDyadic::from_f64(start);
     let end = ExactDyadic::from_f64(end);
-    let left = den.try_clone()?.try_subtract(num.try_clone()?)?;
+    let left = den.clone().try_subtract(num.clone())?;
     let numerator = start.try_product(&left)?.try_add(end.try_product(num)?)?;
     Ok(Some(round_ratio(&numerator, den)?))
 }

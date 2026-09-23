@@ -286,10 +286,7 @@ impl SegmentProjection {
             },
             Self::CertifiedInterior(projection) => projection.exact()?,
             Self::ExactInterior(projection) => {
-                return Ok((
-                    projection.numerator.try_clone()?,
-                    projection.denominator.try_clone()?,
-                ));
+                return Ok((projection.numerator.clone(), projection.denominator.clone()));
             },
             Self::Start | Self::End => unreachable!("endpoint ratio has no interior recipe"),
         };
@@ -913,8 +910,8 @@ fn clip_segment_edge_cross_exact(
     let end_x = ExactDyadic::from_f64(segment.end.x);
     let start_y = ExactDyadic::from_f64(segment.start.y);
     let end_y = ExactDyadic::from_f64(segment.end.y);
-    let delta_x = end_x.try_subtract(start_x.try_clone()?)?;
-    let delta_y = end_y.try_subtract(start_y.try_clone()?)?;
+    let delta_x = end_x.try_subtract(start_x.clone())?;
+    let delta_y = end_y.try_subtract(start_y.clone())?;
     if same_topological_coordinate(edge_start.x, edge_end.x) {
         let edge_x = ExactDyadic::from_f64(edge_start.x);
         let offset = edge_x.try_subtract(start_x)?;
@@ -1513,7 +1510,7 @@ impl ExactSquaredDistance {
     fn from_operands(determinant: &ExactDyadic, denominator: &ExactDyadic) -> Result<Self> {
         Ok(Self {
             numerator: determinant.try_product(determinant)?,
-            denominator: denominator.try_clone()?,
+            denominator: denominator.clone(),
         })
     }
 
@@ -1710,8 +1707,8 @@ impl PointSegmentSelection {
             SelectionProjectionSource::Ready(projection) => match projection {
                 SegmentProjection::ExactInterior(inner) => Ok(SegmentProjection::ExactInterior(
                     Box::new(ExactSegmentProjection {
-                        numerator: inner.numerator.try_clone()?,
-                        denominator: inner.denominator.try_clone()?,
+                        numerator: inner.numerator.clone(),
+                        denominator: inner.denominator.clone(),
                         fraction: inner.fraction,
                         emitted_foot: inner.emitted_foot,
                     }),
@@ -1984,7 +1981,7 @@ impl SquaredDistanceKey {
         let denominator = ExactDyadic::from_f64(1.0);
         let lo = ExactSquaredDistance {
             numerator: ExactDyadic::from_f64(self.filter.lo),
-            denominator: denominator.try_clone().unwrap(),
+            denominator: denominator.clone(),
         };
         let hi = ExactSquaredDistance {
             numerator: ExactDyadic::from_f64(self.filter.hi),

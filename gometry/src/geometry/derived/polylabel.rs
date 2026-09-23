@@ -207,11 +207,11 @@ impl CertifiedDisk {
         let point_y = ExactDyadic::from_f64(point.y);
         let dx = self
             .center_x
-            .try_clone()?
+            .clone()
             .try_subtract(point_x.try_product(&self.center_w)?)?;
         let dy = self
             .center_y
-            .try_clone()?
+            .clone()
             .try_subtract(point_y.try_product(&self.center_w)?)?;
         let distance_squared = dx
             .try_product(&dx)?
@@ -237,11 +237,11 @@ impl CertifiedDisk {
         let left_y = ExactDyadic::from_f64(left.y);
         let center_offset_x = self
             .center_x
-            .try_clone()?
+            .clone()
             .try_subtract(left_x.try_product(&self.center_w)?)?;
         let center_offset_y = self
             .center_y
-            .try_clone()?
+            .clone()
             .try_subtract(left_y.try_product(&self.center_w)?)?;
         let h = edge_x
             .try_product(&center_offset_y)?
@@ -1061,8 +1061,8 @@ fn segment_enters_candidate(
 ) -> Result<bool> {
     let zero = ExactDyadic::from_f64(0.0);
     let one = ExactDyadic::from_f64(1.0);
-    let lower_bound = (zero.try_clone()?, one.try_clone()?);
-    let upper_bound = (one.try_clone()?, one);
+    let lower_bound = (zero.clone(), one.clone());
+    let upper_bound = (one.clone(), one);
     let mut lower = lower_bound;
     let mut upper = upper_bound;
     let mut lower_closed = true;
@@ -1083,8 +1083,8 @@ fn segment_enters_candidate(
             (c0, c1)
         } else {
             (
-                zero.try_clone()?.try_subtract(c0)?,
-                zero.try_clone()?.try_subtract(c1)?,
+                zero.clone().try_subtract(c0)?,
+                zero.clone().try_subtract(c1)?,
             )
         };
         match c1.sign() {
@@ -1097,14 +1097,14 @@ fn segment_enters_candidate(
                 update_lower(
                     &mut lower,
                     &mut lower_closed,
-                    (zero.try_clone()?.try_subtract(c0)?, c1),
+                    (zero.clone().try_subtract(c0)?, c1),
                 )?;
             },
             ExactSign::Negative => {
                 update_upper(
                     &mut upper,
                     &mut upper_closed,
-                    (c0, zero.try_clone()?.try_subtract(c1)?),
+                    (c0, zero.clone().try_subtract(c1)?),
                 )?;
             },
         }
