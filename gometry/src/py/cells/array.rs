@@ -1426,7 +1426,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let cells = self.clone();
         let (ids, offsets) = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
-                let mut builder = crate::CsrBuilder::<u64>::new();
+                let mut builder = crate::CsrBuilder::<u64>::with_capacity(0, cells.len());
                 for row in 0..cells.len() {
                     if cells.is_row_missing(row) {
                         builder.push_row(std::iter::empty::<u64>())?;
@@ -1499,7 +1499,7 @@ fn to_numpy(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         });
         let (ids, offsets) = py.detach(move || {
             dispatch_cell_grid!(&cells, G, {
-                let mut builder = crate::CsrBuilder::<u64>::new();
+                let mut builder = crate::CsrBuilder::<u64>::with_capacity(0, cells.len());
                 for row in 0..cells.len() {
                     if cells.is_row_missing(row) {
                         builder.push_row(std::iter::empty::<u64>())?;

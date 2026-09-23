@@ -99,7 +99,7 @@ impl Groups {
         frame: crate::Frame,
     ) -> crate::error::Result<(PyGeometryArray, Self, Self, Self)> {
         fn diagnostic_csr(rows: Vec<Vec<Shape>>) -> crate::error::Result<(Vec<Shape>, Vec<i64>)> {
-            let mut builder = CsrBuilder::new();
+            let mut builder = CsrBuilder::with_capacity(0, rows.len());
             for row in rows {
                 builder.push_row(row)?;
             }
@@ -175,24 +175,6 @@ impl Groups {
         })
     }
 
-    /// One flat cell column plus per-input-cell row offsets — the ragged
-    /// result of a cell array's `neighbors`/`children` (one row per input
-    /// cell, in input order).
-    pub(crate) fn from_cell_rows<I, R>(kind: GridKind, rows: I) -> PyResult<Self>
-    where
-        I: IntoIterator<Item = R>,
-        R: AsRef<[u64]>,
-    {
-        let mut builder = CsrBuilder::<u64>::new();
-        for row in rows {
-            builder
-                .push_row(row.as_ref().iter().copied())
-                .map_err(pyo3::PyErr::from)?;
-        }
-        let (ids, offsets) = builder.finish();
-        Self::from_cell_flat(kind, ids, offsets)
-    }
-
     pub(crate) fn from_cell_flat(
         kind: GridKind,
         ids: Vec<u64>,
@@ -213,7 +195,7 @@ fn self_intersection_csr(
     array: &PyGeometryArray,
     domain: TopologyDomain,
 ) -> Result<CsrBuilder<Shape>> {
-    let mut builder = CsrBuilder::<Shape>::new();
+    let mut builder = CsrBuilder::<Shape>::with_capacity(0, array.len());
     for row in array.row_operation().rows_with_missing(|| ()) {
         match row {
             crate::array::ArrayRow::Missing { .. } => builder.push_row(std::iter::empty())?,

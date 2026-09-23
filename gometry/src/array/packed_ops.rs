@@ -334,7 +334,7 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let builder = py
             .detach(move || {
-                let mut builder = crate::CsrBuilder::<Shape>::new();
+                let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
                 for logical_row in array.row_operation().rows_with_missing(Vec::new) {
                     let (row, values) = match logical_row {
                         ArrayRow::Missing { logical, value } => (logical, value),
@@ -374,7 +374,7 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let builder = py
             .detach(move || {
-                let mut builder = crate::CsrBuilder::<Shape>::new();
+                let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
                 for logical_row in array.row_operation().rows_with_missing(Vec::new) {
                     let (row, values) = match logical_row {
                         ArrayRow::Missing { logical, value } => (logical, value),
@@ -416,7 +416,7 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         let builder = py
             .detach(move || {
-                let mut builder = crate::CsrBuilder::<Point>::new();
+                let mut builder = crate::CsrBuilder::<Point>::with_capacity(0, array.len());
                 for logical_row in array.row_operation().rows_with_missing(Vec::new) {
                     let (row, values) = match logical_row {
                         ArrayRow::Missing { logical, value } => (logical, value),

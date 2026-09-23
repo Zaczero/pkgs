@@ -216,18 +216,17 @@ pub(crate) fn grid_cover_dispatch<'py>(
             cover_array_rows(admitted, max_cells, build)
         })
     });
-    let rows = result?;
-    Groups::from_cell_rows(kind, rows)?.into_py_any(py)
+    let (ids, offsets) = result?.finish();
+    Groups::from_cell_flat(kind, ids, offsets)?.into_py_any(py)
 }
 
 fn cover_array_rows(
-    admitted: impl IntoIterator<Item = Result<Option<PyGeometry>, GridCoverError>>,
+    admitted: impl ExactSizeIterator<Item = Result<Option<PyGeometry>, GridCoverError>>,
     max_cells: Option<usize>,
     build: impl Fn(&PyGeometry, Option<usize>) -> Result<Vec<u64>, GridCoverError>,
-) -> Result<Vec<Vec<u64>>, GridCoverError> {
+) -> Result<crate::CsrBuilder<u64>, GridCoverError> {
     let mut produced = 0_usize;
-    let admitted = admitted.into_iter();
-    let mut out = Vec::with_capacity(admitted.size_hint().0);
+    let mut out = crate::CsrBuilder::with_capacity(0, admitted.len());
     for (logical, geometry) in admitted.enumerate() {
         let ids = match geometry? {
             None => Vec::new(),
@@ -250,7 +249,7 @@ fn cover_array_rows(
                 }
             },
         };
-        out.push(ids);
+        out.push_row(ids)?;
     }
     Ok(out)
 }
@@ -416,8 +415,9 @@ mod tests {
                 crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(0.0, 95.0)),
             ))),
         ];
-        let error = cover_array_rows(admitted, Some(1), |_, _| Ok(vec![0, 1]))
-            .expect_err("row 0 must exhaust max_cells before row 1 lonlat");
+        let error = cover_array_rows(admitted.into_iter(), Some(1), |_, _| Ok(vec![0, 1]))
+            .err()
+            .expect("row 0 must exhaust max_cells before row 1 lonlat");
         let GridCoverError::Budget(budget) = error else {
             panic!("expected budget error, got {error:?}");
         };
@@ -462,11 +462,12 @@ mod tests {
                 Ok(Some(crate::PyGeometry::wgs84(
                     crate::geometry::Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 2.0)),
                 ))),
-            ],
+            ]
+            .into_iter(),
             None,
             |_, _| Ok(vec![7]),
         )
         .expect("empty and missing are groups");
-        assert_eq!(rows, vec![Vec::new(), Vec::new(), vec![7]]);
+        assert_eq!(rows.finish(), (vec![7], vec![0, 0, 0, 1]));
     }
 }

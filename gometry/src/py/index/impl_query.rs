@@ -896,7 +896,7 @@ impl PySpatialIndex {
         }
 
         let mut refined_ids = 0;
-        let mut refined_offsets = CsrBuilder::<()>::new();
+        let mut refined_offsets = CsrBuilder::<()>::with_capacity(0, points.len());
         for row in 0..points.len() {
             for position in offsets[row] as usize..offsets[row + 1] as usize {
                 if keep[position] {

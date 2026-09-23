@@ -152,7 +152,7 @@ pub(crate) fn line_interpolate_points_rows(
         let result = py.detach(
             move || -> crate::error::Result<_, (usize, crate::error::Error)> {
                 let map = row_map.as_deref();
-                let mut builder = crate::CsrBuilder::<Shape>::new();
+                let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, logical_len);
                 for row in 0..logical_len {
                     if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                         builder
@@ -192,7 +192,7 @@ fn interpolate_mixed_row_groups(
     plan: &RowInterpolatePlan,
     model: &crs::MetricModel,
 ) -> std::result::Result<crate::CsrBuilder<Shape>, (usize, crate::error::Error)> {
-    let mut builder = crate::CsrBuilder::<Shape>::new();
+    let mut builder = crate::CsrBuilder::<Shape>::with_capacity(0, array.len());
     let mut rows = array.row_operation();
     for logical_row in rows.rows_with_missing(|| ()) {
         match logical_row {

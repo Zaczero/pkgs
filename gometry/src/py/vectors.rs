@@ -743,7 +743,7 @@ impl Groups {
                         },
                         GroupsValues::Cells(values) => {
                             let kind = values.kind();
-                            let mut builder = CsrBuilder::<u64>::new();
+                            let mut builder = CsrBuilder::<u64>::with_capacity(0, count);
                             for row in rows {
                                 builder
                                     .push_row(this.cell_row_view(row).logical_ids())
