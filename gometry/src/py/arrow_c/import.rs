@@ -157,9 +157,8 @@ pub(crate) unsafe fn import_stream(
     if stream.is_null() {
         return Ok(None);
     }
-    // The capsule normally remains the fallback owner if moving the stream
-    // shell cannot allocate. Keep an explicit stack owner as well so direct
-    // native callers have the same failure-path guarantee.
+    // Install a stack owner before consuming the stream shell so direct native
+    // callers release the stream if ownership transfer returns an error.
     // SAFETY: the caller supplies a live, writable stream (checked non-null).
     let _stream_guard = unsafe { ArrowReleaseGuard::from_raw(stream) }?;
     // Consume the capsule-owned stream shell before inspecting callback
@@ -179,8 +178,8 @@ pub(crate) unsafe fn import_stream(
         let mut stream_schema = empty_schema();
         let schema_status = get_schema(stream, &raw mut stream_schema);
         // Install this before inspecting status or attempting schema
-        // admission. If the producer initialized a live output and a later
-        // allocation fails, this stack owner releases it exactly once.
+        // admission so a returned callback/admission error releases a live
+        // output shell exactly once.
         let schema_guard = ArrowReleaseGuard::from_raw(&raw mut stream_schema)?;
         if schema_status != 0 {
             return Err(stream_callback_error(

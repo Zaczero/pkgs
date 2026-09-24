@@ -9,7 +9,7 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
 
-use pyo3::exceptions::PyTypeError;
+use pyo3::exceptions::{PyOverflowError, PyTypeError};
 use pyo3::prelude::{Bound, PyAny, PyResult};
 
 use crate::array::missing::union_many;
@@ -482,9 +482,6 @@ pub(crate) unsafe fn move_arrow_shell<T: ArrowReleaseSlot>(source: *mut T) -> *m
     // the Arrow-specified move operation; nulling source release leaves its
     // capsule-owned shell inert.
     unsafe {
-        // Keep the producer release slot intact until the consumer shell has
-        // been allocated. If the allocation is refused, the caller can still
-        // release the original producer-owned shell exactly once.
         let moved = Box::new(ptr::read(source));
         *T::release_slot(source) = None;
         Box::into_raw(moved)
@@ -590,7 +587,7 @@ pub(crate) unsafe fn native_arrow_batch_from_raw_array(
     struct_child: Option<usize>,
 ) -> PyResult<NativeArrowBatch> {
     // The stream callback has just initialized this output shell. Install a
-    // non-allocating owner before the moved-shell allocation can fail.
+    // non-allocating owner before transferring shell ownership.
     // SAFETY: caller guarantees a live, writable producer batch array.
     let _output_guard = unsafe { ArrowReleaseGuard::from_raw(array) }?;
     // SAFETY: caller guarantees a live producer batch array.
@@ -710,6 +707,17 @@ unsafe fn admit_selected_struct_geometry(
             crate::error::ParseFormat::GeoArrow,
         ));
     }
+    let child_schema = schema.children.get(child_index).ok_or_else(|| {
+        errors::parse_error(
+            format!(
+                "Arrow child index {child_index} is out of range for schema n_children={}",
+                schema.children.len()
+            ),
+            crate::error::ParseFormat::GeoArrow,
+        )
+    })?;
+    let child_format = ArrowFormat::parse(child_schema.format())?;
+    let child_schema_n = child_schema.children.len();
     if root.children.is_null() {
         return Err(errors::parse_error(
             "Arrow struct array children pointer is null",
@@ -724,18 +732,6 @@ unsafe fn admit_selected_struct_geometry(
             crate::error::ParseFormat::GeoArrow,
         ));
     }
-    if child_index >= schema.children.len() {
-        return Err(errors::parse_error(
-            format!(
-                "Arrow child index {child_index} is out of range for schema n_children={}",
-                schema.children.len()
-            ),
-            crate::error::ParseFormat::GeoArrow,
-        ));
-    }
-    let child_schema = &schema.children[child_index];
-    let child_format = ArrowFormat::parse(child_schema.format())?;
-    let child_schema_n = child_schema.children.len();
     let parent_offset = usize::try_from(root.offset)
         .map_err(|_| PyTypeError::new_err("Arrow array offset is negative or too large"))?;
     let parent_length = usize::try_from(root.length)
@@ -744,15 +740,14 @@ unsafe fn admit_selected_struct_geometry(
     // must propagate (C11): only a successfully admitted, genuinely absent
     // validity bitmap becomes `None`. Swallowing layout failures previously
     // accepted a parent with forged `n_buffers` / null_count / validity.
-    // SAFETY: the moved shell owns the live root and `n_children` came from
-    // that same root after checked conversion; `CaptureLayout::new` validates
-    // its pointer table before any snapshot reads it.
+    // SAFETY: the moved shell owns the live root; `CaptureLayout::new` validates
+    // the array's child count against the admitted schema before snapshotting.
     let mut parent_layout = unsafe {
         CaptureLayout::new(
             array_shell,
             array_shell.as_ptr(),
             ArrowFormat::Struct,
-            n_children,
+            schema.children.len(),
         )
     }?;
     let (parent_buffers, _) = snapshot_native_buffers(&mut parent_layout)?;
@@ -1629,9 +1624,9 @@ fn validate_owned_null_count(array: &CaptureLayout, buffers: &OwnedBufferSlots) 
 fn checked_byte_span(count: usize, width: usize, overflow: &'static str) -> PyResult<usize> {
     let bytes = count
         .checked_mul(width)
-        .ok_or_else(|| PyTypeError::new_err(overflow))?;
+        .ok_or_else(|| PyOverflowError::new_err(overflow))?;
     if bytes > isize::MAX as usize {
-        return Err(PyTypeError::new_err(overflow));
+        return Err(PyOverflowError::new_err(overflow));
     }
     Ok(bytes)
 }
@@ -2509,13 +2504,26 @@ mod layout_validation_tests {
     #[test]
     fn checked_byte_span_rejects_overflow_and_isize_max() {
         ensure_python();
-        assert!(checked_byte_span(usize::MAX, 2, "overflow").is_err());
-        assert!(checked_byte_span((usize::MAX / 8) + 1, 8, "overflow").is_err());
-        assert!(checked_byte_span(usize::MAX / 4 + 1, 4, "overflow").is_err());
-        assert_eq!(checked_byte_span(4, 8, "overflow").unwrap(), 32);
-        // Defect: format `g`, length 2^60 → 2^63 bytes fits usize but exceeds isize::MAX.
-        let huge = 1_usize << 60;
-        assert!(checked_byte_span(huge, 8, "overflow").is_err());
+        Python::attach(|py| {
+            for (count, width) in [
+                (usize::MAX, 2),
+                ((usize::MAX / 8) + 1, 8),
+                (usize::MAX / 4 + 1, 4),
+                (1_usize << 60, 8),
+            ] {
+                let error = checked_byte_span(count, width, "overflow")
+                    .expect_err("unrepresentable byte span must be rejected");
+                assert!(
+                    error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py),
+                    "{error}"
+                );
+            }
+            assert_eq!(checked_byte_span(4, 8, "overflow").unwrap(), 32);
+            assert_eq!(
+                checked_byte_span(isize::MAX as usize, 1, "overflow").unwrap(),
+                isize::MAX as usize
+            );
+        });
     }
 
     #[test]

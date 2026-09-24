@@ -157,7 +157,7 @@ fn record_payload_materialization() {
 }
 
 fn initial_offsets(rows: usize) -> Vec<i32> {
-    let mut offsets = Vec::with_capacity(rows.wrapping_add(1));
+    let mut offsets = Vec::with_capacity(rows.saturating_add(1));
     offsets.push(0);
     offsets
 }
@@ -322,18 +322,21 @@ fn plan_geometry_array_auto(
 }
 
 fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<StoragePlan> {
-    let mut total = 0_usize;
-    for row in array.row_operation().rows_with_missing(|| ()) {
-        if let ArrayRow::Present(row) = row {
-            let size = row
-                .row()
-                .try_with_shape(|shape| crate::io::wkb_len(shape, false))?;
-            total = total
-                .checked_add(size)
-                .ok_or_else(|| NativeArrowExportError::overflow("WKB size overflows usize"))?;
-        }
-    }
-    validate_wkb_total(total)?;
+    let sizes = array
+        .row_operation()
+        .rows_with_missing(|| ())
+        .filter_map(|row| {
+            if let ArrayRow::Present(row) = row {
+                Some(
+                    row.row()
+                        .try_with_shape(|shape| crate::io::wkb_len(shape, false))
+                        .map_err(NativeArrowExportError::from),
+                )
+            } else {
+                None
+            }
+        });
+    let total = checked_wkb_total(sizes)? as usize;
     let mut data = Vec::with_capacity(total);
     let mut offsets = initial_offsets(array.len());
     for row in array.row_operation().rows_with_missing(|| ()) {
@@ -580,19 +583,13 @@ fn plan_single_list(
     axes: CoordinateAxes,
     points_of: impl Fn(&Shape) -> &CoordSeq,
 ) -> NativeArrowExportResult<StoragePlan> {
-    let total = shapes.iter().try_fold(0_usize, |total, shape| {
-        total.checked_add(points_of(shape).len()).ok_or_else(|| {
-            NativeArrowExportError::overflow("Arrow coordinate count overflows usize")
-        })
-    })?;
     let mut offsets = initial_offsets(shapes.len());
     let mut count = 0_i32;
     for shape in shapes {
-        count = count
-            .checked_add(i32::try_from(points_of(shape).len()).map_err(|_| offset_error())?)
-            .ok_or_else(offset_error)?;
+        count = checked_i32_offset_total(count, points_of(shape).len())?;
         offsets.push(count);
     }
+    let total = count as usize;
     let coords = gather_coordseqs(axes, total, shapes.iter().map(|shape| points_of(shape)))?;
     Ok(StoragePlan::List {
         offsets: crate::geometry::SharedSlice::from_vec(offsets),
@@ -606,27 +603,28 @@ fn plan_multilines(
     shapes: &[&Shape],
     axes: CoordinateAxes,
 ) -> NativeArrowExportResult<StoragePlan> {
-    let total_lines = shapes.iter().try_fold(0_usize, |total, shape| {
-        let Shape::MultiLineString(lines) = shape else {
-            unreachable!()
-        };
-        total
-            .checked_add(lines.member_count())
-            .ok_or_else(|| NativeArrowExportError::overflow("Arrow line count overflows usize"))
-    })?;
     let mut geometry_offsets = initial_offsets(shapes.len());
+    let (total_lines, total_stored_lines) = shapes.iter().try_fold(
+        (0_i32, 0_usize),
+        |(total_lines, total_stored_lines), shape| {
+            let Shape::MultiLineString(lines) = shape else {
+                unreachable!()
+            };
+            let total_lines = checked_i32_offset_total(total_lines, lines.member_count())?;
+            // Stored values are a subset of the checked member count.
+            let total_stored_lines = total_stored_lines.saturating_add(lines.as_slice().len());
+            geometry_offsets.push(total_lines);
+            Ok::<_, NativeArrowExportError>((total_lines, total_stored_lines))
+        },
+    )?;
+    let total_lines = total_lines as usize;
     let mut line_offsets = initial_offsets(total_lines);
-    let mut lines = Vec::with_capacity(total_lines);
-    let mut line_count = 0_i32;
+    let mut lines = Vec::with_capacity(total_stored_lines);
     let mut point_count = 0_i32;
     for shape in shapes {
         let Shape::MultiLineString(items) = shape else {
             unreachable!()
         };
-        line_count = line_count
-            .checked_add(i32::try_from(items.member_count()).map_err(|_| offset_error())?)
-            .ok_or_else(offset_error)?;
-        geometry_offsets.push(line_count);
         for member in items.members() {
             match member {
                 crate::geometry::MultiMember::Empty => {
@@ -634,9 +632,7 @@ fn plan_multilines(
                 },
                 crate::geometry::MultiMember::Value(index) => {
                     let line = &items.as_slice()[index];
-                    point_count = point_count
-                        .checked_add(i32::try_from(line.len()).map_err(|_| offset_error())?)
-                        .ok_or_else(offset_error)?;
+                    point_count = checked_i32_offset_total(point_count, line.len())?;
                     line_offsets.push(point_count);
                     lines.push(line);
                 },
@@ -655,34 +651,30 @@ fn plan_multilines(
         child: Box::new(StoragePlan::List {
             offsets: crate::geometry::SharedSlice::from_vec(line_offsets),
             start: 0,
-            length: line_count as usize,
+            length: total_lines,
             child: Box::new(StoragePlan::Coordinates(coords)),
         }),
     })
 }
 
 fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportResult<StoragePlan> {
-    let total_rings = shapes.iter().try_fold(0_usize, |total, shape| {
+    let mut polygon_offsets = initial_offsets(shapes.len());
+    let total_rings = shapes.iter().try_fold(0_i32, |total, shape| {
         let Shape::Polygon(polygon) = shape else {
             unreachable!()
         };
-        total
-            .checked_add(polygon_ring_count(polygon)?)
-            .ok_or_else(|| NativeArrowExportError::overflow("Arrow ring count overflows usize"))
+        let total = checked_i32_offset_total(total, polygon_ring_count(polygon))?;
+        polygon_offsets.push(total);
+        Ok::<_, NativeArrowExportError>(total)
     })?;
-    let mut polygon_offsets = initial_offsets(shapes.len());
+    let total_rings = total_rings as usize;
     let mut ring_offsets = initial_offsets(total_rings);
     let mut rings = Vec::with_capacity(total_rings);
-    let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
     for shape in shapes {
         let Shape::Polygon(polygon) = shape else {
             unreachable!()
         };
-        ring_count = ring_count
-            .checked_add(i32::try_from(polygon_ring_count(polygon)?).map_err(|_| offset_error())?)
-            .ok_or_else(offset_error)?;
-        polygon_offsets.push(ring_count);
         push_polygon_plan(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
@@ -693,7 +685,7 @@ fn plan_polygons(shapes: &[&Shape], axes: CoordinateAxes) -> NativeArrowExportRe
         child: Box::new(StoragePlan::List {
             offsets: crate::geometry::SharedSlice::from_vec(ring_offsets),
             start: 0,
-            length: ring_count as usize,
+            length: total_rings,
             child: Box::new(StoragePlan::Coordinates(coords)),
         }),
     })
@@ -703,57 +695,43 @@ fn plan_multipolygons(
     shapes: &[&Shape],
     axes: CoordinateAxes,
 ) -> NativeArrowExportResult<StoragePlan> {
+    let mut multipolygon_offsets = initial_offsets(shapes.len());
     let (total_polygons, total_rings) =
         shapes
             .iter()
-            .try_fold((0_usize, 0_usize), |(polygons, rings), shape| {
+            .try_fold((0_i32, 0_i32), |(polygons, rings), shape| {
                 let Shape::MultiPolygon(items) = shape else {
                     unreachable!()
                 };
-                let polygons = polygons.checked_add(items.member_count()).ok_or_else(|| {
-                    NativeArrowExportError::overflow("Arrow polygon count overflows usize")
-                })?;
+                let polygons = checked_i32_offset_total(polygons, items.member_count())?;
+                multipolygon_offsets.push(polygons);
                 let rings = items.iter().try_fold(rings, |rings, polygon| {
-                    rings
-                        .checked_add(polygon_ring_count(polygon)?)
-                        .ok_or_else(|| {
-                            NativeArrowExportError::overflow("Arrow ring count overflows usize")
-                        })
+                    checked_i32_offset_total(rings, polygon_ring_count(polygon))
                 })?;
                 Ok::<_, NativeArrowExportError>((polygons, rings))
             })?;
-    let mut multipolygon_offsets = initial_offsets(shapes.len());
+    let total_polygons = total_polygons as usize;
+    let total_rings = total_rings as usize;
     let mut polygon_offsets = initial_offsets(total_polygons);
     let mut ring_offsets = initial_offsets(total_rings);
     let mut rings = Vec::with_capacity(total_rings);
-    let mut polygon_count = 0_i32;
-    let mut ring_count = 0_i32;
     let mut point_count = 0_i32;
     for shape in shapes {
         let Shape::MultiPolygon(polygons) = shape else {
             unreachable!()
         };
-        polygon_count = polygon_count
-            .checked_add(i32::try_from(polygons.member_count()).map_err(|_| offset_error())?)
-            .ok_or_else(offset_error)?;
-        multipolygon_offsets.push(polygon_count);
+        let mut stored_polygons = polygons.as_slice().iter();
         for member in polygons.members() {
-            match member {
-                crate::geometry::MultiMember::Empty => {
-                    polygon_offsets.push(ring_count);
-                },
-                crate::geometry::MultiMember::Value(index) => {
-                    let polygon = &polygons.as_slice()[index];
-                    ring_count = ring_count
-                        .checked_add(
-                            i32::try_from(polygon_ring_count(polygon)?)
-                                .map_err(|_| offset_error())?,
-                        )
-                        .ok_or_else(offset_error)?;
-                    polygon_offsets.push(ring_count);
-                    push_polygon_plan(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
-                },
+            if let crate::geometry::MultiMember::Value(_) = member {
+                let polygon = stored_polygons
+                    .next()
+                    .expect("multipart member values are stored in encounter order");
+                push_polygon_plan(polygon, &mut rings, &mut ring_offsets, &mut point_count)?;
             }
+            // `initial_offsets` keeps this output column nonempty.
+            let ring_count =
+                i32::try_from(ring_offsets.len().wrapping_sub(1)).map_err(|_| offset_error())?;
+            polygon_offsets.push(ring_count);
         }
     }
     let coords = gather_coordseqs(axes, point_count as usize, rings.into_iter())?;
@@ -764,11 +742,11 @@ fn plan_multipolygons(
         child: Box::new(StoragePlan::List {
             offsets: crate::geometry::SharedSlice::from_vec(polygon_offsets),
             start: 0,
-            length: polygon_count as usize,
+            length: total_polygons,
             child: Box::new(StoragePlan::List {
                 offsets: crate::geometry::SharedSlice::from_vec(ring_offsets),
                 start: 0,
-                length: ring_count as usize,
+                length: total_rings,
                 child: Box::new(StoragePlan::Coordinates(coords)),
             }),
         }),
@@ -782,21 +760,15 @@ fn push_polygon_plan<'a>(
     point_count: &mut i32,
 ) -> NativeArrowExportResult<()> {
     for ring in polygon.rings() {
-        *point_count = point_count
-            .checked_add(i32::try_from(ring.len()).map_err(|_| offset_error())?)
-            .ok_or_else(offset_error)?;
+        *point_count = checked_i32_offset_total(*point_count, ring.len())?;
         ring_offsets.push(*point_count);
         rings.push(ring);
     }
     Ok(())
 }
 
-fn polygon_ring_count(polygon: &Polygon) -> NativeArrowExportResult<usize> {
-    polygon
-        .holes
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| NativeArrowExportError::overflow("Arrow ring count overflows usize"))
+fn polygon_ring_count(polygon: &Polygon) -> usize {
+    polygon.holes.len().saturating_add(1)
 }
 
 fn gather_coordseqs<'a>(
@@ -822,12 +794,11 @@ fn gather_coordseqs<'a>(
 }
 
 fn plan_wkb_refs(shapes: &[&Shape]) -> NativeArrowExportResult<StoragePlan> {
-    let total = shapes.iter().try_fold(0_usize, |total, shape| {
-        total
-            .checked_add(crate::io::wkb_len(shape, false)?)
-            .ok_or_else(|| NativeArrowExportError::overflow("WKB size overflows usize"))
-    })?;
-    validate_wkb_total(total)?;
+    let total = checked_wkb_total(
+        shapes
+            .iter()
+            .map(|shape| crate::io::wkb_len(shape, false).map_err(NativeArrowExportError::from)),
+    )? as usize;
     let mut data = Vec::with_capacity(total);
     let mut offsets = initial_offsets(shapes.len());
     for shape in shapes {
@@ -916,8 +887,15 @@ fn offset_error() -> NativeArrowExportError {
     )
 }
 
-fn validate_wkb_total(total: usize) -> NativeArrowExportResult<()> {
-    i32::try_from(total).map(|_| ()).map_err(|_| offset_error())
+fn checked_i32_offset_total(total: i32, increment: usize) -> NativeArrowExportResult<i32> {
+    let increment = i32::try_from(increment).map_err(|_| offset_error())?;
+    total.checked_add(increment).ok_or_else(offset_error)
+}
+
+fn checked_wkb_total(
+    mut sizes: impl Iterator<Item = NativeArrowExportResult<usize>>,
+) -> NativeArrowExportResult<i32> {
+    sizes.try_fold(0_i32, |total, size| checked_i32_offset_total(total, size?))
 }
 
 fn mixed_axes_error() -> NativeArrowExportError {
@@ -942,10 +920,14 @@ mod tests {
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn wkb_total_admission_rejects_i32_overflow_without_allocating() {
-        let error = validate_wkb_total((i32::MAX as usize) + 1)
+        let maximum = i32::MAX as usize;
+        assert_eq!(
+            checked_wkb_total([Ok(maximum)].into_iter()).unwrap(),
+            i32::MAX
+        );
+        let error = checked_wkb_total([Ok(maximum), Ok(1)].into_iter())
             .expect_err("WKB data total must fit Arrow i32 offsets");
         assert!(matches!(error, NativeArrowExportError::Overflow(_)));
-        validate_wkb_total(i32::MAX as usize).unwrap();
     }
 
     #[test]

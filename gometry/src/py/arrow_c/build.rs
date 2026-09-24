@@ -98,10 +98,7 @@ fn schema_text(text: &str) -> NativeArrowExportResult<Vec<u8>> {
             "Arrow schema text contains a nul",
         ));
     }
-    let capacity = text
-        .len()
-        .checked_add(1)
-        .ok_or_else(|| NativeArrowExportError::overflow("Arrow schema text is too large"))?;
+    let capacity = text.len().saturating_add(1);
     let mut bytes = Vec::with_capacity(capacity);
     bytes.extend_from_slice(text.as_bytes());
     bytes.push(0);
@@ -123,13 +120,10 @@ pub(crate) fn encode_schema_metadata(
             NativeArrowExportError::geometry("Arrow schema metadata value is too large")
         })?;
         capacity = capacity
-            .checked_add(size_of::<i32>())
-            .and_then(|size| size.checked_add(key.len()))
-            .and_then(|size| size.checked_add(size_of::<i32>()))
-            .and_then(|size| size.checked_add(value.len()))
-            .ok_or_else(|| {
-                NativeArrowExportError::geometry("Arrow schema metadata size overflows usize")
-            })?;
+            .saturating_add(size_of::<i32>())
+            .saturating_add(key.len())
+            .saturating_add(size_of::<i32>())
+            .saturating_add(value.len());
     }
     let mut out = Vec::with_capacity(capacity);
     out.extend_from_slice(&pair_count.to_ne_bytes());
@@ -614,15 +608,12 @@ pub(crate) fn extension_metadata_json(
                 .ok_or_else(|| NativeArrowExportError::geometry("coordinate epoch must be finite"))
         })
         .transpose()?;
-    Ok(Some(assemble_extension_metadata(projjson, epoch)?))
+    Ok(Some(assemble_extension_metadata(projjson, epoch)))
 }
 
 /// Wrap trusted PROJJSON bytes in the GeoArrow envelope. Does not parse or
 /// rebuild a `serde_json::Value` tree.
-fn assemble_extension_metadata(
-    projjson: Option<String>,
-    epoch: Option<Number>,
-) -> NativeArrowExportResult<String> {
+fn assemble_extension_metadata(projjson: Option<String>, epoch: Option<Number>) -> String {
     debug_assert!(
         projjson.is_some() || epoch.is_some(),
         "absent CRS and epoch is returned as None before assembly"
@@ -642,11 +633,7 @@ fn assemble_extension_metadata(
     let needed = projjson
         .as_deref()
         .map_or(0, str::len)
-        .checked_add(extra)
-        .ok_or_else(|| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))?;
-    if needed > isize::MAX as usize {
-        return Err(crate::error::Error::from(crate::error::ResourceError::SizeOverflow).into());
-    }
+        .saturating_add(extra);
     let mut out = String::with_capacity(needed);
     if let Some(projjson) = projjson {
         out.push_str(CRS_PREFIX);
@@ -661,7 +648,7 @@ fn assemble_extension_metadata(
         write!(out, "{epoch}").expect("writing into a reserved String cannot fail");
     }
     out.push_str(OBJECT_END);
-    Ok(out)
+    out
 }
 
 pub(crate) fn list_schema(child: SchemaNode, nullable: bool) -> SchemaNode {
@@ -786,7 +773,7 @@ mod owner_export_tests {
     #[test]
     fn assemble_extension_metadata_embeds_projjson_bytes() {
         let projjson = "{\"type\":\"GeographicCRS\",\"name\":\"fixture\"}".to_owned();
-        let text = assemble_extension_metadata(Some(projjson.clone()), None).unwrap();
+        let text = assemble_extension_metadata(Some(projjson.clone()), None);
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["crs_type"], "projjson");
         assert_eq!(
@@ -794,8 +781,7 @@ mod owner_export_tests {
             serde_json::from_str::<serde_json::Value>(&projjson).unwrap()
         );
         assert!(text.contains(&projjson), "PROJJSON bytes must be retained");
-        let with_epoch =
-            assemble_extension_metadata(Some(projjson), Number::from_f64(2010.5)).unwrap();
+        let with_epoch = assemble_extension_metadata(Some(projjson), Number::from_f64(2010.5));
         let value: serde_json::Value = serde_json::from_str(&with_epoch).unwrap();
         assert_eq!(value["epoch"].as_f64(), Some(2010.5));
         assert_eq!(value["crs_type"], "projjson");
@@ -812,10 +798,9 @@ mod owner_export_tests {
         ] {
             let number = Number::from_f64(epoch).expect("finite epoch");
             let reserved = number.clone();
-            let (result, allocations) = crate::test_support::allocation_count(|| {
+            let (text, allocations) = crate::test_support::allocation_count(|| {
                 assemble_extension_metadata(None, Some(reserved))
             });
-            let text = result.expect("envelope reserves");
             assert_eq!(allocations, 1, "epoch {epoch:?} allocated {allocations}");
             let token = text
                 .strip_prefix(EPOCH_ONLY_PREFIX)
@@ -828,8 +813,7 @@ mod owner_export_tests {
             );
             let value: serde_json::Value = serde_json::from_str(&text).unwrap();
             assert!(value["epoch"].is_number(), "{text}");
-            let repeated =
-                assemble_extension_metadata(None, Some(number)).expect("repeated epoch envelope");
+            let repeated = assemble_extension_metadata(None, Some(number));
             assert_eq!(repeated, text);
         }
     }

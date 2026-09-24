@@ -37,11 +37,7 @@ pub(crate) enum NativeArrowExportError {
 
 pub(crate) type NativeArrowExportResult<T> = std::result::Result<T, NativeArrowExportError>;
 
-/// Publish an owned vector only after its final shared allocation succeeds.
-///
-/// `Arc::from(Vec)` uses the infallible allocation path. Arrow admission owns
-/// producer data before it can release the foreign shell, so an allocator
-/// refusal here must remain a catchable Python `MemoryError`.
+/// Share an owned vector while retaining its capacity for native heap accounting.
 #[expect(
     clippy::rc_buffer,
     reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
@@ -50,8 +46,7 @@ pub(crate) fn arc_from_vec<T>(values: Vec<T>) -> Arc<Vec<T>> {
     Arc::new(values)
 }
 
-/// Publish an owned string only after both its bytes and shared allocation
-/// have succeeded.
+/// Share an owned string while retaining its capacity for native heap accounting.
 #[expect(
     clippy::rc_buffer,
     reason = "the sharing handle must remain Arc<String> so capacity stays part of heap accounting"

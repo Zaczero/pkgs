@@ -253,21 +253,9 @@ impl NativeArrowAccumulator {
                 ));
             }
         }
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.storage, 1) {
-            self.release_owned_rows();
-            drop((storage, srids, missing));
-            return Err(error.into());
-        }
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.srids, srids.len()) {
-            self.release_owned_rows();
-            drop((storage, srids, missing));
-            return Err(error.into());
-        }
-        if let Err(error) = crate::boundary::try_reserve_vec(&mut self.missing, missing.len()) {
-            self.release_owned_rows();
-            drop((storage, srids, missing));
-            return Err(error.into());
-        }
+        self.storage.reserve(1);
+        self.srids.reserve(srids.len());
+        self.missing.reserve(missing.len());
         for local in missing {
             self.missing.push(row_base + local);
         }
@@ -409,8 +397,7 @@ fn combine_native_storage(
             .checked_add(part.len())
             .ok_or(crate::error::ResourceError::SizeOverflow)
     })?;
-    let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, total)?;
+    let mut shapes = Vec::with_capacity(total);
     for part in parts {
         let mut part = part.into_shapes().map_err(|error| match error {
             NativeArrowDecodeError::Core(error) => error,
@@ -602,10 +589,10 @@ pub(crate) fn arrow_geometry_input(
         ));
     }
     let schema = value.getattr_opt(pyo3::intern!(value.py(), "schema"))?;
-    let mut geometry_name_indexes = crate::try_vec_with_capacity(names.len())?;
+    let mut geometry_name_indexes = Vec::with_capacity(names.len());
     for (index, name) in names.iter().enumerate() {
         if name == "geometry" {
-            crate::try_push(&mut geometry_name_indexes, index)?;
+            geometry_name_indexes.push(index);
         }
     }
     if geometry_name_indexes.len() > 1 {
@@ -825,18 +812,23 @@ pub(crate) use export::{array_to_arrow, shapes_to_arrow, shapes_to_wkb_arrow};
 ///     invariant.
 /// ParseError
 ///     If GeoArrow metadata, offsets, validity buffers, coordinate buffers, or
-///     WKB data are malformed.
+///     WKB data are malformed, or a selected table geometry child is absent
+///     or out of range.
 /// TypeError
 ///     If ``data`` is not a supported Arrow object or provider, its schema or
-///     encoding cannot be classified, or it has no geometry column.
+///     encoding cannot be classified, it has no geometry column, a C array
+///     length or offset is negative, its ``null_count`` is below -1 (``-1``
+///     means unknown) or a known count exceeds the logical length, or its
+///     format-specific buffer/child layout conflicts with the schema.
 /// OSError
 ///     If an Arrow C stream schema or batch callback returns a nonzero status
 ///     other than ``ENOMEM``; the callback status is exposed as ``errno``.
 /// MemoryError
-///     If an Arrow C stream callback returns ``ENOMEM``, or native
-///     storage allocation fails.
+///     If an Arrow C stream callback returns ``ENOMEM``. Native Rust allocator
+///     exhaustion is process-fatal and is not translated into a Python error.
 /// OverflowError
-///     If Arrow lengths or offsets exceed representable native sizes.
+///     If a nonnegative Arrow buffer byte span cannot fit ``usize`` or the
+///     maximum size of a Rust slice.
 ///
 /// See Also
 /// --------
