@@ -589,18 +589,15 @@ pub(crate) fn arrow_geometry_input(
         ));
     }
     let schema = value.getattr_opt(pyo3::intern!(value.py(), "schema"))?;
-    let mut geometry_name_indexes = Vec::with_capacity(names.len());
+    let mut geometry_name_index = None;
     for (index, name) in names.iter().enumerate() {
-        if name == "geometry" {
-            geometry_name_indexes.push(index);
+        if name == "geometry" && geometry_name_index.replace(index).is_some() {
+            return Err(PyTypeError::new_err(
+                "Arrow table or record batch has multiple columns named 'geometry'; select one column explicitly",
+            ));
         }
     }
-    if geometry_name_indexes.len() > 1 {
-        return Err(PyTypeError::new_err(
-            "Arrow table or record batch has multiple columns named 'geometry'; select one column explicitly",
-        ));
-    }
-    if let Some(&index) = geometry_name_indexes.first() {
+    if let Some(index) = geometry_name_index {
         return Ok(ArrowGeometryInput {
             value: value.call_method1("column", (index,))?.unbind(),
             field: schema

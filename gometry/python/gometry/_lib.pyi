@@ -18723,8 +18723,6 @@ class _GeoParquetPhysicalLayout:
             ``'view'`` for ``BinaryView``. Native encodings report ``'int32'``.
         """
 
-    def __iter__(self) -> Iterator[bool | str | float | None]: ...
-
 def _parse_geoparquet_column_frame(
     metadata: Mapping[str, Any],
     column_name: str,

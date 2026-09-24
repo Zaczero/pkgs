@@ -866,6 +866,18 @@ impl NativeNode {
             .is_some_and(|missing| missing.is_missing(index))
     }
 
+    fn missing_count(&self) -> usize {
+        self.effective_missing
+            .as_ref()
+            .map_or(0, crate::array::ValidityMask::missing_count)
+    }
+
+    fn present_count(&self) -> usize {
+        self.effective_missing
+            .as_ref()
+            .map_or(self.length, crate::array::ValidityMask::present_count)
+    }
+
     fn bytes_at(&self, index: usize) -> Option<&[u8]> {
         if index >= self.n_buffers {
             return None;

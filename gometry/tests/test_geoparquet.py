@@ -2470,12 +2470,13 @@ def test_admit_preserves_raw_field_extension_frame() -> None:
         }).encode(),
     }
     field = pa.field('geometry', storage.type, metadata=meta)
-    has_ext, crs, epoch = _admit_geoparquet_geometry_storage(
+    layout = _admit_geoparquet_geometry_storage(
         storage.type, 'point', 'geometry', field
     )
-    assert has_ext is True
-    assert json.loads(crs) == gm.CRS(4326).to_projjson_dict()
-    assert epoch is None
+    assert layout.has_extension is True
+    assert layout.embedded_crs is not None
+    assert json.loads(layout.embedded_crs) == gm.CRS(4326).to_projjson_dict()
+    assert layout.embedded_epoch is None
 
     # Rewrap with matching geoparquet frame succeeds; mismatched raises.
     chunked = pa.chunked_array([storage])
