@@ -148,6 +148,108 @@ def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
     assert at.calls == 1
 
 
+def test_crs_transform_bounds_preserves_second_next_error_identity() -> None:
+    error = RuntimeError('bounds iterator boom')
+
+    class Rows:
+        def __init__(self) -> None:
+            self.iter_calls = 0
+            self.next_calls = 0
+
+        def __iter__(self):
+            self.iter_calls += 1
+
+            def rows():
+                self.next_calls = 1
+                yield (0.0, 0.0, 1.0, 1.0)
+                self.next_calls = 2
+                raise error
+
+            return rows()
+
+    rows = Rows()
+    assert_same(
+        lambda: gm.crs_transform_bounds('not-a-crs', 3857, rows, densify=0),
+        error,
+    )
+    assert (rows.iter_calls, rows.next_calls) == (1, 2)
+
+
+def test_crs_transform_bounds_preserves_len_error_identity_after_first_row() -> None:
+    error = RuntimeError('bounds len boom')
+
+    class Rows:
+        def __init__(self) -> None:
+            self.iter_calls = 0
+            self.next_calls = 0
+            self.len_calls = 0
+
+        def __iter__(self):
+            self.iter_calls += 1
+
+            def rows():
+                self.next_calls = 1
+                yield (0.0, 0.0, 1.0, 1.0)
+                self.next_calls = 2
+                yield (0.0, 0.0, 1.0, 1.0)
+
+            return rows()
+
+        def __len__(self) -> int:
+            self.len_calls += 1
+            assert self.next_calls == 1
+            raise error
+
+    rows = Rows()
+    assert_same(
+        lambda: gm.crs_transform_bounds(4326, 3857, rows, densify=0),
+        error,
+    )
+    assert (rows.iter_calls, rows.next_calls, rows.len_calls) == (1, 1, 1)
+
+
+def test_crs_transform_bounds_parses_crs_before_scalar_finiteness() -> None:
+    with pytest.raises(gm.CRSError):
+        gm.crs_transform_bounds(
+            'not-a-crs',
+            3857,
+            (math.inf, 0.0, 1.0, 1.0),
+            densify=0,
+        )
+
+
+def test_crs_transform_bounds_parses_crs_before_batch_row_shape() -> None:
+    with pytest.raises(gm.CRSError):
+        gm.crs_transform_bounds(
+            'not-a-crs',
+            3857,
+            [(0.0, 0.0, 1.0)],
+            densify=0,
+        )
+
+
+def test_crs_transform_bounds_scalar_lane_probes_only_one_excess_value() -> None:
+    class Repeating:
+        def __init__(self) -> None:
+            self.iter_calls = 0
+            self.next_calls = 0
+
+        def __iter__(self):
+            self.iter_calls += 1
+            return self
+
+        def __next__(self) -> float:
+            self.next_calls += 1
+            if self.next_calls <= 7:
+                return 0.0
+            raise AssertionError('scalar bounds consumed a second excess value')
+
+    values = Repeating()
+    with pytest.raises(gm.GeometryError, match='4-tuple or 6-tuple'):
+        gm.crs_transform_bounds(4326, 3857, values, densify=0)
+    assert (values.iter_calls, values.next_calls) == (1, 7)
+
+
 def test_line_interpolate_drains_at_provider_before_processing_array_rows() -> None:
     class RaisingDistances:
         def __len__(self) -> int:

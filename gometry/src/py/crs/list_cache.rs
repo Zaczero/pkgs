@@ -124,9 +124,9 @@ fn freeze_nested<'py>(py: Python<'py>, value: &Bound<'py, PyAny>) -> PyResult<Py
         return Ok(proxy.unbind());
     }
     if let Ok(list) = value.cast::<PyList>() {
-        let mut items = crate::try_vec_with_capacity(list.len())?;
+        let mut items = Vec::with_capacity(list.len());
         for item in list.iter() {
-            crate::try_push(&mut items, freeze_nested(py, &item)?)?;
+            items.push(freeze_nested(py, &item)?);
         }
         return Ok(PyTuple::new(py, items)?.into_any().unbind());
     }

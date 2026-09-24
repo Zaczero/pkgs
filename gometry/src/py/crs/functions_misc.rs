@@ -27,7 +27,6 @@ pub(crate) fn crs_parse_required(value: &Bound<'_, PyAny>) -> PyResult<Crs> {
 // Normalized CRS definition: the same parser as `crs_parse_required` /
 // geometry `to_crs`, so syntax-only spellings ("Epsg:4326", "EPSG:4326") share
 // one stored authority spelling without rewriting authored definitions.
-pub(crate) fn crs_normalize(value: &Bound<'_, PyAny>) -> PyResult<String> {
-    let crs = crs_parse_required(value)?;
-    Ok(crs.as_str().to_owned())
+pub(crate) fn crs_normalize(value: &Bound<'_, PyAny>) -> PyResult<Crs> {
+    crs_parse_required(value)
 }
