@@ -74,6 +74,7 @@ pub(super) fn delaunay_complex(
     let triangles = mesh.triangles();
     let mut parents = Vec::with_capacity(triangles.len());
     parents.extend(0..triangles.len());
+    let mut remaining_roots = triangles.len();
     for (edge, &reverse) in mesh.halfedges().iter().enumerate() {
         if reverse == EMPTY || edge > reverse {
             continue;
@@ -86,6 +87,8 @@ pub(super) fn delaunay_complex(
             if left != right {
                 let (keep, merge) = (left.min(right), left.max(right));
                 parents[merge] = keep;
+                // Distinct roots prove the remaining count cannot wrap here.
+                remaining_roots = remaining_roots.wrapping_sub(1);
             }
         }
     }
@@ -96,7 +99,7 @@ pub(super) fn delaunay_complex(
     // lexicographic minimum and edges sort canonically. Any face of the fan
     // defines the exact circumcenter, since all of them are cocircular.
     let mut component_of_root = vec![usize::MAX; triangles.len()];
-    let mut centers = Vec::with_capacity(triangles.len());
+    let mut centers = Vec::with_capacity(remaining_roots);
     for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
         if component_of_root[root] == usize::MAX {
