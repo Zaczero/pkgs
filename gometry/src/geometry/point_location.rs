@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use crate::HeapSize;
 use crate::error::Result;
-use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex};
+use crate::geometry::segment_index::{EdgeId, EdgeYIndex, YStabbingIndex, checked_index_count};
 use crate::geometry::{
     Bounds, CoordSeq, Loc, Point, Polygon, Ring, RingClass, RingView, Shape, SharedSlice, XY,
     cartesian_polygon_views_location, edge_winding, ring_kind_columns, xy_bounds_columns,
@@ -70,18 +70,19 @@ impl RingPointIndex {
 
     fn edge_xy(&self, edge: EdgeId) -> (f64, f64, f64, f64) {
         let e = edge.as_usize();
+        let next = e.wrapping_add(1);
         debug_assert_eq!(self.xs.len(), self.ys.len());
-        debug_assert!(e + 1 < self.xs.len());
+        debug_assert!(next < self.xs.len());
         // SAFETY: EdgeYIndex::build creates exactly one id per adjacent Y pair,
         // and its dense/tree plans only emit those ids. The index is built from
         // these same columns, whose equal lengths make every emitted id satisfy
-        // `e + 1 < self.xs.len()`.
+        // `next < self.xs.len()`.
         unsafe {
             (
                 *self.xs.get_unchecked(e),
                 *self.ys.get_unchecked(e),
-                *self.xs.get_unchecked(e + 1),
-                *self.ys.get_unchecked(e + 1),
+                *self.xs.get_unchecked(next),
+                *self.ys.get_unchecked(next),
             )
         }
     }
@@ -96,7 +97,7 @@ impl RingPointIndex {
             edge_winding(XY::new(ax, ay), XY::new(bx, by), query).map_or(
                 ControlFlow::Break(()),
                 |delta| {
-                    winding += delta;
+                    winding = winding.wrapping_add(delta);
                     ControlFlow::Continue(())
                 },
             )
@@ -107,7 +108,10 @@ impl RingPointIndex {
 
 impl HeapSize for RingPointIndex {
     fn heap_bytes(&self) -> usize {
-        self.xs.heap_bytes() + self.ys.heap_bytes() + self.edges.heap_bytes()
+        self.xs
+            .heap_bytes()
+            .saturating_add(self.ys.heap_bytes())
+            .saturating_add(self.edges.heap_bytes())
     }
 }
 
@@ -122,9 +126,9 @@ pub(crate) struct PolygonPointIndex {
 
 impl PolygonPointIndex {
     pub(crate) fn build(polygon: &Polygon) -> Result<Self> {
+        let hole_count = checked_index_count(polygon.holes.len())?;
         let mut index = Self::build_shell(&polygon.shell)?;
-        let mut hole_rings = Vec::new();
-        crate::try_reserve_vec(&mut hole_rings, polygon.holes.len())?;
+        let mut hole_rings = Vec::with_capacity(hole_count as usize);
         for hole in polygon.holes.iter() {
             let ring = RingPointIndex::build(hole.coords())?;
             index.winding_rings &= ring.kind == crate::geometry::RingKind::Winding;
@@ -240,7 +244,9 @@ impl PolygonPointIndex {
 
 impl HeapSize for PolygonPointIndex {
     fn heap_bytes(&self) -> usize {
-        self.shell.heap_bytes() + self.holes.heap_bytes()
+        self.shell
+            .heap_bytes()
+            .saturating_add(self.holes.heap_bytes())
     }
 }
 
@@ -310,7 +316,12 @@ impl PointBatchTester {
         match shape {
             Shape::Polygon(polygon) => Self::from_polygon(polygon),
             Shape::MultiPolygon(polygons) => Self::from_multipolygon(polygons),
-            _ => Ok(Self::Generic(ExactPointTester {
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => Ok(Self::Generic(ExactPointTester {
                 shape: shape.clone(),
             })),
         }
@@ -323,10 +334,11 @@ impl PointBatchTester {
     }
 
     pub(crate) fn from_multipolygon(polygons: &crate::geometry::MultiPolygon) -> Result<Self> {
-        if polygons.len() == 1 {
-            return Self::from_polygon(&polygons[0]);
+        if let [polygon] = polygons.as_slice() {
+            return Self::from_polygon(polygon);
         }
-        let mut built = Vec::with_capacity(polygons.len());
+        let part_count = checked_index_count(polygons.len())?;
+        let mut built = Vec::with_capacity(part_count as usize);
         for polygon in polygons.iter() {
             built.push(PolygonPointIndex::build(polygon)?);
         }

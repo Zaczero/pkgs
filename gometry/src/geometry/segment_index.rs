@@ -27,17 +27,27 @@ mod sweep;
 /// slot; nested leaf heap is not charged.
 fn bulk_rtree_heap_bytes<T: RTreeObject>(tree: &BulkRTree<T>) -> usize {
     fn node_bytes<T: RTreeObject>(node: &RTreeNode<T>) -> usize {
-        std::mem::size_of::<RTreeNode<T>>()
-            + match node {
-                RTreeNode::Leaf(_) => 0,
-                RTreeNode::Parent(parent) => parent.children().iter().map(node_bytes).sum(),
-            }
+        let children_bytes = match node {
+            RTreeNode::Leaf(_) => 0,
+            RTreeNode::Parent(parent) => parent
+                .children()
+                .iter()
+                .map(node_bytes)
+                .fold(0_usize, usize::saturating_add),
+        };
+        std::mem::size_of::<RTreeNode<T>>().saturating_add(children_bytes)
     }
-    tree.root().children().iter().map(node_bytes).sum()
+    tree.root()
+        .children()
+        .iter()
+        .map(node_bytes)
+        .fold(0_usize, usize::saturating_add)
 }
 
 pub(crate) use index::{PointSetIndex, SegmentIndex};
-pub(crate) use stabbing::{EdgeId, EdgeYIndex, YStabbingIndex, uses_linear_plan_for_len};
+pub(crate) use stabbing::{
+    EdgeId, EdgeYIndex, YStabbingIndex, checked_index_count, uses_linear_plan_for_len,
+};
 pub(crate) use sweep::SEGMENT_INDEX_MIN_PAIRS;
 pub(in crate::geometry) use sweep::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,

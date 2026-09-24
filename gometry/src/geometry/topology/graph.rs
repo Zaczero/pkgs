@@ -1033,6 +1033,8 @@ impl GraphBuilder {
     }
 
     fn collect_polygon(&mut self, polygon: &Polygon, source_row: u32) -> crate::error::Result<()> {
+        let area_polygon = u32::try_from(self.area_support.len())
+            .map_err(|_| crate::error::ResourceError::SizeOverflow)?;
         let mut staged_rings = Vec::new();
         let StagedChartRing {
             ring: shell,
@@ -1051,7 +1053,6 @@ impl GraphBuilder {
             holes: holes.into_boxed_slice(),
         });
         let component = self.component();
-        let area_polygon = (self.area_support.len() - 1) as u32;
         for (ring_index, (ring, is_hole)) in std::iter::once((&polygon.shell, false))
             .chain(polygon.holes.iter().map(|ring| (ring, true)))
             .enumerate()
@@ -2223,7 +2224,7 @@ fn chart_ring_edges_for_y<B>(
     mut visit: impl FnMut(Segment) -> std::ops::ControlFlow<B>,
 ) -> Option<B> {
     if let Some(edges) = ring.edges.dense_band_edges(y) {
-        for &edge in edges {
+        for edge in edges {
             let edge = edge.as_usize();
             let next = if edge + 1 < ring.points.len() {
                 edge + 1

@@ -25,6 +25,14 @@ pub(crate) enum RingKind {
     Collapsed,
 }
 
+const fn ring_ray_delta(kind: RingKind, reverse: bool) -> i64 {
+    match (kind, reverse) {
+        (RingKind::Winding, false) => 1,
+        (RingKind::Winding, true) => -1,
+        (RingKind::Collapsed, _) => 0,
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct RingView<'a> {
     pub(crate) xs: &'a [f64],
@@ -57,6 +65,7 @@ struct Ray {
     collapsed: bool,
 }
 
+#[derive(Clone, Copy)]
 struct RayGroup {
     start: usize,
     end: usize,
@@ -172,7 +181,7 @@ impl<'a> SourceSupport<'a> {
                 if !same_point(query, end) {
                     rays.push(Ray {
                         end,
-                        ring: Some((ring_id, i64::from(ring.kind == RingKind::Winding))),
+                        ring: Some((ring_id, ring_ray_delta(ring.kind, false))),
                         curve: false,
                         collapsed: ring.kind == RingKind::Collapsed,
                     });
@@ -180,7 +189,7 @@ impl<'a> SourceSupport<'a> {
                 if !same_point(query, start) {
                     rays.push(Ray {
                         end: start,
-                        ring: Some((ring_id, -i64::from(ring.kind == RingKind::Winding))),
+                        ring: Some((ring_id, ring_ray_delta(ring.kind, true))),
                         curve: false,
                         collapsed: ring.kind == RingKind::Collapsed,
                     });
@@ -261,7 +270,7 @@ impl<'a> SourceSupport<'a> {
                 if !same_point(query, end) {
                     rays.push(Ray {
                         end,
-                        ring: Some((ring_id, i64::from(ring.kind == RingKind::Winding))),
+                        ring: Some((ring_id, ring_ray_delta(ring.kind, false))),
                         curve: false,
                         collapsed: ring.kind == RingKind::Collapsed,
                     });
@@ -269,7 +278,7 @@ impl<'a> SourceSupport<'a> {
                 if !same_point(query, start) {
                     rays.push(Ray {
                         end: start,
-                        ring: Some((ring_id, -i64::from(ring.kind == RingKind::Winding))),
+                        ring: Some((ring_id, ring_ray_delta(ring.kind, true))),
                         curve: false,
                         collapsed: ring.kind == RingKind::Collapsed,
                     });
@@ -304,7 +313,7 @@ impl<'a> SourceSupport<'a> {
             .any(|curve| curve_has_point(curve.xs, curve.ys, query));
         let collapsed = self.collapsed_polygon_support(windings, query);
         if curve || collapsed {
-            return line_location(curve, collapsed, self.curve_endpoint_parity(query), 0);
+            return line_location(self.curve_endpoint_parity(query), false);
         }
         if explicit_point {
             Loc::Interior
@@ -313,6 +322,10 @@ impl<'a> SourceSupport<'a> {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "polygon ring ranges and the same-order winding slice are appended together; indexed shell/hole reads avoid rescanning rings"
+    )]
     fn area_occupied(&self, windings: &[i64]) -> bool {
         self.polygons.iter().any(|rings| {
             let mut rings = rings.clone();
@@ -321,6 +334,10 @@ impl<'a> SourceSupport<'a> {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "shell/hole IDs come from the polygon ranges and index the same source-ring and winding owners"
+    )]
     fn collapsed_polygon_support(&self, windings: &[i64], query: XY) -> bool {
         self.polygons.iter().any(|rings| {
             let mut rings = rings.clone();
@@ -372,6 +389,14 @@ struct LocalStar<'a, 'b> {
 }
 
 impl LocalStar<'_, '_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray groups are a checked partition of the sorted ray slice owned by this star"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "nonempty groups and bounded cyclic offsets keep group ordinals representable"
+    )]
     fn location(&mut self) -> Loc {
         if self.groups.is_empty() {
             return self.location_without_rays();
@@ -403,21 +428,21 @@ impl LocalStar<'_, '_> {
         let mut sector_area = Vec::with_capacity(self.groups.len());
         let mut ray_polygon_support = false;
         let mut curve_ray = false;
-        let mut residual_collapsed_degree = 0_usize;
+        let mut residual_collapsed_degree_odd = false;
         let mut ring_support = Vec::new();
         if !self.collapsed_points.is_empty() {
             ring_support.resize(self.source.rings.len(), false);
-            for (ring, &winding) in self.windings.iter().enumerate() {
-                ring_support[ring] |= winding != 0;
+            for (support, &winding) in ring_support.iter_mut().zip(&self.windings) {
+                *support |= winding != 0;
             }
             for &ring in &self.collapsed_points {
-                ring_support[ring] = true;
+                Self::retain_ring_support(&mut ring_support, ring, true);
             }
             for ray in &self.rays {
                 if let Some((ring, _)) = ray.ring
                     && ray.collapsed
                 {
-                    ring_support[ring] = true;
+                    Self::retain_ring_support(&mut ring_support, ring, true);
                 }
             }
         }
@@ -426,28 +451,29 @@ impl LocalStar<'_, '_> {
         for offset in 0..self.groups.len() {
             let group_index = (first + offset) % self.groups.len();
             let group = &self.groups[group_index];
+            let group_rays = &self.rays[group.start..group.end];
             let before_area = self.source.area_occupied(&self.windings);
-            self.group_ring_values(group, &mut group_values);
-            let group_curve = self.rays[group.start..group.end]
-                .iter()
-                .any(|ray| ray.curve);
+            self.group_ring_values(group_rays, &mut group_values);
+            let group_curve = group_rays.iter().any(|ray| ray.curve);
             curve_ray |= group_curve;
-            for ray in &self.rays[group.start..group.end] {
+            for ray in group_rays {
                 if let Some((ring, delta)) = ray.ring {
-                    self.windings[ring] += delta;
-                    if !ring_support.is_empty() && self.source.rings[ring].kind == RingKind::Winding
-                    {
-                        ring_support[ring] |= self.windings[ring] != 0;
-                    }
+                    Self::cross_ring(
+                        &mut self.windings,
+                        &self.source.rings,
+                        ring,
+                        delta,
+                        &mut ring_support,
+                    );
                 }
             }
             let after_area = self.source.area_occupied(&self.windings);
             sector_area.push(before_area);
             let group_support =
-                self.polygon_ray_support(group, &group_values, before_area, after_area);
+                self.polygon_ray_support(group_rays, &group_values, before_area, after_area);
             ray_polygon_support |= group_support;
             if group_support && !group_curve {
-                residual_collapsed_degree += 1;
+                residual_collapsed_degree_odd = !residual_collapsed_degree_odd;
             }
         }
 
@@ -461,12 +487,7 @@ impl LocalStar<'_, '_> {
         }
         let line = curve_ray || ray_polygon_support;
         if line {
-            return line_location(
-                curve_ray,
-                ray_polygon_support,
-                self.endpoint_parity,
-                residual_collapsed_degree,
-            );
+            return line_location(self.endpoint_parity, residual_collapsed_degree_odd);
         }
         if !ring_support.is_empty() && self.collapsed_point_support(&ring_support) {
             return Loc::Interior;
@@ -478,6 +499,32 @@ impl LocalStar<'_, '_> {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray ring IDs address the same winding and source-ring vectors used to generate them"
+    )]
+    fn cross_ring(
+        windings: &mut [i64],
+        rings: &[RingView<'_>],
+        ring: usize,
+        delta: i64,
+        ring_support: &mut [bool],
+    ) {
+        let winding = &mut windings[ring];
+        *winding = winding.wrapping_add(delta);
+        if !ring_support.is_empty() && rings[ring].kind == RingKind::Winding {
+            Self::retain_ring_support(ring_support, ring, *winding != 0);
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ray and collapsed-point ring IDs address the support vector sized from the same source rings"
+    )]
+    const fn retain_ring_support(ring_support: &mut [bool], ring: usize, supported: bool) {
+        ring_support[ring] |= supported;
+    }
+
     fn location_without_rays(&self) -> Loc {
         if self.source.area_occupied(&self.windings) || self.explicit_point {
             Loc::Interior
@@ -486,6 +533,10 @@ impl LocalStar<'_, '_> {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "shell and hole IDs are ranges into the support vector built for these source rings"
+    )]
     fn collapsed_point_support(&self, ring_support: &[bool]) -> bool {
         self.source.polygons.iter().any(|rings| {
             let mut rings = rings.clone();
@@ -496,9 +547,13 @@ impl LocalStar<'_, '_> {
         })
     }
 
-    fn group_ring_values(&self, group: &RayGroup, values: &mut Vec<(usize, i64)>) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ring IDs carried by these rays address the aligned per-ring winding state"
+    )]
+    fn group_ring_values(&self, group: &[Ray], values: &mut Vec<(usize, i64)>) {
         values.clear();
-        for ray in &self.rays[group.start..group.end] {
+        for ray in group {
             let Some((ring, _)) = ray.ring else {
                 continue;
             };
@@ -509,27 +564,24 @@ impl LocalStar<'_, '_> {
         }
     }
 
-    fn ring_value(
-        &self,
-        ring: usize,
-        group: &RayGroup,
-        before: &[(usize, i64)],
-        after: bool,
-    ) -> bool {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the ring ID indexes the same winding vector used to build each ray"
+    )]
+    fn ring_value(&self, ring: usize, group: &[Ray], before: &[(usize, i64)], after: bool) -> bool {
         let value = before
             .iter()
             .find_map(|&(candidate, value)| (candidate == ring).then_some(value))
             .map_or(self.windings[ring], |value| {
                 if after {
-                    value
-                        + self.rays[group.start..group.end]
-                            .iter()
-                            .map(|ray| {
-                                ray.ring
-                                    .filter(|&(candidate, _)| candidate == ring)
-                                    .map_or(0, |(_, delta)| delta)
-                            })
-                            .sum::<i64>()
+                    let group_delta = group.iter().fold(0_i64, |sum, ray| {
+                        sum.wrapping_add(
+                            ray.ring
+                                .filter(|&(candidate, _)| candidate == ring)
+                                .map_or(0, |(_, delta)| delta),
+                        )
+                    });
+                    value.wrapping_add(group_delta)
                 } else {
                     value
                 }
@@ -539,7 +591,7 @@ impl LocalStar<'_, '_> {
 
     fn polygon_ray_support(
         &self,
-        group: &RayGroup,
+        group: &[Ray],
         before: &[(usize, i64)],
         _before_area: bool,
         _after_area: bool,
@@ -559,15 +611,19 @@ impl LocalStar<'_, '_> {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the ring ID comes from this source's ray and indexes its owned ring views"
+    )]
     fn ring_sector_support(
         &self,
         ring: usize,
-        group: &RayGroup,
+        group: &[Ray],
         before: &[(usize, i64)],
         after: bool,
     ) -> bool {
         if self.source.rings[ring].kind == RingKind::Collapsed {
-            return self.rays[group.start..group.end].iter().any(|ray| {
+            return group.iter().any(|ray| {
                 ray.collapsed && ray.ring.is_some_and(|(candidate, _)| candidate == ring)
             });
         }
@@ -575,14 +631,8 @@ impl LocalStar<'_, '_> {
     }
 }
 
-fn line_location(
-    explicit_curve: bool,
-    collapsed_support: bool,
-    endpoint_parity: bool,
-    residual_collapsed_degree: usize,
-) -> Loc {
-    debug_assert!(explicit_curve || collapsed_support);
-    let boundary = endpoint_parity ^ (residual_collapsed_degree % 2 == 1);
+const fn line_location(endpoint_parity: bool, residual_collapsed_degree_odd: bool) -> Loc {
+    let boundary = endpoint_parity ^ residual_collapsed_degree_odd;
     if boundary {
         Loc::Boundary
     } else {
@@ -590,15 +640,19 @@ fn line_location(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "start and end advance only within the sorted ray slice being grouped"
+)]
 fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
     let mut groups = Vec::new();
-    let mut start = 0;
+    let mut start = 0_usize;
     while start < rays.len() {
-        let mut end = start + 1;
+        let mut end = start.wrapping_add(1);
         while end < rays.len()
             && compare_rays(query, rays[start].end, rays[end].end) == Ordering::Equal
         {
-            end += 1;
+            end = end.wrapping_add(1);
         }
         groups.push(RayGroup { start, end });
         start = end;
@@ -624,7 +678,7 @@ fn ring_probe_columns(xs: &[f64], ys: &[f64], point: XY) -> RingProbe {
     let mut winding = 0_i64;
     let mut incident = false;
     for_each_xy_segment(xs, ys, |start, end| match edge_winding(start, end, point) {
-        Some(delta) => winding += delta,
+        Some(delta) => winding = winding.wrapping_add(delta),
         None => incident = true,
     });
     RingProbe { winding, incident }
@@ -664,9 +718,9 @@ fn formal_ring_winding(xs: &[f64], ys: &[f64], point: XY) -> i64 {
         }
         let orientation = symbolic_orientation(start, end, point);
         if !start_above && end_above && orientation == ExactSign::Positive {
-            winding += 1;
+            winding = winding.wrapping_add(1);
         } else if !end_above && start_above && orientation == ExactSign::Negative {
-            winding -= 1;
+            winding = winding.wrapping_sub(1);
         }
     });
     winding
@@ -696,14 +750,13 @@ pub(crate) fn ring_kind_columns(xs: &[f64], ys: &[f64]) -> RingKind {
     let Some((&ax, &ay)) = xs.first().zip(ys.first()) else {
         return RingKind::Collapsed;
     };
-    let Some(index) = (0..xs.len()).find(|&index| xs[index] != ax || ys[index] != ay) else {
+    let Some((&bx, &by)) = xs.iter().zip(ys).find(|(x, y)| **x != ax || **y != ay) else {
         return RingKind::Collapsed;
     };
-    let bx = xs[index];
-    let by = ys[index];
-    let collinear = (0..xs.len()).all(|index| {
-        stored_orientation_sign(ax, ay, bx, by, xs[index], ys[index]) == ExactSign::Zero
-    });
+    let collinear = xs
+        .iter()
+        .zip(ys)
+        .all(|(&x, &y)| stored_orientation_sign(ax, ay, bx, by, x, y) == ExactSign::Zero);
     if collinear {
         RingKind::Collapsed
     } else {
@@ -734,20 +787,18 @@ fn for_each_ring_segment(xs: &[f64], ys: &[f64], mut visit: impl FnMut(XY, XY)) 
     if xs.len() < 2 || ys.len() < 2 {
         return;
     }
-    let count = if same_point(
-        XY::new(xs[0], ys[0]),
-        XY::new(xs[xs.len() - 1], ys[ys.len() - 1]),
-    ) {
-        xs.len() - 1
-    } else {
-        xs.len()
-    };
-    if count == 0 {
+    let (Some(&first_x), Some(&first_y), Some(&last_x), Some(&last_y)) =
+        (xs.first(), ys.first(), xs.last(), ys.last())
+    else {
         return;
+    };
+    let first = XY::new(first_x, first_y);
+    let last = XY::new(last_x, last_y);
+    for ([ax, bx], [ay, by]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+        visit(XY::new(*ax, *ay), XY::new(*bx, *by));
     }
-    for index in 0..count {
-        let next = if index + 1 == count { 0 } else { index + 1 };
-        visit(XY::new(xs[index], ys[index]), XY::new(xs[next], ys[next]));
+    if !same_point(first, last) {
+        visit(last, first);
     }
 }
 

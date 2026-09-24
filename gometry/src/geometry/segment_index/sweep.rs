@@ -30,6 +30,10 @@ const SWEEP_BAND_GRAIN: usize = 2048;
 
 /// [`for_each_overlapping_bounds_pair`] over rows that may lack bounds: a row
 /// without bounds meets nothing, and the visitor receives row ordinals.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the compact bounds and source ordinal vectors are appended together and the sweep emits compact IDs"
+)]
 pub(in crate::geometry) fn for_each_indexed_overlapping_bounds_pair<B>(
     bounds: &[Option<Bounds>],
     mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
@@ -103,6 +107,10 @@ impl MonotoneRun {
     const fn ascending(&self, swapped: bool) -> bool {
         (if swapped { self.sign_y } else { self.sign_x }) >= 0
     }
+
+    const fn len(&self) -> u32 {
+        self.end.wrapping_sub(self.start)
+    }
 }
 
 /// Visit every unordered pair of axis-aligned bounds whose envelopes
@@ -120,14 +128,20 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair<B>(
         return Ok(ControlFlow::Continue(()));
     }
     if count < SWEEP_MIN_ITEMS {
-        for left in 0..count {
-            for right in (left + 1)..count {
-                if bounds[left].intersects(bounds[right])
-                    && let ControlFlow::Break(value) = visit(left, right)
+        let mut remaining = bounds;
+        let mut left_index = 0_usize;
+        while let Some((left, right_bounds)) = remaining.split_first() {
+            let mut right_index = left_index.wrapping_add(1);
+            for right in right_bounds {
+                if left.intersects(*right)
+                    && let ControlFlow::Break(value) = visit(left_index, right_index)
                 {
                     return Ok(ControlFlow::Break(value));
                 }
+                right_index = right_index.wrapping_add(1);
             }
+            left_index = left_index.wrapping_add(1);
+            remaining = right_bounds;
         }
         return Ok(ControlFlow::Continue(()));
     }
@@ -139,6 +153,9 @@ fn try_overlapping_bounds_sweep<B>(
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> Result<ControlFlow<B>> {
     let count = bounds.len();
+    if let Some(last) = count.checked_sub(1) {
+        u32_ordinal(last)?;
+    }
     let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
     entries.reserve(count);
     let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
@@ -154,7 +171,7 @@ fn try_overlapping_bounds_sweep<B>(
             sweep_max: x_hi,
             cross_min: y_lo,
             cross_max: y_hi,
-            ordinal: u32_ordinal(ordinal)?,
+            ordinal: ordinal as u32,
             side: 0,
         });
     }
@@ -172,7 +189,13 @@ fn try_overlapping_bounds_sweep<B>(
             .map(|e| e.cross_max)
             .fold(f64::NEG_INFINITY, f64::max);
         let band_height = ((cross_hi - cross_lo) / bands as f64).max(f64::EPSILON);
-        try_banded_windows(&entries, bands, cross_lo, band_height, visit)
+        Ok(banded_windows(
+            &entries,
+            bands,
+            cross_lo,
+            band_height,
+            visit,
+        ))
     } else {
         Ok(plain_windows(&entries, visit))
     }
@@ -242,12 +265,18 @@ pub(in crate::geometry) fn candidate_pairs_over_staged_runs<B>(
 ) -> Result<ControlFlow<B>> {
     let count = pool.len();
     if count < SWEEP_MIN_ITEMS {
-        for left in 0..count {
-            for right in (left + 1)..count {
+        let mut remaining = pool;
+        let mut left = 0_usize;
+        while let Some((_segment, right_segments)) = remaining.split_first() {
+            let mut right = left.wrapping_add(1);
+            for _ in right_segments {
                 if let ControlFlow::Break(value) = visit(left, right) {
                     return Ok(ControlFlow::Break(value));
                 }
+                right = right.wrapping_add(1);
             }
+            left = left.wrapping_add(1);
+            remaining = right_segments;
         }
         return Ok(ControlFlow::Continue(()));
     }
@@ -260,6 +289,10 @@ pub(in crate::geometry) const fn single_chain(_: usize) -> u32 {
     0
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "run windows and entry ordinals are generated from these exact u32-admitted slices"
+)]
 fn try_candidate_pairs_over_runs<B>(
     pool: &[Segment],
     runs: &[MonotoneRun],
@@ -309,7 +342,13 @@ fn try_candidate_pairs_over_runs<B>(
         run_pair_join(pool, &runs[left], &runs[right], swapped, visit)
     };
     if bands > 1 && band_height > 0.0 {
-        try_banded_windows(&entries, bands, cross_lo, band_height, &mut run_visit)
+        Ok(banded_windows(
+            &entries,
+            bands,
+            cross_lo,
+            band_height,
+            &mut run_visit,
+        ))
     } else {
         Ok(plain_windows(&entries, &mut run_visit))
     }
@@ -328,16 +367,21 @@ pub(in crate::geometry) fn monotone_runs(
     let len = u32_ordinal(pool.len())?;
     let mut start = 0_u32;
     let (mut sign_x, mut sign_y) = (0_i8, 0_i8);
+    let mut previous_segment = None;
     for (index, segment) in pool.iter().enumerate() {
         let index_u32 = index as u32;
         let dx = segment.end.x - segment.start.x;
         let dy = segment.end.y - segment.start.y;
         let (sx, sy) = (sign_of(dx), sign_of(dy));
         let degenerate = sx == 0 && sy == 0;
+        let previous = previous_segment;
+        previous_segment = Some((index, segment));
         let chained = index_u32 > start
             && !degenerate
-            && chain_of(index - 1) == chain_of(index)
-            && PointKey::new(pool[index - 1].end) == PointKey::new(segment.start)
+            && previous.is_some_and(|(previous_index, previous_segment)| {
+                chain_of(previous_index) == chain_of(index)
+                    && PointKey::new(previous_segment.end) == PointKey::new(segment.start)
+            })
             && (sx == 0 || sign_x == 0 || sx == sign_x)
             && (sy == 0 || sign_y == 0 || sy == sign_y);
         if chained {
@@ -404,7 +448,7 @@ fn run_pair_join<B>(
     // pieces interleave their sources, so chains rarely form there) —
     // and for them the entry sweep has ALREADY proven exact envelope
     // overlap on both axes, so the pair goes straight to the visitor.
-    if a.end - a.start == 1 && b.end - b.start == 1 {
+    if a.len() == 1 && b.len() == 1 {
         let (low, high) = if a.start < b.start {
             (a.start, b.start)
         } else {
@@ -437,28 +481,32 @@ struct RunChain<'a> {
 
 impl RunChain<'_> {
     const fn len(&self) -> u32 {
-        self.run.end - self.run.start
+        self.run.len()
     }
 
     /// Pool ordinal of the segment at ascending position `position`.
     const fn ordinal(&self, position: u32) -> usize {
         if self.run.ascending(self.swapped) {
-            (self.run.start + position) as usize
+            self.run.start.wrapping_add(position) as usize
         } else {
-            (self.run.end - 1 - position) as usize
+            self.run.end.wrapping_sub(1).wrapping_sub(position) as usize
         }
     }
 
     /// Chain vertex at ascending position `position` (`0..=len`).
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the run and bisected vertex position are bounded by this exact pool slice"
+    )]
     const fn vertex(&self, position: u32) -> XY {
         if self.run.ascending(self.swapped) {
             if position < self.len() {
-                self.pool[(self.run.start + position) as usize].start
+                self.pool[self.run.start.wrapping_add(position) as usize].start
             } else {
-                self.pool[self.run.end as usize - 1].end
+                self.pool[self.run.end.wrapping_sub(1) as usize].end
             }
         } else if position < self.len() {
-            self.pool[(self.run.end - 1 - position) as usize].end
+            self.pool[self.run.end.wrapping_sub(1).wrapping_sub(position) as usize].end
         } else {
             self.pool[self.run.start as usize].start
         }
@@ -497,7 +545,7 @@ fn bisect_runs<B>(
     if as_hi < bs_lo || bs_hi < as_lo || ac_hi < bc_lo || bc_hi < ac_lo {
         return ControlFlow::Continue(());
     }
-    let (a_len, b_len) = (a_hi - a_lo, b_hi - b_lo);
+    let (a_len, b_len) = (a_hi.wrapping_sub(a_lo), b_hi.wrapping_sub(b_lo));
     if a_len == 1 && b_len == 1 {
         let (x, y) = (a.ordinal(a_lo), b.ordinal(b_lo));
         // One pool: input-ordinal order. Two pools: `a` then `b`, whatever
@@ -510,11 +558,11 @@ fn bisect_runs<B>(
         return visit(low, high);
     }
     if a_len >= b_len {
-        let mid = a_lo + a_len / 2;
+        let mid = a_lo.wrapping_add(a_len / 2);
         bisect_runs(a, a_lo, mid, b, b_lo, b_hi, visit)?;
         bisect_runs(a, mid, a_hi, b, b_lo, b_hi, visit)
     } else {
-        let mid = b_lo + b_len / 2;
+        let mid = b_lo.wrapping_add(b_len / 2);
         bisect_runs(a, a_lo, a_hi, b, b_lo, mid, visit)?;
         bisect_runs(a, a_lo, a_hi, b, mid, b_hi, visit)
     }
@@ -525,8 +573,9 @@ fn plain_windows<B>(
     entries: &[SweepEntry],
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
-    for (position, left) in entries.iter().enumerate() {
-        for right in &entries[(position + 1)..] {
+    let mut remaining = entries;
+    while let Some((left, right_entries)) = remaining.split_first() {
+        for right in right_entries {
             if right.sweep_min > left.sweep_max {
                 break;
             }
@@ -537,6 +586,7 @@ fn plain_windows<B>(
                 visit_ordered(left, right, visit)?;
             }
         }
+        remaining = right_entries;
     }
     ControlFlow::Continue(())
 }
@@ -544,29 +594,32 @@ fn plain_windows<B>(
 /// The banded forward-window scan (see [`for_each_candidate_pair`]): CSR
 /// band membership over the cross axis, a window per band, each pair
 /// visited only in the first band both envelopes share.
-fn try_banded_windows<B>(
+#[expect(
+    clippy::indexing_slicing,
+    reason = "at most 64 bands of u32-admitted entries keep every usize CSR offset representable on the supported 64-bit target"
+)]
+fn banded_windows<B>(
     entries: &[SweepEntry],
     bands: usize,
     cross_lo: f64,
     band_height: f64,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
-) -> Result<ControlFlow<B>> {
-    let band_of =
-        |cross: f64| -> usize { (((cross - cross_lo) / band_height) as usize).min(bands - 1) };
+) -> ControlFlow<B> {
+    let band_of = |cross: f64| -> usize {
+        (((cross - cross_lo) / band_height) as usize).min(bands.wrapping_sub(1))
+    };
     // Entries are already in sweep order, so every band row is too.
-    let start_len = bands.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    let start_len = bands.wrapping_add(1);
     let mut starts = vec![0_usize; start_len];
     for entry in entries {
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
-            starts[band + 1] = starts[band + 1]
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let next = band.wrapping_add(1);
+            starts[next] = starts[next].wrapping_add(1);
         }
     }
     for band in 0..bands {
-        starts[band + 1] = starts[band + 1]
-            .checked_add(starts[band])
-            .ok_or(ResourceError::SizeOverflow)?;
+        let next = band.wrapping_add(1);
+        starts[next] = starts[next].wrapping_add(starts[band]);
     }
     let mut cursor = Vec::with_capacity(start_len);
     cursor.extend_from_slice(&starts);
@@ -574,16 +627,16 @@ fn try_banded_windows<B>(
     for (position, entry) in entries.iter().enumerate() {
         for band in band_of(entry.cross_min)..=band_of(entry.cross_max) {
             slots[cursor[band]] = position;
-            cursor[band] = cursor[band]
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            cursor[band] = cursor[band].wrapping_add(1);
         }
     }
     for band in 0..bands {
-        let row = &slots[starts[band]..starts[band + 1]];
-        for (offset, &left_slot) in row.iter().enumerate() {
+        let next = band.wrapping_add(1);
+        let row = &slots[starts[band]..starts[next]];
+        let mut remaining = row;
+        while let Some((&left_slot, right_slots)) = remaining.split_first() {
             let left = &entries[left_slot];
-            for &right_slot in &row[(offset + 1)..] {
+            for &right_slot in right_slots {
                 let right = &entries[right_slot];
                 if right.sweep_min > left.sweep_max {
                     break;
@@ -594,12 +647,13 @@ fn try_banded_windows<B>(
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
                     && let ControlFlow::Break(value) = visit_ordered(left, right, visit)
                 {
-                    return Ok(ControlFlow::Break(value));
+                    return ControlFlow::Break(value);
                 }
             }
+            remaining = right_slots;
         }
     }
-    Ok(ControlFlow::Continue(()))
+    ControlFlow::Continue(())
 }
 
 /// Forward one candidate pair in input-ordinal order (`low < high`).
