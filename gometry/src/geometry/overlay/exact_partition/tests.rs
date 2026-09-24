@@ -1054,6 +1054,28 @@ fn metric_support_boundary_incidence_excludes_internal_and_residual_items() {
             .all(|(_, &selected)| selected)
     );
 
+    let tangent_hole =
+        metric_support_with_boundary_for("POLYGON ((0 0,6 0,6 6,0 6,0 0),(0 3,2 2,2 4,0 3))");
+    let tangent_hole_boundary = tangent_hole
+        .boundary_spans
+        .as_ref()
+        .expect("boundary selection");
+    assert_eq!(tangent_hole_boundary.len(), tangent_hole.spans.len());
+    assert!(tangent_hole_boundary.iter().all(|&selected| selected));
+    for edge in [
+        ((0.0, 3.0), (2.0, 2.0)),
+        ((2.0, 2.0), (2.0, 4.0)),
+        ((2.0, 4.0), (0.0, 3.0)),
+    ] {
+        assert!(
+            tangent_hole
+                .spans
+                .iter()
+                .zip(tangent_hole_boundary)
+                .any(|(span, &selected)| selected && span_between(span, edge.0, edge.1))
+        );
+    }
+
     let residual = metric_support_with_boundary_for(
         "GEOMETRYCOLLECTION(\
          POLYGON ((0 0,4 0,4 4,0 4,0 0)),\
@@ -1132,6 +1154,20 @@ fn metric_support_boundary_incidence_excludes_internal_and_residual_items() {
             .iter()
             .all(|&selected| selected)
     );
+
+    let line_support = metric_support_with_boundary_for(
+        "GEOMETRYCOLLECTION(LINESTRING (0 0,1 0,2 0), POINT (8 1))",
+    );
+    assert!(line_support.faces.is_empty());
+    assert!(
+        line_support
+            .boundary_spans
+            .as_ref()
+            .expect("boundary selection")
+            .iter()
+            .all(|&selected| selected)
+    );
+    assert_eq!(line_support.boundary_points, Some(vec![true]));
 }
 
 #[test]
@@ -1168,17 +1204,15 @@ fn metric_support_boundary_incidence_scales_without_pairwise_matching() {
 }
 
 #[test]
-fn ordinary_metric_support_does_not_build_a_boundary_plan() {
+fn metric_support_returns_boundary_flags_only_when_requested() {
     let wkt = "POLYGON ((0 0,4 0,4 4,0 4,0 0))";
-    reset_boundary_plan_calls();
     let ordinary = metric_support_for(wkt);
     assert!(ordinary.boundary_spans.is_none());
-    assert_eq!(boundary_plan_calls(), 0);
+    assert!(ordinary.boundary_points.is_none());
 
-    reset_boundary_plan_calls();
     let boundary = metric_support_with_boundary_for(wkt);
-    assert!(boundary.boundary_spans.is_some());
-    assert_eq!(boundary_plan_calls(), 1);
+    assert_eq!(boundary.boundary_spans, Some(vec![true; 4]));
+    assert_eq!(boundary.boundary_points, Some(Vec::new()));
 }
 
 #[test]
