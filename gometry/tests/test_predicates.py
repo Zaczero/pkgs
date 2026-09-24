@@ -615,6 +615,53 @@ def test_polygon_hole_excludes_points() -> None:
     assert not gm.contains_xy(polygon, 2, 2)
 
 
+def test_128_ray_multipolygon_fan_needs_every_sector_to_contain_its_center() -> None:
+    ray_count = 128
+    vertices = [
+        (
+            math.cos(2.0 * math.pi * index / ray_count),
+            math.sin(2.0 * math.pi * index / ray_count),
+        )
+        for index in range(ray_count)
+    ]
+    center = (0.0, 0.0)
+    wedges = [
+        gm.Polygon(
+            [center, vertices[index], vertices[(index + 1) % ray_count], center]
+        )
+        for index in range(ray_count)
+    ]
+    fan = gm.MultiPolygon(wedges)
+    fan_with_one_sector_missing = gm.MultiPolygon(wedges[:-1])
+    probe = gm.Point(0.0, 0.0)
+
+    assert gm.contains(fan, probe)
+    assert gm.intersects(fan, probe)
+    assert not gm.contains(fan_with_one_sector_missing, probe)
+    assert gm.intersects(fan_with_one_sector_missing, probe)
+
+
+def test_long_noncontact_line_does_not_contain_or_intersect_its_nearby_point() -> None:
+    line = gm.LineString(
+        [(float(index), float(index % 2)) for index in range(4097)]
+    )
+    query = gm.Point(2048.25, 0.4)
+
+    assert not gm.contains(line, query)
+    assert not gm.intersects(line, query)
+
+
+def test_collapsed_polygon_shell_contains_line_interior_but_not_its_endpoint() -> None:
+    collapsed = gm.from_wkt('POLYGON ((0 0,2 0,1 0,0 0))')
+    interior = gm.Point(1.0, 0.0)
+    endpoint = gm.Point(0.0, 0.0)
+
+    assert gm.contains(collapsed, interior)
+    assert gm.intersects(collapsed, interior)
+    assert not gm.contains(collapsed, endpoint)
+    assert gm.intersects(collapsed, endpoint)
+
+
 def test_intersects_detects_polygon_hole_boundaries() -> None:
     polygon = gm.Polygon(
         [(0, 0), (4, 0), (4, 4), (0, 4)], holes=[[(1, 1), (3, 1), (3, 3), (1, 3)]]

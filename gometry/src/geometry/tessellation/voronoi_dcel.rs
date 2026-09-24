@@ -253,8 +253,15 @@ struct BoxIndex {
     count: usize,
 }
 
+fn admit_box_ordinals(count: usize) -> crate::error::Result<()> {
+    u32::try_from(count.saturating_sub(1))
+        .map(|_| ())
+        .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
+}
+
 impl BoxIndex {
     fn build(boxes: &[Option<Bounds>]) -> Result<Self> {
+        admit_box_ordinals(boxes.len())?;
         let mut bounded = Vec::new();
         let mut unbounded = Vec::new();
         bounded.reserve(boxes.len());

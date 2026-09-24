@@ -18,7 +18,7 @@ mod sweep_characterization {
 
     fn structured_pool(n: usize) -> Vec<Segment> {
         let groups = n.saturating_sub(4).div_ceil(8);
-        let xmax = (16 * groups + 12) as f64;
+        let xmax = (groups.wrapping_mul(16).wrapping_add(12)) as f64;
         let mut pool = vec![
             Segment {
                 start: XY::new(0.0, 6.0),
@@ -38,7 +38,7 @@ mod sweep_characterization {
             },
         ];
         for group in 0..groups {
-            let x = (16 * group) as f64;
+            let x = group.wrapping_mul(16) as f64;
             pool.extend([
                 Segment {
                     start: XY::new(x, 0.0),
@@ -192,24 +192,28 @@ mod indexed_bounds_characterization {
 
     fn brute_pairs(rows: &[Option<Bounds>]) -> Vec<(usize, usize)> {
         let mut pairs = Vec::new();
-        for left in 0..rows.len() {
-            for right in (left + 1)..rows.len() {
-                if rows[left]
-                    .is_some_and(|left| rows[right].is_some_and(|right| left.intersects(right)))
-                {
-                    pairs.push((left, right));
+        let mut remaining = rows;
+        let mut left_index = 0_usize;
+        while let Some((left, right_rows)) = remaining.split_first() {
+            let mut right_index = left_index.wrapping_add(1);
+            for right in right_rows {
+                if left.is_some_and(|left| right.is_some_and(|right| left.intersects(right))) {
+                    pairs.push((left_index, right_index));
                 }
+                right_index = right_index.wrapping_add(1);
             }
+            left_index = left_index.wrapping_add(1);
+            remaining = right_rows;
         }
         pairs
     }
 
     fn indexed_pairs(rows: &[Option<Bounds>]) -> (Vec<(usize, usize)>, usize) {
         let mut pairs = Vec::new();
-        let mut work = 0;
+        let mut work = 0_usize;
         let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
             for_each_indexed_overlapping_bounds_pair(rows, |left, right| {
-                work += 1;
+                work = work.wrapping_add(1);
                 pairs.push((left, right));
                 ControlFlow::Continue(())
             })
@@ -234,6 +238,29 @@ mod indexed_bounds_characterization {
         expected.sort_unstable();
         assert_eq!(indexed, expected);
         assert_eq!(indexed.array_windows::<2>().find(|[a, b]| a == b), None);
+    }
+
+    #[test]
+    fn banded_bounds_visit_each_multiband_pair_once_in_input_order() {
+        let mut rows = Vec::with_capacity(4096);
+        rows.extend([
+            bounds(0.0, -1.0, 2.0, 1.0),
+            bounds(1.0, -1.0, 3.0, 1.0),
+            bounds(2.5, -1.0, 3.5, 1.0),
+        ]);
+        rows.extend((0..4093).map(|index| {
+            let min_x = 4.5 + f64::from(index) * 2.0;
+            bounds(min_x, -1.0, min_x + 0.5, 1.0)
+        }));
+
+        let mut pairs = Vec::new();
+        let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
+            for_each_indexed_overlapping_bounds_pair(&rows, |left, right| {
+                pairs.push((left, right));
+                ControlFlow::Continue(())
+            })
+            .unwrap();
+        assert_eq!(pairs, [(0, 1), (1, 2)]);
     }
 
     #[test]
@@ -322,7 +349,7 @@ mod run_collapse_dispatch {
     fn arc(x0: f64, y0: f64, n: usize) -> Vec<(f64, f64)> {
         (0..n)
             .map(|i| {
-                let t = i as f64 / (n - 1) as f64;
+                let t = i as f64 / n.wrapping_sub(1) as f64;
                 (x0 + 10.0 * t, y0 + 3.0 * (t * std::f64::consts::PI).sin())
             })
             .collect()
@@ -344,10 +371,10 @@ mod run_collapse_dispatch {
     }
 
     fn visits(pool: &[Segment]) -> usize {
-        let mut count = 0;
+        let mut count = 0_usize;
         let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
             for_each_candidate_pair(pool, single_chain, |_left, _right| {
-                count += 1;
+                count = count.wrapping_add(1);
                 ControlFlow::Continue(())
             })
             .expect("sweep indexes fit their structural widths");
@@ -454,12 +481,12 @@ mod sweep_entry_scratch {
         assert!(expected.len() > 1);
 
         let mut nested = Vec::new();
-        let mut inner_visits = 0;
+        let mut inner_visits = 0_usize;
         let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
             for_each_overlapping_bounds_pair(&bounds, |left, right| {
                 let ControlFlow::Continue(()): ControlFlow<std::convert::Infallible> =
                     for_each_candidate_pair(&segments, single_chain, |_, _| {
-                        inner_visits += 1;
+                        inner_visits = inner_visits.wrapping_add(1);
                         ControlFlow::Continue(())
                     })
                     .expect("inner candidate sweep");
@@ -480,8 +507,10 @@ mod sweep_entry_scratch {
 
         let mut first = None;
         let flow = for_each_overlapping_bounds_pair(&bounds, |left, right| {
-            let _ = for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Break(()))
-                .expect("inner candidate sweep");
+            let inner =
+                for_each_candidate_pair(&segments, single_chain, |_, _| ControlFlow::Break(()))
+                    .expect("inner candidate sweep");
+            assert_eq!(inner, ControlFlow::Break(()));
             first = Some((left, right));
             ControlFlow::Break(())
         })

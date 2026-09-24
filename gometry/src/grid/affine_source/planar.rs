@@ -134,7 +134,7 @@ pub(super) fn classify_lifted_ring_bucket(
                 },
             };
         if let Some(edges) = y_index.dense_band_edges(query_y) {
-            for &edge in edges {
+            for edge in edges {
                 if visit(edge).is_break() {
                     break;
                 }

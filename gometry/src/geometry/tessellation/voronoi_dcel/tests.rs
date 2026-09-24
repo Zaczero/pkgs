@@ -74,6 +74,31 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
 }
 
 use super::*;
+use crate::geometry::segment_index::checked_index_count;
+
+#[test]
+fn box_index_keeps_ordinal_and_bounded_count_limits_distinct() {
+    let full_range = (u32::MAX as usize).wrapping_add(1);
+    assert_eq!(
+        admit_box_ordinals(full_range).map_err(|error| error.to_string()),
+        Ok(())
+    );
+
+    assert_eq!(
+        checked_index_count(u32::MAX as usize).map_err(|error| error.to_string()),
+        Ok(u32::MAX)
+    );
+    assert_eq!(
+        checked_index_count(full_range).map_err(|error| error.to_string()),
+        Err("resource size arithmetic overflowed".to_owned())
+    );
+
+    let too_many = full_range.wrapping_add(1);
+    assert_eq!(
+        admit_box_ordinals(too_many).map_err(|error| error.to_string()),
+        Err("resource size arithmetic overflowed".to_owned())
+    );
+}
 
 #[test]
 fn rounded_fan_order_matches_exact_stored_points() {

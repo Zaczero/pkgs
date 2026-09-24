@@ -35,6 +35,12 @@ def _xy(point: gm.Geometry) -> tuple[float, float]:
     return (float(point.coords.x[0]), float(point.coords.y[0]))
 
 
+def _alternating_line(vertex_count: int) -> gm.Geometry:
+    return gm.LineString(
+        [(float(index), float(index % 2)) for index in range(vertex_count)]
+    )
+
+
 _ANTIMERIDIAN_LONGITUDES = frozenset({180.0, -180.0})
 
 
@@ -159,6 +165,16 @@ class TestObliqueFoot:
         assert gm.distance(s1, s2) == pytest.approx(4.0 / math.sqrt(2))
 
 
+def test_long_noncontact_line_nearest_points_use_exact_edge_projection() -> None:
+    line = _alternating_line(4097)
+    query = gm.Point(2048.25, 0.4)
+    left, right = gm.nearest_points(line, query, unit='planar')
+    # On edge (2048, 0)–(2049, 1), the exact parameter is 13/40.
+    assert left.x == pytest.approx(2048.0 + 13.0 / 40.0, abs=1e-12)
+    assert left.y == pytest.approx(13.0 / 40.0, abs=1e-12)
+    assert _xy(right) == (2048.25, 0.4)
+
+
 class TestDegenerate:
     """Touching/intersecting/contained operands -> distance 0, a degenerate
     (zero-length) connecting line, and identical witnesses.
@@ -194,6 +210,35 @@ class TestDegenerate:
     def test_identical(self) -> None:
         poly = gm.from_wkt('POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0))')
         self._assert_zero_contact(poly, poly)
+
+    def test_128_ray_multipolygon_fan_nearest_witness_is_the_shared_center(self) -> None:
+        ray_count = 128
+        vertices = [
+            (
+                math.cos(2.0 * math.pi * index / ray_count),
+                math.sin(2.0 * math.pi * index / ray_count),
+            )
+            for index in range(ray_count)
+        ]
+        center = (0.0, 0.0)
+        wedges = [
+            gm.Polygon(
+                [center, vertices[index], vertices[(index + 1) % ray_count], center]
+            )
+            for index in range(ray_count)
+        ]
+        fan = gm.MultiPolygon(wedges)
+        probe = gm.Point(0.0, 0.0)
+
+        self._assert_zero_contact(fan, probe)
+
+    def test_collapsed_polygon_shell_nearest_points_use_line_support(self) -> None:
+        collapsed = gm.from_wkt('POLYGON ((0 0,2 0,1 0,0 0))')
+        query = gm.Point(1.0, 1.0)
+        left, right = gm.nearest_points(collapsed, query, unit='planar')
+
+        assert left.to_wkt() == 'POINT (1 0)'
+        assert right.to_wkt() == 'POINT (1 1)'
 
 
 class TestCommonDims:
