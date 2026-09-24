@@ -8,7 +8,7 @@ use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyIterator, PySequence, PyString};
 
-use crate::boundary::buffer_endian::buffer_item_count;
+use crate::boundary::buffer_endian::{buffer_item_count, get_untyped_buffer};
 use crate::error::{ResourceError, Result};
 
 /// Initial reservation bound for advisory Rust iterator and serde size hints.
@@ -324,29 +324,27 @@ enum ByteBufferCopyError {
 fn copy_exported_byte_buffer(
     value: &Bound<'_, PyAny>,
 ) -> std::result::Result<Vec<u8>, ByteBufferCopyError> {
-    // Check the slot without invoking it so genuine exporter exceptions from
-    // the single acquisition below retain their original identity.
-    // SAFETY: `value` is a live Python object attached to this call.
-    let exports_buffer = unsafe { pyo3::ffi::PyObject_CheckBuffer(value.as_ptr()) } != 0;
-    if !exports_buffer {
-        return Err(ByteBufferCopyError::NotOneByte);
-    }
-    let buffer =
-        pyo3::buffer::PyUntypedBuffer::get(value).map_err(ByteBufferCopyError::PythonError)?;
+    let buffer = get_untyped_buffer(value)
+        .map_err(ByteBufferCopyError::PythonError)?
+        .ok_or(ByteBufferCopyError::NotOneByte)?;
     if let Ok(buffer) = buffer.as_typed::<u8>() {
         let item_count = buffer_item_count(buffer).map_err(ByteBufferCopyError::PythonError)?;
         let mut owned = vec![0; item_count];
-        buffer
-            .copy_to_slice(value.py(), &mut owned)
-            .map_err(ByteBufferCopyError::PythonError)?;
+        if item_count != 0 {
+            buffer
+                .copy_to_slice(value.py(), &mut owned)
+                .map_err(ByteBufferCopyError::PythonError)?;
+        }
         return Ok(owned);
     }
     if let Ok(buffer) = buffer.as_typed::<i8>() {
         let item_count = buffer_item_count(buffer).map_err(ByteBufferCopyError::PythonError)?;
         let mut signed = vec![0; item_count];
-        buffer
-            .copy_to_slice(value.py(), &mut signed)
-            .map_err(ByteBufferCopyError::PythonError)?;
+        if item_count != 0 {
+            buffer
+                .copy_to_slice(value.py(), &mut signed)
+                .map_err(ByteBufferCopyError::PythonError)?;
+        }
         let (ptr, len, capacity) = signed.into_raw_parts();
         // SAFETY: i8 and u8 have the same layout and every byte is initialized.
         return Ok(unsafe { Vec::from_raw_parts(ptr.cast(), len, capacity) });
@@ -378,11 +376,9 @@ pub(crate) fn is_one_byte_buffer(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     if value.extract::<&[u8]>().is_ok() {
         return Ok(true);
     }
-    // SAFETY: `value` is a live Python object attached to this call.
-    if unsafe { pyo3::ffi::PyObject_CheckBuffer(value.as_ptr()) } == 0 {
+    let Some(buffer) = get_untyped_buffer(value)? else {
         return Ok(false);
-    }
-    let buffer = pyo3::buffer::PyUntypedBuffer::get(value)?;
+    };
     Ok(buffer.as_typed::<u8>().is_ok() || buffer.as_typed::<i8>().is_ok())
 }
 

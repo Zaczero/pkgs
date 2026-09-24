@@ -69,10 +69,12 @@ def test_exact_pickle_rows_reject_unrepresentable_layout_before_next() -> None:
 
 
 def test_pickle_row_buffer_preserves_exporter_exception() -> None:
-    row = _lib._RaisingBuffer()
+    error = RuntimeError('pickle row buffer exporter sentinel')
+    row = _lib._RaisingBuffer(error)
 
-    with pytest.raises(RuntimeError, match='buffer exporter sentinel'):
+    with pytest.raises(RuntimeError) as excinfo:
         _lib._unpickle_geometry_array_v1([row], None, None, None)
+    assert excinfo.value is error
 
 
 def test_cell_array_pickle_mask_is_zero_present_one_missing():

@@ -11,7 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyInt};
 
 use crate::boundary::buffer_endian;
-use crate::boundary::buffer_endian::{buffer_item_count, buffer_to_column_f64, buffer_to_vec_f64};
+use crate::boundary::buffer_endian::{
+    buffer_item_count, buffer_to_column_f64, buffer_to_vec_f64, try_typed_buffer,
+};
 use crate::geometry::column_all_finite;
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
@@ -69,7 +71,7 @@ pub(crate) fn reject_multidimensional_coordinate_array(
     name: &str,
 ) -> PyResult<()> {
     reject_masked_array(value)?;
-    let dimensions = if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    let dimensions = if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         buffer_item_count(&buffer)?;
         buffer.dimensions()
     } else if let Ok(array) = value.cast::<PyUntypedArray>() {
@@ -424,7 +426,7 @@ pub(crate) fn coordinate_column_values(
     name: &str,
 ) -> PyResult<Vec<f64>> {
     reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         let item_count = buffer_item_count(&buffer)?;
         reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
         return coordinate_column_values_from_buffer(py, &buffer, item_count);
@@ -591,7 +593,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<CoordSeq>> {
     reject_masked_array(value)?;
-    let Ok(buffer) = PyBuffer::<f64>::get(value) else {
+    let Some(buffer) = try_typed_buffer::<f64>(value)? else {
         return Ok(None);
     };
     let item_count = buffer_item_count(&buffer)?;
@@ -742,7 +744,7 @@ pub(crate) fn coordinate_column_values_exact(
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
     reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         let got = buffer_item_count(&buffer)?;
         reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
         if got != expected {
@@ -801,7 +803,7 @@ pub(crate) fn float_values(
     kind: FloatInput,
 ) -> PyResult<Vec<f64>> {
     reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         // Normalize non-native endian (e.g. NumPy `>f8` on little-endian) —
         // raw `to_vec` reinterprets bytes and silently corrupts.
         let item_count = buffer_item_count(&buffer)?;
@@ -831,7 +833,7 @@ pub(crate) fn float_values_at_most(
     on_excess: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
     reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         let got = buffer_item_count(&buffer)?;
         if matches!(kind, FloatInput::Coordinate) {
             reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
@@ -871,7 +873,7 @@ pub(crate) fn float_values_exact(
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
     reject_masked_array(value)?;
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         let got = buffer_item_count(&buffer)?;
         if matches!(kind, FloatInput::Coordinate) {
             reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
@@ -902,7 +904,7 @@ pub(crate) fn coordinate_sequence_len_hint(
     // length. Numeric admission below owns that conversion and must call it
     // once. Check f64 buffers first because their item count is authoritative
     // after the rank check below.
-    if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+    if let Some(buffer) = try_typed_buffer::<f64>(value)? {
         let item_count = buffer_item_count(&buffer)?;
         let dimensions = buffer.dimensions();
         reject_coordinate_buffer_rank(dimensions, name)?;

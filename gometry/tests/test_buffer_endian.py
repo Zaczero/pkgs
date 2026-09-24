@@ -124,10 +124,17 @@ def test_d04_native_endian_u64_unchanged() -> None:
         ('shape_mismatch', 'd', 'line_matrix', 'BufferError'),
         ('shape_product_overflow', 'd', 'line_matrix', 'BufferError'),
         ('negative_len', 'd', 'points_fast_path', 'BufferError'),
+        ('null_buffer', 'd', 'line_column', 'BufferError'),
+        ('null_strided', 'd', 'line_strided', 'BufferError'),
+        ('null_matrix', 'd', 'line_matrix', 'BufferError'),
+        ('null_buffer', 'd', 'crs_transform', 'BufferError'),
         ('negative_len', 'B', 'wkb', 'BufferError'),
         ('negative_len', 'b', 'wkb', 'BufferError'),
+        ('null_buffer', 'B', 'wkb', 'BufferError'),
         ('negative_len', 'Q', 'cell_ids', 'BufferError'),
         ('negative_len', 'Q', 'h3_ids', 'BufferError'),
+        ('null_buffer', 'Q', 'cell_ids', 'BufferError'),
+        ('null_buffer', 'Q', 'h3_ids', 'BufferError'),
     ],
     ids=[
         'negative-byte-length',
@@ -137,10 +144,17 @@ def test_d04_native_endian_u64_unchanged() -> None:
         'shape-count-disagrees-with-length',
         'shape-product-overflow',
         'point-buffer-fast-path',
+        'null-data-f64-column',
+        'null-data-strided-f64-column',
+        'null-data-f64-matrix',
+        'null-data-crs-coordinate',
         'one-byte-buffer-copy',
         'signed-one-byte-buffer-copy',
+        'null-data-one-byte-copy',
         'cell-u64-buffer-copy',
         'h3-u64-buffer-copy',
+        'null-data-cell-u64-copy',
+        'null-data-h3-u64-copy',
     ],
 )
 def test_malformed_buffer_metadata_is_rejected_before_consumers_read(
@@ -162,10 +176,14 @@ def test_malformed_buffer_metadata_is_rejected_before_consumers_read(
         try:
             if consumer == 'line_column':
                 gm.LineString(x=bad, y=[1.0])
+            elif consumer == 'line_strided':
+                gm.LineString(x=bad, y=[1.0, 2.0, 3.0])
             elif consumer == 'line_matrix':
                 gm.LineString(bad)
             elif consumer == 'points_fast_path':
                 gm.points(bad, array.array('d', [1.0]))
+            elif consumer == 'crs_transform':
+                gm.crs_transform(4326, 4326, bad, [1.0])
             elif consumer == 'wkb':
                 gm.from_wkb(bad)
             elif consumer == 'cell_ids':
@@ -231,9 +249,96 @@ def test_strided_byte_offset_overflow_is_rejected_before_pointer_read(
     assert result.stdout.startswith('REJECTED OverflowError'), result.stdout
 
 
+def test_empty_null_buffers_keep_empty_results(tmp_path: Path) -> None:
+    script = textwrap.dedent(
+        """
+        import numpy as np
+        import gometry as gm
+
+        null_f64 = gm._lib._malformed_buffer('null_empty', 'd')
+        null_u64 = gm._lib._malformed_buffer('null_empty', 'Q')
+        null_bytes = gm._lib._malformed_buffer('null_empty', 'B')
+
+        assert gm.LineString(x=null_f64, y=[]).to_wkt() == 'LINESTRING EMPTY'
+        assert gm.LineString(x=np.array([], dtype=np.float64), y=[]).to_wkt() == (
+            'LINESTRING EMPTY'
+        )
+
+        assert len(gm.CellArray(null_u64, type=gm.H3Cell)) == 0
+        assert len(
+            gm.CellArray(np.array([], dtype=np.uint64), type=gm.H3Cell)
+        ) == 0
+
+        def from_empty_wkb(data):
+            try:
+                gm.from_wkb(data)
+            except Exception as error:
+                return type(error).__name__, str(error)
+            raise AssertionError('empty WKB unexpectedly parsed')
+
+        expected = ('ParseError', 'invalid WKB: unexpected end of WKB')
+        assert from_empty_wkb(b'') == expected
+        assert from_empty_wkb(null_bytes) == expected
+        print('empty buffers preserved')
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f'rc={result.returncode}\nstdout={result.stdout!r}\nstderr={result.stderr!r}'
+    )
+    assert result.stdout.strip() == 'empty buffers preserved'
+
+
+@pytest.mark.parametrize(
+    'consumer',
+    [
+        'float_column',
+        'coordinate_matrix',
+        'points_constructor',
+        'cell_array_ids',
+        'cell_array_inferred_ids',
+        'h3_array_ids',
+    ],
+    ids=[
+        'float-column',
+        'nd-matrix',
+        'points-constructor',
+        'cell-array-u64',
+        'cell-array-inferred-u64',
+        'h3-array-u64',
+    ],
+)
+def test_typed_buffer_provider_exception_instance_is_preserved(
+    consumer: str,
+) -> None:
+    error = RuntimeError(f'buffer exporter sentinel for {consumer}')
+    bad = gm._lib._RaisingBuffer(error)
+    operation = {
+        'float_column': lambda: gm.LineString(x=bad, y=[0.0, 1.0]),
+        'coordinate_matrix': lambda: gm.LineString(bad),
+        'points_constructor': lambda: gm.points(bad, [0.0, 1.0]),
+        'cell_array_ids': lambda: gm.CellArray(bad, type=gm.H3Cell),
+        'cell_array_inferred_ids': lambda: gm.CellArray(bad),
+        'h3_array_ids': lambda: gm.H3VertexArray(bad),
+    }[consumer]
+    with pytest.raises(RuntimeError) as excinfo:
+        operation()
+    assert excinfo.value is error
+
+
 def test_byte_buffer_provider_error_is_not_misclassified_as_an_iterable() -> None:
-    with pytest.raises(RuntimeError, match='buffer exporter sentinel'):
-        gm.from_wkb(gm._lib._RaisingBuffer())
+    error = RuntimeError('byte buffer exporter sentinel')
+    with pytest.raises(RuntimeError) as excinfo:
+        gm.from_wkb(gm._lib._RaisingBuffer(error))
+    assert excinfo.value is error
 
 
 def test_d01_erroring_arrow_stream_propagates() -> None:

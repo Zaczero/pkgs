@@ -28,7 +28,7 @@
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
-use pyo3::exceptions::{PyBufferError, PyRuntimeError, PyValueError};
+use pyo3::exceptions::{PyBaseException, PyBufferError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 
@@ -152,6 +152,7 @@ pub(crate) struct MalformedBuffer {
     ndim: c_int,
     itemsize: isize,
     format: &'static std::ffi::CStr,
+    null_data: bool,
 }
 
 #[pyclass(
@@ -161,19 +162,30 @@ pub(crate) struct MalformedBuffer {
     immutable_type,
     skip_from_py_object
 )]
-pub(crate) struct RaisingBuffer;
+pub(crate) struct RaisingBuffer {
+    exception: Py<PyBaseException>,
+}
 
 #[pymethods]
 impl RaisingBuffer {
     #[new]
-    fn new() -> Self {
-        Self
+    fn new(exception: Bound<'_, PyBaseException>) -> Self {
+        Self {
+            exception: exception.unbind(),
+        }
     }
 
     /// # Safety
     /// Buffer-protocol slot; CPython guarantees a valid `view` pointer.
-    unsafe fn __getbuffer__(&self, _view: *mut ffi::Py_buffer, _flags: c_int) -> PyResult<()> {
-        Err(PyRuntimeError::new_err("buffer exporter sentinel"))
+    unsafe fn __getbuffer__(
+        &self,
+        py: Python<'_>,
+        _view: *mut ffi::Py_buffer,
+        _flags: c_int,
+    ) -> PyResult<()> {
+        Err(PyErr::from_value(
+            self.exception.bind(py).clone().into_any(),
+        ))
     }
 
     /// # Safety
@@ -202,7 +214,11 @@ impl MalformedBuffer {
                 this.len,
                 this.ndim,
                 this.itemsize,
-                this.values.as_ptr().cast::<c_void>().cast_mut(),
+                if this.null_data {
+                    ptr::null_mut()
+                } else {
+                    this.values.as_ptr().cast::<c_void>().cast_mut()
+                },
                 this.shape.as_ptr().cast_mut(),
                 this.strides.as_ptr().cast_mut(),
                 this.format.as_ptr().cast_mut(),
@@ -259,14 +275,26 @@ pub(crate) fn malformed_buffer(case: &str, format: &str) -> PyResult<MalformedBu
         _ => return Err(PyValueError::new_err("unsupported malformed-buffer format")),
     };
     let scalar_stride = itemsize;
-    let (len, ndim, shape, strides) = match case {
-        "negative_len" => (itemsize.wrapping_neg(), 1, vec![1], vec![scalar_stride]),
-        "partial_item" if itemsize == 8 => (9, 1, vec![1], vec![8]),
-        "negative_shape" if itemsize == 8 => (8, 1, vec![-1], vec![8]),
-        "negative_ndim" if itemsize == 8 => (8, -1, vec![1], vec![8]),
-        "shape_mismatch" if itemsize == 8 => (8, 2, vec![2, 2], vec![16, 8]),
-        "shape_product_overflow" if itemsize == 8 => (8, 2, vec![isize::MAX, 3], vec![24, 8]),
-        "stride_span_overflow" if itemsize == 8 => (24, 1, vec![3], vec![isize::MAX & !7]),
+    let (len, ndim, shape, strides, null_data) = match case {
+        "negative_len" => (
+            itemsize.wrapping_neg(),
+            1,
+            vec![1],
+            vec![scalar_stride],
+            false,
+        ),
+        "partial_item" if itemsize == 8 => (9, 1, vec![1], vec![8], false),
+        "negative_shape" if itemsize == 8 => (8, 1, vec![-1], vec![8], false),
+        "negative_ndim" if itemsize == 8 => (8, -1, vec![1], vec![8], false),
+        "shape_mismatch" if itemsize == 8 => (8, 2, vec![2, 2], vec![16, 8], false),
+        "shape_product_overflow" if itemsize == 8 => {
+            (8, 2, vec![isize::MAX, 3], vec![24, 8], false)
+        },
+        "stride_span_overflow" if itemsize == 8 => (24, 1, vec![3], vec![isize::MAX & !7], false),
+        "null_buffer" => (itemsize, 1, vec![1], vec![scalar_stride], true),
+        "null_empty" => (0, 1, vec![0], vec![scalar_stride], true),
+        "null_strided" if itemsize == 8 => (24, 1, vec![3], vec![16], true),
+        "null_matrix" if itemsize == 8 => (32, 2, vec![2, 2], vec![16, 8], true),
         _ => return Err(PyValueError::new_err("unsupported malformed-buffer case")),
     };
     let values = vec![
@@ -284,6 +312,7 @@ pub(crate) fn malformed_buffer(case: &str, format: &str) -> PyResult<MalformedBu
         ndim,
         itemsize,
         format,
+        null_data,
     })
 }
 

@@ -3,12 +3,11 @@
 //! Python-input -> `Vec<u64>` collectors the constructor uses.
 use h3o::CellIndex;
 use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
-use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyInt, PyString, PyType};
 
-use crate::boundary::buffer_endian::buffer_item_count;
+use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::Tile;
@@ -624,7 +623,7 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
             missing: None,
         });
     }
-    if let Ok(buffer) = PyBuffer::<u64>::get(ids) {
+    if let Some(buffer) = try_typed_buffer::<u64>(ids)? {
         if kind == GridKind::GeohashCell {
             return Err(PyTypeError::new_err(
                 "geohash cells are constructed from tokens, not integers",
@@ -640,7 +639,7 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
         }
         let mut values = vec![0; count];
         // Normalize non-native endian (e.g. NumPy `>u8`) before interpreting ids.
-        crate::buffer_copy_to_slice_u64(ids.py(), &buffer, &mut values)?;
+        crate::buffer_copy_to_slice_u64(ids.py(), &buffer, count, &mut values)?;
         for &id in &values {
             kind.validate_id(id)?;
         }
@@ -695,7 +694,7 @@ pub(super) fn collect_inferred_ids(
             "bare token text is ambiguous; use [{token:?}] for one cell or an explicit iterable for many"
         )));
     }
-    if PyBuffer::<u64>::get(values).is_ok() {
+    if try_typed_buffer::<u64>(values)?.is_some() {
         return Err(PyTypeError::new_err(
             "cell array type is required for raw id arrays and buffers",
         ));

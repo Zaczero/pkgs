@@ -8,7 +8,8 @@
 
 use std::ffi::{CStr, c_int};
 
-use pyo3::buffer::{Element, PyBuffer};
+use numpy::{PyUntypedArray, PyUntypedArrayMethods as _};
+use pyo3::buffer::{Element, PyBuffer, PyUntypedBuffer};
 use pyo3::exceptions::PyBufferError;
 use pyo3::prelude::*;
 #[cfg(Py_GIL_DISABLED)]
@@ -18,6 +19,39 @@ use pyo3::types::PyMemoryView;
 
 #[cfg(Py_GIL_DISABLED)]
 use crate::py::vectors::Float64Buffer;
+
+/// Acquire an exporter only when it advertises the buffer protocol.
+///
+/// This distinguishes an ordinary non-buffer value from an exporter whose
+/// `PyObject_GetBuffer` callback raised an exception.
+pub(crate) fn get_untyped_buffer(value: &Bound<'_, PyAny>) -> PyResult<Option<PyUntypedBuffer>> {
+    // SAFETY: `value` is a live Python object attached to this call.
+    if unsafe { pyo3::ffi::PyObject_CheckBuffer(value.as_ptr()) } == 0 {
+        return Ok(None);
+    }
+    PyUntypedBuffer::get(value).map(Some)
+}
+
+/// Try a typed view while preserving errors raised by the exporter itself.
+///
+/// A successful untyped acquisition followed by typed incompatibility keeps
+/// the caller's ordinary iterable fallback.
+pub(crate) fn try_typed_buffer<T: Element>(
+    value: &Bound<'_, PyAny>,
+) -> PyResult<Option<PyBuffer<T>>> {
+    if value.is_exact_instance_of::<PyUntypedArray>()
+        && let Ok(array) = value.cast::<PyUntypedArray>()
+        && array.ndim() == 0
+    {
+        // NumPy uses a null shape pointer for scalars; retain their existing
+        // scalar path, while subclasses still run their own buffer callback.
+        return Ok(None);
+    }
+    let Some(buffer) = get_untyped_buffer(value)? else {
+        return Ok(None);
+    };
+    Ok(buffer.into_typed::<T>().ok())
+}
 
 /// Validate exporter-supplied length and shape before using PyO3's derived
 /// count, slice, or contiguity helpers.
@@ -62,6 +96,9 @@ pub(crate) fn buffer_item_count<T: Element>(buffer: &PyBuffer<T>) -> PyResult<us
         return Err(PyBufferError::new_err(
             "buffer shape does not match its byte length",
         ));
+    }
+    if item_count != 0 && buffer.buf_ptr().is_null() {
+        return Err(PyBufferError::new_err("buffer has a null data pointer"));
     }
     Ok(item_count)
 }
@@ -155,6 +192,9 @@ pub(crate) fn buffer_to_column_f64(
     buffer: &PyBuffer<f64>,
     item_count: usize,
 ) -> PyResult<Vec<f64>> {
+    if item_count == 0 {
+        return Ok(Vec::new());
+    }
     if !exporter_supports_direct_capture(py, buffer) {
         return buffer_to_vec_f64(py, buffer, item_count);
     }
@@ -186,6 +226,9 @@ pub(crate) fn buffer_to_vec_f64(
     buffer: &PyBuffer<f64>,
     item_count: usize,
 ) -> PyResult<Vec<f64>> {
+    if item_count == 0 {
+        return Ok(Vec::new());
+    }
     let mut values = vec![0.0; item_count];
     buffer.copy_to_slice(py, &mut values)?;
     if !buffer_format_is_native_endian(buffer.format()) {
@@ -207,6 +250,9 @@ pub(crate) fn buffer_to_vec_u64(
     buffer: &PyBuffer<u64>,
     item_count: usize,
 ) -> PyResult<Vec<u64>> {
+    if item_count == 0 {
+        return Ok(Vec::new());
+    }
     let mut values = vec![0; item_count];
     buffer.copy_to_slice(py, &mut values)?;
     if !buffer_format_is_native_endian(buffer.format()) {
@@ -222,12 +268,22 @@ pub(crate) fn buffer_to_vec_u64(
 /// The exporter must remain quiescent until the copy returns. A destination
 /// slice is exclusive after the copy, but `copy_to_slice` does not synchronize
 /// the source with a native writer. Callers must admit the buffer with
-/// [`buffer_item_count`] before allocating `target`.
+/// [`buffer_item_count`] before allocating `target`, then pass that count with
+/// the correspondingly sized destination.
 pub(crate) fn buffer_copy_to_slice_u64(
     py: Python<'_>,
     buffer: &PyBuffer<u64>,
+    item_count: usize,
     target: &mut [u64],
 ) -> PyResult<()> {
+    if target.len() != item_count {
+        return Err(PyBufferError::new_err(
+            "buffer destination length does not match admitted item count",
+        ));
+    }
+    if item_count == 0 {
+        return Ok(());
+    }
     buffer.copy_to_slice(py, target)?;
     if !buffer_format_is_native_endian(buffer.format()) {
         for value in target.iter_mut() {
