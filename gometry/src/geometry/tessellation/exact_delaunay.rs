@@ -10,10 +10,10 @@
 //! every such edge is flagged from one final exact pass so the Voronoi dual can
 //! collapse the fan it belongs to.
 //!
-//! Sites are inserted in Hilbert order, so each insertion lands near the last
-//! and the walk from the previous triangle is short; the seed is the fan of the
-//! exact hull over all sites, so every later insertion is interior and the
-//! hull never changes. Output uses the halfedge layout the rest of the
+//! Sites are inserted in Hilbert order, and each point-location walk starts
+//! from the previous insertion's face. The seed fans the strict corner hull;
+//! later sites can lie on a hull edge, where insertion extends that hull. Output
+//! uses the halfedge layout the rest of the
 //! tessellation code already reads: triangle `t` owns slots `3t..3t + 3`,
 //! `halfedges[e]` is the twin slot or `EMPTY`, and `hull` is the counter-
 //! clockwise hull cycle.
@@ -31,14 +31,89 @@ use crate::geometry::{Point, XY};
 pub(crate) const EMPTY: usize = usize::MAX;
 
 pub(crate) const fn next_halfedge(edge: usize) -> usize {
-    if edge % 3 == 2 { edge - 2 } else { edge + 1 }
+    if edge.wrapping_add(1).is_multiple_of(3) {
+        edge.wrapping_sub(2)
+    } else {
+        edge.wrapping_add(1)
+    }
 }
 
 pub(crate) const fn prev_halfedge(edge: usize) -> usize {
     if edge.is_multiple_of(3) {
-        edge + 2
+        edge.wrapping_add(2)
     } else {
-        edge - 1
+        edge.wrapping_sub(1)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FaceId(usize);
+
+impl FaceId {
+    const fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub(super) const fn index(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct HalfedgeId(usize);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FaceSide {
+    First,
+    Second,
+    Third,
+}
+
+impl FaceSide {
+    pub(super) const ALL: [Self; 3] = [Self::First, Self::Second, Self::Third];
+
+    const fn offset(self) -> usize {
+        match self {
+            Self::First => 0,
+            Self::Second => 1,
+            Self::Third => 2,
+        }
+    }
+}
+
+impl HalfedgeId {
+    pub(super) const fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub(super) const fn index(self) -> usize {
+        self.0
+    }
+
+    pub(super) const fn in_face(face: FaceId, side: FaceSide) -> Self {
+        Self(face.index().wrapping_mul(3).wrapping_add(side.offset()))
+    }
+
+    pub(super) const fn face(self) -> FaceId {
+        FaceId::from_index(self.0 / 3)
+    }
+
+    const fn side(self) -> FaceSide {
+        if self.0.is_multiple_of(3) {
+            FaceSide::First
+        } else if self.0.wrapping_add(1).is_multiple_of(3) {
+            FaceSide::Third
+        } else {
+            FaceSide::Second
+        }
+    }
+
+    pub(super) const fn next(self) -> Self {
+        Self(next_halfedge(self.0))
+    }
+
+    pub(super) const fn prev(self) -> Self {
+        Self(prev_halfedge(self.0))
     }
 }
 
@@ -81,7 +156,15 @@ pub(super) fn exact_delaunay(points: &[Point]) -> Result<ExactMesh> {
             cocircular: Vec::new(),
         });
     };
-    mesh.finish(|site| points[site].xy())
+    mesh.finish(|site| site_xy(points, site))
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "site ordinals are admitted by this exact mesh from the same point slice"
+)]
+pub(super) const fn site_xy(points: &[Point], site: usize) -> XY {
+    points[site].xy()
 }
 
 impl Mesh {
@@ -91,12 +174,12 @@ impl Mesh {
         if hull.len() < 3 {
             return Ok(None);
         }
-        let xy = |site: usize| points[site].xy();
+        let xy = |site| site_xy(points, site);
         let mut mesh = Self::seed(&hull, points.len());
         mesh.try_legalize(&xy)?;
 
-        // Interior sites: not on the hull, not an exact duplicate of a site
-        // already placed, in Hilbert order over the point bounds.
+        // Remaining distinct sites exclude only strict hull corners, so a
+        // collinear hull site is inserted along with the interior sites.
         let mut placed = crate::collections::try_hash_set_with_capacity(points.len())?;
         for &site in &hull {
             placed.insert(key(xy(site)));
@@ -114,7 +197,7 @@ impl Mesh {
         }
         interior.sort_unstable();
 
-        let mut last = 0_usize;
+        let mut last = FaceId::from_index(0);
         for (_, site) in interior {
             let located = mesh.locate(&xy, last, xy(site));
             last = mesh.try_insert_with(&xy, site, located, None)?;
@@ -168,11 +251,13 @@ fn hilbert16(p: XY, min: XY, max: XY) -> u32 {
     while s > 0 {
         let rx = u32::from(x & s > 0);
         let ry = u32::from(y & s > 0);
-        d += s * s * ((3 * rx) ^ ry);
+        let quadrant = 3_u32.wrapping_mul(rx) ^ ry;
+        d = d.wrapping_add(s.wrapping_mul(s).wrapping_mul(quadrant));
         if ry == 0 {
             if rx == 1 {
-                x = N - 1 - x;
-                y = N - 1 - y;
+                let mask = N.wrapping_sub(1);
+                x ^= mask;
+                y ^= mask;
             }
             std::mem::swap(&mut x, &mut y);
         }
@@ -185,17 +270,17 @@ fn hilbert16(p: XY, min: XY, max: XY) -> u32 {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Located {
     /// Strictly inside this triangle.
-    Inside(usize),
+    Inside(FaceId),
     /// On this halfedge (exactly collinear with it, strictly between its ends).
-    OnEdge(usize),
+    OnEdge(HalfedgeId),
     /// Exactly on an existing vertex: nothing to insert.
     OnVertex,
 }
 
 pub(super) struct Mesh {
-    pub(super) triangles: Vec<usize>,
-    pub(super) halfedges: Vec<usize>,
-    pub(super) hull: Vec<usize>,
+    triangles: Vec<usize>,
+    halfedges: Vec<usize>,
+    hull: Vec<usize>,
     /// One outgoing halfedge slot per vertex (`EMPTY` for a vertex not in
     /// the mesh), kept valid across insertions so a fan can be walked.
     incident: Vec<usize>,
@@ -208,25 +293,205 @@ pub(super) struct Mesh {
 }
 
 impl Mesh {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "FaceId is minted by this mesh's seed and slot allocator; dead faces retain their slot"
+    )]
+    fn face_slots(&self, face: FaceId) -> &[usize; 3] {
+        &self.triangles.as_chunks::<3>().0[face.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "FaceId is minted by this mesh's seed and slot allocator; dead faces retain their slot"
+    )]
+    fn face_slots_mut(&mut self, face: FaceId) -> &mut [usize; 3] {
+        &mut self.triangles.as_chunks_mut::<3>().0[face.index()]
+    }
+
+    const fn slot<T: Copy>(row: &[T; 3], side: FaceSide) -> T {
+        let [first, second, third] = *row;
+        match side {
+            FaceSide::First => first,
+            FaceSide::Second => second,
+            FaceSide::Third => third,
+        }
+    }
+
+    fn set_slot<T>(row: &mut [T; 3], side: FaceSide, value: T) {
+        let [first, second, third] = row;
+        match side {
+            FaceSide::First => *first = value,
+            FaceSide::Second => *second = value,
+            FaceSide::Third => *third = value,
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HalfedgeId is minted from this mesh's admitted three-slot rows"
+    )]
+    const fn set_flat_halfedge_slot(slots: &mut [usize], edge: HalfedgeId, value: usize) {
+        slots[edge.index()] = value;
+    }
+
+    fn set_face_vertex(&mut self, face: FaceId, side: FaceSide, vertex: usize) {
+        Self::set_slot(self.face_slots_mut(face), side, vertex);
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HalfedgeId identifies an admitted stable flat slot owned by this mesh"
+    )]
+    pub(super) fn edge_start(&self, edge: HalfedgeId) -> usize {
+        self.triangles[edge.index()]
+    }
+
+    pub(super) fn edge_end(&self, edge: HalfedgeId) -> usize {
+        self.edge_start(edge.next())
+    }
+
+    pub(super) fn edge_apex(&self, edge: HalfedgeId) -> usize {
+        self.edge_start(edge.prev())
+    }
+
+    pub(super) fn edge_vertices(&self, edge: HalfedgeId) -> (usize, usize) {
+        (self.edge_start(edge), self.edge_end(edge))
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HalfedgeId identifies an admitted stable flat slot owned by this mesh"
+    )]
+    pub(super) fn twin(&self, edge: HalfedgeId) -> usize {
+        self.halfedges[edge.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HalfedgeId identifies an admitted stable flat slot owned by this mesh"
+    )]
+    fn set_twin(&mut self, edge: HalfedgeId, twin: usize) {
+        self.halfedges[edge.index()] = twin;
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the side table is admitted with one entry for every mesh halfedge"
+    )]
+    const fn side_value<T: Copy>(side: &[T], edge: HalfedgeId) -> T {
+        Self::slot(&side.as_chunks::<3>().0[edge.face().index()], edge.side())
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the side table is admitted with one entry for every mesh halfedge"
+    )]
+    fn set_side_face<T>(side: &mut [T], face: FaceId, values: [T; 3]) {
+        let row = &mut side.as_chunks_mut::<3>().0[face.index()];
+        let [first, second, third] = row;
+        let [value_first, value_second, value_third] = values;
+        *first = value_first;
+        *second = value_second;
+        *third = value_third;
+    }
+
+    pub(super) const fn edge_count(&self) -> usize {
+        self.halfedges.len()
+    }
+
+    pub(super) fn edge_ids(&self) -> impl Iterator<Item = HalfedgeId> + '_ {
+        (0..self.halfedges.len()).map(HalfedgeId::from_index)
+    }
+
+    pub(super) fn face_ids(&self) -> impl Iterator<Item = FaceId> + '_ {
+        (0..self.triangle_count()).map(FaceId::from_index)
+    }
+
+    fn incident(&self, site: usize) -> usize {
+        Self::site_entry(&self.incident, site)
+    }
+
+    fn set_incident(&mut self, site: usize, edge: usize) {
+        Self::set_site_entry(&mut self.incident, site, edge);
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "site ordinals in the incidence table come from the admitted point slice"
+    )]
+    const fn site_entry(values: &[usize], site: usize) -> usize {
+        values[site]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "site ordinals in the incidence table come from the admitted point slice"
+    )]
+    const fn set_site_entry(values: &mut [usize], site: usize, value: usize) {
+        values[site] = value;
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "FaceId is minted by this mesh's seed and slot allocator"
+    )]
+    fn stamp(&self, face: FaceId) -> u32 {
+        self.stamp[face.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "FaceId is minted by this mesh's seed and slot allocator"
+    )]
+    fn set_stamp(&mut self, face: FaceId, stamp: u32) {
+        self.stamp[face.index()] = stamp;
+    }
+
     fn seed(hull: &[usize], vertex_count: usize) -> Self {
-        let count = hull.len() - 2;
+        let count = hull.len().wrapping_sub(2);
         let slots = count.wrapping_mul(3);
         let mut triangles = Vec::with_capacity(slots);
         let mut halfedges = vec![EMPTY; slots];
-        for (t, index) in (1..hull.len() - 1).enumerate() {
-            triangles.extend([hull[0], hull[index], hull[index + 1]]);
-            // Fan triangles share the spoke `hull[0]..hull[index + 1]`: slot 2
-            // of triangle t (edge hull[index+1] -> hull[0]) twins slot 0 of
-            // triangle t + 1 (edge hull[0] -> hull[index+1]).
-            if t + 1 < count {
-                halfedges[3 * t + 2] = 3 * (t + 1);
-                halfedges[3 * (t + 1)] = 3 * t + 2;
-            }
+        let mut hull_sites = hull.iter().copied();
+        let root = hull_sites
+            .next()
+            .expect("a two-dimensional hull has corners");
+        let first = hull_sites
+            .next()
+            .expect("a two-dimensional hull has corners");
+        let mut previous = hull_sites
+            .next()
+            .expect("a two-dimensional hull has three corners");
+        triangles.extend([root, first, previous]);
+        let mut previous_face = FaceId::from_index(0);
+        for next in hull_sites {
+            let face = FaceId::from_index(previous_face.index().wrapping_add(1));
+            // Consecutive fan faces share slot 2 of the previous face with
+            // slot 0 of the new face. The rows stay in the public slot order.
+            let previous_spoke = HalfedgeId::in_face(previous_face, FaceSide::Third);
+            let next_spoke = HalfedgeId::in_face(face, FaceSide::First);
+            Self::set_flat_halfedge_slot(&mut halfedges, previous_spoke, next_spoke.index());
+            Self::set_flat_halfedge_slot(&mut halfedges, next_spoke, previous_spoke.index());
+            triangles.extend([root, previous, next]);
+            previous = next;
+            previous_face = face;
         }
         let mut incident = vec![EMPTY; vertex_count];
-        for (slot, &v) in triangles.iter().enumerate() {
-            if incident[v] == EMPTY {
-                incident[v] = slot;
+        for (face, vertices) in triangles.as_chunks::<3>().0.iter().enumerate() {
+            let [first, second, third] = *vertices;
+            for (side, vertex) in [
+                (FaceSide::First, first),
+                (FaceSide::Second, second),
+                (FaceSide::Third, third),
+            ] {
+                if Self::site_entry(&incident, vertex) == EMPTY {
+                    Self::set_site_entry(
+                        &mut incident,
+                        vertex,
+                        HalfedgeId::in_face(FaceId::from_index(face), side).index(),
+                    );
+                }
             }
         }
         Self {
@@ -244,20 +509,33 @@ impl Mesh {
         self.triangles.len() / 3
     }
 
-    pub(super) fn alive(&self, t: usize) -> bool {
-        self.triangles[3 * t] != EMPTY
+    pub(super) fn alive(&self, face: FaceId) -> bool {
+        let [first, _, _] = *self.face_slots(face);
+        first != EMPTY
     }
 
     /// Every halfedge slot leaving `u`, walking its fan both ways so a hull
     /// vertex's open fan is covered too.
-    pub(super) fn outgoing(&self, u: usize) -> Vec<usize> {
-        let start = self.incident[u];
+    pub(super) fn outgoing(&self, u: usize) -> Vec<HalfedgeId> {
+        let start = self.incident(u);
         let mut slots = Vec::with_capacity(self.triangle_count());
-        if start == EMPTY || !self.alive(start / 3) || self.triangles[start] != u {
+        let start = HalfedgeId::from_index(start);
+        if start.index() == EMPTY || !self.alive(start.face()) || self.edge_start(start) != u {
             // The remembered slot died in a cavity: fall back to a scan.
-            for e in 0..self.triangles.len() {
-                if self.alive(e / 3) && self.triangles[e] == u {
-                    slots.push(e);
+            for (face, vertices) in self.triangles.as_chunks::<3>().0.iter().enumerate() {
+                let face = FaceId::from_index(face);
+                let [first, second, third] = *vertices;
+                if !self.alive(face) {
+                    continue;
+                }
+                for (side, vertex) in [
+                    (FaceSide::First, first),
+                    (FaceSide::Second, second),
+                    (FaceSide::Third, third),
+                ] {
+                    if vertex == u {
+                        slots.push(HalfedgeId::in_face(face, side));
+                    }
                 }
             }
             return slots;
@@ -266,11 +544,11 @@ impl Mesh {
         let mut e = start;
         loop {
             slots.push(e);
-            let twin = self.halfedges[prev_halfedge(e)];
+            let twin = self.twin(e.prev());
             if twin == EMPTY {
                 break;
             }
-            e = twin;
+            e = HalfedgeId::from_index(twin);
             if e == start {
                 return slots;
             }
@@ -278,11 +556,11 @@ impl Mesh {
         // Clockwise from the start: across the edge out of `u`.
         let mut e = start;
         loop {
-            let twin = self.halfedges[e];
+            let twin = self.twin(e);
             if twin == EMPTY {
                 break;
             }
-            e = next_halfedge(twin);
+            e = HalfedgeId::from_index(twin).next();
             if e == start {
                 break;
             }
@@ -293,17 +571,17 @@ impl Mesh {
 
     /// The slot of the edge between `u` and `v` in either direction, if it
     /// is an edge; a hull edge exists as one halfedge only.
-    pub(super) fn edge_slot(&self, u: usize, v: usize) -> Option<usize> {
+    pub(super) fn edge_slot(&self, u: usize, v: usize) -> Option<HalfedgeId> {
         if let Some(slot) = self.directed_slot(u, v) {
             return Some(slot);
         }
         self.directed_slot(v, u)
     }
 
-    fn directed_slot(&self, u: usize, v: usize) -> Option<usize> {
+    fn directed_slot(&self, u: usize, v: usize) -> Option<HalfedgeId> {
         self.outgoing(u)
             .into_iter()
-            .find(|&e| self.triangles[next_halfedge(e)] == v)
+            .find(|&e| self.edge_end(e) == v)
     }
 
     /// Lawson legalization of every interior edge: flip while the twin's apex
@@ -316,27 +594,24 @@ impl Mesh {
         let mut stack = Vec::with_capacity(self.halfedges.len());
         for (e, &twin) in self.halfedges.iter().enumerate() {
             if twin != EMPTY && twin > e {
-                stack.push(e);
+                stack.push(HalfedgeId::from_index(e));
             }
         }
-        while let Some(e) = stack.pop() {
-            let f = self.halfedges[e];
-            if f == EMPTY {
+        while let Some(edge) = stack.pop() {
+            let twin = self.twin(edge);
+            if twin == EMPTY {
                 continue;
             }
-            let [a, b, c] = self.triangle(e / 3);
-            let d = self.triangles[prev_halfedge(f)];
+            let [a, b, c] = self.triangle(edge.face());
+            let d = self.edge_apex(HalfedgeId::from_index(twin));
             if exact::incircle(xy(a), xy(b), xy(c), xy(d))? != ExactSign::Positive {
                 continue;
             }
-            let g = self.flip(e);
-            let h = self.halfedges[g];
-            for edge in [
-                next_halfedge(g),
-                prev_halfedge(g),
-                next_halfedge(h),
-                prev_halfedge(h),
-            ] {
+            let diagonal = self.flip(edge);
+            let twin = self.twin(diagonal);
+            debug_assert_ne!(twin, EMPTY, "an interior diagonal has a twin");
+            let twin = HalfedgeId::from_index(twin);
+            for edge in [diagonal.next(), diagonal.prev(), twin.next(), twin.prev()] {
                 stack.push(edge);
             }
         }
@@ -346,81 +621,89 @@ impl Mesh {
     /// Flip the edge at slot `e` (`a -> b`, apex `c`; twin apex `d`) to
     /// `c -> d`, returning the slot of `c -> d`. The caller has checked the
     /// quad is convex.
-    pub(super) fn flip(&mut self, e: usize) -> usize {
-        let f = self.halfedges[e];
+    pub(super) fn flip(&mut self, e: HalfedgeId) -> HalfedgeId {
+        let f = self.twin(e);
         debug_assert_ne!(f, EMPTY, "a hull edge cannot flip");
-        let (t, u) = (e / 3, f / 3);
-        let (a, b, c) = (
-            self.triangles[e],
-            self.triangles[next_halfedge(e)],
-            self.triangles[prev_halfedge(e)],
-        );
-        let d = self.triangles[prev_halfedge(f)];
+        let f = HalfedgeId::from_index(f);
+        let (t, u) = (e.face(), f.face());
+        let (a, b, c) = (self.edge_start(e), self.edge_end(e), self.edge_apex(e));
+        let d = self.edge_apex(f);
         // Outside neighbours that change owner: across a-d and across b-c.
-        let across_ad = self.halfedges[next_halfedge(f)];
-        let across_bc = self.halfedges[next_halfedge(e)];
-        let keep_ca = self.halfedges[prev_halfedge(e)];
-        let keep_db = self.halfedges[prev_halfedge(f)];
+        let across_ad = self.twin(f.next());
+        let across_bc = self.twin(e.next());
+        let keep_ca = self.twin(e.prev());
+        let keep_db = self.twin(f.prev());
         // t becomes (a, d, c); u becomes (b, c, d).
-        self.triangles[3 * t] = a;
-        self.triangles[3 * t + 1] = d;
-        self.triangles[3 * t + 2] = c;
-        self.triangles[3 * u] = b;
-        self.triangles[3 * u + 1] = c;
-        self.triangles[3 * u + 2] = d;
-        self.halfedges[3 * t] = across_ad;
+        {
+            let [first, second, third] = self.face_slots_mut(t);
+            *first = a;
+            *second = d;
+            *third = c;
+        }
+        {
+            let [first, second, third] = self.face_slots_mut(u);
+            *first = b;
+            *second = c;
+            *third = d;
+        }
+        let t_first = HalfedgeId::in_face(t, FaceSide::First);
+        let t_second = HalfedgeId::in_face(t, FaceSide::Second);
+        let t_third = HalfedgeId::in_face(t, FaceSide::Third);
+        let u_first = HalfedgeId::in_face(u, FaceSide::First);
+        let u_second = HalfedgeId::in_face(u, FaceSide::Second);
+        let u_third = HalfedgeId::in_face(u, FaceSide::Third);
+        self.set_twin(t_first, across_ad);
         if across_ad != EMPTY {
-            self.halfedges[across_ad] = 3 * t;
+            self.set_twin(HalfedgeId::from_index(across_ad), t_first.index());
         }
-        self.halfedges[3 * t + 1] = 3 * u + 1;
-        self.halfedges[3 * u + 1] = 3 * t + 1;
-        self.halfedges[3 * t + 2] = keep_ca;
+        self.set_twin(t_second, u_second.index());
+        self.set_twin(u_second, t_second.index());
+        self.set_twin(t_third, keep_ca);
         if keep_ca != EMPTY {
-            self.halfedges[keep_ca] = 3 * t + 2;
+            self.set_twin(HalfedgeId::from_index(keep_ca), t_third.index());
         }
-        self.halfedges[3 * u] = across_bc;
+        self.set_twin(u_first, across_bc);
         if across_bc != EMPTY {
-            self.halfedges[across_bc] = 3 * u;
+            self.set_twin(HalfedgeId::from_index(across_bc), u_first.index());
         }
-        self.halfedges[3 * u + 2] = keep_db;
+        self.set_twin(u_third, keep_db);
         if keep_db != EMPTY {
-            self.halfedges[keep_db] = 3 * u + 2;
+            self.set_twin(HalfedgeId::from_index(keep_db), u_third.index());
         }
-        self.incident[a] = 3 * t;
-        self.incident[d] = 3 * t + 1;
-        self.incident[c] = 3 * t + 2;
-        self.incident[b] = 3 * u;
-        3 * u + 1
+        self.set_incident(a, t_first.index());
+        self.set_incident(d, t_second.index());
+        self.set_incident(c, t_third.index());
+        self.set_incident(b, u_first.index());
+        u_second
     }
 
     /// [`Self::flip`] that moves a per-halfedge side table with the four outer
     /// edges it relocates; both halves of the new diagonal take `diagonal`.
     pub(super) fn flip_carrying<T: Copy>(
         &mut self,
-        e: usize,
+        e: HalfedgeId,
         side: &mut [T],
         diagonal: T,
-    ) -> usize {
-        let f = self.halfedges[e];
+    ) -> HalfedgeId {
+        let f = HalfedgeId::from_index(self.twin(e));
         let outer = [
-            side[next_halfedge(f)],
-            side[prev_halfedge(e)],
-            side[next_halfedge(e)],
-            side[prev_halfedge(f)],
+            Self::side_value(side, f.next()),
+            Self::side_value(side, e.prev()),
+            Self::side_value(side, e.next()),
+            Self::side_value(side, f.prev()),
         ];
         let new_edge = self.flip(e);
-        let (t, u) = (3 * (e / 3), 3 * (f / 3));
-        side[t..t + 3].copy_from_slice(&[outer[0], diagonal, outer[1]]);
-        side[u..u + 3].copy_from_slice(&[outer[2], diagonal, outer[3]]);
+        Self::set_side_face(side, e.face(), [outer[0], diagonal, outer[1]]);
+        Self::set_side_face(side, f.face(), [outer[2], diagonal, outer[3]]);
         new_edge
     }
 
     /// Walk from triangle `start` toward `p` by exact orientation. Every
-    /// site the Delaunay driver inserts is interior to the seed hull, so the
-    /// walk never reaches a hull edge.
-    pub(super) fn locate(&self, xy: &impl Fn(usize) -> XY, start: usize, p: XY) -> Located {
+    /// inserted site lies in the closed seed hull; a hull-edge site is
+    /// classified as `OnEdge` before the walk could cross the hull.
+    pub(super) fn locate(&self, xy: &impl Fn(usize) -> XY, start: FaceId, p: XY) -> Located {
         self.locate_bounded(xy, start, p, &[])
-            .unwrap_or_else(|_| unreachable!("an interior site never leaves the hull"))
+            .unwrap_or_else(|_| unreachable!("a site in the closed hull is locatable"))
     }
 
     /// The orientation walk that never crosses a hull edge or a slot `stop`
@@ -430,10 +713,10 @@ impl Mesh {
     pub(super) fn locate_bounded(
         &self,
         xy: &impl Fn(usize) -> XY,
-        start: usize,
+        start: FaceId,
         p: XY,
         stop: &[bool],
-    ) -> Result<Located, usize> {
+    ) -> Result<Located, HalfedgeId> {
         let mut t = if self.alive(start) {
             start
         } else {
@@ -445,18 +728,19 @@ impl Mesh {
                 Ok(located) => return Ok(located),
                 Err(e) => e,
             };
-            let twin = self.halfedges[e];
-            if twin == EMPTY || stop.get(e).is_some_and(|&stopped| stopped) {
+            let twin = self.twin(e);
+            if twin == EMPTY || stop.get(e.index()).is_some_and(|&stopped| stopped) {
                 return Err(e);
             }
-            steps += 1;
+            steps = steps.wrapping_add(1);
             if steps > self.triangle_count() {
                 return (0..self.triangle_count())
+                    .map(FaceId::from_index)
                     .filter(|&f| self.alive(f))
                     .find_map(|f| self.classify(xy, f, p).ok())
                     .ok_or(e);
             }
-            t = twin / 3;
+            t = HalfedgeId::from_index(twin).face();
         }
     }
 
@@ -465,39 +749,40 @@ impl Mesh {
     pub(super) fn classify(
         &self,
         xy: &impl Fn(usize) -> XY,
-        t: usize,
+        t: FaceId,
         p: XY,
-    ) -> Result<Located, usize> {
-        let mut collinear = [false; 3];
-        for (i, on) in collinear.iter_mut().enumerate() {
-            let e = 3 * t + i;
-            match exact::orient2d(
-                xy(self.triangles[e]),
-                xy(self.triangles[next_halfedge(e)]),
-                p,
-            ) {
-                ExactSign::Negative => return Err(e),
-                ExactSign::Zero => *on = true,
+    ) -> Result<Located, HalfedgeId> {
+        let mut collinear_count = 0_usize;
+        let mut collinear_edge = FaceSide::First;
+        for side in FaceSide::ALL {
+            let edge = HalfedgeId::in_face(t, side);
+            match exact::orient2d(xy(self.edge_start(edge)), xy(self.edge_end(edge)), p) {
+                ExactSign::Negative => return Err(edge),
+                ExactSign::Zero => {
+                    collinear_count = collinear_count.wrapping_add(1);
+                    collinear_edge = side;
+                },
                 ExactSign::Positive => {},
             }
         }
-        Ok(match collinear.iter().filter(|&&on| on).count() {
+        Ok(match collinear_count {
             0 => Located::Inside(t),
             1 => {
-                let e = 3 * t + collinear.iter().position(|&on| on).unwrap_or(0);
-                let (a, b) = (self.triangles[e], self.triangles[next_halfedge(e)]);
+                let edge = HalfedgeId::in_face(t, collinear_edge);
+                let (a, b) = (self.edge_start(edge), self.edge_end(edge));
                 if p == xy(a) || p == xy(b) {
                     Located::OnVertex
                 } else {
-                    Located::OnEdge(e)
+                    Located::OnEdge(edge)
                 }
             },
             _ => Located::OnVertex,
         })
     }
 
-    fn any_alive(&self) -> usize {
+    fn any_alive(&self) -> FaceId {
         (0..self.triangle_count())
+            .map(FaceId::from_index)
             .find(|&t| self.alive(t))
             .expect("a seeded mesh has a triangle")
     }
@@ -511,22 +796,19 @@ impl Mesh {
         site: usize,
         located: Located,
         skip: Option<&[bool]>,
-    ) -> Result<usize> {
+    ) -> Result<FaceId> {
         // A site on a hull edge splits that edge: the cavity boundary is then
         // an open chain from the edge's end to its start, the site joins the
         // hull between them, and the two chain ends become hull edges.
         let (split_hull, seeds) = match located {
             Located::OnVertex => return Ok(self.any_alive()),
             Located::Inside(t) => (None, vec![t]),
-            Located::OnEdge(e) => {
-                let twin = self.halfedges[e];
+            Located::OnEdge(edge) => {
+                let twin = self.twin(edge);
                 if twin == EMPTY {
-                    (
-                        Some((self.triangles[e], self.triangles[next_halfedge(e)])),
-                        vec![e / 3],
-                    )
+                    (Some(self.edge_vertices(edge)), vec![edge.face()])
                 } else {
-                    (None, vec![e / 3, twin / 3])
+                    (None, vec![edge.face(), HalfedgeId::from_index(twin).face()])
                 }
             },
         };
@@ -542,25 +824,25 @@ impl Mesh {
         let epoch = self.epoch;
         let mut cavity = Vec::with_capacity(self.triangle_count());
         let mut stack = seeds;
-        for &t in &stack {
-            self.stamp[t] = epoch;
+        for &face in &stack {
+            self.set_stamp(face, epoch);
         }
-        while let Some(t) = stack.pop() {
-            cavity.push(t);
-            for i in 0..3 {
-                let e = 3 * t + i;
-                let twin = self.halfedges[e];
-                if twin == EMPTY || skip.is_some_and(|skip| skip[e]) {
+        while let Some(face) = stack.pop() {
+            cavity.push(face);
+            for side in FaceSide::ALL {
+                let edge = HalfedgeId::in_face(face, side);
+                let twin = self.twin(edge);
+                if twin == EMPTY || skip.is_some_and(|skip| Self::side_value(skip, edge)) {
                     continue;
                 }
-                let n = twin / 3;
-                if self.stamp[n] == epoch {
+                let neighbor = HalfedgeId::from_index(twin).face();
+                if self.stamp(neighbor) == epoch {
                     continue;
                 }
-                let [a, b, c] = self.triangle(n);
+                let [a, b, c] = self.triangle(neighbor);
                 if exact::incircle(xy(a), xy(b), xy(c), p)? == ExactSign::Positive {
-                    self.stamp[n] = epoch;
-                    stack.push(n);
+                    self.set_stamp(neighbor, epoch);
+                    stack.push(neighbor);
                 }
             }
         }
@@ -570,15 +852,15 @@ impl Mesh {
         let mut boundary: Vec<(usize, usize, usize)> = Vec::new(); // (a, b, twin slot)
         let boundary_capacity = cavity.len().wrapping_mul(3);
         boundary.reserve(boundary_capacity);
-        for &t in &cavity {
-            for i in 0..3 {
-                let e = 3 * t + i;
-                let twin = self.halfedges[e];
-                let ends = (self.triangles[e], self.triangles[next_halfedge(e)]);
+        for &face in &cavity {
+            for side in FaceSide::ALL {
+                let edge = HalfedgeId::in_face(face, side);
+                let twin = self.twin(edge);
+                let ends = self.edge_vertices(edge);
                 if split_hull == Some(ends) {
                     continue; // the split edge is not a boundary: the site lies on it
                 }
-                if twin == EMPTY || self.stamp[twin / 3] != epoch {
+                if twin == EMPTY || self.stamp(HalfedgeId::from_index(twin).face()) != epoch {
                     boundary.push((ends.0, ends.1, twin));
                 }
             }
@@ -586,7 +868,10 @@ impl Mesh {
         // Chain the boundary edges: a -> b, then the edge starting at b, and
         // so on. A closed cycle around an interior site; for a hull split, an
         // open chain from the split edge's end around to its start.
-        let start = split_hull.map_or(boundary[0].0, |(_, b)| b);
+        let start = split_hull.map_or_else(
+            || boundary.first().expect("a cavity has a boundary").0,
+            |(_, b)| b,
+        );
         let mut ordered = Vec::with_capacity(boundary.len());
         let mut at = start;
         for _ in 0..boundary.len() {
@@ -614,40 +899,48 @@ impl Mesh {
             self.hull.reserve(1);
         }
         let mut slots = Vec::with_capacity(ordered.len());
-        for &t in &cavity {
-            self.triangles[3 * t] = EMPTY;
-            self.free.push(t);
+        for &face in &cavity {
+            self.set_face_vertex(face, FaceSide::First, EMPTY);
+            self.free.push(face.index());
         }
         // New triangles (a, b, site): slot 0 = a->b twins the outside, slot 1 =
         // b->site twins slot 2 of the next, slot 2 = site->a twins slot 1 of
         // the previous.
-        let count = ordered.len();
-        for _ in 0..count {
+        for _ in 0..ordered.len() {
             slots.push(self.take_slot());
         }
-        let mut first = 0;
-        for (k, &(a, b, twin)) in ordered.iter().enumerate() {
-            let t = slots[k];
-            self.triangles[3 * t] = a;
-            self.triangles[3 * t + 1] = b;
-            self.triangles[3 * t + 2] = site;
-            self.halfedges[3 * t] = twin;
+        let first = *slots.first().expect("a cavity has a boundary");
+        let mut slots = slots.into_iter().peekable();
+        let mut last = first;
+        for (a, b, twin) in ordered.iter().copied() {
+            let face = slots.next().expect("each boundary edge has one face slot");
+            let next = slots.peek().copied();
+            self.set_face_vertex(face, FaceSide::First, a);
+            self.set_face_vertex(face, FaceSide::Second, b);
+            self.set_face_vertex(face, FaceSide::Third, site);
+            let first_edge = HalfedgeId::in_face(face, FaceSide::First);
+            let second_edge = HalfedgeId::in_face(face, FaceSide::Second);
+            let third_edge = HalfedgeId::in_face(face, FaceSide::Third);
+            self.set_twin(first_edge, twin);
             if twin != EMPTY {
-                self.halfedges[twin] = 3 * t;
+                self.set_twin(HalfedgeId::from_index(twin), first_edge.index());
             }
-            if split_hull.is_some() && k + 1 == count {
+            if split_hull.is_some() && next.is_none() {
                 // Open chain: the last triangle's `b -> site` and the first
                 // triangle's `site -> a` are the two new hull edges.
-                self.halfedges[3 * t + 1] = EMPTY;
-                self.halfedges[3 * slots[0] + 2] = EMPTY;
+                self.set_twin(second_edge, EMPTY);
             } else {
-                let next = slots[(k + 1) % count];
-                self.halfedges[3 * t + 1] = 3 * next + 2;
-                self.halfedges[3 * next + 2] = 3 * t + 1;
+                let next = next.unwrap_or(first);
+                let next_edge = HalfedgeId::in_face(next, FaceSide::Third);
+                self.set_twin(second_edge, next_edge.index());
+                self.set_twin(next_edge, second_edge.index());
             }
-            self.incident[a] = 3 * t;
-            self.incident[site] = 3 * t + 2;
-            first = t;
+            self.set_incident(a, first_edge.index());
+            self.set_incident(site, third_edge.index());
+            last = face;
+        }
+        if split_hull.is_some() {
+            self.set_twin(HalfedgeId::in_face(first, FaceSide::Third), EMPTY);
         }
         if let Some((a, _)) = split_hull {
             let position = self
@@ -655,9 +948,9 @@ impl Mesh {
                 .iter()
                 .position(|&h| h == a)
                 .expect("a hull edge starts on the hull");
-            self.hull.insert(position + 1, site);
+            self.hull.insert(position.wrapping_add(1), site);
         }
-        Ok(first)
+        Ok(last)
     }
 
     pub(super) fn insert_constrained(
@@ -666,30 +959,27 @@ impl Mesh {
         site: usize,
         located: Located,
         skip: &[bool],
-    ) -> Result<usize> {
+    ) -> Result<FaceId> {
         self.try_insert_with(xy, site, located, Some(skip))
     }
 
-    pub(super) fn triangle(&self, t: usize) -> [usize; 3] {
-        [
-            self.triangles[3 * t],
-            self.triangles[3 * t + 1],
-            self.triangles[3 * t + 2],
-        ]
+    pub(super) fn triangle(&self, face: FaceId) -> [usize; 3] {
+        *self.face_slots(face)
     }
 
-    fn take_slot(&mut self) -> usize {
-        if let Some(t) = self.free.pop() {
-            self.stamp[t] = 0;
-            return t;
+    fn take_slot(&mut self) -> FaceId {
+        if let Some(face) = self.free.pop() {
+            let face = FaceId::from_index(face);
+            self.set_stamp(face, 0);
+            return face;
         }
         // try_insert_with reserves all three buffers for every slot that
         // cannot be reused before it consumes the free list.
-        let t = self.triangle_count();
+        let face = FaceId::from_index(self.triangle_count());
         self.triangles.extend([EMPTY; 3]);
         self.halfedges.extend([EMPTY; 3]);
         self.stamp.push(0);
-        t
+        face
     }
 
     /// Grow the incidence table for sites appended after construction
@@ -697,7 +987,8 @@ impl Mesh {
     pub(super) fn admit_vertex(&mut self, site: usize) {
         let required = site.wrapping_add(1);
         if self.incident.len() < required {
-            self.incident.reserve(required - self.incident.len());
+            self.incident
+                .reserve(required.wrapping_sub(self.incident.len()));
             self.incident.resize(required, EMPTY);
         }
     }
@@ -707,41 +998,54 @@ impl Mesh {
     pub(super) fn finish(self, xy: impl Fn(usize) -> XY) -> Result<ExactMesh> {
         let mut remap = vec![EMPTY; self.triangle_count()];
         let mut triangles = Vec::with_capacity(self.triangles.len());
-        let mut old_slots = Vec::with_capacity(self.triangles.len());
-        for (t, slot) in remap.iter_mut().enumerate() {
-            if self.alive(t) {
+        for (vertices, slot) in self.triangles.as_chunks::<3>().0.iter().zip(&mut remap) {
+            let [first, second, third] = *vertices;
+            if first != EMPTY {
                 *slot = triangles.len() / 3;
-                triangles.extend(self.triangle(t));
-                let base = t.wrapping_mul(3);
-                let end = base.wrapping_add(3);
-                old_slots.extend(base..end);
+                triangles.extend([first, second, third]);
             }
         }
-        let mut halfedges = Vec::with_capacity(old_slots.len());
-        for &old in &old_slots {
-            let twin = self.halfedges[old];
-            let twin = if twin == EMPTY {
-                EMPTY
-            } else {
-                remap[twin / 3]
-                    .checked_mul(3)
-                    .and_then(|slot| slot.checked_add(twin % 3))
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?
-            };
-            halfedges.push(twin);
-        }
-        let mut cocircular = vec![false; halfedges.len()];
-        for e in 0..halfedges.len() {
-            let twin = halfedges[e];
-            if twin == EMPTY || twin < e {
+        let mut halfedges = Vec::with_capacity(triangles.len());
+        for (vertices, twins) in self
+            .triangles
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(self.halfedges.as_chunks::<3>().0)
+        {
+            let [first, _, _] = *vertices;
+            if first == EMPTY {
                 continue;
             }
-            let t = e / 3;
-            let [a, b, c] = [triangles[3 * t], triangles[3 * t + 1], triangles[3 * t + 2]];
-            let opposite = triangles[prev_halfedge(twin)];
-            if exact::incircle(xy(a), xy(b), xy(c), xy(opposite))? == ExactSign::Zero {
-                cocircular[e] = true;
-                cocircular[twin] = true;
+            for &twin in twins {
+                halfedges.push(if twin == EMPTY {
+                    EMPTY
+                } else {
+                    Self::remap_twin(&remap, HalfedgeId::from_index(twin))?
+                });
+            }
+        }
+        let mut cocircular = vec![false; halfedges.len()];
+        for (face, (vertices, twins)) in triangles
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(halfedges.as_chunks::<3>().0)
+            .enumerate()
+        {
+            let [a, b, c] = *vertices;
+            let face = FaceId::from_index(face);
+            for (side, &twin) in FaceSide::ALL.into_iter().zip(twins) {
+                let edge = HalfedgeId::in_face(face, side);
+                if twin == EMPTY || twin < edge.index() {
+                    continue;
+                }
+                let opposite_edge = HalfedgeId::from_index(twin).prev();
+                let opposite = Self::output_vertex(&triangles, opposite_edge);
+                if exact::incircle(xy(a), xy(b), xy(c), xy(opposite))? == ExactSign::Zero {
+                    Self::set_output_flag(&mut cocircular, edge, true);
+                    Self::set_output_flag(&mut cocircular, HalfedgeId::from_index(twin), true);
+                }
             }
         }
         Ok(ExactMesh {
@@ -750,6 +1054,37 @@ impl Mesh {
             hull: self.hull,
             cocircular,
         })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a live twin in this mesh resolves to a face in the same compaction remap"
+    )]
+    const fn remapped_face(remap: &[usize], face: FaceId) -> usize {
+        remap[face.index()]
+    }
+
+    fn remap_twin(remap: &[usize], twin: HalfedgeId) -> Result<usize> {
+        Self::remapped_face(remap, twin.face())
+            .checked_mul(3)
+            .and_then(|base| base.checked_add(twin.side().offset()))
+            .ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "a remapped halfedge twin names a site in the same compact triangle table"
+    )]
+    const fn output_vertex(triangles: &[usize], edge: HalfedgeId) -> usize {
+        triangles[edge.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "output flags use the same admitted halfedge ID domain as the finished topology"
+    )]
+    const fn set_output_flag(flags: &mut [bool], edge: HalfedgeId, value: bool) {
+        flags[edge.index()] = value;
     }
 }
 
@@ -798,34 +1133,39 @@ mod tests {
 
     fn assert_delaunay(mesh: &ExactMesh, points: &[Point]) {
         let xy = |s: usize| points[s].xy();
-        for e in 0..mesh.halfedges.len() {
-            let twin = mesh.halfedges[e];
-            if twin == EMPTY {
-                continue;
-            }
-            let t = e / 3;
-            let [a, b, c] = [
-                mesh.triangles[3 * t],
-                mesh.triangles[3 * t + 1],
-                mesh.triangles[3 * t + 2],
-            ];
+        for (face, (vertices, twins)) in mesh
+            .triangles
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(mesh.halfedges.as_chunks::<3>().0)
+            .enumerate()
+        {
+            let [a, b, c] = *vertices;
             assert_eq!(
                 exact::orient2d(xy(a), xy(b), xy(c)),
                 ExactSign::Positive,
-                "triangle {t} is counter-clockwise"
+                "triangle {face} is counter-clockwise"
             );
-            let opposite = mesh.triangles[prev_halfedge(twin)];
-            let sign = exact::incircle(xy(a), xy(b), xy(c), xy(opposite)).unwrap();
-            assert_ne!(
-                sign,
-                ExactSign::Positive,
-                "opposite vertex {opposite} inside circumcircle of {t}"
-            );
-            assert_eq!(
-                sign == ExactSign::Zero,
-                mesh.cocircular[e],
-                "cocircular flag at {e}"
-            );
+            for (side, &twin) in FaceSide::ALL.into_iter().zip(twins) {
+                if twin == EMPTY {
+                    continue;
+                }
+                let edge = HalfedgeId::in_face(FaceId::from_index(face), side);
+                let opposite = mesh.triangles[HalfedgeId::from_index(twin).prev().index()];
+                let sign = exact::incircle(xy(a), xy(b), xy(c), xy(opposite)).unwrap();
+                assert_ne!(
+                    sign,
+                    ExactSign::Positive,
+                    "opposite vertex {opposite} inside circumcircle of {face}"
+                );
+                assert_eq!(
+                    sign == ExactSign::Zero,
+                    mesh.cocircular[edge.index()],
+                    "cocircular flag at {}",
+                    edge.index()
+                );
+            }
         }
     }
 
@@ -899,9 +1239,53 @@ mod tests {
         assert_halfedges_consistent(&mesh);
         assert_delaunay(&mesh, &pts);
         assert_eq!(
-            mesh.triangles.len() / 3,
-            2 * pts.len() - mesh.hull.len() - 2
+            mesh.hull.len(),
+            76,
+            "all grid boundary sites are on the hull"
         );
+        assert_eq!(
+            mesh.triangles.as_chunks::<3>().0.len(),
+            722,
+            "the 400-site grid with a 76-site hull has 722 faces"
+        );
+        let boundary_axis = [0.0_f64.to_bits(), 19.0_f64.to_bits()];
+        let expected_hull: std::collections::HashSet<[u64; 2]> = pts
+            .iter()
+            .filter(|point| {
+                boundary_axis.contains(&point.x.to_bits())
+                    || boundary_axis.contains(&point.y.to_bits())
+            })
+            .map(|point| [point.x.to_bits(), point.y.to_bits()])
+            .collect();
+        let actual_hull: std::collections::HashSet<[u64; 2]> = mesh
+            .hull
+            .iter()
+            .map(|&site| {
+                let point = pts.get(site).expect("hull site is an input site");
+                [point.x.to_bits(), point.y.to_bits()]
+            })
+            .collect();
+        assert_eq!(
+            actual_hull, expected_hull,
+            "the hull retains every boundary site"
+        );
+        let center = Point::new_raw_xy(10.0, 10.0);
+        for (&start, &end) in mesh.hull.iter().zip(mesh.hull.iter().cycle().skip(1)) {
+            let start = pts.get(start).expect("hull site is an input site").xy();
+            let end = pts.get(end).expect("hull site is an input site").xy();
+            let dx = (start.x - end.x).abs().to_bits();
+            let dy = (start.y - end.y).abs().to_bits();
+            assert!(
+                (dx == 1.0_f64.to_bits() && dy == 0.0_f64.to_bits())
+                    || (dx == 0.0_f64.to_bits() && dy == 1.0_f64.to_bits()),
+                "adjacent hull sites must be consecutive grid points"
+            );
+            assert_eq!(
+                exact::orient2d(start, end, center.xy()),
+                ExactSign::Positive,
+                "the hull cycle is counter-clockwise"
+            );
+        }
         // Every interior diagonal of a unit square is cocircular.
         let flagged = mesh.cocircular.iter().filter(|&&f| f).count() / 2;
         assert_eq!(flagged, 19 * 19, "one cocircular diagonal per grid cell");
@@ -979,7 +1363,7 @@ mod tests {
         let mut wrapped = seed();
         wrapped.epoch = u32::MAX;
         wrapped.stamp.fill(1);
-        let located = ordinary.locate(&xy, 0, xy(4));
+        let located = ordinary.locate(&xy, FaceId::from_index(0), xy(4));
         assert!(matches!(located, Located::Inside(_)));
         ordinary.try_insert_with(&xy, 4, located, None).unwrap();
         wrapped.try_insert_with(&xy, 4, located, None).unwrap();

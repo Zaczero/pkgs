@@ -24,7 +24,7 @@
 
 use std::collections::VecDeque;
 
-use super::exact_delaunay::{EMPTY, Located, Mesh, next_halfedge, prev_halfedge};
+use super::exact_delaunay::{EMPTY, FaceId, FaceSide, HalfedgeId, Located, Mesh, site_xy};
 use crate::collections::{HashMap, HashSet};
 use crate::error::{ErrorKind, Result};
 use crate::geometry::exact_arith::ExactSign;
@@ -232,7 +232,54 @@ pub(super) struct ConstrainedMesh {
     provenance: Vec<NodeProvenance>,
 }
 
+struct FaceLabels(Vec<Option<bool>>);
+
+impl FaceLabels {
+    fn new(count: usize) -> Self {
+        Self(vec![None; count])
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "FaceId is enumerated from the same live mesh whose face count sizes this label table"
+    )]
+    fn get(&self, face: FaceId) -> Option<bool> {
+        self.0[face.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "FaceId is enumerated from the same live mesh whose face count sizes this label table"
+    )]
+    fn set(&mut self, face: FaceId, value: bool) {
+        self.0[face.index()] = Some(value);
+    }
+
+    fn into_inside(self) -> Vec<bool> {
+        self.0
+            .into_iter()
+            .map(|value| value.unwrap_or(false))
+            .collect()
+    }
+}
+
 impl ConstrainedMesh {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HalfedgeId comes from this mesh and the constraint column is admitted to its edge count"
+    )]
+    fn is_constrained(&self, edge: HalfedgeId) -> bool {
+        self.constrained[edge.index()]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HalfedgeId comes from this mesh and the constraint column is admitted to its edge count"
+    )]
+    const fn set_constrained(flags: &mut [bool], edge: HalfedgeId, value: bool) {
+        flags[edge.index()] = value;
+    }
+
     /// Delaunay-triangulate `points`, then force every `edges` pair in.
     #[cfg(test)]
     pub(super) fn build(points: &[Point], edges: &[[usize; 2]]) -> Option<Self> {
@@ -260,7 +307,7 @@ impl ConstrainedMesh {
         let Some(mesh) = Mesh::try_delaunay(points)? else {
             return Ok(None);
         };
-        let constrained = vec![false; mesh.halfedges.len()];
+        let constrained = vec![false; mesh.edge_count()];
         let source_constraints = sources.to_vec();
         let source_pieces = crate::collections::try_hash_map_with_capacity(sources.len())?;
         let provenance = occurrences
@@ -275,7 +322,7 @@ impl ConstrainedMesh {
             source_pieces,
             provenance,
         };
-        let xy = |site: usize| points[site].xy();
+        let xy = |site| site_xy(points, site);
         for source in sources {
             this.insert_constraint(
                 &xy,
@@ -319,11 +366,11 @@ impl ConstrainedMesh {
         // Walk the fan around `u` to find the triangle the segment leaves
         // through, or a vertex it passes through exactly.
         let (pu, pv) = (xy(u), xy(v));
-        let mut crossing: Vec<usize> = Vec::with_capacity(self.mesh.triangle_count());
+        let mut crossing: Vec<HalfedgeId> = Vec::with_capacity(self.mesh.triangle_count());
         let mut start = None;
         for slot in self.mesh.outgoing(u) {
-            let a = self.mesh.triangles[next_halfedge(slot)];
-            let b = self.mesh.triangles[prev_halfedge(slot)];
+            let a = self.mesh.edge_end(slot);
+            let b = self.mesh.edge_apex(slot);
             // Segment u->v exits triangle (u, a, b) through edge a->b when v
             // is left of u->a and right of u->b (strictly), or through a
             // vertex when collinear.
@@ -350,7 +397,7 @@ impl ConstrainedMesh {
                 return Ok(());
             }
             if sa == ExactSign::Positive && sb == ExactSign::Negative {
-                start = Some(next_halfedge(slot)); // the edge a -> b
+                start = Some(slot.next()); // the edge a -> b
                 break;
             }
         }
@@ -362,19 +409,20 @@ impl ConstrainedMesh {
         // the left; enter its twin's triangle and find the next exit. A
         // straight segment enters each triangle at most once.
         loop {
-            if self.constrained[edge] {
+            if self.is_constrained(edge) {
                 return Err(GeometryErrorKind::triangulation(
                     "constrained triangulation boundaries cross",
                 ));
             }
-            let twin = self.mesh.halfedges[edge];
+            let twin = self.mesh.twin(edge);
             if twin == EMPTY || crossing.len() == self.mesh.triangle_count() {
                 return Err(GeometryErrorKind::triangulation(
                     "constraint walk left the triangulation",
                 ));
             }
             crossing.push(edge);
-            let apex = self.mesh.triangles[prev_halfedge(twin)];
+            let twin = HalfedgeId::from_index(twin);
+            let apex = self.mesh.edge_apex(twin);
             if apex == v {
                 break;
             }
@@ -403,9 +451,9 @@ impl ConstrainedMesh {
             // the left makes the next edge the crossed one; on the right, the
             // previous.
             edge = if s == ExactSign::Positive {
-                next_halfedge(twin)
+                twin.next()
             } else {
-                prev_halfedge(twin)
+                twin.prev()
             };
         }
         self.flip_until_clear(xy, u, v, crossing);
@@ -424,20 +472,19 @@ impl ConstrainedMesh {
         xy: &impl Fn(usize) -> XY,
         u: usize,
         v: usize,
-        mut crossing: Vec<usize>,
+        mut crossing: Vec<HalfedgeId>,
     ) {
         let (pu, pv) = (xy(u), xy(v));
         let mut guard = 0_usize;
         while let Some(edge) = crossing.pop() {
-            guard += 1;
+            guard = guard.wrapping_add(1);
             assert!(guard < 1_000_000, "constraint insertion did not converge");
-            let twin = self.mesh.halfedges[edge];
-            let (a, b) = (
-                self.mesh.triangles[edge],
-                self.mesh.triangles[next_halfedge(edge)],
-            );
-            let c = self.mesh.triangles[prev_halfedge(edge)];
-            let d = self.mesh.triangles[prev_halfedge(twin)];
+            let twin = self.mesh.twin(edge);
+            debug_assert_ne!(twin, EMPTY, "only crossed interior edges are flipped");
+            let twin = HalfedgeId::from_index(twin);
+            let (a, b) = (self.mesh.edge_start(edge), self.mesh.edge_end(edge));
+            let c = self.mesh.edge_apex(edge);
+            let d = self.mesh.edge_apex(twin);
             // The quad a,b with apexes c,d is flippable only when convex.
             let convex = exact::orient2d(xy(c), xy(d), xy(a))
                 != exact::orient2d(xy(c), xy(d), xy(b))
@@ -447,10 +494,7 @@ impl ConstrainedMesh {
                 continue;
             }
             let new_edge = self.mesh.flip_carrying(edge, &mut self.constrained, false);
-            let (na, nb) = (
-                self.mesh.triangles[new_edge],
-                self.mesh.triangles[next_halfedge(new_edge)],
-            );
+            let (na, nb) = (self.mesh.edge_start(new_edge), self.mesh.edge_end(new_edge));
             let still_crosses = {
                 let s1 = exact::orient2d(pu, pv, xy(na));
                 let s2 = exact::orient2d(pu, pv, xy(nb));
@@ -470,11 +514,11 @@ impl ConstrainedMesh {
         self.mark(slot);
     }
 
-    fn mark(&mut self, slot: usize) {
-        self.constrained[slot] = true;
-        let twin = self.mesh.halfedges[slot];
+    fn mark(&mut self, slot: HalfedgeId) {
+        Self::set_constrained(&mut self.constrained, slot, true);
+        let twin = self.mesh.twin(slot);
         if twin != EMPTY {
-            self.constrained[twin] = true;
+            Self::set_constrained(&mut self.constrained, HalfedgeId::from_index(twin), true);
         }
     }
 
@@ -484,36 +528,42 @@ impl ConstrainedMesh {
         #[cfg(test)]
         update_work(|counters| counters.inside_label_passes += 1);
         let count = self.mesh.triangle_count();
-        let mut label = vec![None; count];
+        let mut labels = FaceLabels::new(count);
         let mut queue = VecDeque::with_capacity(count);
         // Seed from the hull: beyond a hull edge is the outside, so a face is
         // outside unless that hull edge is itself a constraint, in which case
         // the polygon's boundary runs along the hull and the face is inside.
-        for e in 0..self.mesh.halfedges.len() {
-            if self.mesh.halfedges[e] == EMPTY && self.mesh.alive(e / 3) && label[e / 3].is_none() {
-                label[e / 3] = Some(self.constrained[e]);
-                queue.push_back(e / 3);
+        for edge in self.mesh.edge_ids() {
+            let face = edge.face();
+            if self.mesh.twin(edge) == EMPTY && self.mesh.alive(face) && labels.get(face).is_none()
+            {
+                labels.set(face, self.is_constrained(edge));
+                queue.push_back(face);
             }
         }
-        while let Some(t) = queue.pop_front() {
-            let inside = label[t].expect("queued faces are labelled");
-            for i in 0..3 {
-                let e = 3 * t + i;
-                let twin = self.mesh.halfedges[e];
+        while let Some(face) = queue.pop_front() {
+            let inside = labels.get(face).expect("queued faces are labelled");
+            for side in FaceSide::ALL {
+                let edge = HalfedgeId::in_face(face, side);
+                let twin = self.mesh.twin(edge);
                 if twin == EMPTY {
                     continue;
                 }
-                let n = twin / 3;
-                if label[n].is_none() {
-                    label[n] = Some(if self.constrained[e] { !inside } else { inside });
-                    queue.push_back(n);
+                let neighbor = HalfedgeId::from_index(twin).face();
+                if labels.get(neighbor).is_none() {
+                    labels.set(
+                        neighbor,
+                        if self.is_constrained(edge) {
+                            !inside
+                        } else {
+                            inside
+                        },
+                    );
+                    queue.push_back(neighbor);
                 }
             }
         }
-        label
-            .into_iter()
-            .map(|value| value.unwrap_or(false))
-            .collect()
+        labels.into_inside()
     }
 
     /// Ruppert refinement of the inside faces to `min_angle` degrees and/or
@@ -530,32 +580,32 @@ impl ConstrainedMesh {
         let mut inserted = 0_usize;
         loop {
             let inside = self.inside_faces();
-            let xy = |site: usize, points: &[Point]| points[site].xy();
+            let xy = |site, points: &[Point]| site_xy(points, site);
             let mut bad = None;
             #[cfg(test)]
             update_work(|counters| counters.bad_face_scans += 1);
-            for (t, &kept) in inside.iter().enumerate() {
-                if !kept || !self.mesh.alive(t) {
+            for (face, &kept) in self.mesh.face_ids().zip(&inside) {
+                if !kept || !self.mesh.alive(face) {
                     continue;
                 }
-                let [a, b, c] = self.mesh.triangle(t);
+                let [a, b, c] = self.mesh.triangle(face);
                 let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
                 let violates = min_angle
                     .is_some_and(|limit| triangle_min_angle_degrees(pa, pb, pc) < limit)
                     || max_area
                         .is_some_and(|limit| open_xy_cycle_magnitude(&[pa, pb, pc]).get() > limit);
                 if violates {
-                    bad = Some(t);
+                    bad = Some(face);
                     break;
                 }
             }
-            let Some(t) = bad else {
+            let Some(face) = bad else {
                 return Ok(true);
             };
             if inserted >= limit {
                 return Ok(false);
             }
-            let [a, b, c] = self.mesh.triangle(t);
+            let [a, b, c] = self.mesh.triangle(face);
             let (pa, pb, pc) = (xy(a, points), xy(b, points), xy(c, points));
             // No finite binary64 can represent this center. Ruppert can
             // still make progress with the explicitly chosen longest-edge
@@ -568,24 +618,21 @@ impl ConstrainedMesh {
             // center beyond a constraint is one that encroaches it. A source
             // split is emitted from its original exact parameter; a generated
             // edge midpoint only needs a valid topological placement.
-            let encroached = (0..self.mesh.halfedges.len()).find(|&e| {
-                self.constrained[e] && self.mesh.alive(e / 3) && {
-                    let (s, t2) = (
-                        self.mesh.triangles[e],
-                        self.mesh.triangles[next_halfedge(e)],
-                    );
+            let encroached = self.mesh.edge_ids().find(|&edge| {
+                self.is_constrained(edge) && self.mesh.alive(edge.face()) && {
+                    let (s, t2) = self.mesh.edge_vertices(edge);
                     in_diametral_circle(xy(s, points), xy(t2, points), center)
                 }
             });
-            let xy_now = |s: usize| points[s].xy();
+            let xy_now = |s| site_xy(points, s);
             let placed = if let Some(e) = encroached {
                 self.prepare_split(&xy_now, points, e)?
             } else {
                 match self
                     .mesh
-                    .locate_bounded(&xy_now, t, center, &self.constrained)
+                    .locate_bounded(&xy_now, face, center, &self.constrained)
                 {
-                    Ok(Located::OnEdge(e)) if self.constrained[e] => {
+                    Ok(Located::OnEdge(e)) if self.is_constrained(e) => {
                         self.prepare_split(&xy_now, points, e)?
                     },
                     Ok(located) => Some(PreparedSplit {
@@ -629,7 +676,7 @@ impl ConstrainedMesh {
                 },
                 None => NodeProvenance::Generated,
             });
-            let xy2 = |s: usize| points[s].xy();
+            let xy2 = |s| site_xy(points, s);
             let mut skip = Vec::with_capacity(self.constrained.len());
             skip.extend_from_slice(&self.constrained);
             self.mesh.insert_constrained(&xy2, site, located, &skip)?;
@@ -662,13 +709,10 @@ impl ConstrainedMesh {
         &self,
         xy: &impl Fn(usize) -> XY,
         points: &[Point],
-        e: usize,
+        e: HalfedgeId,
     ) -> Result<Option<PreparedSplit>> {
-        let (start, end) = (
-            self.mesh.triangles[e],
-            self.mesh.triangles[next_halfedge(e)],
-        );
-        if self.constrained[e] {
+        let (start, end) = self.mesh.edge_vertices(e);
+        if self.is_constrained(e) {
             let Some(piece) = self.source_pieces.get(&ordered(start, end)) else {
                 return Err(GeometryErrorKind::triangulation(
                     "constrained edge has no source interval",
@@ -705,14 +749,14 @@ impl ConstrainedMesh {
                 source: Some((source_piece, parameter)),
             }));
         }
-        let ps = points[start].xy();
-        let pt = points[self.mesh.triangles[next_halfedge(e)]].xy();
+        let ps = site_xy(points, start);
+        let pt = site_xy(points, end);
         let midpoint = XY::new(f64::midpoint(ps.x, pt.x), f64::midpoint(ps.y, pt.y));
         let located = match self
             .mesh
-            .locate_bounded(xy, e / 3, midpoint, &self.constrained)
+            .locate_bounded(xy, e.face(), midpoint, &self.constrained)
         {
-            Ok(Located::OnEdge(slot)) if slot == e || slot == self.mesh.halfedges[e] => {
+            Ok(Located::OnEdge(slot)) if slot == e || slot.index() == self.mesh.twin(e) => {
                 Located::OnEdge(e)
             },
             Ok(Located::Inside(face)) => Located::Inside(face),
@@ -747,10 +791,12 @@ impl ConstrainedMesh {
     /// A source split is topologically on an edge only after exact
     /// classification says so. An adjacent-face hit is an interior point, not
     /// evidence that the source edge can be replaced by two edges.
-    fn locate_split(&self, xy: &impl Fn(usize) -> XY, e: usize, point: XY) -> Option<Located> {
-        let twin = self.mesh.halfedges[e];
-        match self.mesh.classify(xy, e / 3, point) {
-            Ok(Located::OnEdge(slot)) => (slot == e || slot == twin).then_some(Located::OnEdge(e)),
+    fn locate_split(&self, xy: &impl Fn(usize) -> XY, e: HalfedgeId, point: XY) -> Option<Located> {
+        let twin = self.mesh.twin(e);
+        match self.mesh.classify(xy, e.face(), point) {
+            Ok(Located::OnEdge(slot)) => {
+                (slot == e || slot.index() == twin).then_some(Located::OnEdge(e))
+            },
             Ok(Located::Inside(_) | Located::OnVertex) | Err(_) => None,
         }
     }
@@ -758,13 +804,11 @@ impl ConstrainedMesh {
     fn constrained_pairs(&self) -> Result<HashSet<(usize, usize)>> {
         #[cfg(test)]
         update_work(|counters| counters.constraint_reconstruction_passes += 1);
-        let mut pairs = crate::collections::try_hash_set_with_capacity(self.mesh.halfedges.len())?;
-        for e in 0..self.mesh.halfedges.len() {
-            if self.constrained[e] && self.mesh.alive(e / 3) {
-                pairs.insert(ordered(
-                    self.mesh.triangles[e],
-                    self.mesh.triangles[next_halfedge(e)],
-                ));
+        let mut pairs = crate::collections::try_hash_set_with_capacity(self.mesh.edge_count())?;
+        for edge in self.mesh.edge_ids() {
+            if self.is_constrained(edge) && self.mesh.alive(edge.face()) {
+                let (start, end) = self.mesh.edge_vertices(edge);
+                pairs.insert(ordered(start, end));
             }
         }
         Ok(pairs)
@@ -775,16 +819,16 @@ impl ConstrainedMesh {
     fn remark(&mut self, pairs: &HashSet<(usize, usize)>) {
         #[cfg(test)]
         update_work(|counters| counters.flag_remark_passes += 1);
-        self.constrained = vec![false; self.mesh.halfedges.len()];
-        for e in 0..self.mesh.halfedges.len() {
-            if !self.mesh.alive(e / 3) {
+        self.constrained = vec![false; self.mesh.edge_count()];
+        for edge in self.mesh.edge_ids() {
+            if !self.mesh.alive(edge.face()) {
                 continue;
             }
             if pairs.contains(&ordered(
-                self.mesh.triangles[e],
-                self.mesh.triangles[next_halfedge(e)],
+                self.mesh.edge_start(edge),
+                self.mesh.edge_end(edge),
             )) {
-                self.constrained[e] = true;
+                Self::set_constrained(&mut self.constrained, edge, true);
             }
         }
     }
@@ -885,9 +929,9 @@ impl ConstrainedMesh {
         self.validate_source_chains(&points)?;
         let inside = self.inside_faces();
         let mut faces = Vec::with_capacity(self.mesh.triangle_count());
-        for (t, &kept) in inside.iter().enumerate() {
-            if kept && self.mesh.alive(t) {
-                faces.push(self.mesh.triangle(t));
+        for (face, &kept) in self.mesh.face_ids().zip(&inside) {
+            if kept && self.mesh.alive(face) {
+                faces.push(self.mesh.triangle(face));
             }
         }
         let mut constraint_pieces = Vec::with_capacity(self.source_pieces.len());
@@ -997,22 +1041,25 @@ mod tests {
             "the constraint 0-2 is an edge"
         );
         let slot = mesh.mesh.edge_slot(0, 2).unwrap();
-        assert!(mesh.constrained[slot]);
+        assert!(mesh.constrained[slot.index()]);
     }
 
     /// The constraint flags mark exactly the constrained vertex pairs, on both
     /// halves of each edge.
     fn assert_flags_match(mesh: &ConstrainedMesh, edges: &[[usize; 2]]) {
-        for e in 0..mesh.mesh.halfedges.len() {
-            if !mesh.mesh.alive(e / 3) {
+        for edge in mesh.mesh.edge_ids() {
+            if !mesh.mesh.alive(edge.face()) {
                 continue;
             }
-            let pair = ordered(
-                mesh.mesh.triangles[e],
-                mesh.mesh.triangles[next_halfedge(e)],
-            );
+            let (start, end) = mesh.mesh.edge_vertices(edge);
+            let pair = ordered(start, end);
             let expected = edges.iter().any(|&[u, v]| ordered(u, v) == pair);
-            assert_eq!(mesh.constrained[e], expected, "slot {e} pair {pair:?}");
+            assert_eq!(
+                mesh.constrained[edge.index()],
+                expected,
+                "slot {} pair {pair:?}",
+                edge.index()
+            );
         }
     }
 
@@ -1068,7 +1115,15 @@ mod tests {
                 })
                 .collect::<Vec<_>>(),
         );
-        assert!(result.is_err());
+        assert!(matches!(
+            result.as_ref(),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    ErrorKind::Geometry(GeometryErrorKind::Triangulation(message))
+                        if message.as_ref() == "constrained triangulation boundaries cross"
+                )
+        ));
     }
 
     #[test]
@@ -1085,15 +1140,20 @@ mod tests {
         let mesh = ConstrainedMesh::build(&pts, &edges).unwrap();
         let inside = mesh.inside_faces();
         let xy = |s: usize| pts[s].xy();
-        for (t, &kept) in inside.iter().enumerate() {
-            if !mesh.mesh.alive(t) {
+        for (face, &kept) in mesh.mesh.face_ids().zip(&inside) {
+            if !mesh.mesh.alive(face) {
                 continue;
             }
-            let [a, b, c] = mesh.mesh.triangle(t);
+            let [a, b, c] = mesh.mesh.triangle(face);
             let cx = (xy(a).x + xy(b).x + xy(c).x) / 3.0;
             let cy = (xy(a).y + xy(b).y + xy(c).y) / 3.0;
             let in_hole = (4.0..6.0).contains(&cx) && (4.0..6.0).contains(&cy);
-            assert_eq!(kept, !in_hole, "face {t} centroid ({cx}, {cy})");
+            assert_eq!(
+                kept,
+                !in_hole,
+                "face {} centroid ({cx}, {cy})",
+                face.index()
+            );
         }
     }
 
@@ -1107,9 +1167,9 @@ mod tests {
             "a generous budget completes"
         );
         let inside = mesh.inside_faces();
-        for (t, &kept) in inside.iter().enumerate() {
-            if kept && mesh.mesh.alive(t) {
-                let [a, b, c] = mesh.mesh.triangle(t);
+        for (face, &kept) in mesh.mesh.face_ids().zip(&inside) {
+            if kept && mesh.mesh.alive(face) {
+                let [a, b, c] = mesh.mesh.triangle(face);
                 assert!(
                     open_xy_cycle_magnitude(&[pts[a].xy(), pts[b].xy(), pts[c].xy()]).get() <= 25.0
                 );
@@ -1206,8 +1266,10 @@ mod regressions {
     }
     fn inside_count(cdt: &ConstrainedMesh) -> usize {
         let inside = cdt.inside_faces();
-        (0..cdt.mesh.triangle_count())
-            .filter(|&t| cdt.mesh.alive(t) && inside[t])
+        cdt.mesh
+            .face_ids()
+            .zip(inside)
+            .filter(|(face, kept)| cdt.mesh.alive(*face) && *kept)
             .count()
     }
 

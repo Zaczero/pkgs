@@ -1078,6 +1078,36 @@ fn earcut_rejects_hole_touching_shell() {
 }
 
 #[test]
+fn earcut_reports_outside_first_hole_before_a_later_invalid_hole() {
+    let poly = polygon(
+        vec![xy(0.0, 0.0), xy(10.0, 0.0), xy(10.0, 10.0), xy(0.0, 10.0)],
+        vec![
+            vec![
+                xy(20.0, 20.0),
+                xy(22.0, 20.0),
+                xy(22.0, 22.0),
+                xy(20.0, 22.0),
+            ],
+            vec![
+                xy(4.0, 4.0),
+                xy(6.0, 6.0),
+                xy(4.0, 6.0),
+                xy(6.0, 4.0),
+                xy(7.0, 5.0),
+            ],
+        ],
+    );
+    let error = Shape::Polygon(poly)
+        .polygon_triangles()
+        .expect_err("the first outside hole owns the reported failure");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Geometry(GeometryErrorKind::Triangulation(message))
+            if message.as_ref() == "polygon hole is not strictly inside the shell"
+    ));
+}
+
+#[test]
 fn earcut_rejects_self_crossing_ring() {
     let poly = polygon(
         vec![
@@ -1150,7 +1180,7 @@ fn zscale_one_d_morton_orders_horizontal_sliver() {
     sorted.sort_unstable();
     assert_eq!(keys, sorted, "x-ordered ring should have monotone z keys");
     let arena = EarArena::new(&ring);
-    assert!(arena.z_scale.is_some());
+    assert!(arena.has_z_scale());
 }
 
 #[test]
