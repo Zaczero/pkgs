@@ -280,22 +280,16 @@ fn py_to_json_value_inner(
         return py_to_json_value_mapping(&dict, projection, depth);
     }
     if let Ok(list) = value.cast::<PyList>() {
-        let mut values = crate::try_vec_with_capacity(list.len())?;
+        let mut values = Vec::with_capacity(list.len());
         for item in list.iter() {
-            crate::try_push(
-                &mut values,
-                py_to_json_value_inner(&item, projection, depth + 1)?,
-            )?;
+            values.push(py_to_json_value_inner(&item, projection, depth + 1)?);
         }
         return Ok(Value::Array(values));
     }
     if let Ok(tuple) = value.cast::<PyTuple>() {
-        let mut values = crate::try_vec_with_capacity(tuple.len())?;
+        let mut values = Vec::with_capacity(tuple.len());
         for item in tuple.iter() {
-            crate::try_push(
-                &mut values,
-                py_to_json_value_inner(&item, projection, depth + 1)?,
-            )?;
+            values.push(py_to_json_value_inner(&item, projection, depth + 1)?);
         }
         return Ok(Value::Array(values));
     }

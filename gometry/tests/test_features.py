@@ -459,6 +459,133 @@ def test_feature_collection_broadcasts_mapping_and_bounds_alignment() -> None:
             gm.to_feature_collection(points, ids=scalar)  # type: ignore[arg-type]
 
 
+def test_feature_collection_drains_geometry_provider_before_row_validation() -> None:
+    class GeometryProviderError(RuntimeError):
+        pass
+
+    def rows():
+        yield object()
+        raise GeometryProviderError('later geometry provider failure')
+
+    with pytest.raises(GeometryProviderError, match='later geometry provider failure'):
+        gm.to_feature_collection(rows())
+
+
+def test_feature_collection_validates_rows_before_side_provider() -> None:
+    class SideProviderError(RuntimeError):
+        pass
+
+    class SideRows:
+        def __iter__(self):
+            raise SideProviderError('side iterator must not be acquired')
+
+    with pytest.raises(TypeError, match='expected Geometry'):
+        gm.to_feature_collection([object()], properties=SideRows())
+
+
+def test_feature_collection_aligns_sides_before_geometry_serialization() -> None:
+    class SideProviderError(RuntimeError):
+        pass
+
+    class SideRows:
+        def __iter__(self):
+            raise SideProviderError('side iterator precedes coordinate serialization')
+
+    with pytest.raises(
+        SideProviderError, match='side iterator precedes coordinate serialization'
+    ):
+        gm.to_feature_collection([gm.Point(181, 0)], properties=SideRows())
+
+
+def test_feature_collection_broadcasts_keys_only_mapping_once() -> None:
+    nested: list[int] = []
+
+    class OneShotProperties:
+        def __init__(self) -> None:
+            self.keys_calls = 0
+
+        def keys(self):
+            self.keys_calls += 1
+            if self.keys_calls > 1:
+                raise RuntimeError('keys stream was consumed twice')
+            return iter(('nested',))
+
+        def __getitem__(self, key: str) -> list[int]:
+            assert key == 'nested'
+            return nested
+
+    properties = OneShotProperties()
+    features = gm.to_feature_collection(
+        [gm.Point(0, 0), gm.Point(1, 1)], properties=properties
+    )['features']
+
+    assert properties.keys_calls == 1
+    first, second = features
+    assert first['properties'] is not second['properties']
+    assert first['properties'] == second['properties'] == {'nested': nested}
+    assert first['properties']['nested'] is second['properties']['nested'] is nested
+
+
+def test_feature_collection_accepts_exact_4097_row_iterables() -> None:
+    row_count = 4097
+    points = [gm.Point(index % 170 - 85, index % 80) for index in range(row_count)]
+
+    class GeometryRows:
+        def __len__(self) -> int:
+            return row_count
+
+        def __iter__(self):
+            return iter(points)
+
+    class PropertyRows:
+        def __len__(self) -> int:
+            return row_count
+
+        def __iter__(self):
+            return ({'row': index} for index in range(row_count))
+
+    class IdRows:
+        def __len__(self) -> int:
+            return row_count
+
+        def __iter__(self):
+            return iter(range(row_count))
+
+    features = gm.to_feature_collection(
+        GeometryRows(), properties=PropertyRows(), ids=IdRows()
+    )['features']
+
+    assert len(features) == row_count
+    assert features[0]['properties'] == {'row': 0}
+    assert features[-1]['properties'] == {'row': row_count - 1}
+    assert features[-1]['id'] == row_count - 1
+
+
+def test_feature_collection_accepts_lengthless_advisory_iterators() -> None:
+    point = gm.Point(2, 3)
+
+    class GeometryRows:
+        def __iter__(self):
+            return iter([point, point])
+
+        def __length_hint__(self) -> int:
+            return 1 << 40
+
+    class PropertyRows:
+        def __iter__(self):
+            return iter([{'row': 0}, {'row': 1}])
+
+        def __length_hint__(self) -> int:
+            return 1 << 40
+
+    features = gm.to_feature_collection(GeometryRows(), properties=PropertyRows())[
+        'features'
+    ]
+
+    assert len(features) == 2
+    assert features[1]['properties'] == {'row': 1}
+
+
 def test_feature_collection_accepts_one_geometry_or_null_geometry() -> None:
     point = gm.Point(1, 2)
     feature = gm.to_feature_collection(point, properties={'name': 'one'})['features'][0]

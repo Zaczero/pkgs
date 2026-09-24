@@ -392,6 +392,55 @@ def test_geojson_malformed_geometry_has_one_path_across_text_mapping_interface()
         )
 
 
+@pytest.mark.parametrize(
+    'sequence_factory',
+    [pytest.param(list, id='list'), pytest.param(tuple, id='tuple')],
+)
+def test_geojson_nested_sequence_conversion_stops_at_first_unsupported_child(
+    sequence_factory: Callable[..., object],
+) -> None:
+    class FirstUnsupported:
+        pass
+
+    class LaterUnsupported:
+        pass
+
+    coordinates = sequence_factory((
+        sequence_factory((FirstUnsupported(), 0)),
+        sequence_factory((LaterUnsupported(), 0)),
+    ))
+
+    with pytest.raises(
+        gm.GeometryError, match='unsupported JSON value type FirstUnsupported'
+    ):
+        gm.from_geojson(
+            {'type': 'LineString', 'coordinates': coordinates},
+            crs=None,
+        )
+
+
+@pytest.mark.parametrize(
+    'sequence_factory',
+    [pytest.param(list, id='list'), pytest.param(tuple, id='tuple')],
+)
+def test_geojson_nested_sequence_conversion_keeps_geometry_path(
+    sequence_factory: Callable[..., object],
+) -> None:
+    coordinates = sequence_factory((
+        sequence_factory((0, 0)),
+        sequence_factory((1, 'not numeric')),
+        sequence_factory((2, 0)),
+    ))
+
+    with pytest.raises(gm.ParseError) as exc_info:
+        gm.from_geojson(
+            {'type': 'LineString', 'coordinates': coordinates},
+            crs=None,
+        )
+
+    assert exc_info.value.path == '$.coordinates[1][1]'
+
+
 def test_geojson_multipolygon_invalid_ordinate_reports_nested_path() -> None:
     payload = {
         'type': 'MultiPolygon',
