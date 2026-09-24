@@ -14,7 +14,6 @@ use pyo3::exceptions::PyBufferError;
 use pyo3::prelude::*;
 #[cfg(Py_GIL_DISABLED)]
 use pyo3::types::PyBytes;
-#[cfg(Py_GIL_DISABLED)]
 use pyo3::types::PyMemoryView;
 
 #[cfg(Py_GIL_DISABLED)]
@@ -39,12 +38,15 @@ pub(crate) fn get_untyped_buffer(value: &Bound<'_, PyAny>) -> PyResult<Option<Py
 pub(crate) fn try_typed_buffer<T: Element>(
     value: &Bound<'_, PyAny>,
 ) -> PyResult<Option<PyBuffer<T>>> {
-    if value.is_exact_instance_of::<PyUntypedArray>()
-        && let Ok(array) = value.cast::<PyUntypedArray>()
+    if let Ok(array) = value.cast::<PyUntypedArray>()
         && array.ndim() == 0
     {
-        // NumPy uses a null shape pointer for scalars; retain their existing
-        // scalar path, while subclasses still run their own buffer callback.
+        if value.is_exact_instance_of::<PyUntypedArray>() {
+            // NumPy uses a null shape pointer for base scalar arrays; retain
+            // their existing scalar path.
+            return Ok(None);
+        }
+        drop(PyMemoryView::from(value)?);
         return Ok(None);
     }
     let Some(buffer) = get_untyped_buffer(value)? else {

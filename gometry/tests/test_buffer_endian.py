@@ -65,6 +65,57 @@ def test_zero_dimensional_f64_buffers_remain_single_coordinate_columns() -> None
     assert points.to_wkt() == ['POINT (1.25 2.5)', 'POINT (1.25 3.5)']
 
 
+@pytest.mark.parametrize(
+    ('dtype', 'value', 'expected'),
+    [
+        (
+            np.float64,
+            1.25,
+            ['POINT (1.25 2.5)', 'POINT (1.25 3.5)'],
+        ),
+        (
+            np.int64,
+            1,
+            ['POINT (1 2.5)', 'POINT (1 3.5)'],
+        ),
+        (
+            object,
+            1.25,
+            ['POINT (1.25 2.5)', 'POINT (1.25 3.5)'],
+        ),
+    ],
+    ids=['float64', 'int64', 'object-float'],
+)
+def test_zero_dimensional_ndarray_subclass_broadcasts_as_scalar(
+    dtype: object,
+    value: float,
+    expected: list[str],
+) -> None:
+    class ScalarArray(np.ndarray):
+        pass
+
+    x = np.array(value, dtype=dtype).view(ScalarArray)
+    assert gm.points(x, [2.5, 3.5]).to_wkt() == expected
+
+
+@pytest.mark.skipif(
+    sys.version_info < (3, 12),
+    reason='Python-level buffer protocol overrides require Python 3.12',
+)
+def test_zero_dimensional_ndarray_subclass_buffer_exception_keeps_identity() -> None:
+    error = RuntimeError('ndarray subclass buffer sentinel')
+
+    class RaisingBufferArray(np.ndarray):
+        def __buffer__(self, flags: int) -> memoryview:
+            raise error
+
+    x = np.array(1.25).view(RaisingBufferArray)
+    with pytest.raises(RuntimeError) as excinfo:
+        gm.points(x, [2.5, 3.5])
+
+    assert excinfo.value is error
+
+
 def test_d03_big_endian_misread_would_be_wrong_without_swap() -> None:
     """Sanity: raw BE→host reinterpret of 1.0 is not 1.0; our path must still yield 1.0."""
     import struct
