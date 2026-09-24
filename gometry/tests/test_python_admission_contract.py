@@ -148,6 +148,21 @@ def test_scalar_float_classification_does_not_reprobe_stateful_values() -> None:
     assert at.calls == 1
 
 
+def test_line_interpolate_drains_at_provider_before_processing_array_rows() -> None:
+    class RaisingDistances:
+        def __len__(self) -> int:
+            return 2
+
+        def __iter__(self):
+            yield 1.0
+            raise RuntimeError('at provider boom')
+
+    rows = gm.GeometryArray([gm.Point(0, 0), gm.LineString([(0, 0), (10, 0)])])
+
+    with pytest.raises(RuntimeError, match='at provider boom'):
+        rows.line_interpolate(RaisingDistances())
+
+
 @pytest.mark.parametrize(
     'operation',
     [

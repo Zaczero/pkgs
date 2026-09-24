@@ -59,6 +59,18 @@ def test_line_interpolate_counts_distances_and_index_reuse() -> None:
         gm.box(0, 0, 1, 1).line_interpolate(count=2)
 
 
+def test_line_interpolate_count_above_advisory_hint_keeps_exact_output_length() -> None:
+    line = gm.LineString([(0, 0), (10, 0)])
+    samples = line.line_interpolate(count=4097)
+    assert len(samples) == 4097
+    assert (samples[0].x, samples[-1].x) == (0.0, 10.0)
+
+    packed = gm.GeometryArray([line]).line_interpolate(count=4097)
+    assert len(packed) == 1
+    assert len(packed[0]) == 4097
+    assert (packed[0][0].x, packed[0][-1].x) == (0.0, 10.0)
+
+
 def test_interpolate_m_runs_continuously_across_parts() -> None:
     line = gm.LineString([(0, 0), (10, 0)], z=[7, 8])
     measured = line.interpolate_m(0, 100)

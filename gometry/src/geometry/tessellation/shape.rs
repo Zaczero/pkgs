@@ -1,3 +1,5 @@
+use std::borrow::Borrow;
+
 use crate::NonNegative;
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
@@ -528,7 +530,7 @@ impl Shape {
     /// vertices and interpolate noding vertices from source edges, so Z/M is
     /// carried by provenance; `strict` selects strict ordinate verification
     /// while the default uses the lenient degradation policy.
-    pub fn polygonize_all(shapes: &[&Self], strict: bool) -> Result<Vec<Self>> {
+    pub fn polygonize_all<S: Borrow<Self>>(shapes: &[S], strict: bool) -> Result<Vec<Self>> {
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
@@ -598,7 +600,10 @@ impl Shape {
 
     /// [`Shape::polygonize_all`] with diagnostics: one combined universe for
     /// polygons, cut edges, dangles, and invalid rings alike.
-    pub fn polygonize_full_all(shapes: &[&Self], strict: bool) -> Result<PolygonizeFull> {
+    pub fn polygonize_full_all<S: Borrow<Self>>(
+        shapes: &[S],
+        strict: bool,
+    ) -> Result<PolygonizeFull> {
         let inventory = ExactSourceInventory::from_shapes(shapes)?;
         let mut budget = ExpansionBudget::new("polygonize_full", "exact partition");
         let mut partition = inventory.partition(&mut budget)?;
@@ -609,7 +614,8 @@ impl Shape {
             rows.into_iter()
                 .enumerate()
                 .map(|(row, outputs)| {
-                    carry_each(outputs, &[shapes[row]], "polygonize_full", strict)
+                    let source = <S as Borrow<Self>>::borrow(&shapes[row]);
+                    carry_each(outputs, &[source], "polygonize_full", strict)
                 })
                 .collect::<Result<Vec<_>>>()
         };

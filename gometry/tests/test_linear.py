@@ -492,6 +492,32 @@ def test_zero_length_line_linear_referencing_degenerates_cleanly() -> None:
     assert degenerate.line_locate(gm.Point(9, 9)) == 0.0
 
 
+def test_line_interpolate_keeps_subnormal_length_and_reports_length_overflow() -> None:
+    tiny = math.ulp(0.0)
+    subnormal = gm.LineString([(0.0, 0.0), (tiny, 0.0)])
+    assert subnormal.line_interpolate(tiny).x == tiny
+
+    maximum = sys.float_info.max
+    with pytest.raises(gm.GeometryError, match='non-finite segment length'):
+        gm.LineString([(-maximum, 0.0), (maximum, 0.0)]).line_interpolate(0.0)
+
+    lines = gm.GeometryArray([
+        gm.LineString([(0.0, 0.0), (1.0, 0.0)]),
+        gm.LineString([(-maximum, 0.0), (maximum, 0.0)]),
+    ])
+    with pytest.raises(gm.GeometryError, match='non-finite segment length') as error:
+        lines.line_interpolate(0.0)
+    assert error.value.__notes__ == ['while processing array element 1']
+
+    with pytest.raises(gm.GeometryError, match='total length must be finite'):
+        gm.LineString([
+            (0.0, 0.0),
+            (1.0e308, 0.0),
+            (0.0, 0.0),
+            (1.0e308, 0.0),
+        ]).line_interpolate(0.0)
+
+
 def test_measured_lrs_rejects_non_monotone_m_and_handles_plateaus() -> None:
     non_monotone = gm.from_wkt('LINESTRING M (0 0 0, 1 0 2, 2 0 1)')
     with pytest.raises(ValueError, match='monotonic'):

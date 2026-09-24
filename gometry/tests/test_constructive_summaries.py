@@ -369,6 +369,57 @@ def test_polygonize_full_preserves_epoch() -> None:
         assert groups[0].epoch == 2020.0
 
 
+def test_polygonize_full_diagnostics_keep_source_rows_after_missing_input() -> None:
+    joined_cycles = gm.MultiLineString([
+        [(0, 0), (1, 0), (1, 1), (0, 1), (0, 0)],
+        [(1, 0), (2, 0)],
+        [(2, 0), (3, 0), (3, 1), (2, 1), (2, 0)],
+    ])
+    dangle = gm.LineString([(-1, 5), (0, 5)])
+    invalid = gm.MultiLineString([[(10, 0), (11, 0)], [(10, 0), (11, 0)]])
+
+    result = gm.polygonize_full(gm.GeometryArray([None, joined_cycles, dangle, invalid]))
+
+    assert len(result.polygons) == 2
+    assert [len(row) for row in result.cut_edges] == [0, 1, 0, 0]
+    assert [len(row) for row in result.dangles] == [0, 0, 1, 0]
+    assert [len(row) for row in result.invalid_rings] == [0, 0, 0, 1]
+
+    cut = list(result.cut_edges[1][0].coords)
+    assert tuple(sorted((tuple(cut[0]), tuple(cut[-1])))) == ((1.0, 0.0), (2.0, 0.0))
+    dangle_coords = list(result.dangles[2][0].coords)
+    assert tuple(sorted((tuple(dangle_coords[0]), tuple(dangle_coords[-1])))) == (
+        (-1.0, 5.0),
+        (0.0, 5.0),
+    )
+    invalid_coords = list(result.invalid_rings[3][0].coords)
+    assert len(invalid_coords) == 3
+    assert invalid_coords[0] == invalid_coords[-1]
+    assert {tuple(point) for point in invalid_coords} == {(10.0, 0.0), (11.0, 0.0)}
+
+
+@pytest.mark.parametrize(
+    ('right_crs', 'right_epoch'),
+    [(3857, 2020.0), (4326, 2021.0)],
+    ids=['crs-mismatch', 'epoch-mismatch'],
+)
+@pytest.mark.parametrize(
+    'operation',
+    [gm.polygonize, gm.polygonize_full],
+    ids=['polygonize', 'polygonize-full'],
+)
+def test_pooled_polygonize_rejects_crs_and_epoch_mismatches(
+    right_crs: int,
+    right_epoch: float,
+    operation,
+) -> None:
+    left = gm.LineString([(0, 0), (1, 0)], crs=4326, epoch=2020.0)
+    right = gm.LineString([(1, 0), (1, 1)], crs=right_crs, epoch=right_epoch)
+
+    with pytest.raises(gm.CRSMismatchError):
+        operation([left, right])
+
+
 def test_empty_polygon_rejects_non_iterable_holes() -> None:
     with pytest.raises(TypeError):
         gm.Polygon(None, holes=cast('Any', 42))

@@ -169,11 +169,10 @@ pub(crate) fn line_interpolate_points_coordseq(
     let crate::crs::MetricModel::Planar { to_metre } = model else {
         unreachable!("packed column path is planar-only");
     };
-    let mut points = Vec::new();
-    crate::boundary::try_reserve_vec(&mut points, plan.sample_count())?;
+    let mut points = Vec::with_capacity(plan.sample_count());
     if line.is_empty() {
         for _ in 0..plan.sample_count() {
-            crate::boundary::try_push_vec(&mut points, Shape::empty_point())?;
+            points.push(Shape::empty_point());
         }
         return Ok(points);
     }
@@ -181,26 +180,20 @@ pub(crate) fn line_interpolate_points_coordseq(
     match plan {
         InterpolatePlan::Count(count) => {
             for sample in 0..*count {
-                crate::boundary::try_push_vec(
-                    &mut points,
-                    Shape::Point(index.interpolate(
-                        InterpolatePlan::count_fraction(sample, *count),
-                        true,
-                        &PlanarMetric,
-                    )),
-                )?;
+                points.push(Shape::Point(index.interpolate(
+                    InterpolatePlan::count_fraction(sample, *count),
+                    true,
+                    &PlanarMetric,
+                )));
             }
         },
         InterpolatePlan::Distances(distances, mode) => {
             for &distance in distances {
-                crate::boundary::try_push_vec(
-                    &mut points,
-                    Shape::Point(index.interpolate(
-                        mode.planar_along(distance, to_metre.get()),
-                        mode.is_normalized(),
-                        &PlanarMetric,
-                    )),
-                )?;
+                points.push(Shape::Point(index.interpolate(
+                    mode.planar_along(distance, to_metre.get()),
+                    mode.is_normalized(),
+                    &PlanarMetric,
+                )));
             }
         },
     }
@@ -216,8 +209,7 @@ pub(crate) fn line_interpolate_points_shape(
     plan: &InterpolatePlan,
     lane: crate::dispatch::Lane,
 ) -> Result<Vec<Shape>, crate::error::Error> {
-    let mut shapes = Vec::new();
-    crate::boundary::try_reserve_vec(&mut shapes, plan.sample_count())?;
+    let mut shapes = Vec::with_capacity(plan.sample_count());
     let sample = |distance, mode| {
         crate::broadcast::degrade_linref_point(
             line_interpolate_shape_with_mode(model, shape, frame_cache, distance, mode),
@@ -227,18 +219,15 @@ pub(crate) fn line_interpolate_points_shape(
     match plan {
         InterpolatePlan::Count(count) => {
             for index in 0..*count {
-                crate::boundary::try_push_vec(
-                    &mut shapes,
-                    sample(
-                        InterpolatePlan::count_fraction(index, *count),
-                        crate::crs::DistanceMode::of(true),
-                    )?,
-                )?;
+                shapes.push(sample(
+                    InterpolatePlan::count_fraction(index, *count),
+                    crate::crs::DistanceMode::of(true),
+                )?);
             }
         },
         InterpolatePlan::Distances(distances, mode) => {
             for &distance in distances {
-                crate::boundary::try_push_vec(&mut shapes, sample(distance, *mode)?)?;
+                shapes.push(sample(distance, *mode)?);
             }
         },
     }

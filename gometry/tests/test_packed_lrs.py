@@ -59,6 +59,25 @@ def test_packed_interpolate_per_row_distance_param() -> None:
     assert [p.y for p in varied] == [0.0, 6.0]
 
 
+def test_packed_gathered_nullable_interpolation_keeps_logical_rows() -> None:
+    rows = gm.GeometryArray([
+        gm.LineString([(0, 0), (10, 0)]),
+        gm.LineString([(0, 10), (0, 18)]),
+        None,
+        gm.LineString([(20, 0), (24, 0)]),
+    ])
+    selected = rows[[3, 0, 2, 3]]
+
+    groups = selected.line_interpolate(count=2)
+
+    assert [[(point.x, point.y) for point in group] for group in groups] == [
+        [(20.0, 0.0), (24.0, 0.0)],
+        [(0.0, 0.0), (10.0, 0.0)],
+        [],
+        [(20.0, 0.0), (24.0, 0.0)],
+    ]
+
+
 def test_packed_substring_per_row_distance_params() -> None:
     lines = _long_packed_lines()
     scalar = (lines).line_substring(1.0, 3.0)

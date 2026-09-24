@@ -396,12 +396,7 @@ pub(crate) fn coverage_union(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyRes
 #[pyfunction]
 pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<PyGeometryArray> {
     let (metadata, shapes) = pooled_shapes(values)?;
-    let polygons = py.detach(move || {
-        let mut refs = Vec::new();
-        crate::boundary::try_reserve_vec(&mut refs, shapes.len())?;
-        refs.extend(&shapes);
-        Shape::polygonize_all(&refs, false)
-    })?;
+    let polygons = py.detach(move || Shape::polygonize_all(&shapes, false))?;
     Ok(PyGeometryArray::from_shapes(polygons, metadata)?)
 }
 
@@ -440,12 +435,7 @@ pub(crate) fn polygonize(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<
 #[pyfunction]
 pub(crate) fn polygonize_full(py: Python<'_>, values: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
     let (metadata, shapes) = pooled_shapes_with_rows(values)?;
-    let full = py.detach(move || {
-        let mut refs = Vec::new();
-        crate::boundary::try_reserve_vec(&mut refs, shapes.len())?;
-        refs.extend(&shapes);
-        Shape::polygonize_full_all(&refs, false)
-    })?;
+    let full = py.detach(move || Shape::polygonize_full_all(&shapes, false))?;
     crate::py_polygonize_full(py, full, metadata.crs_ref(), metadata.epoch())
 }
 

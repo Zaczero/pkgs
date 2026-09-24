@@ -14,7 +14,7 @@
 //! nodes, and canonical atoms are generated items. Sweep scratch is
 //! [`ResourceError`], not the item cap.
 
-use std::borrow::Cow;
+use std::borrow::{Borrow, Cow};
 use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::hash::BuildHasherDefault;
@@ -511,11 +511,11 @@ pub(in crate::geometry) struct ExactSourceInventory {
 }
 
 impl ExactSourceInventory {
-    pub(in crate::geometry) fn from_shapes(shapes: &[&Shape]) -> Result<Self> {
+    pub(in crate::geometry) fn from_shapes<S: Borrow<Shape>>(shapes: &[S]) -> Result<Self> {
         let mut staged = StagedExactSources::new(shapes.len());
         for (operand, shape) in shapes.iter().enumerate() {
             let operand = u32::try_from(operand).map_err(|_| ResourceError::SizeOverflow)?;
-            staged.append_shape(shape, operand)?;
+            staged.append_shape(Borrow::<Shape>::borrow(shape), operand)?;
         }
         Self::from_staged(staged)
     }
