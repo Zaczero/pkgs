@@ -31,6 +31,27 @@ fn point_append_admission_rejects_when_count_is_u32_max() {
     ));
 }
 
+#[test]
+fn line_source_ranges_reserve_only_stored_multiline_values() {
+    let line = LineSeq::from_proven(
+        CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(1.0, 0.0)]).unwrap(),
+    );
+    let mut members = Vec::with_capacity(65);
+    for _ in 0..64 {
+        members.push(crate::geometry::MultiMember::Empty);
+    }
+    members.push(crate::geometry::MultiMember::Value(line));
+    let lines = MultiLineString::try_new(crate::geometry::CoordinateAxes::XY, members).unwrap();
+    let member_count = lines.member_count();
+    assert_eq!(lines.len(), 1);
+
+    let shape = Shape::MultiLineString(lines);
+    let source = LineSource::from_shape(&shape).expect("multiline source");
+    let ranges = source_line_ranges(source).unwrap();
+    assert_eq!(ranges, [0..1]);
+    assert!(ranges.capacity() < member_count);
+}
+
 impl ExactPartition<'_> {
     fn stored_node(&self, point: XY) -> Option<NodeId> {
         let key = PointKey::new(point);
