@@ -288,6 +288,10 @@ impl<T> NonEmptyVec<T> {
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
+
+    pub(crate) fn is_shared(&self) -> bool {
+        self.0.is_shared()
+    }
 }
 
 impl<T> std::ops::Deref for NonEmptyVec<T> {
@@ -421,6 +425,10 @@ impl GeometryCollection {
 
     pub(crate) fn len(&self) -> usize {
         self.members.len()
+    }
+
+    pub(crate) fn members_are_shared(&self) -> bool {
+        self.members.is_shared()
     }
 }
 

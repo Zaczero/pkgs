@@ -16,6 +16,8 @@
 
 use std::borrow::Cow;
 use std::cmp::Ordering;
+use std::collections::HashSet;
+use std::hash::BuildHasherDefault;
 use std::mem;
 use std::ops::{ControlFlow, Range};
 
@@ -498,6 +500,25 @@ impl ExactSourceInventory {
             staged.append_shape(shape, operand)?;
         }
         Self::from_staged(staged)
+    }
+
+    /// Build only the sources that can select occupied two-dimensional faces.
+    ///
+    /// Point and line sources can subdivide an areal boundary, but cannot alter
+    /// its selected faces. Their extra boundary crosses telescope exactly
+    /// across the homogeneous subdivisions, so they do not belong in this
+    /// area-only partition.
+    fn from_occupied_area_shape(shape: &Shape) -> Result<Option<Self>> {
+        let mut staged = StagedExactSources::new(1);
+        {
+            let mut collection_owners =
+                HashSet::<usize, BuildHasherDefault<crate::collections::IndexHasher>>::default();
+            staged.append_occupied_area_shape(shape, 0, &mut collection_owners)?;
+        }
+        if staged.polygon_count == 0 {
+            return Ok(None);
+        }
+        Self::from_staged(staged).map(Some)
     }
 
     /// Stage polygonal inputs as one operand for their union, or `None` when
@@ -1867,7 +1888,9 @@ impl ExactSourceInventory {
 }
 
 pub(crate) fn occupied_cartesian_area(shape: &Shape) -> Result<f64> {
-    let inventory = ExactSourceInventory::from_shapes(&[shape])?;
+    let Some(inventory) = ExactSourceInventory::from_occupied_area_shape(shape)? else {
+        return Ok(0.0);
+    };
     let mut budget = ExpansionBudget::new("area", "exact partition");
     let partition = inventory.partition(&mut budget)?;
     inventory.occupied_cartesian_area(&partition)
@@ -2045,6 +2068,50 @@ impl StagedExactSources {
             },
             crate::geometry::Component::Polygon(polygon) => self.append_polygon(polygon, operand),
         })
+    }
+
+    fn append_occupied_area_shape(
+        &mut self,
+        shape: &Shape,
+        operand: u32,
+        collection_owners: &mut HashSet<usize, BuildHasherDefault<crate::collections::IndexHasher>>,
+    ) -> Result<()> {
+        match shape {
+            Shape::Point(..)
+            | Shape::MultiPoint(..)
+            | Shape::LineString(..)
+            | Shape::MultiLineString(..)
+            | Shape::Empty(..) => {},
+            Shape::Polygon(polygon) => self.append_polygon(polygon, operand)?,
+            Shape::MultiPolygon(polygons) => {
+                for polygon in polygons {
+                    self.append_polygon(polygon, operand)?;
+                }
+            },
+            Shape::GeometryCollection(collection) => {
+                let members = collection.as_slice();
+                if !members.iter().any(|member| {
+                    matches!(
+                        member,
+                        Shape::Polygon(..)
+                            | Shape::MultiPolygon(..)
+                            | Shape::GeometryCollection(..)
+                    )
+                }) {
+                    return Ok(());
+                }
+                if collection.members_are_shared() {
+                    let address = members.as_ptr().addr();
+                    if !collection_owners.insert(address) {
+                        return Ok(());
+                    }
+                }
+                for member in members {
+                    self.append_occupied_area_shape(member, operand, collection_owners)?;
+                }
+            },
+        }
+        Ok(())
     }
 
     /// One point with no segment to carry it: the three isolated columns move
