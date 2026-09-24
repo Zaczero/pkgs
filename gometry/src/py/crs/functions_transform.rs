@@ -365,19 +365,31 @@ pub(crate) fn coordinates_to_matrix_py(
     let capacity = rows
         .checked_mul(columns)
         .ok_or_else(|| GeometryError::new_err("coordinate matrix size overflows usize"))?;
-    let mut flat = crate::try_vec_with_capacity(capacity)?;
+    let mut flat = vec![0.0; capacity];
     match z {
         None => {
-            for i in 0..rows {
-                crate::try_push(&mut flat, x[i])?;
-                crate::try_push(&mut flat, y[i])?;
+            for (values, (&x, &y)) in flat
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(x.iter().zip(y.iter()))
+            {
+                let [out_x, out_y] = values;
+                *out_x = x;
+                *out_y = y;
             }
         },
         Some(z) => {
-            for i in 0..rows {
-                crate::try_push(&mut flat, x[i])?;
-                crate::try_push(&mut flat, y[i])?;
-                crate::try_push(&mut flat, z[i])?;
+            for (values, ((&x, &y), &z)) in flat
+                .as_chunks_mut::<3>()
+                .0
+                .iter_mut()
+                .zip(x.iter().zip(y.iter()).zip(z.iter()))
+            {
+                let [out_x, out_y, out_z] = values;
+                *out_x = x;
+                *out_y = y;
+                *out_z = z;
             }
         },
     }
@@ -544,15 +556,15 @@ pub(crate) fn crs_transform_bounds(
             GeometryError::new_err("bounds must be a 4-tuple or 6-tuple of finite floats")
         })?;
         let mut items = Vec::new();
-        crate::try_push(&mut items, first)?;
-        crate::try_reserve_vec(&mut items, rest.len())?;
+        items.push(first);
+        items.reserve(rest.len());
         items.extend(rest);
         items
     } else {
         let rest = crate::collect_py_iter_from_iter(bounds, iter, Ok)?;
         let mut items = Vec::new();
-        crate::try_push(&mut items, first)?;
-        crate::try_reserve_vec(&mut items, rest.len())?;
+        items.push(first);
+        items.reserve(rest.len());
         items.extend(rest);
         items
     };
@@ -596,56 +608,44 @@ pub(crate) fn crs_transform_bounds(
             )),
         },
         BoundsShape::Many(rows) => {
-            let columns = rows.first().map_or(4, BoundsRow::width);
-            let len = rows.len();
+            let (len, columns) = match &rows {
+                BoundsRows::TwoD(rows) => (rows.len(), 4),
+                BoundsRows::ThreeD(rows) => (rows.len(), 6),
+            };
             let (out, execution) = py.detach(move || {
                 let capacity = len
                     .checked_mul(columns)
                     .ok_or_else(|| GeometryError::new_err("bounds matrix size overflows usize"))?;
-                let mut out = crate::try_vec_with_capacity(capacity)?;
-                if columns == 4 {
-                    let mut input_rows = crate::try_vec_with_capacity(len)?;
-                    for row in rows {
-                        crate::try_push(&mut input_rows, match row {
-                            BoundsRow::TwoD(bounds) => bounds,
-                            BoundsRow::ThreeD(_) => {
-                                unreachable!("checked homogeneous bounds width")
-                            },
-                        })?;
-                    }
-                    let (transformed, execution) = crs::transform_bounds_many(
-                        &source,
-                        &target,
-                        &input_rows,
-                        densify,
-                        options,
-                    )?;
-                    for transformed in transformed {
-                        out.extend_from_slice(&<[f64; 4]>::from(transformed));
-                    }
-                    Ok::<_, PyErr>((out, execution))
-                } else {
-                    let mut input_rows = crate::try_vec_with_capacity(len)?;
-                    for row in rows {
-                        crate::try_push(&mut input_rows, match row {
-                            BoundsRow::ThreeD(bounds) => bounds,
-                            BoundsRow::TwoD(_) => {
-                                unreachable!("checked homogeneous bounds width")
-                            },
-                        })?;
-                    }
-                    let (transformed, execution) = crs::transform_bounds_3d_many(
-                        &source,
-                        &target,
-                        &input_rows,
-                        densify,
-                        options,
-                    )?;
-                    for transformed in transformed {
-                        out.extend_from_slice(&<[f64; 6]>::from(transformed));
-                    }
-                    Ok::<_, PyErr>((out, execution))
-                }
+                let mut out = Vec::with_capacity(capacity);
+                let execution = match rows {
+                    BoundsRows::TwoD(input_rows) => {
+                        let (transformed, execution) = crs::transform_bounds_many(
+                            &source,
+                            &target,
+                            &input_rows,
+                            densify,
+                            options,
+                        )?;
+                        for transformed in transformed {
+                            out.extend_from_slice(&<[f64; 4]>::from(transformed));
+                        }
+                        execution
+                    },
+                    BoundsRows::ThreeD(input_rows) => {
+                        let (transformed, execution) = crs::transform_bounds_3d_many(
+                            &source,
+                            &target,
+                            &input_rows,
+                            densify,
+                            options,
+                        )?;
+                        for transformed in transformed {
+                            out.extend_from_slice(&<[f64; 6]>::from(transformed));
+                        }
+                        execution
+                    },
+                };
+                Ok::<_, PyErr>((out, execution))
             })?;
             Ok((float64_matrix(py, out, len, columns)?, execution))
         },
@@ -654,23 +654,14 @@ pub(crate) fn crs_transform_bounds(
     Ok(result)
 }
 
-enum BoundsRow {
-    TwoD((f64, f64, f64, f64)),
-    ThreeD((f64, f64, f64, f64, f64, f64)),
-}
-
-impl BoundsRow {
-    const fn width(&self) -> usize {
-        match self {
-            Self::TwoD(_) => 4,
-            Self::ThreeD(_) => 6,
-        }
-    }
+enum BoundsRows {
+    TwoD(Vec<(f64, f64, f64, f64)>),
+    ThreeD(Vec<(f64, f64, f64, f64, f64, f64)>),
 }
 
 enum BoundsShape {
     One(Vec<f64>),
-    Many(Vec<BoundsRow>),
+    Many(BoundsRows),
 }
 
 /// Structural One|Many classification over already-materialized bounds items.
@@ -694,12 +685,12 @@ fn classify_bounds_shape(
         if !first.is_finite() {
             return Err(GeometryError::new_err("bounds must be finite"));
         }
-        let mut values = crate::try_vec_with_capacity(items.len())?;
-        crate::try_push(&mut values, first)?;
+        let mut values = Vec::with_capacity(items.len());
+        values.push(first);
         for item in &items[1..] {
             // Match float_values' element contract: f64-extractable only.
             let value = crate::finite_f64_required("bounds", item)?;
-            crate::try_push(&mut values, value)?;
+            values.push(value);
         }
         if !matches!(values.len(), 4 | 6) {
             return Err(GeometryError::new_err(
@@ -708,8 +699,7 @@ fn classify_bounds_shape(
         }
         return Ok(BoundsShape::One(values));
     }
-    let mut rows = Vec::new();
-    rows.reserve(items.len());
+    let mut rows = None;
     let mut width = None;
     for item in items {
         let values =
@@ -732,16 +722,29 @@ fn classify_bounds_shape(
             }
         } else {
             width = Some(row_width);
+            rows = Some(match row_width {
+                4 => BoundsRows::TwoD(Vec::with_capacity(items.len())),
+                6 => BoundsRows::ThreeD(Vec::with_capacity(items.len())),
+                _ => unreachable!("checked row width above"),
+            });
         }
-        crate::try_push(&mut rows, match values.as_slice() {
-            [minx, miny, maxx, maxy] => BoundsRow::TwoD((*minx, *miny, *maxx, *maxy)),
-            [minx, miny, minz, maxx, maxy, maxz] => {
-                BoundsRow::ThreeD((*minx, *miny, *minz, *maxx, *maxy, *maxz))
+        match (
+            rows.as_mut()
+                .expect("the first valid row creates its output"),
+            values.as_slice(),
+        ) {
+            (BoundsRows::TwoD(output), [minx, miny, maxx, maxy]) => {
+                output.push((*minx, *miny, *maxx, *maxy));
             },
-            _ => unreachable!("checked row width above"),
-        })?;
+            (BoundsRows::ThreeD(output), [minx, miny, minz, maxx, maxy, maxz]) => {
+                output.push((*minx, *miny, *minz, *maxx, *maxy, *maxz));
+            },
+            _ => unreachable!("checked homogeneous bounds width"),
+        }
     }
-    Ok(BoundsShape::Many(rows))
+    Ok(BoundsShape::Many(
+        rows.expect("nonempty batch contains at least one valid row"),
+    ))
 }
 
 #[pyfunction(signature = (

@@ -31,15 +31,15 @@ fn geocode_array_codes(
             return Err(crate::note_array_row(error.into(), row));
         },
     };
-    let mut output = crate::try_vec_with_capacity(points.len())?;
+    let mut output = Vec::with_capacity(points.len());
     for row in 0..points.len() {
         if array.is_row_missing(row) {
-            crate::try_push(&mut output, None)?;
+            output.push(None);
             continue;
         }
         let point = points.get(row);
         let code = operation(point.x, point.y).map_err(|err| crate::note_array_row(err, row))?;
-        crate::try_push(&mut output, Some(code))?;
+        output.push(Some(code));
     }
     Ok(output)
 }
@@ -424,14 +424,19 @@ pub(crate) fn osm_shortlink_location(
         CodeInput::Scalar(code) => Ok(shortlink_decode(&code)?.into_pyobject(py)?.unbind().into()),
         CodeInput::Many(codes) => {
             let (lon, lat, zoom) = py.detach(move || {
-                let mut lon = crate::try_vec_with_capacity(codes.len())?;
-                let mut lat = crate::try_vec_with_capacity(codes.len())?;
-                let mut zoom = crate::try_vec_with_capacity(codes.len())?;
-                for code in &codes {
+                let mut lon = vec![0.0; codes.len()];
+                let mut lat = vec![0.0; codes.len()];
+                let mut zoom = vec![0_i64; codes.len()];
+                for (((lon, lat), zoom), code) in lon
+                    .iter_mut()
+                    .zip(lat.iter_mut())
+                    .zip(zoom.iter_mut())
+                    .zip(&codes)
+                {
                     let (x, y, z) = shortlink_decode(code)?;
-                    crate::try_push(&mut lon, x)?;
-                    crate::try_push(&mut lat, y)?;
-                    crate::try_push(&mut zoom, i64::from(z))?;
+                    *lon = x;
+                    *lat = y;
+                    *zoom = i64::from(z);
                 }
                 Ok::<_, PyErr>((lon, lat, zoom))
             })?;
