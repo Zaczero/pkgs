@@ -127,10 +127,11 @@ fn mixed_batch(length: usize, shapes: Vec<Shape>, missing: Vec<usize>) -> Native
 }
 
 fn missing_rows(node: &NativeNode) -> Vec<usize> {
-    if node.effective_missing.is_none() {
+    let missing_count = node.missing_count();
+    if missing_count == 0 {
         return Vec::new();
     }
-    let mut missing = Vec::with_capacity(node.length);
+    let mut missing = Vec::with_capacity(missing_count);
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -141,22 +142,19 @@ fn missing_rows(node: &NativeNode) -> Vec<usize> {
 
 fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let coordinates = NativeCoordinates::new(node)?;
-    let missing = missing_rows(node);
     for row in 0..node.length {
         if node.missing_at(row) {
             continue;
         }
         if !coordinates.point_packable(row, row)? {
-            return decode_points_mixed(node);
+            return decode_points_mixed(node, &coordinates);
         }
     }
+    let missing = missing_rows(node);
     let coords = if missing.is_empty() {
         Arc::new(coordinates.coords().clone())
     } else {
-        let mut builder = CoordSeqBuilder::with_capacity(
-            coordinates.axes(),
-            node.length.saturating_sub(missing.len()),
-        );
+        let mut builder = CoordSeqBuilder::with_capacity(coordinates.axes(), node.present_count());
         for row in 0..node.length {
             if !node.missing_at(row) {
                 builder.push_at(coordinates.coords(), row);
@@ -177,10 +175,12 @@ fn decode_points(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     })
 }
 
-fn decode_points_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
-    let coordinates = NativeCoordinates::new(node)?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+fn decode_points_mixed(
+    node: &NativeNode,
+    coordinates: &NativeCoordinates,
+) -> DecodeResult<NativeDecodedBatch> {
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -241,8 +241,8 @@ fn decode_coordseq_rows(
         .child(0)
         .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow geometry list child is missing"))?;
     let coordinates = NativeCoordinates::new(values)?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -286,8 +286,8 @@ fn decode_multilinestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch
         NativeArrowDecodeError::geoarrow("Arrow line coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -397,8 +397,8 @@ fn decode_polygons_mixed(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> 
         NativeArrowDecodeError::geoarrow("Arrow ring coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -430,11 +430,8 @@ fn packed_lines_storage(
         }));
     }
 
-    let mut builder = PackedColumnBuilder::like(
-        coordinates.coords(),
-        total_vertices,
-        node.length.wrapping_sub(missing.len()),
-    );
+    let mut builder =
+        PackedColumnBuilder::like(coordinates.coords(), total_vertices, node.present_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             continue;
@@ -458,7 +455,7 @@ fn packed_polygon_storage(
     total_vertices: usize,
     ring_count: usize,
 ) -> DecodeResult<GeometryArrayStorage> {
-    let present_rows = node.length - missing.len();
+    let present_rows = node.present_count();
     if missing.is_empty() && !needs_rebuild {
         let mut ring_offsets = CsrOffsetBuilder::with_capacity(ring_count);
         let mut polygon_offsets = CsrOffsetBuilder::with_capacity(present_rows);
@@ -530,8 +527,8 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
         NativeArrowDecodeError::geoarrow("Arrow ring coordinate child is missing")
     })?;
     let coordinates = NativeCoordinates::new(values)?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -622,9 +619,9 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
     let data = node
         .bytes_at(2)
         .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow WKB data buffer is missing"))?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut srids = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut srids = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);
@@ -651,9 +648,9 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
     let views = node
         .bytes_at(1)
         .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow binary-view buffer is missing"))?;
-    let mut shapes = Vec::with_capacity(node.length);
-    let mut srids = Vec::with_capacity(node.length);
-    let mut missing = Vec::with_capacity(node.length);
+    let mut shapes = Vec::with_capacity(node.present_count());
+    let mut srids = Vec::with_capacity(node.present_count());
+    let mut missing = Vec::with_capacity(node.missing_count());
     for row in 0..node.length {
         if node.missing_at(row) {
             missing.push(row);

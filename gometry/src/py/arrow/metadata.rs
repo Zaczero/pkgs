@@ -196,18 +196,6 @@ impl GeoParquetPhysicalLayout {
             WkbOffsetWidth::View => "view",
         }
     }
-
-    /// Retain the historical private `(has_extension, crs, epoch)` unpacking
-    /// contract while exposing the full record through named properties.
-    fn __iter__(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let values = (
-            self.has_extension,
-            self.embedded_crs.clone(),
-            self.embedded_epoch,
-        )
-            .into_pyobject(py)?;
-        values.call_method0("__iter__").map(Bound::unbind)
-    }
 }
 
 /// Typed failure categories at the GeoParquet physical-layout boundary.
