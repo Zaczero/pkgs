@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rstar::{AABB, RTree, RTreeObject};
 
@@ -242,11 +242,29 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
     Ok(canonical)
 }
 
-/// Cover already-canonical atomic shapes and merge one global cell union. This
-/// is shared by source covering and the per-component bbox representation, so
-/// neither may hand every syntactic window the full adaptive target.
+/// Retain the first occurrence of each exact bbox window without changing its order.
+fn deduplicate_bbox_windows(windows: &mut Vec<Shape>) {
+    if windows.len() <= 1 {
+        return;
+    }
+
+    let mut seen = BTreeSet::new();
+    windows.retain(|window| {
+        let bounds = window
+            .bounds()
+            .expect("constructed bbox query windows have bounds");
+        seen.insert([
+            bounds.minx().to_bits(),
+            bounds.miny().to_bits(),
+            bounds.maxx().to_bits(),
+            bounds.maxy().to_bits(),
+        ])
+    });
+}
+
+/// Cover S2 bbox query windows and merge their one global cell union.
 fn cover_s2_shapes(
-    components: Vec<Shape>,
+    mut components: Vec<Shape>,
     min_level: u8,
     max_level: u8,
     level_mod: u8,
@@ -254,6 +272,7 @@ fn cover_s2_shapes(
     target_cells: usize,
     rule: CoverRule,
 ) -> Result<Vec<(CellId, bool)>, S2ComponentCoverError> {
+    deduplicate_bbox_windows(&mut components);
     if components.is_empty() {
         return Ok(Vec::new());
     }
@@ -453,4 +472,106 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     );
     crate::add_classes!(m; PyS2Cell);
     Ok(())
+}
+
+#[cfg(test)]
+mod bbox_window_dedup_tests {
+    use super::deduplicate_bbox_windows;
+    use crate::geometry::{LineSeq, Point, Shape};
+    use crate::py::cells::coverage_ops::envelope_window_shapes;
+
+    fn line(west: f64, east: f64, latitude: f64) -> Shape {
+        Shape::LineString(
+            LineSeq::segment(
+                Point::new_raw_xy(west, latitude),
+                Point::new_raw_xy(east, latitude),
+            )
+            .expect("valid bbox component line"),
+        )
+    }
+
+    fn windows(lines: Vec<Shape>) -> Vec<Shape> {
+        let source = Shape::geometry_collection(lines).expect("valid bbox components");
+        envelope_window_shapes(&source).expect("valid bbox query windows")
+    }
+
+    #[test]
+    fn exact_bbox_window_dedup_preserves_first_order_and_bound_bits() {
+        let east = line(179.5, 180.0, 0.0);
+        let west = line(-180.0, -179.5, 0.0);
+        let mut seam_windows = windows(vec![east.clone(), west.clone(), east, west]);
+        assert_eq!(seam_windows.len(), 4);
+
+        deduplicate_bbox_windows(&mut seam_windows);
+
+        assert_eq!(seam_windows.len(), 2);
+        let mut seam_windows_iter = seam_windows.iter();
+        let east_window = seam_windows_iter.next().expect("first seam window");
+        let west_window = seam_windows_iter.next().expect("second seam window");
+        assert_eq!(
+            east_window
+                .bounds()
+                .expect("east seam window has bounds")
+                .minx()
+                .to_bits(),
+            179.5_f64.to_bits()
+        );
+        assert_eq!(
+            west_window
+                .bounds()
+                .expect("west seam window has bounds")
+                .minx()
+                .to_bits(),
+            (-180.0_f64).to_bits()
+        );
+
+        let mut reversed_lines = windows(vec![line(-10.0, 10.0, 0.0), line(10.0, -10.0, 0.0)]);
+        assert_eq!(reversed_lines.len(), 2);
+        let mut reversed_iter = reversed_lines.iter();
+        let forward_window = reversed_iter.next().expect("forward line envelope");
+        let backward_window = reversed_iter.next().expect("backward line envelope");
+        assert_eq!(
+            forward_window.bounds(),
+            backward_window.bounds(),
+            "reversed source spelling produces the same exact envelope window"
+        );
+        deduplicate_bbox_windows(&mut reversed_lines);
+        assert_eq!(reversed_lines.len(), 1);
+
+        let mut signed_zero_lines = windows(vec![line(-0.0, 10.0, 0.0), line(0.0, 10.0, 0.0)]);
+        assert_eq!(signed_zero_lines.len(), 2);
+        let mut signed_zero_iter = signed_zero_lines.iter();
+        let negative_zero_window = signed_zero_iter.next().expect("negative-zero window");
+        let positive_zero_window = signed_zero_iter.next().expect("positive-zero window");
+        assert!(
+            negative_zero_window
+                .covers(positive_zero_window)
+                .expect("same support")
+        );
+        assert!(
+            positive_zero_window
+                .covers(negative_zero_window)
+                .expect("same support")
+        );
+        assert_ne!(
+            negative_zero_window
+                .bounds()
+                .expect("negative-zero window has bounds")
+                .minx()
+                .to_bits(),
+            positive_zero_window
+                .bounds()
+                .expect("positive-zero window has bounds")
+                .minx()
+                .to_bits()
+        );
+
+        deduplicate_bbox_windows(&mut signed_zero_lines);
+
+        assert_eq!(
+            signed_zero_lines.len(),
+            2,
+            "topological equality does not merge distinct exact bound bits"
+        );
+    }
 }

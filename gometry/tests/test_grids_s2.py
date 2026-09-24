@@ -425,6 +425,75 @@ def test_s2_adaptive_bbox_budget_is_global_and_exact_duplicates_are_free() -> No
     assert len(deduplicated) == 1
 
 
+def test_s2_bbox_exact_duplicate_windows_are_idempotent() -> None:
+    """Repeated bbox windows do not divide the returned-coverage target."""
+    window = gm.LineString([(-10.0, 0.0), (10.0, 0.0)], crs=4326)
+    repeated = gm.GeometryCollection([window] * 8, crs=4326)
+
+    for options in (
+        {'level': 8, 'max_cells': None},
+        {
+            'min_level': 0,
+            'max_level': 30,
+            'target_cells': 8,
+            'max_cells': None,
+        },
+        {
+            'min_level': 0,
+            'max_level': 30,
+            'target_cells': 8,
+            'max_cells': 1,
+        },
+        {
+            'min_level': 0,
+            'max_level': 30,
+            'target_cells': 8,
+            'max_cells': 8,
+        },
+    ):
+        single = gm.s2_cover(window, cell_rule='bbox', **options)
+        duplicate = gm.s2_cover(repeated, cell_rule='bbox', **options)
+        assert [cell.id for cell in duplicate] == [cell.id for cell in single]
+        if options['max_cells'] is not None:
+            assert len(duplicate) <= options['max_cells']
+
+
+def test_s2_bbox_exact_window_dedup_preserves_nonidentical_unions() -> None:
+    """Only identical query windows collapse; overlap and disjoint sets still union."""
+    overlapping = (
+        gm.LineString([(0.0, 0.0), (20.0, 0.0)], crs=4326),
+        gm.LineString([(10.0, 0.0), (30.0, 0.0)], crs=4326),
+    )
+    disjoint = (
+        gm.LineString([(-30.0, 15.0), (-20.0, 15.0)], crs=4326),
+        gm.LineString([(20.0, -15.0), (30.0, -15.0)], crs=4326),
+    )
+
+    for name, components, should_overlap in (
+        ('overlapping', overlapping, True),
+        ('disjoint', disjoint, False),
+    ):
+        component_ids = [
+            {
+                cell.id
+                for cell in gm.s2_cover(
+                    component, level=8, cell_rule='bbox', max_cells=None
+                )
+            }
+            for component in components
+        ]
+        if should_overlap:
+            assert component_ids[0].intersection(component_ids[1]), name
+        else:
+            assert component_ids[0].isdisjoint(component_ids[1]), name
+
+        aggregate = gm.GeometryCollection(components, crs=4326)
+        actual = gm.s2_cover(aggregate, level=8, cell_rule='bbox', max_cells=None)
+        assert [cell.id for cell in actual] == sorted(
+            component_ids[0] | component_ids[1]
+        )
+
+
 def test_s2_cover_superset_invariant_over_handwritten_corpus() -> None:
     """Every source point must lie in some returned cell.
 

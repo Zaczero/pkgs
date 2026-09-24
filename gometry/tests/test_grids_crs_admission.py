@@ -49,6 +49,28 @@ def test_a2_s2_bbox_antimeridian_not_full_equator():
     assert n_overlap > 0
     assert n_bbox <= max(4 * n_overlap, n_overlap + 64)
 
+    repeated_band = gm.GeometryCollection([band, band], crs=4326)
+    for budget in (
+        {'level': 8, 'max_cells': None},
+        {
+            'min_level': 0,
+            'max_level': 30,
+            'target_cells': 8,
+            'max_cells': None,
+        },
+        {
+            'min_level': 0,
+            'max_level': 30,
+            'target_cells': 8,
+            'max_cells': 16,
+        },
+    ):
+        single = gm.s2_cover(band, cell_rule='bbox', **budget)
+        duplicate = gm.s2_cover(repeated_band, cell_rule='bbox', **budget)
+        assert [cell.id for cell in duplicate] == [cell.id for cell in single]
+        if budget['max_cells'] is not None:
+            assert len(duplicate) <= budget['max_cells']
+
 
 # ---------------------------------------------------------------------------
 # A3 - H3 non-areal cell_rule refinement
