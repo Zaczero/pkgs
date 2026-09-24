@@ -53,7 +53,7 @@ impl<'a> PointArena<'a> {
     }
 
     pub(super) fn push(&mut self, recipe: NodeRecipe, rounded: XY) -> Result<u32> {
-        let index = u32::try_from(self.recipes.len()).map_err(|_| ResourceError::SizeOverflow)?;
+        let index = point_id_for_append(self.recipes.len())?;
         self.recipes.push(recipe);
         self.rounded.push(rounded);
         Ok(index)
@@ -172,6 +172,28 @@ impl<'a> PointArena<'a> {
             items.reverse();
         }
         Ok(())
+    }
+}
+
+/// Admit a node ID only when its append leaves the count representable by the
+/// `u32`-counted topology and emission loops.
+pub(super) fn point_id_for_append(current_count: usize) -> Result<u32> {
+    let id = u32::try_from(current_count).map_err(|_| ResourceError::SizeOverflow)?;
+    if id == u32::MAX {
+        return Err(ResourceError::SizeOverflow.into());
+    }
+    Ok(id)
+}
+
+/// Convert per-segment contact counts into native-vector offsets in place.
+pub(super) fn prefix_contact_offsets(offsets: &mut [usize]) {
+    let Some((first, rest)) = offsets.split_first_mut() else {
+        return;
+    };
+    let mut total = *first;
+    for offset in rest {
+        total = total.wrapping_add(*offset);
+        *offset = total;
     }
 }
 
@@ -464,26 +486,40 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     // Group contacts by segment (counting placement), then order each group
     // along its segment: by rounded coordinate first, and exactly only within
     // a run of equal rounded coordinates, whose equal points are one node.
-    let mut contact_starts = vec![0_u32; unique.len() + 1];
+    let mut contact_starts = vec![0_usize; unique.len().wrapping_add(1)];
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "contact source IDs come from unique and the count vector includes a terminal slot"
+    )]
     for &(segment, _) in &contacts {
-        contact_starts[segment as usize + 1] += 1;
+        let next = (segment as usize).wrapping_add(1);
+        contact_starts[next] = contact_starts[next].wrapping_add(1);
     }
-    for index in 0..unique.len() {
-        contact_starts[index + 1] += contact_starts[index];
-    }
+    prefix_contact_offsets(&mut contact_starts);
     let mut along = vec![0_u32; contacts.len()];
     {
         let mut cursor = Vec::with_capacity(unique.len());
         cursor.extend_from_slice(&contact_starts[..unique.len()]);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "prefix cursors place each contact inside the along slice for its source"
+        )]
         for &(segment, handle) in &contacts {
-            along[cursor[segment as usize] as usize] = handle;
-            cursor[segment as usize] += 1;
+            let segment = segment as usize;
+            along[cursor[segment]] = handle;
+            cursor[segment] = cursor[segment].wrapping_add(1);
         }
     }
     drop(contacts);
     let mut equal_pairs: Vec<(u32, u32)> = Vec::new();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "prefix offsets partition along in unique-segment order"
+    )]
     for (index, &segment) in unique.iter().enumerate() {
-        let group = &mut along[contact_starts[index] as usize..contact_starts[index + 1] as usize];
+        let start = contact_starts[index];
+        let end = contact_starts[index.wrapping_add(1)];
+        let group = &mut along[start..end];
         if group.len() > 1 {
             forest.points.order_along(
                 segment,

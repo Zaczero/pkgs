@@ -1,5 +1,36 @@
 use super::*;
 
+#[test]
+fn contact_offsets_use_the_native_index_domain_past_u32_max() {
+    let u32_max = usize::try_from(u32::MAX).expect("u32 count fits this supported target");
+    let mut over_u32 = [0, u32_max, 1];
+    construction::prefix_contact_offsets(&mut over_u32);
+    assert_eq!(over_u32, [0, u32_max, u32_max.wrapping_add(1)]);
+
+    let mut at_u32 = [0, u32_max.wrapping_sub(1), 1];
+    construction::prefix_contact_offsets(&mut at_u32);
+    assert_eq!(at_u32, [0, u32_max.wrapping_sub(1), u32_max]);
+}
+
+#[test]
+fn point_append_admission_rejects_when_count_is_u32_max() {
+    let u32_max = usize::try_from(u32::MAX).expect("u32 count fits this supported target");
+    let last_id = u32::MAX.wrapping_sub(1);
+    assert_eq!(
+        construction::point_id_for_append(u32_max.wrapping_sub(1))
+            .expect("the maximum supported count can be reached"),
+        last_id
+    );
+    assert!(matches!(
+        construction::point_id_for_append(u32_max),
+        Err(error)
+            if matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            )
+    ));
+}
+
 impl ExactPartition<'_> {
     fn stored_node(&self, point: XY) -> Option<NodeId> {
         let key = PointKey::new(point);
