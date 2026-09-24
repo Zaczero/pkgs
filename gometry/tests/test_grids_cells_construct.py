@@ -9,6 +9,7 @@ assertions stay in the H3/S2/geohash/tile oracle modules.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass
 
 import gometry as gm
@@ -522,7 +523,9 @@ def test_cells_accept_packed_point_arrays(grid: GridCase) -> None:
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cell_admission_error_keeps_logical_row_after_missing(grid: GridCase) -> None:
     points = gm.points([0, 0], [0, 91], crs=4326)._with_missing([True, False])
-    with pytest.raises(gm.InvalidGeometryError, match='invalid longitude/latitude') as error:
+    with pytest.raises(
+        gm.InvalidGeometryError, match='invalid longitude/latitude'
+    ) as error:
         grid.factory(points, **{grid.depth_kw: grid.depth})
     assert error.value.__notes__ == ['while processing array element 1']
 
@@ -921,6 +924,60 @@ def test_cell_array_inference_preserves_all_grid_sequences(
         inferred = gm.CellArray(values)
         assert list(inferred) == expected
         assert inferred.grid == gm.CellArray(expected, type=type(cells[0])).grid
+
+
+@pytest.mark.parametrize('typed', [False, True], ids=['inferred', 'typed'])
+def test_cell_array_iterable_reserves_exact_length_once(typed: bool) -> None:
+    cell = gm.H3Cell(21.0, 52.0, resolution=7)
+
+    class ExactRows:
+        def __init__(self) -> None:
+            self.length_calls = 0
+
+        def __iter__(self):
+            return iter([cell, cell])
+
+        def __len__(self) -> int:
+            self.length_calls += 1
+            return 2
+
+    rows = ExactRows()
+    result = gm.CellArray(rows, type=gm.H3Cell) if typed else gm.CellArray(rows)
+
+    assert list(result) == [cell, cell]
+    assert rows.length_calls == 1
+
+
+def test_cell_array_rejects_unrepresentable_exact_length_before_next() -> None:
+    cell = gm.H3Cell(21.0, 52.0, resolution=7)
+
+    class ExactHugeRows:
+        def __init__(self) -> None:
+            self.remaining = sys.maxsize
+            self.events: list[str] = []
+            self.next_calls = 0
+
+        def __len__(self) -> int:
+            self.events.append('len')
+            return self.remaining
+
+        def __iter__(self):
+            self.events.append('iter')
+            return self
+
+        def __next__(self) -> gm.H3Cell:
+            self.next_calls += 1
+            if self.remaining == 0:
+                raise StopIteration
+            self.remaining -= 1
+            return cell
+
+    rows = ExactHugeRows()
+    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
+        gm.CellArray(rows, type=gm.H3Cell)
+
+    assert rows.events == ['iter', 'len']
+    assert rows.next_calls == 0
 
 
 def test_cells_plural_returns_cell_array_round_trip() -> None:

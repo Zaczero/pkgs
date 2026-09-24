@@ -473,6 +473,36 @@ def test_require_stream_reserves_from_exact_source_length_once() -> None:
     assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
 
+def test_generic_collection_rejects_unrepresentable_exact_length_before_next() -> None:
+    class ExactHugeGeometryRows:
+        def __init__(self) -> None:
+            self.remaining = sys.maxsize
+            self.events: list[str] = []
+            self.next_calls = 0
+
+        def __len__(self) -> int:
+            self.events.append('len')
+            return self.remaining
+
+        def __iter__(self):
+            self.events.append('iter')
+            return self
+
+        def __next__(self) -> gm.Point:
+            self.next_calls += 1
+            if self.remaining == 0:
+                raise StopIteration
+            self.remaining -= 1
+            return gm.Point(1, 2)
+
+    rows = ExactHugeGeometryRows()
+    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
+        gm.to_feature_collection(rows)
+
+    assert rows.events == ['iter', 'len']
+    assert rows.next_calls == 0
+
+
 def test_concrete_wkt_batch_reserves_from_exact_source_length_once() -> None:
     wkt_rows = ExactLengthList(['POINT (1 2)', 'POINT (3 4)'])
     wkt = gm.from_wkt(wkt_rows)

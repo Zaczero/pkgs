@@ -329,8 +329,8 @@ impl Groups {
             },
             Err(error) => return Err(error),
         };
-        let capacity = crate::optional_len(item)?.unwrap_or_default();
-        let mut values = Vec::with_capacity(capacity);
+        let mut values = Vec::new();
+        crate::reserve_from_py_len(item, &mut values)?;
         for (position, candidate) in iter.enumerate() {
             crate::check_python_signals(item.py(), position)?;
             let candidate = candidate?;

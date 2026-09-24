@@ -42,10 +42,11 @@ use boundary::{
     parse_affine_matrix, parse_area, parse_cdt_refinement, parse_grid_size, parse_sample_count,
     parse_sample_seed, point_tuple, point_xy, positive_int, py_i64_bounded, py_i64_required,
     py_index_check, py_index_object, py_isize_required, py_iter_or_error, py_u64_if_index,
-    py_u64_required, reject_multidimensional_coordinate_array, reserve_hint, strict_i32,
-    strict_i32_overflow, strict_i64, strict_i64_overflow, strict_i128, strict_optional_i64,
-    strict_u64, try_coordseq_from_nd_buffer, try_push, try_reserve_vec, try_vec_with_capacity,
-    validate_lonlat_shape, validate_subdivide_max_vertices, wgs84_crs, with_one_byte_buffer,
+    py_u64_required, reject_multidimensional_coordinate_array, reserve_from_py_len, reserve_hint,
+    strict_i32, strict_i32_overflow, strict_i64, strict_i64_overflow, strict_i128,
+    strict_optional_i64, strict_u64, try_coordseq_from_nd_buffer, try_push, try_reserve_vec,
+    try_vec_with_capacity, validate_lonlat_shape, validate_subdivide_max_vertices,
+    visit_py_iter_from_iter, wgs84_crs, with_one_byte_buffer,
 };
 mod collections;
 #[cfg(test)]

@@ -3,11 +3,11 @@
 //! Python-input -> `Vec<u64>` collectors the constructor uses.
 use h3o::CellIndex;
 use numpy::{PyReadonlyArrayDyn, PyUntypedArray, PyUntypedArrayMethods as _};
-use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyInt, PyString, PyType};
 
+use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
 use crate::grid::geohash::{GEOHASH_MAX_PRECISION, Geohash};
 use crate::grid::s2::cellid::CellId;
 use crate::grid::tile::Tile;
@@ -503,9 +503,10 @@ fn collect_ids_from_iter<'py>(
     kind: GridKind,
     mismatch: impl Fn(GridKind) -> PyErr,
 ) -> PyResult<CollectedCellIds> {
-    let mut ids = Vec::with_capacity(crate::optional_len(values)?.unwrap_or_default());
+    let mut ids = Vec::new();
+    crate::reserve_from_py_len(values, &mut ids)?;
     let mut missing = None;
-    crate::collect_py_iter_from_iter(values, iter, |item| {
+    crate::visit_py_iter_from_iter(values, iter, |item| {
         if item.is_none() {
             append_cell_row(&mut ids, &mut missing, 0, true);
         } else {
@@ -517,7 +518,7 @@ fn collect_ids_from_iter<'py>(
             let id = kind.id_from_value(&item)?;
             append_cell_row(&mut ids, &mut missing, id, false);
         }
-        Ok::<_, PyErr>(())
+        Ok(())
     })?;
     let missing =
         missing.and_then(|missing| crate::array::ValidityMask::from_vec(ids.len(), missing));
@@ -528,25 +529,26 @@ fn collect_inferred_from_iter<'py>(
     values: &Bound<'py, PyAny>,
     iter: Bound<'py, pyo3::types::PyIterator>,
 ) -> PyResult<(GridKind, CollectedCellIds)> {
-    let mut ids = Vec::with_capacity(crate::optional_len(values)?.unwrap_or_default());
+    let mut ids = Vec::new();
+    crate::reserve_from_py_len(values, &mut ids)?;
     let mut missing = None;
     let mut kind: Option<GridKind> = None;
     let mut pending = Vec::new();
-    crate::collect_py_iter_from_iter(values, iter, |item| {
+    crate::visit_py_iter_from_iter(values, iter, |item| {
         if item.is_none() {
             append_cell_row(&mut ids, &mut missing, 0, true);
-            return Ok::<_, PyErr>(());
+            return Ok(());
         }
         let Some(item_kind) = grid_kind_from_cell(&item) else {
             let Some(kind) = kind else {
                 let index = ids.len();
                 append_cell_row(&mut ids, &mut missing, 0, false);
                 pending.push((index, item));
-                return Ok::<_, PyErr>(());
+                return Ok(());
             };
             let id = kind.id_from_value(&item)?;
             append_cell_row(&mut ids, &mut missing, id, false);
-            return Ok::<_, PyErr>(());
+            return Ok(());
         };
         if let Some(kind) = kind
             && item_kind != kind
@@ -565,7 +567,7 @@ fn collect_inferred_from_iter<'py>(
         }
         let id = item_kind.id_from_value(&item)?;
         append_cell_row(&mut ids, &mut missing, id, false);
-        Ok::<_, PyErr>(())
+        Ok(())
     })?;
     let kind = kind.ok_or_else(|| {
         if ids.is_empty() {
@@ -621,12 +623,13 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
             missing: None,
         });
     }
-    if let Ok(buffer) = PyBuffer::<u64>::get(ids) {
+    if let Some(buffer) = try_typed_buffer::<u64>(ids)? {
         if kind == GridKind::GeohashCell {
             return Err(PyTypeError::new_err(
                 "geohash cells are constructed from tokens, not integers",
             ));
         }
+        let count = buffer_item_count(&buffer)?;
         // m07: same rank rule as ndarray — CellArray is a 0/1-D id column.
         // A multi-dimensional memoryview must not flatten while ndarray rejects.
         if buffer.dimensions() > 1 {
@@ -634,11 +637,9 @@ pub(super) fn collect_ids(ids: &Bound<'_, PyAny>, kind: GridKind) -> PyResult<Co
                 "cell array ids must be zero- or one-dimensional",
             ));
         }
-        let count = buffer.item_count();
         let mut values = vec![0; count];
-        // Copy via the buffer API into a fallibly reserved Vec; normalize
-        // non-native endian (e.g. NumPy `>u8`) so ids are not silently corrupted.
-        crate::buffer_copy_to_slice_u64(ids.py(), &buffer, &mut values)?;
+        // Normalize non-native endian (e.g. NumPy `>u8`) before interpreting ids.
+        crate::buffer_copy_to_slice_u64(ids.py(), &buffer, count, &mut values)?;
         for &id in &values {
             kind.validate_id(id)?;
         }
@@ -693,7 +694,7 @@ pub(super) fn collect_inferred_ids(
             "bare token text is ambiguous; use [{token:?}] for one cell or an explicit iterable for many"
         )));
     }
-    if PyBuffer::<u64>::get(values).is_ok() {
+    if try_typed_buffer::<u64>(values)?.is_some() {
         return Err(PyTypeError::new_err(
             "cell array type is required for raw id arrays and buffers",
         ));

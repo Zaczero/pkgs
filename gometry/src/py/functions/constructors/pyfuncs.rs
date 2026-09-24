@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
+use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
 use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
@@ -227,7 +228,6 @@ fn try_points_from_arc_columns(
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Option<CoordSeq>> {
-    use pyo3::buffer::PyBuffer;
     numpy::reject_masked_array(x)?;
     numpy::reject_masked_array(y)?;
     if let Some(value) = z {
@@ -236,15 +236,15 @@ fn try_points_from_arc_columns(
     if let Some(value) = m {
         numpy::reject_masked_array(value)?;
     }
-    let Ok(x_buffer) = PyBuffer::<f64>::get(x) else {
+    let Some(x_buffer) = try_typed_buffer::<f64>(x)? else {
         return Ok(None);
     };
-    let Ok(y_buffer) = PyBuffer::<f64>::get(y) else {
+    let Some(y_buffer) = try_typed_buffer::<f64>(y)? else {
         return Ok(None);
     };
     let z_buffer = match z {
         Some(value) if !value.is_none() => {
-            let Ok(buffer) = PyBuffer::<f64>::get(value) else {
+            let Some(buffer) = try_typed_buffer::<f64>(value)? else {
                 return Ok(None);
             };
             Some(buffer)
@@ -253,22 +253,22 @@ fn try_points_from_arc_columns(
     };
     let m_buffer = match m {
         Some(value) if !value.is_none() => {
-            let Ok(buffer) = PyBuffer::<f64>::get(value) else {
+            let Some(buffer) = try_typed_buffer::<f64>(value)? else {
                 return Ok(None);
             };
             Some(buffer)
         },
         _ => None,
     };
-    let x_len = x_buffer.item_count();
-    let y_len = y_buffer.item_count();
+    let x_len = buffer_item_count(&x_buffer)?;
+    let y_len = buffer_item_count(&y_buffer)?;
     if x_len != y_len {
         return Err(InvalidGeometryError::new_err(format!(
             "x and y must have the same length, got {x_len} and {y_len}",
         )));
     }
-    let xs = coordinate_column_values_from_buffer(py, &x_buffer)?;
-    let ys = coordinate_column_values_from_buffer(py, &y_buffer)?;
+    let xs = coordinate_column_values_from_buffer(py, &x_buffer, x_len)?;
+    let ys = coordinate_column_values_from_buffer(py, &y_buffer, y_len)?;
     let zs = optional_coordinate_column_values_from_buffer(py, z_buffer.as_ref(), x_len, "z")?;
     let ms = optional_coordinate_column_values_from_buffer(py, m_buffer.as_ref(), x_len, "m")?;
     Ok(Some(CoordSeq::from_owned_columns(xs, ys, zs, ms)?))

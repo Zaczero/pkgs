@@ -236,7 +236,7 @@ pub(crate) fn from_geojson(
         let decoded = py.detach(move || decode_geojson_text(text, crs_for_parse, parsed_epoch))?;
         return decoded_geojson_into_py(py, decoded);
     }
-    if is_py_bytes_or_bytearray(data) {
+    if is_py_bytes_or_bytearray(data)? {
         let bytes = if let Some(bytes) = exact_backed_bytes(data) {
             OwnedBytes::Backed(bytes)
         } else {
@@ -269,7 +269,7 @@ pub(crate) fn from_geojson(
                     if let Ok(text) = data.cast::<PyString>() {
                         return Ok(OwnedGeoJsonRow::Text(text.extract()?));
                     }
-                    if is_py_bytes_or_bytearray(data) {
+                    if is_py_bytes_or_bytearray(data)? {
                         return Ok(OwnedGeoJsonRow::Bytes(
                             if let Some(bytes) = exact_backed_bytes(data) {
                                 OwnedBytes::Backed(bytes)
@@ -303,7 +303,7 @@ pub(crate) fn from_geojson(
                 if let Ok(text) = data.cast::<PyString>() {
                     return Ok(OwnedGeoJsonRow::Text(text.extract()?));
                 }
-                if is_py_bytes_or_bytearray(data) {
+                if is_py_bytes_or_bytearray(data)? {
                     return Ok(OwnedGeoJsonRow::Bytes(
                         if let Some(bytes) = exact_backed_bytes(data) {
                             OwnedBytes::Backed(bytes)
@@ -408,7 +408,7 @@ pub(crate) fn from_features(
     if let Ok(text) = features.cast::<PyString>() {
         return parse_features_text(py, text.extract()?, crs, epoch);
     }
-    if is_py_bytes_or_bytearray(features) {
+    if is_py_bytes_or_bytearray(features)? {
         // Same one-byte buffer path as from_geojson / from_wkb: signed and
         // unsigned itemsize-1 exporters (bytes/bytearray/memoryview/array.array
         // 'B'|'b'). Do not re-fork an unsigned-only PyBuffer::<u8> lane.

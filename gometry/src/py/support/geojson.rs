@@ -105,7 +105,7 @@ pub(crate) fn classify_scalar_or_iterator<'py>(
     value: &Bound<'py, PyAny>,
 ) -> PyResult<ScalarOrIterator<'py>> {
     if value.cast::<PyString>().is_ok()
-        || is_py_bytes_or_bytearray(value)
+        || is_py_bytes_or_bytearray(value)?
         || is_mapping_like(value)?
         || value
             .getattr_opt(pyo3::intern!(value.py(), "__geo_interface__"))?
@@ -390,7 +390,7 @@ pub(crate) fn parse_geojson_slice(bytes: &[u8]) -> crate::error::Result<Value> {
     parse_json_bytes(bytes)
 }
 
-pub(crate) fn is_py_bytes_or_bytearray(value: &Bound<'_, PyAny>) -> bool {
+pub(crate) fn is_py_bytes_or_bytearray(value: &Bound<'_, PyAny>) -> PyResult<bool> {
     // Broad one-byte buffer detection: bytes/bytearray/memoryview plus any
     // buffer-protocol exporter with itemsize 1 (signed or unsigned) —
     // ``array.array('B'|'b')``, ``memoryview(...).cast('b')``, etc.
@@ -398,7 +398,7 @@ pub(crate) fn is_py_bytes_or_bytearray(value: &Bound<'_, PyAny>) -> bool {
 }
 
 pub(crate) fn parse_geojson_bytes_like(value: &Bound<'_, PyAny>) -> PyResult<Option<Value>> {
-    if !crate::is_one_byte_buffer(value) {
+    if !crate::is_one_byte_buffer(value)? {
         return Ok(None);
     }
     Ok(Some(crate::with_one_byte_buffer(value, |bytes| {

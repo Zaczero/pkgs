@@ -194,7 +194,7 @@ pub(crate) fn from_wkb(
         geometry.set_epoch_keep_crs(parsed_epoch)?;
         Ok(geometry)
     };
-    if crate::is_one_byte_buffer(data) {
+    if crate::is_one_byte_buffer(data)? {
         let bytes = if let Some(bytes) = exact_backed_bytes(data) {
             OwnedBytes::Backed(bytes)
         } else {

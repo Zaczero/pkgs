@@ -115,7 +115,7 @@ pub(crate) fn coerce_geometry(
     if let Some(geometry) = exact_geometry(item) {
         return Ok(geometry.clone());
     }
-    if is_one_byte_buffer(item) {
+    if is_one_byte_buffer(item)? {
         let bytes = crate::copy_wkb_payload(item)?;
         return Ok(item.py().detach(move || parse_wkb_geometry(&bytes))?);
     }
