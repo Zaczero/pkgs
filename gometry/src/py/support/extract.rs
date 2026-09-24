@@ -99,7 +99,7 @@ pub(crate) fn own_geometry_item(
     if let Some(geometry) = exact_geometry(item) {
         return Ok(OwnedGeometryItem::Native(geometry.clone()));
     }
-    if is_py_bytes_or_bytearray(item) {
+    if is_py_bytes_or_bytearray(item)? {
         return Ok(OwnedGeometryItem::Wkb(
             if let Some(bytes) = exact_backed_bytes(item) {
                 OwnedBytes::Backed(bytes)

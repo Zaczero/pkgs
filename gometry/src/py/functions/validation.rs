@@ -371,7 +371,7 @@ fn parse_require_input(geom: &Bound<'_, PyAny>, fallback: Option<&Crs>) -> PyRes
         let parsed = support::parse_geojson_text(text.as_ref())?;
         return parse_require_geojson_value(&parsed, fallback);
     }
-    if is_one_byte_buffer(geom) {
+    if is_one_byte_buffer(geom)? {
         return parse_require_buffer(geom, fallback);
     }
     let parsed = parse_geojson_geometry_value(geom)?;

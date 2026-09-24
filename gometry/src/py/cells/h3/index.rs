@@ -12,6 +12,7 @@ use pyo3::exceptions::PyTypeError;
 use pyo3::prelude::*;
 use pyo3::types::PyBool;
 
+use crate::boundary::buffer_endian::buffer_item_count;
 use crate::py::errors::{ParseFormat, parse_error};
 use crate::py::numpy::reject_masked_array;
 
@@ -219,6 +220,7 @@ pub(super) fn collect_h3_index_ids<I: H3Index>(
         return Ok(values);
     }
     if let Ok(buffer) = PyBuffer::<u64>::get(ids) {
+        let item_count = buffer_item_count(&buffer)?;
         // m07: same rank rule as ndarray — 0/1-D only (no silent flatten).
         if buffer.dimensions() > 1 {
             return Err(PyTypeError::new_err(format!(
@@ -228,7 +230,7 @@ pub(super) fn collect_h3_index_ids<I: H3Index>(
         }
         // Normalize non-native endian (`>u8`) — raw to_vec reinterprets bytes
         // and yields invalid-looking ids that then over-reject at validate.
-        let values = crate::buffer_to_vec_u64(ids.py(), &buffer)?;
+        let values = crate::buffer_to_vec_u64(ids.py(), &buffer, item_count)?;
         validate_h3_index_ids::<I>(&values)?;
         return Ok(values);
     }

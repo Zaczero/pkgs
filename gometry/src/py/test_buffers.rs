@@ -28,7 +28,7 @@
 use std::ffi::{c_int, c_void};
 use std::ptr;
 
-use pyo3::exceptions::{PyBufferError, PyValueError};
+use pyo3::exceptions::{PyBufferError, PyRuntimeError, PyValueError};
 use pyo3::ffi;
 use pyo3::prelude::*;
 
@@ -128,6 +128,163 @@ impl IndirectFloat64Buffer {
             )),
         }
     }
+}
+
+/// Separate from `IndirectFloat64Buffer`, whose constructor always exports a
+/// valid indirect layout.
+///
+/// Buffer exporter for boundary tests that reject malformed PEP 3118 metadata.
+///
+/// The fixed backing allocation lets tests exercise impossible declared
+/// lengths, shapes, and strides without allocating the claimed payload.
+#[pyclass(
+    name = "_MalformedBuffer",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    skip_from_py_object
+)]
+pub(crate) struct MalformedBuffer {
+    values: Box<[u64]>,
+    shape: Box<[isize]>,
+    strides: Box<[isize]>,
+    len: isize,
+    ndim: c_int,
+    itemsize: isize,
+    format: &'static std::ffi::CStr,
+}
+
+#[pyclass(
+    name = "_RaisingBuffer",
+    module = "gometry",
+    frozen,
+    immutable_type,
+    skip_from_py_object
+)]
+pub(crate) struct RaisingBuffer;
+
+#[pymethods]
+impl RaisingBuffer {
+    #[new]
+    fn new() -> Self {
+        Self
+    }
+
+    /// # Safety
+    /// Buffer-protocol slot; CPython guarantees a valid `view` pointer.
+    unsafe fn __getbuffer__(&self, _view: *mut ffi::Py_buffer, _flags: c_int) -> PyResult<()> {
+        Err(PyRuntimeError::new_err("buffer exporter sentinel"))
+    }
+
+    /// # Safety
+    /// `__getbuffer__` always returns an error and never acquires a view.
+    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
+}
+
+#[pymethods]
+impl MalformedBuffer {
+    /// # Safety
+    /// Buffer-protocol slot; CPython guarantees a valid `view` pointer.
+    unsafe fn __getbuffer__(
+        slf: Bound<'_, Self>,
+        view: *mut ffi::Py_buffer,
+        flags: c_int,
+    ) -> PyResult<()> {
+        if view.is_null() {
+            return Err(PyBufferError::new_err("view is null"));
+        }
+        if (flags & ffi::PyBUF_WRITABLE) == ffi::PyBUF_WRITABLE {
+            return Err(PyBufferError::new_err("gometry test buffers are read-only"));
+        }
+        let (len, ndim, itemsize, data, shape, strides, format) = {
+            let this = slf.get();
+            (
+                this.len,
+                this.ndim,
+                this.itemsize,
+                this.values.as_ptr().cast::<c_void>().cast_mut(),
+                this.shape.as_ptr().cast_mut(),
+                this.strides.as_ptr().cast_mut(),
+                this.format.as_ptr().cast_mut(),
+            )
+        };
+        // SAFETY: the owning frozen object keeps the fixed backing values and
+        // metadata arrays alive for the exported view's lifetime.
+        unsafe {
+            (*view).obj = slf.into_any().into_ptr();
+            (*view).buf = data;
+            (*view).len = len;
+            (*view).readonly = 1;
+            (*view).itemsize = itemsize;
+            (*view).ndim = ndim;
+            (*view).internal = ptr::null_mut();
+            (*view).shape = if (flags & ffi::PyBUF_ND) == ffi::PyBUF_ND {
+                shape
+            } else {
+                ptr::null_mut()
+            };
+            (*view).strides = if (flags & ffi::PyBUF_STRIDES) == ffi::PyBUF_STRIDES {
+                strides
+            } else {
+                ptr::null_mut()
+            };
+            (*view).suboffsets = ptr::null_mut();
+            (*view).format = if (flags & ffi::PyBUF_FORMAT) == ffi::PyBUF_FORMAT {
+                format
+            } else {
+                ptr::null_mut()
+            };
+        }
+        Ok(())
+    }
+
+    /// # Safety
+    /// Paired with `__getbuffer__`; the exporter retains all view storage.
+    unsafe fn __releasebuffer__(&self, _view: *mut ffi::Py_buffer) {}
+}
+
+/// Build an intentionally malformed numeric buffer for admission tests.
+#[pyfunction]
+#[pyo3(
+    name = "_malformed_buffer",
+    signature = (case, format = "d"),
+    text_signature = "(case, format='d')"
+)]
+pub(crate) fn malformed_buffer(case: &str, format: &str) -> PyResult<MalformedBuffer> {
+    let (itemsize, format) = match format {
+        "d" => (8_isize, c"d"),
+        "Q" => (8, c"Q"),
+        "B" => (1, c"B"),
+        "b" => (1, c"b"),
+        _ => return Err(PyValueError::new_err("unsupported malformed-buffer format")),
+    };
+    let scalar_stride = itemsize;
+    let (len, ndim, shape, strides) = match case {
+        "negative_len" => (itemsize.wrapping_neg(), 1, vec![1], vec![scalar_stride]),
+        "partial_item" if itemsize == 8 => (9, 1, vec![1], vec![8]),
+        "negative_shape" if itemsize == 8 => (8, 1, vec![-1], vec![8]),
+        "negative_ndim" if itemsize == 8 => (8, -1, vec![1], vec![8]),
+        "shape_mismatch" if itemsize == 8 => (8, 2, vec![2, 2], vec![16, 8]),
+        "shape_product_overflow" if itemsize == 8 => (8, 2, vec![isize::MAX, 3], vec![24, 8]),
+        "stride_span_overflow" if itemsize == 8 => (24, 1, vec![3], vec![isize::MAX & !7]),
+        _ => return Err(PyValueError::new_err("unsupported malformed-buffer case")),
+    };
+    let values = vec![
+        1.0_f64.to_bits(),
+        2.0_f64.to_bits(),
+        3.0_f64.to_bits(),
+        4.0_f64.to_bits(),
+    ]
+    .into_boxed_slice();
+    Ok(MalformedBuffer {
+        values,
+        shape: shape.into_boxed_slice(),
+        strides: strides.into_boxed_slice(),
+        len,
+        ndim,
+        itemsize,
+        format,
+    })
 }
 
 #[pymethods]
@@ -254,5 +411,8 @@ pub(crate) fn indirect_float64_buffer(
 pub(crate) fn register(module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<IndirectFloat64Buffer>()?;
     module.add_function(wrap_pyfunction!(indirect_float64_buffer, module)?)?;
+    module.add_class::<MalformedBuffer>()?;
+    module.add_function(wrap_pyfunction!(malformed_buffer, module)?)?;
+    module.add_class::<RaisingBuffer>()?;
     Ok(())
 }

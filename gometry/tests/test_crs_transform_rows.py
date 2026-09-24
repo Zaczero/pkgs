@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import TYPE_CHECKING
 
 import gometry as gm
@@ -9,6 +10,39 @@ import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+
+def test_sibling_exact_length_checks_coordinate_layout_before_next() -> None:
+    class LengthlessCoordinates:
+        def __init__(self) -> None:
+            self.remaining = sys.maxsize
+            self.iter_calls = 0
+            self.next_calls = 0
+
+        def __iter__(self):
+            self.iter_calls += 1
+            return self
+
+        def __next__(self) -> float:
+            self.next_calls += 1
+            if self.remaining == 0:
+                raise StopIteration
+            self.remaining -= 1
+            return 1.0
+
+    class ExactLengthCoordinates(LengthlessCoordinates):
+        def __len__(self) -> int:
+            return self.remaining
+
+    x = LengthlessCoordinates()
+    y = ExactLengthCoordinates()
+    with pytest.raises(OverflowError, match='resource size arithmetic overflowed'):
+        gm.crs_transform(4326, 4326, x, y)
+
+    assert x.iter_calls == 1
+    assert x.next_calls == 0
+    assert y.iter_calls == 0
+    assert y.next_calls == 0
 
 
 def _assert_row_error(operation: Callable[[], object], row: int) -> BaseException:

@@ -11,7 +11,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyFloat, PyInt};
 
 use crate::boundary::buffer_endian;
-use crate::boundary::buffer_endian::{buffer_to_column_f64, buffer_to_vec_f64};
+use crate::boundary::buffer_endian::{buffer_item_count, buffer_to_column_f64, buffer_to_vec_f64};
 use crate::geometry::column_all_finite;
 use crate::py::errors;
 use crate::py::errors::{GeometryError, InvalidGeometryError};
@@ -36,13 +36,6 @@ pub(crate) enum FloatInput {
 }
 
 impl FloatInput {
-    fn admit(self, value: &Bound<'_, PyAny>, name: &str) -> PyResult<()> {
-        match self {
-            Self::Coordinate => reject_multidimensional_coordinate_array(value, name),
-            Self::Parameter => reject_masked_array(value),
-        }
-    }
-
     pub(crate) fn item(self, name: &str, value: &Bound<'_, PyAny>) -> PyResult<f64> {
         let parsed = match self {
             Self::Coordinate => crate::finite_coordinate_required(name, value),
@@ -77,18 +70,24 @@ pub(crate) fn reject_multidimensional_coordinate_array(
 ) -> PyResult<()> {
     reject_masked_array(value)?;
     let dimensions = if let Ok(buffer) = PyBuffer::<f64>::get(value) {
+        buffer_item_count(&buffer)?;
         buffer.dimensions()
     } else if let Ok(array) = value.cast::<PyUntypedArray>() {
         array.ndim()
     } else {
         return Ok(());
     };
+    reject_coordinate_buffer_rank(dimensions, name)
+}
+
+fn reject_coordinate_buffer_rank(dimensions: usize, name: &str) -> PyResult<()> {
     if dimensions > 1 {
-        return Err(PyTypeError::new_err(format!(
+        Err(PyTypeError::new_err(format!(
             "{name} must be a scalar or a one-dimensional sequence; got a {dimensions}-dimensional array"
-        )));
+        )))
+    } else {
+        Ok(())
     }
-    Ok(())
 }
 
 fn coordinate_scalar_named(name: &str, value: &Bound<'_, PyAny>) -> PyResult<Option<f64>> {
@@ -424,9 +423,11 @@ pub(crate) fn coordinate_column_values(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Vec<f64>> {
-    reject_multidimensional_coordinate_array(value, name)?;
+    reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        return coordinate_column_values_from_buffer(py, &buffer);
+        let item_count = buffer_item_count(&buffer)?;
+        reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
+        return coordinate_column_values_from_buffer(py, &buffer, item_count);
     }
     float_values(py, value, name, FloatInput::Coordinate)
 }
@@ -434,16 +435,18 @@ pub(crate) fn coordinate_column_values(
 /// Copy an already-admitted `f64` buffer into its final native-endian column.
 /// Keeping the admission object across the caller's length checks avoids a
 /// second `PyBuffer::get` and preserves the same contiguous/strided safety
-/// paths as [`coordinate_column_values`].
+/// paths as [`coordinate_column_values`]. `item_count` must come from
+/// [`buffer_item_count`] for this buffer.
 pub(crate) fn coordinate_column_values_from_buffer(
     py: Python<'_>,
     buffer: &PyBuffer<f64>,
+    item_count: usize,
 ) -> PyResult<Vec<f64>> {
     if buffer.is_c_contiguous() {
-        return buffer_to_column_f64(py, buffer);
+        return buffer_to_column_f64(py, buffer, item_count);
     }
     // Strided 1-D (or flattened multi-D): fill the column via a strided walk.
-    strided_buffer_to_column_f64(py, buffer)
+    strided_buffer_to_column_f64(py, buffer, item_count)
 }
 
 /// Capture a non-contiguous buffer in an owned column.
@@ -453,7 +456,11 @@ pub(crate) fn coordinate_column_values_from_buffer(
 /// non-atomic load, and the fallback copy is an ordinary copy rather than a
 /// synchronization protocol: the producer must stay quiescent until this
 /// capture returns. Afterward only the owned column is retained.
-fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyResult<Vec<f64>> {
+fn strided_buffer_to_column_f64(
+    py: Python<'_>,
+    buffer: &PyBuffer<f64>,
+    len: usize,
+) -> PyResult<Vec<f64>> {
     use pyo3::buffer::ReadOnlyCell;
 
     // The strided fast path below reads through a raw pointer. When the
@@ -461,17 +468,16 @@ fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
     // copy the suboffset case already falls back to. Neither choice
     // synchronizes a native writer; the producer remains quiescent for both.
     if !buffer_endian::exporter_supports_direct_capture(py, buffer) {
-        return buffer_to_vec_f64(py, buffer);
+        return buffer_to_vec_f64(py, buffer, len);
     }
 
-    let len = buffer.item_count();
     // Indirect (PIL-style) buffers store pointers in the strided slots;
     // `suboffsets[n] >= 0` requires a pointer dereference before adding the
     // suboffset. The flat `buf_ptr + i*stride` arithmetic would read the
     // pointer-table bytes as f64 coordinates. Route through PyO3's safe
     // contiguous copy which honors suboffsets via `PyBuffer_GetPointer`.
     if buffer.suboffsets().is_some() {
-        return buffer_to_vec_f64(py, buffer);
+        return buffer_to_vec_f64(py, buffer, len);
     }
     // General strides and byte order use PyO3's contiguous copy. A simple
     // native-endian column can fill its destination directly.
@@ -479,6 +485,7 @@ fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
         let stride = buffer.strides()[0];
         let item = std::mem::size_of::<f64>() as isize;
         if stride % item == 0 {
+            check_1d_byte_stride_span(len, stride)?;
             let step = stride / item;
             let mut values = vec![0.0; len];
             // ReadOnlyCell is transparent over T; treating each strided slot as
@@ -496,7 +503,19 @@ fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
             return Ok(values);
         }
     }
-    buffer_to_vec_f64(py, buffer)
+    buffer_to_vec_f64(py, buffer, len)
+}
+
+fn check_1d_byte_stride_span(len: usize, stride: isize) -> PyResult<()> {
+    let Some(last_index) = len.checked_sub(1) else {
+        return Ok(());
+    };
+    let index = isize::try_from(last_index)
+        .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows"))?;
+    index.checked_mul(stride).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
+    })?;
+    Ok(())
 }
 
 /// Build a [`CoordSeq`] from an indirect (suboffset) N×D `f64` buffer via
@@ -504,20 +523,13 @@ fn strided_buffer_to_column_f64(py: Python<'_>, buffer: &PyBuffer<f64>) -> PyRes
 fn coordseq_from_indirect_nd_buffer(
     py: Python<'_>,
     buffer: &PyBuffer<f64>,
+    item_count: usize,
     n: usize,
     d: usize,
     z: Option<&Bound<'_, PyAny>>,
     m: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<CoordSeq> {
-    let flat = buffer_to_vec_f64(py, buffer)?;
-    let expected = n.checked_mul(d).ok_or_else(|| {
-        pyo3::exceptions::PyOverflowError::new_err("indirect buffer shape overflows usize")
-    })?;
-    if flat.len() != expected {
-        return Err(InvalidGeometryError::new_err(
-            "indirect buffer item count does not match N×D shape",
-        ));
-    }
+    let flat = buffer_to_vec_f64(py, buffer, item_count)?;
     let mut xs = Vec::with_capacity(n);
     let mut ys = Vec::with_capacity(n);
     let mut zs_col = (d >= 3).then(|| Vec::with_capacity(n));
@@ -582,6 +594,7 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     let Ok(buffer) = PyBuffer::<f64>::get(value) else {
         return Ok(None);
     };
+    let item_count = buffer_item_count(&buffer)?;
     if buffer.dimensions() != 2 {
         return Ok(None);
     }
@@ -600,7 +613,8 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     // the flat row/col stride arithmetic would read the pointer table as
     // coordinates. Snapshot through PyO3's safe contiguous copy.
     if buffer.suboffsets().is_some() {
-        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
+        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, item_count, n, d, z, m)
+            .map(Some);
     }
     let Some(&[row_stride, col_stride]) = buffer.strides().first_chunk::<2>() else {
         return Ok(None);
@@ -614,8 +628,10 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     // The direct stride walk and the ordinary copy both require a quiescent
     // producer; the copy path is not a native-writer synchronization protocol.
     if !buffer_endian::exporter_supports_direct_capture(value.py(), &buffer) {
-        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, n, d, z, m).map(Some);
+        return coordseq_from_indirect_nd_buffer(value.py(), &buffer, item_count, n, d, z, m)
+            .map(Some);
     }
+    check_2d_byte_stride_corners(n, d, row_stride, col_stride)?;
     let native = buffer_endian::buffer_format_is_native_endian(buffer.format());
     let swap = !native;
 
@@ -691,6 +707,31 @@ pub(crate) fn try_coordseq_from_nd_buffer(
     Ok(Some(CoordSeq::try_from_vecs(xs, ys, zs, ms)?))
 }
 
+fn check_2d_byte_stride_corners(
+    rows: usize,
+    columns: usize,
+    row_stride: isize,
+    column_stride: isize,
+) -> PyResult<()> {
+    let (Some(last_row), Some(last_column)) = (rows.checked_sub(1), columns.checked_sub(1)) else {
+        return Ok(());
+    };
+    let last_row = isize::try_from(last_row)
+        .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows"))?;
+    let last_column = isize::try_from(last_column)
+        .map_err(|_| pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows"))?;
+    let row_offset = last_row.checked_mul(row_stride).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
+    })?;
+    let column_offset = last_column.checked_mul(column_stride).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
+    })?;
+    row_offset.checked_add(column_offset).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("buffer stride index overflows")
+    })?;
+    Ok(())
+}
+
 /// Like [`coordinate_column_values`], but stop after `expected + 1` items when
 /// the length is known from the receiver (D11: `set_coordinates`, …).
 pub(crate) fn coordinate_column_values_exact(
@@ -700,16 +741,14 @@ pub(crate) fn coordinate_column_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
-    reject_multidimensional_coordinate_array(value, name)?;
+    reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        let got = buffer.item_count();
+        let got = buffer_item_count(&buffer)?;
+        reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
         if got != expected {
             return Err(on_len(got));
         }
-        if buffer.is_c_contiguous() {
-            return buffer_to_column_f64(py, &buffer);
-        }
-        return coordinate_column_values_from_buffer(py, &buffer);
+        return coordinate_column_values_from_buffer(py, &buffer, got);
     }
     float_values_exact(py, value, name, FloatInput::Coordinate, expected, on_len)
 }
@@ -746,13 +785,13 @@ pub(crate) fn optional_coordinate_column_values_from_buffer(
     let Some(buffer) = buffer else {
         return Ok(None);
     };
-    let got = buffer.item_count();
+    let got = buffer_item_count(buffer)?;
     if got != expected_len {
         return Err(InvalidGeometryError::new_err(format!(
             "{name} must have the same length as x/y coordinates (got length {got})"
         )));
     }
-    coordinate_column_values_from_buffer(py, buffer).map(Some)
+    coordinate_column_values_from_buffer(py, buffer, got).map(Some)
 }
 
 pub(crate) fn float_values(
@@ -761,11 +800,20 @@ pub(crate) fn float_values(
     name: &str,
     kind: FloatInput,
 ) -> PyResult<Vec<f64>> {
-    kind.admit(value, name)?;
+    reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
         // Normalize non-native endian (e.g. NumPy `>f8` on little-endian) —
         // raw `to_vec` reinterprets bytes and silently corrupts.
-        return buffer_to_vec_f64(py, &buffer);
+        let item_count = buffer_item_count(&buffer)?;
+        if matches!(kind, FloatInput::Coordinate) {
+            reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
+        }
+        return buffer_to_vec_f64(py, &buffer, item_count);
+    }
+    if matches!(kind, FloatInput::Coordinate)
+        && let Ok(array) = value.cast::<PyUntypedArray>()
+    {
+        reject_coordinate_buffer_rank(array.ndim(), name)?;
     }
     let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
     collect_py_iter_from_iter(value, iter, |item| kind.item(name, &item))
@@ -782,13 +830,21 @@ pub(crate) fn float_values_at_most(
     maximum: usize,
     on_excess: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
-    kind.admit(value, name)?;
+    reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        let got = buffer.item_count();
+        let got = buffer_item_count(&buffer)?;
+        if matches!(kind, FloatInput::Coordinate) {
+            reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
+        }
         if got > maximum {
             return Err(on_excess(got));
         }
-        return buffer_to_vec_f64(py, &buffer);
+        return buffer_to_vec_f64(py, &buffer, got);
+    }
+    if matches!(kind, FloatInput::Coordinate)
+        && let Ok(array) = value.cast::<PyUntypedArray>()
+    {
+        reject_coordinate_buffer_rank(array.ndim(), name)?;
     }
     let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
     collect_py_iter_at_most_from_iter(
@@ -814,13 +870,21 @@ pub(crate) fn float_values_exact(
     expected: usize,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<f64>> {
-    kind.admit(value, name)?;
+    reject_masked_array(value)?;
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        let got = buffer.item_count();
+        let got = buffer_item_count(&buffer)?;
+        if matches!(kind, FloatInput::Coordinate) {
+            reject_coordinate_buffer_rank(buffer.dimensions(), name)?;
+        }
         if got != expected {
             return Err(on_len(got));
         }
-        return buffer_to_vec_f64(py, &buffer);
+        return buffer_to_vec_f64(py, &buffer, got);
+    }
+    if matches!(kind, FloatInput::Coordinate)
+        && let Ok(array) = value.cast::<PyUntypedArray>()
+    {
+        reject_coordinate_buffer_rank(array.ndim(), name)?;
     }
     let iter = py_iter_or_error(value, || not_a_float_iterable(name))?;
     collect_py_iter_exact_from_iter(value, iter, expected, |item| kind.item(name, &item), on_len)
@@ -833,13 +897,16 @@ pub(crate) fn coordinate_sequence_len_hint(
     value: &Bound<'_, PyAny>,
     name: &str,
 ) -> PyResult<Option<usize>> {
-    reject_multidimensional_coordinate_array(value, name)?;
+    reject_masked_array(value)?;
     // Do not invoke a user `__float__` provider merely to discover the pair
     // length. Numeric admission below owns that conversion and must call it
     // once. Check f64 buffers first because their item count is authoritative
-    // after the rank check above.
+    // after the rank check below.
     if let Ok(buffer) = PyBuffer::<f64>::get(value) {
-        return Ok((buffer.dimensions() != 0).then_some(buffer.item_count()));
+        let item_count = buffer_item_count(&buffer)?;
+        let dimensions = buffer.dimensions();
+        reject_coordinate_buffer_rank(dimensions, name)?;
+        return Ok((dimensions != 0).then_some(item_count));
     }
     // NumPy integer/object arrays do not export as f64 buffers, but their
     // reported length still pins a paired bare iterator. A 0-D array is a
@@ -848,6 +915,7 @@ pub(crate) fn coordinate_sequence_len_hint(
         return if array.ndim() == 0 {
             Ok(None)
         } else {
+            reject_coordinate_buffer_rank(array.ndim(), name)?;
             crate::optional_len(value)
         };
     }

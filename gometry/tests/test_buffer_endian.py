@@ -8,11 +8,17 @@ D01: Arrow stream `read_all` errors must propagate (no silent empty array).
 
 from __future__ import annotations
 
+import subprocess
 import sys
+import textwrap
+from typing import TYPE_CHECKING
 
 import gometry as gm
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def test_d03_big_endian_f64_points_match_native() -> None:
@@ -52,6 +58,11 @@ def test_d03_native_endian_f64_unchanged() -> None:
     arr = gm.points(x, y)
     assert arr[0].x == 3.5 and arr[0].y == 9.0
     assert arr[1].x == -7.25 and arr[1].y == 0.125
+
+
+def test_zero_dimensional_f64_buffers_remain_single_coordinate_columns() -> None:
+    points = gm.points(np.array(1.25), [2.5, 3.5])
+    assert points.to_wkt() == ['POINT (1.25 2.5)', 'POINT (1.25 3.5)']
 
 
 def test_d03_big_endian_misread_would_be_wrong_without_swap() -> None:
@@ -101,6 +112,128 @@ def test_d04_native_endian_u64_unchanged() -> None:
     cell = gm.S2Cell(0, 0, level=2)
     arr = gm.CellArray(np.array([cell.id], dtype=f'{native}u8'), type=gm.S2Cell)
     assert arr[0].id == cell.id
+
+
+@pytest.mark.parametrize(
+    ('case', 'pep_format', 'consumer', 'expected'),
+    [
+        ('negative_len', 'd', 'line_column', 'BufferError'),
+        ('partial_item', 'd', 'line_column', 'BufferError'),
+        ('negative_shape', 'd', 'line_column', 'BufferError'),
+        ('negative_ndim', 'd', 'line_column', 'BufferError'),
+        ('shape_mismatch', 'd', 'line_matrix', 'BufferError'),
+        ('shape_product_overflow', 'd', 'line_matrix', 'BufferError'),
+        ('negative_len', 'd', 'points_fast_path', 'BufferError'),
+        ('negative_len', 'B', 'wkb', 'BufferError'),
+        ('negative_len', 'b', 'wkb', 'BufferError'),
+        ('negative_len', 'Q', 'cell_ids', 'BufferError'),
+        ('negative_len', 'Q', 'h3_ids', 'BufferError'),
+    ],
+    ids=[
+        'negative-byte-length',
+        'partial-f64-item',
+        'negative-shape-dimension',
+        'negative-dimension-count',
+        'shape-count-disagrees-with-length',
+        'shape-product-overflow',
+        'point-buffer-fast-path',
+        'one-byte-buffer-copy',
+        'signed-one-byte-buffer-copy',
+        'cell-u64-buffer-copy',
+        'h3-u64-buffer-copy',
+    ],
+)
+def test_malformed_buffer_metadata_is_rejected_before_consumers_read(
+    case: str,
+    pep_format: str,
+    consumer: str,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    script = textwrap.dedent(
+        """
+        import array
+        import sys
+
+        import gometry as gm
+
+        case, format, consumer = sys.argv[1:]
+        bad = gm._lib._malformed_buffer(case, format)
+        try:
+            if consumer == 'line_column':
+                gm.LineString(x=bad, y=[1.0])
+            elif consumer == 'line_matrix':
+                gm.LineString(bad)
+            elif consumer == 'points_fast_path':
+                gm.points(bad, array.array('d', [1.0]))
+            elif consumer == 'wkb':
+                gm.from_wkb(bad)
+            elif consumer == 'cell_ids':
+                gm.CellArray(bad, type=gm.H3Cell)
+            elif consumer == 'h3_ids':
+                gm.H3VertexArray(bad)
+            else:
+                raise SystemExit(f'unknown consumer: {consumer}')
+        except BufferError as error:
+            print('REJECTED BufferError', error)
+        except OverflowError as error:
+            print('REJECTED OverflowError', error)
+        else:
+            raise SystemExit('malformed buffer was accepted')
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script, case, pep_format, consumer],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f'{case}/{pep_format} through {consumer}: rc={result.returncode}\n'
+        f'stdout={result.stdout!r}\nstderr={result.stderr!r}'
+    )
+    assert result.stdout.startswith(f'REJECTED {expected}'), result.stdout
+
+
+def test_strided_byte_offset_overflow_is_rejected_before_pointer_read(
+    tmp_path: Path,
+) -> None:
+    script = textwrap.dedent(
+        """
+        import sys
+
+        import gometry as gm
+
+        bad = gm._lib._malformed_buffer('stride_span_overflow', 'd')
+        try:
+            gm.LineString(x=bad, y=[1.0, 2.0, 3.0])
+        except OverflowError as error:
+            print('REJECTED OverflowError', error)
+        else:
+            raise SystemExit('unrepresentable stride was accepted')
+        """
+    )
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+
+    assert result.returncode == 0, (
+        f'rc={result.returncode}\nstdout={result.stdout!r}\nstderr={result.stderr!r}'
+    )
+    assert result.stdout.startswith('REJECTED OverflowError'), result.stdout
+
+
+def test_byte_buffer_provider_error_is_not_misclassified_as_an_iterable() -> None:
+    with pytest.raises(RuntimeError, match='buffer exporter sentinel'):
+        gm.from_wkb(gm._lib._RaisingBuffer())
 
 
 def test_d01_erroring_arrow_stream_propagates() -> None:

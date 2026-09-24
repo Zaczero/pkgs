@@ -2,6 +2,7 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
+use crate::boundary::buffer_endian::buffer_item_count;
 use crate::py::functions::constructors::{
     Bound, CoordSeq, Frame, GeometryError, InvalidGeometryError, PyAny, PyAnyMethods as _,
     PyGeometry, PyGeometryArray, PyResult, Python, Typed, broadcast_coordinate_group,
@@ -260,15 +261,15 @@ fn try_points_from_arc_columns(
         },
         _ => None,
     };
-    let x_len = x_buffer.item_count();
-    let y_len = y_buffer.item_count();
+    let x_len = buffer_item_count(&x_buffer)?;
+    let y_len = buffer_item_count(&y_buffer)?;
     if x_len != y_len {
         return Err(InvalidGeometryError::new_err(format!(
             "x and y must have the same length, got {x_len} and {y_len}",
         )));
     }
-    let xs = coordinate_column_values_from_buffer(py, &x_buffer)?;
-    let ys = coordinate_column_values_from_buffer(py, &y_buffer)?;
+    let xs = coordinate_column_values_from_buffer(py, &x_buffer, x_len)?;
+    let ys = coordinate_column_values_from_buffer(py, &y_buffer, y_len)?;
     let zs = optional_coordinate_column_values_from_buffer(py, z_buffer.as_ref(), x_len, "z")?;
     let ms = optional_coordinate_column_values_from_buffer(py, m_buffer.as_ref(), x_len, "m")?;
     Ok(Some(CoordSeq::from_owned_columns(xs, ys, zs, ms)?))
