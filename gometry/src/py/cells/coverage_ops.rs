@@ -456,6 +456,28 @@ impl GridSourceAdmission {
             .map_or_else(|| array.len(), |mask| mask.present_count());
         let mut xs = Vec::with_capacity(present_count);
         let mut ys = Vec::with_capacity(present_count);
+        if admission.transformer.is_none() {
+            for logical in 0..array.len() {
+                if array.is_row_missing(logical) {
+                    continue;
+                }
+                let row = if array.is_compact_nullable() {
+                    xs.len()
+                } else {
+                    logical
+                };
+                let point = points.get(row);
+                geographic::validate_lonlat_xy(point.x, point.y).map_err(|error| {
+                    GridCoverError::NativeRow {
+                        row: logical,
+                        error,
+                    }
+                })?;
+                xs.push(point.x);
+                ys.push(point.y);
+            }
+            return Ok((xs, ys));
+        }
         for logical in 0..array.len() {
             if array.is_row_missing(logical) {
                 continue;
