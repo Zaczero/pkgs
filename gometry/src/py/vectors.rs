@@ -329,7 +329,8 @@ impl Groups {
             },
             Err(error) => return Err(error),
         };
-        let mut values = crate::try_vec_with_capacity(0)?;
+        let capacity = crate::optional_len(item)?.unwrap_or_default();
+        let mut values = Vec::with_capacity(capacity);
         for (position, candidate) in iter.enumerate() {
             crate::check_python_signals(item.py(), position)?;
             let candidate = candidate?;
@@ -351,7 +352,7 @@ impl Groups {
             let Ok(candidate) = index.extract::<i64>() else {
                 return Ok(None);
             };
-            crate::try_push(&mut values, candidate)?;
+            values.push(candidate);
         }
         Ok(Some(values))
     }
@@ -506,9 +507,21 @@ impl Groups {
                 let GroupsValues::Int64(values) = &this.values else {
                     unreachable!("values getter int64 branch");
                 };
-                let start = this.offsets[this.rows.start] as usize;
-                let end = this.offsets[this.rows.end] as usize;
-                &values[start..end]
+                let offsets = this
+                    .offsets
+                    .get(this.rows.start..=this.rows.end)
+                    .expect("Groups rows are bounded by their admitted offsets");
+                let start = *offsets
+                    .first()
+                    .expect("Groups rows include their starting offset")
+                    as usize;
+                let end = *offsets
+                    .last()
+                    .expect("Groups rows include their terminal offset")
+                    as usize;
+                values
+                    .get(start..end)
+                    .expect("Groups offsets are bounded by their int64 values")
             }),
             // Mirror the int64 branch: return the LOGICAL window (matching the
             // rebased `offsets`), not the full backing — else a sliced
@@ -516,8 +529,18 @@ impl Groups {
             // invariant.
             GroupsValues::Geometry(values) => {
                 let this = slf.borrow();
-                let start = this.offsets[this.rows.start] as usize;
-                let end = this.offsets[this.rows.end] as usize;
+                let offsets = this
+                    .offsets
+                    .get(this.rows.start..=this.rows.end)
+                    .expect("Groups rows are bounded by their admitted offsets");
+                let start = *offsets
+                    .first()
+                    .expect("Groups rows include their starting offset")
+                    as usize;
+                let end = *offsets
+                    .last()
+                    .expect("Groups rows include their terminal offset")
+                    as usize;
                 let py = slf.py();
                 if start == 0 && end == values.len() {
                     values.as_ref().clone().into_py_any(py)
@@ -527,8 +550,18 @@ impl Groups {
             },
             GroupsValues::Cells(values) => {
                 let this = slf.borrow();
-                let start = this.offsets[this.rows.start] as usize;
-                let end = this.offsets[this.rows.end] as usize;
+                let offsets = this
+                    .offsets
+                    .get(this.rows.start..=this.rows.end)
+                    .expect("Groups rows are bounded by their admitted offsets");
+                let start = *offsets
+                    .first()
+                    .expect("Groups rows include their starting offset")
+                    as usize;
+                let end = *offsets
+                    .last()
+                    .expect("Groups rows include their terminal offset")
+                    as usize;
                 let py = slf.py();
                 if start == 0 && end == values.len() {
                     values.as_ref().clone().into_py_any(py)
@@ -544,13 +577,23 @@ impl Groups {
     #[getter]
     fn offsets(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         if slf.borrow().rows.start == 0 {
-            return frozen_i64_view(slf, |this| &this.offsets[0..=this.rows.end]);
+            return frozen_i64_view(slf, |this| {
+                this.offsets
+                    .get(0..=this.rows.end)
+                    .expect("Groups rows are bounded by their admitted offsets")
+            });
         }
         let this = slf.borrow();
-        let base = this.offsets[this.rows.start];
-        let mut offsets = crate::try_vec_with_capacity(this.rows.len() + 1)?;
-        for &offset in &this.offsets[this.rows.start..=this.rows.end] {
-            crate::try_push(&mut offsets, offset - base)?;
+        let source_offsets = this
+            .offsets
+            .get(this.rows.start..=this.rows.end)
+            .expect("Groups rows are bounded by their admitted offsets");
+        let base = *source_offsets
+            .first()
+            .expect("Groups rows include their starting offset");
+        let mut offsets = Vec::with_capacity(this.rows.len().saturating_add(1));
+        for &offset in source_offsets {
+            offsets.push(offset.wrapping_sub(base));
         }
         int64_array(slf.py(), offsets)
     }
@@ -559,9 +602,16 @@ impl Groups {
     #[getter]
     fn counts(slf: Bound<'_, Self>) -> PyResult<Py<PyAny>> {
         let this = slf.borrow();
-        let mut counts = crate::try_vec_with_capacity(this.rows.len())?;
-        for row in this.rows.start..this.rows.end {
-            crate::try_push(&mut counts, this.offsets[row + 1] - this.offsets[row])?;
+        let mut counts = Vec::with_capacity(this.rows.len());
+        let offsets = this
+            .offsets
+            .get(this.rows.start..=this.rows.end)
+            .expect("Groups rows are bounded by their admitted offsets");
+        for pair in offsets.windows(2) {
+            let [start, end] = pair else {
+                unreachable!("two-offset windows contain two values");
+            };
+            counts.push(end.wrapping_sub(*start));
         }
         int64_array(slf.py(), counts)
     }
@@ -601,9 +651,16 @@ impl Groups {
         let py = slf.py();
         let row_ids = {
             let this = slf.borrow();
-            let mut row_ids = crate::try_vec_with_capacity(this.values_window().len())?;
-            for (logical_row, row) in (this.rows.start..this.rows.end).enumerate() {
-                let count = (this.offsets[row + 1] - this.offsets[row]) as usize;
+            let mut row_ids = Vec::with_capacity(this.values_window().len());
+            let offsets = this
+                .offsets
+                .get(this.rows.start..=this.rows.end)
+                .expect("Groups rows are bounded by their admitted offsets");
+            for (logical_row, pair) in offsets.windows(2).enumerate() {
+                let [start, end] = pair else {
+                    unreachable!("two-offset windows contain two values");
+                };
+                let count = end.wrapping_sub(*start) as usize;
                 row_ids.extend(std::iter::repeat_n(logical_row as i64, count));
             }
             row_ids
@@ -613,7 +670,9 @@ impl Groups {
             let GroupsValues::Int64(values) = &this.values else {
                 unreachable!("to_pairs checked integer backing");
             };
-            &values[this.values_window()]
+            values
+                .get(this.values_window())
+                .expect("Groups values window is bounded by its backing column")
         })?;
         Ok((row_ids, values))
     }
@@ -923,7 +982,7 @@ impl Groups {
     /// >>> [g.to_wkt() for g in groups.to_list()[0]]
     /// ['POLYGON ((0 2, 0 0, 2 0, 0 2))', 'POLYGON ((2 0, 2 2, 0 2, 2 0))']
     fn to_list(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let mut rows = crate::try_vec_with_capacity(self.rows.len())?;
+        let mut rows = Vec::with_capacity(self.rows.len());
         for row in 0..self.rows.len() {
             let value = match &self.values {
                 GroupsValues::Int64(_) => {
@@ -940,7 +999,7 @@ impl Groups {
                     PyList::new(py, items)?.into_py_any(py)?
                 },
             };
-            crate::try_push(&mut rows, value)?;
+            rows.push(value);
         }
         PyList::new(py, rows)?.into_py_any(py)
     }
@@ -950,21 +1009,27 @@ impl Groups {
         // Pickle the LOGICAL groups: rebase offsets to start at 0 and slice the
         // backing to the window, so a sliced Groups round-trips (the
         // `_unpickle_*` validators require offsets[0]==0 and last==values_len).
-        let base = self.offsets[self.rows.start];
+        let source_offsets = self
+            .offsets
+            .get(self.rows.start..=self.rows.end)
+            .expect("Groups rows are bounded by their admitted offsets");
+        let base = *source_offsets
+            .first()
+            .expect("Groups rows include their starting offset");
         let start = base as usize;
-        let end = self.offsets[self.rows.end] as usize;
-        let mut rebased = crate::try_vec_with_capacity(
-            self.rows
-                .len()
-                .checked_add(1)
-                .ok_or_else(|| PyOverflowError::new_err("Groups offset count overflows usize"))?,
-        )?;
-        for &offset in &self.offsets[self.rows.start..=self.rows.end] {
-            crate::try_push(&mut rebased, offset - base)?;
+        let end = *source_offsets
+            .last()
+            .expect("Groups rows include their terminal offset") as usize;
+        let mut rebased = Vec::with_capacity(self.rows.len().saturating_add(1));
+        for &offset in source_offsets {
+            rebased.push(offset.wrapping_sub(base));
         }
         match &self.values {
             GroupsValues::Int64(values) => {
-                let copied = values[start..end].to_vec();
+                let copied = values
+                    .get(start..end)
+                    .expect("Groups offsets are bounded by their int64 values")
+                    .to_vec();
                 let args = (copied, rebased).into_py_any(py)?;
                 Ok((
                     module

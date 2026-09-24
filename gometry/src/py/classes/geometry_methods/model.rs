@@ -363,13 +363,13 @@ fn geometry_parts_getitem(
         RowIndexOrSlice::Slice {
             start, step, count, ..
         } => {
-            let mut parts = crate::try_vec_with_capacity(count)?;
+            let mut parts = Vec::with_capacity(count);
             let mut row = start;
             for _ in 0..count {
                 if let Some(part) = geometry.shape.part_at(row as usize) {
-                    crate::try_push(&mut parts, geometry.typed_shape(part))?;
+                    parts.push(geometry.typed_shape(part));
                 }
-                row += step;
+                row = row.saturating_add(step);
             }
             Ok(parts.into_pyobject(py)?.into_any().unbind())
         },

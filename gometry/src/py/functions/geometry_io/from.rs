@@ -88,6 +88,7 @@ pub(crate) fn from_wkt(
     if crate::is_concrete_batch(data)? {
         let array = batch_bulk_srid(
             py,
+            data,
             iter,
             move |item, _row| {
                 if item.is_none() {
@@ -108,6 +109,7 @@ pub(crate) fn from_wkt(
     }
     let array = stream_bulk_srid(
         py,
+        data,
         iter,
         fallback,
         parsed_epoch,
@@ -208,6 +210,7 @@ pub(crate) fn from_wkb(
     if crate::is_concrete_batch(data)? {
         let array = batch_bulk_srid(
             py,
+            data,
             iter,
             move |item, _row| {
                 if item.is_none() {
@@ -236,6 +239,7 @@ pub(crate) fn from_wkb(
     }
     let array = stream_bulk_srid(
         py,
+        data,
         values,
         fallback,
         parsed_epoch,

@@ -367,7 +367,7 @@ pub(crate) fn from_polyline(
     }
     let error = || PyTypeError::new_err("expected polyline string or iterable of strings");
     let iter = crate::py_iter_or_error(data, error)?;
-    let array = stream_bulk(iter, crs, epoch, None, |item, rows, _row| {
+    let array = stream_bulk(data, iter, crs, epoch, None, |item, rows, _row| {
         let text = item
             .cast::<pyo3::types::PyString>()
             .map_err(|_| error())?

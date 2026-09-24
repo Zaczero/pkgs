@@ -373,9 +373,8 @@ pub(super) fn boxes(
         "minx, miny, maxx, and maxy",
     )?;
     let frame = parse_crs_epoch(crs, epoch)?;
-    // Stream boxes into packed storage (same fallible-collection bound as the
-    // other bulk constructors) — no intermediate Vec<Shape>.
-    let mut rows = crate::array::StreamingShapes::new();
+    // The broadcast coordinate columns establish the exact output-row count.
+    let mut rows = crate::array::StreamingShapes::with_capacity(0, minx.values.len());
     for (((minx, miny), maxx), maxy) in minx
         .values
         .iter()

@@ -1,9 +1,23 @@
 """Plural geometry constructors — columnar broadcast and sequence builders."""
 
 import inspect
+from collections.abc import Iterable
 
 import gometry as gm
 import pytest
+
+
+class ExactLengthRows:
+    def __init__(self, rows: Iterable[object]) -> None:
+        self.rows = list(rows)
+        self.length_calls = 0
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        self.length_calls += 1
+        return len(self.rows)
 
 
 def test_points_scalar_broadcast() -> None:
@@ -48,6 +62,80 @@ def test_line_strings_round_trip() -> None:
     assert (lines[0]).to_wkt() == 'LINESTRING (0 0, 1 1)'
     assert (lines[1]).to_wkt() == 'LINESTRING (2 2, 3 3)'
     assert lines.crs == 'EPSG:4326'
+
+
+def test_scalar_multipoint_publishes_every_exactly_sized_member() -> None:
+    count = 4_097
+    rows = ExactLengthRows([gm.Point(float(i), float(-i)) for i in range(count)])
+
+    multipoint = gm.MultiPoint(rows)
+
+    assert rows.length_calls == 1
+    assert len(multipoint) == count
+    assert multipoint[0].to_wkt() == 'POINT (0 0)'
+    assert multipoint[-1].to_wkt() == f'POINT ({count - 1} {-count + 1})'
+
+
+def test_line_strings_publishes_every_exactly_sized_row() -> None:
+    count = 4_097
+    rows = ExactLengthRows([[(float(i), 0.0), (float(i), 1.0)] for i in range(count)])
+
+    lines = gm.line_strings(rows)
+
+    assert rows.length_calls == 1
+    assert len(lines) == count
+    assert lines[0].to_wkt() == 'LINESTRING (0 0, 0 1)'
+    assert lines[-1].to_wkt() == f'LINESTRING ({count - 1} 0, {count - 1} 1)'
+
+
+@pytest.mark.parametrize(
+    'hint',
+    [0, 1 << 60],
+    ids=['small-advisory-hint', 'large-advisory-hint'],
+)
+def test_line_strings_grow_past_advisory_length_hints(hint: int) -> None:
+    count = 4_097
+
+    class HintIterator:
+        def __init__(self) -> None:
+            self.row = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            if self.row == count:
+                raise StopIteration
+            row = self.row
+            self.row += 1
+            return [(float(row), 0.0), (float(row), 1.0)]
+
+        def __length_hint__(self) -> int:
+            return hint
+
+    class LengthlessRows:
+        def __iter__(self) -> HintIterator:
+            return HintIterator()
+
+    lines = gm.line_strings(LengthlessRows())
+
+    assert len(lines) == count
+    assert lines[-1].to_wkt() == f'LINESTRING ({count - 1} 0, {count - 1} 1)'
+
+
+def test_multipoint_preserves_xyzm_columns_and_typed_empty_members() -> None:
+    first = gm.Point(1, 2, z=3, m=4)
+    last = gm.Point(5, 6, z=7, m=8)
+    dense = gm.MultiPoint([first, last])
+    sparse = gm.MultiPoint([first, gm.from_wkt('POINT ZM EMPTY'), last])
+
+    assert dense.coordinate_axes == 'XYZM'
+    assert [point.coords.to_nested() for point in dense.parts] == [
+        [1.0, 2.0, 3.0, 4.0],
+        [5.0, 6.0, 7.0, 8.0],
+    ]
+    assert sparse.coordinate_axes == 'XYZM'
+    assert sparse.to_wkt() == 'MULTIPOINT ZM ((1 2 3 4), EMPTY, (5 6 7 8))'
 
 
 def test_polygons_round_trip() -> None:
@@ -158,6 +246,16 @@ def test_scalar_multipart_constructors_reconcile_member_frames() -> None:
     ):
         with pytest.raises(gm.CRSMismatchError):
             constructor(values, crs=3857)
+
+
+def test_multipoint_resolves_member_frames_before_axes_admission() -> None:
+    points = [
+        gm.Point(0, 0, crs=4326),
+        gm.Point(1, 1, z=2, crs=3857),
+    ]
+
+    with pytest.raises(gm.CRSMismatchError):
+        gm.MultiPoint(points)
 
 
 def test_polygon_xy_column_form() -> None:

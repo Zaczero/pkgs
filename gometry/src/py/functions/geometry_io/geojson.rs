@@ -255,6 +255,7 @@ pub(crate) fn from_geojson(
             let crs_for_rows = crs.clone();
             let array = batch_bulk(
                 py,
+                data,
                 iter,
                 move |data, _row| {
                     if data.is_none() {
@@ -495,8 +496,9 @@ fn decode_features_text(
     if let Some(legacy) = collection_legacy.as_ref() {
         declarations.reconcile_declaration(legacy)?;
     }
-    let mut shapes = crate::array::StreamingShapes::new();
-    let mut side_rows = Vec::new();
+    let row_capacity = rows_meta.len();
+    let mut shapes = crate::array::StreamingShapes::with_capacity(0, row_capacity);
+    let mut side_rows = Vec::with_capacity(row_capacity);
     for (row_index, meta) in rows_meta.into_iter().enumerate() {
         let row = feature_row_from_meta(meta, feature_geometry_path(path_kind, row_index))?;
         row.reconcile_legacy_crs(&mut declarations)?;

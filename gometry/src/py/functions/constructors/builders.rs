@@ -4,8 +4,8 @@
 )]
 use crate::boundary::FloatInput;
 use crate::geometry::{
-    Bounds, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
-    ZOrdinate, geographic_bounds_to_shape,
+    Bounds, CoordSeqBuilder, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint,
+    MultiPolygon, ZOrdinate, geographic_bounds_to_shape,
 };
 use crate::py::errors::parameter_error;
 use crate::py::functions::constructors::{
@@ -38,7 +38,8 @@ fn multipart_members(
     raw: impl Fn(&Bound<'_, PyAny>) -> PyResult<Shape>,
 ) -> PyResult<(Vec<Shape>, Frame)> {
     numpy::reject_masked_array(values)?;
-    // Fallible growth (D10) via collect_py_iter — no artificial count ceiling.
+    // Materialize every member before frame reconciliation so a later member
+    // error keeps precedence over a frame conflict.
     let mut row = 0_usize;
     let mut members = crate::collect_py_iter(values, |item| {
         let this_row = row;
@@ -63,11 +64,7 @@ fn multipart_members(
         context,
     )?;
     let member_count = members.len();
-    let mut shapes = Vec::new();
-    if let Err(error) = crate::try_reserve_vec(&mut shapes, member_count) {
-        drop(members);
-        return Err(error.into());
-    }
+    let mut shapes = Vec::with_capacity(member_count);
     for geometry in members {
         shapes.push(match std::sync::Arc::try_unwrap(geometry.shape) {
             Ok(data) => data.into_shape(),
@@ -337,7 +334,6 @@ pub(crate) fn build_polygon(
     // writers via `require_serializable_axes`) — never admit mixed XY/XYZ that
     // would invent Z/M on serialize. Promote with force_3d/set_m first.
     let holes = match holes {
-        // Fallible growth (D10): `holes=itertools.repeat(...)` → MemoryError.
         Some(value) => crate::collect_py_iter(value, |item| {
             Ok(Ring::closed_coordseq(coordinate_vertices(
                 Some(&item),
@@ -389,7 +385,13 @@ pub(crate) fn build_multi_point(
         |shape| match shape {
             Shape::Point(point) => Some(Shape::Point(*point)),
             Shape::Empty(GeometryKind::Point, _) => Some(shape.clone()),
-            _ => None,
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
         },
         |item| {
             Ok(extract_coordinate_or_empty(item)?.map_or_else(
@@ -403,28 +405,25 @@ pub(crate) fn build_multi_point(
     }
     let axes = homogeneous_multipart_axes(&members, "MultiPoint")?;
     if members.iter().all(|shape| matches!(shape, Shape::Point(_))) {
-        let mut points = crate::try_vec_with_capacity(members.len())?;
-        for shape in members {
-            let Shape::Point(point) = shape else {
-                unreachable!("dense MultiPoint members are points");
-            };
-            crate::try_push(&mut points, point)?;
-        }
+        let coordinates = dense_multi_point_coordinates(members, axes)?;
         return Ok(PyGeometry::with_frame(
-            Shape::multi_point(
-                axes,
-                CoordSeq::try_from_points(&points).map_err(PyErr::from)?,
-            ),
+            Shape::multi_point(axes, coordinates),
             frame,
         ));
     }
-    let mut point_members = crate::try_vec_with_capacity(members.len())?;
+    let mut point_members = Vec::with_capacity(members.len());
     for shape in members {
-        crate::try_push(&mut point_members, match shape {
+        point_members.push(match shape {
             Shape::Point(point) => MultiMember::Value(point),
             Shape::Empty(GeometryKind::Point, _) => MultiMember::Empty,
-            _ => unreachable!("multipart member type checked above"),
-        })?;
+            Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => unreachable!("multipart member type checked above"),
+        });
     }
     if point_members.is_empty() {
         return Ok(PyGeometry::with_frame(empty_multi_point(), frame));
@@ -433,6 +432,17 @@ pub(crate) fn build_multi_point(
         Shape::MultiPoint(MultiPoint::try_new(axes, point_members).map_err(PyErr::from)?),
         frame,
     ))
+}
+
+fn dense_multi_point_coordinates(members: Vec<Shape>, axes: CoordinateAxes) -> PyResult<CoordSeq> {
+    let mut coordinates = CoordSeqBuilder::with_capacity(axes, members.len());
+    for member in members {
+        let Shape::Point(point) = member else {
+            unreachable!("dense MultiPoint members are points");
+        };
+        coordinates.push(point);
+    }
+    coordinates.finish().map_err(PyErr::from)
 }
 
 /// Build a ``MultiLineString`` from a sequence of line coordinate sequences.
@@ -454,7 +464,13 @@ pub(crate) fn build_multi_line_string(
         |shape| match shape {
             Shape::LineString(line) => Some(Shape::LineString(line.clone())),
             Shape::Empty(GeometryKind::LineString, _) => Some(shape.clone()),
-            _ => None,
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
         },
         |item| {
             let seq = if let Some(seq) = crate::try_coordseq_from_nd_buffer(item, None, None)? {
@@ -480,30 +496,31 @@ pub(crate) fn build_multi_line_string(
         .iter()
         .all(|shape| matches!(shape, Shape::LineString(_)))
     {
-        let mut lines = crate::try_vec_with_capacity(members.len())?;
+        let mut lines = Vec::with_capacity(members.len());
         for shape in members {
             let Shape::LineString(line) = shape else {
                 unreachable!("dense MultiLineString members are lines");
             };
-            crate::try_push(&mut lines, line)?;
+            lines.push(line);
         }
         let shape = Shape::multi_line_string(axes, lines);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
     let member_count = members.len();
-    let mut line_members = Vec::new();
-    if let Err(error) = crate::try_reserve_vec(&mut line_members, member_count) {
-        drop(members);
-        return Err(error.into());
-    }
+    let mut line_members = Vec::with_capacity(member_count);
     for shape in members {
-        crate::try_push_vec(&mut line_members, match shape {
+        line_members.push(match shape {
             Shape::LineString(line) => MultiMember::Value(line),
             Shape::Empty(GeometryKind::LineString, _) => MultiMember::Empty,
-            _ => unreachable!("multipart member type checked above"),
-        })
-        .map_err(PyErr::from)?;
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => unreachable!("multipart member type checked above"),
+        });
     }
     let shape =
         Shape::MultiLineString(MultiLineString::try_new(axes, line_members).map_err(PyErr::from)?);
@@ -533,7 +550,13 @@ pub(crate) fn build_multi_polygon(
         |shape| match shape {
             Shape::Polygon(polygon) => Some(Shape::Polygon(polygon.clone())),
             Shape::Empty(GeometryKind::Polygon, _) => Some(shape.clone()),
-            _ => None,
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
         },
         polygon_from_coordinates_item,
     )?;
@@ -545,30 +568,31 @@ pub(crate) fn build_multi_polygon(
         .iter()
         .all(|shape| matches!(shape, Shape::Polygon(_)))
     {
-        let mut polygons = crate::try_vec_with_capacity(members.len())?;
+        let mut polygons = Vec::with_capacity(members.len());
         for shape in members {
             let Shape::Polygon(polygon) = shape else {
                 unreachable!("dense MultiPolygon members are polygons");
             };
-            crate::try_push(&mut polygons, polygon)?;
+            polygons.push(polygon);
         }
         let shape = Shape::multi_polygon(axes, polygons);
         crate::io::require_serializable_axes(&shape).map_err(PyErr::from)?;
         return Ok(PyGeometry::with_frame(shape, frame));
     }
     let member_count = members.len();
-    let mut polygon_members = Vec::new();
-    if let Err(error) = crate::try_reserve_vec(&mut polygon_members, member_count) {
-        drop(members);
-        return Err(error.into());
-    }
+    let mut polygon_members = Vec::with_capacity(member_count);
     for shape in members {
-        crate::try_push_vec(&mut polygon_members, match shape {
+        polygon_members.push(match shape {
             Shape::Polygon(polygon) => MultiMember::Value(polygon),
             Shape::Empty(GeometryKind::Polygon, _) => MultiMember::Empty,
-            _ => unreachable!("multipart member type checked above"),
-        })
-        .map_err(PyErr::from)?;
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => unreachable!("multipart member type checked above"),
+        });
     }
     let shape =
         Shape::MultiPolygon(MultiPolygon::try_new(axes, polygon_members).map_err(PyErr::from)?);
@@ -788,9 +812,9 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
         // Ring cardinality is variable; only the coordinate-member branch is
         // bounded by the four-ordinate contract.
         let mut values = Vec::with_capacity(1);
-        crate::try_push(&mut values, first_item)?;
+        values.push(first_item);
         let rest = crate::collect_py_iter_from_iter(member, iter, Ok::<_, PyErr>)?;
-        crate::try_reserve_vec(&mut values, rest.len())?;
+        values.reserve(rest.len());
         values.extend(rest);
         return Ok(PolygonMember::Nested(values));
     };
@@ -809,19 +833,20 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
             ))
         },
     )?;
-    let mut values = crate::try_vec_with_capacity(1 + rest.len())?;
-    crate::try_push(&mut values, first)?;
+    let mut values = Vec::with_capacity(rest.len().saturating_add(1));
+    values.push(first);
     values.extend(rest);
     if values.len() < 2 {
         return Err(InvalidGeometryError::new_err("coordinate requires x and y"));
     }
-    let x = values[0];
-    let y = values[1];
-    let z = values.get(2).copied();
-    let m = values.get(3).copied();
+    let [x, y, optional @ ..] = values.as_slice() else {
+        unreachable!("coordinate length checked above");
+    };
+    let z = optional.first().copied();
+    let m = optional.get(1).copied();
     Ok(PolygonMember::Coordinate(Point::new_raw_axes(
-        x,
-        y,
+        *x,
+        *y,
         ZOrdinate(z),
         MOrdinate(m),
     )))
@@ -829,23 +854,23 @@ fn materialize_polygon_member<'py>(member: &Bound<'py, PyAny>) -> PyResult<Polyg
 
 /// Classify a materialized top-level polygon item as a bare shell or ring list.
 fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Shape> {
-    if members.is_empty() {
+    let Some((first_member, remaining_members)) = members.split_first() else {
         return Ok(Shape::empty_polygon());
-    }
-    let first = materialize_polygon_member(&members[0])?;
+    };
+    let first = materialize_polygon_member(first_member)?;
     match first {
         PolygonMember::Coordinate(first) => {
             // Bare shell `[(x, y), ...]`: each top-level member is admitted
             // once as one coordinate.
-            let mut points = crate::try_vec_with_capacity(members.len())?;
-            crate::try_push(&mut points, first)?;
-            for member in &members[1..] {
+            let mut points = Vec::with_capacity(members.len());
+            points.push(first);
+            for member in remaining_members {
                 let PolygonMember::Coordinate(point) = materialize_polygon_member(member)? else {
                     return Err(PyTypeError::new_err(
                         "polygon shell must contain only coordinate values",
                     ));
                 };
-                crate::try_push(&mut points, point)?;
+                points.push(point);
             }
             ensure_homogeneous_axes(&points)?;
             Ok(Shape::Polygon(Polygon::new(
@@ -857,17 +882,14 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
             // Ring list: each ring source is materialized once before the
             // shell/holes distinction, so one-shot ring iterators survive.
             let shell = Ring::closed(points_from_coordinate_members(&first)?)?;
-            let mut holes = crate::try_vec_with_capacity(members.len().saturating_sub(1))?;
-            for member in &members[1..] {
+            let mut holes = Vec::with_capacity(remaining_members.len());
+            for member in remaining_members {
                 let PolygonMember::Nested(ring) = materialize_polygon_member(member)? else {
                     return Err(PyTypeError::new_err(
                         "polygon holes must contain coordinate sequences",
                     ));
                 };
-                crate::try_push(
-                    &mut holes,
-                    Ring::closed(points_from_coordinate_members(&ring)?)?,
-                )?;
+                holes.push(Ring::closed(points_from_coordinate_members(&ring)?)?);
             }
             Ok(Shape::Polygon(Polygon::new(shell, holes)))
         },
@@ -876,9 +898,9 @@ fn polygon_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Sha
 
 /// Parse every top-level member as a coordinate (bare-shell form).
 fn points_from_coordinate_members(members: &[Bound<'_, PyAny>]) -> PyResult<Vec<Point>> {
-    let mut points = crate::try_vec_with_capacity(members.len())?;
+    let mut points = Vec::with_capacity(members.len());
     for member in members {
-        crate::try_push(&mut points, extract_coordinate(member)?)?;
+        points.push(extract_coordinate(member)?);
     }
     ensure_homogeneous_axes(&points)?;
     Ok(points)
@@ -891,12 +913,13 @@ pub(super) fn build_geometry_array(
     item: impl Fn(&Bound<'_, PyAny>) -> PyResult<Shape>,
 ) -> PyResult<PyGeometryArray> {
     numpy::reject_masked_array(values)?;
-    // Fallible growth (D10): linestrings/polygons factories and similar
-    // `itertools.repeat` inputs terminate with MemoryError, never abort.
-    // Stream directly into StreamingShapes — no intermediate Vec<Shape>.
+    // Admit CRS and iterator acquisition before consulting the source's exact
+    // length. The count sizes storage only; iteration remains authoritative.
     let frame = parse_crs_epoch(crs, epoch)?;
-    let mut rows = crate::array::StreamingShapes::new();
-    for (row, item_value) in values.try_iter()?.enumerate() {
+    let iter = values.try_iter()?;
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
+    let mut rows = crate::array::StreamingShapes::with_capacity(0, row_capacity);
+    for (row, item_value) in iter.enumerate() {
         let item_value = item_value?;
         crate::check_python_signals(item_value.py(), row)?;
         rows.try_push(item(&item_value)?)?;
@@ -915,8 +938,6 @@ pub(crate) fn build_geometry_collection(
     let Some(geometries) = geometries else {
         return geometry_with_crs_epoch(empty_geometry_collection(), crs, epoch);
     };
-    // Fallible growth (D10): `GeometryCollection(itertools.repeat(Point))`
-    // must MemoryError on real fallible OOM, never hang/abort.
     // Fail-fast on the first missing member: GeometryCollection cannot carry
     // None (unlike GeometryArray rows).
     let mut row = 0_usize;
@@ -957,4 +978,57 @@ pub(crate) fn build_geometry_collection(
         frame.crs_owned(),
         frame.epoch(),
     )?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dense_multi_point_coordinates;
+    use crate::geometry::{CoordSeq, CoordinateAxes, MOrdinate, Point, Shape, ZOrdinate};
+    use crate::test_support::allocation_count;
+
+    fn assert_matches_staged_coordinates(points: &[Point], axes: CoordinateAxes) {
+        let members: Vec<_> = points.iter().copied().map(Shape::Point).collect();
+        let staged_members = members.clone();
+
+        let (staged, staged_allocations) = allocation_count(|| {
+            let mut staged_points = Vec::with_capacity(staged_members.len());
+            for member in staged_members {
+                let Shape::Point(point) = member else {
+                    unreachable!("staged MultiPoint members are points");
+                };
+                staged_points.push(point);
+            }
+            CoordSeq::try_from_points(&staged_points).expect("admitted points form coordinates")
+        });
+        let (direct, direct_allocations) = allocation_count(|| {
+            dense_multi_point_coordinates(members, axes).expect("admitted points form coordinates")
+        });
+
+        assert_eq!(staged_allocations, direct_allocations.saturating_add(1));
+        assert_eq!(staged.axes(), direct.axes());
+        assert_eq!(
+            staged.points().collect::<Vec<_>>(),
+            direct.points().collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn dense_xy_multi_point_columns_remove_the_point_staging_allocation() {
+        let points = [
+            Point::new_raw_axes(1.0, 2.0, ZOrdinate(None), MOrdinate(None)),
+            Point::new_raw_axes(3.0, 4.0, ZOrdinate(None), MOrdinate(None)),
+            Point::new_raw_axes(5.0, 6.0, ZOrdinate(None), MOrdinate(None)),
+        ];
+        assert_matches_staged_coordinates(&points, CoordinateAxes::XY);
+    }
+
+    #[test]
+    fn dense_xyzm_multi_point_columns_remove_the_point_staging_allocation() {
+        let points = [
+            Point::new_raw_axes(1.0, 2.0, ZOrdinate(Some(3.0)), MOrdinate(Some(4.0))),
+            Point::new_raw_axes(5.0, 6.0, ZOrdinate(Some(7.0)), MOrdinate(Some(8.0))),
+            Point::new_raw_axes(9.0, 10.0, ZOrdinate(Some(11.0)), MOrdinate(Some(12.0))),
+        ];
+        assert_matches_staged_coordinates(&points, CoordinateAxes::XYZM);
+    }
 }
