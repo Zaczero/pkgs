@@ -2,7 +2,10 @@ use std::cmp::Ordering;
 
 use crate::geometry::derived::concave::point_xy_cmp;
 use crate::geometry::derived::native_concave_hull;
-use crate::geometry::{CoordSeq, LineSeq, MOrdinate, Point, Shape, ZOrdinate, empty_geometry};
+use crate::geometry::{
+    CoordSeq, LineSeq, MOrdinate, MultiPolygon, Point, Polygon, Ring, Shape, ZOrdinate,
+    empty_geometry,
+};
 
 fn hull_vertices(points: &[Point]) -> Vec<Point> {
     super::monotone_chain_hull(points)
@@ -68,6 +71,80 @@ fn point(x: f64, y: f64) -> Point {
 
 fn point_z(x: f64, y: f64, z: f64) -> Point {
     Point::new_axes(x, y, ZOrdinate(Some(z)), MOrdinate(None)).unwrap()
+}
+
+fn centroid_test_polygon(points: &[(f64, f64)]) -> Polygon {
+    let points = points.iter().map(|&(x, y)| point(x, y)).collect::<Vec<_>>();
+    let coordinates = CoordSeq::try_from_points(&points).expect("polygon coordinates");
+    Polygon::new(
+        Ring::try_from_closed(coordinates).expect("closed polygon ring"),
+        Vec::new(),
+    )
+}
+
+#[test]
+fn areal_centroid_replays_multipolygon_when_positive_child_weight_rounds_to_zero() {
+    let tiny = f64::from_bits(1);
+    let x = 2.0_f64.powi(51);
+    let ordinary = centroid_test_polygon(&[
+        (-0.5, -0.5),
+        (0.5, -0.5),
+        (0.5, 0.5),
+        (-0.5, 0.5),
+        (-0.5, -0.5),
+    ]);
+    let small = centroid_test_polygon(&[
+        (x, 0.0),
+        (x + 0.5, 0.0),
+        (x + 0.5, tiny),
+        (x, tiny),
+        (x, 0.0),
+    ]);
+    let shape =
+        Shape::MultiPolygon(MultiPolygon::from_dense(vec![ordinary, small]).expect("two polygons"));
+
+    let (centroid_x, centroid_y) =
+        super::areal_centroid(&shape).expect("positive exact aggregate area");
+    let expected_x = f64::from_bits(1_u64 << 50);
+    assert_eq!(centroid_x.to_bits(), expected_x.to_bits());
+    assert_eq!(centroid_y.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn areal_centroid_propagates_rounded_zero_through_nested_collections() {
+    let side = 2.0_f64.powi(-540);
+    let square = centroid_test_polygon(&[
+        (0.0, 0.0),
+        (side, 0.0),
+        (side, side),
+        (0.0, side),
+        (0.0, 0.0),
+    ]);
+    let slender = centroid_test_polygon(&[
+        (3.0 * side, 0.0),
+        (5.0 * side, 0.0),
+        (5.0 * side, side / 2.0),
+        (3.0 * side, side / 2.0),
+        (3.0 * side, 0.0),
+    ]);
+    let inner = Shape::geometry_collection(vec![Shape::Polygon(square), Shape::Polygon(slender)])
+        .expect("inner collection");
+    let nested = Shape::geometry_collection(vec![inner]).expect("outer collection");
+
+    let (centroid_x, centroid_y) =
+        super::areal_centroid(&nested).expect("positive exact nested area");
+    assert_eq!(centroid_x.to_bits(), (2.25 * side).to_bits());
+    assert_eq!(centroid_y.to_bits(), (0.375 * side).to_bits());
+}
+
+#[test]
+fn exact_zero_area_collection_still_uses_its_lineal_centroid() {
+    let degenerate = centroid_test_polygon(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)]);
+    let collection =
+        Shape::geometry_collection(vec![Shape::Polygon(degenerate)]).expect("collection");
+
+    assert!(super::areal_centroid(&collection).is_none());
+    assert_eq!(super::lineal_centroid(&collection), Some((1.0, 0.0)),);
 }
 
 fn origin_on(hull: &Shape) -> Point {

@@ -161,6 +161,140 @@ def test_tiny_ring_and_mixed_axis_remain_green() -> None:
     assert float(_stored(a) * _stored(b)) == pytest.approx(mixed.area, rel=0, abs=1e-15)
 
 
+@pytest.mark.parametrize(
+    ('container', 'reverse', 'packed'),
+    [
+        pytest.param('multi', False, False, id='multipolygon-ordinary-first'),
+        pytest.param('multi', True, False, id='multipolygon-tiny-first'),
+        pytest.param('collection', False, False, id='collection-ordinary-first'),
+        pytest.param('collection', True, False, id='collection-tiny-first'),
+        pytest.param('multi', False, True, id='multipolygon-array-row'),
+        pytest.param('collection', True, True, id='collection-array-row'),
+    ],
+)
+def test_aggregate_centroid_keeps_positive_area_with_zero_rounded_weight(
+    container: str,
+    reverse: bool,
+    packed: bool,
+) -> None:
+    """A child area rounded to zero still contributes to its exact aggregate."""
+    tiny = math.ulp(0.0)
+    x = 2.0**51
+    small = gm.Polygon([
+        (x, 0.0),
+        (x + 0.5, 0.0),
+        (x + 0.5, tiny),
+        (x, tiny),
+        (x, 0.0),
+    ])
+    small_area = _stored(0.5) * _stored(tiny)
+    assert small_area > 0
+    assert float(small_area) == 0.0
+
+    small_center_x = (_stored(x) + _stored(x + 0.5)) / 2
+    small_center_y = _stored(tiny) / 2
+    direct = small.centroid()
+    assert (direct.x, direct.y) == (float(small_center_x), float(small_center_y))
+
+    ordinary = gm.box(-0.5, -0.5, 0.5, 0.5)
+    members = [ordinary, small]
+    if reverse:
+        members.reverse()
+    geometry = (
+        gm.MultiPolygon(members)
+        if container == 'multi'
+        else gm.GeometryCollection(members)
+    )
+    source = gm.GeometryArray([geometry]) if packed else geometry
+    result = source.centroid()
+    if packed:
+        result = result[0]
+
+    expected_x = float(small_area * small_center_x / (1 + small_area))
+    expected_y = float(small_area * small_center_y / (1 + small_area))
+    assert (result.x, result.y) == (expected_x, expected_y)
+
+
+@pytest.mark.parametrize('packed', [False, True], ids=['scalar', 'array-row'])
+def test_nested_all_rounded_zero_areas_propagate_the_areal_centroid(
+    packed: bool,
+) -> None:
+    """Nested exact-positive areas must not fall through to lineal dimension."""
+    side = 2.0**-540
+    square = gm.Polygon([
+        (0.0, 0.0),
+        (side, 0.0),
+        (side, side),
+        (0.0, side),
+        (0.0, 0.0),
+    ])
+    slender = gm.Polygon([
+        (3.0 * side, 0.0),
+        (5.0 * side, 0.0),
+        (5.0 * side, side / 2.0),
+        (3.0 * side, side / 2.0),
+        (3.0 * side, 0.0),
+    ])
+    exact_area = _stored(side) * _stored(side)
+    assert exact_area > 0
+    assert float(exact_area) == 0.0
+    assert float(2 * exact_area) == 0.0
+
+    geometry = gm.GeometryCollection([
+        gm.GeometryCollection([square, slender]),
+    ])
+    source = gm.GeometryArray([geometry]) if packed else geometry
+    result = source.centroid()
+    if packed:
+        result = result[0]
+
+    expected_x = float((Fraction(1, 2) * _stored(side) + 4 * _stored(side)) / 2)
+    expected_y = float(
+        (Fraction(1, 2) * _stored(side) + Fraction(1, 4) * _stored(side)) / 2
+    )
+    assert (result.x, result.y) == (expected_x, expected_y)
+
+
+@pytest.mark.parametrize(
+    ('container', 'packed'),
+    [
+        pytest.param('multi', False, id='multipolygon'),
+        pytest.param('collection', False, id='collection'),
+        pytest.param('multi', True, id='multipolygon-array-row'),
+        pytest.param('collection', True, id='collection-array-row'),
+    ],
+)
+def test_exact_zero_area_aggregate_still_uses_lineal_centroid(
+    container: str,
+    packed: bool,
+) -> None:
+    """An exact-zero ring returns no areal child summary and remains lineal."""
+    rings = [
+        [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (0.0, 0.0)],
+        [(10.0, 0.0), (11.0, 0.0), (12.0, 0.0), (10.0, 0.0)],
+    ]
+    polygons = [gm.Polygon(ring) for ring in rings]
+    for ring in rings:
+        twice_area = sum(
+            _stored(x0) * _stored(y1) - _stored(x1) * _stored(y0)
+            for (x0, y0), (x1, y1) in pairwise(ring)
+        )
+        twice_area += _stored(ring[-1][0]) * _stored(ring[0][1])
+        twice_area -= _stored(ring[0][0]) * _stored(ring[-1][1])
+        assert twice_area == 0
+
+    geometry = (
+        gm.MultiPolygon(polygons)
+        if container == 'multi'
+        else gm.GeometryCollection(polygons)
+    )
+    source = gm.GeometryArray([geometry]) if packed else geometry
+    result = source.centroid()
+    if packed:
+        result = result[0]
+    assert (result.x, result.y) == (6.0, 0.0)
+
+
 def test_exact_product_tails_keep_near_collinear_polygon_topology() -> None:
     """A closed stored-double ring must not lose its nonzero exact tails.
 
