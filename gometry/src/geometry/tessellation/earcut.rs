@@ -92,24 +92,33 @@ pub(crate) fn strip_collinear_vertices(vertices: &mut Vec<Point>) {
     let mut out: Vec<Point> = Vec::with_capacity(vertices.len());
     for &curr in vertices.iter() {
         out.push(curr);
-        while out.len() >= 3 {
-            let n = out.len();
-            if is_collinear(out[n - 3], out[n - 2], out[n - 1]) {
-                out[n - 2] = out[n - 1];
-                out.pop();
-            } else {
-                break;
+        loop {
+            match out.as_mut_slice() {
+                [.., first, middle, last] if is_collinear(*first, *middle, *last) => {
+                    *middle = *last;
+                    out.pop();
+                },
+                _ => break,
             }
         }
     }
     // Seam fixup: the ring is closed, so re-check the wrap-around triples
     // (…, last, first) and (last, first, second), collapsing the middle until
     // stable. A simple polygon's seam holds O(1) collinear vertices.
-    while out.len() >= 3 {
-        let n = out.len();
-        if is_collinear(out[n - 2], out[n - 1], out[0]) {
+    loop {
+        let removes_last = match out.as_slice() {
+            [first, .., second_last, last] => is_collinear(*second_last, *last, *first),
+            _ => false,
+        };
+        if removes_last {
             out.pop();
-        } else if is_collinear(out[n - 1], out[0], out[1]) {
+            continue;
+        }
+        let removes_first = match out.as_slice() {
+            [first, second, .., last] => is_collinear(*last, *first, *second),
+            _ => false,
+        };
+        if removes_first {
             out.remove(0);
         } else {
             break;
@@ -130,11 +139,8 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
             ));
         }
     }
-    for index in 0..ring.len() {
-        let len = ring.len();
-        let prev = ring[wrap_index(index + len - 1, len)];
-        let curr = ring[index];
-        let next = ring[wrap_index(index + 1, len)];
+    let cycle = EarcutCycle::new(ring);
+    for (prev, curr, next) in cycle.triples() {
         if orientation(prev, curr, next) == Orientation::Collinear
             && !point_on_segment(curr, prev, next)
         {
@@ -143,17 +149,23 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
             ));
         }
     }
-    let segments: Vec<Segment> = (0..ring.len())
-        .map(|index| ring_segment(ring, index))
+    let segments: Vec<Segment> = cycle
+        .edges()
+        .map(|(_, start, end)| ring_segment_points(start, end))
         .collect();
     let index = SegmentIndex::build(&segments);
-    for left in 0..segments.len() {
-        for entry in index.intersecting_candidates(segments[left]) {
+    for (left, &left_segment) in segments.iter().enumerate() {
+        for entry in index.intersecting_candidates(left_segment) {
             let right = entry.ordinal;
             if right <= left || ring_segments_adjacent(ring.len(), left, right) {
                 continue;
             }
-            if segments_intersect(segments[left], segments[right]) {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "candidate ordinals come from the SegmentIndex built from this exact segment slice"
+            )]
+            let right_segment = segments[right];
+            if segments_intersect(left_segment, right_segment) {
                 return Err(GeometryErrorKind::triangulation(
                     "polygon ring self-intersects",
                 ));
@@ -164,7 +176,10 @@ pub(crate) fn validate_earcut_ring(ring: &[Point]) -> Result<()> {
 }
 
 pub(crate) fn validate_hole_inside_shell(shell: &[Point], hole: &[Point]) -> Result<()> {
-    if !ring_contains_interior(&closed_ring(shell), hole[0]) {
+    if !ring_contains_interior(
+        &closed_ring(shell),
+        *hole.first().expect("validated holes are non-empty"),
+    ) {
         return Err(GeometryErrorKind::triangulation(
             "polygon hole is not strictly inside the shell",
         ));
@@ -175,36 +190,163 @@ pub(crate) fn validate_hole_inside_shell(shell: &[Point], hole: &[Point]) -> Res
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum EarcutRingId {
     Shell,
-    Hole(usize),
+    Hole(HoleId),
 }
 
-fn push_ring_segments(
-    ring: &[Point],
-    id: EarcutRingId,
-    segments: &mut Vec<Segment>,
-    owners: &mut Vec<EarcutRingId>,
-) {
-    for index in 0..ring.len() {
-        segments.push(ring_segment(ring, index));
-        owners.push(id);
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct HoleId(usize);
+
+impl HoleId {
+    const fn from_index(index: usize) -> Self {
+        Self(index)
     }
+
+    const fn index(self) -> usize {
+        self.0
+    }
+}
+
+struct HoleList<'holes> {
+    rings: &'holes [Vec<Point>],
+}
+
+impl<'holes> HoleList<'holes> {
+    const fn new(rings: &'holes [Vec<Point>]) -> Self {
+        Self { rings }
+    }
+
+    fn ids(&self) -> impl Iterator<Item = HoleId> + '_ {
+        (0..self.rings.len()).map(HoleId::from_index)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HoleId is created by enumerating this unchanged hole slice before bridge elimination"
+    )]
+    fn ring(&self, hole: HoleId) -> &[Point] {
+        &self.rings[hole.index()]
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RingVertexId(usize);
+
+struct EarcutCycle<'ring> {
+    points: &'ring [Point],
+}
+
+impl<'ring> EarcutCycle<'ring> {
+    const fn new(points: &'ring [Point]) -> Self {
+        Self { points }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "RingVertexId comes from enumerating this unchanged ring and is used only before the next splice"
+    )]
+    const fn point(&self, vertex: RingVertexId) -> Point {
+        self.points[vertex.0]
+    }
+
+    const fn next(&self, vertex: RingVertexId) -> RingVertexId {
+        RingVertexId(wrap_index(vertex.0.wrapping_add(1), self.points.len()))
+    }
+
+    const fn previous(&self, vertex: RingVertexId) -> RingVertexId {
+        let prior = vertex.0.wrapping_add(self.points.len()).wrapping_sub(1);
+        RingVertexId(wrap_index(prior, self.points.len()))
+    }
+
+    fn edges(&self) -> impl Iterator<Item = (RingVertexId, Point, Point)> + '_ {
+        self.points
+            .iter()
+            .zip(self.points.iter().cycle().skip(1))
+            .enumerate()
+            .map(|(index, (start, end))| (RingVertexId(index), *start, *end))
+    }
+
+    fn vertices_from(
+        &self,
+        start: RingVertexId,
+    ) -> impl Iterator<Item = (RingVertexId, Point)> + '_ {
+        self.points
+            .iter()
+            .enumerate()
+            .skip(start.0)
+            .chain(self.points.iter().enumerate().take(start.0))
+            .map(|(index, point)| (RingVertexId(index), *point))
+    }
+
+    fn triples(&self) -> impl Iterator<Item = (Point, Point, Point)> + '_ {
+        let len = self.points.len();
+        let previous = self
+            .points
+            .iter()
+            .rev()
+            .take(1)
+            .chain(self.points.iter().take(len.wrapping_sub(1)));
+        let current = self.points.iter();
+        let next = self.points.iter().skip(1).chain(self.points.iter().take(1));
+        previous
+            .zip(current)
+            .zip(next)
+            .map(|((previous, current), next)| (*previous, *current, *next))
+    }
+}
+
+struct RingSegments {
+    segments: Vec<Segment>,
+    owners: Vec<EarcutRingId>,
+}
+
+impl RingSegments {
+    const fn new() -> Self {
+        Self {
+            segments: Vec::new(),
+            owners: Vec::new(),
+        }
+    }
+
+    fn push_ring(&mut self, ring: &[Point], id: EarcutRingId) {
+        for (_, start, end) in EarcutCycle::new(ring).edges() {
+            self.segments.push(ring_segment_points(start, end));
+            self.owners.push(id);
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "SegmentEntry.ordinal was assigned by SegmentIndex from this same paired ring-segment stream"
+    )]
+    fn candidate(&self, ordinal: usize) -> (Segment, EarcutRingId) {
+        (self.segments[ordinal], self.owners[ordinal])
+    }
+}
+
+fn push_ring_segments(ring: &[Point], id: EarcutRingId, segments: &mut RingSegments) {
+    segments.push_ring(ring, id);
 }
 
 pub(crate) fn validate_hole_interactions(shell: &[Point], holes: &[Vec<Point>]) -> Result<()> {
-    let mut segments = Vec::new();
-    let mut owners = Vec::new();
-    push_ring_segments(shell, EarcutRingId::Shell, &mut segments, &mut owners);
+    let mut segments = RingSegments::new();
+    push_ring_segments(shell, EarcutRingId::Shell, &mut segments);
     for (index, hole) in holes.iter().enumerate() {
-        push_ring_segments(hole, EarcutRingId::Hole(index), &mut segments, &mut owners);
+        push_ring_segments(
+            hole,
+            EarcutRingId::Hole(HoleId::from_index(index)),
+            &mut segments,
+        );
     }
-    let index = SegmentIndex::build(&segments);
-    for left in 0..segments.len() {
-        for entry in index.intersecting_candidates(segments[left]) {
+    let index = SegmentIndex::build(&segments.segments);
+    for (left, (&left_segment, &left_id)) in
+        segments.segments.iter().zip(&segments.owners).enumerate()
+    {
+        for entry in index.intersecting_candidates(left_segment) {
             let right = entry.ordinal;
             if right <= left {
                 continue;
             }
-            let (left_id, right_id) = (owners[left], owners[right]);
+            let (right_segment, right_id) = segments.candidate(right);
             if matches!(
                 (left_id, right_id),
                 (EarcutRingId::Shell, EarcutRingId::Shell)
@@ -214,7 +356,7 @@ pub(crate) fn validate_hole_interactions(shell: &[Point], holes: &[Vec<Point>]) 
             if left_id == right_id {
                 continue;
             }
-            if !segments_intersect(segments[left], segments[right]) {
+            if !segments_intersect(left_segment, right_segment) {
                 continue;
             }
             return Err(match (left_id, right_id) {
@@ -235,49 +377,70 @@ struct HoleContainmentPrep {
     bounds: Bounds,
 }
 
+struct HoleContainmentPreps(Vec<HoleContainmentPrep>);
+
+impl HoleContainmentPreps {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "HoleId comes from the same hole enumeration stored in this containment table"
+    )]
+    fn get(&self, hole: HoleId) -> &HoleContainmentPrep {
+        &self.0[hole.index()]
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (HoleId, &HoleContainmentPrep)> + '_ {
+        self.0
+            .iter()
+            .enumerate()
+            .map(|(index, prep)| (HoleId::from_index(index), prep))
+    }
+}
+
 /// Reject nested holes: each pair is tested only when one bbox contains the
 /// other's representative vertex (the necessary containment condition).
 fn validate_holes_disjoint(holes: &[Vec<Point>]) -> Result<()> {
     if holes.len() < 2 {
         return Ok(());
     }
-    let preps: Vec<HoleContainmentPrep> = holes
-        .iter()
-        .map(|hole| {
-            let closed = closed_ring(hole);
-            let bounds = Bounds::from_xy_iter(closed.iter().map(Point::xy));
-            HoleContainmentPrep {
-                closed,
-                rep: hole[0],
-                bounds,
-            }
-        })
-        .collect();
-    let tree: BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>> =
+    let preps = HoleContainmentPreps(
+        holes
+            .iter()
+            .map(|hole| {
+                let closed = closed_ring(hole);
+                let bounds = Bounds::from_xy_iter(closed.iter().map(Point::xy));
+                HoleContainmentPrep {
+                    closed,
+                    rep: *hole.first().expect("validated holes are non-empty"),
+                    bounds,
+                }
+            })
+            .collect(),
+    );
+    let tree: BulkRTree<GeomWithData<Rectangle<[f64; 2]>, HoleId>> =
         BulkRTree::bulk_load_with_params(
             preps
                 .iter()
-                .enumerate()
-                .map(|(index, prep)| {
+                .map(|(hole, prep)| {
                     GeomWithData::new(
                         Rectangle::from_corners([prep.bounds.minx(), prep.bounds.miny()], [
                             prep.bounds.maxx(),
                             prep.bounds.maxy(),
                         ]),
-                        index,
+                        hole,
                     )
                 })
                 .collect(),
         );
-    for (index, prep) in preps.iter().enumerate() {
+    for (hole, prep) in preps.iter() {
         let point_envelope = AABB::from_corners([prep.rep.x, prep.rep.y], [prep.rep.x, prep.rep.y]);
         for entry in tree.locate_in_envelope_intersecting(point_envelope) {
             let other = entry.data;
-            if other == index {
+            if other == hole {
                 continue;
             }
-            if ring_contains_interior(&prep.closed, preps[other].rep)
-                || ring_contains_interior(&preps[other].closed, prep.rep)
+            let other = preps.get(other);
+            if ring_contains_interior(&prep.closed, other.rep)
+                || ring_contains_interior(&other.closed, prep.rep)
             {
                 return Err(GeometryErrorKind::triangulation(
                     "polygon holes must be disjoint",
@@ -288,24 +451,27 @@ fn validate_holes_disjoint(holes: &[Vec<Point>]) -> Result<()> {
     Ok(())
 }
 
-pub(crate) const fn ring_segment(ring: &[Point], index: usize) -> Segment {
+const fn ring_segment_points(start: Point, end: Point) -> Segment {
     Segment {
-        start: ring[index].xy(),
-        end: ring[wrap_index(index + 1, ring.len())].xy(),
+        start: start.xy(),
+        end: end.xy(),
     }
 }
 
-pub(crate) const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
-    left.abs_diff(right) == 1 || (left == 0 && right == len - 1)
+const fn ring_segments_adjacent(len: usize, left: usize, right: usize) -> bool {
+    left.abs_diff(right) == 1 || (left == 0 && right == len.wrapping_sub(1))
 }
 
 pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Result<()> {
-    let mut order: Vec<_> = (0..holes.len()).collect();
+    let holes = HoleList::new(holes);
+    let mut order: Vec<_> = holes.ids().collect();
     order.sort_unstable_by(|&left, &right| {
-        compare_hole_leftmost_xy_slope(&holes[left], &holes[right]).then_with(|| left.cmp(&right))
+        compare_hole_leftmost_xy_slope(holes.ring(left), holes.ring(right))
+            .then_with(|| left.index().cmp(&right.index()))
     });
-    for hole_index in order {
-        let hole = rotate_ring(&holes[hole_index], leftmost_vertex(&holes[hole_index]));
+    for hole_id in order {
+        let hole_ring = holes.ring(hole_id);
+        let hole = rotate_ring(hole_ring, leftmost_vertex(hole_ring));
         let bridge = find_hole_bridge(ring, &hole).ok_or_else(|| {
             GeometryErrorKind::triangulation("failed to find a visible bridge for polygon hole")
         })?;
@@ -316,17 +482,19 @@ pub(crate) fn eliminate_holes(ring: &mut Vec<Point>, holes: &[Vec<Point>]) -> Re
 }
 
 fn compare_hole_leftmost_xy_slope(left: &[Point], right: &[Point]) -> std::cmp::Ordering {
+    let left_cycle = EarcutCycle::new(left);
+    let right_cycle = EarcutCycle::new(right);
     let left_index = leftmost_vertex(left);
     let right_index = leftmost_vertex(right);
-    let left_point = left[left_index];
-    let right_point = right[right_index];
+    let left_point = left_cycle.point(left_index);
+    let right_point = right_cycle.point(right_index);
     left_point
         .x
         .total_cmp(&right_point.x)
         .then_with(|| left_point.y.total_cmp(&right_point.y))
         .then_with(|| {
-            let left_next = left[wrap_index(left_index + 1, left.len())];
-            let right_next = right[wrap_index(right_index + 1, right.len())];
+            let left_next = left_cycle.point(left_cycle.next(left_index));
+            let right_next = right_cycle.point(right_cycle.next(right_index));
             let left_dx = left_next.x - left_point.x;
             let right_dx = right_next.x - right_point.x;
             let left_slope = if left_dx == 0.0 {
@@ -343,27 +511,30 @@ fn compare_hole_leftmost_xy_slope(left: &[Point], right: &[Point]) -> std::cmp::
         })
 }
 
-pub(crate) fn leftmost_vertex(ring: &[Point]) -> usize {
-    (1..ring.len()).fold(0, |best, index| {
-        let point = ring[index];
-        let current = ring[best];
-        if point
-            .x
-            .total_cmp(&current.x)
-            .then_with(|| point.y.total_cmp(&current.y))
-            == std::cmp::Ordering::Less
-        {
-            index
-        } else {
-            best
-        }
-    })
+fn leftmost_vertex(ring: &[Point]) -> RingVertexId {
+    let cycle = EarcutCycle::new(ring);
+    ring.iter()
+        .enumerate()
+        .skip(1)
+        .fold(RingVertexId(0), |best, (index, &point)| {
+            let current = cycle.point(best);
+            if point
+                .x
+                .total_cmp(&current.x)
+                .then_with(|| point.y.total_cmp(&current.y))
+                == std::cmp::Ordering::Less
+            {
+                RingVertexId(index)
+            } else {
+                best
+            }
+        })
 }
 
-pub(crate) fn rotate_ring(ring: &[Point], start: usize) -> Vec<Point> {
-    ring[start..]
-        .iter()
-        .chain(&ring[..start])
+fn rotate_ring(ring: &[Point], start: RingVertexId) -> Vec<Point> {
+    ring.iter()
+        .skip(start.0)
+        .chain(ring.iter().take(start.0))
         .copied()
         .collect()
 }
@@ -373,28 +544,25 @@ pub(crate) fn filter_earcut_ring_points(ring: &mut Vec<Point>) {
     strip_collinear_vertices(ring);
 }
 
-#[expect(clippy::many_single_char_names, reason = "standard math notation")]
 #[expect(
     clippy::float_cmp,
     reason = "exact comparison is intentional (sentinel / degenerate / exact-literal check)"
 )]
-pub(crate) fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<usize> {
-    let hole_point = hole[0];
+fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<RingVertexId> {
+    let hole_point = *hole.first()?;
     let (hx, hy) = (hole_point.x, hole_point.y);
-    let n = ring.len();
+    let cycle = EarcutCycle::new(ring);
     let mut qx = f64::NEG_INFINITY;
     let mut m = None;
 
-    for index in 0..n {
-        if same_point(hole_point, ring[index]) {
+    for (index, a, b) in cycle.edges() {
+        if same_point(hole_point, a) {
             return Some(index);
         }
-        let next = wrap_index(index + 1, n);
-        if same_point(hole_point, ring[next]) {
+        let next = cycle.next(index);
+        if same_point(hole_point, b) {
             return Some(next);
         }
-        let a = ring[index];
-        let b = ring[next];
         if a.y >= hy && hy >= b.y && (a.y - b.y) != 0.0 {
             let x = a.x + (hy - a.y) * (b.x - a.x) / (b.y - a.y);
             if x <= hx && x > qx {
@@ -412,13 +580,12 @@ pub(crate) fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<usize> 
         return Some(m);
     }
 
-    let mx = ring[m].x;
-    let my = ring[m].y;
-    let stop = m;
+    let (mx, my) = {
+        let point = cycle.point(m);
+        (point.x, point.y)
+    };
     let mut tan_min = f64::INFINITY;
-    let mut p = m;
-    loop {
-        let pt = ring[p];
+    for (p, pt) in cycle.vertices_from(m) {
         let inside = if hy < my {
             point_in_triangle(hx, hy, mx, my, qx, hy, pt.x, pt.y)
         } else {
@@ -426,19 +593,15 @@ pub(crate) fn find_hole_bridge(ring: &[Point], hole: &[Point]) -> Option<usize> 
         };
         if hx >= pt.x && pt.x >= mx && hx != pt.x && inside {
             let tan = (hy - pt.y).abs() / (hx - pt.x);
-            if locally_inside_for_bridge(ring, p, hole_point)
+            if locally_inside_for_bridge(&cycle, p, hole_point)
                 && (tan < tan_min
                     || (tan == tan_min
-                        && (pt.x > ring[m].x
-                            || (pt.x == ring[m].x && hole_bridge_sector_ok(ring, m, p)))))
+                        && (pt.x > cycle.point(m).x
+                            || (pt.x == cycle.point(m).x && hole_bridge_sector_ok(&cycle, m, p)))))
             {
                 m = p;
                 tan_min = tan;
             }
-        }
-        p = wrap_index(p + 1, n);
-        if p == stop {
-            break;
         }
     }
     Some(m)
@@ -459,11 +622,10 @@ fn point_in_triangle(
         && (bx - px) * (cy - py) >= (cx - px) * (by - py)
 }
 
-fn locally_inside_for_bridge(ring: &[Point], p: usize, target: Point) -> bool {
-    let n = ring.len();
-    let prev = ring[wrap_index(p + n - 1, n)];
-    let curr = ring[p];
-    let next = ring[wrap_index(p + 1, n)];
+fn locally_inside_for_bridge(cycle: &EarcutCycle<'_>, p: RingVertexId, target: Point) -> bool {
+    let prev = cycle.point(cycle.previous(p));
+    let curr = cycle.point(p);
+    let next = cycle.point(cycle.next(p));
     let (tx, ty) = (target.x, target.y);
     if orientation_xy(prev.x, prev.y, curr.x, curr.y, next.x, next.y)
         == Orientation::CounterClockwise
@@ -478,45 +640,59 @@ fn locally_inside_for_bridge(ring: &[Point], p: usize, target: Point) -> bool {
     }
 }
 
-fn hole_bridge_sector_ok(ring: &[Point], m: usize, p: usize) -> bool {
-    let n = ring.len();
-    let m_prev = ring[wrap_index(m + n - 1, n)];
-    let m_curr = ring[m];
-    let m_next = ring[wrap_index(m + 1, n)];
-    let p_prev = ring[wrap_index(p + n - 1, n)];
-    let p_next = ring[wrap_index(p + 1, n)];
+fn hole_bridge_sector_ok(cycle: &EarcutCycle<'_>, m: RingVertexId, p: RingVertexId) -> bool {
+    let m_prev = cycle.point(cycle.previous(m));
+    let m_curr = cycle.point(m);
+    let m_next = cycle.point(cycle.next(m));
+    let p_prev = cycle.point(cycle.previous(p));
+    let p_next = cycle.point(cycle.next(p));
     orientation_xy(m_prev.x, m_prev.y, m_curr.x, m_curr.y, p_prev.x, p_prev.y)
         == Orientation::CounterClockwise
         && orientation_xy(p_next.x, p_next.y, m_curr.x, m_curr.y, m_next.x, m_next.y)
             == Orientation::CounterClockwise
 }
 
-pub(crate) fn splice_hole_bridge(ring: &mut Vec<Point>, bridge_index: usize, hole: &[Point]) {
-    let bridge_point = ring[bridge_index];
-    let hole_point = hole[0];
-    let mut spliced = Vec::with_capacity(ring.len() + hole.len() + 2);
-    spliced.extend_from_slice(&ring[..=bridge_index]);
+fn splice_hole_bridge(ring: &mut Vec<Point>, bridge: RingVertexId, hole: &[Point]) {
+    let bridge_point = EarcutCycle::new(ring).point(bridge);
+    let hole_point = *hole.first().expect("validated holes are non-empty");
+    let head_len = bridge.0.wrapping_add(1);
+    let capacity = ring.len().wrapping_add(hole.len()).wrapping_add(2);
+    let mut spliced = Vec::with_capacity(capacity);
+    spliced.extend(ring.iter().take(head_len).copied());
     spliced.extend_from_slice(hole);
     spliced.push(hole_point);
     spliced.push(bridge_point);
-    spliced.extend_from_slice(&ring[bridge_index + 1..]);
+    spliced.extend(ring.iter().skip(head_len).copied());
     *ring = spliced;
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct EarNode {
-    pub(crate) point: Point,
-    pub(crate) prev: usize,
-    pub(crate) next: usize,
-    pub(crate) active: bool,
-    pub(crate) z: u64,
+struct EarNode {
+    point: Point,
+    prev: NodeId,
+    next: NodeId,
+    active: bool,
+    z: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NodeId(usize);
+
+impl NodeId {
+    const fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+
+    const fn index(self) -> usize {
+        self.0
+    }
 }
 
 pub(crate) struct EarArena {
-    pub(crate) nodes: Vec<EarNode>,
-    pub(crate) z_order: Vec<usize>,
-    pub(crate) active: usize,
-    pub(crate) z_scale: Option<ZScale>,
+    nodes: Vec<EarNode>,
+    z_order: Vec<NodeId>,
+    active: usize,
+    z_scale: Option<ZScale>,
 }
 
 impl EarArena {
@@ -528,14 +704,21 @@ impl EarArena {
             .enumerate()
             .map(|(index, point)| EarNode {
                 point,
-                prev: wrap_index(index + points.len() - 1, points.len()),
-                next: wrap_index(index + 1, points.len()),
+                prev: NodeId::from_index(wrap_index(
+                    index.wrapping_add(points.len()).wrapping_sub(1),
+                    points.len(),
+                )),
+                next: NodeId::from_index(wrap_index(index.wrapping_add(1), points.len())),
                 active: true,
                 z: z_scale.map_or(0, |scale| scale.key(point)),
             })
             .collect();
-        let mut z_order = (0..points.len()).collect::<Vec<_>>();
-        z_order.sort_unstable_by_key(|&index| nodes[index].z);
+        let mut z_order = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, _)| NodeId::from_index(index))
+            .collect::<Vec<_>>();
+        z_order.sort_unstable_by_key(|&node| arena_node(&nodes, node).z);
         Self {
             nodes,
             z_order,
@@ -544,21 +727,62 @@ impl EarArena {
         }
     }
 
-    pub(crate) fn remove(&mut self, index: usize) {
-        let prev = self.nodes[index].prev;
-        let next = self.nodes[index].next;
-        self.nodes[prev].next = next;
-        self.nodes[next].prev = prev;
-        self.nodes[index].active = false;
-        self.active -= 1;
+    fn node(&self, id: NodeId) -> &EarNode {
+        arena_node(&self.nodes, id)
     }
 
-    pub(crate) fn active_indices(&self) -> impl Iterator<Item = usize> + '_ {
+    fn node_mut(&mut self, id: NodeId) -> &mut EarNode {
+        arena_node_mut(&mut self.nodes, id)
+    }
+
+    fn remove(&mut self, id: NodeId) {
+        let (prev, next) = {
+            let node = self.node(id);
+            (node.prev, node.next)
+        };
+        self.node_mut(prev).next = next;
+        self.node_mut(next).prev = prev;
+        self.node_mut(id).active = false;
+        self.active = self.active.wrapping_sub(1);
+    }
+
+    fn active_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.nodes
             .iter()
             .enumerate()
-            .filter_map(|(index, node)| node.active.then_some(index))
+            .filter_map(|(index, node)| node.active.then_some(NodeId::from_index(index)))
     }
+
+    #[cfg(test)]
+    pub(crate) const fn has_z_scale(&self) -> bool {
+        self.z_scale.is_some()
+    }
+
+    fn z_window(&self, min: u64, max: u64) -> Option<&[NodeId]> {
+        let lo = self
+            .z_order
+            .partition_point(|&candidate| self.node(candidate).z < min);
+        let hi = self
+            .z_order
+            .partition_point(|&candidate| self.node(candidate).z <= max);
+        self.z_order.get(lo..hi)
+    }
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "NodeId is enumerated from the same fixed EarArena node allocation"
+)]
+const fn arena_node(nodes: &[EarNode], id: NodeId) -> &EarNode {
+    &nodes[id.index()]
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "NodeId is enumerated from the same fixed EarArena node allocation"
+)]
+const fn arena_node_mut(nodes: &mut [EarNode], id: NodeId) -> &mut EarNode {
+    &mut nodes[id.index()]
 }
 
 #[derive(Clone, Copy)]
@@ -573,7 +797,7 @@ impl ZScale {
     pub(crate) fn new(points: &[Point]) -> Option<Self> {
         let first = *points.first()?;
         let (mut minx, mut miny, mut maxx, mut maxy) = (first.x, first.y, first.x, first.y);
-        for point in &points[1..] {
+        for point in points.iter().skip(1) {
             minx = minx.min(point.x);
             miny = miny.min(point.y);
             maxx = maxx.max(point.x);
@@ -639,54 +863,61 @@ pub(crate) fn earcut_linked_ring_with(
         return Ok(());
     }
     let mut arena = EarArena::new(points);
-    let mut current = 0;
-    let mut guard = 0;
+    let mut current = NodeId::from_index(0);
+    let mut guard = 0_usize;
     while arena.active > 3 {
         if is_ear(&arena, current) {
-            let prev = arena.nodes[current].prev;
-            let next = arena.nodes[current].next;
-            emit(
-                arena.nodes[prev].point,
-                arena.nodes[current].point,
-                arena.nodes[next].point,
-            )?;
+            let (prev, next) = {
+                let node = arena.node(current);
+                (node.prev, node.next)
+            };
+            let triangle = (
+                arena.node(prev).point,
+                arena.node(current).point,
+                arena.node(next).point,
+            );
+            emit(triangle.0, triangle.1, triangle.2)?;
             arena.remove(current);
             current = next;
             guard = 0;
             continue;
         }
-        current = arena.nodes[current].next;
-        guard += 1;
+        current = arena.node(current).next;
+        guard = guard.wrapping_add(1);
         if guard > arena.nodes.len() {
             return Err(GeometryErrorKind::triangulation(
                 "earcut failed to find a valid ear",
             ));
         }
     }
-    let remaining = arena.active_indices().collect::<Vec<_>>();
-    if remaining.len() == 3 {
-        let first = remaining[0];
-        let second = arena.nodes[first].next;
-        let third = arena.nodes[second].next;
+    if arena.active == 3 {
+        let first = arena
+            .active_ids()
+            .next()
+            .expect("three active nodes remain");
+        let second = arena.node(first).next;
+        let third = arena.node(second).next;
         emit(
-            arena.nodes[first].point,
-            arena.nodes[second].point,
-            arena.nodes[third].point,
+            arena.node(first).point,
+            arena.node(second).point,
+            arena.node(third).point,
         )?;
     }
     Ok(())
 }
 
-pub(crate) fn is_ear(arena: &EarArena, index: usize) -> bool {
-    if !arena.nodes[index].active {
+fn is_ear(arena: &EarArena, index: NodeId) -> bool {
+    if !arena.node(index).active {
         return false;
     }
-    let prev = arena.nodes[index].prev;
-    let next = arena.nodes[index].next;
+    let (prev, next) = {
+        let node = arena.node(index);
+        (node.prev, node.next)
+    };
     let (a, b, c) = (
-        arena.nodes[prev].point,
-        arena.nodes[index].point,
-        arena.nodes[next].point,
+        arena.node(prev).point,
+        arena.node(index).point,
+        arena.node(next).point,
     );
     if orientation(a, b, c) != Orientation::CounterClockwise {
         return false;
@@ -694,11 +925,11 @@ pub(crate) fn is_ear(arena: &EarArena, index: usize) -> bool {
     !ear_contains_vertex(arena, prev, index, next, a, b, c)
 }
 
-pub(crate) fn ear_contains_vertex(
+fn ear_contains_vertex(
     arena: &EarArena,
-    prev: usize,
-    current: usize,
-    next: usize,
+    prev: NodeId,
+    current: NodeId,
+    next: NodeId,
     a: Point,
     b: Point,
     c: Point,
@@ -709,28 +940,25 @@ pub(crate) fn ear_contains_vertex(
         // z-range are a CONTIGUOUS slice — binary-search its bounds and scan
         // only that window (mapbox earcut's O(log n + k) hashing) instead of
         // the whole list, which made every ear test O(n) (overall O(n²)).
-        let lo = arena
-            .z_order
-            .partition_point(|&candidate| arena.nodes[candidate].z < min_z);
-        let hi = arena
-            .z_order
-            .partition_point(|&candidate| arena.nodes[candidate].z <= max_z);
-        return arena.z_order[lo..hi].iter().copied().any(|candidate| {
-            let node = arena.nodes[candidate];
-            node.active && candidate_inside_ear(candidate, prev, current, next, node.point, a, b, c)
+        return arena.z_window(min_z, max_z).is_some_and(|window| {
+            window.iter().copied().any(|candidate| {
+                let node = arena.node(candidate);
+                node.active
+                    && candidate_inside_ear(candidate, prev, current, next, node.point, a, b, c)
+            })
         });
     }
-    arena.active_indices().any(|candidate| {
-        let point = arena.nodes[candidate].point;
+    arena.active_ids().any(|candidate| {
+        let point = arena.node(candidate).point;
         candidate_inside_ear(candidate, prev, current, next, point, a, b, c)
     })
 }
 
-pub(crate) fn candidate_inside_ear(
-    candidate: usize,
-    prev: usize,
-    current: usize,
-    next: usize,
+fn candidate_inside_ear(
+    candidate: NodeId,
+    prev: NodeId,
+    current: NodeId,
+    next: NodeId,
     point: Point,
     a: Point,
     b: Point,
@@ -747,8 +975,8 @@ pub(crate) fn candidate_inside_ear(
 
 pub(crate) fn open_ring<C: Coordinates + ?Sized>(points: &C) -> Vec<Point> {
     let len = points.coord_count();
-    let closed = len > 1 && same_point(points.nth_coord(0), points.nth_coord(len - 1));
-    let keep = if closed { len - 1 } else { len };
+    let closed = len > 1 && same_point(points.nth_coord(0), points.nth_coord(len.wrapping_sub(1)));
+    let keep = if closed { len.wrapping_sub(1) } else { len };
     points.iter_coords().take(keep).collect()
 }
 

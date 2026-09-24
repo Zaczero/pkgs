@@ -707,13 +707,34 @@ mod tests {
     fn hull_retains_collinear_boundary_sites_and_collinear_input_is_empty() {
         let boundary_sites = sites(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
         let mesh = certified_delaunay(&boundary_sites).unwrap();
-        assert_eq!(mesh.hull().len(), 5);
-        assert!(mesh.hull().contains(&1));
+        let mut hull_sites = mesh.hull().to_vec();
+        hull_sites.sort_unstable();
+        assert_eq!(hull_sites.as_slice(), &[0, 1, 2, 3, 4]);
+        let center = Point::new_raw_xy(1.0, 1.0).xy();
+        for (&start, &end) in mesh.hull().iter().zip(mesh.hull().iter().cycle().skip(1)) {
+            let start = boundary_sites
+                .get(start)
+                .expect("hull sites come from the input")
+                .point
+                .xy();
+            let end = boundary_sites
+                .get(end)
+                .expect("hull sites come from the input")
+                .point
+                .xy();
+            assert_eq!(
+                exact::orient2d(start, end, center),
+                ExactSign::Positive,
+                "the hull cycle is counter-clockwise"
+            );
+        }
 
         let collinear = sites(&[(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]);
         let mesh = certified_delaunay(&collinear).unwrap();
         assert!(mesh.triangles().is_empty());
-        assert_eq!(mesh.hull(), &[0, 1, 2]);
+        let mut hull_sites = mesh.hull().to_vec();
+        hull_sites.sort_unstable();
+        assert_eq!(hull_sites.as_slice(), &[0, 1, 2]);
     }
 
     #[test]
