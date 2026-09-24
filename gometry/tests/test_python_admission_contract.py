@@ -8,7 +8,10 @@ import math
 import subprocess
 import sys
 import textwrap
-from typing import Self
+from typing import TYPE_CHECKING, Self
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 import gometry as gm
 import pytest
@@ -19,6 +22,30 @@ def assert_same(call, error: BaseException) -> None:
     with pytest.raises(type(error)) as excinfo:
         call()
     assert excinfo.value is error
+
+
+class ExactLengthRows:
+    def __init__(self, rows: Iterable[object]) -> None:
+        self.rows = list(rows)
+        self.length_calls = 0
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        self.length_calls += 1
+        return len(self.rows)
+
+
+class ExactLengthList(list):
+    def __init__(self, rows: Iterable[object]) -> None:
+        self.length_calls = 0
+        super().__init__(rows)
+        self.length_calls = 0
+
+    def __len__(self) -> int:
+        self.length_calls += 1
+        return super().__len__()
 
 
 @pytest.mark.parametrize('value', [2**100, 2**1023])
@@ -237,6 +264,123 @@ def test_iter_and_len_provider_errors_are_not_reclassified() -> None:
         gm.GeometryArray(RaisingIter())
     with pytest.raises(RuntimeError, match='len provider boom'):
         gm.GeometryArray(RaisingLen())
+
+
+@pytest.mark.parametrize(
+    'parse',
+    [
+        gm.MultiPoint,
+        gm.line_strings,
+        gm.from_wkt,
+        gm.from_wkb,
+        gm.from_geojson,
+        gm.from_polyline,
+        gm.require,
+    ],
+    ids=[
+        'MultiPoint',
+        'line_strings',
+        'from_wkt',
+        'from_wkb',
+        'from_geojson',
+        'from_polyline',
+        'require',
+    ],
+)
+def test_row_adapters_acquire_iterators_before_exact_lengths(parse) -> None:
+    iter_error = RuntimeError('iter provider boom')
+    len_error = RuntimeError('len provider boom')
+
+    class RaisingProviders:
+        def __iter__(self):
+            raise iter_error
+
+        def __len__(self):
+            raise len_error
+
+    assert_same(lambda: parse(RaisingProviders()), iter_error)
+
+
+def test_from_wkt_stream_reserves_from_exact_source_length_once() -> None:
+    rows = ExactLengthRows(['POINT (1 2)', 'POINT (3 4)'])
+
+    geometries = gm.from_wkt(rows)
+
+    assert rows.length_calls == 1
+    assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_from_wkb_stream_reserves_from_exact_source_length_once() -> None:
+    rows = ExactLengthRows([
+        gm.Point(1, 2).to_wkb(),
+        gm.Point(3, 4).to_wkb(),
+    ])
+
+    geometries = gm.from_wkb(rows)
+
+    assert rows.length_calls == 1
+    assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_from_geojson_stream_reserves_from_exact_source_length_once() -> None:
+    rows = ExactLengthRows([
+        {'type': 'Point', 'coordinates': [1, 2]},
+        {'type': 'Point', 'coordinates': [3, 4]},
+    ])
+
+    geometries = gm.from_geojson(rows)
+
+    assert rows.length_calls == 1
+    assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_from_polyline_stream_reserves_from_exact_source_length_once() -> None:
+    encoded = '_p~iF~ps|U_ulLnnqC_mqNvxq`@'
+    rows = ExactLengthRows([encoded, encoded])
+
+    geometries = gm.from_polyline(rows)
+
+    assert rows.length_calls == 1
+    assert geometries.to_wkt() == [
+        'LINESTRING (-120.2 38.5, -120.95 40.7, -126.453 43.252)',
+        'LINESTRING (-120.2 38.5, -120.95 40.7, -126.453 43.252)',
+    ]
+
+
+def test_require_stream_reserves_from_exact_source_length_once() -> None:
+    rows = ExactLengthRows([gm.Point(1, 2), gm.Point(3, 4)])
+
+    geometries = gm.require(rows)
+
+    assert rows.length_calls == 1
+    assert geometries.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_concrete_wkt_batch_reserves_from_exact_source_length_once() -> None:
+    wkt_rows = ExactLengthList(['POINT (1 2)', 'POINT (3 4)'])
+    wkt = gm.from_wkt(wkt_rows)
+    assert wkt_rows.length_calls == 1
+    assert wkt.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_concrete_wkb_batch_reserves_from_exact_source_length_once() -> None:
+    wkb_rows = ExactLengthList([
+        gm.Point(1, 2).to_wkb(),
+        gm.Point(3, 4).to_wkb(),
+    ])
+    wkb = gm.from_wkb(wkb_rows)
+    assert wkb_rows.length_calls == 1
+    assert wkb.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
+
+
+def test_concrete_geojson_batch_reserves_from_exact_source_length_once() -> None:
+    geojson_rows = ExactLengthList([
+        {'type': 'Point', 'coordinates': [1, 2]},
+        {'type': 'Point', 'coordinates': [3, 4]},
+    ])
+    geojson = gm.from_geojson(geojson_rows)
+    assert geojson_rows.length_calls == 1
+    assert geojson.to_wkt() == ['POINT (1 2)', 'POINT (3 4)']
 
 
 def test_missing_mask_preserves_iterator_acquisition_error() -> None:

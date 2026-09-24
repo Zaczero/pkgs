@@ -113,6 +113,7 @@ pub(crate) fn require(
         ScalarOrIterator::Iterator(iter) => {
             let expected_for_rows = expected.clone();
             let array = stream_bulk(
+                value,
                 iter,
                 expected,
                 None,

@@ -387,6 +387,68 @@ def test_sequence_index_count_windows_across_native_views() -> None:
             coverage.index(None)
 
 
+def test_groups_comparison_reserves_from_exact_large_row_length() -> None:
+    values = list(range(4_097))
+    groups = _lib._unpickle_int64_groups_v1(values, [0, len(values)])
+
+    class ExactRow:
+        def __init__(self) -> None:
+            self.length_calls = 0
+
+        def __iter__(self):
+            return iter(values)
+
+        def __len__(self) -> int:
+            self.length_calls += 1
+            return len(values)
+
+    row = ExactRow()
+    assert groups == [row]
+    assert row.length_calls == 1
+
+    row.length_calls = 0
+    assert groups.index(row) == 0
+    assert row.length_calls == 1
+
+    row.length_calls = 0
+    assert groups.count(row) == 1
+    assert row.length_calls == 1
+
+
+@pytest.mark.parametrize(
+    'hint',
+    [0, 1 << 60],
+    ids=['small-advisory-hint', 'large-advisory-hint'],
+)
+def test_groups_comparison_grows_past_advisory_length_hints(hint: int) -> None:
+    values = list(range(4_097))
+    groups = _lib._unpickle_int64_groups_v1(values, [0, len(values)])
+
+    class HintIterator:
+        def __init__(self) -> None:
+            self.index = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self) -> int:
+            if self.index == len(values):
+                raise StopIteration
+            value = values[self.index]
+            self.index += 1
+            return value
+
+        def __length_hint__(self) -> int:
+            return hint
+
+    class LengthlessRow:
+        def __iter__(self) -> HintIterator:
+            return HintIterator()
+
+    assert groups.index(LengthlessRow()) == 0
+    assert groups.count(LengthlessRow()) == 1
+
+
 def test_groups_copy_deepcopy_and_pickle_preserve_value_container_protocols() -> None:
     import operator
 

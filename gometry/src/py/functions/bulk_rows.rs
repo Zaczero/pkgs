@@ -190,6 +190,7 @@ where
 }
 
 pub(crate) fn stream_bulk<'py>(
+    values: &Bound<'py, PyAny>,
     iter: impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
     fallback: Option<Crs>,
     explicit_epoch: Option<f64>,
@@ -200,7 +201,8 @@ pub(crate) fn stream_bulk<'py>(
         usize,
     ) -> PyResult<StreamedRow>,
 ) -> PyResult<PyGeometryArray> {
-    let mut rows = crate::array::StreamingShapes::new();
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
+    let mut rows = crate::array::StreamingShapes::with_capacity(0, row_capacity);
     let mut first_crs = SharedRowCrs::Unseen;
     let mut first_epoch = None;
     let mut have_present_row = false;
@@ -320,50 +322,50 @@ fn acquire_owned_chunk<'py, T>(
     iter: &mut impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
     own_row: &mut impl FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
     first_row: usize,
-) -> PyResult<AcquiredChunk<T>> {
-    let mut rows = crate::try_vec_with_capacity(DETACHED_BATCH_ROWS)?;
+) -> AcquiredChunk<T> {
+    let mut rows = Vec::with_capacity(DETACHED_BATCH_ROWS);
     for row in first_row..first_row + DETACHED_BATCH_ROWS {
         let Some(item) = iter.next() else {
-            return Ok(AcquiredChunk {
+            return AcquiredChunk {
                 rows,
                 error: None,
                 finished: true,
-            });
+            };
         };
         let item = match item {
             Ok(item) => item,
             Err(error) => {
-                return Ok(AcquiredChunk {
+                return AcquiredChunk {
                     rows,
                     error: Some((row, error)),
                     finished: false,
-                });
+                };
             },
         };
         if let Err(error) = crate::check_python_signals(item.py(), row) {
-            return Ok(AcquiredChunk {
+            return AcquiredChunk {
                 rows,
                 error: Some((row, error)),
                 finished: false,
-            });
+            };
         }
         let owned = match own_row(&item, row) {
             Ok(owned) => owned,
             Err(error) => {
-                return Ok(AcquiredChunk {
+                return AcquiredChunk {
                     rows,
                     error: Some((row, error)),
                     finished: false,
-                });
+                };
             },
         };
-        crate::try_push(&mut rows, (row, owned))?;
+        rows.push((row, owned));
     }
-    Ok(AcquiredChunk {
+    AcquiredChunk {
         rows,
         error: None,
         finished: false,
-    })
+    }
 }
 
 fn process_owned_chunks<'py, T, S, Own, Parse>(
@@ -386,7 +388,7 @@ where
             rows,
             error,
             finished,
-        } = acquire_owned_chunk(&mut iter, &mut own_row, first_row)?;
+        } = acquire_owned_chunk(&mut iter, &mut own_row, first_row);
         let acquired = rows.len();
         // A failed next acquisition stays pending until this prefix has had its
         // chance to produce the earlier row error.
@@ -510,6 +512,7 @@ where
 /// Acquire and parse a concrete batch in bounded detached regions.
 pub(crate) fn batch_bulk_srid<'py, T, Own, Parse>(
     py: Python<'py>,
+    values: &Bound<'py, PyAny>,
     iter: impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
     own_row: Own,
     fallback: Option<Crs>,
@@ -523,8 +526,9 @@ where
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
     Parse: Fn(T) -> crate::error::Result<Option<StreamedSridRow>> + Send + Sync,
 {
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let state = SridBulkState {
-        rows: crate::array::StreamingShapes::new(),
+        rows: crate::array::StreamingShapes::with_capacity(0, row_capacity),
         frame: SridFrameAdmission::new(fallback, None),
     };
     let state = process_owned_chunks(py, iter, own_row, state, move |state, chunk| {
@@ -538,6 +542,7 @@ where
 /// regions. `None` rows represent missing array slots.
 pub(crate) fn batch_bulk<'py, T, Own, Parse>(
     py: Python<'py>,
+    values: &Bound<'py, PyAny>,
     iter: impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
     own_row: Own,
     fallback: Option<Crs>,
@@ -550,8 +555,9 @@ where
     Own: FnMut(&Bound<'py, PyAny>, usize) -> PyResult<T>,
     Parse: Fn(T, usize) -> crate::error::Result<StreamedShape> + Send + Sync,
 {
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let state = BulkState {
-        rows: crate::array::StreamingShapes::new(),
+        rows: crate::array::StreamingShapes::with_capacity(0, row_capacity),
         first_crs: SharedRowCrs::Unseen,
         first_epoch: None,
         have_present_row: false,
@@ -578,6 +584,7 @@ where
 /// detached one row at a time.
 pub(crate) fn stream_bulk_srid<'py, T, Own, Parse>(
     py: Python<'py>,
+    values: &Bound<'py, PyAny>,
     iter: impl Iterator<Item = PyResult<Bound<'py, PyAny>>>,
     fallback: Option<Crs>,
     epoch: Option<f64>,
@@ -592,8 +599,9 @@ where
     Parse: Fn(T) -> crate::error::Result<StreamedSridRow> + Send + Sync,
 {
     let mut own_row = own_row;
+    let row_capacity = crate::optional_len(values)?.unwrap_or_default();
     let mut state = SridBulkState {
-        rows: crate::array::StreamingShapes::new(),
+        rows: crate::array::StreamingShapes::with_capacity(0, row_capacity),
         frame: SridFrameAdmission::new(fallback, None),
     };
     for (row, item) in iter.enumerate() {

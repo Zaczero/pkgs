@@ -339,14 +339,13 @@ pub(crate) fn metric_concave_hull(
             state,
             |projected| {
                 let mut seen = HashSet::with_capacity(projected.coord_count());
-                let mut pairs = Vec::new();
-                crate::boundary::try_reserve_vec(&mut pairs, projected.coord_count())?;
-                let mut point_index = 0;
+                let mut pairs = Vec::with_capacity(projected.coord_count());
+                let mut point_index = 0_usize;
                 projected.for_each_point(|point| {
                     // Projected vertices are 1:1 with the source; the original
                     // index is the enumeration order (no identity-index slice).
                     let original_index = point_index;
-                    point_index += 1;
+                    point_index = point_index.wrapping_add(1);
                     if seen.insert(PointKey::new(point)) {
                         // The reservation above covers every source vertex;
                         // insertion cannot exceed that validated count.
@@ -357,22 +356,20 @@ pub(crate) fn metric_concave_hull(
                     return Ok(Vec::new());
                 }
                 pairs.sort_unstable_by(|(left, _), (right, _)| geometric_xy_cmp(*left, *right));
-                let mut projected_points = Vec::new();
-                crate::boundary::try_reserve_vec(&mut projected_points, pairs.len())?;
+                let mut projected_points = Vec::with_capacity(pairs.len());
                 for &(point, _) in &pairs {
-                    crate::boundary::try_push_vec(&mut projected_points, point.to_xy())?;
+                    projected_points.push(point.to_xy());
                 }
-                let mut provenance = Vec::new();
-                crate::boundary::try_reserve_vec(&mut provenance, projected_points.len())?;
+                let mut provenance = Vec::with_capacity(projected_points.len());
                 for index in crate::geometry::native_concave_hull(
                     &projected_points,
                     concavity,
                     length_threshold,
                 )? {
-                    crate::boundary::try_push_vec(
-                        &mut provenance,
-                        VertexProvenance::Input(pairs[index].1),
-                    )?;
+                    let (_, original_index) = pairs
+                        .get(index)
+                        .expect("hull vertex index is in the projected input");
+                    provenance.push(VertexProvenance::Input(*original_index));
                 }
                 Ok(provenance)
             },
