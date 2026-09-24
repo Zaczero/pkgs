@@ -518,9 +518,10 @@ pub(super) fn exact_segment_touches_rectangle(
 /// Every copy of a canonical degree window that can meet one exact lifted
 /// source extent.  The proposal is an exact expansion quotient; the one-copy
 /// margin makes this a conservative enumerator even at a closed endpoint.
-/// Individual lifted source edges are seam-split before this point, so a range
-/// wider than five copies means the symbolic carrier is no longer a bounded
-/// certificate and must fail open instead of guessing a periodic image.
+/// Rectangle refinement receives the original, unsplit authority edge, which
+/// may be a written full turn. With source and window spans bounded by one full
+/// turn, the inclusive copy range can have a gap of four (five copies); a wider
+/// range declines certification so callers retain the candidate.
 pub(super) fn exact_longitude_copy_range(
     first: &ExactExpansion,
     second: &ExactExpansion,
