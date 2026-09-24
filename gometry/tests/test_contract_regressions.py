@@ -1118,18 +1118,10 @@ def test_empty_arrow_c_stream_large_list_geoarrow_admits() -> None:
     assert len(empty_wkb) == 0
 
 
-def test_from_arrow_untrusted_length_raises_clean_not_panic() -> None:
-    """Arrow length=i64::MAX must not PanicException (checked-reservation keystone).
-
-    Crafts a binary (format ``z``) capsule with length=i64::MAX and three null
-    buffers so from_arrow hits the mixed-import capacity path.
-    """
+def _arrow_c_binary_capsule_provider(length: int):
+    """Build a retained foreign Binary capsule pair for length-boundary tests."""
     import ctypes
 
-    # Build a released-owned schema/array pair via pyarrow, then mutate length
-    # is not possible after export. Instead construct minimal C ABI capsules
-    # with the review's exact state: format z, length=i64::MAX, n_buffers=3.
-    # Use ctypes to allocate ArrowSchema + ArrowArray matching the ABI.
     class ArrowSchema(ctypes.Structure):
         _fields_ = [
             ('format', ctypes.c_char_p),
@@ -1157,14 +1149,19 @@ def test_from_arrow_untrusted_length_raises_clean_not_panic() -> None:
             ('private_data', ctypes.c_void_p),
         ]
 
-    # Keep buffer table alive for the capsule lifetime.
-    buffer_table = (ctypes.c_void_p * 3)(0, 0, 0)
+    counts = {'schema': 0, 'array': 0}
 
-    # Dummy non-null release so the importer accepts the capsules.
     @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
-    def _noop_release(_ptr):
-        pass
+    def schema_release(pointer: int) -> None:
+        counts['schema'] += 1
+        ArrowSchema.from_address(pointer).release = None
 
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def array_release(pointer: int) -> None:
+        counts['array'] += 1
+        ArrowArray.from_address(pointer).release = None
+
+    buffer_table = (ctypes.c_void_p * 3)(0, 0, 0)
     schema = ArrowSchema(
         format=b'z',
         name=b'',
@@ -1173,11 +1170,11 @@ def test_from_arrow_untrusted_length_raises_clean_not_panic() -> None:
         n_children=0,
         children=None,
         dictionary=None,
-        release=ctypes.cast(_noop_release, ctypes.c_void_p),
+        release=ctypes.cast(schema_release, ctypes.c_void_p),
         private_data=None,
     )
     array = ArrowArray(
-        length=2**63 - 1,  # i64::MAX
+        length=length,
         null_count=0,
         offset=0,
         n_buffers=3,
@@ -1185,39 +1182,70 @@ def test_from_arrow_untrusted_length_raises_clean_not_panic() -> None:
         buffers=ctypes.cast(buffer_table, ctypes.POINTER(ctypes.c_void_p)),
         children=None,
         dictionary=None,
-        release=ctypes.cast(_noop_release, ctypes.c_void_p),
+        release=ctypes.cast(array_release, ctypes.c_void_p),
         private_data=None,
     )
-    # Pin structures.
     schema_box = ctypes.pointer(schema)
     array_box = ctypes.pointer(array)
 
-    # PyCapsule from ctypes pointers.
     PyCapsule_New = ctypes.pythonapi.PyCapsule_New
+    PyCapsule_GetPointer = ctypes.pythonapi.PyCapsule_GetPointer
     PyCapsule_New.restype = ctypes.py_object
     PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
-    schema_cap = PyCapsule_New(schema_box, b'arrow_schema', None)
-    array_cap = PyCapsule_New(array_box, b'arrow_array', None)
-    provider = _CapsuleOnly(schema_cap, array_cap)
+    PyCapsule_GetPointer.restype = ctypes.c_void_p
+    PyCapsule_GetPointer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
 
-    # Must raise a clean error — never pyo3_runtime.PanicException.
-    with pytest.raises(BaseException) as exc_info:
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def schema_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_schema')
+        if pointer and ArrowSchema.from_address(pointer).release:
+            schema_release(pointer)
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def array_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_array')
+        if pointer and ArrowArray.from_address(pointer).release:
+            array_release(pointer)
+
+    schema_cap = PyCapsule_New(
+        ctypes.cast(schema_box, ctypes.c_void_p),
+        b'arrow_schema',
+        ctypes.cast(schema_capsule_destructor, ctypes.c_void_p),
+    )
+    array_cap = PyCapsule_New(
+        ctypes.cast(array_box, ctypes.c_void_p),
+        b'arrow_array',
+        ctypes.cast(array_capsule_destructor, ctypes.c_void_p),
+    )
+    provider = _CapsuleOnly(schema_cap, array_cap)
+    keep_alive = (
+        schema,
+        array,
+        buffer_table,
+        schema_release,
+        array_release,
+        schema_capsule_destructor,
+        array_capsule_destructor,
+        schema_cap,
+        array_cap,
+    )
+    return provider, counts, keep_alive
+
+
+def test_from_arrow_positive_unrepresentable_span_is_overflow_error() -> None:
+    """A positive i64 length whose Binary offsets span cannot fit usize."""
+    provider, counts, _keep_alive = _arrow_c_binary_capsule_provider(2**63 - 1)
+    with pytest.raises(OverflowError, match='Arrow offset window length overflows'):
         gm.from_arrow(provider)
-    err = exc_info.value
-    assert type(err).__name__ != 'PanicException', f'panicked: {err!r}'
-    assert 'capacity overflow' not in str(err).lower()
-    # Accept TypeError/ParseError/MemoryError/ValueError/Overflow from the path.
-    assert isinstance(
-        err,
-        (
-            TypeError,
-            ValueError,
-            MemoryError,
-            gm.ParseError,
-            gm.GeometryError,
-            OverflowError,
-        ),
-    ), type(err)
+    assert counts == {'schema': 1, 'array': 1}
+
+
+def test_from_arrow_negative_length_remains_type_error() -> None:
+    """Negative C fields remain malformed input, not positive-size overflow."""
+    provider, counts, _keep_alive = _arrow_c_binary_capsule_provider(-1)
+    with pytest.raises(TypeError, match='Arrow array length is negative'):
+        gm.from_arrow(provider)
+    assert counts == {'schema': 1, 'array': 1}
 
 
 def test_wkb_structure_budget_rejects_empty_ring_amplification() -> None:
@@ -2423,3 +2451,528 @@ def test_f5_arrow_c_null_child_pointer_rejects() -> None:
         gm.from_arrow(_StreamCapsuleOnly())
     assert type(exc.value).__name__ != 'PanicException'
     assert exc.value.format == 'geoarrow'
+
+
+def _selected_struct_child_count_provider(protocol: str, array_children: int):
+    """Retain one schema child and a selectable table-array child table."""
+    ctypes, ArrowSchema, ArrowArray, ArrowArrayStream = _f5_arrow_c_structs()
+    releases = {'schema': 0, 'array': 0, 'stream': 0}
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def release_schema(pointer: int) -> None:
+        schema = ArrowSchema.from_address(pointer)
+        releases['schema'] += 1
+        if schema.n_children and schema.children:
+            for index in range(schema.n_children):
+                child = schema.children[index]
+                if child and child.contents.release:
+                    release_schema(ctypes.cast(child, ctypes.c_void_p))
+        schema.release = None
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def release_array(pointer: int) -> None:
+        array = ArrowArray.from_address(pointer)
+        releases['array'] += 1
+        if array.n_children and array.children:
+            children = ctypes.cast(
+                array.children, ctypes.POINTER(ctypes.POINTER(ArrowArray))
+            )
+            for index in range(array.n_children):
+                child = children[index]
+                if child and child.contents.release:
+                    release_array(ctypes.cast(child, ctypes.c_void_p))
+        array.release = None
+
+    metadata_pairs = [
+        (b'ARROW:extension:name', b'geoarrow.point'),
+        (b'ARROW:extension:metadata', b'{}'),
+    ]
+    metadata_body = b''
+    for key, value in metadata_pairs:
+        metadata_body += struct.pack('=i', len(key)) + key
+        metadata_body += struct.pack('=i', len(value)) + value
+    metadata_blob = struct.pack('=i', len(metadata_pairs)) + metadata_body
+    metadata = (ctypes.c_uint8 * len(metadata_blob))(*metadata_blob)
+    schema_release_pointer = ctypes.cast(release_schema, ctypes.c_void_p)
+    array_release_pointer = ctypes.cast(release_array, ctypes.c_void_p)
+
+    x_schema = ArrowSchema(
+        b'g', b'x', None, 0, 0, None, None, schema_release_pointer, None
+    )
+    y_schema = ArrowSchema(
+        b'g', b'y', None, 0, 0, None, None, schema_release_pointer, None
+    )
+    coordinate_schemas = (ctypes.POINTER(ArrowSchema) * 2)(
+        ctypes.pointer(x_schema), ctypes.pointer(y_schema)
+    )
+    geometry_schema = ArrowSchema(
+        b'+s',
+        b'geometry',
+        ctypes.cast(metadata, ctypes.c_void_p),
+        0,
+        2,
+        ctypes.cast(coordinate_schemas, ctypes.POINTER(ctypes.POINTER(ArrowSchema))),
+        None,
+        schema_release_pointer,
+        None,
+    )
+    schema_children = (ctypes.POINTER(ArrowSchema) * 1)(ctypes.pointer(geometry_schema))
+    root_schema = ArrowSchema(
+        b'+s',
+        b'',
+        None,
+        0,
+        1,
+        ctypes.cast(schema_children, ctypes.POINTER(ctypes.POINTER(ArrowSchema))),
+        None,
+        schema_release_pointer,
+        None,
+    )
+
+    x_values = (ctypes.c_double * 1)(1.0)
+    y_values = (ctypes.c_double * 1)(2.0)
+    x_buffers = (ctypes.c_void_p * 2)(None, ctypes.addressof(x_values))
+    y_buffers = (ctypes.c_void_p * 2)(None, ctypes.addressof(y_values))
+    x_array = ArrowArray(
+        1,
+        0,
+        0,
+        2,
+        0,
+        ctypes.cast(x_buffers, ctypes.c_void_p),
+        None,
+        None,
+        array_release_pointer,
+        None,
+    )
+    y_array = ArrowArray(
+        1,
+        0,
+        0,
+        2,
+        0,
+        ctypes.cast(y_buffers, ctypes.c_void_p),
+        None,
+        None,
+        array_release_pointer,
+        None,
+    )
+    geometry_buffers = (ctypes.c_void_p * 1)(None)
+    coordinate_arrays = (ctypes.POINTER(ArrowArray) * 2)(
+        ctypes.pointer(x_array), ctypes.pointer(y_array)
+    )
+    geometry_array = ArrowArray(
+        1,
+        0,
+        0,
+        1,
+        2,
+        ctypes.cast(geometry_buffers, ctypes.c_void_p),
+        ctypes.cast(coordinate_arrays, ctypes.c_void_p),
+        None,
+        array_release_pointer,
+        None,
+    )
+    extra_values = (ctypes.c_double * 1)(9.0)
+    extra_buffers = (ctypes.c_void_p * 2)(None, ctypes.addressof(extra_values))
+    extra_array = ArrowArray(
+        1,
+        0,
+        0,
+        2,
+        0,
+        ctypes.cast(extra_buffers, ctypes.c_void_p),
+        None,
+        None,
+        array_release_pointer,
+        None,
+    )
+    root_buffers = (ctypes.c_void_p * 1)(None)
+    array_children_values = [ctypes.pointer(geometry_array)]
+    if array_children == 2:
+        array_children_values.append(ctypes.pointer(extra_array))
+    array_child_table = (ctypes.POINTER(ArrowArray) * array_children)(
+        *array_children_values
+    )
+    root_array = ArrowArray(
+        1,
+        0,
+        0,
+        1,
+        array_children,
+        ctypes.cast(root_buffers, ctypes.c_void_p),
+        ctypes.cast(array_child_table, ctypes.c_void_p),
+        None,
+        array_release_pointer,
+        None,
+    )
+
+    keep_alive = (
+        metadata,
+        x_schema,
+        y_schema,
+        coordinate_schemas,
+        geometry_schema,
+        schema_children,
+        root_schema,
+        x_values,
+        y_values,
+        x_buffers,
+        y_buffers,
+        x_array,
+        y_array,
+        geometry_buffers,
+        coordinate_arrays,
+        geometry_array,
+        extra_values,
+        extra_buffers,
+        extra_array,
+        root_buffers,
+        array_child_table,
+        root_array,
+        release_schema,
+        release_array,
+    )
+    PyCapsule_New = ctypes.pythonapi.PyCapsule_New
+    PyCapsule_GetPointer = ctypes.pythonapi.PyCapsule_GetPointer
+    PyCapsule_New.restype = ctypes.py_object
+    PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    PyCapsule_GetPointer.restype = ctypes.c_void_p
+    PyCapsule_GetPointer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def schema_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_schema')
+        if pointer and ArrowSchema.from_address(pointer).release:
+            release_schema(pointer)
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def array_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_array')
+        if pointer and ArrowArray.from_address(pointer).release:
+            release_array(pointer)
+
+    if protocol == 'array':
+        schema_capsule = PyCapsule_New(
+            ctypes.cast(ctypes.pointer(root_schema), ctypes.c_void_p),
+            b'arrow_schema',
+            ctypes.cast(schema_capsule_destructor, ctypes.c_void_p),
+        )
+        array_capsule = PyCapsule_New(
+            ctypes.cast(ctypes.pointer(root_array), ctypes.c_void_p),
+            b'arrow_array',
+            ctypes.cast(array_capsule_destructor, ctypes.c_void_p),
+        )
+        keep_alive += (
+            schema_capsule_destructor,
+            array_capsule_destructor,
+            schema_capsule,
+            array_capsule,
+        )
+        return _CapsuleOnly(schema_capsule, array_capsule), releases, keep_alive
+
+    if protocol != 'stream':
+        raise AssertionError(f'unexpected Arrow-C protocol {protocol!r}')
+
+    state = {'done': False}
+    stream = ArrowArrayStream()
+
+    @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    def get_schema(_stream: int, output: int) -> int:
+        ctypes.memmove(output, ctypes.byref(root_schema), ctypes.sizeof(root_schema))
+        # Move the schema tree to the callback output without releasing it.
+        root_schema.release = None
+        return 0
+
+    @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    def get_next(_stream: int, output: int) -> int:
+        if state['done']:
+            ctypes.memset(output, 0, ctypes.sizeof(ArrowArray))
+            return 0
+        state['done'] = True
+        ctypes.memmove(output, ctypes.byref(root_array), ctypes.sizeof(root_array))
+        # Move the array tree to the callback output without releasing it.
+        root_array.release = None
+        return 0
+
+    @ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p)
+    def get_last_error(_stream: int) -> None:
+        return None
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def release_stream(pointer: int) -> None:
+        stream_owner = ArrowArrayStream.from_address(pointer)
+        releases['stream'] += 1
+        if root_schema.release:
+            release_schema(ctypes.addressof(root_schema))
+        if root_array.release:
+            release_array(ctypes.addressof(root_array))
+        stream_owner.release = None
+
+    stream.get_schema = ctypes.cast(get_schema, ctypes.c_void_p)
+    stream.get_next = ctypes.cast(get_next, ctypes.c_void_p)
+    stream.get_last_error = ctypes.cast(get_last_error, ctypes.c_void_p)
+    stream.release = ctypes.cast(release_stream, ctypes.c_void_p)
+    stream.private_data = None
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def stream_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_array_stream')
+        if pointer and ArrowArrayStream.from_address(pointer).release:
+            release_stream(pointer)
+
+    stream_capsule = PyCapsule_New(
+        ctypes.cast(ctypes.pointer(stream), ctypes.c_void_p),
+        b'arrow_array_stream',
+        ctypes.cast(stream_capsule_destructor, ctypes.c_void_p),
+    )
+
+    class _StreamCapsuleOnly:
+        __slots__ = ('_capsule',)
+
+        def __init__(self, capsule: object) -> None:
+            self._capsule = capsule
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            del requested_schema
+            return self._capsule
+
+    keep_alive += (
+        state,
+        stream,
+        get_schema,
+        get_next,
+        get_last_error,
+        release_stream,
+        stream_capsule_destructor,
+        stream_capsule,
+    )
+    return _StreamCapsuleOnly(stream_capsule), releases, keep_alive
+
+
+@pytest.mark.parametrize(
+    'protocol',
+    ['array', 'stream'],
+    ids=['arrow-c-array', 'arrow-c-stream'],
+)
+def test_arrow_c_selected_struct_child_count_matches_schema(protocol: str) -> None:
+    """Selected struct roots reject mismatched schema/array counts and release once."""
+    invalid, invalid_releases, _invalid_keep_alive = (
+        _selected_struct_child_count_provider(protocol, array_children=2)
+    )
+    # Schema callbacks cover root + point struct + x/y; the extra array child
+    # makes the mismatched array tree one callback longer than the valid tree.
+    with pytest.raises(TypeError, match=r'n_children.*schema'):
+        gm.from_arrow(invalid)
+    assert invalid_releases == {
+        'schema': 4,
+        'array': 5,
+        'stream': int(protocol == 'stream'),
+    }
+
+    valid, valid_releases, _valid_keep_alive = _selected_struct_child_count_provider(
+        protocol, array_children=1
+    )
+    assert gm.from_arrow(valid).to_wkt() == ['POINT (1 2)']
+    assert valid_releases == {
+        'schema': 4,
+        'array': 4,
+        'stream': int(protocol == 'stream'),
+    }
+
+
+def _oversized_schema_child_count_provider(protocol: str):
+    """Expose a huge foreign schema count with one inert child-table slot."""
+    ctypes, ArrowSchema, ArrowArray, ArrowArrayStream = _f5_arrow_c_structs()
+    releases = {'schema': 0, 'array': 0, 'stream': 0, 'get_next': 0}
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def release_schema(pointer: int) -> None:
+        schema = ArrowSchema.from_address(pointer)
+        releases['schema'] += 1
+        # This malformed table is deliberately not traversed during release.
+        schema.release = None
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def release_array(pointer: int) -> None:
+        array = ArrowArray.from_address(pointer)
+        releases['array'] += 1
+        array.release = None
+
+    key = b'ARROW:extension:name'
+    value = b'geoarrow.point'
+    metadata_blob = (
+        struct.pack('=i', 1)
+        + struct.pack('=i', len(key))
+        + key
+        + struct.pack('=i', len(value))
+        + value
+    )
+    metadata = (ctypes.c_uint8 * len(metadata_blob))(*metadata_blob)
+    placeholder = ArrowSchema(b'g', b'placeholder', None, 0, 0, None, None, None, None)
+    placeholder_children = (ctypes.POINTER(ArrowSchema) * 1)(
+        ctypes.pointer(placeholder)
+    )
+    root_schema = ArrowSchema(
+        b'+s',
+        b'geometry',
+        ctypes.cast(metadata, ctypes.c_void_p),
+        0,
+        2**63 - 1,
+        ctypes.cast(placeholder_children, ctypes.POINTER(ctypes.POINTER(ArrowSchema))),
+        None,
+        ctypes.cast(release_schema, ctypes.c_void_p),
+        None,
+    )
+
+    array_buffers = (ctypes.c_void_p * 1)(None)
+    root_array = ArrowArray(
+        0,
+        0,
+        0,
+        1,
+        0,
+        ctypes.cast(array_buffers, ctypes.c_void_p),
+        None,
+        None,
+        ctypes.cast(release_array, ctypes.c_void_p),
+        None,
+    )
+
+    PyCapsule_New = ctypes.pythonapi.PyCapsule_New
+    PyCapsule_GetPointer = ctypes.pythonapi.PyCapsule_GetPointer
+    PyCapsule_New.restype = ctypes.py_object
+    PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
+    PyCapsule_GetPointer.restype = ctypes.c_void_p
+    PyCapsule_GetPointer.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def schema_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_schema')
+        if pointer and ArrowSchema.from_address(pointer).release:
+            release_schema(pointer)
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def array_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_array')
+        if pointer and ArrowArray.from_address(pointer).release:
+            release_array(pointer)
+
+    # Keep all source structures and callbacks alive, but not the capsules:
+    # dropping the provider below must run each remaining capsule destructor.
+    keep_alive = (
+        metadata,
+        placeholder,
+        placeholder_children,
+        root_schema,
+        array_buffers,
+        root_array,
+        release_schema,
+        release_array,
+        schema_capsule_destructor,
+        array_capsule_destructor,
+    )
+    if protocol == 'array':
+        schema_capsule = PyCapsule_New(
+            ctypes.cast(ctypes.pointer(root_schema), ctypes.c_void_p),
+            b'arrow_schema',
+            ctypes.cast(schema_capsule_destructor, ctypes.c_void_p),
+        )
+        array_capsule = PyCapsule_New(
+            ctypes.cast(ctypes.pointer(root_array), ctypes.c_void_p),
+            b'arrow_array',
+            ctypes.cast(array_capsule_destructor, ctypes.c_void_p),
+        )
+        return _CapsuleOnly(schema_capsule, array_capsule), releases, keep_alive
+
+    if protocol != 'stream':
+        raise AssertionError(f'unexpected Arrow-C protocol {protocol!r}')
+
+    stream = ArrowArrayStream()
+
+    @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    def get_schema(_stream: int, output: int) -> int:
+        ctypes.memmove(output, ctypes.byref(root_schema), ctypes.sizeof(root_schema))
+        root_schema.release = None
+        return 0
+
+    @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)
+    def get_next(_stream: int, output: int) -> int:
+        releases['get_next'] += 1
+        ctypes.memset(output, 0, ctypes.sizeof(ArrowArray))
+        return 0
+
+    @ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p)
+    def get_last_error(_stream: int) -> None:
+        return None
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def release_stream(pointer: int) -> None:
+        stream_owner = ArrowArrayStream.from_address(pointer)
+        releases['stream'] += 1
+        stream_owner.release = None
+
+    stream.get_schema = ctypes.cast(get_schema, ctypes.c_void_p)
+    stream.get_next = ctypes.cast(get_next, ctypes.c_void_p)
+    stream.get_last_error = ctypes.cast(get_last_error, ctypes.c_void_p)
+    stream.release = ctypes.cast(release_stream, ctypes.c_void_p)
+    stream.private_data = None
+
+    @ctypes.CFUNCTYPE(None, ctypes.c_void_p)
+    def stream_capsule_destructor(capsule: int) -> None:
+        pointer = PyCapsule_GetPointer(capsule, b'arrow_array_stream')
+        if pointer and ArrowArrayStream.from_address(pointer).release:
+            release_stream(pointer)
+
+    stream_capsule = PyCapsule_New(
+        ctypes.cast(ctypes.pointer(stream), ctypes.c_void_p),
+        b'arrow_array_stream',
+        ctypes.cast(stream_capsule_destructor, ctypes.c_void_p),
+    )
+    keep_alive += (
+        stream,
+        get_schema,
+        get_next,
+        get_last_error,
+        release_stream,
+        stream_capsule_destructor,
+    )
+
+    class _StreamCapsuleOnly:
+        __slots__ = ('_capsule',)
+
+        def __init__(self, capsule: object) -> None:
+            self._capsule = capsule
+
+        def __arrow_c_stream__(self, requested_schema=None):
+            del requested_schema
+            return self._capsule
+
+    return _StreamCapsuleOnly(stream_capsule), releases, keep_alive
+
+
+@pytest.mark.parametrize(
+    'protocol',
+    ['array', 'stream'],
+    ids=['arrow-c-array', 'arrow-c-stream'],
+)
+def test_arrow_c_unrepresentable_schema_child_count_is_type_error(
+    protocol: str,
+) -> None:
+    """A huge positive schema child count is rejected before table traversal."""
+    import gc
+
+    provider, releases, _keep_alive = _oversized_schema_child_count_provider(protocol)
+    with pytest.raises(
+        TypeError, match='Arrow schema n_children is negative or too large'
+    ):
+        gm.from_arrow(provider)
+
+    del provider
+    gc.collect()
+    assert releases == {
+        'schema': 1,
+        'array': int(protocol == 'array'),
+        'stream': int(protocol == 'stream'),
+        'get_next': 0,
+    }

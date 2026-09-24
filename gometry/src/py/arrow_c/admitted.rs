@@ -429,12 +429,10 @@ enum CaptureDepth {
 }
 
 fn schema_children(count: usize) -> PyResult<Vec<AdmittedArrowSchema>> {
-    let max = (isize::MAX as usize) / std::mem::size_of::<AdmittedArrowSchema>();
-    if count > max {
-        return Err(PyTypeError::new_err(
-            "Arrow schema n_children is negative or too large",
-        ));
-    }
+    // The count comes from ArrowSchema and must fit a Rust slice before its
+    // producer-owned child table can be reserved or traversed.
+    let _layout = std::alloc::Layout::array::<AdmittedArrowSchema>(count)
+        .map_err(|_| PyTypeError::new_err("Arrow schema n_children is negative or too large"))?;
     Ok(Vec::with_capacity(count))
 }
 

@@ -18808,18 +18808,23 @@ def from_arrow(
         invariant.
     ParseError
         If GeoArrow metadata, offsets, validity buffers, coordinate buffers, or
-        WKB data are malformed.
+        WKB data are malformed, or a selected table geometry child is absent
+        or out of range.
     TypeError
         If ``data`` is not a supported Arrow object or provider, its schema or
-        encoding cannot be classified, or it has no geometry column.
+        encoding cannot be classified, it has no geometry column, a C array
+        length or offset is negative, its ``null_count`` is below -1 (``-1``
+        means unknown) or a known count exceeds the logical length, or its
+        format-specific buffer/child layout conflicts with the schema.
     OSError
         If an Arrow C stream schema or batch callback returns a nonzero status
         other than ``ENOMEM``; the callback status is exposed as ``errno``.
     MemoryError
-        If an Arrow C stream callback returns ``ENOMEM``, or native
-        storage allocation fails.
+        If an Arrow C stream callback returns ``ENOMEM``. Native Rust allocator
+        exhaustion is process-fatal and is not translated into a Python error.
     OverflowError
-        If Arrow lengths or offsets exceed representable native sizes.
+        If a nonnegative Arrow buffer byte span cannot fit ``usize`` or the
+        maximum size of a Rust slice.
 
     See Also
     --------
