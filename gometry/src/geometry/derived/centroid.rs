@@ -662,6 +662,12 @@ fn exact_areal_centroid_shape(shape: &Shape) -> Option<(f64, f64, f64)> {
     })
 }
 
+fn areal_child_weight_requires_exact_replay(area: f64) -> bool {
+    // Exact zero area finishes as None; a present zero weight is positive
+    // exact area that rounded to zero.
+    area.is_infinite() || area == 0.0
+}
+
 /// Dimension-2 centroid. Multi-polygon / multi-area collections compute each
 /// component's centroid in its own local frame, then area-weight merge —
 /// a single global triangle fan cancels across distant equal parts (N6).
@@ -676,7 +682,7 @@ fn areal_centroid_summary(shape: &Shape) -> Option<(f64, f64, f64)> {
             let mut area = 0.0_f64;
             for polygon in polygons {
                 if let Some(part) = areal_centroid_polygon(polygon) {
-                    if part.0.is_infinite() {
+                    if areal_child_weight_requires_exact_replay(part.0) {
                         return exact_areal_centroid_shape(shape);
                     }
                     if part.0 > 0.0 && part.0.is_finite() {
@@ -692,7 +698,7 @@ fn areal_centroid_summary(shape: &Shape) -> Option<(f64, f64, f64)> {
             let mut area = 0.0_f64;
             for geometry in geometries {
                 if let Some(part) = areal_centroid_summary(geometry) {
-                    if part.0.is_infinite() {
+                    if areal_child_weight_requires_exact_replay(part.0) {
                         return exact_areal_centroid_shape(shape);
                     }
                     if part.0 > 0.0 && part.0.is_finite() {
