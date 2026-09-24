@@ -2,6 +2,8 @@
 //! the operation's input vertices and segments (`carry_ordinates`/`carry_each`
 //! and the `OrdinateSource` lookup), shared by overlay and decomposition.
 
+use std::borrow::Borrow;
+
 use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geometry::{
@@ -34,12 +36,12 @@ pub(super) struct OrdinateSource {
 const OVERLAY_SNAP_RELATIVE: f64 = 1.0 / (1_u64 << 28) as f64;
 
 impl OrdinateSource {
-    fn new(inputs: &[&Shape]) -> Result<Self> {
+    fn new<S: Borrow<Shape>>(inputs: &[S]) -> Result<Self> {
         // Upper bound: every input vertex carries ordinates (the common
         // case — XYZ/XYM inputs are usually uniformly dimensioned).
         let total_coords = inputs.iter().try_fold(0_usize, |count, shape| {
             count
-                .checked_add(shape.coord_count())
+                .checked_add(Borrow::<Shape>::borrow(shape).coord_count())
                 .ok_or(crate::error::ResourceError::SizeOverflow)
         })?;
         let vertices = crate::collections::try_hash_map_with_capacity(total_coords)?;
@@ -59,9 +61,10 @@ impl OrdinateSource {
         }
     }
 
-    fn build_direct(inputs: &[&Shape]) -> Result<Self> {
+    fn build_direct<S: Borrow<Shape>>(inputs: &[S]) -> Result<Self> {
         let mut result = Self::new(inputs)?;
-        for shape in inputs {
+        for input in inputs {
+            let shape = Borrow::<Shape>::borrow(input);
             match shape {
                 Shape::Point(point) => add_vertex(&mut result.vertices, *point),
                 Shape::MultiPoint(points) => {
@@ -262,9 +265,10 @@ pub(super) fn segment_ordinate_at(
     Ok(Some((lifted.z(), lifted.m())))
 }
 
-fn ordinate_tolerance(inputs: &[&Shape]) -> f64 {
+fn ordinate_tolerance<S: Borrow<Shape>>(inputs: &[S]) -> f64 {
     let mut magnitude: f64 = 0.0;
-    for shape in inputs {
+    for input in inputs {
+        let shape = Borrow::<Shape>::borrow(input);
         if let Some(bounds) = shape.bounds() {
             magnitude = magnitude
                 .max(bounds.minx().abs())
@@ -319,19 +323,22 @@ pub(crate) fn carry_overlay_ordinates(
 
 /// Carry Z/M onto each shape in a decomposition result (see
 /// [`carry_ordinates`] for the strict/degrading semantics).
-pub(super) fn carry_each(
+pub(super) fn carry_each<S: Borrow<Shape>>(
     outputs: Vec<Shape>,
-    inputs: &[&Shape],
+    inputs: &[S],
     operation: &str,
     strict: bool,
 ) -> Result<Vec<Shape>> {
-    if !inputs.iter().any(|shape| shape.has_z() || shape.has_m()) {
+    if !inputs.iter().any(|shape| {
+        let shape = Borrow::<Shape>::borrow(shape);
+        shape.has_z() || shape.has_m()
+    }) {
         return Ok(outputs);
     }
     let source = OrdinateSource::build_direct(inputs)?;
-    let declared_axes = inputs
-        .iter()
-        .fold(CoordinateAxes::XY, |axes, shape| axes.union(shape.axes()));
+    let declared_axes = inputs.iter().fold(CoordinateAxes::XY, |axes, shape| {
+        axes.union(Borrow::<Shape>::borrow(shape).axes())
+    });
     let mut carried = Vec::with_capacity(outputs.len());
     for output in &outputs {
         carried.push(carry_or_degrade(

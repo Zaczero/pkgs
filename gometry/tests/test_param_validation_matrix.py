@@ -291,6 +291,14 @@ def test_line_interpolate_non_finite_raises_on_both_surfaces(bad: float) -> None
         lines.line_interpolate([1.0, bad, 2.0])
 
 
+@pytest.mark.parametrize('at', [[NAN, 1.0], [1.0, NAN]], ids=['first', 'last'])
+def test_line_interpolate_admits_all_samples_before_array_rows(at: list[float]) -> None:
+    rows = gm.GeometryArray([gm.Point(0, 0), gm.LineString([(0, 0), (1, 0)])])
+
+    with pytest.raises(gm.GeometryError, match='at must be finite'):
+        rows.line_interpolate(at)
+
+
 # (id, scalar_call, array_call, match)
 NegativeInvalid = tuple[str, Callable[[], Any], Callable[[], Any], str]
 
