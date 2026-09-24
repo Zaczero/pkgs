@@ -412,6 +412,53 @@ def test_coverage_union_rejects_gap_under_width() -> None:
     assert union.area == pytest.approx(0.999 + 1.0)
 
 
+@pytest.mark.parametrize(
+    'simplify_boundary',
+    [
+        pytest.param(True, id='simplify-exterior'),
+        pytest.param(False, id='preserve-exterior'),
+    ],
+)
+def test_coverage_simplify_walks_open_exterior_chains(
+    simplify_boundary: bool,
+) -> None:
+    """A removable exterior kink must not make an open shared chain look cyclic."""
+    left = gm.from_wkt(
+        'POLYGON ((0 0, 0.5 0.035, 1 0, 1 1, 0 1, 0 0))',
+        crs=3857,
+    )
+    right = gm.from_wkt(
+        'POLYGON ((1 0, 2 0, 2 1, 1 1, 1 0))',
+        crs=3857,
+    )
+    rows = gm.GeometryArray([left, right], crs=3857)
+
+    assert [geometry.is_valid for geometry in rows] == [True, True]
+    assert gm.coverage_is_valid(rows)
+
+    simplified = gm.coverage_simplify(
+        rows,
+        0.2,
+        method='vw',
+        simplify_boundary=simplify_boundary,
+    )
+
+    assert len(simplified) == 2
+    assert simplified.crs == 'EPSG:3857'
+    assert gm.coverage_is_valid(simplified)
+    expected = (
+        [gm.box(0, 0, 1, 1, crs=3857), gm.box(1, 0, 2, 1, crs=3857)]
+        if simplify_boundary
+        else [left, right]
+    )
+    assert [
+        gm.equals(got, want) for got, want in zip(simplified, expected, strict=True)
+    ] == [
+        True,
+        True,
+    ]
+
+
 def test_coverage_simplify_preserves_topology() -> None:
     left = gm.from_wkt(
         'POLYGON ((0 0, 1 0, 1.05 0.25, 0.95 0.5, 1.05 0.75, 1 1, 0 1, 0 0))'
@@ -577,7 +624,9 @@ def test_coverage_clean_longest_border_orders_individual_length_overflow() -> No
     assert gm.contains(scaled_output[1], gm.Point(0.0, 0.5))
 
 
-def test_coverage_clean_longest_border_orders_overflowed_sums_with_finite_edges() -> None:
+def test_coverage_clean_longest_border_orders_overflowed_sums_with_finite_edges() -> (
+    None
+):
     rows = gm.GeometryArray([
         gm.box(0.0, -1.7e308, 1.5e308, 1.7e308),
         gm.box(-1.7e308, 0.0, 1.7e308, 1.0e308),

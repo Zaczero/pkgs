@@ -2941,34 +2941,25 @@ impl ExactPartition<'_> {
         chain_of_span.resize(self.spans.len(), u32::MAX);
         let mut chains = Vec::with_capacity(self.spans.len());
 
-        for seed in 0..self.spans.len() {
-            if visited[seed] {
-                continue;
-            }
-            let span = self.spans[seed];
-            let (origin, first) = if node_pin[span.start.0 as usize] {
-                if node_pin[span.end.0 as usize]
-                    && self.compare_nodes(span.end, span.start)? == Ordering::Less
-                {
-                    (span.end, seed as u32)
-                } else {
-                    (span.start, seed as u32)
-                }
-            } else if node_pin[span.end.0 as usize] {
-                (span.end, seed as u32)
-            } else {
-                (span.start, seed as u32)
-            };
-            let (mut nodes, mut spans) = walk_exact_chain(
+        let append_chain = |seed: usize,
+                            origin: NodeId,
+                            cycle: bool,
+                            visited: &mut [bool],
+                            chain_of_span: &mut [u32],
+                            chains: &mut Vec<ExactChainView>|
+         -> Result<()> {
+            let (mut nodes, spans) = walk_exact_chain(
                 &topology,
                 &edge_of_slot,
                 &self.spans,
                 &node_pin,
-                &mut visited,
+                visited,
                 origin,
-                first,
+                seed as u32,
             )?;
-            if !node_pin[origin.0 as usize] {
+            debug_assert_eq!(cycle, !node_pin[origin.0 as usize]);
+            let mut spans = spans;
+            if cycle {
                 let count = spans.len();
                 let mut minimum = 0;
                 for index in 1..count {
@@ -3000,6 +2991,58 @@ impl ExactPartition<'_> {
                 spans,
                 shared,
             });
+            Ok(())
+        };
+
+        // Open chains start at pinned junctions. Consume them before an
+        // unpinned interior span can split one walk and leave a visited suffix.
+        for seed in 0..self.spans.len() {
+            if visited[seed] {
+                continue;
+            }
+            let span = self.spans[seed];
+            let start_pinned = node_pin[span.start.0 as usize];
+            let end_pinned = node_pin[span.end.0 as usize];
+            if !start_pinned && !end_pinned {
+                continue;
+            }
+            let origin = if start_pinned {
+                if node_pin[span.end.0 as usize]
+                    && self.compare_nodes(span.end, span.start)? == Ordering::Less
+                {
+                    span.end
+                } else {
+                    span.start
+                }
+            } else {
+                span.end
+            };
+            append_chain(
+                seed,
+                origin,
+                false,
+                &mut visited,
+                &mut chain_of_span,
+                &mut chains,
+            )?;
+        }
+        // No unvisited span touches a pin now. Every remaining component has
+        // degree two at every node and is therefore a closed cycle.
+        for seed in 0..self.spans.len() {
+            if visited[seed] {
+                continue;
+            }
+            let span = self.spans[seed];
+            debug_assert!(!node_pin[span.start.0 as usize]);
+            debug_assert!(!node_pin[span.end.0 as usize]);
+            append_chain(
+                seed,
+                span.start,
+                true,
+                &mut visited,
+                &mut chain_of_span,
+                &mut chains,
+            )?;
         }
         Ok(ExactChainViews {
             chains,
