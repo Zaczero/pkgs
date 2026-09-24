@@ -1,8 +1,8 @@
-use crate::error::Result;
+use crate::error::{ResourceError, Result};
 use crate::geometry::overlay::{ExactSourceInventory, OverlayOp, self_node_segments_sourced};
 use crate::geometry::{
-    Arrangement, Bounds, Polygon, RingWinding, Segment, SegmentIndex, XY, ray_crossing_is_right,
-    ring_winding, same_point, wrap_index,
+    Arrangement, Bounds, Polygon, Ring, RingWinding, Segment, SegmentIndex, XY,
+    ray_crossing_is_right, ring_winding, same_point,
 };
 use crate::scratch_pool::{RetainScratch, ScratchPool, flat_vec_retained_bytes};
 
@@ -84,8 +84,114 @@ fn areal_operand_inventory<P: AsRef<Polygon>>(polygons: &[P]) -> (usize, usize) 
         .iter()
         .flat_map(|polygon| polygon.as_ref().rings())
         .fold((0, 0), |(segments, rings), ring| {
-            (segments + ring.len(), rings + 1)
+            (segments.saturating_add(ring.len()), rings.saturating_add(1))
         })
+}
+
+fn staged_ring_segments(ring: &Ring, ring_index: usize) -> impl Iterator<Item = Segment> + '_ {
+    let (xs, ys) = (ring.xs(), ring.ys());
+    let mut count = xs.len();
+    if count >= 2 {
+        let first = xs
+            .first()
+            .zip(ys.first())
+            .map(|(&x, &y)| XY::new(x, y))
+            .expect("a ring with at least two coordinates has a first point");
+        let last = xs
+            .last()
+            .zip(ys.last())
+            .map(|(&x, &y)| XY::new(x, y))
+            .expect("a ring with at least two coordinates has a last point");
+        if same_point(first, last) {
+            count = count
+                .checked_sub(1)
+                .expect("a closed ring with at least two coordinates has one to remove");
+        }
+    }
+    // Shells follow CCW winding and holes follow CW winding in the source
+    // chain so coincident rings can cancel by their signed direction.
+    let has_cycle = count >= 3;
+    let reverse = has_cycle && ((ring_winding(ring) == RingWinding::Clockwise) != (ring_index > 0));
+    let mut remaining = if has_cycle { count } else { 0 };
+    let mut from = 0_usize;
+    std::iter::from_fn(move || {
+        while remaining > 0 {
+            let to = if reverse {
+                from.checked_sub(1).unwrap_or_else(|| {
+                    count
+                        .checked_sub(1)
+                        .expect("a staged ring cycle has at least three coordinates")
+                })
+            } else {
+                from.checked_add(1)
+                    .filter(|&next| next < count)
+                    .unwrap_or(0)
+            };
+            let start = XY::new(
+                *xs.get(from)
+                    .expect("staged source index is in the open ring"),
+                *ys.get(from)
+                    .expect("staged source index is in the open ring"),
+            );
+            let end = XY::new(
+                *xs.get(to).expect("staged target index is in the open ring"),
+                *ys.get(to).expect("staged target index is in the open ring"),
+            );
+            from = to;
+            remaining = remaining
+                .checked_sub(1)
+                .expect("a staged edge consumes one remaining ring edge");
+            if !same_point(start, end) {
+                return Some(Segment { start, end });
+            }
+        }
+        None
+    })
+}
+
+fn next_areal_segment_count(count: usize) -> Result<usize> {
+    let next = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+    u32::try_from(next)
+        .map(|_| next)
+        .map_err(|_| ResourceError::SizeOverflow.into())
+}
+
+fn count_staged_operand_segments<P: AsRef<Polygon>>(
+    polygons: &[P],
+    mut count: usize,
+) -> Result<usize> {
+    for polygon in polygons {
+        for (ring_index, ring) in polygon.as_ref().rings().enumerate() {
+            for _ in staged_ring_segments(ring, ring_index) {
+                count = next_areal_segment_count(count)?;
+            }
+        }
+    }
+    Ok(count)
+}
+
+fn areal_segment_capacity<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
+    left: &[P],
+    right: &[Q],
+    upper_bound: usize,
+) -> Result<usize> {
+    // Ring lengths are a cheap reserve upper bound. If it exceeds the stored
+    // ordinal width, count the exact staged edges using the same ring walk.
+    if u32::try_from(upper_bound).is_ok() {
+        return Ok(upper_bound);
+    }
+    let exact_count = count_staged_operand_segments(left, 0)
+        .and_then(|count| count_staged_operand_segments(right, count));
+    match exact_count {
+        Ok(count) => Ok(count),
+        Err(error) => {
+            // The sourced-noding fallback acquires this state before reporting
+            // its width error. Preserve entropy-error precedence while
+            // rejecting before staging the columns that cannot be indexed.
+            crate::collections::collection_hash_state()?;
+            Err(error)
+        },
+    }
 }
 
 fn stage_areal_operand<P: AsRef<Polygon>>(
@@ -98,39 +204,20 @@ fn stage_areal_operand<P: AsRef<Polygon>>(
 ) {
     for polygon in polygons {
         for (ring_index, ring) in polygon.as_ref().rings().enumerate() {
-            // Columnar canonical walk (shells CCW, holes CW): the
-            // orientation reads the same shoelace the Point-staged
-            // `canonical_ring_walk` read, and segments emit straight
-            // off the coordinate columns in forward or reversed cyclic
-            // order — no 40-byte `Point` per vertex.
-            let (xs, ys) = (ring.xs(), ring.ys());
-            let mut count = xs.len();
-            if count >= 2
-                && same_point(XY::new(xs[0], ys[0]), XY::new(xs[count - 1], ys[count - 1]))
-            {
-                count -= 1;
-            }
-            if count < 3 {
-                continue;
-            }
-            let reverse = (ring_winding(ring) == RingWinding::Clockwise) != (ring_index > 0);
             let before = segments.len();
-            for step in 0..count {
-                let (from, to) = if reverse {
-                    (wrap_index(count - step, count), count - step - 1)
-                } else {
-                    (step, wrap_index(step + 1, count))
-                };
-                let start = XY::new(xs[from], ys[from]);
-                let end = XY::new(xs[to], ys[to]);
-                if !same_point(start, end) {
-                    segments.push(Segment { start, end });
-                    tags.push(operand as u32);
-                    segment_loop.push(loop_anchor.len() as u32);
-                }
+            for segment in staged_ring_segments(ring, ring_index) {
+                segments.push(segment);
+                tags.push(operand as u32);
+                segment_loop.push(loop_anchor.len() as u32);
             }
             if segments.len() > before {
-                loop_anchor.push(XY::new(xs[0], ys[0]));
+                let anchor = ring
+                    .xs()
+                    .first()
+                    .zip(ring.ys().first())
+                    .map(|(&x, &y)| XY::new(x, y))
+                    .expect("a ring with staged segments has a first point");
+                loop_anchor.push(anchor);
             }
         }
     }
@@ -140,13 +227,14 @@ pub(in crate::geometry) fn build_areal_arrangement<P: AsRef<Polygon>, Q: AsRef<P
     left: &[P],
     right: &[Q],
 ) -> Result<ArealArrangement> {
-    // Tight upper bounds from the ring inventory: every ring of `n` points
-    // yields at most `n` segments and exactly one anchor.
+    // Ring lengths and ring count provide cheap upper bounds for staged data.
     let (left_segments, left_rings) = areal_operand_inventory(left);
     let (right_segments, right_rings) = areal_operand_inventory(right);
+    let segment_upper = left_segments.saturating_add(right_segments);
+    let segment_capacity = areal_segment_capacity(left, right, segment_upper)?;
     let mut scratch = ScratchPool::checkout(&AREAL_SCRATCH);
-    let segment_capacity = left_segments.saturating_add(right_segments);
-    let ring_capacity = left_rings.saturating_add(right_rings);
+    // Each retained loop anchor belongs to a ring that staged at least one edge.
+    let ring_capacity = left_rings.saturating_add(right_rings).min(segment_capacity);
     scratch.segments.reserve(segment_capacity);
     scratch.tags.reserve(segment_capacity);
     scratch.segment_loop.reserve(segment_capacity);
@@ -361,4 +449,68 @@ pub(crate) fn ray_crossing(segment: Segment, probe: XY) -> i32 {
         return if by > ay { 1 } else { -1 };
     }
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorKind;
+    use crate::geometry::CoordSeq;
+
+    #[test]
+    fn areal_segment_count_admits_u32_boundary_and_rejects_next_segment() {
+        let maximum = usize::try_from(u32::MAX).unwrap();
+        assert_eq!(
+            next_areal_segment_count(maximum.checked_sub(1).unwrap()).unwrap(),
+            maximum
+        );
+        assert!(matches!(
+            next_areal_segment_count(maximum).unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn loose_segment_upper_bound_uses_the_staged_cyclic_edges() {
+        let points = [
+            XY::new(0.0, 0.0),
+            XY::new(2.0, 0.0),
+            XY::new(2.0, 0.0),
+            XY::new(2.0, 2.0),
+            XY::new(0.0, 2.0),
+            XY::new(0.0, 0.0),
+        ];
+        let shell = Ring::from_closed(CoordSeq::try_from_xy(&points).unwrap()).unwrap();
+        let collapsed_points = [XY::new(1.0, 1.0); 4];
+        let collapsed_ring =
+            Ring::from_closed(CoordSeq::try_from_xy(&collapsed_points).unwrap()).unwrap();
+        let polygons = [Polygon::new(shell, vec![collapsed_ring])];
+
+        let right: [Polygon; 0] = [];
+        let loose_upper = usize::try_from(u32::MAX).unwrap().checked_add(1).unwrap();
+        let segment_capacity = areal_segment_capacity(&polygons, &right, loose_upper).unwrap();
+
+        let mut segments = Vec::new();
+        let mut tags = Vec::new();
+        let mut segment_loop = Vec::new();
+        let mut loop_anchor = Vec::new();
+        stage_areal_operand(
+            0,
+            &polygons,
+            &mut segments,
+            &mut tags,
+            &mut segment_loop,
+            &mut loop_anchor,
+        );
+        assert_eq!(segment_capacity, 4);
+        assert_eq!(segments.len(), segment_capacity);
+        assert_eq!(segments.len(), tags.len());
+        assert_eq!(segments.len(), segment_loop.len());
+        assert_eq!(loop_anchor, [XY::new(0.0, 0.0)]);
+        assert!(
+            segments
+                .iter()
+                .all(|segment| !same_point(segment.start, segment.end))
+        );
+    }
 }
