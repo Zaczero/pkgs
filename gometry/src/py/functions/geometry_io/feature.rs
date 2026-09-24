@@ -113,14 +113,12 @@ fn serialize_feature_shapes(
 
 fn serialize_array_feature_shapes(
     py: Python<'_>,
-    array: &crate::PyGeometryArray,
+    array: crate::PyGeometryArray,
     crs: Option<String>,
 ) -> PyResult<Vec<Option<String>>> {
-    let array = array.clone();
     py.detach(move || {
         let domain = crate::io::geojson_domain(crs.as_deref())?;
-        let mut output = Vec::new();
-        crate::boundary::try_reserve_vec(&mut output, array.len())?;
+        let mut output = Vec::with_capacity(array.len());
         for row in array.row_operation().rows_with_missing(|| ()) {
             let text = match row {
                 crate::array::ArrayRow::Missing { .. } => None,
@@ -130,15 +128,11 @@ fn serialize_array_feature_shapes(
                     })?)
                 },
             };
-            crate::boundary::try_push_vec(&mut output, text)?;
+            output.push(text);
         }
         Ok::<_, crate::error::Error>(output)
     })
     .map_err(PyErr::from)
-}
-
-fn owned_rows(rows: Vec<Option<Bound<'_, PyAny>>>) -> Vec<Option<Py<PyAny>>> {
-    rows.into_iter().map(|row| row.map(Bound::unbind)).collect()
 }
 
 fn side_rows<'py>(
@@ -147,21 +141,41 @@ fn side_rows<'py>(
     name: &str,
     broadcast: Option<&Bound<'py, PyDict>>,
 ) -> PyResult<Vec<Option<Py<PyAny>>>> {
-    if value.is_none_or(|value| value.is_none()) {
-        let mut rows = crate::try_vec_with_capacity(len)?;
-        for _ in 0..len {
-            rows.push(None);
-        }
+    let Some(value) = value.filter(|value| !value.is_none()) else {
+        let mut rows = Vec::with_capacity(len);
+        rows.resize_with(len, || None);
         return Ok(rows);
-    }
+    };
     if let Some(broadcast) = broadcast {
-        let mut rows = crate::try_vec_with_capacity(len)?;
+        let mut rows = Vec::with_capacity(len);
         for _ in 0..len {
             rows.push(Some(broadcast.copy()?.into_any().unbind()));
         }
         return Ok(rows);
     }
-    Ok(owned_rows(aligned_rows(value, len, name)?))
+    if value.is_instance_of::<PyString>()
+        || value.is_instance_of::<pyo3::types::PyBytes>()
+        || value.is_instance_of::<pyo3::types::PyByteArray>()
+    {
+        return Err(GeometryError::new_err(format!(
+            "{name} must be an aligned iterable, not a scalar string or bytes"
+        )));
+    }
+    crate::collect_py_iter_exact(
+        value,
+        len,
+        |row| Ok(Some(row.unbind())),
+        |got| {
+            GeometryError::new_err(format!(
+                "{name} length {} does not match values length {len}",
+                if got > len {
+                    format!(">{len}")
+                } else {
+                    got.to_string()
+                }
+            ))
+        },
+    )
 }
 
 fn materialize_feature<'py>(
@@ -269,45 +283,6 @@ pub(crate) fn to_feature(
         .transpose()?;
     let geometry = geometry.as_ref().map(|text| text.bind(py));
     Ok(feature_dict(py, geometry, properties, id, false)?.unbind())
-}
-
-fn aligned_rows<'py>(
-    value: Option<&Bound<'py, PyAny>>,
-    len: usize,
-    name: &str,
-) -> PyResult<Vec<Option<Bound<'py, PyAny>>>> {
-    let Some(value) = value.filter(|value| !value.is_none()) else {
-        let mut rows = crate::try_vec_with_capacity(len)?;
-        for _ in 0..len {
-            rows.push(None);
-        }
-        return Ok(rows);
-    };
-    if value.is_instance_of::<PyString>()
-        || value.is_instance_of::<pyo3::types::PyBytes>()
-        || value.is_instance_of::<pyo3::types::PyByteArray>()
-    {
-        return Err(GeometryError::new_err(format!(
-            "{name} must be an aligned iterable, not a scalar string or bytes"
-        )));
-    }
-    // Fixed-count alignment via keystone: fallible exact reserve + stop after
-    // expected+1 so unbounded side-data iterators cannot grow forever.
-    let rows = crate::collect_py_iter_exact(value, len, Ok, |got| {
-        GeometryError::new_err(format!(
-            "{name} length {} does not match values length {len}",
-            if got > len {
-                format!(">{len}")
-            } else {
-                got.to_string()
-            }
-        ))
-    })?;
-    let mut aligned = crate::try_vec_with_capacity(rows.len())?;
-    for row in rows {
-        aligned.push(Some(row));
-    }
-    Ok(aligned)
 }
 
 /// Build a GeoJSON FeatureCollection from geometries and aligned side data.
@@ -426,7 +401,7 @@ fn to_feature_collection_impl(
             errors::require_epoch_drop(geometry.epoch(), drop_epoch, "to_feature_collection")?;
             require_geojson_shape(geometry.shape.shape(), geometry.crs_str())?;
         }
-        let mut shapes = crate::try_vec_with_capacity(geometry_rows.len())?;
+        let mut shapes = Vec::with_capacity(geometry_rows.len());
         for geometry in geometry_rows {
             let row = if geometry.is_none() {
                 None
@@ -438,7 +413,7 @@ fn to_feature_collection_impl(
                     geometry.crs_str().map(str::to_owned),
                 ))
             };
-            crate::boundary::try_push_vec(&mut shapes, row)?;
+            shapes.push(row);
         }
         let row_count = shapes.len();
         (FeatureGeometryRows::Shapes(shapes), row_count)
@@ -453,7 +428,8 @@ fn to_feature_collection_impl(
     let ids = side_rows(ids, row_count, "ids", None)?;
     let geometry_texts = match geometry_rows {
         FeatureGeometryRows::Array(array) => {
-            serialize_array_feature_shapes(py, &array, array.crs_str().map(str::to_owned))?
+            let crs = array.crs_str().map(str::to_owned);
+            serialize_array_feature_shapes(py, array, crs)?
         },
         FeatureGeometryRows::Shapes(shapes) => serialize_feature_shapes(py, shapes)?,
     };
