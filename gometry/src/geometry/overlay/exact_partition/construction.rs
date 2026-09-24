@@ -67,23 +67,31 @@ impl<'a> PointArena<'a> {
     /// The crossing of two unique segments' carriers, lower index first,
     /// rounded by the double-double certificate or, when it declines, by the
     /// exact construction it then keeps.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "crossing segment IDs are admitted from the unique-segment candidate sweep"
+    )]
     pub(super) fn push_crossing(&mut self, segments: [u32; 2]) -> Result<u32> {
-        let (first, second) = (
-            self.unique[segments[0] as usize],
-            self.unique[segments[1] as usize],
-        );
+        let [first, second] = segments;
+        let (first, second) = (self.unique[first as usize], self.unique[second as usize]);
         let crossing = crossing_point(first, second)?;
         let exact = crossing
             .exact
             .map_or_else(std::cell::OnceCell::new, |point| {
                 #[cfg(test)]
-                update_partition_metrics(|metrics| metrics.declined_crossings += 1);
+                update_partition_metrics(|metrics| {
+                    metrics.declined_crossings = metrics.declined_crossings.wrapping_add(1);
+                });
                 std::cell::OnceCell::from(Box::new(point))
             });
         self.push(NodeRecipe::Crossing { segments, exact }, crossing.point)
     }
 
     /// Move an entry out, leaving a stored placeholder behind.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses its recipe and rounded point together"
+    )]
     pub(super) fn take(&mut self, index: u32) -> (NodeRecipe, XY) {
         (
             mem::replace(&mut self.recipes[index as usize], NodeRecipe::Stored),
@@ -91,15 +99,27 @@ impl<'a> PointArena<'a> {
         )
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses its recipe column"
+    )]
     pub(super) fn is_stored(&self, index: u32) -> bool {
         matches!(self.recipes[index as usize], NodeRecipe::Stored)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses its rounded point column"
+    )]
     pub(super) fn stored_key(&self, index: u32) -> Option<PointKey> {
         self.is_stored(index)
             .then(|| PointKey::new(self.rounded[index as usize]))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses aligned recipe and rounded columns; crossing segment IDs came from the candidate sweep"
+    )]
     pub(super) fn exact(&self, index: u32) -> Result<Cow<'_, [ExactDyadic; 3]>> {
         match &self.recipes[index as usize] {
             NodeRecipe::Stored => {
@@ -113,10 +133,13 @@ impl<'a> PointArena<'a> {
             NodeRecipe::Crossing { segments, exact } => {
                 let point = exact.get_or_try_init(|| -> Result<_> {
                     #[cfg(test)]
-                    update_partition_metrics(|metrics| metrics.exact_crossings += 1);
+                    update_partition_metrics(|metrics| {
+                        metrics.exact_crossings = metrics.exact_crossings.wrapping_add(1);
+                    });
+                    let [first, second] = *segments;
                     Ok(Box::new(crossing_homogeneous(
-                        self.unique[segments[0] as usize],
-                        self.unique[segments[1] as usize],
+                        self.unique[first as usize],
+                        self.unique[second as usize],
                     )?))
                 })?;
                 Ok(Cow::Borrowed(&**point))
@@ -125,6 +148,10 @@ impl<'a> PointArena<'a> {
     }
 
     /// Order a point's coordinate against a binary64 value by the same rule.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses aligned recipe and rounded columns"
+    )]
     pub(super) fn compare_axis_to(&self, index: u32, axis: Axis, value: f64) -> Result<Ordering> {
         let rounded = axis.of(self.rounded[index as usize]);
         if rounded < value {
@@ -137,10 +164,14 @@ impl<'a> PointArena<'a> {
             return Ok(Ordering::Equal);
         }
         let point = self.exact(index)?;
-        let axis = axis.index();
+        let [x, y, w] = &*point;
+        let (coordinate, denominator) = match axis {
+            Axis::X => (x, w),
+            Axis::Y => (y, w),
+        };
         compare_ratios(
-            &point[axis],
-            &point[2],
+            coordinate,
+            denominator,
             &ExactDyadic::from_f64(value),
             &ExactDyadic::from_f64(1.0),
         )
@@ -148,6 +179,10 @@ impl<'a> PointArena<'a> {
 
     /// Certified outward bounds on a coordinate: the stored value, or the
     /// neighbours of a crossing's nearest-even rounding.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted PointArena node ID addresses its rounded point column"
+    )]
     pub(super) fn axis_bounds(&self, index: u32, axis: Axis) -> (f64, f64) {
         let rounded = axis.of(self.rounded[index as usize]);
         if self.is_stored(index) {
@@ -281,6 +316,10 @@ impl<'a> Forest<'a> {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "every DSU handle was admitted by adopt and the parent column stays one-for-one with PointArena"
+    )]
     pub(super) fn find(&mut self, mut node: u32) -> u32 {
         while self.parent[node as usize] != node {
             self.parent[node as usize] = self.parent[self.parent[node as usize] as usize];
@@ -307,6 +346,10 @@ impl<'a> Forest<'a> {
 
     /// Join two handles denoting one point. A stored root wins, and between
     /// crossings the lower segment pair, so a node's recipe is deterministic.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "find returns roots from the same admitted forest and PointArena"
+    )]
     pub(super) fn union(&mut self, a: u32, b: u32) -> Result<()> {
         let a = self.find(a);
         let b = self.find(b);
@@ -424,6 +467,10 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             .ok_or(ResourceError::SizeOverflow)?;
         let mut pool = Vec::with_capacity(capacity);
         pool.extend_from_slice(unique);
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "extra handles were admitted by PointArena and address its aligned rounded-point column"
+        )]
         pool.extend(extra_handles.iter().map(|&handle| {
             let point = forest.points.rounded[handle as usize];
             Segment {
@@ -499,7 +546,7 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let mut along = vec![0_u32; contacts.len()];
     {
         let mut cursor = Vec::with_capacity(unique.len());
-        cursor.extend_from_slice(&contact_starts[..unique.len()]);
+        cursor.extend(contact_starts.iter().take(unique.len()).copied());
         #[expect(
             clippy::indexing_slicing,
             reason = "prefix cursors place each contact inside the along slice for its source"
@@ -540,6 +587,10 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let mut compact_of: Vec<Option<u32>> = Vec::with_capacity(forest.parent.len());
     compact_of.resize(forest.parent.len(), None);
     let mut points = PointArena::with_capacity(unique, 0);
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "forest roots are valid handles; compact_of is sized one-for-one with the forest and PointArena"
+    )]
     for handle in 0..forest.parent.len() as u32 {
         let root = forest.find(handle);
         if compact_of[root as usize].is_some() {
@@ -551,15 +602,23 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
         }
         compact_of[root as usize] = Some(points.push(recipe, rounded)?);
     }
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each forest handle and its root have entries in the compact map sized from that forest"
+    )]
     for handle in 0..forest.parent.len() {
         let root = forest.find(handle as u32);
         compact_of[handle] = compact_of[root as usize];
     }
     drop(forest);
     let node_of = |handle: u32| -> Result<u32> {
-        compact_of[handle as usize].ok_or_else(|| {
-            GeometryErrorKind::Invalid("partition handle was not compacted".into()).into()
-        })
+        compact_of
+            .get(handle as usize)
+            .copied()
+            .flatten()
+            .ok_or_else(|| {
+                GeometryErrorKind::Invalid("partition handle was not compacted".into()).into()
+            })
     };
 
     // Walk every segment from its start through its ordered contacts to its
@@ -570,24 +629,39 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let mut last_unique = Vec::with_capacity(node_count);
     last_unique.resize(node_count, u32::MAX);
     let mut binding_nodes: Vec<(u32, u32)> = Vec::new();
-    let mut binding_starts = vec![0_u32; node_count + 1];
+    let mut binding_starts = vec![0_u32; node_count.wrapping_add(1)];
     let mut intervals: Vec<(u32, u32, u32)> = Vec::new();
-    for (index, segment) in unique.iter().enumerate() {
+    for (index, (((segment, &start_handle), &end_handle), &[start_contact, end_contact])) in unique
+        .iter()
+        .zip(&start_handle)
+        .zip(&end_handle)
+        .zip(contact_starts.array_windows::<2>())
+        .enumerate()
+    {
         // A zero-length segment is an isolated point, bound as a point source.
         if same_point(segment.start, segment.end) {
             continue;
         }
         let source = index as u32;
-        let group = &along[contact_starts[index] as usize..contact_starts[index + 1] as usize];
-        let walk = std::iter::once(start_handle[index])
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "the checked contact prefix window bounds this source's contiguous range in along"
+        )]
+        let group = &along[start_contact..end_contact];
+        let walk = std::iter::once(start_handle)
             .chain(group.iter().copied())
-            .chain(std::iter::once(end_handle[index]));
+            .chain(std::iter::once(end_handle));
         let mut previous: Option<u32> = None;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "node IDs come from this partition's PointArena and index its aligned binding columns"
+        )]
         for handle in walk {
             let node = node_of(handle)?;
             if last_unique[node as usize] != source {
                 last_unique[node as usize] = source;
-                binding_starts[node as usize + 1] += 1;
+                let next = node.wrapping_add(1) as usize;
+                binding_starts[next] = binding_starts[next].wrapping_add(1);
                 binding_nodes.push((node, source));
             }
             if let Some(start) = previous
@@ -602,18 +676,24 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     drop(along);
     drop(contact_starts);
     drop(last_unique);
-    for node in 0..node_count {
-        binding_starts[node + 1] = binding_starts[node + 1]
-            .checked_add(binding_starts[node])
+    let mut total = 0_u32;
+    for offset in binding_starts.iter_mut().skip(1) {
+        total = total
+            .checked_add(*offset)
             .ok_or(ResourceError::SizeOverflow)?;
+        *offset = total;
     }
     let mut bindings = vec![0_u32; binding_nodes.len()];
     {
         let mut cursor = Vec::with_capacity(node_count);
-        cursor.extend_from_slice(&binding_starts[..node_count]);
+        cursor.extend(binding_starts.iter().take(node_count).copied());
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "binding nodes and cursors were counted into the same checked CSR offsets"
+        )]
         for &(node, source) in &binding_nodes {
             bindings[cursor[node as usize] as usize] = source;
-            cursor[node as usize] += 1;
+            cursor[node as usize] = cursor[node as usize].wrapping_add(1);
         }
     }
     drop(binding_nodes);
@@ -627,6 +707,10 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     let (spans, atom_provenance) = aggregate_atoms(intervals, provenance, baseline, budget)?;
 
     let mut degree = vec![0_u32; node_count];
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each span endpoint is a NodeId admitted by the PointArena that sized degree"
+    )]
     for span in &spans {
         degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
         degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
@@ -645,10 +729,11 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     }
 
     let mut point_sources = Vec::new();
-    for (source, segment) in unique.iter().enumerate() {
+    for ((segment, &start_handle), owners) in
+        unique.iter().zip(&start_handle).zip(provenance.iter())
+    {
         if same_point(segment.start, segment.end) {
-            let node = NodeId(node_of(start_handle[source])?);
-            let owners = provenance.owners(source);
+            let node = NodeId(node_of(start_handle)?);
             point_sources.reserve(owners.len());
             point_sources.extend(owners.iter().map(|&(ordinal, _)| (node, ordinal)));
         }
@@ -676,6 +761,10 @@ pub(super) struct EndpointHandles<'h> {
     extra: &'h [u32],
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate pair IDs index the exact pool partition and its parallel endpoint-handle columns"
+)]
 pub(super) fn visit_pool_pair(
     unique: &[Segment],
     pool: &[Segment],
@@ -692,14 +781,14 @@ pub(super) fn visit_pool_pair(
             unique[left],
             left,
             pool[right].start,
-            handles.extra[right - count],
+            handles.extra[right.wrapping_sub(count)],
             contacts,
         ),
         (false, true) => push_point_on_source(
             unique[right],
             right,
             pool[left].start,
-            handles.extra[left - count],
+            handles.extra[left.wrapping_sub(count)],
             contacts,
         ),
         (false, false) => Ok(()),
@@ -744,6 +833,10 @@ pub(super) fn push_point_on_source(
 
 /// Cut two collinear segments at every endpoint of one strictly inside the
 /// other.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "overlap pair IDs index the unique segments' aligned start/end handle columns"
+)]
 pub(super) fn push_overlap(
     [a, b]: [Segment; 2],
     [left, right]: [usize; 2],
@@ -764,11 +857,15 @@ pub(super) fn push_overlap(
     }
     #[cfg(test)]
     if contacts.len() > before {
-        record_overlap(contacts.len() - before);
+        record_overlap(contacts.len().wrapping_sub(before));
     }
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate pair IDs index the unique segment and endpoint-handle columns"
+)]
 pub(super) fn classify_pair_into(
     unique: &[Segment],
     left: usize,
@@ -872,6 +969,10 @@ pub(super) fn classify_pair_into(
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "atom IDs are assigned from spans and their checked provenance CSR counts"
+)]
 pub(super) fn aggregate_atoms(
     intervals: Vec<(u32, u32, u32)>,
     source_provenance: &SegmentProvenance,
@@ -922,7 +1023,7 @@ pub(super) fn aggregate_atoms(
         for &(ordinal, reversed) in source_provenance.owners(unique as usize) {
             let slot = cursor[atom as usize] as usize;
             entries[slot] = (ordinal, reversed != reversed_geom);
-            cursor[atom as usize] += 1;
+            cursor[atom as usize] = cursor[atom as usize].wrapping_add(1);
         }
     }
     Ok((spans, SegmentProvenance::from_csr(offsets, entries)))

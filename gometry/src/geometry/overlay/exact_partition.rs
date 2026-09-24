@@ -30,8 +30,9 @@ use crate::geometry::segments::stored_cross_sign;
 use crate::geometry::tessellation::exact::ExactDyadic;
 use crate::geometry::{
     Bounds, Contact, CoordSeq, Coordinates as _, ExpansionBudget, GeometryErrorKind, GeometryKind,
-    HashMap, LineSeq, Loc, Point, PointKey, Polygon, PolygonizeFull, Result, Ring, RingKind,
-    Segment, Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact, single_chain,
+    HashMap, LineSeq, Loc, MultiLineString, Point, PointKey, Polygon, PolygonizeFull, Result, Ring,
+    RingKind, Segment, Shape, XY, for_each_candidate_pair, same_point, segment_contact_exact,
+    single_chain,
 };
 
 mod construction;
@@ -123,6 +124,10 @@ impl ArealCells {
         Ok(selected)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "lower_dimensions returns admitted NodeIds and each topology column shares the partition node/face domains"
+    )]
     fn emission_plan_with_protected(
         &self,
         partition: &ExactPartition<'_>,
@@ -155,6 +160,10 @@ impl ArealCells {
         Ok(plan)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "edge and face IDs come from this partition's topology, while covered masks are sized from the same span and node counts"
+    )]
     fn lower_dimensions(
         &self,
         partition: &ExactPartition<'_>,
@@ -164,19 +173,25 @@ impl ArealCells {
     ) -> (Vec<u32>, Vec<NodeId>) {
         let mut covered_spans = Vec::with_capacity(self.spans.len());
         covered_spans.resize(self.spans.len(), false);
-        for (slot, &span) in edges.iter().enumerate() {
-            let face = global.walk_faces[topology.face_of[slot] as usize];
+        for (&span, &walk) in edges.iter().zip(&topology.face_of) {
+            let face = global.walk_faces[walk as usize];
             covered_spans[span as usize] |= self.faces[face as usize];
         }
         let mut covered_nodes = Vec::with_capacity(self.nodes.len());
         covered_nodes.resize(self.nodes.len(), false);
         let mut lines = Vec::new();
-        for (index, span) in partition.spans.iter().enumerate() {
-            if self.spans[index] || covered_spans[index] {
+        for (index, ((span, &selected), &covered)) in partition
+            .spans
+            .iter()
+            .zip(&self.spans)
+            .zip(&covered_spans)
+            .enumerate()
+        {
+            if selected || covered {
                 covered_nodes[span.start.0 as usize] = true;
                 covered_nodes[span.end.0 as usize] = true;
             }
-            if self.spans[index] && !covered_spans[index] {
+            if selected && !covered {
                 lines.push(index as u32);
             }
         }
@@ -186,8 +201,8 @@ impl ArealCells {
                 self.faces[global.component_hosts[component as usize] as usize];
         }
         let mut points = Vec::new();
-        for (index, &selected) in self.nodes.iter().enumerate() {
-            if selected && !covered_nodes[index] {
+        for (index, (&selected, &covered)) in self.nodes.iter().zip(&covered_nodes).enumerate() {
+            if selected && !covered {
                 points.push(NodeId(index as u32));
             }
         }
@@ -197,10 +212,6 @@ impl ArealCells {
 
 #[cfg(test)]
 impl ArealSources {
-    #[expect(
-        clippy::float_cmp,
-        reason = "Ring closure is an exact coordinate identity, not an approximate comparison"
-    )]
     fn new(polygons: &[impl AsRef<Polygon>]) -> Result<Self> {
         let mut sources = Self {
             segments: Vec::new(),
@@ -219,13 +230,9 @@ impl ArealSources {
                     .ring_count
                     .checked_add(1)
                     .ok_or(ResourceError::SizeOverflow)?;
-                let (xs, ys) = (ring.xs(), ring.ys());
                 let collapsed = crate::geometry::ring_is_collinear(ring.coords());
                 let first_segment = sources.segments.len();
-                let mut count = xs.len();
-                if count > 1 && xs[0] == xs[count - 1] && ys[0] == ys[count - 1] {
-                    count -= 1;
-                }
+                let count = ring.len().saturating_sub(1);
                 let total = sources
                     .segments
                     .len()
@@ -234,11 +241,18 @@ impl ArealSources {
                 u32::try_from(total).map_err(|_| ResourceError::SizeOverflow)?;
                 sources.segments.reserve(count);
                 sources.source_rings.reserve(count);
-                for from in 0..count {
-                    let to = if from + 1 == count { 0 } else { from + 1 };
+                let first = ring
+                    .iter_coords()
+                    .next()
+                    .expect("a Ring has at least four coordinates");
+                let mut pairs = ring.segment_pairs().peekable();
+                while let Some([start, mut end]) = pairs.next() {
+                    if pairs.peek().is_none() {
+                        end = first;
+                    }
                     sources.segments.push(Segment {
-                        start: XY::new(xs[from], ys[from]),
-                        end: XY::new(xs[to], ys[to]),
+                        start: start.xy(),
+                        end: end.xy(),
                     });
                     sources.source_rings.push((!collapsed).then_some(ring_id));
                 }
@@ -427,9 +441,13 @@ pub(in crate::geometry) struct ExactLineEmission {
 }
 
 impl ExactLineEmission {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the span ordinal is admitted by ExactPartition and offsets has one checked terminal entry"
+    )]
     pub(in crate::geometry) fn sources(&self, span: usize) -> &[ExactLineSource] {
         let start = self.offsets[span] as usize;
-        let end = self.offsets[span + 1] as usize;
+        let end = self.offsets[span.wrapping_add(1)] as usize;
         &self.owners[start..end]
     }
 }
@@ -593,35 +611,47 @@ impl ExactSourceInventory {
             // loop; the final-to-first edge is part of that source contract.
             // This ingress is not the open-line inventory used by overlay.
             let closed = xs.len() >= 3;
-            let count = xs.len().saturating_sub(usize::from(
-                closed
-                    && same_point(
-                        XY::new(xs[0], ys[0]),
-                        XY::new(xs[xs.len() - 1], ys[ys.len() - 1]),
-                    ),
-            ));
+            let coordinate_pairs = || xs.iter().copied().zip(ys.iter().copied());
+            let mut endpoints = coordinate_pairs();
+            let first = endpoints.next().map(|(x, y)| XY::new(x, y));
+            let last = endpoints.next_back().map(|(x, y)| XY::new(x, y));
+            let repeated_closure = closed
+                && first
+                    .zip(last)
+                    .is_some_and(|(first, last)| same_point(first, last));
+            let count = xs.len().saturating_sub(usize::from(repeated_closure));
             staged.ring_kinds.push(RingKind::Winding);
             staged.reserve_segments(count);
-            for index in 0..count {
-                let next = if index + 1 == count { 0 } else { index + 1 };
-                staged.push_segment(
-                    Segment {
-                        start: XY::new(xs[index], ys[index]),
-                        end: XY::new(xs[next], ys[next]),
-                    },
-                    &[
-                        Point::new_raw_xy(xs[index], ys[index]),
-                        Point::new_raw_xy(xs[next], ys[next]),
-                    ],
-                    0,
-                    closed.then_some(ring_id),
-                    closed.then_some(RingKind::Winding),
-                );
+            let points = || {
+                coordinate_pairs().take(count).map(|(x, y)| {
+                    let point = Point::new_raw_xy(x, y);
+                    (point.xy(), point)
+                })
+            };
+            if let Some(first) = points().next() {
+                for ((start_xy, start), (end_xy, end)) in
+                    points().zip(points().skip(1).chain(std::iter::once(first)))
+                {
+                    staged.push_segment(
+                        Segment {
+                            start: start_xy,
+                            end: end_xy,
+                        },
+                        &[start, end],
+                        0,
+                        closed.then_some(ring_id),
+                        closed.then_some(RingKind::Winding),
+                    );
+                }
             }
         }
         Self::from_staged(staged)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "source IDs and node IDs in the partition are admitted by source staging and PointArena"
+    )]
     pub(in crate::geometry) fn partition(
         &self,
         budget: &mut ExpansionBudget,
@@ -630,7 +660,7 @@ impl ExactSourceInventory {
         record_partition_call();
         #[cfg(test)]
         update_partition_metrics(|metrics| {
-            metrics.partition_builds += 1;
+            metrics.partition_builds = metrics.partition_builds.wrapping_add(1);
             metrics.source_segments = self.source_segments.len();
             metrics.unique_source_segments = self.unique.len();
         });
@@ -686,6 +716,10 @@ impl ExactSourceInventory {
         self.metric_support_impl(partition, true)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node, span, walk, and dart IDs address the checked partition topology; boundary flags remain parallel to partition spans"
+    )]
     fn metric_support_impl(
         &self,
         partition: &ExactPartition<'_>,
@@ -722,11 +756,10 @@ impl ExactSourceInventory {
         }
         let mut covered = Vec::with_capacity(partition.node_count());
         covered.resize(partition.node_count(), false);
-        for (index, &selected) in cells.spans.iter().enumerate() {
+        for (index, (span, &selected)) in partition.spans.iter().zip(&cells.spans).enumerate() {
             if !selected {
                 continue;
             }
-            let span = partition.spans[index];
             let start = partition.exact_owned(span.start)?;
             let end = partition.exact_owned(span.end)?;
             let source = partition.unique[span.unique as usize];
@@ -752,8 +785,8 @@ impl ExactSourceInventory {
         let mut points = Vec::new();
         let mut boundary_points = with_boundary.then(Vec::new);
         points.reserve(cells.nodes.iter().filter(|&&value| value).count());
-        for (index, &selected) in cells.nodes.iter().enumerate() {
-            if selected && !covered[index] {
+        for (index, (&selected, &is_covered)) in cells.nodes.iter().zip(&covered).enumerate() {
+            if selected && !is_covered {
                 points.push(ExactMetricNode {
                     homogeneous: partition.exact_owned(NodeId(index as u32))?,
                 });
@@ -764,14 +797,13 @@ impl ExactSourceInventory {
         }
         let mut faces = Vec::with_capacity(global.count as usize);
         faces.resize_with(global.count as usize, Vec::new);
-        for walk in 0..topology.face_starts.len().saturating_sub(1) {
+        for (walk, &[start, end]) in topology.face_starts.array_windows::<2>().enumerate() {
             let face = global.walk_faces[walk] as usize;
             if face == 0 || !cells.faces[face] {
                 continue;
             }
-            let start = topology.face_starts[walk] as usize;
-            let end = topology.face_starts[walk + 1] as usize;
-            let mut cycle = Vec::with_capacity(end - start);
+            let (start, end) = (start as usize, end as usize);
+            let mut cycle = Vec::with_capacity(end.saturating_sub(start));
             for &slot in &topology.face_slots[start..end] {
                 let node = NodeId(topology.owners[slot as usize]);
                 cycle.push(ExactMetricNode {
@@ -790,6 +822,10 @@ impl ExactSourceInventory {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node_bindings is a CSR row lookup for a NodeId admitted by the same ExactPartition"
+    )]
     fn node_bindings<'a>(&self, node: NodeId, partition: &'a ExactPartition<'_>) -> &'a [u32] {
         let index = node.0 as usize;
         let start = partition.binding_starts[index] as usize;
@@ -797,6 +833,10 @@ impl ExactSourceInventory {
         &partition.bindings[start..end]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "unique, source, and point IDs come from this inventory's checked provenance and partition"
+    )]
     fn resolve_node_point(
         &self,
         partition: &ExactPartition<'_>,
@@ -879,6 +919,10 @@ impl ExactSourceInventory {
         ))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the binding-start windows and node-aligned output are built from the same ExactPartition"
+    )]
     fn ordinate_protected_nodes(
         &self,
         partition: &ExactPartition<'_>,
@@ -949,6 +993,10 @@ impl ExactSourceInventory {
         partition.emit_lines(&self.source_operands)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node pairs and resolved point entries are emitted from the same ExactPartition"
+    )]
     pub(in crate::geometry) fn node_shape(
         &self,
         partition: &ExactPartition<'_>,
@@ -987,6 +1035,10 @@ impl ExactSourceInventory {
         Ok(Shape::multi_line_string(axes, lines))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span, node, dart, face, and operand IDs come from the checked partition and its aligned diagnostic rows"
+    )]
     pub(in crate::geometry) fn polygonize_diagnostics(
         &self,
         partition: &ExactPartition<'_>,
@@ -1054,6 +1106,10 @@ impl ExactSourceInventory {
     /// boundary coordinates. Face selection follows the same stored-ring
     /// winding fold as ordinary overlay; the selected homogeneous face
     /// integrals are accumulated as one exact rational before final rounding.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face, dart, twin, and node IDs address vectors built by this partition's checked topology"
+    )]
     pub(in crate::geometry) fn occupied_cartesian_area(
         &self,
         partition: &ExactPartition<'_>,
@@ -1086,12 +1142,11 @@ impl ExactSourceInventory {
             },
         )?;
         let mut area = crate::geometry::ExactRationalArea::new();
-        for walk in 0..topology.face_starts.len().saturating_sub(1) {
+        for (walk, &[start, end]) in topology.face_starts.array_windows::<2>().enumerate() {
             if !selected[global.walk_faces[walk] as usize] {
                 continue;
             }
-            let range =
-                topology.face_starts[walk] as usize..topology.face_starts[walk + 1] as usize;
+            let range = start as usize..end as usize;
             for &slot in &topology.face_slots[range] {
                 let slot = slot as usize;
                 let twin_face =
@@ -1206,6 +1261,10 @@ impl ExactSourceInventory {
     /// arrangement. The cut rectangles are separate polygon operands, but
     /// their seam and every source crossing share the same node recipes,
     /// topology, rounding pass, and ordinate resolution.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "plan node IDs are admitted by this partition and index its node-aligned seen/coordinate columns"
+    )]
     pub(in crate::geometry) fn subdivision_parts(
         &self,
         partition: &ExactPartition<'_>,
@@ -1231,13 +1290,10 @@ impl ExactSourceInventory {
         let winding_rings = self.winding_source_rings();
         let facts =
             self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
-        if matches!(
-            source_shape,
-            Shape::LineString(_) | Shape::MultiLineString(_)
-        ) {
+        if let Some(line_source) = LineSource::from_shape(source_shape) {
             return self.subdivision_line_parts(
                 partition,
-                source_shape,
+                line_source,
                 &topology,
                 &global,
                 &facts,
@@ -1344,10 +1400,14 @@ impl ExactSourceInventory {
         Ok([first, second])
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected spans and node masks are sized from the same partition whose span and node IDs the routine visits"
+    )]
     fn subdivision_line_parts(
         &self,
         partition: &ExactPartition<'_>,
-        source_shape: &Shape,
+        source: LineSource<'_>,
         topology: &IndexedTopology,
         global: &GlobalFaces,
         facts: &CellFacts,
@@ -1387,12 +1447,12 @@ impl ExactSourceInventory {
             declared_axes,
         )?;
         let views = partition.source_span_views(&self.source_segments)?;
-        let ranges = source_line_ranges(source_shape)?;
+        let ranges = source_line_ranges(source)?;
         let mut outputs = Vec::with_capacity(selected.len());
         for spans in selected {
             outputs.push(self.emit_source_line_shape(
                 partition,
-                source_shape,
+                source.kind(),
                 &ranges,
                 &views,
                 &spans,
@@ -1408,10 +1468,14 @@ impl ExactSourceInventory {
         ])
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span IDs and their selection bits are produced from the same ExactPartition, so both indexed columns share its span domain"
+    )]
     fn emit_source_line_shape(
         &self,
         partition: &ExactPartition<'_>,
-        source_shape: &Shape,
+        source_kind: GeometryKind,
         ranges: &[Range<usize>],
         views: &[Vec<(u32, bool)>],
         selected: &[bool],
@@ -1431,7 +1495,7 @@ impl ExactSourceInventory {
                         "exact subdivision line provenance lost a source segment".into(),
                     )
                 })? {
-                    if !selected.get(span_id as usize).copied().unwrap_or(false) {
+                    if !selected[span_id as usize] {
                         if run.len() >= 2 {
                             node_runs.push(std::mem::take(&mut run));
                         } else {
@@ -1477,14 +1541,7 @@ impl ExactSourceInventory {
             lines.push(LineSeq::from_proven(CoordSeq::try_from_points(&points)?));
         }
         if lines.is_empty() {
-            return Ok(Shape::typed_empty(
-                match source_shape {
-                    Shape::LineString(_) => GeometryKind::LineString,
-                    Shape::MultiLineString(_) => GeometryKind::MultiLineString,
-                    _ => unreachable!("line subdivision source is lineal"),
-                },
-                declared_axes,
-            ));
+            return Ok(Shape::typed_empty(source_kind, declared_axes));
         }
         Ok(Shape::narrow_lines(line_axes, lines))
     }
@@ -1573,6 +1630,10 @@ impl ExactSourceInventory {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "topology IDs and CSR rows are built from this partition; CellFacts admission checked each row-major product and both operand IDs are validated by subdivision_parts"
+    )]
     fn select_subdivision_cells(
         &self,
         partition: &ExactPartition<'_>,
@@ -1589,41 +1650,83 @@ impl ExactSourceInventory {
             nodes: Vec::new(),
         };
         cells.faces.reserve(global.count as usize);
-        cells.faces.resize(global.count as usize, false);
-        for face in 0..global.count as usize {
-            cells.faces[face] = facts.face_membership[face * operands + source_operand]
-                && facts.face_membership[face * operands + clip_operand];
-        }
+        let source_faces = facts
+            .face_membership
+            .iter()
+            .skip(source_operand)
+            .step_by(operands);
+        let clip_faces = facts
+            .face_membership
+            .iter()
+            .skip(clip_operand)
+            .step_by(operands);
+        cells.faces.extend(
+            source_faces
+                .zip(clip_faces)
+                .map(|(&source, &clip)| source && clip),
+        );
         cells.spans.reserve(partition.spans.len());
-        cells.spans.resize(partition.spans.len(), false);
+        let source_spans = facts
+            .span_support
+            .iter()
+            .skip(source_operand)
+            .step_by(operands);
+        let clip_spans = facts
+            .span_support
+            .iter()
+            .skip(clip_operand)
+            .step_by(operands);
+        cells.spans.extend(
+            source_spans
+                .zip(clip_spans)
+                .map(|(&source, &clip)| source && clip),
+        );
         cells.nodes.reserve(partition.node_count());
         cells.nodes.resize(partition.node_count(), false);
-        for span in 0..partition.spans.len() {
-            cells.spans[span] = facts.span_support[span * operands + source_operand]
-                && facts.span_support[span * operands + clip_operand];
-            if cells.spans[span] {
-                let span = partition.spans[span];
+        for (span, &selected) in partition.spans.iter().zip(&cells.spans) {
+            if selected {
                 cells.nodes[span.start.0 as usize] = true;
                 cells.nodes[span.end.0 as usize] = true;
             }
         }
 
-        for node in 0..partition.node_count() {
-            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
-            let memberships = |operand: usize| {
+        let source_points = facts
+            .point_membership
+            .iter()
+            .skip(source_operand)
+            .step_by(operands);
+        let clip_points = facts
+            .point_membership
+            .iter()
+            .skip(clip_operand)
+            .step_by(operands);
+        let face_membership = |face: u32, operand: usize| {
+            let offset = (face as usize).wrapping_mul(operands).wrapping_add(operand);
+            facts.face_membership[offset]
+        };
+        for (((selected, starts), &component), (&source_point, &clip_point)) in cells
+            .nodes
+            .iter_mut()
+            .zip(topology.starts.array_windows::<2>())
+            .zip(&topology.component_of)
+            .zip(source_points.zip(clip_points))
+        {
+            let &[start, end] = starts;
+            let range = start as usize..end as usize;
+            let memberships = |operand: usize, point_membership: bool| {
                 let face_membership = if range.is_empty() {
-                    let component = topology.component_of[node] as usize;
-                    let host = global.component_hosts[component] as usize;
-                    facts.face_membership[host * operands + operand]
+                    let host = global.component_hosts[component as usize];
+                    face_membership(host, operand)
                 } else {
                     range.clone().any(|slot| {
-                        let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                        facts.face_membership[face * operands + operand]
+                        let face = global.walk_faces[topology.face_of[slot] as usize];
+                        face_membership(face, operand)
                     })
                 };
-                face_membership || facts.point_membership[node * operands + operand]
+                face_membership || point_membership
             };
-            cells.nodes[node] |= memberships(source_operand) && memberships(clip_operand);
+            *selected |=
+                memberships(source_operand, source_point) && memberships(clip_operand, clip_point);
         }
         cells
     }
@@ -1667,6 +1770,10 @@ impl ExactSourceInventory {
         plan.emit_xy_parts(partition, &topology)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face and dart IDs are produced by the checked local/global topology built from this partition"
+    )]
     pub(in crate::geometry) fn linework_polygons(
         &self,
         partition: &mut ExactPartition<'_>,
@@ -1680,9 +1787,8 @@ impl ExactSourceInventory {
         }
         let mut cycles: Vec<Vec<Vec<NodeId>>> = Vec::with_capacity(global.count as usize);
         cycles.resize_with(global.count as usize, Vec::new);
-        for walk in 0..topology.face_starts.len().saturating_sub(1) {
-            let start = topology.face_starts[walk] as usize;
-            let end = topology.face_starts[walk + 1] as usize;
+        for (walk, &[start, end]) in topology.face_starts.array_windows::<2>().enumerate() {
+            let (start, end) = (start as usize, end as usize);
             let mut cycle = Vec::with_capacity(end.saturating_sub(start));
             for &slot in &topology.face_slots[start..end] {
                 cycle.push(NodeId(topology.owners[slot as usize]));
@@ -1692,14 +1798,14 @@ impl ExactSourceInventory {
         }
         let mut samples = Vec::with_capacity(global.count as usize);
         samples.resize(global.count as usize, None);
-        for face in 1..global.count as usize {
-            for &node in cycles[face].iter().flatten() {
-                let earlier = match samples[face] {
+        for (face_cycles, sample_slot) in cycles.iter().zip(&mut samples).skip(1) {
+            for &node in face_cycles.iter().flatten() {
+                let earlier = match *sample_slot {
                     None => true,
                     Some(prior) => partition.compare_nodes(node, prior)?.is_lt(),
                 };
                 if earlier {
-                    samples[face] = Some(node);
+                    *sample_slot = Some(node);
                 }
             }
         }
@@ -1710,7 +1816,7 @@ impl ExactSourceInventory {
         let mut by_x = Vec::with_capacity(global.count as usize);
         for (face, sample) in samples.iter().enumerate() {
             if let Some(sample) = sample {
-                by_x.push((partition.node_xy(*sample), face));
+                by_x.push((partition.node_xy(*sample), face, *sample));
             }
         }
         by_x.sort_unstable_by(|left, right| left.0.x.total_cmp(&right.0.x));
@@ -1725,28 +1831,32 @@ impl ExactSourceInventory {
             else {
                 continue;
             };
-            let first = by_x.partition_point(|(xy, _)| xy.x < min_x);
-            for &(xy, face) in &by_x[first..] {
+            let first = by_x.partition_point(|(xy, ..)| xy.x < min_x);
+            for &(xy, face, sample) in by_x.iter().skip(first) {
                 if xy.x > max_x {
                     break;
                 }
                 if face == other || xy.y < min_y || xy.y > max_y {
                     continue;
                 }
-                let sample = samples[face].expect("sorted faces have samples");
                 for cycle in other_cycles {
                     if cycle_contains_node(partition, cycle, sample)? {
-                        depths[face] += 1;
+                        depths[face] = depths[face].wrapping_add(1);
                         break;
                     }
                 }
             }
         }
         let mut selected = Vec::with_capacity(global.count as usize);
-        selected
-            .extend((0..global.count as usize).map(|face| {
-                face != 0 && samples[face].is_some() && depths[face].is_multiple_of(2)
-            }));
+        selected.extend(
+            samples
+                .iter()
+                .zip(&depths)
+                .enumerate()
+                .map(|(face, (sample, &depth))| {
+                    face != 0 && sample.is_some() && depth.is_multiple_of(2)
+                }),
+        );
         let cells = ArealCells {
             faces: selected,
             spans: {
@@ -1765,6 +1875,10 @@ impl ExactSourceInventory {
         Ok(polygons)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face IDs yielded by visit_face_windings index the selected vector sized from GlobalFaces"
+    )]
     pub(in crate::geometry) fn winding_polygons(
         &self,
         partition: &ExactPartition<'_>,
@@ -1793,6 +1907,10 @@ impl ExactSourceInventory {
     /// source partition. Each range contains one polygon's canonical shell
     /// followed by its canonical holes; a face belongs when any group's
     /// signed winding is negative.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face IDs yielded by visit_face_windings index the selected vector sized from GlobalFaces"
+    )]
     pub(in crate::geometry) fn winding_group_union_polygons(
         &self,
         partition: &ExactPartition<'_>,
@@ -1910,6 +2028,10 @@ pub(crate) fn cartesian_support_nonempty(shape: &Shape) -> Result<bool> {
         || cells.nodes.iter().any(|&value| value))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the only indirect access is by a span ID produced by the same admitted partition"
+)]
 pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<bool> {
     let inventory = ExactSourceInventory::from_shapes(&[shape])?;
     let mut budget = ExpansionBudget::new("intersects", "exact partition");
@@ -1936,27 +2058,27 @@ pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<b
             return Ok(true);
         }
     }
-    let corners = bounds.corners();
+    let [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = bounds.corners();
     let rectangle = [
         Segment {
-            start: XY::new(corners[0][0], corners[0][1]),
-            end: XY::new(corners[1][0], corners[1][1]),
+            start: XY::new(x0, y0),
+            end: XY::new(x1, y1),
         },
         Segment {
-            start: XY::new(corners[1][0], corners[1][1]),
-            end: XY::new(corners[2][0], corners[2][1]),
+            start: XY::new(x1, y1),
+            end: XY::new(x2, y2),
         },
         Segment {
-            start: XY::new(corners[2][0], corners[2][1]),
-            end: XY::new(corners[3][0], corners[3][1]),
+            start: XY::new(x2, y2),
+            end: XY::new(x3, y3),
         },
         Segment {
-            start: XY::new(corners[3][0], corners[3][1]),
-            end: XY::new(corners[0][0], corners[0][1]),
+            start: XY::new(x3, y3),
+            end: XY::new(x0, y0),
         },
     ];
-    for (index, &span) in partition.spans.iter().enumerate() {
-        if !cells.spans[index] {
+    for (&span, &selected) in partition.spans.iter().zip(&cells.spans) {
+        if !selected {
             continue;
         }
         let segment = partition.unique[span.unique as usize];
@@ -1973,6 +2095,10 @@ pub(crate) fn exact_intersects_bounds(shape: &Shape, bounds: Bounds) -> Result<b
     Ok(false)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "closed selects three points and open selects two from the matching fixed array"
+)]
 fn diagnostic_line(segment: Segment, closed: bool) -> Result<Shape> {
     let points = if closed {
         [segment.start, segment.end, segment.start]
@@ -2106,6 +2232,10 @@ impl StagedExactSources {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "operand IDs are admitted by the source inventory's operand count"
+    )]
     fn append_polygon(&mut self, polygon: &Polygon, operand: u32) -> Result<()> {
         let first_ring = self.ring_count;
         let polygon_id =
@@ -2122,12 +2252,6 @@ impl StagedExactSources {
                 .ring_count
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            let (xs, ys) = (ring.xs(), ring.ys());
-            let mut count = xs.len();
-            if count > 1 && same_point(XY::new(xs[0], ys[0]), XY::new(xs[count - 1], ys[count - 1]))
-            {
-                count -= 1;
-            }
             let kind = if crate::geometry::ring_is_collinear(ring.coords()) {
                 RingKind::Collapsed
             } else {
@@ -2136,11 +2260,15 @@ impl StagedExactSources {
             self.ring_polygons.push(polygon_id);
             self.ring_holes.push(ring_index > 0);
             self.ring_kinds.push(kind);
+            let count = ring.len().saturating_sub(1);
             self.reserve_segments(count);
-            for index in 0..count {
-                let next = if index + 1 == count { 0 } else { index + 1 };
-                let start = ring.point_at(index);
-                let end = ring.point_at(next);
+            let mut pairs = ring.segment_pairs().peekable();
+            let [first, first_end] = pairs.next().expect("a Ring has at least four coordinates");
+            let mut pairs = std::iter::once([first, first_end]).chain(pairs).peekable();
+            while let Some([start, mut end]) = pairs.next() {
+                if pairs.peek().is_none() {
+                    end = first;
+                }
                 self.push_segment(
                     Segment {
                         start: start.xy(),
@@ -2216,6 +2344,10 @@ struct PolygonOccupancy {
 }
 
 impl PolygonOccupancy {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "staged ring IDs and polygon rows are assigned from ring/polygon identity ranges"
+    )]
     fn new(polygon_rings: &[Vec<Range<usize>>], ring_count: usize, odd: bool) -> Result<Self> {
         let mut ring_polygon = Vec::with_capacity(ring_count);
         ring_polygon.resize(ring_count, None);
@@ -2245,10 +2377,14 @@ impl PolygonOccupancy {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ring and polygon IDs in the walk were admitted by source staging and PolygonOccupancy::new"
+    )]
     fn cross(&mut self, winding: &mut [i64], ring: u32, direction: i64) {
         let ring = ring as usize;
         let before = ring_occupied(winding[ring], self.odd);
-        winding[ring] += direction;
+        winding[ring] = winding[ring].wrapping_add(direction);
         let after = ring_occupied(winding[ring], self.odd);
         let Some((polygon, shell)) = self.ring_polygon[ring].filter(|_| before != after) else {
             return;
@@ -2258,26 +2394,34 @@ impl PolygonOccupancy {
         if shell {
             self.shell_filled[polygon] = after;
         } else if after {
-            self.filled_holes[polygon] += 1;
+            self.filled_holes[polygon] = self.filled_holes[polygon].wrapping_add(1);
         } else {
-            self.filled_holes[polygon] -= 1;
+            self.filled_holes[polygon] = self.filled_holes[polygon].wrapping_sub(1);
         }
         let now = self.shell_filled[polygon] && self.filled_holes[polygon] == 0;
         if was != now {
             let count = &mut self.occupied[self.polygon_operand[polygon] as usize];
             if now {
-                *count += 1;
+                *count = count.wrapping_add(1);
             } else {
-                *count -= 1;
+                *count = count.wrapping_sub(1);
             }
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "operand indexes are admitted from ExactSourceInventory::polygon_rings"
+    )]
     fn operand_occupied(&self, operand: usize) -> bool {
         self.occupied[operand] != 0
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "ring IDs in each stored polygon range were admitted with the source ring inventory"
+)]
 fn rings_occupied(winding: &[i64], mut rings: Range<usize>, odd: bool) -> bool {
     rings
         .next()
@@ -2335,6 +2479,10 @@ const fn location(occupied: bool) -> Loc {
 /// different exact construction (currently Voronoi). ExactPartition owns the
 /// final noding/incidence pass; the external owner retains cocircular centers,
 /// clipping policy, and fan order.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate pair IDs address segments built one-for-one from the input items"
+)]
 pub(in crate::geometry) fn certify_emitted_incidence(items: &[([u32; 2], Segment)]) -> Result<()> {
     let mut coordinates: HashMap<u32, PointKey> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
@@ -2399,9 +2547,10 @@ fn cycle_contains_node(
     query: NodeId,
 ) -> Result<bool> {
     let mut inside = false;
-    for index in 0..cycle.len() {
-        let a = cycle[index];
-        let b = cycle[(index + 1) % cycle.len()];
+    for (&a, &b) in cycle
+        .iter()
+        .zip(cycle.iter().skip(1).chain(cycle.iter().take(1)))
+    {
         let y_a = partition.compare_axis(a, query, Axis::Y)?;
         let y_b = partition.compare_axis(b, query, Axis::Y)?;
         let a_is_below = y_a != Ordering::Greater;
@@ -2431,26 +2580,49 @@ fn cycle_contains_node(
     Ok(inside)
 }
 
-const fn node_source_range(records: &[(NodeId, u32)], node: NodeId) -> Range<usize> {
-    let mut low = 0;
-    let mut high = records.len();
-    while low < high {
-        let middle = low + (high - low) / 2;
-        if records[middle].0.0 < node.0 {
-            low = middle + 1;
-        } else {
-            high = middle;
-        }
-    }
-    let start = low;
-    while high < records.len() && records[high].0.0 == node.0 {
-        high += 1;
-    }
-    start..high
+fn node_source_range(records: &[(NodeId, u32)], node: NodeId) -> Range<usize> {
+    let start = records.partition_point(|(record_node, _)| record_node.0 < node.0);
+    let count = records
+        .iter()
+        .skip(start)
+        .take_while(|(record_node, _)| record_node.0 == node.0)
+        .count();
+    start..start.wrapping_add(count)
 }
 
-fn source_line_ranges(source: &Shape) -> Result<Vec<Range<usize>>> {
-    let mut ranges = Vec::with_capacity(source.part_count());
+#[derive(Clone, Copy)]
+enum LineSource<'a> {
+    LineString(&'a LineSeq),
+    MultiLineString(&'a MultiLineString),
+}
+
+impl<'a> LineSource<'a> {
+    fn from_shape(shape: &'a Shape) -> Option<Self> {
+        match shape {
+            Shape::LineString(line) => Some(Self::LineString(line)),
+            Shape::MultiLineString(lines) => Some(Self::MultiLineString(lines)),
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
+        }
+    }
+
+    const fn kind(self) -> GeometryKind {
+        match self {
+            Self::LineString(_) => GeometryKind::LineString,
+            Self::MultiLineString(_) => GeometryKind::MultiLineString,
+        }
+    }
+}
+
+fn source_line_ranges(source: LineSource<'_>) -> Result<Vec<Range<usize>>> {
+    let mut ranges = Vec::with_capacity(match source {
+        LineSource::LineString(_) => 1,
+        LineSource::MultiLineString(lines) => lines.len(),
+    });
     let mut offset = 0_usize;
     let mut push = |length: usize| -> Result<()> {
         let end = offset
@@ -2461,22 +2633,20 @@ fn source_line_ranges(source: &Shape) -> Result<Vec<Range<usize>>> {
         Ok(())
     };
     match source {
-        Shape::LineString(line) => push(line.len())?,
-        Shape::MultiLineString(lines) => {
+        LineSource::LineString(line) => push(line.len())?,
+        LineSource::MultiLineString(lines) => {
             for line in lines.iter() {
                 push(line.len())?;
             }
-        },
-        _ => {
-            return Err(GeometryErrorKind::Invalid(
-                "exact subdivision line ranges require lineal source".into(),
-            )
-            .into());
         },
     }
     Ok(ranges)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the incoming span and node IDs come from the exact chain walk and the CSR row is owned by its topology"
+)]
 fn next_incident_span(
     topology: &IndexedTopology,
     edge_of_slot: &[u32],
@@ -2491,6 +2661,10 @@ fn next_incident_span(
         .find(|&span| span != incoming)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "span and node IDs are returned by the checked topology walk and address its aligned visit/pin columns"
+)]
 fn walk_exact_chain(
     topology: &IndexedTopology,
     edge_of_slot: &[u32],
@@ -2543,6 +2717,10 @@ impl ExactPartition<'_> {
     }
 
     /// A node's nearest-even binary64 point.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "NodeId is admitted by this partition's PointArena"
+    )]
     pub(in crate::geometry) fn node_xy(&self, node: NodeId) -> XY {
         self.points.rounded[node.0 as usize]
     }
@@ -2586,6 +2764,10 @@ impl ExactPartition<'_> {
     /// Ordering the inherited atoms from the stored source endpoint gives
     /// callers a view of the source spelling without rebuilding a coordinate
     /// graph.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span IDs are assigned from self.spans; each zipped source segment owns one pre-sized view"
+    )]
     pub(in crate::geometry) fn source_span_views(
         &self,
         source_segments: &[Segment],
@@ -2602,8 +2784,8 @@ impl ExactPartition<'_> {
                 view.push((span as u32, reversed));
             }
         }
-        for (source, segment) in source_segments.iter().enumerate() {
-            if views[source].len() < 2 {
+        for (segment, view) in source_segments.iter().zip(&mut views) {
+            if view.len() < 2 {
                 continue;
             }
             // Each atom's entry is its node nearest the source start; ordered
@@ -2616,7 +2798,7 @@ impl ExactPartition<'_> {
                 let span = self.spans[span as usize];
                 if reversed { span.start } else { span.end }
             };
-            let mut ordered = std::mem::take(&mut views[source]);
+            let mut ordered = std::mem::take(view);
             self.points
                 .order_along(*segment, &mut ordered, entry, |_, _| {
                     Err(GeometryErrorKind::Invalid(
@@ -2625,7 +2807,7 @@ impl ExactPartition<'_> {
                     .into())
                 })?;
             let first = NodeId(entry(ordered[0]));
-            let last = exit(ordered[ordered.len() - 1]);
+            let last = exit(ordered[ordered.len().wrapping_sub(1)]);
             if self.stored_key(first.0 as usize) != Some(PointKey::new(segment.start))
                 || self.stored_key(last.0 as usize) != Some(PointKey::new(segment.end))
             {
@@ -2643,7 +2825,7 @@ impl ExactPartition<'_> {
                 )
                 .into());
             }
-            views[source] = ordered;
+            *view = ordered;
         }
         Ok(views)
     }
@@ -2654,6 +2836,10 @@ impl ExactPartition<'_> {
     /// identities. An atom is shared only when its exact provenance names two
     /// distinct rows. A chain ends at every non-degree-two node and wherever
     /// that shared/exterior class changes.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span and node IDs come from this partition; degree-two continuation rows are built from its checked topology"
+    )]
     pub(in crate::geometry) fn coverage_chain_views(
         &self,
         source_operands: &[u32],
@@ -2663,7 +2849,7 @@ impl ExactPartition<'_> {
         for owners in self.provenance.iter() {
             let mut first = None;
             let mut second = None;
-            let mut count = 0;
+            let mut count = 0_usize;
             for &(source, _) in owners {
                 let operand = *source_operands.get(source as usize).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
@@ -2678,7 +2864,7 @@ impl ExactPartition<'_> {
                 } else if second.is_none() {
                     second = Some(operand);
                 }
-                count += 1;
+                count = count.wrapping_add(1);
             }
             shared_by_span.push(count == 2);
         }
@@ -2689,7 +2875,7 @@ impl ExactPartition<'_> {
             let slots = start as usize..end as usize;
             node_pin[node] = slots.len() != 2
                 || shared_by_span[edge_of_slot[slots.start] as usize]
-                    != shared_by_span[edge_of_slot[slots.start + 1] as usize];
+                    != shared_by_span[edge_of_slot[slots.start.wrapping_add(1)] as usize];
         }
 
         let mut visited = Vec::with_capacity(self.spans.len());
@@ -2736,7 +2922,8 @@ impl ExactPartition<'_> {
                 nodes[..count].rotate_left(minimum);
                 nodes[count] = nodes[0];
                 spans.rotate_left(minimum);
-                if self.compare_nodes(nodes[1], nodes[count - 1])? == Ordering::Greater {
+                if self.compare_nodes(nodes[1], nodes[count.wrapping_sub(1)])? == Ordering::Greater
+                {
                     nodes[1..count].reverse();
                     spans.reverse();
                 }
@@ -2805,11 +2992,17 @@ impl ExactPartition<'_> {
         let moved = items.iter().flatten().any(|&node| !self.is_stored(node));
         #[cfg(test)]
         if !moved {
-            update_partition_metrics(|metrics| metrics.unmoved_emissions += 1);
+            update_partition_metrics(|metrics| {
+                metrics.unmoved_emissions = metrics.unmoved_emissions.wrapping_add(1);
+            });
         }
         moved
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "each item endpoint is a NodeId admitted by this partition and seen is sized from its PointArena"
+    )]
     fn round_incident_items(&self, items: &[[NodeId; 2]]) -> Result<Vec<Segment>> {
         let mut segments = Vec::with_capacity(items.len());
         segments.extend(items.iter().map(|&[start, end]| Segment {
@@ -2850,6 +3043,10 @@ impl ExactPartition<'_> {
         Ok(segments)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "darts and span IDs are generated by local_topology and source operands match admitted provenance rows"
+    )]
     fn emit_lines(&self, source_operands: &[u32]) -> Result<ExactLineEmission> {
         let mut items = Vec::with_capacity(self.spans.len());
         items.extend(self.spans.iter().map(|span| [span.start, span.end]));
@@ -2902,6 +3099,10 @@ impl ExactPartition<'_> {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "dart IDs and fan ranges are produced by local_topology and the emitted-dart vector is sized from those slots"
+    )]
     fn check_emitted_fans(
         topology: &IndexedTopology,
         darts: &[[u32; 2]],
@@ -2921,8 +3122,8 @@ impl ExactPartition<'_> {
         for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
             let mut first = None;
             let mut previous = None;
-            let mut descents = 0;
-            let mut count = 0;
+            let mut descents = 0_usize;
+            let mut count = 0_usize;
             for (target, departure) in
                 (start..end).zip(&mut departures[start as usize..end as usize])
             {
@@ -2932,23 +3133,23 @@ impl ExactPartition<'_> {
                 let current = (target, point);
                 first.get_or_insert((origin, current));
                 if let Some((last_target, last_point)) = previous {
-                    descents += usize::from(
+                    descents = descents.wrapping_add(usize::from(
                         compare_departures(origin, last_point, last_target, point, target)
                             == Ordering::Greater,
-                    );
+                    ));
                 }
                 previous = Some(current);
-                count += 1;
+                count = count.wrapping_add(1);
             }
             if count > 2 {
                 let (origin, (first_target, first_point)) =
                     first.expect("a node with multiple emitted darts has a first dart");
                 let (last_target, last_point) =
                     previous.expect("a node with multiple emitted darts has a last dart");
-                descents += usize::from(
+                descents = descents.wrapping_add(usize::from(
                     compare_departures(origin, last_point, last_target, first_point, first_target)
                         == Ordering::Greater,
-                );
+                ));
                 // A cyclically sorted sequence crosses the positive-x cut once.
                 if descents != 1 {
                     return Err(GeometryErrorKind::ExactCyclicOrder { node: node as u32 }.into());
@@ -2968,14 +3169,19 @@ impl ExactPartition<'_> {
         right: NodeId,
     ) -> Result<Ordering> {
         match self.compare_axis(left, right, Axis::X)? {
+            Ordering::Less => Ok(Ordering::Less),
             Ordering::Equal => self.compare_axis(left, right, Axis::Y),
-            order => Ok(order),
+            Ordering::Greater => Ok(Ordering::Greater),
         }
     }
 
     #[expect(
         clippy::float_cmp,
         reason = "exact rounded coordinates are ordered by their stored binary64 values to keep emitted topology deterministic"
+    )]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "departure indexes are span IDs in the same partition used to build the local topology"
     )]
     fn compare_departures(&self, origin: NodeId, left: usize, right: usize) -> Ordering {
         let departure = |index: usize| {
@@ -3008,6 +3214,10 @@ impl ExactPartition<'_> {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "NodeIds and edge IDs come from this partition; checked CSR degree prefixes bound every topology row and cursor"
+    )]
     pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
         let vertices = self.node_count();
         let slots = self
@@ -3021,29 +3231,34 @@ impl ExactPartition<'_> {
         topology.starts.reserve(vertex_capacity);
         topology.starts.resize(vertex_capacity, 0);
         for span in &self.spans {
-            topology.starts[span.start.0 as usize + 1] = topology.starts[span.start.0 as usize + 1]
+            let start = span.start.0.wrapping_add(1) as usize;
+            topology.starts[start] = topology.starts[start]
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
-            topology.starts[span.end.0 as usize + 1] = topology.starts[span.end.0 as usize + 1]
+            let end = span.end.0.wrapping_add(1) as usize;
+            topology.starts[end] = topology.starts[end]
                 .checked_add(1)
                 .ok_or(ResourceError::SizeOverflow)?;
         }
-        for node in 0..vertices {
-            topology.starts[node + 1] = topology.starts[node + 1]
-                .checked_add(topology.starts[node])
+        let mut total = 0_u32;
+        for offset in topology.starts.iter_mut().skip(1) {
+            total = total
+                .checked_add(*offset)
                 .ok_or(ResourceError::SizeOverflow)?;
+            *offset = total;
         }
         let mut cursor = Vec::with_capacity(vertices);
-        cursor.extend_from_slice(&topology.starts[..vertices]);
+        cursor.extend(topology.starts.iter().take(vertices).copied());
         let mut edge_of_slot = vec![0; slots];
         for (edge, span) in self.spans.iter().enumerate() {
             for node in [span.start, span.end] {
-                edge_of_slot[cursor[node.0 as usize] as usize] = edge as u32;
-                cursor[node.0 as usize] += 1;
+                let node = node.0 as usize;
+                edge_of_slot[cursor[node] as usize] = edge as u32;
+                cursor[node] = cursor[node].wrapping_add(1);
             }
         }
-        for node in 0..vertices {
-            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+        for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
+            let range = start as usize..end as usize;
             // Degree-two nodes are ordered too: visibility wedges read the
             // angular origin.
             edge_of_slot[range].sort_unstable_by(|&left, &right| {
@@ -3051,8 +3266,8 @@ impl ExactPartition<'_> {
             });
         }
         topology.targets.reserve(slots);
-        for node in 0..vertices {
-            let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+        for (node, &[start, end]) in topology.starts.array_windows::<2>().enumerate() {
+            let range = start as usize..end as usize;
             for &edge in &edge_of_slot[range] {
                 let span = self.spans[edge as usize];
                 topology.targets.push(if span.start.0 == node as u32 {
@@ -3078,6 +3293,10 @@ impl ExactPartition<'_> {
         Ok((topology, edge_of_slot))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "component IDs are densely assigned by IndexedTopology::finish and minima is appended in that same order"
+    )]
     fn component_minima(&self, topology: &IndexedTopology) -> Result<Vec<NodeId>> {
         let mut minima: Vec<NodeId> = Vec::new();
         for (node, &component) in topology.component_of.iter().enumerate() {
@@ -3094,6 +3313,10 @@ impl ExactPartition<'_> {
         Ok(minima)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "root node and departure slots are IDs from this checked IndexedTopology"
+    )]
     fn exterior_walk(
         &self,
         topology: &IndexedTopology,
@@ -3127,6 +3350,10 @@ impl ExactPartition<'_> {
         Ok(chosen.map(|slot| topology.face_of[slot]))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face IDs are bounded by the checked global walk count and links/labels are allocated to that count"
+    )]
     fn global_faces(&self, topology: &IndexedTopology, edges: &[u32]) -> Result<GlobalFaces> {
         let minima = self.component_minima(topology)?;
         let walks = topology.face_starts.len().saturating_sub(1);
@@ -3152,12 +3379,14 @@ impl ExactPartition<'_> {
             )?
         };
         for (&root, hit) in minima.iter().zip(hits) {
-            let host = hit.map_or(0, |span| self.contact_walk(topology, edges, span) + 1);
+            let host = hit.map_or(0, |span| {
+                self.contact_walk(topology, edges, span).wrapping_add(1)
+            });
             component_hosts.push(host);
             if let Some(exterior) = self.exterior_walk(topology, edges, root)? {
                 // Every link reaches a component with a strictly smaller
                 // minimum x, so exterior links cannot form a cycle.
-                links[exterior as usize + 1] = host;
+                links[exterior.wrapping_add(1) as usize] = host;
             }
         }
         for start in 1..size {
@@ -3173,11 +3402,11 @@ impl ExactPartition<'_> {
             }
         }
         let mut labels = vec![0; size];
-        let mut count = 1;
+        let mut count = 1_u32;
         for node in 1..size {
             if links[node] == node as u32 {
                 labels[node] = count;
-                count += 1;
+                count = count.wrapping_add(1);
             }
         }
         for host in &mut component_hosts {
@@ -3192,6 +3421,10 @@ impl ExactPartition<'_> {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "dart and edge IDs are generated by local_topology and provenance rows are bounded by its checked CSR"
+    )]
     fn cross_face_winding<T>(
         &self,
         topology: &IndexedTopology,
@@ -3211,7 +3444,7 @@ impl ExactPartition<'_> {
                 let direction = if reversed ^ backward {
                     direction
                 } else {
-                    -direction
+                    direction.wrapping_neg()
                 };
                 cross_ring(winding, ring, direction, state)?;
             }
@@ -3219,6 +3452,10 @@ impl ExactPartition<'_> {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ring IDs passed to the visit callback are admitted by source staging and winding is sized from ring_count"
+    )]
     fn visit_face_windings(
         &self,
         topology: &IndexedTopology,
@@ -3237,13 +3474,18 @@ impl ExactPartition<'_> {
             ring_count,
             &mut state,
             |winding, ring, direction, ()| {
-                winding[ring as usize] += direction;
+                let index = ring as usize;
+                winding[index] = winding[index].wrapping_add(direction);
                 Ok(())
             },
             |face, winding, ()| visit(face, winding),
         )
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "walk, face, twin, and ring IDs index arrays sized from checked topology and source counts"
+    )]
     fn visit_face_windings_with_hook<T>(
         &self,
         topology: &IndexedTopology,
@@ -3261,10 +3503,14 @@ impl ExactPartition<'_> {
         starts.reserve(start_count);
         starts.resize(start_count, 0_usize);
         for &walk in &topology.face_of {
-            starts[faces.walk_faces[walk as usize] as usize + 1] += 1;
+            let face = faces.walk_faces[walk as usize] as usize;
+            let next = face.wrapping_add(1);
+            starts[next] = starts[next].wrapping_add(1);
         }
-        for face in 0..count {
-            starts[face + 1] += starts[face];
+        let mut total = 0_usize;
+        for offset in starts.iter_mut().skip(1) {
+            total = total.wrapping_add(*offset);
+            *offset = total;
         }
         let mut cursor = Vec::with_capacity(count);
         cursor.extend_from_slice(&starts[..count]);
@@ -3272,7 +3518,7 @@ impl ExactPartition<'_> {
         for (slot, &walk) in topology.face_of.iter().enumerate() {
             let face = faces.walk_faces[walk as usize] as usize;
             slots[cursor[face]] = slot as u32;
-            cursor[face] += 1;
+            cursor[face] = cursor[face].wrapping_add(1);
         }
         let mut winding = vec![0_i64; ring_count];
         let mut visited = Vec::with_capacity(count);
@@ -3282,7 +3528,7 @@ impl ExactPartition<'_> {
         visit(0, &winding, state)?;
         stack.push((0_u32, starts[0], None));
         while let Some((face, next, incoming)) = stack.last_mut() {
-            if *next == starts[*face as usize + 1] {
+            if *next == starts[(*face as usize).wrapping_add(1)] {
                 if let Some(slot) = *incoming {
                     self.cross_face_winding(
                         topology,
@@ -3299,7 +3545,7 @@ impl ExactPartition<'_> {
                 continue;
             }
             let slot = slots[*next];
-            *next += 1;
+            *next = next.wrapping_add(1);
             let twin = topology.twins[slot as usize] as usize;
             let neighbor = faces.walk_faces[topology.face_of[twin] as usize];
             if visited[neighbor as usize] {
@@ -3326,6 +3572,10 @@ impl ExactPartition<'_> {
 
     /// The walk on the east side of `span`: the departure from its upper
     /// endpoint keeps that side on its left.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the contact span comes from the same partition and its departure row comes from local_topology"
+    )]
     fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], span: u32) -> u32 {
         let atom = self.spans[span as usize];
         let source = self.unique[atom.unique as usize];
