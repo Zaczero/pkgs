@@ -468,6 +468,15 @@ def test_ogc_mod2_multiline_point_relations_have_known_answers() -> None:
         assert gm.disjoint(lines, point) is disjoint, name
 
 
+def test_shared_line_collection_relation_preserves_boundary_multiplicity() -> None:
+    shared_line = gm.GeometryCollection([gm.LineString([(0, 0), (4, 0)])])
+    repeated = gm.GeometryCollection([shared_line, shared_line])
+    endpoint = gm.Point(0, 0)
+
+    assert gm.relate(shared_line, endpoint) == 'FF10F0FF2'
+    assert gm.relate(repeated, endpoint) == '0F1FFFFF2'
+
+
 def test_de9im_broadcasts_match_scalar_calls() -> None:
     left = gm.box(0, 0, 2, 2)
     right = gm.box(1, 1, 3, 3)
