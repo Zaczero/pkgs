@@ -80,6 +80,12 @@ impl StaticStrTree {
         // become leaves and every upper level re-chunks the one below
         // (already spatially ordered).
         let leaf_count = entry_count.div_ceil(NODE_CAP);
+        let mut level_count = 1_usize;
+        let mut level_len = leaf_count;
+        while level_len > NODE_CAP {
+            level_len = level_len.div_ceil(NODE_CAP);
+            level_count = level_count.wrapping_add(1);
+        }
         let root = leaf_count.isqrt();
         let strips = root + usize::from(root * root != leaf_count);
         let strip_len = entry_count.div_ceil(strips).max(NODE_CAP);
@@ -96,8 +102,7 @@ impl StaticStrTree {
         for strip in entries.chunks_mut(strip_len) {
             strip.sort_unstable_by(|a, b| center(a, 1).total_cmp(&center(b, 1)));
         }
-        let mut level = Vec::new();
-        crate::boundary::try_reserve_vec(&mut level, leaf_count)?;
+        let mut level = Vec::with_capacity(leaf_count);
         for (node, chunk) in entries.chunks(NODE_CAP).enumerate() {
             level.push(StrNode {
                 envelope: chunk
@@ -108,11 +113,10 @@ impl StaticStrTree {
                 children: range_at(node, chunk.len()),
             });
         }
-        let mut levels = Vec::new();
+        let mut levels = Vec::with_capacity(level_count);
         while level.len() > NODE_CAP {
             let next_count = level.len().div_ceil(NODE_CAP);
-            let mut next = Vec::new();
-            crate::boundary::try_reserve_vec(&mut next, next_count)?;
+            let mut next = Vec::with_capacity(next_count);
             for (node, chunk) in level.chunks(NODE_CAP).enumerate() {
                 next.push(StrNode {
                     envelope: chunk
@@ -123,10 +127,10 @@ impl StaticStrTree {
                     children: range_at(node, chunk.len()),
                 });
             }
-            crate::boundary::try_push_vec(&mut levels, level)?;
+            levels.push(level);
             level = next;
         }
-        crate::boundary::try_push_vec(&mut levels, level)?;
+        levels.push(level);
         tree.entries = entries;
         tree.levels = levels;
         Ok(Arc::new(tree))
@@ -439,12 +443,9 @@ impl StaticStrForest {
         Ok(())
     }
 
-    /// Admit the persistent count-column layout before reserving storage.
-    pub(super) fn try_reserve_entry_counts(
-        &mut self,
-        additional: usize,
-    ) -> crate::error::Result<()> {
-        crate::try_reserve_vec(&mut self.entry_counts, additional)
+    /// Reserve the persistent count column for incoming overflow rows.
+    pub(super) fn reserve_entry_counts(&mut self, additional: usize) {
+        self.entry_counts.reserve(additional);
     }
 
     pub(super) fn entry_count_for_handle(&self, handle: usize) -> usize {
@@ -463,11 +464,21 @@ impl StaticStrForest {
         entries: &[IndexEntry],
         total_rows: usize,
     ) -> crate::error::Result<PreparedForest> {
+        self.prepare_insert_from(entries.iter().copied(), total_rows)
+    }
+
+    /// The exact incoming length determines the binary chunk partition.
+    fn prepare_insert_from(
+        &self,
+        mut entries: impl ExactSizeIterator<Item = IndexEntry>,
+        total_rows: usize,
+    ) -> crate::error::Result<PreparedForest> {
+        let added_entries = entries.len();
         let total_entries = self
             .total_entries
-            .checked_add(entries.len())
+            .checked_add(added_entries)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        if entries.is_empty() {
+        if added_entries == 0 {
             return Ok(PreparedForest {
                 runs: Vec::new(),
                 consumed: Vec::new(),
@@ -481,16 +492,18 @@ impl StaticStrForest {
         let mut consumed = vec![false; rank_count];
 
         let mut offset = 0;
-        while offset < entries.len() {
-            let chunk_len = highest_power_of_two(entries.len() - offset);
-            let mut carry = entries[offset..offset + chunk_len].to_vec();
+        while offset < added_entries {
+            let chunk_len = highest_power_of_two(added_entries.wrapping_sub(offset));
+            let mut carry = Vec::with_capacity(chunk_len);
+            carry.extend((&mut entries).take(chunk_len));
+            debug_assert_eq!(carry.len(), chunk_len);
             let mut rank = chunk_len.trailing_zeros() as usize;
             offset += chunk_len;
 
             loop {
                 debug_assert!(rank < pending.len());
                 if let Some(staged) = pending[rank].take() {
-                    crate::try_reserve_vec(&mut carry, staged.len())?;
+                    carry.reserve(staged.len());
                     carry.extend_from_slice(&staged);
                     rank += 1;
                     continue;
@@ -500,7 +513,7 @@ impl StaticStrForest {
                     && let Some(existing) = self.runs[rank].as_ref()
                 {
                     consumed[rank] = true;
-                    crate::try_reserve_vec(&mut carry, existing.entry_count())?;
+                    carry.reserve(existing.entry_count());
                     carry.extend_from_slice(existing.entries());
                     rank += 1;
                     continue;
@@ -518,6 +531,7 @@ impl StaticStrForest {
                     .transpose()?,
             );
         }
+        debug_assert_eq!(entries.len(), 0);
         Ok(PreparedForest {
             runs,
             consumed,
@@ -583,16 +597,16 @@ impl StaticStrForest {
     ) -> crate::error::Result<PreparedForest> {
         debug_assert!(removed_entries <= self.live_entries);
         let remaining = self.live_entries - removed_entries;
-        let mut entries = Vec::new();
-        crate::try_reserve_vec(&mut entries, remaining)?;
-        for entry in self.live_entries(live) {
-            if entry.idx != removed_handle {
-                entries.push(*entry);
-            }
-        }
-        debug_assert_eq!(entries.len(), remaining);
+        let mut entries = LiveEntriesExcept {
+            entries: self.live_entries(live),
+            removed_handle,
+            remaining,
+        };
         let empty = Self::new(self.handle_start);
-        empty.prepare_insert(&entries, total_rows)
+        let prepared = empty.prepare_insert_from(&mut entries, total_rows)?;
+        #[cfg(debug_assertions)]
+        entries.debug_assert_exhausted();
+        Ok(prepared)
     }
 
     pub(super) fn commit_compaction(&mut self, prepared: PreparedForest) {
@@ -601,6 +615,61 @@ impl StaticStrForest {
         self.live_entries = prepared.total_entries;
         self.dead_entries = 0;
         debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+    }
+}
+
+struct LiveEntriesExcept<I> {
+    entries: I,
+    removed_handle: usize,
+    remaining: usize,
+}
+
+impl<'a, I> Iterator for LiveEntriesExcept<I>
+where
+    I: Iterator<Item = &'a IndexEntry>,
+{
+    type Item = IndexEntry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 {
+            return None;
+        }
+        let entry = self.entries.find(|entry| entry.idx != self.removed_handle);
+        debug_assert!(
+            entry.is_some(),
+            "live forest entries ended before its physical-entry count"
+        );
+        let entry = entry?;
+        self.remaining = self.remaining.wrapping_sub(1);
+        Some(*entry)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (self.remaining, Some(self.remaining))
+    }
+}
+
+impl<'a, I> ExactSizeIterator for LiveEntriesExcept<I>
+where
+    I: Iterator<Item = &'a IndexEntry>,
+{
+    fn len(&self) -> usize {
+        self.remaining
+    }
+}
+
+impl<'a, I> LiveEntriesExcept<I>
+where
+    I: Iterator<Item = &'a IndexEntry>,
+{
+    #[cfg(debug_assertions)]
+    fn debug_assert_exhausted(&mut self) {
+        debug_assert_eq!(self.remaining, 0);
+        let removed_handle = self.removed_handle;
+        debug_assert!(
+            self.entries.all(|entry| entry.idx == removed_handle),
+            "live forest iterator left an unremoved physical entry"
+        );
     }
 }
 
@@ -750,9 +819,7 @@ mod tests {
         let prepared = forest
             .prepare_insert(entries, 128)
             .expect("prepared forest");
-        forest
-            .try_reserve_entry_counts(counts.len())
-            .expect("entry-count reserve");
+        forest.reserve_entry_counts(counts.len());
         forest.commit_insert(prepared, counts);
     }
 
