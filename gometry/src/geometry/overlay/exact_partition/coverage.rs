@@ -4,6 +4,8 @@
 //! methods walk the partition's global faces once, carrying the rows that
 //! occupy each face, so a face-by-row membership matrix is never built.
 
+use std::cmp::Ordering;
+
 #[cfg(test)]
 use super::metrics::update as update_partition_metrics;
 use super::{
@@ -12,10 +14,204 @@ use super::{
 };
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
+use crate::geometry::exact_arith::{dd_add, floor_binary_exponent, two_sum};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, CoverageOverlapRule, ExactRationalArea, GeometryErrorKind, HashMap,
-    Point, Polygon, Result, Ring, Shape, point_distance,
+    Point, Polygon, Result, Ring, Shape, XY, axis_pow2_scale, point_distance,
+    power_of_two_exponent, scale_by_power_of_two, scaled_residual,
 };
+
+/// A nonnegative binary64 significand times an extended binary exponent.
+#[derive(Clone, Copy, Debug, Default)]
+struct ScaledLength {
+    significand: f64,
+    exponent: i32,
+}
+
+impl ScaledLength {
+    fn from_finite(value: f64) -> Self {
+        debug_assert!(value.is_finite() && value >= 0.0);
+        Self::from_scaled(value, 0)
+    }
+
+    fn from_scaled(value: f64, exponent: i32) -> Self {
+        debug_assert!(value.is_finite() && value >= 0.0);
+        if value.total_cmp(&0.0) == Ordering::Equal {
+            return Self::default();
+        }
+        let adjustment = floor_binary_exponent(value);
+        Self {
+            significand: scale_by_power_of_two(value, adjustment.wrapping_neg()),
+            exponent: exponent.wrapping_add(adjustment),
+        }
+    }
+
+    fn is_positive(self) -> bool {
+        self.significand > 0.0
+    }
+
+    fn compare(self, other: Self) -> Ordering {
+        match (
+            self.significand.total_cmp(&0.0) == Ordering::Equal,
+            other.significand.total_cmp(&0.0) == Ordering::Equal,
+        ) {
+            (true, true) => Ordering::Equal,
+            (true, false) => Ordering::Less,
+            (false, true) => Ordering::Greater,
+            (false, false) => self
+                .exponent
+                .cmp(&other.exponent)
+                .then_with(|| self.significand.total_cmp(&other.significand)),
+        }
+    }
+}
+
+/// A guarded binary64 reduction of positive lengths without an f64 range cap.
+///
+/// The rank describes binary64 distance terms, not an exact sum of irrational
+/// Euclidean lengths.
+#[derive(Clone, Copy, Debug, Default)]
+struct ScaledLengthSum {
+    high: f64,
+    low: f64,
+    exponent: i32,
+    nonzero: bool,
+}
+
+#[derive(Clone, Copy)]
+enum BorderTieBreak {
+    LowestRow,
+    HighestRow,
+}
+
+impl ScaledLengthSum {
+    fn add(&mut self, length: ScaledLength) {
+        if !length.is_positive() {
+            return;
+        }
+        if !self.nonzero {
+            self.high = length.significand;
+            self.exponent = length.exponent;
+            self.nonzero = true;
+            return;
+        }
+
+        let term = if length.exponent > self.exponent {
+            let shift = self.exponent.wrapping_sub(length.exponent);
+            self.high = scale_by_power_of_two(self.high, shift);
+            self.low = scale_by_power_of_two(self.low, shift);
+            self.exponent = length.exponent;
+            length.significand
+        } else {
+            scale_by_power_of_two(
+                length.significand,
+                length.exponent.wrapping_sub(self.exponent),
+            )
+        };
+        (self.high, self.low) = dd_add((self.high, self.low), (term, 0.0));
+        self.normalize();
+    }
+
+    fn normalize(&mut self) {
+        let adjustment = floor_binary_exponent(self.high);
+        self.high = scale_by_power_of_two(self.high, adjustment.wrapping_neg());
+        self.low = scale_by_power_of_two(self.low, adjustment.wrapping_neg());
+        self.exponent = self.exponent.wrapping_add(adjustment);
+    }
+
+    fn rank(self) -> ScaledLength {
+        if !self.nonzero {
+            return ScaledLength::default();
+        }
+        ScaledLength::from_scaled(two_sum(self.high, self.low).0, self.exponent)
+    }
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "callers provide row IDs from the parallel border-rank column"
+)]
+fn longest_border_owner(
+    rows: impl IntoIterator<Item = usize>,
+    overflowed_ranks: &[ScaledLength],
+    tie_break: BorderTieBreak,
+    include_zero: bool,
+) -> Option<usize> {
+    let mut best: Option<(usize, ScaledLength)> = None;
+    for row in rows {
+        let rank = overflowed_ranks[row];
+        if !include_zero && !rank.is_positive() {
+            continue;
+        }
+        let replace = if let Some((best_row, best_rank)) = best {
+            let order = rank.compare(best_rank);
+            order == Ordering::Greater
+                || (order == Ordering::Equal
+                    && match tie_break {
+                        BorderTieBreak::LowestRow => row < best_row,
+                        BorderTieBreak::HighestRow => row > best_row,
+                    })
+        } else {
+            true
+        };
+        if replace {
+            best = Some((row, rank));
+        }
+    }
+    best.map(|(row, _)| row)
+}
+
+fn scaled_point_distance(start: XY, end: XY) -> ScaledLength {
+    let distance = point_distance(start, end);
+    if distance.is_finite() {
+        return ScaledLength::from_finite(distance);
+    }
+
+    let (dx, dx_base_exponent) = scaled_difference(start.x, end.x);
+    let (dy, dy_base_exponent) = scaled_difference(start.y, end.y);
+    let dx_world_exponent = if dx.abs().total_cmp(&0.0) == Ordering::Equal {
+        None
+    } else {
+        Some(dx_base_exponent.wrapping_add(floor_binary_exponent(dx.abs())))
+    };
+    let dy_world_exponent = if dy.abs().total_cmp(&0.0) == Ordering::Equal {
+        None
+    } else {
+        Some(dy_base_exponent.wrapping_add(floor_binary_exponent(dy.abs())))
+    };
+    let common_exponent = match (dx_world_exponent, dy_world_exponent) {
+        (Some(dx), Some(dy)) => dx.max(dy),
+        (Some(dx), None) => dx,
+        (None, Some(dy)) => dy,
+        (None, None) => return ScaledLength::default(),
+    };
+    // `dx` and `dy` are already framed; subtract only each base exponent to
+    // bring both components into the common scale used by `hypot`. The largest
+    // normalized axis is in [1, 2), so the norm stays finite; zero axes remain
+    // zero and tiny axes can round away only below that rank's f64 precision.
+    let dx = dx_world_exponent.map_or(0.0, |_| {
+        scale_by_power_of_two(dx, dx_base_exponent.wrapping_sub(common_exponent))
+    });
+    let dy = dy_world_exponent.map_or(0.0, |_| {
+        scale_by_power_of_two(dy, dy_base_exponent.wrapping_sub(common_exponent))
+    });
+    ScaledLength::from_scaled(dx.hypot(dy), common_exponent)
+}
+
+// Return a framed difference and base exponent, representing the coordinate
+// delta as `framed_delta * 2^base_exponent`.
+fn scaled_difference(start: f64, end: f64) -> (f64, i32) {
+    let delta = end - start;
+    if delta.is_finite() {
+        return (delta, 0);
+    }
+    // Keep finite residuals unscaled; scale this axis only to rescue overflow.
+    let scale = axis_pow2_scale(start.abs().max(end.abs()));
+    (
+        scaled_residual(end, start, scale),
+        power_of_two_exponent(scale).wrapping_neg(),
+    )
+}
 
 impl ExactSourceInventory {
     /// Visit each global face with the rows whose exact areal supports occupy
@@ -42,6 +238,61 @@ impl ExactSourceInventory {
             |winding, ring, direction, state| state.update_ring(self, winding, ring, direction),
             |face, _, state| visit(face, &state.active_rows),
         )
+    }
+
+    fn for_each_span_row(
+        &self,
+        partition: &ExactPartition<'_>,
+        span: usize,
+        seen_rows: &mut Vec<u32>,
+        mut visit: impl FnMut(usize) -> Result<()>,
+    ) -> Result<()> {
+        seen_rows.clear();
+        for &(source, _) in partition.owners(span) {
+            let operand = *self.source_operands.get(source as usize).ok_or_else(|| {
+                GeometryErrorKind::Invalid(
+                    "exact partition provenance references an unknown source".into(),
+                )
+            })?;
+            if seen_rows.contains(&operand) {
+                continue;
+            }
+            seen_rows.push(operand);
+            visit(operand as usize)?;
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the admitted face CSR and partition spans own these indices"
+    )]
+    fn overflowed_border_ranks(
+        &self,
+        partition: &ExactPartition<'_>,
+        edges: &[u32],
+        face_starts: &[u32],
+        face_slots: &[u32],
+        face: usize,
+        row_count: usize,
+        seen_rows: &mut Vec<u32>,
+    ) -> Result<Vec<ScaledLength>> {
+        let mut lengths = vec![ScaledLengthSum::default(); row_count];
+        let start = face_starts[face] as usize;
+        let end = face_starts[face.wrapping_add(1)] as usize;
+        for &slot in &face_slots[start..end] {
+            let span = edges[slot as usize] as usize;
+            let atomic = partition.spans[span];
+            let length = scaled_point_distance(
+                partition.node_xy(atomic.start),
+                partition.node_xy(atomic.end),
+            );
+            self.for_each_span_row(partition, span, seen_rows, |row| {
+                lengths[row].add(length);
+                Ok(())
+            })?;
+        }
+        Ok(lengths.into_iter().map(ScaledLengthSum::rank).collect())
     }
 
     /// Label every bounded global face and publish each coverage row from that
@@ -120,7 +371,7 @@ impl ExactSourceInventory {
                 let needs_stats = candidates.is_empty() && gap_width > 0.0
                     || candidates.len() > 1
                         && matches!(overlaps, CoverageOverlapRule::LongestBorder);
-                let (area, perimeter) = if needs_stats {
+                let (area, perimeter, any_border_overflowed) = if needs_stats {
                     let measure_area = candidates.is_empty();
                     self.coverage_face_stats(
                         partition,
@@ -134,23 +385,54 @@ impl ExactSourceInventory {
                         measure_area,
                     )?
                 } else {
-                    (0.0, 0.0)
+                    (0.0, 0.0, false)
+                };
+                #[expect(
+                    clippy::indexing_slicing,
+                    reason = "candidate rows are admitted and border_lengths is row_count-sized"
+                )]
+                let border_overflowed = if !needs_stats {
+                    false
+                } else if candidates.is_empty() {
+                    any_border_overflowed
+                } else {
+                    candidates
+                        .iter()
+                        .any(|&row| border_lengths[row].is_infinite())
                 };
                 let owner = match candidates.as_slice() {
                     [] if gap_width > 0.0
                         && perimeter > 0.0
                         && 2.0 * area / perimeter < gap_width =>
                     {
-                        (0..row_count)
-                            .filter_map(|row| {
-                                let border = border_lengths[row];
-                                (border > 0.0).then_some((row, border))
-                            })
-                            // The ascending scan and ordinary `max_by` tie
-                            // behavior retain the historical highest row on
-                            // equal gap borders.
-                            .max_by(|left, right| left.1.total_cmp(&right.1))
-                            .map(|(row, _)| row)
+                        if border_overflowed {
+                            let border_ranks = self.overflowed_border_ranks(
+                                partition,
+                                &edges,
+                                &face_starts,
+                                &face_slots,
+                                face_index,
+                                row_count,
+                                &mut seen_rows,
+                            )?;
+                            longest_border_owner(
+                                0..row_count,
+                                &border_ranks,
+                                BorderTieBreak::HighestRow,
+                                false,
+                            )
+                        } else {
+                            (0..row_count)
+                                .filter_map(|row| {
+                                    let border = border_lengths[row];
+                                    (border > 0.0).then_some((row, border))
+                                })
+                                // The ascending scan and ordinary `max_by` tie
+                                // behavior retain the historical highest row on
+                                // equal gap borders.
+                                .max_by(|left, right| left.1.total_cmp(&right.1))
+                                .map(|(row, _)| row)
+                        }
                     },
                     [] => None,
                     [only] => Some(*only),
@@ -166,17 +448,38 @@ impl ExactSourceInventory {
                             .copied()
                             .min_by(|left, right| row_areas[*left].total_cmp(&row_areas[*right]))
                             .expect("non-empty face candidates"),
-                        CoverageOverlapRule::LongestBorder => candidates
-                            .iter()
-                            .copied()
-                            .map(|row| (row, border_lengths[row]))
-                            // Reversed row comparison retains the historical
-                            // lowest row on equal overlap borders.
-                            .max_by(|left, right| {
-                                left.1.total_cmp(&right.1).then(right.0.cmp(&left.0))
-                            })
-                            .map(|(row, _)| row)
-                            .expect("non-empty face candidates"),
+                        CoverageOverlapRule::LongestBorder => {
+                            if border_overflowed {
+                                let border_ranks = self.overflowed_border_ranks(
+                                    partition,
+                                    &edges,
+                                    &face_starts,
+                                    &face_slots,
+                                    face_index,
+                                    row_count,
+                                    &mut seen_rows,
+                                )?;
+                                longest_border_owner(
+                                    candidates.iter().copied(),
+                                    &border_ranks,
+                                    BorderTieBreak::LowestRow,
+                                    true,
+                                )
+                                .expect("non-empty face candidates")
+                            } else {
+                                candidates
+                                    .iter()
+                                    .copied()
+                                    .map(|row| (row, border_lengths[row]))
+                                    // Reversed row comparison retains the historical
+                                    // lowest row on equal overlap borders.
+                                    .max_by(|left, right| {
+                                        left.1.total_cmp(&right.1).then(right.0.cmp(&left.0))
+                                    })
+                                    .map(|(row, _)| row)
+                                    .expect("non-empty face candidates")
+                            }
+                        },
                     }),
                 };
                 if let Some(owner) = owner {
@@ -320,12 +623,15 @@ impl ExactSourceInventory {
         border_lengths: &mut [f64],
         seen_rows: &mut Vec<u32>,
         measure_area: bool,
-    ) -> Result<(f64, f64)> {
+    ) -> Result<(f64, f64, bool)> {
         border_lengths.fill(0.0);
         let start = face_starts[face] as usize;
         let end = face_starts[face + 1] as usize;
         let mut area = measure_area.then(ExactRationalArea::new);
         let mut perimeter = 0.0;
+        // Perimeter remains in distance space; only border ranking needs an
+        // extended exponent when its binary64 sum overflows.
+        let mut border_overflowed = false;
         for &slot in &face_slots[start..end] {
             let slot = slot as usize;
             let span_index = edges[slot] as usize;
@@ -340,31 +646,24 @@ impl ExactSourceInventory {
                     &*partition.exact(NodeId(topology.targets[slot]))?,
                 )?;
             }
-            seen_rows.clear();
-            for &(source, _) in partition.owners(span_index) {
-                let operand = *self.source_operands.get(source as usize).ok_or_else(|| {
-                    GeometryErrorKind::Invalid(
-                        "exact partition provenance references an unknown source".into(),
-                    )
-                })?;
-                if seen_rows.contains(&operand) {
-                    continue;
-                }
-                seen_rows.push(operand);
-                let operand = operand as usize;
+            self.for_each_span_row(partition, span_index, seen_rows, |operand| {
                 let border = border_lengths.get_mut(operand).ok_or_else(|| {
                     GeometryErrorKind::Invalid(
                         "exact coverage provenance operand is out of range".into(),
                     )
                 })?;
                 *border += length;
-            }
+                if border.is_infinite() {
+                    border_overflowed = true;
+                }
+                Ok(())
+            })?;
         }
         let area = match area {
             Some(area) => area.round_abs_half()?,
             None => 0.0,
         };
-        Ok((area, perimeter))
+        Ok((area, perimeter, border_overflowed))
     }
 
     pub(super) fn coverage_shape_from_node_parts(
@@ -412,5 +711,106 @@ impl ExactSourceInventory {
             polygons.push(Polygon::new(shell, holes));
         }
         Ok(Shape::narrow_polygons(axes, polygons))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scaled_point_distance_keeps_small_residual_at_large_offset() {
+        let origin = XY::new(1.0e308, 0.0);
+        let short = scaled_point_distance(origin, XY::new(1.0e308, 1.0e-300));
+        let long = scaled_point_distance(origin, XY::new(1.0e308, 2.0e-300));
+
+        assert!(short.is_positive());
+        assert!(long.is_positive());
+        assert_eq!(short.compare(long), Ordering::Less);
+    }
+
+    #[test]
+    fn scaled_point_distance_carries_norm_past_f64_max() {
+        let maximum = f64::MAX;
+        let length = scaled_point_distance(XY::new(-maximum, -maximum), XY::new(maximum, maximum));
+
+        assert!(length.is_positive());
+        assert!(length.significand.is_finite());
+        assert!(length.exponent > floor_binary_exponent(maximum));
+    }
+
+    #[test]
+    fn scaled_point_distance_keeps_multiaxis_overflow_ranks_finite() {
+        let axis = scaled_point_distance(XY::new(0.0, 0.0), XY::new(1.5e308, 0.0));
+        let finite_delta_diagonal =
+            scaled_point_distance(XY::new(0.0, 0.0), XY::new(1.5e308, 1.5e308));
+
+        assert!((1.0..2.0).contains(&axis.significand));
+        assert!((1.0..2.0).contains(&finite_delta_diagonal.significand));
+        assert_eq!(finite_delta_diagonal.compare(axis), Ordering::Greater);
+
+        let overflowed_delta_axis =
+            scaled_point_distance(XY::new(-1.2e308, 0.0), XY::new(1.2e308, 0.0));
+        let overflowed_delta_diagonal =
+            scaled_point_distance(XY::new(-1.2e308, -1.2e308), XY::new(1.2e308, 1.2e308));
+
+        assert!((1.0..2.0).contains(&overflowed_delta_axis.significand));
+        assert!((1.0..2.0).contains(&overflowed_delta_diagonal.significand));
+        assert_eq!(
+            overflowed_delta_diagonal.compare(overflowed_delta_axis),
+            Ordering::Greater
+        );
+
+        let subnormal_y =
+            scaled_point_distance(XY::new(-1.2e308, 0.0), XY::new(1.2e308, f64::from_bits(1)));
+        // This least-subnormal y delta is below binary64 rank resolution beside x.
+        assert_eq!(subnormal_y.compare(overflowed_delta_axis), Ordering::Equal);
+    }
+
+    #[test]
+    fn compensated_length_rank_retains_small_following_terms() {
+        let large = ScaledLength::from_finite(2.0_f64.powi(60));
+        let mut base = ScaledLengthSum::default();
+        base.add(large);
+        let base_rank = base.rank();
+
+        let mut below = base;
+        for _ in 0..127 {
+            below.add(ScaledLength::from_finite(1.0));
+        }
+        assert_eq!(below.rank().compare(base_rank), Ordering::Equal);
+
+        let mut above = base;
+        for _ in 0..256 {
+            above.add(ScaledLength::from_finite(1.0));
+        }
+        assert_eq!(above.rank().compare(base_rank), Ordering::Greater);
+    }
+
+    #[test]
+    fn overlap_rank_preserves_lowest_row_when_all_borders_are_zero() {
+        let zero = ScaledLength::default();
+        let owner = longest_border_owner([0, 1], &[zero, zero], BorderTieBreak::LowestRow, true);
+        assert_eq!(owner, Some(0));
+    }
+
+    #[test]
+    fn gap_rank_ignores_rows_without_a_border() {
+        let zero = ScaledLength::default();
+        let positive = ScaledLength::from_finite(1.0);
+        let positive_owner =
+            longest_border_owner([0, 1], &[zero, positive], BorderTieBreak::HighestRow, false);
+        assert_eq!(positive_owner, Some(1));
+
+        let empty_owner =
+            longest_border_owner([0, 1], &[zero, zero], BorderTieBreak::HighestRow, false);
+        assert_eq!(empty_owner, None);
+    }
+
+    #[test]
+    fn overflowed_gap_rank_keeps_highest_row_tie() {
+        let tied = ScaledLength::from_scaled(1.5, 1024);
+        let owner = longest_border_owner([0, 1], &[tied, tied], BorderTieBreak::HighestRow, false);
+        assert_eq!(owner, Some(1));
     }
 }

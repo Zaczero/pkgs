@@ -310,6 +310,25 @@ mod tests {
     }
 
     #[test]
+    fn coverage_clean_longest_border_orders_overflowed_finite_borders() {
+        let rows = [
+            rectangle(-1.6e308, -1.7e308, 1.6e308, 1.7e308),
+            rectangle(-1.7e308, 0.0, 1.7e308, 1.0e308),
+        ];
+        let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)
+            .expect("finite-coordinate overlap");
+        let overlap = Point::new_raw_xy(0.0, 0.5e308);
+        assert_eq!(
+            crate::geometry::cartesian_point_location(&output[0], overlap),
+            crate::geometry::Loc::Exterior
+        );
+        assert_eq!(
+            crate::geometry::cartesian_point_location(&output[1], overlap),
+            crate::geometry::Loc::Interior
+        );
+    }
+
+    #[test]
     fn coverage_clean_keeps_one_shared_node_coordinate_for_both_rows() {
         let rows = [rectangle(0.0, 0.0, 1.2, 1.0), rectangle(1.0, 0.0, 2.0, 1.0)];
         let output = coverage_clean(&rows, 0.0, 0.0, CoverageOverlapRule::LongestBorder)

@@ -546,6 +546,78 @@ def test_coverage_clean_overlap_rules_and_gaps() -> None:
     assert twice.to_wkb() == identity.to_wkb()
 
 
+def test_coverage_clean_longest_border_orders_individual_length_overflow() -> None:
+    rows = gm.GeometryArray([
+        gm.box(-1.6e308, -1.7e308, 1.6e308, 1.7e308),
+        gm.box(-1.7e308, 0.0, 1.7e308, 1.0e308),
+    ])
+    overlap = gm.Point(0.0, 0.5e308)
+    output = gm.coverage_clean(rows, grid_size=0, overlap_rule='longest_border')
+    assert not gm.contains(output[0], overlap)
+    assert gm.contains(output[1], overlap)
+
+    reversed_output = gm.coverage_clean(
+        gm.GeometryArray(list(reversed(rows))),
+        grid_size=0,
+        overlap_rule='longest_border',
+    )
+    assert gm.contains(reversed_output[0], overlap)
+    assert not gm.contains(reversed_output[1], overlap)
+
+    scaled_rows = gm.GeometryArray([
+        gm.box(-1.6, -1.7, 1.6, 1.7),
+        gm.box(-1.7, 0.0, 1.7, 1.0),
+    ])
+    scaled_output = gm.coverage_clean(
+        scaled_rows,
+        grid_size=0,
+        overlap_rule='longest_border',
+    )
+    assert not gm.contains(scaled_output[0], gm.Point(0.0, 0.5))
+    assert gm.contains(scaled_output[1], gm.Point(0.0, 0.5))
+
+
+def test_coverage_clean_longest_border_orders_overflowed_sums_with_finite_edges() -> None:
+    rows = gm.GeometryArray([
+        gm.box(0.0, -1.7e308, 1.5e308, 1.7e308),
+        gm.box(-1.7e308, 0.0, 1.7e308, 1.0e308),
+    ])
+    output = gm.coverage_clean(rows, grid_size=0, overlap_rule='longest_border')
+    assert not gm.contains(output[0], gm.Point(0.75e308, 0.5e308))
+    assert gm.contains(output[1], gm.Point(0.75e308, 0.5e308))
+
+    scaled_rows = gm.GeometryArray([
+        gm.box(0.0, -0.017, 0.015, 0.017),
+        gm.box(-0.017, 0.0, 0.017, 0.01),
+    ])
+    scaled_output = gm.coverage_clean(
+        scaled_rows,
+        grid_size=0,
+        overlap_rule='longest_border',
+    )
+    assert not gm.contains(scaled_output[0], gm.Point(0.0075, 0.005))
+    assert gm.contains(scaled_output[1], gm.Point(0.0075, 0.005))
+
+
+def test_coverage_clean_longest_border_keeps_overflowed_tie_order() -> None:
+    rows = gm.GeometryArray([
+        gm.box(-1.7e308, 0.0, 1.7e308, 1.5e308),
+        gm.box(0.0, -1.7e308, 1.5e308, 1.7e308),
+    ])
+    overlap = gm.Point(0.75e308, 0.75e308)
+    output = gm.coverage_clean(rows, grid_size=0, overlap_rule='longest_border')
+    assert gm.contains(output[0], overlap)
+    assert not gm.contains(output[1], overlap)
+
+    reversed_output = gm.coverage_clean(
+        gm.GeometryArray(list(reversed(rows))),
+        grid_size=0,
+        overlap_rule='longest_border',
+    )
+    assert gm.contains(reversed_output[0], overlap)
+    assert not gm.contains(reversed_output[1], overlap)
+
+
 def test_coverage_clean_publishes_shared_bits_and_source_ordinates() -> None:
     import numpy as np
 
