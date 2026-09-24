@@ -1965,6 +1965,43 @@ def test_self_join_finds_an_inserted_antimeridian_crossing_pair() -> None:
     assert pair_rows(idx.self_join(predicate='intersects')) == []
 
 
+def test_compaction_removing_antimeridian_row_preserves_live_handles() -> None:
+    index = gm.SpatialIndex()
+    points = [gm.Point(174.0 + i * 0.02, 0.0, crs=4326) for i in range(256)]
+    crossing = gm.Polygon(
+        [(170.0, -6.0), (-170.0, -6.0), (-170.0, 6.0), (170.0, 6.0), (170.0, -6.0)],
+        crs=4326,
+    )
+    handles = np.asarray(index.insert([*points, crossing]), dtype=np.int64).tolist()
+    assert handles == list(range(257))
+    crossing_handle = handles[-1]
+
+    east = gm.box(174.0, -1.0, 180.0, 1.0, crs=4326)
+    west = gm.box(-180.0, -1.0, -170.0, 1.0, crs=4326)
+    assert ids(index.candidates(east)) == list(range(257))
+    assert ids(index.candidates(west)) == [crossing_handle]
+
+    for handle in range(128):
+        assert index.remove(handle)
+    assert len(index) == 129
+
+    # This two-window removal crosses the compaction threshold after 128
+    # single-entry tombstones.
+    assert index.remove(crossing_handle)
+    assert len(index) == 128
+    east_candidates = gm.box(173.0, -1.0, 180.0, 1.0, crs=4326)
+    assert ids(index.candidates(east_candidates)) == list(range(128, 256))
+
+    # A second compaction checks that the first rebuild retained exact live
+    # physical-entry accounting for later removals.
+    for handle in range(128, 192):
+        assert index.remove(handle)
+    assert len(index) == 64
+    assert index.remove(192)
+    assert len(index) == 63
+    assert ids(index.candidates(east_candidates)) == list(range(193, 256))
+
+
 def test_array_dwithin_query_widens_an_antimeridian_crossing_row() -> None:
     """The array/join dwithin row lane must widen a crossing query's planar
     bounds (like the scalar lane and the self-join), or candidates across the

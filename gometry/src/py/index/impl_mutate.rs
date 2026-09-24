@@ -6,6 +6,14 @@ use crate::py::index::{
     geodesic_prunable_point, index_envelopes, index_metadata,
 };
 
+fn checked_total_rows(start: usize, count: usize) -> PyResult<usize> {
+    start
+        .checked_add(count)
+        .ok_or(crate::error::ResourceError::SizeOverflow)
+        .map_err(crate::error::Error::from)
+        .map_err(pyo3::PyErr::from)
+}
+
 impl PySpatialIndex {
     pub(crate) fn live_handles_sorted(&self) -> Vec<usize> {
         let mut handles = self
@@ -94,12 +102,14 @@ impl PySpatialIndex {
                 .map(|&envelope| IndexEntry { idx, envelope }),
         );
         entry_counts[0] = entries.len();
+        let total_rows = checked_total_rows(idx, 1)?;
         self.insert_prepared_rows(
             std::iter::once(geometry),
             entries,
             &entry_counts,
             non_prunable_live,
             adopt_frame,
+            total_rows,
         )
     }
 
@@ -220,7 +230,8 @@ impl PySpatialIndex {
         let count = items.len();
         debug_assert_eq!(entry_counts.len(), count);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
-        let mut handles = crate::try_vec_with_capacity(count)?;
+        let total_rows = checked_total_rows(start, count)?;
+        let mut handles = Vec::with_capacity(count);
         handles.extend((0..count).map(|offset| start + offset));
         self.insert_prepared_rows(
             items.into_iter(),
@@ -228,6 +239,7 @@ impl PySpatialIndex {
             entry_counts,
             non_prunable_live,
             adopt_frame,
+            total_rows,
         )?;
         Ok(handles)
     }
@@ -239,26 +251,21 @@ impl PySpatialIndex {
         entry_counts: &[usize],
         non_prunable_live: usize,
         adopt_frame: Option<Frame>,
+        total_rows: usize,
     ) -> PyResult<usize> {
         let start = self.rows.len();
         let count = items.len();
         debug_assert_eq!(entry_counts.len(), count);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
+        debug_assert_eq!(total_rows.checked_sub(start), Some(count));
         debug_assert!(
             entries
                 .iter()
-                .all(|entry| entry.idx >= start && entry.idx < start + count)
+                .all(|entry| entry.idx >= start && entry.idx < total_rows)
         );
-        let total_rows = start
-            .checked_add(count)
-            .ok_or(crate::error::ResourceError::SizeOverflow)
-            .map_err(crate::error::Error::from)
-            .map_err(pyo3::PyErr::from)?;
         let prepared = self.overflow.prepare_insert(&entries, total_rows)?;
         self.rows.reserve_insert(count);
-        self.overflow
-            .try_reserve_entry_counts(count)
-            .map_err(pyo3::PyErr::from)?;
+        self.overflow.reserve_entry_counts(count);
         if let Some(frame) = adopt_frame {
             self.metadata = Some(frame);
         }
