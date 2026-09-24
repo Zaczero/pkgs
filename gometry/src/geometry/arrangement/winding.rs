@@ -276,64 +276,249 @@ mod tests {
     use super::*;
     use crate::scratch_pool::SCRATCH_RETAIN_BYTES;
 
+    fn over_budget_capacity(element_size: usize) -> usize {
+        SCRATCH_RETAIN_BYTES
+            .checked_div(element_size)
+            .expect("a vector element has nonzero size")
+            .checked_add(1)
+            .expect("the scratch retention test capacity fits usize")
+    }
+
     fn clear_core_pool() {
-        let mut scratch = arrangement_spares();
-        scratch
-            .points
-            .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<XY>() + 1);
+        {
+            let mut scratch = arrangement_spares();
+            scratch
+                .points
+                .reserve_exact(over_budget_capacity(size_of::<XY>()));
+        }
+        assert_eq!(arrangement_spares().points.capacity(), 0);
+    }
+
+    fn clear_region_pool() {
+        region_spares()
+            .ring
+            .reserve_exact(over_budget_capacity(size_of::<XY>()));
+        assert_eq!(region_spares().ring.capacity(), 0);
+    }
+
+    fn clear_typed_pool<W: WindingWeight>() {
+        typed_spares::<W>()
+            .multiplicities
+            .reserve_exact(over_budget_capacity(size_of::<W>()));
+        assert_eq!(typed_spares::<W>().multiplicities.capacity(), 0);
+    }
+
+    fn assert_lane_evicted<T: RetainScratch + 'static>(
+        lane: &str,
+        element_size: usize,
+        clear_pool: impl Fn(),
+        checkout: impl Fn() -> ScratchLease<T>,
+        reserve: impl FnOnce(&mut T, usize),
+        capacity: impl FnOnce(&T) -> usize,
+    ) {
+        clear_pool();
+        {
+            let mut scratch = checkout();
+            reserve(&mut scratch, over_budget_capacity(element_size));
+        }
+        let scratch = checkout();
+        assert_eq!(capacity(&scratch), 0, "{lane} capacity was retained");
     }
 
     #[test]
-    fn core_accounting_includes_every_vector_and_map() {
+    fn core_pooled_buffers_evict_when_each_lane_exceeds_budget() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        let mut scratch = ArrangementSpares::default();
-        scratch.points.reserve_exact(3);
-        scratch.starts.reserve_exact(5);
-        scratch.targets.reserve_exact(7);
-        scratch.owners.reserve_exact(11);
-        scratch.twins.reserve_exact(12);
-        scratch.face_of.reserve_exact(13);
-        scratch.face_starts.reserve_exact(17);
-        scratch.face_slots.reserve_exact(19);
-        scratch.component_of.reserve_exact(23);
-        scratch.filled.reserve_exact(29);
-        scratch.topology_scratch.component_stack.reserve_exact(31);
-        scratch.topology_scratch.successor.reserve_exact(41);
-        scratch.topology_scratch.edge_slots.reserve_exact(43);
-        scratch.edge_of_slot.reserve_exact(47);
-        scratch.outer.reserve_exact(41);
-        scratch.winding_queue.reserve_exact(43);
-        let mut ids = scratch.take_ids().unwrap();
-        ids.reserve(29);
-        scratch.ids = Some(ids);
-        assert_eq!(
-            scratch.retained_bytes(),
-            flat_vec_retained_bytes(&scratch.points)
-                .saturating_add(flat_vec_retained_bytes(&scratch.starts))
-                .saturating_add(flat_vec_retained_bytes(&scratch.targets))
-                .saturating_add(flat_vec_retained_bytes(&scratch.owners))
-                .saturating_add(flat_vec_retained_bytes(&scratch.twins))
-                .saturating_add(flat_vec_retained_bytes(&scratch.face_of))
-                .saturating_add(flat_vec_retained_bytes(&scratch.face_starts))
-                .saturating_add(flat_vec_retained_bytes(&scratch.face_slots))
-                .saturating_add(scratch.ids.as_ref().map_or(0, hash_map_retained_bytes))
-                .saturating_add(flat_vec_retained_bytes(&scratch.component_of))
-                .saturating_add(flat_vec_retained_bytes(&scratch.filled))
-                .saturating_add(flat_vec_retained_bytes(
-                    &scratch.topology_scratch.component_stack
-                ))
-                .saturating_add(flat_vec_retained_bytes(&scratch.topology_scratch.successor))
-                .saturating_add(flat_vec_retained_bytes(
-                    &scratch.topology_scratch.edge_slots
-                ))
-                .saturating_add(flat_vec_retained_bytes(&scratch.edge_of_slot))
-                .saturating_add(flat_vec_retained_bytes(&scratch.outer))
-                .saturating_add(
-                    scratch
-                        .winding_queue
-                        .capacity()
-                        .saturating_mul(std::mem::size_of::<u32>()),
-                )
+        let u32_size = size_of::<u32>();
+        assert_lane_evicted(
+            "topology.starts",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.starts.reserve_exact(capacity),
+            |scratch| scratch.topology.starts.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.targets",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.targets.reserve_exact(capacity),
+            |scratch| scratch.topology.targets.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.owners",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.owners.reserve_exact(capacity),
+            |scratch| scratch.topology.owners.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.twins",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.twins.reserve_exact(capacity),
+            |scratch| scratch.topology.twins.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.component_of",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.component_of.reserve_exact(capacity),
+            |scratch| scratch.topology.component_of.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.face_of",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.face_of.reserve_exact(capacity),
+            |scratch| scratch.topology.face_of.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.face_starts",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.face_starts.reserve_exact(capacity),
+            |scratch| scratch.topology.face_starts.capacity(),
+        );
+        assert_lane_evicted(
+            "topology.face_slots",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology.face_slots.reserve_exact(capacity),
+            |scratch| scratch.topology.face_slots.capacity(),
+        );
+        assert_lane_evicted(
+            "topology_scratch.component_stack",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| {
+                scratch
+                    .topology_scratch
+                    .component_stack
+                    .reserve_exact(capacity);
+            },
+            |scratch| scratch.topology_scratch.component_stack.capacity(),
+        );
+        assert_lane_evicted(
+            "topology_scratch.successor",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology_scratch.successor.reserve_exact(capacity),
+            |scratch| scratch.topology_scratch.successor.capacity(),
+        );
+        assert_lane_evicted(
+            "topology_scratch.edge_slots",
+            size_of::<[u32; 2]>(),
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.topology_scratch.edge_slots.reserve_exact(capacity),
+            |scratch| scratch.topology_scratch.edge_slots.capacity(),
+        );
+        assert_lane_evicted(
+            "edge_of_slot",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.edge_of_slot.reserve_exact(capacity),
+            |scratch| scratch.edge_of_slot.capacity(),
+        );
+        assert_lane_evicted(
+            "filled",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.filled.reserve_exact(capacity),
+            |scratch| scratch.filled.capacity(),
+        );
+        assert_lane_evicted(
+            "outer",
+            size_of::<Option<u32>>(),
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.outer.reserve_exact(capacity),
+            |scratch| scratch.outer.capacity(),
+        );
+        assert_lane_evicted(
+            "winding_queue",
+            u32_size,
+            clear_core_pool,
+            arrangement_spares,
+            |scratch, capacity| scratch.winding_queue.reserve(capacity),
+            |scratch| scratch.winding_queue.capacity(),
+        );
+    }
+
+    #[test]
+    fn region_pooled_buffers_evict_when_each_lane_exceeds_budget() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        assert_lane_evicted(
+            "used",
+            size_of::<bool>(),
+            clear_region_pool,
+            region_spares,
+            |scratch, capacity| scratch.used.reserve_exact(capacity),
+            |scratch| scratch.used.capacity(),
+        );
+        assert_lane_evicted(
+            "position_of",
+            size_of::<(u32, u32)>(),
+            clear_region_pool,
+            region_spares,
+            |scratch, capacity| scratch.position_of.reserve_exact(capacity),
+            |scratch| scratch.position_of.capacity(),
+        );
+        assert_lane_evicted(
+            "ring_ids",
+            size_of::<u32>(),
+            clear_region_pool,
+            region_spares,
+            |scratch, capacity| scratch.ring_ids.reserve_exact(capacity),
+            |scratch| scratch.ring_ids.capacity(),
+        );
+        assert_lane_evicted(
+            "path",
+            size_of::<XY>(),
+            clear_region_pool,
+            region_spares,
+            |scratch, capacity| scratch.path.reserve_exact(capacity),
+            |scratch| scratch.path.capacity(),
+        );
+        assert_lane_evicted(
+            "path_ids",
+            size_of::<u32>(),
+            clear_region_pool,
+            region_spares,
+            |scratch, capacity| scratch.path_ids.reserve_exact(capacity),
+            |scratch| scratch.path_ids.capacity(),
+        );
+    }
+
+    #[test]
+    fn typed_edge_buffers_evict_when_each_lane_exceeds_budget() {
+        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
+        assert_lane_evicted(
+            "typed i32 edges",
+            size_of::<(u32, u32, i32)>(),
+            clear_typed_pool::<i32>,
+            typed_spares::<i32>,
+            |scratch, capacity| scratch.edges.reserve_exact(capacity),
+            |scratch| scratch.edges.capacity(),
+        );
+        assert_lane_evicted(
+            "typed pair edges",
+            size_of::<(u32, u32, [i32; 2])>(),
+            clear_typed_pool::<[i32; 2]>,
+            typed_spares::<[i32; 2]>,
+            |scratch, capacity| scratch.edges.reserve_exact(capacity),
+            |scratch| scratch.edges.capacity(),
         );
     }
 
