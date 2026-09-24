@@ -52,17 +52,13 @@ use emission::{
     emitted_pair_preserves_incidence, polygonize_faces,
 };
 #[cfg(test)]
-pub(crate) use metrics::{
-    boundary_plan_calls, partition_calls, reset_boundary_plan_calls, reset_partition_calls,
-};
-#[cfg(test)]
 pub(in crate::geometry) use metrics::{
     partition_builds, partition_metrics, reset_partition_builds,
 };
 #[cfg(test)]
-use metrics::{
-    record_boundary_plan_call, record_partition_call, update as update_partition_metrics,
-};
+pub(crate) use metrics::{partition_calls, reset_partition_calls};
+#[cfg(test)]
+use metrics::{record_partition_call, update as update_partition_metrics};
 use rays::{RayPoints as _, shoot_left};
 
 #[cfg(test)]
@@ -99,28 +95,27 @@ impl ArealCells {
         self.emission_plan_with_protected(partition, topology, edges, global, None)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Slot, twin, face, occupancy, and span IDs are established by the same topology and selection"
+    )]
     fn selected_boundary_spans(
         &self,
-        partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
         edges: &[u32],
         global: &GlobalFaces,
-    ) -> Result<Vec<bool>> {
-        #[cfg(test)]
-        record_boundary_plan_call();
-        // `walks` come only from occupied/unoccupied face adjacency. The
-        // separate `lines` list is produced by lower_dimensions for support
-        // with no occupied face on either side, so it cannot carry an areal
-        // shell or hole boundary.
-        let plan = self.emission_plan(partition, topology, edges, global)?;
-        let mut selected = Vec::with_capacity(partition.spans.len());
-        selected.resize(partition.spans.len(), false);
-        for chord in plan.walks.iter().flatten() {
-            for &slot in &plan.source_darts[chord.sources.clone()] {
-                selected[edges[slot as usize] as usize] = true;
+    ) -> Vec<bool> {
+        let mut selected = Vec::with_capacity(self.spans.len());
+        selected.resize(self.spans.len(), false);
+        for (slot, &span) in edges.iter().enumerate() {
+            let left = global.walk_faces[topology.face_of[slot] as usize] as usize;
+            let twin = topology.twins[slot] as usize;
+            let right = global.walk_faces[topology.face_of[twin] as usize] as usize;
+            if self.faces[left] && !self.faces[right] {
+                selected[span as usize] = true;
             }
         }
-        Ok(selected)
+        selected
     }
 
     fn emission_plan_with_protected(
@@ -383,10 +378,10 @@ pub(in crate::geometry) struct ExactMetricSupport {
     pub spans: Vec<ExactMetricSpan>,
     pub points: Vec<ExactMetricNode>,
     pub faces: Vec<Vec<Vec<ExactMetricNode>>>,
-    /// Partition-span incidence selected by the filled union's boundary
-    /// walks. The order is the same as `spans`; lower-dimensional support
-    /// hidden by a positive-area face is deliberately absent. Ordinary
-    /// metric support leaves this unbuilt.
+    /// Partition-span incidence selected by occupied/unoccupied global-face
+    /// adjacency. The order is the same as `spans`; lower-dimensional support
+    /// hidden by a positive-area face is deliberately absent. Ordinary metric
+    /// support leaves this unbuilt.
     pub boundary_spans: Option<Vec<bool>>,
     /// Point incidence parallel to `points`. Positive-area support does not
     /// retain isolated points as a metric boundary target. Ordinary metric
@@ -677,8 +672,8 @@ impl ExactSourceInventory {
     }
 
     /// Exact closed support plus the areal boundary incidence needed by
-    /// directed inradius. The boundary plan is built here, beside the face
-    /// selection, rather than reconstructed by a metric consumer.
+    /// directed filled-set metrics. Boundary flags follow global-face
+    /// adjacency without constructing an emission plan.
     pub(in crate::geometry) fn metric_support_with_boundary(
         &self,
         partition: &ExactPartition<'_>,
@@ -701,19 +696,14 @@ impl ExactSourceInventory {
             crate::geometry::OverlayOp::Union,
             false,
         )?;
-        let mut selected_boundary_spans = if with_boundary {
-            Some(cells.selected_boundary_spans(partition, &topology, &edges, &global)?)
-        } else {
-            None
-        };
         let has_selected_area = with_boundary && cells.faces.iter().any(|&selected| selected);
-        if !has_selected_area
-            && let Some(selected_boundary_spans) = selected_boundary_spans.as_mut()
-        {
-            for (selected, &cell) in selected_boundary_spans.iter_mut().zip(&cells.spans) {
-                *selected = cell;
+        let selected_boundary_spans = with_boundary.then(|| {
+            if has_selected_area {
+                cells.selected_boundary_spans(&topology, &edges, &global)
+            } else {
+                cells.spans.clone()
             }
-        }
+        });
         let mut spans = Vec::new();
         let mut boundary_spans = with_boundary.then(Vec::new);
         spans.reserve(cells.spans.iter().filter(|&&value| value).count());

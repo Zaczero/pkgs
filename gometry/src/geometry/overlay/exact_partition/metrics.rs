@@ -60,12 +60,7 @@ impl PartitionMetrics {
 
 thread_local! {
     static PARTITION_CALLS: Cell<usize> = const { Cell::new(0) };
-    static BOUNDARY_PLAN_CALLS: Cell<usize> = const { Cell::new(0) };
     static PARTITION_METRICS: Cell<PartitionMetrics> = const { Cell::new(PartitionMetrics::ZERO) };
-}
-
-pub(crate) fn boundary_plan_calls() -> usize {
-    BOUNDARY_PLAN_CALLS.with(Cell::get)
 }
 
 pub(in crate::geometry) fn partition_builds() -> usize {
@@ -78,10 +73,6 @@ pub(crate) fn partition_calls() -> usize {
 
 pub(in crate::geometry) fn partition_metrics() -> PartitionMetrics {
     PARTITION_METRICS.with(Cell::get)
-}
-
-pub(super) fn record_boundary_plan_call() {
-    BOUNDARY_PLAN_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
 }
 
 pub(super) fn record_candidate_pair() {
@@ -100,10 +91,6 @@ pub(super) fn record_overlap(cuts: usize) {
 
 pub(super) fn record_partition_call() {
     PARTITION_CALLS.with(|calls| calls.set(calls.get().saturating_add(1)));
-}
-
-pub(crate) fn reset_boundary_plan_calls() {
-    BOUNDARY_PLAN_CALLS.with(|calls| calls.set(0));
 }
 
 pub(in crate::geometry) fn reset_partition_builds() {
