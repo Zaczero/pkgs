@@ -905,8 +905,10 @@ fn response_connection_directive_has_exactly_one_meaning() {
                 (PyBytes::new(py, b"upgrade"), PyBytes::new(py, b"h2c")),
             ],
         });
-        let _ = parse_http_outbound_event(&contradictory)
-            .expect_err("contradictory connection directives are rejected");
+        drop(
+            parse_http_outbound_event(&contradictory)
+                .expect_err("contradictory connection directives are rejected"),
+        );
         Ok(())
     })
     .unwrap();
@@ -1042,7 +1044,9 @@ async fn cancelled_in_flight_receive_requeues_before_a_concurrent_waiter() {
     let second_state = Arc::clone(&state);
     let (attempted_tx, attempted_rx) = oneshot::channel();
     let second = tokio::spawn(async move {
-        let _ = attempted_tx.send(());
+        attempted_tx
+            .send(())
+            .expect("the main test waits for the concurrent receive");
         let mut guard = second_state.lock_owned().await;
         guard.next().await
     });

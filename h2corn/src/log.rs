@@ -604,12 +604,12 @@ pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     }
 
     let mut stderr = anstream::stderr().lock();
-    let _ = writeln!(
+    drop(writeln!(
         stderr,
         "{} v{} • HTTP/2 ASGI",
         "h2corn".style(Style::new().bold().cyan()),
         env!("CARGO_PKG_VERSION"),
-    );
+    ));
 
     let mut binds = config
         .binds
@@ -623,17 +623,17 @@ pub(crate) fn emit_banner(config: &ServerConfig, tls: bool) {
     }
 
     if config.http1.enabled {
-        let _ = writeln!(
+        drop(writeln!(
             stderr,
             "HTTP/1 compatibility is enabled; disable with http1=False (--no-http1)",
-        );
+        ));
     }
 
-    let _ = writeln!(stderr);
+    drop(writeln!(stderr));
 }
 
 fn write_listen_target_line(stderr: &mut impl Write, prefix: &str, bind: &str) {
-    let _ = writeln!(stderr, "{prefix}{}", bind.bold());
+    drop(writeln!(stderr, "{prefix}{}", bind.bold()));
 }
 
 pub(crate) fn emit_http_access_log(entry: &HttpAccessLogEntry<'_>) {
@@ -757,7 +757,7 @@ fn write_access_log_line(
     code: &dyn fmt::Display,
     io_summary: &dyn fmt::Display,
 ) {
-    let _ = writeln!(
+    let _format_result = writeln!(
         AccessLogWriter(line),
         "{client_label} {summary} {code} {io_summary}"
     );

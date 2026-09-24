@@ -160,9 +160,9 @@ impl Doorbell {
     /// byte would leave the queue with nothing to wake the pump.
     fn ring(&self) {
         #[cfg(target_os = "linux")]
-        let _ = retry_on_intr(|| write(&self.fd, &1_u64.to_ne_bytes()));
+        let _write_result = retry_on_intr(|| write(&self.fd, &1_u64.to_ne_bytes()));
         #[cfg(not(target_os = "linux"))]
-        let _ = retry_on_intr(|| write(&self.write, &[1_u8]));
+        let _write_result = retry_on_intr(|| write(&self.write, &[1_u8]));
     }
 
     /// Drain pending wakeups; called by the pump before processing. The
@@ -172,7 +172,7 @@ impl Doorbell {
         #[cfg(target_os = "linux")]
         {
             let mut buf = [0_u8; 8];
-            let _ = read(&self.fd, &mut buf);
+            let _read_result = read(&self.fd, &mut buf);
         }
         #[cfg(not(target_os = "linux"))]
         {
@@ -394,7 +394,7 @@ impl ShardHandle {
     /// suppressing redundant cross-thread doorbells from producers.
     pub(super) fn reschedule_local(&self, py: Python<'_>) {
         if !self.armed.swap(true, Ordering::AcqRel) {
-            let _ = self.schedule_pump(py, &self.call_soon);
+            drop(self.schedule_pump(py, &self.call_soon));
         }
     }
 
@@ -416,7 +416,7 @@ impl ShardHandle {
         // teardown case as a POSIX loop that stopped reading the fd.
         #[cfg(windows)]
         Python::attach(|py| {
-            let _ = self.schedule_pump(py, &self.call_soon_threadsafe);
+            drop(self.schedule_pump(py, &self.call_soon_threadsafe));
         });
     }
 
@@ -478,10 +478,10 @@ impl ShardHandle {
     pub(crate) fn detach(&self, py: Python<'_>) {
         #[cfg(unix)]
         {
-            let _ = self.event_loop.bind(py).call_method1(
+            drop(self.event_loop.bind(py).call_method1(
                 pyo3::intern!(py, "remove_reader"),
                 (self.doorbell.reader_fd(),),
-            );
+            ));
         }
         #[cfg(windows)]
         let _ = py;
@@ -489,10 +489,11 @@ impl ShardHandle {
 
     pub(super) fn stop_loop(&self, py: Python<'_>) {
         self.detach(py);
-        let _ = self
-            .event_loop
-            .bind(py)
-            .call_method0(pyo3::intern!(py, "stop"));
+        drop(
+            self.event_loop
+                .bind(py)
+                .call_method0(pyo3::intern!(py, "stop")),
+        );
     }
 
     /// Drain up to [`PUMP_BATCH_MAX`] events into a LIFO work buffer in
@@ -532,7 +533,7 @@ impl ShardThread {
         // doorbell are finally destroyed on their owning loop thread.
         drop(shard);
         if let Some(join) = self.join.take() {
-            let _ = join.join();
+            drop(join.join());
         }
     }
 }
@@ -559,7 +560,7 @@ pub(crate) fn spawn_shard_thread(
                     let event_loop = factory.create(py)?;
                     let actual = SecondaryLoopFactory::classify(&event_loop)?;
                     if actual != factory {
-                        let _ = event_loop.call_method0("close");
+                        drop(event_loop.call_method0("close"));
                         return Err(PyRuntimeError::new_err(format!(
                             "{factory:?} secondary-loop factory returned {actual:?} loop"
                         )));
@@ -569,15 +570,15 @@ pub(crate) fn spawn_shard_thread(
                 };
                 match setup() {
                     Ok((shard, event_loop)) => {
-                        let _ = tx.send(Ok(Arc::clone(&shard)));
+                        drop(tx.send(Ok(Arc::clone(&shard))));
                         // Blocks this thread until ShardHandle::stop.
                         let result = event_loop.bind(py).call_method0("run_forever");
                         drop(result);
-                        let _ = event_loop.bind(py).call_method0("close");
+                        drop(event_loop.bind(py).call_method0("close"));
                         drop(shard);
                     },
                     Err(err) => {
-                        let _ = tx.send(Err(err));
+                        drop(tx.send(Err(err)));
                     },
                 }
             });
@@ -592,7 +593,7 @@ pub(crate) fn spawn_shard_thread(
             join: Some(join),
         }),
         Ok(Err(err)) | Err(err) => {
-            let _ = join.join();
+            drop(join.join());
             Err(err)
         },
     }
@@ -626,7 +627,7 @@ where
 pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) {
     let (done, wait) = oneshot::channel();
     shard.push(PumpEvent::ReleaseApp { app, done });
-    let _ = wait.await;
+    let _release_result = wait.await;
 }
 
 #[cfg(test)]

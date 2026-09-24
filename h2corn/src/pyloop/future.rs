@@ -273,7 +273,9 @@ impl RustFuture {
                     drop(state);
                     (callbacks, abort)
                 },
-                _ => return Ok(false),
+                FutureState::Ready(_) | FutureState::Failed(_) | FutureState::Cancelled { .. } => {
+                    return Ok(false);
+                },
             }
         };
         if let Some(handle) = abort {
@@ -341,7 +343,7 @@ impl RustFuture {
         exc_val: Option<Py<PyAny>>,
         exc_tb: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        let _ = (exc_val, exc_tb);
+        drop((exc_val, exc_tb));
         Err(PyErr::from_value(
             exc_type.call0().unwrap_or_else(|_| exc_type.clone()),
         ))

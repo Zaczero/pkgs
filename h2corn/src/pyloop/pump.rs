@@ -114,7 +114,7 @@ fn process_event(py: Python<'_>, shard: &Shard, event: PumpEvent) {
         },
         PumpEvent::ReleaseApp { app, done } => {
             drop(app);
-            let _ = done.send(());
+            let _send_result = done.send(());
         },
         PumpEvent::CancelTask { task } => {
             if let Err(err) = task.call_method0(py, pyo3::intern!(py, "cancel")) {
@@ -174,7 +174,7 @@ fn start_task(
     })?;
     task.call_method1(pyo3::intern!(py, "add_done_callback"), (done,))?;
     if let Some(task) = slot.set_task(task.unbind()) {
-        let _ = task.call_method0(py, pyo3::intern!(py, "cancel"));
+        drop(task.call_method0(py, pyo3::intern!(py, "cancel")));
     }
     Ok(())
 }
@@ -194,7 +194,7 @@ fn spawn_awaitable(
     })?;
     task.call_method1(pyo3::intern!(py, "add_done_callback"), (done,))?;
     if let Some(task) = slot.set_task(task.unbind()) {
-        let _ = task.call_method0(py, pyo3::intern!(py, "cancel"));
+        drop(task.call_method0(py, pyo3::intern!(py, "cancel")));
     }
     Ok(())
 }

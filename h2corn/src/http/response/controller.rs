@@ -596,7 +596,7 @@ impl ResponseController {
         if matches!(self.state, ResponseState::DiscardingTrailers) {
             // Consumed, never written: the response they belong to carries no
             // content, so there is no trailer section on the wire for them.
-            let _ = headers;
+            drop(headers);
             if !more_trailers {
                 self.state = ResponseState::Complete;
             }
@@ -685,7 +685,11 @@ impl ResponseController {
     ) -> Result<StartedResponse, error::H2CornError> {
         match mem::replace(&mut self.state, ResponseState::Aborted) {
             ResponseState::Started(started) => Ok(started),
-            state => {
+            state @ (ResponseState::WaitingForStart
+            | ResponseState::WaitingForTrailers { .. }
+            | ResponseState::DiscardingTrailers
+            | ResponseState::Complete
+            | ResponseState::Aborted) => {
                 self.state = state;
                 err.err()
             },
@@ -810,10 +814,23 @@ mod tests {
                     http::response::FinalResponseBody::Bytes(body) => {
                         assert_eq!(body.as_ref(), b"hello");
                     },
-                    _ => panic!("expected byte-backed final body"),
+                    http::response::FinalResponseBody::Empty
+                    | http::response::FinalResponseBody::File(_)
+                    | http::response::FinalResponseBody::Suppressed { .. } => {
+                        panic!("expected byte-backed final body")
+                    },
                 }
             },
-            _ => panic!("expected final response action"),
+            http::response::ResponseAction::Start { .. }
+            | http::response::ResponseAction::Body(_)
+            | http::response::ResponseAction::File(_)
+            | http::response::ResponseAction::Finish
+            | http::response::ResponseAction::FinishWithTrailers(_)
+            | http::response::ResponseAction::EarlyHint(_)
+            | http::response::ResponseAction::InternalError
+            | http::response::ResponseAction::AbortIncomplete => {
+                panic!("expected final response action")
+            },
         }
     }
 
@@ -863,7 +880,16 @@ mod tests {
                     http::response::FinalResponseBody::Suppressed { len: 6 }
                 ));
             },
-            _ => panic!("expected a final action, not a streaming start"),
+            http::response::ResponseAction::Start { .. }
+            | http::response::ResponseAction::Body(_)
+            | http::response::ResponseAction::File(_)
+            | http::response::ResponseAction::Finish
+            | http::response::ResponseAction::FinishWithTrailers(_)
+            | http::response::ResponseAction::EarlyHint(_)
+            | http::response::ResponseAction::InternalError
+            | http::response::ResponseAction::AbortIncomplete => {
+                panic!("expected a final action, not a streaming start")
+            },
         }
 
         // Trailers the application declared are accepted and dropped: there
@@ -1146,7 +1172,8 @@ mod tests {
                     | error::HttpResponseError::PathsendMixedWithBody
             )
         ));
-        let _ = remove_file(temp_path);
+        drop(actions);
+        remove_file(temp_path).expect("temporary response file is removable");
     }
 
     fn start_unary(
@@ -1181,7 +1208,16 @@ mod tests {
                 );
                 assert!(matches!(body, http::response::FinalResponseBody::Empty));
             },
-            _ => panic!("expected final substitute response action"),
+            http::response::ResponseAction::Start { .. }
+            | http::response::ResponseAction::Body(_)
+            | http::response::ResponseAction::File(_)
+            | http::response::ResponseAction::Finish
+            | http::response::ResponseAction::FinishWithTrailers(_)
+            | http::response::ResponseAction::EarlyHint(_)
+            | http::response::ResponseAction::InternalError
+            | http::response::ResponseAction::AbortIncomplete => {
+                panic!("expected final substitute response action")
+            },
         }
     }
 

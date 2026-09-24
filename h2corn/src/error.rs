@@ -1054,7 +1054,22 @@ impl WebSocketProtocolError {
         match self {
             Self::InvalidUtf8 { .. } => close_code::INVALID_FRAME_PAYLOAD_DATA,
             Self::MessageTooLarge => close_code::MESSAGE_TOO_BIG,
-            _ => close_code::PROTOCOL_ERROR,
+            Self::NonCanonical16BitLengthEncoding
+            | Self::ReservedHighBitIn64BitLengthEncoding
+            | Self::FrameTooLarge
+            | Self::NonCanonical64BitLengthEncoding
+            | Self::ExtensionsNotNegotiated
+            | Self::InvalidCompressedPayload
+            | Self::CompressedContinuationFrame
+            | Self::CompressedControlFrame
+            | Self::ClientFramesMustBeMasked
+            | Self::UnsupportedOpcode
+            | Self::DataBeforeFragmentCompletion
+            | Self::UnexpectedContinuationFrame
+            | Self::InvalidControlFrame
+            | Self::CloseFramePayloadTruncated
+            | Self::CloseFrameInvalidCode
+            | Self::UnsupportedControlOpcode => close_code::PROTOCOL_ERROR,
         }
     }
 }

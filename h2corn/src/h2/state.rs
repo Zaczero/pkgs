@@ -155,7 +155,7 @@ impl InputDelivery {
             Self::Stopped => None,
         };
         if let Some(sender) = sender {
-            let _ = sender.try_send(terminal);
+            drop(sender.try_send(terminal));
         }
     }
 
@@ -429,7 +429,7 @@ impl RequestTask {
         }
         if let Some(task) = self.task.as_mut() {
             task.abort();
-            let _ = task.await;
+            drop(task.await);
         }
         self.task = None;
     }
@@ -674,7 +674,7 @@ impl InboundStream {
         self.state = match self.state {
             StreamLifecycle::Open => StreamLifecycle::RequestClosed,
             StreamLifecycle::ResponseClosed => StreamLifecycle::Closed,
-            state => state,
+            state @ (StreamLifecycle::RequestClosed | StreamLifecycle::Closed) => state,
         };
         self.state == StreamLifecycle::Closed
     }
@@ -683,7 +683,7 @@ impl InboundStream {
         self.state = match self.state {
             StreamLifecycle::Open => StreamLifecycle::ResponseClosed,
             StreamLifecycle::RequestClosed => StreamLifecycle::Closed,
-            state => state,
+            state @ (StreamLifecycle::ResponseClosed | StreamLifecycle::Closed) => state,
         };
         self.state == StreamLifecycle::Closed
     }
@@ -985,7 +985,11 @@ mod tests {
     fn assert_data(input: StreamInput, expected: &[u8]) {
         match input {
             StreamInput::Data { body, credit: None } => assert_eq!(body.as_ref(), expected),
-            other => panic!("expected data input, got {other:?}"),
+            other @ (StreamInput::Data { .. }
+            | StreamInput::BufferedData { .. }
+            | StreamInput::DataBatch { .. }
+            | StreamInput::EndStream
+            | StreamInput::Reset(_)) => panic!("expected data input, got {other:?}"),
         }
     }
 
@@ -994,7 +998,11 @@ mod tests {
             StreamInput::BufferedData { body, credit: None } => {
                 assert_eq!(body.as_ref(), expected);
             },
-            other => panic!("expected buffered data input, got {other:?}"),
+            other @ (StreamInput::Data { .. }
+            | StreamInput::BufferedData { .. }
+            | StreamInput::DataBatch { .. }
+            | StreamInput::EndStream
+            | StreamInput::Reset(_)) => panic!("expected buffered data input, got {other:?}"),
         }
     }
 
@@ -1014,7 +1022,11 @@ mod tests {
                     assert_eq!(body.as_ref(), *expected);
                 }
             },
-            other => panic!("expected HTTP data batch, got {other:?}"),
+            other @ (StreamInput::Data { .. }
+            | StreamInput::BufferedData { .. }
+            | StreamInput::DataBatch { .. }
+            | StreamInput::EndStream
+            | StreamInput::Reset(_)) => panic!("expected HTTP data batch, got {other:?}"),
         }
     }
 
@@ -1080,7 +1092,7 @@ mod tests {
         impl Drop for DropSignal {
             fn drop(&mut self) {
                 if let Some(done) = self.0.take() {
-                    let _ = done.send(());
+                    let _done_result = done.send(());
                 }
             }
         }
@@ -1091,7 +1103,9 @@ mod tests {
         let mut tasks = RequestTasks::new(1);
         tasks.spawn(stream_id, RequestTaskCancellation::Immediate, async move {
             let _drop_signal = DropSignal(Some(dropped_tx));
-            let _ = started_tx.send(());
+            started_tx
+                .send(())
+                .expect("request task start receiver remains alive");
             pending::<()>().await;
         });
         started_rx.await.expect("request task started");

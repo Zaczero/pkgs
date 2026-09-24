@@ -213,10 +213,11 @@ impl AcceptedWebSocketTransport for H2WebSocketTransport {
 
         debug_assert!(!state.has_queued_close());
         if state.should_reset_h2_stream() {
-            let _ = self
-                .connection
-                .reset_stream(self.stream_id, ErrorCode::NO_ERROR)
-                .await;
+            drop(
+                self.connection
+                    .reset_stream(self.stream_id, ErrorCode::NO_ERROR)
+                    .await,
+            );
         }
         Ok(())
     }

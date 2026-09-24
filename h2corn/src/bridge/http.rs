@@ -46,7 +46,7 @@ pub(crate) struct RequestBodyCounter {
 
 impl RequestInputShared {
     pub(crate) fn mark_app_started(&self) {
-        let _ = self.app_started.set(());
+        self.app_started.get_or_init(|| ());
         self.notify.notify_one();
     }
 

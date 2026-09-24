@@ -1358,9 +1358,9 @@ mod tests {
 
     #[test]
     fn connect_authority_requires_a_port_after_generic_validation() {
-        let _ = ConnectAuthority::try_from(BytesStr::from_static("example.com")).unwrap_err();
-        let _ = ConnectAuthority::try_from(BytesStr::from_static("[::1]")).unwrap_err();
-        let _ = ConnectAuthority::try_from(BytesStr::from_static("example.com:443")).unwrap();
+        drop(ConnectAuthority::try_from(BytesStr::from_static("example.com")).unwrap_err());
+        drop(ConnectAuthority::try_from(BytesStr::from_static("[::1]")).unwrap_err());
+        drop(ConnectAuthority::try_from(BytesStr::from_static("example.com:443")).unwrap());
     }
 
     #[test]

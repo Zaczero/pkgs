@@ -699,7 +699,9 @@ fn parse_accepted_outbound_event(
         WebSocketOutboundEvent::Close { code, reason } => {
             Ok(AcceptedOutboundEvent::Close { code, reason })
         },
-        unexpected => {
+        unexpected @ (WebSocketOutboundEvent::Accept { .. }
+        | WebSocketOutboundEvent::HttpResponseStart { .. }
+        | WebSocketOutboundEvent::HttpResponseBody { .. }) => {
             WebSocketError::unexpected_outbound_event_after_accept(unexpected.message_type()).err()
         },
     }

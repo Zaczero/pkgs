@@ -277,7 +277,9 @@ impl RequestHeaderMeta {
                         ParsedWebSocketVersion::Supported
                     },
                     ParsedWebSocketVersion::Missing => ParsedWebSocketVersion::Unsupported,
-                    _ => ParsedWebSocketVersion::Duplicate,
+                    ParsedWebSocketVersion::Supported
+                    | ParsedWebSocketVersion::Unsupported
+                    | ParsedWebSocketVersion::Duplicate => ParsedWebSocketVersion::Duplicate,
                 };
             },
             KnownRequestHeaderName::SecWebSocketKey => {
@@ -289,14 +291,39 @@ impl RequestHeaderMeta {
                     {
                         ParsedWebSocketKey::Valid(key)
                     },
-                    _ => ParsedWebSocketKey::Invalid,
+                    ParsedWebSocketKey::Missing
+                    | ParsedWebSocketKey::Valid(_)
+                    | ParsedWebSocketKey::Invalid => ParsedWebSocketKey::Invalid,
                 };
             },
             KnownRequestHeaderName::SecWebSocketExtensions => {
                 self.rare_mut().websocket.request.per_message_deflate |=
                     offers_compatible_permessage_deflate(value_bytes);
             },
-            _ => {},
+            KnownRequestHeaderName::Accept
+            | KnownRequestHeaderName::AcceptEncoding
+            | KnownRequestHeaderName::AcceptLanguage
+            | KnownRequestHeaderName::Authorization
+            | KnownRequestHeaderName::CacheControl
+            | KnownRequestHeaderName::Connection
+            | KnownRequestHeaderName::ContentLength
+            | KnownRequestHeaderName::ContentType
+            | KnownRequestHeaderName::Cookie
+            | KnownRequestHeaderName::Expect
+            | KnownRequestHeaderName::Host
+            | KnownRequestHeaderName::Http2Settings
+            | KnownRequestHeaderName::IfModifiedSince
+            | KnownRequestHeaderName::IfNoneMatch
+            | KnownRequestHeaderName::KeepAlive
+            | KnownRequestHeaderName::Origin
+            | KnownRequestHeaderName::Pragma
+            | KnownRequestHeaderName::ProxyConnection
+            | KnownRequestHeaderName::Referer
+            | KnownRequestHeaderName::SecWebSocketProtocol
+            | KnownRequestHeaderName::Te
+            | KnownRequestHeaderName::TransferEncoding
+            | KnownRequestHeaderName::Upgrade
+            | KnownRequestHeaderName::UserAgent => {},
         }
     }
 }
@@ -329,7 +356,7 @@ pub(crate) fn proxy_header_kind(name: RequestHeaderNameRef<'_>) -> Option<(Proxy
         RequestHeaderNameRef::Other("x_forwarded_host") => Some((ProxyHeaderKind::Host, false)),
         RequestHeaderNameRef::Other("x_forwarded_port") => Some((ProxyHeaderKind::Port, false)),
         RequestHeaderNameRef::Other("x_forwarded_prefix") => Some((ProxyHeaderKind::Prefix, false)),
-        _ => None,
+        RequestHeaderNameRef::Known(_) | RequestHeaderNameRef::Other(_) => None,
     }
 }
 

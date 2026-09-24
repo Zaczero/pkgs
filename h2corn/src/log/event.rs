@@ -79,8 +79,8 @@ impl Event {
         let out = &mut AccessLogWriter(&mut line);
         match format() {
             LogFormat::Text => {
-                let _ = out.write_fmt(text);
-                let _ = out.write_char('\n');
+                let _format_result = out.write_fmt(text);
+                let _format_result = out.write_char('\n');
             },
             LogFormat::Json => {
                 let mut object = JsonObject::new(out);
@@ -145,17 +145,17 @@ pub(crate) struct JsonObject<'a> {
 
 impl<'a> JsonObject<'a> {
     fn new(out: &'a mut dyn fmt::Write) -> Self {
-        let _ = out.write_char('{');
+        let _format_result = out.write_char('{');
         Self { out, empty: true }
     }
 
     fn key(&mut self, name: &str) {
         if !self.empty {
-            let _ = self.out.write_char(',');
+            let _format_result = self.out.write_char(',');
         }
         self.empty = false;
         write_json_string(self.out, name);
-        let _ = self.out.write_char(':');
+        let _format_result = self.out.write_char(':');
     }
 
     /// A quoted, escaped string field.
@@ -167,27 +167,27 @@ impl<'a> JsonObject<'a> {
     /// A `Display` value quoted as a string, escaped without buffering it.
     pub(crate) fn text(&mut self, name: &str, value: impl fmt::Display) {
         self.key(name);
-        let _ = self.out.write_char('"');
-        let _ = write!(JsonStringWriter { out: self.out }, "{value}");
-        let _ = self.out.write_char('"');
+        let _format_result = self.out.write_char('"');
+        let _format_result = write!(JsonStringWriter { out: self.out }, "{value}");
+        let _format_result = self.out.write_char('"');
     }
 
     /// A `Display` value written as a bare JSON number.
     pub(crate) fn num(&mut self, name: &str, value: impl fmt::Display) {
         self.key(name);
-        let _ = write!(self.out, "{value}");
+        let _format_result = write!(self.out, "{value}");
     }
 
     fn finish(self) {
-        let _ = self.out.write_str("}\n");
+        let _format_result = self.out.write_str("}\n");
     }
 }
 
 /// Write `value` as a JSON string literal.
 fn write_json_string(out: &mut dyn fmt::Write, value: &str) {
-    let _ = out.write_char('"');
-    let _ = JsonStringWriter { out }.write_str(value);
-    let _ = out.write_char('"');
+    let _format_result = out.write_char('"');
+    let _format_result = JsonStringWriter { out }.write_str(value);
+    let _format_result = out.write_char('"');
 }
 
 pub(crate) fn set_format(format: LogFormat) {

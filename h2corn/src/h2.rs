@@ -1169,15 +1169,17 @@ where
     state.request_tasks.cancel_all().await;
     match result {
         Ok(()) => {
-            let _ = state
-                .writer
-                .goaway(
-                    state.last_client_stream_id,
-                    ErrorCode::NO_ERROR,
-                    Vec::new(),
-                    true,
-                )
-                .await;
+            drop(
+                state
+                    .writer
+                    .goaway(
+                        state.last_client_stream_id,
+                        ErrorCode::NO_ERROR,
+                        Vec::new(),
+                        true,
+                    )
+                    .await,
+            );
             state.writer.close_ingress().await;
             drop(state.connection);
             Ok(())
@@ -1417,7 +1419,17 @@ fn map_frame_ingest_result(
                 reset_stream: None,
                 error,
             }),
-            kind => Err(kind.into()),
+            kind @ (ErrorKind::Python(_)
+            | ErrorKind::Io(_)
+            | ErrorKind::Join(_)
+            | ErrorKind::Config(_)
+            | ErrorKind::Asgi(_)
+            | ErrorKind::Http1(_)
+            | ErrorKind::HttpResponse(_)
+            | ErrorKind::H2(_)
+            | ErrorKind::Pathsend(_)
+            | ErrorKind::Proxy(_)
+            | ErrorKind::WebSocket(_)) => Err(kind.into()),
         },
     }
 }

@@ -423,9 +423,9 @@ fn adopt_tcp_listener(fd: ListenerFd) -> io::Result<TcpListener> {
 }
 
 fn configure_tcp_stream(stream: &TcpStream) {
-    let _ = stream.set_nodelay(true);
+    drop(stream.set_nodelay(true));
     #[cfg(target_os = "linux")]
-    let _ = set_tcp_quickack(stream, true);
+    let _quickack_result = set_tcp_quickack(stream, true);
 }
 
 /// Report a connection failure an operator can act on, and stay quiet about
@@ -629,18 +629,20 @@ async fn serve_listeners(
                 graceful_deadline = Some(Box::pin(tokio::time::sleep(
                     config.timeout_graceful_shutdown,
                 )));
-                let _ = shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
+                let _shutdown_result =
+                    shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
                 continue;
             }
             shutdown_kind = &mut shutdown => {
                 graceful_deadline = Some(Box::pin(tokio::time::sleep(
                     config.timeout_graceful_shutdown,
                 )));
-                let _ = shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
+                let _shutdown_result =
+                    shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
                 continue;
             }
             joined = tasks.join_next(), if !tasks.is_empty() => {
-                let _ = joined;
+                drop(joined);
                 continue;
             }
             accepted = accept_one(&listeners, accept_start),

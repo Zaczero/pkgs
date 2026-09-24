@@ -715,7 +715,10 @@ impl StreamInput {
     ) -> Result<(), Self> {
         let (second_body, second_credit) = match next {
             Self::Data { body, credit } => (body, credit),
-            other => return Err(other),
+            other @ (Self::BufferedData { .. }
+            | Self::DataBatch { .. }
+            | Self::EndStream
+            | Self::Reset(_)) => return Err(other),
         };
 
         let first_len = match self {
@@ -777,7 +780,10 @@ impl StreamInput {
     ) -> Result<(), Self> {
         let (second_body, second_credit) = match next {
             Self::Data { body, credit } => (body, credit),
-            other => return Err(other),
+            other @ (Self::BufferedData { .. }
+            | Self::DataBatch { .. }
+            | Self::EndStream
+            | Self::Reset(_)) => return Err(other),
         };
         if second_body.len() <= min_fragment_bytes {
             return Err(Self::Data {

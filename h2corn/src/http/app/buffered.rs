@@ -383,8 +383,7 @@ impl HttpSendState {
                     };
                     tokio::select! {
                         credit = budget.acquire(charge) => credit.ok()?,
-                        changed = closed.changed() => {
-                            let _ = changed;
+                        _ = closed.changed() => {
                             return None;
                         }
                     }
@@ -417,8 +416,7 @@ impl HttpSendState {
                         Ok(permit) => permit,
                         Err(_) => return false,
                     },
-                    changed = closed.changed() => {
-                        let _ = changed;
+                    _ = closed.changed() => {
                         return false;
                     }
                 };
@@ -544,9 +542,11 @@ pub(crate) fn outbound_charge(event: &HttpOutboundEvent) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::poll_fn;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Barrier};
+    use std::task::Poll;
 
     use bytes::Bytes;
     use tokio::time::{Duration, timeout};
@@ -611,7 +611,13 @@ mod tests {
                 assert_eq!(body.as_ref(), expected);
                 assert!(more_body);
             },
-            other => panic!("expected buffered HTTP body event, got {other:?}"),
+            other @ (HttpOutboundEvent::Start { .. }
+            | HttpOutboundEvent::PathSend { .. }
+            | HttpOutboundEvent::ZeroCopySend { .. }
+            | HttpOutboundEvent::Trailers { .. }
+            | HttpOutboundEvent::EarlyHint(_)) => {
+                panic!("expected buffered HTTP body event, got {other:?}")
+            },
         }
     }
 
@@ -1202,10 +1208,10 @@ mod tests {
         else {
             panic!("terminal event waits for channel capacity")
         };
-        let terminal = tokio::spawn(waiter.send());
-        tokio::task::yield_now().await;
-        terminal.abort();
-        let _ = terminal.await;
+        let mut send = Box::pin(waiter.send());
+        let poll = poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await;
+        assert!(poll.is_pending(), "terminal sender is waiting for capacity");
+        drop(send);
         for _ in 0..3 {
             assert!(send_buffer.take_ready().is_some());
         }
@@ -1327,10 +1333,13 @@ mod tests {
         else {
             panic!("nonempty terminal body waits for byte credit")
         };
-        let terminal = tokio::spawn(waiter.send());
-        tokio::task::yield_now().await;
-        terminal.abort();
-        let _ = terminal.await;
+        let mut send = Box::pin(waiter.send());
+        let poll = poll_fn(|cx| Poll::Ready(send.as_mut().poll(cx))).await;
+        assert!(
+            poll.is_pending(),
+            "byte-budget sender is waiting for credit"
+        );
+        drop(send);
         drop(retained);
 
         assert_admitted(send_state.push_or_forward(body_event(b"still open")));

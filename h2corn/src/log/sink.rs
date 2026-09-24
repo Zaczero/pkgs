@@ -139,7 +139,7 @@ pub(crate) fn start() {
             .spawn(move || drain_forever(sink))
             .is_ok()
         {
-            let _ = SINK.set(sink);
+            SINK.get_or_init(|| sink);
         }
     });
 }
@@ -147,7 +147,7 @@ pub(crate) fn start() {
 /// Queue one formatted line, or write it inline if there is no writer.
 pub(crate) fn write_line(line: &[u8]) {
     let Some(sink) = SINK.get() else {
-        let _ = io::stderr().write_all(line);
+        drop(io::stderr().write_all(line));
         return;
     };
 
@@ -225,14 +225,17 @@ fn drain_forever(sink: &'static LogSink) -> ! {
 
         let dropped = sink.dropped.swap(0, Ordering::Relaxed);
         if dropped != 0 {
-            let _ = writeln!(stderr, "dropped {dropped} access log lines: sink too slow");
+            drop(writeln!(
+                stderr,
+                "dropped {dropped} access log lines: sink too slow"
+            ));
         }
         // One batch, one write. Linux holds the file's lock for the whole of a
         // regular-file write, so a batch appended by one worker cannot have
         // another worker's batch spliced into the middle of a line. Splitting
         // it here — at any fixed size, since lines do not land on that
         // boundary — is what would break that.
-        let _ = stderr.write_all(&batch);
+        drop(stderr.write_all(&batch));
 
         batch.clear();
         let mut pending = sink.pending.lock();

@@ -138,7 +138,7 @@ impl PathReadState {
     fn take_ready(&mut self) -> Option<(File, Option<Box<[u8]>>)> {
         match mem::replace(self, Self::Failed) {
             Self::Ready { file, buffer } => Some((file, buffer)),
-            other => {
+            other @ (Self::Reading(_) | Self::Failed) => {
                 *self = other;
                 None
             },
@@ -344,9 +344,9 @@ fn open_pathsend_file_blocking(path: PathBuf) -> Result<(PathSource, usize), Pat
     }
     // Best-effort sequential read-ahead hint for the streamed file.
     #[cfg(target_os = "linux")]
-    let _ = fadvise(&file, 0, None, Advice::Sequential);
+    let _advice_result = fadvise(&file, 0, None, Advice::Sequential);
     #[cfg(target_os = "macos")]
-    let _ = fcntl_rdadvise(&file, 0, len as u64);
+    let _advice_result = fcntl_rdadvise(&file, 0, len as u64);
     Ok((PathSource::File(file), len))
 }
 

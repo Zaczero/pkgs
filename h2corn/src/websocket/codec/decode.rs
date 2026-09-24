@@ -534,7 +534,9 @@ mod tests {
             match decoded {
                 DecodedFrame::Text(text) => assert_eq!(text.as_bytes(), b"hello"),
                 DecodedFrame::Binary(payload) => assert_eq!(payload.as_ref(), b"hello"),
-                _ => panic!("fragmented data must decode as its original opcode"),
+                DecodedFrame::Ping(_) | DecodedFrame::Pong | DecodedFrame::Close(_) => {
+                    panic!("fragmented data must decode as its original opcode")
+                },
             }
         }
     }

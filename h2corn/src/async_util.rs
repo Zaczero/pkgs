@@ -72,7 +72,7 @@ pub(crate) async fn send_best_effort<T>(tx: &mpsc::Sender<T>, value: T) {
     match try_push(tx, value) {
         TryPush::Sent | TryPush::Closed(_) => {},
         TryPush::Full(value) => {
-            let _ = tx.send(value).await;
+            drop(tx.send(value).await);
         },
     }
 }
@@ -229,5 +229,35 @@ mod write_all_vectored_tests {
             .await
             .expect_err("zero progress must fail");
         assert_eq!(err.kind(), io::ErrorKind::WriteZero);
+    }
+}
+
+#[cfg(test)]
+mod send_best_effort_tests {
+    use std::pin::Pin;
+    use std::task::{Context, Poll, Waker};
+
+    use tokio::sync::mpsc;
+
+    use super::send_best_effort;
+
+    fn poll_once<F: Future>(mut future: Pin<&mut F>) -> Poll<F::Output> {
+        future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop()))
+    }
+
+    #[tokio::test]
+    async fn send_best_effort_ignores_close_after_backpressure() {
+        let (tx, rx) = mpsc::channel(1);
+        tx.try_send(0).expect("channel has one available slot");
+        let mut send = Box::pin(send_best_effort(&tx, 1));
+        assert!(
+            poll_once(send.as_mut()).is_pending(),
+            "the queued item must force the best-effort send to wait"
+        );
+
+        drop(rx);
+        assert!(matches!(poll_once(send.as_mut()), Poll::Ready(()),));
     }
 }
