@@ -521,7 +521,21 @@ mod tests {
                     Some(b"1".as_slice())
                 );
             },
-            other => panic!("expected headers before pathsend, got {other:?}"),
+            other @ (WriterCommand::SendFinal { .. }
+            | WriterCommand::SendTrailers { .. }
+            | WriterCommand::SendEarlyHint { .. }
+            | WriterCommand::SendData { .. }
+            | WriterCommand::SendWebSocketData { .. }
+            | WriterCommand::SendFile { .. }
+            | WriterCommand::FlushBufferedOutput
+            | WriterCommand::SendReset { .. }
+            | WriterCommand::SendSettingsAck
+            | WriterCommand::PeerReset { .. }
+            | WriterCommand::SendWindowUpdate { .. }
+            | WriterCommand::PingAck(_)
+            | WriterCommand::Goaway { .. }) => {
+                panic!("expected headers before pathsend, got {other:?}")
+            },
         }
         assert!(matches!(
             commands.pop_front(),
@@ -529,7 +543,7 @@ mod tests {
         ));
         assert!(commands.is_empty());
 
-        let _ = fs::remove_file(path);
+        fs::remove_file(path).expect("temporary pathsend file is removable");
     }
 
     #[test]
@@ -563,7 +577,21 @@ mod tests {
                     Some(b"0".as_slice())
                 );
             },
-            other => panic!("expected one terminal headers command, got {other:?}"),
+            other @ (WriterCommand::SendFinal { .. }
+            | WriterCommand::SendTrailers { .. }
+            | WriterCommand::SendEarlyHint { .. }
+            | WriterCommand::SendData { .. }
+            | WriterCommand::SendWebSocketData { .. }
+            | WriterCommand::SendFile { .. }
+            | WriterCommand::FlushBufferedOutput
+            | WriterCommand::SendReset { .. }
+            | WriterCommand::SendSettingsAck
+            | WriterCommand::PeerReset { .. }
+            | WriterCommand::SendWindowUpdate { .. }
+            | WriterCommand::PingAck(_)
+            | WriterCommand::Goaway { .. }) => {
+                panic!("expected one terminal headers command, got {other:?}")
+            },
         }
         assert!(commands.is_empty());
     }

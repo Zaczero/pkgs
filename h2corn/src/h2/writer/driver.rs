@@ -419,7 +419,7 @@ where
     /// Flush and half-close the write side (TCP FIN / TLS `close_notify`),
     /// prompting the peer to read pending output and close.
     pub(crate) async fn shutdown_write(&mut self) {
-        let _ = self.writer.shutdown().await;
+        drop(self.writer.shutdown().await);
     }
 
     pub(crate) async fn close_ingress(&self) {
@@ -707,15 +707,17 @@ where
         context.initial_stream_send_window,
     );
     if stream.open_response(end_stream).is_err() {
-        let _ = force_reset_stream(
-            context.writer,
-            context.frame_buf,
-            context.streams,
-            context.response_closes,
-            stream_id,
-            ErrorCode::INTERNAL_ERROR,
-        )
-        .await;
+        drop(
+            force_reset_stream(
+                context.writer,
+                context.frame_buf,
+                context.streams,
+                context.response_closes,
+                stream_id,
+                ErrorCode::INTERNAL_ERROR,
+            )
+            .await,
+        );
         return Ok(());
     }
     if end_stream {
@@ -745,15 +747,17 @@ where
         context.initial_stream_send_window,
     );
     if stream.queue_trailers(headers).is_err() {
-        let _ = force_reset_stream(
-            context.writer,
-            context.frame_buf,
-            context.streams,
-            context.response_closes,
-            stream_id,
-            ErrorCode::INTERNAL_ERROR,
-        )
-        .await;
+        drop(
+            force_reset_stream(
+                context.writer,
+                context.frame_buf,
+                context.streams,
+                context.response_closes,
+                stream_id,
+                ErrorCode::INTERNAL_ERROR,
+            )
+            .await,
+        );
         return Ok(());
     }
     context.ready_streams.schedule(stream, stream_id, true);
@@ -776,15 +780,17 @@ where
         context.initial_stream_send_window,
     );
     if stream.queue_data(data, credit, end_stream).is_err() {
-        let _ = force_reset_stream(
-            context.writer,
-            context.frame_buf,
-            context.streams,
-            context.response_closes,
-            stream_id,
-            ErrorCode::INTERNAL_ERROR,
-        )
-        .await;
+        drop(
+            force_reset_stream(
+                context.writer,
+                context.frame_buf,
+                context.streams,
+                context.response_closes,
+                stream_id,
+                ErrorCode::INTERNAL_ERROR,
+            )
+            .await,
+        );
         return Ok(());
     }
     context.ready_streams.schedule(stream, stream_id, false);
@@ -806,15 +812,17 @@ where
         context.initial_stream_send_window,
     );
     if stream.queue_websocket_data(data, credit).is_err() {
-        let _ = force_reset_stream(
-            context.writer,
-            context.frame_buf,
-            context.streams,
-            context.response_closes,
-            stream_id,
-            ErrorCode::INTERNAL_ERROR,
-        )
-        .await;
+        drop(
+            force_reset_stream(
+                context.writer,
+                context.frame_buf,
+                context.streams,
+                context.response_closes,
+                stream_id,
+                ErrorCode::INTERNAL_ERROR,
+            )
+            .await,
+        );
         return Ok(());
     }
     context.ready_streams.schedule(stream, stream_id, false);
@@ -922,15 +930,17 @@ where
         ))
         .is_err()
     {
-        let _ = force_reset_stream(
-            context.writer,
-            context.frame_buf,
-            context.streams,
-            context.response_closes,
-            stream_id,
-            ErrorCode::INTERNAL_ERROR,
-        )
-        .await;
+        drop(
+            force_reset_stream(
+                context.writer,
+                context.frame_buf,
+                context.streams,
+                context.response_closes,
+                stream_id,
+                ErrorCode::INTERNAL_ERROR,
+            )
+            .await,
+        );
         return Ok(());
     }
     context.ready_streams.schedule(stream, stream_id, false);

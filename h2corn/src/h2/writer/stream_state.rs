@@ -348,7 +348,7 @@ impl StreamBodyState {
     fn normalized(self) -> Self {
         match self {
             Self::Body(queue) if queue.is_empty() => Self::Idle,
-            other => other,
+            other @ (Self::Idle | Self::Body(_)) => other,
         }
     }
 }

@@ -121,7 +121,10 @@ impl AcceptedWebSocketState {
                 self.close = CloseLifecycle::Sent(reported_code);
                 Some(frame)
             },
-            lifecycle => {
+            lifecycle @ (CloseLifecycle::Open
+            | CloseLifecycle::Sent(_)
+            | CloseLifecycle::PeerGone(_)
+            | CloseLifecycle::PeerReset(_)) => {
                 self.close = lifecycle;
                 None
             },

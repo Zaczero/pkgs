@@ -437,7 +437,7 @@ fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
             ));
         }
     } else {
-        let _ = TOKIO_WORKER_THREADS.set(worker_threads);
+        let _set_result = TOKIO_WORKER_THREADS.set(worker_threads);
     }
 
     init_runtime(|| {
@@ -481,7 +481,7 @@ pub(crate) fn prepare_tls(
     };
     // Discard the full config: the goal is to exercise extraction. The
     // prepared acceptor is what survives into workers.
-    let _ = py_config.server_config(tls.clone())?;
+    drop(py_config.server_config(tls.clone())?);
     Ok(PreparedTls(tls))
 }
 
@@ -828,7 +828,7 @@ async fn run_serve_task(task: ServeTask) {
         },
     };
     if !shard_threads.is_empty() {
-        let _ = spawn_blocking(move || drop(shard_threads)).await;
+        drop(spawn_blocking(move || drop(shard_threads)).await);
     }
     main_shard.push(PumpEvent::Resolve {
         fut: resolve_fut,

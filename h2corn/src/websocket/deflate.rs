@@ -596,8 +596,10 @@ mod tests {
         );
         assert!(deflater.is_none(), "empty sends do not need zlib state");
 
-        let _ = PerMessageDeflateEnabled::compress(&mut deflater, b"compressible compressible")
-            .unwrap();
+        drop(
+            PerMessageDeflateEnabled::compress(&mut deflater, b"compressible compressible")
+                .unwrap(),
+        );
         assert!(deflater.is_some());
         assert!(
             inflater.is_none(),

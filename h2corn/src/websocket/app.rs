@@ -68,7 +68,7 @@ impl WebSocketAppTask {
     pub(super) fn take_outcome(&mut self) -> Option<Result<(), H2CornError>> {
         match mem::replace(&mut self.state, WebSocketAppTaskState::Settled) {
             WebSocketAppTaskState::Joined(outcome) => Some(outcome),
-            state => {
+            state @ (WebSocketAppTaskState::Running(_) | WebSocketAppTaskState::Settled) => {
                 self.state = state;
                 None
             },

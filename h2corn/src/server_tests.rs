@@ -157,7 +157,7 @@ fn structural_collisions_fail_before_any_duplication() {
 fn count_mismatch_closes_every_unadopted_handle() {
     let (fds, raw) = owned_pipe_writes(2);
     let result = adopt_all(&binds(1), fds, |_, fd| Ok::<_, io::Error>(fd));
-    let _ = result.unwrap_err();
+    drop(result.unwrap_err());
     assert_closed(&raw);
 }
 
@@ -173,14 +173,20 @@ fn mid_adoption_failure_closes_prior_current_and_remaining_handles() {
         }
         Ok(fd)
     });
-    let _ = result.unwrap_err();
+    drop(result.unwrap_err());
     assert_closed(&raw);
 }
 
 #[test]
 fn tls_adoption_rejects_unix_listeners_at_the_ownership_boundary() {
     let path = std::env::temp_dir().join(format!("h2corn-adopt-tls-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
+    if let Err(error) = std::fs::remove_file(&path) {
+        assert_eq!(
+            error.kind(),
+            std::io::ErrorKind::NotFound,
+            "stale test socket must be removable"
+        );
+    }
     let listener = UnixListener::bind(&path).expect("temporary Unix listener binds");
     let fd: OwnedFd = listener.into();
     let binds = [BindTarget::Fd { fd: 0 }];
