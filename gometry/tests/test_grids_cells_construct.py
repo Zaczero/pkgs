@@ -527,6 +527,20 @@ def test_cell_admission_error_keeps_logical_row_after_missing(grid: GridCase) ->
     assert error.value.__notes__ == ['while processing array element 1']
 
 
+@pytest.mark.parametrize('grid', GRID_CASES, ids=[grid.name for grid in GRID_CASES])
+def test_cell_array_admits_later_gathered_invalid_coordinate_before_malformed_depth(
+    grid: GridCase,
+) -> None:
+    source = gm.points([13.4, 14.4, 15.4], [52.5, 91.0, 54.5])
+    points = source[[1, 0, 1]]._with_missing([True, False, False])
+    with pytest.raises(
+        gm.InvalidGeometryError,
+        match='invalid longitude/latitude',
+    ) as error:
+        grid.factory(points, **{grid.depth_kw: 'not-an-integer'})
+    assert error.value.__notes__ == ['while processing array element 2']
+
+
 @pytest.mark.parametrize('grid', GRID_CASES, ids=[g.name for g in GRID_CASES])
 def test_cell_array_hierarchical_predicate_broadcast(grid: GridCase) -> None:
     parent_depth = 5 if grid.name != 'geohash' else 4
