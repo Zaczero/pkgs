@@ -12,7 +12,6 @@ use super::rays::{EmittedPoints, shoot_left};
 use super::{
     ArealCells, Axis, ExactPartition, ExactSourceInventory, KeptNodes, NodeId, rings_occupied,
 };
-use crate::error::ResourceError;
 use crate::geometry::arrangement::{IndexedTopology, compare_departures};
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{point_on_segment, stored_orientation_sign};
@@ -29,7 +28,7 @@ pub(super) struct GlobalFaces {
 
 pub(super) struct CellFacts {
     pub(super) face_membership: Vec<bool>,
-    pub(super) span_raw: Vec<bool>,
+    pub(super) span_raw: Vec<[bool; 2]>,
     pub(super) span_curve: Vec<bool>,
     pub(super) span_support: Vec<bool>,
     pub(super) span_faces: Vec<[u32; 2]>,
@@ -77,86 +76,85 @@ impl CoverageFaceState {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "winding ring IDs, polygon owners, and operand rows are constructed together by the exact source inventory"
+    )]
     pub(super) fn update_ring(
         &mut self,
         inventory: &ExactSourceInventory,
         winding: &mut [i64],
         ring: u32,
         delta: i64,
-    ) -> Result<()> {
+    ) {
         let ring_index = ring as usize;
         let before = winding[ring_index] != 0;
-        winding[ring_index] += delta;
+        winding[ring_index] = winding[ring_index].wrapping_add(delta);
         let after = winding[ring_index] != 0;
         if before == after {
-            return Ok(());
+            return;
         }
-        let polygon = *inventory.ring_polygons.get(ring_index).ok_or_else(|| {
-            GeometryErrorKind::Invalid("exact coverage winding references an unknown ring".into())
-        })? as usize;
+        let polygon = inventory.ring_polygons[ring_index] as usize;
         let occupied = rings_occupied(
             winding,
             inventory.polygon_ring_ranges[polygon].clone(),
             false,
         );
         if occupied == self.polygon_occupied[polygon] {
-            return Ok(());
+            return;
         }
         self.polygon_occupied[polygon] = occupied;
         let row = inventory.polygon_operands[polygon] as usize;
         if occupied {
-            let count = self.row_polygon_counts.get_mut(row).ok_or_else(|| {
-                GeometryErrorKind::Invalid("exact coverage polygon operand is out of range".into())
-            })?;
+            let count = &mut self.row_polygon_counts[row];
             let was_empty = *count == 0;
-            *count = count.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
+            *count = count.wrapping_add(1);
             if was_empty {
                 let position = self.active_rows.len();
                 self.active_rows.push(row);
                 self.active_positions[row] = position;
             }
         } else {
-            let count = self.row_polygon_counts.get_mut(row).ok_or_else(|| {
-                GeometryErrorKind::Invalid("exact coverage polygon operand is out of range".into())
-            })?;
-            *count = count.checked_sub(1).ok_or_else(|| {
-                GeometryErrorKind::Invalid("exact coverage polygon occupancy underflow".into())
-            })?;
+            let count = &mut self.row_polygon_counts[row];
+            *count = count.wrapping_sub(1);
             if *count == 0 {
                 let position = self.active_positions[row];
-                let last = self.active_rows.pop().ok_or_else(|| {
-                    GeometryErrorKind::Invalid("exact coverage active rows are out of sync".into())
-                })?;
-                if position != self.active_rows.len() {
-                    self.active_rows[position] = last;
-                    self.active_positions[last] = position;
+                self.active_rows.swap_remove(position);
+                if position < self.active_rows.len() {
+                    let moved = self.active_rows[position];
+                    self.active_positions[moved] = position;
                 }
                 self.active_positions[row] = usize::MAX;
             }
         }
-        Ok(())
     }
 }
 
 impl BoundaryPlan {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "chord endpoints and incidence nodes come from this boundary plan and its checked CSR topology"
+    )]
     pub(super) fn line_walks(&self, topology: &IndexedTopology) -> Vec<Vec<(usize, bool)>> {
         if self.lines.is_empty() {
             return Vec::new();
         }
         let mut ends = Vec::with_capacity(self.lines.len());
-        let mut incidence = Vec::with_capacity(topology.starts.len() - 1);
-        incidence.resize(topology.starts.len() - 1, (0_usize, [0_usize; 2]));
+        let node_count = topology.component_of.len();
+        let mut incidence = Vec::with_capacity(node_count);
+        incidence.resize(node_count, (0_usize, [0_usize; 2]));
         for (index, chord) in self.lines.iter().enumerate() {
             let pair = [
                 topology.owners[self.source_darts[chord.sources.start] as usize] as usize,
-                topology.targets[self.source_darts[chord.sources.end - 1] as usize] as usize,
+                topology.targets[self.source_darts[chord.sources.end.wrapping_sub(1)] as usize]
+                    as usize,
             ];
             for node in pair {
                 let (degree, edges) = &mut incidence[node];
                 if *degree < 2 {
                     edges[*degree] = index;
                 }
-                *degree += 1;
+                *degree = degree.wrapping_add(1);
             }
             ends.push(pair);
         }
@@ -198,6 +196,10 @@ impl BoundaryPlan {
         walks
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "ring owners and line-walk indices are produced from this same boundary plan; coordinate columns are emitted in walk order"
+    )]
     pub(super) fn emit_xy_parts(
         &self,
         partition: &ExactPartition<'_>,
@@ -235,10 +237,7 @@ impl BoundaryPlan {
         for walk in line_walks {
             let mut xs = Vec::new();
             let mut ys = Vec::new();
-            let coordinate_count = walk
-                .len()
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let coordinate_count = walk.len().wrapping_add(1);
             xs.reserve(coordinate_count);
             ys.reserve(coordinate_count);
             for (index, reversed) in walk {
@@ -256,15 +255,14 @@ impl BoundaryPlan {
                 ys.push(end.y);
             }
             if xs.len() > 2
-                && same_point(
-                    XY::new(xs[0], ys[0]),
-                    XY::new(xs[xs.len() - 1], ys[ys.len() - 1]),
-                )
+                && let (Some(first), Some(last)) =
+                    (xs.first().zip(ys.first()), xs.last().zip(ys.last()))
+                && same_point(XY::new(*first.0, *first.1), XY::new(*last.0, *last.1))
             {
                 canonicalize_closed_xy(&mut xs, &mut ys);
-                let open = xs.len() - 1;
+                let open = xs.len().wrapping_sub(1);
                 let next = (xs[1], ys[1]);
-                let previous = (xs[open - 1], ys[open - 1]);
+                let previous = (xs[open.wrapping_sub(1)], ys[open.wrapping_sub(1)]);
                 if next > previous {
                     xs[1..open].reverse();
                     ys[1..open].reverse();
@@ -352,6 +350,10 @@ impl BoundaryPlan {
         self.emit_node_parts_from_segments(partition, topology, &items, &rounded_segments, false)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "planned source ranges, walk owners, and node chords are IDs from this boundary plan and topology"
+    )]
     pub(super) fn emit_node_parts_from_segments(
         &self,
         partition: &ExactPartition<'_>,
@@ -362,10 +364,7 @@ impl BoundaryPlan {
     ) -> Result<NodeParts> {
         let mut rounded = Vec::new();
         if retain_rounded {
-            let rounded_capacity = items
-                .len()
-                .checked_mul(2)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let rounded_capacity = items.len().wrapping_mul(2);
             rounded.reserve(rounded_capacity);
             for (&[start, end], segment) in items.iter().zip(rounded_segments) {
                 rounded.push((start, segment.start));
@@ -374,7 +373,7 @@ impl BoundaryPlan {
         }
         let node_chord = |chord: &PlannedChord| {
             let first = self.source_darts[chord.sources.start] as usize;
-            let last = self.source_darts[chord.sources.end - 1] as usize;
+            let last = self.source_darts[chord.sources.end.wrapping_sub(1)] as usize;
             [
                 NodeId(topology.owners[first]),
                 NodeId(topology.targets[last]),
@@ -386,10 +385,7 @@ impl BoundaryPlan {
         rings.resize_with(self.walks.len(), || None);
         for (index, walk) in self.walks.iter().enumerate() {
             let mut nodes = Vec::new();
-            let node_capacity = walk
-                .len()
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let node_capacity = walk.len().wrapping_add(1);
             nodes.reserve(node_capacity);
             for chord in walk {
                 nodes.push(node_chord(chord)[0]);
@@ -407,10 +403,7 @@ impl BoundaryPlan {
                 .take()
                 .expect("each ring has one polygon owner");
             let mut polygon_rings = Vec::new();
-            let ring_capacity = indices
-                .len()
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let ring_capacity = indices.len().wrapping_add(1);
             polygon_rings.reserve(ring_capacity);
             polygon_rings.push(shell);
             for index in indices {
@@ -428,10 +421,7 @@ impl BoundaryPlan {
         let mut lines = Vec::with_capacity(line_walks.len());
         for walk in line_walks {
             let mut nodes = Vec::new();
-            let node_capacity = walk
-                .len()
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            let node_capacity = walk.len().wrapping_add(1);
             nodes.reserve(node_capacity);
             for (index, reversed) in walk {
                 let [start, end] = node_chord(&self.lines[index]);
@@ -443,8 +433,10 @@ impl BoundaryPlan {
             }
             if nodes.len() > 2 && nodes.first() == nodes.last() {
                 canonicalize_closed_nodes(partition, &mut nodes)?;
-                let open = nodes.len() - 1;
-                if partition.compare_nodes(nodes[1], nodes[open - 1])? == Ordering::Greater {
+                let open = nodes.len().wrapping_sub(1);
+                if partition.compare_nodes(nodes[1], nodes[open.wrapping_sub(1)])?
+                    == Ordering::Greater
+                {
                     nodes[1..open].reverse();
                     nodes[open] = nodes[0];
                 }
@@ -466,6 +458,10 @@ impl BoundaryPlan {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "boundary walks are nonempty cycles whose source darts and face hosts come from this plan"
+    )]
     pub(super) fn polygon_walks(
         &self,
         partition: &ExactPartition<'_>,
@@ -481,7 +477,7 @@ impl BoundaryPlan {
                 topology,
                 walk.len(),
                 |chord| self.source_darts[walk[chord].sources.start],
-                |chord| self.source_darts[walk[chord].sources.end - 1],
+                |chord| self.source_darts[walk[chord].sources.end.wrapping_sub(1)],
             )?;
             // Each bounded occupied face has one outer cycle; its other
             // cycles bound holes, even when they touch that outer cycle.
@@ -503,6 +499,10 @@ impl BoundaryPlan {
         Ok(polygons)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "source ranges and dart twins come from the same boundary plan and checked topology"
+    )]
     pub(super) fn check_emitted_fans(
         &self,
         topology: &IndexedTopology,
@@ -511,10 +511,10 @@ impl BoundaryPlan {
         let mut darts = Vec::new();
         for chord in self.walks.iter().flatten().chain(&self.lines) {
             let first = self.source_darts[chord.sources.start];
-            let last = self.source_darts[chord.sources.end - 1];
+            let last = self.source_darts[chord.sources.end.wrapping_sub(1)];
             darts.push([first, topology.twins[last as usize]]);
         }
-        debug_assert_eq!(segments.len(), darts.len() + self.points.len());
+        debug_assert_eq!(segments.len(), darts.len().wrapping_add(self.points.len()));
         ExactPartition::check_emitted_fans(topology, &darts, &segments[..darts.len()])
     }
 
@@ -534,6 +534,10 @@ impl BoundaryPlan {
 
     // Incidence and cyclic order fix each connected embedding up to its exterior.
     // Fixing that face and the hosts of disconnected components fixes the global faces.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "emitted NodeIds index the partition; incident offsets and item ordinals are native usize indices built from those items"
+    )]
     #[expect(
         clippy::float_cmp,
         reason = "exact rounded coordinates are ordered by their stored binary64 values to keep emitted topology deterministic"
@@ -557,15 +561,20 @@ impl BoundaryPlan {
         // Every node at its emitted coordinate, as stored doubles.
         let mut coordinates = Vec::with_capacity(node_count);
         coordinates.extend((0..node_count as u32).map(|node| partition.node_xy(NodeId(node))));
-        let mut incident_starts = vec![0_u32; node_count + 1];
+        let incidence_rows = node_count.wrapping_add(1);
+        let mut incident_starts = vec![0_usize; incidence_rows];
         let mut parents = Vec::with_capacity(node_count);
         parents.extend(0..node_count as u32);
         for (&[start, end], segment) in items.iter().zip(segments) {
             coordinates[start.0 as usize] = segment.start;
             coordinates[end.0 as usize] = segment.end;
-            incident_starts[start.0 as usize + 1] += 1;
+            let start_node = start.0 as usize;
+            let start_offset = start_node.wrapping_add(1);
+            incident_starts[start_offset] = incident_starts[start_offset].wrapping_add(1);
             if end != start {
-                incident_starts[end.0 as usize + 1] += 1;
+                let end_node = end.0 as usize;
+                let end_offset = end_node.wrapping_add(1);
+                incident_starts[end_offset] = incident_starts[end_offset].wrapping_add(1);
             }
             let mut left = start.0;
             let mut right = end.0;
@@ -579,17 +588,21 @@ impl BoundaryPlan {
             }
             parents[left.max(right) as usize] = left.min(right);
         }
-        for node in 0..node_count {
-            incident_starts[node + 1] += incident_starts[node];
-        }
-        let mut incident = vec![0_u32; incident_starts[node_count] as usize];
+        super::construction::prefix_contact_offsets(&mut incident_starts);
+        let incident_count = incident_starts[node_count];
+        let mut incident = vec![0_usize; incident_count];
         {
             let mut cursor = Vec::with_capacity(node_count);
-            cursor.extend_from_slice(&incident_starts[..node_count]);
+            cursor.extend(incident_starts.iter().take(node_count).copied());
             for (index, &[start, end]) in items.iter().enumerate() {
-                for node in [start, end].into_iter().take(1 + usize::from(end != start)) {
-                    incident[cursor[node.0 as usize] as usize] = index as u32;
-                    cursor[node.0 as usize] += 1;
+                for node in [start, end]
+                    .into_iter()
+                    .take(if end == start { 1 } else { 2 })
+                {
+                    let node = node.0 as usize;
+                    let position = cursor[node];
+                    incident[position] = index;
+                    cursor[node] = position.wrapping_add(1);
                 }
             }
         }
@@ -597,7 +610,7 @@ impl BoundaryPlan {
         let mut roots: Vec<Option<(usize, XY)>> = Vec::with_capacity(node_count);
         roots.resize(node_count, None);
         for node in 0..node_count {
-            if incident_starts[node] == incident_starts[node + 1] {
+            if incident_starts[node] == incident_starts[node.wrapping_add(1)] {
                 continue;
             }
             let mut root = node as u32;
@@ -621,9 +634,8 @@ impl BoundaryPlan {
             let mut exterior = None;
             let mut chosen = None;
             let mut has_upper = false;
-            let range = incident_starts[node] as usize..incident_starts[node + 1] as usize;
+            let range = incident_starts[node]..incident_starts[node.wrapping_add(1)];
             for &index in &incident[range] {
-                let index = index as usize;
                 let [start, end] = items[index];
                 let (target, target_point, face) = if start.0 as usize == node {
                     (end.0, segments[index].end, sides[index][0])
@@ -666,7 +678,6 @@ impl BoundaryPlan {
         )?;
         for ((&node, &exterior), hit) in queries.iter().zip(&exteriors).zip(hits) {
             let host = hit.map_or(0, |chord| {
-                let chord = chord as usize;
                 let segment = segments[chord];
                 if segment.start.y < segment.end.y {
                     sides[chord][1]
@@ -681,11 +692,15 @@ impl BoundaryPlan {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "planned source ranges address darts in this plan and its paired topology"
+    )]
     pub(super) fn incident_items(&self, topology: &IndexedTopology) -> Vec<[NodeId; 2]> {
         let mut items = Vec::new();
         for chord in self.walks.iter().flatten().chain(&self.lines) {
             let first = self.source_darts[chord.sources.start] as usize;
-            let last = self.source_darts[chord.sources.end - 1] as usize;
+            let last = self.source_darts[chord.sources.end.wrapping_sub(1)] as usize;
             items.push([
                 NodeId(topology.owners[first]),
                 NodeId(topology.targets[last]),
@@ -705,6 +720,10 @@ impl BoundaryPlan {
 /// coordinates instead of re-rounding the edges it shares with neighbors.
 /// Dangling edges inside a face bound nothing and are neither certified nor
 /// emitted.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "polygonization slot, span, walk, and face IDs come from the same checked topology and exact partition"
+)]
 pub(super) fn polygonize_faces(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
@@ -767,6 +786,10 @@ pub(super) fn polygonize_faces(
 /// Whether a closed boundary walk is the outer cycle of the face on its left,
 /// judged at its exact lexicographically least vertex. `first(i)` and
 /// `last(i)` are the first and last darts of the walk's `i`-th step.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "callbacks return darts from the same nonempty closed walk in the checked topology"
+)]
 pub(super) fn walk_is_shell(
     partition: &ExactPartition<'_>,
     topology: &IndexedTopology,
@@ -785,7 +808,11 @@ pub(super) fn walk_is_shell(
         }
     }
     let outgoing = first(minimum);
-    let prior = if minimum == 0 { steps - 1 } else { minimum - 1 };
+    let prior = if minimum == 0 {
+        steps.wrapping_sub(1)
+    } else {
+        minimum.wrapping_sub(1)
+    };
     let incoming = topology.twins[last(prior) as usize];
     let root = NodeId(topology.owners[outgoing as usize]);
     let upper = |slot: u32| -> Result<bool> {
@@ -809,27 +836,29 @@ pub(super) fn canonicalize_closed_nodes(
     partition: &ExactPartition<'_>,
     nodes: &mut [NodeId],
 ) -> Result<()> {
-    let open = nodes.len().saturating_sub(1);
-    if open == 0 {
+    let Some((closing, open)) = nodes.split_last_mut() else {
         return Ok(());
-    }
-    let mut start = 0;
-    for index in 1..open {
-        if partition.compare_nodes(nodes[index], nodes[start])? == Ordering::Less {
+    };
+    let Some(&first) = open.first() else {
+        return Ok(());
+    };
+    let (mut start, mut minimum) = (0, first);
+    for (index, &node) in open.iter().enumerate().skip(1) {
+        if partition.compare_nodes(node, minimum)? == Ordering::Less {
             start = index;
+            minimum = node;
         }
     }
-    nodes[..open].rotate_left(start);
-    nodes[open] = nodes[0];
+    open.rotate_left(start);
+    if let Some(&first) = open.first() {
+        *closing = first;
+    }
     Ok(())
 }
 
 /// A closed ring through `vertices`, rotated to start at its least vertex.
 pub(super) fn closed_ring(vertices: impl ExactSizeIterator<Item = XY> + Clone) -> Result<Ring> {
-    let count = vertices
-        .len()
-        .checked_add(1)
-        .ok_or(ResourceError::SizeOverflow)?;
+    let count = vertices.len().wrapping_add(1);
     let mut xs = Vec::new();
     let mut ys = Vec::new();
     xs.reserve(count);
@@ -844,21 +873,32 @@ pub(super) fn closed_ring(vertices: impl ExactSizeIterator<Item = XY> + Clone) -
 }
 
 pub(super) fn canonicalize_closed_xy(xs: &mut [f64], ys: &mut [f64]) {
-    let open = xs.len().saturating_sub(1);
-    if open == 0 {
+    let Some((closing_x, open_x)) = xs.split_last_mut() else {
         return;
+    };
+    let Some((closing_y, open_y)) = ys.split_last_mut() else {
+        return;
+    };
+    let (Some(&first_x), Some(&first_y)) = (open_x.first(), open_y.first()) else {
+        return;
+    };
+    let mut minimum = (first_x, first_y);
+    let mut start = 0;
+    for (index, (&x, &y)) in open_x.iter().zip(open_y.iter()).enumerate().skip(1) {
+        if x.total_cmp(&minimum.0)
+            .then_with(|| y.total_cmp(&minimum.1))
+            == Ordering::Less
+        {
+            minimum = (x, y);
+            start = index;
+        }
     }
-    let start = (0..open)
-        .min_by(|&left, &right| {
-            xs[left]
-                .total_cmp(&xs[right])
-                .then_with(|| ys[left].total_cmp(&ys[right]))
-        })
-        .unwrap_or(0);
-    xs[..open].rotate_left(start);
-    ys[..open].rotate_left(start);
-    xs[open] = xs[0];
-    ys[open] = ys[0];
+    open_x.rotate_left(start);
+    open_y.rotate_left(start);
+    if let (Some(&first_x), Some(&first_y)) = (open_x.first(), open_y.first()) {
+        *closing_x = first_x;
+        *closing_y = first_y;
+    }
 }
 
 pub(super) fn emitted_pair_preserves_incidence(
@@ -912,6 +952,10 @@ impl GlobalFaces {
         self.boundary_plan_with_protected(lines, topology, edges, partition, occupied, None)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span, dart, node, and face IDs come from the paired partition and topology; extra protection is length-checked at entry"
+    )]
     pub(super) fn boundary_plan_with_protected(
         &self,
         lines: &[u32],
@@ -974,7 +1018,8 @@ impl GlobalFaces {
             if protected[node] || sides(left) != sides(right) {
                 return Ok(false);
             }
-            let row = topology.starts[node] as usize..topology.starts[node + 1] as usize;
+            let row =
+                topology.starts[node] as usize..topology.starts[node.wrapping_add(1)] as usize;
             if row.filter(|&slot| retained[edges[slot] as usize]).count() != 2 {
                 return Ok(false);
             }
@@ -1003,17 +1048,15 @@ impl GlobalFaces {
         // Every selected boundary dart and retained line source is appended
         // once; chord joins only change grouping. Production line spans are
         // unique, while duplicate test inputs merely over-reserve this hint.
-        let source_dart_capacity = walks.iter().fold(lines.len(), |count, walk| {
-            count
-                .checked_add(walk.len())
-                .expect("boundary plan source dart count fits usize")
-        });
+        let source_dart_capacity = walks
+            .iter()
+            .fold(lines.len(), |count, walk| count.wrapping_add(walk.len()));
         let mut source_darts = Vec::with_capacity(source_dart_capacity);
         let mut make_chord = |slot: u32| -> Result<PlannedChord> {
             let start = source_darts.len();
             source_darts.push(slot);
             Ok(PlannedChord {
-                sources: start..start + 1,
+                sources: start..start.wrapping_add(1),
                 sides: sides(slot),
             })
         };
@@ -1022,9 +1065,9 @@ impl GlobalFaces {
             // Start at a retained corner so a joined source range never wraps.
             for index in 0..walk.len() {
                 let prior = if index == 0 {
-                    walk.len() - 1
+                    walk.len().wrapping_sub(1)
                 } else {
-                    index - 1
+                    index.wrapping_sub(1)
                 };
                 if !can_join(walk[prior], walk[index])? {
                     walk.rotate_left(index);
@@ -1034,7 +1077,7 @@ impl GlobalFaces {
             let mut chords = Vec::with_capacity(walk.len());
             for (index, &slot) in walk.iter().enumerate() {
                 let chord = make_chord(slot)?;
-                if index > 0 && can_join(walk[index - 1], slot)? {
+                if index > 0 && can_join(walk[index.wrapping_sub(1)], slot)? {
                     let previous: &mut PlannedChord = chords
                         .last_mut()
                         .expect("a joined chord has a preceding planned chord");
@@ -1055,7 +1098,7 @@ impl GlobalFaces {
         let continuation = |slot: u32, remaining: &[bool]| -> Result<Option<u32>> {
             let node = topology.targets[slot as usize] as usize;
             let twin = topology.twins[slot as usize];
-            for next in topology.starts[node]..topology.starts[node + 1] {
+            for next in topology.starts[node]..topology.starts[node.wrapping_add(1)] {
                 if next != twin && remaining[edges[next as usize] as usize] && can_join(slot, next)?
                 {
                     return Ok(Some(next));
@@ -1096,6 +1139,10 @@ impl GlobalFaces {
     /// twin's face: `bounds(face, twin_face)`. Each walk stays within one
     /// face, since the next dart clockwise from an incoming twin bounds the
     /// same face on its left.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected darts and successor rows are generated from this topology's CSR and global face map"
+    )]
     pub(super) fn boundary_walks(
         &self,
         topology: &IndexedTopology,
@@ -1111,8 +1158,8 @@ impl GlobalFaces {
         }
         let mut visited = Vec::with_capacity(selected.len());
         visited.resize(selected.len(), false);
-        let mut positions = Vec::with_capacity(topology.starts.len() - 1);
-        positions.resize(topology.starts.len() - 1, None);
+        let mut positions = Vec::with_capacity(topology.component_of.len());
+        positions.resize(topology.component_of.len(), None);
         let mut walks = Vec::new();
         for start in 0..selected.len() {
             if !selected[start] || visited[start] {
@@ -1129,7 +1176,7 @@ impl GlobalFaces {
                 // A tangent hole can share a boundary walk with its shell.
                 // Cut closed cycles by exact identity before any rounding.
                 if let Some(begin) = positions[target] {
-                    let mut cycle = Vec::with_capacity(walk.len() - begin);
+                    let mut cycle = Vec::with_capacity(walk.len().wrapping_sub(begin));
                     for dart in walk.drain(begin..) {
                         positions[topology.owners[dart as usize] as usize] = None;
                         cycle.push(dart);
@@ -1137,12 +1184,16 @@ impl GlobalFaces {
                     walks.push(cycle);
                 }
                 let first = topology.starts[target] as usize;
-                let end = topology.starts[target + 1] as usize;
+                let end = topology.starts[target.wrapping_add(1)] as usize;
                 let twin = topology.twins[slot] as usize;
                 // Skip omitted wedges clockwise from the incoming twin.
                 slot = twin;
                 loop {
-                    slot = if slot == first { end - 1 } else { slot - 1 };
+                    slot = if slot == first {
+                        end.wrapping_sub(1)
+                    } else {
+                        slot.wrapping_sub(1)
+                    };
                     if selected[slot] {
                         break;
                     }
@@ -1157,6 +1208,10 @@ impl GlobalFaces {
         walks
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "dart, span, and face IDs are paired from the same checked topology and retained-span table"
+    )]
     pub(super) fn quotient(
         &self,
         topology: &IndexedTopology,

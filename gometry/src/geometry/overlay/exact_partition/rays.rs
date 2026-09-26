@@ -12,11 +12,17 @@ use super::Axis;
 use super::construction::PointArena;
 #[cfg(test)]
 use super::metrics::update as update_partition_metrics;
-use crate::error::ResourceError;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
 use crate::geometry::tessellation::exact::{Interval, compare_ratios};
 use crate::geometry::{GeometryErrorKind, Result, XY};
+
+#[derive(Clone, Copy)]
+struct SweepEdge {
+    lower: u32,
+    upper: u32,
+    item: usize,
+}
 
 /// Points a leftward ray sweep reads: rounded coordinates, an order on each
 /// axis, and orientation.
@@ -28,6 +34,10 @@ pub(super) trait RayPoints {
     /// Sort items by their points' coordinate on `axis`, reporting each
     /// adjacent pair at one coordinate to `equal`. The rounded coordinate
     /// sorts; exact points break only runs of equal rounded coordinates.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "run bounds are advanced only within the sorted item slice"
+    )]
     fn sort_by_axis<T: Copy, P: Fn(T) -> u32, E: FnMut(T, T) -> Result<()>>(
         &self,
         items: &mut [T],
@@ -42,20 +52,18 @@ pub(super) trait RayPoints {
         items.sort_unstable_by(|&left, &right| key(left).total_cmp(&key(right)));
         let mut run = 0;
         while run < items.len() {
-            let mut end = run + 1;
+            let mut end = run.wrapping_add(1);
             while end < items.len() && key(items[end]).total_cmp(&key(items[run])).is_eq() {
-                end += 1;
+                end = end.wrapping_add(1);
             }
-            if end - run > 1 {
+            if end.wrapping_sub(run) > 1 {
                 let tied = &mut items[run..end];
                 try_sort_by(tied, |&left, &right| {
                     self.compare_axis(point(left), point(right), axis)
                 })?;
-                for pair in 1..tied.len() {
-                    if self.compare_axis(point(tied[pair - 1]), point(tied[pair]), axis)?
-                        == Ordering::Equal
-                    {
-                        equal(tied[pair - 1], tied[pair])?;
+                for &[left, right] in tied.array_windows::<2>() {
+                    if self.compare_axis(point(left), point(right), axis)? == Ordering::Equal {
+                        equal(left, right)?;
                     }
                 }
             }
@@ -66,6 +74,10 @@ pub(super) trait RayPoints {
 }
 
 impl RayPoints for PointArena<'_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the point ID was admitted by PointArena before it entered the sweep"
+    )]
     fn rounded(&self, index: u32) -> XY {
         self.rounded[index as usize]
     }
@@ -73,6 +85,10 @@ impl RayPoints for PointArena<'_> {
     /// Order two points along one axis. Nearest-even rounding is monotone, so
     /// rounded coordinates that differ order the exact points the same way;
     /// only a tie that is not between two stored values reads exact points.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "sweep endpoints and queries are IDs from this PointArena"
+    )]
     fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering> {
         let (l, r) = (
             axis.of(self.rounded[left as usize]),
@@ -95,6 +111,10 @@ impl RayPoints for PointArena<'_> {
     /// The orientation of `c` against the directed line through `a` and `b`:
     /// the stored predicate when all three are stored, otherwise an interval
     /// filter over the certified bounds and the exact homogeneous determinant.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "sweep endpoints and queries are IDs from this PointArena"
+    )]
     fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
         if self.is_stored(a) && self.is_stored(b) && self.is_stored(c) {
             let [a, b, c] = [a, b, c].map(|index| self.rounded[index as usize]);
@@ -143,10 +163,18 @@ impl RayPoints for PointArena<'_> {
 pub(super) struct EmittedPoints<'p>(pub(super) &'p [XY]);
 
 impl RayPoints for EmittedPoints<'_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "emitted node IDs index the coordinate slice produced for the same partition"
+    )]
     fn rounded(&self, index: u32) -> XY {
         self.0[index as usize]
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "emitted node IDs index the coordinate slice produced for the same partition"
+    )]
     fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering> {
         let (left, right) = (
             axis.of(self.0[left as usize]),
@@ -161,6 +189,10 @@ impl RayPoints for EmittedPoints<'_> {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "emitted node IDs index the coordinate slice produced for the same partition"
+    )]
     fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign> {
         let [a, b, c] = [a, b, c].map(|index| self.0[index as usize]);
         Ok(stored_orientation_sign(a.x, a.y, b.x, b.y, c.x, c.y))
@@ -176,24 +208,28 @@ impl RayPoints for EmittedPoints<'_> {
 /// the faces its wedge toward +x belongs to, and a horizontal edge at the
 /// query's height is never crossed. Each query must be its component's
 /// lexicographic minimum, so its own edges never lie strictly left of it.
-/// Answers follow `queries`, as indices into `edges`.
+/// Answers follow `queries`, as native indices into `edges`.
 ///
 /// The status holds the edges crossing the sweep line in x order: an edge
 /// enters at its lower endpoint and leaves at its upper one, placed and found
 /// by binary search on orientations, so the sweep costs O((n + q) log n)
 /// comparisons plus the status shifts.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "query positions come from order and status positions from first_not_left over those same slices"
+)]
 pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
     points: &R,
     edge_count: usize,
     edge: E,
     queries: &[u32],
-) -> Result<Vec<Option<u32>>> {
+) -> Result<Vec<Option<usize>>> {
     let mut order = Vec::with_capacity(queries.len());
     order.extend(0..queries.len());
     points.sort_by_axis(&mut order, Axis::Y, |index| queries[index], |_, _| Ok(()))?;
-    // [lower, upper, edge] for the edges some ray crosses: a horizontal or
-    // zero-length edge never does, nor one no query height falls within.
-    let mut starts: Vec<[u32; 3]> = Vec::new();
+    // A horizontal or zero-length edge never crosses the sweep, nor does one
+    // whose vertical extent contains no query height.
+    let mut starts: Vec<SweepEdge> = Vec::new();
     for index in 0..edge_count {
         let [a, b] = edge(index);
         let (lower, upper) = match points.compare_axis(a, b, Axis::Y)? {
@@ -207,83 +243,91 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
         if let Some(&query) = order.get(first)
             && points.compare_axis(queries[query], upper, Axis::Y)? == Ordering::Less
         {
-            let index = u32::try_from(index).map_err(|_| ResourceError::SizeOverflow)?;
-            starts.push([lower, upper, index]);
+            starts.push(SweepEdge {
+                lower,
+                upper,
+                item: index,
+            });
         }
     }
     let mut ends = Vec::with_capacity(starts.len());
     ends.extend_from_slice(&starts);
-    points.sort_by_axis(&mut starts, Axis::Y, |[lower, ..]| lower, |_, _| Ok(()))?;
-    points.sort_by_axis(&mut ends, Axis::Y, |[_, upper, _]| upper, |_, _| Ok(()))?;
+    points.sort_by_axis(&mut starts, Axis::Y, |edge| edge.lower, |_, _| Ok(()))?;
+    points.sort_by_axis(&mut ends, Axis::Y, |edge| edge.upper, |_, _| Ok(()))?;
     let mut answers = Vec::with_capacity(queries.len());
     answers.resize(queries.len(), None);
 
     let orientation = |a, b, c| {
         #[cfg(test)]
-        update_partition_metrics(|metrics| metrics.ray_orientations += 1);
+        update_partition_metrics(|metrics| {
+            metrics.ray_orientations = metrics.ray_orientations.wrapping_add(1);
+        });
         points.orientation(a, b, c)
     };
     let negative = |a, b, c| -> Result<bool> { Ok(orientation(a, b, c)? == ExactSign::Negative) };
     let positive = |a, b, c| -> Result<bool> { Ok(orientation(a, b, c)? == ExactSign::Positive) };
     // Whether `edge` lies left of every point just above `point`'s height on
     // the ray through it; for an edge starting at `point`, the fan order.
-    let left_above = |[lower, upper, _]: [u32; 3], [start, end, _]: [u32; 3]| -> Result<bool> {
-        if lower == start {
-            positive(start, end, upper)
+    let left_above = |edge: SweepEdge, starting: SweepEdge| -> Result<bool> {
+        if edge.lower == starting.lower {
+            positive(starting.lower, starting.upper, edge.upper)
         } else {
-            negative(lower, upper, start)
+            negative(edge.lower, edge.upper, starting.lower)
         }
     };
     // The same just below the height where `ending` leaves, among the edges
     // converging on its upper endpoint by their lower directions.
-    let left_below = |[lower, upper, _]: [u32; 3], [start, end, _]: [u32; 3]| -> Result<bool> {
-        if upper == end {
-            positive(start, end, lower)
+    let left_below = |edge: SweepEdge, ending: SweepEdge| -> Result<bool> {
+        if edge.upper == ending.upper {
+            positive(ending.lower, ending.upper, edge.lower)
         } else {
-            negative(lower, upper, end)
+            negative(edge.lower, edge.upper, ending.upper)
         }
     };
-    let mut status: Vec<[u32; 3]> = Vec::with_capacity(starts.len());
+    let mut status: Vec<SweepEdge> = Vec::with_capacity(starts.len());
     let (mut next_start, mut next_end, mut next_query) = (0, 0, 0);
     while next_query < order.len() {
         let mut height = queries[order[next_query]];
-        if let Some(&[lower, ..]) = starts.get(next_start)
-            && points.compare_axis(lower, height, Axis::Y)? == Ordering::Less
+        if let Some(starting) = starts.get(next_start)
+            && points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Less
         {
-            height = lower;
+            height = starting.lower;
         }
-        if let Some(&[_, upper, _]) = ends.get(next_end)
-            && points.compare_axis(upper, height, Axis::Y)? == Ordering::Less
+        if let Some(ending) = ends.get(next_end)
+            && points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Less
         {
-            height = upper;
+            height = ending.upper;
         }
         while let Some(&ending) = ends.get(next_end)
-            && points.compare_axis(ending[1], height, Axis::Y)? == Ordering::Equal
+            && points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Equal
         {
             let index = first_not_left(&status, |edge| left_below(edge, ending))?;
-            if status.get(index).map(|edge| edge[2]) != Some(ending[2]) {
+            if status.get(index).map(|edge| edge.item) != Some(ending.item) {
                 return Err(GeometryErrorKind::Invalid(
                     "leftward ray sweep lost an edge from its status".into(),
                 )
                 .into());
             }
             status.remove(index);
-            next_end += 1;
+            next_end = next_end.wrapping_add(1);
         }
         while let Some(&starting) = starts.get(next_start)
-            && points.compare_axis(starting[0], height, Axis::Y)? == Ordering::Equal
+            && points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Equal
         {
             let index = first_not_left(&status, |edge| left_above(edge, starting))?;
             status.insert(index, starting);
-            next_start += 1;
+            next_start = next_start.wrapping_add(1);
         }
         while let Some(&query) = order.get(next_query)
             && points.compare_axis(queries[query], height, Axis::Y)? == Ordering::Equal
         {
             let point = queries[query];
-            let index = first_not_left(&status, |[lower, upper, _]| negative(lower, upper, point))?;
-            answers[query] = index.checked_sub(1).map(|left| status[left][2]);
-            next_query += 1;
+            let index = first_not_left(&status, |edge| negative(edge.lower, edge.upper, point))?;
+            answers[query] = index
+                .checked_sub(1)
+                .and_then(|left| status.get(left))
+                .map(|edge| edge.item);
+            next_query = next_query.wrapping_add(1);
         }
     }
     Ok(answers)
@@ -291,15 +335,19 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
 
 /// The first item that is not left of the probe, for items ordered so that
 /// `left` holds on a prefix.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "binary-search middle is strictly below high, which starts at items.len()"
+)]
 pub(super) fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(
     items: &[T],
     mut left: L,
 ) -> Result<usize> {
     let (mut low, mut high) = (0, items.len());
     while low < high {
-        let middle = low + (high - low) / 2;
+        let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
         if left(items[middle])? {
-            low = middle + 1;
+            low = middle.wrapping_add(1);
         } else {
             high = middle;
         }

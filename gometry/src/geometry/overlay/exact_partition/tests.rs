@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn contact_offsets_use_the_native_index_domain_past_u32_max() {
+fn csr_prefix_offsets_use_the_native_index_domain_past_u32_max() {
     let u32_max = usize::try_from(u32::MAX).expect("u32 count fits this supported target");
     let mut over_u32 = [0, u32_max, 1];
     construction::prefix_contact_offsets(&mut over_u32);
@@ -61,7 +61,7 @@ impl ExactPartition<'_> {
     }
 
     /// The span a leftward ray from `query` meets first, by the sweep.
-    fn left_contact(&self, query: NodeId) -> Option<u32> {
+    fn left_contact(&self, query: NodeId) -> Option<usize> {
         shoot_left(
             &self.points,
             self.spans.len(),
@@ -1701,12 +1701,9 @@ fn local_walks_keep_nested_components_and_bridge_sides_separate() {
         })
         .unwrap();
     for query in [inner, isolated] {
-        assert_eq!(
-            partition.left_contact(NodeId(query as u32)),
-            Some(wall as u32)
-        );
+        assert_eq!(partition.left_contact(NodeId(query as u32)), Some(wall));
     }
-    let host = partition.contact_walk(&topology, &edges, wall as u32);
+    let host = partition.contact_walk(&topology, &edges, wall);
     assert_ne!(host, outer_walk);
     let wall_slot = (topology.starts[outer] as usize..topology.starts[outer + 1] as usize)
         .find(|&slot| edges[slot] == wall as u32)
@@ -1815,7 +1812,7 @@ fn rays_pass_over_horizontal_spans_and_tangent_vertices() {
                 .spans
                 .iter()
                 .position(|span| span.start == start && span.end == end)
-                .unwrap() as u32
+                .unwrap()
         });
         assert_eq!(partition.left_contact(query), expected);
         let faces = partition.global_faces(&topology, &edges).unwrap();
@@ -1850,7 +1847,7 @@ fn vertex_visibility_links_disconnected_exteriors_to_infinity() {
         .position(|span| {
             (span.start == valley && span.end == rim) || (span.start == rim && span.end == valley)
         })
-        .unwrap() as u32;
+        .unwrap();
     assert_eq!(partition.left_contact(root), Some(contact));
     let faces = partition.global_faces(&topology, &edges).unwrap();
     assert_eq!(faces.count, 3);

@@ -564,6 +564,22 @@ impl ExactSourceInventory {
         })
     }
 
+    fn isolated_point_occurrences<'a>(
+        &'a self,
+        partition: &'a ExactPartition<'_>,
+    ) -> impl Iterator<Item = (NodeId, Point, u32)> + 'a {
+        debug_assert_eq!(self.isolated.len(), self.isolated_points.len());
+        debug_assert_eq!(self.isolated.len(), self.isolated_operands.len());
+        debug_assert_eq!(self.isolated.len(), partition.point_nodes.len());
+        partition
+            .point_nodes
+            .iter()
+            .copied()
+            .zip(self.isolated_points.iter().copied())
+            .zip(self.isolated_operands.iter().copied())
+            .map(|((node, point), operand)| (node, point, operand))
+    }
+
     pub(in crate::geometry) fn from_polygon_operands<P: AsRef<Polygon>, Q: AsRef<Polygon>>(
         left: &[P],
         right: &[Q],
@@ -883,17 +899,10 @@ impl ExactSourceInventory {
                 }
             }
         }
-        if partition.point_nodes.len() != self.isolated_points.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "exact partition isolated-point provenance is out of sync".into(),
-            )
-            .into());
-        }
-        for (index, &bound) in partition.point_nodes.iter().enumerate() {
+        for (bound, point, _) in self.isolated_point_occurrences(partition) {
             if bound != node {
                 continue;
             }
-            let point = self.isolated_points[index];
             if axes.has_z() {
                 z.observe(point.z());
             }
@@ -3566,8 +3575,8 @@ impl ExactPartition<'_> {
         clippy::indexing_slicing,
         reason = "the contact span comes from the same partition and its departure row comes from local_topology"
     )]
-    fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], span: u32) -> u32 {
-        let atom = self.spans[span as usize];
+    fn contact_walk(&self, topology: &IndexedTopology, edges: &[u32], span: usize) -> u32 {
+        let atom = self.spans[span];
         let source = self.unique[atom.unique as usize];
         let origin = if source.end.y > source.start.y {
             atom.end
@@ -3576,7 +3585,7 @@ impl ExactPartition<'_> {
         };
         let slot = (topology.starts[origin.0 as usize] as usize
             ..topology.starts[origin.0 as usize + 1] as usize)
-            .find(|&slot| edges[slot] == span)
+            .find(|&slot| edges[slot] as usize == span)
             .expect("contact atom has a departure slot");
         topology.face_of[slot]
     }

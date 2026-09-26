@@ -10,7 +10,7 @@ use super::{
 };
 use crate::error::ResourceError;
 use crate::geometry::arrangement::IndexedTopology;
-use crate::geometry::{De9im, Dimension, GeometryErrorKind, HashMap, Loc, Result, RingKind};
+use crate::geometry::{De9im, Dimension, HashMap, Loc, Result, RingKind};
 
 impl ExactSourceInventory {
     pub(in crate::geometry) fn relate(&self, partition: &ExactPartition<'_>) -> Result<De9im> {
@@ -19,19 +19,17 @@ impl ExactSourceInventory {
         let winding_rings = self.winding_source_rings();
         let facts =
             self.build_cell_facts(partition, &topology, &edges, &global, &winding_rings, false)?;
-        let line_boundaries = self.node_source_flags(partition)?;
         let operands = self.operand_count();
+        let line_boundaries = self.node_source_flags(partition, facts.point_membership.len())?;
         let mut matrix = De9im::empty_disjoint();
-        for face in 0..global.count as usize {
-            matrix.set_at_least(
-                location(facts.face_membership[face * operands]),
-                location(facts.face_membership[face * operands + 1]),
-                Dimension::Surface,
-            );
+        for membership in facts.face_membership.chunks_exact(operands) {
+            let [left, right] = membership else {
+                unreachable!("DE-9IM relation has exactly two operands")
+            };
+            matrix.set_at_least(location(*left), location(*right), Dimension::Surface);
         }
-        for span in 0..partition.spans.len() {
-            let left_face = facts.span_faces[span][0] as usize;
-            let right_face = facts.span_faces[span][1] as usize;
+        for (span, &[left_face, right_face]) in facts.span_faces.iter().enumerate() {
+            let (left_face, right_face) = (left_face as usize, right_face as usize);
             let left =
                 self.span_location_from_facts(0, span, left_face, right_face, &facts, operands);
             let right =
@@ -68,6 +66,14 @@ impl ExactSourceInventory {
         Ok(matrix)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "source, node, face, and span IDs come from the same admitted inventory and topology; cell extents are allocated from their row counts"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "flattened cell offsets are bounded by the checked ID domains and their owning row extents"
+    )]
     pub(super) fn build_cell_facts(
         &self,
         partition: &ExactPartition<'_>,
@@ -78,19 +84,10 @@ impl ExactSourceInventory {
         odd: bool,
     ) -> Result<CellFacts> {
         let operands = self.operand_count();
-        let face_cells = (global.count as usize)
-            .checked_mul(operands)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let span_cells = partition
-            .spans
-            .len()
-            .checked_mul(operands)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let raw_cells = span_cells
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let face_slots = self.global_face_slots(topology, edges, global)?;
-        let span_faces = self.span_faces(topology, edges, global)?;
+        let face_cells = (global.count as usize).wrapping_mul(operands);
+        let span_cells = partition.spans.len().wrapping_mul(operands);
+        let face_slots = self.global_face_slots(topology, global);
+        let span_faces = Self::span_faces(partition, topology, edges, global);
         let mut facts = CellFacts {
             face_membership: Vec::new(),
             span_raw: Vec::new(),
@@ -101,16 +98,13 @@ impl ExactSourceInventory {
         };
         facts.face_membership.reserve(face_cells);
         facts.face_membership.resize(face_cells, false);
-        facts.span_raw.reserve(raw_cells);
-        facts.span_raw.resize(raw_cells, false);
+        facts.span_raw.reserve(span_cells);
+        facts.span_raw.resize(span_cells, [false; 2]);
         facts.span_curve.reserve(span_cells);
         facts.span_curve.resize(span_cells, false);
         facts.span_support.reserve(span_cells);
         facts.span_support.resize(span_cells, false);
-        let node_cells = partition
-            .node_count()
-            .checked_mul(operands)
-            .ok_or(ResourceError::SizeOverflow)?;
+        let node_cells = partition.node_count().wrapping_mul(operands);
         facts.point_membership.reserve(node_cells);
         facts.point_membership.resize(node_cells, false);
         let mut shell_support = Vec::new();
@@ -256,7 +250,7 @@ impl ExactSourceInventory {
                         }
                         if shell_support[polygon] && !hole_support[polygon] {
                             let operand = self.polygon_operands[polygon] as usize;
-                            facts.span_raw[(span * 2 + side) * operands + operand] = true;
+                            facts.span_raw[span * operands + operand][side] = true;
                         }
                         shell_support[polygon] = false;
                         hole_support[polygon] = false;
@@ -272,14 +266,8 @@ impl ExactSourceInventory {
                 facts.point_membership[node.0 as usize * operands + operand] = true;
             }
         }
-        if partition.point_nodes.len() != self.isolated_operands.len() {
-            return Err(GeometryErrorKind::Invalid(
-                "exact partition point sources lost their occurrence mapping".into(),
-            )
-            .into());
-        }
-        for (index, &node) in partition.point_nodes.iter().enumerate() {
-            let operand = self.isolated_operands[index] as usize;
+        for (node, _, operand) in self.isolated_point_occurrences(partition) {
+            let operand = operand as usize;
             facts.point_membership[node.0 as usize * operands + operand] = true;
         }
         for &(node, source) in &partition.point_sources {
@@ -290,15 +278,27 @@ impl ExactSourceInventory {
             }
         }
 
-        for span in 0..partition.spans.len() {
-            let left = facts.span_faces[span][0] as usize;
-            let right = facts.span_faces[span][1] as usize;
-            for operand in 0..operands {
-                let index = span * operands + operand;
-                facts.span_curve[index] = self.explicit_curve_support(partition, span, operand);
-                facts.span_support[index] = facts.span_curve[index]
-                    || facts.span_raw[(span * 2) * operands + operand]
-                    || facts.span_raw[(span * 2 + 1) * operands + operand]
+        let span_rows = facts
+            .span_curve
+            .chunks_exact_mut(operands)
+            .zip(facts.span_support.chunks_exact_mut(operands))
+            .zip(facts.span_raw.chunks_exact(operands));
+        for (span, (faces, ((curve_row, support_row), raw_row))) in
+            facts.span_faces.iter().zip(span_rows).enumerate()
+        {
+            let [left, right] = *faces;
+            let (left, right) = (left as usize, right as usize);
+            for (operand, ((curve, support), raw)) in curve_row
+                .iter_mut()
+                .zip(support_row)
+                .zip(raw_row)
+                .enumerate()
+            {
+                let [left_raw, right_raw] = *raw;
+                *curve = self.explicit_curve_support(partition, span, operand);
+                *support = *curve
+                    || left_raw
+                    || right_raw
                     || facts.face_membership[left * operands + operand]
                     || facts.face_membership[right * operands + operand];
             }
@@ -306,60 +306,69 @@ impl ExactSourceInventory {
         Ok(facts)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "walk IDs come from global_faces and slot cursors address the exact topology CSR"
+    )]
     pub(super) fn global_face_slots(
         &self,
         topology: &IndexedTopology,
-        _edges: &[u32],
         global: &GlobalFaces,
-    ) -> Result<(Vec<u32>, Vec<u32>)> {
+    ) -> (Vec<u32>, Vec<u32>) {
         let count = global.count as usize;
         let mut counts = vec![0_u32; count];
         for &walk in &topology.face_of {
             let face = global.walk_faces[walk as usize] as usize;
-            counts[face] = counts[face]
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)?;
+            counts[face] = counts[face].wrapping_add(1);
         }
-        let starts = super::placement_offsets(&mut counts)?;
+        let mut starts = Vec::with_capacity(count.wrapping_add(1));
+        let mut total = 0_u32;
+        for count in &mut counts {
+            let row_count = *count;
+            starts.push(total);
+            *count = total;
+            total = total.wrapping_add(row_count);
+        }
+        starts.push(total);
         let mut cursor = counts;
         let mut slots = vec![0; topology.face_of.len()];
         for (slot, &walk) in topology.face_of.iter().enumerate() {
             let face = global.walk_faces[walk as usize] as usize;
             let index = cursor[face] as usize;
-            slots[index] = u32::try_from(slot).map_err(|_| ResourceError::SizeOverflow)?;
-            cursor[face] += 1;
+            slots[index] = slot as u32;
+            cursor[face] = cursor[face].wrapping_add(1);
         }
-        Ok((starts, slots))
+        (starts, slots)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "local_topology pairs every slot with an admitted span ID and global walk face"
+    )]
     pub(super) fn span_faces(
-        &self,
+        partition: &ExactPartition<'_>,
         topology: &IndexedTopology,
         edges: &[u32],
         global: &GlobalFaces,
-    ) -> Result<Vec<[u32; 2]>> {
-        let mut faces = Vec::new();
-        let face_capacity = edges.iter().copied().max().map_or(Ok(0_usize), |edge| {
-            (edge as usize)
-                .checked_add(1)
-                .ok_or(ResourceError::SizeOverflow)
-        })?;
-        faces.reserve(face_capacity);
-        if !edges.is_empty() {
-            faces.resize(face_capacity, [u32::MAX; 2]);
-        }
-        for (slot, &span) in edges.iter().enumerate() {
-            let face = global.walk_faces[topology.face_of[slot] as usize];
+    ) -> Vec<[u32; 2]> {
+        let mut faces = vec![[u32::MAX; 2]; partition.spans.len()];
+        for (slot, &walk) in topology.face_of.iter().enumerate() {
+            let span = edges[slot] as usize;
+            let face = global.walk_faces[walk as usize];
             let twin = topology.twins[slot] as usize;
             let other = global.walk_faces[topology.face_of[twin] as usize];
-            let pair = &mut faces[span as usize];
+            let pair = &mut faces[span];
             if pair[0] == u32::MAX {
                 *pair = [face, other];
             }
         }
-        Ok(faces)
+        faces
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "span owner source IDs and their operand/ring columns come from the same inventory"
+    )]
     pub(super) fn explicit_curve_support(
         &self,
         partition: &ExactPartition<'_>,
@@ -372,6 +381,10 @@ impl ExactSourceInventory {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node, dart, source, and ring IDs are admitted by this partition's topology and provenance"
+    )]
     pub(super) fn collapsed_ring_at_node(
         &self,
         partition: &ExactPartition<'_>,
@@ -402,12 +415,20 @@ impl ExactSourceInventory {
         })
     }
 
-    pub(super) fn node_source_flags(&self, partition: &ExactPartition<'_>) -> Result<Vec<bool>> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "line boundary keys and operand IDs are produced by the same staged inventory and point-node partition"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the flattened node/operand index addresses the exact node-cell table sized by build_cell_facts"
+    )]
+    pub(super) fn node_source_flags(
+        &self,
+        partition: &ExactPartition<'_>,
+        cells: usize,
+    ) -> Result<Vec<bool>> {
         let operands = self.operand_count();
-        let cells = partition
-            .node_count()
-            .checked_mul(operands)
-            .ok_or(ResourceError::SizeOverflow)?;
         let mut line_boundaries = Vec::with_capacity(cells);
         line_boundaries.resize(cells, false);
 
@@ -419,17 +440,21 @@ impl ExactSourceInventory {
             }
         }
         for &(operand, key) in &self.line_boundaries {
-            let Some(&node) = stored.get(&key) else {
-                continue;
-            };
+            let node = stored[&key];
             let index = node as usize * operands + operand as usize;
-            if let Some(value) = line_boundaries.get_mut(index) {
-                *value = !*value;
-            }
+            line_boundaries[index] = !line_boundaries[index];
         }
         Ok(line_boundaries)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face and span IDs are admitted by the same exact partition and fact tables"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "flattened face and span cells are within the exact row-major table extents"
+    )]
     pub(super) fn span_location_from_facts(
         &self,
         operand: usize,
@@ -454,6 +479,14 @@ impl ExactSourceInventory {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "NodeId, CSR slot, span, host-face, and operand IDs are admitted by this partition and its row-major facts"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "flattened fact indices stay within their node/span rows; residual degree is only a mod-2 boundary count"
+    )]
     pub(super) fn node_location_from_facts(
         &self,
         operand: usize,
@@ -498,10 +531,10 @@ impl ExactSourceInventory {
             let span = edges[slot] as usize;
             let index = span * operands + operand;
             line |= facts.span_support[index];
-            if facts.span_raw[span * 2 * operands + operand]
-                || facts.span_raw[(span * 2 + 1) * operands + operand]
-            {
-                residual_degree += usize::from(!facts.span_curve[index]);
+            let [left_raw, right_raw] = facts.span_raw[index];
+            if left_raw || right_raw {
+                residual_degree =
+                    residual_degree.wrapping_add(usize::from(!facts.span_curve[index]));
             }
         }
         let node_index = node.0 as usize * operands + operand;
@@ -540,6 +573,14 @@ impl ExactSourceInventory {
         )
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "selected face/span/node IDs are the same IDs used to size the exact fact and cell tables"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "remaining flattened indices are row offsets within those exact tables"
+    )]
     pub(super) fn select_cells_with_winding_rings(
         &self,
         partition: &ExactPartition<'_>,
@@ -564,37 +605,33 @@ impl ExactSourceInventory {
         cells.spans.resize(partition.spans.len(), false);
         cells.nodes.reserve(partition.node_count());
         cells.nodes.resize(partition.node_count(), false);
-        for face in 0..global.count as usize {
-            cells.faces[face] = select_operation(
-                operation,
-                &facts.face_membership[face * operands..][..operands],
-            );
+        for (selected, membership) in cells
+            .faces
+            .iter_mut()
+            .zip(facts.face_membership.chunks_exact(operands))
+        {
+            *selected = select_operation(operation, membership);
         }
 
-        let node_cells = partition
-            .node_count()
-            .checked_mul(operands)
-            .ok_or(ResourceError::SizeOverflow)?;
-        let mut node_membership = Vec::with_capacity(node_cells);
-        node_membership.resize(node_cells, false);
-        for span_index in 0..partition.spans.len() {
-            let membership = &facts.span_support[span_index * operands..][..operands];
-            cells.spans[span_index] = select_operation(operation, membership);
-            if cells.spans[span_index] {
-                let span = partition.spans[span_index];
+        let mut node_membership = Vec::with_capacity(facts.point_membership.len());
+        node_membership.extend_from_slice(&facts.point_membership);
+        for ((selected, span), membership) in cells
+            .spans
+            .iter_mut()
+            .zip(&partition.spans)
+            .zip(facts.span_support.chunks_exact(operands))
+        {
+            *selected = select_operation(operation, membership);
+            if *selected {
                 cells.nodes[span.start.0 as usize] = true;
                 cells.nodes[span.end.0 as usize] = true;
             }
-            for operand in 0..operands {
-                if facts.span_support[span_index * operands + operand] {
-                    let span = partition.spans[span_index];
+            for (operand, &present) in membership.iter().enumerate() {
+                if present {
                     node_membership[span.start.0 as usize * operands + operand] = true;
                     node_membership[span.end.0 as usize * operands + operand] = true;
                 }
             }
-        }
-        for (membership, &point) in node_membership.iter_mut().zip(&facts.point_membership) {
-            *membership |= point;
         }
         for &node in &partition.isolated {
             let component = topology.component_of[node.0 as usize] as usize;
@@ -604,22 +641,23 @@ impl ExactSourceInventory {
                     facts.face_membership[host * operands + operand];
             }
         }
-        for node in 0..partition.node_count() {
+        for (node, (cell_node, membership)) in cells
+            .nodes
+            .iter_mut()
+            .zip(node_membership.chunks_exact_mut(operands))
+            .enumerate()
+        {
             let range = topology.starts[node] as usize..topology.starts[node + 1] as usize;
-            if range.is_empty() {
-                continue;
+            if !range.is_empty() {
+                for (operand, present) in membership.iter_mut().enumerate() {
+                    let any = range.clone().any(|slot| {
+                        let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
+                        facts.face_membership[face * operands + operand]
+                    });
+                    *present |= any;
+                }
             }
-            for operand in 0..operands {
-                let any = range.clone().any(|slot| {
-                    let face = global.walk_faces[topology.face_of[slot] as usize] as usize;
-                    facts.face_membership[face * operands + operand]
-                });
-                node_membership[node * operands + operand] |= any;
-            }
-        }
-        for node in 0..partition.node_count() {
-            let membership = &node_membership[node * operands..][..operands];
-            cells.nodes[node] |= select_operation(operation, membership);
+            *cell_node |= select_operation(operation, membership);
         }
         Ok(cells)
     }

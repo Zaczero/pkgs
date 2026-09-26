@@ -235,7 +235,10 @@ impl ExactSourceInventory {
             &winding_rings,
             self.ring_count,
             &mut state,
-            |winding, ring, direction, state| state.update_ring(self, winding, ring, direction),
+            |winding, ring, direction, state| {
+                state.update_ring(self, winding, ring, direction);
+                Ok(())
+            },
             |face, _, state| visit(face, &state.active_rows),
         )
     }
@@ -336,7 +339,7 @@ impl ExactSourceInventory {
             metrics.topology_halfedges = topology.face_of.len();
             metrics.global_faces = global.count as usize;
         });
-        let (face_starts, face_slots) = self.global_face_slots(&topology, &edges, &global)?;
+        let (face_starts, face_slots) = self.global_face_slots(&topology, &global);
         let mut face_owners = Vec::with_capacity(global.count as usize);
         face_owners.resize(global.count as usize, u32::MAX);
         let mut face_seen = Vec::with_capacity(global.count as usize);
