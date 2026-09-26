@@ -240,7 +240,7 @@ fn py_to_json_value_mapping(
         if let Some(child_projection) = child_projection {
             map.insert(
                 key_str,
-                py_to_json_value_inner(&val, child_projection, depth + 1)?,
+                py_to_json_value_inner(&val, child_projection, depth.wrapping_add(1))?,
             );
         }
     }
@@ -282,14 +282,22 @@ fn py_to_json_value_inner(
     if let Ok(list) = value.cast::<PyList>() {
         let mut values = Vec::with_capacity(list.len());
         for item in list.iter() {
-            values.push(py_to_json_value_inner(&item, projection, depth + 1)?);
+            values.push(py_to_json_value_inner(
+                &item,
+                projection,
+                depth.wrapping_add(1),
+            )?);
         }
         return Ok(Value::Array(values));
     }
     if let Ok(tuple) = value.cast::<PyTuple>() {
         let mut values = Vec::with_capacity(tuple.len());
         for item in tuple.iter() {
-            values.push(py_to_json_value_inner(&item, projection, depth + 1)?);
+            values.push(py_to_json_value_inner(
+                &item,
+                projection,
+                depth.wrapping_add(1),
+            )?);
         }
         return Ok(Value::Array(values));
     }
@@ -328,7 +336,7 @@ pub(crate) fn py_to_json_value_classified(
 const MAX_JSON_NESTING: usize = crate::geometry::MAX_NESTING * 2 + 16;
 
 fn check_json_nesting(bytes: &[u8]) -> crate::error::Result<()> {
-    let mut depth = 0;
+    let mut depth = 0_usize;
     let mut escaped = false;
     let mut in_string = false;
     for &byte in bytes {
@@ -345,7 +353,7 @@ fn check_json_nesting(bytes: &[u8]) -> crate::error::Result<()> {
         match byte {
             b'"' => in_string = true,
             b'{' | b'[' => {
-                depth += 1;
+                depth = depth.wrapping_add(1);
                 if depth > MAX_JSON_NESTING {
                     return Err(crate::io::IoError::geojson(format!(
                         "GeoJSON JSON nesting exceeds the structural limit of {MAX_JSON_NESTING}"

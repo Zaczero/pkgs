@@ -442,7 +442,7 @@ mod tests {
     }
 
     fn reference_polygon(polygon: &Polygon, include_z: bool) -> Vec<Vec<Vec<f64>>> {
-        let mut rings = Vec::with_capacity(polygon.holes.len() + 1);
+        let mut rings = Vec::with_capacity(polygon.holes.len().wrapping_add(1));
         rings.push(reference_points(&polygon.shell, include_z));
         rings.extend(
             polygon

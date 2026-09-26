@@ -751,6 +751,24 @@ macro_rules! impl_multipart {
                 self.members.iter(self.values.len())
             }
 
+            /// Borrow members in logical order, resolving admitted value
+            /// indices at the multipart layout owner.
+            pub(crate) fn members_with_values<'a>(
+                &'a self,
+            ) -> impl Iterator<Item = MultiMember<&'a $member>> + 'a {
+                self.members
+                    .iter(self.values.len())
+                    .map(|member| match member {
+                        MultiMember::Empty => MultiMember::Empty,
+                        MultiMember::Value(index) => MultiMember::Value(
+                            self.values
+                                .as_slice()
+                                .get(index)
+                                .expect("multipart value indices are admitted with their layout"),
+                        ),
+                    })
+            }
+
             pub(crate) fn member_at(&self, index: usize) -> Option<MultiMember<usize>> {
                 self.members.get(index, self.values.len())
             }

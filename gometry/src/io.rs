@@ -231,7 +231,11 @@ pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
                 require_serializable_axes(member)?;
             }
         },
-        _ => {},
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => {},
     }
     Ok(())
 }
@@ -348,7 +352,10 @@ struct WktHeader<'a> {
 fn parse_content(format: ParseFormat, error: CrateError) -> CrateError {
     match error.kind() {
         crate::error::ErrorKind::Geometry(_) => IoError::parse(format, error.to_string()),
-        _ => error,
+        crate::error::ErrorKind::Crs(_)
+        | crate::error::ErrorKind::Io(_)
+        | crate::error::ErrorKind::Frame(_)
+        | crate::error::ErrorKind::Resource(_) => error,
     }
 }
 

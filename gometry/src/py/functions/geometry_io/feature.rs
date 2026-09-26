@@ -434,16 +434,19 @@ fn to_feature_collection_impl(
         FeatureGeometryRows::Shapes(shapes) => serialize_feature_shapes(py, shapes)?,
     };
     let features = PyList::empty(py);
-    for index in 0..row_count {
-        let geometry = geometry_texts[index]
+    debug_assert_eq!(geometry_texts.len(), row_count);
+    debug_assert_eq!(properties.len(), row_count);
+    debug_assert_eq!(ids.len(), row_count);
+    for ((geometry_text, properties), id) in geometry_texts.into_iter().zip(properties).zip(ids) {
+        let geometry = geometry_text
             .as_deref()
             .map(|text| geometry_from_json_text(py, text))
             .transpose()?;
         let feature = materialize_feature(
             py,
             geometry.as_ref(),
-            properties[index].as_ref(),
-            ids[index].as_ref(),
+            properties.as_ref(),
+            id.as_ref(),
             true,
         )?;
         features.append(feature)?;
