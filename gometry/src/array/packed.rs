@@ -664,17 +664,17 @@ impl PyGeometryArray {
                 for (_, present_index) in mask.cursor() {
                     if present_index.is_some() {
                         let physical = physical_row(map, present_row);
-                        let ring_start = polygon_offsets[physical] as usize;
-                        let ring_end = polygon_offsets[physical + 1] as usize;
-                        for ring in ring_start..ring_end {
-                            for vertex in
-                                ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize
-                            {
+                        let row_rings = RowSelectionRef::Identity
+                            .csr_window(polygon_offsets.as_slice(), physical);
+                        for ring in row_rings.clone() {
+                            let vertices =
+                                RowSelectionRef::Identity.csr_window(ring_offsets.as_slice(), ring);
+                            for vertex in vertices {
                                 builder.push_at(coords, vertex);
                             }
                             out_rings.push_end(builder.len(), i32::MAX as usize)?;
                         }
-                        rings = rings.wrapping_add(ring_end - ring_start);
+                        rings = rings.wrapping_add(row_rings.len());
                         present_row += 1;
                     }
                     out_polygons.push_end(rings, i32::MAX as usize)?;

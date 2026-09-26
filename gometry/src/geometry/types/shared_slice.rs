@@ -125,7 +125,9 @@ impl<T> SharedSlice<T> {
             .saturating_add(std::mem::size_of::<Vec<T>>())
             .saturating_add(range.len().saturating_mul(std::mem::size_of::<T>()))
             .saturating_add(
-                owner[range]
+                owner
+                    .get(range)
+                    .expect("visible shared-slice range is bounded by its owner")
                     .iter()
                     .map(HeapSize::heap_bytes)
                     .fold(0_usize, usize::saturating_add),

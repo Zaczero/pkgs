@@ -15,7 +15,7 @@ use crate::array::{
     ComputedCaches, CoordSeq, CoordinateAxes, CoordinateReplacement, CsrOffsetBuilder,
     CsrOffsetColumn, Frame, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
     PointRowLayout, PolygonLevel, PyErr, PyGeometryArray, PyResult, Python, ReplacementAxis,
-    RingLevel, RowSelectionRef, StorageLayout, ValidityMask, admit_packed_total,
+    RingLevel, RowSelectionRef, StorageLayout, ValidityMask, admit_packed_total, csr_value_window,
     map_masked_point_columns_to_crs, materialized_packed_lines_len,
     materialized_packed_polygons_len, rows_err,
 };
@@ -496,7 +496,7 @@ impl<'a> PolygonColumns<'a> {
                 let offsets = self.ring_offsets();
                 vertices = admit_packed_total(
                     vertices,
-                    offsets[row_rings.end] as usize - offsets[row_rings.start] as usize,
+                    csr_value_window(offsets, row_rings.clone()).len(),
                 )?;
             }
             rings = admit_packed_total(rings, row_rings.len())?;
@@ -1375,16 +1375,22 @@ fn map_selected_to_crs(
                     let row_rings = polygons.polygon_rings(logical);
                     if !row_rings.is_empty() {
                         let source = polygons.ring_offsets();
-                        let source_start = source[row_rings.start] as usize;
+                        let source_coordinates = csr_value_window(source, row_rings.clone());
                         let output_start = output_coordinate_count;
+                        let mut output_row_end = 0_usize;
                         for ring in row_rings.clone() {
-                            let end = source[ring + 1] as usize - source_start;
+                            output_row_end = output_row_end.wrapping_add(
+                                csr_value_window(source, ring..ring.wrapping_add(1)).len(),
+                            );
                             rings
-                                .push_end(output_start.wrapping_add(end), i32::MAX as usize)
+                                .push_end(
+                                    output_start.wrapping_add(output_row_end),
+                                    i32::MAX as usize,
+                                )
                                 .map_err(batch_err)?;
                         }
-                        output_coordinate_count = output_coordinate_count
-                            .wrapping_add(source[row_rings.end] as usize - source_start);
+                        output_coordinate_count =
+                            output_coordinate_count.wrapping_add(source_coordinates.len());
                     }
                     output_ring_count = output_ring_count.wrapping_add(row_rings.len());
                 }
@@ -1401,7 +1407,7 @@ fn map_selected_to_crs(
                 .flat_map(|logical| polygons.polygon_rings(logical))
                 .flat_map(|ring| {
                     let source = polygons.ring_offsets();
-                    source[ring] as usize..source[ring + 1] as usize
+                    csr_value_window(source, ring..ring.wrapping_add(1))
                 });
             let coords = transform_selected_coords(
                 transformer,

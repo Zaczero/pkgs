@@ -50,13 +50,12 @@ pub(crate) fn gather_polygon_columns(
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(map.len());
     let mut ring_index = 0_usize;
     for &physical in map {
-        let ring_start = polygon_offsets[physical] as usize;
-        let ring_end = polygon_offsets[physical + 1] as usize;
-        for ring in ring_start..ring_end {
-            let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
+        let rings = RowSelectionRef::Identity.csr_window(polygon_offsets, physical);
+        for ring in rings.clone() {
+            let window = RowSelectionRef::Identity.csr_window(ring_offsets, ring);
             builder.push_window_admitted(coords, window)?;
         }
-        ring_index = ring_index.wrapping_add(ring_end - ring_start);
+        ring_index = ring_index.wrapping_add(rings.len());
         polygon_builder.push_end(ring_index, ring_index)?;
     }
     let cap = builder.vertex_len();

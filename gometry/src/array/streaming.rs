@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::array::{
     ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
     PackedStorage, PolygonLevel, PyGeometryArray, RingLevel, RowSelectionRef, Shape, ShapeRow,
-    StorageLayout, ValidityBuilder, ValidityMask, admit_packed_total,
+    StorageLayout, ValidityBuilder, ValidityMask, admit_packed_total, csr_value_window,
     materialized_packed_lines_len, materialized_packed_polygons_len,
 };
 use crate::geometry::types::checked_csr_window;
@@ -247,7 +247,10 @@ impl StreamingShapes {
                 }
                 let existing = match &self.state {
                     StreamingState::Points(builder) => builder.len(),
-                    _ => 0,
+                    StreamingState::Empty
+                    | StreamingState::Lines(_)
+                    | StreamingState::Polygons(_)
+                    | StreamingState::Shapes(_) => 0,
                 };
                 admit_packed_total(existing, count)?;
                 if let StreamingState::Points(builder) = &mut self.state {
@@ -286,7 +289,10 @@ impl StreamingShapes {
                 let incoming = materialized_packed_lines_len(offsets.as_slice(), map)?;
                 let existing = match &self.state {
                     StreamingState::Lines(builder) => builder.coords.len(),
-                    _ => 0,
+                    StreamingState::Empty
+                    | StreamingState::Points(_)
+                    | StreamingState::Polygons(_)
+                    | StreamingState::Shapes(_) => 0,
                 };
                 admit_packed_total(existing, incoming)?;
                 if let StreamingState::Lines(builder) = &mut self.state {
@@ -334,7 +340,10 @@ impl StreamingShapes {
                     StreamingState::Polygons(builder) => {
                         (builder.coords.len(), builder.ring_offsets.row_count())
                     },
-                    _ => (0, 0),
+                    StreamingState::Empty
+                    | StreamingState::Points(_)
+                    | StreamingState::Lines(_)
+                    | StreamingState::Shapes(_) => (0, 0),
                 };
                 admit_packed_total(existing_vertices, incoming_vertices)?;
                 admit_packed_total(existing_rings, incoming_rings)?;
@@ -804,13 +813,12 @@ impl StreamingPolygons {
     ) -> crate::error::Result<()> {
         let output_end = admit_packed_total(
             self.coords.len(),
-            ring_offsets[rings.end] as usize - ring_offsets[rings.start] as usize,
+            csr_value_window(ring_offsets, rings.clone()).len(),
         )?;
         let output_rings = admit_packed_total(self.ring_offsets.row_count(), rings.len())?;
         for ring in rings {
-            let start = ring_offsets[ring] as usize;
-            let end = ring_offsets[ring + 1] as usize;
-            self.coords.extend_window(coords, start..end);
+            let window = RowSelectionRef::Identity.csr_window(ring_offsets, ring);
+            self.coords.extend_window(coords, window);
             self.ring_offsets
                 .push_end(self.coords.len(), i32::MAX as usize)?;
         }
@@ -834,8 +842,8 @@ impl StreamingPolygons {
             polygon_window.source_start()..polygon_window.source_end(),
             coords.len(),
         )?;
-        self.ring_offsets
-            .reserve_rows(polygon_window.source_end() - polygon_window.source_start());
+        let source_rings = polygon_window.source_start()..polygon_window.source_end();
+        self.ring_offsets.reserve_rows(source_rings.len());
         self.polygon_offsets.reserve_rows(row_count);
         let output_coordinate_start = self.coords.len();
         let output_ring_start = self.ring_offsets.row_count();

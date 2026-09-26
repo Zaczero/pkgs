@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use crate::array::column_window;
 use crate::error::Result as CrateResult;
+use crate::geometry::types::ensure_coordseq_vertex_capacity;
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind,
 };
@@ -15,6 +16,13 @@ pub(crate) struct PackedColumnBuilder {
     zs: Option<Vec<f64>>,
     ms: Option<Vec<f64>>,
     offsets: CsrOffsetBuilder,
+}
+
+fn has_spare_capacity<T>(values: &Vec<T>, additional: usize) -> bool {
+    values
+        .capacity()
+        .checked_sub(values.len())
+        .is_some_and(|available| available >= additional)
 }
 
 impl PackedColumnBuilder {
@@ -46,7 +54,7 @@ impl PackedColumnBuilder {
             .len()
             .checked_add(additional)
             .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
-        crate::geometry::types::ensure_coordseq_vertex_capacity(total)
+        ensure_coordseq_vertex_capacity(total)
     }
 
     /// Copy one CSR vertex window verbatim, then close the row.
@@ -65,23 +73,17 @@ impl PackedColumnBuilder {
         coords: &CoordSeq,
         window: Range<usize>,
     ) -> CrateResult<()> {
-        debug_assert!(
-            self.xs
-                .len()
-                .checked_add(window.len())
-                .is_some_and(|total| total <= i32::MAX as usize)
-        );
-        debug_assert!(self.xs.capacity() - self.xs.len() >= window.len());
-        debug_assert!(self.ys.capacity() - self.ys.len() >= window.len());
+        debug_assert!(has_spare_capacity(&self.xs, window.len()));
+        debug_assert!(has_spare_capacity(&self.ys, window.len()));
         debug_assert!(
             self.zs
                 .as_ref()
-                .is_none_or(|column| column.capacity() - column.len() >= window.len())
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         debug_assert!(
             self.ms
                 .as_ref()
-                .is_none_or(|column| column.capacity() - column.len() >= window.len())
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         let (xs, ys) = (coords.xs(), coords.ys());
         let (zs, ms) = (coords.zs(), coords.ms());
@@ -103,23 +105,17 @@ impl PackedColumnBuilder {
         coords: &CoordSeq,
         window: Range<usize>,
     ) -> CrateResult<()> {
-        debug_assert!(
-            self.xs
-                .len()
-                .checked_add(window.len())
-                .is_some_and(|total| total <= i32::MAX as usize)
-        );
-        debug_assert!(self.xs.capacity() - self.xs.len() >= window.len());
-        debug_assert!(self.ys.capacity() - self.ys.len() >= window.len());
+        debug_assert!(has_spare_capacity(&self.xs, window.len()));
+        debug_assert!(has_spare_capacity(&self.ys, window.len()));
         debug_assert!(
             self.zs
                 .as_ref()
-                .is_none_or(|column| column.capacity() - column.len() >= window.len())
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         debug_assert!(
             self.ms
                 .as_ref()
-                .is_none_or(|column| column.capacity() - column.len() >= window.len())
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         let (xs, ys) = (coords.xs(), coords.ys());
         let (zs, ms) = (coords.zs(), coords.ms());
@@ -172,23 +168,17 @@ impl PackedColumnBuilder {
         window: Range<usize>,
         transform: crate::geometry::OriginAffine,
     ) -> CrateResult<()> {
-        debug_assert!(
-            self.xs
-                .len()
-                .checked_add(window.len())
-                .is_some_and(|total| total <= i32::MAX as usize)
-        );
-        debug_assert!(self.xs.capacity() - self.xs.len() >= window.len());
-        debug_assert!(self.ys.capacity() - self.ys.len() >= window.len());
+        debug_assert!(has_spare_capacity(&self.xs, window.len()));
+        debug_assert!(has_spare_capacity(&self.ys, window.len()));
         debug_assert!(
             self.zs
                 .as_ref()
-                .is_none_or(|column| column.capacity() - column.len() >= window.len())
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         debug_assert!(
             self.ms
                 .as_ref()
-                .is_none_or(|column| column.capacity() - column.len() >= window.len())
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
         );
         let previous_len = self.xs.len();
         for (&x, &y) in column_window(coords.xs(), &window)
@@ -220,30 +210,32 @@ impl PackedColumnBuilder {
     pub(crate) fn push_kept_vertices_admitted(
         &mut self,
         coords: &CoordSeq,
-        start: usize,
+        window: Range<usize>,
         keep: &[bool],
         count: usize,
     ) {
+        debug_assert_eq!(window.len(), keep.len());
         debug_assert_eq!(keep.iter().filter(|&&kept| kept).count(), count);
-        debug_assert!(
-            self.xs
-                .len()
-                .checked_add(count)
-                .is_some_and(|total| total <= i32::MAX as usize)
-        );
-        debug_assert!(self.xs.capacity() - self.xs.len() >= count);
-        debug_assert!(self.ys.capacity() - self.ys.len() >= count);
+        debug_assert!(has_spare_capacity(&self.xs, count));
+        debug_assert!(has_spare_capacity(&self.ys, count));
         let (xs, ys, zs, ms) = (coords.xs(), coords.ys(), coords.zs(), coords.ms());
-        for (slot, &kept) in keep.iter().enumerate() {
+        let mut zs = zs.map(|column| column_window(column, &window).iter());
+        let mut ms = ms.map(|column| column_window(column, &window).iter());
+        for ((&kept, x), y) in keep
+            .iter()
+            .zip(column_window(xs, &window))
+            .zip(column_window(ys, &window))
+        {
+            let z = zs.as_mut().and_then(|column| column.next());
+            let m = ms.as_mut().and_then(|column| column.next());
             if kept {
-                let index = start.wrapping_add(slot);
-                self.xs.push(xs[index]);
-                self.ys.push(ys[index]);
-                if let (Some(out), Some(column)) = (self.zs.as_mut(), zs) {
-                    out.push(column[index]);
+                self.xs.push(*x);
+                self.ys.push(*y);
+                if let Some(out) = &mut self.zs {
+                    out.push(*z.expect("Z columns share the admitted coordinate window"));
                 }
-                if let (Some(out), Some(column)) = (self.ms.as_mut(), ms) {
-                    out.push(column[index]);
+                if let Some(out) = &mut self.ms {
+                    out.push(*m.expect("M columns share the admitted coordinate window"));
                 }
             }
         }
@@ -294,8 +286,10 @@ pub(crate) fn concat_packed_line_columns(
         if n_lines == 0 {
             continue;
         }
-        vertices =
-            crate::array::admit_packed_total(vertices, offsets.as_slice()[n_lines] as usize)?;
+        vertices = crate::array::admit_packed_total(
+            vertices,
+            crate::array::csr_value_window(offsets.as_slice(), 0..n_lines).len(),
+        )?;
         rows = rows
             .checked_add(n_lines)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
@@ -312,9 +306,11 @@ pub(crate) fn concat_packed_line_columns(
         if n_lines == 0 {
             continue;
         }
-        let ends = offsets.as_slice();
-        for line in 0..n_lines {
-            builder.push_window_admitted(&coords, ends[line] as usize..ends[line + 1] as usize)?;
+        for ends in offsets.as_slice().windows(2) {
+            let [start, end] = ends else {
+                unreachable!("CSR windows have exactly two boundaries");
+            };
+            builder.push_window_admitted(&coords, *start as usize..*end as usize)?;
         }
     }
     builder.finish(vertices)

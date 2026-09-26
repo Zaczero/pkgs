@@ -254,7 +254,12 @@ impl Shape {
         match self {
             Self::LineString(line) => line.logical_heap_bytes_saturating(),
             Self::Polygon(polygon) => polygon.logical_heap_bytes_saturating(),
-            _ => memo.heap_bytes(self),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::MultiLineString(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => memo.heap_bytes(self),
         }
     }
 }

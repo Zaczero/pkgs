@@ -22,6 +22,7 @@ use crate::array::{
     Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
     missing, overlay_operator,
 };
+use crate::boundary::coordinates::measure_storage;
 use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 
@@ -956,8 +957,7 @@ impl PyGeometryArray {
     /// int
     #[getter]
     pub fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
-        let measure =
-            crate::boundary::coordinates::measure_storage(py, self.storage(), self.missing())?;
+        let measure = measure_storage(py, self.storage(), self.missing())?;
         Ok(measure.bytes_pyint(py))
     }
 

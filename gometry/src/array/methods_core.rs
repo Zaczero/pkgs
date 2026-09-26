@@ -17,6 +17,7 @@ use crate::array::{
     replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
     total_bounds_from_columns,
 };
+use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
 use crate::boundary::metadata::FrameError;
 use crate::predicates::unary;
@@ -703,14 +704,8 @@ impl PyGeometryArray {
     #[getter]
     pub fn num_coordinates(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
         let row_count = self.len();
-        let int64_capacity = crate::boundary::coordinates::checked_vector_len::<i64>(
-            row_count,
-            "coordinate-count array",
-        )?;
-        let object_capacity = crate::boundary::coordinates::checked_vector_len::<Py<PyAny>>(
-            row_count,
-            "coordinate-count array",
-        )?;
+        let int64_capacity = checked_vector_len::<i64>(row_count, "coordinate-count array")?;
+        let object_capacity = checked_vector_len::<Py<PyAny>>(row_count, "coordinate-count array")?;
         let mut int64_values = Vec::with_capacity(int64_capacity);
         let mut object_values: Option<Vec<Py<PyAny>>> = None;
         let mut query = crate::boundary::coordinates::CoordinateMeasureQuery::default();
@@ -736,8 +731,8 @@ impl PyGeometryArray {
             let values = object_values.get_or_insert_with(|| {
                 let mut values = Vec::with_capacity(object_capacity);
                 values.extend(
-                    int64_values
-                        .drain(..)
+                    std::mem::take(&mut int64_values)
+                        .into_iter()
                         .map(|value| PyInt::new(py, value).into_any().unbind()),
                 );
                 values

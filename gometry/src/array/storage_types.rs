@@ -175,6 +175,23 @@ impl RowSelectionRef<'_> {
     }
 }
 
+/// Vertex interval covered by a contiguous range of admitted CSR rows.
+pub(crate) fn csr_value_window(
+    offsets: &[i32],
+    rows: std::ops::Range<usize>,
+) -> std::ops::Range<usize> {
+    let endpoints = offsets
+        .get(rows.start..=rows.end)
+        .expect("CSR row range is bounded by its admitted offset column");
+    let start = endpoints
+        .first()
+        .expect("CSR row range includes its start boundary");
+    let end = endpoints
+        .last()
+        .expect("CSR row range includes its end boundary");
+    (*start as usize)..(*end as usize)
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum GeometryArrayStorage {
     /// Heterogeneous (or non-packable) rows owned as plain shapes.
@@ -453,10 +470,12 @@ pub(crate) fn materialized_packed_polygons_len<'a>(
             return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
         }
         if !row_rings.is_empty() {
-            let start = ring_offsets[row_rings.start] as usize;
-            let end = ring_offsets[row_rings.end] as usize;
+            let vertex_window = csr_value_window(ring_offsets, row_rings);
             vertices = vertices
-                .checked_add((end - start) as u128)
+                .checked_add(
+                    u128::try_from(vertex_window.len())
+                        .expect("packed polygon vertex count fits u128"),
+                )
                 .expect("packed polygon vertex count fits u128");
             if vertices > i32::MAX as u128 {
                 return Err(GeometryErrorKind::OffsetCapacityExceeded.into());

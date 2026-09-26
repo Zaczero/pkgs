@@ -4,10 +4,12 @@
 )]
 use crate::array::{
     Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, PackedStorage, Polygon, Ring,
-    RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window, line_logical_len,
-    physical_row, point_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
+    RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window, csr_value_window,
+    line_logical_len, physical_row, point_logical_len, polygon_logical_len, polygon_rings_range,
+    row_bounds,
 };
 use crate::error::Result;
+use crate::geometry::types::ShapeHeapMemo;
 use crate::geometry::{CoordWindow, GeometryKind};
 
 impl GeometryArrayStorage {
@@ -200,7 +202,7 @@ impl GeometryArrayStorage {
             // (array-side cache) is counted on PyGeometryArray::heap_bytes
             // once chunks initialize — see RowProducts::heap_bytes.
             Self::Mixed(shapes) => {
-                let mut memo = crate::geometry::types::ShapeHeapMemo::default();
+                let mut memo = ShapeHeapMemo::default();
                 let nested = shapes.iter().fold(0_usize, |bytes, shape| {
                     bytes.saturating_add(memo.heap_bytes(shape))
                 });
@@ -254,8 +256,7 @@ impl GeometryArrayStorage {
                             (
                                 ring_count.saturating_add(row_rings.len()),
                                 vertex_count.saturating_add(
-                                    ring_offsets[row_rings.end] as usize
-                                        - ring_offsets[row_rings.start] as usize,
+                                    csr_value_window(ring_offsets, row_rings).len(),
                                 ),
                             )
                         }

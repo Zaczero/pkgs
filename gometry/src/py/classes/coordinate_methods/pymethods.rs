@@ -10,6 +10,7 @@ use crate::py::classes::coordinate_methods::{
     parse_row_index_or_slice, py_bool, pymethods,
 };
 use crate::py::numpy::{astype_readonly, int64_array, numpy_module};
+use crate::py::row::normalize_row;
 
 #[pymethods]
 impl PyCoordinates {
@@ -122,7 +123,7 @@ impl PyCoordinates {
         let index = crate::py_isize_required("coordinate", index)?;
         let row = if index < 0 {
             let len = self.view.len_for_python(py)?;
-            crate::py::row::normalize_row(index, len, "coordinate")?
+            normalize_row(index, len, "coordinate")?
         } else {
             index as usize
         };
@@ -508,7 +509,7 @@ impl PyCoordinates {
         let normalize_negative = |bound: i64| -> usize {
             let len = i64::try_from(len.expect("negative bounds admitted the exact length"))
                 .expect("Python sequence length fits isize");
-            usize::try_from((len + bound).max(0)).unwrap_or(0)
+            usize::try_from(len.wrapping_add(bound).max(0)).unwrap_or(0)
         };
         let start = if start < 0 {
             normalize_negative(start)
@@ -572,16 +573,17 @@ impl PyCoordinates {
         let walk = self.view.try_for_each_point(&mut |coord| match self
             .visible_equals(py, coord, value)
         {
-            Ok(true) => {
-                if let Some(next) = count.checked_add(1) {
-                    count = next;
-                    std::ops::ControlFlow::Continue(())
-                } else {
+            Ok(true) => count.checked_add(1).map_or_else(
+                || {
                     std::ops::ControlFlow::Break(PyOverflowError::new_err(
                         "coordinate count exceeds the native integer range",
                     ))
-                }
-            },
+                },
+                |next| {
+                    count = next;
+                    std::ops::ControlFlow::Continue(())
+                },
+            ),
             Ok(false) => std::ops::ControlFlow::Continue(()),
             Err(err) => std::ops::ControlFlow::Break(err),
         });

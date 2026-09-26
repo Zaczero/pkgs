@@ -17,7 +17,7 @@ use pyo3::types::{PyAnyMethods as _, PyInt};
 use pyo3::{Bound, PyResult, Python};
 
 use crate::GeometryArrayStorage;
-use crate::array::{PackedStorage, RingLevel, RowSelectionRef, ValidityMask};
+use crate::array::{PackedStorage, RingLevel, RowSelectionRef, ValidityMask, csr_value_window};
 use crate::geometry::types::ShapeOwnerKey;
 use crate::geometry::{
     CoordRun, CoordSeq, CoordWindow, CoordinateAxes, CsrOffsetColumn, MOrdinate, Point, Polygon,
@@ -35,30 +35,27 @@ impl<'py> ExactUnsigned<'py> {
 
     fn add(&self, py: Python<'py>, other: &Self) -> PyResult<Self> {
         match (self, other) {
-            (Self::Small(left), Self::Small(right)) => {
-                if let Some(sum) = left.checked_add(*right) {
-                    Ok(Self::Small(sum))
-                } else {
-                    Self::add_python_ints(py, PyInt::new(py, *left), PyInt::new(py, *right))
-                }
-            },
+            (Self::Small(left), Self::Small(right)) => left.checked_add(*right).map_or_else(
+                || {
+                    let left = PyInt::new(py, *left);
+                    let right = PyInt::new(py, *right);
+                    Self::add_python_ints(&left, &right)
+                },
+                |sum| Ok(Self::Small(sum)),
+            ),
             (Self::Big(left), Self::Small(right)) => {
-                Self::add_python_ints(py, left.clone(), PyInt::new(py, *right))
+                let right = PyInt::new(py, *right);
+                Self::add_python_ints(left, &right)
             },
             (Self::Small(left), Self::Big(right)) => {
-                Self::add_python_ints(py, PyInt::new(py, *left), right.clone())
+                let left = PyInt::new(py, *left);
+                Self::add_python_ints(&left, right)
             },
-            (Self::Big(left), Self::Big(right)) => {
-                Self::add_python_ints(py, left.clone(), right.clone())
-            },
+            (Self::Big(left), Self::Big(right)) => Self::add_python_ints(left, right),
         }
     }
 
-    fn add_python_ints(
-        _py: Python<'py>,
-        left: Bound<'py, PyInt>,
-        right: Bound<'py, PyInt>,
-    ) -> PyResult<Self> {
+    fn add_python_ints(left: &Bound<'py, PyInt>, right: &Bound<'py, PyInt>) -> PyResult<Self> {
         Ok(Self::Big(
             left.as_any().add(right.as_any())?.cast_into::<PyInt>()?,
         ))
@@ -71,7 +68,7 @@ impl<'py> ExactUnsigned<'py> {
         }
     }
 
-    fn fits_py_ssize(&self) -> Option<usize> {
+    const fn fits_py_ssize(&self) -> Option<usize> {
         match self {
             Self::Small(value) if *value <= isize::MAX as u128 => Some(*value as usize),
             Self::Small(_) | Self::Big(_) => None,
@@ -124,12 +121,12 @@ impl<'py> CoordinateMeasure<'py> {
         }
     }
 
-    fn with_shape_axes(mut self, axes: CoordinateAxes) -> Self {
+    const fn with_shape_axes(mut self, axes: CoordinateAxes) -> Self {
         self.shape_axes = axes;
         self
     }
 
-    fn present_only(mut self) -> Self {
+    const fn present_only(mut self) -> Self {
         self.shape_axes = CoordinateAxes::XY;
         self
     }
@@ -180,7 +177,7 @@ impl<'py> CoordinateMeasure<'py> {
         self.coordinates.equals(py, &other.coordinates)
     }
 
-    pub(crate) fn count_i64(&self) -> Option<i64> {
+    pub(crate) const fn count_i64(&self) -> Option<i64> {
         match &self.coordinates {
             ExactUnsigned::Small(value) if *value <= i64::MAX as u128 => Some(*value as i64),
             ExactUnsigned::Small(_) | ExactUnsigned::Big(_) => None,
@@ -255,10 +252,10 @@ fn shape_measure<'py>(
             let owner = collection
                 .members_are_shared()
                 .then(|| ShapeOwnerKey::new(members));
-            if let Some(owner) = owner {
-                if let Some(measure) = collections.as_ref().and_then(|cached| cached.get(&owner)) {
-                    return Ok(measure.clone());
-                }
+            if let Some(owner) = owner
+                && let Some(measure) = collections.as_ref().and_then(|cached| cached.get(&owner))
+            {
+                return Ok(measure.clone());
             }
             let mut measure = CoordinateMeasure::ZERO;
             for member in members {
@@ -358,7 +355,7 @@ pub(crate) fn measure_storage<'py>(
                 }
                 let row_rings = map.csr_window(polygons, row);
                 if !row_rings.is_empty() {
-                    let vertices = rings[row_rings.end] as usize - rings[row_rings.start] as usize;
+                    let vertices = csr_value_window(rings, row_rings).len();
                     count = count
                         .checked_add(
                             u128::try_from(vertices).expect("packed polygon count fits u128"),
@@ -379,7 +376,9 @@ pub(crate) fn measure_storage<'py>(
 }
 
 pub(crate) fn checked_vector_len<T>(count: usize, label: &str) -> PyResult<usize> {
-    let max_len = (isize::MAX as usize) / std::mem::size_of::<T>();
+    let max_len = (isize::MAX as usize)
+        .checked_div(std::mem::size_of::<T>())
+        .unwrap_or(usize::MAX);
     if count > max_len {
         return Err(PyOverflowError::new_err(format!(
             "{label} output is too large to materialize"
@@ -495,7 +494,7 @@ impl CoordinatePointCursor {
         let mut frames = Vec::new();
         match &view.owner {
             CoordinateOwner::Shape(shape) => {
-                frames.push(CoordinateFrame::Shape(shape.shape().clone()))
+                frames.push(CoordinateFrame::Shape(shape.shape().clone()));
             },
             CoordinateOwner::Array { storage, missing } => {
                 let (rows, compact_point_rank) = match storage.as_ref() {
@@ -507,7 +506,10 @@ impl CoordinatePointCursor {
                             compact.map(|mask| if reverse { mask.present_count() } else { 0 }),
                         )
                     },
-                    _ => (storage.len(), None),
+                    GeometryArrayStorage::Mixed(_)
+                    | GeometryArrayStorage::Packed(
+                        PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
+                    ) => (storage.len(), None),
                 };
                 frames.push(CoordinateFrame::ArrayRows {
                     storage: Arc::clone(storage),
@@ -533,7 +535,7 @@ impl CoordinatePointCursor {
                 match shape {
                     Shape::Point(point) => return Some(point),
                     Shape::MultiPoint(points) => {
-                        let coordinates = (&*points).clone();
+                        let coordinates = CoordSeq::clone(&points);
                         self.frames.push(CoordinateFrame::Sequence {
                             remaining: 0..coordinates.len(),
                             coordinates,
@@ -554,7 +556,7 @@ impl CoordinatePointCursor {
                         });
                     },
                     Shape::Polygon(polygon) => {
-                        let rings = polygon.holes.len() + 1;
+                        let rings = polygon.holes.len().wrapping_add(1);
                         self.frames.push(CoordinateFrame::PolygonRings {
                             polygon,
                             remaining: 0..rings,
@@ -588,9 +590,7 @@ impl CoordinatePointCursor {
                 CoordinateStep::Point(point) => return Some(point),
                 CoordinateStep::Push(frame) => self.frames.push(frame),
                 CoordinateStep::Pop => {
-                    if self.frames.pop().is_none() {
-                        return None;
-                    }
+                    self.frames.pop()?;
                 },
             }
         }
@@ -623,8 +623,12 @@ impl CoordinateFrame {
                     let Shape::GeometryCollection(collection) = shape else {
                         unreachable!("collection frame owns a geometry collection");
                     };
-                    CoordinateStep::Push(CoordinateFrame::Shape(
-                        collection.as_slice()[index].clone(),
+                    CoordinateStep::Push(Self::Shape(
+                        collection
+                            .as_slice()
+                            .get(index)
+                            .expect("collection frame index is within its admitted member range")
+                            .clone(),
                     ))
                 })
             },
@@ -634,8 +638,13 @@ impl CoordinateFrame {
                     let Shape::MultiLineString(lines) = shape else {
                         unreachable!("line frame owns a multi-line string");
                     };
-                    let coordinates = lines.as_slice()[index].as_coords().clone();
-                    CoordinateStep::Push(CoordinateFrame::Sequence {
+                    let coordinates = lines
+                        .as_slice()
+                        .get(index)
+                        .expect("multi-line frame index is within its admitted member range")
+                        .as_coords()
+                        .clone();
+                    CoordinateStep::Push(Self::Sequence {
                         remaining: 0..coordinates.len(),
                         coordinates,
                     })
@@ -647,8 +656,12 @@ impl CoordinateFrame {
                     let Shape::MultiPolygon(polygons) = shape else {
                         unreachable!("polygon frame owns a multi-polygon");
                     };
-                    CoordinateStep::Push(CoordinateFrame::Shape(Shape::Polygon(
-                        polygons.as_slice()[index].clone(),
+                    CoordinateStep::Push(Self::Shape(Shape::Polygon(
+                        polygons
+                            .as_slice()
+                            .get(index)
+                            .expect("multi-polygon frame index is within its admitted member range")
+                            .clone(),
                     )))
                 })
             },
@@ -658,10 +671,14 @@ impl CoordinateFrame {
                     let coordinates = if index == 0 {
                         polygon.shell.coords()
                     } else {
-                        polygon.holes[index - 1].coords()
+                        polygon
+                            .holes
+                            .get(index.wrapping_sub(1))
+                            .expect("polygon ring index follows its shell")
+                            .coords()
                     }
                     .clone();
-                    CoordinateStep::Push(CoordinateFrame::Sequence {
+                    CoordinateStep::Push(Self::Sequence {
                         remaining: 0..coordinates.len(),
                         coordinates,
                     })
@@ -681,7 +698,14 @@ impl CoordinateFrame {
                         if missing.as_ref().is_some_and(|mask| mask.is_missing(row)) {
                             CoordinateStep::Continue
                         } else {
-                            CoordinateStep::Push(CoordinateFrame::Shape(shapes[row].clone()))
+                            CoordinateStep::Push(Self::Shape(
+                                shapes
+                                    .get(row)
+                                    .expect(
+                                        "array row frame index is within its admitted row range",
+                                    )
+                                    .clone(),
+                            ))
                         }
                     },
                     GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
@@ -728,7 +752,7 @@ impl CoordinateFrame {
                         let window = row_map.as_deref().csr_window(offsets.as_slice(), row);
                         let coordinates =
                             coords.view(CoordWindow::from_range(window, coords.len()));
-                        CoordinateStep::Push(CoordinateFrame::Sequence {
+                        CoordinateStep::Push(Self::Sequence {
                             remaining: 0..coordinates.len(),
                             coordinates,
                         })
@@ -748,7 +772,7 @@ impl CoordinateFrame {
                         if rings.is_empty() {
                             return CoordinateStep::Continue;
                         }
-                        CoordinateStep::Push(CoordinateFrame::PackedRings {
+                        CoordinateStep::Push(Self::PackedRings {
                             coordinates: Arc::clone(coords),
                             offsets: ring_offsets.clone(),
                             remaining: rings,
@@ -764,11 +788,10 @@ impl CoordinateFrame {
                 let Some(ring) = next_index(remaining, reverse) else {
                     return CoordinateStep::Pop;
                 };
-                let offsets = offsets.as_slice();
-                let window = offsets[ring] as usize..offsets[ring + 1] as usize;
+                let window = csr_value_window(offsets.as_slice(), ring..ring.wrapping_add(1));
                 let coordinates =
                     coordinates.view(CoordWindow::from_range(window, coordinates.len()));
-                CoordinateStep::Push(CoordinateFrame::Sequence {
+                CoordinateStep::Push(Self::Sequence {
                     remaining: 0..coordinates.len(),
                     coordinates,
                 })
@@ -1091,7 +1114,11 @@ impl CoordinateView {
                 },
             };
             let mut out = Vec::with_capacity(capacity);
-            out.extend(map.iter().map(|&row| values[row]));
+            out.extend(map.iter().map(|&row| {
+                *values
+                    .get(row)
+                    .expect("point row selection is bounded by its coordinate owner")
+            }));
             return Ok(CoordinateColumnRef::Dense(out));
         }
         if let Some(seq) = self.single_seq() {
@@ -1188,7 +1215,6 @@ impl CoordinateView {
             let capacity = checked_vector_len::<usize>(count, "coordinate row index")
                 .expect("test row index fits Vec layout");
             self.row_index_cast(capacity, |row| row)
-                .expect("test row index materializes")
         })
     }
 
@@ -1208,17 +1234,13 @@ impl CoordinateView {
                 "coordinate row index exceeds the int64 output range",
             ));
         }
-        self.row_index_cast(capacity, |row| row as i64)
+        Ok(self.row_index_cast(capacity, |row| row as i64))
     }
 
     /// Shared run-wise row-index emitter. Identity packed storage fills from
     /// CSR offsets (or the point column length); every other owner walks
     /// coordinate runs once and fills each run's span with its logical row id.
-    fn row_index_cast<T: Copy>(
-        &self,
-        capacity: usize,
-        cast: impl Fn(usize) -> T,
-    ) -> PyResult<Vec<T>> {
+    fn row_index_cast<T: Copy>(&self, capacity: usize, cast: impl Fn(usize) -> T) -> Vec<T> {
         let zero = cast(0);
 
         if let CoordinateOwner::Array {
@@ -1230,7 +1252,7 @@ impl CoordinateView {
                 GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map })
                     if row_map.is_identity() =>
                 {
-                    return Ok((0..coords.len()).map(cast).collect());
+                    return (0..coords.len()).map(cast).collect();
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Lines {
                     offsets, row_map, ..
@@ -1242,7 +1264,7 @@ impl CoordinateView {
                         let end = end as usize;
                         indexes[start..end].fill(cast(row));
                     }
-                    return Ok(indexes);
+                    return indexes;
                 },
                 GeometryArrayStorage::Packed(PackedStorage::Polygons {
                     ring_offsets,
@@ -1263,7 +1285,7 @@ impl CoordinateView {
                         let end = rings[ring_end] as usize;
                         indexes[start..end].fill(cast(row));
                     }
-                    return Ok(indexes);
+                    return indexes;
                 },
                 _ => {},
             }
@@ -1271,7 +1293,7 @@ impl CoordinateView {
 
         // Scalar geometry: every coordinate belongs to the single owner (id 0).
         if matches!(&self.owner, CoordinateOwner::Shape(_)) {
-            return Ok(vec![zero; capacity]);
+            return vec![zero; capacity];
         }
 
         // Mask / gather / window / mixed: one fill per coordinate run, logical
@@ -1289,7 +1311,7 @@ impl CoordinateView {
             remaining = rest;
         });
         debug_assert!(remaining.is_empty());
-        Ok(indexes)
+        indexes
     }
 
     /// The coordinate at `index` (flattened), or `None` if out of range.
@@ -1440,7 +1462,7 @@ impl CoordinateView {
             if right_visible.get(idx).copied() != Some(left) {
                 return ControlFlow::Break(false);
             }
-            idx += 1;
+            idx = idx.wrapping_add(1);
             ControlFlow::Continue(())
         });
         Ok(!matches!(equal, ControlFlow::Break(false)))

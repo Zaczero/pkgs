@@ -1,6 +1,7 @@
 use crate::error::Result;
 use crate::geometry::types::{
     CoordIter, CoordSeq, CoordSeqBuilder, GeometryErrorKind, LineSeq, Point, XY,
+    ensure_coordseq_vertex_capacity,
 };
 use crate::geometry::{same_active_position, same_point};
 
@@ -63,7 +64,7 @@ impl Ring {
             .len()
             .checked_add(1)
             .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
-        crate::geometry::types::ensure_coordseq_vertex_capacity(capacity)?;
+        ensure_coordseq_vertex_capacity(capacity)?;
         let first = coords.point_at(0);
         let mut closed = CoordSeqBuilder::with_capacity(coords.axes(), capacity);
         closed.extend_window(&coords, 0..coords.len());

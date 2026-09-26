@@ -3,9 +3,11 @@ use std::sync::Arc;
 use crate::array::{
     ArrayRow, Bound, CoordSeq, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
     PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result, RowSelectionRef, Shape,
-    column_window, curves, note_array_row, parse_curve_bounds, physical_row, rows_err,
+    column_window, csr_value_window, curves, note_array_row, parse_curve_bounds, physical_row,
+    rows_err,
 };
 use crate::boundary::input;
+use crate::geometry::types::ShapeHeapMemo;
 use crate::py::vectors::Groups;
 
 fn selected_row_map_heap_bytes(
@@ -71,7 +73,7 @@ impl PyGeometryArray {
                         if rings.is_empty() {
                             0
                         } else {
-                            ring_offsets[rings.end] as usize - ring_offsets[rings.start] as usize
+                            csr_value_window(ring_offsets, rings).len()
                         }
                     })
                     .sum();
@@ -87,8 +89,10 @@ impl PyGeometryArray {
             .saturating_add(std::mem::size_of::<GeometryArrayStorage>());
         owner.saturating_add(match self.storage() {
             GeometryArrayStorage::Mixed(shapes) => {
-                let mut memo = crate::geometry::types::ShapeHeapMemo::default();
-                let selected_shapes = &shapes[rows.clone()];
+                let mut memo = ShapeHeapMemo::default();
+                let selected_shapes = shapes
+                    .get(rows.clone())
+                    .expect("logical row range is bounded by mixed storage");
                 selected_shapes
                     .iter()
                     .zip(rows.clone())
@@ -152,7 +156,7 @@ impl PyGeometryArray {
                         if rings.is_empty() {
                             0
                         } else {
-                            ring_offsets[rings.end] as usize - ring_offsets[rings.start] as usize
+                            csr_value_window(ring_offsets, rings).len()
                         }
                     })
                     .fold(0, usize::saturating_add);
@@ -244,7 +248,7 @@ impl PyGeometryArray {
             }
             builder.push_kept_vertices_admitted(
                 coords,
-                start,
+                window,
                 &keep,
                 kept.expect("a changed keep mask reports its survivor count"),
             );

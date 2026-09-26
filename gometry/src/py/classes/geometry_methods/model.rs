@@ -5,7 +5,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::types::PySequence;
 
 use crate::array::RowProducts;
+use crate::boundary::coordinates::measure_shape;
 use crate::geometry::PreparedPlan;
+use crate::geometry::types::ShapeHeapMemo;
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
 use crate::{
     Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
@@ -406,7 +408,7 @@ impl PyGeometryParts {
     /// int
     #[getter]
     fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyInt>> {
-        let measure = crate::boundary::coordinates::measure_shape(py, self.geometry.shape.shape())?;
+        let measure = measure_shape(py, self.geometry.shape.shape())?;
         Ok(measure.bytes_pyint(py))
     }
 
@@ -595,8 +597,7 @@ row_iter_pymethods! {
 
 impl HeapSize for PyGeometryParts {
     fn heap_bytes(&self) -> usize {
-        crate::geometry::types::ShapeHeapMemo::default()
-            .coordinate_bytes(self.geometry.shape.shape())
+        ShapeHeapMemo::default().coordinate_bytes(self.geometry.shape.shape())
     }
 }
 

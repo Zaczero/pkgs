@@ -313,7 +313,7 @@ impl PyGeometryArray {
             let rows = bounds.len();
             let vertex_count = rows
                 .checked_mul(5)
-                .filter(|&count| count <= i32::MAX as usize)
+                .filter(|&count| i32::try_from(count).is_ok())
                 .ok_or_else(|| {
                     crate::PyErr::from(crate::error::Error::from(
                         crate::geometry::GeometryErrorKind::OffsetCapacityExceeded,

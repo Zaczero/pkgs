@@ -1,5 +1,6 @@
 use std::fmt::Write as _;
 
+use crate::boundary::coordinates::measure_shape;
 use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, PyResult, Python};
 use crate::py::functions::polyline;
 use crate::py::{arrow, arrow_c, errors, functions};
@@ -296,8 +297,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
         &self,
         py: Python<'py>,
     ) -> PyResult<Bound<'py, pyo3::types::PyInt>> {
-        let measure =
-            crate::boundary::coordinates::measure_shape(py, self.shape.shape())?;
+        let measure = measure_shape(py, self.shape.shape())?;
         Ok(measure.bytes_pyint(py))
     }
 

@@ -44,7 +44,12 @@ impl RowProductChunk {
                     .capacity()
                     .saturating_mul(std::mem::size_of::<RowProductCell>()),
             )
-            .saturating_add(self.cells[offset].heap_bytes())
+            .saturating_add(
+                self.cells
+                    .get(offset)
+                    .expect("row product offset belongs to its fixed-size chunk")
+                    .heap_bytes(),
+            )
     }
 
     fn heap_bytes_for_selection(
@@ -66,7 +71,10 @@ impl RowProductChunk {
                 let first = start.saturating_sub(chunk_start);
                 let last = end.saturating_sub(chunk_start).min(self.cells.len());
                 if first < last {
-                    retained = self.cells[first..last]
+                    retained = self
+                        .cells
+                        .get(first..last)
+                        .expect("selected chunk range is bounded by its cells")
                         .iter()
                         .map(HeapSize::heap_bytes)
                         .fold(retained, usize::saturating_add);
