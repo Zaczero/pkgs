@@ -871,7 +871,10 @@ fn push_clip_hit(hits: ClipHit, output: &mut [Option<ClipHit>; 6], count: &mut u
     *count += 1;
 }
 
-fn clip_segment_parameter(segment: Segment, point: XY) -> Result<SegmentParameter> {
+pub(in crate::geometry) fn clip_segment_parameter(
+    segment: Segment,
+    point: XY,
+) -> Result<SegmentParameter> {
     if same_point(segment.start, point) {
         return Ok(SegmentParameter::Start);
     }

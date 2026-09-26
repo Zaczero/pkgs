@@ -1305,6 +1305,27 @@ fn generated_budget_charges_only_net_canonical_growth() {
     }
 }
 
+#[test]
+fn intermediate_partition_can_run_after_the_output_budget_is_exhausted() {
+    use crate::geometry::generated_budget::GENERATED_ITEM_LIMIT;
+
+    let crossing = [seg(0.0, 0.0, 2.0, 2.0), seg(0.0, 2.0, 2.0, 0.0)];
+    let inventory = ExactSourceInventory::from_segments(&crossing).unwrap();
+    let mut exhausted = ExpansionBudget::new("voronoi", "published output");
+    exhausted.add(GENERATED_ITEM_LIMIT - 1).unwrap();
+    let Err(error) = inventory.partition(&mut exhausted) else {
+        panic!("partition growth exceeded the remaining output budget");
+    };
+    assert!(matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(GeometryErrorKind::GeneratedOutputTooLarge { .. })
+    ));
+
+    let partition = inventory.partition_without_budget().unwrap();
+    assert_eq!(partition.node_count(), 5);
+    assert_eq!(partition.spans.len(), 4);
+}
+
 fn crossing_node(partition: &ExactPartition<'_>) -> NodeId {
     let mut crossings =
         (0..partition.node_count() as u32).filter(|&node| !partition.is_stored(NodeId(node)));

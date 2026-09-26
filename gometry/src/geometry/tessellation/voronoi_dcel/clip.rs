@@ -5,8 +5,8 @@
 //! vertex the clip did not produce.
 
 use super::{
-    ExactSign, ExpansionBudget, NormalizedClip, Ordering, Result, Site, SiteId, XY, exact, lex_xy,
-    try_dedup_by, try_sort_by, voronoi_error,
+    ExactSign, NormalizedClip, Ordering, Result, Site, SiteId, XY, exact, lex_xy, try_dedup_by,
+    try_sort_by, voronoi_error,
 };
 
 pub(super) fn orient_separator(
@@ -185,10 +185,8 @@ pub(super) fn separator_rectangle_hits(
     pair: [XY; 2],
     line: &exact::ExactLine,
     rect: &[exact::ExactPoint; 4],
-    budget: &mut ExpansionBudget,
 ) -> Result<Vec<exact::ExactPoint>> {
     let certified = bisector_frame_intersections(pair, rect)?;
-    budget.add(certified.len().saturating_add(8))?;
     let mut hits = Vec::with_capacity(certified.len().saturating_add(8));
     hits.extend(certified.into_iter().map(|(_, point)| point));
     for side in 0..4 {
@@ -210,11 +208,8 @@ pub(super) fn clip_segment_to_rectangle(
     pair: [XY; 2],
     line: &exact::ExactLine,
     rect: &[exact::ExactPoint; 4],
-    budget: &mut ExpansionBudget,
 ) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
-    budget.add(4)?;
-    let mut points = separator_rectangle_hits(pair, line, rect, budget)?;
-    budget.add(2)?;
+    let mut points = separator_rectangle_hits(pair, line, rect)?;
     points.reserve(2);
     if in_rectangle(rect, start)? {
         points.push(start.clone());
@@ -262,14 +257,11 @@ pub(super) fn clip_hull_ray_to_rectangle(
     line: &exact::ExactLine,
     rect: &[exact::ExactPoint; 4],
     sites: &[Site],
-    budget: &mut ExpansionBudget,
 ) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
-    budget.add(4)?;
     let hits = separator_rectangle_hits(
         [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
         line,
         rect,
-        budget,
     )?;
     let left = exact::ExactPoint::from_xy(sites[pair[0]].point.xy());
     let right = exact::ExactPoint::from_xy(sites[pair[1]].point.xy());
@@ -279,7 +271,6 @@ pub(super) fn clip_hull_ray_to_rectangle(
         &right,
         &exact::ExactPoint::from_xy(sites[opposite].point.xy()),
     )?;
-    budget.add(hits.len().saturating_add(1))?;
     let mut points = Vec::with_capacity(hits.len().saturating_add(1));
     if in_rectangle(rect, center)? {
         points.push(center.clone());

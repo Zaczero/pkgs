@@ -38,6 +38,8 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
                 ));
             },
             (true, Ok(dual), Ok(legacy)) => {
+                let clip =
+                    Shape::Polygon(Polygon::new(rectangle(0.0, 0.0, step, step), Vec::new()));
                 for diagram in [dual, legacy] {
                     assert_eq!(diagram.polygons.len(), 3, "units={units}");
                     let cells: Vec<_> = diagram
@@ -50,15 +52,13 @@ fn direct_dual_subnormal_admission_matches_legacy_builder() {
                     assert!(coverage_is_valid(&cells, 0.0).unwrap(), "units={units}");
                     let union = Shape::union_all(&cells, Strictness::Lenient).unwrap();
                     assert!(
-                        diagram
-                            .clip
-                            .difference(&union, Strictness::Lenient)
+                        clip.difference(&union, Strictness::Lenient)
                             .unwrap()
                             .is_empty()
                     );
                     assert!(
                         union
-                            .difference(&diagram.clip, Strictness::Lenient)
+                            .difference(&clip, Strictness::Lenient)
                             .unwrap()
                             .is_empty()
                     );
@@ -113,6 +113,71 @@ fn cycle_xy(points: &[(f64, f64)]) -> Vec<XY> {
     points.iter().map(|&(x, y)| XY::new(x, y)).collect()
 }
 
+fn rounded_clip_segment_certificate(
+    segment: Segment,
+    exact_rings: &[Vec<exact::ExactPoint>],
+    rounded_rings: &[Vec<XY>],
+    events: &mut Vec<exact::ExactPoint>,
+    parity: &mut ClipRingParity,
+) -> Result<bool> {
+    let mut clip_edges = Vec::new();
+    for (ring_index, (exact_ring, rounded_ring)) in
+        exact_rings.iter().zip(rounded_rings).enumerate()
+    {
+        for ((start, end), (rounded_start, rounded_end)) in exact_ring
+            .iter()
+            .zip(exact_ring.iter().cycle().skip(1))
+            .zip(rounded_ring.iter().zip(rounded_ring.iter().cycle().skip(1)))
+        {
+            clip_edges.push(ClipCertificateEdge {
+                ring: ring_index,
+                start,
+                end,
+                rounded: [*rounded_start, *rounded_end],
+            });
+        }
+    }
+    let polygon = Polygon::new(
+        Ring::closed(
+            rounded_rings[0]
+                .iter()
+                .map(|point| Point::new_raw_xy(point.x, point.y))
+                .collect(),
+        )?,
+        rounded_rings[1..]
+            .iter()
+            .map(|ring| {
+                Ring::closed(
+                    ring.iter()
+                        .map(|point| Point::new_raw_xy(point.x, point.y))
+                        .collect(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?,
+    );
+    let point_index = PolygonPointIndex::build(&polygon)?;
+    let edge_ids: Vec<_> = (0..clip_edges.len()).collect();
+    let y_index = YStabbingIndex::build(edge_ids, |&edge| {
+        let [start, end] = clip_edges[edge].rounded;
+        (
+            start.x.min(end.x),
+            start.x.max(end.x),
+            start.y.min(end.y),
+            start.y.max(end.y),
+        )
+    })?;
+    let candidates: Vec<_> = (0..clip_edges.len()).collect();
+    rounded_segment_covered_by_clip(
+        segment,
+        &clip_edges,
+        &candidates,
+        &point_index,
+        &y_index,
+        events,
+        parity,
+    )
+}
+
 #[test]
 fn rounded_segment_certificate_matches_closed_clip_membership() {
     let rectangle_points = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)];
@@ -122,8 +187,9 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
     let hole = cycle(&hole_points);
     let hole_xy = cycle_xy(&hole_points);
     let mut events = Vec::new();
+    let mut parity = ClipRingParity::new(2);
     assert!(
-        rounded_segment_covered_by_clip(
+        rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(0.0, 0.0),
                 end: XY::new(4.0, 0.0),
@@ -131,11 +197,12 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             std::slice::from_ref(&rectangle),
             std::slice::from_ref(&rectangle_xy),
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
     assert!(
-        rounded_segment_covered_by_clip(
+        rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(0.5, 0.5),
                 end: XY::new(3.5, 3.5),
@@ -143,11 +210,12 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             std::slice::from_ref(&rectangle),
             std::slice::from_ref(&rectangle_xy),
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
     assert!(
-        !rounded_segment_covered_by_clip(
+        !rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(0.5, 2.0),
                 end: XY::new(3.5, 2.0),
@@ -155,11 +223,12 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             &[rectangle.clone(), hole.clone()],
             &[rectangle_xy.clone(), hole_xy.clone()],
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
     assert!(
-        rounded_segment_covered_by_clip(
+        rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(1.0, 1.0),
                 end: XY::new(3.0, 1.0),
@@ -167,6 +236,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             &[rectangle.clone(), hole],
             &[rectangle_xy.clone(), hole_xy],
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
@@ -183,7 +253,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
     let concave = cycle(&concave_points);
     let concave_xy = cycle_xy(&concave_points);
     assert!(
-        !rounded_segment_covered_by_clip(
+        !rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(0.5, 3.5),
                 end: XY::new(3.5, 3.5),
@@ -191,6 +261,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             &[concave],
             &[concave_xy],
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
@@ -205,7 +276,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
     let l_shape = cycle(&l_shape_points);
     let l_shape_xy = cycle_xy(&l_shape_points);
     assert!(
-        !rounded_segment_covered_by_clip(
+        !rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(4.0, 1.0),
                 end: XY::new(1.0, 4.0),
@@ -213,6 +284,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             &[l_shape],
             &[l_shape_xy],
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
@@ -265,16 +337,17 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
         exact::orient2d(slanted_segment.start, slanted_segment.end, slanted_midpoint,),
         ExactSign::Zero
     );
-    let slanted_result = rounded_segment_covered_by_clip(
+    let slanted_result = rounded_clip_segment_certificate(
         slanted_segment,
         &[slanted_edge],
         &[slanted_edge_xy],
         &mut events,
+        &mut parity,
     )
     .unwrap();
     assert!(slanted_result);
     assert!(
-        !rounded_segment_covered_by_clip(
+        !rounded_clip_segment_certificate(
             Segment {
                 start: XY::new(-1.0, 2.0),
                 end: XY::new(2.0, 2.0),
@@ -282,6 +355,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
             &[rectangle],
             &[rectangle_xy],
             &mut events,
+            &mut parity,
         )
         .unwrap()
     );
@@ -289,8 +363,7 @@ fn rounded_segment_certificate_matches_closed_clip_membership() {
 
 fn validates(cycles: &[Vec<exact::ExactPoint>]) -> bool {
     let refs: Vec<_> = cycles.iter().map(Vec::as_slice).collect();
-    let mut budget = ExpansionBudget::new("test", "exact cycles");
-    validate_exact_cycles(&refs, 0, &mut budget).is_ok()
+    validate_exact_cycles(&refs, 0).is_ok()
 }
 
 #[test]
@@ -298,8 +371,8 @@ fn finite_max_exact_candidate_boxes_remain_sparse() {
     let high = cycle(&[(f64::MAX, f64::MAX), (f64::MAX, f64::MAX.next_down())]);
     let low = cycle(&[(0.0, 0.0), (0.0, 1.0)]);
     let cycles = [high.as_slice(), low.as_slice()];
-    let mut budget = ExpansionBudget::new("test", "exact candidates");
-    let candidates = indexed_exact_segment_candidates(&cycles, &mut budget).unwrap();
+    let (offsets, candidates) = indexed_exact_segment_candidates(&cycles).unwrap();
+    assert_eq!(offsets, [0, 2]);
     assert_eq!(candidates, [[0, 1], [2, 3]]);
 }
 
@@ -396,6 +469,132 @@ fn exact_touch_graph_covers_all_five_outcomes_and_reversed_discovery() {
         assert_eq!(restored, expected);
         assert_eq!(reversed, restored);
     }
+}
+
+#[test]
+fn source_clip_contacts_keep_parameters_through_ring_normalization() {
+    let polygon = Polygon::new(
+        Ring::closed(vec![
+            Point::new_raw_xy(0.0, 8.0),
+            Point::new_raw_xy(8.0, 8.0),
+            Point::new_raw_xy(8.0, 0.0),
+            Point::new_raw_xy(8.0, 0.0),
+            Point::new_raw_xy(0.0, 0.0),
+        ])
+        .unwrap(),
+        vec![
+            closed_ring(&[(4.0, 4.0), (6.0, 4.0), (6.0, 6.0), (4.0, 6.0)]),
+            Ring::closed(vec![
+                Point::new_raw_xy(2.0, 3.0),
+                Point::new_raw_xy(2.0, 3.0),
+                Point::new_raw_xy(2.0, 5.0),
+                Point::new_raw_xy(-0.0, 4.0),
+            ])
+            .unwrap(),
+        ],
+    );
+    assert!(polygon.holes[1].point_at(3).x.is_sign_negative());
+
+    let mut source_contacts = Vec::new();
+    assert!(
+        polygon
+            .validate_with_contacts("polygon", "$", &mut source_contacts)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(source_contacts.len(), 2);
+    for contact in &source_contacts {
+        assert_eq!(contact.rings, [0, 2]);
+        assert_eq!(contact.edges[0], 4);
+        assert_eq!(
+            PointKey::new(contact.point),
+            PointKey::new(XY::new(0.0, 4.0))
+        );
+        let SegmentParameter::Ratio { num, den } = &contact.parameters[0] else {
+            panic!("the shell contact is interior to its source edge");
+        };
+        assert_eq!(
+            exact::ExactRational::new(num.clone(), den.clone())
+                .unwrap()
+                .round()
+                .unwrap(),
+            0.5
+        );
+        match contact.edges[1] {
+            2 => assert!(matches!(contact.parameters[1], SegmentParameter::End)),
+            3 => assert!(matches!(contact.parameters[1], SegmentParameter::Start)),
+            edge => panic!("unexpected source hole edge {edge}"),
+        }
+    }
+
+    let sites = sites_xy(&[(-1.0, 0.0), (1.0, 0.0)]);
+    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), false).unwrap();
+    assert_eq!(
+        clip.contacts
+            .iter()
+            .map(|contact| contact.segments)
+            .collect::<Vec<_>>(),
+        [[3, 4], [3, 6]]
+    );
+    assert!(clip.contacts.iter().all(|contact| {
+        contact
+            .point
+            .same_position(&exact::ExactPoint::from_xy(XY::new(0.0, 4.0)))
+            .unwrap()
+    }));
+    let rect = clip_rectangle(&clip).unwrap();
+    let scaffold = build_scaffold(&rect, &clip).unwrap();
+    for segment in [3_u32, 4, 6] {
+        let primitive = scaffold
+            .iter()
+            .find(|primitive| primitive.clip_source == Some(ClipSegmentId(segment)))
+            .expect("each normalized contact edge has a scaffold primitive");
+        assert!(primitive.events.iter().any(|point| {
+            point
+                .same_position(&exact::ExactPoint::from_xy(XY::new(0.0, 4.0)))
+                .unwrap()
+        }));
+    }
+}
+
+#[test]
+fn source_clip_records_point_sized_collinear_contacts() {
+    let polygon = Polygon::new(rectangle(0.0, 0.0, 10.0, 10.0), vec![
+        closed_ring(&[(3.0, 5.0), (5.0, 5.0), (4.0, 7.0)]),
+        closed_ring(&[(5.0, 5.0), (7.0, 5.0), (6.0, 7.0)]),
+    ]);
+    let mut source_contacts = Vec::new();
+    assert!(
+        polygon
+            .validate_with_contacts("polygon", "$", &mut source_contacts)
+            .unwrap()
+            .is_none()
+    );
+
+    let clip = normalize_clip(
+        &sites_xy(&[(-1.0, 0.0), (1.0, 0.0)]),
+        VoronoiBoundary::Polygon(&polygon),
+        false,
+    )
+    .unwrap();
+    let shared_point = exact::ExactPoint::from_xy(XY::new(5.0, 5.0));
+    assert!(
+        clip.contacts
+            .iter()
+            .any(|contact| { contact.point.same_position(&shared_point).unwrap() })
+    );
+    let scaffold = build_scaffold(&clip_rectangle(&clip).unwrap(), &clip).unwrap();
+    let contacted: Vec<_> = scaffold
+        .iter()
+        .filter(|primitive| {
+            primitive
+                .events
+                .iter()
+                .any(|point| point.same_position(&shared_point).unwrap())
+        })
+        .filter_map(|primitive| primitive.clip_source)
+        .collect();
+    assert!(contacted.len() >= 2);
 }
 
 #[test]
@@ -599,8 +798,7 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
             exact::PointInCycle::Outside,
         );
     }
-    let mut clip_budget = ExpansionBudget::new("test", "extreme cluster clip");
-    let padded = normalize_clip(&canonical, VoronoiBoundary::Padded, &mut clip_budget).unwrap();
+    let padded = normalize_clip(&canonical, VoronoiBoundary::Padded, false).unwrap();
     let bounds = padded.frame_bounds();
     assert_directed_partition(&cells, bounds);
     // The generic coverage oracle intentionally retains its midpoint
@@ -661,28 +859,18 @@ fn shifted_six_site_diagram_rejects_colliding_binary64_vertices() {
 }
 
 fn grafted_clip_subdivision(sites: &[Site], clip_polygon: &Polygon) -> ExactSubdivision {
-    let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-    let clip = normalize_clip(sites, VoronoiBoundary::Polygon(clip_polygon), &mut budget).unwrap();
+    let clip = normalize_clip(sites, VoronoiBoundary::Polygon(clip_polygon), false).unwrap();
     let mesh = certified_delaunay(sites).unwrap();
     let complex = delaunay_complex(&mesh, sites).unwrap();
     let primal_edges = mesh.primal_edges();
-    let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
+    let adjacency = certified_site_adjacency(&primal_edges, sites.len()).unwrap();
     let rect = clip_rectangle(&clip).unwrap();
-    let scaffold = build_scaffold(&rect, &clip, &mut budget).unwrap();
-    let separators =
-        emit_clipped_separators(sites, &primal_edges, &complex, &rect, &mut budget).unwrap();
-    let atoms = node_scaffold_and_separators(
-        scaffold,
-        separators,
-        sites,
-        &adjacency,
-        &clip,
-        &rect,
-        &mut budget,
-    )
-    .unwrap();
-    let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
-    graft_components(&mut subdivision, sites, &adjacency, &mut budget).unwrap();
+    let scaffold = build_scaffold(&rect, &clip).unwrap();
+    let separators = emit_clipped_separators(sites, &primal_edges, &complex, &rect).unwrap();
+    let atoms = node_scaffold_and_separators(scaffold, separators, sites, &adjacency, &clip, &rect)
+        .unwrap();
+    let mut subdivision = build_exact_subdivision(atoms).unwrap();
+    graft_components(&mut subdivision, sites, &adjacency).unwrap();
     subdivision
 }
 
@@ -766,6 +954,167 @@ fn separator_fixture() -> (Vec<Site>, Polygon) {
     )
 }
 
+#[test]
+fn polygon_clip_with_many_disjoint_holes_is_budgeted_by_output() {
+    let holes = (0..1_334)
+        .map(|index| {
+            let x = 1.0 + f64::from(index % 50) * 0.7;
+            let y = -8.0 + f64::from(index / 50) * 0.6;
+            Ring::closed(vec![
+                Point::new_raw_xy(x, y),
+                Point::new_raw_xy(x + 0.2, y),
+                Point::new_raw_xy(x + 0.1, y + 0.2),
+            ])
+            .unwrap()
+        })
+        .collect();
+    let polygon = Polygon::new(rectangle(-10.0, -10.0, 40.0, 10.0), holes);
+    assert!(polygon_is_valid(&polygon).unwrap());
+
+    let source = Shape::MultiPoint(
+        sites_xy(&[(-1.0, 0.0), (1.0, 0.0)])
+            .into_iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .expect("the 5,346-position partition is below the generated-output budget");
+
+    assert_eq!(cells.len(), 2);
+    assert!(
+        cells.iter().all(
+            |cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+        )
+    );
+    let (hole_count, coordinate_count) = cells.iter().fold((0, 0), |(holes, coords), cell| {
+        let Shape::Polygon(polygon) = cell else {
+            unreachable!("Voronoi polygon output contains only polygons");
+        };
+        (
+            holes + polygon.holes.len(),
+            coords
+                + polygon.shell.len()
+                + polygon.holes.iter().map(|ring| ring.len()).sum::<usize>(),
+        )
+    });
+    assert_eq!(hole_count, 1_334);
+    assert_eq!(coordinate_count, 5_346);
+    assert_eq!(budget.used(), 7);
+}
+
+#[test]
+fn polygon_clip_never_publishes_separator_edges_through_holes() {
+    let source = Shape::MultiPoint(
+        [
+            (7.363_407_761_916_353, 0.910_061_356_872_448_7),
+            (6.090_183_077_044_946, -8.212_595_695_268_158),
+            (36.882_862_911_401_645, 2.797_623_572_491_808_4),
+            (36.301_612_116_132_375, -7.745_261_677_494_59),
+            (28.239_545_834_041_202, 0.914_252_377_592_369_2),
+            (-7.512_276_371_063_782, 0.431_337_981_564_331_23),
+            (18.856_535_571_352_17, 3.728_851_987_116_291_5),
+            (7.907_218_354_022_312, 6.144_878_172_929_207),
+            (37.461_899_718_154_09, -4.374_205_394_511_301),
+            (28.995_254_695_626_983, 8.082_142_040_528_609),
+            (34.199_497_713_157_854, -4.726_233_471_603_177),
+            (4.480_941_274_147_678, 0.874_366_871_259_853_8),
+            (13.083_919_124_933_26, -7.950_635_799_513_469),
+            (16.680_131_726_928_522, 8.985_083_973_425_464),
+            (12.409_534_275_855_67, 0.875_640_236_445_242_7),
+            (12.801_013_459_163_723, 8.594_561_991_431_593),
+            (15.491_850_637_223_166, 4.641_750_373_890_741),
+            (27.311_848_761_232, 6.604_639_667_276_992),
+            (1.396_568_785_930_606_2, 1.939_113_266_429_83),
+            (3.841_055_416_132_109, 6.533_768_346_517_97),
+            (27.292_924_130_985_24, 4.143_438_302_403_387),
+            (35.301_683_216_775_01, -0.571_294_127_869_450_1),
+            (12.340_258_256_482_5, -1.424_072_102_708_254_1),
+            (38.356_471_151_004_33, -3.732_209_537_823_021),
+        ]
+        .into_iter()
+        .map(|(x, y)| Point::new_raw_xy(x, y))
+        .collect::<Vec<_>>()
+        .into(),
+    );
+    let holes = (0..13)
+        .map(|index| {
+            let x = 1.0 + f64::from(index % 50) * 0.7;
+            let y = -8.0 + f64::from(index / 50) * 0.6;
+            closed_ring(&[(x, y), (x + 0.2, y), (x + 0.1, y + 0.2)])
+        })
+        .collect();
+    let polygon = Polygon::new(rectangle(-10.0, -10.0, 40.0, 10.0), holes);
+    assert!(polygon_is_valid(&polygon).unwrap());
+
+    let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    match source.voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+    {
+        Err(error) => {
+            assert!(
+                error
+                    .to_string()
+                    .contains("no topology-preserving binary64 embedding"),
+                "unexpected Voronoi error: {error}"
+            );
+        },
+        Ok((coordinates, offsets)) => {
+            assert!(offsets.as_slice().len() > 1);
+            assert_eq!(
+                offsets.as_slice().last().copied().map(|end| end as usize),
+                Some(coordinates.len())
+            );
+            let clip = Shape::Polygon(polygon);
+            for [start, end] in offsets.as_slice().array_windows::<2>() {
+                let points = (*start as usize..*end as usize)
+                    .map(|index| coordinates.point_at(index))
+                    .collect::<Vec<_>>();
+                let line = Shape::LineString(
+                    LineSeq::try_new(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+                );
+                assert!(clip.covers(&line).unwrap());
+            }
+        },
+    }
+}
+
+#[test]
+fn sparse_collinear_edges_do_not_charge_clip_scan_work() {
+    let mut boundary = Vec::with_capacity(20_000);
+    for (start, end, subdivisions) in [
+        (XY::new(-2.0, -1.0), XY::new(2.0, -0.5), 9_999_u32),
+        (XY::new(2.0, -0.5), XY::new(2.0, 1.0), 1),
+        (XY::new(2.0, 1.0), XY::new(-2.0, 0.5), 9_999),
+        (XY::new(-2.0, 0.5), XY::new(-2.0, -1.0), 1),
+    ] {
+        for step in 0..subdivisions {
+            let fraction = f64::from(step) / f64::from(subdivisions);
+            boundary.push(Point::new_raw_xy(
+                start.x + (end.x - start.x) * fraction,
+                start.y + (end.y - start.y) * fraction,
+            ));
+        }
+    }
+    let polygon = Polygon::new(Ring::closed(boundary).unwrap(), Vec::new());
+    assert_eq!(polygon.shell.len() - 1, 20_000);
+
+    let sites = (0_u32..801)
+        .map(|index| Point::new_raw_xy(0.0, -0.5 + f64::from(index) / 800.0))
+        .collect::<Vec<_>>();
+    let source = Shape::MultiPoint(sites.into());
+    let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let (coordinates, offsets) = source
+        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .expect("800 separator edges fit the output budget");
+
+    assert_eq!(offsets.as_slice().len(), 801);
+    assert_eq!(offsets.as_slice().last(), Some(&1_600));
+    assert_eq!(coordinates.len(), 1_600);
+    assert_eq!(budget.used(), 2_400);
+}
+
 fn coincident_frame_fixture() -> (Vec<Site>, Polygon) {
     (
         sites_xy(&[(0.0, -1.0), (0.0, 1.0), (2.0, 0.5)]),
@@ -773,20 +1122,16 @@ fn coincident_frame_fixture() -> (Vec<Site>, Polygon) {
     )
 }
 
-fn node_polygon(sites: &[Site], polygon: &Polygon, budget: &mut ExpansionBudget) -> NodedAtoms {
-    let clip = normalize_clip(sites, VoronoiBoundary::Polygon(polygon), budget).unwrap();
+fn node_polygon(sites: &[Site], polygon: &Polygon) -> NodedAtoms {
+    let clip = normalize_clip(sites, VoronoiBoundary::Polygon(polygon), false).unwrap();
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(sites).unwrap();
     let complex = delaunay_complex(&mesh, sites).unwrap();
     let primal_edges = mesh.primal_edges();
-    let adjacency = certified_site_adjacency(&primal_edges, sites.len(), budget).unwrap();
-    let scaffold = build_scaffold(&rect, &clip, budget).unwrap();
-    let separators =
-        emit_clipped_separators(sites, &primal_edges, &complex, &rect, budget).unwrap();
-    node_scaffold_and_separators(
-        scaffold, separators, sites, &adjacency, &clip, &rect, budget,
-    )
-    .unwrap()
+    let adjacency = certified_site_adjacency(&primal_edges, sites.len()).unwrap();
+    let scaffold = build_scaffold(&rect, &clip).unwrap();
+    let separators = emit_clipped_separators(sites, &primal_edges, &complex, &rect).unwrap();
+    node_scaffold_and_separators(scaffold, separators, sites, &adjacency, &clip, &rect).unwrap()
 }
 
 fn old_frame_halfplane_holds(edge: &AtomicEdge, vertices: &[NodedVertex], sites: &[Site]) -> bool {
@@ -817,14 +1162,12 @@ fn old_frame_halfplane_holds(edge: &AtomicEdge, vertices: &[NodedVertex], sites:
 #[test]
 fn canonical_separator_emitter_keeps_one_sorted_directed_edge_per_dual() {
     let (sites, polygon) = separator_fixture();
-    let mut budget = ExpansionBudget::new("test", "canonical separators");
-    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget).unwrap();
+    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), false).unwrap();
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let complex = delaunay_complex(&mesh, &sites).unwrap();
     let primal_edges = mesh.primal_edges();
-    let separators =
-        emit_clipped_separators(&sites, &primal_edges, &complex, &rect, &mut budget).unwrap();
+    let separators = emit_clipped_separators(&sites, &primal_edges, &complex, &rect).unwrap();
     let expected = primal_edges
         .iter()
         .filter(|edge| match edge {
@@ -848,14 +1191,12 @@ fn canonical_separator_emitter_keeps_one_sorted_directed_edge_per_dual() {
 #[test]
 fn hull_center_outside_clip_aabb_keeps_the_enter_exit_chord() {
     let (sites, polygon) = coincident_frame_fixture();
-    let mut budget = ExpansionBudget::new("test", "external center chord");
-    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut budget).unwrap();
+    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), false).unwrap();
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let complex = delaunay_complex(&mesh, &sites).unwrap();
     let separators =
-        emit_clipped_separators(&sites, &mesh.primal_edges(), &complex, &rect, &mut budget)
-            .unwrap();
+        emit_clipped_separators(&sites, &mesh.primal_edges(), &complex, &rect).unwrap();
     let pair = [SiteId(0), SiteId(1)];
     let chord = separators
         .iter()
@@ -873,19 +1214,11 @@ fn hull_center_outside_clip_aabb_keeps_the_enter_exit_chord() {
     );
     let center = complex.center(0);
     assert!(!in_rectangle(&rect, center).unwrap());
-    let adjacency =
-        certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut budget).unwrap();
-    let scaffold = build_scaffold(&rect, &clip, &mut budget).unwrap();
-    let atoms = node_scaffold_and_separators(
-        scaffold,
-        separators,
-        &sites,
-        &adjacency,
-        &clip,
-        &rect,
-        &mut budget,
-    )
-    .unwrap();
+    let adjacency = certified_site_adjacency(&mesh.primal_edges(), sites.len()).unwrap();
+    let scaffold = build_scaffold(&rect, &clip).unwrap();
+    let atoms =
+        node_scaffold_and_separators(scaffold, separators, &sites, &adjacency, &clip, &rect)
+            .unwrap();
     assert!(
         !atoms
             .vertices
@@ -897,8 +1230,7 @@ fn hull_center_outside_clip_aabb_keeps_the_enter_exit_chord() {
 #[test]
 fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
     let (sites, polygon) = coincident_frame_fixture();
-    let mut budget = ExpansionBudget::new("test", "coincident frame");
-    let atoms = node_polygon(&sites, &polygon, &mut budget);
+    let atoms = node_polygon(&sites, &polygon);
     let coincident: Vec<_> = atoms
         .edges
         .iter()
@@ -923,25 +1255,14 @@ fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
             .unwrap();
         nearest_site(&midpoint, &sites).unwrap_err();
     }
-    let mut fail_budget = ExpansionBudget::new("test", "frame-only tie");
-    let clip =
-        normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), &mut fail_budget).unwrap();
+    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), false).unwrap();
     let rect = clip_rectangle(&clip).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
-    let adjacency =
-        certified_site_adjacency(&mesh.primal_edges(), sites.len(), &mut fail_budget).unwrap();
-    let scaffold = build_scaffold(&rect, &clip, &mut fail_budget).unwrap();
+    let adjacency = certified_site_adjacency(&mesh.primal_edges(), sites.len()).unwrap();
+    let scaffold = build_scaffold(&rect, &clip).unwrap();
     assert!(
-        node_scaffold_and_separators(
-            scaffold,
-            Vec::new(),
-            &sites,
-            &adjacency,
-            &clip,
-            &rect,
-            &mut fail_budget,
-        )
-        .is_err()
+        node_scaffold_and_separators(scaffold, Vec::new(), &sites, &adjacency, &clip, &rect,)
+            .is_err()
     );
 }
 
@@ -976,6 +1297,32 @@ fn packed_separator_column_matches_chain_coordinates() {
         }
         cursor = end;
     }
+}
+
+#[test]
+fn direct_dual_edge_budget_counts_only_the_published_line_column() {
+    let source = Shape::MultiPoint(
+        vec![
+            Point::new_raw_xy(0.0, 0.0),
+            Point::new_raw_xy(2.0, 0.0),
+            Point::new_raw_xy(0.0, 2.0),
+            Point::new_raw_xy(2.0, 2.0),
+            Point::new_raw_xy(0.8, 1.1),
+        ]
+        .into(),
+    );
+    let mut budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let (coordinates, offsets) = source
+        .voronoi_edge_column_budgeted(0.0, VoronoiBoundary::Envelope, &mut budget)
+        .unwrap();
+    let edge_count = offsets.as_slice().len() - 1;
+    assert!(edge_count > 0);
+    assert_eq!(offsets.as_slice().first(), Some(&0));
+    assert_eq!(
+        offsets.as_slice().last().copied().map(|end| end as usize),
+        Some(coordinates.len())
+    );
+    assert_eq!(budget.used(), coordinates.len() + edge_count);
 }
 
 #[test]
@@ -1034,13 +1381,12 @@ fn interior_first_separator_order_emits_one_full_chain() {
         ]),
         Vec::new(),
     );
-    let mut budget = ExpansionBudget::new("test", "interior-first chain");
-    let atoms = node_polygon(&sites, &polygon, &mut budget);
-    let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
+    let atoms = node_polygon(&sites, &polygon);
+    let mut subdivision = build_exact_subdivision(atoms).unwrap();
     let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
-    let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
-    graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
-    let assembled = assemble_edges(&subdivision, &mut budget).unwrap();
+    let adjacency = certified_site_adjacency(&primal_edges, sites.len()).unwrap();
+    graft_components(&mut subdivision, &sites, &adjacency).unwrap();
+    let assembled = assemble_edges(&subdivision).unwrap();
     let separator = [SiteId(0), SiteId(1)];
     let matching: Vec<_> = assembled
         .iter()
@@ -1080,7 +1426,7 @@ fn interior_first_separator_order_emits_one_full_chain() {
     assert_eq!(degree[&left], 2);
     assert_eq!(degree[&right], 2);
     let mut chains = Vec::new();
-    assemble_separator_group(&subdivision, separator, &group, &mut budget, &mut chains).unwrap();
+    assemble_separator_group(&subdivision, separator, &group, &mut chains).unwrap();
     assert_eq!(chains.len(), 1);
     assert_eq!(chains[0].edges.len(), 3);
     assert_eq!(chains[0].vertices.len(), 4);
@@ -1268,7 +1614,7 @@ fn public_polygon_admits_sites_on_and_outside_clip_aabb() {
     let sites = sites_xy(&[(0.0, 0.0), (1.0, 0.0), (3.0, 1.0), (1.0, 1.0)]);
     let polygon = Polygon::new(rectangle(0.0, 0.0, 2.0, 2.0), Vec::new());
     let mut budget = ExpansionBudget::new("test", "sites on and outside R");
-    let atoms = node_polygon(&sites, &polygon, &mut budget);
+    let atoms = node_polygon(&sites, &polygon);
     assert!(
         atoms.edges.iter().any(|edge| {
             edge.separator.is_none()
@@ -1315,8 +1661,7 @@ fn subnormal_clip_aabb_exact_lane_admits_sites_on_corners() {
 #[test]
 fn canonical_separator_atoms_keep_one_identity_and_do_not_branch() {
     let (sites, polygon) = separator_fixture();
-    let mut budget = ExpansionBudget::new("test", "canonical separators");
-    let atoms = node_polygon(&sites, &polygon, &mut budget);
+    let atoms = node_polygon(&sites, &polygon);
     let mut degree = std::collections::BTreeMap::<([SiteId; 2], VertexId), usize>::new();
     for edge in atoms.edges {
         if let Some(pair) = edge.separator {
@@ -1340,15 +1685,14 @@ fn crossed_component_keeps_distinct_faces_with_the_same_owner() {
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -12.0, -1.0, 12.0, 1.0,
     )]);
-    let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-    let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
-    let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
+    let atoms = node_polygon(&sites, &clip_polygon);
+    let mut subdivision = build_exact_subdivision(atoms).unwrap();
     assert_boundary_walk_euler(&subdivision);
     let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
-    let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
-    graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
+    let adjacency = certified_site_adjacency(&primal_edges, sites.len()).unwrap();
+    graft_components(&mut subdivision, &sites, &adjacency).unwrap();
     assert_boundary_walk_euler(&subdivision);
-    let parts = assemble_cells(&subdivision, &mut budget).unwrap();
+    let parts = assemble_cells(&subdivision).unwrap();
     for part in &parts {
         assert_eq!(part.shell.edges.len() + 1, part.shell.vertices.len());
         assert!(
@@ -1379,13 +1723,12 @@ fn isolated_component_exterior_inherits_the_containing_face() {
     let clip_polygon = Polygon::new(rectangle(-20.0, -20.0, 20.0, 20.0), vec![rectangle(
         -1.0, -1.0, 1.0, 1.0,
     )]);
-    let mut budget = ExpansionBudget::new("test", "Voronoi topology");
-    let atoms = node_polygon(&sites, &clip_polygon, &mut budget);
-    let mut subdivision = build_exact_subdivision(atoms, &mut budget).unwrap();
+    let atoms = node_polygon(&sites, &clip_polygon);
+    let mut subdivision = build_exact_subdivision(atoms).unwrap();
     assert_boundary_walk_euler(&subdivision);
     let primal_edges = certified_delaunay(&sites).unwrap().primal_edges();
-    let adjacency = certified_site_adjacency(&primal_edges, sites.len(), &mut budget).unwrap();
-    graft_components(&mut subdivision, &sites, &adjacency, &mut budget).unwrap();
+    let adjacency = certified_site_adjacency(&primal_edges, sites.len()).unwrap();
+    graft_components(&mut subdivision, &sites, &adjacency).unwrap();
     assert_boundary_walk_euler(&subdivision);
     let inherited: Vec<_> = subdivision
         .labels
@@ -1406,7 +1749,7 @@ fn isolated_component_exterior_inherits_the_containing_face() {
     assert_eq!(inherited[0].frame_winding, 1);
     assert_eq!(inherited[0].clip_winding, 1);
     assert!(inherited[0].owner.is_some());
-    let parts = assemble_cells(&subdivision, &mut budget).unwrap();
+    let parts = assemble_cells(&subdivision).unwrap();
     assert_eq!(parts.iter().map(|part| part.holes.len()).sum::<usize>(), 1);
 }
 
@@ -1431,8 +1774,7 @@ fn two_isolated_holes_in_split_same_owner_cell_pair_by_containment() {
         first_equal_label_misattaches_a_hole(&subdivision),
         "first equal-label attachment must pick a non-containing shell on this split same-owner diagram"
     );
-    let mut budget = ExpansionBudget::new("test", "owner-grouped assembly");
-    let restored = assemble_cells(&subdivision, &mut budget).unwrap();
+    let restored = assemble_cells(&subdivision).unwrap();
     let top: Vec<_> = restored
         .iter()
         .filter(|part| part.owner == SiteId(1))
@@ -1585,6 +1927,47 @@ fn sloped_collinear_envelope_emits_analytic_bisector() {
     let mut endpoints: Vec<_> = edges[0].iter().map(|point| point.xy()).collect();
     endpoints.sort_unstable_by(|left, right| left.x.total_cmp(&right.x));
     assert_eq!(endpoints, [XY::new(0.0, 2.0), XY::new(2.0, 0.0)]);
+}
+
+#[test]
+fn collinear_edge_projection_follows_mesh_site_order() {
+    let sites = sites_xy(&[
+        (-1.0, 100.0),
+        (-0.5, 50.0),
+        (0.0, 0.0),
+        (0.5, -50.0),
+        (1.0, -100.0),
+    ]);
+    let mesh = certified_delaunay(&sites).unwrap();
+    let order = mesh.collinear_order().unwrap();
+    assert_eq!(order, &[4, 3, 2, 1, 0]);
+
+    let corners = [
+        XY::new(-2.0, -200.0),
+        XY::new(2.0, -200.0),
+        XY::new(2.0, 200.0),
+        XY::new(-2.0, 200.0),
+    ];
+    let mut boundary = Vec::new();
+    for side in 0..corners.len() {
+        let start = corners[side];
+        let end = corners[(side + 1) % corners.len()];
+        for step in 0..20 {
+            let fraction = f64::from(step) / 20.0;
+            boundary.push(Point::new_raw_xy(
+                start.x + (end.x - start.x) * fraction,
+                start.y + (end.y - start.y) * fraction,
+            ));
+        }
+    }
+    let clip = Polygon::new(Ring::closed(boundary).unwrap(), Vec::new());
+    let mut budget = ExpansionBudget::new("test", "collinear projection order");
+    let edges = build_collinear_edges(&sites, VoronoiBoundary::Polygon(&clip), &mut budget, &mesh)
+        .unwrap()
+        .into_line_seqs()
+        .unwrap();
+
+    assert_eq!(edges.len(), order.len() - 1);
 }
 
 #[test]
@@ -1752,17 +2135,22 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
             point: Point::new_raw_xy(x, y),
         })
         .collect();
-    let mut construction_budget = ExpansionBudget::new("test", "dual completeness");
-    let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
+    let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, false).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let complex = delaunay_complex(&mesh, &sites).unwrap();
-    let restored =
-        dual_build_rings(&sites, &mesh, complex, &clip, &mut construction_budget).unwrap();
+    let restored = dual_build_rings(&sites, &mesh, complex, &clip).unwrap();
     let mut mutated = restored.clone();
     mutated.rings.pop();
 
     let mut restored_budget = ExpansionBudget::new("test", "restored dual completeness");
-    let restored_diagram = dual_embed(&restored, &clip, &sites, &mut restored_budget).unwrap();
+    let restored_diagram = dual_embed(
+        &restored,
+        &clip,
+        &sites,
+        VoronoiProduct::Both,
+        &mut restored_budget,
+    )
+    .unwrap();
     let restored_admitted = true;
     let mut missing_rows: Vec<_> = restored_diagram
         .polygons
@@ -1776,7 +2164,14 @@ fn dual_completeness_rejects_a_missing_cell_mutant() {
         "coverage validity deliberately does not certify clip completeness"
     );
     let mut mutated_budget = ExpansionBudget::new("test", "mutated dual completeness");
-    let mutated_admitted = dual_embed(&mutated, &clip, &sites, &mut mutated_budget).is_ok();
+    let mutated_admitted = dual_embed(
+        &mutated,
+        &clip,
+        &sites,
+        VoronoiProduct::Both,
+        &mut mutated_budget,
+    )
+    .is_ok();
     assert_ne!(
         mutated_admitted, restored_admitted,
         "mutated missing-cell admitted={mutated_admitted}, restored admitted={restored_admitted}"
@@ -1867,14 +2262,19 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
         point: Point::new_raw_xy(x, y),
     })
     .collect();
-    let mut construction_budget = ExpansionBudget::new("test", "dual mutation fixture");
-    let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, &mut construction_budget).unwrap();
+    let clip = normalize_clip(&sites, VoronoiBoundary::Envelope, false).unwrap();
     let mesh = certified_delaunay(&sites).unwrap();
     let complex = delaunay_complex(&mesh, &sites).unwrap();
-    let restored =
-        dual_build_rings(&sites, &mesh, complex, &clip, &mut construction_budget).unwrap();
+    let restored = dual_build_rings(&sites, &mesh, complex, &clip).unwrap();
     let mut restored_budget = ExpansionBudget::new("test", "restored dual mutation fixture");
-    dual_embed(&restored, &clip, &sites, &mut restored_budget).unwrap();
+    dual_embed(
+        &restored,
+        &clip,
+        &sites,
+        VoronoiProduct::Both,
+        &mut restored_budget,
+    )
+    .unwrap();
 
     let mut mutations = Vec::new();
 
@@ -1958,7 +2358,7 @@ fn dual_local_validator_rejects_deterministic_partition_mutations() {
     for (name, mutation) in mutations {
         let mut budget = ExpansionBudget::new("test", "mutated dual partition");
         assert!(
-            dual_embed(&mutation, &clip, &sites, &mut budget).is_err(),
+            dual_embed(&mutation, &clip, &sites, VoronoiProduct::Both, &mut budget,).is_err(),
             "dual mutation unexpectedly admitted: {name}"
         );
     }

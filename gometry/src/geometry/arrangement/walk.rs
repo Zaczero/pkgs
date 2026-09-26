@@ -181,11 +181,7 @@ pub(crate) fn build_csr<W: WindingWeight>(
     mut multiplicities: Vec<W>,
     mut edge_of_slot: Vec<u32>,
 ) -> Result<(Vec<u32>, Vec<u32>, Vec<W>, Vec<u32>)> {
-    let half_edge_count = edges
-        .len()
-        .checked_mul(2)
-        .ok_or(ResourceError::SizeOverflow)?;
-    u32::try_from(half_edge_count).map_err(|_| ResourceError::SizeOverflow)?;
+    let half_edge_count = IndexedTopology::admit_counts(vertex_count, edges.len())?;
     let start_count = vertex_count
         .checked_add(1)
         .ok_or(ResourceError::SizeOverflow)?;

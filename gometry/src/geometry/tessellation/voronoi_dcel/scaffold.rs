@@ -6,11 +6,10 @@
 
 use super::{
     AtomSeed, AtomicEdge, CertifiedPrimalEdge, ClipSegmentId, ClippedSeparator, DelaunayComplex,
-    ExactSign, ExpansionBudget, NodedAtoms, NodedVertex, NormalizedClip, Ordering, OwnerTransition,
+    ExactSign, IndexedTopology, NodedAtoms, NodedVertex, NormalizedClip, Ordering, OwnerTransition,
     PointKey, PrimitiveOwner, Result, ScaffoldPrimitive, Site, SiteAdjacency, SiteId, Transition,
-    VertexId, XY, budgeted_push, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact,
-    nearest_site_walk, orient_separator, sort_unique_along, try_dedup_by, try_sort_by,
-    voronoi_error,
+    VertexId, XY, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact, nearest_site_walk,
+    orient_separator, sort_unique_along, try_dedup_by, try_sort_by, voronoi_error,
 };
 
 pub(super) fn coincident_frame_owner(
@@ -45,7 +44,6 @@ pub(super) fn coincident_frame_owner(
 pub(super) fn build_scaffold(
     rect: &[exact::ExactPoint; 4],
     clip: &NormalizedClip<'_>,
-    budget: &mut ExpansionBudget,
 ) -> Result<Vec<ScaffoldPrimitive>> {
     let mut outer_is_rect = clip.rings.first().is_some_and(|ring| ring.len() == 4);
     for side in 0..4 {
@@ -56,8 +54,20 @@ pub(super) fn build_scaffold(
     } else {
         clip.rings.as_slice()
     };
-    let scaffold_count = 4_usize.saturating_add(clip_rings.iter().map(Vec::len).sum::<usize>());
-    budget.add(scaffold_count)?;
+    let scaffold_segments = clip_rings.iter().try_fold(0_usize, |count, ring| {
+        count
+            .checked_add(ring.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    let scaffold_count = 4_usize
+        .checked_add(scaffold_segments)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let clip_segment_count = clip.rings.iter().try_fold(0_usize, |count, ring| {
+        count
+            .checked_add(ring.len())
+            .ok_or(crate::error::ResourceError::SizeOverflow)
+    })?;
+    u32::try_from(clip_segment_count).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
     let mut scaffold = Vec::with_capacity(scaffold_count);
     for side in 0..4 {
         scaffold.push(ScaffoldPrimitive {
@@ -100,10 +110,10 @@ pub(super) fn build_scaffold(
                 .iter_mut()
                 .find(|primitive| primitive.clip_source == Some(ClipSegmentId(segment as u32)))
                 .ok_or_else(|| voronoi_error("validated clip contact has no source segment"))?;
-            budgeted_push(&mut primitive.events, contact.point.clone(), budget)?;
+            primitive.events.push(contact.point.clone());
         }
     }
-    register_frame_clip_contacts(&mut scaffold, budget)?;
+    register_frame_clip_contacts(&mut scaffold)?;
     for primitive in &mut scaffold {
         if exact::signed_line_product(&primitive.line, &primitive.start)? != ExactSign::Zero
             || exact::signed_line_product(&primitive.line, &primitive.end)? != ExactSign::Zero
@@ -112,7 +122,6 @@ pub(super) fn build_scaffold(
                 "exact Voronoi primitive endpoints leave their support line",
             ));
         }
-        budget.add(2)?;
         primitive.events.reserve(2);
         primitive
             .events
@@ -126,7 +135,6 @@ pub(super) fn emit_clipped_separators(
     primal_edges: &[CertifiedPrimalEdge],
     complex: &DelaunayComplex,
     rect: &[exact::ExactPoint; 4],
-    budget: &mut ExpansionBudget,
 ) -> Result<Vec<ClippedSeparator>> {
     let mut separators = Vec::new();
     for &primal in primal_edges {
@@ -149,7 +157,6 @@ pub(super) fn emit_clipped_separators(
                     [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
                     &line,
                     rect,
-                    budget,
                 )?
                 else {
                     continue;
@@ -172,7 +179,6 @@ pub(super) fn emit_clipped_separators(
                     &line,
                     rect,
                     sites,
-                    budget,
                 )?
                 else {
                     continue;
@@ -189,19 +195,14 @@ pub(super) fn emit_clipped_separators(
                 "exact Voronoi primitive endpoints leave their support line",
             ));
         }
-        budget.add(2)?;
         let mut events = Vec::with_capacity(2);
         events.extend([start.clone(), end.clone()]);
-        budgeted_push(
-            &mut separators,
-            ClippedSeparator {
-                pair: ids,
-                start,
-                end,
-                events,
-            },
-            budget,
-        )?;
+        separators.push(ClippedSeparator {
+            pair: ids,
+            start,
+            end,
+            events,
+        });
     }
     Ok(separators)
 }
@@ -263,10 +264,6 @@ pub(super) fn lex_position(
     Ok(None)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "atom emission needs the endpoints, events, windings, owner, and seed sink together"
-)]
 pub(super) fn emit_atom_windows(
     start: &exact::ExactPoint,
     end: &exact::ExactPoint,
@@ -278,7 +275,6 @@ pub(super) fn emit_atom_windows(
     clip_source: Option<ClipSegmentId>,
     frame_side: Option<u8>,
     seeds: &mut Vec<AtomSeed>,
-    budget: &mut ExpansionBudget,
 ) -> Result<()> {
     sort_unique_along(start, end, events)?;
     let bounded = match events.as_slice() {
@@ -297,30 +293,22 @@ pub(super) fn emit_atom_windows(
                 "exact primitive has unordered duplicate events",
             ));
         }
-        budgeted_push(
-            seeds,
-            AtomSeed {
-                start: left.clone(),
-                end: right.clone(),
-                frame_delta,
-                clip_delta,
-                owner,
-                separator,
-                clip_source,
-                frame_side,
-            },
-            budget,
-        )?;
+        seeds.push(AtomSeed {
+            start: left.clone(),
+            end: right.clone(),
+            frame_delta,
+            clip_delta,
+            owner,
+            separator,
+            clip_source,
+            frame_side,
+        });
     }
     Ok(())
 }
 
-pub(super) fn register_frame_clip_contacts(
-    scaffold: &mut [ScaffoldPrimitive],
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
+pub(super) fn register_frame_clip_contacts(scaffold: &mut [ScaffoldPrimitive]) -> Result<()> {
     let (frames, clips) = scaffold.split_at_mut(4);
-    budget.add(4_usize.saturating_mul(clips.len()))?;
     for clip_prim in clips {
         for frame_prim in frames.iter_mut() {
             match exact::segment_intersection(
@@ -331,17 +319,11 @@ pub(super) fn register_frame_clip_contacts(
             )? {
                 exact::SegmentIntersection::None => {},
                 exact::SegmentIntersection::Point(point) => {
-                    budgeted_push(&mut frame_prim.events, point.clone(), budget)?;
-                    budgeted_push(&mut clip_prim.events, point, budget)?;
+                    frame_prim.events.push(point.clone());
+                    clip_prim.events.push(point);
                 },
                 exact::SegmentIntersection::Overlap { start, end } => {
-                    push_split_events(
-                        &mut frame_prim.events,
-                        &mut clip_prim.events,
-                        start,
-                        end,
-                        budget,
-                    )?;
+                    push_split_events(&mut frame_prim.events, &mut clip_prim.events, start, end);
                 },
             }
         }
@@ -354,14 +336,11 @@ pub(super) fn push_split_events(
     right: &mut Vec<exact::ExactPoint>,
     start: exact::ExactPoint,
     end: exact::ExactPoint,
-    budget: &mut ExpansionBudget,
-) -> Result<()> {
-    budget.add(4)?;
+) {
     left.reserve(2);
     left.extend([start.clone(), end.clone()]);
     right.reserve(2);
     right.extend([start, end]);
-    Ok(())
 }
 
 pub(super) fn node_scaffold_and_separators(
@@ -371,9 +350,7 @@ pub(super) fn node_scaffold_and_separators(
     adjacency: &SiteAdjacency,
     clip: &NormalizedClip<'_>,
     rect: &[exact::ExactPoint; 4],
-    budget: &mut ExpansionBudget,
 ) -> Result<NodedAtoms> {
-    budget.add(separators.len().saturating_mul(scaffold.len()))?;
     for separator in &mut separators {
         for primitive in &mut scaffold {
             match exact::segment_intersection(
@@ -384,17 +361,11 @@ pub(super) fn node_scaffold_and_separators(
             )? {
                 exact::SegmentIntersection::None => {},
                 exact::SegmentIntersection::Point(point) => {
-                    budgeted_push(&mut separator.events, point.clone(), budget)?;
-                    budgeted_push(&mut primitive.events, point, budget)?;
+                    separator.events.push(point.clone());
+                    primitive.events.push(point);
                 },
                 exact::SegmentIntersection::Overlap { start, end } => {
-                    push_split_events(
-                        &mut separator.events,
-                        &mut primitive.events,
-                        start,
-                        end,
-                        budget,
-                    )?;
+                    push_split_events(&mut separator.events, &mut primitive.events, start, end);
                 },
             }
         }
@@ -412,7 +383,6 @@ pub(super) fn node_scaffold_and_separators(
             primitive.clip_source,
             primitive.frame_side,
             &mut seeds,
-            budget,
         )?;
     }
     for separator in &mut separators {
@@ -430,7 +400,6 @@ pub(super) fn node_scaffold_and_separators(
             None,
             None,
             &mut seeds,
-            budget,
         )?;
     }
     let mut event_points = Vec::with_capacity(seeds.len().saturating_mul(2));
@@ -439,14 +408,12 @@ pub(super) fn node_scaffold_and_separators(
     }
     try_sort_by(&mut event_points, exact::ExactPoint::compare_lex)?;
     try_dedup_by(&mut event_points, exact::ExactPoint::same_position)?;
-    budget.add(event_points.len())?;
+    IndexedTopology::admit_counts(event_points.len(), 0)?;
     let fixed = fixed_coordinates(&event_points, sites, clip)?;
     let vertex_id = |point: &exact::ExactPoint| -> Result<VertexId> {
         let index = lex_position(&event_points, point)?
             .ok_or_else(|| voronoi_error("exact event was not globally interned"))?;
-        Ok(VertexId(
-            u32::try_from(index).map_err(|_| voronoi_error("too many exact vertices"))?,
-        ))
+        Ok(VertexId(index as u32))
     };
     #[derive(Clone)]
     struct MappedSeed {
@@ -579,8 +546,7 @@ pub(super) fn node_scaffold_and_separators(
                         let midpoint = vertices[seed.endpoints[0].0 as usize]
                             .point
                             .midpoint(&vertices[seed.endpoints[1].0 as usize].point)?;
-                        frame_owner =
-                            nearest_site_walk(&midpoint, sites, adjacency, frame_owner, budget)?;
+                        frame_owner = nearest_site_walk(&midpoint, sites, adjacency, frame_owner)?;
                         let owner = OwnerTransition::Boundary {
                             left: Some(frame_owner),
                             right: None,
@@ -604,21 +570,17 @@ pub(super) fn node_scaffold_and_separators(
         clip_sources.sort_unstable();
         clip_sources.dedup();
         if frame_delta != 0 || clip_delta != 0 || separator.is_some() {
-            budgeted_push(
-                &mut edges,
-                AtomicEdge {
-                    endpoints: mapped[start].endpoints,
-                    forward: Transition {
-                        frame_delta,
-                        clip_delta,
-                        owner,
-                    },
-                    separator,
-                    clip_sources,
-                    frame_side,
+            edges.push(AtomicEdge {
+                endpoints: mapped[start].endpoints,
+                forward: Transition {
+                    frame_delta,
+                    clip_delta,
+                    owner,
                 },
-                budget,
-            )?;
+                separator,
+                clip_sources,
+                frame_side,
+            });
         }
         start = end;
     }

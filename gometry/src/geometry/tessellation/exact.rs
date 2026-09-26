@@ -888,6 +888,17 @@ impl ExactPoint {
         Ok(coords)
     }
 
+    pub(super) fn projected_coordinate(
+        &self,
+        x_coefficient: &ExactDyadic,
+        y_coefficient: &ExactDyadic,
+    ) -> Result<ExactRational> {
+        let coords = self.coords()?;
+        let x = coords.x.try_product(x_coefficient)?;
+        let y = coords.y.try_product(y_coefficient)?;
+        ExactRational::new(x.try_add(y)?, coords.w.clone())
+    }
+
     /// The stored double behind a point made from one, `None` for any other
     /// construction.
     pub(super) fn as_double(&self) -> Option<XY> {

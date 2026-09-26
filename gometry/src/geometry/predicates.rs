@@ -13,17 +13,19 @@ mod simplicity;
 mod validate;
 mod validity_helpers;
 
-pub(crate) use membership::{
-    RingClass, RingEdgeMembership, TouchDirections, ring_classify_point, ring_contains_interior,
-    ring_edge_membership, ring_label,
+pub(in crate::geometry) use membership::{
+    PolygonContact, multi_polygon_members_issue, polygon_rings_issue_with_contacts,
 };
-pub(in crate::geometry) use membership::{multi_polygon_members_issue, polygon_rings_issue};
+pub(crate) use membership::{
+    RingClass, TouchDirections, ring_classify_point, ring_contains_interior, ring_label,
+};
 pub(crate) use pole::{
     ring_encloses_pole, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
     shape_reaches_geographic_pole_in_frame,
 };
 pub(in crate::geometry) use relate::LineworkChains;
 pub(crate) use repair::polygonal_repair;
+pub(in crate::geometry) use shape_data::classify_ring_pair_with_contacts;
 #[cfg(test)]
 pub(in crate::geometry) use shape_data::pseudo_angle;
 pub(crate) use shape_data::{

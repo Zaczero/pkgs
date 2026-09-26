@@ -371,6 +371,23 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
     isolated: &[XY],
     budget: &mut ExpansionBudget,
 ) -> Result<ExactPartition<'a>> {
+    partition_unique_segments_with_budget(unique, provenance, isolated, Some(budget))
+}
+
+pub(in crate::geometry) fn partition_unique_segments_unbudgeted<'a>(
+    unique: &'a [Segment],
+    provenance: &SegmentProvenance,
+    isolated: &[XY],
+) -> Result<ExactPartition<'a>> {
+    partition_unique_segments_with_budget(unique, provenance, isolated, None)
+}
+
+fn partition_unique_segments_with_budget<'a>(
+    unique: &'a [Segment],
+    provenance: &SegmentProvenance,
+    isolated: &[XY],
+    mut budget: Option<&mut ExpansionBudget>,
+) -> Result<ExactPartition<'a>> {
     debug_assert_eq!(provenance.len(), unique.len());
     let endpoint_capacity = unique
         .len()
@@ -546,7 +563,9 @@ pub(in crate::geometry) fn partition_unique_segments<'a>(
             continue;
         }
         let (recipe, rounded) = forest.points.take(root);
-        if matches!(recipe, NodeRecipe::Crossing { .. }) {
+        if matches!(recipe, NodeRecipe::Crossing { .. })
+            && let Some(budget) = budget.as_deref_mut()
+        {
             budget.add(1)?;
         }
         compact_of[root as usize] = Some(points.push(recipe, rounded)?);
@@ -876,7 +895,7 @@ pub(super) fn aggregate_atoms(
     intervals: Vec<(u32, u32, u32)>,
     source_provenance: &SegmentProvenance,
     baseline: usize,
-    budget: &mut ExpansionBudget,
+    mut budget: Option<&mut ExpansionBudget>,
 ) -> Result<(Vec<ExactSpan>, SegmentProvenance)> {
     let mut atom_of: HashMap<(u32, u32), u32> =
         HashMap::with_hasher(crate::collections::collection_hash_state()?.clone());
@@ -891,7 +910,9 @@ pub(super) fn aggregate_atoms(
             contributors.push((atom, unique, reversed));
             continue;
         }
-        if spans.len() >= baseline {
+        if spans.len() >= baseline
+            && let Some(budget) = budget.as_deref_mut()
+        {
             budget.add(1)?;
         }
         let atom = u32::try_from(spans.len()).map_err(|_| ResourceError::SizeOverflow)?;

@@ -433,7 +433,15 @@ impl Shape {
         let cells = if mesh.collinear_order().is_some() {
             voronoi_dcel::build_collinear_polygons(&canonical, boundary, budget, &mesh)?
         } else {
-            voronoi_dcel::build(&canonical, boundary, budget, true, &mesh)?.into_polygons()
+            voronoi_dcel::build_product(
+                &canonical,
+                boundary,
+                budget,
+                true,
+                &mesh,
+                voronoi_dcel::VoronoiProduct::Polygons,
+            )?
+            .into_polygons()
         };
         Ok(cells.into_iter().map(Self::Polygon).collect())
     }
@@ -631,6 +639,9 @@ impl Shape {
 
     fn prepare_voronoi(&self, tolerance: f64) -> Result<(Vec<Site>, Option<CertifiedDelaunay>)> {
         let sites = self.voronoi_sites(tolerance)?;
+        if let Some(last) = sites.len().checked_sub(1) {
+            u32::try_from(last).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
+        }
         let mesh = if sites.len() >= 2 {
             Some(certified_delaunay(&sites)?)
         } else {

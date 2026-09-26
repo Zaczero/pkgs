@@ -164,8 +164,11 @@ pub(in crate::geometry) use exact_partition::{
 };
 #[cfg(test)]
 pub(crate) use exact_partition::{partition_calls, reset_partition_calls};
+pub(in crate::geometry) use nary::{
+    VoronoiIntermediateOverlay, binary_cartesian_overlay_without_partition_budget,
+    overlay_all_geographic_from, overlay_view_error,
+};
 pub(crate) use nary::{empty_shape_for_dimension_with_axes, overlay_all};
-pub(in crate::geometry) use nary::{overlay_all_geographic_from, overlay_view_error};
 #[cfg(test)]
 pub(crate) use noding::self_node_segments;
 pub(crate) use noding::self_node_segments_sourced;

@@ -5,9 +5,9 @@
 //! the label of the face that contains it.
 
 use super::{
-    AtomicEdge, BoundaryFaceId, ExactSign, ExpansionBudget, IndexedTopology,
-    IndexedTopologyScratch, NodedAtoms, Ordering, OwnerTransition, Result, Site, SiteAdjacency,
-    SiteId, Transition, VecDeque, XY, exact, nearest_site_walk, voronoi_error,
+    AtomicEdge, BoundaryFaceId, ExactSign, IndexedTopology, IndexedTopologyScratch, NodedAtoms,
+    Ordering, OwnerTransition, Result, Site, SiteAdjacency, SiteId, Transition, VecDeque, XY,
+    exact, nearest_site_walk, voronoi_error,
 };
 
 pub(super) struct ExactVertex {
@@ -23,15 +23,10 @@ pub(super) fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     node
 }
 
-pub(super) fn build_exact_subdivision(
-    atoms: NodedAtoms,
-    budget: &mut ExpansionBudget,
-) -> Result<ExactSubdivision> {
+pub(super) fn build_exact_subdivision(atoms: NodedAtoms) -> Result<ExactSubdivision> {
     let vertices = atoms.vertices.len();
     let edges = atoms.edges.len();
-    let slots = edges * 2;
-    budget.add(slots)?;
-    budget.add(slots)?;
+    let slots = IndexedTopology::admit_counts(vertices, edges)?;
     let mut topology = IndexedTopology::default();
     let mut scratch = IndexedTopologyScratch::default();
     topology.starts.reserve(vertices + 1);
@@ -266,7 +261,6 @@ pub(super) fn graft_components(
     subdivision: &mut ExactSubdivision,
     sites: &[Site],
     adjacency: &SiteAdjacency,
-    budget: &mut ExpansionBudget,
 ) -> Result<()> {
     let topology = &subdivision.topology;
     let boundary_faces = topology.face_starts.len() - 1;
@@ -282,7 +276,6 @@ pub(super) fn graft_components(
     for face in 0..boundary_faces {
         let walk = &topology.face_slots
             [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
-        budget.add(walk.len())?;
         let sign =
             exact::cycle_orientation(walk.iter().map(|&slot| {
                 &subdivision.vertices[topology.owners[slot as usize] as usize].point
@@ -341,7 +334,7 @@ pub(super) fn graft_components(
         }
         let start = &subdivision.vertices[topology.owners[slot] as usize].point;
         let end = &subdivision.vertices[topology.targets[slot] as usize].point;
-        let owner = nearest_site_walk(&start.midpoint(end)?, sites, adjacency, SiteId(0), budget)?;
+        let owner = nearest_site_walk(&start.midpoint(end)?, sites, adjacency, SiteId(0))?;
         let label = RegionLabel {
             frame_winding: 1,
             clip_winding: i32::from(transition.clip_delta > 0),
