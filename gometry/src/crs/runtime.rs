@@ -154,6 +154,10 @@ pub(crate) fn configure_runtime(
     if config == *state.config {
         return Ok(config);
     }
+    proj_search_path_count(
+        config.search_paths.as_ref().map_or(0, Vec::len),
+        config.user_writable_directory.is_some(),
+    )?;
     let updated = Arc::new(RuntimeState {
         generation: state.generation.wrapping_add(1),
         config: Arc::new(config),
@@ -162,6 +166,17 @@ pub(crate) fn configure_runtime(
     drop(state);
     ensure_thread_caches_current(&updated);
     Ok((*updated.config).clone())
+}
+
+fn proj_search_path_count(path_len: usize, has_writable_directory: bool) -> Result<i32> {
+    let Some(count) = path_len.checked_add(usize::from(has_writable_directory)) else {
+        return Err(CrsError::invalid(
+            "PROJ search path count exceeds i32::MAX".to_owned(),
+        ));
+    };
+    i32::try_from(count).map_err(|_| {
+        CrsError::invalid(format!("PROJ search path count exceeds i32::MAX ({count})"))
+    })
 }
 
 fn validate_runtime_path(name: &str, value: Option<&str>) -> Result<()> {
@@ -230,6 +245,10 @@ pub(crate) fn runtime_state_snapshot() -> Result<Arc<RuntimeState>> {
 /// typed context. Callers wrap the context in [`ProjContext`] *before* this
 /// so error/panic paths never need a manual `proj_context_destroy`.
 pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig) -> Result<()> {
+    let path_count = proj_search_path_count(
+        config.search_paths.as_ref().map_or(0, Vec::len),
+        config.user_writable_directory.is_some(),
+    )?;
     // SAFETY: DOC-H. Typed live context on the creating thread. PROJ copies
     // search paths / directory into context-owned storage; CString/pointer
     // vectors need only outlive each call. The bare finder returns the
@@ -269,7 +288,7 @@ pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig
                 .collect::<Vec<_>>();
             proj_sys::proj_context_set_search_paths(
                 context.as_ptr(),
-                pointers.len() as i32,
+                path_count,
                 pointers.as_ptr(),
             );
         }
@@ -283,4 +302,49 @@ pub(super) fn apply_runtime_config(context: &ProjContext, config: &RuntimeConfig
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod proj_search_path_count_tests {
+    use super::proj_search_path_count;
+
+    #[test]
+    fn search_paths_at_the_c_int_limit_are_admitted_without_a_writable_path() {
+        assert_eq!(
+            proj_search_path_count(0x7FFF_FFFF, false).unwrap(),
+            i32::MAX
+        );
+    }
+
+    #[test]
+    fn writable_directory_counts_as_a_proj_search_path() {
+        assert_eq!(proj_search_path_count(0x7FFF_FFFE, true).unwrap(), i32::MAX);
+
+        let error = proj_search_path_count(0x7FFF_FFFF, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("PROJ search path count exceeds i32::MAX")
+        );
+    }
+
+    #[test]
+    fn search_paths_one_past_the_c_int_limit_are_rejected() {
+        let error = proj_search_path_count(0x8000_0000, false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("PROJ search path count exceeds i32::MAX")
+        );
+    }
+
+    #[test]
+    fn search_path_count_rejects_usize_overflow_with_a_writable_directory() {
+        let error = proj_search_path_count(usize::MAX, true).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("PROJ search path count exceeds i32::MAX")
+        );
+    }
 }
