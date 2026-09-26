@@ -62,8 +62,8 @@ impl HeapSize for PyGeometry {
             .filter(|plan| Arc::ptr_eq(plan.shape_arc(), &self.shape))
             .map_or(0, |_| shape_bytes);
         shape_bytes
-            + product_bytes.saturating_sub(prepared_shape_bytes)
-            + self.frame.crs_ref().map_or(0, HeapSize::heap_bytes)
+            .saturating_add(product_bytes.saturating_sub(prepared_shape_bytes))
+            .saturating_add(self.frame.crs_ref().map_or(0, HeapSize::heap_bytes))
     }
 }
 
@@ -405,15 +405,16 @@ impl PyGeometryParts {
     /// -------
     /// int
     #[getter]
-    fn nbytes(&self) -> usize {
-        self.geometry.shape.shape().coordinate_bytes()
+    fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, pyo3::types::PyInt>> {
+        let measure = crate::boundary::coordinates::measure_shape(py, self.geometry.shape.shape())?;
+        Ok(measure.bytes_pyint(py))
     }
 
     /// ``sys.getsizeof`` support: this lazy view plus the source geometry's
     /// logical coordinate heap. The view shares the geometry; it does not
     /// materialize individual parts.
     fn __sizeof__(&self) -> usize {
-        self.total_size()
+        std::mem::size_of::<Self>().saturating_add(self.heap_bytes())
     }
 
     fn __repr__(&self) -> String {
@@ -594,7 +595,8 @@ row_iter_pymethods! {
 
 impl HeapSize for PyGeometryParts {
     fn heap_bytes(&self) -> usize {
-        self.geometry.shape.shape().coordinate_bytes()
+        crate::geometry::types::ShapeHeapMemo::default()
+            .coordinate_bytes(self.geometry.shape.shape())
     }
 }
 

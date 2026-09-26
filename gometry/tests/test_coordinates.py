@@ -900,6 +900,39 @@ def test_set_coordinates_per_axis_and_num_coordinates() -> None:
     assert int(arr.num_coordinates.sum()) == len(arr.coords)
 
 
+def test_exact_count_and_byte_metadata_promote_for_shared_collections() -> None:
+    geometry = gm.GeometryCollection([gm.Point(1, 2), gm.Point(3, 4)])
+    for _ in range(127):
+        geometry = gm.GeometryCollection([geometry, geometry])
+
+    coordinate_count = 1 << 128
+    coordinate_bytes = 1 << 132
+    assert geometry.num_coordinates == coordinate_count
+    assert geometry.nbytes == coordinate_bytes
+
+    coords = geometry.coords
+    assert coords.nbytes == coordinate_bytes
+    assert repr(coords) == f'<Coordinates XY len={coordinate_count}>'
+    assert coords[0] == (1.0, 2.0)
+    iterator = iter(coords)
+    assert next(iterator) == (1.0, 2.0)
+    reverse_iterator = reversed(coords)
+    assert next(reverse_iterator) == (3.0, 4.0)
+    with pytest.raises(OverflowError, match='maximum Python sequence length'):
+        len(coords)
+
+    values = gm.GeometryArray([geometry, None, geometry])
+    counts = values.num_coordinates
+    assert counts.dtype == object
+    assert counts.tolist() == [coordinate_count, 0, coordinate_count]
+    assert values.nbytes == 2 * coordinate_bytes
+    assert values.coords.nbytes == 2 * coordinate_bytes
+
+    duplicated_points = gm.points([0.0, 1.0], [2.0, 3.0])[[1, 1]]
+    assert duplicated_points.nbytes == 2 * 16
+    assert duplicated_points.coords.nbytes == 2 * 16
+
+
 def test_map_coordinates_matches_shapely_transform() -> None:
     shapely = pytest.importorskip('shapely')
     from shapely import transform as shapely_transform

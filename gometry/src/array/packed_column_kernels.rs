@@ -51,12 +51,15 @@ pub(crate) fn buffer_point_columns(
         quadrant_segments.get() as usize,
     )
     .map_err(batch_err)?;
-    let vertices_per_row = steps.wrapping_add(1);
+    let vertices_per_row = steps
+        .checked_add(1)
+        .expect("buffer expansion steps are bounded before addition");
     let point_rows = points.rows();
     let present_rows = point_rows.present_count();
-    let total = present_rows
-        .checked_mul(vertices_per_row)
-        .ok_or_else(|| batch_err(crate::error::ResourceError::SizeOverflow.into()))?;
+    let total = present_rows.checked_mul(vertices_per_row).ok_or_else(|| {
+        batch_err(crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into())
+    })?;
+    crate::array::admit_packed_coord_count(total).map_err(batch_err)?;
 
     let mut unit_x = Vec::with_capacity(steps);
     let mut unit_y = Vec::with_capacity(steps);
@@ -154,8 +157,7 @@ pub(crate) fn clip_lines_packed_xy(
         return Ok(None);
     }
     let (xs, ys) = (coords.xs(), coords.ys());
-    let selected_len =
-        crate::array::packed_lines_coord_len(line_columns.offsets(), line_columns.selection());
+    let selected_len = line_columns.selected_vertex_capacity_hint();
     let mut builder = PackedColumnBuilder::like(coords, selected_len, line_columns.rows());
 
     for row in 0..line_columns.rows() {
@@ -206,14 +208,20 @@ pub(crate) fn clip_lines_packed_xy(
                 continue;
             }
             if last_end.is_some_and(|last| same_point(last, clipped_start)) {
-                builder.push_xy(clipped_end.x, clipped_end.y);
+                builder
+                    .push_xy(clipped_end.x, clipped_end.y)
+                    .map_err(batch_err)?;
             } else {
                 part_count += 1;
                 if part_count > 1 {
                     return Ok(None);
                 }
-                builder.push_xy(clipped_start.x, clipped_start.y);
-                builder.push_xy(clipped_end.x, clipped_end.y);
+                builder
+                    .push_xy(clipped_start.x, clipped_start.y)
+                    .map_err(batch_err)?;
+                builder
+                    .push_xy(clipped_end.x, clipped_end.y)
+                    .map_err(batch_err)?;
             }
             last_end = Some(clipped_end);
         }
@@ -782,6 +790,8 @@ pub(crate) fn map_masked_point_columns_to_crs(
     let rows = PointRows::new(coords.len(), selection, Some(missing), layout);
     let present_count = rows.present_count();
     let compact = rows.is_compact();
+    crate::array::admit_packed_coord_count(if compact { present_count } else { rows.len() })
+        .map_err(crate::crs::TransformFailure::from)?;
     let mut xs = Vec::with_capacity(present_count);
     let mut ys = Vec::with_capacity(present_count);
     let mut zs = coords.zs().map(|_| Vec::with_capacity(present_count));
@@ -1058,7 +1068,7 @@ pub(crate) fn subdivide_line_columns(
 ) -> Result<PackedColumnOutput> {
     let coords = columns.coords();
     let rows = columns.rows();
-    let selected_len = crate::array::packed_lines_coord_len(columns.offsets(), columns.selection());
+    let selected_len = columns.materialized_present_vertices(0)?;
     let mut builder = PackedColumnBuilder::like(coords, selected_len, rows);
     for row in 0..rows {
         if columns.is_missing(row) {
@@ -1085,13 +1095,7 @@ pub(crate) fn subdivide_polygon_columns(
 ) -> Result<PackedColumnOutput> {
     let coords = columns.coords();
     let ring_offsets = columns.ring_offsets();
-    let selected_len = crate::array::packed_polygons_coord_len(
-        ring_offsets,
-        columns.polygon_offsets(),
-        columns.selection(),
-    );
-    let rings =
-        crate::array::packed_polygons_ring_len(columns.polygon_offsets(), columns.selection());
+    let (selected_len, rings) = columns.materialized_present_sizes()?;
     let mut builder = PackedColumnBuilder::like(coords, selected_len, rings);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows());
     let mut output_rings = 0;
@@ -1101,11 +1105,12 @@ pub(crate) fn subdivide_polygon_columns(
             continue;
         }
         let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-        for ring in columns.polygon_rings(row) {
+        let row_rings = columns.polygon_rings(row);
+        for ring in row_rings.clone() {
             let ring_window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
             builder.push_subdivided(coords, ring_window, &subdivide, &mut budget)?;
-            output_rings += 1;
         }
+        output_rings = output_rings.wrapping_add(row_rings.len());
         polygon_builder.push_end(output_rings, i32::MAX as usize)?;
     }
     let cap = builder.vertex_len();
@@ -1128,11 +1133,14 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 let coords = if let Some(coords) = point_columns.contiguous_coords() {
                     coords
                 } else {
+                    let rows = point_columns.rows();
+                    crate::array::admit_packed_coord_count(rows.present_count())
+                        .map_err(batch_err)?;
                     let mut builder = CoordSeqBuilder::with_capacity(
                         point_columns.coords().axes(),
-                        point_columns.rows().present_count(),
+                        rows.present_count(),
                     );
-                    for (_, physical) in point_columns.rows().cursor() {
+                    for (_, physical) in rows.cursor() {
                         if let Some(physical) = physical {
                             builder.push_at(point_columns.coords(), physical);
                         }
@@ -1150,6 +1158,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                 } else {
                     rows.len()
                 };
+                crate::array::admit_packed_coord_count(capacity).map_err(batch_err)?;
                 let mut builder = CoordSeqBuilder::with_capacity(axes, capacity);
                 let mut has_missing = false;
                 for (logical, physical) in rows.cursor() {
@@ -1189,8 +1198,8 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let coords = line_columns.coords();
             let XyColumns { xs, ys } = line_columns.physical_xy();
             let rows = line_columns.rows();
-            let mut builder =
-                PackedColumnBuilder::like(coords, line_columns.selected_vertex_len(), rows);
+            let capacity = line_columns.materialized_present_vertices(2)?;
+            let mut builder = PackedColumnBuilder::like(coords, capacity, rows);
             for row in 0..rows {
                 if line_columns.is_missing(row) {
                     builder.close_row().map_err(batch_err)?;
@@ -1205,7 +1214,7 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                     .map_err(|error| row_err(row, error))?;
                 let transform = linear.at(pivot).map_err(|error| row_err(row, error))?;
                 builder
-                    .push_affine_about_origin(coords, window, transform)
+                    .push_affine_about_origin_admitted(coords, window, transform)
                     .map_err(|error| row_err(row, error))?;
             }
             let cap = builder.vertex_len();
@@ -1220,12 +1229,8 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
             let ring_offsets = polygon_columns.ring_offsets();
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let rows = polygon_columns.rows();
-            let rings = crate::array::packed_polygons_ring_len(
-                polygon_columns.polygon_offsets(),
-                polygon_columns.selection(),
-            );
-            let mut builder =
-                PackedColumnBuilder::like(coords, polygon_columns.selected_vertex_len(), rings);
+            let (capacity, rings) = polygon_columns.materialized_present_sizes()?;
+            let mut builder = PackedColumnBuilder::like(coords, capacity, rings);
             let mut output_polygons = CsrOffsetBuilder::with_capacity(rows);
             let mut output_rings = 0;
             for row in 0..rows {
@@ -1235,17 +1240,17 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         .map_err(batch_err)?;
                     continue;
                 }
-                let rings = polygon_columns.polygon_rings(row);
-                let pivot = packed_polygon_row_pivot(spec, xs, ys, ring_offsets, rings.clone())
+                let row_rings = polygon_columns.polygon_rings(row);
+                let pivot = packed_polygon_row_pivot(spec, xs, ys, ring_offsets, row_rings.clone())
                     .map_err(|error| row_err(row, error))?;
                 let transform = linear.at(pivot).map_err(|error| row_err(row, error))?;
-                for ring in rings {
+                for ring in row_rings.clone() {
                     let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
                     builder
-                        .push_affine_about_origin(coords, window, transform)
+                        .push_affine_about_origin_admitted(coords, window, transform)
                         .map_err(|error| row_err(row, error))?;
-                    output_rings += 1;
                 }
+                output_rings = output_rings.wrapping_add(row_rings.len());
                 output_polygons
                     .push_end(output_rings, i32::MAX as usize)
                     .map_err(batch_err)?;

@@ -30,13 +30,13 @@ impl PyGeometryArray {
     pub(crate) fn uniform_line_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
     ) -> Result<Option<(CoordSeq, CsrOffsetColumn)>> {
-        if shapes.len() == 0 {
+        let rows = shapes.len();
+        if rows == 0 {
             return Ok(None);
         }
-        let mut offset_builder = CsrOffsetBuilder::new();
         let mut axes: Option<CoordinateAxes> = None;
-        // Validate + total in one pass, then REPLAY the cloned iterator to
-        // copy columns — no per-row `Vec<&CoordSeq>` stash between passes.
+        // Admit the complete coordinate total before reserving or copying any
+        // packed output. The cloned iterator avoids a per-row reference stash.
         let replay = shapes.clone();
         let mut total: usize = 0;
         let vertex_cap = i32::MAX as usize;
@@ -60,19 +60,20 @@ impl PyGeometryArray {
             if total > vertex_cap {
                 return Ok(None);
             }
-            if admit_or_decline(offset_builder.push_end(total, vertex_cap))?.is_none() {
-                return Ok(None);
-            }
         }
         let Some(axes) = axes else {
             return Ok(None);
         };
         let mut builder = CoordSeqBuilder::with_capacity(axes, total);
+        let mut offset_builder = CsrOffsetBuilder::with_capacity(rows);
         for shape in replay {
             let Shape::LineString(seq) = shape else {
                 unreachable!("validated in the first pass");
             };
             builder.extend_window(seq, 0..seq.len());
+            if admit_or_decline(offset_builder.push_end(builder.len(), vertex_cap))?.is_none() {
+                return Ok(None);
+            }
         }
         let Some(coords) = admit_or_decline(builder.finish())? else {
             return Ok(None);
@@ -95,13 +96,13 @@ impl PyGeometryArray {
     pub(crate) fn uniform_polygon_column<'a>(
         shapes: impl ExactSizeIterator<Item = &'a Shape> + Clone,
     ) -> Result<Option<PackedPolygonColumns>> {
-        if shapes.len() == 0 {
+        let rows = shapes.len();
+        if rows == 0 {
             return Ok(None);
         }
-        let mut ring_builder = CsrOffsetBuilder::new();
-        let mut polygon_builder = CsrOffsetBuilder::new();
         let mut axes: Option<CoordinateAxes> = None;
-        // Same replay shape as `uniform_line_column`: no `Vec<&Polygon>` stash.
+        // Admit the complete coordinate and ring totals before reserving or
+        // copying packed output. The cloned iterator avoids a polygon stash.
         let replay = shapes.clone();
         let mut total_vertices = 0_usize;
         let mut ring_index = 0_usize;
@@ -130,9 +131,6 @@ impl PyGeometryArray {
                 if total_vertices > vertex_cap {
                     return Ok(None);
                 }
-                if admit_or_decline(ring_builder.push_end(total_vertices, vertex_cap))?.is_none() {
-                    return Ok(None);
-                }
                 let Some(next_ring) = ring_index.checked_add(1) else {
                     return Ok(None);
                 };
@@ -147,20 +145,27 @@ impl PyGeometryArray {
             }
             // polygon_pack_axes already requires a nonempty ring set.
             debug_assert!(poly_rings > 0);
-            if admit_or_decline(polygon_builder.push_end(ring_index, vertex_cap))?.is_none() {
-                return Ok(None);
-            }
         }
         let Some(axes) = axes else {
             return Ok(None);
         };
         let mut builder = CoordSeqBuilder::with_capacity(axes, total_vertices);
+        let mut ring_builder = CsrOffsetBuilder::with_capacity(ring_index);
+        let mut polygon_builder = CsrOffsetBuilder::with_capacity(rows);
         for shape in replay {
             let Shape::Polygon(polygon) = shape else {
                 unreachable!("validated in the first pass");
             };
             for seq in polygon.rings() {
                 builder.extend_window(seq, 0..seq.len());
+                if admit_or_decline(ring_builder.push_end(builder.len(), vertex_cap))?.is_none() {
+                    return Ok(None);
+                }
+            }
+            if admit_or_decline(polygon_builder.push_end(ring_builder.row_count(), vertex_cap))?
+                .is_none()
+            {
+                return Ok(None);
             }
         }
         let Some(coords) = admit_or_decline(builder.finish())? else {
@@ -205,6 +210,9 @@ impl PyGeometryArray {
         let Some(axes) = axes else {
             return Ok(None);
         };
+        if shapes.len() > i32::MAX as usize {
+            return Ok(None);
+        }
         let mut builder = CoordSeqBuilder::with_capacity(axes, shapes.len());
         for shape in shapes {
             let Shape::Point(point) = shape else {

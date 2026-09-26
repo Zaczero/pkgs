@@ -5,7 +5,8 @@ use std::sync::Arc;
 use crate::array::{
     ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
     PackedStorage, PolygonLevel, PyGeometryArray, RingLevel, RowSelectionRef, Shape, ShapeRow,
-    StorageLayout, ValidityBuilder, ValidityMask,
+    StorageLayout, ValidityBuilder, ValidityMask, admit_packed_total,
+    materialized_packed_lines_len, materialized_packed_polygons_len,
 };
 use crate::geometry::types::checked_csr_window;
 use crate::geometry::{
@@ -100,6 +101,28 @@ enum RowKind {
     Polygon(CoordinateAxes),
 }
 
+// Check representation size separately from allocation; Vec's allocator
+// failure remains process-fatal.
+fn admit_vec_capacity<T>(capacity: usize) -> crate::error::Result<()> {
+    std::alloc::Layout::array::<T>(capacity)
+        .map(|_| ())
+        .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
+}
+
+fn admit_offset_rows_capacity(rows: usize) -> crate::error::Result<()> {
+    // CsrOffsetBuilder stores the implicit initial zero as an extra entry.
+    let offsets = rows
+        .checked_add(1)
+        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    admit_vec_capacity::<i32>(offsets)
+}
+
+fn shape_vec_capacity(required: usize, hint: usize) -> crate::error::Result<usize> {
+    let capacity = required.max(hint);
+    admit_vec_capacity::<Shape>(capacity)?;
+    Ok(capacity)
+}
+
 impl StreamingShapes {
     pub(crate) const fn new() -> Self {
         Self {
@@ -127,9 +150,9 @@ impl StreamingShapes {
         Self {
             state: StreamingState::Empty,
             validity: ValidityBuilder::with_capacity(row_capacity),
-            coordinate_capacity,
+            coordinate_capacity: coordinate_capacity.min(i32::MAX as usize),
             row_capacity,
-            ring_capacity,
+            ring_capacity: ring_capacity.min(i32::MAX as usize),
         }
     }
 
@@ -217,10 +240,16 @@ impl StreamingShapes {
                 if rows.is_empty() {
                     return Ok(true);
                 }
+                let count = rows.len();
                 let axes = coords.axes();
                 if !self.admit_kind(RowKind::Point(axes)) {
                     return Ok(false);
                 }
+                let existing = match &self.state {
+                    StreamingState::Points(builder) => builder.len(),
+                    _ => 0,
+                };
+                admit_packed_total(existing, count)?;
                 if let StreamingState::Points(builder) = &mut self.state {
                     builder.extend_window(coords, rows.clone());
                 } else {
@@ -241,6 +270,7 @@ impl StreamingShapes {
                 offsets,
                 row_map,
             }) => {
+                let map = row_map.as_deref();
                 let Some(rows) =
                     contiguous_rows(row_map.as_deref(), offsets.len().saturating_sub(1))
                 else {
@@ -253,8 +283,14 @@ impl StreamingShapes {
                 if !self.admit_kind(RowKind::Line(axes)) {
                     return Ok(false);
                 }
+                let incoming = materialized_packed_lines_len(offsets.as_slice(), map)?;
+                let existing = match &self.state {
+                    StreamingState::Lines(builder) => builder.coords.len(),
+                    _ => 0,
+                };
+                admit_packed_total(existing, incoming)?;
                 if let StreamingState::Lines(builder) = &mut self.state {
-                    builder.try_extend(coords, offsets.as_slice(), rows.clone())?;
+                    builder.try_extend_admitted(coords, offsets.as_slice(), rows.clone())?;
                 } else {
                     let mut builder = StreamingLines::try_new(
                         axes,
@@ -262,7 +298,7 @@ impl StreamingShapes {
                         self.row_capacity,
                         self.validity.len(),
                     )?;
-                    builder.try_extend(coords, offsets.as_slice(), rows.clone())?;
+                    builder.try_extend_admitted(coords, offsets.as_slice(), rows.clone())?;
                     self.state = StreamingState::Lines(builder);
                 }
                 self.validity.extend_present(rows.len());
@@ -276,6 +312,7 @@ impl StreamingShapes {
                 polygon_offsets,
                 row_map,
             }) => {
+                let map = row_map.as_deref();
                 let Some(rows) =
                     contiguous_rows(row_map.as_deref(), polygon_offsets.len().saturating_sub(1))
                 else {
@@ -288,8 +325,21 @@ impl StreamingShapes {
                 if !self.admit_kind(RowKind::Polygon(axes)) {
                     return Ok(false);
                 }
+                let (incoming_vertices, incoming_rings) = materialized_packed_polygons_len(
+                    ring_offsets.as_slice(),
+                    polygon_offsets.as_slice(),
+                    map,
+                )?;
+                let (existing_vertices, existing_rings) = match &self.state {
+                    StreamingState::Polygons(builder) => {
+                        (builder.coords.len(), builder.ring_offsets.row_count())
+                    },
+                    _ => (0, 0),
+                };
+                admit_packed_total(existing_vertices, incoming_vertices)?;
+                admit_packed_total(existing_rings, incoming_rings)?;
                 if let StreamingState::Polygons(builder) = &mut self.state {
-                    builder.try_extend(
+                    builder.try_extend_admitted(
                         coords,
                         ring_offsets.as_slice(),
                         polygon_offsets.as_slice(),
@@ -303,7 +353,7 @@ impl StreamingShapes {
                         self.ring_capacity,
                         self.validity.len(),
                     )?;
-                    builder.try_extend(
+                    builder.try_extend_admitted(
                         coords,
                         ring_offsets.as_slice(),
                         polygon_offsets.as_slice(),
@@ -322,7 +372,7 @@ impl StreamingShapes {
 
     fn try_push_shape_native(&mut self, shape: &Shape) -> crate::error::Result<bool> {
         match shape {
-            Shape::Point(point) => Ok(self.push_point_native(*point)),
+            Shape::Point(point) => self.push_point_native(*point),
             Shape::LineString(line) => self.try_push_line_native(line),
             Shape::Polygon(polygon) if super::polygon_pack_axes(polygon).is_some() => {
                 self.try_push_polygon_native(polygon)
@@ -333,7 +383,7 @@ impl StreamingShapes {
 
     fn try_push_row_native(&mut self, row: ShapeRow<'_>) -> crate::error::Result<bool> {
         match row {
-            ShapeRow::Point(point) => Ok(self.push_point_native(point)),
+            ShapeRow::Point(point) => self.push_point_native(point),
             ShapeRow::Line(coords, start, end) => {
                 self.try_push_line_span_native(coords, start..end)
             },
@@ -345,13 +395,14 @@ impl StreamingShapes {
         }
     }
 
-    fn push_point_native(&mut self, point: crate::geometry::Point) -> bool {
+    fn push_point_native(&mut self, point: crate::geometry::Point) -> crate::error::Result<bool> {
         let axes = CoordinateAxes::from_point(point);
         if matches!(self.state, StreamingState::Shapes(_)) || !self.admit_kind(RowKind::Point(axes))
         {
-            return false;
+            return Ok(false);
         }
         if let StreamingState::Points(builder) = &mut self.state {
+            admit_packed_total(builder.len(), 1)?;
             builder.push(point);
         } else {
             let mut builder =
@@ -359,7 +410,7 @@ impl StreamingShapes {
             builder.push(point);
             self.state = StreamingState::Points(builder);
         }
-        true
+        Ok(true)
     }
 
     fn try_push_line_native(&mut self, line: &LineSeq) -> crate::error::Result<bool> {
@@ -477,7 +528,8 @@ impl StreamingShapes {
             match state {
                 StreamingState::Points(builder) => {
                     let coords = builder.finish()?;
-                    let mut shapes = Vec::with_capacity(coords.len().max(self.row_capacity));
+                    let capacity = shape_vec_capacity(coords.len(), self.row_capacity)?;
+                    let mut shapes = Vec::with_capacity(capacity);
                     shapes.extend(coords.iter().map(Shape::Point));
                     Ok(shapes)
                 },
@@ -488,7 +540,10 @@ impl StreamingShapes {
                     builder.into_present_shapes(&self.validity, self.row_capacity)
                 },
                 StreamingState::Shapes(shapes) => Ok(shapes),
-                StreamingState::Empty => Ok(Vec::with_capacity(self.row_capacity)),
+                StreamingState::Empty => {
+                    let capacity = shape_vec_capacity(0, self.row_capacity)?;
+                    Ok(Vec::with_capacity(capacity))
+                },
             }
         })();
         let shapes = match result {
@@ -630,6 +685,7 @@ impl StreamingLines {
         row_capacity: usize,
         leading_missing: usize,
     ) -> crate::error::Result<Self> {
+        admit_offset_rows_capacity(row_capacity)?;
         let offsets = CsrOffsetBuilder::with_capacity(row_capacity);
         let mut out = Self {
             coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, coordinate_capacity),
@@ -646,17 +702,20 @@ impl StreamingLines {
         coords: &CoordSeq,
         window: std::ops::Range<usize>,
     ) -> crate::error::Result<()> {
+        let output_end = admit_packed_total(self.coords.len(), window.len())?;
         self.coords.extend_window(coords, window);
-        self.offsets.push_end(self.coords.len(), i32::MAX as usize)
+        self.offsets.push_end(output_end, i32::MAX as usize)
     }
 
-    fn try_extend(
+    fn try_extend_admitted(
         &mut self,
         coords: &CoordSeq,
         offsets: &[i32],
         rows: std::ops::Range<usize>,
     ) -> crate::error::Result<()> {
+        let row_count = rows.len();
         let window = checked_csr_window(offsets, rows, coords.len())?;
+        self.offsets.reserve_rows(row_count);
         let output_start = self.coords.len();
         self.coords
             .extend_window(coords, window.source_start()..window.source_end());
@@ -680,7 +739,8 @@ impl StreamingLines {
         capacity: usize,
     ) -> crate::error::Result<Vec<Shape>> {
         let (coords, offsets) = self.into_parts()?;
-        let mut shapes = Vec::with_capacity(validity.present_count().max(capacity));
+        let capacity = shape_vec_capacity(validity.present_count(), capacity)?;
+        let mut shapes = Vec::with_capacity(capacity);
         for (logical, [start, end]) in offsets.array_windows::<2>().enumerate() {
             if !validity.is_present(logical) {
                 continue;
@@ -707,6 +767,8 @@ impl StreamingPolygons {
         ring_capacity: usize,
         leading_missing: usize,
     ) -> crate::error::Result<Self> {
+        admit_offset_rows_capacity(ring_capacity)?;
+        admit_offset_rows_capacity(row_capacity)?;
         let mut out = Self {
             coords: crate::geometry::CoordSeqBuilder::with_capacity(axes, coordinate_capacity),
             ring_offsets: CsrOffsetBuilder::with_capacity(ring_capacity),
@@ -719,13 +781,19 @@ impl StreamingPolygons {
     }
 
     fn try_push(&mut self, polygon: &Polygon) -> crate::error::Result<()> {
+        let mut output_vertices = self.coords.len();
+        let mut output_rings = self.ring_offsets.row_count();
+        for ring in polygon.rings() {
+            output_vertices = admit_packed_total(output_vertices, ring.len())?;
+            output_rings = admit_packed_total(output_rings, 1)?;
+        }
         for ring in polygon.rings() {
             self.coords.extend_window(ring, 0..ring.len());
             self.ring_offsets
                 .push_end(self.coords.len(), i32::MAX as usize)?;
         }
         self.polygon_offsets
-            .push_end(self.ring_offsets.row_count(), i32::MAX as usize)
+            .push_end(output_rings, i32::MAX as usize)
     }
 
     fn try_push_spans(
@@ -734,6 +802,11 @@ impl StreamingPolygons {
         ring_offsets: &[i32],
         rings: std::ops::Range<usize>,
     ) -> crate::error::Result<()> {
+        let output_end = admit_packed_total(
+            self.coords.len(),
+            ring_offsets[rings.end] as usize - ring_offsets[rings.start] as usize,
+        )?;
+        let output_rings = admit_packed_total(self.ring_offsets.row_count(), rings.len())?;
         for ring in rings {
             let start = ring_offsets[ring] as usize;
             let end = ring_offsets[ring + 1] as usize;
@@ -741,17 +814,19 @@ impl StreamingPolygons {
             self.ring_offsets
                 .push_end(self.coords.len(), i32::MAX as usize)?;
         }
+        debug_assert_eq!(self.coords.len(), output_end);
         self.polygon_offsets
-            .push_end(self.ring_offsets.row_count(), i32::MAX as usize)
+            .push_end(output_rings, i32::MAX as usize)
     }
 
-    fn try_extend(
+    fn try_extend_admitted(
         &mut self,
         coords: &CoordSeq,
         ring_offsets: &[i32],
         polygon_offsets: &[i32],
         rows: std::ops::Range<usize>,
     ) -> crate::error::Result<()> {
+        let row_count = rows.len();
         let polygon_window =
             checked_csr_window(polygon_offsets, rows, ring_offsets.len().saturating_sub(1))?;
         let ring_window = checked_csr_window(
@@ -759,6 +834,9 @@ impl StreamingPolygons {
             polygon_window.source_start()..polygon_window.source_end(),
             coords.len(),
         )?;
+        self.ring_offsets
+            .reserve_rows(polygon_window.source_end() - polygon_window.source_start());
+        self.polygon_offsets.reserve_rows(row_count);
         let output_coordinate_start = self.coords.len();
         let output_ring_start = self.ring_offsets.row_count();
         self.coords
@@ -801,7 +879,8 @@ impl StreamingPolygons {
         capacity: usize,
     ) -> crate::error::Result<Vec<Shape>> {
         let (coords, ring_offsets, polygon_offsets) = self.into_parts()?;
-        let mut shapes = Vec::with_capacity(validity.present_count().max(capacity));
+        let capacity = shape_vec_capacity(validity.present_count(), capacity)?;
+        let mut shapes = Vec::with_capacity(capacity);
         for (logical, [start, end]) in polygon_offsets.array_windows::<2>().enumerate() {
             if !validity.is_present(logical) {
                 continue;
@@ -879,6 +958,101 @@ mod demotion_tests {
             array.geometry_at(3).unwrap().shape.shape().axes(),
             CoordinateAxes::XY
         );
+    }
+
+    #[test]
+    fn packed_point_stream_checks_shape_layout_only_when_demoting() {
+        let capacity = isize::MAX as usize;
+        let mut points = StreamingShapes::with_capacity(0, capacity);
+        points
+            .try_push(Shape::Point(Point::new_raw_xy(1.0, 2.0)))
+            .unwrap();
+        assert!(matches!(&points.state, StreamingState::Points(_)));
+        let points = points.finish(Frame::None).unwrap();
+        assert!(matches!(
+            points.storage(),
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) if coords.len() == 1
+        ));
+
+        let mut mixed = StreamingShapes::with_capacity(0, capacity);
+        mixed
+            .try_push(Shape::Point(Point::new_raw_xy(1.0, 2.0)))
+            .unwrap();
+        let error = mixed
+            .try_push(xy_line(&[(0.0, 0.0), (1.0, 1.0)]))
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn packed_line_and_polygon_offset_layouts_fail_before_reservation() {
+        let capacity = isize::MAX as usize;
+        let mut lines = StreamingShapes::with_capacity(0, capacity);
+        let error = lines
+            .try_push(xy_line(&[(0.0, 0.0), (1.0, 1.0)]))
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+
+        let mut polygons = StreamingShapes::with_capacity(0, capacity);
+        let error = polygons.try_push(xy_square()).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn line_and_polygon_shape_demotions_admit_present_row_capacity() {
+        let capacity = isize::MAX as usize;
+        let mut validity = ValidityBuilder::new();
+        validity.push(true);
+
+        let Shape::LineString(line) = xy_line(&[(0.0, 0.0), (1.0, 1.0)]) else {
+            unreachable!()
+        };
+        let mut lines = StreamingLines::try_new(line.axes(), line.len(), 1, 0).unwrap();
+        lines
+            .try_push_span(line.as_coords(), 0..line.len())
+            .unwrap();
+        let error = lines.into_present_shapes(&validity, capacity).unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+
+        let Shape::Polygon(polygon) = xy_square() else {
+            unreachable!()
+        };
+        let mut polygons = StreamingPolygons::try_new(polygon.axes(), 5, 1, 1, 0).unwrap();
+        polygons.try_push(&polygon).unwrap();
+        let error = polygons
+            .into_present_shapes(&validity, capacity)
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn empty_to_mixed_demotion_checks_shape_layout() {
+        let mut rows = StreamingShapes::with_capacity(0, isize::MAX as usize);
+        let error = rows
+            .try_push(Shape::typed_empty(
+                GeometryKind::MultiPoint,
+                CoordinateAxes::XY,
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
     }
 
     #[test]

@@ -50,6 +50,12 @@ impl<T> SharedSlice<T> {
         self.as_slice().len()
     }
 
+    pub(crate) fn is_shared(&self) -> bool {
+        self.owner
+            .as_ref()
+            .is_some_and(|owner| Arc::strong_count(owner) > 1)
+    }
+
     #[cfg(test)]
     pub(crate) fn capacity(&self) -> usize {
         self.owner.as_deref().map_or(0, Vec::capacity)
@@ -83,10 +89,21 @@ impl<T> SharedSlice<T> {
     /// values vary between full owners and logical views.
     pub(crate) fn heap_bytes_with(&self, nested: impl Fn(&T) -> usize) -> usize {
         self.owner.as_ref().map_or(0, |owner| {
+            self.shallow_heap_bytes().saturating_add(
+                owner
+                    .iter()
+                    .map(nested)
+                    .fold(0_usize, usize::saturating_add),
+            )
+        })
+    }
+
+    /// Retained Arc/Vec owner without recursively charging its elements.
+    pub(crate) fn shallow_heap_bytes(&self) -> usize {
+        self.owner.as_ref().map_or(0, |owner| {
             crate::heap_size::ARC_CONTROL_BYTES
-                + std::mem::size_of::<Vec<T>>()
-                + owner.capacity() * std::mem::size_of::<T>()
-                + owner.iter().map(nested).sum::<usize>()
+                .saturating_add(std::mem::size_of::<Vec<T>>())
+                .saturating_add(owner.capacity().saturating_mul(std::mem::size_of::<T>()))
         })
     }
 
@@ -105,9 +122,14 @@ impl<T> SharedSlice<T> {
             return self.heap_bytes();
         }
         crate::heap_size::ARC_CONTROL_BYTES
-            + std::mem::size_of::<Vec<T>>()
-            + range.len() * std::mem::size_of::<T>()
-            + owner[range].iter().map(HeapSize::heap_bytes).sum::<usize>()
+            .saturating_add(std::mem::size_of::<Vec<T>>())
+            .saturating_add(range.len().saturating_mul(std::mem::size_of::<T>()))
+            .saturating_add(
+                owner[range]
+                    .iter()
+                    .map(HeapSize::heap_bytes)
+                    .fold(0_usize, usize::saturating_add),
+            )
     }
 }
 

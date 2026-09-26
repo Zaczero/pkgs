@@ -98,6 +98,8 @@ where
             let XyColumns { xs, ys } = line_columns.physical_xy();
             let may_cross_antimeridian =
                 domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
+            crate::array::admit_packed_coord_count(columns.row_count())
+                .map_err(PackedColumnError::Batch)?;
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
@@ -144,6 +146,8 @@ where
             let ring_offsets = polygon_columns.ring_offsets();
             let may_cross_antimeridian =
                 domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
+            crate::array::admit_packed_coord_count(columns.row_count())
+                .map_err(PackedColumnError::Batch)?;
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             let mut crossings = Vec::new();
@@ -307,7 +311,14 @@ impl PyGeometryArray {
             })
         {
             let rows = bounds.len();
-            let vertex_count = rows.wrapping_mul(5);
+            let vertex_count = rows
+                .checked_mul(5)
+                .filter(|&count| count <= i32::MAX as usize)
+                .ok_or_else(|| {
+                    crate::PyErr::from(crate::error::Error::from(
+                        crate::geometry::GeometryErrorKind::OffsetCapacityExceeded,
+                    ))
+                })?;
             let mut xs = Vec::with_capacity(vertex_count);
             let mut ys = Vec::with_capacity(vertex_count);
             let mut ring_builder = crate::geometry::CsrOffsetBuilder::with_capacity(rows);

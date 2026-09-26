@@ -469,16 +469,14 @@ class ParseError(GeometryError):
 
 @final
 class CoordinatesIterator:
-    """Lazy iterator over a ``Coordinates`` view, yielding one coordinate tuple per
-    step. Holds a cursor into the view (O(1) construct, O(1) next on storage-
-    shaped owners) rather than materializing all points up front.
+    """Lazy iterator over a ``Coordinates`` view. A traversal stack retains the
+    current shape or packed row and yields tuples without materializing all
+    points up front.
     """
     def __length_hint__(self) -> int:
-        """Remaining rows — lets ``list(iter)`` preallocate."""
+        """Advisory remaining count, capped at Python's largest sequence length."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support: the iterator plus the logical
-        payload it keeps alive while iterating.
-        """
+        """``sys.getsizeof`` support for the iterator and its retained view."""
     def __iter__(self) -> Self:
         """Implement iter(self)."""
     def __next__(self) -> tuple[float | None, ...]:
@@ -6279,7 +6277,9 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Returns
         -------
         numpy.ndarray
-            One ``int64`` coordinate count per input geometry.
+            One coordinate count per input geometry. The array uses ``int64``
+            when every count fits; otherwise it uses ``object`` with exact
+            Python integers.
         """
     @overload
     def set_coordinates(

@@ -57,16 +57,20 @@ pub(crate) fn coordinate_ordinate(point: Point, axis: CoordinateAxis) -> Option<
 
 /// Materialize a row-major matrix, interleaving contiguous columns directly.
 pub(crate) fn coordinate_matrix_data(
+    py: Python<'_>,
     view: &coordinates::CoordinateView,
     axes: CoordinateAxes,
     missing: f64,
-) -> Vec<f64> {
+) -> PyResult<(usize, Vec<f64>)> {
     let (order, dims) = coordinate_axis_order(axes);
     let order = &order[..dims];
-    let rows = view.len();
-    let count = rows.wrapping_mul(dims);
+    let rows = view.len_for_python(py)?;
+    let count = rows.checked_mul(dims).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("coordinate matrix is too large")
+    })?;
+    let capacity = coordinates::checked_vector_len::<f64>(count, "coordinate matrix")?;
     let Some(seq) = view.single_seq().filter(|seq| seq.len() == rows) else {
-        let mut data = Vec::with_capacity(count);
+        let mut data = Vec::with_capacity(capacity);
         view.for_each_point(|coord| {
             data.extend(
                 order
@@ -74,9 +78,9 @@ pub(crate) fn coordinate_matrix_data(
                     .map(|&axis| coordinate_ordinate(coord, axis).unwrap_or(missing)),
             );
         });
-        return data;
+        return Ok((rows, data));
     };
-    let mut data = vec![0.0; count];
+    let mut data = vec![0.0; capacity];
     let xs = seq.xs();
     let ys = seq.ys();
     let zs = seq.zs();
@@ -102,7 +106,7 @@ pub(crate) fn coordinate_matrix_data(
             }
         }
     }
-    data
+    Ok((rows, data))
 }
 
 /// Format one coordinate as a Python tuple, honoring a fixed `select` layout
@@ -141,9 +145,11 @@ pub(crate) fn column_axis_to_py(
 ) -> PyResult<Py<PyAny>> {
     let owner = slf.clone().into_any();
     let this = slf.borrow();
-    match this.view.column(axis) {
+    match this.view.try_column(py, axis)? {
         coordinates::CoordinateColumnRef::Missing => {
-            float64_array(py, vec![f64::NAN; this.view.len()])
+            let count = this.view.len_for_python(py)?;
+            let capacity = coordinates::checked_vector_len::<f64>(count, "coordinate column")?;
+            float64_array(py, vec![f64::NAN; capacity])
         },
         column => column_ref_to_py(py, owner, column),
     }
@@ -228,11 +234,10 @@ pub(crate) fn get_coordinates(
     let axes = axes.unwrap_or(CoordinateAxes::XY);
     let (_, dims) = coordinate_axis_order(axes);
     let view = coordinate_view_for_input(input);
-    let rows = view.len();
-    let data = coordinate_matrix_data(&view, axes, f64::NAN);
+    let (rows, data) = coordinate_matrix_data(py, &view, axes, f64::NAN)?;
     let matrix = float64_matrix(py, data, rows, dims)?;
     if return_index {
-        let indexes = int64_array(py, view.row_index_i64())?;
+        let indexes = int64_array(py, view.try_row_index_i64(py)?)?;
         Ok((matrix, indexes).into_pyobject(py)?.unbind().into())
     } else {
         Ok(matrix)

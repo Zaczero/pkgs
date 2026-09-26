@@ -1,7 +1,8 @@
 //! Core `GeometryArray` methods: construction, metadata, properties, iteration.
 
+use numpy::PyArrayMethods as _;
 use pyo3::PyErr;
-use pyo3::types::PyList;
+use pyo3::types::{PyInt, PyList};
 
 use crate::array::{
     ArrayRow, Bound, Bounds, CRSError, CoordSeq, CoordinateReplacement, Crs, CsrOffsetColumn,
@@ -696,19 +697,63 @@ impl PyGeometryArray {
     /// Returns
     /// -------
     /// numpy.ndarray
-    ///     One ``int64`` coordinate count per input geometry.
+    ///     One coordinate count per input geometry. The array uses ``int64``
+    ///     when every count fits; otherwise it uses ``object`` with exact
+    ///     Python integers.
     #[getter]
     pub fn num_coordinates(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        int64_array(
-            py,
-            self.row_operation()
-                .rows_with_missing(|| 0_i64)
-                .map(|row| match row {
-                    ArrayRow::Missing { value, .. } => value,
-                    ArrayRow::Present(row) => row.row().coord_count() as i64,
-                })
-                .collect(),
-        )
+        let row_count = self.len();
+        let int64_capacity = crate::boundary::coordinates::checked_vector_len::<i64>(
+            row_count,
+            "coordinate-count array",
+        )?;
+        let object_capacity = crate::boundary::coordinates::checked_vector_len::<Py<PyAny>>(
+            row_count,
+            "coordinate-count array",
+        )?;
+        let mut int64_values = Vec::with_capacity(int64_capacity);
+        let mut object_values: Option<Vec<Py<PyAny>>> = None;
+        let mut query = crate::boundary::coordinates::CoordinateMeasureQuery::default();
+        for row in self.row_operation().rows_with_missing(|| ()) {
+            let measure = match row {
+                ArrayRow::Missing { .. } => None,
+                ArrayRow::Present(row) => {
+                    Some(row.row().with_shape(|shape| query.shape(py, shape))??)
+                },
+            };
+            let narrow = measure
+                .as_ref()
+                .map_or(Some(0), |measure| measure.count_i64());
+            if let Some(value) = narrow {
+                if let Some(values) = &mut object_values {
+                    values.push(PyInt::new(py, value).into_any().unbind());
+                } else {
+                    int64_values.push(value);
+                }
+                continue;
+            }
+            let measure = measure.expect("only a present row can have a wide coordinate count");
+            let values = object_values.get_or_insert_with(|| {
+                let mut values = Vec::with_capacity(object_capacity);
+                values.extend(
+                    int64_values
+                        .drain(..)
+                        .map(|value| PyInt::new(py, value).into_any().unbind()),
+                );
+                values
+            });
+            values.push(measure.count_pyint(py).into_any().unbind());
+        }
+        if let Some(values) = object_values {
+            let array = numpy::PyArray1::from_owned_object_array(
+                py,
+                numpy::ndarray::Array1::from_vec(values),
+            );
+            array.try_readwrite()?.make_nonwriteable();
+            Ok(array.into_any().unbind())
+        } else {
+            int64_array(py, int64_values)
+        }
     }
     /// Return an array with the same topology and replacement coordinates.
     ///
@@ -751,7 +796,10 @@ impl PyGeometryArray {
         // replace_shape_coordinates, which keeps each member's native axes.
         // Uniform packed arrays still take the dense columnar fast path.
         let view = self.coordinate_view();
-        let replacement = parse_coordinate_replacement(py, args, kwargs, view.axes(), view.len())?;
+        let measure = view.exact_measure(py)?;
+        let axes = measure.present_axes();
+        let len = measure.len_for_python()?;
+        let replacement = parse_coordinate_replacement(py, args, kwargs, axes, len)?;
         replace_array_coordinates(self, py, replacement)
     }
     /// Apply a vectorized callback to this array's coordinate matrix.

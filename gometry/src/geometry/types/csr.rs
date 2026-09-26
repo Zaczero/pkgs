@@ -1,6 +1,5 @@
 use std::marker::PhantomData;
 
-use crate::HeapSize as _;
 use crate::error::Result;
 use crate::geometry::types::{GeometryErrorKind, Shape, SharedSlice};
 
@@ -72,6 +71,7 @@ impl Default for CsrOffsetBuilder {
 }
 
 impl CsrOffsetBuilder {
+    #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::default()
     }
@@ -164,7 +164,7 @@ impl<Level> std::ops::Deref for CsrOffsetColumn<Level> {
 
 impl<Level> crate::HeapSize for CsrOffsetColumn<Level> {
     fn heap_bytes(&self) -> usize {
-        self.offsets.heap_bytes()
+        self.offsets.shallow_heap_bytes()
     }
 }
 
@@ -213,13 +213,13 @@ impl<Level> CsrOffsetColumn<Level> {
 
     pub(crate) fn logical_heap_bytes_for_count(&self, count: usize) -> usize {
         if count == self.len() {
-            self.offsets.heap_bytes()
+            self.offsets.shallow_heap_bytes()
         } else if count == 0 {
             0
         } else {
             crate::heap_size::ARC_CONTROL_BYTES
-                + std::mem::size_of::<Vec<i32>>()
-                + count * std::mem::size_of::<i32>()
+                .saturating_add(std::mem::size_of::<Vec<i32>>())
+                .saturating_add(count.saturating_mul(std::mem::size_of::<i32>()))
         }
     }
 }

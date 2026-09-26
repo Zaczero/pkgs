@@ -612,6 +612,8 @@ impl FacetBvh {
 
 impl HeapSize for FacetBvh {
     fn heap_bytes(&self) -> usize {
-        self.aabbs.heap_bytes() + self.codes.heap_bytes()
+        self.aabbs
+            .heap_bytes()
+            .saturating_add(self.codes.heap_bytes())
     }
 }

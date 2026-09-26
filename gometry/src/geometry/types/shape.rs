@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::num::NonZeroU8;
 use std::ops::Deref;
 
@@ -103,6 +104,112 @@ pub enum Shape {
     Empty(GeometryKind, CoordinateAxes),
 }
 
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ShapeOwnerKey {
+    address: usize,
+    len: usize,
+}
+
+impl ShapeOwnerKey {
+    pub(crate) fn new(members: &[Shape]) -> Self {
+        Self {
+            address: members.as_ptr().addr(),
+            len: members.len(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ShapeHeapStats {
+    coordinate_bytes: usize,
+    heap_bytes: usize,
+}
+
+#[derive(Default)]
+pub(crate) struct ShapeHeapMemo {
+    collections: HashMap<ShapeOwnerKey, ShapeHeapStats>,
+}
+
+impl ShapeHeapMemo {
+    pub(crate) fn heap_bytes(&mut self, shape: &Shape) -> usize {
+        self.shape_stats(shape).heap_bytes
+    }
+
+    pub(crate) fn coordinate_bytes(&mut self, shape: &Shape) -> usize {
+        self.shape_stats(shape).coordinate_bytes
+    }
+
+    fn shape_stats(&mut self, shape: &Shape) -> ShapeHeapStats {
+        match shape {
+            Shape::GeometryCollection(collection) => self.collection_stats(collection),
+            Shape::MultiLineString(lines) => ShapeHeapStats {
+                coordinate_bytes: lines.iter().fold(0_usize, |bytes, line| {
+                    bytes.saturating_add(seq_coordinate_bytes(line.as_coords()))
+                }),
+                heap_bytes: lines.heap_bytes_saturating(),
+            },
+            Shape::Polygon(polygon) => ShapeHeapStats {
+                coordinate_bytes: polygon.rings().fold(0_usize, |bytes, ring| {
+                    bytes.saturating_add(seq_coordinate_bytes(ring.coords()))
+                }),
+                heap_bytes: polygon.heap_bytes_saturating(),
+            },
+            Shape::MultiPolygon(polygons) => ShapeHeapStats {
+                coordinate_bytes: polygons.iter().fold(0_usize, |bytes, polygon| {
+                    polygon.rings().fold(bytes, |bytes, ring| {
+                        bytes.saturating_add(seq_coordinate_bytes(ring.coords()))
+                    })
+                }),
+                heap_bytes: polygons.heap_bytes_saturating(),
+            },
+            Shape::MultiPoint(points) => ShapeHeapStats {
+                coordinate_bytes: seq_coordinate_bytes(points),
+                heap_bytes: points.heap_bytes_saturating(),
+            },
+            Shape::LineString(line) => ShapeHeapStats {
+                coordinate_bytes: seq_coordinate_bytes(line.as_coords()),
+                heap_bytes: line.as_coords().heap_bytes_saturating(),
+            },
+            Shape::Point(point) => {
+                let bytes = CoordinateAxes::from_point(*point).byte_width(1);
+                ShapeHeapStats {
+                    coordinate_bytes: bytes,
+                    heap_bytes: bytes,
+                }
+            },
+            Shape::Empty(..) => ShapeHeapStats::default(),
+        }
+    }
+
+    fn collection_stats(&mut self, collection: &GeometryCollection) -> ShapeHeapStats {
+        let owner = ShapeOwnerKey::new(collection.as_slice());
+        if let Some(&stats) = self.collections.get(&owner) {
+            return stats;
+        }
+        let stats = collection.as_slice().iter().fold(
+            ShapeHeapStats {
+                coordinate_bytes: 0,
+                heap_bytes: collection.shallow_heap_bytes(),
+            },
+            |stats, member| {
+                let child = self.shape_stats(member);
+                ShapeHeapStats {
+                    coordinate_bytes: stats
+                        .coordinate_bytes
+                        .saturating_add(child.coordinate_bytes),
+                    heap_bytes: stats.heap_bytes.saturating_add(child.heap_bytes),
+                }
+            },
+        );
+        self.collections.insert(owner, stats);
+        stats
+    }
+}
+
+fn seq_coordinate_bytes(seq: &CoordSeq) -> usize {
+    seq.len().saturating_mul(seq.axes().byte_width(1))
+}
+
 impl Shape {
     /// Admit collection children after checking the complete subtree without
     /// recursion. Empty input uses the typed empty collection representation.
@@ -137,25 +244,17 @@ impl HeapSize for Shape {
     /// delegate to their owners, which include `SharedSlice` Arc/Vec capacity.
     /// Empty and Point have no shared owner and report only coordinate bytes.
     fn heap_bytes(&self) -> usize {
-        match self {
-            Self::MultiLineString(lines) => lines.heap_bytes(),
-            Self::Polygon(polygon) => polygon.heap_bytes(),
-            Self::MultiPolygon(polygons) => polygons.heap_bytes(),
-            Self::GeometryCollection(geometries) => geometries.heap_bytes(),
-            Self::MultiPoint(points) => points.heap_bytes(),
-            Self::LineString(line) => line.heap_bytes(),
-            // Empty / Point: no shared coordinate owner.
-            leaf => leaf.coordinate_bytes(),
-        }
+        ShapeHeapMemo::default().heap_bytes(self)
     }
 }
 
 impl Shape {
     pub(crate) fn logical_heap_bytes(&self) -> usize {
+        let mut memo = ShapeHeapMemo::default();
         match self {
-            Self::LineString(line) => line.logical_heap_bytes(),
-            Self::Polygon(polygon) => polygon.logical_heap_bytes(),
-            _ => self.heap_bytes(),
+            Self::LineString(line) => line.logical_heap_bytes_saturating(),
+            Self::Polygon(polygon) => polygon.logical_heap_bytes_saturating(),
+            _ => memo.heap_bytes(self),
         }
     }
 }
@@ -264,8 +363,8 @@ impl crate::HeapSize for LineSeq {
 }
 
 impl LineSeq {
-    pub(crate) fn logical_heap_bytes(&self) -> usize {
-        self.as_coords().logical_heap_bytes()
+    pub(crate) fn logical_heap_bytes_saturating(&self) -> usize {
+        self.as_coords().logical_heap_bytes_saturating()
     }
 }
 
@@ -287,6 +386,14 @@ impl<T> NonEmptyVec<T> {
 
     pub(crate) fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub(crate) fn is_shared(&self) -> bool {
+        self.0.is_shared()
+    }
+
+    fn shallow_heap_bytes(&self) -> usize {
+        self.0.shallow_heap_bytes()
     }
 }
 
@@ -421,6 +528,14 @@ impl GeometryCollection {
 
     pub(crate) fn len(&self) -> usize {
         self.members.len()
+    }
+
+    pub(crate) fn members_are_shared(&self) -> bool {
+        self.members.is_shared()
+    }
+
+    fn shallow_heap_bytes(&self) -> usize {
+        self.members.shallow_heap_bytes()
     }
 }
 
@@ -796,11 +911,17 @@ macro_rules! impl_multipart {
                     members: self.members.clone(),
                 }
             }
+
+            pub(crate) fn heap_bytes_saturating(&self) -> usize {
+                self.values
+                    .heap_bytes_with(HeapSize::heap_bytes)
+                    .saturating_add(self.members.heap_bytes())
+            }
         }
 
         impl crate::HeapSize for $name {
             fn heap_bytes(&self) -> usize {
-                self.values.heap_bytes() + self.members.heap_bytes()
+                self.heap_bytes_saturating()
             }
         }
     };
@@ -1005,7 +1126,15 @@ impl<'a> IntoIterator for &'a MultiPoint {
 
 impl crate::HeapSize for MultiPoint {
     fn heap_bytes(&self) -> usize {
-        self.coords.heap_bytes() + self.members.heap_bytes()
+        self.heap_bytes_saturating()
+    }
+}
+
+impl MultiPoint {
+    pub(crate) fn heap_bytes_saturating(&self) -> usize {
+        self.coords
+            .heap_bytes_saturating()
+            .saturating_add(self.members.heap_bytes())
     }
 }
 
@@ -1114,7 +1243,7 @@ impl Coordinates for MultiPoint {
 
 impl crate::HeapSize for GeometryCollection {
     fn heap_bytes(&self) -> usize {
-        self.members.heap_bytes()
+        ShapeHeapMemo::default().collection_stats(self).heap_bytes
     }
 }
 

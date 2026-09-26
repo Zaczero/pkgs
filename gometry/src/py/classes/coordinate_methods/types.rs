@@ -8,13 +8,13 @@ impl PyCoordinates {
         Self { view, layout: None }
     }
 
-    pub(crate) fn coordinates_equal(&self, other: &Self) -> bool {
+    pub(crate) fn coordinates_equal(&self, py: Python<'_>, other: &Self) -> PyResult<bool> {
         // Full-scan equality is run-wise / columnar (never n× CSR `point_at`,
         // which is O(n log rows) on packed lines/polygons). Short-circuit
         // first-mismatch stays linear via dual sequential streams; identical
         // owners answer in O(1).
         self.view
-            .equal_visible(&other.view, self.layout, other.layout)
+            .try_equal_visible(py, &other.view, self.layout, other.layout)
     }
 
     /// Single-pass sequence equality: stream self's visible tuples against

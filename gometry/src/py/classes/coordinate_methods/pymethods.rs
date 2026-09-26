@@ -1,5 +1,6 @@
 use pyo3::PyErr;
-use pyo3::exceptions::{PyTypeError, PyValueError};
+use pyo3::exceptions::{PyIndexError, PyOverflowError, PyTypeError, PyValueError};
+use pyo3::types::PyInt;
 
 use crate::array::PackedStorage;
 use crate::py::classes::coordinate_methods::{
@@ -23,8 +24,8 @@ impl PyCoordinates {
     /// Returns
     /// -------
     /// int
-    pub fn __len__(&self) -> usize {
-        self.view.len()
+    pub fn __len__(&self, py: Python<'_>) -> PyResult<usize> {
+        self.view.len_for_python(py)
     }
 
     /// Logical coordinate payload in bytes (numpy's ``nbytes`` convention):
@@ -38,8 +39,8 @@ impl PyCoordinates {
     /// -------
     /// int
     #[getter]
-    pub fn nbytes(&self) -> usize {
-        self.view.nbytes()
+    pub fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
+        self.view.nbytes_pyint(py)
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus the logical Rust-side
@@ -49,7 +50,7 @@ impl PyCoordinates {
     /// geometry/array sidecars (prepared caches, coverage membership, …) are
     /// not owned by the view and are not counted here.
     pub fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>() + self.view.logical_heap_bytes()
+        std::mem::size_of::<Self>().saturating_add(self.view.logical_heap_bytes())
     }
 
     /// Select vertices by integer or slice.
@@ -61,62 +62,75 @@ impl PyCoordinates {
     /// -------
     /// tuple or list of tuple
     pub fn __getitem__(&self, py: Python<'_>, index: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
-        match parse_row_index_or_slice(index, self.view.len(), "coordinate")? {
-            RowIndexOrSlice::Slice {
-                start, step, count, ..
-            } => {
-                // Stream only the selected rows in one walk (no full
-                // materialization): membership in the slice's arithmetic
-                // progression is a cheap test per flat position; descending
-                // slices collect ascending and reverse at the end.
-                let mut tuples = Vec::with_capacity(count);
-                if count > 0 {
-                    use std::ops::ControlFlow;
-                    let first = if step > 0 {
-                        start
-                    } else {
-                        start.wrapping_add(step.wrapping_mul(count.wrapping_sub(1) as isize))
-                    } as usize;
-                    let stride = step.unsigned_abs();
-                    let mut position = 0_usize;
-                    // Track the next selected position in the arithmetic
-                    // progression instead of testing `(position - first) % stride`
-                    // per coordinate — the modulo compiled to a per-row `idiv`.
-                    let mut next = first;
-                    if let ControlFlow::Break(result) = self.view.try_for_each_point(&mut |coord| {
-                        let current = position;
-                        position = position.wrapping_add(1);
-                        if current != next {
-                            return ControlFlow::Continue(());
-                        }
-                        match self.tuple(py, coord) {
-                            Ok(tuple) => {
-                                tuples.push(tuple);
-                                if tuples.len() == count {
-                                    return ControlFlow::Break(Ok(()));
+        if index.cast::<pyo3::types::PySlice>().is_ok() {
+            let len = self.view.len_for_python(py)?;
+            return match parse_row_index_or_slice(index, len, "coordinate")? {
+                RowIndexOrSlice::Slice {
+                    start, step, count, ..
+                } => {
+                    // Stream only the selected rows in one walk (no full
+                    // materialization): membership in the slice's arithmetic
+                    // progression is a cheap test per flat position; descending
+                    // slices collect ascending and reverse at the end.
+                    let capacity =
+                        coordinates::checked_vector_len::<Py<PyAny>>(count, "coordinate slice")?;
+                    let mut tuples = Vec::with_capacity(capacity);
+                    if count > 0 {
+                        use std::ops::ControlFlow;
+                        let first = if step > 0 {
+                            start
+                        } else {
+                            start.wrapping_add(step.wrapping_mul(count.wrapping_sub(1) as isize))
+                        } as usize;
+                        let stride = step.unsigned_abs();
+                        let mut position = 0_usize;
+                        // Track the next selected position in the arithmetic
+                        // progression instead of testing `(position - first) % stride`
+                        // per coordinate — the modulo compiled to a per-row `idiv`.
+                        let mut next = first;
+                        if let ControlFlow::Break(result) =
+                            self.view.try_for_each_point(&mut |coord| {
+                                let current = position;
+                                position = position.wrapping_add(1);
+                                if current != next {
+                                    return ControlFlow::Continue(());
                                 }
-                                next = next.wrapping_add(stride);
-                                ControlFlow::Continue(())
-                            },
-                            Err(err) => ControlFlow::Break(Err(err)),
+                                match self.tuple(py, coord) {
+                                    Ok(tuple) => {
+                                        tuples.push(tuple);
+                                        if tuples.len() == count {
+                                            return ControlFlow::Break(Ok(()));
+                                        }
+                                        next = next.wrapping_add(stride);
+                                        ControlFlow::Continue(())
+                                    },
+                                    Err(err) => ControlFlow::Break(Err(err)),
+                                }
+                            })
+                        {
+                            result?;
                         }
-                    }) {
-                        result?;
+                        if step < 0 {
+                            tuples.reverse();
+                        }
                     }
-                    if step < 0 {
-                        tuples.reverse();
-                    }
-                }
-                Ok(PyList::new(py, tuples)?.unbind().into())
-            },
-            RowIndexOrSlice::Index(index) => {
-                let point = self
-                    .view
-                    .point_at(index)
-                    .expect("index already range-checked");
-                self.tuple(py, point)
-            },
+                    Ok(PyList::new(py, tuples)?.unbind().into())
+                },
+                RowIndexOrSlice::Index(_) => unreachable!("slice input parsed as a slice"),
+            };
         }
+        let index = crate::py_isize_required("coordinate", index)?;
+        let row = if index < 0 {
+            let len = self.view.len_for_python(py)?;
+            crate::py::row::normalize_row(index, len, "coordinate")?
+        } else {
+            index as usize
+        };
+        let point = self
+            .view
+            .point_at(row)
+            .ok_or_else(|| PyIndexError::new_err("coordinate index out of range"))?;
+        self.tuple(py, point)
     }
 
     /// Iterate coordinate tuples in vertex order.
@@ -127,7 +141,7 @@ impl PyCoordinates {
     pub fn __iter__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(slf.view.clone(), slf.layout, false),
+            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, false)?,
         )
     }
 
@@ -139,7 +153,7 @@ impl PyCoordinates {
     pub fn __reversed__(slf: PyRef<'_, Self>, py: Python<'_>) -> PyResult<Py<PyCoordinatesIter>> {
         Py::new(
             py,
-            PyCoordinatesIter::new(slf.view.clone(), slf.layout, true),
+            PyCoordinatesIter::new(py, slf.view.clone(), slf.layout, true)?,
         )
     }
 
@@ -162,8 +176,11 @@ impl PyCoordinates {
     /// Coordinate layout: ``'XY'``, ``'XYZ'``, ``'XYM'``, or ``'XYZM'`` — the
     /// `select`-forced layout when set, else the union of the present axes.
     #[getter]
-    pub fn coordinate_axes(&self) -> &'static str {
-        self.layout.unwrap_or_else(|| self.view.axes()).as_str()
+    pub fn coordinate_axes(&self, py: Python<'_>) -> PyResult<&'static str> {
+        match self.layout {
+            Some(layout) => Ok(layout.as_str()),
+            None => Ok(self.view.axes_for_python(py)?.as_str()),
+        }
     }
 
     /// Return a view of the same coordinates in a fixed ``coordinate_axes`` layout
@@ -201,7 +218,7 @@ impl PyCoordinates {
     /// the source row for each vertex of a ``GeometryArray``.
     #[getter]
     pub fn row_index(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        int64_array(py, self.view.row_index_i64())
+        int64_array(py, self.view.try_row_index_i64(py)?)
     }
 
     /// The X ordinates as a read-only ``float64`` ``numpy.ndarray``.
@@ -259,7 +276,10 @@ impl PyCoordinates {
     ) -> PyResult<Bound<'py, PyDict>> {
         let dict = PyDict::new(py);
         let this = slf.borrow();
-        let layout = this.layout.unwrap_or_else(|| this.view.axes());
+        let layout = match this.layout {
+            Some(layout) => layout,
+            None => this.view.axes_for_python(py)?,
+        };
         drop(this);
         dict.set_item("x", column_axis_to_py(py, slf.clone(), CoordinateAxis::X)?)?;
         dict.set_item("y", column_axis_to_py(py, slf.clone(), CoordinateAxis::Y)?)?;
@@ -270,7 +290,10 @@ impl PyCoordinates {
             dict.set_item("m", column_axis_to_py(py, slf.clone(), CoordinateAxis::M)?)?;
         }
         if index {
-            dict.set_item("index", int64_array(py, slf.borrow().view.row_index_i64())?)?;
+            dict.set_item(
+                "index",
+                int64_array(py, slf.borrow().view.try_row_index_i64(py)?)?,
+            )?;
         }
         Ok(dict)
     }
@@ -413,7 +436,7 @@ impl PyCoordinates {
     /// / short-circuit paths in ``coordinates_equal`` are preserved.
     pub fn __eq__(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<PyAny>> {
         if let Ok(other_coords) = other.extract::<PyRef<Self>>() {
-            return Ok(py_bool(py, self.coordinates_equal(&other_coords)));
+            return Ok(py_bool(py, self.coordinates_equal(py, &other_coords)?));
         }
         // Do not call `try_iter` merely to probe — that drains one-shot
         // generators. Attempt equality once; a TypeError (not iterable)
@@ -477,17 +500,26 @@ impl PyCoordinates {
         #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
     ) -> PyResult<usize> {
         use std::ops::ControlFlow;
-        let len = self.view.len();
-        let clamp = |bound: i64| -> usize {
-            let resolved = if bound < 0 {
-                bound + i64::try_from(len).unwrap_or(i64::MAX)
-            } else {
-                bound
-            };
-            usize::try_from(resolved.max(0)).unwrap_or(0).min(len)
+        let len = if start < 0 || stop.is_some_and(|bound| bound < 0) {
+            Some(self.view.len_for_python(py)?)
+        } else {
+            None
         };
-        let start = clamp(start);
-        let stop = stop.map_or(len, clamp);
+        let normalize_negative = |bound: i64| -> usize {
+            let len = i64::try_from(len.expect("negative bounds admitted the exact length"))
+                .expect("Python sequence length fits isize");
+            usize::try_from((len + bound).max(0)).unwrap_or(0)
+        };
+        let start = if start < 0 {
+            normalize_negative(start)
+        } else {
+            start as usize
+        };
+        let stop = match stop {
+            Some(bound) if bound < 0 => normalize_negative(bound),
+            Some(bound) => bound as usize,
+            None => usize::MAX,
+        };
         let mut position = 0_usize;
         let found = self.view.try_for_each_point(&mut |coord| {
             if position >= stop {
@@ -500,7 +532,12 @@ impl PyCoordinates {
                     Err(err) => return ControlFlow::Break(Err(err)),
                 }
             }
-            position += 1;
+            let Some(next) = position.checked_add(1) else {
+                return ControlFlow::Break(Err(PyOverflowError::new_err(
+                    "coordinate index exceeds the native index range",
+                )));
+            };
+            position = next;
             ControlFlow::Continue(())
         });
         match found {
@@ -536,8 +573,14 @@ impl PyCoordinates {
             .visible_equals(py, coord, value)
         {
             Ok(true) => {
-                count += 1;
-                std::ops::ControlFlow::Continue(())
+                if let Some(next) = count.checked_add(1) {
+                    count = next;
+                    std::ops::ControlFlow::Continue(())
+                } else {
+                    std::ops::ControlFlow::Break(PyOverflowError::new_err(
+                        "coordinate count exceeds the native integer range",
+                    ))
+                }
             },
             Ok(false) => std::ops::ControlFlow::Continue(()),
             Err(err) => std::ops::ControlFlow::Break(err),
@@ -548,11 +591,13 @@ impl PyCoordinates {
         }
     }
 
-    pub fn __repr__(&self) -> String {
-        format!(
-            "<Coordinates {} len={}>",
-            self.view.axes().as_str(),
-            self.view.len()
-        )
+    pub fn __repr__(&self, py: Python<'_>) -> PyResult<String> {
+        let measure = self.view.exact_measure(py)?;
+        let axes = match self.view.source() {
+            coordinates::CoordinateSource::Shape(_) => measure.shape_axes(),
+            coordinates::CoordinateSource::Array(..) => measure.present_axes(),
+        };
+        let len = measure.count_pyint(py).str()?.extract::<String>()?;
+        Ok(format!("<Coordinates {} len={len}>", axes.as_str()))
     }
 }

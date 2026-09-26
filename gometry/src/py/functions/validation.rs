@@ -553,12 +553,18 @@ impl PyValidationReport {
 
 impl HeapSize for PyValidationReport {
     fn heap_bytes(&self) -> usize {
-        self.geometry.shape.shape().coordinate_bytes() + self.issue.heap_bytes()
+        self.geometry
+            .shape
+            .shape()
+            .coordinate_bytes()
+            .saturating_add(self.issue.heap_bytes())
     }
 }
 
 impl HeapSize for ValidationIssue {
     fn heap_bytes(&self) -> usize {
-        self.detail.heap_bytes() + self.path.heap_bytes()
+        self.detail
+            .heap_bytes()
+            .saturating_add(self.path.heap_bytes())
     }
 }

@@ -239,6 +239,54 @@ def test_iter_and_len_provider_errors_are_not_reclassified() -> None:
         gm.GeometryArray(RaisingLen())
 
 
+def test_exact_max_len_overflow_is_reported_at_mixed_shape_demotion() -> None:
+    class ExactMaximumLength:
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        def __len__(self) -> int:
+            return sys.maxsize
+
+        def __iter__(self):
+            for row in (
+                gm.Point(0, 0),
+                gm.LineString([(0, 0), (1, 1)]),
+                object(),
+            ):
+                self.yielded += 1
+                yield row
+            for _ in range(sys.maxsize - 3):
+                self.yielded += 1
+                yield gm.Point(2, 2)
+
+    rows = ExactMaximumLength()
+    with pytest.raises(OverflowError):
+        gm.GeometryArray(rows)
+    assert rows.yielded == 2
+
+
+def test_exact_max_len_overflow_is_reported_at_packed_line_offsets() -> None:
+    class ExactMaximumLength:
+        def __init__(self) -> None:
+            self.yielded = 0
+
+        def __len__(self) -> int:
+            return sys.maxsize
+
+        def __iter__(self):
+            for row in (gm.LineString([(0, 0), (1, 1)]), object()):
+                self.yielded += 1
+                yield row
+            for _ in range(sys.maxsize - 2):
+                self.yielded += 1
+                yield gm.Point(2, 2)
+
+    rows = ExactMaximumLength()
+    with pytest.raises(OverflowError):
+        gm.GeometryArray(rows)
+    assert rows.yielded == 1
+
+
 def test_missing_mask_preserves_iterator_acquisition_error() -> None:
     error = TypeError('provider not iterable sentinel')
 

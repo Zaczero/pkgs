@@ -30,11 +30,7 @@ impl crate::HeapSize for Ring {
     }
 }
 
-impl Ring {
-    pub(crate) fn logical_heap_bytes(&self) -> usize {
-        self.0.logical_heap_bytes()
-    }
-}
+impl Ring {}
 
 impl Ring {
     /// Minimum distinct vertices for an open ring (before closing).
@@ -63,9 +59,13 @@ impl Ring {
             return Ok(Self(coords));
         }
         // XY-open: silently append the first point to close the ring.
+        let capacity = coords
+            .len()
+            .checked_add(1)
+            .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+        crate::geometry::types::ensure_coordseq_vertex_capacity(capacity)?;
         let first = coords.point_at(0);
-        let mut closed =
-            CoordSeqBuilder::with_capacity(coords.axes(), coords.len().wrapping_add(1));
+        let mut closed = CoordSeqBuilder::with_capacity(coords.axes(), capacity);
         closed.extend_window(&coords, 0..coords.len());
         closed.push(first);
         Ok(Self(closed.finish()?))

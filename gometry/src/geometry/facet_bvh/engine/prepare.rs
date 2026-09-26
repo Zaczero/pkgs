@@ -461,7 +461,10 @@ crate::heapless!(Facet);
 
 impl HeapSize for PreparedLinework {
     fn heap_bytes(&self) -> usize {
-        self.chains.heap_bytes() + self.chain_vertex_offsets.heap_bytes() + self.facets.heap_bytes()
+        self.chains
+            .heap_bytes()
+            .saturating_add(self.chain_vertex_offsets.heap_bytes())
+            .saturating_add(self.facets.heap_bytes())
     }
 }
 

@@ -7,7 +7,7 @@ use crate::geometry::{MOrdinate, SharedSlice, ZOrdinate};
 use crate::py::classes::coordinate_methods::{
     Bound, CoordSeq, CoordinateAxes, CoordinateAxis, CoordinateReplacement, Point, PyAny,
     PyAnyMethods as _, PyCoordinates, PyDictMethods as _, PyErr, PyRef, PyResult,
-    PyTupleMethods as _, Python, ReplacementAxis, Shape, coordinate_axis_order,
+    PyTupleMethods as _, Python, ReplacementAxis, Shape, coordinate_axis_order, coordinates,
 };
 use crate::py::errors::{GeometryError, InvalidGeometryError};
 use crate::py::numpy::numpy_module;
@@ -131,11 +131,15 @@ fn replacement_from_kwargs(
 }
 
 fn replacement_from_coordinates_view(
+    py: Python<'_>,
     coords: &PyCoordinates,
     axes: CoordinateAxes,
     expected_len: usize,
 ) -> PyResult<CoordinateReplacement> {
-    let layout = coords.layout.unwrap_or_else(|| coords.view.axes());
+    let layout = match coords.layout {
+        Some(layout) => layout,
+        None => coords.view.axes_for_python(py)?,
+    };
     if layout != axes {
         return Err(InvalidGeometryError::new_err(format!(
             "coordinates axes must be {}; got {}",
@@ -143,10 +147,11 @@ fn replacement_from_coordinates_view(
             layout.as_str()
         )));
     }
-    let rows = coords.view.len();
+    let rows = coords.view.len_for_python(py)?;
     if rows != expected_len {
         return Err(replacement_len_error(expected_len, rows));
     }
+    coordinates::checked_vector_len::<f64>(expected_len, "coordinate replacement")?;
     if let Some(seq) = coords.view.single_seq()
         && seq.axes() == axes
         && seq.len() == expected_len
@@ -202,7 +207,7 @@ fn replacement_from_matrix(
     expected_len: usize,
 ) -> PyResult<CoordinateReplacement> {
     if let Ok(coords) = value.extract::<PyRef<PyCoordinates>>() {
-        return replacement_from_coordinates_view(&coords, axes, expected_len);
+        return replacement_from_coordinates_view(py, &coords, axes, expected_len);
     }
 
     let numpy = numpy_module(py)?;
@@ -224,6 +229,11 @@ fn replacement_from_matrix(
     if width != expected_width {
         return Err(replacement_width_error(expected_width, width));
     }
+    let cells = rows.checked_mul(width).ok_or_else(|| {
+        pyo3::exceptions::PyOverflowError::new_err("coordinate replacement matrix is too large")
+    })?;
+    coordinates::checked_vector_len::<f64>(cells, "coordinate replacement matrix")?;
+    coordinates::checked_vector_len::<f64>(rows, "coordinate replacement")?;
     let flat_obj = array.call_method0("ravel")?;
     let flat = coordinate_column_values(py, &flat_obj, "coordinates")?;
     let mut xs = Vec::with_capacity(rows);
@@ -276,7 +286,10 @@ pub(crate) fn parse_coordinate_replacement(
 ) -> PyResult<CoordinateReplacement> {
     let has_kwargs = kwargs.is_some_and(|kwargs| !kwargs.is_empty());
     match (args.len(), has_kwargs) {
-        (0, true) => replacement_from_kwargs(py, kwargs.expect("checked"), axes, expected_len),
+        (0, true) => {
+            coordinates::checked_vector_len::<f64>(expected_len, "coordinate replacement")?;
+            replacement_from_kwargs(py, kwargs.expect("checked"), axes, expected_len)
+        },
         (1, false) => replacement_from_matrix(py, &args.get_item(0)?, axes, expected_len),
         (0, false) => Err(GeometryError::new_err(
             "set_coordinates requires a coordinate matrix or x= and y= columns",
@@ -441,6 +454,7 @@ pub(crate) fn map_coordinates_callback(
 ) -> PyResult<CoordinateReplacement> {
     let matrix = coords.__array__(py, None, None)?;
     let result = func.call1((matrix.bind(py),))?;
-    let axes = coords.view.axes();
-    replacement_from_matrix(py, &result, axes, coords.view.len())
+    let axes = coords.view.axes_for_python(py)?;
+    let len = coords.view.len_for_python(py)?;
+    replacement_from_matrix(py, &result, axes, len)
 }

@@ -71,13 +71,17 @@ crate::heapless!(Segment3d);
 
 impl HeapSize for SegmentBvh3d {
     fn heap_bytes(&self) -> usize {
-        self.aabbs.heap_bytes() + self.codes.heap_bytes()
+        self.aabbs
+            .heap_bytes()
+            .saturating_add(self.codes.heap_bytes())
     }
 }
 
 impl HeapSize for Distance3dParts {
     fn heap_bytes(&self) -> usize {
-        self.segments.heap_bytes() + self.bvh.heap_bytes()
+        self.segments
+            .heap_bytes()
+            .saturating_add(self.bvh.heap_bytes())
     }
 }
 
