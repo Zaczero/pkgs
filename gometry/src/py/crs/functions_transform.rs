@@ -462,11 +462,19 @@ pub(crate) fn coordinates_to_py(
 /// ----------
 /// source, target : CRS-like
 ///     Source and destination CRS (EPSG code or authority/WKT string).
-/// bounds : tuple
-///     ``(minx, miny, maxx, maxy)`` (or a 3D ``(minx, miny, minz, maxx,
-///     maxy, maxz)``) box in the source CRS.
+/// bounds : sequence of float or iterable of sequences of float
+///     A scalar box is a 4-value ``(minx, miny, maxx, maxy)`` sequence or a
+///     6-value ``(minx, miny, minz, maxx, maxy, maxz)`` sequence in the source
+///     CRS. A batch is a nonempty iterable of 4- or 6-value rows; every row
+///     must have the same dimensionality. One-dimensional NumPy arrays supply
+///     scalar bounds and two-dimensional NumPy arrays supply batch rows.
+///     Batch row order is preserved.
 /// densify : int, default 21
 ///     Points added per edge before transforming, to track curved edges.
+///     Must be a non-boolean, nonnegative integer that fits in ``u32``. For a
+///     non-identity transform it must be at most 10,000; if the target CRS is
+///     geographic, it must also be at least 2. Identity transforms do not
+///     sample bounds and skip these transform-specific limits.
 /// area_of_interest : sequence of float, dict, or object, optional
 ///     Area of interest guiding operation selection, as
 ///     ``(west, south, east, north)`` in DEGREES, an area mapping, or an
@@ -496,17 +504,27 @@ pub(crate) fn coordinates_to_py(
 ///
 /// Returns
 /// -------
-/// tuple
-///     The reprojected box in the target CRS.
+/// tuple or numpy.ndarray
+///     The reprojected box in the target CRS. Scalar input returns a 4- or
+///     6-value tuple. Batch input returns a ``float64`` array of shape
+///     ``(n, 4)`` or ``(n, 6)`` in input row order.
 ///
 /// Raises
 /// ------
 /// TransformError
 ///     If no transform exists between the frames or it fails to apply.
 /// CRSError
-///     If ``source``/``target`` are unrecognized.
+///     If ``source``/``target`` are unrecognized, or a non-identity transform
+///     has ``densify`` above 10,000 or below 2 for a geographic target.
 /// GeometryError
-///     If ``bounds`` is not a 4- or 6-value sequence of finite floats.
+///     If a bounds box does not contain four or six finite values, a batch is
+///     empty, batch rows have inconsistent dimensions, or ``densify`` is
+///     outside the nonnegative ``u32`` range.
+/// TypeError
+///     If ``bounds`` is not iterable or ``densify`` is not an integer index
+///     value (``bool`` is not accepted).
+/// OverflowError
+///     If ``densify`` is outside the signed 64-bit input range.
 ///
 /// Examples
 /// --------
