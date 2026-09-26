@@ -26,8 +26,14 @@ fn geodesic_leaf_count(segment_count: usize) -> usize {
     let quotient = segment_count / GEODESIC_LEAF_SEGMENTS;
     let base = 1_usize << quotient.ilog2();
     // At `base * threshold` segments the balanced tree has `base` leaves;
-    // it gains one leaf per segment until the next complete level.
-    (base * 2).min(base + segment_count - GEODESIC_LEAF_SEGMENTS * base)
+    // it gains one leaf per segment until the next complete level. `build`
+    // admits at most `LEAF_BIT / 2` segments before calling this helper, so the
+    // leaf formula and its node count are representable in `usize`.
+    let complete_level = base.wrapping_mul(2);
+    let partial_level = base
+        .wrapping_add(segment_count)
+        .wrapping_sub(GEODESIC_LEAF_SEGMENTS.wrapping_mul(base));
+    complete_level.min(partial_level)
 }
 
 #[derive(Clone, Copy)]
@@ -71,7 +77,7 @@ impl GeodesicFacetBvh {
             return None;
         }
         let leaf_count = geodesic_leaf_count(segments.len());
-        let node_count = 2 * leaf_count - 1;
+        let node_count = leaf_count.wrapping_mul(2).wrapping_sub(1);
         let mut tree = Self {
             anchors: vec![Point::new_raw_xy(0.0, 0.0); node_count].into_boxed_slice(),
             reaches: vec![0.0; node_count].into_boxed_slice(),
@@ -111,6 +117,10 @@ impl GeodesicFacetBvh {
         Some(tree)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node, leaf, and segment IDs are generated together inside the admitted u32-sized BVH"
+    )]
     fn fill_node(
         &mut self,
         node: usize,
@@ -126,12 +136,12 @@ impl GeodesicFacetBvh {
             let first = *next_segment_id as u32;
             for entry in ids.iter() {
                 self.segment_ids[*next_segment_id] = entry.index;
-                *next_segment_id += 1;
+                *next_segment_id = (*next_segment_id).wrapping_add(1);
             }
             let len = ids.len() as u8;
             let leaf_index = *next_leaf as u32;
             self.leaves[*next_leaf] = GeodesicLeaf { first, len };
-            *next_leaf += 1;
+            *next_leaf = (*next_leaf).wrapping_add(1);
             self.codes[node] = BvhCode::leaf(leaf_index as usize).raw();
             self.fill_cap(node, segments, ids, metric);
             return;
@@ -140,13 +150,13 @@ impl GeodesicFacetBvh {
         let axis = split_axis(ids);
         let mid = ids.len() / 2;
         ids.select_nth_unstable_by(mid, |a, b| {
-            a.centroid[axis]
-                .total_cmp(&b.centroid[axis])
+            axis.coordinate(a.centroid)
+                .total_cmp(&axis.coordinate(b.centroid))
                 .then_with(|| a.index.cmp(&b.index))
         });
         let (lower, upper) = ids.split_at_mut(mid);
         let first_child = *next;
-        *next += 2;
+        *next = (*next).wrapping_add(2);
         self.codes[node] = BvhCode::internal(first_child as u32).raw();
         self.fill_node(
             first_child,
@@ -158,7 +168,7 @@ impl GeodesicFacetBvh {
             metric,
         );
         self.fill_node(
-            first_child + 1,
+            first_child.wrapping_add(1),
             next,
             segments,
             upper,
@@ -170,11 +180,15 @@ impl GeodesicFacetBvh {
         self.reaches[node] = child_reach(self, node, first_child, metric).max(child_reach(
             self,
             node,
-            first_child + 1,
+            first_child.wrapping_add(1),
             metric,
         ));
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "leaf segment IDs are selected from the same admitted segment slice used to build this BVH"
+    )]
     fn fill_cap(
         &mut self,
         node: usize,
@@ -192,6 +206,10 @@ impl GeodesicFacetBvh {
         self.reaches[node] = reach;
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "traversal node and leaf IDs are decoded from codes emitted by this immutable BVH builder"
+    )]
     pub(super) fn min_point_distance(
         &self,
         point: Point,
@@ -249,6 +267,10 @@ impl GeodesicFacetBvh {
         clippy::too_many_arguments,
         reason = "the BVH traversal keeps node order, segment scratch, witness order, and tie state explicit at one hot call boundary"
     )]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "traversal node and leaf IDs are decoded from codes emitted by this immutable BVH builder"
+    )]
     pub(super) fn witness_point(
         &self,
         vertex: Point,
@@ -258,10 +280,11 @@ impl GeodesicFacetBvh {
         stack: &mut Vec<u32>,
         segment_scratch: &mut GeodesicSegmentScratch,
         mut best: Option<GeodesicWitnessCandidate>,
-        order_offset: usize,
+        order_offset: WitnessOrder,
         swapped: bool,
-        width: usize,
+        width: u128,
     ) -> Result<Option<GeodesicWitnessCandidate>> {
+        let row_order = WitnessOrder::after_rows(order_offset, vertex_index, width);
         stack.clear();
         stack.push(0);
         while let Some(node) = stack.pop() {
@@ -278,7 +301,7 @@ impl GeodesicFacetBvh {
                     for edge_index in self.leaf_segment_ids(leaf) {
                         let edge_index = *edge_index as usize;
                         let segment = parts.segments[edge_index];
-                        let order = order_offset + vertex_index * width + edge_index;
+                        let order = row_order.with_column(edge_index as u128);
                         let best_distance = witness_refine_limit(best.as_ref(), order);
                         let bound = metric.point_distance_lower_bound(vertex, segment.start)?
                             - segment.length;
@@ -326,8 +349,10 @@ impl GeodesicFacetBvh {
         }
         if !parts.point_only.is_empty() {
             for (point_index, &point) in parts.point_only.iter().enumerate() {
-                let order =
-                    order_offset + vertex_index * width + parts.segments.len() + point_index;
+                let order = row_order.with_column(WitnessOrder::point_feature(
+                    parts.segments.len(),
+                    point_index,
+                ));
                 let best_distance = witness_refine_limit(best.as_ref(), order);
                 if metric.point_distance_lower_bound(vertex, point)? > best_distance {
                     continue;
@@ -352,6 +377,10 @@ impl GeodesicFacetBvh {
         Ok(best)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "traversal node and leaf IDs are decoded from codes emitted by this immutable BVH builder"
+    )]
     pub(super) fn dwithin_point(
         &self,
         point: Point,
@@ -406,7 +435,7 @@ impl GeodesicFacetBvh {
                 BvhNode::Internal(first_child) => {
                     let first_child = first_child as u32;
                     stack.push(first_child);
-                    stack.push(first_child + 1);
+                    stack.push(first_child.wrapping_add(1));
                 },
             }
         }
@@ -428,19 +457,23 @@ impl GeodesicFacetBvh {
         stack: &mut Vec<u32>,
     ) -> Result<()> {
         let left = first_child as usize;
-        let right = left + 1;
+        let right = left.wrapping_add(1);
         let left_bound = self.bound(point, left, metric)?;
         let right_bound = self.bound(point, right, metric)?;
         if left_bound < right_bound {
-            stack.push(first_child + 1);
+            stack.push(first_child.wrapping_add(1));
             stack.push(first_child);
         } else {
             stack.push(first_child);
-            stack.push(first_child + 1);
+            stack.push(first_child.wrapping_add(1));
         }
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node IDs are rooted in this immutable BVH and its equal-length node columns"
+    )]
     fn bound(&self, point: Point, node: usize, metric: &impl GeodesicMetric) -> Result<f64> {
         Ok(
             (metric.point_distance_lower_bound(point, self.anchors[node])? - self.reaches[node])
@@ -448,8 +481,14 @@ impl GeodesicFacetBvh {
         )
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "leaf ranges are emitted by fill_node from the reserved segment-ID column"
+    )]
     fn leaf_segment_ids(&self, leaf: GeodesicLeaf) -> &[u32] {
-        &self.segment_ids[leaf.first as usize..leaf.first as usize + leaf.len as usize]
+        let first = leaf.first as usize;
+        let end = first.wrapping_add(usize::from(leaf.len));
+        &self.segment_ids[first..end]
     }
 }
 
@@ -465,6 +504,10 @@ impl HeapSize for GeodesicFacetBvh {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "parent and adjacent child IDs are emitted by fill_node inside equal-length node columns"
+)]
 fn child_reach(
     tree: &GeodesicFacetBvh,
     parent: usize,
@@ -474,22 +517,40 @@ fn child_reach(
     metric.segment_length(tree.anchors[parent], tree.anchors[child]) + tree.reaches[child]
 }
 
-fn split_axis(ids: &[SegmentBuild]) -> usize {
+#[derive(Clone, Copy)]
+enum AuxiliaryAxis {
+    X,
+    Y,
+    Z,
+}
+
+impl AuxiliaryAxis {
+    fn coordinate(self, point: [f64; 3]) -> f64 {
+        match self {
+            Self::X => point[0],
+            Self::Y => point[1],
+            Self::Z => point[2],
+        }
+    }
+}
+
+fn split_axis(ids: &[SegmentBuild]) -> AuxiliaryAxis {
     let mut min = [f64::INFINITY; 3];
     let mut max = [f64::NEG_INFINITY; 3];
     for id in ids {
-        for axis in 0..3 {
-            min[axis] = min[axis].min(id.centroid[axis]);
-            max[axis] = max[axis].max(id.centroid[axis]);
+        for ((minimum, maximum), coordinate) in min.iter_mut().zip(max.iter_mut()).zip(id.centroid)
+        {
+            *minimum = (*minimum).min(coordinate);
+            *maximum = (*maximum).max(coordinate);
         }
     }
     let spans = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
     if spans[1] > spans[0] && spans[1] >= spans[2] {
-        1
+        AuxiliaryAxis::Y
     } else if spans[2] > spans[0] && spans[2] > spans[1] {
-        2
+        AuxiliaryAxis::Z
     } else {
-        0
+        AuxiliaryAxis::X
     }
 }
 
@@ -507,11 +568,55 @@ pub(super) struct GeodesicWitnessCandidate {
     pub(super) lower: f64,
     pub(super) evaluation_error: f64,
     pub(super) feature: GeodesicTargetFeature,
-    pub(super) order: usize,
+    pub(super) order: WitnessOrder,
     pub(super) swapped: bool,
 }
 
-pub(super) fn witness_refine_limit(best: Option<&GeodesicWitnessCandidate>, order: usize) -> f64 {
+/// Exact row-major order among candidate witnesses.
+///
+/// Each stored point and segment occupies at least 16 bytes, and each vector is
+/// bounded by `isize::MAX` bytes. On the supported 64-bit targets, one source
+/// count is below 2^59, one combined target-feature width is below 2^60, and
+/// both directed products together remain below 2^120.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct WitnessOrder(u128);
+
+impl WitnessOrder {
+    pub(super) const ZERO: Self = Self(0);
+
+    pub(super) fn from_rank(rank: u128) -> Self {
+        Self(rank)
+    }
+
+    pub(super) fn ordinal(index: usize) -> Self {
+        Self(index as u128)
+    }
+
+    pub(super) fn feature_width(segments: usize, point_only: usize) -> u128 {
+        (segments as u128).wrapping_add(point_only as u128)
+    }
+
+    pub(super) fn row_major(base: Self, row: usize, width: u128, column: u128) -> Self {
+        Self::after_rows(base, row, width).with_column(column)
+    }
+
+    pub(super) fn after_rows(base: Self, rows: usize, width: u128) -> Self {
+        Self(base.0.wrapping_add((rows as u128).wrapping_mul(width)))
+    }
+
+    pub(super) fn with_column(self, column: u128) -> Self {
+        Self(self.0.wrapping_add(column))
+    }
+
+    pub(super) fn point_feature(segments: usize, point: usize) -> u128 {
+        (segments as u128).wrapping_add(point as u128)
+    }
+}
+
+pub(super) fn witness_refine_limit(
+    best: Option<&GeodesicWitnessCandidate>,
+    order: WitnessOrder,
+) -> f64 {
     best.map_or(f64::INFINITY, |candidate| {
         if order < candidate.order {
             f64::INFINITY
@@ -534,7 +639,7 @@ pub(super) fn geodesic_witness_is_better(
 
 #[cfg(test)]
 mod tests {
-    use super::geodesic_leaf_count;
+    use super::{WitnessOrder, geodesic_leaf_count};
 
     #[test]
     fn balanced_leaf_count_matches_split_boundaries() {
@@ -564,5 +669,24 @@ mod tests {
             let leaves = geodesic_leaf_count(segment_count);
             assert_eq!(leaves, expected_leaves, "segments={segment_count}");
         }
+    }
+
+    #[test]
+    fn witness_order_preserves_wide_forward_and_reverse_ranks() {
+        let width = usize::MAX as u128;
+        let last_forward =
+            WitnessOrder::row_major(WitnessOrder::ZERO, 2, width, width.wrapping_sub(1));
+        let first_reverse = WitnessOrder::row_major(
+            WitnessOrder::after_rows(WitnessOrder::ZERO, 3, width),
+            0,
+            width,
+            0,
+        );
+        let same_forward =
+            WitnessOrder::row_major(WitnessOrder::ZERO, 2, width, width.wrapping_sub(1));
+
+        assert!(last_forward.0 > width);
+        assert!(last_forward < first_reverse);
+        assert_eq!(same_forward, last_forward);
     }
 }

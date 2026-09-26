@@ -460,6 +460,17 @@ def test_distance_3d_generalized_over_linework() -> None:
         )
 
 
+def test_distance_3d_indexed_xyzm_line_uses_z_and_ignores_m() -> None:
+    line = gm.LineString(
+        [(float(index), 0.0) for index in range(65)],
+        z=[0.0] * 65,
+        m=[float(index) * 1e12 for index in range(65)],
+    )
+    probe = gm.Point(32.0, 3.0, z=4.0, m=-1e150)
+
+    assert gm.distance_3d(probe, line) == 5.0
+
+
 def test_distance_3d_array_degrades_missing_z_rows() -> None:
     """Array rows without Z on every vertex degrade to nan; scalar still raises."""
     mixed = gm.GeometryArray([

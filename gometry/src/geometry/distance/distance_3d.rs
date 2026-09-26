@@ -41,15 +41,15 @@ mod traversal_counters {
     }
 
     pub(crate) fn bound_call() {
-        BOUND_CALLS.set(BOUND_CALLS.get() + 1);
+        BOUND_CALLS.set(BOUND_CALLS.get().wrapping_add(1));
     }
 
     pub(crate) fn pruned_node() {
-        PRUNED_NODES.set(PRUNED_NODES.get() + 1);
+        PRUNED_NODES.set(PRUNED_NODES.get().wrapping_add(1));
     }
 
     pub(crate) fn visited_leaf() {
-        VISITED_LEAVES.set(VISITED_LEAVES.get() + 1);
+        VISITED_LEAVES.set(VISITED_LEAVES.get().wrapping_add(1));
     }
 
     pub(crate) fn reset() {
@@ -208,53 +208,55 @@ pub(crate) fn aabb3_distance_lower_bound(a: Aabb3d, b: Aabb3d) -> f64 {
     downward_scale(scale, downward_sqrt(squared))
 }
 
+fn point_xyz(point: crate::geometry::Point) -> [f64; 3] {
+    [point.x, point.y, point.z().expect("Z column present")]
+}
+
+fn points_xyz(coords: &CoordSeq) -> impl Iterator<Item = [f64; 3]> + '_ {
+    let zs = coords.zs().expect("Z column present");
+    coords
+        .xs()
+        .iter()
+        .copied()
+        .zip(coords.ys().iter().copied())
+        .zip(zs.iter().copied())
+        .map(|((x, y), z)| [x, y, z])
+}
+
+fn push_segment_3d(start: [f64; 3], end: [f64; 3], out: &mut Vec<Segment3d>) {
+    out.push(Segment3d {
+        start,
+        end,
+        aabb: segment_aabb3(start, end),
+    });
+}
+
 fn push_segments_3d(coords: &CoordSeq, out: &mut Vec<Segment3d>) {
-    let p3 = |index: usize| {
-        let point = coords.point_at(index);
-        [point.x, point.y, point.z().expect("Z column present")]
+    let mut points = points_xyz(coords);
+    let Some(start) = points.next() else {
+        return;
     };
-    match coords.len() {
-        0 => {},
-        1 => {
-            let point = p3(0);
-            out.push(Segment3d {
-                start: point,
-                end: point,
-                aabb: segment_aabb3(point, point),
-            });
-        },
-        n => {
-            for index in 0..n - 1 {
-                let (start, end) = (p3(index), p3(index + 1));
-                out.push(Segment3d {
-                    start,
-                    end,
-                    aabb: segment_aabb3(start, end),
-                });
-            }
-        },
+    let Some(mut end) = points.next() else {
+        push_segment_3d(start, start, out);
+        return;
+    };
+    push_segment_3d(start, end, out);
+    for point in points {
+        let start = end;
+        end = point;
+        push_segment_3d(start, end, out);
     }
 }
 
 fn collect_segments_3d(shape: &Shape, out: &mut Vec<Segment3d>) {
     match shape {
         Shape::Point(point) => {
-            let p = [point.x, point.y, point.z().expect("Z present")];
-            out.push(Segment3d {
-                start: p,
-                end: p,
-                aabb: segment_aabb3(p, p),
-            });
+            let point = point_xyz(*point);
+            push_segment_3d(point, point, out);
         },
         Shape::MultiPoint(coords) => {
-            for index in 0..coords.len() {
-                let point = coords.point_at(index);
-                let p = [point.x, point.y, point.z().expect("Z present")];
-                out.push(Segment3d {
-                    start: p,
-                    end: p,
-                    aabb: segment_aabb3(p, p),
-                });
+            for point in points_xyz(coords) {
+                push_segment_3d(point, point, out);
             }
         },
         Shape::LineString(coords) => push_segments_3d(coords, out),
@@ -319,7 +321,8 @@ impl SegmentBvh3d {
         }
         let mut ids = Vec::with_capacity(segments.len());
         ids.extend(0..segment_count);
-        let node_count = 2 * segment_count as usize - 1;
+        // `LEAF_BIT / 2` admission makes this exact node count fit `usize`.
+        let node_count = (segment_count as usize).wrapping_mul(2).wrapping_sub(1);
         let mut tree = Self {
             aabbs: vec![[0.0; 6]; node_count],
             codes: vec![0; node_count],
@@ -329,6 +332,10 @@ impl SegmentBvh3d {
         Some(tree)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "node and segment IDs are generated from the admitted u32-sized tree and its exact node arrays"
+    )]
     fn fill_node(
         &mut self,
         node: usize,
@@ -349,15 +356,16 @@ impl SegmentBvh3d {
         let axis = longest_axis(aabb);
         let pivot = ids.len() / 2;
         ids.select_nth_unstable_by(pivot, |&left, &right| {
-            segments[left as usize].aabb[axis].total_cmp(&segments[right as usize].aabb[axis])
+            axis.lower(segments[left as usize].aabb)
+                .total_cmp(&axis.lower(segments[right as usize].aabb))
         });
         let (lower, upper) = ids.split_at_mut(pivot);
         let first_child = *next;
-        *next += 2;
+        *next = next.wrapping_add(2);
         self.aabbs[node] = aabb;
         self.codes[node] = BvhCode::internal(first_child as u32).raw();
         self.fill_node(first_child, next, segments, lower);
-        self.fill_node(first_child + 1, next, segments, upper);
+        self.fill_node(first_child.wrapping_add(1), next, segments, upper);
     }
 
     fn distance_to_parts(
@@ -376,6 +384,10 @@ impl SegmentBvh3d {
         Ok(best)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "stack node IDs and decoded leaf IDs originate in this immutable BVH built from the same target segment slice"
+    )]
     fn visit_with_targets(
         &self,
         probe: &Segment3d,
@@ -414,26 +426,48 @@ impl SegmentBvh3d {
         Ok(())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "first_child names the adjacent pair written by fill_node in the admitted node arrays"
+    )]
     fn push_nearer_last(&self, stack: &mut Vec<usize>, first_child: usize, probe_aabb: Aabb3d) {
         let left_bound = aabb3_distance_lower_bound(self.aabbs[first_child], probe_aabb);
-        let right_bound = aabb3_distance_lower_bound(self.aabbs[first_child + 1], probe_aabb);
+        let right_bound =
+            aabb3_distance_lower_bound(self.aabbs[first_child.wrapping_add(1)], probe_aabb);
         if left_bound <= right_bound {
-            stack.push(first_child + 1);
+            stack.push(first_child.wrapping_add(1));
             stack.push(first_child);
         } else {
             stack.push(first_child);
-            stack.push(first_child + 1);
+            stack.push(first_child.wrapping_add(1));
         }
     }
 }
 
-fn longest_axis(aabb: Aabb3d) -> usize {
+#[derive(Clone, Copy)]
+enum Axis3d {
+    X,
+    Y,
+    Z,
+}
+
+impl Axis3d {
+    fn lower(self, aabb: Aabb3d) -> f64 {
+        match self {
+            Self::X => aabb[0],
+            Self::Y => aabb[1],
+            Self::Z => aabb[2],
+        }
+    }
+}
+
+fn longest_axis(aabb: Aabb3d) -> Axis3d {
     let spans = [aabb[3] - aabb[0], aabb[4] - aabb[1], aabb[5] - aabb[2]];
-    spans
-        .iter()
-        .enumerate()
+    [Axis3d::X, Axis3d::Y, Axis3d::Z]
+        .into_iter()
+        .zip(spans)
         .max_by(|(_, left), (_, right)| left.total_cmp(right))
-        .map_or(0, |(axis, _)| axis)
+        .map_or(Axis3d::X, |(axis, _)| axis)
 }
 
 const fn union_aabb3(left: Aabb3d, right: Aabb3d) -> Aabb3d {

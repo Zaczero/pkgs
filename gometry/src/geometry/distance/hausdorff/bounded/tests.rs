@@ -30,8 +30,8 @@ fn adjacent_box_union(count: usize) -> Shape {
             wkt,
             "(({} 0,{} 0,{} 1,{} 1,{} 0))",
             index,
-            index + 1,
-            index + 1,
+            index.wrapping_add(1),
+            index.wrapping_add(1),
             index,
             index
         )
@@ -50,7 +50,7 @@ fn adjacent_box_prepared_support(count: usize) -> (PreparedSupport, PreparedSupp
         ExactPoint::from_xy(XY::new(0.0, 1.0)),
     ]]])
     .unwrap();
-    let mut spans = Vec::with_capacity(2 * count + 2);
+    let mut spans = Vec::with_capacity(count.wrapping_mul(2).wrapping_add(2));
     for index in 0..count {
         let start = index as f64;
         let end = start + 1.0;
@@ -205,15 +205,19 @@ fn directed_adjacent_box_refinement_work_scales_with_boundary_spans() {
 }
 
 fn regular_polygon(count: usize, offset: (f64, f64)) -> Shape {
-    let vertices: Vec<(f64, f64)> = (0..=count)
+    let mut vertices: Vec<(f64, f64)> = (0..count)
         .map(|index| {
-            let angle = std::f64::consts::TAU * (index % count) as f64 / count as f64;
+            let angle = std::f64::consts::TAU * index as f64 / count as f64;
             (
                 100.0 * angle.cos() + offset.0,
                 100.0 * angle.sin() + offset.1,
             )
         })
         .collect();
+    let first = *vertices
+        .first()
+        .expect("regular polygon tests use a positive vertex count");
+    vertices.push(first);
     polygon(&vertices)
 }
 
@@ -322,8 +326,8 @@ fn assert_sqrt_certificate(name: &str, squared: &Rational) -> SqrtInterval {
         let upper_value = dyadic_as_f64(upper).expect("upper binary64");
         if lower_value.to_bits() != upper_value.to_bits() {
             assert_eq!(
-                upper_value.to_bits() - lower_value.to_bits(),
-                1,
+                lower_value.to_bits().checked_add(1),
+                Some(upper_value.to_bits()),
                 "{name}: finite endpoints must be adjacent"
             );
         }

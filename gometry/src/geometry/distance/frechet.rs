@@ -26,6 +26,10 @@ pub(crate) fn frechet_distance_line_columns(
 
 /// Element-wise planar Fréchet over packed line CSR windows (one column
 /// kernel per pair, identity shortcuts for identical windows).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the scratch rows are resized to the exact shorter-column width before the DP kernel"
+)]
 pub(crate) fn frechet_distance_line_columns_batch(
     left: PackedLineColumnView<'_>,
     right: PackedLineColumnView<'_>,
@@ -92,6 +96,10 @@ pub(crate) fn discrete_frechet_distance_with_scratch(
 /// step take whichever forward move (down / right / diagonal) pairs the
 /// nearest next vertices, tracking the worst pairing. `O(L + W)`, and tight
 /// when the curves run close — which is exactly when the band pays off.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the greedy coupling maintains both indices inside the admitted nonempty coordinate columns"
+)]
 pub(crate) fn frechet_greedy_ub_squared(
     short_xs: &[f64],
     short_ys: &[f64],
@@ -108,21 +116,22 @@ pub(crate) fn frechet_greedy_ub_squared(
     };
     let (mut i, mut j) = (0_usize, 0_usize);
     let mut bottleneck = d2(0, 0);
-    while i + 1 < length || j + 1 < width {
-        let (down, right) = (i + 1 < length, j + 1 < width);
+    while i.wrapping_add(1) < length || j.wrapping_add(1) < width {
+        let (next_i, next_j) = (i.wrapping_add(1), j.wrapping_add(1));
+        let (down, right) = (next_i < length, next_j < width);
         (i, j) = if down && right {
-            let (diag, dn, dr) = (d2(i + 1, j + 1), d2(i + 1, j), d2(i, j + 1));
+            let (diag, dn, dr) = (d2(next_i, next_j), d2(next_i, j), d2(i, next_j));
             if diag <= dn && diag <= dr {
-                (i + 1, j + 1)
+                (next_i, next_j)
             } else if dn <= dr {
-                (i + 1, j)
+                (next_i, j)
             } else {
-                (i, j + 1)
+                (i, next_j)
             }
         } else if down {
-            (i + 1, j)
+            (next_i, j)
         } else {
-            (i, j + 1)
+            (i, next_j)
         };
         bottleneck = bottleneck.max(d2(i, j));
     }
@@ -221,6 +230,10 @@ pub(crate) fn frechet_dp_columns(
     frechet_dp_columns_with_dp_scratch(short_xs, short_ys, long_xs, long_ys, &mut scratch)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "ensure_capacity establishes that both scratch rows cover the exact DP width"
+)]
 pub(crate) fn frechet_dp_columns_with_dp_scratch(
     short_xs: &[f64],
     short_ys: &[f64],
@@ -246,6 +259,10 @@ pub(crate) fn frechet_dp_columns_with_dp_scratch(
 /// Column Fréchet DP using caller-provided row workspaces (`previous` /
 /// `current`, each at least `short_xs.len()`). Buffers are reset to `+∞` on
 /// entry; stale slots outside the live band are never read.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the exact-width row reslices and the live band bounds prove each recurrence cell is in its workspace"
+)]
 pub(crate) fn frechet_dp_columns_with_scratch<'a>(
     short_xs: &[f64],
     short_ys: &[f64],
@@ -296,8 +313,8 @@ pub(crate) fn frechet_dp_columns_with_scratch<'a>(
             } else {
                 INF
             };
-            let prev_j1 = if index > lo && index - 1 <= prev_hi {
-                previous[index - 1]
+            let prev_j1 = if index > lo && index.wrapping_sub(1) <= prev_hi {
+                previous[index.wrapping_sub(1)]
             } else {
                 INF
             };
@@ -340,11 +357,8 @@ pub(crate) fn frechet_dp_columns_with_scratch<'a>(
     }
     // The corner is live, so `previous[width - 1]` is the exact Fréchet²; the
     // `ub2` arm is unreachable defence against a degenerate empty final band.
-    let answer2 = if prev_hi == width - 1 {
-        previous[width - 1]
-    } else {
-        ub2
-    };
+    let last = width.wrapping_sub(1);
+    let answer2 = if prev_hi == last { previous[last] } else { ub2 };
     finish_frechet_squared(answer2, short_xs, short_ys, long_xs, long_ys)
 }
 
@@ -437,6 +451,10 @@ fn frechet_columns_vertexwise_equal(
 
 /// Distance-space discrete Fréchet DP (rescue for zero, subnormal, or
 /// non-finite squared answers).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "both rows are allocated to the exact nonzero shorter-column width and the recurrence indices stay within it"
+)]
 fn frechet_dp_columns_distance(
     short_xs: &[f64],
     short_ys: &[f64],
@@ -466,7 +484,7 @@ fn frechet_dp_columns_distance(
                 previous[0]
             } else {
                 previous[short_index]
-                    .min(previous[short_index - 1])
+                    .min(previous[short_index.wrapping_sub(1)])
                     .min(left_value)
             };
             left_value = distance.max(reach);
@@ -474,7 +492,7 @@ fn frechet_dp_columns_distance(
         }
         std::mem::swap(&mut previous, &mut current);
     }
-    previous[width - 1]
+    previous[width.wrapping_sub(1)]
 }
 
 #[cfg(test)]
