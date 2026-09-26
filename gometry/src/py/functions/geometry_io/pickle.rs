@@ -41,7 +41,10 @@ fn selected_f64_column_le_bytes(
         .ok_or_else(|| pickle_size_overflow("coordinate byte length overflows usize"))?;
     let mut out = Vec::with_capacity(byte_len);
     for logical in 0..len {
-        out.extend_from_slice(&values[selection.physical(logical)].to_le_bytes());
+        let value = values
+            .get(selection.physical(logical))
+            .expect("pickle row selection is admitted against the coordinate column");
+        out.extend_from_slice(&value.to_le_bytes());
     }
     Ok(out)
 }
@@ -56,7 +59,10 @@ fn selected_f64_windows_le_bytes(
         .ok_or_else(|| pickle_size_overflow("coordinate byte length overflows usize"))?;
     let mut out = Vec::with_capacity(byte_len);
     for window in windows {
-        for &value in &values[window] {
+        let selected = values
+            .get(window)
+            .expect("pickle CSR windows are admitted against the coordinate column");
+        for &value in selected {
             out.extend_from_slice(&value.to_le_bytes());
         }
     }
@@ -283,7 +289,7 @@ fn unpickle_packed_array_detached(
             let offsets = pickled_csr_offsets(offsets, seq.len())?;
             if offsets
                 .array_windows::<2>()
-                .any(|[start, end]| end - start == 1)
+                .any(|[start, end]| (*end).wrapping_sub(*start) == 1)
             {
                 return Err(pickle_error("line-array pickle row has a single vertex"));
             }
@@ -295,7 +301,7 @@ fn unpickle_packed_array_detached(
                 CheckedRingWindow::checked(&seq, *start as usize..*end as usize)
                     .map_err(|error| pickle_error(format!("polygon-array pickle {error}")))?;
             }
-            let polygons = pickled_csr_offsets(polygons, rings.len() - 1)?;
+            let polygons = pickled_csr_offsets(polygons, rings.len().wrapping_sub(1))?;
             if polygons
                 .array_windows::<2>()
                 .any(|[start, end]| end <= start)
@@ -478,10 +484,14 @@ fn pickle_rows(
             let mut windows = Vec::with_capacity(rows.len());
             let mut polygon_ring_counts = Vec::with_capacity(rows.len());
             for &row in &rows {
-                let rings = row_map.as_deref().csr_window(polygon_offsets, row);
-                polygon_ring_counts.push(rings.len());
-                for ring in rings {
-                    windows.push(ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize);
+                let ring_indices = row_map.as_deref().csr_window(polygon_offsets, row);
+                polygon_ring_counts.push(ring_indices.len());
+                let ring_ends = ring_offsets
+                    .as_slice()
+                    .get(ring_indices.start..=ring_indices.end)
+                    .expect("admitted polygon offsets select admitted ring offsets");
+                for [start, end] in ring_ends.array_windows::<2>() {
+                    windows.push(*start as usize..*end as usize);
                 }
             }
             if !columns_are_finite(coords, &windows) {
@@ -563,27 +573,59 @@ fn selected_storage_indices(
 fn points_are_finite(coords: &CoordSeq, selection: RowSelectionRef<'_>) -> bool {
     (0..selection.len(coords.len())).all(|logical| {
         let index = selection.physical(logical);
-        coords.xs()[index].is_finite()
-            && coords.ys()[index].is_finite()
-            && coords.zs().is_none_or(|values| values[index].is_finite())
-            && coords.ms().is_none_or(|values| values[index].is_finite())
+        coords
+            .xs()
+            .get(index)
+            .expect("pickle row selection is admitted against the X column")
+            .is_finite()
+            && coords
+                .ys()
+                .get(index)
+                .expect("pickle row selection is admitted against the Y column")
+                .is_finite()
+            && coords.zs().is_none_or(|values| {
+                values
+                    .get(index)
+                    .expect("coordinate axes keep the Z column aligned")
+                    .is_finite()
+            })
+            && coords.ms().is_none_or(|values| {
+                values
+                    .get(index)
+                    .expect("coordinate axes keep the M column aligned")
+                    .is_finite()
+            })
     })
 }
 
 fn columns_are_finite(coords: &CoordSeq, windows: &[std::ops::Range<usize>]) -> bool {
     windows.iter().all(|window| {
-        coords.xs()[window.clone()]
+        coords
+            .xs()
+            .get(window.clone())
+            .expect("pickle CSR windows are admitted against the X column")
             .iter()
             .all(|value| value.is_finite())
-            && coords.ys()[window.clone()]
+            && coords
+                .ys()
+                .get(window.clone())
+                .expect("pickle CSR windows are admitted against the Y column")
                 .iter()
                 .all(|value| value.is_finite())
-            && coords
-                .zs()
-                .is_none_or(|values| values[window.clone()].iter().all(|value| value.is_finite()))
-            && coords
-                .ms()
-                .is_none_or(|values| values[window.clone()].iter().all(|value| value.is_finite()))
+            && coords.zs().is_none_or(|values| {
+                values
+                    .get(window.clone())
+                    .expect("coordinate axes keep the Z column aligned")
+                    .iter()
+                    .all(|value| value.is_finite())
+            })
+            && coords.ms().is_none_or(|values| {
+                values
+                    .get(window.clone())
+                    .expect("coordinate axes keep the M column aligned")
+                    .iter()
+                    .all(|value| value.is_finite())
+            })
     })
 }
 
@@ -665,7 +707,7 @@ fn wkb_rows_for_mask(
             continue;
         }
         let payload_row = if compact { present } else { logical };
-        present += 1;
+        present = present.wrapping_add(1);
         let wkb = storage
             .row(payload_row)
             .try_with_shape(|shape| crate::io::to_wkb(shape, None, false))?;

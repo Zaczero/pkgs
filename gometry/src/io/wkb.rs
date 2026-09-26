@@ -21,9 +21,14 @@ const fn wkb_coords_len(count: usize, axes: CoordinateAxes) -> usize {
         .wrapping_mul(size_of::<f64>())
 }
 
-/// ISO 1000/2000/3000 dimension offsets indexed by `(z as usize) << 1 | (m as
-/// usize)`.
-const ISO_DIM_OFFSET: [u32; 4] = [0, WKB_M_OFFSET, WKB_Z_OFFSET, WKB_ZM_OFFSET];
+const fn iso_dimension_offset(z: bool, m: bool) -> u32 {
+    match (z, m) {
+        (false, false) => 0,
+        (false, true) => WKB_M_OFFSET,
+        (true, false) => WKB_Z_OFFSET,
+        (true, true) => WKB_ZM_OFFSET,
+    }
+}
 
 fn wkb_type(kind: GeometryKind, axes: CoordinateAxes, extended: bool) -> u32 {
     let mut value = match kind {
@@ -43,7 +48,7 @@ fn wkb_type(kind: GeometryKind, axes: CoordinateAxes, extended: bool) -> u32 {
             value |= EWKB_M_FLAG;
         }
     } else {
-        value += ISO_DIM_OFFSET[(usize::from(axes.has_z()) << 1) | usize::from(axes.has_m())];
+        value = value.wrapping_add(iso_dimension_offset(axes.has_z(), axes.has_m()));
     }
     value
 }

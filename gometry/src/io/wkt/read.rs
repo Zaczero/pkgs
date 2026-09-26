@@ -59,7 +59,7 @@ fn parse_wkt_inner(
             };
             let members = split_wkt_collection_members(body)?
                 .into_iter()
-                .map(|value| parse_wkt_inner(value, depth + 1, child_axes))
+                .map(|value| parse_wkt_inner(value, depth.wrapping_add(1), child_axes))
                 .collect::<Result<Vec<_>>>()?;
             Ok(Shape::geometry_collection(members)?)
         },
@@ -255,14 +255,14 @@ pub(crate) const WKT_MAX_TYPE_TOKEN_LEN: usize = 20;
 /// Strip a trailing compact PostGIS axes suffix (`ZM` / `Z` / `M`).
 fn strip_wkt_compact_axes(token: &[u8]) -> (&[u8], Option<CoordinateAxes>) {
     // Longest axes suffix first so `ZM` is not parsed as bare `M`.
-    if token.ends_with(b"ZM") {
-        return (&token[..token.len() - 2], Some(CoordinateAxes::XYZM));
+    if let Some(base) = token.strip_suffix(b"ZM") {
+        return (base, Some(CoordinateAxes::XYZM));
     }
-    if token.ends_with(b"Z") {
-        return (&token[..token.len() - 1], Some(CoordinateAxes::XYZ));
+    if let Some(base) = token.strip_suffix(b"Z") {
+        return (base, Some(CoordinateAxes::XYZ));
     }
-    if token.ends_with(b"M") {
-        return (&token[..token.len() - 1], Some(CoordinateAxes::XYM));
+    if let Some(base) = token.strip_suffix(b"M") {
+        return (base, Some(CoordinateAxes::XYM));
     }
     (token, None)
 }
@@ -279,9 +279,10 @@ pub(crate) fn classify_wkt_type_token(
         return None;
     }
     let mut upper = [0_u8; WKT_MAX_TYPE_TOKEN_LEN];
-    upper[..token.len()].copy_from_slice(token.as_bytes());
-    upper[..token.len()].make_ascii_uppercase();
-    parse_wkt_type_keyword_upper(&upper[..token.len()])
+    let upper_keyword = upper.get_mut(..token.len())?;
+    upper_keyword.copy_from_slice(token.as_bytes());
+    upper_keyword.make_ascii_uppercase();
+    parse_wkt_type_keyword_upper(upper.get(..token.len())?)
 }
 
 fn parse_wkt_type_keyword_upper(upper: &[u8]) -> Option<(GeometryKind, Option<CoordinateAxes>)> {
@@ -395,12 +396,11 @@ fn paren_body(value: &str) -> Result<&str> {
     }
     let bytes = value.as_bytes();
     let close = find_wkt_closing_parenthesis(bytes, 0, "WKT is missing closing parenthesis")?;
-    if !value
-        .get(close + 1..)
-        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?
-        .trim()
-        .is_empty()
-    {
+    let after_close = value
+        .get(close..)
+        .and_then(|tail| tail.strip_prefix(')'))
+        .ok_or_else(|| IoError::wkt("invalid WKT parentheses"))?;
+    if !after_close.trim().is_empty() {
         return Err(IoError::wkt("trailing text after WKT geometry"));
     }
     value
@@ -416,19 +416,19 @@ fn find_wkt_closing_parenthesis(
 ) -> Result<usize> {
     debug_assert_eq!(bytes.get(open), Some(&b'('));
     let mut depth = 1_usize;
-    let mut index = open + 1;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'(' => depth += 1,
+    let mut cursor = WktByteCursor::at(bytes, open.wrapping_add(1));
+    while let Some(byte) = cursor.peek() {
+        match byte {
+            b'(' => depth = depth.wrapping_add(1),
             b')' => {
-                depth -= 1;
+                depth = depth.wrapping_sub(1);
                 if depth == 0 {
-                    return Ok(index);
+                    return Ok(cursor.position);
                 }
             },
             _ => {},
         }
-        index += 1;
+        cursor.advance();
     }
     Err(IoError::wkt(unclosed_error))
 }
@@ -450,34 +450,34 @@ fn parse_wkt_polygon_body(value: &str, axes: CoordinateAxes) -> Result<Polygon> 
 /// non-keyword garbage between members.
 fn split_wkt_collection_members(value: &str) -> Result<Vec<&str>> {
     let bytes = value.as_bytes();
-    let mut index = 0_usize;
+    let mut cursor = WktByteCursor::new(bytes);
     let mut members = Vec::new();
 
-    skip_wkt_ascii_whitespace(bytes, &mut index);
+    cursor.skip_ascii_whitespace();
     // Empty parenthesized bodies (`GEOMETRYCOLLECTION ()`) are invalid; the
     // empty spelling is the `EMPTY` keyword, not `()`.
-    if index >= bytes.len() {
+    if cursor.is_empty() {
         return Err(IoError::wkt(
             "empty parenthesized WKT member list; use EMPTY for an empty geometry",
         ));
     }
 
     loop {
-        skip_wkt_ascii_whitespace(bytes, &mut index);
-        if index >= bytes.len() {
+        cursor.skip_ascii_whitespace();
+        if cursor.is_empty() {
             return Err(IoError::wkt("trailing comma in geometry collection"));
         }
         // Members are full WKT geometries — must begin with a type keyword.
-        if !bytes[index].is_ascii_alphabetic() {
+        if !cursor.peek().is_some_and(|byte| byte.is_ascii_alphabetic()) {
             return Err(IoError::wkt(
                 "expected geometry type in geometry collection member list",
             ));
         }
-        let start = index;
-        let mut depth = 0_u32;
-        while index < bytes.len() {
-            match bytes[index] {
-                b'(' => depth += 1,
+        let start = cursor.position;
+        let mut depth = 0_usize;
+        while let Some(byte) = cursor.peek() {
+            match byte {
+                b'(' => depth = depth.wrapping_add(1),
                 b')' => {
                     depth = depth
                         .checked_sub(1)
@@ -486,25 +486,25 @@ fn split_wkt_collection_members(value: &str) -> Result<Vec<&str>> {
                 b',' if depth == 0 => break,
                 _ => {},
             }
-            index += 1;
+            cursor.advance();
         }
         if depth != 0 {
             return Err(IoError::wkt("unclosed geometry collection parentheses"));
         }
         let member = value
-            .get(start..index)
+            .get(start..cursor.position)
             .ok_or_else(|| IoError::wkt("invalid geometry collection member"))?
             .trim_end();
         if member.is_empty() {
             return Err(IoError::wkt("empty geometry collection member"));
         }
         members.push(member);
-        if index >= bytes.len() {
+        if cursor.is_empty() {
             return Ok(members);
         }
         // Comma at depth 0 — another member is required.
-        debug_assert_eq!(bytes[index], b',');
-        index += 1;
+        debug_assert_eq!(cursor.peek(), Some(b','));
+        cursor.advance();
     }
 }
 
@@ -578,36 +578,37 @@ enum WktMember<'a> {
 /// [`split_wkt_collection_members`] (full child WKT texts, not groups).
 fn split_wkt_members(value: &str) -> Result<Vec<WktMember<'_>>> {
     let bytes = value.as_bytes();
-    let mut index = 0_usize;
+    let mut cursor = WktByteCursor::new(bytes);
     let mut members = Vec::new();
 
-    skip_wkt_ascii_whitespace(bytes, &mut index);
+    cursor.skip_ascii_whitespace();
     // Empty parenthesized bodies (`MULTILINESTRING ()`) are invalid; the
     // empty spelling is the `EMPTY` keyword, not `()`.
-    if index >= bytes.len() {
+    if cursor.is_empty() {
         return Err(IoError::wkt(
             "empty parenthesized WKT member list; use EMPTY for an empty geometry",
         ));
     }
 
     loop {
-        skip_wkt_ascii_whitespace(bytes, &mut index);
-        if index >= bytes.len() {
+        cursor.skip_ascii_whitespace();
+        if cursor.is_empty() {
             return Err(IoError::wkt("trailing comma in WKT member list"));
         }
 
-        if is_wkt_empty_keyword(bytes, index) {
-            index += 5;
+        if is_wkt_empty_keyword(bytes, cursor.position) {
+            cursor.advance_by(5);
             members.push(WktMember::Empty);
-        } else if bytes[index] == b'(' {
-            let open = index;
+        } else if cursor.peek() == Some(b'(') {
+            let open = cursor.position;
             let close =
                 find_wkt_closing_parenthesis(bytes, open, "unclosed WKT member parentheses")?;
             let group = value
-                .get(open + 1..close)
+                .get(open..close)
+                .and_then(|group| group.strip_prefix('('))
                 .ok_or_else(|| IoError::wkt("invalid WKT member parentheses"))?
                 .trim();
-            index = close + 1;
+            cursor.seek_after(close);
             members.push(WktMember::Group(group));
         } else {
             return Err(IoError::wkt(
@@ -615,28 +616,25 @@ fn split_wkt_members(value: &str) -> Result<Vec<WktMember<'_>>> {
             ));
         }
 
-        skip_wkt_ascii_whitespace(bytes, &mut index);
-        if index >= bytes.len() {
+        cursor.skip_ascii_whitespace();
+        if cursor.is_empty() {
             return Ok(members);
         }
-        if bytes[index] == b',' {
-            index += 1;
+        if cursor.peek() == Some(b',') {
+            cursor.advance();
             continue;
         }
         return Err(IoError::wkt("expected comma between WKT members"));
     }
 }
 
-const fn skip_wkt_ascii_whitespace(bytes: &[u8], index: &mut usize) {
-    while *index < bytes.len() && bytes[*index].is_ascii_whitespace() {
-        *index += 1;
-    }
-}
-
 fn is_wkt_empty_keyword(bytes: &[u8], index: usize) -> bool {
-    bytes.len() >= index + 5
-        && bytes[index..index + 5].eq_ignore_ascii_case(b"EMPTY")
-        && (bytes.len() == index + 5 || !bytes[index + 5].is_ascii_alphanumeric())
+    let Some(tail) = bytes.get(index..) else {
+        return false;
+    };
+    tail.get(..5)
+        .is_some_and(|keyword| keyword.eq_ignore_ascii_case(b"EMPTY"))
+        && !tail.get(5).is_some_and(|byte| byte.is_ascii_alphanumeric())
 }
 
 fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
@@ -650,10 +648,11 @@ fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
 
 fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<CoordSeq> {
     let bytes = value.as_bytes();
-    let mut capacity = 1;
-    for &byte in bytes {
-        capacity += usize::from(byte == b',');
-    }
+    let capacity = bytes
+        .iter()
+        .filter(|byte| **byte == b',')
+        .count()
+        .wrapping_add(1);
     match parse_wkt_ascii_points_impl::<Z, M>(bytes, capacity) {
         Ok(sequence) => Ok(sequence),
         Err(error) if bytes.is_ascii() => Err(error),
@@ -678,25 +677,25 @@ fn parse_wkt_ascii_points_impl<const Z: bool, const M: bool>(
 ) -> Result<CoordSeq> {
     let mut builder =
         CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), capacity);
-    let mut index = 0;
+    let mut cursor = WktByteCursor::new(bytes);
     loop {
-        let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", true)?;
-        let y = parse_wkt_ascii_float_at(bytes, &mut index, "y", true)?;
+        let x = parse_wkt_ascii_float_at(&mut cursor, "x", true)?;
+        let y = parse_wkt_ascii_float_at(&mut cursor, "y", true)?;
         let z = Z
-            .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "z", true))
+            .then(|| parse_wkt_ascii_float_at(&mut cursor, "z", true))
             .transpose()?;
         let m = M
-            .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "m", true))
+            .then(|| parse_wkt_ascii_float_at(&mut cursor, "m", true))
             .transpose()?;
-        skip_wkt_ascii_whitespace(bytes, &mut index);
-        if index < bytes.len() && bytes[index] != b',' {
+        cursor.skip_ascii_whitespace();
+        if cursor.peek().is_some_and(|byte| byte != b',') {
             return Err(IoError::wkt("coordinate has too many ordinates"));
         }
         builder.push_xyzm(x, y, z, m);
-        if index == bytes.len() {
+        if cursor.is_empty() {
             break;
         }
-        index += 1;
+        cursor.advance();
     }
     builder.finish()
 }
@@ -759,17 +758,17 @@ fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Poi
 
 fn parse_wkt_ascii_point_impl<const Z: bool, const M: bool>(bytes: &[u8]) -> Result<Point> {
     let mut builder = CoordSeqBuilder::with_capacity(CoordinateAxes::new(HasZ(Z), HasM(M)), 1);
-    let mut index = 0;
-    let x = parse_wkt_ascii_float_at(bytes, &mut index, "x", false)?;
-    let y = parse_wkt_ascii_float_at(bytes, &mut index, "y", false)?;
+    let mut cursor = WktByteCursor::new(bytes);
+    let x = parse_wkt_ascii_float_at(&mut cursor, "x", false)?;
+    let y = parse_wkt_ascii_float_at(&mut cursor, "y", false)?;
     let z = Z
-        .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "z", false))
+        .then(|| parse_wkt_ascii_float_at(&mut cursor, "z", false))
         .transpose()?;
     let m = M
-        .then(|| parse_wkt_ascii_float_at(bytes, &mut index, "m", false))
+        .then(|| parse_wkt_ascii_float_at(&mut cursor, "m", false))
         .transpose()?;
-    skip_wkt_ascii_whitespace(bytes, &mut index);
-    if index != bytes.len() {
+    cursor.skip_ascii_whitespace();
+    if !cursor.is_empty() {
         return Err(IoError::wkt("coordinate has too many ordinates"));
     }
     builder.push_xyzm(x, y, z, m);
@@ -787,24 +786,69 @@ fn finish_wkt_point(builder: CoordSeqBuilder) -> Result<Point> {
 /// lists and disabled for Points so malformed point commas retain the old
 /// numeric-token error.
 fn parse_wkt_ascii_float_at(
-    bytes: &[u8],
-    index: &mut usize,
+    cursor: &mut WktByteCursor<'_>,
     name: &str,
     comma_delimiter: bool,
 ) -> Result<f64> {
-    skip_wkt_ascii_whitespace(bytes, index);
-    let start = *index;
-    while *index < bytes.len()
-        && !bytes[*index].is_ascii_whitespace()
-        && (!comma_delimiter || bytes[*index] != b',')
+    cursor.skip_ascii_whitespace();
+    let start = cursor.position;
+    while let Some(byte) = cursor.peek()
+        && !byte.is_ascii_whitespace()
+        && (!comma_delimiter || byte != b',')
     {
-        *index += 1;
+        cursor.advance();
     }
-    if start == *index {
+    if start == cursor.position {
         return Err(IoError::wkt(format!("coordinate is missing {name}")));
     }
-    lexical_core::parse::<f64>(&bytes[start..*index])
-        .map_err(|_| IoError::wkt(format!("{name} coordinate must be numeric")))
+    lexical_core::parse::<f64>(
+        cursor
+            .bytes
+            .get(start..cursor.position)
+            .expect("WKT byte cursor remains within its input"),
+    )
+    .map_err(|_| IoError::wkt(format!("{name} coordinate must be numeric")))
+}
+
+struct WktByteCursor<'a> {
+    bytes: &'a [u8],
+    position: usize,
+}
+
+impl<'a> WktByteCursor<'a> {
+    const fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, position: 0 }
+    }
+
+    const fn at(bytes: &'a [u8], position: usize) -> Self {
+        Self { bytes, position }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.bytes.get(self.position).copied()
+    }
+
+    const fn is_empty(&self) -> bool {
+        self.position == self.bytes.len()
+    }
+
+    fn advance(&mut self) {
+        self.position = self.position.wrapping_add(1);
+    }
+
+    fn advance_by(&mut self, count: usize) {
+        self.position = self.position.wrapping_add(count);
+    }
+
+    fn seek_after(&mut self, position: usize) {
+        self.position = position.wrapping_add(1);
+    }
+
+    fn skip_ascii_whitespace(&mut self) {
+        while self.peek().is_some_and(|byte| byte.is_ascii_whitespace()) {
+            self.advance();
+        }
+    }
 }
 
 fn parse_wkt_ordinate<'a>(values: &mut impl Iterator<Item = &'a str>, name: &str) -> Result<f64> {

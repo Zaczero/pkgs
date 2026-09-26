@@ -112,7 +112,7 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
         Shape::GeometryCollection(geometries) => geometries
             .iter()
             .try_for_each(validate_geojson_value::<INCLUDE_Z>),
-        _ => Ok(()),
+        Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..) => Ok(()),
     }
 }
 /// The serialization-only view of `shape` normalized for RFC 7946 output.
@@ -337,7 +337,9 @@ pub(crate) use geojson_object::{
 fn json_number(value: &Value, message: &'static str) -> Result<f64> {
     match value {
         Value::Number(number) => json_number_to_f64(number),
-        _ => Err(IoError::geojson(message)),
+        Value::Null | Value::Bool(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
+            Err(IoError::geojson(message))
+        },
     }
 }
 

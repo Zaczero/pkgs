@@ -97,7 +97,7 @@ impl WktNumberFormat {
                     && rendered.contains('.')
                 {
                     let keep = rendered.trim_end_matches('0').trim_end_matches('.').len();
-                    out.truncate(start + keep);
+                    out.truncate(start.wrapping_add(keep));
                 }
             },
         }
@@ -216,7 +216,7 @@ fn write_wkt(
         Shape::MultiLineString(lines) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             write!(out, "MULTILINESTRING{} (", axes.wkt_tag()).expect("writing WKT to String");
-            for (index, member) in lines.members().enumerate() {
+            for (index, member) in lines.members_with_values().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
@@ -225,8 +225,7 @@ fn write_wkt(
                 }
                 match member {
                     crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
-                    crate::geometry::MultiMember::Value(line_index) => {
-                        let line = &lines.as_slice()[line_index];
+                    crate::geometry::MultiMember::Value(line) => {
                         require_wkt_axes(line.axes(), axes)?;
                         out.push('(');
                         write_wkt_ring(out, line, axes, format, limit);
@@ -247,7 +246,7 @@ fn write_wkt(
         Shape::MultiPolygon(polygons) => {
             let axes = wkt_output_axes(shape.axes(), output_dimension);
             write!(out, "MULTIPOLYGON{} (", axes.wkt_tag()).expect("writing WKT to String");
-            for (index, member) in polygons.members().enumerate() {
+            for (index, member) in polygons.members_with_values().enumerate() {
                 if out.len() >= limit {
                     break;
                 }
@@ -256,15 +255,9 @@ fn write_wkt(
                 }
                 match member {
                     crate::geometry::MultiMember::Empty => out.push_str("EMPTY"),
-                    crate::geometry::MultiMember::Value(polygon_index) => {
+                    crate::geometry::MultiMember::Value(polygon) => {
                         out.push('(');
-                        write_wkt_polygon(
-                            out,
-                            &polygons.as_slice()[polygon_index],
-                            axes,
-                            format,
-                            limit,
-                        )?;
+                        write_wkt_polygon(out, polygon, axes, format, limit)?;
                         out.push(')');
                     },
                 }

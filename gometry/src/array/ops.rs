@@ -120,7 +120,13 @@ impl PyGeometryArray {
                 .map_err(rows_err)?;
             let mut start = 0;
             for end in ends {
-                let bytes = PyBytes::new(py, &buffer[start..end]).unbind();
+                let bytes = PyBytes::new(
+                    py,
+                    buffer
+                        .get(start..end)
+                        .expect("WKB chunk ends match the accumulated byte buffer"),
+                )
+                .unbind();
                 start = end;
                 output.push(bytes);
             }

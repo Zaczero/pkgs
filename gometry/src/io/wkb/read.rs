@@ -5,10 +5,10 @@ use crate::geometry::{
     ZOrdinate, column_all_finite,
 };
 use crate::io::wkb::{
-    CoordSeq, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, GeometryErrorKind, GeometryKind,
-    ISO_DIM_OFFSET, IoError, LineSeq, MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring,
-    Shape, WKB_COUNT, WKB_GEOMETRYCOLLECTION, WKB_HEADER_BASE, WKB_LINESTRING, WKB_MULTILINESTRING,
-    WKB_MULTIPOINT, WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbGeometry, parse_content,
+    CoordSeq, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, GeometryErrorKind, GeometryKind, IoError,
+    LineSeq, MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring, Shape, WKB_COUNT,
+    WKB_GEOMETRYCOLLECTION, WKB_HEADER_BASE, WKB_LINESTRING, WKB_MULTILINESTRING, WKB_MULTIPOINT,
+    WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbGeometry, iso_dimension_offset, parse_content,
     wkb_dimension,
 };
 
@@ -40,12 +40,12 @@ fn parse_wkb_type(value: u32) -> Result<(u32, CoordinateAxes)> {
     let mut base = value & !(EWKB_Z_FLAG | EWKB_M_FLAG | EWKB_SRID_FLAG);
     let mut iso_z = false;
     let mut iso_m = false;
-    let [_, m_offset, z_offset, zm_offset] = ISO_DIM_OFFSET;
-    for (index, offset) in [(3, zm_offset), (1, m_offset), (2, z_offset)] {
+    for (candidate_z, candidate_m) in [(true, true), (false, true), (true, false)] {
+        let offset = iso_dimension_offset(candidate_z, candidate_m);
         if base >= offset {
             base = base.wrapping_sub(offset);
-            iso_z = (index >> 1) != 0;
-            iso_m = (index & 1) != 0;
+            iso_z = candidate_z;
+            iso_m = candidate_m;
             break;
         }
     }

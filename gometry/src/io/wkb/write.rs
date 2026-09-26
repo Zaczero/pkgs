@@ -244,26 +244,27 @@ impl WkbBody<'_> {
             // so each child header and body is sized against that one layout.
             Self::MultiLineString(lines) => wkb_counted_body_len(lines.member_count(), || {
                 let prefix = WKB_HEADER_BASE.wrapping_add(WKB_COUNT);
-                Ok(lines.members().fold(0_usize, |total, member| {
+                Ok(lines.members_with_values().fold(0_usize, |total, member| {
                     let body = match member {
                         MultiMember::Empty => 0,
-                        MultiMember::Value(index) => {
-                            wkb_coords_len(lines.as_slice()[index].len(), axes)
-                        },
+                        MultiMember::Value(line) => wkb_coords_len(line.len(), axes),
                     };
                     total.wrapping_add(prefix).wrapping_add(body)
                 }))
             }),
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
             Self::MultiPolygon(polygons) => wkb_counted_body_len(polygons.member_count(), || {
-                polygons.members().try_fold(0_usize, |total, member| {
-                    let child = match member {
-                        MultiMember::Empty => WKB_HEADER_BASE.wrapping_add(WKB_COUNT),
-                        MultiMember::Value(index) => WKB_HEADER_BASE
-                            .wrapping_add(wkb_polygon_body_len(&polygons.as_slice()[index], axes)?),
-                    };
-                    Ok(total.wrapping_add(child))
-                })
+                polygons
+                    .members_with_values()
+                    .try_fold(0_usize, |total, member| {
+                        let child = match member {
+                            MultiMember::Empty => WKB_HEADER_BASE.wrapping_add(WKB_COUNT),
+                            MultiMember::Value(polygon) => {
+                                WKB_HEADER_BASE.wrapping_add(wkb_polygon_body_len(polygon, axes)?)
+                            },
+                        };
+                        Ok(total.wrapping_add(child))
+                    })
             }),
             Self::GeometryCollection(geometries) => wkb_counted_body_len(geometries.len(), || {
                 geometries.iter().try_fold(0_usize, |total, geometry| {
@@ -304,26 +305,22 @@ impl WkbBody<'_> {
             Self::LineString(line) => write_wkb_sequence(out, line, axes),
             Self::MultiLineString(lines) => {
                 write_u32(out, lines.member_count() as u32);
-                for member in lines.members() {
+                for member in lines.members_with_values() {
                     write_wkb_header(out, GeometryKind::LineString, axes, None);
                     match member {
                         MultiMember::Empty => write_u32(out, 0),
-                        MultiMember::Value(index) => {
-                            write_wkb_sequence(out, &lines.as_slice()[index], axes);
-                        },
+                        MultiMember::Value(line) => write_wkb_sequence(out, line, axes),
                     }
                 }
             },
             Self::Polygon(polygon) => write_wkb_polygon(out, polygon, axes),
             Self::MultiPolygon(polygons) => {
                 write_u32(out, polygons.member_count() as u32);
-                for member in polygons.members() {
+                for member in polygons.members_with_values() {
                     write_wkb_header(out, GeometryKind::Polygon, axes, None);
                     match member {
                         MultiMember::Empty => write_u32(out, 0),
-                        MultiMember::Value(index) => {
-                            write_wkb_polygon(out, &polygons.as_slice()[index], axes);
-                        },
+                        MultiMember::Value(polygon) => write_wkb_polygon(out, polygon, axes),
                     }
                 }
             },

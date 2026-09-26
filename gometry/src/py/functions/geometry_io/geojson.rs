@@ -1368,7 +1368,7 @@ impl RawJsonToPy<'_, '_> {
             .get(self.position)
             .is_some_and(u8::is_ascii_whitespace)
         {
-            self.position += 1;
+            self.advance();
         }
     }
 
@@ -1376,11 +1376,15 @@ impl RawJsonToPy<'_, '_> {
         self.text.as_bytes().get(self.position).copied()
     }
 
+    fn advance(&mut self) {
+        self.position = self.position.wrapping_add(1);
+    }
+
     fn consume(&mut self, byte: u8) -> PyResult<()> {
         if self.current() != Some(byte) {
             return Err(self.invalid("unexpected token"));
         }
-        self.position += 1;
+        self.advance();
         Ok(())
     }
 
@@ -1431,11 +1435,11 @@ impl RawJsonToPy<'_, '_> {
                 let key = self.parse_string()?;
                 self.skip_whitespace();
                 self.consume(b':')?;
-                let value = self.parse_value(depth + 1)?;
+                let value = self.parse_value(depth.wrapping_add(1))?;
                 values.insert(key, value);
                 self.skip_whitespace();
                 match self.current() {
-                    Some(b',') => self.position += 1,
+                    Some(b',') => self.advance(),
                     Some(b'}') => break,
                     _ => return Err(self.invalid("object is missing a separator")),
                 }
@@ -1457,10 +1461,10 @@ impl RawJsonToPy<'_, '_> {
         let mut values = Vec::new();
         if self.current() != Some(b']') {
             loop {
-                values.push(self.parse_value(depth + 1)?);
+                values.push(self.parse_value(depth.wrapping_add(1))?);
                 self.skip_whitespace();
                 match self.current() {
-                    Some(b',') => self.position += 1,
+                    Some(b',') => self.advance(),
                     Some(b']') => break,
                     _ => return Err(self.invalid("array is missing a separator")),
                 }
@@ -1486,7 +1490,7 @@ impl RawJsonToPy<'_, '_> {
         let start = self.position;
         self.consume(b'"')?;
         while let Some(byte) = self.current() {
-            self.position += 1;
+            self.advance();
             match byte {
                 b'"' => {
                     let text = self
@@ -1499,7 +1503,7 @@ impl RawJsonToPy<'_, '_> {
                     if self.current().is_none() {
                         return Err(self.invalid("unterminated string escape"));
                     }
-                    self.position += 1;
+                    self.advance();
                 },
                 _ => {},
             }
@@ -1510,14 +1514,14 @@ impl RawJsonToPy<'_, '_> {
     fn parse_number(&mut self) -> PyResult<Py<PyAny>> {
         let start = self.position;
         if self.current() == Some(b'-') {
-            self.position += 1;
+            self.advance();
         }
         match self.current() {
-            Some(b'0') => self.position += 1,
+            Some(b'0') => self.advance(),
             Some(b'1'..=b'9') => {
-                self.position += 1;
+                self.advance();
                 while matches!(self.current(), Some(b'0'..=b'9')) {
-                    self.position += 1;
+                    self.advance();
                 }
             },
             _ => return Err(self.invalid("invalid JSON number")),
@@ -1525,10 +1529,10 @@ impl RawJsonToPy<'_, '_> {
         let mut integer = true;
         if self.current() == Some(b'.') {
             integer = false;
-            self.position += 1;
+            self.advance();
             let fraction_start = self.position;
             while matches!(self.current(), Some(b'0'..=b'9')) {
-                self.position += 1;
+                self.advance();
             }
             if self.position == fraction_start {
                 return Err(self.invalid("invalid JSON fraction"));
@@ -1536,13 +1540,13 @@ impl RawJsonToPy<'_, '_> {
         }
         if matches!(self.current(), Some(b'e' | b'E')) {
             integer = false;
-            self.position += 1;
+            self.advance();
             if matches!(self.current(), Some(b'+' | b'-')) {
-                self.position += 1;
+                self.advance();
             }
             let exponent_start = self.position;
             while matches!(self.current(), Some(b'0'..=b'9')) {
-                self.position += 1;
+                self.advance();
             }
             if self.position == exponent_start {
                 return Err(self.invalid("invalid JSON exponent"));
