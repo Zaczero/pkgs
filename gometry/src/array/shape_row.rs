@@ -4,6 +4,7 @@ use crate::array::{GeometryArrayStorage, row_bounds};
 use crate::error::Result;
 use crate::geometry::{
     Bounds, CoordSeq, CoordWindow, CoordinateAxes, LineSeq, Point, PreparedPlan, Shape,
+    ShapeCountQuery,
 };
 
 #[derive(Clone, Copy)]
@@ -34,16 +35,16 @@ impl<'a> ShapeRow<'a> {
         }
     }
 
-    pub(crate) fn coord_count(self) -> usize {
+    pub(crate) fn coordinates(self, counts: &mut ShapeCountQuery<'a>) -> Result<usize> {
         match self {
-            Self::Handle(handle) => handle.shape().coord_count(),
-            Self::Shape(shape) => shape.coord_count(),
-            Self::Point(_) => 1,
-            Self::Line(_, start, end) => end.wrapping_sub(start),
+            Self::Handle(handle) => counts.coordinates(handle.shape()),
+            Self::Shape(shape) => counts.coordinates(shape),
+            Self::Point(_) => Ok(1),
+            Self::Line(_, start, end) => Ok(end.wrapping_sub(start)),
             Self::Rings(_, offsets, start, end) => {
                 let start = offsets.get(start).expect("admitted ring start");
                 let end = offsets.get(end).expect("admitted ring end");
-                end.wrapping_sub(*start) as usize
+                Ok(end.wrapping_sub(*start) as usize)
             },
         }
     }

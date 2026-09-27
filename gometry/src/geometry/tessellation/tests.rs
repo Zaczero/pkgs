@@ -1604,7 +1604,9 @@ fn earcut_holes_containment_scales_linearly_in_triangle_count() {
     let mut prev_triangles = 0_usize;
     for hole_count in [10_usize, 20, 40, 80] {
         let poly = square_shell_with_grid_holes(hole_count);
-        let vertex_count = poly.coord_count();
+        let vertex_count = crate::geometry::ShapeCountQuery::default()
+            .polygon_coordinates(&poly)
+            .unwrap();
         let source = Shape::Polygon(poly);
         let triangles = source
             .polygon_triangles()

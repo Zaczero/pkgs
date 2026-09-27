@@ -7,7 +7,7 @@ use crate::array::{
     validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
-use crate::geometry::{ExpansionBudget, TopologyDomain};
+use crate::geometry::{ExpansionBudget, ShapeCountQuery, TopologyDomain};
 
 fn verify_planar_segmentize_array(
     result: &PyGeometryArray,
@@ -453,7 +453,10 @@ impl PyGeometryArray {
         Python::attach(|py| {
             self.map_shapes_shared_detached_indexed(py, move |shape, row| {
                 let cleaned = shape.remove_repeated_points(tolerance.get(row))?;
-                Ok((cleaned.coord_count() != shape.coord_count()).then_some(cleaned))
+                let mut counts = ShapeCountQuery::default();
+                let cleaned_count = counts.coordinates(&cleaned)?;
+                let source_count = counts.coordinates(shape)?;
+                Ok((cleaned_count != source_count).then_some(cleaned))
             })
         })
     }

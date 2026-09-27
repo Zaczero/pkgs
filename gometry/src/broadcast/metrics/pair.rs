@@ -6,7 +6,7 @@ use crate::broadcast::metrics::{
 };
 use crate::dispatch::MetricOp;
 use crate::geographic::GeographicFrame;
-use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan};
+use crate::geometry::{FrameDependentCaches, LineSeq, PreparedPlan, ShapeCountQuery};
 use crate::py::support;
 #[cfg(test)]
 use crate::test_support::binary_dispatch_counters;
@@ -678,11 +678,12 @@ pub(crate) fn metric_frechet_with_scratch(
 /// error naming the parameter to raise, rather than an uninterruptible wait.
 /// Undensified operands are input-sized and stay uncharged.
 fn charge_frechet_dp(a: &Shape, b: &Shape) -> crate::error::Result<()> {
+    let mut counts = ShapeCountQuery::default();
     crate::geometry::ExpansionBudget::pairwise(
         "frechet_distance",
         "densify",
-        a.coord_count(),
-        b.coord_count(),
+        counts.coordinates(a)?,
+        counts.coordinates(b)?,
     )
 }
 

@@ -1,7 +1,7 @@
 use crate::geometry::{
-    DistanceParts, Loc, MultiPoint, Point, Segment, Shape, point_distance, point_distance_squared,
-    point_segment_distance, point_segment_distance_squared, points_dwithin, same_point,
-    segment_envelopes_disjoint, segments_intersect,
+    DistanceParts, Loc, MultiPoint, Point, Segment, Shape, ShapeCountQuery, point_distance,
+    point_distance_squared, point_segment_distance, point_segment_distance_squared, points_dwithin,
+    same_point, segment_envelopes_disjoint, segments_intersect,
 };
 pub(crate) fn parts_covers_point(shape: &Shape, parts: &DistanceParts, point: Point) -> bool {
     if shape.has_area_parts() {
@@ -204,7 +204,7 @@ fn puntal_brute_operands<'a>(a: &'a Shape, b: &'a Shape) -> Option<(PuntalProbe<
     ) {
         return None;
     }
-    let segments = other.segment_count();
+    let segments = ShapeCountQuery::default().segments(other).ok()?;
     if segments == 0 || segments > PUNTAL_BRUTE_MAX_SEGMENTS {
         return None;
     }

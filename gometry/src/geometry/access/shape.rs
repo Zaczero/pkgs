@@ -1,13 +1,26 @@
+use std::collections::HashSet;
 use std::convert::Infallible;
 use std::ops::ControlFlow;
 
 use crate::error::Result;
 use crate::geometry::access::{bounds_from_iter, canonicalize_zero, column_minmax, line_length};
 use crate::geometry::{
-    Bounds, CoordSeq, CoordinateAxes, Coordinates, Dimension, GeometryErrorKind, GeometryKind,
-    HasM, HasZ, LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon,
-    Shape, line_length_3d,
+    Bounds, CoordSeq, CoordinateAxes, Dimension, GeometryErrorKind, GeometryKind, HasM, HasZ,
+    LineSeq, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Shape,
+    ShapeCountQuery, admit_shape_vector_capacity, line_length_3d,
 };
+
+fn reserve_unique_points_capacity(
+    capacity: usize,
+    seen: &mut HashSet<Point>,
+    unique: &mut Vec<Point>,
+) {
+    // The coordinate count bounds both containers but can greatly exceed the
+    // number of distinct points. A failed reservation only loses this hint;
+    // normal growth still follows the values actually inserted.
+    let _seen_reservation = seen.try_reserve(capacity);
+    let _unique_reservation = unique.try_reserve(capacity);
+}
 
 /// One atomic part of a shape: a point, a line, or a polygon.
 ///
@@ -366,11 +379,15 @@ impl Shape {
     /// Materialize every vertex into a pre-sized `Vec`, avoiding the
     /// boxed-`dyn` iterator allocation of the historical `points()`. Prefer
     /// it for hot paths (distance worksets, geodesic/Hausdorff distance,
-    /// min-clearance) that need an owned vertex buffer.
-    pub fn points_vec(&self) -> Vec<Point> {
-        let mut points = Vec::with_capacity(self.coord_count());
+    /// min-clearance) that need an owned vertex buffer. Returns
+    /// `SizeOverflow` if the logical point count or vector layout is not
+    /// representable.
+    pub fn points_vec(&self) -> crate::error::Result<Vec<Point>> {
+        let count = ShapeCountQuery::default().coordinates(self)?;
+        let capacity = admit_shape_vector_capacity::<Point>(count)?;
+        let mut points = Vec::with_capacity(capacity);
         self.collect_points_into(&mut points);
-        points
+        Ok(points)
     }
 
     /// Distinct vertices in first-occurrence order.
@@ -387,10 +404,12 @@ impl Shape {
                 CoordSeq::try_from_points(&[*point])?,
             ));
         }
-        let capacity = self.coord_count();
-        let mut seen = std::collections::HashSet::<Point>::new();
-        seen.reserve(capacity);
-        let mut unique = Vec::with_capacity(capacity);
+        let capacity = ShapeCountQuery::default().coordinates(self).ok();
+        let mut seen = HashSet::<Point>::new();
+        let mut unique = Vec::new();
+        if let Some(capacity) = capacity {
+            reserve_unique_points_capacity(capacity, &mut seen, &mut unique);
+        }
         self.for_each_point(|point| {
             if seen.insert(point) {
                 unique.push(point);
@@ -408,7 +427,8 @@ impl Shape {
                 CoordSeq::try_from_points(&unique)?,
             ));
         }
-        let mut members = Vec::with_capacity(unique.len());
+        let capacity = admit_shape_vector_capacity::<Self>(unique.len())?;
+        let mut members = Vec::with_capacity(capacity);
         members.extend(unique.into_iter().map(Self::Point));
         Self::geometry_collection(members)
     }
@@ -492,21 +512,6 @@ impl Shape {
                 _,
             ) => ShapePartsIter::Single(Some(self)),
             Self::Empty(..) => ShapePartsIter::Empty,
-        }
-    }
-
-    /// Total vertex count across every part — `O(parts)`, for pre-sizing
-    /// vertex collectors on hot paths instead of growing a `Vec` from empty.
-    pub fn coord_count(&self) -> usize {
-        match self {
-            Self::Point(_) => 1,
-            Self::MultiPoint(coords) => coords.coord_count(),
-            Self::LineString(coords) => coords.coord_count(),
-            Self::MultiLineString(lines) => lines.iter().map(Coordinates::coord_count).sum(),
-            Self::Polygon(polygon) => polygon.coord_count(),
-            Self::MultiPolygon(polygons) => polygons.iter().map(Polygon::coord_count).sum(),
-            Self::GeometryCollection(geometries) => geometries.iter().map(Self::coord_count).sum(),
-            Self::Empty(..) => 0,
         }
     }
 
@@ -1041,5 +1046,25 @@ mod parts_iter_tests {
                 .len(),
             1
         );
+    }
+}
+
+#[cfg(test)]
+mod unique_points_capacity_tests {
+    use super::*;
+
+    #[test]
+    fn oversized_unique_point_capacity_is_only_a_hint() {
+        let capacity = 1_usize << 57;
+        // The vector layout fits, but the hash table cannot represent this
+        // many points on the supported 64-bit target.
+        assert!(std::alloc::Layout::array::<Point>(capacity).is_ok());
+
+        let mut seen = HashSet::new();
+        let mut unique = Vec::new();
+        reserve_unique_points_capacity(capacity, &mut seen, &mut unique);
+
+        assert!(seen.is_empty());
+        assert!(unique.is_empty());
     }
 }

@@ -1,4 +1,4 @@
-use crate::geometry::GeometryErrorKind;
+use crate::geometry::{GeometryErrorKind, ShapeCountQuery};
 use crate::io::text_structure_count;
 use crate::io::wkt::{
     CoordinateAxes, Coordinates, GeometryKind, IoError, Point, Polygon, Result, Shape,
@@ -127,11 +127,19 @@ fn format_wkt(
     };
     let coordinate_bytes_per_coord = wkt_output_axes(shape.axes(), output_dimension)
         .dimension()
-        .wrapping_mul(bytes_per_ordinate);
-    let coordinate_bytes = shape.coord_count().wrapping_mul(coordinate_bytes_per_coord);
-    let structural_bytes = text_structure_count(shape).wrapping_mul(32);
-    let capacity = coordinate_bytes.wrapping_add(structural_bytes);
-    let mut out = String::with_capacity(capacity);
+        .checked_mul(bytes_per_ordinate);
+    let capacity = ShapeCountQuery::default()
+        .coordinates(shape)
+        .ok()
+        .zip(coordinate_bytes_per_coord)
+        .and_then(|(count, bytes_per_coord)| count.checked_mul(bytes_per_coord))
+        .zip(text_structure_count(shape).checked_mul(32))
+        .and_then(|(coordinate_bytes, structural_bytes)| {
+            coordinate_bytes.checked_add(structural_bytes)
+        })
+        .unwrap_or_default();
+    let mut out = String::new();
+    let _reservation = out.try_reserve(capacity);
     write_wkt(&mut out, shape, output_dimension, format, usize::MAX)?;
     Ok(out)
 }

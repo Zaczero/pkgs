@@ -20,6 +20,7 @@ use crate::array::{
 use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
 use crate::boundary::metadata::FrameError;
+use crate::geometry::ShapeCountQuery;
 use crate::predicates::unary;
 use crate::py::functions::bulk_rows::{StreamedShape, stream_bulk_owned};
 use crate::py::functions::geometry_io;
@@ -207,16 +208,21 @@ fn replace_array_coordinates(
             .replace_packed_coords_detached(py, array.frame.clone(), replacement)?
             .expect("non-Mixed storage has packed columns"));
     }
-    let mut present_cursor = 0;
+    let mut present_cursor = 0_usize;
+    let mut counts = ShapeCountQuery::default();
     let mut shapes = Vec::with_capacity(
         array
             .missing()
             .map_or(array.len(), crate::array::ValidityMask::present_count),
     );
     for row in array.row_operation().present_rows() {
-        let count = row.row().coord_count();
+        let count = row.row().coordinates(&mut counts).map_err(PyErr::from)?;
+        let next_present_cursor = present_cursor
+            .checked_add(count)
+            .ok_or_else(|| crate::error::Error::from(crate::error::ResourceError::SizeOverflow))
+            .map_err(PyErr::from)?;
         let sub = slice_replacement_for_shape(&replacement, present_cursor, count);
-        present_cursor = present_cursor.wrapping_add(count);
+        present_cursor = next_present_cursor;
         shapes.push(
             row.row()
                 .try_with_shape(|shape| replace_shape_coordinates(shape, &sub))?,

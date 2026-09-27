@@ -12,7 +12,8 @@ use crate::geometry::tessellation::{
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
     GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring,
-    Segment, Shape, VoronoiBoundary, axis_extent, carry_each, empty_geometry, line_segments,
+    Segment, Shape, ShapeCountQuery, VoronoiBoundary, XY, admit_shape_vector_capacity, axis_extent,
+    carry_each, empty_geometry, line_segments,
 };
 
 /// The ear-cut emitter owns the admission-before-allocation invariant: every
@@ -130,7 +131,7 @@ impl Shape {
         // XY-unique vertices keeping FULL ordinates (first-seen Z/M): triangle
         // corners are input vertices, so carrying their Z/M here preserves it
         // directly — no post-hoc XY re-lookup (the old `carry_each` step).
-        let source_points = self.points_vec();
+        let source_points = self.points_vec()?;
         let (points, _) = selected_source_sites(source_points)?;
         if points.len() < 3 {
             return Ok(Vec::new());
@@ -364,7 +365,9 @@ impl Shape {
             }
         }
         if self.topological_dimension() >= Dimension::Curve {
-            let mut segments: Vec<Segment> = Vec::with_capacity(self.segment_count());
+            let segment_count = ShapeCountQuery::default().segments(self)?;
+            let segment_capacity = admit_shape_vector_capacity::<Segment>(segment_count)?;
+            let mut segments: Vec<Segment> = Vec::with_capacity(segment_capacity);
             self.for_each_segment_chain(|chain| {
                 segments.extend(line_segments(chain));
             });
@@ -395,7 +398,7 @@ impl Shape {
                 return Ok(points);
             }
         }
-        let atoms = self.points_vec();
+        let atoms = self.points_vec()?;
         Ok(sample_weighted(
             count,
             seed,
@@ -638,7 +641,9 @@ impl Shape {
 
 impl Shape {
     fn voronoi_sites(&self, tolerance: f64) -> Result<Vec<Site>> {
-        let mut points = Vec::with_capacity(self.coord_count());
+        let count = ShapeCountQuery::default().coordinates(self)?;
+        let capacity = admit_shape_vector_capacity::<XY>(count)?;
+        let mut points = Vec::with_capacity(capacity);
         self.for_each_point(|point| points.push(point.to_xy()));
         canonical_voronoi_sites(points, tolerance)
     }

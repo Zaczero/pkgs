@@ -1088,8 +1088,8 @@ fn brute_geodesic_distance_and_nearest_points(
     right: &Shape,
     metric: &impl GeodesicMetric,
 ) -> Option<(f64, (Point, Point))> {
-    let left_points = left.points_vec();
-    let right_points = right.points_vec();
+    let left_points = left.points_vec().expect("representable left points");
+    let right_points = right.points_vec().expect("representable right points");
     if left_points.is_empty() || right_points.is_empty() {
         return None;
     }

@@ -471,6 +471,7 @@ fn smooth_polygon_rings(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::geometry::ShapeCountQuery;
 
     fn line(n: usize) -> Shape {
         let points: Vec<Point> = (0..n)
@@ -528,7 +529,8 @@ mod tests {
         let chaikin = src
             .smooth(2, SmoothMethod::Chaikin, true)
             .expect("ordinary smooth is within budget");
-        assert!(chaikin.segment_count() > src.segment_count());
+        let mut counts = ShapeCountQuery::default();
+        assert!(counts.segments(&chaikin).unwrap() > counts.segments(&src).unwrap());
         // Non-positive iterations pass through bit-identically.
         let identity = src
             .smooth(0, SmoothMethod::Chaikin, true)

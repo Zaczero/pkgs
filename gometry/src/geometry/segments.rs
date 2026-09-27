@@ -16,8 +16,9 @@ use crate::geometry::tessellation::exact::{
     ExactDyadic, compare_ratios, round_ratio, round_sqrt_ratio,
 };
 use crate::geometry::{
-    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, XY, ZOrdinate,
-    axis_pow2_scale, same_point, same_topological_coordinate, scaled_residual,
+    Bounds, Coordinates, MOrdinate, Ordering, Point, PointKey, Segment, Shape, ShapeCountQuery, XY,
+    ZOrdinate, admit_shape_vector_capacity, axis_pow2_scale, same_point,
+    same_topological_coordinate, scaled_residual,
 };
 
 mod exact;
@@ -429,9 +430,14 @@ pub(super) fn nearest_points(left: &Shape, right: &Shape) -> Result<Option<(Poin
     // Vertex-pair lists are hoisted once per side; this lane carries FULL
     // ordinates so witness feet interpolate Z/M like the vertices they
     // sit between (the planar `Segment` is XY-only by design).
-    let mut left_pairs = Vec::with_capacity(left.segment_count());
+    let mut counts = ShapeCountQuery::default();
+    let left_count = counts.segments(left)?;
+    let left_capacity = admit_shape_vector_capacity::<(Point, Point)>(left_count)?;
+    let right_count = counts.segments(right)?;
+    let right_capacity = admit_shape_vector_capacity::<(Point, Point)>(right_count)?;
+    let mut left_pairs = Vec::with_capacity(left_capacity);
     left.for_each_vertex_pair(|start, end| left_pairs.push((start, end)));
-    let mut right_pairs = Vec::with_capacity(right.segment_count());
+    let mut right_pairs = Vec::with_capacity(right_capacity);
     right.for_each_vertex_pair(|start, end| right_pairs.push((start, end)));
 
     let mut missing = false;

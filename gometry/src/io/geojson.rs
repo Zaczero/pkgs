@@ -6,7 +6,7 @@ use serde_json::Value;
 use crate::boundary::metadata;
 use crate::geometry::{
     CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
-    TopologyDomain, ZOrdinate,
+    ShapeCountQuery, TopologyDomain, ZOrdinate,
 };
 use crate::io::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, IoError, LineSeq,
@@ -44,10 +44,17 @@ pub(crate) fn to_geojson_string<const INCLUDE_Z: bool>(
     crate::io::require_serializable_axes(shape)?;
     let prepared = geojson_output_shape(shape, domain)?;
     // Three zmij-formatted ordinates and their delimiters fit within 80 bytes.
-    let coordinate_bytes = prepared.coord_count().wrapping_mul(80);
-    let structural_bytes = text_structure_count(&prepared).wrapping_mul(128);
-    let capacity = coordinate_bytes.wrapping_add(structural_bytes);
-    let mut out = String::with_capacity(capacity);
+    let capacity = ShapeCountQuery::default()
+        .coordinates(&prepared)
+        .ok()
+        .and_then(|count| count.checked_mul(80))
+        .zip(text_structure_count(&prepared).checked_mul(128))
+        .and_then(|(coordinate_bytes, structural_bytes)| {
+            coordinate_bytes.checked_add(structural_bytes)
+        })
+        .unwrap_or_default();
+    let mut out = String::new();
+    let _reservation = out.try_reserve(capacity);
     write_geojson_to_impl::<INCLUDE_Z>(&mut out, &prepared);
     Ok(out)
 }

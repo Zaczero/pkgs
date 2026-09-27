@@ -4,8 +4,8 @@ use crate::geometry::constructive::Result;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT,
     GeometryErrorKind, GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point,
-    PointKey, Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, TopologyDomain, XY,
-    axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
+    PointKey, Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, ShapeCountQuery,
+    TopologyDomain, XY, axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
     interpolate_subdivision_ordinate, line_segments, point_distance,
     point_segment_distance_and_projection, points_dwithin, repair_shape_in_frame, same_point,
     same_topological_coordinate, scaled_residual, validate_shape_in_frame,
@@ -241,8 +241,13 @@ fn outward_padded_bounds(
 }
 
 fn try_unique_xy_points(shape: &Shape) -> crate::error::Result<Vec<XY>> {
-    let mut seen = crate::collections::try_hash_set_with_capacity(shape.coord_count())?;
-    let mut points = Vec::with_capacity(shape.coord_count());
+    let capacity = ShapeCountQuery::default().coordinates(shape).ok();
+    let mut seen = crate::collections::try_hash_set()?;
+    let mut points = Vec::new();
+    if let Some(capacity) = capacity {
+        let _seen_reservation = seen.try_reserve(capacity);
+        let _points_reservation = points.try_reserve(capacity);
+    }
     shape.for_each_point(|point| {
         let point = point.xy();
         if seen.insert(PointKey::new(point)) {

@@ -16,6 +16,7 @@ use crate::crs::{
     transform_at, utm_crs,
 };
 use crate::error::{Error, Result};
+use crate::geometry::{ShapeCountQuery, admit_shape_vector_capacity};
 
 /// Maximum admitted meridional or parallel scale error (0.1%).
 pub(crate) const LOCAL_SCALE_ERROR_LIMIT: f64 = 0.001;
@@ -131,7 +132,17 @@ impl LocalExtent {
         source_crs: &str,
         state: &RuntimeState,
     ) -> Result<Option<Self>> {
-        let mut points = Vec::with_capacity(shapes.iter().map(|shape| shape.coord_count()).sum());
+        let mut counts = ShapeCountQuery::default();
+        let coordinate_count = counts.coordinates_for_shapes(shapes.iter().copied())?;
+        let capacity = if coordinate_count == 0 {
+            0
+        } else {
+            coordinate_count
+                .checked_add(9)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?
+        };
+        let capacity = admit_shape_vector_capacity::<(f64, f64)>(capacity)?;
+        let mut points = Vec::with_capacity(capacity);
         for &shape in shapes {
             let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
                 Cow::Borrowed(shape)

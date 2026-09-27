@@ -11,6 +11,7 @@ use crate::array::{
 use crate::geometry::types::checked_csr_window;
 use crate::geometry::{
     CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind, LineSeq, Polygon,
+    ShapeCountQuery,
 };
 
 #[cfg(test)]
@@ -461,13 +462,20 @@ impl StreamingShapes {
         if let StreamingState::Polygons(builder) = &mut self.state {
             builder.try_push(polygon)?;
         } else {
+            let polygon_capacity = ShapeCountQuery::default()
+                .polygon_coordinates(polygon)
+                .ok()
+                .filter(|&capacity| capacity <= i32::MAX as usize);
             let mut builder = StreamingPolygons::try_new(
                 axes,
-                self.coordinate_capacity.max(polygon.coord_count()),
+                self.coordinate_capacity,
                 self.row_capacity,
                 self.ring_capacity,
                 self.validity.len(),
             )?;
+            if let Some(capacity) = polygon_capacity {
+                builder.coords.reserve_hint(capacity);
+            }
             builder.try_push(polygon)?;
             self.state = StreamingState::Polygons(builder);
         }

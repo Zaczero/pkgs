@@ -4,10 +4,11 @@ use ahash::HashMapExt as _;
 use crate::geometry::predicates::{LineworkChains, indexed_segments_are_simple, validate_line};
 use crate::geometry::{
     Component, CoordSeq, Coordinates, HashMap, Ordering, Point, PointKey, PointSetIndex, Polygon,
-    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, VertexProvenance, XY, point_distance,
-    point_distance_squared, point_in_ccw_triangle, point_segment_distance, ring_winding,
-    same_point, segment_projection, squared_norm_is_trustworthy, try_point_distance_squared,
-    try_point_segment_distance_squared, wrap_index,
+    SEGMENT_INDEX_MIN_PAIRS, Segment, SegmentIndex, Shape, ShapeCountQuery, VertexProvenance, XY,
+    admit_shape_vector_capacity, point_distance, point_distance_squared, point_in_ccw_triangle,
+    point_segment_distance, ring_winding, same_point, segment_projection,
+    squared_norm_is_trustworthy, try_point_distance_squared, try_point_segment_distance_squared,
+    wrap_index,
 };
 
 /// Iteratively remove segments with a degree-1 endpoint (dangles) from the
@@ -143,11 +144,11 @@ pub(crate) struct MinimumClearanceWitness {
 pub(crate) fn minimum_clearance_witness(
     shape: &Shape,
 ) -> crate::error::Result<Option<MinimumClearanceWitness>> {
-    let points = shape.points_vec();
+    let points = shape.points_vec()?;
     if points.len() < 2 {
         return Ok(None);
     }
-    let segments = indexed_segments(shape);
+    let segments = indexed_segments(shape)?;
     let witness = if points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS {
         minimum_clearance_witness_indexed(&points, &segments)?
     } else {
@@ -346,7 +347,7 @@ fn first_point_index_by_xy(points: &[Point]) -> crate::error::Result<HashMap<Poi
     Ok(indices)
 }
 
-fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
+fn indexed_segments(shape: &Shape) -> crate::error::Result<Vec<IndexedSegment>> {
     fn line_segments_with_indices<C: Coordinates + ?Sized>(
         coords: &C,
         cursor: &mut usize,
@@ -368,7 +369,9 @@ fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
         *cursor += coords.coord_count();
     }
 
-    let mut out = Vec::with_capacity(shape.segment_count());
+    let segment_count = ShapeCountQuery::default().segments(shape)?;
+    let capacity = admit_shape_vector_capacity::<IndexedSegment>(segment_count)?;
+    let mut out = Vec::with_capacity(capacity);
     let mut cursor = 0;
     shape.for_each_component(&mut |component| match component {
         // A puntal member owns one coordinate index and no segment.
@@ -382,7 +385,7 @@ fn indexed_segments(shape: &Shape) -> Vec<IndexedSegment> {
             }
         },
     });
-    out
+    Ok(out)
 }
 
 pub(crate) fn line_is_closed<C: Coordinates + ?Sized>(points: &C) -> bool {
@@ -573,8 +576,8 @@ mod clearance_index_tests {
     #[test]
     fn indexed_clearance_matches_brute_force() {
         let shape = indexed_line();
-        let points = shape.points_vec();
-        let segments = indexed_segments(&shape);
+        let points = shape.points_vec().unwrap();
+        let segments = indexed_segments(&shape).unwrap();
         assert!(points.len() * points.len().max(segments.len()) >= SEGMENT_INDEX_MIN_PAIRS);
         let (indexed_plan, indexed_distance) =
             minimum_clearance_witness_indexed(&points, &segments)

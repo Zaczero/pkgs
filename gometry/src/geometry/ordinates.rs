@@ -8,9 +8,9 @@ use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geometry::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
-    PointKey, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay, point_distance,
-    point_on_segment, point_segment_distance_and_projection, same_point, scaled_residual,
-    segment_projection,
+    PointKey, Segment, Shape, ShapeCountQuery, XY, ZOrdinate, axis_pow2_scale, overlay,
+    point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
+    scaled_residual, segment_projection,
 };
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact vertex
@@ -39,13 +39,16 @@ impl OrdinateSource {
     fn new<S: Borrow<Shape>>(inputs: &[S]) -> Result<Self> {
         // Upper bound: every input vertex carries ordinates (the common
         // case — XYZ/XYM inputs are usually uniformly dimensioned).
-        let total_coords = inputs.iter().try_fold(0_usize, |count, shape| {
-            count
-                .checked_add(Borrow::<Shape>::borrow(shape).coord_count())
-                .ok_or(crate::error::ResourceError::SizeOverflow)
-        })?;
-        let vertices = crate::collections::try_hash_map_with_capacity(total_coords)?;
-        let segments = Vec::with_capacity(total_coords);
+        let mut counts = ShapeCountQuery::default();
+        let capacity = counts
+            .coordinates_for_shapes(inputs.iter().map(|shape| Borrow::<Shape>::borrow(shape)))
+            .ok();
+        let mut vertices = crate::collections::try_hash_map()?;
+        let mut segments = Vec::new();
+        if let Some(capacity) = capacity {
+            let _vertices_reservation = vertices.try_reserve(capacity);
+            let _segments_reservation = segments.try_reserve(capacity);
+        }
         Ok(Self {
             vertices,
             segments,

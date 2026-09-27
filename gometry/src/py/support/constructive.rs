@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
-use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    GeodesicMetric as _, Point, PointKey, VertexProvenance, emit_from_original, geometric_xy_cmp,
-    shape_from_selected_hull, smallest_enclosing_circle,
+    GeodesicMetric as _, Point, PointKey, ShapeCountQuery, VertexProvenance, emit_from_original,
+    geometric_xy_cmp, shape_from_selected_hull, smallest_enclosing_circle,
 };
 use crate::py::errors;
 use crate::py::support::{
@@ -338,8 +337,13 @@ pub(crate) fn metric_concave_hull(
             crs,
             state,
             |projected| {
-                let mut seen = HashSet::with_capacity(projected.coord_count());
-                let mut pairs = Vec::with_capacity(projected.coord_count());
+                let capacity = ShapeCountQuery::default().coordinates(projected).ok();
+                let mut seen = crate::collections::try_hash_set()?;
+                let mut pairs = Vec::new();
+                if let Some(capacity) = capacity {
+                    let _seen_reservation = seen.try_reserve(capacity);
+                    let _pairs_reservation = pairs.try_reserve(capacity);
+                }
                 let mut point_index = 0_usize;
                 projected.for_each_point(|point| {
                     // Projected vertices are 1:1 with the source; the original
@@ -347,8 +351,8 @@ pub(crate) fn metric_concave_hull(
                     let original_index = point_index;
                     point_index = point_index.wrapping_add(1);
                     if seen.insert(PointKey::new(point)) {
-                        // The reservation above covers every source vertex;
-                        // insertion cannot exceed that validated count.
+                        // A count-derived reservation, when representable,
+                        // covers every source vertex.
                         pairs.push((point, original_index));
                     }
                 });
@@ -388,12 +392,12 @@ pub(crate) fn geodesic_by_identity(
     if shape.is_empty() {
         return rebuild(Vec::new());
     }
-    let original = shape.points_vec();
+    let original = shape.points_vec()?;
     let source = crs.unwrap_or("EPSG:4326");
     let local = crate::crs::estimate_local_crs_at(&[shape], source, state)?;
     let projected = crate::crs::transform_at(shape, source, &local.definition, state)
         .map_err(|error| local.annotate_error(error))?;
-    if projected.coord_count() != original.len() {
+    if ShapeCountQuery::default().coordinates(&projected)? != original.len() {
         return Err(crate::crs::CrsError::invalid(
             "internal identity projection changed point count",
         ));

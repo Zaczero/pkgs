@@ -149,6 +149,7 @@ fn exact_zero_area_collection_still_uses_its_lineal_centroid() {
 
 fn origin_on(hull: &Shape) -> Point {
     hull.points_vec()
+        .expect("hull point count fits")
         .into_iter()
         .find(|point| point.x == 0.0 && point.y == 0.0)
         .expect("hull contains the origin")
@@ -221,7 +222,7 @@ fn mixed_signed_zero_rectangle() -> Vec<Point> {
     reason = "hull vertices are identified by stored coordinates, including signed-zero spelling"
 )]
 fn assert_open_hull_is_mixed_zero_rectangle(hull: &Shape) {
-    let verts = hull.points_vec();
+    let verts = hull.points_vec().expect("hull point count fits");
     let (_, open) = verts.split_last().expect("closed polygon hull");
     assert_eq!(open.len(), 4);
     assert!(
@@ -249,7 +250,7 @@ fn convex_hull_mixed_signed_zero_rectangle_drops_collinear_midpoint() {
 }
 
 fn open_hull_contains(hull: &Shape, expected: Point) -> bool {
-    let verts = hull.points_vec();
+    let verts = hull.points_vec().expect("hull point count fits");
     let Some((_, open)) = verts.split_last() else {
         return false;
     };
@@ -310,7 +311,7 @@ fn convex_hull_transposed_signed_zero_collinear_drops_midpoint() {
         point(1.0, -0.0),
     ];
     let hull = multipoint(&points).convex_hull().expect("convex hull");
-    let verts = hull.points_vec();
+    let verts = hull.points_vec().expect("hull point count fits");
     let open = &verts[..verts.len() - 1];
     assert_eq!(open.len(), 4);
     assert!(open.iter().all(|point| !(point.x == 1.0 && point.y == 0.0)));

@@ -6,8 +6,8 @@ use crate::geometry::distance::{
     geodesic_directed_hausdorff_distance, geodesic_scratch, min_parts_to_parts, squared_space_safe,
 };
 use crate::geometry::{
-    DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework, Shape, distance,
-    finish_planar_squared_min, nearest_points,
+    DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework, Shape, ShapeCountQuery,
+    distance, finish_planar_squared_min, nearest_points,
 };
 impl Shape {
     /// Build this shape's [`DistanceParts`] (vertices, packed linework,
@@ -29,11 +29,14 @@ impl Shape {
     /// validation happens before any allocation is cached by `ShapeData`.
     pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
         ensure_geodesic_linework(self, metric)?;
-        let mut points = self.points_vec();
+        let mut points = self.points_vec()?;
         let mut point_only = Vec::new();
         collect_point_only_into(self, &mut point_only);
-        let segment_count = self.segment_count();
-        let mut segments = Vec::with_capacity(segment_count);
+        let segment_count = ShapeCountQuery::default().segments(self).ok();
+        let mut segments = Vec::new();
+        if let Some(segment_count) = segment_count {
+            let _reservation = segments.try_reserve(segment_count);
+        }
         let mut caps_accum = GeodesicSweepCapsAccum::new(segment_count);
         self.try_for_each_vertex_pair(|start, end| {
             let segment = metric.make_segment(start, end)?;

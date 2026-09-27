@@ -9,7 +9,8 @@ use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceI
 use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
-    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape, XY,
+    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape,
+    ShapeCountQuery, XY,
 };
 
 mod index;
@@ -50,7 +51,11 @@ impl PreparedSupport {
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         if !shape.has_area_parts() {
-            let mut spans = Vec::with_capacity(shape.segment_count());
+            let capacity = ShapeCountQuery::default().segments(shape).ok();
+            let mut spans = Vec::new();
+            if let Some(capacity) = capacity {
+                let _reservation = spans.try_reserve(capacity);
+            }
             let mut points = Vec::new();
             shape.try_for_each_vertex_pair(|start, end| -> crate::error::Result<()> {
                 push_raw_segment(

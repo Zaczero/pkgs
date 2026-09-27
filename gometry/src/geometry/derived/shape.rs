@@ -28,7 +28,7 @@ impl Shape {
         if self.is_empty() {
             return Ok(Self::empty_polygon());
         }
-        let points = self.points_vec();
+        let points = self.points_vec()?;
         let open: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
             .map(|index| points[index])
@@ -137,7 +137,7 @@ impl Shape {
         // reduce to Point/LineString like every degenerate polygon. Surviving
         // vertices are copies of those source points, including Z/M and
         // signed-zero spelling.
-        let points = self.first_seen_xy_vertices();
+        let points = self.first_seen_xy_vertices()?;
         let hull: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
             .map(|index| points[index])
@@ -152,7 +152,7 @@ impl Shape {
     pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {
         let concavity = NonNegative::try_new("concavity", concavity)?.get();
         let length_threshold = NonNegative::try_new("length_threshold", length_threshold)?.get();
-        let mut points = self.first_seen_xy_vertices();
+        let mut points = self.first_seen_xy_vertices()?;
         if points.is_empty() {
             return Ok(Self::empty_polygon());
         }

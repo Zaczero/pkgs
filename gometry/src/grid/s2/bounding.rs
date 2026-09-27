@@ -32,7 +32,7 @@
 //! Coverer fail-open `Boundary` is intentionally unused here (correct for
 //! outer covers, not multi-face proof). No amplification beyond the bbox.
 use crate::boundary::geographic::normalize_accepted_latitude;
-use crate::geometry::{Bounds, Shape};
+use crate::geometry::{Bounds, Shape, ShapeCountQuery};
 use crate::grid::s2::cell::Cell;
 use crate::grid::s2::cellid::{CellId, Face};
 use crate::grid::s2::projection::{Point3, lonlat_to_point};
@@ -48,23 +48,21 @@ use crate::grid::s2::projection::{Point3, lonlat_to_point};
 /// when both windows pass the cell halfspaces; vertex ownership is never a
 /// containment certificate.
 pub(crate) fn bounding_cell(shape: &Shape) -> Option<CellId> {
-    let mut n_points = 0_usize;
-    let mut only: Option<Point3> = None;
-    shape.for_each_point(|point| {
-        n_points += 1;
-        if n_points == 1 {
-            let (lon, lat) = crate::grid::canonical_lonlat(point.x, point.y);
-            only = Some(point_from_lonlat(lon, lat));
-        }
-    });
-    if n_points == 0 {
+    let mut counts = ShapeCountQuery::default();
+    if counts.coordinates_at_most(shape, 0) {
         return None;
     }
 
     // Single point (no segments): exact L30 leaf. Multi-point aggregates share
     // the region bbox path so the cell contains the envelope, not just vertices.
-    if shape.segment_count() == 0 && n_points == 1 {
-        return Some(CellId::from_point(only.expect("n_points == 1")));
+    if counts.coordinates_at_most(shape, 1) && !counts.has_segments(shape) {
+        let mut only = None;
+        shape.any_point(|point| {
+            let (lon, lat) = crate::grid::canonical_lonlat(point.x, point.y);
+            only = Some(point_from_lonlat(lon, lat));
+            true
+        });
+        return Some(CellId::from_point(only.expect("one admitted coordinate")));
     }
 
     let bounds = shape.bounds()?;

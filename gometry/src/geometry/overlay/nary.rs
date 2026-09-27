@@ -13,8 +13,8 @@ use crate::geometry::topology::TopologyLocation;
 use crate::geometry::{
     AreaSign, Arrangement, Bounds, CoordSeq, CoordinateAxes, Coordinates as _, Dimension,
     GeometryErrorKind, GeometryKind, HashMap, HashSet, Point, PointKey, Segment, Shape,
-    TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates, ordered_edge, point_on_segment,
-    segment_midpoint,
+    ShapeCountQuery, TopologyDomain, TopologyGraph, XY, carry_overlay_ordinates, ordered_edge,
+    point_on_segment, segment_midpoint,
 };
 
 /// Evaluate one or more operands in one canonical overlay arrangement.
@@ -1121,13 +1121,13 @@ fn keep_area_face(membership: &[bool], op: OverlayOp) -> bool {
 fn output_polygon_edges(
     polygons: &[crate::geometry::Polygon],
 ) -> Result<HashSet<(PointKey, PointKey)>> {
-    let capacity = polygons.iter().try_fold(0_usize, |count, polygon| {
-        count
-            .checked_add(polygon.coord_count())
-            .ok_or(ResourceError::SizeOverflow)
-    })?;
-    let mut edges = HashSet::with_hasher(crate::collections::collection_hash_state()?.clone());
-    edges.reserve(capacity);
+    let capacity = ShapeCountQuery::default()
+        .coordinates_for_polygons(polygons)
+        .ok();
+    let mut edges = crate::collections::try_hash_set()?;
+    if let Some(capacity) = capacity {
+        let _reservation = edges.try_reserve(capacity);
+    }
     for polygon in polygons {
         for ring in polygon.rings() {
             for [start, end] in ring.segment_pairs() {

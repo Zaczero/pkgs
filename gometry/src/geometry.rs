@@ -49,9 +49,9 @@ pub(crate) use types::{
     GeometryErrorKind, GeometryKind, HasM, HasZ, IndexedSegment, IntoSharedShape, LineSeq,
     MAX_NESTING, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point,
     PointKey, Polygon, PolygonLevel, PolygonizeFull, PolylabelCell, PreparedPlan, RepairMethod,
-    Ring, RingLevel, Segment, SegmentContact, SegmentPairWitness, Shape, ShapeData, SharedSlice,
-    SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY, ZOrdinate,
-    canonical_f64_bits, coerce_to_common_axes, ordered_edge, segment_midpoint,
+    Ring, RingLevel, Segment, SegmentContact, SegmentPairWitness, Shape, ShapeCountQuery,
+    ShapeData, SharedSlice, SimplifyMethod, SmoothMethod, ValidationIssue, VoronoiBoundary, XY,
+    ZOrdinate, canonical_f64_bits, coerce_to_common_axes, ordered_edge, segment_midpoint,
 };
 mod antimeridian;
 pub(crate) use antimeridian::{
@@ -287,6 +287,16 @@ pub(in crate::geometry) use types::GeodesicPartsKey;
 use crate::collections::{HashMap, HashSet};
 use crate::error::Result;
 
+/// Admit a count before a native vector must represent every output item.
+///
+/// This checks only the vector's representable layout. Allocation exhaustion
+/// remains process-fatal under the crate's allocator policy.
+pub(crate) fn admit_shape_vector_capacity<T>(capacity: usize) -> Result<usize> {
+    std::alloc::Layout::array::<T>(capacity)
+        .map(|_| capacity)
+        .map_err(|_| crate::error::ResourceError::SizeOverflow.into())
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct BulkParams;
 
@@ -476,22 +486,6 @@ impl Shape {
         }
     }
 
-    /// Total segment count — `O(parts)`, for pre-sizing collectors.
-    pub(crate) fn segment_count(&self) -> usize {
-        match self {
-            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => 0,
-            Self::LineString(points) => points.len().saturating_sub(1),
-            Self::MultiLineString(lines) => {
-                lines.iter().map(|line| line.len().saturating_sub(1)).sum()
-            },
-            Self::Polygon(polygon) => polygon.segment_count(),
-            Self::MultiPolygon(polygons) => polygons.iter().map(Polygon::segment_count).sum(),
-            Self::GeometryCollection(geometries) => {
-                geometries.iter().map(Self::segment_count).sum()
-            },
-        }
-    }
-
     fn point_only_points(&self) -> Vec<Point> {
         let mut points = Vec::new();
         self.append_point_only(&mut points);
@@ -568,12 +562,6 @@ impl Polygon {
 
     pub fn points(&self) -> impl Iterator<Item = Point> + '_ {
         self.shell.iter().chain(self.holes.iter().flatten())
-    }
-
-    /// Total vertex count across the shell and every hole — `O(rings)`, for
-    /// pre-sizing collectors.
-    pub fn coord_count(&self) -> usize {
-        self.shell.coord_count() + self.holes.iter().map(Ring::coord_count).sum::<usize>()
     }
 
     /// The shell followed by every hole, each as a borrowed coordinate column.
@@ -822,12 +810,6 @@ impl Polygon {
         self.map_rings_collapsing(|ring| {
             CoordSeq::try_from_points(&snap_ring_to_reference(ring, reference)?).map(Some)
         })
-    }
-
-    /// Total ring-edge count across the shell and every hole — `O(rings)`,
-    /// for pre-sizing collectors.
-    fn segment_count(&self) -> usize {
-        self.rings().map(|ring| ring.len().saturating_sub(1)).sum()
     }
 }
 

@@ -2,7 +2,8 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 
 use crate::geometry::{
-    Bounds, CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, Strictness,
+    Bounds, CoordSeq, LineSeq, Point, PointBatchTester, Polygon, Ring, Shape, ShapeCountQuery,
+    Strictness,
 };
 use crate::grid::affine_source::{
     GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
@@ -35,7 +36,7 @@ fn has(cells: &[CellId], cell: CellId) -> bool {
 }
 
 fn point_leaves(source: &Shape) -> Option<Vec<CellId>> {
-    (source.segment_count() == 0).then(|| {
+    (!ShapeCountQuery::default().has_segments(source)).then(|| {
         let mut leaves = Vec::new();
         source.for_each_point(|point| {
             let xyz = super::super::projection::lonlat_to_point(point.x, point.y);

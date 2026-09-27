@@ -15,8 +15,9 @@ use crate::error::Result;
 use crate::geometry::{
     CoordSeq, Coordinates as _, GeodesicMetric, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentScratch, GeodesicWitnessNeed, GeometryErrorKind, LineSeq, MeasureRange,
-    Ordering, Point, Segment, Shape, interpolate_f64, lerp_point, linework_first_point,
-    normalize_line_distance, point_distance, point_segment_distance_and_projection,
+    Ordering, Point, Segment, Shape, ShapeCountQuery, interpolate_f64, lerp_point,
+    linework_first_point, normalize_line_distance, point_distance,
+    point_segment_distance_and_projection,
 };
 
 /// Per-segment measurement for the linear-referencing engine.
@@ -265,11 +266,16 @@ pub(crate) struct LineIndex {
 }
 
 impl LineIndex {
-    fn storage(upper: usize) -> (Vec<OrdinateSegment>, Vec<f64>) {
-        (
-            Vec::with_capacity(upper),
-            Vec::with_capacity(upper.saturating_add(1)),
-        )
+    fn storage(upper: Option<usize>) -> (Vec<OrdinateSegment>, Vec<f64>) {
+        let mut segments = Vec::new();
+        let mut prefix = Vec::new();
+        if let Some(upper) = upper {
+            let _segments_reservation = segments.try_reserve(upper);
+            if let Some(prefix_capacity) = upper.checked_add(1) {
+                let _prefix_reservation = prefix.try_reserve(prefix_capacity);
+            }
+        }
+        (segments, prefix)
     }
 
     /// Build over `shape`'s linework. `LineStringRequired` for non-lineal
@@ -279,7 +285,7 @@ impl LineIndex {
     pub(crate) fn build(shape: &Shape, metric: &impl SegmentMetric) -> Result<Self> {
         let lines = shape.linework()?;
         let first = linework_first_point(&lines).ok_or(GeometryErrorKind::EmptyLinework)?;
-        let upper = shape.segment_count();
+        let upper = ShapeCountQuery::default().segments(shape).ok();
         let (mut segments, mut prefix) = Self::storage(upper);
         prefix.push(0.0);
         let mut total = 0.0;
@@ -335,7 +341,7 @@ impl LineIndex {
     pub(crate) fn build_coordseq(coords: &CoordSeq, metric: &impl SegmentMetric) -> Result<Self> {
         let first = coords.first().ok_or(GeometryErrorKind::EmptyLinework)?;
         let upper = coords.len().saturating_sub(1);
-        let (mut segments, mut prefix) = Self::storage(upper);
+        let (mut segments, mut prefix) = Self::storage(Some(upper));
         prefix.push(0.0);
         let mut total = 0.0;
         let mut last = first;

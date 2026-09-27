@@ -7,11 +7,9 @@ use std::simd::Select as _;
 use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdFloat as _;
 
-use ahash::HashSetExt as _;
-
 use crate::geometry::{
-    Borrow, Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, HashSet, LineSeq, Point,
-    PointKey, Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, XY, rect_polygon,
+    Borrow, Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, LineSeq, Point, PointKey,
+    Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, ShapeCountQuery, XY, rect_polygon,
 };
 
 pub(crate) const fn empty_geometry() -> Shape {
@@ -98,9 +96,13 @@ pub(crate) fn geographic_bounds_to_shape(
 impl Shape {
     /// XY-unique vertices in first-seen order.
     pub(crate) fn try_unique_xy_points(&self) -> crate::error::Result<Vec<Point>> {
-        let capacity = self.coord_count();
-        let mut seen = crate::collections::try_hash_set_with_capacity(capacity)?;
-        let mut unique = Vec::with_capacity(capacity);
+        let capacity = ShapeCountQuery::default().coordinates(self).ok();
+        let mut seen = crate::collections::try_hash_set()?;
+        let mut unique = Vec::new();
+        if let Some(capacity) = capacity {
+            let _seen_reservation = seen.try_reserve(capacity);
+            let _unique_reservation = unique.try_reserve(capacity);
+        }
         self.for_each_point(|point| {
             if seen.insert(PointKey::new(point)) {
                 unique.push(point.to_xy());
@@ -111,20 +113,24 @@ impl Shape {
 
     /// XY-unique vertices in first-seen order, keeping each survivor's full
     /// coordinates (Z/M and signed-zero spelling).
-    pub(crate) fn first_seen_xy_vertices(&self) -> Vec<Point> {
-        let capacity = self.coord_count();
-        let mut seen = HashSet::with_capacity(capacity);
-        let mut unique = Vec::with_capacity(capacity);
+    pub(crate) fn first_seen_xy_vertices(&self) -> crate::error::Result<Vec<Point>> {
+        let capacity = ShapeCountQuery::default().coordinates(self).ok();
+        let mut seen = crate::collections::try_hash_set()?;
+        let mut unique = Vec::new();
+        if let Some(capacity) = capacity {
+            let _seen_reservation = seen.try_reserve(capacity);
+            let _unique_reservation = unique.try_reserve(capacity);
+        }
         self.for_each_point(|point| {
             if seen.insert(PointKey::new(point)) {
                 unique.push(point);
             }
         });
-        unique
+        Ok(unique)
     }
 }
 
-pub(crate) fn unique_xy_points<I>(points: I) -> Vec<Point>
+pub(crate) fn unique_xy_points<I>(points: I) -> crate::error::Result<Vec<Point>>
 where
     I: IntoIterator,
     I::Item: Borrow<Point>,
@@ -132,15 +138,17 @@ where
     let iter = points.into_iter();
     let (lower, upper) = iter.size_hint();
     let capacity = upper.unwrap_or(lower);
-    let mut seen = HashSet::with_capacity(capacity);
-    let mut unique = Vec::with_capacity(capacity);
+    let mut seen = crate::collections::try_hash_set()?;
+    let mut unique = Vec::new();
+    let _seen_reservation = seen.try_reserve(capacity);
+    let _unique_reservation = unique.try_reserve(capacity);
     for point in iter {
         let point = *point.borrow();
         if seen.insert(PointKey::new(point)) {
             unique.push(point);
         }
     }
-    unique
+    Ok(unique)
 }
 
 pub(crate) fn same_point(left: impl Into<XY>, right: impl Into<XY>) -> bool {
@@ -305,5 +313,36 @@ pub(crate) fn optional_coord_within(left: Option<f64>, right: Option<f64>, toler
         (Some(left), Some(right)) => coord_within(left, right, tolerance),
         (None, None) => true,
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod unique_xy_capacity_tests {
+    use super::*;
+
+    struct HugeSizeHint<I>(I);
+
+    impl<I: Iterator> Iterator for HugeSizeHint<I> {
+        type Item = I::Item;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.0.next()
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (0, Some(usize::MAX))
+        }
+    }
+
+    #[test]
+    fn huge_advisory_size_hint_preserves_first_seen_xy_order() {
+        let first = Point::new_raw_xy(1.0, 2.0);
+        let second = Point::new_raw_xy(3.0, 4.0);
+        let last = Point::new_raw_xy(5.0, 6.0);
+
+        let unique =
+            unique_xy_points(HugeSizeHint([first, second, first, last].into_iter())).unwrap();
+
+        assert_eq!(unique, [first, second, last]);
     }
 }

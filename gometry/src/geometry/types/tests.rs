@@ -697,7 +697,7 @@ mod point_gather_tests {
         );
         let unique = shape.unique_points().unwrap();
         assert_eq!(unique.axes(), CoordinateAxes::XYZM);
-        assert_eq!(unique.points_vec(), [a, b, c, d]);
+        assert_eq!(unique.points_vec().unwrap(), [a, b, c, d]);
     }
 }
 
@@ -777,5 +777,129 @@ mod shape_heap_memo_tests {
             empty_pair_bytes.saturating_add(bytes.saturating_mul(2))
         });
         assert_eq!(heap_bytes(&shared), expected_shared_bytes);
+    }
+}
+
+#[cfg(test)]
+mod shape_count_query_tests {
+    use super::*;
+    use crate::error::{ErrorKind, ResourceError};
+
+    fn double(shape: Shape, depth: usize) -> Shape {
+        (0..depth).fold(shape, |child, _| {
+            Shape::geometry_collection(vec![child.clone(), child])
+                .expect("shared child stays within collection depth")
+        })
+    }
+
+    fn square_ring(offset: f64) -> Ring {
+        Ring::try_from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(offset, 0.0),
+                Point::new_raw_xy(offset + 1.0, 0.0),
+                Point::new_raw_xy(offset + 1.0, 1.0),
+                Point::new_raw_xy(offset, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn shared_collection_counts_multiply_every_logical_member() {
+        let point = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let points = double(point, 10);
+        let mut counts = ShapeCountQuery::default();
+        assert_eq!(counts.coordinates(&points).unwrap(), 1_024);
+        assert_eq!(counts.segments(&points).unwrap(), 0);
+        assert!(counts.coordinates_at_most(&points, 1_024));
+        assert!(!counts.coordinates_at_most(&points, 1_023));
+
+        let line = Shape::LineString(
+            LineSeq::segment(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 0.0)).unwrap(),
+        );
+        let lines = double(line, 10);
+        assert_eq!(counts.coordinates(&lines).unwrap(), 2_048);
+        assert_eq!(counts.segments(&lines).unwrap(), 1_024);
+        assert!(counts.has_segments(&lines));
+    }
+
+    #[test]
+    fn shared_multipart_and_polygon_owners_keep_multiplicity() {
+        let line =
+            LineSeq::segment(Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(1.0, 0.0)).unwrap();
+        let multiline = MultiLineString::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(line),
+            MultiMember::Empty,
+        ])
+        .unwrap();
+        let repeated_multiline = Shape::geometry_collection(vec![
+            Shape::MultiLineString(multiline.clone()),
+            Shape::MultiLineString(multiline),
+        ])
+        .unwrap();
+
+        let polygon = Polygon::new(square_ring(0.0), vec![square_ring(2.0)]);
+        let repeated_polygon = Shape::geometry_collection(vec![
+            Shape::Polygon(polygon.clone()),
+            Shape::Polygon(polygon.clone()),
+        ])
+        .unwrap();
+        let multi_polygon = MultiPolygon::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(polygon),
+            MultiMember::Empty,
+        ])
+        .unwrap();
+        let repeated_multi_polygon = Shape::geometry_collection(vec![
+            Shape::MultiPolygon(multi_polygon.clone()),
+            Shape::MultiPolygon(multi_polygon),
+        ])
+        .unwrap();
+
+        let mut counts = ShapeCountQuery::default();
+        assert_eq!(counts.coordinates(&repeated_multiline).unwrap(), 4);
+        assert_eq!(counts.segments(&repeated_multiline).unwrap(), 2);
+        assert_eq!(counts.coordinates(&repeated_polygon).unwrap(), 16);
+        assert_eq!(counts.segments(&repeated_polygon).unwrap(), 12);
+        assert_eq!(counts.coordinates(&repeated_multi_polygon).unwrap(), 16);
+        assert_eq!(counts.segments(&repeated_multi_polygon).unwrap(), 12);
+    }
+
+    #[test]
+    fn coordinate_overflow_does_not_overflow_the_independent_segment_count() {
+        let points = double(Shape::Point(Point::new_raw_xy(0.0, 0.0)), MAX_NESTING);
+        let mut counts = ShapeCountQuery::default();
+        assert!(matches!(
+            counts.coordinates(&points).unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+        assert_eq!(counts.segments(&points).unwrap(), 0);
+        assert!(!counts.coordinates_at_most(&points, usize::MAX));
+        assert!(!counts.has_segments(&points));
+    }
+
+    #[test]
+    fn full_point_materialization_admits_layout_before_reserving() {
+        let points = double(Shape::Point(Point::new_raw_xy(0.0, 0.0)), 62);
+        let (count, query_allocations) =
+            allocation_count(|| ShapeCountQuery::default().coordinates(&points).unwrap());
+        assert_eq!(count, 1_usize << 62);
+        let (result, materializer_allocations) = allocation_count(|| points.points_vec());
+        assert!(matches!(
+            result.unwrap_err().kind(),
+            ErrorKind::Resource(ResourceError::SizeOverflow)
+        ));
+        assert_eq!(materializer_allocations, query_allocations);
+    }
+
+    #[test]
+    fn ordinary_scalar_count_query_allocates_nothing() {
+        let point = Shape::Point(Point::new_raw_xy(1.0, 2.0));
+        let (count, allocations) =
+            allocation_count(|| ShapeCountQuery::default().coordinates(&point).unwrap());
+        assert_eq!(count, 1);
+        assert_eq!(allocations, 0);
     }
 }

@@ -313,8 +313,8 @@ fn geodesic_hausdorff_is_segment_aware() -> Result<()> {
     let source = line(vec![p(0.0, 0.0), p(0.5, 0.0)]);
     let target = line(vec![p(0.0, 0.05), p(0.25, 0.4), p(0.5, 0.05)]);
     with_ellipsoid_metric("EPSG:4326", &[&source, &target], |metric| {
-        let source_points = source.points_vec();
-        let target_points = target.points_vec();
+        let source_points = source.points_vec()?;
+        let target_points = target.points_vec()?;
         let source_parts = source.geodesic_parts(metric)?;
         let target_parts = target.geodesic_parts(metric)?;
         let mut scratch = geodesic_scratch();
@@ -780,7 +780,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 expect_bvh,
                 "{name} bvh presence"
             );
-            let vertices = probes.points_vec();
+            let vertices = probes.points_vec()?;
             let mut rows = Vec::new();
             let mut segment_scratch = GeodesicSegmentScratch::default();
             let expected_distance = geodesic_capped_sweep_with_parts(

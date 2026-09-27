@@ -1046,6 +1046,18 @@ impl CoordSeqBuilder {
         }
     }
 
+    /// Best-effort reservation for an optional coordinate-count hint.
+    pub(crate) fn reserve_hint(&mut self, additional: usize) {
+        let _xs_reservation = self.xs.try_reserve(additional);
+        let _ys_reservation = self.ys.try_reserve(additional);
+        if let Some(column) = self.zs.as_mut() {
+            let _zs_reservation = column.try_reserve(additional);
+        }
+        if let Some(column) = self.ms.as_mut() {
+            let _ms_reservation = column.try_reserve(additional);
+        }
+    }
+
     fn reserve(&mut self, additional: usize) {
         self.xs.reserve(additional);
         self.ys.reserve(additional);

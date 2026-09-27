@@ -60,6 +60,24 @@ pub(crate) fn collection_hash_state() -> crate::error::Result<&'static ahash::Ra
 }
 
 /// Construct a crate-owned hash map with the fallible process hash state and
+/// no capacity reservation.
+pub(crate) fn try_hash_map<K, V>() -> crate::error::Result<HashMap<K, V>>
+where
+    K: Eq + Hash,
+{
+    Ok(HashMap::with_hasher(collection_hash_state()?.clone()))
+}
+
+/// Construct a crate-owned hash set with the fallible process hash state and
+/// no capacity reservation.
+pub(crate) fn try_hash_set<T>() -> crate::error::Result<HashSet<T>>
+where
+    T: Eq + Hash,
+{
+    Ok(HashSet::with_hasher(collection_hash_state()?.clone()))
+}
+
+/// Construct a crate-owned hash map with the fallible process hash state and
 /// reserve its validated element count before the caller inserts anything.
 pub(crate) fn try_hash_map_with_capacity<K, V>(
     capacity: usize,
@@ -236,6 +254,15 @@ mod row_id_sort_tests {
             assert_eq!(map.capacity(), 0);
         });
         assert_eq!(allocations, 0);
+    }
+
+    #[test]
+    fn hash_table_try_reserve_reports_unrepresentable_layouts() {
+        let mut map = super::try_hash_map::<u64, u64>().unwrap();
+        assert!(map.try_reserve(usize::MAX).is_err());
+
+        let mut set = super::try_hash_set::<u64>().unwrap();
+        assert!(set.try_reserve(usize::MAX).is_err());
     }
 
     #[test]
