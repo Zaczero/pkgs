@@ -457,11 +457,12 @@ crate::heapless!(GeodesicLeaf);
 
 impl HeapSize for GeodesicFacetBvh {
     fn heap_bytes(&self) -> usize {
-        self.anchors.heap_bytes()
-            + self.reaches.heap_bytes()
-            + self.codes.heap_bytes()
-            + self.leaves.heap_bytes()
-            + self.segment_ids.heap_bytes()
+        self.anchors
+            .heap_bytes()
+            .saturating_add(self.reaches.heap_bytes())
+            .saturating_add(self.codes.heap_bytes())
+            .saturating_add(self.leaves.heap_bytes())
+            .saturating_add(self.segment_ids.heap_bytes())
     }
 }
 

@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
-use crate::HeapSize as _;
 use crate::array::{
     ArrayRow, Bound, CoordSeq, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
     PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result, RowSelectionRef, Shape,
-    column_window, curves, note_array_row, parse_curve_bounds, physical_row, rows_err,
+    column_window, csr_value_window, curves, note_array_row, parse_curve_bounds, physical_row,
+    rows_err,
 };
 use crate::boundary::input;
+use crate::geometry::types::ShapeHeapMemo;
 use crate::py::vectors::Groups;
 
 fn selected_row_map_heap_bytes(
@@ -22,7 +23,7 @@ fn selected_row_map_heap_bytes(
     }) {
         0
     } else {
-        rows.len() * std::mem::size_of::<usize>()
+        rows.len().saturating_mul(std::mem::size_of::<usize>())
     }
 }
 
@@ -72,7 +73,7 @@ impl PyGeometryArray {
                         if rings.is_empty() {
                             0
                         } else {
-                            ring_offsets[rings.end] as usize - ring_offsets[rings.start] as usize
+                            csr_value_window(ring_offsets, rings).len()
                         }
                     })
                     .sum();
@@ -84,91 +85,93 @@ impl PyGeometryArray {
     /// Logical heap footprint for a contiguous logical row range without
     /// materializing its row-selection metadata.
     pub(crate) fn logical_heap_bytes_range(&self, rows: std::ops::Range<usize>) -> usize {
-        let coordinate_bytes = self.logical_coordinate_bytes_range(rows.clone());
-        let owner =
-            crate::heap_size::ARC_CONTROL_BYTES + std::mem::size_of::<GeometryArrayStorage>();
-        owner
-            + match self.storage() {
-                GeometryArrayStorage::Mixed(shapes) => {
-                    // Keep the range's visible coordinate payload separate
-                    // from nested mixed-shape owners.
-                    let selected_shapes = &shapes[rows.clone()];
-                    coordinate_bytes
-                        + rows.len() * std::mem::size_of::<Shape>()
-                        + selected_shapes
-                            .iter()
-                            .zip(rows)
-                            .filter(|(_, logical)| !self.is_row_missing(*logical))
-                            .map(|(shape, _)| {
-                                shape.heap_bytes().saturating_sub(shape.coordinate_bytes())
-                            })
-                            .sum::<usize>()
-                },
-                GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-                    let count = if self.is_compact_nullable() {
-                        self.missing().map_or_else(
-                            || rows.len(),
-                            |missing| {
-                                rows.clone()
-                                    .filter(|&logical| missing.is_valid(logical))
-                                    .count()
-                            },
-                        )
-                    } else {
-                        rows.len()
-                    };
-                    crate::heap_size::ARC_CONTROL_BYTES
-                        + std::mem::size_of::<CoordSeq>()
-                        + coords.logical_heap_bytes_for_count(count)
-                        + selected_row_map_heap_bytes(row_map.as_deref(), rows)
-                },
-                GeometryArrayStorage::Packed(PackedStorage::Lines {
-                    coords,
-                    offsets,
-                    row_map,
-                }) => {
-                    let map = row_map.as_deref();
-                    let vertices: usize = rows
-                        .clone()
-                        .map(|logical| map.csr_window(offsets, logical).len())
-                        .sum();
-                    crate::heap_size::ARC_CONTROL_BYTES
-                        + std::mem::size_of::<CoordSeq>()
-                        + coords.logical_heap_bytes_for_count(vertices)
-                        + offsets.logical_heap_bytes_for_count(rows.len() + 1)
-                        + selected_row_map_heap_bytes(row_map.as_deref(), rows)
-                },
-                GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                    coords,
-                    ring_offsets,
-                    polygon_offsets,
-                    row_map,
-                }) => {
-                    let map = row_map.as_deref();
-                    let rings: usize = rows
-                        .clone()
-                        .map(|logical| map.csr_window(polygon_offsets, logical).len())
-                        .sum();
-                    let vertices: usize = rows
-                        .clone()
-                        .map(|logical| {
-                            let rings = map.csr_window(polygon_offsets, logical);
-                            if rings.is_empty() {
-                                0
-                            } else {
-                                ring_offsets[rings.end] as usize
-                                    - ring_offsets[rings.start] as usize
-                            }
-                        })
-                        .sum();
-                    crate::heap_size::ARC_CONTROL_BYTES
-                        + std::mem::size_of::<CoordSeq>()
-                        + coords.logical_heap_bytes_for_count(vertices)
-                        + ring_offsets.logical_heap_bytes_for_count(rings + 1)
-                        + polygon_offsets.logical_heap_bytes_for_count(rows.len() + 1)
-                        + selected_row_map_heap_bytes(map, rows)
-                },
-            }
+        let owner = crate::heap_size::ARC_CONTROL_BYTES
+            .saturating_add(std::mem::size_of::<GeometryArrayStorage>());
+        owner.saturating_add(match self.storage() {
+            GeometryArrayStorage::Mixed(shapes) => {
+                let mut memo = ShapeHeapMemo::default();
+                let selected_shapes = shapes
+                    .get(rows.clone())
+                    .expect("logical row range is bounded by mixed storage");
+                selected_shapes
+                    .iter()
+                    .zip(rows.clone())
+                    .filter(|(_, logical)| !self.is_row_missing(*logical))
+                    .fold(
+                        rows.len().saturating_mul(std::mem::size_of::<Shape>()),
+                        |bytes, (shape, _)| bytes.saturating_add(memo.heap_bytes(shape)),
+                    )
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
+                let count = if self.is_compact_nullable() {
+                    self.missing().map_or_else(
+                        || rows.len(),
+                        |missing| {
+                            rows.clone()
+                                .filter(|&logical| missing.is_valid(logical))
+                                .count()
+                        },
+                    )
+                } else {
+                    rows.len()
+                };
+                crate::heap_size::ARC_CONTROL_BYTES
+                    .saturating_add(std::mem::size_of::<CoordSeq>())
+                    .saturating_add(coords.logical_heap_bytes_for_count_saturating(count))
+                    .saturating_add(selected_row_map_heap_bytes(row_map.as_deref(), rows))
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Lines {
+                coords,
+                offsets,
+                row_map,
+            }) => {
+                let map = row_map.as_deref();
+                let vertices: usize = rows
+                    .clone()
+                    .map(|logical| map.csr_window(offsets, logical).len())
+                    .fold(0, usize::saturating_add);
+                crate::heap_size::ARC_CONTROL_BYTES
+                    .saturating_add(std::mem::size_of::<CoordSeq>())
+                    .saturating_add(coords.logical_heap_bytes_for_count_saturating(vertices))
+                    .saturating_add(
+                        offsets.logical_heap_bytes_for_count(rows.len().saturating_add(1)),
+                    )
+                    .saturating_add(selected_row_map_heap_bytes(row_map.as_deref(), rows))
+            },
+            GeometryArrayStorage::Packed(PackedStorage::Polygons {
+                coords,
+                ring_offsets,
+                polygon_offsets,
+                row_map,
+            }) => {
+                let map = row_map.as_deref();
+                let rings: usize = rows
+                    .clone()
+                    .map(|logical| map.csr_window(polygon_offsets, logical).len())
+                    .fold(0, usize::saturating_add);
+                let vertices: usize = rows
+                    .clone()
+                    .map(|logical| {
+                        let rings = map.csr_window(polygon_offsets, logical);
+                        if rings.is_empty() {
+                            0
+                        } else {
+                            csr_value_window(ring_offsets, rings).len()
+                        }
+                    })
+                    .fold(0, usize::saturating_add);
+                crate::heap_size::ARC_CONTROL_BYTES
+                    .saturating_add(std::mem::size_of::<CoordSeq>())
+                    .saturating_add(coords.logical_heap_bytes_for_count_saturating(vertices))
+                    .saturating_add(
+                        ring_offsets.logical_heap_bytes_for_count(rings.saturating_add(1)),
+                    )
+                    .saturating_add(
+                        polygon_offsets.logical_heap_bytes_for_count(rows.len().saturating_add(1)),
+                    )
+                    .saturating_add(selected_row_map_heap_bytes(map, rows))
+            },
+        })
     }
 
     /// Gather logical packed-line rows into fresh CSR columns in logical order,
@@ -240,14 +243,15 @@ impl PyGeometryArray {
             )?;
             // Too short or nothing removable: the row passes through whole.
             if kept.is_none_or(|count| count == end - start) {
-                builder.push_window(coords, window)?;
+                builder.push_window_admitted(coords, window)?;
                 continue;
             }
-            for (slot, &kept) in keep.iter().enumerate() {
-                if kept {
-                    builder.push_vertex(coords, start + slot);
-                }
-            }
+            builder.push_kept_vertices_admitted(
+                coords,
+                window,
+                &keep,
+                kept.expect("a changed keep mask reports its survivor count"),
+            );
             builder.close_row()?;
         }
         let cap = builder.vertex_len();

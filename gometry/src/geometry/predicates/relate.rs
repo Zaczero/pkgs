@@ -211,9 +211,18 @@ impl LineworkChains {
 
 impl HeapSize for LineworkChains {
     fn heap_bytes(&self) -> usize {
-        self.segments.heap_bytes()
-            + self.line_of.heap_bytes()
-            + self.spans.capacity() * std::mem::size_of::<LineSpan>()
-            + self.runs.capacity() * std::mem::size_of::<MonotoneRun>()
+        self.segments
+            .heap_bytes()
+            .saturating_add(self.line_of.heap_bytes())
+            .saturating_add(
+                self.spans
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<LineSpan>()),
+            )
+            .saturating_add(
+                self.runs
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<MonotoneRun>()),
+            )
     }
 }

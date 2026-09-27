@@ -22,14 +22,26 @@ impl AsRef<Self> for Polygon {
 
 impl crate::HeapSize for Polygon {
     fn heap_bytes(&self) -> usize {
-        self.shell.coords().heap_bytes() + self.holes.heap_bytes()
+        self.heap_bytes_saturating()
     }
 }
 
 impl Polygon {
-    pub(crate) fn logical_heap_bytes(&self) -> usize {
-        self.shell.logical_heap_bytes()
-            + self.holes.heap_bytes_with(|ring| ring.logical_heap_bytes())
+    pub(crate) fn heap_bytes_saturating(&self) -> usize {
+        self.shell.coords().heap_bytes_saturating().saturating_add(
+            self.holes
+                .heap_bytes_with(|ring| ring.coords().heap_bytes_saturating()),
+        )
+    }
+
+    pub(crate) fn logical_heap_bytes_saturating(&self) -> usize {
+        self.shell
+            .coords()
+            .logical_heap_bytes_saturating()
+            .saturating_add(
+                self.holes
+                    .heap_bytes_with(|ring| ring.coords().logical_heap_bytes_saturating()),
+            )
     }
 }
 

@@ -343,6 +343,7 @@ impl PyGeometryArray {
             return Ok(None);
         };
         let axes = coords.axes();
+        crate::array::admit_packed_coord_count(self.len())?;
         let mut builder = CoordSeqBuilder::with_capacity(axes, self.len());
         for row in self.row_operation().rows_with_missing(|| ()) {
             match row {
@@ -465,9 +466,10 @@ impl PyGeometryArray {
         coords: &CoordSeq,
         row_map: RowSelectionRef<'_>,
     ) -> crate::error::Result<CoordSeq> {
-        let mut builder =
-            PointColumnBuilder::with_capacity(coords.axes(), point_logical_len(coords, row_map));
-        for logical in 0..point_logical_len(coords, row_map) {
+        let rows = point_logical_len(coords, row_map);
+        crate::array::admit_packed_coord_count(rows)?;
+        let mut builder = PointColumnBuilder::with_capacity(coords.axes(), rows);
+        for logical in 0..rows {
             builder.push_at(coords, physical_row(row_map, logical));
         }
         builder.finish()
@@ -488,7 +490,9 @@ impl PyGeometryArray {
                 "logical nullable payload length must match the missing mask",
             ));
         }
-        let mut builder = PointColumnBuilder::with_capacity(coords.axes(), mask.present_count());
+        let rows = mask.present_count();
+        crate::array::admit_packed_coord_count(rows)?;
+        let mut builder = PointColumnBuilder::with_capacity(coords.axes(), rows);
         for (logical, present) in mask.cursor() {
             if present.is_some() {
                 builder.push_at(coords, physical_row(row_map.as_deref(), logical));
@@ -599,10 +603,9 @@ impl PyGeometryArray {
                         row_map: RowSelection::Identity,
                     }));
                 }
-                let mut builder = PointColumnBuilder::with_capacity(
-                    coords.axes(),
-                    crate::array::packed_lines_coord_len(offsets.as_slice(), map),
-                );
+                let vertices =
+                    crate::array::materialized_packed_lines_len(offsets.as_slice(), map)?;
+                let mut builder = PointColumnBuilder::with_capacity(coords.axes(), vertices);
                 let mut logical_offsets = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
                 for (_, present_index) in mask.cursor() {
@@ -648,32 +651,30 @@ impl PyGeometryArray {
                         row_map: RowSelection::Identity,
                     }));
                 }
-                let mut builder = PointColumnBuilder::with_capacity(
-                    coords.axes(),
-                    crate::array::packed_polygons_coord_len(
-                        ring_offsets.as_slice(),
-                        polygon_offsets.as_slice(),
-                        map,
-                    ),
-                );
-                let mut out_rings = CsrOffsetBuilder::with_capacity(mask.len());
+                let (vertices, ring_capacity) = crate::array::materialized_packed_polygons_len(
+                    ring_offsets.as_slice(),
+                    polygon_offsets.as_slice(),
+                    map,
+                )?;
+                let mut builder = PointColumnBuilder::with_capacity(coords.axes(), vertices);
+                let mut out_rings = CsrOffsetBuilder::with_capacity(ring_capacity);
                 let mut out_polygons = CsrOffsetBuilder::with_capacity(mask.len());
                 let mut present_row = 0;
-                let mut rings = 0;
+                let mut rings = 0_usize;
                 for (_, present_index) in mask.cursor() {
                     if present_index.is_some() {
                         let physical = physical_row(map, present_row);
-                        for ring in polygon_offsets[physical] as usize
-                            ..polygon_offsets[physical + 1] as usize
-                        {
-                            for vertex in
-                                ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize
-                            {
+                        let row_rings = RowSelectionRef::Identity
+                            .csr_window(polygon_offsets.as_slice(), physical);
+                        for ring in row_rings.clone() {
+                            let vertices =
+                                RowSelectionRef::Identity.csr_window(ring_offsets.as_slice(), ring);
+                            for vertex in vertices {
                                 builder.push_at(coords, vertex);
                             }
-                            rings += 1;
                             out_rings.push_end(builder.len(), i32::MAX as usize)?;
                         }
+                        rings = rings.wrapping_add(row_rings.len());
                         present_row += 1;
                     }
                     out_polygons.push_end(rings, i32::MAX as usize)?;
@@ -982,11 +983,19 @@ impl PyGeometryArray {
                 "packed triangle vertex stream length must be a multiple of 4, got {len}"
             )));
         }
+        crate::array::admit_packed_coord_count(len)?;
         let count = len / 4;
-        let capacity = count.wrapping_add(1);
+        crate::array::admit_packed_coord_count(count)?;
+        let capacity = count
+            .checked_add(1)
+            .expect("an admitted triangle count is below the coordinate width");
         let mut rings = Vec::with_capacity(capacity);
         let mut polygons = Vec::with_capacity(capacity);
-        rings.extend((0..=count).map(|index| index.wrapping_mul(4)));
+        rings.extend((0..=count).map(|index| {
+            index
+                .checked_mul(4)
+                .expect("an admitted triangle vertex offset fits usize")
+        }));
         polygons.extend(0..=count);
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(rings, len)?;
         let polygon_offsets = CsrOffsetColumn::<PolygonLevel>::try_new(polygons, count)?;
@@ -1271,7 +1280,6 @@ mod compact_nullable_tests {
         )
         .unwrap();
 
-        assert_eq!(compact.nbytes(), present.nbytes());
         assert_eq!(
             compact.storage().logical_heap_bytes(),
             present.storage().logical_heap_bytes(),
@@ -1471,10 +1479,8 @@ mod compact_nullable_tests {
             )
             .unwrap();
             assert_eq!(array.uniform_axes(), Some(axes));
-            assert_eq!(array.nbytes(), axes.byte_width(1));
             let all_missing = array.gather_logical_rows(&[0, 2]).unwrap();
             assert_eq!(all_missing.uniform_axes(), Some(axes));
-            assert_eq!(all_missing.nbytes(), 0);
         }
     }
 

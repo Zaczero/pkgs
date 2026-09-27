@@ -39,14 +39,14 @@ impl fmt::Debug for FrameDependentCaches {
 
 impl HeapSize for FrameDependentCaches {
     fn heap_bytes(&self) -> usize {
-        self.entry.heap_bytes()
-            + self
-                .geographic_topology
+        self.entry.heap_bytes().saturating_add(
+            self.geographic_topology
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .graph
                 .as_ref()
-                .map_or(0, HeapSize::heap_bytes)
+                .map_or(0, HeapSize::heap_bytes),
+        )
     }
 }
 
@@ -208,7 +208,9 @@ impl FrameDependentCaches {
 
 impl HeapSize for FrameDependentEntry {
     fn heap_bytes(&self) -> usize {
-        self.line_index.heap_bytes() + self.parts.heap_bytes()
+        self.line_index
+            .heap_bytes()
+            .saturating_add(self.parts.heap_bytes())
     }
 }
 
@@ -522,41 +524,49 @@ impl HeapSize for ShapeData {
 
 impl HeapSize for TopologyPlan {
     fn heap_bytes(&self) -> usize {
-        self.validity.heap_bytes() + self.point_tester.heap_bytes()
+        self.validity
+            .heap_bytes()
+            .saturating_add(self.point_tester.heap_bytes())
     }
 }
 
 impl HeapSize for MetricPlan {
     fn heap_bytes(&self) -> usize {
-        self.distance.heap_bytes()
-            + self.distance_3d.heap_bytes()
-            + self.line_index.heap_bytes()
-            + self.measured_line_index.heap_bytes()
+        self.distance
+            .heap_bytes()
+            .saturating_add(self.distance_3d.heap_bytes())
+            .saturating_add(self.line_index.heap_bytes())
+            .saturating_add(self.measured_line_index.heap_bytes())
     }
 }
 
 impl HeapSize for PreparedPlan {
     fn heap_bytes(&self) -> usize {
-        self.shape.heap_bytes() + self.topology.heap_bytes() + self.metric.heap_bytes()
+        self.shape
+            .heap_bytes()
+            .saturating_add(self.topology.heap_bytes())
+            .saturating_add(self.metric.heap_bytes())
     }
 }
 
 impl HeapSize for DistanceParts {
     fn heap_bytes(&self) -> usize {
-        self.point_only.heap_bytes()
-            + self.linework.heap_bytes()
-            + self.facet_bvh.heap_bytes()
-            + self.point_index.heap_bytes()
+        self.point_only
+            .heap_bytes()
+            .saturating_add(self.linework.heap_bytes())
+            .saturating_add(self.facet_bvh.heap_bytes())
+            .saturating_add(self.point_index.heap_bytes())
     }
 }
 
 impl HeapSize for GeodesicParts {
     fn heap_bytes(&self) -> usize {
-        self.points.heap_bytes()
-            + self.segments.heap_bytes()
-            + self.point_only.heap_bytes()
-            + self.caps.heap_bytes()
-            + self.facet_bvh.heap_bytes()
+        self.points
+            .heap_bytes()
+            .saturating_add(self.segments.heap_bytes())
+            .saturating_add(self.point_only.heap_bytes())
+            .saturating_add(self.caps.heap_bytes())
+            .saturating_add(self.facet_bvh.heap_bytes())
     }
 }
 

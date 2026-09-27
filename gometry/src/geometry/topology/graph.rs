@@ -146,21 +146,28 @@ pub(crate) struct TopologyGraph {
 
 impl HeapSize for TopologyGraph {
     fn heap_bytes(&self) -> usize {
-        self.nodes.heap_bytes()
-            + self.edges.heap_bytes()
-            + self.source_edges.heap_bytes()
-            + self.source_points.heap_bytes()
-            + self.area_support.heap_bytes()
-            + self.line_boundary.heap_bytes()
-            + self.line_source_nodes.capacity()
-                * std::mem::size_of::<(TopologyKey, u32)>()
-            + self.support.heap_bytes()
+        self.nodes
+            .heap_bytes()
+            .saturating_add(self.edges.heap_bytes())
+            .saturating_add(self.source_edges.heap_bytes())
+            .saturating_add(self.source_points.heap_bytes())
+            .saturating_add(self.area_support.heap_bytes())
+            .saturating_add(self.line_boundary.heap_bytes())
+            .saturating_add(
+                self.line_source_nodes
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<(TopologyKey, u32)>()),
+            )
+            .saturating_add(self.support.heap_bytes())
             // `HashMap` has no crate-wide accounting implementation; charge
             // its key/value arrays conservatively without exposing its table
             // representation to the topology layer.
-            + self.node_lookup.capacity()
-                * (std::mem::size_of::<TopologyKey>()
-                    + std::mem::size_of::<TopologyNodeId>())
+            .saturating_add(
+                self.node_lookup.capacity().saturating_mul(
+                    std::mem::size_of::<TopologyKey>()
+                        .saturating_add(std::mem::size_of::<TopologyNodeId>()),
+                ),
+            )
     }
 }
 
@@ -190,13 +197,18 @@ impl HeapSize for SourcePoint {
 
 impl HeapSize for AreaSupport {
     fn heap_bytes(&self) -> usize {
-        self.source.heap_bytes() + self.shell.heap_bytes() + self.holes.heap_bytes()
+        self.source
+            .heap_bytes()
+            .saturating_add(self.shell.heap_bytes())
+            .saturating_add(self.holes.heap_bytes())
     }
 }
 
 impl HeapSize for ChartRing {
     fn heap_bytes(&self) -> usize {
-        self.points.heap_bytes() + self.edges.heap_bytes()
+        self.points
+            .heap_bytes()
+            .saturating_add(self.edges.heap_bytes())
     }
 }
 
@@ -935,20 +947,24 @@ fn rectangle_query_supported(
 
 impl HeapSize for TopologySupport {
     fn heap_bytes(&self) -> usize {
-        self.edge_index.heap_bytes()
-            + self.area.heap_bytes()
-            + self
-                .point_support
-                .capacity()
-                .saturating_mul(std::mem::size_of::<TopologyKey>())
-            + self
-                .noncollapsed_point_support
-                .capacity()
-                .saturating_mul(std::mem::size_of::<TopologyKey>())
-            + self
-                .boundary_support
-                .capacity()
-                .saturating_mul(std::mem::size_of::<TopologyKey>())
+        self.edge_index
+            .heap_bytes()
+            .saturating_add(self.area.heap_bytes())
+            .saturating_add(
+                self.point_support
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TopologyKey>()),
+            )
+            .saturating_add(
+                self.noncollapsed_point_support
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TopologyKey>()),
+            )
+            .saturating_add(
+                self.boundary_support
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<TopologyKey>()),
+            )
     }
 }
 

@@ -1,11 +1,11 @@
 use std::fmt::Write as _;
 
+use crate::boundary::coordinates::measure_shape;
 use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, PyResult, Python};
 use crate::py::functions::polyline;
 use crate::py::{arrow, arrow_c, errors, functions};
 use crate::{
-    ArrowEncoding, HeapSize as _, OverlayOp, PyValueError, exact_geometry, io, overlay_operator,
-    py_bool,
+    ArrowEncoding, OverlayOp, PyValueError, exact_geometry, io, overlay_operator, py_bool,
 };
 
 frozen_pymethods! {
@@ -293,8 +293,12 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     /// -------
     /// int
     #[getter]
-    pub fn nbytes(&self) -> usize {
-        self.shape.shape().coordinate_bytes()
+    pub fn nbytes<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyInt>> {
+        let measure = measure_shape(py, self.shape.shape())?;
+        Ok(measure.bytes_pyint(py))
     }
 
     /// Retained native cost of this geometry for ``sys.getsizeof``.
@@ -320,7 +324,7 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     /// -------
     /// int
     pub fn __sizeof__(&self) -> usize {
-        self.total_size()
+        std::mem::size_of::<Self>().saturating_add(crate::HeapSize::heap_bytes(self))
     }
 }
 }

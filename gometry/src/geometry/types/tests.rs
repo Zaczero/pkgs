@@ -700,3 +700,82 @@ mod point_gather_tests {
         assert_eq!(unique.points_vec(), [a, b, c, d]);
     }
 }
+
+#[cfg(test)]
+mod shape_heap_memo_tests {
+    use super::*;
+
+    fn point(x: f64) -> Shape {
+        Shape::Point(Point::new_raw_xy(x, 0.0))
+    }
+
+    fn empty_point() -> Shape {
+        Shape::Empty(GeometryKind::Point, CoordinateAxes::XY)
+    }
+
+    fn collection(members: Vec<Shape>) -> Shape {
+        Shape::geometry_collection(members).expect("nonempty test collection")
+    }
+
+    fn heap_bytes(shape: &Shape) -> usize {
+        crate::HeapSize::heap_bytes(shape)
+    }
+
+    #[test]
+    fn unique_collection_size_is_allocation_free_and_shared_dag_counts_each_occurrence() {
+        let point_bytes = heap_bytes(&point(0.0));
+        let empty_pair_bytes = heap_bytes(&collection(vec![empty_point(), empty_point()]));
+        assert!(point_bytes > 0);
+        assert!(empty_pair_bytes > 0);
+        let two_point_bytes = empty_pair_bytes.saturating_add(point_bytes.saturating_mul(2));
+
+        let single = collection(vec![point(0.0), point(1.0)]);
+        let (single_bytes, single_allocations) = allocation_count(|| heap_bytes(&single));
+        assert_eq!(single_bytes, two_point_bytes);
+        assert_eq!(single_allocations, 0);
+
+        let unique_children: Vec<_> = (0..5_000)
+            .map(|index| collection(vec![point(f64::from(index)), point(f64::from(index) + 1.0)]))
+            .collect();
+        let unique = collection(unique_children);
+        let Shape::GeometryCollection(unique_members) = &unique else {
+            unreachable!("collection constructor returns a collection");
+        };
+        assert!(!unique_members.members_are_shared());
+        assert!(unique_members.iter().all(|member| {
+            let Shape::GeometryCollection(child) = member else {
+                return false;
+            };
+            !child.members_are_shared()
+        }));
+
+        let empty_root = collection(vec![empty_point(); 5_000]);
+        let expected_unique_bytes =
+            heap_bytes(&empty_root).saturating_add(two_point_bytes.saturating_mul(5_000));
+        let (unique_bytes, unique_allocations) = allocation_count(|| heap_bytes(&unique));
+        assert_eq!(unique_bytes, expected_unique_bytes);
+        assert_eq!(unique_allocations, 0);
+
+        let mut shared = point(0.0);
+        for _ in 0..20 {
+            shared = collection(vec![shared.clone(), shared.clone()]);
+        }
+        let Shape::GeometryCollection(root) = &shared else {
+            unreachable!("depth-20 fixture ends in a collection");
+        };
+        assert!(!root.members_are_shared());
+        let Shape::GeometryCollection(shared_child) = root
+            .as_slice()
+            .first()
+            .expect("collection has two repeated children")
+        else {
+            unreachable!("depth-20 fixture child is a collection");
+        };
+        assert!(shared_child.members_are_shared());
+
+        let expected_shared_bytes = (0..20).fold(point_bytes, |bytes, _| {
+            empty_pair_bytes.saturating_add(bytes.saturating_mul(2))
+        });
+        assert_eq!(heap_bytes(&shared), expected_shared_bytes);
+    }
+}

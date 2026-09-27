@@ -5,7 +5,7 @@
 use pyo3::types::{PyAny, PyDict, PyList};
 
 use crate::py::numpy::float64_matrix;
-use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
+use crate::py::row::{RowIndexOrSlice, parse_row_index_or_slice};
 use crate::{
     Arc, Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError,
     HeapSize, Point, Py, PyAnyMethods, PyDictMethods, PyErr, PyGeometryArray, PyRef, PyResult,
@@ -47,69 +47,36 @@ impl PyCoordinates {
         axes: Option<CoordinateAxes>,
         missing: f64,
     ) -> PyResult<Py<PyAny>> {
-        let layout = axes.unwrap_or_else(|| self.layout.unwrap_or_else(|| self.view.axes()));
+        let layout = match axes.or(self.layout) {
+            Some(layout) => layout,
+            None => self.view.axes_for_python(py)?,
+        };
         let (_, dims) = coordinate_axis_order(layout);
-        let rows = self.view.len();
-        let data = coordinate_matrix_data(&self.view, layout, missing);
+        let (rows, data) = coordinate_matrix_data(py, &self.view, layout, missing)?;
         float64_matrix(py, data, rows, dims)
     }
 }
 
-/// View-owning cursor for lazy coordinate iteration: O(1) construction, O(1)
-/// `next` via storage-shaped `point_at` when the owner supports it. Gathered
-/// ragged / mixed / masked owners materialize once on first access so full
-/// iteration stays linear (never walk-from-start per step).
+/// View-owning cursor for lazy coordinate iteration. The point stream advances
+/// packed rows and nested shapes directly without flattening the view first.
 struct CoordinateCursor {
-    view: coordinates::CoordinateView,
+    points: std::sync::Mutex<coordinates::CoordinatePointCursor>,
     layout: Option<CoordinateAxes>,
-    len: usize,
-    /// `None` when storage-shaped random access is O(1)/O(log); otherwise a
-    /// one-shot materialization shared by every `scalar_row` call.
-    material: Option<std::sync::OnceLock<Vec<crate::geometry::Point>>>,
+    remaining_hint: std::sync::atomic::AtomicUsize,
 }
 
 impl HeapSize for CoordinateCursor {
     fn heap_bytes(&self) -> usize {
-        // The view shares owner Arcs; report the logical payload like the parent.
-        let material_bytes = self
-            .material
-            .as_ref()
-            .and_then(std::sync::OnceLock::get)
-            .map_or(0, |points| {
-                points.len() * std::mem::size_of::<crate::geometry::Point>()
-            });
-        self.view.logical_heap_bytes() + material_bytes
+        self.points
+            .lock()
+            .expect("coordinate iterator cursor mutex is not poisoned")
+            .logical_heap_bytes()
     }
 }
 
-impl RowContainer for CoordinateCursor {
-    const LABEL: &'static str = "Coordinates";
-
-    fn row_count(&self) -> usize {
-        self.len
-    }
-
-    fn scalar_row(&self, py: Python<'_>, row: usize) -> PyResult<Py<PyAny>> {
-        let point = self.material.as_ref().map_or_else(
-            || {
-                self.view
-                    .point_at(row)
-                    .expect("iterator index already range-checked")
-            },
-            |lock| {
-                let points = lock.get_or_init(|| self.view.collect_points());
-                *points
-                    .get(row)
-                    .expect("iterator index already range-checked")
-            },
-        );
-        coordinate_tuple(py, point, self.layout)
-    }
-}
-
-/// Lazy iterator over a ``Coordinates`` view, yielding one coordinate tuple per
-/// step. Holds a cursor into the view (O(1) construct, O(1) next on storage-
-/// shaped owners) rather than materializing all points up front.
+/// Lazy iterator over a ``Coordinates`` view. A traversal stack retains the
+/// current shape or packed row and yields tuples without materializing all
+/// points up front.
 #[pyclass(
     name = "CoordinatesIterator",
     module = "gometry",
@@ -118,39 +85,63 @@ impl RowContainer for CoordinateCursor {
 )]
 pub struct PyCoordinatesIter {
     source: CoordinateCursor,
-    state: RowIterState,
 }
 
 impl PyCoordinatesIter {
     fn new(
+        py: Python<'_>,
         view: coordinates::CoordinateView,
         layout: Option<CoordinateAxes>,
         reverse: bool,
-    ) -> Self {
-        let len = view.len();
-        // Reverse needs random access at the far end; materialize when the
-        // storage path is not O(1) so reverse does not re-walk from the head.
-        let material = if view.has_o1_random_access() {
-            None
-        } else {
-            Some(std::sync::OnceLock::new())
-        };
-        let _ = reverse; // reverse still uses RowIterState over random indices
-        Self {
+    ) -> PyResult<Self> {
+        let hint = view.exact_measure(py)?.length_hint();
+        Ok(Self {
             source: CoordinateCursor {
-                view,
+                points: std::sync::Mutex::new(view.point_cursor(reverse)),
                 layout,
-                len,
-                material,
+                remaining_hint: std::sync::atomic::AtomicUsize::new(hint),
             },
-            state: RowIterState::new(reverse),
-        }
+        })
     }
 }
 
-row_iter_pymethods! {
-    impl PyCoordinatesIter {
-        source: CoordinateCursor,
+#[pymethods]
+impl PyCoordinatesIter {
+    const fn __iter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Advisory remaining count, capped at Python's largest sequence length.
+    fn __length_hint__(&self) -> usize {
+        self.source
+            .remaining_hint
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// ``sys.getsizeof`` support for the iterator and its retained view.
+    fn __sizeof__(&self) -> usize {
+        std::mem::size_of::<Self>().saturating_add(self.source.heap_bytes())
+    }
+
+    fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {
+        let point = self
+            .source
+            .points
+            .lock()
+            .expect("coordinate iterator cursor mutex is not poisoned")
+            .next_point();
+        let Some(point) = point else {
+            return Ok(None);
+        };
+        self.source
+            .remaining_hint
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |hint| Some(hint.saturating_sub(1)),
+            )
+            .expect("coordinate iterator length hint update is infallible");
+        coordinate_tuple(py, point, self.source.layout).map(Some)
     }
 }
 

@@ -4,10 +4,12 @@ use crate::array::packed_columns::{PackedColumnResult, batch_err};
 use crate::array::{
     Arc, CoordSeq, CsrOffsetBuilder, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
     PackedStorage, PointColumnBuilder, PolygonLevel, Result, RingLevel, RowSelection,
-    RowSelectionRef,
+    RowSelectionRef, admit_packed_coord_count, materialized_packed_lines_len,
+    materialized_packed_polygons_len,
 };
 
 pub(crate) fn gather_point_columns(coords: &CoordSeq, map: &[usize]) -> Result<CoordSeq> {
+    admit_packed_coord_count(map.len())?;
     let mut builder = PointColumnBuilder::with_capacity(coords.axes(), map.len());
     for &physical in map {
         builder.push_at(coords, physical);
@@ -21,11 +23,11 @@ pub(crate) fn gather_line_columns(
     selection: RowSelectionRef<'_>,
 ) -> Result<(CoordSeq, CsrOffsetColumn)> {
     let rows = crate::array::line_logical_len(offsets, selection);
-    let vertices = crate::array::packed_lines_coord_len(offsets, selection);
+    let vertices = materialized_packed_lines_len(offsets, selection)?;
     let mut builder = PackedColumnBuilder::like(coords, vertices, rows);
     for row in 0..rows {
         let window = selection.csr_window(offsets, row);
-        builder.push_window(coords, window)?;
+        builder.push_window_admitted(coords, window)?;
     }
     let cap = builder.vertex_len();
     builder.finish(cap)
@@ -42,20 +44,18 @@ pub(crate) fn gather_polygon_columns(
     CsrOffsetColumn<PolygonLevel>,
 )> {
     let selection = RowSelectionRef::Gather(map);
-    let vertices =
-        crate::array::packed_polygons_coord_len(ring_offsets, polygon_offsets, selection);
-    let rings = crate::array::packed_polygons_ring_len(polygon_offsets, selection);
+    let (vertices, rings) =
+        materialized_packed_polygons_len(ring_offsets, polygon_offsets, selection)?;
     let mut builder = PackedColumnBuilder::like(coords, vertices, rings);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(map.len());
     let mut ring_index = 0_usize;
     for &physical in map {
-        let ring_start = polygon_offsets[physical] as usize;
-        let ring_end = polygon_offsets[physical + 1] as usize;
-        for ring in ring_start..ring_end {
-            let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
-            builder.push_window(coords, window)?;
-            ring_index += 1;
+        let rings = RowSelectionRef::Identity.csr_window(polygon_offsets, physical);
+        for ring in rings.clone() {
+            let window = RowSelectionRef::Identity.csr_window(ring_offsets, ring);
+            builder.push_window_admitted(coords, window)?;
         }
+        ring_index = ring_index.wrapping_add(rings.len());
         polygon_builder.push_end(ring_index, ring_index)?;
     }
     let cap = builder.vertex_len();

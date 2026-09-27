@@ -1,3 +1,4 @@
+use crate::boundary::coordinates::measure_shape;
 use crate::dispatch::{MetricOp, kernels};
 use crate::predicates::unary;
 use crate::py::classes::geometry_methods::{
@@ -148,8 +149,12 @@ impl PyGeometry {
     /// -------
     /// int
     #[getter]
-    pub fn num_coordinates(&self) -> usize {
-        self.shape.coord_count()
+    pub fn num_coordinates<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Bound<'py, pyo3::types::PyInt>> {
+        let measure = measure_shape(py, self.shape.shape())?;
+        Ok(measure.count_pyint(py))
     }
     /// Return a geometry with the same topology and replacement coordinates.
     ///
@@ -186,13 +191,10 @@ impl PyGeometry {
         args: &Bound<'_, PyTuple>,
         kwargs: Option<&Bound<'_, PyDict>>,
     ) -> PyResult<Typed> {
-        let replacement = parse_coordinate_replacement(
-            py,
-            args,
-            kwargs,
-            self.shape.axes(),
-            self.shape.coord_count(),
-        )?;
+        let measure = measure_shape(py, self.shape.shape())?;
+        let axes = measure.shape_axes();
+        let len = measure.len_for_python()?;
+        let replacement = parse_coordinate_replacement(py, args, kwargs, axes, len)?;
         let shape = replace_shape_coordinates(self.shape.shape(), &replacement)?;
         Ok(self.typed_shape(shape))
     }

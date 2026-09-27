@@ -38,9 +38,18 @@ impl RowProductChunk {
 
     fn heap_bytes_for_cell(&self, offset: usize) -> usize {
         crate::heap_size::ARC_CONTROL_BYTES
-            + std::mem::size_of::<Self>()
-            + self.cells.capacity() * std::mem::size_of::<RowProductCell>()
-            + self.cells[offset].heap_bytes()
+            .saturating_add(std::mem::size_of::<Self>())
+            .saturating_add(
+                self.cells
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<RowProductCell>()),
+            )
+            .saturating_add(
+                self.cells
+                    .get(offset)
+                    .expect("row product offset belongs to its fixed-size chunk")
+                    .heap_bytes(),
+            )
     }
 
     fn heap_bytes_for_selection(
@@ -49,8 +58,12 @@ impl RowProductChunk {
         chunk_index: usize,
     ) -> usize {
         let mut retained = crate::heap_size::ARC_CONTROL_BYTES
-            + std::mem::size_of::<Self>()
-            + self.cells.capacity() * std::mem::size_of::<RowProductCell>();
+            .saturating_add(std::mem::size_of::<Self>())
+            .saturating_add(
+                self.cells
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<RowProductCell>()),
+            );
         let chunk_start = chunk_index.saturating_mul(ROWS_PER_CHUNK);
         match selection {
             crate::array::RowSelectionRef::Window { start, len } => {
@@ -58,10 +71,13 @@ impl RowProductChunk {
                 let first = start.saturating_sub(chunk_start);
                 let last = end.saturating_sub(chunk_start).min(self.cells.len());
                 if first < last {
-                    retained += self.cells[first..last]
+                    retained = self
+                        .cells
+                        .get(first..last)
+                        .expect("selected chunk range is bounded by its cells")
                         .iter()
                         .map(HeapSize::heap_bytes)
-                        .sum::<usize>();
+                        .fold(retained, usize::saturating_add);
                 }
             },
             crate::array::RowSelectionRef::Gather(rows) => {
@@ -73,7 +89,7 @@ impl RowProductChunk {
                 }
                 for (offset, cell) in self.cells.iter().enumerate() {
                     if selected & (1_u64 << offset) != 0 {
-                        retained += cell.heap_bytes();
+                        retained = retained.saturating_add(cell.heap_bytes());
                     }
                 }
             },
@@ -85,13 +101,23 @@ impl RowProductChunk {
 
 impl HeapSize for RowProductCell {
     fn heap_bytes(&self) -> usize {
-        self.prepared.heap_bytes() + self.frame.heap_bytes()
+        self.prepared
+            .heap_bytes()
+            .saturating_add(self.frame.heap_bytes())
     }
 }
 
 impl HeapSize for RowProductChunk {
     fn heap_bytes(&self) -> usize {
-        self.cells.heap_bytes()
+        self.cells
+            .capacity()
+            .saturating_mul(std::mem::size_of::<RowProductCell>())
+            .saturating_add(
+                self.cells
+                    .iter()
+                    .map(HeapSize::heap_bytes)
+                    .fold(0, usize::saturating_add),
+            )
     }
 }
 
@@ -425,16 +451,15 @@ impl RowProducts {
     /// must not charge products initialized for its array siblings.
     pub(crate) fn heap_bytes_at(&self, logical: usize) -> usize {
         let mut products = self.operation();
+        let retained = crate::heap_size::ARC_CONTROL_BYTES
+            .saturating_add(std::mem::size_of::<RowProductOwner>());
         let Some((chunk, offset)) = products.existing_cell(logical) else {
-            return crate::heap_size::ARC_CONTROL_BYTES
-                + std::mem::size_of::<RowProductOwner>()
-                + self.selection.heap_bytes();
+            return retained.saturating_add(self.selection.heap_bytes());
         };
-        crate::heap_size::ARC_CONTROL_BYTES
-            + std::mem::size_of::<RowProductOwner>()
-            + std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
-            + chunk.heap_bytes_for_cell(offset)
-            + self.selection.heap_bytes()
+        retained
+            .saturating_add(std::mem::size_of::<(usize, Arc<RowProductChunk>)>())
+            .saturating_add(chunk.heap_bytes_for_cell(offset))
+            .saturating_add(self.selection.heap_bytes())
     }
 
     pub(crate) fn install_prepared_plan(
@@ -589,10 +614,15 @@ impl HeapSize for RowProducts {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             match self.selection.as_deref() {
-                crate::array::RowSelectionRef::Identity => {
-                    chunks.capacity() * std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
-                        + chunks.values().map(HeapSize::heap_bytes).sum::<usize>()
-                },
+                crate::array::RowSelectionRef::Identity => chunks
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<(usize, Arc<RowProductChunk>)>())
+                    .saturating_add(
+                        chunks
+                            .values()
+                            .map(HeapSize::heap_bytes)
+                            .fold(0, usize::saturating_add),
+                    ),
                 selection => chunks
                     .iter()
                     .filter(|&(&chunk_index, chunk)| {
@@ -600,15 +630,15 @@ impl HeapSize for RowProducts {
                     })
                     .map(|(&chunk_index, chunk)| {
                         std::mem::size_of::<(usize, Arc<RowProductChunk>)>()
-                            + chunk.heap_bytes_for_selection(selection, chunk_index)
+                            .saturating_add(chunk.heap_bytes_for_selection(selection, chunk_index))
                     })
-                    .sum::<usize>(),
+                    .fold(0, usize::saturating_add),
             }
         };
         let retained = crate::heap_size::ARC_CONTROL_BYTES
-            + std::mem::size_of::<RowProductOwner>()
-            + chunk_bytes;
-        retained + self.selection.heap_bytes()
+            .saturating_add(std::mem::size_of::<RowProductOwner>())
+            .saturating_add(chunk_bytes);
+        retained.saturating_add(self.selection.heap_bytes())
     }
 }
 

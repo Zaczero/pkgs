@@ -4,10 +4,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use smol_str::SmolStr;
 
 pub(crate) trait HeapSize {
+    /// Estimated retained native heap, saturating at `usize::MAX`.
     fn heap_bytes(&self) -> usize;
 
     fn total_size(&self) -> usize {
-        size_of_val(self) + self.heap_bytes()
+        size_of_val(self).saturating_add(self.heap_bytes())
     }
 }
 
@@ -45,13 +46,15 @@ heapless!(
 
 impl<T: HeapSize, const N: usize> HeapSize for [T; N] {
     fn heap_bytes(&self) -> usize {
-        self.iter().map(HeapSize::heap_bytes).sum()
+        self.iter()
+            .map(HeapSize::heap_bytes)
+            .fold(0, usize::saturating_add)
     }
 }
 
 impl<A: HeapSize, B: HeapSize> HeapSize for (A, B) {
     fn heap_bytes(&self) -> usize {
-        self.0.heap_bytes() + self.1.heap_bytes()
+        self.0.heap_bytes().saturating_add(self.1.heap_bytes())
     }
 }
 
@@ -64,25 +67,41 @@ impl<T: HeapSize> HeapSize for Option<T> {
 impl<T: HeapSize> HeapSize for Box<T> {
     fn heap_bytes(&self) -> usize {
         // The box owns a heap allocation of `T` plus `T`'s nested heap.
-        size_of::<T>() + (**self).heap_bytes()
+        size_of::<T>().saturating_add((**self).heap_bytes())
     }
 }
 
 impl<T: HeapSize> HeapSize for Vec<T> {
     fn heap_bytes(&self) -> usize {
-        self.capacity() * size_of::<T>() + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
+        self.capacity()
+            .saturating_mul(size_of::<T>())
+            .saturating_add(
+                self.iter()
+                    .map(HeapSize::heap_bytes)
+                    .fold(0, usize::saturating_add),
+            )
     }
 }
 
 impl<T: HeapSize, S: BuildHasher> HeapSize for std::collections::HashSet<T, S> {
     fn heap_bytes(&self) -> usize {
-        self.capacity() * size_of::<T>() + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
+        self.capacity()
+            .saturating_mul(size_of::<T>())
+            .saturating_add(
+                self.iter()
+                    .map(HeapSize::heap_bytes)
+                    .fold(0, usize::saturating_add),
+            )
     }
 }
 
 impl<T: HeapSize> HeapSize for Box<[T]> {
     fn heap_bytes(&self) -> usize {
-        self.len() * size_of::<T>() + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
+        self.len().saturating_mul(size_of::<T>()).saturating_add(
+            self.iter()
+                .map(HeapSize::heap_bytes)
+                .fold(0, usize::saturating_add),
+        )
     }
 }
 
@@ -102,15 +121,21 @@ impl<T: HeapSize> HeapSize for Arc<T> {
     fn heap_bytes(&self) -> usize {
         // Pointee layout + nested heap + control block (matches Box's
         // size_of::<T>() + nested, plus the Arc header Box does not need).
-        ARC_CONTROL_BYTES + size_of::<T>() + (**self).heap_bytes()
+        ARC_CONTROL_BYTES
+            .saturating_add(size_of::<T>())
+            .saturating_add((**self).heap_bytes())
     }
 }
 
 impl<T: HeapSize> HeapSize for Arc<[T]> {
     fn heap_bytes(&self) -> usize {
         ARC_CONTROL_BYTES
-            + self.len() * size_of::<T>()
-            + self.iter().map(HeapSize::heap_bytes).sum::<usize>()
+            .saturating_add(self.len().saturating_mul(size_of::<T>()))
+            .saturating_add(
+                self.iter()
+                    .map(HeapSize::heap_bytes)
+                    .fold(0, usize::saturating_add),
+            )
     }
 }
 
@@ -156,6 +181,35 @@ mod tests {
 
     use super::*;
 
+    #[derive(Clone, Copy, Eq, Hash, PartialEq)]
+    struct MaxHeap(u8);
+
+    impl HeapSize for MaxHeap {
+        fn heap_bytes(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    #[test]
+    fn generic_heap_size_aggregates_saturate() {
+        assert_eq!([MaxHeap(0), MaxHeap(1)].heap_bytes(), usize::MAX);
+        assert_eq!((MaxHeap(0), MaxHeap(1)).heap_bytes(), usize::MAX);
+        assert_eq!(Box::new(MaxHeap(0)).heap_bytes(), usize::MAX);
+        assert_eq!(vec![MaxHeap(0), MaxHeap(1)].heap_bytes(), usize::MAX);
+
+        let mut set = std::collections::HashSet::new();
+        set.extend([MaxHeap(0), MaxHeap(1)]);
+        assert_eq!(set.heap_bytes(), usize::MAX);
+
+        let boxed: Box<[MaxHeap]> = vec![MaxHeap(0), MaxHeap(1)].into_boxed_slice();
+        assert_eq!(boxed.heap_bytes(), usize::MAX);
+
+        let shared = Arc::new(MaxHeap(0));
+        assert_eq!(shared.heap_bytes(), usize::MAX);
+        let shared_slice: Arc<[MaxHeap]> = Arc::from(vec![MaxHeap(0), MaxHeap(1)]);
+        assert_eq!(shared_slice.heap_bytes(), usize::MAX);
+    }
+
     #[test]
     fn poisoned_mutex_heap_bytes_keeps_populated_vec() {
         let value = Mutex::new(Vec::<u8>::with_capacity(16));
@@ -176,7 +230,9 @@ mod tests {
         let value = Arc::new(Vec::<u8>::with_capacity(17));
         assert_eq!(
             value.heap_bytes(),
-            ARC_CONTROL_BYTES + size_of::<Vec<u8>>() + value.capacity() * size_of::<u8>()
+            ARC_CONTROL_BYTES
+                .saturating_add(size_of::<Vec<u8>>())
+                .saturating_add(value.capacity().saturating_mul(size_of::<u8>()))
         );
     }
 }

@@ -926,7 +926,11 @@ mod tests {
         assert_eq!(index.plan_kind(), "linear");
         assert_eq!(
             index.heap_bytes(),
-            index.items.heap_bytes() + index.spans.heap_bytes() + index.x_spans.heap_bytes()
+            index
+                .items
+                .heap_bytes()
+                .saturating_add(index.spans.heap_bytes())
+                .saturating_add(index.x_spans.heap_bytes())
         );
         assert_eq!(
             index.x_spans.heap_bytes(),

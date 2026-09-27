@@ -2,7 +2,10 @@ use std::ops::Range;
 
 use crate::array::column_window;
 use crate::error::Result as CrateResult;
-use crate::geometry::{CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, CsrOffsetColumn};
+use crate::geometry::types::ensure_coordseq_vertex_capacity;
+use crate::geometry::{
+    CoordSeq, CoordSeqBuilder, CoordWindow, CsrOffsetBuilder, CsrOffsetColumn, GeometryErrorKind,
+};
 
 /// One point per output row — direct column push, no `Vec<Point>` staging.
 pub(crate) type PointColumnBuilder = CoordSeqBuilder;
@@ -13,6 +16,13 @@ pub(crate) struct PackedColumnBuilder {
     zs: Option<Vec<f64>>,
     ms: Option<Vec<f64>>,
     offsets: CsrOffsetBuilder,
+}
+
+fn has_spare_capacity<T>(values: &Vec<T>, additional: usize) -> bool {
+    values
+        .capacity()
+        .checked_sub(values.len())
+        .is_some_and(|available| available >= additional)
 }
 
 impl PackedColumnBuilder {
@@ -38,13 +48,43 @@ impl PackedColumnBuilder {
         }
     }
 
+    fn admit_vertices(&self, additional: usize) -> CrateResult<()> {
+        let total = self
+            .xs
+            .len()
+            .checked_add(additional)
+            .ok_or(GeometryErrorKind::OffsetCapacityExceeded)?;
+        ensure_coordseq_vertex_capacity(total)
+    }
+
     /// Copy one CSR vertex window verbatim, then close the row.
     pub(crate) fn push_window(
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
     ) -> CrateResult<()> {
+        self.admit_vertices(window.len())?;
         self.reserve_columns(window.len());
+        self.push_window_admitted(coords, window)
+    }
+
+    pub(crate) fn push_window_admitted(
+        &mut self,
+        coords: &CoordSeq,
+        window: Range<usize>,
+    ) -> CrateResult<()> {
+        debug_assert!(has_spare_capacity(&self.xs, window.len()));
+        debug_assert!(has_spare_capacity(&self.ys, window.len()));
+        debug_assert!(
+            self.zs
+                .as_ref()
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
+        );
+        debug_assert!(
+            self.ms
+                .as_ref()
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
+        );
         let (xs, ys) = (coords.xs(), coords.ys());
         let (zs, ms) = (coords.zs(), coords.ms());
         self.xs.extend_from_slice(column_window(xs, &window));
@@ -59,13 +99,24 @@ impl PackedColumnBuilder {
         Ok(())
     }
 
-    /// Copy one CSR vertex window in reverse, then close the row.
-    pub(crate) fn push_reversed_window(
+    /// Copy one admitted CSR vertex window in reverse, then close the row.
+    pub(crate) fn push_reversed_window_admitted(
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
     ) -> CrateResult<()> {
-        self.reserve_columns(window.len());
+        debug_assert!(has_spare_capacity(&self.xs, window.len()));
+        debug_assert!(has_spare_capacity(&self.ys, window.len()));
+        debug_assert!(
+            self.zs
+                .as_ref()
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
+        );
+        debug_assert!(
+            self.ms
+                .as_ref()
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
+        );
         let (xs, ys) = (coords.xs(), coords.ys());
         let (zs, ms) = (coords.zs(), coords.ms());
         self.xs
@@ -92,11 +143,12 @@ impl PackedColumnBuilder {
     ) -> CrateResult<()> {
         let row = coords.view(CoordWindow::from_range(window, coords.len()));
         let result = subdivide(&row, budget)?;
-        self.extend_coords(&result);
+        self.extend_coords(&result)?;
         self.close_row()
     }
 
-    fn extend_coords(&mut self, transformed: &CoordSeq) {
+    fn extend_coords(&mut self, transformed: &CoordSeq) -> CrateResult<()> {
+        self.admit_vertices(transformed.len())?;
         self.reserve_columns(transformed.len());
         self.xs.extend_from_slice(transformed.xs());
         self.ys.extend_from_slice(transformed.ys());
@@ -106,16 +158,28 @@ impl PackedColumnBuilder {
         if let (Some(out), Some(column)) = (self.ms.as_mut(), transformed.ms()) {
             out.extend_from_slice(column);
         }
+        Ok(())
     }
 
-    /// Exact affine-map one CSR window, then close the row.
-    pub(crate) fn push_affine_about_origin(
+    /// Exact affine-map one admitted CSR window, then close the row.
+    pub(crate) fn push_affine_about_origin_admitted(
         &mut self,
         coords: &CoordSeq,
         window: Range<usize>,
         transform: crate::geometry::OriginAffine,
     ) -> CrateResult<()> {
-        self.reserve_columns(window.len());
+        debug_assert!(has_spare_capacity(&self.xs, window.len()));
+        debug_assert!(has_spare_capacity(&self.ys, window.len()));
+        debug_assert!(
+            self.zs
+                .as_ref()
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
+        );
+        debug_assert!(
+            self.ms
+                .as_ref()
+                .is_none_or(|column| has_spare_capacity(column, window.len()))
+        );
         let previous_len = self.xs.len();
         for (&x, &y) in column_window(coords.xs(), &window)
             .iter()
@@ -142,25 +206,50 @@ impl PackedColumnBuilder {
         Ok(())
     }
 
-    /// Append one source vertex by column index (simplify keep-mask path).
-    pub(crate) fn push_vertex(&mut self, coords: &CoordSeq, index: usize) {
-        self.xs.push(coords.xs()[index]);
-        self.ys.push(coords.ys()[index]);
-        if let (Some(out), Some(column)) = (self.zs.as_mut(), coords.zs()) {
-            out.push(column[index]);
-        }
-        if let (Some(out), Some(column)) = (self.ms.as_mut(), coords.ms()) {
-            out.push(column[index]);
+    /// Append a row's kept vertices after its caller admits the survivor count.
+    pub(crate) fn push_kept_vertices_admitted(
+        &mut self,
+        coords: &CoordSeq,
+        window: Range<usize>,
+        keep: &[bool],
+        count: usize,
+    ) {
+        debug_assert_eq!(window.len(), keep.len());
+        debug_assert_eq!(keep.iter().filter(|&&kept| kept).count(), count);
+        debug_assert!(has_spare_capacity(&self.xs, count));
+        debug_assert!(has_spare_capacity(&self.ys, count));
+        let (xs, ys, zs, ms) = (coords.xs(), coords.ys(), coords.zs(), coords.ms());
+        let mut zs = zs.map(|column| column_window(column, &window).iter());
+        let mut ms = ms.map(|column| column_window(column, &window).iter());
+        for ((&kept, x), y) in keep
+            .iter()
+            .zip(column_window(xs, &window))
+            .zip(column_window(ys, &window))
+        {
+            let z = zs.as_mut().and_then(|column| column.next());
+            let m = ms.as_mut().and_then(|column| column.next());
+            if kept {
+                self.xs.push(*x);
+                self.ys.push(*y);
+                if let Some(out) = &mut self.zs {
+                    out.push(*z.expect("Z columns share the admitted coordinate window"));
+                }
+                if let Some(out) = &mut self.ms {
+                    out.push(*m.expect("M columns share the admitted coordinate window"));
+                }
+            }
         }
     }
 
     /// Append a generated XY vertex to an XY-only packed result.
-    pub(crate) fn push_xy(&mut self, x: f64, y: f64) {
+    pub(crate) fn push_xy(&mut self, x: f64, y: f64) -> CrateResult<()> {
+        self.admit_vertices(1)?;
         if self.xs.len() == self.xs.capacity() {
             self.reserve_columns(1);
         }
         self.xs.push(x);
         self.ys.push(y);
+        Ok(())
     }
 
     /// Close the current CSR row after a custom vertex append sequence.
@@ -188,37 +277,43 @@ impl PackedColumnBuilder {
 /// Join packed line columns in one append pass. Pairwise prefix concat copies
 /// already-merged vertices again on every extra column.
 pub(crate) fn concat_packed_line_columns(
-    columns: impl IntoIterator<Item = (CoordSeq, CsrOffsetColumn)>,
+    columns: Vec<(CoordSeq, CsrOffsetColumn)>,
 ) -> CrateResult<(CoordSeq, CsrOffsetColumn)> {
-    let mut builder: Option<PackedColumnBuilder> = None;
+    let mut vertices = 0_usize;
+    let mut rows = 0_usize;
+    for (_, offsets) in &columns {
+        let n_lines = offsets.len().saturating_sub(1);
+        if n_lines == 0 {
+            continue;
+        }
+        vertices = crate::array::admit_packed_total(
+            vertices,
+            crate::array::csr_value_window(offsets.as_slice(), 0..n_lines).len(),
+        )?;
+        rows = rows
+            .checked_add(n_lines)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    }
+    let Some((first_coords, _)) = columns.iter().find(|(_, offsets)| offsets.len() > 1) else {
+        return Ok((
+            CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
+            CsrOffsetColumn::try_new(vec![0], 0)?,
+        ));
+    };
+    let mut builder = PackedColumnBuilder::like(first_coords, vertices, rows);
     for (coords, offsets) in columns {
         let n_lines = offsets.len().saturating_sub(1);
         if n_lines == 0 {
             continue;
         }
-        let ends = offsets.as_slice();
-        let builder = match &mut builder {
-            Some(builder) => {
-                builder.reserve_columns(coords.len());
-                builder.offsets.reserve_rows(n_lines);
-                builder
-            },
-            None => builder.insert(PackedColumnBuilder::like(&coords, coords.len(), n_lines)),
-        };
-        for line in 0..n_lines {
-            builder.push_window(&coords, ends[line] as usize..ends[line + 1] as usize)?;
+        for ends in offsets.as_slice().windows(2) {
+            let [start, end] = ends else {
+                unreachable!("CSR windows have exactly two boundaries");
+            };
+            builder.push_window_admitted(&coords, *start as usize..*end as usize)?;
         }
     }
-    match builder {
-        Some(builder) => {
-            let vertices = builder.vertex_len();
-            builder.finish(vertices)
-        },
-        None => Ok((
-            CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None)?,
-            CsrOffsetColumn::try_new(vec![0], 0)?,
-        )),
-    }
+    builder.finish(vertices)
 }
 
 #[cfg(test)]
@@ -242,7 +337,7 @@ mod tests {
             .unwrap();
         assert!(
             builder
-                .push_affine_about_origin(&coords, 1..3, transform)
+                .push_affine_about_origin_admitted(&coords, 1..3, transform)
                 .is_err()
         );
         let (output, offsets) = builder.finish(2).unwrap();
@@ -267,7 +362,7 @@ mod tests {
         let second_offsets = CsrOffsetColumn::try_new(vec![0, 2, 4], 4).unwrap();
         let empty = CoordSeq::try_from_vecs(Vec::new(), Vec::new(), None, None).unwrap();
         let empty_offsets = CsrOffsetColumn::try_new(vec![0], 0).unwrap();
-        let (coords, offsets) = concat_packed_line_columns([
+        let (coords, offsets) = concat_packed_line_columns(vec![
             (first, first_offsets),
             (empty, empty_offsets),
             (second, second_offsets),

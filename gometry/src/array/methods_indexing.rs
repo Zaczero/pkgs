@@ -22,6 +22,7 @@ use crate::array::{
     Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
     missing, overlay_operator,
 };
+use crate::boundary::coordinates::measure_storage;
 use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
 
@@ -327,15 +328,18 @@ fn classify_and_collect_exact_tuple(tuple: &Bound<'_, PyTuple>) -> PyResult<Coll
 
 impl HeapSize for PyGeometryArray {
     fn heap_bytes(&self) -> usize {
-        self.storage().logical_heap_bytes()
-            + self.missing().map_or(0, HeapSize::heap_bytes)
-            + self.row_products.heap_bytes()
-            + self.bounds_cache.heap_bytes()
+        self.storage()
+            .logical_heap_bytes()
+            .saturating_add(self.missing().map_or(0, HeapSize::heap_bytes))
+            .saturating_add(self.row_products.heap_bytes())
+            .saturating_add(self.bounds_cache.heap_bytes())
             // This cache's value is an inline four-f64 tuple, so its Arc and
             // OnceLock owner are the only heap bytes in either state.
-            + crate::heap_size::ARC_CONTROL_BYTES
-            + std::mem::size_of::<std::sync::OnceLock<Option<(f64, f64, f64, f64)>>>()
-            + self.frame.crs_ref().map_or(0, HeapSize::heap_bytes)
+            .saturating_add(crate::heap_size::ARC_CONTROL_BYTES)
+            .saturating_add(std::mem::size_of::<
+                std::sync::OnceLock<Option<(f64, f64, f64, f64)>>,
+            >())
+            .saturating_add(self.frame.crs_ref().map_or(0, HeapSize::heap_bytes))
     }
 }
 
@@ -952,8 +956,9 @@ impl PyGeometryArray {
     /// -------
     /// int
     #[getter]
-    pub fn nbytes(&self) -> usize {
-        self.storage().logical_coordinate_bytes()
+    pub fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
+        let measure = measure_storage(py, self.storage(), self.missing())?;
+        Ok(measure.bytes_pyint(py))
     }
 
     /// `sys.getsizeof` support: the wrapper plus this array's logical
@@ -965,7 +970,7 @@ impl PyGeometryArray {
     /// Shared backing buffers are accounted like NumPy views: the logical view
     /// is reported, not the whole shared parent allocation.
     pub fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>() + self.heap_bytes()
+        std::mem::size_of::<Self>().saturating_add(self.heap_bytes())
     }
 
     pub fn __repr__(&self) -> PyResult<String> {

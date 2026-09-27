@@ -576,6 +576,7 @@ mod ownership_tests {
 
     #[test]
     fn packed_index_and_source_share_the_persistent_row_arc() {
+        pyo3::Python::initialize();
         let source = long_lines();
         let index = packed_spatial_index(&source).unwrap().unwrap();
         let source_arc = match source.prepared_row(0, source.storage().row(0)).unwrap() {
@@ -593,7 +594,8 @@ mod ownership_tests {
             .unwrap()
             .into_owned_plan();
         assert!(Arc::ptr_eq(&indexed_first, &source_second));
-        assert!(crate::HeapSize::heap_bytes(&source) > source.nbytes());
+        let nbytes = Python::attach(|py| source.nbytes(py).unwrap().extract::<usize>().unwrap());
+        assert!(crate::HeapSize::heap_bytes(&source) > nbytes);
     }
 
     #[test]

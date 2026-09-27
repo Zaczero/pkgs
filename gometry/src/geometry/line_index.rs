@@ -624,7 +624,9 @@ impl HeapSize for LineIndexSlot {
 
 impl HeapSize for LineIndex {
     fn heap_bytes(&self) -> usize {
-        self.segments.heap_bytes() + self.prefix.heap_bytes()
+        self.segments
+            .heap_bytes()
+            .saturating_add(self.prefix.heap_bytes())
     }
 }
 
