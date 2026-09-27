@@ -19,6 +19,9 @@ use crate::grid::coverer::RectCell;
 
 pub(crate) const TILE_MAX_ZOOM: u8 = 29;
 
+/// The low 58 bits of a packed tile id hold its Morton payload.
+const TILE_ID_PAYLOAD_MASK: u64 = 0x03FF_FFFF_FFFF_FFFF;
+
 /// The latitude edge of the square Web Mercator tile grid.
 pub(crate) const TILE_MAX_LATITUDE: f64 = 85.051_128_779_806_6;
 
@@ -78,12 +81,16 @@ fn latitude_boundary(index: u32, cells: f64) -> f64 {
 /// Correct a longitude seed against the emitted half-open boundaries.
 fn locate_longitude(lon: f64, seed: u32, cells: f64) -> u32 {
     let limit = cells as u32;
-    let mut index = seed.min(limit - 1);
+    let mut index = seed.min(limit.wrapping_sub(1));
     while index > 0 && lon < longitude_boundary(index, cells) {
-        index -= 1;
+        index = index.wrapping_sub(1);
     }
-    while index + 1 < limit && lon >= longitude_boundary(index + 1, cells) {
-        index += 1;
+    loop {
+        let next = index.wrapping_add(1);
+        if next >= limit || lon < longitude_boundary(next, cells) {
+            break;
+        }
+        index = next;
     }
     index
 }
@@ -92,12 +99,16 @@ fn locate_longitude(lon: f64, seed: u32, cells: f64) -> u32 {
 /// boundaries. The boundary at row `index` is that row's north edge.
 fn locate_latitude(lat: f64, seed: u32, cells: f64) -> u32 {
     let limit = cells as u32;
-    let mut index = seed.min(limit - 1);
+    let mut index = seed.min(limit.wrapping_sub(1));
     while index > 0 && lat > latitude_boundary(index, cells) {
-        index -= 1;
+        index = index.wrapping_sub(1);
     }
-    while index + 1 < limit && lat <= latitude_boundary(index + 1, cells) {
-        index += 1;
+    loop {
+        let next = index.wrapping_add(1);
+        if next >= limit || lat > latitude_boundary(next, cells) {
+            break;
+        }
+        index = next;
     }
     index
 }
@@ -108,19 +119,20 @@ impl Tile {
     /// order) left-aligned below.
     pub(crate) fn id(self) -> u64 {
         let morton = morton_interleave(self.x, self.y);
-        (u64::from(self.z) << 58) | ((morton << (58 - 2 * u32::from(self.z))) & ((1 << 58) - 1))
+        let shift = 58_u32.wrapping_sub(2_u32.wrapping_mul(u32::from(self.z)));
+        u64::from(self.z).wrapping_shl(58) | (morton.wrapping_shl(shift) & TILE_ID_PAYLOAD_MASK)
     }
 
     /// Rebuild from a packed id; `None` when malformed (bad zoom or set
     /// bits below the tile's depth).
     pub(crate) fn from_id(id: u64) -> Option<Self> {
-        let z = (id >> 58) as u8;
+        let z = id.wrapping_shr(58) as u8;
         if z > TILE_MAX_ZOOM {
             return None;
         }
-        let payload = id & ((1 << 58) - 1);
-        let shift = 58 - 2 * u32::from(z);
-        if payload & ((1 << shift) - 1) != 0 {
+        let payload = id & TILE_ID_PAYLOAD_MASK;
+        let shift = 58_u32.wrapping_sub(2_u32.wrapping_mul(u32::from(z)));
+        if payload & 1_u64.wrapping_shl(shift).wrapping_sub(1) != 0 {
             return None;
         }
         let morton = payload >> shift;
@@ -163,9 +175,10 @@ impl Tile {
         (1..=u32::from(self.z))
             .rev()
             .map(|level| {
-                let mask = 1_u32 << (level - 1);
-                let digit = u8::from(self.x & mask != 0) + 2 * u8::from(self.y & mask != 0);
-                char::from(b'0' + digit)
+                let mask = 1_u32.wrapping_shl(level.wrapping_sub(1));
+                let x_bit = u8::from(self.x & mask != 0);
+                let y_bit = u8::from(self.y & mask != 0).wrapping_shl(1);
+                char::from(b'0'.wrapping_add(x_bit | y_bit))
             })
             .collect()
     }
@@ -211,15 +224,15 @@ impl Tile {
         let cells = tile_cells(self.z);
         Bounds::new_raw(
             longitude_boundary(self.x, cells),
-            latitude_boundary(self.y + 1, cells),
-            longitude_boundary(self.x + 1, cells),
+            latitude_boundary(self.y.wrapping_add(1), cells),
+            longitude_boundary(self.x.wrapping_add(1), cells),
             latitude_boundary(self.y, cells),
         )
     }
 
     /// The parent at `zoom` (must be coarser or equal).
     pub(crate) fn parent_at(self, zoom: u8) -> Self {
-        let shift = u32::from(self.z - zoom);
+        let shift = u32::from(self.z.wrapping_sub(zoom));
         Self {
             z: zoom,
             x: self.x >> shift,
@@ -233,15 +246,27 @@ impl Tile {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) const fn children(self) -> [Self; 4] {
-        let (z, x, y) = (self.z + 1, self.x << 1, self.y << 1);
+        let (z, x, y) = (
+            self.z.wrapping_add(1),
+            self.x.wrapping_shl(1),
+            self.y.wrapping_shl(1),
+        );
         [
             Self { z, x, y },
-            Self { z, x: x + 1, y },
-            Self { z, x, y: y + 1 },
             Self {
                 z,
-                x: x + 1,
-                y: y + 1,
+                x: x.wrapping_add(1),
+                y,
+            },
+            Self {
+                z,
+                x,
+                y: y.wrapping_add(1),
+            },
+            Self {
+                z,
+                x: x.wrapping_add(1),
+                y: y.wrapping_add(1),
             },
         ]
     }
@@ -252,8 +277,8 @@ impl Tile {
         let cells = 1_i64 << u32::from(self.z);
         // `dx ∈ {-1,0,1}` and `|dx| ≤ cells`, so the branchless wrap reproduces
         // `rem_euclid` exactly without the `idiv` it compiles to (hot in `neighbors`).
-        let x = super::wrap_axis(i64::from(self.x) + dx, cells);
-        let y = i64::from(self.y) + dy;
+        let x = super::wrap_axis(i64::from(self.x).wrapping_add(dx), cells);
+        let y = i64::from(self.y).wrapping_add(dy);
         if y < 0 || y >= cells {
             return None;
         }
@@ -296,10 +321,10 @@ impl RectCell for Tile {
         // The child grid has twice the parent's cell count, so the shared
         // midpoint is just its odd-indexed boundary.
         let child_cells = tile_cells(self.z) * 2.0;
-        let child_x = self.x * 2;
-        let child_y = self.y * 2;
-        let mid_lon = longitude_boundary(child_x + 1, child_cells);
-        let mid_lat = latitude_boundary(child_y + 1, child_cells);
+        let child_x = self.x.wrapping_shl(1);
+        let child_y = self.y.wrapping_shl(1);
+        let mid_lon = longitude_boundary(child_x.wrapping_add(1), child_cells);
+        let mid_lat = latitude_boundary(child_y.wrapping_add(1), child_cells);
         let kids = Self::children(self);
         out.reserve(kids.len());
         out.extend([
@@ -326,11 +351,13 @@ impl RectCell for Tile {
         // east/west do NOT wrap the antimeridian (None at x = 0 / last column).
         let cells = 1_u32 << u32::from(self.z);
         let at = |x: u32, y: u32| Self { z: self.z, x, y };
+        let south = self.y.wrapping_add(1);
+        let east = self.x.wrapping_add(1);
         [
-            (self.y + 1 < cells).then(|| at(self.x, self.y + 1)), // south (miny)
-            (self.x + 1 < cells).then(|| at(self.x + 1, self.y)), // east (maxx)
-            (self.y > 0).then(|| at(self.x, self.y - 1)),         // north (maxy)
-            (self.x > 0).then(|| at(self.x - 1, self.y)),         // west (minx)
+            (south < cells).then(|| at(self.x, south)), // south (miny)
+            (east < cells).then(|| at(east, self.y)),   // east (maxx)
+            (self.y > 0).then(|| at(self.x, self.y.wrapping_sub(1))), // north (maxy)
+            (self.x > 0).then(|| at(self.x.wrapping_sub(1), self.y)), // west (minx)
         ]
     }
 }
@@ -513,6 +540,12 @@ mod tests {
         };
         assert_eq!(tile.id(), 0x77FF_FFFF_FFFF_FFFF);
         assert_eq!(Tile::from_id(tile.id()), Some(tile));
+    }
+
+    #[test]
+    fn from_id_rejects_zoom_above_maximum_and_nonzero_unused_bits() {
+        assert_eq!(Tile::from_id(0x7800_0000_0000_0000), None);
+        assert_eq!(Tile::from_id(1), None);
     }
 
     #[test]
