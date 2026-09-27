@@ -163,6 +163,107 @@ fn first_chain_error_stops_nested_collection_and_multipart_siblings() {
 }
 
 #[test]
+fn sparse_multiline_parts_keep_empty_order_for_indexed_and_double_ended_access() {
+    let first = line(&[point(-0.0, 1.0, 11.0, 101.0), point(2.0, 2.0, 12.0, 102.0)]);
+    let last = line(&[point(5.0, 5.0, 15.0, 105.0), point(6.0, 6.0, 16.0, 106.0)]);
+    let lines = MultiLineString::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Empty,
+        MultiMember::Value(first.clone()),
+        MultiMember::Empty,
+        MultiMember::Value(last.clone()),
+    ])
+    .expect("homogeneous multipart");
+    let expected_first = Shape::LineString(first);
+    let expected = [
+        Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYZM),
+        expected_first.clone(),
+        Shape::Empty(GeometryKind::LineString, CoordinateAxes::XYZM),
+        Shape::LineString(last),
+    ];
+    let shape = Shape::MultiLineString(lines);
+
+    for (index, part) in expected.iter().enumerate() {
+        assert_eq!(shape.part_at(index), Some(part.clone()));
+    }
+    assert_eq!(shape.part_at(expected.len()), None);
+    let Shape::LineString(first_part) = shape.part_at(1).expect("present line member") else {
+        panic!("member 1 is a line");
+    };
+    let first_point = first_part.point_at(0);
+    assert_eq!(first_point.x.to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(first_point.z(), Some(11.0));
+    assert_eq!(first_point.m(), Some(101.0));
+    let (part, allocations) = crate::test_support::allocation_count(|| shape.part_at(1));
+    assert_eq!(part, Some(expected_first));
+    assert_eq!(allocations, 0);
+
+    let mut parts = shape.parts();
+    let mut expected_parts = expected.into_iter();
+    assert_eq!(parts.len(), 4);
+    assert_eq!(parts.next(), expected_parts.next());
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts.next_back(), expected_parts.next_back());
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts.next(), expected_parts.next());
+    assert_eq!(parts.next_back(), expected_parts.next_back());
+    assert_eq!(parts.len(), 0);
+    assert_eq!(parts.next(), None);
+}
+
+#[test]
+fn sparse_multipolygon_parts_keep_empty_order_for_indexed_and_double_ended_access() {
+    let first = Polygon::new(
+        ring(&[
+            point(0.0, 0.0, 10.0, 100.0),
+            point(1.0, 0.0, 11.0, 101.0),
+            point(1.0, 1.0, 12.0, 102.0),
+            point(0.0, 0.0, 10.0, 100.0),
+        ]),
+        vec![],
+    );
+    let last = Polygon::new(
+        ring(&[
+            point(5.0, 5.0, 15.0, 105.0),
+            point(6.0, 5.0, 16.0, 106.0),
+            point(6.0, 6.0, 17.0, 107.0),
+            point(5.0, 5.0, 15.0, 105.0),
+        ]),
+        vec![],
+    );
+    let polygons = MultiPolygon::try_new(CoordinateAxes::XYZM, vec![
+        MultiMember::Empty,
+        MultiMember::Value(first.clone()),
+        MultiMember::Empty,
+        MultiMember::Value(last.clone()),
+    ])
+    .expect("homogeneous multipart");
+    let expected = [
+        Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZM),
+        Shape::Polygon(first),
+        Shape::Empty(GeometryKind::Polygon, CoordinateAxes::XYZM),
+        Shape::Polygon(last),
+    ];
+    let shape = Shape::MultiPolygon(polygons);
+
+    for (index, part) in expected.iter().enumerate() {
+        assert_eq!(shape.part_at(index), Some(part.clone()));
+    }
+    assert_eq!(shape.part_at(expected.len()), None);
+
+    let mut parts = shape.parts();
+    let mut expected_parts = expected.into_iter();
+    assert_eq!(parts.len(), 4);
+    assert_eq!(parts.next(), expected_parts.next());
+    assert_eq!(parts.len(), 3);
+    assert_eq!(parts.next_back(), expected_parts.next_back());
+    assert_eq!(parts.len(), 2);
+    assert_eq!(parts.next(), expected_parts.next());
+    assert_eq!(parts.next_back(), expected_parts.next_back());
+    assert_eq!(parts.len(), 0);
+    assert_eq!(parts.next(), None);
+}
+
+#[test]
 fn column_all_finite_rejects_non_finite() {
     let column = vec![0.0, 1.0, f64::NAN, 3.0];
     assert!(!column_all_finite(&column));
@@ -187,6 +288,58 @@ fn column_minmax_single_element() {
 #[test]
 fn column_minmax_finds_extremes() {
     assert_eq!(column_minmax(&[3.0, -1.0, 7.0, 2.0]), Some((-1.0, 7.0)));
+}
+
+#[test]
+fn column_minmax_scans_a_full_chunk_and_scalar_tail_while_skipping_nan() {
+    let len = REDUCE_LANES.wrapping_add(3);
+    let values: Vec<f64> = (0..len)
+        .map(|index| {
+            if index == 0 {
+                -11.0
+            } else if index == REDUCE_LANES.wrapping_sub(1) {
+                13.0
+            } else if index == 3 || index == REDUCE_LANES {
+                f64::NAN
+            } else if index == len.wrapping_sub(1) {
+                17.0
+            } else {
+                4.0
+            }
+        })
+        .collect();
+
+    assert_eq!(column_minmax(&values), Some((-11.0, 17.0)));
+}
+
+#[test]
+fn simd_reduce_f64_keeps_chunk_order_and_the_scalar_tail_range() {
+    let chunks = REDUCE_LANES.wrapping_mul(2);
+    let len = chunks.wrapping_add(3);
+    let mut chunk_starts = Vec::new();
+    let mut tail_ranges = Vec::new();
+
+    let result = simd_reduce_f64(
+        len,
+        0_usize,
+        0_usize,
+        |chunk_count, scalar_count, start| {
+            chunk_starts.push(start);
+            (chunk_count.wrapping_add(1), scalar_count)
+        },
+        |scalar_count, range| {
+            tail_ranges.push(range.clone());
+            scalar_count.wrapping_add(range.len())
+        },
+        |chunk_count, scalar_count| (chunk_count, scalar_count),
+    );
+
+    assert_eq!(chunk_starts, [0, REDUCE_LANES]);
+    assert_eq!(tail_ranges.len(), 1);
+    let tail = tail_ranges.first().expect("one scalar tail");
+    assert_eq!(tail.start, chunks);
+    assert_eq!(tail.end, len);
+    assert_eq!(result, (2, 3));
 }
 
 #[test]
