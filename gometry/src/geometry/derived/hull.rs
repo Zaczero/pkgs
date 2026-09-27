@@ -15,9 +15,9 @@ pub(crate) fn shape_from_open_hull(
         [] => Ok(empty()),
         [point] => Ok(Shape::Point(*point)),
         [first, second] => Ok(Shape::LineString(LineSeq::segment(*first, *second)?)),
-        _ => {
+        [first, ..] => {
             let mut ring = hull.to_vec();
-            ring.push(ring[0]);
+            ring.push(*first);
             Ok(Shape::Polygon(Polygon::new(
                 Ring::try_from_closed(CoordSeq::try_from_points(&ring)?)?,
                 Vec::new(),
@@ -38,10 +38,9 @@ pub(crate) fn shape_from_selected_hull(
         [_, _] => Ok(Shape::LineString(LineSeq::from_proven(
             CoordSeq::try_from_points(hull)?,
         ))),
-        _ => {
+        [first, ..] => {
             let mut ring = hull.to_vec();
-            let first = ring[0];
-            ring.push(first);
+            ring.push(*first);
             Ok(Shape::Polygon(Polygon::new(
                 Ring::try_from_closed(CoordSeq::try_from_points(&ring)?)?,
                 Vec::new(),
@@ -70,9 +69,12 @@ fn geometric_ordinate_cmp(left: f64, right: f64) -> Ordering {
 /// exact XY dedup, then lower+upper chains with ROBUST orientation turns
 /// (collinear vertices pop). Returns open CCW hull indices into `points`;
 /// 1-2 distinct points pass through for the degenerate reductions.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "hull and sort keys are source ordinals constructed from this points slice"
+)]
 pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
-    let mut ids: Vec<usize> = (0..points.len()).collect();
-    akl_toussaint_filter(points, &mut ids);
+    let mut ids = akl_toussaint_filter(points);
     ids.sort_unstable_by(|&left, &right| geometric_xy_cmp(points[left], points[right]));
     ids.dedup_by(|right, left| {
         same_topological_coordinate(points[*left].x, points[*right].x)
@@ -83,11 +85,13 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
     }
     let mut hull: Vec<usize> = Vec::with_capacity(64);
     let keeps_turn = |hull: &[usize], point: usize| {
-        orientation(
-            points[hull[hull.len() - 2]],
-            points[hull[hull.len() - 1]],
-            points[point],
-        ) == Orientation::CounterClockwise
+        let Some((&last, prefix)) = hull.split_last() else {
+            return false;
+        };
+        let Some((&previous, _)) = prefix.split_last() else {
+            return false;
+        };
+        orientation(points[previous], points[last], points[point]) == Orientation::CounterClockwise
     };
     for &point in &ids {
         while hull.len() >= 2 && !keeps_turn(&hull, point) {
@@ -95,9 +99,9 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
         }
         hull.push(point);
     }
-    let lower = hull.len() + 1;
+    let lower_len = hull.len();
     for &point in ids.iter().rev().skip(1) {
-        while hull.len() >= lower && !keeps_turn(&hull, point) {
+        while hull.len() > lower_len && !keeps_turn(&hull, point) {
             hull.pop();
         }
         hull.push(point);
@@ -112,25 +116,29 @@ pub(crate) fn monotone_chain_hull(points: &[Point]) -> Vec<usize> {
 /// with a conservative margin that over-covers the floating error, so a
 /// borderline point is always KEPT for the exact chain; only clearly
 /// interior points drop.
-fn akl_toussaint_filter(points: &[Point], ids: &mut Vec<usize>) {
-    if ids.len() < 256 {
-        return;
+fn akl_toussaint_filter(points: &[Point]) -> Vec<usize> {
+    let mut ids = Vec::with_capacity(points.len());
+    if points.len() < 256 {
+        ids.extend(0..points.len());
+        return ids;
     }
-    let mut quad = [points[ids[0]].xy(); 4]; // min-x, min-y, max-x, max-y extremes
+    let first = *points.first().expect("large point input is non-empty");
+    let (mut west, mut south, mut east, mut north) =
+        (first.xy(), first.xy(), first.xy(), first.xy());
     let mut extent = 0.0_f64;
-    for &id in ids.as_slice() {
-        let point = points[id].xy();
-        if point.x < quad[0].x {
-            quad[0] = point;
+    for point in points {
+        let point = point.xy();
+        if point.x < west.x {
+            west = point;
         }
-        if point.y < quad[1].y {
-            quad[1] = point;
+        if point.y < south.y {
+            south = point;
         }
-        if point.x > quad[2].x {
-            quad[2] = point;
+        if point.x > east.x {
+            east = point;
         }
-        if point.y > quad[3].y {
-            quad[3] = point;
+        if point.y > north.y {
+            north = point;
         }
         extent = extent.max(point.x.abs()).max(point.y.abs());
     }
@@ -138,11 +146,12 @@ fn akl_toussaint_filter(points: &[Point], ids: &mut Vec<usize>) {
     // stored coordinates are near f64::MAX. A non-finite intermediate is not
     // a negative certificate: fail open into the robust monotone chain.
     if !extent.is_finite() {
-        return;
+        ids.extend(0..points.len());
+        return ids;
     }
     let origin = XY::new(
-        f64::midpoint(quad[0].x, quad[2].x),
-        f64::midpoint(quad[1].y, quad[3].y),
+        f64::midpoint(west.x, east.x),
+        f64::midpoint(south.y, north.y),
     );
     let scale = axis_pow2_scale(extent);
     let normalize = |point: XY| {
@@ -151,18 +160,22 @@ fn akl_toussaint_filter(points: &[Point], ids: &mut Vec<usize>) {
             scaled_residual(point.y, origin.y, scale),
         )
     };
-    quad = quad.map(normalize);
+    let [west, south, east, north] = [west, south, east, north].map(normalize);
+    let edges = [(west, south), (south, east), (east, north), (north, west)];
     let margin = 1e-10;
-    ids.retain(|&id| {
-        let point = normalize(points[id].xy());
-        for edge in 0..4 {
-            let a = quad[edge];
-            let b = quad[(edge + 1) % 4];
+    for (id, point) in points.iter().enumerate() {
+        let point = normalize(point.xy());
+        let mut keep = false;
+        for (a, b) in edges {
             let cross = (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
             if !cross.is_finite() || cross <= margin {
-                return true; // on, outside, or too close to call: keep
+                keep = true;
+                break;
             }
         }
-        false // clearly interior on every edge
-    });
+        if keep {
+            ids.push(id);
+        }
+    }
+    ids
 }

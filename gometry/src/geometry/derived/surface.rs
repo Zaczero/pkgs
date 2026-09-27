@@ -7,10 +7,15 @@ use crate::geometry::{
 /// Collect horizontal-bisector chord crossings for one ring's coordinate
 /// columns.
 fn push_chord_crossings(xs: &[f64], ys: &[f64], mid: f64, crossings: &mut Vec<f64>) -> bool {
-    for index in 1..ys.len() {
-        let (y0, y1) = (ys[index - 1], ys[index]);
-        if (y0 <= mid) != (y1 <= mid) {
-            let Some(x) = held_axis_interpolate(y0, xs[index - 1], y1, xs[index], mid) else {
+    // Both columns come from one admitted XY sequence, so their paired
+    // iterators cover the same source edges.
+    for ((x0, x1), (y0, y1)) in xs
+        .iter()
+        .zip(xs.iter().skip(1))
+        .zip(ys.iter().zip(ys.iter().skip(1)))
+    {
+        if (*y0 <= mid) != (*y1 <= mid) {
+            let Some(x) = held_axis_interpolate(*y0, *x0, *y1, *x1, mid) else {
                 return false;
             };
             crossings.push(x);
@@ -25,12 +30,17 @@ fn point_from_chord_crossings(crossings: &mut [f64], mid: f64) -> Option<Point> 
         return None;
     }
     crossings.sort_unstable_by(f64::total_cmp);
-    let widest = crossings
+    let [left, right] = crossings
         .as_chunks::<2>()
         .0
         .iter()
-        .max_by(|left, right| (left[1] - left[0]).total_cmp(&(right[1] - right[0])))?;
-    Some(Point::new_raw_xy(f64::midpoint(widest[0], widest[1]), mid))
+        .copied()
+        .max_by(|left, right| {
+            let [left_start, left_end] = *left;
+            let [right_start, right_end] = *right;
+            (left_end - left_start).total_cmp(&(right_end - right_start))
+        })?;
+    Some(Point::new_raw_xy(f64::midpoint(left, right), mid))
 }
 
 /// Column kernel for polygonal `point_on_surface`: widest even-odd chord on the
@@ -44,10 +54,16 @@ fn point_on_surface_polygon_columns(
     crossings: &mut Vec<f64>,
 ) -> Option<Point> {
     let mid = f64::midpoint(bounds.miny(), bounds.maxy());
-    for ring_index in rings {
-        let start = ring_offsets[ring_index] as usize;
-        let end = ring_offsets[ring_index + 1] as usize;
-        if !push_chord_crossings(&xs[start..end], &ys[start..end], mid, crossings) {
+    let starts = ring_offsets.iter().skip(rings.start).copied();
+    let ends = ring_offsets.iter().skip(rings.start).copied().skip(1);
+    for (start, end) in starts.zip(ends).take(rings.len()) {
+        let start = start as usize;
+        let end = end as usize;
+        let (xs_prefix, _) = xs.split_at(end);
+        let (_, xs_ring) = xs_prefix.split_at(start);
+        let (ys_prefix, _) = ys.split_at(end);
+        let (_, ys_ring) = ys_prefix.split_at(start);
+        if !push_chord_crossings(xs_ring, ys_ring, mid, crossings) {
             return None;
         }
     }
@@ -62,18 +78,22 @@ fn point_on_surface_polygon_boundary_columns(
     ring_offsets: &[i32],
     rings: std::ops::Range<usize>,
 ) -> Option<Point> {
-    rings
-        .map(|ring_index| {
-            let start = ring_offsets[ring_index] as usize;
-            let end = ring_offsets[ring_index + 1] as usize;
-            (
-                line_length_columns(&xs[start..end], &ys[start..end]),
-                start,
-                end,
-            )
+    let starts = ring_offsets.iter().skip(rings.start).copied();
+    let ends = ring_offsets.iter().skip(rings.start).copied().skip(1);
+    starts
+        .zip(ends)
+        .take(rings.len())
+        .map(|(start, end)| {
+            let start = start as usize;
+            let end = end as usize;
+            let (xs_prefix, _) = xs.split_at(end);
+            let (_, xs_ring) = xs_prefix.split_at(start);
+            let (ys_prefix, _) = ys.split_at(end);
+            let (_, ys_ring) = ys_prefix.split_at(start);
+            (line_length_columns(xs_ring, ys_ring), xs_ring, ys_ring)
         })
         .max_by(|left, right| left.0.total_cmp(&right.0))
-        .and_then(|(_, start, end)| point_on_surface_line_columns(&xs[start..end], &ys[start..end]))
+        .and_then(|(_, xs_ring, ys_ring)| point_on_surface_line_columns(xs_ring, ys_ring))
 }
 
 /// Packed-polygon row kernel: scanline interior, then boundary lineal fallback.
@@ -126,7 +146,7 @@ pub(crate) fn polygonal_surface_point<'a>(
 }
 
 /// Column kernel for lineal `point_on_surface`: arc-length midpoint of one
-/// coordinate run (at least two vertices).
+/// admitted equal-length XY coordinate run (at least two vertices).
 pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Point> {
     if xs.len() < 2 {
         return None;
@@ -134,15 +154,17 @@ pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Po
     let total = line_length_columns(xs, ys);
     if total == 0.0 {
         // Every vertex coincides: the first one is on the line.
-        return Some(Point::new_raw_xy(xs[0], ys[0]));
+        return Some(Point::new_raw_xy(*xs.first()?, *ys.first()?));
     }
     let target = total / 2.0;
     let mut walked = 0.0;
-    for index in 1..xs.len() {
-        let (start, end) = (
-            Point::new_raw_xy(xs[index - 1], ys[index - 1]),
-            Point::new_raw_xy(xs[index], ys[index]),
-        );
+    // These parallel columns are slices of an admitted XY sequence.
+    for ((x0, x1), (y0, y1)) in xs
+        .iter()
+        .zip(xs.iter().skip(1))
+        .zip(ys.iter().zip(ys.iter().skip(1)))
+    {
+        let (start, end) = (Point::new_raw_xy(*x0, *y0), Point::new_raw_xy(*x1, *y1));
         let length = point_distance(start, end);
         if walked + length >= target {
             let fraction = if length == 0.0 {
@@ -156,7 +178,7 @@ pub(crate) fn point_on_surface_line_columns(xs: &[f64], ys: &[f64]) -> Option<Po
         walked += length;
     }
     // Float accumulation can land a hair short of `target`: take the last vertex.
-    Some(Point::new_raw_xy(xs[xs.len() - 1], ys[ys.len() - 1]))
+    Some(Point::new_raw_xy(*xs.last()?, *ys.last()?))
 }
 
 /// A representative point ON the linework: the arc-length midpoint of the
@@ -177,6 +199,14 @@ pub(crate) fn lineal_surface_point<'a>(
 
 /// The multipoint vertex nearest its centroid — a representative that is always
 /// one of the input points (so `covered_by` holds), no geo-rs conversion.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "argmin ordinals and SIMD lane groups are generated from these equal-length columns"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the selected vertex is defined by the existing IEEE-754 squared-distance score"
+)]
 pub(crate) fn multipoint_surface_point(xs: &[f64], ys: &[f64]) -> Option<Point> {
     let count = xs.len();
     if count == 0 {
@@ -306,7 +336,13 @@ mod tests {
     fn surface_xy(shape: &Shape) -> (f64, f64) {
         match shape.point_on_surface() {
             Shape::Point(point) => (point.x, point.y),
-            other => panic!("expected a point, got {other:?}"),
+            other @ (Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..)) => panic!("expected a point, got {other:?}"),
         }
     }
 

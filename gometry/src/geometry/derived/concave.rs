@@ -8,6 +8,10 @@ use crate::geometry::{
     point_distance, point_segment_distance,
 };
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "triangle IDs and live flags are created together from this Delaunay mesh"
+)]
 pub(crate) fn native_concave_hull(
     points: &[Point],
     concavity: f64,
@@ -26,6 +30,10 @@ pub(crate) fn native_concave_hull(
 
     let triangle_count = triangulation.triangles.len() / 3;
     let mut alive = vec![true; triangle_count];
+    // The Delaunay hull is one simple cycle, so each initial boundary degree
+    // is at most two. Peeling a triangle with one boundary edge replaces that
+    // edge with two through an opposite degree-zero vertex; its edge endpoints
+    // keep their degrees and the new vertex gets degree two.
     let mut boundary_degree = vec![0_i16; points.len()];
     let mut heap = BinaryHeap::new();
     for halfedge in 0..triangulation.triangles.len() {
@@ -80,6 +88,10 @@ struct ConcaveBoundaryEdge {
 }
 
 impl ConcaveBoundaryEdge {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "Delaunay edge endpoints are source ordinals from this points slice"
+    )]
     fn new(points: &[Point], triangulation: &Triangulation, halfedge: usize) -> Self {
         let (start, end) = edge_indices(triangulation, halfedge);
         let edge_key = if point_xy_cmp(&points[start], &points[end]).is_gt() {
@@ -118,6 +130,10 @@ impl PartialOrd for ConcaveBoundaryEdge {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "triangle and site ordinals are produced by this exact triangulation"
+)]
 fn can_peel_boundary_triangle(
     points: &[Point],
     triangulation: &Triangulation,
@@ -145,6 +161,10 @@ fn can_peel_boundary_triangle(
         && edge_point_distance(a, c).min(edge_point_distance(c, b)) < max_length)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "Delaunay edge endpoints are source ordinals from this points slice"
+)]
 fn edge_length(points: &[Point], triangulation: &Triangulation, halfedge: usize) -> f64 {
     let (start, end) = edge_indices(triangulation, halfedge);
     edge_point_distance(points[start], points[end])
@@ -161,6 +181,10 @@ pub(crate) fn canonicalize_concave_hull_points(points: &mut [Point]) {
     points.sort_unstable_by(point_xy_cmp);
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "halfedge endpoints are adjacent slots in the admitted Delaunay mesh"
+)]
 fn edge_indices(triangulation: &Triangulation, halfedge: usize) -> (usize, usize) {
     (
         triangulation.triangles[halfedge],
@@ -172,6 +196,10 @@ pub(crate) fn point_xy_cmp(left: &Point, right: &Point) -> Ordering {
     geometric_xy_cmp(*left, *right)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "triangle and twin ordinals are admitted by the same Delaunay mesh"
+)]
 fn is_boundary_halfedge(triangulation: &Triangulation, alive: &[bool], halfedge: usize) -> bool {
     if !alive[halfedge / 3] {
         return false;
@@ -180,6 +208,10 @@ fn is_boundary_halfedge(triangulation: &Triangulation, alive: &[bool], halfedge:
     twin == EMPTY || !alive[twin / 3]
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "triangle IDs come from halfedge ordinals, and each triangle owns three slots"
+)]
 fn triangle_boundary_count(
     triangulation: &Triangulation,
     alive: &[bool],
@@ -190,6 +222,14 @@ fn triangle_boundary_count(
         .count()
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "site ordinals are Delaunay vertices and degree storage has one slot per source site"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the simple initial hull has degree two; one-edge peeling with a zero-degree opposite vertex preserves the 0..=2 bound"
+)]
 fn bump_boundary_degree(
     degree: &mut [i16],
     triangulation: &Triangulation,
@@ -203,6 +243,10 @@ fn bump_boundary_degree(
     debug_assert!(degree[start] >= 0 && degree[end] >= 0);
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "peeled halfedges and live flags use the same admitted Delaunay mesh"
+)]
 fn push_live_twin_boundary(
     points: &[Point],
     triangulation: &Triangulation,
@@ -216,24 +260,29 @@ fn push_live_twin_boundary(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "boundary endpoints are Delaunay site ordinals and adjacency has one slot per site"
+)]
 fn extract_concave_boundary(
     points: &[Point],
     triangulation: &Triangulation,
     alive: &[bool],
 ) -> crate::error::Result<Vec<usize>> {
     // Boundary vertices have degree exactly two, so the adjacency is a single
-    // flat `[u32; 2]` per vertex (`NONE` sentinel) — one allocation instead of
-    // one `Vec` per point. `overflowed` flags any degree>2 vertex the two slots
-    // cannot represent, preserving the malformed-boundary rejection below.
-    const NONE: u32 = u32::MAX;
+    // flat `[usize; 2]` per vertex (`NONE` sentinel) — one allocation instead
+    // of one `Vec` per point. Site IDs stay in the triangulation's native
+    // `usize` domain; `overflowed` flags degree>2 boundaries without narrowing
+    // a valid vertex ID.
+    const NONE: usize = usize::MAX;
     let mut adjacency = vec![[NONE; 2]; points.len()];
     let mut overflowed = false;
     for halfedge in 0..triangulation.triangles.len() {
         if is_boundary_halfedge(triangulation, alive, halfedge) {
             let start = triangulation.triangles[halfedge];
             let end = triangulation.triangles[next_halfedge(halfedge)];
-            overflowed |= push_unique_neighbor(&mut adjacency[start], end as u32);
-            overflowed |= push_unique_neighbor(&mut adjacency[end], start as u32);
+            overflowed |= push_unique_neighbor(&mut adjacency[start], end);
+            overflowed |= push_unique_neighbor(&mut adjacency[end], start);
         }
     }
     let Some(start) = adjacency.iter().position(|slot| slot[0] != NONE) else {
@@ -255,11 +304,11 @@ fn extract_concave_boundary(
 
     let boundary_vertex_count = adjacency.iter().filter(|slot| slot[0] != NONE).count();
     let mut ring = Vec::with_capacity(boundary_vertex_count);
-    let mut previous = u32::MAX;
-    let mut current = start as u32;
+    let mut previous = usize::MAX;
+    let mut current = start;
     loop {
-        ring.push(current as usize);
-        let neighbors = adjacency[current as usize];
+        ring.push(current);
+        let neighbors = adjacency[current];
         let next = if neighbors[0] == previous {
             neighbors[1]
         } else {
@@ -267,7 +316,7 @@ fn extract_concave_boundary(
         };
         previous = current;
         current = next;
-        if current as usize == start {
+        if current == start {
             break;
         }
         if ring.len() > points.len() {
@@ -280,6 +329,10 @@ fn extract_concave_boundary(
 }
 
 /// CCW open cycle rotated to its lexicographically least XY vertex.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "cycle IDs are produced from the same admitted source-point slice"
+)]
 fn canonicalize_open_hull_indices(
     points: &[Point],
     mut ring: Vec<usize>,
@@ -315,10 +368,10 @@ fn canonicalize_open_hull_indices(
     Ok(ring)
 }
 
-/// Record `candidate` in a degree-two adjacency slot. Returns `true` if the
-/// vertex already holds two distinct neighbors (degree>2 overflow).
-const fn push_unique_neighbor(neighbors: &mut [u32; 2], candidate: u32) -> bool {
-    const NONE: u32 = u32::MAX;
+/// Record one full-width Delaunay site ID in a degree-two adjacency slot.
+/// Returns `true` if the vertex already holds two distinct neighbors.
+const fn push_unique_neighbor(neighbors: &mut [usize; 2], candidate: usize) -> bool {
+    const NONE: usize = usize::MAX;
     if neighbors[0] == candidate || neighbors[1] == candidate {
         return false;
     }
@@ -389,6 +442,20 @@ mod tests {
             &error,
             "concave hull boundary vertices must have degree two",
         );
+    }
+
+    #[test]
+    fn boundary_neighbor_slots_preserve_full_usize_site_ids() {
+        let u32_max = usize::try_from(u32::MAX).expect("u32 fits the supported usize");
+        let one_past_u32 = u32_max
+            .checked_add(1)
+            .expect("one-past-u32 fits the supported usize");
+        let mut neighbors = [usize::MAX; 2];
+
+        assert!(!push_unique_neighbor(&mut neighbors, u32_max));
+        assert!(!push_unique_neighbor(&mut neighbors, one_past_u32));
+        assert_eq!(neighbors, [u32_max, one_past_u32]);
+        assert!(!push_unique_neighbor(&mut neighbors, one_past_u32));
     }
 
     #[test]
