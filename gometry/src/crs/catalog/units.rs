@@ -119,7 +119,7 @@ pub(crate) fn units_with_state(
     let category_owned = category.map(str::to_owned);
     CRS_UNITS_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_UNITS_CACHE_CAPACITY,
             |item| {
@@ -136,7 +136,7 @@ pub(crate) fn units_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.to_vec())
+        Ok(entry.items.to_vec())
     })
 }
 

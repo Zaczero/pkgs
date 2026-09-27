@@ -193,6 +193,10 @@ pub(crate) fn geodesic_frechet_at_with_scratch(
 /// Greedy diagonal-walk upper bound on the discrete geodesic Fréchet
 /// bottleneck. `O(L + W)`, tight when the curves run close — exactly when the
 /// band pays off.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the DP calls this only for nonempty admitted rows and each index advances only while below its row length"
+)]
 pub(crate) fn geodesic_frechet_greedy_ub<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
     metric: &EllipsoidMetric<'_>,
     short: &S,
@@ -243,6 +247,14 @@ pub(crate) fn geodesic_frechet_dp<S: Coordinates + ?Sized, L: Coordinates + ?Siz
     geodesic_frechet_dp_with_scratch(metric, short, long, &mut scratch)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "rolling rows are sized to width and each cell access is bounded by the live Fréchet predecessor band"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "width is nonzero after the early return and recurrence indices remain within the admitted rows"
+)]
 pub(crate) fn geodesic_frechet_dp_with_scratch<S: Coordinates + ?Sized, L: Coordinates + ?Sized>(
     metric: &EllipsoidMetric<'_>,
     short: &S,

@@ -98,7 +98,8 @@ pub(super) fn crs_text_from_holder(
         if nested.is_none() {
             continue;
         }
-        if let Some(crs) = parse_crs_inner(&nested, depth + 1)? {
+        // `parse_crs_inner` rejects depth > 4 before following another holder.
+        if let Some(crs) = parse_crs_inner(&nested, depth.wrapping_add(1))? {
             return Ok(Some(crs.to_string()));
         }
     }

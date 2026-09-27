@@ -320,8 +320,14 @@ fn snap_webmerc_to_utm_latitude(lat: f64) -> f64 {
 pub(super) fn utm_crs(crs: &str) -> Option<(LocalUtmZone, Pole)> {
     let code = parse_epsg(crs)?;
     match code {
-        32601..=32660 => Some((LocalUtmZone::try_new(code - 32600).ok()?, Pole::North)),
-        32701..=32760 => Some((LocalUtmZone::try_new(code - 32700).ok()?, Pole::South)),
+        32601..=32660 => Some((
+            LocalUtmZone::try_new(code.wrapping_sub(32600)).ok()?,
+            Pole::North,
+        )),
+        32701..=32760 => Some((
+            LocalUtmZone::try_new(code.wrapping_sub(32700)).ok()?,
+            Pole::South,
+        )),
         _ => None,
     }
 }

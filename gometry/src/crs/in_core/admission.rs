@@ -163,7 +163,7 @@ fn resolve_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<
     ensure_thread_caches_current(state);
     CRS_IN_CORE_DESCRIPTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_IN_CORE_DESCRIPTOR_CACHE_CAPACITY,
             |item| item.definition.as_str() == normalized.as_ref(),
@@ -175,7 +175,7 @@ fn resolve_in_core_descriptor(crs: &str, state: &RuntimeState) -> Result<Option<
                 })
             },
         )?;
-        Ok(cache[index].descriptor.clone())
+        Ok(entry.descriptor.clone())
     })
 }
 
@@ -278,17 +278,16 @@ fn projected_axis_scale(info: &CrsInfo) -> Option<AxisScale> {
     // ISO 19111 projected coordinate systems have Cartesian axes whose units
     // are lengths. Make that category requirement local instead of relying on
     // this helper's current call site being inside the projected branch.
-    if !info.is_projected() || info.axes.len() < 2 {
+    if !info.is_projected() {
         return None;
     }
-    let axes = &info.axes[..2];
-    if !axes
+    let [first_axis, second_axis] = info.axes.first_chunk::<2>()?;
+    if ![first_axis, second_axis]
         .iter()
         .all(|axis| is_horizontal_direction(axis.direction.as_deref()))
     {
         return None;
     }
-    let [first_axis, second_axis] = axes.first_chunk::<2>()?;
     let factor = first_axis.unit_conversion_factor;
     #[expect(
         clippy::float_cmp,

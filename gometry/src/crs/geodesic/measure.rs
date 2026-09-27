@@ -241,7 +241,7 @@ fn geodesic_ring_area<C: Coordinates + ?Sized>(
             ._gen_inverse(latest_lat, latest_lon, lat, lon, caps::AREA)
             .9;
         add_compensated(&mut area, &mut correction, s12);
-        crossings += longitude_transit(latest_lon, lon);
+        crossings = crossings.wrapping_add(longitude_transit(latest_lon, lon));
         latest_lon = lon;
         latest_lat = lat;
     }
@@ -250,7 +250,7 @@ fn geodesic_ring_area<C: Coordinates + ?Sized>(
         ._gen_inverse(latest_lat, latest_lon, initial_lat, initial_lon, caps::AREA)
         .9;
     add_compensated(&mut area, &mut correction, s12);
-    crossings += longitude_transit(latest_lon, initial_lon);
+    crossings = crossings.wrapping_add(longitude_transit(latest_lon, initial_lon));
 
     let geoid_area = geodesic.area();
     area %= geoid_area;

@@ -160,7 +160,7 @@ fn with_authority_matches<R>(
     let authority = authority.map(str::to_owned);
     CRS_AUTHORITY_MATCH_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_AUTHORITY_MATCH_CACHE_CAPACITY,
             |item| {
@@ -187,7 +187,7 @@ fn with_authority_matches<R>(
                 })
             },
         )?;
-        Ok(read(&cache[index].items))
+        Ok(read(&entry.items))
     })
 }
 
@@ -416,7 +416,7 @@ pub(crate) fn non_deprecated_with_state(
     let normalized = normalize(value)?;
     NON_DEPRECATED_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             NON_DEPRECATED_CACHE_CAPACITY,
             |item| item.definition.as_str() == normalized.as_ref(),
@@ -428,7 +428,7 @@ pub(crate) fn non_deprecated_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.clone())
+        Ok(entry.items.clone())
     })
 }
 
@@ -452,7 +452,7 @@ pub(crate) fn search_with_state(
     }
     CRS_SEARCH_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_SEARCH_CACHE_CAPACITY,
             |item| item.name == name && item.options == *options,
@@ -464,7 +464,7 @@ pub(crate) fn search_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.clone())
+        Ok(entry.items.clone())
     })
 }
 

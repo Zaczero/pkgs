@@ -130,7 +130,7 @@ impl Authalic {
             .apa
             .iter()
             .enumerate()
-            .map(|(i, c)| c * (2.0 * (i + 1) as f64 * beta).sin())
+            .map(|(i, c)| c * (2.0 * i.wrapping_add(1) as f64 * beta).sin())
             .sum::<f64>()
     }
 }

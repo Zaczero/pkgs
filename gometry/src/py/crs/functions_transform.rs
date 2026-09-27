@@ -344,6 +344,10 @@ pub(crate) fn crs_apply(
 /// `transform_bounds_many`). The input epoch `t` is never a transformed
 /// spatial ordinate, so it is not echoed (unlike `crs_apply`, which returns
 /// the raw columns it ran on).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "CrsCoordinateArgs records scalar input before broadcasting and scalar columns contain one ordinate"
+)]
 pub(crate) fn coordinates_to_matrix_py(
     py: Python<'_>,
     coordinates: CrsCoordinateArgs,
@@ -398,6 +402,10 @@ pub(crate) fn coordinates_to_matrix_py(
 
 /// Rebuild the Python result tuple — `(x, y)`, `(x, y, z)`, or
 /// `(x, y, z, t)`; scalars in, scalars out.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "CrsCoordinateArgs records scalar input before broadcasting and scalar columns contain one ordinate"
+)]
 pub(crate) fn coordinates_to_py(
     py: Python<'_>,
     coordinates: CrsCoordinateArgs,
@@ -705,7 +713,7 @@ fn classify_bounds_shape(
         }
         let mut values = Vec::with_capacity(items.len());
         values.push(first);
-        for item in &items[1..] {
+        for item in items.iter().skip(1) {
             // Match float_values' element contract: f64-extractable only.
             let value = crate::finite_f64_required("bounds", item)?;
             values.push(value);
@@ -891,7 +899,12 @@ pub(crate) fn crs_roundtrip(
     })?;
     drain_accuracy_warning(py, &execution)?;
     if coordinates.scalar {
-        Ok(errors[0].into_pyobject(py)?.unbind().into())
+        Ok(errors
+            .first()
+            .expect("scalar coordinates produce one round-trip error")
+            .into_pyobject(py)?
+            .unbind()
+            .into())
     } else {
         Ok(float64_array(py, errors)?)
     }

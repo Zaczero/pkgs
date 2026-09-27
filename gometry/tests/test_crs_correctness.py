@@ -329,6 +329,29 @@ def test_point_to_segment_geodesic_matches_pyproj() -> None:
     assert result == pytest.approx(expected)
 
 
+def test_geodesic_point_to_segment_array_matches_scalar_across_cache_clear() -> None:
+    """Packed queries preserve interior and endpoint minima on cold and warm paths."""
+    segment = gm.LineString([(0, 0), (5, 0)], crs=4326)
+    query_points = [gm.Point(2, 1, crs=4326), gm.Point(6, 3, crs=4326)]
+    queries = gm.points([2, 6], [1, 3], crs=4326)
+    expected = [
+        GEOD.inv(2, 1, 2, 0)[2],
+        GEOD.inv(6, 3, 5, 0)[2],
+    ]
+
+    gm.crs_clear_cache()
+    cold = gm.distance(queries, segment)
+    assert cold == pytest.approx(expected)
+    assert cold == pytest.approx([gm.distance(point, segment) for point in query_points])
+
+    warm = gm.distance(queries, segment)
+    assert warm == pytest.approx(expected)
+
+    gm.crs_clear_cache()
+    cleared = gm.distance(queries, segment)
+    assert cleared == pytest.approx(expected)
+
+
 def _geodesic_point_collection_membership_cases() -> list[object]:
     query = gm.Point(0.0, 0.0, crs=4326)
     far = gm.Point(20.0, 0.0, crs=4326)

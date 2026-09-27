@@ -2,7 +2,7 @@ use geographiclib_rs::Geodesic;
 
 use crate::crs::geodesic::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError,
-    ensure_thread_caches_current, lru_resolve,
+    ensure_thread_caches_current, lru_insert, lru_promote,
 };
 use crate::crs::{RuntimeState, info_with_state};
 use crate::error::Result;
@@ -94,34 +94,26 @@ pub(crate) fn with_geodesic_cache_at<T, E>(
     // invalidate every thread-local cache, including this one.
     let hit = CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let Some(index) = cache.iter().position(|item| item.definition == crs) else {
-            return false;
-        };
-        if index + 1 != cache.len() {
-            let entry = cache.remove(index);
-            cache.push(entry);
-        }
-        true
+        lru_promote(&mut cache, |item| item.definition == crs)
     });
     if hit {
         return CRS_GEODESIC_CACHE.with(|cache| {
             let cache = cache.borrow();
-            f(&cache[cache.len() - 1].object)
+            f(&cache
+                .last()
+                .expect("a promoted geodesic object is the MRU tail")
+                .object)
         });
     }
 
     let entry = cached_geodesic_object(crs, state).map_err(&map_err)?;
     ensure_thread_caches_current(state);
+    // The miss path resolves only CRS info and constructs the geodesic object;
+    // it cannot re-enter this thread-local geodesic-object bucket.
     CRS_GEODESIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
-            &mut cache,
-            CRS_GEODESIC_CACHE_CAPACITY,
-            |item| item.definition == crs,
-            || Ok(entry),
-        )
-        .map_err(&map_err)?;
-        f(&cache[index].object)
+        let entry = lru_insert(&mut cache, CRS_GEODESIC_CACHE_CAPACITY, entry);
+        f(&entry.object)
     })
 }
 

@@ -565,8 +565,11 @@ pub(crate) fn add_cf_lambert_conformal_conic_parameters(
             },
         }
     }
-    if standard_parallel.len() == 1 {
-        items.push(("standard_parallel", CfValue::Float(standard_parallel[0])));
+    if let [standard_parallel_value] = standard_parallel.as_slice() {
+        items.push((
+            "standard_parallel",
+            CfValue::Float(*standard_parallel_value),
+        ));
     } else if !standard_parallel.is_empty() {
         items.push(("standard_parallel", CfValue::FloatList(standard_parallel)));
     }

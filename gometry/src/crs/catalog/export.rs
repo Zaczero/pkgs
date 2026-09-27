@@ -4,7 +4,8 @@ use crate::crs::{
     CrsComparisonKey, CrsExportKey, CrsExportKind, CrsInfo, CrsProjJsonOptions, CrsProjOptions,
     CrsWktOptions, EllipsoidCatalogInfo, OnceLock, PrimeMeridianCatalogInfo, ProjObject,
     ProjOperationCatalogInfo, RuntimeState, WktVersion, ensure_thread_caches_current,
-    first_static_string_from_ptr, info_with_state, lru_resolve, normalize, runtime_state_snapshot,
+    first_static_string_from_ptr, info_with_state, lru_insert, lru_promote, lru_resolve, normalize,
+    runtime_state_snapshot,
 };
 use crate::error::Result;
 
@@ -261,17 +262,20 @@ pub(crate) fn same_with_state(
     };
     let hit = CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        let (index, value) = cache.iter().enumerate().find_map(|(index, item)| {
-            (item.key.left.as_str() == left.as_ref()
+        if lru_promote(&mut cache, |item| {
+            item.key.left.as_str() == left.as_ref()
                 && item.key.right.as_str() == right.as_ref()
-                && item.key.mode == comparison)
-                .then_some((index, item.value))
-        })?;
-        if index + 1 != cache.len() {
-            let entry = cache.remove(index);
-            cache.push(entry);
+                && item.key.mode == comparison
+        }) {
+            Some(
+                cache
+                    .last()
+                    .expect("a promoted CRS comparison is the MRU tail")
+                    .value,
+            )
+        } else {
+            None
         }
-        Some(value)
     });
     if let Some(value) = hit {
         return Ok(value);
@@ -283,20 +287,16 @@ pub(crate) fn same_with_state(
         right: right.into(),
         mode: comparison,
     };
+    // `crs_same_uncached` resolves only CRS info and PROJ objects; it cannot
+    // re-enter this thread-local comparison bucket between the miss and insert.
     CRS_COMPARISON_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        let index = lru_resolve(
+        Ok(lru_insert(
             &mut cache,
             CRS_COMPARISON_CACHE_CAPACITY,
-            |item| item.key == key,
-            || {
-                Ok(CachedCrsComparison {
-                    key: key.clone(),
-                    value,
-                })
-            },
-        )?;
-        Ok(cache[index].value)
+            CachedCrsComparison { key, value },
+        )
+        .value)
     })
 }
 
@@ -362,7 +362,7 @@ where
     ensure_thread_caches_current(state);
     CRS_EXPORT_CACHE.with(|items| {
         let mut cache = items.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_EXPORT_CACHE_CAPACITY,
             |item| &item.key == key,
@@ -374,7 +374,7 @@ where
                 })
             },
         )?;
-        Ok(cache[index].value.clone())
+        Ok(entry.value.clone())
     })
 }
 

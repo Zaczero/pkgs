@@ -103,7 +103,7 @@ pub(crate) fn catalog_with_state(
         .to_owned();
     CRS_CATALOG_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_CATALOG_CACHE_CAPACITY,
             |item| {
@@ -117,7 +117,7 @@ pub(crate) fn catalog_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.clone())
+        Ok(entry.items.clone())
     })
 }
 
@@ -167,7 +167,7 @@ pub(crate) fn celestial_bodies_with_state(
     let authority_owned = authority.map(str::to_owned);
     CRS_CELESTIAL_BODIES_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_CELESTIAL_BODIES_CACHE_CAPACITY,
             |item| item.authority.as_deref() == authority_owned.as_deref(),
@@ -178,7 +178,7 @@ pub(crate) fn celestial_bodies_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.to_vec())
+        Ok(entry.items.to_vec())
     })
 }
 

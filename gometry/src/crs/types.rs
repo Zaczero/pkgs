@@ -392,10 +392,10 @@ impl TransformFailure {
     pub(crate) fn offset_coordinate(mut self, offset: usize, chunk_end: usize) -> Self {
         self.coordinate = self.coordinate.map(|coordinate| {
             assert!(
-                offset <= chunk_end && coordinate < chunk_end - offset,
+                offset <= chunk_end && coordinate < chunk_end.wrapping_sub(offset),
                 "transform returned a coordinate outside its batch"
             );
-            offset + coordinate
+            offset.wrapping_add(coordinate)
         });
         self
     }
