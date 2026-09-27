@@ -50,7 +50,7 @@ pub(crate) fn info_with_state(
     let normalized = normalize(value)?;
     CRS_INFO_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_INFO_CACHE_CAPACITY,
             |item| item.definition == normalized,
@@ -65,7 +65,7 @@ pub(crate) fn info_with_state(
             },
         )?;
         // Cheap refcount clone — `CrsInfo` is immutable per CRS.
-        Ok(std::sync::Arc::clone(&cache[index].info))
+        Ok(std::sync::Arc::clone(&entry.info))
     })
 }
 
@@ -119,7 +119,7 @@ fn factors_batch_with_state(
     let target = normalize(target)?;
     CRS_FACTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
             |item| item.definition.as_str() == target.as_ref(),
@@ -128,7 +128,7 @@ fn factors_batch_with_state(
         longitudes
             .iter()
             .zip(latitudes)
-            .map(|(&longitude, &latitude)| cache[index].object.factors(longitude, latitude, unit))
+            .map(|(&longitude, &latitude)| entry.object.factors(longitude, latitude, unit))
             .collect()
     })
 }
@@ -165,15 +165,13 @@ fn factor_columns_with_state(
     let target = normalize(target)?;
     CRS_FACTOR_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_FACTOR_CACHE_CAPACITY,
             |item| item.definition.as_str() == target.as_ref(),
             || projection_factors_object(&target, state),
         )?;
-        cache[index]
-            .object
-            .factor_columns(longitudes, latitudes, unit)
+        entry.object.factor_columns(longitudes, latitudes, unit)
     })
 }
 

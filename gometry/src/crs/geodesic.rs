@@ -9,7 +9,7 @@ pub(crate) use geographiclib_rs::{DirectGeodesic, InverseGeodesic};
 
 use crate::crs::{
     CRS_GEODESIC_CACHE, CRS_GEODESIC_CACHE_CAPACITY, CachedGeodesicObject, CrsError, CrsInfo,
-    GeodesicDirectInfo, ensure_thread_caches_current, lru_resolve, normalize,
+    GeodesicDirectInfo, ensure_thread_caches_current, lru_insert, lru_promote, normalize,
 };
 use crate::error::Result;
 use crate::geometry::GeodesicNumericalPolicy;
@@ -59,43 +59,43 @@ pub(crate) mod geodesic_counters {
     }
 
     pub(super) fn line_cache_hit() {
-        LINE_CACHE_HITS.set(LINE_CACHE_HITS.get() + 1);
+        LINE_CACHE_HITS.set(LINE_CACHE_HITS.get().saturating_add(1));
     }
 
     pub(super) fn line_cache_miss() {
-        LINE_CACHE_MISSES.set(LINE_CACHE_MISSES.get() + 1);
+        LINE_CACHE_MISSES.set(LINE_CACHE_MISSES.get().saturating_add(1));
     }
 
     pub(super) fn segment_query() {
-        SEGMENT_QUERIES.set(SEGMENT_QUERIES.get() + 1);
+        SEGMENT_QUERIES.set(SEGMENT_QUERIES.get().saturating_add(1));
     }
 
     pub(super) fn segment_value_evaluation() {
-        SEGMENT_VALUE_EVALUATIONS.set(SEGMENT_VALUE_EVALUATIONS.get() + 1);
+        SEGMENT_VALUE_EVALUATIONS.set(SEGMENT_VALUE_EVALUATIONS.get().saturating_add(1));
     }
 
     pub(super) fn segment_derivative_evaluation() {
-        SEGMENT_DERIVATIVE_EVALUATIONS.set(SEGMENT_DERIVATIVE_EVALUATIONS.get() + 1);
+        SEGMENT_DERIVATIVE_EVALUATIONS.set(SEGMENT_DERIVATIVE_EVALUATIONS.get().saturating_add(1));
     }
 
     pub(super) fn segment_interval_pop() {
-        SEGMENT_INTERVAL_POPS.set(SEGMENT_INTERVAL_POPS.get() + 1);
+        SEGMENT_INTERVAL_POPS.set(SEGMENT_INTERVAL_POPS.get().saturating_add(1));
     }
 
     pub(super) fn segment_interval_split() {
-        SEGMENT_INTERVAL_SPLITS.set(SEGMENT_INTERVAL_SPLITS.get() + 1);
+        SEGMENT_INTERVAL_SPLITS.set(SEGMENT_INTERVAL_SPLITS.get().saturating_add(1));
     }
 
     pub(super) fn segment_convex_closure() {
-        SEGMENT_CONVEX_CLOSURES.set(SEGMENT_CONVEX_CLOSURES.get() + 1);
+        SEGMENT_CONVEX_CLOSURES.set(SEGMENT_CONVEX_CLOSURES.get().saturating_add(1));
     }
 
     pub(super) fn segment_derivative_decline() {
-        SEGMENT_DERIVATIVE_DECLINES.set(SEGMENT_DERIVATIVE_DECLINES.get() + 1);
+        SEGMENT_DERIVATIVE_DECLINES.set(SEGMENT_DERIVATIVE_DECLINES.get().saturating_add(1));
     }
 
     pub(super) fn segment_admission() {
-        SEGMENT_ADMISSIONS.set(SEGMENT_ADMISSIONS.get() + 1);
+        SEGMENT_ADMISSIONS.set(SEGMENT_ADMISSIONS.get().saturating_add(1));
     }
 
     pub(crate) fn reset() {

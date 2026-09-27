@@ -146,14 +146,20 @@ impl BoundsSamplePlan {
         let TopologyDomain::Geographic(frame) = self.target_domain else {
             return Ok(());
         };
-        for (index, latitude) in [(1, frame.pole()), (0, -frame.pole())] {
+        let mut target_poles = self.target_poles;
+        for (pole_contained, latitude) in target_poles
+            .iter_mut()
+            .rev()
+            .zip([frame.pole(), -frame.pole()])
+        {
             let Some((longitude, latitude)) = inverse(0.0, latitude)? else {
                 continue;
             };
             if self.source_contains(longitude, latitude)? {
-                self.target_poles[index] = true;
+                *pole_contained = true;
             }
         }
+        self.target_poles = target_poles;
         Ok(())
     }
 
@@ -295,7 +301,9 @@ fn map_geographic_conversion_error(error: GeographicError) -> crate::error::Erro
             "latitude {value:e} is outside the geographic coordinate domain"
         )),
         GeographicError::NonFinite { .. } => GeometryErrorKind::NonFiniteCoordinate.into(),
-        other => CrsError::invalid(other.to_string()),
+        other @ (GeographicError::InvalidAngularFactor { .. }
+        | GeographicError::InvalidSweep { .. }
+        | GeographicError::SeamTransitOverflow) => CrsError::invalid(other.to_string()),
     }
 }
 
@@ -386,8 +394,9 @@ fn push_edge_2d(
     end: (f64, f64),
     points: usize,
 ) {
+    let edge_intervals = points.wrapping_sub(1);
     for index in 0..points {
-        let fraction = index as f64 / (points - 1) as f64;
+        let fraction = index as f64 / edge_intervals as f64;
         x.push(interpolate(start.0, end.0, fraction));
         y.push(interpolate(start.1, end.1, fraction));
     }
@@ -401,8 +410,9 @@ fn push_edge_3d(
     end: (f64, f64, f64),
     points: usize,
 ) {
+    let edge_intervals = points.wrapping_sub(1);
     for index in 0..points {
-        let fraction = index as f64 / (points - 1) as f64;
+        let fraction = index as f64 / edge_intervals as f64;
         x.push(interpolate(start.0, end.0, fraction));
         y.push(interpolate(start.1, end.1, fraction));
         z.push(interpolate(start.2, end.2, fraction));
@@ -448,18 +458,23 @@ fn accumulate_horizontal(
         CircularInterval::Full
     } else {
         x.sort_unstable_by(f64::total_cmp);
+        let first = *x.first().expect("bounds sample plan is non-empty");
+        let last = *x.last().expect("bounds sample plan is non-empty");
         let mut best_gap = -1.0;
         let mut best_start = 0.0;
-        for index in 0..x.len() {
-            let (gap, start) = if index + 1 == x.len() {
-                ((axis.period() - x[index]) + x[0], x[0])
-            } else {
-                (x[index + 1] - x[index], x[index + 1])
-            };
+        for &[left, right] in x.array_windows::<2>() {
+            let gap = right - left;
+            let start = right;
             if gap > best_gap || (gap.total_cmp(&best_gap).is_eq() && start < best_start) {
                 best_gap = gap;
                 best_start = start;
             }
+        }
+        let seam_next = axis.period() - last;
+        let seam_gap = seam_next + first;
+        if seam_gap > best_gap || (seam_gap.total_cmp(&best_gap).is_eq() && first < best_start) {
+            best_gap = seam_gap;
+            best_start = first;
         }
         CircularInterval::try_arc(axis, best_start, axis.period() - best_gap)
             .map_err(|error| CrsError::invalid(error.to_string()))?
@@ -475,9 +490,11 @@ fn accumulate_horizontal(
 }
 
 fn ordered_extrema(values: &[f64]) -> (f64, f64) {
-    let mut low = values[0];
-    let mut high = values[0];
-    for &value in &values[1..] {
+    let mut values = values.iter().copied();
+    let first = values.next().expect("bounds sample plan is non-empty");
+    let mut low = first;
+    let mut high = first;
+    for value in values {
         low = low.min(value);
         high = high.max(value);
     }
@@ -1325,8 +1342,7 @@ impl TransformOutputPlan {
             })
             .collect::<Result<Vec<_>>>()?;
         let mut cursor = TransformCursor {
-            sequences,
-            offset: 0,
+            sequences: sequences.into_iter(),
         };
         shapes
             .iter()
@@ -1346,17 +1362,33 @@ fn execute_batch_indexed(
 ) -> std::result::Result<(), TransformFailure> {
     let capacity = capacity.max(1);
     let OutputColumns { xs, ys, zs } = columns;
-    let mut zs = zs.as_mut().map(Vec::as_mut_slice);
-    let mut offset = 0;
-    while offset < xs.len() {
-        let end = xs.len().min(offset.saturating_add(capacity));
-        transform(
-            &mut xs[offset..end],
-            &mut ys[offset..end],
-            zs.as_deref_mut().map(|values| &mut values[offset..end]),
-        )
-        .map_err(|failure| failure.offset_coordinate(offset, end))?;
-        offset = end;
+    debug_assert_eq!(xs.len(), ys.len(), "XY output columns stay aligned");
+    debug_assert!(
+        zs.as_ref().is_none_or(|zs| zs.len() == xs.len()),
+        "XYZ output columns stay aligned",
+    );
+    let mut offset = 0_usize;
+    match zs.as_mut() {
+        Some(zs) => {
+            for ((xs, ys), zs) in xs
+                .chunks_mut(capacity)
+                .zip(ys.chunks_mut(capacity))
+                .zip(zs.chunks_mut(capacity))
+            {
+                let end = offset.wrapping_add(xs.len());
+                transform(xs, ys, Some(zs))
+                    .map_err(|failure| failure.offset_coordinate(offset, end))?;
+                offset = end;
+            }
+        },
+        None => {
+            for (xs, ys) in xs.chunks_mut(capacity).zip(ys.chunks_mut(capacity)) {
+                let end = offset.wrapping_add(xs.len());
+                transform(xs, ys, None)
+                    .map_err(|failure| failure.offset_coordinate(offset, end))?;
+                offset = end;
+            }
+        },
     }
     Ok(())
 }
@@ -1365,18 +1397,14 @@ fn execute_batch_indexed(
 /// the slices it contributed, in order, from the XY or XYZ batch matching its
 /// axes.
 struct TransformCursor {
-    sequences: Vec<CoordSeq>,
-    offset: usize,
+    sequences: std::vec::IntoIter<CoordSeq>,
 }
 
 impl TransformCursor {
     fn take(&mut self) -> CoordSeq {
-        let seq = std::mem::replace(
-            &mut self.sequences[self.offset],
-            CoordSeq::empty(crate::geometry::CoordinateAxes::XY),
-        );
-        self.offset += 1;
-        seq
+        self.sequences
+            .next()
+            .expect("the shape walk consumes its emitted coordinate sequences in order")
     }
 }
 
@@ -1543,7 +1571,13 @@ mod lane_tests {
             .iter()
             .map(|shape| match shape {
                 Shape::Point(point) => (point.x, point.y, point.z()),
-                _ => unreachable!(),
+                Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => unreachable!(),
             })
             .collect::<Vec<_>>();
         assert_eq!(coordinates, [

@@ -321,6 +321,10 @@ fn meridian_parameter(
     clippy::neg_cmp_op_on_partial_ord,
     reason = "the preceding finite checks make this strict interval inclusion explicit"
 )]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the Newton inclusion matrix, vectors, and loop indices are fixed two-dimensional stencils"
+)]
 fn regular_root_inclusion(
     geodesic: &Geodesic,
     first: &GeodesicSegment,
@@ -874,7 +878,7 @@ fn search_point_segment(
         GeodesicSegmentQuery::Threshold { limit, .. } if initial.lower > limit => {
             Ok(GeodesicSegmentQueryResult::ThresholdOutside)
         },
-        _ => {
+        GeodesicSegmentQuery::Minimum { .. } | GeodesicSegmentQuery::Threshold { .. } => {
             scratch.clear();
             scratch.inner.push(initial);
             let mut minimum = endpoint_minimum;
@@ -1734,6 +1738,10 @@ impl IntersectSolver {
         ))
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the five local intersection offsets and skip flags are a fixed, algorithm-keyed stencil"
+    )]
     fn closest(&self, line_x: &GeodesicLine, line_y: &GeodesicLine, p0: XPoint) -> Result<XPoint> {
         let offsets = [(0.0, 0.0), (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)];
         let mut skip = [false; 5];
@@ -1758,7 +1766,7 @@ impl IntersectSolver {
             if n == 0 || qx.l1_from(p0) < q.l1_from(p0) {
                 q = qx;
             }
-            for m in n + 1..5 {
+            for m in n.wrapping_add(1)..5 {
                 skip[m] = skip[m]
                     || qx.l1_from(XPoint::new(
                         p0.x + offsets[m].0 * self.d1,
@@ -2116,7 +2124,9 @@ fn fixsegment(sx: f64, sy: f64, p: XPoint) -> XPoint {
 }
 
 fn segmentmode(sx: f64, sy: f64, p: XPoint) -> i32 {
-    side_code(p.x, sx) * 3 + side_code(p.y, sy)
+    side_code(p.x, sx)
+        .wrapping_mul(3)
+        .wrapping_add(side_code(p.y, sy))
 }
 
 fn side_code(value: f64, limit: f64) -> i32 {

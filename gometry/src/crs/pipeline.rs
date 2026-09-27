@@ -383,6 +383,10 @@ impl ProjPipeline {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the FFI entry checks equal X/Y/Z lengths and T is either equal-length or explicitly broadcast from its first element"
+)]
 fn first_nonfinite_coordinate(
     x: &[f64],
     y: &[f64],
@@ -433,7 +437,95 @@ mod tests {
                         GeometryErrorKind::Projection(_)
                             | GeometryErrorKind::ProjectionDomain(_),
                     )
-                )
+            )
         ));
+    }
+
+    #[test]
+    fn transform_lanes_indexed_rejects_mismatches_and_accepts_singleton_time() {
+        let _guard = crate::crs::RUNTIME_STATE_TEST_LOCK.lock().unwrap();
+        let state = crate::crs::runtime_state_snapshot().unwrap();
+        let pipeline = ProjPipeline::from_definition_with_state(
+            "+proj=pipeline +step +proj=affine +xoff=1 +yoff=2",
+            &state,
+        )
+        .unwrap();
+        let execution = TransformExecution::default();
+
+        let mut empty_x = [];
+        let mut one_y = [0.0];
+        let xy_mismatch = pipeline
+            .transform_lanes_indexed(
+                &mut empty_x,
+                &mut one_y,
+                None,
+                None,
+                ProjDirection::Forward,
+                &execution,
+            )
+            .unwrap_err();
+        assert!(
+            xy_mismatch
+                .error
+                .to_string()
+                .contains("transform lane length mismatch")
+        );
+
+        let mut empty_x = [];
+        let mut empty_y = [];
+        let mut one_z = [0.0];
+        let z_mismatch = pipeline
+            .transform_lanes_indexed(
+                &mut empty_x,
+                &mut empty_y,
+                Some(&mut one_z),
+                None,
+                ProjDirection::Forward,
+                &execution,
+            )
+            .unwrap_err();
+        assert!(
+            z_mismatch
+                .error
+                .to_string()
+                .contains("transform z lane length mismatch")
+        );
+
+        let mut empty_x = [];
+        let mut empty_y = [];
+        let mut two_t = [2020.0, 2021.0];
+        let t_mismatch = pipeline
+            .transform_lanes_indexed(
+                &mut empty_x,
+                &mut empty_y,
+                None,
+                Some(&mut two_t),
+                ProjDirection::Forward,
+                &execution,
+            )
+            .unwrap_err();
+        assert!(
+            t_mismatch
+                .error
+                .to_string()
+                .contains("transform t lane length mismatch")
+        );
+
+        let mut x = [0.0, 1.0];
+        let mut y = [0.0, 1.0];
+        let mut singleton_t = [2020.0];
+        pipeline
+            .transform_lanes_indexed(
+                &mut x,
+                &mut y,
+                None,
+                Some(&mut singleton_t),
+                ProjDirection::Forward,
+                &execution,
+            )
+            .unwrap();
+        assert_eq!(x, [1.0, 2.0]);
+        assert_eq!(y, [2.0, 3.0]);
+        assert_eq!(singleton_t, [2020.0]);
     }
 }

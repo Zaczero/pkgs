@@ -68,7 +68,7 @@ use cache::{
     record_transform_engine, with_proj_diagnostic_pipeline_at, with_proj_operation_at,
     with_proj_pipeline_at, with_proj_pipeline_indexed_at,
 };
-pub(crate) use cache::{cache_info, lru_resolve};
+pub(crate) use cache::{cache_info, lru_insert, lru_promote, lru_resolve};
 pub(crate) use catalog::{
     CF_LINEAR_INTERNATIONAL_FOOT, CF_LINEAR_METRE, CF_LINEAR_US_SURVEY_FOOT, ProjStringVersion,
     authorities_with_state, catalog, celestial_bodies_with_state, codes, ellipsoids, geoid_models,

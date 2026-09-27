@@ -360,33 +360,44 @@ pub(crate) fn cache_info() -> CacheInfo {
     }
 }
 
-/// Resolve an entry in a thread-local LRU `Vec`, returning its index.
-///
-/// The entry matching `matches` is moved to the back (most-recently-used); on a
-/// miss the front entry is evicted when the cache is at `capacity` and `make()`
-/// is pushed. The match closure borrows the key, so the hot hit path clones no
-/// key — the single source of truth for the move-to-back caching all CRS
-/// thread-local caches share (instead of re-implementing the dance per cache).
-pub(crate) fn lru_resolve<E>(
-    cache: &mut Vec<E>,
-    capacity: usize,
-    matches: impl Fn(&E) -> bool,
-    make: impl FnOnce() -> Result<E>,
-) -> Result<usize> {
-    if let Some(index) = cache.iter().position(&matches) {
-        if index.wrapping_add(1) == cache.len() {
-            return Ok(index);
-        }
+/// Move a matching entry to the LRU tail and report whether it was present.
+pub(crate) fn lru_promote<E>(cache: &mut Vec<E>, matches: impl Fn(&E) -> bool) -> bool {
+    let Some(index) = cache.iter().position(matches) else {
+        return false;
+    };
+    if index.wrapping_add(1) != cache.len() {
         let entry = cache.remove(index);
         cache.push(entry);
-        return Ok(cache.len().wrapping_sub(1));
     }
-    let entry = make()?;
+    true
+}
+
+/// Insert a new entry at the MRU tail, evicting the least-recently-used entry
+/// when the cache is full.
+pub(crate) fn lru_insert<E>(cache: &mut Vec<E>, capacity: usize, entry: E) -> &E {
     if cache.len() == capacity {
         cache.remove(0);
     }
     cache.push(entry);
-    Ok(cache.len().wrapping_sub(1))
+    cache.last().expect("an inserted LRU entry is the MRU tail")
+}
+
+/// Resolve an entry in a thread-local LRU `Vec`, returning the MRU entry.
+///
+/// The match closure borrows the key, so the hit path clones no key. CRS caches
+/// whose miss construction consults another cache can use `lru_promote` and
+/// `lru_insert` around that work without holding this cache's borrow.
+pub(crate) fn lru_resolve<'a, E>(
+    cache: &'a mut Vec<E>,
+    capacity: usize,
+    matches: impl Fn(&E) -> bool,
+    make: impl FnOnce() -> Result<E>,
+) -> Result<&'a E> {
+    if lru_promote(cache, matches) {
+        return Ok(cache.last().expect("a promoted LRU entry is the MRU tail"));
+    }
+    let entry = make()?;
+    Ok(lru_insert(cache, capacity, entry))
 }
 
 pub(super) fn with_proj_pipeline_at<R>(
@@ -414,29 +425,32 @@ pub(super) fn with_proj_pipeline_indexed_at<R>(
     ensure_thread_caches_current(state);
     PROJ_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
-            &mut cache,
-            PROJ_CACHE_CAPACITY,
-            |item| item.source == source && item.target == target && item.options == *options,
-            || {
-                options.validate()?;
-                Ok(CachedProjPipeline {
-                    source: source.into(),
-                    target: target.into(),
-                    options: options.clone(),
-                    pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
-                })
-            },
-        )?;
-        let diagnostics_before = execution.diagnostic_count();
-        let result = transform(&cache[index].pipeline);
+        let (diagnostics_before, result) = {
+            let pipeline = lru_resolve(
+                &mut cache,
+                PROJ_CACHE_CAPACITY,
+                |item| item.source == source && item.target == target && item.options == *options,
+                || {
+                    options.validate()?;
+                    Ok(CachedProjPipeline {
+                        source: source.into(),
+                        target: target.into(),
+                        options: options.clone(),
+                        pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
+                    })
+                },
+            )?;
+            let diagnostics_before = execution.diagnostic_count();
+            let result = transform(&pipeline.pipeline);
+            (diagnostics_before, result)
+        };
         if execution.diagnostic_count() > diagnostics_before {
             // PROJ disables this diagnostic after the first attempted
             // coordinate on a PJ. Retaining that PJ would make a later call in
             // another region repeat the first grid name. Evict only degraded
             // pipelines so the next call gets a coordinate-correct selection;
             // a batch still makes one FFI call and one failed attempt total.
-            cache.remove(index);
+            cache.pop().expect("the degraded pipeline is the MRU tail");
             result.map_err(|failure| {
                 let message = execution.diagnostic().unwrap_or_default();
                 let error = if message.is_empty() {
@@ -494,23 +508,28 @@ pub(super) fn with_proj_diagnostic_pipeline_at<R>(
     options.validate()?;
     PROJ_DIAGNOSTIC_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
-            &mut cache,
-            PROJ_DIAGNOSTIC_CACHE_CAPACITY,
-            |item| item.source == source && item.target == target && item.options == *options,
-            || {
-                Ok(CachedProjPipeline {
-                    source: source.into(),
-                    target: target.into(),
-                    options: options.clone(),
-                    pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
-                })
-            },
-        )?;
-        let diagnostics_before = execution.diagnostic_count();
-        let result = inspect(&cache[index].pipeline);
+        let (diagnostics_before, result) = {
+            let pipeline = lru_resolve(
+                &mut cache,
+                PROJ_DIAGNOSTIC_CACHE_CAPACITY,
+                |item| item.source == source && item.target == target && item.options == *options,
+                || {
+                    Ok(CachedProjPipeline {
+                        source: source.into(),
+                        target: target.into(),
+                        options: options.clone(),
+                        pipeline: ProjPipeline::new_with_state(source, target, options, state)?,
+                    })
+                },
+            )?;
+            let diagnostics_before = execution.diagnostic_count();
+            let result = inspect(&pipeline.pipeline);
+            (diagnostics_before, result)
+        };
         if execution.diagnostic_count() > diagnostics_before {
-            cache.remove(index);
+            cache
+                .pop()
+                .expect("the diagnostic pipeline is the MRU tail");
         }
         result.map_err(|error| {
             preserve_resource_error(error, |error| {
@@ -529,21 +548,24 @@ pub(super) fn with_proj_operation_at<R>(
     ensure_thread_caches_current(state);
     PROJ_OPERATION_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
-            &mut cache,
-            PROJ_OPERATION_CACHE_CAPACITY,
-            |item| item.definition == definition,
-            || {
-                Ok(CachedProjOperation {
-                    definition: definition.into(),
-                    operation: ProjPipeline::from_definition_with_state(definition, state)?,
-                })
-            },
-        )?;
-        let diagnostics_before = execution.diagnostic_count();
-        let result = transform(&cache[index].operation);
+        let (diagnostics_before, result) = {
+            let operation = lru_resolve(
+                &mut cache,
+                PROJ_OPERATION_CACHE_CAPACITY,
+                |item| item.definition == definition,
+                || {
+                    Ok(CachedProjOperation {
+                        definition: definition.into(),
+                        operation: ProjPipeline::from_definition_with_state(definition, state)?,
+                    })
+                },
+            )?;
+            let diagnostics_before = execution.diagnostic_count();
+            let result = transform(&operation.operation);
+            (diagnostics_before, result)
+        };
         if execution.diagnostic_count() > diagnostics_before {
-            cache.remove(index);
+            cache.pop().expect("the degraded operation is the MRU tail");
         }
         result.map_err(|error| {
             preserve_resource_error(error, |error| {

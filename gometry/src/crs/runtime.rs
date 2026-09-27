@@ -38,7 +38,12 @@ unsafe extern "C" fn capture_proj_diagnostic(
         return;
     }
     let end = bytes.len().min(MAX_PROJ_DIAGNOSTIC_BYTES);
-    let message = String::from_utf8_lossy(&bytes[..end]).into_owned();
+    let message = String::from_utf8_lossy(
+        bytes
+            .get(..end)
+            .expect("diagnostic prefix end is bounded by the byte length"),
+    )
+    .into_owned();
     if app_data.is_null() {
         return;
     }

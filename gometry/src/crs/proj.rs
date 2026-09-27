@@ -489,7 +489,7 @@ impl OwnedProjStringList {
             if let Some(value) = proj_c_string!(value) {
                 values.push(value);
             }
-            index += 1;
+            index = index.wrapping_add(1);
         }
         values
     }

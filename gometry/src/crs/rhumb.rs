@@ -35,7 +35,7 @@ use std::f64::consts::FRAC_PI_2;
 use crate::crs::RuntimeState;
 use crate::crs::cache::{
     CRS_RHUMB_CACHE, CRS_RHUMB_CACHE_CAPACITY, CachedRhumbEllipsoid, ensure_thread_caches_current,
-    lru_resolve,
+    lru_insert, lru_promote,
 };
 use crate::crs::error::CrsError;
 use crate::crs::geodesic::ensure_geographic_lonlat;
@@ -169,7 +169,7 @@ impl RhumbEllipsoid {
         if dphi == 0.0 {
             let mut dmu_dphi = 1.0;
             for (index, coefficient) in self.to_mu.iter().enumerate() {
-                let m = 2.0 * (index + 1) as f64;
+                let m = 2.0 * index.wrapping_add(1) as f64;
                 dmu_dphi += coefficient * m * (m * phi1).cos();
             }
             let sin_phi = phi1.sin();
@@ -283,19 +283,15 @@ pub(in crate::crs) fn with_rhumb_at<T>(
     // clear this cache while another thread changes runtime configuration.
     let hit = CRS_RHUMB_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let Some(index) = cache.iter().position(|item| item.definition == crs) else {
-            return false;
-        };
-        if index + 1 != cache.len() {
-            let entry = cache.remove(index);
-            cache.push(entry);
-        }
-        true
+        lru_promote(&mut cache, |item| item.definition == crs)
     });
     if hit {
         return CRS_RHUMB_CACHE.with(|cache| {
             let cache = cache.borrow();
-            f(&cache[cache.len() - 1].ellipsoid)
+            f(&cache
+                .last()
+                .expect("a promoted rhumb ellipsoid is the MRU tail")
+                .ellipsoid)
         });
     }
 
@@ -304,15 +300,12 @@ pub(in crate::crs) fn with_rhumb_at<T>(
         ellipsoid: RhumbEllipsoid::for_crs_at(crs, state)?,
     };
     ensure_thread_caches_current(state);
+    // The miss path resolves through the CRS-info and geodesic caches, not
+    // this thread-local rhumb cache.
     CRS_RHUMB_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
-            &mut cache,
-            CRS_RHUMB_CACHE_CAPACITY,
-            |item| item.definition == crs,
-            || Ok(entry),
-        )?;
-        f(&cache[index].ellipsoid)
+        let entry = lru_insert(&mut cache, CRS_RHUMB_CACHE_CAPACITY, entry);
+        f(&entry.ellipsoid)
     })
 }
 
@@ -514,7 +507,7 @@ mod tests {
     fn series_naive(theta: f64, coefficients: &[f64; 6]) -> f64 {
         let mut value = theta;
         for (index, coefficient) in coefficients.iter().enumerate() {
-            value += coefficient * (2.0 * (index + 1) as f64 * theta).sin();
+            value += coefficient * (2.0 * index.wrapping_add(1) as f64 * theta).sin();
         }
         value
     }
@@ -550,7 +543,7 @@ mod tests {
         let mid = f64::midpoint(phi1, phi2);
         let mut mu_diff = dphi;
         for (index, coefficient) in ellipsoid.to_mu.iter().enumerate() {
-            let m = 2.0 * (index + 1) as f64;
+            let m = 2.0 * index.wrapping_add(1) as f64;
             mu_diff += coefficient * 2.0 * (m * mid).cos() * (m * dphi / 2.0).sin();
         }
         let (t1, t2) = (phi1.tan(), phi2.tan());

@@ -215,7 +215,15 @@ impl CrsError {
                     *target_display = Some(display_name);
                 }
             },
-            _ => {},
+            Self::Create { .. }
+            | Self::Export { .. }
+            | Self::Identify { .. }
+            | Self::EmptyGeometry
+            | Self::VerticalUnits { .. }
+            | Self::MetricUnits { .. }
+            | Self::GeodesicUnits { .. }
+            | Self::GeodesicExponentOverflow
+            | Self::Message(..) => {},
         }
     }
 }

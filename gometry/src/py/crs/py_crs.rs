@@ -168,6 +168,10 @@ impl PyCrs {
         Ok(out)
     }
 
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the CRS definition, one info Arc graph, and identify memo own disjoint retained allocations bounded by the process address space"
+    )]
     fn retained_heap_bytes(&self) -> usize {
         let identify = self
             .identify
@@ -213,6 +217,10 @@ impl HeapSize for crs::AreaOfUse {
 }
 
 impl HeapSize for crs::AuthorityObjectInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             crs,
@@ -234,6 +242,10 @@ impl HeapSize for crs::AuthorityObjectInfo {
 }
 
 impl HeapSize for crs::AxisInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             name,
@@ -254,6 +266,10 @@ impl HeapSize for crs::AxisInfo {
 }
 
 impl HeapSize for crs::DomainInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self { scope, area_of_use } = self;
         scope.heap_bytes() + area_of_use.heap_bytes()
@@ -261,6 +277,10 @@ impl HeapSize for crs::DomainInfo {
 }
 
 impl HeapSize for crs::DatumInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             name,
@@ -292,6 +312,10 @@ impl HeapSize for crs::EllipsoidInfo {
 }
 
 impl HeapSize for crs::PrimeMeridianInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             name,
@@ -304,6 +328,10 @@ impl HeapSize for crs::PrimeMeridianInfo {
 }
 
 impl HeapSize for crs::OperationParameterInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             name,
@@ -330,6 +358,10 @@ impl HeapSize for crs::OperationParameterInfo {
 }
 
 impl HeapSize for crs::GridInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             short_name,
@@ -342,6 +374,10 @@ impl HeapSize for crs::GridInfo {
 }
 
 impl HeapSize for crs::MethodInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             name,
@@ -353,6 +389,10 @@ impl HeapSize for crs::MethodInfo {
 }
 
 impl HeapSize for crs::CrsCoordinateOperationInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             name,
@@ -381,6 +421,10 @@ impl HeapSize for crs::CrsCoordinateOperationInfo {
 }
 
 impl HeapSize for crs::CrsInfo {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata tree is a retained-size graph bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         let Self {
             definition,
@@ -434,6 +478,10 @@ impl HeapSize for crs::CrsInfo {
 }
 
 impl HeapSize for crs::IdentifyCandidate {
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the owned CRS metadata fields are a retained-size subset bounded by the process address space"
+    )]
     fn heap_bytes(&self) -> usize {
         self.crs.heap_bytes()
             + self.name.heap_bytes()

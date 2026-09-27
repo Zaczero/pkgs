@@ -18,6 +18,10 @@ use crate::py::numpy::float64_array;
 /// Returns
 /// -------
 /// dict
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the scalar branch is admitted from two scalar CoordinateInputs before broadcasting"
+)]
 pub(crate) fn crs_factors(
     py: Python<'_>,
     target: &Bound<'_, PyAny>,

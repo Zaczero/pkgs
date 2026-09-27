@@ -245,6 +245,10 @@ pub(crate) fn roundtrip_error_distances(
     clippy::large_types_passed_by_value,
     reason = "a Zt lane view is a bundle of borrowed slices, passed by value like the slices it holds"
 )]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "roundtrip_errors admits equal lane lengths and the cloned transform outputs preserve that width through the SIMD and tail paths"
+)]
 pub(crate) fn roundtrip_error_distances_zt(
     roundtrip_x: &[f64],
     roundtrip_y: &[f64],
@@ -314,7 +318,7 @@ pub(crate) fn roundtrip_error_distances_zt(
             roundtrip_norm_lanes(dx, dy, dz, dt).copy_to_slice(out_chunk);
         }
     }
-    let lanes = chunks * REDUCE_LANES;
+    let lanes = chunks.wrapping_mul(REDUCE_LANES);
     if lanes < count {
         roundtrip_error_zt_scalar(
             &mut errors[lanes..],
@@ -412,6 +416,14 @@ fn roundtrip_error_zt_scalar(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "chunk is enumerated over the full fixed-width SIMD prefix of equally sized admitted lanes"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "this is the required f64 SIMD difference between corresponding round-trip coordinates"
+)]
 fn roundtrip_lane_delta(values: &[f64], original: &[f64], chunk: usize) -> ReduceSimd {
     let (values, _) = values.as_chunks::<REDUCE_LANES>();
     let (original, _) = original.as_chunks::<REDUCE_LANES>();
@@ -429,6 +441,10 @@ fn roundtrip_optional_lane_delta(
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "index is emitted from 0..roundtrip_x.len and all original/result columns were admitted at that common length"
+)]
 fn roundtrip_error_at(
     index: usize,
     roundtrip_x: &[f64],
@@ -476,7 +492,7 @@ pub(crate) fn operations_info_with_state(
     let (source, target) = normalize_pair(source, target)?;
     CRS_OPERATIONS_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let index = lru_resolve(
+        let entry = lru_resolve(
             &mut cache,
             CRS_OPERATIONS_CACHE_CAPACITY,
             |item| {
@@ -494,7 +510,7 @@ pub(crate) fn operations_info_with_state(
                 })
             },
         )?;
-        Ok(cache[index].items.clone())
+        Ok(entry.items.clone())
     })
 }
 
@@ -578,6 +594,10 @@ fn roundtrip_norm(dx: f64, dy: f64, dz: f64, dt: f64) -> f64 {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "this is the f64 SIMD squared norm; the existing scalar hypot fallback owns overflow and underflow"
+)]
 fn roundtrip_norm_lanes(
     dx: ReduceSimd,
     dy: ReduceSimd,
@@ -600,9 +620,11 @@ fn roundtrip_norm_lanes(
     let ys = dy.to_array();
     let zs = dz.to_array();
     let ts = dt.to_array();
-    for lane in 0..REDUCE_LANES {
+    for (lane, ((((out, x), y), z), t)) in
+        out.iter_mut().zip(xs).zip(ys).zip(zs).zip(ts).enumerate()
+    {
         if bits & (1 << lane) != 0 {
-            out[lane] = roundtrip_norm(xs[lane], ys[lane], zs[lane], ts[lane]);
+            *out = roundtrip_norm(x, y, z, t);
         }
     }
     ReduceSimd::from_array(out)

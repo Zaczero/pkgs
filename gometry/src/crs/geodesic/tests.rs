@@ -188,7 +188,11 @@ fn append_point_only(shape: &Shape, out: &mut Vec<Point>) {
                 append_point_only(geometry, out);
             }
         },
-        _ => {},
+        Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => {},
     }
 }
 
@@ -413,12 +417,13 @@ fn geodesic_threshold_owner_keeps_clear_cases_cheaper_than_full_minimum() {
 }
 
 const fn segment_work(stats: &super::geodesic_counters::Snapshot) -> u64 {
-    stats.segment_value_evaluations
-        + stats.segment_derivative_evaluations
-        + stats.segment_interval_pops
-        + stats.segment_interval_splits
-        + stats.segment_convex_closures
-        + stats.segment_derivative_declines
+    stats
+        .segment_value_evaluations
+        .saturating_add(stats.segment_derivative_evaluations)
+        .saturating_add(stats.segment_interval_pops)
+        .saturating_add(stats.segment_interval_splits)
+        .saturating_add(stats.segment_convex_closures)
+        .saturating_add(stats.segment_derivative_declines)
 }
 
 #[test]
@@ -1266,7 +1271,7 @@ fn geodesic_frechet_full_reference<S: Coordinates + ?Sized, L: Coordinates + ?Si
                 previous[0]
             } else {
                 previous[short_index]
-                    .min(previous[short_index - 1])
+                    .min(previous[short_index.wrapping_sub(1)])
                     .min(left_value)
             };
             left_value = edge.max(reach);
@@ -1274,7 +1279,7 @@ fn geodesic_frechet_full_reference<S: Coordinates + ?Sized, L: Coordinates + ?Si
         }
         std::mem::swap(&mut previous, &mut current);
     }
-    previous[width - 1]
+    previous[width.wrapping_sub(1)]
 }
 
 #[test]

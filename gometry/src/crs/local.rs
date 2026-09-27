@@ -192,22 +192,29 @@ fn circular_longitude_extent(longitudes: &mut Vec<f64>) -> (f64, f64, f64) {
     if let [longitude] = longitudes.as_slice() {
         return (*longitude, *longitude, *longitude);
     }
+    let first = *longitudes
+        .first()
+        .expect("a multi-coordinate extent has a first longitude");
+    let last = *longitudes
+        .last()
+        .expect("a multi-coordinate extent has a last longitude");
     let mut largest_gap = f64::NEG_INFINITY;
-    let mut gap_start = 0;
-    for index in 0..longitudes.len() {
-        let next = if index + 1 == longitudes.len() {
-            longitudes[0] + 360.0
-        } else {
-            longitudes[index + 1]
-        };
-        let gap = next - longitudes[index];
+    let mut west = first;
+    let mut east = last;
+    for &[left, right] in longitudes.array_windows::<2>() {
+        let gap = right - left;
         if gap > largest_gap {
             largest_gap = gap;
-            gap_start = index;
+            west = right;
+            east = left;
         }
     }
-    let west = longitudes[(gap_start + 1) % longitudes.len()];
-    let mut east = longitudes[gap_start];
+    let seam_next = first + 360.0;
+    let seam_gap = seam_next - last;
+    if seam_gap > largest_gap {
+        west = first;
+        east = last;
+    }
     if east < west {
         east += 360.0;
     }
@@ -489,11 +496,11 @@ fn unique_epsg_param<'a>(
 }
 
 fn wgs84_utm_crs(zone: UtmZone, pole: Pole) -> String {
-    let base = match pole {
+    let base: u32 = match pole {
         Pole::North => 32600,
         Pole::South => 32700,
     };
-    format!("EPSG:{}", base + u32::from(zone.get()))
+    format!("EPSG:{}", base.wrapping_add(u32::from(zone.get())))
 }
 
 /// Clockwise bearing in `[0, 360)` from an azimuth in `(-180, 180]`, the range
@@ -539,7 +546,7 @@ fn utm_zone(lon: f64, lat: f64) -> UtmZone {
             return UtmZone::try_new(37).expect("literal UTM zone is valid");
         }
     }
-    let zone = ((lon + 180.0) / 6.0).floor().clamp(0.0, 59.0) as u32 + 1;
+    let zone = (((lon + 180.0) / 6.0).floor().clamp(0.0, 59.0) as u32).wrapping_add(1);
     UtmZone::try_new(zone).expect("clamped UTM zone is valid")
 }
 
