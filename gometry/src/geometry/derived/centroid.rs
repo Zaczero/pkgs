@@ -162,10 +162,59 @@ fn lineal_centroid_scalar_plain(
     // Use the shared point-distance (hypot rescue on untrusted squares) so
     // length matches `.length` / `point_distance` at subnormal scales. The
     // length·midpoint product may still underfloor — finish rescues via online.
-    range.fold((0.0_f64, 0.0_f64, 0.0_f64), |(tl, lx, ly), segment| {
+    if range.len() < 2 {
+        return range.fold((0.0_f64, 0.0_f64, 0.0_f64), |(tl, lx, ly), segment| {
+            let (length, cx, cy) = lineal_centroid_segment_contrib(xs, ys, segment);
+            (tl + length, lx + cx, ly + cy)
+        });
+    }
+
+    let mut total_length = 0.0_f64;
+    let mut moment_x = 0.0_f64;
+    let mut moment_y = 0.0_f64;
+    let mut moment_x_signs = 0_u8;
+    let mut moment_y_signs = 0_u8;
+    for segment in range.clone() {
         let (length, cx, cy) = lineal_centroid_segment_contrib(xs, ys, segment);
-        (tl + length, lx + cx, ly + cy)
-    })
+        total_length += length;
+        moment_x += cx;
+        moment_y += cy;
+        moment_x_signs |= if cx > 0.0 {
+            0b01
+        } else if cx < 0.0 {
+            0b10
+        } else {
+            0
+        };
+        moment_y_signs |= if cy > 0.0 {
+            0b01
+        } else if cy < 0.0 {
+            0b10
+        } else {
+            0
+        };
+    }
+
+    if moment_x_signs == 0b11 || moment_y_signs == 0b11 {
+        let mut compensated_x = NeumaierSum::default();
+        let mut compensated_y = NeumaierSum::default();
+        for segment in range {
+            let (_, cx, cy) = lineal_centroid_segment_contrib(xs, ys, segment);
+            if moment_x_signs == 0b11 {
+                compensated_x.add(cx);
+            }
+            if moment_y_signs == 0b11 {
+                compensated_y.add(cy);
+            }
+        }
+        if moment_x_signs == 0b11 {
+            moment_x = compensated_x.total();
+        }
+        if moment_y_signs == 0b11 {
+            moment_y = compensated_y.total();
+        }
+    }
+    (total_length, moment_x, moment_y)
 }
 
 fn lineal_centroid_scalar_algebraic(
@@ -188,6 +237,21 @@ fn lineal_centroid_column_sums(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
     if segments < REDUCE_SIMD_MIN {
         return lineal_centroid_scalar_plain(xs, ys, 0..segments);
     }
+    let simd_moment_sum = |accumulated: ReduceSimd, scalar: f64| {
+        let zero = ReduceSimd::splat(0.0);
+        let has_positive = accumulated.simd_gt(zero).any() || scalar > 0.0;
+        let has_negative = accumulated.simd_lt(zero).any() || scalar < 0.0;
+        if has_positive && has_negative {
+            let mut sum = NeumaierSum::default();
+            for lane in accumulated.to_array() {
+                sum.add(lane);
+            }
+            sum.add(scalar);
+            sum.total()
+        } else {
+            accumulated.reduce_sum().algebraic_add(scalar)
+        }
+    };
     let (x0, _) = xs[..segments].as_chunks::<REDUCE_LANES>();
     let (x1, _) = xs[1..=segments].as_chunks::<REDUCE_LANES>();
     let (y0, _) = ys[..segments].as_chunks::<REDUCE_LANES>();
@@ -262,8 +326,8 @@ fn lineal_centroid_column_sums(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
                 let contrib_len = fresh.select(length, ReduceSimd::splat(0.0));
                 (
                     scalar.0.algebraic_add(contrib_len.reduce_sum()),
-                    scalar.1.algebraic_add(contrib_x.reduce_sum()),
-                    scalar.2.algebraic_add(contrib_y.reduce_sum()),
+                    scalar.1.algebraic_add(simd_moment_sum(contrib_x, 0.0)),
+                    scalar.2.algebraic_add(simd_moment_sum(contrib_y, 0.0)),
                 )
             } else {
                 let (added_len, added_x, added_y) =
@@ -278,8 +342,8 @@ fn lineal_centroid_column_sums(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
         |(len_acc, x_acc, y_acc), scalar| {
             (
                 len_acc.reduce_sum().algebraic_add(scalar.0),
-                x_acc.reduce_sum().algebraic_add(scalar.1),
-                y_acc.reduce_sum().algebraic_add(scalar.2),
+                simd_moment_sum(x_acc, scalar.1),
+                simd_moment_sum(y_acc, scalar.2),
             )
         },
     )
@@ -413,6 +477,94 @@ fn lineal_centroid_online(revisit: impl Fn(&mut dyn FnMut(&[f64], &[f64]))) -> O
     })
 }
 
+/// Recompute all lineal runs about the midpoint of the longest segment.
+fn lineal_centroid_compensated(
+    revisit: impl Fn(&mut dyn FnMut(&[f64], &[f64])),
+) -> Option<(f64, f64)> {
+    let mut maximum_length = 0.0_f64;
+    let mut anchor = None;
+    let mut unrepresentable_length = false;
+    revisit(&mut |xs, ys| {
+        for ((&x0, &y0), (&x1, &y1)) in xs
+            .iter()
+            .zip(ys)
+            .zip(xs.iter().skip(1).zip(ys.iter().skip(1)))
+        {
+            let length = point_distance(Point::new_raw_xy(x0, y0), Point::new_raw_xy(x1, y1));
+            if !length.is_finite() {
+                unrepresentable_length = true;
+            } else if length > maximum_length {
+                maximum_length = length;
+                anchor = Some((f64::midpoint(x0, x1), f64::midpoint(y0, y1)));
+            }
+        }
+    });
+    if unrepresentable_length {
+        return lineal_centroid_online(revisit);
+    }
+    let (anchor_x, anchor_y) = anchor?;
+
+    let mut total_length = NeumaierSum::default();
+    let mut moment_x = NeumaierSum::default();
+    let mut moment_y = NeumaierSum::default();
+    let mut underflowed_moment = false;
+    let mut nonfinite_moment = false;
+    revisit(&mut |xs, ys| {
+        for ((&x0, &y0), (&x1, &y1)) in xs
+            .iter()
+            .zip(ys)
+            .zip(xs.iter().skip(1).zip(ys.iter().skip(1)))
+        {
+            let length = point_distance(Point::new_raw_xy(x0, y0), Point::new_raw_xy(x1, y1));
+            if length == 0.0 {
+                continue;
+            }
+            let midpoint_x = f64::midpoint(x0, x1);
+            let midpoint_y = f64::midpoint(y0, y1);
+            let delta_x = midpoint_x - anchor_x;
+            let delta_y = midpoint_y - anchor_y;
+            let contribution_x = length * delta_x;
+            let contribution_y = length * delta_y;
+            if !(delta_x.is_finite()
+                && delta_y.is_finite()
+                && contribution_x.is_finite()
+                && contribution_y.is_finite())
+            {
+                nonfinite_moment = true;
+                return;
+            }
+            underflowed_moment |= (delta_x != 0.0 && contribution_x == 0.0)
+                || (delta_y != 0.0 && contribution_y == 0.0);
+            total_length.add(length);
+            moment_x.add(contribution_x);
+            moment_y.add(contribution_y);
+        }
+    });
+
+    if nonfinite_moment
+        || underflowed_moment
+        || !total_length.sum.is_finite()
+        || !total_length.correction.is_finite()
+        || !moment_x.sum.is_finite()
+        || !moment_x.correction.is_finite()
+        || !moment_y.sum.is_finite()
+        || !moment_y.correction.is_finite()
+    {
+        return lineal_centroid_online(revisit);
+    }
+    let total = total_length.total();
+    if !(total > 0.0 && total.is_finite()) {
+        return None;
+    }
+    let x = anchor_x + moment_x.total() / total;
+    let y = anchor_y + moment_y.total() / total;
+    if x.is_finite() && y.is_finite() {
+        Some((canonicalize_zero(x), canonicalize_zero(y)))
+    } else {
+        lineal_centroid_online(revisit)
+    }
+}
+
 /// Column kernel for lineal centroid (dimension-1 pass) over one coordinate
 /// run.
 fn centroid_line_columns(xs: &[f64], ys: &[f64]) -> Option<(f64, f64)> {
@@ -526,8 +678,8 @@ fn areal_centroid_polygon(polygon: &Polygon) -> Option<(f64, f64, f64)> {
     finish_areal_centroid(area_sum2, cg3).or_else(exact)
 }
 
-/// Streaming Neumaier accumulator for the cold stable-merge path. It keeps the
-/// established ordered summation without staging scaled X/Y contributions.
+/// Streaming Neumaier accumulator for scalar cancellation and component merges,
+/// without staging contributions.
 #[derive(Default)]
 struct NeumaierSum {
     sum: f64,
@@ -558,35 +710,78 @@ fn neumaier_sum(values: impl IntoIterator<Item = f64>) -> f64 {
     sum.total()
 }
 
+fn positive_weight_normalizes_to_zero(weight: f64, normalized: f64) -> bool {
+    weight > 0.0 && normalized == 0.0
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WeightedCentroidMergeFallback {
+    None,
+    ReplayWholeSource,
+    PositiveWeightNormalizationUnderflow,
+}
+
+struct WeightedCentroidMergeResult {
+    centroid: Option<(f64, f64)>,
+    fallback: WeightedCentroidMergeFallback,
+}
+
 /// Area/length-weighted merge of component centroids. Ordinary mid-range
 /// inputs use a flat weighted sum (bit-stable). Large absolute coordinates or
 /// detected cancellation scale by a power-of-two first and Neumaier-sum the
 /// scaled weighted coordinates so order cannot move the result (N6).
 ///
 /// Finite weights are normalized by their finite maximum before *both* the
-/// denominator and coordinate moments. Infinite `f64` weights are never a
-/// mathematical identity: callers replay those components through one shared
-/// normalized frame before reaching this finite-only merge.
-fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
+/// denominator and coordinate moments. Infinite weights and nonfinite lineal
+/// centers require whole-source online replay before any moment is accumulated.
+///
+/// With `LINEAL_PARTS_ADMITTED`, the first scan owns replay admission; the fast
+/// and stable moment scans can then skip their repeated validity checks.
+/// Lineal parts come from positive sums of nonnegative segment lengths, so
+/// after replay sentinels are removed their weights are positive and finite.
+fn weighted_centroid_merge<
+    const DETECT_POSITIVE_WEIGHT_UNDERFLOW: bool,
+    const LINEAL_PARTS_ADMITTED: bool,
+>(
+    parts: &[(f64, f64, f64)],
+) -> WeightedCentroidMergeResult {
     if parts.is_empty() {
-        return None;
+        return WeightedCentroidMergeResult {
+            centroid: None,
+            fallback: WeightedCentroidMergeFallback::None,
+        };
     }
     let mut max_weight = 0.0_f64;
     let mut max_abs_x = 0.0_f64;
     let mut max_abs_y = 0.0_f64;
     for &(w, cx, cy) in parts {
-        if !(w > 0.0 && cx.is_finite() && cy.is_finite()) {
-            continue;
-        }
-        if !w.is_finite() {
-            return None;
+        if LINEAL_PARTS_ADMITTED {
+            if lineal_part_requires_online_replay(w, cx, cy) {
+                return WeightedCentroidMergeResult {
+                    centroid: None,
+                    fallback: WeightedCentroidMergeFallback::ReplayWholeSource,
+                };
+            }
+        } else {
+            if !(w > 0.0 && cx.is_finite() && cy.is_finite()) {
+                continue;
+            }
+            if !w.is_finite() {
+                return WeightedCentroidMergeResult {
+                    centroid: None,
+                    fallback: WeightedCentroidMergeFallback::None,
+                };
+            }
         }
         max_weight = max_weight.max(w);
         max_abs_x = max_abs_x.max(cx.abs());
         max_abs_y = max_abs_y.max(cy.abs());
     }
     if !(max_weight > 0.0 && max_weight.is_finite()) {
-        return None;
+        return WeightedCentroidMergeResult {
+            centroid: None,
+            fallback: WeightedCentroidMergeFallback::None,
+        };
     }
     // Fast path: unscaled weighted sum when coordinates are mid-range.
     if max_abs_x.max(max_abs_y) <= AREAL_EXACT_MAX_COORD {
@@ -594,12 +789,22 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
         let mut sy = 0.0_f64;
         let mut w_sum = 0.0_f64;
         for &(w, cx, cy) in parts {
-            if w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite() {
-                let normalized = w / max_weight;
-                w_sum += normalized;
-                sx += normalized * cx;
-                sy += normalized * cy;
+            if !LINEAL_PARTS_ADMITTED
+                && !(w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite())
+            {
+                continue;
             }
+            let normalized = w / max_weight;
+            if DETECT_POSITIVE_WEIGHT_UNDERFLOW && positive_weight_normalizes_to_zero(w, normalized)
+            {
+                return WeightedCentroidMergeResult {
+                    centroid: None,
+                    fallback: WeightedCentroidMergeFallback::PositiveWeightNormalizationUnderflow,
+                };
+            }
+            w_sum += normalized;
+            sx += normalized * cx;
+            sy += normalized * cy;
         }
         let (mx, my) = (sx / w_sum, sy / w_sum);
         if mx.is_finite() && my.is_finite() {
@@ -607,7 +812,10 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
             if max_abs_x.max(max_abs_y) == 0.0
                 || mx.abs().max(my.abs()) >= max_abs_x.max(max_abs_y) * f64::EPSILON * 32.0
             {
-                return Some((canonicalize_zero(mx), canonicalize_zero(my)));
+                return WeightedCentroidMergeResult {
+                    centroid: Some((canonicalize_zero(mx), canonicalize_zero(my))),
+                    fallback: WeightedCentroidMergeFallback::None,
+                };
             }
         }
     }
@@ -624,20 +832,34 @@ fn weighted_centroid_merge(parts: &[(f64, f64, f64)]) -> Option<(f64, f64)> {
     let mut x_sum = NeumaierSum::default();
     let mut y_sum = NeumaierSum::default();
     for &(w, cx, cy) in parts {
-        if w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite() {
-            let normalized = w / max_weight;
-            w_sum += normalized;
-            x_sum.add(normalized * (cx * scale_x));
-            y_sum.add(normalized * (cy * scale_y));
+        if !LINEAL_PARTS_ADMITTED && !(w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite())
+        {
+            continue;
         }
+        let normalized = w / max_weight;
+        if DETECT_POSITIVE_WEIGHT_UNDERFLOW && positive_weight_normalizes_to_zero(w, normalized) {
+            return WeightedCentroidMergeResult {
+                centroid: None,
+                fallback: WeightedCentroidMergeFallback::PositiveWeightNormalizationUnderflow,
+            };
+        }
+        w_sum += normalized;
+        x_sum.add(normalized * (cx * scale_x));
+        y_sum.add(normalized * (cy * scale_y));
     }
     if w_sum <= 0.0 {
-        return None;
+        return WeightedCentroidMergeResult {
+            centroid: None,
+            fallback: WeightedCentroidMergeFallback::None,
+        };
     }
-    Some((
-        canonicalize_zero((x_sum.total() / w_sum) * inv_scale_x),
-        canonicalize_zero((y_sum.total() / w_sum) * inv_scale_y),
-    ))
+    WeightedCentroidMergeResult {
+        centroid: Some((
+            canonicalize_zero((x_sum.total() / w_sum) * inv_scale_x),
+            canonicalize_zero((y_sum.total() / w_sum) * inv_scale_y),
+        )),
+        fallback: WeightedCentroidMergeFallback::None,
+    }
 }
 
 fn visit_areal_polygons(shape: &Shape, visit: &mut dyn FnMut(&Polygon)) {
@@ -691,7 +913,9 @@ fn areal_centroid_summary(shape: &Shape) -> Option<(f64, f64, f64)> {
                     }
                 }
             }
-            weighted_centroid_merge(&parts).map(|(x, y)| (area, x, y))
+            weighted_centroid_merge::<false, false>(&parts)
+                .centroid
+                .map(|(x, y)| (area, x, y))
         },
         Shape::GeometryCollection(geometries) => {
             let mut parts = Vec::new();
@@ -707,7 +931,9 @@ fn areal_centroid_summary(shape: &Shape) -> Option<(f64, f64, f64)> {
                     }
                 }
             }
-            weighted_centroid_merge(&parts).map(|(x, y)| (area, x, y))
+            weighted_centroid_merge::<false, false>(&parts)
+                .centroid
+                .map(|(x, y)| (area, x, y))
         },
         _ => None,
     }
@@ -718,13 +944,29 @@ pub(crate) fn areal_centroid(shape: &Shape) -> Option<(f64, f64)> {
 }
 
 /// Per-component lineal centroid for a single coordinate run, returned with
-/// its length weight for a later stable merge.
+/// its length weight for the caller's merge or whole-shape replay decision.
 fn lineal_component_centroid(xs: &[f64], ys: &[f64]) -> Option<(f64, f64, f64)> {
     let mut total_length = 0.0_f64;
     let mut line_sum = (0.0_f64, 0.0_f64);
     accumulate_lineal_centroid(xs, ys, &mut total_length, &mut line_sum);
     let (cx, cy) = finish_lineal_centroid_rescued(total_length, line_sum, |visit| visit(xs, ys))?;
     (total_length > 0.0).then_some((total_length, cx, cy))
+}
+
+fn lineal_part_requires_online_replay(weight: f64, cx: f64, cy: f64) -> bool {
+    // An infinite length remains a replay sentinel even if its rescued center failed too.
+    weight.is_infinite() || !cx.is_finite() || !cy.is_finite()
+}
+
+fn lineal_single_part_collection_centroid(
+    (weight, cx, cy): (f64, f64, f64),
+    replay: impl FnOnce() -> Option<(f64, f64)>,
+) -> Option<(f64, f64)> {
+    if lineal_part_requires_online_replay(weight, cx, cy) {
+        replay()
+    } else {
+        Some((cx, cy))
+    }
 }
 
 /// Dimension-1 centroid: length-weighted edge-midpoint sums over every lineal
@@ -741,14 +983,23 @@ pub(crate) fn lineal_centroid(shape: &Shape) -> Option<(f64, f64)> {
                     parts.push((w, cx, cy));
                 }
             }
-            if parts.iter().any(|(weight, ..)| weight.is_infinite()) {
-                lineal_centroid_online(|visit| {
-                    for line in lines {
-                        visit(line.xs(), line.ys());
-                    }
-                })
-            } else {
-                weighted_centroid_merge(&parts)
+            let merged = weighted_centroid_merge::<true, true>(&parts);
+            match merged.fallback {
+                WeightedCentroidMergeFallback::ReplayWholeSource => {
+                    lineal_centroid_online(|visit| {
+                        for line in lines {
+                            visit(line.xs(), line.ys());
+                        }
+                    })
+                },
+                WeightedCentroidMergeFallback::PositiveWeightNormalizationUnderflow => {
+                    lineal_centroid_compensated(|visit| {
+                        for line in lines {
+                            visit(line.xs(), line.ys());
+                        }
+                    })
+                },
+                WeightedCentroidMergeFallback::None => merged.centroid,
             }
         },
         Shape::GeometryCollection(_) => {
@@ -759,12 +1010,21 @@ pub(crate) fn lineal_centroid(shape: &Shape) -> Option<(f64, f64)> {
                     parts.push((w, cx, cy));
                 }
             });
-            if parts.iter().any(|(weight, ..)| weight.is_infinite()) {
-                lineal_centroid_online(|visit| for_each_lineal(shape, visit))
-            } else if parts.len() > 1 {
-                weighted_centroid_merge(&parts)
-            } else if let Some((w, cx, cy)) = parts.first() {
-                (*w > 0.0).then_some((*cx, *cy))
+            if parts.len() > 1 {
+                let merged = weighted_centroid_merge::<true, true>(&parts);
+                match merged.fallback {
+                    WeightedCentroidMergeFallback::ReplayWholeSource => {
+                        lineal_centroid_online(|visit| for_each_lineal(shape, visit))
+                    },
+                    WeightedCentroidMergeFallback::PositiveWeightNormalizationUnderflow => {
+                        lineal_centroid_compensated(|visit| for_each_lineal(shape, visit))
+                    },
+                    WeightedCentroidMergeFallback::None => merged.centroid,
+                }
+            } else if let Some(&part) = parts.first() {
+                lineal_single_part_collection_centroid(part, || {
+                    lineal_centroid_online(|visit| for_each_lineal(shape, visit))
+                })
             } else {
                 None
             }
@@ -883,5 +1143,94 @@ fn for_each_fallback_point(shape: &Shape, visit: &mut impl FnMut(f64, f64)) {
 fn anchor_vertex(xs: &[f64], ys: &[f64], visit: &mut impl FnMut(f64, f64)) {
     if let Some((&x, &y)) = xs.first().zip(ys.first()) {
         visit(x, y);
+    }
+}
+
+#[cfg(test)]
+mod compensated_centroid_tests {
+    use super::lineal_centroid_compensated;
+
+    #[test]
+    fn zero_product_fallback_recovers_subnormal_centroid() {
+        let delta = 2.0_f64.powi(-540);
+        let first_x = [-0.5 * delta, 0.5 * delta];
+        let first_y = [0.0, 0.0];
+        let second_x = [3.5 * delta, 4.5 * delta];
+        let second_y = [0.0, 0.0];
+
+        assert_eq!((first_x[1] - first_x[0]).to_bits(), delta.to_bits());
+        assert_eq!((second_x[1] - second_x[0]).to_bits(), delta.to_bits());
+        assert_eq!((delta * (4.0 * delta)).to_bits(), 0.0_f64.to_bits());
+
+        let centroid = lineal_centroid_compensated(|visit| {
+            visit(&first_x, &first_y);
+            visit(&second_x, &second_y);
+        })
+        .expect("positive lineal measure");
+        assert_eq!(centroid.0.to_bits(), (2.0 * delta).to_bits());
+        assert_eq!(centroid.1.to_bits(), 0.0_f64.to_bits());
+    }
+}
+
+#[cfg(test)]
+mod weighted_centroid_merge_tests {
+    use super::{
+        WeightedCentroidMergeFallback, lineal_single_part_collection_centroid,
+        weighted_centroid_merge,
+    };
+
+    #[test]
+    fn finite_weight_nonfinite_center_requires_whole_source_replay() {
+        let parts = [(1.0, f64::INFINITY, 0.0), (3.0, 2.0, 3.0)];
+
+        let old_checked_skip = weighted_centroid_merge::<true, false>(&parts);
+        assert_eq!(old_checked_skip.centroid, Some((2.0, 3.0)));
+
+        let admitted_lineal = weighted_centroid_merge::<true, true>(&parts);
+        assert_eq!(
+            admitted_lineal.fallback,
+            WeightedCentroidMergeFallback::ReplayWholeSource
+        );
+        assert_eq!(admitted_lineal.centroid, None);
+    }
+
+    #[test]
+    fn infinite_weight_precedes_nonfinite_center_admission() {
+        let parts = [
+            (f64::INFINITY, f64::INFINITY, f64::INFINITY),
+            (3.0, 2.0, 3.0),
+        ];
+
+        let result = weighted_centroid_merge::<true, true>(&parts);
+
+        assert_eq!(
+            result.fallback,
+            WeightedCentroidMergeFallback::ReplayWholeSource
+        );
+        assert_eq!(result.centroid, None);
+    }
+
+    #[test]
+    fn single_part_collection_replays_for_nonfinite_center() {
+        let mut replay_calls = 0;
+        let result = lineal_single_part_collection_centroid((1.0, f64::INFINITY, 0.0), || {
+            replay_calls += 1;
+            Some((7.0, 11.0))
+        });
+
+        assert_eq!(replay_calls, 1);
+        assert_eq!(result, Some((7.0, 11.0)));
+    }
+
+    #[test]
+    fn positive_normalization_underflow_remains_a_separate_outcome() {
+        let parts = [(1.0e308, 0.0, 0.0), (f64::from_bits(1), 4.0, 0.0)];
+
+        let result = weighted_centroid_merge::<true, true>(&parts);
+
+        assert_eq!(
+            result.fallback,
+            WeightedCentroidMergeFallback::PositiveWeightNormalizationUnderflow
+        );
     }
 }
