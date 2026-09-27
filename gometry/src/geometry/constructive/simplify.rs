@@ -670,23 +670,15 @@ fn keep_polygon(
     }))
 }
 
-fn prefix_members<T: Clone>(
-    values: &[T],
-    members: impl ExactSizeIterator<Item = MultiMember<usize>>,
+fn prefix_members<'a, T: Clone + 'a>(
+    members: impl Iterator<Item = MultiMember<&'a T>>,
+    capacity: usize,
     end: usize,
 ) -> Vec<MultiMember<T>> {
-    let mut values = values.iter();
-    let mut out = Vec::with_capacity(members.len());
-    out.extend(members.take(end).map(|member| {
-        match member {
-            MultiMember::Empty => MultiMember::Empty,
-            MultiMember::Value(_) => MultiMember::Value(
-                values
-                    .next()
-                    .expect("sparse member values follow stored value order")
-                    .clone(),
-            ),
-        }
+    let mut out = Vec::with_capacity(capacity);
+    out.extend(members.take(end).map(|member| match member {
+        MultiMember::Empty => MultiMember::Empty,
+        MultiMember::Value(value) => MultiMember::Value(value.clone()),
     }));
     out
 }
@@ -697,35 +689,32 @@ fn keep_multi_lines(
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<LineSeq>>> = None;
-    let mut values = lines.iter();
-    for (index, member) in lines.members().enumerate() {
+    for (index, member) in lines.members_with_values().enumerate() {
         match member {
             MultiMember::Empty => {
                 if let Some(members) = out.as_mut() {
                     members.push(MultiMember::Empty);
                 }
             },
-            MultiMember::Value(_) => {
-                let line = values
-                    .next()
-                    .expect("sparse member values follow stored line order");
-                match kept_coords(line, scratch, keep_mask)? {
-                    None => {
-                        if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Value(line.clone()));
-                        }
-                    },
-                    Some(coords) => {
-                        if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Value(LineSeq::from_proven(coords)));
-                        } else {
-                            let mut members =
-                                prefix_members(lines.as_slice(), lines.members(), index);
-                            members.push(MultiMember::Value(LineSeq::from_proven(coords)));
-                            out = Some(members);
-                        }
-                    },
-                }
+            MultiMember::Value(line) => match kept_coords(line, scratch, keep_mask)? {
+                None => {
+                    if let Some(members) = out.as_mut() {
+                        members.push(MultiMember::Value(line.clone()));
+                    }
+                },
+                Some(coords) => {
+                    if let Some(members) = out.as_mut() {
+                        members.push(MultiMember::Value(LineSeq::from_proven(coords)));
+                    } else {
+                        let mut members = prefix_members(
+                            lines.members_with_values(),
+                            lines.member_count(),
+                            index,
+                        );
+                        members.push(MultiMember::Value(LineSeq::from_proven(coords)));
+                        out = Some(members);
+                    }
+                },
             },
         }
     }
@@ -744,45 +733,45 @@ fn keep_multi_polygons(
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<Polygon>>> = None;
-    let mut values = polygons.iter();
-    for (index, member) in polygons.members().enumerate() {
+    for (index, member) in polygons.members_with_values().enumerate() {
         match member {
             MultiMember::Empty => {
                 if let Some(members) = out.as_mut() {
                     members.push(MultiMember::Empty);
                 }
             },
-            MultiMember::Value(_) => {
-                let polygon = values
-                    .next()
-                    .expect("sparse member values follow stored polygon order");
-                match keep_polygon(polygon, scratch, keep_mask)? {
-                    PolygonKeep::Same => {
-                        if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Value(polygon.clone()));
-                        }
-                    },
-                    PolygonKeep::Empty => {
-                        if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Empty);
-                        } else {
-                            let mut members =
-                                prefix_members(polygons.as_slice(), polygons.members(), index);
-                            members.push(MultiMember::Empty);
-                            out = Some(members);
-                        }
-                    },
-                    PolygonKeep::New(polygon) => {
-                        if let Some(members) = out.as_mut() {
-                            members.push(MultiMember::Value(polygon));
-                        } else {
-                            let mut members =
-                                prefix_members(polygons.as_slice(), polygons.members(), index);
-                            members.push(MultiMember::Value(polygon));
-                            out = Some(members);
-                        }
-                    },
-                }
+            MultiMember::Value(polygon) => match keep_polygon(polygon, scratch, keep_mask)? {
+                PolygonKeep::Same => {
+                    if let Some(members) = out.as_mut() {
+                        members.push(MultiMember::Value(polygon.clone()));
+                    }
+                },
+                PolygonKeep::Empty => {
+                    if let Some(members) = out.as_mut() {
+                        members.push(MultiMember::Empty);
+                    } else {
+                        let mut members = prefix_members(
+                            polygons.members_with_values(),
+                            polygons.member_count(),
+                            index,
+                        );
+                        members.push(MultiMember::Empty);
+                        out = Some(members);
+                    }
+                },
+                PolygonKeep::New(polygon) => {
+                    if let Some(members) = out.as_mut() {
+                        members.push(MultiMember::Value(polygon));
+                    } else {
+                        let mut members = prefix_members(
+                            polygons.members_with_values(),
+                            polygons.member_count(),
+                            index,
+                        );
+                        members.push(MultiMember::Value(polygon));
+                        out = Some(members);
+                    }
+                },
             },
         }
     }
@@ -861,17 +850,11 @@ impl Shape {
                 Self::Polygon,
             ),
             Self::MultiPolygon(polygons) => {
-                let mut values = polygons.iter();
                 let members = polygons
-                    .members()
+                    .members_with_values()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
-                        crate::geometry::MultiMember::Value(_) => clean(
-                            values
-                                .next()
-                                .expect("sparse polygon values follow member order"),
-                        )
-                        .map_or(
+                        crate::geometry::MultiMember::Value(polygon) => clean(polygon).map_or(
                             crate::geometry::MultiMember::Empty,
                             crate::geometry::MultiMember::Value,
                         ),

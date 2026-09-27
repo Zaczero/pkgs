@@ -1130,14 +1130,11 @@ impl Shape {
                 Self::Polygon,
             ),
             Self::MultiPolygon(polygons) => {
-                let mut values = polygons.iter();
                 let members = polygons
-                    .members()
+                    .members_with_values()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(_) => Ok(values
-                            .next()
-                            .expect("sparse polygon values follow member order")
+                        MultiMember::Value(polygon) => Ok(polygon
                             .snap_to_reference(engine)?
                             .map_or(MultiMember::Empty, MultiMember::Value)),
                     })
@@ -1199,18 +1196,12 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut members = Vec::with_capacity(lines.member_count());
-                let mut values = lines.iter();
-                for member in lines.members() {
+                for member in lines.members_with_values() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(_) => MultiMember::Value(
-                            LineSeq::try_new(seq_fn(
-                                values
-                                    .next()
-                                    .expect("sparse line values follow member order"),
-                            )?)
-                            .map_err(E::from)?,
-                        ),
+                        MultiMember::Value(line) => {
+                            MultiMember::Value(LineSeq::try_new(seq_fn(line)?).map_err(E::from)?)
+                        },
                     };
                     members.push(member);
                 }
@@ -1226,16 +1217,12 @@ impl Shape {
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
                 let mut members = Vec::with_capacity(polygons.member_count());
-                let mut values = polygons.iter();
-                for member in polygons.members() {
+                for member in polygons.members_with_values() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(_) => MultiMember::Value(
-                            values
-                                .next()
-                                .expect("sparse polygon values follow member order")
-                                .try_map_ring_seqs(seq_fn)?,
-                        ),
+                        MultiMember::Value(polygon) => {
+                            MultiMember::Value(polygon.try_map_ring_seqs(seq_fn)?)
+                        },
                     };
                     members.push(member);
                 }
@@ -1371,14 +1358,10 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut members = Vec::with_capacity(lines.member_count());
-                let mut values = lines.iter();
-                for member in lines.members() {
+                for member in lines.members_with_values() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(_) => {
-                            let line = values
-                                .next()
-                                .expect("sparse line values follow member order");
+                        MultiMember::Value(line) => {
                             let vertices = dedup_line(line);
                             if vertices.len() >= 2 {
                                 MultiMember::Value(LineSeq::try_new(CoordSeq::try_from_points(
@@ -1399,20 +1382,14 @@ impl Shape {
             },
             Self::MultiPolygon(polygons) => {
                 let mut members = Vec::with_capacity(polygons.member_count());
-                let mut values = polygons.iter();
-                for member in polygons.members() {
+                for member in polygons.members_with_values() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(_) => {
-                            let polygon = values
-                                .next()
-                                .expect("sparse polygon values follow member order");
-                            match dedup_ring(&polygon.shell)? {
-                                Some(shell) => {
-                                    MultiMember::Value(Polygon::new(shell, dedup_holes(polygon)?))
-                                },
-                                None => MultiMember::Empty,
-                            }
+                        MultiMember::Value(polygon) => match dedup_ring(&polygon.shell)? {
+                            Some(shell) => {
+                                MultiMember::Value(Polygon::new(shell, dedup_holes(polygon)?))
+                            },
+                            None => MultiMember::Empty,
                         },
                     };
                     members.push(member);

@@ -74,19 +74,13 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
         Shape::Polygon(_) => shape.clone(),
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::with_capacity(polygons.member_count());
-            let mut values = polygons.iter();
-            for member in polygons.members() {
+            for member in polygons.members_with_values() {
                 let shape = match member {
                     crate::geometry::MultiMember::Empty => {
                         Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
                     },
-                    crate::geometry::MultiMember::Value(_) => {
-                        degenerate_polygonal_as_linework(&Shape::Polygon(
-                            values
-                                .next()
-                                .expect("sparse polygon values follow member order")
-                                .clone(),
-                        ))?
+                    crate::geometry::MultiMember::Value(polygon) => {
+                        degenerate_polygonal_as_linework(&Shape::Polygon(polygon.clone()))?
                     },
                 };
                 members.push(shape);

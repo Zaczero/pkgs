@@ -1149,22 +1149,18 @@ impl Shape {
                 Self::Polygon,
             ),
             Self::MultiPolygon(polygons) => {
-                let mut values = polygons.iter();
                 let members = polygons
-                    .members()
+                    .members_with_values()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
-                        crate::geometry::MultiMember::Value(_) => Ok(remove_repeated_polygon(
-                            values
-                                .next()
-                                .expect("sparse polygon values follow member order"),
-                        )?
-                        .map_or(
-                            crate::geometry::MultiMember::Empty,
-                            crate::geometry::MultiMember::Value,
-                        )),
+                        crate::geometry::MultiMember::Value(polygon) => {
+                            Ok(remove_repeated_polygon(polygon)?.map_or(
+                                crate::geometry::MultiMember::Empty,
+                                crate::geometry::MultiMember::Value,
+                            ))
+                        },
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Self::MultiPolygon(MultiPolygon::try_new(polygons.axes(), members)?)

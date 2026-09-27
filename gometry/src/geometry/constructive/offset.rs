@@ -762,24 +762,18 @@ impl Shape {
                 },
             },
             Self::MultiLineString(lines) => {
-                let mut values = lines.iter();
                 let members = lines
-                    .members()
+                    .members_with_values()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
-                        crate::geometry::MultiMember::Value(_) => offset(
-                            values
-                                .next()
-                                .expect("sparse line values follow member order")
-                                .as_coords(),
-                        )?
-                        .map_or(Ok(crate::geometry::MultiMember::Empty), |line| {
-                            Ok(crate::geometry::MultiMember::Value(LineSeq::try_new(
-                                CoordSeq::try_from_points(&line)?,
-                            )?))
-                        }),
+                        crate::geometry::MultiMember::Value(line) => offset(line.as_coords())?
+                            .map_or(Ok(crate::geometry::MultiMember::Empty), |line| {
+                                Ok(crate::geometry::MultiMember::Value(LineSeq::try_new(
+                                    CoordSeq::try_from_points(&line)?,
+                                )?))
+                            }),
                     })
                     .collect::<Result<Vec<_>>>()?;
                 Self::MultiLineString(MultiLineString::try_new(lines.axes(), members)?)
