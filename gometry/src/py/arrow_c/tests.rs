@@ -95,12 +95,18 @@ unsafe fn metadata_snapshot(metadata: *const c_char) -> Option<Vec<u8>> {
     let mut end = std::mem::size_of::<i32>();
     for _ in 0..count {
         let key_len = usize::try_from(read_i32(end)).expect("metadata key length");
+        let key_envelope = std::mem::size_of::<i32>()
+            .checked_add(key_len)
+            .expect("metadata key envelope length");
         end = end
-            .checked_add(std::mem::size_of::<i32>() + key_len)
+            .checked_add(key_envelope)
             .expect("metadata key envelope length");
         let value_len = usize::try_from(read_i32(end)).expect("metadata value length");
+        let value_envelope = std::mem::size_of::<i32>()
+            .checked_add(value_len)
+            .expect("metadata value envelope length");
         end = end
-            .checked_add(std::mem::size_of::<i32>() + value_len)
+            .checked_add(value_envelope)
             .expect("metadata value envelope length");
     }
     // SAFETY: the length was decoded from the complete production envelope.
@@ -496,11 +502,9 @@ fn schema_only_uses_borrowed_description_without_payload_work() {
 }
 
 fn schema_snapshot_node_count(snapshot: &SchemaSnapshot) -> usize {
-    1 + snapshot
-        .children
-        .iter()
-        .map(schema_snapshot_node_count)
-        .sum::<usize>()
+    snapshot.children.iter().fold(1_usize, |count, child| {
+        count.wrapping_add(schema_snapshot_node_count(child))
+    })
 }
 
 #[test]

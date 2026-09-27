@@ -1031,7 +1031,12 @@ fn admit_geoparquet_geometry_storage(
                 wkb_offset_width(is_large_binary, is_binary_view),
             ))
         },
-        native => {
+        native @ (GeometryEncoding::Point
+        | GeometryEncoding::MultiPoint
+        | GeometryEncoding::LineString
+        | GeometryEncoding::MultiLineString
+        | GeometryEncoding::Polygon
+        | GeometryEncoding::MultiPolygon) => {
             let expected_name = native.extension_name();
             let physical = geoarrow_native_layout(pa, &storage_type)
                 .map_err(GeoParquetAdmissionError::layout_from_py)?;

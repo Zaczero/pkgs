@@ -1,8 +1,3 @@
-#![expect(
-    clippy::absolute_paths,
-    reason = "Arrow planning is kept beside the C exporter and its native types"
-)]
-
 use std::borrow::Cow;
 #[cfg(test)]
 use std::cell::Cell;
@@ -13,10 +8,13 @@ use crate::PyGeometryArray;
 use crate::array::{ArrayRow, GeometryArrayStorage, PackedStorage, RowSelectionRef};
 use crate::geometry::{CoordSeq, CoordinateAxes, LineSeq, Polygon, Shape};
 use crate::py::arrow::{ArrowEncoding, accumulate_geometry_axes};
+#[cfg(test)]
+use crate::py::arrow_c::GometryArrowSchema;
 use crate::py::arrow_c::{
     ExportedArray, GeometryEncoding, GometryArrowArray, NativeArrowExportError,
     NativeArrowExportResult, SchemaNode, admitted_binary_array, admitted_list_array_windowed,
-    coordinate_array, coordinate_schema, extension_schema, list_schema, wkb_schema,
+    apply_exported_validity_plan, coordinate_array, coordinate_schema, export_with_schema_node,
+    extension_schema, list_schema, wkb_schema,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -148,12 +146,12 @@ pub(crate) fn payload_events() -> (usize, usize) {
 
 #[cfg(test)]
 fn record_payload_builder() {
-    PAYLOAD_BUILDERS.with(|count| count.set(count.get() + 1));
+    PAYLOAD_BUILDERS.with(|count| count.set(count.get().wrapping_add(1)));
 }
 
 #[cfg(test)]
 fn record_payload_materialization() {
-    PAYLOAD_MATERIALIZATIONS.with(|count| count.set(count.get() + 1));
+    PAYLOAD_MATERIALIZATIONS.with(|count| count.set(count.get().wrapping_add(1)));
 }
 
 fn initial_offsets(rows: usize) -> Vec<i32> {
@@ -180,7 +178,7 @@ impl StoragePlan {
     const fn offset(&self) -> usize {
         match self {
             Self::List { start, .. } => *start,
-            _ => 0,
+            Self::Coordinates(_) | Self::Binary { .. } => 0,
         }
     }
 
@@ -228,13 +226,9 @@ pub(crate) fn materialize_export_plan(plan: PreparedArrowExportPlan) -> PyResult
     let ArrowExportPlan {
         storage, validity, ..
     } = plan;
-    let mut export = crate::py::arrow_c::export_with_schema_node(schema, storage.materialize()?)?;
+    let mut export = export_with_schema_node(schema, storage.materialize()?)?;
     if let Some(validity) = validity {
-        crate::py::arrow_c::apply_exported_validity_plan(
-            &mut export,
-            validity.bitmap,
-            validity.null_count,
-        )?;
+        apply_exported_validity_plan(&mut export, validity.bitmap, validity.null_count)?;
     }
     Ok(export)
 }
@@ -242,7 +236,7 @@ pub(crate) fn materialize_export_plan(plan: PreparedArrowExportPlan) -> PyResult
 #[cfg(test)]
 pub(crate) fn materialize_schema_plan(
     plan: PreparedArrowExportPlan,
-) -> PyResult<crate::py::arrow_c::GometryArrowSchema> {
+) -> PyResult<GometryArrowSchema> {
     plan.schema
         .materialize_schema()
         .map_err(|error| pyo3::Python::attach(|py| error.into_py_err(py)))
@@ -365,9 +359,12 @@ fn plan_storage(
         GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
             let coords = match row_map.as_deref() {
                 RowSelectionRef::Identity | RowSelectionRef::Gather(_) => coords.as_ref().clone(),
-                RowSelectionRef::Window { start, len } => coords.view(
-                    crate::geometry::CoordWindow::from_range(start..start + len, coords.len()),
-                ),
+                RowSelectionRef::Window { start, len } => {
+                    coords.view(crate::geometry::CoordWindow::from_range(
+                        start..start.wrapping_add(len),
+                        coords.len(),
+                    ))
+                },
             };
             Ok(StoragePlan::Coordinates(coords))
         },
@@ -537,7 +534,14 @@ fn describe_shape_iter<'a>(mut shapes: impl Iterator<Item = &'a Shape> + Clone) 
         {
             GeometryEncoding::MultiPolygon
         },
-        _ => GeometryEncoding::Wkb,
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => GeometryEncoding::Wkb,
     };
     GeometrySchema { encoding, axes }
 }
@@ -562,13 +566,29 @@ fn plan_shape_refs_with_layout(
         GeometryEncoding::MultiPoint => {
             plan_single_list(shapes, layout.axes, |shape| match shape {
                 Shape::MultiPoint(points) => points,
-                _ => unreachable!("schema description selected multipoint payload"),
+                Shape::Point(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => {
+                    unreachable!("schema description selected multipoint payload")
+                },
             })
         },
         GeometryEncoding::LineString => {
             plan_single_list(shapes, layout.axes, |shape| match shape {
                 Shape::LineString(points) => points,
-                _ => unreachable!("schema description selected linestring payload"),
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::MultiLineString(_)
+                | Shape::Polygon(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => {
+                    unreachable!("schema description selected linestring payload")
+                },
             })
         },
         GeometryEncoding::MultiLineString => plan_multilines(shapes, layout.axes),
@@ -625,13 +645,16 @@ fn plan_multilines(
         let Shape::MultiLineString(items) = shape else {
             unreachable!()
         };
+        let mut stored_lines = items.as_slice().iter();
         for member in items.members() {
             match member {
                 crate::geometry::MultiMember::Empty => {
                     line_offsets.push(point_count);
                 },
-                crate::geometry::MultiMember::Value(index) => {
-                    let line = &items.as_slice()[index];
+                crate::geometry::MultiMember::Value(_) => {
+                    let line = stored_lines
+                        .next()
+                        .expect("multipart value indices are encounter-ordered");
                     point_count = checked_i32_offset_total(point_count, line.len())?;
                     line_offsets.push(point_count);
                     lines.push(line);
@@ -826,15 +849,18 @@ fn validate_list_offsets(
                 "Arrow offsets buffer is shorter than declared array length",
             )
         })?;
-    if end > offsets.len() {
-        return Err(NativeArrowExportError::geoarrow(
+    let window = offsets.get(start..end).ok_or_else(|| {
+        NativeArrowExportError::geoarrow(
             "Arrow offsets buffer is shorter than declared array length",
-        ));
-    }
-    let mut previous = usize::try_from(offsets[start])
+        )
+    })?;
+    let (first, remaining) = window
+        .split_first()
+        .expect("checked Arrow offset window contains at least its initial offset");
+    let mut previous = usize::try_from(*first)
         .map_err(|_| NativeArrowExportError::geoarrow("Arrow offsets must be non-negative"))?;
-    for index in 1..=length {
-        let next = usize::try_from(offsets[start + index])
+    for raw_next in remaining {
+        let next = usize::try_from(*raw_next)
             .map_err(|_| NativeArrowExportError::geoarrow("Arrow offsets must be non-negative"))?;
         if previous > next {
             return Err(NativeArrowExportError::geoarrow(
@@ -867,11 +893,21 @@ fn plan_validity(
         owned
     } else {
         let mut values = vec![0; total_bits.div_ceil(8)];
-        for row in 0..mask.len() {
-            if mask.is_valid(row) {
-                let bit = offset + row;
-                values[bit / 8] |= 1 << (bit % 8);
+        let mut missing = mask.iter();
+        let mut first_bit = offset % 8;
+        'bytes: for byte in values.iter_mut().skip(offset / 8) {
+            let mut packed = 0_u8;
+            for bit in first_bit..8 {
+                let Some(is_missing) = missing.next() else {
+                    *byte = packed;
+                    break 'bytes;
+                };
+                if !is_missing {
+                    packed |= 1_u8 << bit;
+                }
             }
+            *byte = packed;
+            first_bit = 0;
         }
         crate::geometry::SharedSlice::from_vec(values)
     };
@@ -916,6 +952,7 @@ mod tests {
     use pyo3::prelude::*;
 
     use super::*;
+    use crate::py::errors::{GeometryError, InvalidGeometryError, ParseError};
 
     #[cfg(target_pointer_width = "64")]
     #[test]
@@ -941,7 +978,7 @@ mod tests {
             let geoarrow = validate_list_offsets(&[0, 2, 1], 0, 2, 2)
                 .expect_err("decreasing offsets must fail")
                 .into_py_err(py);
-            assert!(geoarrow.is_instance_of::<crate::py::errors::ParseError>(py));
+            assert!(geoarrow.is_instance_of::<ParseError>(py));
             assert_eq!(
                 geoarrow
                     .value(py)
@@ -954,15 +991,15 @@ mod tests {
             assert!(geoarrow.value(py).to_string().contains("must be ordered"));
 
             let generic = NativeArrowExportError::geometry("epoch is invalid").into_py_err(py);
-            assert!(generic.is_instance_of::<crate::py::errors::GeometryError>(py));
+            assert!(generic.is_instance_of::<GeometryError>(py));
 
             let invalid = mixed_axes_error().into_py_err(py);
-            assert!(invalid.is_instance_of::<crate::py::errors::InvalidGeometryError>(py));
+            assert!(invalid.is_instance_of::<InvalidGeometryError>(py));
 
             let core: crate::error::Error =
                 crate::geometry::GeometryErrorKind::OffsetCapacityExceeded.into();
             let core = NativeArrowExportError::from(core).into_py_err(py);
-            assert!(core.is_instance_of::<crate::py::errors::GeometryError>(py));
+            assert!(core.is_instance_of::<GeometryError>(py));
             assert!(core.value(py).to_string().contains("i32 offset"));
         });
     }

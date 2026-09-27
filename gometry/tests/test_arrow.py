@@ -406,6 +406,29 @@ def test_explicit_empty_multipart_arrow_controls_preserve_other_contracts() -> N
     assert framed_restored.epoch == 2020.0
 
 
+def test_sliced_nullable_geometry_export_rebases_validity_bits() -> None:
+    source = gm.GeometryArray([
+        gm.Point(0.0, 10.0),
+        None,
+        gm.Point(2.0, 12.0),
+        gm.Point(3.0, 13.0),
+        None,
+        gm.Point(5.0, 15.0),
+    ])
+    sliced = source[1:5]
+    arrow = sliced.to_arrow()
+
+    assert arrow.type.extension_name == 'geoarrow.point'
+    validity = arrow.storage.buffers()[0]
+    assert validity is not None
+    assert validity.to_pybytes()[0] & 0b1111 == 0b0110
+    assert arrow.is_null().to_pylist() == [True, False, False, True]
+
+    restored = cast('gm.GeometryArray', gm.from_arrow(arrow))
+    assert restored.is_missing.tolist() == [True, False, False, True]
+    assert restored.to_wkt() == [None, 'POINT (2 12)', 'POINT (3 13)', None]
+
+
 def test_to_arrow_forced_wkb_encoding_roundtrips() -> None:
     values = gm.points([0.0, 1.0], [2.0, 3.0], crs=4326)
     arrow = values.to_arrow(encoding='wkb')

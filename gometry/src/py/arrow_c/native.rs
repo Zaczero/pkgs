@@ -1,10 +1,4 @@
 //! Native Arrow C Data Interface admission into owned Arrow batches.
-#![expect(
-    clippy::type_complexity,
-    clippy::use_self,
-    clippy::missing_const_for_fn,
-    reason = "owned Arrow admission + recursive capture is intentionally explicit"
-)]
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
@@ -117,7 +111,7 @@ impl ArrowFormat {
         match self {
             Self::Binary | Self::List => Some(4),
             Self::LargeBinary | Self::LargeList => Some(8),
-            _ => None,
+            Self::Float64 | Self::BinaryView | Self::FixedSizeList(_) | Self::Struct => None,
         }
     }
 
@@ -207,9 +201,6 @@ struct CaptureLayout<'shell> {
     buffers: *const *const c_void,
     /// Producer children table; live only while the capture shell is held.
     children: *mut *mut ArrowArray,
-    /// BinaryView only: sparse selected payload windows keyed by referenced
-    /// non-inline data-buffer index. `None` for non-BinaryView.
-    binary_view_data_ranges: Option<Arc<HashMap<usize, std::ops::Range<usize>>>>,
     /// Selected logical child span from an owned list-offset window.
     child_window: Option<(usize, usize)>,
 }
@@ -310,7 +301,7 @@ impl<'shell> CaptureLayout<'shell> {
             match raw_count {
                 NullCount::Known(0) => NullCount::Known(0),
                 count if offset == raw_offset && length == raw_length => count,
-                _ => NullCount::Unknown,
+                NullCount::Known(_) | NullCount::Unknown => NullCount::Unknown,
             }
         } else {
             NullCount::parse(raw.null_count, length)?
@@ -340,7 +331,6 @@ impl<'shell> CaptureLayout<'shell> {
             format,
             buffers: raw.buffers,
             children: raw.children,
-            binary_view_data_ranges: None,
             child_window: None,
         })
     }
@@ -350,7 +340,7 @@ impl<'shell> CaptureLayout<'shell> {
     /// # Safety
     ///
     /// Capture shell must still be live (buffer table valid).
-    unsafe fn buffer_ptr(&self, index: usize) -> *const c_void {
+    const unsafe fn buffer_ptr(&self, index: usize) -> *const c_void {
         if index >= self.n_buffers || self.buffers.is_null() {
             return ptr::null();
         }
@@ -462,11 +452,11 @@ fn with_owned_content_layout<R>(
     array: &mut ArrowArray,
     format: ArrowFormat,
     schema_n_children: usize,
-    f: impl FnOnce(&mut CaptureLayout<'_>) -> R,
+    f: impl FnOnce(&mut CaptureLayout<'_>, &OwnedBufferSlots) -> R,
 ) -> PyResult<R> {
     try_with_stack_layout(array, format, schema_n_children, |layout| {
-        drop(snapshot_native_buffers(layout)?);
-        Ok(f(layout))
+        let buffers = snapshot_native_buffers(layout)?;
+        Ok(f(layout, &buffers))
     })
 }
 
@@ -750,7 +740,7 @@ unsafe fn admit_selected_struct_geometry(
             schema.children.len(),
         )
     }?;
-    let (parent_buffers, _) = snapshot_native_buffers(&mut parent_layout)?;
+    let parent_buffers = snapshot_native_buffers(&mut parent_layout)?;
     let parent_effective = merge_owned_row_missing(&parent_layout, &parent_buffers, None)?;
     let parent_missing = project_ancestor_missing(
         &parent_layout,
@@ -786,7 +776,7 @@ struct NativeNode {
         clippy::rc_buffer,
         reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
     )]
-    children: Arc<Vec<NativeNode>>,
+    children: Arc<Vec<Self>>,
     /// This node's own schema field name (used by fixed-size-list dimensions).
     #[expect(
         clippy::rc_buffer,
@@ -942,92 +932,83 @@ fn build_owned_node_admitted(
     schema: &AdmittedArrowSchema,
     effective_missing: Option<crate::array::ValidityMask>,
 ) -> PyResult<NativeNode> {
-    let (buffers, _) = snapshot_native_buffers(validated)?;
+    let buffers = snapshot_native_buffers(validated)?;
     // Own-row nulls from owned validity, OR'd with any ancestor mask.
     let effective_missing = merge_owned_row_missing(validated, &buffers, effective_missing)?;
     let mut field_names = Vec::with_capacity(validated.n_children);
     let mut children = Vec::with_capacity(validated.n_children);
-    if validated.n_children > 0 {
-        if schema.children.len() != validated.n_children {
-            return Err(errors::parse_error(
-                "Arrow child schema index out of range",
-                crate::error::ParseFormat::GeoArrow,
-            ));
-        }
-        for index in 0..validated.n_children {
-            let child_schema = &schema.children[index];
-            let name = child_schema.name().to_owned();
-            field_names.push(name);
-            // SAFETY: children live under capture shell for this construction.
-            let child_array_ptr = unsafe { validated.child_ptr(index)? };
-            let child_format = ArrowFormat::parse(child_schema.format())?;
-            let child_schema_n = child_schema.children.len();
-            let is_struct_field = matches!(validated.format, ArrowFormat::Struct);
-            // SAFETY: same capture shell as parent.
-            let mut child_validated = unsafe {
-                if is_struct_field {
-                    CaptureLayout::struct_child(
-                        validated.shell,
-                        child_array_ptr,
-                        child_format,
-                        validated.offset,
-                        validated.length,
-                        child_schema_n,
-                    )?
-                } else if matches!(validated.format, ArrowFormat::List | ArrowFormat::LargeList) {
-                    let (child_offset, child_length) = validated.child_window.ok_or_else(|| {
-                        PyTypeError::new_err(
-                            "Arrow list offsets were not captured before child admission",
-                        )
-                    })?;
-                    CaptureLayout::struct_child(
-                        validated.shell,
-                        child_array_ptr,
-                        child_format,
-                        child_offset,
-                        child_length,
-                        child_schema_n,
-                    )?
-                } else if let ArrowFormat::FixedSizeList(size) = validated.format {
-                    let child_offset = validated.offset.checked_mul(size).ok_or_else(|| {
-                        PyTypeError::new_err("Arrow fixed-size-list child offset overflows")
-                    })?;
-                    let child_length = validated.length.checked_mul(size).ok_or_else(|| {
-                        PyTypeError::new_err("Arrow fixed-size-list child length overflows")
-                    })?;
-                    CaptureLayout::struct_child(
-                        validated.shell,
-                        child_array_ptr,
-                        child_format,
-                        child_offset,
-                        child_length,
-                        child_schema_n,
-                    )?
-                } else {
-                    CaptureLayout::new(
-                        validated.shell,
-                        child_array_ptr,
-                        child_format,
-                        child_schema_n,
-                    )?
-                }
-            };
-            // Project the parent-effective mask onto every child carrier. A
-            // Struct maps rows 1:1; list and fixed-size-list parents expand a
-            // missing outer row to its selected child range. Child-own nulls
-            // merge only after the child's snapshot in the recursive call.
-            let child_missing = project_ancestor_missing(
-                validated,
-                &buffers,
-                effective_missing.as_ref(),
-                child_validated.length,
-            )?;
-            children.push(build_owned_node_admitted(
-                &mut child_validated,
-                child_schema,
-                child_missing,
-            )?);
-        }
+    for (index, child_schema) in schema.children.iter().enumerate() {
+        let name = child_schema.name().to_owned();
+        field_names.push(name);
+        // SAFETY: children live under capture shell for this construction.
+        let child_array_ptr = unsafe { validated.child_ptr(index)? };
+        let child_format = ArrowFormat::parse(child_schema.format())?;
+        let child_schema_n = child_schema.children.len();
+        let is_struct_field = matches!(validated.format, ArrowFormat::Struct);
+        // SAFETY: same capture shell as parent.
+        let mut child_validated = unsafe {
+            if is_struct_field {
+                CaptureLayout::struct_child(
+                    validated.shell,
+                    child_array_ptr,
+                    child_format,
+                    validated.offset,
+                    validated.length,
+                    child_schema_n,
+                )?
+            } else if matches!(validated.format, ArrowFormat::List | ArrowFormat::LargeList) {
+                let (child_offset, child_length) = validated.child_window.ok_or_else(|| {
+                    PyTypeError::new_err(
+                        "Arrow list offsets were not captured before child admission",
+                    )
+                })?;
+                CaptureLayout::struct_child(
+                    validated.shell,
+                    child_array_ptr,
+                    child_format,
+                    child_offset,
+                    child_length,
+                    child_schema_n,
+                )?
+            } else if let ArrowFormat::FixedSizeList(size) = validated.format {
+                let child_offset = validated.offset.checked_mul(size).ok_or_else(|| {
+                    PyTypeError::new_err("Arrow fixed-size-list child offset overflows")
+                })?;
+                let child_length = validated.length.checked_mul(size).ok_or_else(|| {
+                    PyTypeError::new_err("Arrow fixed-size-list child length overflows")
+                })?;
+                CaptureLayout::struct_child(
+                    validated.shell,
+                    child_array_ptr,
+                    child_format,
+                    child_offset,
+                    child_length,
+                    child_schema_n,
+                )?
+            } else {
+                CaptureLayout::new(
+                    validated.shell,
+                    child_array_ptr,
+                    child_format,
+                    child_schema_n,
+                )?
+            }
+        };
+        // Project the parent-effective mask onto every child carrier. A
+        // Struct maps rows 1:1; list and fixed-size-list parents expand a
+        // missing outer row to its selected child range. Child-own nulls
+        // merge only after the child's snapshot in the recursive call.
+        let child_missing = project_ancestor_missing(
+            validated,
+            &buffers,
+            effective_missing.as_ref(),
+            child_validated.length,
+        )?;
+        children.push(build_owned_node_admitted(
+            &mut child_validated,
+            child_schema,
+            child_missing,
+        )?);
     }
     Ok(NativeNode {
         length: validated.length,
@@ -1115,10 +1096,7 @@ fn project_ancestor_missing(
                     continue;
                 }
                 let start = read_offset(row)?;
-                let end =
-                    read_offset(row.checked_add(1).ok_or_else(|| {
-                        PyTypeError::new_err("Arrow list offset index overflows")
-                    })?)?;
+                let end = read_offset(row.wrapping_add(1))?;
                 if end < start {
                     return Err(arrow::geoarrow_parse_error(
                         "Arrow list offsets must be ordered",
@@ -1129,10 +1107,10 @@ fn project_ancestor_missing(
                         "Arrow list child offsets exceed the selected child length",
                     ));
                 }
-                missing.extend_present(start - missing.len());
-                missing.extend_missing(end - start);
+                missing.extend_present(start.wrapping_sub(missing.len()));
+                missing.extend_missing(end.wrapping_sub(start));
             }
-            missing.extend_present(child_length - missing.len());
+            missing.extend_present(child_length.wrapping_sub(missing.len()));
             Ok(missing.finish())
         },
         ArrowFormat::FixedSizeList(width) => {
@@ -1291,7 +1269,9 @@ impl OwnedBufferSlots {
             } => match index {
                 0 => Some(validity),
                 1 => Some(views),
-                index if index >= 2 && index + 1 < *n_buffers => data.get(&(index - 2)),
+                index if index >= 2 && index < n_buffers.wrapping_sub(1) => {
+                    data.get(&index.wrapping_sub(2))
+                },
                 _ => None,
             },
         }
@@ -1299,17 +1279,12 @@ impl OwnedBufferSlots {
 }
 
 /// Snapshot producer buffers under the live shell, then validate content on
-/// owned storage. Returns owned slots + optional BinaryView selected-range map.
+/// owned storage.
 #[expect(
     clippy::iter_over_hash_type,
     reason = "range iteration only fills a keyed owned-buffer map; descriptor order remains the public order"
 )]
-fn snapshot_native_buffers(
-    array: &mut CaptureLayout,
-) -> PyResult<(
-    OwnedBufferSlots,
-    Option<Arc<HashMap<usize, std::ops::Range<usize>>>>,
-)> {
+fn snapshot_native_buffers(array: &mut CaptureLayout) -> PyResult<OwnedBufferSlots> {
     if matches!(array.format, ArrowFormat::BinaryView) {
         // Snapshot only the descriptor control buffers. Unrelated variadic payload
         // slots never participate in validation or decoding for this visible
@@ -1331,20 +1306,19 @@ fn snapshot_native_buffers(
         // referenced 8-byte variadic-size entries → sparse ranges.
         let ranges = scan_binary_view_data_ranges_owned(array, &validity, &views)?;
         let views = rebase_owned_binary_view_offsets(array, &validity, &views, &ranges)?;
-        array.binary_view_data_ranges = Some(Arc::clone(&ranges));
         // Phase 3: each referenced payload retains only its selected envelope
         // (not the physical parent prefix), after the owned descriptors have
         // been rebased to that local origin.
         let mut data = HashMap::new();
         data.reserve(ranges.len());
-        for (&data_index, range) in ranges.iter() {
+        for (&data_index, range) in &ranges {
             let len = range
                 .end
                 .checked_sub(range.start)
                 .ok_or_else(|| PyTypeError::new_err("Arrow binary-view data range is invalid"))?;
             data.insert(
                 data_index,
-                snapshot_one_buffer_range(array, data_index + 2, range.start, len)?,
+                snapshot_one_buffer_range(array, data_index.wrapping_add(2), range.start, len)?,
             );
         }
         validate_binary_view_prefixes(&validity, &views, &data, array)?;
@@ -1355,7 +1329,7 @@ fn snapshot_native_buffers(
             n_buffers: array.n_buffers,
         };
         validate_owned_null_count(array, &slots)?;
-        return Ok((slots, array.binary_view_data_ranges.clone()));
+        return Ok(slots);
     }
 
     let mut snapshots = Vec::with_capacity(array.n_buffers);
@@ -1399,8 +1373,7 @@ fn snapshot_native_buffers(
     let slots = OwnedBufferSlots::Dense(arc_from_vec(snapshots));
     // Content validation on OWNED validity only (P02 null_count match).
     validate_owned_null_count(array, &slots)?;
-    let ranges = array.binary_view_data_ranges.clone();
-    Ok((slots, ranges))
+    Ok(slots)
 }
 
 fn snapshot_one_buffer_range(
@@ -1510,7 +1483,7 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
         .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))?;
     let mut rebased = raw.to_vec();
     let mut last = first;
-    for index in 0..slots {
+    for (index, window) in rebased.chunks_exact_mut(width).enumerate() {
         let value = usize::try_from(read(index)?)
             .map_err(|_| arrow::geoarrow_parse_error("Arrow offsets must be non-negative"))?;
         if value < last {
@@ -1520,15 +1493,14 @@ fn snapshot_rebased_offsets(array: &CaptureLayout) -> PyResult<(OwnedBuffer, usi
             .checked_sub(first)
             .ok_or_else(|| arrow::geoarrow_parse_error("Arrow offsets must be ordered"))?;
         last = value;
-        let at = index * width;
         if width == 4 {
             let local = i32::try_from(local)
                 .map_err(|_| arrow::geoarrow_parse_error("Arrow offset exceeds i32 range"))?;
-            rebased[at..at + width].copy_from_slice(&local.to_le_bytes());
+            window.copy_from_slice(&local.to_le_bytes());
         } else {
             let local = i64::try_from(local)
                 .map_err(|_| arrow::geoarrow_parse_error("Arrow offset exceeds i64 range"))?;
-            rebased[at..at + width].copy_from_slice(&local.to_le_bytes());
+            window.copy_from_slice(&local.to_le_bytes());
         }
     }
     Ok((OwnedBuffer::Bytes(arc_from_vec(rebased)), first, last))
@@ -1620,7 +1592,7 @@ fn validate_owned_null_count(array: &CaptureLayout, buffers: &OwnedBufferSlots) 
     let mut actual = 0_usize;
     for row in 0..array.length {
         if !owned_or_raw_row_valid(array, buffers, row)? {
-            actual += 1;
+            actual = actual.wrapping_add(1);
         }
     }
     if actual != expected {
@@ -1671,19 +1643,20 @@ fn scan_binary_view_data_ranges_owned(
     array: &CaptureLayout,
     validity: &OwnedBuffer,
     views: &OwnedBuffer,
-) -> PyResult<Arc<HashMap<usize, std::ops::Range<usize>>>> {
+) -> PyResult<HashMap<usize, std::ops::Range<usize>>> {
     let mut ranges = HashMap::new();
     if array.length == 0 {
-        return Ok(arc_new(ranges));
+        return Ok(ranges);
     }
-    let max_data_buffers = array.n_buffers - 3;
+    // CaptureLayout admits BinaryView only with at least three buffers.
+    let max_data_buffers = array.n_buffers.wrapping_sub(3);
     let OwnedBuffer::Bytes(views) = views else {
-        return Ok(arc_new(ranges));
+        return Ok(ranges);
     };
     if views.is_empty() {
-        return Ok(arc_new(ranges));
+        return Ok(ranges);
     }
-    let sizes_index = array.n_buffers - 1;
+    let sizes_index = array.n_buffers.wrapping_sub(1);
     let mut declared_sizes = HashMap::new();
     let (descriptors, _) = views.as_chunks::<16>();
     if descriptors.len() < array.length {
@@ -1691,7 +1664,7 @@ fn scan_binary_view_data_ranges_owned(
             "Arrow binary-view buffer is shorter than declared",
         ));
     }
-    for (row, view) in descriptors[..array.length].iter().enumerate() {
+    for (row, view) in descriptors.iter().take(array.length).enumerate() {
         if !owned_binary_view_row_is_valid(array, validity, row)? {
             continue;
         }
@@ -1699,7 +1672,7 @@ fn scan_binary_view_data_ranges_owned(
         let length = usize::try_from(length)
             .map_err(|_| PyTypeError::new_err("Arrow binary-view length is negative"))?;
         if length <= 12 {
-            if view[4 + length..16].iter().any(|&b| b != 0) {
+            if view.iter().skip(4).skip(length).any(|&b| b != 0) {
                 return Err(PyTypeError::new_err(
                     "Arrow binary-view inline padding must be zero",
                 ));
@@ -1759,7 +1732,7 @@ fn scan_binary_view_data_ranges_owned(
             })
             .or_insert(byte_offset..span_end);
     }
-    Ok(arc_new(ranges))
+    Ok(ranges)
 }
 
 /// Rebase non-inline BinaryView descriptor offsets to their selected owned
@@ -1991,7 +1964,7 @@ mod layout_validation_tests {
         let buffers: [*const c_void; 2] = [validity.as_ptr().cast(), values.as_ptr().cast()];
         let mut array = stack_array(5, 5, 0, 2, 0, buffers.as_ptr(), ptr::null_mut());
         try_with_stack_layout(&mut array, ArrowFormat::Float64, 0, |layout| {
-            let (slots, _) = snapshot_native_buffers(layout)?;
+            let slots = snapshot_native_buffers(layout)?;
             let OwnedBuffer::Bytes(bitmap) = slots.get(0).expect("owned validity") else {
                 panic!("validity is a byte bitmap")
             };
@@ -2435,7 +2408,7 @@ mod layout_validation_tests {
             child_ptrs.as_mut_ptr(),
         );
         with_stack_layout(&mut parent, ArrowFormat::List, 1, |layout| {
-            let (slots, _) = snapshot_native_buffers(layout).unwrap();
+            let slots = snapshot_native_buffers(layout).unwrap();
             let OwnedBuffer::Bytes(bitmap) = slots.get(0).unwrap() else {
                 panic!("expected copied validity byte");
             };
@@ -2460,7 +2433,7 @@ mod layout_validation_tests {
                 CaptureLayout::struct_child(layout.shell, child_ptr, ArrowFormat::Float64, 10, 6, 0)
             }
             .unwrap();
-            let (child_slots, _) = snapshot_native_buffers(&mut child_layout).unwrap();
+            let child_slots = snapshot_native_buffers(&mut child_layout).unwrap();
             let OwnedBuffer::F64(child_values) = child_slots.get(1).unwrap() else {
                 panic!("expected owned f64 child window");
             };
@@ -2478,7 +2451,7 @@ mod layout_validation_tests {
             [ptr::null(), offsets.as_ptr().cast(), data.as_ptr().cast()];
         let mut array = stack_array(2, 0, 0, 3, 0, buffers.as_ptr(), ptr::null_mut());
         with_stack_layout(&mut array, ArrowFormat::Binary, 0, |validated| {
-            let (slots, _) = snapshot_native_buffers(validated).unwrap();
+            let slots = snapshot_native_buffers(validated).unwrap();
             let OwnedBuffer::Bytes(data_slot) = slots.get(2).unwrap() else {
                 panic!("expected bytes data buffer");
             };
@@ -2494,7 +2467,7 @@ mod layout_validation_tests {
         ];
         let mut large = stack_array(2, 0, 0, 3, 0, large_buffers.as_ptr(), ptr::null_mut());
         with_stack_layout(&mut large, ArrowFormat::LargeBinary, 0, |validated| {
-            let (slots, _) = snapshot_native_buffers(validated).unwrap();
+            let slots = snapshot_native_buffers(validated).unwrap();
             let OwnedBuffer::Bytes(data_slot) = slots.get(2).unwrap() else {
                 panic!("expected bytes data buffer");
             };
@@ -2556,12 +2529,19 @@ mod layout_validation_tests {
         ensure_python();
         let bufs = dummy_buffers(3);
         let mut array = stack_array(0, 0, -1, 3, 0, bufs.as_ptr(), ptr::null_mut());
-        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |validated| {
-            assert_eq!(validated.length, 0);
-            assert_eq!(validated.null_count, NullCount::Unknown);
-            let ranges = validated.binary_view_data_ranges.as_ref().unwrap();
-            assert!(ranges.is_empty(), "sparse empty map, not dense n_buffers-3");
-        })
+        with_owned_content_layout(
+            &mut array,
+            ArrowFormat::BinaryView,
+            0,
+            |validated, slots| {
+                assert_eq!(validated.length, 0);
+                assert_eq!(validated.null_count, NullCount::Unknown);
+                let OwnedBufferSlots::BinaryView { data, .. } = slots else {
+                    panic!("expected sparse BinaryView buffers");
+                };
+                assert!(data.is_empty(), "zero rows retain no data fragments");
+            },
+        )
         .unwrap();
     }
 
@@ -2575,11 +2555,19 @@ mod layout_validation_tests {
         let mut bufs = dummy_buffers(n_buffers);
         bufs[n_buffers - 1] = sizes.as_ptr().cast();
         // The mandatory sizes table has one entry per variadic buffer, but the
-        // selected-range cache remains sparse instead of mirroring that table.
+        // selected payload owner remains sparse instead of mirroring that table.
         let mut array = stack_array(0, 0, 0, n_buffers as i64, 0, bufs.as_ptr(), ptr::null_mut());
-        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |validated| {
-            let ranges = validated.binary_view_data_ranges.as_ref().unwrap();
-            assert!(ranges.is_empty());
+        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |_, slots| {
+            let OwnedBufferSlots::BinaryView {
+                data,
+                n_buffers: captured_buffers,
+                ..
+            } = slots
+            else {
+                panic!("expected sparse BinaryView buffers");
+            };
+            assert_eq!(*captured_buffers, n_buffers);
+            assert!(data.is_empty());
         })
         .unwrap();
     }
@@ -2613,7 +2601,7 @@ mod layout_validation_tests {
             ptr::null_mut(),
         );
         try_with_stack_layout(&mut array, ArrowFormat::BinaryView, 0, |layout| {
-            let (owned, _) = snapshot_native_buffers(layout)?;
+            let owned = snapshot_native_buffers(layout)?;
             assert!(matches!(
                 owned.get(data_index + 2),
                 Some(OwnedBuffer::Bytes(bytes)) if bytes.as_slice() == &data[..]
@@ -2647,17 +2635,19 @@ mod layout_validation_tests {
         ensure_python();
         // Two non-inline rows on distinct data buffers: ends keyed sparsely.
         let mut views = [0_u8; 32];
+        let data0 = *b"0123456789abcdefghijklmnopqrstuv";
+        let data1 = [0_u8; 1]; // unused index 1
+        let data2 = *b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef";
         // Row 0: length=20, buffer_index=0, byte_offset=0 → end=20
         views[0..4].copy_from_slice(&20_i32.to_le_bytes());
+        views[4..8].copy_from_slice(&data0[0..4]);
         views[8..12].copy_from_slice(&0_i32.to_le_bytes());
         views[12..16].copy_from_slice(&0_i32.to_le_bytes());
         // Row 1: length=15, buffer_index=2, byte_offset=4 → end=19
         views[16..20].copy_from_slice(&15_i32.to_le_bytes());
+        views[20..24].copy_from_slice(&data2[4..8]);
         views[24..28].copy_from_slice(&2_i32.to_le_bytes());
         views[28..32].copy_from_slice(&4_i32.to_le_bytes());
-        let data0 = [0_u8; 32];
-        let data1 = [0_u8; 1]; // unused index 1
-        let data2 = [0_u8; 32];
         let sizes = [32_i64, 1, 32];
         let buffers: [*const c_void; 6] = [
             ptr::null(),
@@ -2668,12 +2658,20 @@ mod layout_validation_tests {
             sizes.as_ptr().cast(),
         ];
         let mut array = stack_array(2, 0, 0, 6, 0, buffers.as_ptr(), ptr::null_mut());
-        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |validated| {
-            let ranges = validated.binary_view_data_ranges.as_ref().unwrap();
-            assert_eq!(ranges.len(), 2);
-            assert_eq!(ranges.get(&0), Some(&(0..20)));
-            assert_eq!(ranges.get(&2), Some(&(4..19)));
-            assert!(!ranges.contains_key(&1));
+        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |_, slots| {
+            let Some(OwnedBuffer::Bytes(first)) = slots.get(2) else {
+                panic!("selected first BinaryView payload was not retained");
+            };
+            let Some(OwnedBuffer::Bytes(second)) = slots.get(4) else {
+                panic!("selected second BinaryView payload was not retained");
+            };
+            assert_eq!(first.as_slice(), &data0[0..20]);
+            assert_eq!(second.as_slice(), &data2[4..19]);
+            assert!(
+                slots.get(3).is_none(),
+                "unreferenced middle slot was retained"
+            );
+            assert!(slots.get(5).is_none(), "sizes table was exposed as payload");
         })
         .unwrap();
     }
@@ -2698,16 +2696,18 @@ mod layout_validation_tests {
             sizes.as_ptr().cast(),
         ];
         let mut array = stack_array(1, 0, 1, 4, 0, buffers.as_ptr(), ptr::null_mut());
-        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |validated| {
-            let ranges = validated.binary_view_data_ranges.as_ref().unwrap();
-            // Sparse: null-only arrays leave the range map empty (absent ≡ empty).
-            assert!(ranges.is_empty());
+        with_owned_content_layout(&mut array, ArrowFormat::BinaryView, 0, |_, slots| {
+            let OwnedBufferSlots::BinaryView { data, .. } = slots else {
+                panic!("expected sparse BinaryView buffers");
+            };
+            assert!(data.is_empty(), "null descriptors must not select payloads");
+            assert!(slots.get(2).is_none());
         })
         .unwrap();
     }
 
     #[test]
-    fn binary_view_present_descriptor_bounds_and_caches_selected_range() {
+    fn binary_view_present_descriptor_snapshots_selected_payload() {
         ensure_python();
         // Present non-inline: length=20, buffer_index=0, byte_offset=2 → end=22.
         let mut view = [0_u8; 16];
@@ -2725,8 +2725,7 @@ mod layout_validation_tests {
         ];
         let mut array = stack_array(1, 0, 0, 4, 0, buffers.as_ptr(), ptr::null_mut());
         try_with_stack_layout(&mut array, ArrowFormat::BinaryView, 0, |layout| {
-            let (owned, ranges) = snapshot_native_buffers(layout)?;
-            assert_eq!(ranges.as_ref().unwrap().get(&0), Some(&(2..22)));
+            let owned = snapshot_native_buffers(layout)?;
             let Some(OwnedBuffer::Bytes(payload)) = owned.get(2) else {
                 panic!("selected payload slot was not retained");
             };
@@ -2759,7 +2758,7 @@ mod layout_validation_tests {
         ];
         let mut array = stack_array(1, 0, 0, 4, 0, buffers.as_ptr(), ptr::null_mut());
         try_with_stack_layout(&mut array, ArrowFormat::BinaryView, 0, |layout| {
-            let (owned, _) = snapshot_native_buffers(layout)?;
+            let owned = snapshot_native_buffers(layout)?;
             let view = owned
                 .get(1)
                 .and_then(|buffer| match buffer {

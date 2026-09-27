@@ -257,7 +257,7 @@ impl NativeArrowAccumulator {
         self.srids.reserve(srids.len());
         self.missing.reserve(missing.len());
         for local in missing {
-            self.missing.push(row_base + local);
+            self.missing.push(row_base.wrapping_add(local));
         }
         self.storage.push(storage);
         self.srids.append(&mut srids);
@@ -310,7 +310,7 @@ impl NativeArrowAccumulator {
             } else {
                 None
             };
-            present += 1;
+            present = present.wrapping_add(1);
             frame
                 .admit_srid(srid, row, "Arrow import", "EWKB SRID")
                 .map_err(PyErr::from)?;
@@ -362,7 +362,9 @@ fn native_packed_family(storage: &NativeDecodedStorage) -> Option<NativePackedFa
         PackedStorage::Polygons {
             coords, row_map, ..
         } if row_map.is_identity() => NativePackedFamily::Polygons(coords.axes()),
-        _ => return None,
+        PackedStorage::Points { .. }
+        | PackedStorage::Lines { .. }
+        | PackedStorage::Polygons { .. } => return None,
     })
 }
 
@@ -493,8 +495,11 @@ fn combine_packed_parts(
                 else {
                     unreachable!("packed parts have one line family")
                 };
-                for row in 0..source_offsets.len().saturating_sub(1) {
-                    let window = source_offsets[row] as usize..source_offsets[row + 1] as usize;
+                for source_window in source_offsets.as_slice().windows(2) {
+                    let [start, end] = source_window else {
+                        unreachable!("offset windows contain two endpoints")
+                    };
+                    let window = *start as usize..*end as usize;
                     builder.extend_window(source, window);
                     offsets.push_end(builder.len(), i32::MAX as usize)?;
                 }
@@ -524,15 +529,23 @@ fn combine_packed_parts(
                 else {
                     unreachable!("packed parts have one polygon family")
                 };
-                for row in 0..source_polygon_offsets.len().saturating_sub(1) {
-                    let ring_start = source_polygon_offsets[row] as usize;
-                    let ring_end = source_polygon_offsets[row + 1] as usize;
-                    for ring in ring_start..ring_end {
-                        let window = source_ring_offsets[ring] as usize
-                            ..source_ring_offsets[ring + 1] as usize;
+                let mut source_rings = source_ring_offsets.as_slice().windows(2);
+                for source_polygon in source_polygon_offsets.as_slice().windows(2) {
+                    let [ring_start, ring_end] = source_polygon else {
+                        unreachable!("offset windows contain two endpoints")
+                    };
+                    let ring_count = (*ring_end as usize).wrapping_sub(*ring_start as usize);
+                    for _ in 0..ring_count {
+                        let source_window = source_rings
+                            .next()
+                            .expect("admitted polygon offsets cover every ring");
+                        let [start, end] = source_window else {
+                            unreachable!("offset windows contain two endpoints")
+                        };
+                        let window = *start as usize..*end as usize;
                         builder.extend_window(source, window);
                         ring_offsets.push_end(builder.len(), i32::MAX as usize)?;
-                        rings += 1;
+                        rings = rings.wrapping_add(1);
                     }
                     polygon_offsets.push_end(rings, i32::MAX as usize)?;
                 }
