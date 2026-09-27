@@ -319,16 +319,11 @@ fn weighted_iterator_keeps_source_ordinals_when_skipping_zero_length_edges() {
 }
 
 #[test]
-fn fan_order_uses_geometry_after_a_pseudo_angle_collision() {
+fn fan_order_uses_exact_ray_orientation_for_adjacent_slopes() {
     let high = f64::from_bits(1.0_f64.to_bits() + 1);
-    assert_eq!(
-        predicates::pseudo_angle(1.0, 1.0),
-        predicates::pseudo_angle(1.0, high),
-        "adjacent diagonal rays collide after pseudo-angle rounding"
-    );
 
-    // Target 1 is geometrically above target 2, but an identifier tie-break
-    // put it first before the certified angular comparator.
+    // The adjacent stored slopes have distinct geometric order even though
+    // target IDs put the upper ray first.
     let points = [
         XY::new(0.0, 0.0),
         XY::new(1.0, high),

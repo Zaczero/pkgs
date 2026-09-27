@@ -1,5 +1,5 @@
 use super::*;
-use crate::geometry::{CoordinateAxes, GeometryKind, LineSeq, MultiMember, Ring, predicates};
+use crate::geometry::{CoordinateAxes, GeometryKind, LineSeq, MultiMember, Ring};
 
 fn degrees() -> crate::geographic::GeographicFrame {
     crate::crs::info("EPSG:4326")
@@ -768,11 +768,6 @@ fn quotient_dart(edge: usize, start: XY, end: XY) -> QuotientDart {
 #[test]
 fn quotient_fan_orders_adjacent_diagonals_geometrically() {
     let high = f64::from_bits(1.0_f64.to_bits() + 1);
-    assert_eq!(
-        predicates::pseudo_angle(1.0, 1.0),
-        predicates::pseudo_angle(1.0, high),
-        "adjacent diagonal rays collide after pseudo-angle rounding"
-    );
     let upper = quotient_dart(0, XY::new(0.0, 0.0), XY::new(1.0, high));
     let lower = quotient_dart(1, XY::new(0.0, 0.0), XY::new(1.0, 1.0));
     assert_eq!(

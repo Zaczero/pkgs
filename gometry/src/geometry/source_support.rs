@@ -660,7 +660,7 @@ fn ray_groups(query: XY, rays: &[Ray]) -> Vec<RayGroup> {
     groups
 }
 
-fn compare_rays(query: XY, left: XY, right: XY) -> Ordering {
+pub(in crate::geometry) fn compare_rays(query: XY, left: XY, right: XY) -> Ordering {
     let left_upper = left.y > query.y || (left.y == query.y && left.x > query.x);
     let right_upper = right.y > query.y || (right.y == query.y && right.x > query.x);
     if left_upper != right_upper {

@@ -97,6 +97,7 @@ mod segment_index;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 mod segments;
 mod source_support;
+pub(in crate::geometry) use source_support::compare_rays;
 pub(crate) use source_support::{
     RingKind, RingView, cartesian_area_covers_point, cartesian_point_location,
     cartesian_polygon_views_location, edge_winding, ring_kind_columns,

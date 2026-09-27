@@ -5,10 +5,10 @@ use ahash::HashSetExt as _;
 use crate::geometry::segments::crossing_point;
 use crate::geometry::{
     Contact, Coordinates, HashMap, HashMapExt as _, HashSet, IndexedSegment, LineworkChains, Point,
-    PointKey, RingClass, Segment, TouchDirections, ValidationIssue, XY, face_interior_point,
-    orient_ring, ring_classify_point, ring_label, same_point, segment_contact_exact,
-    segment_cross_point, segment_intersection_is_simple, segments_are_adjacent, segments_intersect,
-    shared_segment_part,
+    PointKey, RingClass, Segment, TouchDirections, ValidationIssue, XY, compare_rays,
+    face_interior_point, orient_ring, ring_classify_point, ring_label, same_point,
+    segment_contact_exact, segment_cross_point, segment_intersection_is_simple,
+    segments_are_adjacent, segments_intersect, shared_segment_part,
 };
 
 /// A point strictly interior to `ring`, preferring a cheap vertex that is
@@ -217,18 +217,14 @@ pub(crate) fn wedges_interleave(first: &[XY], second: &[XY], point: XY) -> bool 
         return false;
     }
     let total = first.len().wrapping_add(second.len());
-    let mut slots = [(0.0_f64, false); MAX_WEDGE_SLOTS];
+    let first_count = first.len();
+    let mut slots = [(XY::new(0.0, 0.0), 0_usize); MAX_WEDGE_SLOTS];
     let mut heap;
     let directions = first
         .iter()
-        .map(|direction| (direction, false))
-        .chain(second.iter().map(|direction| (direction, true)))
-        .map(|(direction, side)| {
-            (
-                pseudo_angle(direction.x - point.x, direction.y - point.y),
-                side,
-            )
-        });
+        .chain(second.iter())
+        .enumerate()
+        .map(|(index, direction)| (*direction, index));
     let slots = if let Some(slots) = slots.get_mut(..total) {
         for (slot, direction) in slots.iter_mut().zip(directions) {
             *slot = direction;
@@ -239,33 +235,35 @@ pub(crate) fn wedges_interleave(first: &[XY], second: &[XY], point: XY) -> bool 
         heap.extend(directions);
         heap.as_mut_slice()
     };
-    slots.sort_unstable_by(|left, right| left.0.total_cmp(&right.0).then(left.1.cmp(&right.1)));
+    slots.sort_unstable_by(|left, right| {
+        compare_rays(point, left.0, right.0).then_with(|| {
+            (left.1 >= first_count)
+                .cmp(&(right.1 >= first_count))
+                .then_with(|| left.1.cmp(&right.1))
+        })
+    });
     let changes = slots
         .iter()
         .zip(slots.iter().cycle().skip(1))
-        .filter(|(left, right)| left.1 != right.1)
+        .filter(|(left, right)| (left.1 >= first_count) != (right.1 >= first_count))
         .count();
     changes >= 4
 }
 
-pub(in crate::geometry) fn pseudo_angle(dx: f64, dy: f64) -> f64 {
-    let scale = dx.abs().max(dy.abs());
-    if scale == 0.0 || !scale.is_finite() {
-        return 0.0;
-    }
-    let (dx, dy) = (dx / scale, dy / scale);
-    let denominator = dx.abs() + dy.abs();
-    if denominator == 0.0 {
-        return 0.0;
-    }
-    let core = dx / denominator;
-    if dy >= 0.0 { 1.0 - core } else { 3.0 + core }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::wedges_interleave;
-    use crate::geometry::XY;
+    use super::{classify_ring_pair, wedges_interleave};
+    use crate::geometry::{IndexedSegment, Segment, TouchDirections, XY};
+
+    fn indexed_segment(line: usize, start: XY, end: XY) -> IndexedSegment {
+        IndexedSegment {
+            segment: Segment { start, end },
+            line,
+            index: 0,
+            count: 1,
+            closed: false,
+        }
+    }
 
     #[test]
     fn ring_touch_directions_classify_small_and_large_fans() {
@@ -280,5 +278,72 @@ mod tests {
             assert!(wedges_interleave(&right, &left, point));
             assert!(wedges_interleave(&left, &right, point));
         }
+    }
+
+    #[test]
+    fn one_ulp_distinct_noninterleaving_touch_rays_remain_valid() {
+        let point = XY::new(0.0, 0.0);
+        let below_one = 1.0_f64.next_down();
+        let first = [XY::new(1.0, 1.0), XY::new(-1.0, -1.0)];
+        let second = [XY::new(1.0, -1.0), XY::new(1.0, below_one)];
+        let reversed_first = [XY::new(-1.0, -1.0), XY::new(1.0, 1.0)];
+        let reversed_second = [XY::new(1.0, below_one), XY::new(1.0, -1.0)];
+
+        assert!(!wedges_interleave(&first, &second, point));
+        assert!(!wedges_interleave(&second, &first, point));
+        assert!(!wedges_interleave(&reversed_first, &reversed_second, point));
+        assert!(!wedges_interleave(&reversed_second, &reversed_first, point));
+    }
+
+    #[test]
+    fn finite_extreme_touch_rays_keep_their_exact_crossing_order() {
+        let max = f64::MAX;
+        let point = XY::new(-max, 0.0);
+        let first = [XY::new(max, 1.0), XY::new(max, 3.0)];
+        let second = [XY::new(max, 2.0), XY::new(max, 4.0)];
+
+        assert!(wedges_interleave(&first, &second, point));
+    }
+
+    #[test]
+    fn same_ray_positive_overlap_is_rejected_before_touch_settlement() {
+        let mut touches = TouchDirections::default();
+        let issue = classify_ring_pair(
+            &indexed_segment(0, XY::new(0.0, 0.0), XY::new(2.0, 0.0)),
+            &indexed_segment(1, XY::new(0.0, 0.0), XY::new(1.0, 0.0)),
+            &mut touches,
+            &|_, _| "rings intersect".to_owned(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            issue.expect("the rings share a segment").code,
+            "shared_linework"
+        );
+        assert!(touches.is_empty());
+    }
+
+    #[test]
+    fn point_sized_collinear_contact_is_not_shared_linework() {
+        let mut touches = TouchDirections::default();
+        let issue = classify_ring_pair(
+            &indexed_segment(0, XY::new(-1.0, 0.0), XY::new(0.0, 0.0)),
+            &indexed_segment(1, XY::new(0.0, 0.0), XY::new(1.0, 0.0)),
+            &mut touches,
+            &|_, _| "rings intersect".to_owned(),
+        )
+        .unwrap();
+
+        assert!(issue.is_none());
+    }
+
+    #[test]
+    fn t_junction_rays_on_one_side_are_noninterleaving() {
+        let point = XY::new(0.0, 0.0);
+        let through = [XY::new(-1.0, 0.0), XY::new(1.0, 0.0)];
+        let endpoint = [XY::new(-1.0, 1.0), XY::new(1.0, 1.0)];
+
+        assert!(!wedges_interleave(&through, &endpoint, point));
+        assert!(!wedges_interleave(&endpoint, &through, point));
     }
 }
