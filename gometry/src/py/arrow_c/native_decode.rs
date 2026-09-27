@@ -10,8 +10,8 @@ use super::{ArrowFormat, NativeArrowBatch, NativeNode};
 use crate::array::{GeometryArrayStorage, PackedColumnBuilder, PackedStorage, RowSelection};
 use crate::geometry::{
     CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, CsrOffsetBuilder, GeometryKind,
-    LineSeq, MColumn, MOrdinate, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring,
-    Shape, SharedSlice, ZOrdinate, column_all_finite,
+    LineSeq, MColumn, MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape,
+    SharedSlice, column_all_finite,
 };
 use crate::io;
 use crate::py::arrow;
@@ -117,7 +117,7 @@ pub(crate) fn decode_batch(batch: NativeArrowBatch) -> DecodeResult<NativeDecode
     Ok(decoded)
 }
 
-fn mixed_batch(length: usize, shapes: Vec<Shape>, missing: Vec<usize>) -> NativeDecodedBatch {
+const fn mixed_batch(length: usize, shapes: Vec<Shape>, missing: Vec<usize>) -> NativeDecodedBatch {
     NativeDecodedBatch {
         length,
         storage: NativeDecodedStorage::Mixed(shapes),
@@ -216,7 +216,7 @@ fn decode_linestrings(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
             // structural non-packability decision into a different error.
             return decode_coordseq_rows(node, GeometryEncoding::LineString);
         }
-        coordinates.ensure_range_valid(range.start, range.end, row)?;
+        let _validated_window = coordinates.validated_coord_window(range.start, range.end, row)?;
         total_vertices = total_vertices
             .checked_add(range.len())
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
@@ -255,7 +255,13 @@ fn decode_coordseq_rows(
                 match encoding {
                     GeometryEncoding::MultiPoint => GeometryKind::MultiPoint,
                     GeometryEncoding::LineString => GeometryKind::LineString,
-                    _ => unreachable!("coordinate sequence decoder only handles two encodings"),
+                    GeometryEncoding::Point
+                    | GeometryEncoding::MultiLineString
+                    | GeometryEncoding::Polygon
+                    | GeometryEncoding::MultiPolygon
+                    | GeometryEncoding::Wkb => {
+                        unreachable!("coordinate sequence decoder only handles two encodings")
+                    },
                 },
                 coordinates.axes(),
             )
@@ -265,7 +271,13 @@ fn decode_coordseq_rows(
                 GeometryEncoding::LineString => Shape::LineString(
                     LineSeq::try_new(coords).map_err(NativeArrowDecodeError::from)?,
                 ),
-                _ => unreachable!("coordinate sequence decoder only handles two encodings"),
+                GeometryEncoding::Point
+                | GeometryEncoding::MultiLineString
+                | GeometryEncoding::Polygon
+                | GeometryEncoding::MultiPolygon
+                | GeometryEncoding::Wkb => {
+                    unreachable!("coordinate sequence decoder only handles two encodings")
+                },
             }
         };
         shapes.push(shape);
@@ -468,7 +480,7 @@ fn packed_polygon_storage(
                     ring_index,
                 )?;
                 ring_offsets.push_end(vertex_range.end, i32::MAX as usize)?;
-                rings += 1;
+                rings = rings.wrapping_add(1);
             }
             polygon_offsets.push_end(rings, i32::MAX as usize)?;
         }
@@ -502,7 +514,7 @@ fn packed_polygon_storage(
                 builder.push_at(coordinates.coords(), vertex_range.start);
             }
             ring_offsets.push_end(builder.len(), i32::MAX as usize)?;
-            rings += 1;
+            rings = rings.wrapping_add(1);
         }
         polygon_offsets.push_end(rings, i32::MAX as usize)?;
     }
@@ -557,7 +569,13 @@ fn decode_multipolygons(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
             match polygon_shape(&coordinates, rings, ring_range, row)? {
                 Shape::Polygon(polygon) => items.push(MultiMember::Value(polygon)),
                 Shape::Empty(GeometryKind::Polygon, _) => items.push(MultiMember::Empty),
-                _ => {
+                Shape::Point(_)
+                | Shape::MultiPoint(_)
+                | Shape::LineString(_)
+                | Shape::MultiLineString(_)
+                | Shape::MultiPolygon(_)
+                | Shape::GeometryCollection(_)
+                | Shape::Empty(..) => {
                     return Err(NativeArrowDecodeError::geoarrow(
                         "Arrow multipolygon member decoded as an unexpected shape",
                     ));
@@ -628,7 +646,7 @@ fn decode_offset_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch> {
             continue;
         }
         let start = offset(node, row)?;
-        let end = offset(node, row + 1)?;
+        let end = offset(node, row.wrapping_add(1))?;
         let bytes = data.get(start..end).ok_or_else(|| {
             NativeArrowDecodeError::geoarrow("Arrow WKB offsets are out of bounds")
         })?;
@@ -656,9 +674,7 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
             missing.push(row);
             continue;
         }
-        let start = row
-            .checked_mul(16)
-            .ok_or_else(|| NativeArrowDecodeError::geoarrow("Arrow binary-view row overflows"))?;
+        let start = row.wrapping_mul(16);
         // The Arrow binary-view descriptor is a fixed 16-byte record; taking it
         // as an array lets every field below be a constant read of a known size.
         let view = views
@@ -674,7 +690,7 @@ fn decode_binary_view_wkb(node: &NativeNode) -> DecodeResult<NativeDecodedBatch>
             NativeArrowDecodeError::geoarrow("Arrow binary-view length is negative")
         })?;
         let bytes = if length <= 12 {
-            view.get(4..4 + length).ok_or_else(|| {
+            view.get(4..4_usize.wrapping_add(length)).ok_or_else(|| {
                 NativeArrowDecodeError::geoarrow("Arrow binary-view inline value is truncated")
             })?
         } else {
@@ -733,7 +749,12 @@ impl NativeCoordinates {
         match node.format {
             ArrowFormat::Struct => Self::separated(node),
             ArrowFormat::FixedSizeList(size) => Self::interleaved(node, size),
-            _ => Err(NativeArrowDecodeError::geoarrow(
+            ArrowFormat::Float64
+            | ArrowFormat::Binary
+            | ArrowFormat::LargeBinary
+            | ArrowFormat::BinaryView
+            | ArrowFormat::List
+            | ArrowFormat::LargeList => Err(NativeArrowDecodeError::geoarrow(
                 "Arrow geometry coordinates must be a struct or fixed-size list",
             )),
         }
@@ -849,20 +870,50 @@ impl NativeCoordinates {
         let mut ys = Vec::with_capacity(node.length);
         let mut zs = has_z.then(|| Vec::with_capacity(node.length));
         let mut ms = has_m.then(|| Vec::with_capacity(node.length));
-        for row in 0..node.length {
-            let start = row * size;
-            xs.push(values[start]);
-            ys.push(values[start + 1]);
-            if let Some(zs) = zs.as_mut() {
-                zs.push(values[start + 2]);
-            }
-            if let Some(ms) = ms.as_mut() {
-                ms.push(values[start + if has_z { 3 } else { 2 }]);
-            }
+        match (has_z, has_m) {
+            (false, false) => {
+                let (coordinates, _) = values.as_chunks::<2>();
+                for [x, y] in coordinates {
+                    xs.push(*x);
+                    ys.push(*y);
+                }
+            },
+            (true, false) => {
+                let zs = zs.as_mut().expect("XYZ coordinates have a Z column");
+                let (coordinates, _) = values.as_chunks::<3>();
+                for [x, y, z] in coordinates {
+                    xs.push(*x);
+                    ys.push(*y);
+                    zs.push(*z);
+                }
+            },
+            (false, true) => {
+                let ms = ms.as_mut().expect("XYM coordinates have an M column");
+                let (coordinates, _) = values.as_chunks::<3>();
+                for [x, y, m] in coordinates {
+                    xs.push(*x);
+                    ys.push(*y);
+                    ms.push(*m);
+                }
+            },
+            (true, true) => {
+                let (Some(zs), Some(ms)) = (zs.as_mut(), ms.as_mut()) else {
+                    unreachable!("XYZM coordinates have Z and M columns")
+                };
+                let (coordinates, _) = values.as_chunks::<4>();
+                for [x, y, z, m] in coordinates {
+                    xs.push(*x);
+                    ys.push(*y);
+                    zs.push(*z);
+                    ms.push(*m);
+                }
+            },
         }
         let validity = combined_validity(node.length, |row| {
             node.missing_at(row)
-                || (0..size).any(|offset| values_node.missing_at(row * size + offset))
+                || (0..size).any(|offset| {
+                    values_node.missing_at(row.wrapping_mul(size).wrapping_add(offset))
+                })
         });
         let coords = CoordSeq::from_shared_columns(
             SharedSlice::from_vec(xs),
@@ -889,6 +940,8 @@ impl NativeCoordinates {
     }
 
     fn point_shape(&self, index: usize, row: usize) -> DecodeResult<Shape> {
+        // This runs once per fallback row; keep admission inline instead of
+        // bouncing each Point through the error-bearing `admitted_point` result.
         if index >= self.coords.len() {
             return Err(NativeArrowDecodeError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
@@ -899,22 +952,24 @@ impl NativeCoordinates {
                 "Arrow geometry arrays require non-null geometry values; found null at index {row}"
             )));
         }
-        if self.empty_point_sentinel(index) {
+        let point = self.coords.point_at(index);
+        if Self::empty_point_sentinel(&point) {
             return Ok(Shape::typed_empty(GeometryKind::Point, self.axes()));
         }
-        self.ensure_range_finite(index, index + 1)?;
-        Ok(Shape::Point(
-            Point::new_axes(
-                self.coords.xs()[index],
-                self.coords.ys()[index],
-                ZOrdinate(self.coords.zs().map(|values| values[index])),
-                MOrdinate(self.coords.ms().map(|values| values[index])),
-            )
-            .map_err(NativeArrowDecodeError::from)?,
-        ))
+        Self::ensure_point_finite(&point)?;
+        Ok(Shape::Point(point))
     }
 
     fn point_packable(&self, index: usize, row: usize) -> DecodeResult<bool> {
+        let point = self.admitted_point(index, row)?;
+        if Self::empty_point_sentinel(&point) {
+            return Ok(false);
+        }
+        Self::ensure_point_finite(&point)?;
+        Ok(true)
+    }
+
+    fn admitted_point(&self, index: usize, row: usize) -> DecodeResult<Point> {
         if index >= self.coords.len() {
             return Err(NativeArrowDecodeError::geoarrow(
                 "Arrow coordinate buffer is shorter than declared array length",
@@ -925,77 +980,21 @@ impl NativeCoordinates {
                 "Arrow geometry arrays require non-null geometry values; found null at index {row}"
             )));
         }
-        if self.empty_point_sentinel(index) {
-            return Ok(false);
-        }
-        self.ensure_range_finite(index, index + 1)?;
-        Ok(true)
+        Ok(self.coords.point_at(index))
     }
 
-    fn empty_point_sentinel(&self, index: usize) -> bool {
-        let point = self.coords.point_at(index);
+    fn empty_point_sentinel(point: &Point) -> bool {
         point.x.is_nan()
             && point.y.is_nan()
             && point.z().is_none_or(f64::is_nan)
             && point.m().is_none_or(f64::is_nan)
     }
 
-    fn coordseq(&self, start: usize, end: usize, row: usize) -> DecodeResult<CoordSeq> {
-        if end < start || end > self.coords.len() {
-            return Err(NativeArrowDecodeError::geoarrow(
-                "Arrow coordinate buffer is shorter than declared array length",
-            ));
-        }
-        for index in start..end {
-            if !self.is_valid(index) {
-                return Err(NativeArrowDecodeError::geoarrow(format!(
-                    "Arrow geometry arrays require non-null geometry values; found null at index {row}"
-                )));
-            }
-        }
-        self.ensure_range_finite(start, end)?;
-        Ok(self
-            .coords
-            .view(CoordWindow::from_range(start..end, self.coords.len())))
-    }
-
-    fn ensure_range_valid(&self, start: usize, end: usize, row: usize) -> DecodeResult<()> {
-        if end < start || end > self.coords.len() {
-            return Err(NativeArrowDecodeError::geoarrow(
-                "Arrow coordinate buffer is shorter than declared array length",
-            ));
-        }
-        for index in start..end {
-            if !self.is_valid(index) {
-                return Err(NativeArrowDecodeError::geoarrow(format!(
-                    "Arrow geometry arrays require non-null geometry values; found null at index {row}"
-                )));
-            }
-        }
-        self.ensure_range_finite(start, end)
-    }
-
-    /// Validate one untrusted GeoArrow ring and report whether it needs the
-    /// boundary vertex appended by the shared ring-admission policy.
-    fn ring_admission(&self, range: std::ops::Range<usize>, row: usize) -> DecodeResult<bool> {
-        self.ensure_range_valid(range.start, range.end, row)?;
-        let coords = self
-            .coords
-            .view(CoordWindow::from_range(range, self.coords.len()));
-        Ring::closure_requires_append(&coords).map_err(arrow_ring_error)
-    }
-
-    fn ensure_range_finite(&self, start: usize, end: usize) -> DecodeResult<()> {
-        let finite = column_all_finite(&self.coords.xs()[start..end])
-            && column_all_finite(&self.coords.ys()[start..end])
-            && self
-                .coords
-                .zs()
-                .is_none_or(|values| column_all_finite(&values[start..end]))
-            && self
-                .coords
-                .ms()
-                .is_none_or(|values| column_all_finite(&values[start..end]));
+    fn ensure_point_finite(point: &Point) -> DecodeResult<()> {
+        let finite = point.x.is_finite()
+            && point.y.is_finite()
+            && point.z().is_none_or(f64::is_finite)
+            && point.m().is_none_or(f64::is_finite);
         if finite {
             Ok(())
         } else {
@@ -1004,6 +1003,66 @@ impl NativeCoordinates {
             ))
         }
     }
+
+    fn coordseq(&self, start: usize, end: usize, row: usize) -> DecodeResult<CoordSeq> {
+        let window = self.validated_coord_window(start, end, row)?;
+        Ok(self.coords.view(window))
+    }
+
+    fn validated_coord_window(
+        &self,
+        start: usize,
+        end: usize,
+        row: usize,
+    ) -> DecodeResult<CoordWindow> {
+        let window = CoordWindow::checked(start..end, self.coords.len()).map_err(|_| {
+            NativeArrowDecodeError::geoarrow(
+                "Arrow coordinate buffer is shorter than declared array length",
+            )
+        })?;
+        for index in window.start()..window.end() {
+            if !self.is_valid(index) {
+                return Err(NativeArrowDecodeError::geoarrow(format!(
+                    "Arrow geometry arrays require non-null geometry values; found null at index {row}"
+                )));
+            }
+        }
+        ensure_range_finite(&self.coords, window)?;
+        Ok(window)
+    }
+
+    /// Validate one untrusted GeoArrow ring and report whether it needs the
+    /// boundary vertex appended by the shared ring-admission policy.
+    fn ring_admission(&self, range: std::ops::Range<usize>, row: usize) -> DecodeResult<bool> {
+        let coords = self.coordseq(range.start, range.end, row)?;
+        Ring::closure_requires_append(&coords).map_err(arrow_ring_error)
+    }
+}
+
+fn ensure_range_finite(coords: &CoordSeq, window: CoordWindow) -> DecodeResult<()> {
+    let start = window.start();
+    let end = window.end();
+    if column_all_finite(admitted_column_window(coords.xs(), start, end))
+        && column_all_finite(admitted_column_window(coords.ys(), start, end))
+        && coords
+            .zs()
+            .is_none_or(|values| column_all_finite(admitted_column_window(values, start, end)))
+        && coords
+            .ms()
+            .is_none_or(|values| column_all_finite(admitted_column_window(values, start, end)))
+    {
+        Ok(())
+    } else {
+        Err(NativeArrowDecodeError::geoarrow(
+            "Arrow coordinates must be finite",
+        ))
+    }
+}
+
+fn admitted_column_window(values: &[f64], start: usize, end: usize) -> &[f64] {
+    values
+        .get(start..end)
+        .expect("CoordSeq ordinate columns share their admitted row range")
 }
 
 fn arrow_ring_error(error: crate::error::Error) -> NativeArrowDecodeError {
@@ -1081,8 +1140,12 @@ mod tests {
         for offset in offsets {
             bytes.extend_from_slice(&offset.to_le_bytes());
         }
+        let length = offsets
+            .len()
+            .checked_sub(1)
+            .expect("list offsets include the initial zero");
         NativeNode {
-            length: offsets.len() - 1,
+            length,
             validity_offset: 0,
             n_buffers: 2,
             format: ArrowFormat::List,

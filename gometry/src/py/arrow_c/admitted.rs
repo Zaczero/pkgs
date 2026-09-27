@@ -3,12 +3,6 @@
 //! No `ArrowSchemaPtr` / `ArrowArrayPtr` / `ValidatedArrowArray` / `ImportedCapsules`
 //! and no producer-backed `Send`/`Sync` buffer wrappers. Intermediate shells are
 //! non-`Send` RAII (`MovedArrowShell`); only owned trees escape admission.
-#![expect(
-    clippy::use_self,
-    clippy::missing_const_for_fn,
-    reason = "owned admission capture is intentionally explicit; helpers land ahead of full native migration"
-)]
-
 use std::ffi::CStr;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -99,7 +93,7 @@ impl<T: ArrowReleaseSlot> MovedArrowShell<T> {
         clippy::needless_pass_by_ref_mut,
         reason = "a mutable raw pointer is handed out under exclusive access, as with `Vec::as_mut_ptr`"
     )]
-    pub(crate) fn as_mut_ptr(&mut self) -> *mut T {
+    pub(crate) const fn as_mut_ptr(&mut self) -> *mut T {
         self.ptr.as_ptr()
     }
 }
@@ -175,7 +169,7 @@ pub(crate) struct AdmittedArrowSchema {
         clippy::rc_buffer,
         reason = "the sharing handle must remain Arc<Vec<T>> so capacity stays part of heap accounting"
     )]
-    pub(crate) children: Arc<Vec<AdmittedArrowSchema>>,
+    pub(crate) children: Arc<Vec<Self>>,
 }
 
 impl AdmittedArrowSchema {
@@ -371,7 +365,7 @@ impl AdmittedArrowSchema {
                                 owner,
                                 child,
                                 CaptureDepth::Deep,
-                                nesting + 1,
+                                nesting.wrapping_add(1),
                             )?);
                         }
                     }
@@ -673,49 +667,48 @@ pub(crate) fn validate_admitted_encoding_storage(
         GeometryEncoding::Point => validate_admitted_coordinate_storage(schema),
         GeometryEncoding::MultiPoint | GeometryEncoding::LineString => {
             require_admitted_list(schema)?;
-            if schema.children.len() != 1 {
+            let [child] = schema.children.as_slice() else {
                 return Err(PyTypeError::new_err(
                     "Arrow list geometry requires exactly one child",
                 ));
-            }
-            validate_admitted_coordinate_storage(&schema.children[0])
+            };
+            validate_admitted_coordinate_storage(child)
         },
         GeometryEncoding::MultiLineString | GeometryEncoding::Polygon => {
             require_admitted_list(schema)?;
-            if schema.children.len() != 1 {
+            let [child] = schema.children.as_slice() else {
                 return Err(PyTypeError::new_err(
                     "Arrow list geometry requires exactly one child",
                 ));
-            }
-            require_admitted_list(&schema.children[0])?;
-            if schema.children[0].children.len() != 1 {
+            };
+            require_admitted_list(child)?;
+            let [coordinates] = child.children.as_slice() else {
                 return Err(PyTypeError::new_err(
                     "Arrow nested list geometry requires exactly one child",
                 ));
-            }
-            validate_admitted_coordinate_storage(&schema.children[0].children[0])
+            };
+            validate_admitted_coordinate_storage(coordinates)
         },
         GeometryEncoding::MultiPolygon => {
             require_admitted_list(schema)?;
-            let c0 = &schema.children;
-            if c0.len() != 1 {
+            let [polygons] = schema.children.as_slice() else {
                 return Err(PyTypeError::new_err(
                     "Arrow list geometry requires exactly one child",
                 ));
-            }
-            require_admitted_list(&c0[0])?;
-            if c0[0].children.len() != 1 {
+            };
+            require_admitted_list(polygons)?;
+            let [rings] = polygons.children.as_slice() else {
                 return Err(PyTypeError::new_err(
                     "Arrow nested list geometry requires exactly one child",
                 ));
-            }
-            require_admitted_list(&c0[0].children[0])?;
-            if c0[0].children[0].children.len() != 1 {
+            };
+            require_admitted_list(rings)?;
+            let [coordinates] = rings.children.as_slice() else {
                 return Err(PyTypeError::new_err(
                     "Arrow nested list geometry requires exactly one child",
                 ));
-            }
-            validate_admitted_coordinate_storage(&c0[0].children[0].children[0])
+            };
+            validate_admitted_coordinate_storage(coordinates)
         },
         GeometryEncoding::Wkb => {
             if !matches!(schema.format(), "z" | "Z" | "vz") {
@@ -775,12 +768,11 @@ fn validate_admitted_interleaved_coordinates(
             "geoarrow interleaved coordinates require fixed_size_list of length 2, 3, or 4",
         ));
     }
-    if schema.children.len() != 1 {
+    let [values] = schema.children.as_slice() else {
         return Err(PyTypeError::new_err(
             "Arrow fixed-size-list coordinates require exactly one value child",
         ));
-    }
-    let values = &schema.children[0];
+    };
     if values.dictionary_present || !values.children.is_empty() || values.format() != "g" {
         return Err(PyTypeError::new_err(
             "geoarrow interleaved coordinates require a float64 value leaf",

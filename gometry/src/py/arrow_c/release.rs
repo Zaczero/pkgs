@@ -134,7 +134,7 @@ pub(crate) unsafe extern "C" fn release_schema(schema: *mut ArrowSchema) {
         // callback; reading its release slot is the idempotence check below.
         && unsafe { (*schema).release.is_some() }
     {
-        SCHEMA_RELEASE_CALLBACKS.with(|count| count.set(count.get() + 1));
+        SCHEMA_RELEASE_CALLBACKS.with(|count| count.set(count.get().wrapping_add(1)));
     }
     // SAFETY: `release_tree` implements the shared Arrow release-slot/private
     // box order for exported schemas.

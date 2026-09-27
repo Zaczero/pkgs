@@ -1,3 +1,4 @@
+use std::ffi::c_void;
 use std::fmt::Write as _;
 use std::ptr;
 
@@ -105,13 +106,16 @@ fn schema_text(text: &str) -> NativeArrowExportResult<Vec<u8>> {
     Ok(bytes)
 }
 
+#[expect(
+    clippy::checked_conversions,
+    reason = "key and value lengths are admitted as i32 before their C Data Interface writes"
+)]
 pub(crate) fn encode_schema_metadata(
     pairs: &[(String, String)],
 ) -> NativeArrowExportResult<Vec<u8>> {
     let pair_count = i32::try_from(pairs.len()).map_err(|_| {
         NativeArrowExportError::geometry("Arrow schema metadata has too many entries")
     })?;
-    let mut capacity = size_of::<i32>();
     for (key, value) in pairs {
         i32::try_from(key.len()).map_err(|_| {
             NativeArrowExportError::geometry("Arrow schema metadata key is too large")
@@ -119,11 +123,20 @@ pub(crate) fn encode_schema_metadata(
         i32::try_from(value.len()).map_err(|_| {
             NativeArrowExportError::geometry("Arrow schema metadata value is too large")
         })?;
+    }
+    let mut capacity = size_of::<i32>();
+    for (key, value) in pairs {
         capacity = capacity
-            .saturating_add(size_of::<i32>())
-            .saturating_add(key.len())
-            .saturating_add(size_of::<i32>())
-            .saturating_add(value.len());
+            .checked_add(size_of::<i32>())
+            .and_then(|capacity| capacity.checked_add(key.len()))
+            .and_then(|capacity| capacity.checked_add(size_of::<i32>()))
+            .and_then(|capacity| capacity.checked_add(value.len()))
+            .filter(|capacity| *capacity <= isize::MAX as usize)
+            .ok_or_else(|| {
+                NativeArrowExportError::overflow(
+                    "Arrow schema metadata envelope exceeds addressable size",
+                )
+            })?;
     }
     let mut out = Vec::with_capacity(capacity);
     out.extend_from_slice(&pair_count.to_ne_bytes());
@@ -147,6 +160,29 @@ pub(crate) enum OwnedBufferSlot {
     F64(SharedSlice<f64>),
     I32(crate::geometry::SharedSlice<i32>),
     U8(crate::geometry::SharedSlice<u8>),
+}
+
+impl OwnedBufferSlot {
+    fn as_ptr(&self) -> *const c_void {
+        match self {
+            Self::Null => ptr::null(),
+            Self::F64(values) => values.as_ptr().cast(),
+            Self::I32(values) => values.as_ptr().cast(),
+            Self::U8(values) => values.as_ptr().cast(),
+        }
+    }
+}
+
+impl ArrayPrivate {
+    fn replace_first_buffer(&mut self, owner: OwnedBufferSlot) -> bool {
+        let Some((pointer, owner_slot)) = self.buffers.first_mut().zip(self.owners.first_mut())
+        else {
+            return false;
+        };
+        *pointer = owner.as_ptr();
+        *owner_slot = owner;
+        true
+    }
 }
 
 /// Gometry-built Arrow array shell. Only the builders in this module construct
@@ -258,12 +294,7 @@ fn make_array_with_offset(
 
     let mut buffer_ptrs = Vec::with_capacity(n_buffers);
     for slot in &buffers {
-        buffer_ptrs.push(match slot {
-            OwnedBufferSlot::Null => ptr::null(),
-            OwnedBufferSlot::F64(values) => values.as_ptr().cast(),
-            OwnedBufferSlot::I32(values) => values.as_ptr().cast(),
-            OwnedBufferSlot::U8(values) => values.as_ptr().cast(),
-        });
+        buffer_ptrs.push(slot.as_ptr());
     }
     let n_children_i64 = checked_i64(children.len(), "n_children")?;
     let mut child_ptrs = Vec::with_capacity(children.len());
@@ -342,7 +373,7 @@ pub(crate) fn apply_top_level_validity(
         let mut validity = vec![0; total_bits.div_ceil(8)];
         for row in 0..mask.len() {
             if mask.is_valid(row) {
-                let bit = offset + row;
+                let bit = offset.wrapping_add(row);
                 validity[bit / 8] |= 1 << (bit % 8);
             }
         }
@@ -359,13 +390,11 @@ pub(crate) fn apply_top_level_validity(
     // preserves both vector allocations and retains the published bytes.
     unsafe {
         let private = &mut *private;
-        if private.buffers.is_empty() {
+        if !private.replace_first_buffer(OwnedBufferSlot::U8(validity)) {
             return Err(GeometryError::new_err(
                 "Arrow geometry export has no top-level validity buffer slot",
             ));
         }
-        private.buffers[0] = validity.as_ptr().cast();
-        private.owners[0] = OwnedBufferSlot::U8(validity);
         array.buffers = private.buffers.as_ptr();
     }
     array.null_count = i64::try_from(null_count)
@@ -408,13 +437,11 @@ pub(crate) fn apply_prebuilt_top_level_validity(
     // live ArrayPrivate allocation. The plan bitmap owns every published byte.
     unsafe {
         let private = &mut *private;
-        if private.buffers.is_empty() {
+        if !private.replace_first_buffer(OwnedBufferSlot::U8(validity)) {
             return Err(GeometryError::new_err(
                 "Arrow geometry export has no top-level validity buffer slot",
             ));
         }
-        private.buffers[0] = validity.as_ptr().cast();
-        private.owners[0] = OwnedBufferSlot::U8(validity);
         array.buffers = private.buffers.as_ptr();
     }
     array.null_count = i64::try_from(null_count)
@@ -514,7 +541,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
     // Gather materialization always produces a full-window seq first.
     let columns = seq.column_arcs();
     let start = columns.window.start;
-    let len = columns.window.end - columns.window.start;
+    let len = columns.window.len();
     let m_parts = columns.m_parts();
     let mut children = Vec::with_capacity(4);
     children.push(primitive_f64_array_windowed(columns.xs, start, len)?);
@@ -526,7 +553,7 @@ pub(crate) fn coordinate_array(seq: &CoordSeq) -> PyResult<GometryArrowArray> {
         children.push(primitive_f64_array_windowed(
             ms,
             m_range.start,
-            m_range.end - m_range.start,
+            m_range.len(),
         )?);
     }
     make_array(len, [OwnedBufferSlot::Null], children)
@@ -619,21 +646,23 @@ fn assemble_extension_metadata(projjson: Option<String>, epoch: Option<Number>) 
         "absent CRS and epoch is returned as None before assembly"
     );
     let extra = match (projjson.is_some(), epoch.is_some()) {
-        (true, false) => CRS_PREFIX.len() + CRS_TYPE_FIELD.len() + OBJECT_END.len(),
-        (true, true) => {
-            CRS_PREFIX.len()
-                + CRS_TYPE_FIELD.len()
-                + EPOCH_FIELD.len()
-                + ZMIJ_F64_DISPLAY
-                + OBJECT_END.len()
-        },
-        (false, true) => EPOCH_ONLY_PREFIX.len() + ZMIJ_F64_DISPLAY + OBJECT_END.len(),
+        (true, false) => CRS_PREFIX
+            .len()
+            .wrapping_add(CRS_TYPE_FIELD.len())
+            .wrapping_add(OBJECT_END.len()),
+        (true, true) => CRS_PREFIX
+            .len()
+            .wrapping_add(CRS_TYPE_FIELD.len())
+            .wrapping_add(EPOCH_FIELD.len())
+            .wrapping_add(ZMIJ_F64_DISPLAY)
+            .wrapping_add(OBJECT_END.len()),
+        (false, true) => EPOCH_ONLY_PREFIX
+            .len()
+            .wrapping_add(ZMIJ_F64_DISPLAY)
+            .wrapping_add(OBJECT_END.len()),
         (false, false) => 0,
     };
-    let needed = projjson
-        .as_deref()
-        .map_or(0, str::len)
-        .saturating_add(extra);
+    let needed = projjson.as_deref().map_or(0, str::len).wrapping_add(extra);
     let mut out = String::with_capacity(needed);
     if let Some(projjson) = projjson {
         out.push_str(CRS_PREFIX);

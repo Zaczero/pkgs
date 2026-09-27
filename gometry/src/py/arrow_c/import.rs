@@ -1,8 +1,3 @@
-#![expect(
-    clippy::absolute_paths,
-    reason = "stream admit/decode loop is intentionally linear"
-)]
-
 use std::ptr;
 
 use libc::ENOMEM;
@@ -10,11 +5,14 @@ use pyo3::exceptions::{PyOSError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyCapsule, PyString, PyTuple};
 
+use crate::check_python_signals;
 use crate::py::arrow::NativeArrowAccumulator;
 use crate::py::arrow_c::{
     ArrowArrayStream, ArrowReleaseGuard, ArrowSchema, MovedArrowShell, NativeArrowClassification,
-    empty_array, ffi, stream_capsule_name,
+    NativeArrowDecodeError, admit_and_classify_raw_schema, empty_array, ffi,
+    native_arrow_batch_from_capsules, native_arrow_batch_from_raw_array, stream_capsule_name,
 };
+use crate::py::errors::ParseError;
 
 pub(crate) fn geometries_from_arrow_c(
     py: Python<'_>,
@@ -60,14 +58,13 @@ pub(crate) fn geometries_from_native_capsules_classified(
     crs: Option<&Bound<'_, PyAny>>,
     epoch: Option<&Bound<'_, PyAny>>,
 ) -> PyResult<Py<PyAny>> {
-    let (batch, classified) =
-        crate::py::arrow_c::native_arrow_batch_from_capsules(schema_capsule, array_capsule)?;
+    let (batch, classified) = native_arrow_batch_from_capsules(schema_capsule, array_capsule)?;
     let (classification, _) = NativeArrowClassification::from_schema(&classified);
     let mut accumulator = NativeArrowAccumulator::new();
     accumulator.admit_classification(&classification)?;
     let decoded = py
         .detach(move || batch.decode())
-        .map_err(crate::py::arrow_c::NativeArrowDecodeError::into_py_err)?;
+        .map_err(NativeArrowDecodeError::into_py_err)?;
     accumulator.push_decoded(decoded)?;
     accumulator.finish(py, crs, epoch)
 }
@@ -134,9 +131,8 @@ const unsafe fn read_metadata_i32(cursor: &mut *const u8) -> i32 {
 unsafe fn read_metadata_len(cursor: &mut *const u8) -> PyResult<usize> {
     // SAFETY: forwarded from `schema_metadata_value`.
     let len = unsafe { read_metadata_i32(cursor) };
-    usize::try_from(len).map_err(|_| {
-        crate::py::errors::ParseError::new_err("Arrow C schema metadata has a negative length")
-    })
+    usize::try_from(len)
+        .map_err(|_| ParseError::new_err("Arrow C schema metadata has a negative length"))
 }
 
 /// Stream import admits and decodes one batch before requesting the next.
@@ -189,15 +185,14 @@ pub(crate) unsafe fn import_stream(
                 "Arrow C stream failed to export its schema",
             ));
         }
-        let (admitted_schema, classified) =
-            crate::py::arrow_c::admit_and_classify_raw_schema(schema_guard.as_ptr())?;
+        let (admitted_schema, classified) = admit_and_classify_raw_schema(schema_guard.as_ptr())?;
         let (classification, struct_child) = NativeArrowClassification::from_schema(&classified);
         let mut accumulator = NativeArrowAccumulator::new();
         accumulator.admit_classification(&classification)?;
         let mut batch_index: usize = 0;
 
         loop {
-            crate::check_python_signals(py, batch_index)?;
+            check_python_signals(py, batch_index)?;
             let mut array = empty_array();
             let next_status = get_next(stream, &raw mut array);
             if next_status != 0 {
@@ -217,7 +212,7 @@ pub(crate) unsafe fn import_stream(
             }
             // Move and release the producer shell before detaching.  The batch
             // owns independent copies of every selected span.
-            let batch = crate::py::arrow_c::native_arrow_batch_from_raw_array(
+            let batch = native_arrow_batch_from_raw_array(
                 &raw mut array,
                 &admitted_schema,
                 classification.clone(),
@@ -225,7 +220,7 @@ pub(crate) unsafe fn import_stream(
             )?;
             let decoded = py
                 .detach(move || batch.decode())
-                .map_err(crate::py::arrow_c::NativeArrowDecodeError::into_py_err)?;
+                .map_err(NativeArrowDecodeError::into_py_err)?;
             accumulator.push_decoded(decoded)?;
             batch_index = batch_index.wrapping_add(1);
         }

@@ -269,6 +269,28 @@ def test_g3_interleaved_xyz_point() -> None:
     assert arr.to_wkt() == ['POINT Z (1 2 3)', 'POINT Z (4 5 6)']
 
 
+def test_g3_interleaved_xyzm_point_preserves_z_and_m_ordinates() -> None:
+    values = pa.array(
+        [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        type=pa.float64(),
+    )
+    coordinate_type = pa.list_(pa.field('item', pa.float64()), 4)
+    storage = pa.FixedSizeListArray.from_arrays(values, type=coordinate_type)
+    field = pa.field(
+        'geometry',
+        storage.type,
+        metadata={
+            b'ARROW:extension:name': b'geoarrow.point',
+            b'ARROW:extension:metadata': b'{}',
+        },
+    )
+    batch = pa.RecordBatch.from_arrays([storage], schema=pa.schema([field]))
+
+    restored = gm.from_arrow(batch)
+
+    assert restored.to_wkt() == ['POINT ZM (0 1 2 3)', 'POINT ZM (4 5 6 7)']
+
+
 def _interleaved_point_batch(flat: list[float], list_size: int, value_name: str):
     """Named FixedSizeList geoarrow.point batch (field name encodes dimensions)."""
     fsl_type = pa.list_(pa.field(value_name, pa.float64()), list_size)
