@@ -1,6 +1,7 @@
 use crate::geometry::{
     Bounds, Coordinates, HashMap, HashMapExt as _, IndexedSegment, LineworkChains, Orientation,
-    Point, PointKey, Polygon, Ring, ValidationIssue, XY, classify_ring_pair, face_interior_point,
+    Point, PointKey, Polygon, Ring, SegmentParameter, ValidationIssue, XY, classify_ring_pair,
+    classify_ring_pair_with_contacts, clip_segment_parameter, face_interior_point,
     for_each_overlapping_bounds_pair, orient_ring, orientation_xy, ray_crossing_is_right,
     ring_probe_point, settle_touches, topology, visit_interacting_pairs,
 };
@@ -151,6 +152,30 @@ pub(crate) fn ring_contains_interior<C: Coordinates + ?Sized>(
 /// ring — accumulated across the pair scan, settled in the post-pass.
 pub(crate) type TouchDirections = HashMap<(usize, usize), HashMap<PointKey, [Vec<XY>; 2]>>;
 
+#[derive(Clone, Debug)]
+pub(in crate::geometry) struct PolygonContact {
+    pub(in crate::geometry) rings: [usize; 2],
+    pub(in crate::geometry) edges: [usize; 2],
+    pub(in crate::geometry) parameters: [SegmentParameter; 2],
+    pub(in crate::geometry) point: XY,
+}
+
+fn source_edge_ordinal(
+    source_edges: &[u32],
+    source_offsets: &[usize],
+    segment: &IndexedSegment,
+) -> usize {
+    let line_start = *source_offsets
+        .get(segment.line)
+        .expect("staged line has a source-edge offset");
+    let source_index = line_start
+        .checked_add(segment.index)
+        .expect("staged segment ordinal fits its source-edge map");
+    *source_edges
+        .get(source_index)
+        .expect("staged segment has a source-edge ordinal") as usize
+}
+
 pub(crate) fn ring_label(ring: usize) -> String {
     if ring == 0 {
         "exterior ring".into()
@@ -161,30 +186,73 @@ pub(crate) fn ring_label(ring: usize) -> String {
 
 /// Validity of one polygon's ring arrangement (rings already individually
 /// closed/finite/long-enough via `validate_ring`).
-pub(in crate::geometry) fn polygon_rings_issue(
+pub(in crate::geometry) fn polygon_rings_issue_with_contacts(
     polygon: &Polygon,
     path: &str,
+    mut contacts: Option<&mut Vec<PolygonContact>>,
 ) -> crate::error::Result<Option<ValidationIssue>> {
     let ring_count = polygon.holes.len() + 1;
     let mut chains = LineworkChains::default();
-    if chains.push_line(polygon.shell.coords())?.is_none() {
-        return Ok(None);
-    }
-    for hole in polygon.holes.iter() {
-        if chains.push_line(hole.coords())?.is_none() {
+    let mut source_edges = Vec::new();
+    let mut source_offsets = Vec::new();
+    for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
+        if contacts.is_some() {
+            source_offsets.push(source_edges.len());
+            if chains
+                .push_line_with_source_edges(ring.coords(), &mut source_edges)?
+                .is_none()
+            {
+                return Ok(None);
+            }
+        } else if chains.push_line(ring.coords())?.is_none() {
             return Ok(None);
         }
     }
 
     let mut touches: TouchDirections = HashMap::new();
     if let Some(issue) = visit_interacting_pairs(&chains, |left, right| {
-        classify_ring_pair(left, right, &mut touches, &|a, b| {
-            format!(
-                "{} and {} intersect",
-                ring_label(a.min(b)),
-                ring_label(a.max(b))
-            )
-        })
+        let mut collect_contact = |left: &IndexedSegment,
+                                   right: &IndexedSegment,
+                                   point: XY|
+         -> crate::error::Result<()> {
+            if let Some(contacts) = contacts.as_deref_mut() {
+                let left_edge = source_edge_ordinal(&source_edges, &source_offsets, left);
+                let right_edge = source_edge_ordinal(&source_edges, &source_offsets, right);
+                let left_parameter = clip_segment_parameter(left.segment, point)?;
+                let right_parameter = clip_segment_parameter(right.segment, point)?;
+                let (rings, edges, parameters) = if left.line < right.line {
+                    ([left.line, right.line], [left_edge, right_edge], [
+                        left_parameter,
+                        right_parameter,
+                    ])
+                } else {
+                    ([right.line, left.line], [right_edge, left_edge], [
+                        right_parameter,
+                        left_parameter,
+                    ])
+                };
+                contacts.push(PolygonContact {
+                    rings,
+                    edges,
+                    parameters,
+                    point,
+                });
+            }
+            Ok(())
+        };
+        classify_ring_pair_with_contacts(
+            left,
+            right,
+            &mut touches,
+            &mut collect_contact,
+            &|a, b| {
+                format!(
+                    "{} and {} intersect",
+                    ring_label(a.min(b)),
+                    ring_label(a.max(b))
+                )
+            },
+        )
     })? {
         return Ok(Some(issue.with_path_prefix(path)));
     }

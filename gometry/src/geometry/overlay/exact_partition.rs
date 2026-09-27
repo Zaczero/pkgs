@@ -47,6 +47,7 @@ mod relate;
 
 use construction::{
     AxisValue, PointArena, interpolate_ordinate, parameter_along, partition_unique_segments,
+    partition_unique_segments_unbudgeted,
 };
 #[cfg(test)]
 use emission::PlannedChord;
@@ -672,6 +673,17 @@ impl ExactSourceInventory {
         &self,
         budget: &mut ExpansionBudget,
     ) -> Result<ExactPartition<'_>> {
+        self.partition_with_budget(Some(budget))
+    }
+
+    pub(in crate::geometry) fn partition_without_budget(&self) -> Result<ExactPartition<'_>> {
+        self.partition_with_budget(None)
+    }
+
+    fn partition_with_budget(
+        &self,
+        budget: Option<&mut ExpansionBudget>,
+    ) -> Result<ExactPartition<'_>> {
         #[cfg(test)]
         record_partition_call();
         #[cfg(test)]
@@ -680,8 +692,16 @@ impl ExactSourceInventory {
             metrics.source_segments = self.source_segments.len();
             metrics.unique_source_segments = self.unique.len();
         });
-        let mut partition =
-            partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?;
+        let mut partition = match budget {
+            Some(budget) => {
+                partition_unique_segments(&self.unique, &self.provenance, &self.isolated, budget)?
+            },
+            None => partition_unique_segments_unbudgeted(
+                &self.unique,
+                &self.provenance,
+                &self.isolated,
+            )?,
+        };
         #[cfg(test)]
         update_partition_metrics(|metrics| {
             metrics.canonical_spans = partition.spans.len();
@@ -3320,12 +3340,7 @@ impl ExactPartition<'_> {
     )]
     pub(in crate::geometry) fn local_topology(&self) -> Result<(IndexedTopology, Vec<u32>)> {
         let vertices = self.node_count();
-        let slots = self
-            .spans
-            .len()
-            .checked_mul(2)
-            .ok_or(ResourceError::SizeOverflow)?;
-        u32::try_from(slots).map_err(|_| ResourceError::SizeOverflow)?;
+        let slots = IndexedTopology::admit_counts(vertices, self.spans.len())?;
         let mut topology = IndexedTopology::default();
         let vertex_capacity = vertices.checked_add(1).ok_or(ResourceError::SizeOverflow)?;
         topology.starts.reserve(vertex_capacity);

@@ -59,7 +59,13 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
         TopologyDomain::Cartesian => {
             let mut refs = Vec::with_capacity(geometries.len());
             refs.extend(geometries.iter().map(std::borrow::Borrow::borrow));
-            exact_cartesian_overlay(refs, op, strictness, bounds_certificates)
+            exact_cartesian_overlay(
+                refs,
+                op,
+                strictness,
+                bounds_certificates,
+                ExactPartitionBudget::Charge,
+            )
         },
         TopologyDomain::Geographic(frame) => {
             let originals = GeographicInputs::try_from_shapes(
@@ -69,6 +75,27 @@ pub(super) fn overlay_all_with_bounds_certificates<S: Borrow<Shape>>(
             .map_err(|error| overlay_view_error(&error))?;
             overlay_all_geographic_from(&originals, op, strictness, bounds_certificates)
         },
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ExactPartitionBudget {
+    Charge,
+    Ignore,
+}
+
+#[derive(Clone, Copy)]
+pub(in crate::geometry) enum VoronoiIntermediateOverlay {
+    Intersection,
+    Difference,
+}
+
+impl VoronoiIntermediateOverlay {
+    const fn operation(self) -> OverlayOp {
+        match self {
+            Self::Intersection => OverlayOp::Intersection,
+            Self::Difference => OverlayOp::Difference,
+        }
     }
 }
 
@@ -82,6 +109,7 @@ fn exact_cartesian_overlay(
     operation: OverlayOp,
     strictness: Strictness,
     bounds_certificates: bool,
+    partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
     if inputs.len() == 1 && operation == OverlayOp::Intersection {
         return Ok(inputs[0].clone());
@@ -108,7 +136,9 @@ fn exact_cartesian_overlay(
         None
     };
     let shape = match components {
-        None => exact_partition_overlay(inputs, operation, declared_axes, strict)?,
+        None => {
+            exact_partition_overlay(inputs, operation, declared_axes, strict, partition_budget)?
+        },
         Some(components) => {
             let mut shapes = Vec::with_capacity(components.len());
             let mut subset = Vec::new();
@@ -121,6 +151,7 @@ fn exact_cartesian_overlay(
                     operation,
                     declared_axes,
                     strict,
+                    partition_budget,
                 )?);
             }
             join_components(&shapes)?
@@ -201,6 +232,7 @@ fn exact_partition_overlay(
     operation: OverlayOp,
     declared_axes: CoordinateAxes,
     strict: bool,
+    partition_budget: ExactPartitionBudget,
 ) -> Result<Shape> {
     let union = if operation == OverlayOp::Union {
         ExactSourceInventory::from_polygonal_union(inputs)?
@@ -211,9 +243,32 @@ fn exact_partition_overlay(
         Some(inventory) => inventory,
         None => ExactSourceInventory::from_shapes(inputs)?,
     };
-    let mut budget = crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
-    let partition = inventory.partition(&mut budget)?;
+    let partition = match partition_budget {
+        ExactPartitionBudget::Charge => {
+            let mut budget =
+                crate::geometry::ExpansionBudget::new(operation.name(), "exact partition");
+            inventory.partition(&mut budget)?
+        },
+        ExactPartitionBudget::Ignore => inventory.partition_without_budget()?,
+    };
     inventory.overlay_shape(&partition, operation, declared_axes, strict)
+}
+
+/// Voronoi uses these overlays for cell clipping and a clip-equivalence
+/// certificate; its caller owns the published-output budget.
+pub(in crate::geometry) fn binary_cartesian_overlay_without_partition_budget(
+    left: &Shape,
+    right: &Shape,
+    operation: VoronoiIntermediateOverlay,
+    strictness: Strictness,
+) -> Result<Shape> {
+    exact_cartesian_overlay(
+        vec![left, right],
+        operation.operation(),
+        strictness,
+        true,
+        ExactPartitionBudget::Ignore,
+    )
 }
 
 pub(in crate::geometry) fn overlay_all_geographic_from(

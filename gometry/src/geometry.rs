@@ -162,19 +162,22 @@ use overlay::{
 };
 pub(crate) use packed_line_metrics::{PackedLineColumnView, scale_metric_values};
 pub(crate) use point_location::{PointBatchTester, PolygonPointIndex};
+pub(in crate::geometry) use predicates::PolygonContact;
 use predicates::{
-    LineworkChains, TouchDirections, classify_ring_pair, face_interior_point, polygon_rings_issue,
-    ring_classify_point, ring_contains_interior, ring_edge_membership, ring_encloses_pole,
-    ring_label, ring_probe_point, segment_intersection_is_simple, segments_are_adjacent,
-    settle_touches, shell_is_convex, simplified_polygon_delta_is_simple, validate_ring,
-    visit_interacting_pairs,
+    LineworkChains, TouchDirections, classify_ring_pair, classify_ring_pair_with_contacts,
+    face_interior_point, polygon_rings_issue_with_contacts, ring_classify_point,
+    ring_contains_interior, ring_encloses_pole, ring_label, ring_probe_point,
+    segment_intersection_is_simple, segments_are_adjacent, settle_touches, shell_is_convex,
+    simplified_polygon_delta_is_simple, validate_ring, visit_interacting_pairs,
 };
 pub(crate) use predicates::{
-    RingClass, RingEdgeMembership, line_is_ccw, line_is_closed, line_is_simple, line_is_valid,
-    polygon_is_valid, shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
+    RingClass, line_is_ccw, line_is_closed, line_is_simple, line_is_valid, polygon_is_valid,
+    shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame,
     shape_reaches_geographic_pole_in_frame,
 };
-pub(in crate::geometry) use segments::{DdInterval, dd_strict_cmp};
+pub(in crate::geometry) use segments::{
+    DdInterval, SegmentParameter, clip_segment_parameter, dd_strict_cmp,
+};
 pub(crate) use util::{
     bounds_to_shape, columns_within, dedup_consecutive_points, dedup_consecutive_xy,
     empty_geometry, geographic_bounds_to_shape, point_equals_exact, points_equal_exact,
@@ -612,6 +615,24 @@ impl Polygon {
         name: &str,
         path: &str,
     ) -> crate::error::Result<Option<ValidationIssue>> {
+        self.validate_inner(name, path, None)
+    }
+
+    pub(in crate::geometry) fn validate_with_contacts(
+        &self,
+        name: &str,
+        path: &str,
+        contacts: &mut Vec<PolygonContact>,
+    ) -> crate::error::Result<Option<ValidationIssue>> {
+        self.validate_inner(name, path, Some(contacts))
+    }
+
+    fn validate_inner(
+        &self,
+        name: &str,
+        path: &str,
+        contacts: Option<&mut Vec<PolygonContact>>,
+    ) -> crate::error::Result<Option<ValidationIssue>> {
         if let Some(issue) = validate_ring(self.shell.coords(), || {
             (format!("{name} shell"), format!("{path}.shell"))
         }) {
@@ -624,7 +645,7 @@ impl Polygon {
                 return Ok(Some(issue));
             }
         }
-        polygon_rings_issue(self, path)
+        polygon_rings_issue_with_contacts(self, path, contacts)
     }
 
     fn contains_point(&self, point: Point) -> bool {

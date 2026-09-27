@@ -45,6 +45,24 @@ impl LineworkChains {
     /// coordinates at all (the historical early-out the validity paths
     /// rely on).
     pub(crate) fn push_line(&mut self, points: &CoordSeq) -> crate::error::Result<Option<()>> {
+        self.push_line_inner(points, None)
+    }
+
+    /// Append a line with one source-edge ordinal per staged segment. Removed
+    /// zero-length stutters do not appear in the mapping.
+    pub(in crate::geometry) fn push_line_with_source_edges(
+        &mut self,
+        points: &CoordSeq,
+        source_edges: &mut Vec<u32>,
+    ) -> crate::error::Result<Option<()>> {
+        self.push_line_inner(points, Some(source_edges))
+    }
+
+    fn push_line_inner(
+        &mut self,
+        points: &CoordSeq,
+        mut source_edges: Option<&mut Vec<u32>>,
+    ) -> crate::error::Result<Option<()>> {
         let Some(count) = points.coord_count().checked_sub(1) else {
             return Ok(None);
         };
@@ -70,6 +88,9 @@ impl LineworkChains {
         self.line_of.reserve(count);
         self.spans.reserve(1);
         self.runs.reserve(count);
+        if let Some(source_edges) = &mut source_edges {
+            source_edges.reserve(count);
+        }
         let [min_x, min_y, max_x, max_y] = crate::geometry::xy_bounds_columns(xs, ys);
         self.bounds.include_xy(XY::new(min_x, min_y));
         self.bounds.include_xy(XY::new(max_x, max_y));
@@ -89,11 +110,14 @@ impl LineworkChains {
         // the closed-ring wrap read the STAGED ordinal/count below, so the real
         // segments flanking a duplicate become correctly adjacent.
         let mut staged = 0_u32;
-        for index in 0..count {
+        for (source_edge, index) in (0..count_u32).zip(0..count) {
             let (x0, y0, x1, y1) = (xs[index], ys[index], xs[index + 1], ys[index + 1]);
             let (sx, sy) = (sign_of(x1 - x0), sign_of(y1 - y0));
             if sx == 0 && sy == 0 {
                 continue; // zero-length: removable stutter, never staged
+            }
+            if let Some(source_edges) = &mut source_edges {
+                source_edges.push(source_edge);
             }
             self.segments.push(Segment {
                 start: Point::new_raw_xy(x0, y0).into(),

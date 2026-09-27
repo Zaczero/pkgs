@@ -4,9 +4,9 @@
 //! incidence is walked once to emit each shared edge exactly one time.
 
 use super::{
-    BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, ExpansionBudget, Ordering,
-    Result, SiteId, VertexId, budgeted_push, exact, rounded_box, selected_cell_label, try_sort_by,
-    validate_exact_cycles, voronoi_error, walk_label,
+    BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, Ordering, Result, SiteId,
+    VertexId, exact, rounded_box, selected_cell_label, try_sort_by, validate_exact_cycles,
+    voronoi_error, walk_label,
 };
 
 pub(super) struct ExactSimpleRing {
@@ -139,7 +139,6 @@ pub(super) fn assemble_owner_parts(
     subdivision: &ExactSubdivision,
     owner: SiteId,
     walks: impl IntoIterator<Item = BoundaryFaceId>,
-    budget: &mut ExpansionBudget,
     parts: &mut Vec<ExactCellPart>,
 ) -> Result<()> {
     let mut rings = Vec::new();
@@ -161,7 +160,6 @@ pub(super) fn assemble_owner_parts(
     let mut ring_points = Vec::with_capacity(rings.len());
     for ring in &rings {
         let count = ring.vertices.len().saturating_sub(1);
-        budget.add(count)?;
         let mut points = Vec::with_capacity(count);
         points.extend(
             ring.vertices[..count]
@@ -194,11 +192,6 @@ pub(super) fn assemble_owner_parts(
             if other == positive {
                 return Ok(());
             }
-            budget.add(
-                ring_points[positive]
-                    .len()
-                    .saturating_mul(ring_points[other].len()),
-            )?;
             if nested(&ring_points[positive], &ring_points[other])? {
                 return Err(voronoi_error(
                     "exact same-face ring forest has depth greater than one",
@@ -221,11 +214,6 @@ pub(super) fn assemble_owner_parts(
             if shell_slot[other] == usize::MAX {
                 return Ok(());
             }
-            budget.add(
-                ring_points[negative]
-                    .len()
-                    .saturating_mul(ring_points[other].len()),
-            )?;
             if nested(&ring_points[negative], &ring_points[other])? {
                 candidates.push(shell_slot[other]);
             }
@@ -237,13 +225,6 @@ pub(super) fn assemble_owner_parts(
                 "negative exact face ring has no same-face shell",
             ));
         }
-        budget.add(
-            candidates
-                .iter()
-                .map(|slot| ring_points[positives[*slot]].len())
-                .sum::<usize>()
-                .saturating_mul(2),
-        )?;
         let mut candidates = candidates.into_iter();
         let mut parent = candidates.next().expect("nonempty ring candidates");
         for candidate in candidates {
@@ -310,25 +291,18 @@ pub(super) fn assemble_owner_parts(
         }
         let mut exact_ring_refs = Vec::with_capacity(exact_rings.len());
         exact_ring_refs.extend(exact_rings.iter().map(Vec::as_slice));
-        validate_exact_cycles(&exact_ring_refs, 0, budget)?;
-        budgeted_push(
-            parts,
-            ExactCellPart {
-                owner,
-                face: shell.face,
-                shell,
-                holes,
-            },
-            budget,
-        )?;
+        validate_exact_cycles(&exact_ring_refs, 0)?;
+        parts.push(ExactCellPart {
+            owner,
+            face: shell.face,
+            shell,
+            holes,
+        });
     }
     Ok(())
 }
 
-pub(super) fn assemble_cells(
-    subdivision: &ExactSubdivision,
-    budget: &mut ExpansionBudget,
-) -> Result<Vec<ExactCellPart>> {
+pub(super) fn assemble_cells(subdivision: &ExactSubdivision) -> Result<Vec<ExactCellPart>> {
     let mut selected = Vec::with_capacity(subdivision.labels.len());
     for (index, label) in subdivision.labels.iter().enumerate() {
         if !selected_cell_label(*label) {
@@ -352,7 +326,6 @@ pub(super) fn assemble_cells(
             subdivision,
             owner,
             selected[start..end].iter().map(|(_, face)| *face),
-            budget,
             &mut parts,
         )?;
         start = end;
@@ -382,7 +355,6 @@ pub(super) fn walk_separator_from(
     incidence: &SeparatorIncidence,
     used: &mut [bool],
     start: VertexId,
-    budget: &mut ExpansionBudget,
     result: &mut Vec<ExactEdgeChain>,
 ) -> Result<()> {
     let mut current = start;
@@ -408,7 +380,6 @@ pub(super) fn walk_separator_from(
         vertices.reverse();
         chain_edges.reverse();
     }
-    budget.add(vertices.len())?;
     result.push(ExactEdgeChain {
         separator,
         vertices,
@@ -421,7 +392,6 @@ pub(super) fn assemble_separator_group(
     subdivision: &ExactSubdivision,
     separator: [SiteId; 2],
     group: &[([SiteId; 2], EdgeId)],
-    budget: &mut ExpansionBudget,
     result: &mut Vec<ExactEdgeChain>,
 ) -> Result<()> {
     let mut incidence = Vec::with_capacity(group.len().saturating_mul(2));
@@ -451,26 +421,19 @@ pub(super) fn assemble_separator_group(
         } else {
             continue;
         };
-        walk_separator_from(
-            separator, group, &incidence, &mut used, start, budget, result,
-        )?;
+        walk_separator_from(separator, group, &incidence, &mut used, start, result)?;
     }
     for (slot, (_, edge_id)) in group.iter().enumerate() {
         if used[slot] {
             continue;
         }
         let start = subdivision.edges[edge_id.0 as usize].endpoints[0];
-        walk_separator_from(
-            separator, group, &incidence, &mut used, start, budget, result,
-        )?;
+        walk_separator_from(separator, group, &incidence, &mut used, start, result)?;
     }
     Ok(())
 }
 
-pub(super) fn assemble_edges(
-    subdivision: &ExactSubdivision,
-    budget: &mut ExpansionBudget,
-) -> Result<Vec<ExactEdgeChain>> {
+pub(super) fn assemble_edges(subdivision: &ExactSubdivision) -> Result<Vec<ExactEdgeChain>> {
     let mut forward_slot = Vec::with_capacity(subdivision.edges.len());
     forward_slot.resize(subdivision.edges.len(), u32::MAX);
     for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
@@ -501,21 +464,12 @@ pub(super) fn assemble_edges(
     }
     selected.sort_unstable();
     let mut result = Vec::new();
-    let mut start = 0;
-    while start < selected.len() {
-        let separator = selected[start].0;
-        let mut end = start + 1;
-        while end < selected.len() && selected[end].0 == separator {
-            end += 1;
-        }
-        assemble_separator_group(
-            subdivision,
-            separator,
-            &selected[start..end],
-            budget,
-            &mut result,
-        )?;
-        start = end;
+    for group in selected.chunk_by(|left, right| left.0 == right.0) {
+        let separator = group
+            .first()
+            .expect("chunk_by returns non-empty separator groups")
+            .0;
+        assemble_separator_group(subdivision, separator, group, &mut result)?;
     }
     try_sort_by(&mut result, |left, right| {
         Ok(left

@@ -21,6 +21,19 @@ pub(crate) struct IndexedTopologyScratch {
 }
 
 impl IndexedTopology {
+    pub(crate) fn admit_counts(
+        vertex_count: usize,
+        edge_count: usize,
+    ) -> crate::error::Result<usize> {
+        let slots = edge_count
+            .checked_mul(2)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        if vertex_count > u32::MAX as usize || slots > u32::MAX as usize {
+            return Err(crate::error::ResourceError::SizeOverflow.into());
+        }
+        Ok(slots)
+    }
+
     pub(crate) fn successor_slot(&self, slot: u32) -> u32 {
         let slot = slot as usize;
         let target = self.targets[slot] as usize;
@@ -211,5 +224,27 @@ mod tests {
             assert_eq!(topology.twins[twin as usize], slot as u32);
             assert_eq!(topology.owners[slot], topology.targets[twin as usize]);
         }
+    }
+
+    #[test]
+    fn count_admission_checks_vertex_sentinel_and_terminal_slot_widths() {
+        let max_count = u32::MAX as usize;
+        assert_eq!(
+            IndexedTopology::admit_counts(max_count, (u32::MAX / 2) as usize).unwrap(),
+            max_count - 1
+        );
+        let beyond_vertex_domain = max_count.checked_add(1).unwrap();
+        assert!(matches!(
+            IndexedTopology::admit_counts(beyond_vertex_domain, 0)
+                .unwrap_err()
+                .kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+        assert!(matches!(
+            IndexedTopology::admit_counts(0, (u32::MAX / 2) as usize + 1)
+                .unwrap_err()
+                .kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
     }
 }

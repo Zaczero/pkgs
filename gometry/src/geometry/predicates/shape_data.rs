@@ -69,6 +69,16 @@ pub(crate) fn classify_ring_pair(
     touches: &mut TouchDirections,
     describe: &impl Fn(usize, usize) -> String,
 ) -> crate::error::Result<Option<ValidationIssue>> {
+    classify_ring_pair_with_contacts(left, right, touches, &mut |_, _, _| Ok(()), describe)
+}
+
+pub(in crate::geometry) fn classify_ring_pair_with_contacts(
+    left: &IndexedSegment,
+    right: &IndexedSegment,
+    touches: &mut TouchDirections,
+    on_touch: &mut impl FnMut(&IndexedSegment, &IndexedSegment, XY) -> crate::error::Result<()>,
+    describe: &impl Fn(usize, usize) -> String,
+) -> crate::error::Result<Option<ValidationIssue>> {
     if left.line == right.line {
         if segment_intersection_is_simple(*left, *right) {
             return Ok(None);
@@ -91,6 +101,7 @@ pub(crate) fn classify_ring_pair(
         ))),
         Contact::Touch { point } => {
             record_touch(touches, left, right, point.point());
+            on_touch(left, right, point)?;
             Ok(None)
         },
         Contact::Collinear { span } if !same_point(span.start, span.end) => {
@@ -101,7 +112,11 @@ pub(crate) fn classify_ring_pair(
                 "$",
             )))
         },
-        Contact::Disjoint | Contact::Collinear { .. } => Ok(None),
+        Contact::Collinear { span } => {
+            on_touch(left, right, span.start)?;
+            Ok(None)
+        },
+        Contact::Disjoint => Ok(None),
     }
 }
 

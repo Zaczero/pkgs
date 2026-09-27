@@ -1,9 +1,10 @@
 use super::walk::arrangement_faces;
 use crate::error::{ResourceError, Result};
 use crate::geometry::arrangement::{
-    Arrangement, ArrangementSpares, TypedSpares, WindingWeight, arrangement_spares, build_csr,
-    dedup_vertices_and_edges, order_single_loop_rows, positional_loop_cuts, positional_loop_pieces,
-    region_spares, sort_rows_counterclockwise, split_ring_at_pinches, typed_spares,
+    Arrangement, ArrangementSpares, IndexedTopology, TypedSpares, WindingWeight,
+    arrangement_spares, build_csr, dedup_vertices_and_edges, order_single_loop_rows,
+    positional_loop_cuts, positional_loop_pieces, region_spares, sort_rows_counterclockwise,
+    split_ring_at_pinches, typed_spares,
 };
 use crate::geometry::{HashMap, PointKey, Segment, XY, arrangement, wrap_index};
 
@@ -54,7 +55,13 @@ impl Arrangement<i32> {
         let mut spares = arrangement_spares();
         let mut typed = typed_spares::<i32>();
         let ids = spares.take_ids()?;
-        let vertex_count = n + group_count as usize;
+        let vertex_count = n
+            .checked_add(group_count as usize)
+            .ok_or(ResourceError::SizeOverflow)?;
+        let edge_count = n
+            .checked_add(cuts.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let half_edge_count = IndexedTopology::admit_counts(vertex_count, edge_count)?;
         let mut points = std::mem::take(&mut spares.points);
         points.clear();
         points.reserve(vertex_count);
@@ -64,14 +71,18 @@ impl Arrangement<i32> {
         // CSR shape needs no edge sort.
         let mut starts = std::mem::take(&mut spares.topology.starts);
         starts.clear();
-        starts.reserve(vertex_count + 1);
+        starts.reserve(
+            vertex_count
+                .checked_add(1)
+                .ok_or(ResourceError::SizeOverflow)?,
+        );
         starts.push(0);
         let mut total = 0_u32;
         for &cut in &is_cut {
             total += if cut { 4 } else { 2 };
             starts.push(total);
         }
-        let half_edge_count = total as usize;
+        debug_assert_eq!(total as usize, half_edge_count);
         debug_assert_eq!(half_edge_count, 2 * pieces.len());
         let mut targets = std::mem::take(&mut spares.topology.targets);
         targets.clear();
@@ -154,7 +165,10 @@ impl<W: WindingWeight> Arrangement<W> {
         let vertex_count = n
             .checked_add(group_count as usize)
             .ok_or(ResourceError::SizeOverflow)?;
-        u32::try_from(vertex_count).map_err(|_| ResourceError::SizeOverflow)?;
+        let edge_count = n
+            .checked_add(cuts.len())
+            .ok_or(ResourceError::SizeOverflow)?;
+        let half_edge_count = IndexedTopology::admit_counts(vertex_count, edge_count)?;
         let mut points = std::mem::take(&mut spares.points);
         points.clear();
         points.reserve(vertex_count);
@@ -176,7 +190,7 @@ impl<W: WindingWeight> Arrangement<W> {
                 .ok_or(ResourceError::SizeOverflow)?;
             starts.push(total);
         }
-        let half_edge_count = total as usize;
+        debug_assert_eq!(total as usize, half_edge_count);
         debug_assert_eq!(half_edge_count, 2 * pieces.len());
         let mut targets = std::mem::take(&mut spares.topology.targets);
         targets.clear();
