@@ -18,6 +18,10 @@ use crate::{NonNegative, Positive};
 const CIRCLE_QUADRANT_SEGMENTS: NonZeroU32 = NonZeroU32::new(16).expect("16 is non-zero");
 
 impl Shape {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "monotone_chain_hull returns source ordinals into this points vector"
+    )]
     pub fn minimum_rotated_rectangle(&self) -> Result<Self> {
         // Empty input has no rectangle: `POLYGON EMPTY` (the operation's areal
         // output type), not the untyped collection the hull yields.
@@ -77,7 +81,12 @@ impl Shape {
         let polygonal = match self {
             Self::Polygon(polygon) => polygonal_surface_point(std::iter::once(polygon)),
             Self::MultiPolygon(polygons) => polygonal_surface_point(polygons.as_slice().iter()),
-            _ => None,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => None,
         };
         if let Some(point) = polygonal {
             return Self::Point(point);
@@ -97,7 +106,10 @@ impl Shape {
             // the scanline could not find) fall to the same dimensional
             // cascade: highest dimension first, areal degeneracy down to its
             // boundary linework and vertices.
-            _ => collection_surface_point(std::slice::from_ref(self)),
+            Self::Polygon(_) | Self::MultiPolygon(_) | Self::GeometryCollection(_) => {
+                collection_surface_point(std::slice::from_ref(self))
+            },
+            Self::Empty(..) => None,
         };
         native.map_or_else(Self::empty_point, Self::Point)
     }
@@ -112,6 +124,10 @@ impl Shape {
             .map_or_else(|| Ok(Self::empty_polygon()), bounds_to_shape)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "monotone_chain_hull returns source ordinals into this points vector"
+    )]
     pub fn convex_hull(&self) -> Result<Self> {
         if self.is_empty() {
             return Ok(Self::empty_polygon());
@@ -129,6 +145,10 @@ impl Shape {
         shape_from_selected_hull(&hull, Self::empty_polygon)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "native_concave_hull returns source ordinals into this sorted point vector"
+    )]
     pub fn concave_hull(&self, concavity: f64, length_threshold: f64) -> Result<Self> {
         let concavity = NonNegative::try_new("concavity", concavity)?.get();
         let length_threshold = NonNegative::try_new("length_threshold", length_threshold)?.get();

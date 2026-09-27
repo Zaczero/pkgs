@@ -41,6 +41,14 @@ struct Interval {
 }
 
 /// Adjacent binary64 values bracketing an exact positive fixed-limb value.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "high_bit is located by this fixed LIMBS range before its limb is read"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the fixed limb count bounds every bit, exponent, and mantissa operation"
+)]
 fn positive_interval(magnitude: &[u64; LIMBS]) -> Interval {
     let high_index = (0..LIMBS)
         .rev()
@@ -76,6 +84,14 @@ fn positive_interval(magnitude: &[u64; LIMBS]) -> Interval {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "shift is bounded by the fixed exact-limb exponent range and the adjacent word is checked"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "word and bits come from shift division/remainder by 64 and the fixed limb range"
+)]
 const fn shifted_low_u64(words: &[u64; LIMBS], shift: usize) -> u64 {
     let word = shift / 64;
     let bits = shift % 64;
@@ -86,6 +102,14 @@ const fn shifted_low_u64(words: &[u64; LIMBS], shift: usize) -> u64 {
     value
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "bit is bounded by the fixed exact-limb exponent range"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "bits is the remainder of division by 64 and remains below the word width"
+)]
 fn any_bits_below(words: &[u64; LIMBS], bit: usize) -> bool {
     let word = bit / 64;
     let bits = bit % 64;
@@ -205,8 +229,8 @@ struct PreferredCorner {
 
 impl PreferredCorner {
     fn coordinate_difference(&self, axis: Axis, value: f64) -> ExactSum {
-        let mut difference = self.numerator[axis.index()].clone();
-        difference.subtract_product(value, self.denominator[axis.index()]);
+        let mut difference = axis.select(&self.numerator).clone();
+        difference.subtract_product(value, *axis.select(&self.denominator));
         difference
     }
 
@@ -268,6 +292,14 @@ pub(crate) fn minimum_area_rectangle(hull: &[Point]) -> Result<CoordSeq> {
     CoordSeq::try_from_points(&corners)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "caliper edge and support ordinals are bounded by the admitted convex hull"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the hull has at least three vertices and edge/support ordinals remain in its bounded cycle"
+)]
 fn select_minimum_candidate(hull: &[Point]) -> Candidate {
     let count = hull.len();
     let first_basis = (0..count)
@@ -335,12 +367,24 @@ fn select_minimum_candidate(hull: &[Point]) -> Candidate {
         .candidate
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the support ordinal and its successor are positions in the nonempty convex hull"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the cyclic successor is bounded by the admitted hull length"
+)]
 fn support_stops_here(hull: &[Point], direction: (f64, f64), index: usize) -> bool {
     let current = index % hull.len();
     let next = (current + 1) % hull.len();
     projection_delta_order(direction, hull[current], hull[next]).is_lt()
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the fold retains source ordinals from this hull slice"
+)]
 fn exact_argmax(hull: &[Point], direction: (f64, f64)) -> usize {
     (1..hull.len()).fold(0, |best, index| {
         if projection_delta_order(direction, hull[best], hull[index]).is_gt() {
@@ -351,6 +395,14 @@ fn exact_argmax(hull: &[Point], direction: (f64, f64)) -> usize {
     })
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "support and successor ordinals remain in the admitted convex hull"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the unwrapped support pointer advances at most one hull length from an admitted ordinal"
+)]
 fn advance_max(hull: &[Point], direction: (f64, f64), mut index: usize) -> usize {
     let count = hull.len();
     for _ in 0..count {
@@ -369,10 +421,12 @@ fn advance_max(hull: &[Point], direction: (f64, f64), mut index: usize) -> usize
 
 fn axis_aligned_hull_rectangle(hull: &[Point]) -> Option<[Point; 5]> {
     (hull.len() == 4
-        && hull.iter().enumerate().all(|(index, point)| {
-            let next = hull[(index + 1) % hull.len()];
-            point.x.to_bits() == next.x.to_bits() || point.y.to_bits() == next.y.to_bits()
-        }))
+        && hull
+            .iter()
+            .zip(hull.iter().cycle().skip(1))
+            .all(|(point, next)| {
+                point.x.to_bits() == next.x.to_bits() || point.y.to_bits() == next.y.to_bits()
+            }))
     .then(|| {
         let (min_x, max_x, min_y, max_y) = hull.iter().fold(
             (
@@ -408,6 +462,14 @@ fn exact_width(direction: (f64, f64), minimum: Point, maximum: Point) -> [u64; L
 }
 
 /// Schoolbook product of little-endian magnitudes; `OUT` holds every carry.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "limb offsets are within OUT by the compile-time OUT >= L + R bound and carry propagation"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "limb offsets are bounded by fixed operand widths and carry is propagated only within OUT"
+)]
 fn wide_product<const L: usize, const R: usize, const OUT: usize>(
     left: &[u64; L],
     right: &[u64; R],
@@ -456,10 +518,10 @@ fn add_triple_magnitude(
 ) -> [u64; TRIPLE_LIMBS] {
     let mut result = [0_u64; TRIPLE_LIMBS];
     let mut carry = false;
-    for index in 0..TRIPLE_LIMBS {
-        let (sum, first_carry) = left[index].overflowing_add(right[index]);
+    for ((&left_word, &right_word), result_word) in left.iter().zip(right).zip(&mut result) {
+        let (sum, first_carry) = left_word.overflowing_add(right_word);
         let (sum, second_carry) = sum.overflowing_add(u64::from(carry));
-        result[index] = sum;
+        *result_word = sum;
         carry = first_carry || second_carry;
     }
     debug_assert!(!carry);
@@ -476,10 +538,11 @@ fn nonzero_span(words: &[u64]) -> Option<(usize, usize)> {
 }
 
 fn cmp_wide(left: &[u64; TRIPLE_LIMBS], right: &[u64; TRIPLE_LIMBS]) -> Ordering {
-    for index in (0..TRIPLE_LIMBS).rev() {
-        match left[index].cmp(&right[index]) {
+    for (left_word, right_word) in left.iter().zip(right).rev() {
+        match left_word.cmp(right_word) {
             Ordering::Equal => {},
-            order => return order,
+            Ordering::Less => return Ordering::Less,
+            Ordering::Greater => return Ordering::Greater,
         }
     }
     Ordering::Equal
@@ -534,6 +597,10 @@ fn double_double_score_order(
 
 type DoubleDouble = (f64, f64);
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate support ordinals are generated from this same convex hull"
+)]
 fn double_double_score(hull: &[Point], candidate: Candidate) -> Option<DoubleDouble> {
     let supports = candidate.supports;
     let along = double_double_delta(
@@ -596,6 +663,10 @@ fn double_double_div(numerator: DoubleDouble, denominator: DoubleDouble) -> Opti
 /// `(support - support)` residual.  At large translations that makes the
 /// interval wider (and selects the exact fallback); for ordinary data it
 /// resolves the comparison without allocating or multiplying limb arrays.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate support ordinals are generated from this same convex hull"
+)]
 fn candidate_score_interval(hull: &[Point], candidate: Candidate) -> Option<Interval> {
     let supports = candidate.supports;
     let along = directed_delta_interval(
@@ -664,6 +735,10 @@ fn two_diff(left: f64, right: f64) -> (f64, f64) {
     (difference, left_error + right_error)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate support ordinals are generated from this same convex hull"
+)]
 fn candidate_score_terms(
     hull: &[Point],
     candidate: Candidate,
@@ -685,20 +760,24 @@ fn candidate_score_terms(
 }
 
 impl Candidate {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "caliper support IDs are source ordinals into this same convex hull"
+    )]
     fn emit(self, hull: &[Point]) -> Result<[Point; 5]> {
         // The legacy formula intentionally omits /N.  It is retained only when
         // the rounded quadrilateral itself carries the constant-time actual
         // edge certificate below; this is the compatibility fast path, never
         // an enclosure test over the hull.
-        if let Some(legacy) = self.legacy_corners(hull)
-            && legacy_rectangle_is_certified(hull, &legacy, self)
+        if let Some([legacy_a, legacy_b, legacy_c, legacy_d]) = self.legacy_corners(hull)
+            && legacy_rectangle_is_certified(hull, &[legacy_a, legacy_b, legacy_c, legacy_d], self)
         {
-            return Ok([legacy[0], legacy[1], legacy[2], legacy[3], legacy[0]]);
+            return Ok([legacy_a, legacy_b, legacy_c, legacy_d, legacy_a]);
         }
 
         let supports = self.supports;
-        let preferred = self.correct_corners(hull);
-        let corners = [
+        let [preferred_a, preferred_b, preferred_c, preferred_d] = self.correct_corners(hull);
+        let [corner_a, corner_b, corner_c, corner_d] = [
             emit_corner(
                 self.basis,
                 SupportHalfplane {
@@ -709,7 +788,7 @@ impl Candidate {
                     gradient: (-self.basis.outward.0, -self.basis.outward.1),
                     support: hull[supports.outward_min],
                 },
-                &preferred[0],
+                &preferred_a,
             ),
             emit_corner(
                 self.basis,
@@ -721,7 +800,7 @@ impl Candidate {
                     gradient: (-self.basis.outward.0, -self.basis.outward.1),
                     support: hull[supports.outward_min],
                 },
-                &preferred[1],
+                &preferred_b,
             ),
             emit_corner(
                 self.basis,
@@ -733,7 +812,7 @@ impl Candidate {
                     gradient: self.basis.outward,
                     support: hull[supports.outward_max],
                 },
-                &preferred[2],
+                &preferred_c,
             ),
             emit_corner(
                 self.basis,
@@ -745,17 +824,20 @@ impl Candidate {
                     gradient: self.basis.outward,
                     support: hull[supports.outward_max],
                 },
-                &preferred[3],
+                &preferred_d,
             ),
         ];
-        let corners: [Point; 4] = corners
-            .into_iter()
-            .collect::<std::result::Result<Vec<_>, _>>()?
-            .try_into()
-            .expect("exactly four MRR corners");
-        Ok([corners[0], corners[1], corners[2], corners[3], corners[0]])
+        let corner_a = corner_a?;
+        let corner_b = corner_b?;
+        let corner_c = corner_c?;
+        let corner_d = corner_d?;
+        Ok([corner_a, corner_b, corner_c, corner_d, corner_a])
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "candidate support ordinals are generated from this same convex hull"
+    )]
     fn projection_scalars(self, hull: &[Point]) -> Option<(f64, f64, f64, f64)> {
         let supports = self.supports;
         let dot =
@@ -794,6 +876,10 @@ impl Candidate {
             .then_some(corners)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "candidate support ordinals are generated from this same convex hull"
+    )]
     fn correct_corners(self, hull: &[Point]) -> [PreferredCorner; 4] {
         let supports = self.supports;
         let origin = hull[supports.along_min];
@@ -946,6 +1032,14 @@ fn cross_delta_order(start: Point, end: Point, current: Point, next: Point) -> O
 /// Sound O(1) certificate for preserving a legacy unnormalised rectangle.
 /// Each retained support must be locally minimal for its *actual emitted
 /// edge*.  Convexity turns that local statement into global support truth.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "candidate support ordinals and their cyclic neighbors are within this convex hull"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "support ordinals are below count and Vec lengths bound the cyclic neighbor arithmetic"
+)]
 fn legacy_rectangle_is_certified(
     hull: &[Point],
     corners: &[Point; 4],
@@ -964,10 +1058,12 @@ fn legacy_rectangle_is_certified(
         candidate.supports.outward_max,
         candidate.supports.along_min,
     ];
-    for edge in 0..4 {
-        let start = corners[edge];
-        let end = corners[(edge + 1) % 4];
-        let index = support[edge];
+    for ((start, end), index) in corners
+        .iter()
+        .copied()
+        .zip(corners.iter().copied().cycle().skip(1))
+        .zip(support)
+    {
         let previous = hull[(index + count - 1) % count];
         let current = hull[index];
         let next = hull[(index + 1) % count];
@@ -989,13 +1085,14 @@ fn legacy_rectangle_is_certified(
             return false;
         }
     }
-    (0..4).all(|edge| {
-        orientation(
-            corners[edge],
-            corners[(edge + 1) % 4],
-            corners[(edge + 2) % 4],
-        ) == Orientation::CounterClockwise
-    })
+    corners
+        .iter()
+        .copied()
+        .zip(corners.iter().copied().cycle().skip(1))
+        .zip(corners.iter().copied().cycle().skip(2))
+        .all(|((first, second), third)| {
+            orientation(first, second, third) == Orientation::CounterClockwise
+        })
 }
 
 #[derive(Clone, Copy)]
@@ -1165,10 +1262,11 @@ enum Axis {
 }
 
 impl Axis {
-    const fn index(self) -> usize {
+    const fn select<T>(self, pair: &[T; 2]) -> &T {
+        let [x, y] = pair;
         match self {
-            Self::X => 0,
-            Self::Y => 1,
+            Self::X => x,
+            Self::Y => y,
         }
     }
 }
@@ -1240,6 +1338,10 @@ fn positive_quotient_interval(magnitude: &[u64; LIMBS], denominator: f64) -> Int
     positive_quotient_interval_binary(magnitude, denominator)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "low and high are ordered nonnegative f64 total-order encodings and the midpoint stays between them"
+)]
 fn positive_quotient_interval_binary(magnitude: &[u64; LIMBS], denominator: f64) -> Interval {
     const MAX_BITS: u64 = f64::MAX.to_bits();
     let mut low = 0_u64;
@@ -1368,6 +1470,10 @@ fn finite_point_on_edge(
     .then_some(candidate)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "low and high are ordered total-order encodings, so binary-search subtraction and midpoint stay in range"
+)]
 fn nearest_feasible_coordinate(
     preferred: &PreferredCorner,
     axis: Axis,
@@ -1416,7 +1522,8 @@ fn displacement_order(left: Point, right: Point, preferred: &PreferredCorner) ->
         Ordering::Equal => total_order_bits(left.x)
             .cmp(&total_order_bits(right.x))
             .then_with(|| total_order_bits(left.y).cmp(&total_order_bits(right.y))),
-        ordering => ordering,
+        Ordering::Less => Ordering::Less,
+        Ordering::Greater => Ordering::Greater,
     }
 }
 
@@ -1430,7 +1537,7 @@ fn exact_squared_distance(point: Point, preferred: &PreferredCorner) -> [u64; TR
         .signed_magnitude()
         .1;
     let denominator_square = |axis: Axis| {
-        let denominator = preferred.denominator[axis.index()];
+        let denominator = *axis.select(&preferred.denominator);
         let mut square = ExactSum::zero();
         square.add_product(denominator, denominator);
         square.signed_magnitude().1
@@ -1736,5 +1843,48 @@ mod tests {
             ),
         ];
         assert_eq!(select_minimum_candidate(&hull).supports.outward_min, 1);
+    }
+
+    #[test]
+    fn exact_equal_area_candidates_keep_the_first_hull_edge() {
+        let a = point(0.0, 0.0);
+        let d = point(1.0, -1.0);
+        let c = point(2.0, 0.0);
+        let b = point(1.0, 1.0);
+        let hull = [a, d, c, b];
+        let first_basis = Basis::from_edge(a, d).expect("nonzero first edge");
+        let second_basis = Basis::from_edge(d, c).expect("nonzero second edge");
+        let mut first = RankedCandidate::new(&hull, Candidate {
+            basis: first_basis,
+            supports: Supports {
+                along_min: 0,
+                along_max: 1,
+                outward_min: 0,
+                outward_max: 2,
+            },
+        });
+        let mut second = RankedCandidate::new(&hull, Candidate {
+            basis: second_basis,
+            supports: Supports {
+                along_min: 0,
+                along_max: 2,
+                outward_min: 1,
+                outward_max: 0,
+            },
+        });
+        assert_eq!(
+            candidate_area_order(&hull, &mut first, &mut second),
+            Ordering::Equal
+        );
+
+        let selected = select_minimum_candidate(&hull);
+        assert_eq!(
+            selected.basis.along.0.to_bits(),
+            first_basis.along.0.to_bits()
+        );
+        assert_eq!(
+            selected.basis.along.1.to_bits(),
+            first_basis.along.1.to_bits()
+        );
     }
 }

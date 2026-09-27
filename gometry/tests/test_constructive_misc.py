@@ -69,6 +69,26 @@ def test_polylabel_handles_extreme_aspect_ratio_with_scale_aware_default() -> No
     assert ribbon.maximum_inscribed_radius() == pytest.approx(0.5)
 
 
+def test_polylabel_refines_a_right_triangle_to_its_analytic_inradius() -> None:
+    triangle = gm.Polygon([(0, 0), (10, 0), (0, 10)])
+    tolerance = 0.01
+    pole = triangle.polylabel(tolerance=tolerance)
+    expected_radius = 10.0 - 5.0 * math.sqrt(2.0)
+    clearance = min(
+        pole.x,
+        pole.y,
+        (10.0 - pole.x - pole.y) / math.sqrt(2.0),
+    )
+
+    assert 0.0 < pole.x and 0.0 < pole.y and pole.x + pole.y < 10.0
+    assert gm.covers(triangle, pole)
+    assert expected_radius - tolerance <= clearance
+    assert clearance <= expected_radius + 8.0 * math.ulp(expected_radius)
+
+    array_pole = gm.GeometryArray([triangle]).polylabel(tolerance=[tolerance])[0]
+    assert gm.equals_exact(array_pole, pole, 0.0)
+
+
 def test_minimum_bounding_circle_polygon_contains_support_points() -> None:
     # Support directions intentionally fall between the 64-gon's vertices.
     points = gm.MultiPoint([

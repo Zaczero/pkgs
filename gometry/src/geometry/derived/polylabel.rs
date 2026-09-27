@@ -69,33 +69,35 @@ pub(crate) struct CertifiedDisk {
 }
 
 impl MinimumCircle {
-    fn support_xy(self, points: &[Point]) -> ([XY; 3], usize) {
-        let mut support = [XY::new(0.0, 0.0); 3];
-        let indices = match self.support {
-            CircleSupport::One(a) => [a, 0, 0],
-            CircleSupport::Two(a, b) => [a, b, 0],
-            CircleSupport::Three(a, b, c) => [a, b, c],
-        };
-        let count = match self.support {
-            CircleSupport::One(_) => 1,
-            CircleSupport::Two(..) => 2,
-            CircleSupport::Three(..) => 3,
-        };
-        for index in 0..count {
-            support[index] = points[indices[index]].xy();
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "support ordinals are created by the enclosing-circle solver from this points slice"
+    )]
+    const fn support_xy(self, points: &[Point]) -> ([XY; 3], usize) {
+        match self.support {
+            CircleSupport::One(a) => ([points[a].xy(), XY::new(0.0, 0.0), XY::new(0.0, 0.0)], 1),
+            CircleSupport::Two(a, b) => ([points[a].xy(), points[b].xy(), XY::new(0.0, 0.0)], 2),
+            CircleSupport::Three(a, b, c) => ([points[a].xy(), points[b].xy(), points[c].xy()], 3),
         }
-        (support, count)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the support and queried ordinals are created from this admitted points slice"
+    )]
     fn contains(self, points: &[Point], point: usize) -> Result<bool> {
         let (support, count) = self.support_xy(points);
         exact::try_circle_contains(&support[..count], points[point].xy())
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "candidate pair ordinals are source sites in this points slice"
+    )]
     fn widest_pair(points: &[Point], a: usize, b: usize, c: usize) -> Result<Self> {
-        let pairs = [(a, b), (a, c), (b, c)];
-        let mut widest = pairs[0];
-        for &(left, right) in &pairs[1..] {
+        let mut pairs = [(a, b), (a, c), (b, c)].into_iter();
+        let mut widest = pairs.next().expect("three support sites have a pair");
+        for (left, right) in pairs {
             if exact::try_squared_distance_cmp(
                 points[left].xy(),
                 points[right].xy(),
@@ -112,6 +114,10 @@ impl MinimumCircle {
         })
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "the support slice length is derived from the CircleSupport variant"
+    )]
     fn certificate(self, points: &[Point]) -> Result<bool> {
         let (support, count) = self.support_xy(points);
         exact::try_certify_support(
@@ -122,6 +128,10 @@ impl MinimumCircle {
 
     /// Materialize the exact disk only after the enclosing-support certificate
     /// succeeds. This is the sole path from a support candidate to a disk.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "support ordinals are created by the enclosing-circle solver from this points slice"
+    )]
     pub(crate) fn certified_disk(self, points: &[Point]) -> Result<CertifiedDisk> {
         if !self.certificate(points)? {
             return Err(crate::geometry::GeometryErrorKind::Invalid(
@@ -286,6 +296,13 @@ struct CircleWork {
         reason = "the counter mutates in test builds and is intentionally zero-sized in production"
     )
 )]
+#[cfg_attr(
+    test,
+    expect(
+        clippy::arithmetic_side_effects,
+        reason = "test-only solver work counters are incremented by fixed, small regression fixtures"
+    )
+)]
 impl CircleWork {
     const fn count_contains(&mut self) {
         #[cfg(test)]
@@ -323,6 +340,10 @@ impl CircleWork {
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the order is a permutation of the non-empty source point ordinals"
+)]
 fn solve_enclosing_circle_order(
     points: &[Point],
     order: &[usize],
@@ -375,6 +396,10 @@ fn solve_enclosing_circle_order(
 /// order and is not based on a normalized or rounded candidate. The returned
 /// support becomes a published disk only through `certified_disk`, which
 /// performs the independent all-source certificate.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the Fisher-Yates upper bound iterates from order length down through two"
+)]
 pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircle> {
     if points.is_empty() {
         return Err(crate::geometry::GeometryErrorKind::Invalid(
@@ -393,11 +418,11 @@ pub(crate) fn smallest_enclosing_circle(points: &[Point]) -> Result<MinimumCircl
     let mut state = hash_state.hash_one((points.len(), "minimum_enclosing_circle"));
     let mut order = Vec::with_capacity(points.len());
     order.extend(0..points.len());
-    for index in (1..order.len()).rev() {
+    for (index, upper) in (1..order.len()).rev().zip((2..=order.len()).rev()) {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1);
-        let other = (state >> 33) as usize % (index + 1);
+        let other = (state >> 33) as usize % upper;
         order.swap(index, other);
     }
 
@@ -474,10 +499,10 @@ fn certify_minimum_circle_polygon(
         }
         vertices.push(point.xy());
     }
-    let Some((&first, rest)) = vertices.split_first() else {
+    let Some((last, open)) = vertices.split_last() else {
         return Err(unrepresentable_minimum_circle());
     };
-    let Some(&last) = rest.last() else {
+    let [first, middle @ .., last_open] = open else {
         return Err(unrepresentable_minimum_circle());
     };
     let same_coordinate = |left: f64, right: f64| {
@@ -486,24 +511,23 @@ fn certify_minimum_circle_polygon(
     if !same_coordinate(first.x, last.x) || !same_coordinate(first.y, last.y) {
         return Err(unrepresentable_minimum_circle());
     }
-    let open = &vertices[..vertices.len() - 1];
-    if open.len() < 3 {
+    if middle.is_empty() {
         return Err(unrepresentable_minimum_circle());
     }
-    for index in 0..open.len() {
-        let next = (index + 1) % open.len();
-        if same_coordinate(open[index].x, open[next].x)
-            && same_coordinate(open[index].y, open[next].y)
-        {
+    for (current, next) in open
+        .iter()
+        .copied()
+        .zip(open.iter().copied().cycle().skip(1))
+    {
+        if same_coordinate(current.x, next.x) && same_coordinate(current.y, next.y) {
             return Err(unrepresentable_minimum_circle());
         }
     }
 
     let mut direction = None;
-    for index in 0..open.len() {
-        let previous = open[(index + open.len() - 1) % open.len()];
-        let current = open[index];
-        let next = open[(index + 1) % open.len()];
+    let mut previous = *last_open;
+    let next_points = open.iter().skip(1).chain(std::iter::once(first));
+    for (&current, &next) in open.iter().zip(next_points) {
         let turn = exact::orient2d(previous, current, next);
         if turn == ExactSign::Zero {
             return Err(unrepresentable_minimum_circle());
@@ -515,15 +539,18 @@ fn certify_minimum_circle_polygon(
         } else {
             direction = Some(turn);
         }
+        previous = current;
     }
     let direction = direction.expect("three or more open circle vertices");
     if direction != ExactSign::Positive {
         return Err(unrepresentable_minimum_circle());
     }
 
-    for index in 0..open.len() {
-        let left = open[index];
-        let right = open[(index + 1) % open.len()];
+    for (left, right) in open
+        .iter()
+        .copied()
+        .zip(open.iter().copied().cycle().skip(1))
+    {
         if !disk
             .vertex_is_strictly_outside(left)
             .map_err(circle_emission_error)?
@@ -542,6 +569,10 @@ fn certify_minimum_circle_polygon(
 }
 
 /// Build the regular tangent-intersection polygon for one candidate radius.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "quadrants is nonzero and steps is checked as four times quadrants, bounding each step division and offset"
+)]
 fn tangent_circle_polygon(
     center: Point,
     radius: f64,
@@ -649,6 +680,10 @@ fn next_realization_radius(exact: f64, candidate: f64, retries: u32, outward: bo
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each realization retry charges at least five items against the 16-million item budget"
+)]
 pub(crate) fn emit_minimum_bounding_circle(
     disk: &CertifiedDisk,
     quadrant_segments: NonZeroU32,
@@ -1067,9 +1102,11 @@ fn segment_enters_candidate(
     let source_dx = exact_difference(segment.end.x, segment.start.x)?;
     let source_dy = exact_difference(segment.end.y, segment.start.y)?;
 
-    for index in 0..candidate.len() {
-        let start = candidate[index];
-        let end = candidate[(index + 1) % candidate.len()];
+    for (start, end) in candidate
+        .iter()
+        .copied()
+        .zip(candidate.iter().copied().cycle().skip(1))
+    {
         let edge_dx = exact_difference(end.x, start.x)?;
         let edge_dy = exact_difference(end.y, start.y)?;
         let start_x = exact_difference(segment.start.x, start.x)?;
@@ -1117,24 +1154,30 @@ fn candidate_center_is_strictly_inside(
     center: Point,
     counter_clockwise: bool,
 ) -> bool {
-    candidate.iter().enumerate().all(|(index, &start)| {
-        let end = candidate[(index + 1) % candidate.len()];
-        matches!(
-            (counter_clockwise, orientation(start, end, center)),
-            (true, Orientation::CounterClockwise) | (false, Orientation::Clockwise)
-        )
-    })
+    candidate
+        .iter()
+        .copied()
+        .zip(candidate.iter().copied().cycle().skip(1))
+        .all(|(start, end)| {
+            matches!(
+                (counter_clockwise, orientation(start, end, center)),
+                (true, Orientation::CounterClockwise) | (false, Orientation::Clockwise)
+            )
+        })
 }
 
 #[cfg(test)]
 fn candidate_covers_point(candidate: &[Point], point: Point, counter_clockwise: bool) -> bool {
-    candidate.iter().enumerate().all(|(index, &start)| {
-        let end = candidate[(index + 1) % candidate.len()];
-        !matches!(
-            (counter_clockwise, orientation(start, end, point)),
-            (true, Orientation::Clockwise) | (false, Orientation::CounterClockwise)
-        )
-    })
+    candidate
+        .iter()
+        .copied()
+        .zip(candidate.iter().copied().cycle().skip(1))
+        .all(|(start, end)| {
+            !matches!(
+                (counter_clockwise, orientation(start, end, point)),
+                (true, Orientation::Clockwise) | (false, Orientation::CounterClockwise)
+            )
+        })
 }
 
 #[cfg(test)]
@@ -1182,7 +1225,11 @@ fn source_hole_is_enclosed(shape: &Shape, candidate: &[Point], counter_clockwise
         Shape::GeometryCollection(geometries) => geometries
             .iter()
             .any(|geometry| source_hole_is_enclosed(geometry, candidate, counter_clockwise)),
-        _ => false,
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => false,
     }
 }
 
@@ -1221,6 +1268,10 @@ pub(crate) fn emit_zero_radius_point(shape: &Shape, center: Point) -> Result<Sha
 /// callers pass the prepared filled/boundary pair retained by the directed
 /// search; `None` is the geographic local-projection path, which intentionally
 /// keeps its existing approximate containment contract.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "each retry charges a nonzero ring against the 16-million item budget"
+)]
 pub(crate) fn build_inscribed_circle(
     center: Point,
     radius: f64,
@@ -1277,6 +1328,10 @@ pub(crate) fn build_inscribed_circle(
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "quadrant is nonzero and steps is checked as four times quadrant, bounding the step division and modulo"
+)]
 fn build_inscribed_circle_once(
     center: Point,
     radius: f64,
@@ -1310,7 +1365,12 @@ fn build_inscribed_circle_once(
     }
     let mut closed = Vec::with_capacity(vertices);
     closed.extend_from_slice(&points);
-    closed.push(points[0]);
+    closed.push(
+        points
+            .first()
+            .copied()
+            .expect("a nonzero quadrant count emits circle vertices"),
+    );
     let seq = CoordSeq::try_from_points(&closed)?;
     let winding = crate::geometry::ring_winding(&seq);
     let strict_convex = predicates::shell_is_strictly_convex(&seq);
@@ -1360,17 +1420,30 @@ fn has_interior(shape: &Shape) -> bool {
             .flat_map(Polygon::rings)
             .any(ring_spans_area),
         Shape::GeometryCollection(geometries) => geometries.iter().any(has_interior),
-        _ => false,
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => false,
     }
 }
 
 pub(crate) fn representative_point(shape: &Shape, bounds: Bounds) -> Point {
-    match shape.point_on_surface() {
-        Shape::Point(point) => point,
-        _ => Point::new_raw_xy(
+    let bounds_center = || {
+        Point::new_raw_xy(
             bounds.minx() + (bounds.maxx() - bounds.minx()) / 2.0,
             bounds.miny() + (bounds.maxy() - bounds.miny()) / 2.0,
-        ),
+        )
+    };
+    match shape.point_on_surface() {
+        Shape::Point(point) => point,
+        Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => bounds_center(),
     }
 }
 

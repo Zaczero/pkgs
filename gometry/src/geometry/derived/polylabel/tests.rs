@@ -47,10 +47,18 @@ fn exact_inscribed_support(shape: &Shape) -> (PreparedSupport, PreparedSupport) 
     (source, boundary)
 }
 
+fn dense_ring_capacity(subdivisions: usize) -> usize {
+    subdivisions
+        .checked_add(1)
+        .and_then(|count| count.checked_mul(2))
+        .and_then(|count| count.checked_add(1))
+        .expect("dense test-ring coordinate count fits usize")
+}
+
 fn dense_reciprocal_polygon(subdivisions: usize) -> Shape {
     let extent = 1.0e162;
     let half_height = 1.0e-162;
-    let mut points = Vec::with_capacity(2 * (subdivisions + 1) + 1);
+    let mut points = Vec::with_capacity(dense_ring_capacity(subdivisions));
     for index in 0..=subdivisions {
         let fraction = index as f64 / subdivisions as f64;
         let x = -extent + 2.0 * extent * fraction;
@@ -69,7 +77,7 @@ fn dense_reciprocal_polygon(subdivisions: usize) -> Shape {
 }
 
 fn dense_unit_polygon(subdivisions: usize) -> Shape {
-    let mut points = Vec::with_capacity(2 * (subdivisions + 1) + 1);
+    let mut points = Vec::with_capacity(dense_ring_capacity(subdivisions));
     for index in 0..=subdivisions {
         let fraction = index as f64 / subdivisions as f64;
         points.push(Point::new_raw_xy(-1.0 + 2.0 * fraction, -1.0));
@@ -598,6 +606,35 @@ fn representative_point_uses_an_interior_chord_instead_of_the_box_center() {
 }
 
 #[test]
+fn polylabel_refines_the_frontier_to_the_right_triangle_inradius() {
+    let source = Shape::Polygon(Polygon::new(
+        Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(0.0, 0.0),
+                Point::new_raw_xy(10.0, 0.0),
+                Point::new_raw_xy(0.0, 10.0),
+                Point::new_raw_xy(0.0, 0.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap(),
+        Vec::new(),
+    ));
+    let tolerance = 0.01;
+    let center = polylabel_point(&source, Some(tolerance)).expect("finite triangle pole");
+    let expected_radius = 10.0 - 5.0 * 2.0_f64.sqrt();
+    let clearance = center
+        .x
+        .min(center.y)
+        .min((10.0 - center.x - center.y) / 2.0_f64.sqrt());
+
+    assert!(center.x > 0.0 && center.y > 0.0 && center.x + center.y < 10.0);
+    assert!(source.covers_point(center));
+    assert!(clearance >= expected_radius - tolerance);
+    assert!(clearance <= expected_radius + 8.0 * f64::EPSILON);
+}
+
+#[test]
 fn minimum_circle_radius_rounds_min_subnormal_support_exactly() {
     let u = f64::from_bits(1);
     let shape = Shape::MultiPoint(
@@ -857,6 +894,10 @@ fn minimum_circle_support_matches_independent_boundary_cases() {
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the Fisher-Yates upper bound iterates from length down through two"
+)]
 fn shuffle_with_seed(length: usize, seed: u64) -> Vec<usize> {
     let mut state = seed ^ length as u64;
     let mut order: Vec<usize> = (0..length).collect();
@@ -864,7 +905,10 @@ fn shuffle_with_seed(length: usize, seed: u64) -> Vec<usize> {
         state = state
             .wrapping_mul(6_364_136_223_846_793_005)
             .wrapping_add(1);
-        order.swap(index, (state >> 33) as usize % (index + 1));
+        let upper = index
+            .checked_add(1)
+            .expect("Fisher-Yates index is below the order length");
+        order.swap(index, (state >> 33) as usize % upper);
     }
     order
 }

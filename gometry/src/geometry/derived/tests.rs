@@ -3,8 +3,8 @@ use std::cmp::Ordering;
 use crate::geometry::derived::concave::point_xy_cmp;
 use crate::geometry::derived::native_concave_hull;
 use crate::geometry::{
-    CoordSeq, LineSeq, MOrdinate, MultiPolygon, Point, Polygon, Ring, Shape, ZOrdinate,
-    empty_geometry,
+    CoordSeq, Coordinates as _, LineSeq, MOrdinate, MultiPolygon, Point, Polygon, Ring, Shape,
+    ZOrdinate, empty_geometry,
 };
 
 fn hull_vertices(points: &[Point]) -> Vec<Point> {
@@ -16,11 +16,11 @@ fn hull_vertices(points: &[Point]) -> Vec<Point> {
 
 fn minimum_area_rectangle_area(hull: &[Point]) -> f64 {
     let ring = super::minimum_area_rectangle(hull).expect("finite rectangle");
-    crate::geometry::open_point_cycle_decision(
-        &(&ring).into_iter().take(ring.len() - 1).collect::<Vec<_>>(),
-    )
-    .magnitude()
-    .get()
+    let mut points = ring.iter_coords();
+    points.next_back().expect("closed rectangle");
+    crate::geometry::open_point_cycle_decision(&points.collect::<Vec<_>>())
+        .magnitude()
+        .get()
 }
 
 #[test]
@@ -222,7 +222,7 @@ fn mixed_signed_zero_rectangle() -> Vec<Point> {
 )]
 fn assert_open_hull_is_mixed_zero_rectangle(hull: &Shape) {
     let verts = hull.points_vec();
-    let open = &verts[..verts.len() - 1];
+    let (_, open) = verts.split_last().expect("closed polygon hull");
     assert_eq!(open.len(), 4);
     assert!(
         open.iter().all(|point| !(point.x == 0.0 && point.y == 1.0)),
@@ -250,7 +250,9 @@ fn convex_hull_mixed_signed_zero_rectangle_drops_collinear_midpoint() {
 
 fn open_hull_contains(hull: &Shape, expected: Point) -> bool {
     let verts = hull.points_vec();
-    let open = &verts[..verts.len() - 1];
+    let Some((_, open)) = verts.split_last() else {
+        return false;
+    };
     open.iter().any(|point| {
         point.x.to_bits() == expected.x.to_bits()
             && point.y.to_bits() == expected.y.to_bits()
