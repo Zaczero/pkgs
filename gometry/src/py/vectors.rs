@@ -27,7 +27,9 @@ use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
 use crate::py::errors::GeometryError;
 use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int64_array};
-use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
+use crate::py::row::{
+    RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice, slice_row_indices,
+};
 use crate::{CsrBuilder, HeapSize};
 
 /// Format a short preview list of already-rendered row strings.
@@ -81,7 +83,7 @@ const fn contiguous_positive_window(
     Some(start as usize..stop as usize)
 }
 
-fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<()> {
+fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<usize> {
     // Parameter/content validation — GeometryError, never BufferError (D32:
     // empty offsets used to underflow then surface as BufferError/panic).
     let values_len = i64::try_from(values_len)
@@ -92,7 +94,7 @@ fn validate_csr_offsets(offsets: &[i64], values_len: usize) -> PyResult<()> {
     if !offsets.is_sorted() {
         return Err(GeometryError::new_err("invalid CSR offsets"));
     }
-    Ok(())
+    Ok(offsets.len().saturating_sub(1))
 }
 
 fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> PyResult<bool> {
@@ -121,17 +123,6 @@ fn geometry_arrays_equal(left: &PyGeometryArray, right: &PyGeometryArray) -> PyR
         }
     }
     Ok(true)
-}
-
-fn slice_rows(
-    start: isize,
-    step: isize,
-    count: usize,
-) -> impl ExactSizeIterator<Item = usize> + Clone {
-    (0..count).map(move |offset| {
-        let offset = isize::try_from(offset).expect("slice length fits in isize");
-        usize::try_from(start + step * offset).expect("normalized slice rows are non-negative")
-    })
 }
 
 /// Flat backing storage for a [`Groups`] container.
@@ -180,18 +171,35 @@ impl ImmutableI64Owner for Groups {}
 mod ctor;
 
 impl Groups {
+    fn visible_offsets(&self) -> &[i64] {
+        self.offsets
+            .get(self.rows.start..=self.rows.end)
+            .expect("Groups rows are bounded by their admitted offsets")
+    }
+
+    /// Read one admitted adjacent offset pair.
+    fn row_values_window_at(offsets: &[i64], row_offset: usize) -> Range<usize> {
+        let &[start, end] = offsets
+            .get(row_offset..)
+            .and_then(|offsets| offsets.first_chunk::<2>())
+            .expect("Groups row offsets are bounded by their admitted CSR range");
+        start as usize..end as usize
+    }
+
     /// Row `i`'s logical value window in the backing payload.
     fn row_values_window(&self, row: usize) -> Range<usize> {
-        let start = self.offsets[self.rows.start + row] as usize;
-        let end = self.offsets[self.rows.start + row + 1] as usize;
-        start..end
+        // Callers admit `row` against this visible row range before rebasing it.
+        let offset = self.rows.start.wrapping_add(row);
+        Self::row_values_window_at(&self.offsets, offset)
     }
 
     fn int64_row_slice(&self, row: usize) -> &[i64] {
         let GroupsValues::Int64(values) = &self.values else {
             unreachable!("int64_row_slice requires Int64 backing");
         };
-        &values[self.row_values_window(row)]
+        values
+            .get(self.row_values_window(row))
+            .expect("Groups row values are bounded by admitted offsets")
     }
 
     fn geometry_row_view(&self, row: usize) -> PyResult<PyGeometryArray> {
@@ -218,8 +226,19 @@ impl Groups {
         }
     }
 
+    fn values_window_in(offsets: &[i64]) -> Range<usize> {
+        match offsets {
+            [only] => {
+                let only = *only as usize;
+                only..only
+            },
+            [start, .., end] => *start as usize..*end as usize,
+            [] => unreachable!("Groups rows include their starting offset"),
+        }
+    }
+
     fn values_window(&self) -> Range<usize> {
-        self.offsets[self.rows.start] as usize..self.offsets[self.rows.end] as usize
+        Self::values_window_in(self.visible_offsets())
     }
 
     fn logical_offsets_bytes(&self) -> usize {
@@ -290,7 +309,13 @@ impl Groups {
         }
         match (&self.values, &other.values) {
             (GroupsValues::Int64(left), GroupsValues::Int64(right)) => {
-                Ok(left[self.values_window()] == right[other.values_window()])
+                let left = left
+                    .get(self.values_window())
+                    .expect("Groups values are bounded by their admitted offsets");
+                let right = right
+                    .get(other.values_window())
+                    .expect("Groups values are bounded by their admitted offsets");
+                Ok(left == right)
             },
             (GroupsValues::Geometry(_), GroupsValues::Geometry(_)) => geometry_arrays_equal(
                 self.geometry_values_view()?
@@ -651,11 +676,9 @@ impl Groups {
         let py = slf.py();
         let row_ids = {
             let this = slf.borrow();
-            let mut row_ids = Vec::with_capacity(this.values_window().len());
-            let offsets = this
-                .offsets
-                .get(this.rows.start..=this.rows.end)
-                .expect("Groups rows are bounded by their admitted offsets");
+            let offsets = this.visible_offsets();
+            let values_window = Self::values_window_in(offsets);
+            let mut row_ids = Vec::with_capacity(values_window.len());
             for (logical_row, pair) in offsets.windows(2).enumerate() {
                 let [start, end] = pair else {
                     unreachable!("two-offset windows contain two values");
@@ -736,14 +759,19 @@ impl Groups {
             } => {
                 let this = slf.borrow();
                 let groups = if let Some(window) = contiguous_positive_window(start, stop, step) {
-                    this.slice_rows(this.rows.start + window.start..this.rows.start + window.end)
+                    // The normalized window is bounded by this admitted row range.
+                    this.slice_rows(
+                        this.rows.start.wrapping_add(window.start)
+                            ..this.rows.start.wrapping_add(window.end),
+                    )
                 } else {
-                    let rows = slice_rows(start, step, count);
+                    let rows = slice_row_indices(start, step, count);
+                    let offsets = this.visible_offsets();
                     match &this.values {
-                        GroupsValues::Int64(_) => {
+                        GroupsValues::Int64(values) => {
                             let value_count = rows.clone().try_fold(0_usize, |total, row| {
                                 total
-                                    .checked_add(this.row_values_window(row).len())
+                                    .checked_add(Self::row_values_window_at(offsets, row).len())
                                     .ok_or_else(|| {
                                         PyOverflowError::new_err(
                                             "Groups values size overflows usize",
@@ -752,18 +780,18 @@ impl Groups {
                             })?;
                             let mut builder = CsrBuilder::<i64>::with_capacity(value_count, count);
                             for row in rows {
-                                for &value in this.int64_row_slice(row) {
-                                    builder.values_mut().push(value);
-                                }
+                                let row_values = values
+                                    .get(Self::row_values_window_at(offsets, row))
+                                    .expect("Groups row values are bounded by admitted offsets");
+                                builder.values_mut().extend_from_slice(row_values);
                                 let end = builder.len();
                                 builder.push_end(end).map_err(PyErr::from)?;
                             }
                             let (ids, offsets) = builder.finish();
-                            let rows = 0..offsets.len() - 1;
                             Self {
                                 values: GroupsValues::Int64(ids.into()),
                                 offsets: offsets.into(),
-                                rows,
+                                rows: 0..count,
                             }
                         },
                         GroupsValues::Geometry(values) => {
@@ -773,7 +801,7 @@ impl Groups {
                             );
                             let value_count = rows.clone().try_fold(0_usize, |total, row| {
                                 total
-                                    .checked_add(this.row_values_window(row).len())
+                                    .checked_add(Self::row_values_window_at(offsets, row).len())
                                     .ok_or_else(|| {
                                         PyOverflowError::new_err(
                                             "Groups values size overflows usize",
@@ -783,8 +811,9 @@ impl Groups {
                             let mut builder =
                                 CsrBuilder::<Shape>::with_capacity(value_count, count);
                             for row in rows {
-                                let row_values =
-                                    values.gather_logical_row_range(this.row_values_window(row))?;
+                                let row_values = values.gather_logical_row_range(
+                                    Self::row_values_window_at(offsets, row),
+                                )?;
                                 for shape in row_values.storage().iter_shapes() {
                                     let shape = shape.map_err(PyErr::from)?.into_owned();
                                     builder.values_mut().push(shape);
@@ -793,19 +822,17 @@ impl Groups {
                                 builder.push_end(end).map_err(PyErr::from)?;
                             }
                             let (shapes, offsets) = builder.finish();
-                            let flat = Arc::new(PyGeometryArray::from_shapes(
-                                shapes,
-                                values.frame.clone(),
-                            )?);
-                            let rows = offsets.len() - 1;
-                            Self::from_geometry_csr(flat, offsets.into(), 0..rows)?
+                            let flat = PyGeometryArray::from_shapes(shapes, values.frame.clone())?;
+                            Self::from_geometry_csr(flat, offsets)?
                         },
                         GroupsValues::Cells(values) => {
                             let kind = values.kind();
                             let mut builder = CsrBuilder::<u64>::with_capacity(0, count);
                             for row in rows {
+                                let row_values = values
+                                    .logical_row_range(Self::row_values_window_at(offsets, row));
                                 builder
-                                    .push_row(this.cell_row_view(row).logical_ids())
+                                    .push_row(row_values.logical_ids())
                                     .map_err(PyErr::from)?;
                             }
                             let (ids, offsets) = builder.finish();
@@ -856,17 +883,18 @@ impl Groups {
         #[pyo3(from_py_with = crate::strict_i64)] start: i64,
         #[pyo3(from_py_with = crate::strict_optional_i64)] stop: Option<i64>,
     ) -> PyResult<usize> {
-        let len = self.rows.len();
+        let row_len = self.rows.len();
+        let len = i64::try_from(row_len).expect("Groups length fits in i64");
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
-                bound + i64::try_from(len).unwrap_or(i64::MAX)
+                bound.saturating_add(len)
             } else {
                 bound
             };
-            usize::try_from(resolved.max(0)).unwrap_or(0).min(len)
+            usize::try_from(resolved.max(0)).unwrap_or(0).min(row_len)
         };
         let start = clamp(start);
-        let stop = stop.map_or(len, clamp);
+        let stop = stop.map_or(row_len, clamp);
         if start < stop {
             if matches!(&self.values, GroupsValues::Int64(_)) {
                 if let Some(expected) = Self::parse_int64_row_item(value)? {
@@ -910,9 +938,9 @@ impl Groups {
                 .filter(|&row| self.int64_row_matches(row, &expected))
                 .count());
         }
-        let mut count = 0;
+        let mut count = 0_usize;
         for row in 0..self.rows.len() {
-            count += usize::from(self.row_matches(row, value)?);
+            count = count.wrapping_add(usize::from(self.row_matches(row, value)?));
         }
         Ok(count)
     }
@@ -1081,13 +1109,7 @@ pub(crate) fn _unpickle_int64_groups_v1(
 ) -> PyResult<Groups> {
     let ids = crate::collect_i64_sequence(ids, "Groups pickle ids")?;
     let offsets = crate::collect_i64_sequence(offsets, "Groups pickle offsets")?;
-    validate_csr_offsets(&offsets, ids.len())?;
-    let rows = 0..offsets.len() - 1;
-    Ok(Groups {
-        values: GroupsValues::Int64(ids.into()),
-        offsets: offsets.into(),
-        rows,
-    })
+    Groups::from_int64_values_csr(ids, offsets)
 }
 
 #[expect(
@@ -1102,12 +1124,7 @@ pub(crate) fn _unpickle_geometry_groups_v1(
     let offsets = crate::collect_i64_sequence(offsets, "geometry Groups pickle offsets")?;
     Python::attach(|py| {
         let array = values.bind(py).borrow().clone();
-        // Validate CSR before computing the row range — empty offsets must not
-        // panic on `len() - 1` (debug) before the BufferError path runs.
-        validate_csr_offsets(&offsets, array.len())?;
-        let offsets: Arc<[i64]> = offsets.into();
-        let rows = 0..offsets.len() - 1;
-        Groups::from_geometry_csr(Arc::new(array), offsets, rows)
+        Groups::from_geometry_csr(array, offsets)
     })
 }
 
@@ -1123,10 +1140,7 @@ pub(crate) fn _unpickle_cell_groups_v1(
     let offsets = crate::collect_i64_sequence(offsets, "cell Groups pickle offsets")?;
     Python::attach(|py| {
         let array = values.bind(py).borrow().clone();
-        validate_csr_offsets(&offsets, array.len())?;
-        let offsets: Arc<[i64]> = offsets.into();
-        let rows = 0..offsets.len() - 1;
-        Groups::from_cell_csr(Arc::new(array), offsets, rows)
+        Groups::from_cell_csr(array, offsets)
     })
 }
 
@@ -1141,7 +1155,9 @@ pub(crate) struct Float64Buffer {
 
 impl Float64Buffer {
     fn as_slice(&self) -> &[f64] {
-        &self.storage[self.range.clone()]
+        self.storage
+            .get(self.range.clone())
+            .expect("float64 buffer range is bounded by its immutable storage")
     }
 }
 

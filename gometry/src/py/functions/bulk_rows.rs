@@ -324,7 +324,7 @@ fn acquire_owned_chunk<'py, T>(
     first_row: usize,
 ) -> AcquiredChunk<T> {
     let mut rows = Vec::with_capacity(DETACHED_BATCH_ROWS);
-    for row in first_row..first_row + DETACHED_BATCH_ROWS {
+    for row in first_row..first_row.wrapping_add(DETACHED_BATCH_ROWS) {
         let Some(item) = iter.next() else {
             return AcquiredChunk {
                 rows,
@@ -407,7 +407,9 @@ where
         if finished {
             return Ok(state);
         }
-        first_row += acquired;
+        // Both callers retain every source row in `StreamingShapes`, whose
+        // addressable storage bounds this ordinal before it can wrap.
+        first_row = first_row.wrapping_add(acquired);
     }
 }
 

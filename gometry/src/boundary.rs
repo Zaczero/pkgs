@@ -41,6 +41,6 @@ pub(crate) use reserve::{
     collect_py_iter, collect_py_iter_at_most_from_iter, collect_py_iter_exact,
     collect_py_iter_exact_from_iter, collect_py_iter_from_iter, collect_py_strings,
     collect_sequence_items, collect_u64_sequence, copy_one_byte_buffer, is_one_byte_buffer,
-    optional_len, py_iter_or_error, reserve_from_py_len, reserve_hint, try_push, try_push_vec,
-    try_reserve_vec, try_vec_with_capacity, visit_py_iter_from_iter, with_one_byte_buffer,
+    optional_len, py_iter_or_error, reserve_from_py_len, reserve_hint, try_push,
+    try_vec_with_capacity, visit_py_iter_from_iter, with_one_byte_buffer,
 };

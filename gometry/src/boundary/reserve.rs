@@ -71,17 +71,9 @@ fn check_vec_capacity<T>(len: usize, additional: usize) -> Result<()> {
     Ok(())
 }
 
-/// Reserve output storage after rejecting an impossible element layout.
-/// Allocator exhaustion follows Rust's process-fatal native contract.
-pub(crate) fn try_reserve_vec<T>(vec: &mut Vec<T>, additional: usize) -> Result<()> {
-    check_vec_capacity::<T>(vec.len(), additional)?;
-    vec.reserve(additional);
-    Ok(())
-}
-
 /// Append one value after rejecting the only recoverable failure: an
 /// impossible element layout.
-pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
+fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
     if vec.len() == vec.capacity() {
         std::hint::cold_path();
         check_vec_capacity::<T>(vec.len(), 1)?;
