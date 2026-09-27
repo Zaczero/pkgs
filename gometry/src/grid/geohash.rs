@@ -14,12 +14,16 @@ const ALPHABET: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 
 const ALPHABET_VALUE: [i8; 256] = build_alphabet_lut();
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const evaluation lacks checked slice access; the loop bounds the alphabet index and each u8 indexes the full 256-entry table"
+)]
 const fn build_alphabet_lut() -> [i8; 256] {
     let mut lut = [-1_i8; 256];
     let mut index = 0;
-    while index < 32 {
+    while index < ALPHABET.len() {
         lut[ALPHABET[index] as usize] = index as i8;
-        index += 1;
+        index = index.wrapping_add(1);
     }
     lut
 }
@@ -51,7 +55,7 @@ fn discretize_axis(value: f64, min: f64, max: f64, bits: u32) -> u64 {
     let cells = 1_u64 << bits;
     let span = max - min;
     let mut index = (((value - min) / span) * cells as f64) as u64;
-    index = index.min(cells - 1);
+    index = index.min(cells.wrapping_sub(1));
 
     // Every bisection boundary is exactly representable here: `min`, `max`,
     // and `span` are integers; `bits <= 30`; and `index * span` needs fewer
@@ -62,15 +66,20 @@ fn discretize_axis(value: f64, min: f64, max: f64, bits: u32) -> u64 {
     // including the immediate `nextafter` neighbors of every boundary.
     let boundary = |index: u64| min + (index as f64 * span) / cells as f64;
     if index > 0 && value < boundary(index) {
-        index -= 1;
-    } else if index + 1 < cells && value >= boundary(index + 1) {
-        index += 1;
+        index = index.wrapping_sub(1);
+    } else {
+        let next = index.wrapping_add(1);
+        if next < cells && value >= boundary(next) {
+            index = next;
+        }
     }
     index
 }
 
 fn alphabet_value(byte: u8) -> Option<u64> {
-    let value = ALPHABET_VALUE[byte.to_ascii_lowercase() as usize];
+    let value = *ALPHABET_VALUE
+        .get(usize::from(byte.to_ascii_lowercase()))
+        .expect("every byte indexes the 256-entry alphabet lookup table");
     (value >= 0).then_some(value as u64)
 }
 
@@ -86,15 +95,17 @@ impl Geohash {
             ));
         }
         let mut bits = 0_u64;
-        for (index, &byte) in bytes.iter().enumerate() {
+        for &byte in bytes {
             let Some(value) = alphabet_value(byte) else {
                 return Err(format!(
                     "invalid geohash character {:?} in {token:?}",
                     char::from(byte)
                 ));
             };
-            bits |= value << (64 - 5 - 5 * index);
+            bits = bits.wrapping_shl(5) | value;
         }
+        let shift = 64_u32.wrapping_sub(5_u32.wrapping_mul(bytes.len() as u32));
+        bits = bits.wrapping_shl(shift);
         Ok(Self {
             bits,
             precision: bytes.len() as u8,
@@ -111,6 +122,10 @@ impl Geohash {
     }
 
     /// The canonical lowercase token.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "token_bytes returns the admitted precision's prefix, bounded by the 12-byte token buffer"
+    )]
     pub(crate) fn token(self) -> String {
         let (bytes, length) = self.token_bytes();
         // Every byte comes from the ASCII alphabet above, and validating at
@@ -119,13 +134,18 @@ impl Geohash {
     }
 
     /// The canonical token bytes in a stack-sized buffer.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "token precision is admitted to 1..=12, the loop bounds each output index, and the five-bit mask bounds the alphabet index"
+    )]
     pub(crate) const fn token_bytes(self) -> ([u8; 12], usize) {
         let mut bytes = [0_u8; 12];
         let mut index = 0;
         while index < self.precision as usize {
-            let value = (self.bits >> (64 - 5 - 5 * index as u32)) & 0x1F;
-            bytes[index] = ALPHABET[value as usize];
-            index += 1;
+            let shift = 59_u32.wrapping_sub(5_u32.wrapping_mul(index as u32));
+            let value = (self.bits.wrapping_shr(shift) & 0x1F) as usize;
+            bytes[index] = ALPHABET[value];
+            index = index.wrapping_add(1);
         }
         (bytes, self.precision as usize)
     }
@@ -154,8 +174,8 @@ impl Geohash {
         Bounds::new_raw(
             -180.0 + lon_index as f64 * lon_span,
             -90.0 + lat_index as f64 * lat_span,
-            -180.0 + (lon_index + 1) as f64 * lon_span,
-            -90.0 + (lat_index + 1) as f64 * lat_span,
+            -180.0 + lon_index.wrapping_add(1) as f64 * lon_span,
+            -90.0 + lat_index.wrapping_add(1) as f64 * lat_span,
         )
     }
 
@@ -175,7 +195,7 @@ impl Geohash {
         let mask = if keep == 0 {
             0
         } else {
-            u64::MAX << (64 - keep)
+            u64::MAX.wrapping_shl(64_u32.wrapping_sub(keep))
         };
         Self {
             bits: self.bits & mask,
@@ -189,9 +209,10 @@ impl Geohash {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) fn children(self) -> impl DoubleEndedIterator<Item = Self> + ExactSizeIterator {
-        let precision = self.precision + 1;
-        (0..32).map(move |value| Self {
-            bits: self.bits | ((value as u64) << (64 - 5 * u32::from(precision))),
+        let precision = self.precision.wrapping_add(1);
+        (0_u32..32).map(move |value| Self {
+            bits: self.bits
+                | u64::from(value).wrapping_shl(64_u32.wrapping_sub(5 * u32::from(precision))),
             precision,
         })
     }
@@ -200,14 +221,15 @@ impl Geohash {
     /// across the antimeridian; `None` past the poles.
     pub(crate) fn neighbor(self, dx: i64, dy: i64) -> Option<Self> {
         let (lon_bits, lat_bits) = self.split_axes();
-        let lon_count = u32::from(self.precision) * 5 - u32::from(self.precision) * 5 / 2;
+        let total = u32::from(self.precision) * 5;
+        let lon_count = total.wrapping_sub(total / 2);
         let lat_count = u32::from(self.precision) * 5 / 2;
         let lon_cells = 1_i64 << lon_count;
         let lat_cells = 1_i64 << lat_count;
         // `dx ∈ {-1,0,1}` and `lon_cells ≥ 8`, so the branchless wrap reproduces
         // `rem_euclid` exactly without the `idiv` it compiles to (hot in `neighbors`).
-        let lon = super::wrap_axis(lon_bits as i64 + dx, lon_cells) as u64;
-        let lat = lat_bits as i64 + dy;
+        let lon = super::wrap_axis((lon_bits as i64).wrapping_add(dx), lon_cells) as u64;
+        let lat = (lat_bits as i64).wrapping_add(dy);
         if lat < 0 || lat >= lat_cells {
             return None;
         }
@@ -234,16 +256,16 @@ impl Geohash {
         let total = u32::from(self.precision) * 5;
         let (lon, lat) = self.axis_planes();
         (
-            u64::from(lon >> (32 - total.div_ceil(2))),
-            u64::from(lat >> (32 - total / 2)),
+            u64::from(lon.wrapping_shr(32_u32.wrapping_sub(total.div_ceil(2)))),
+            u64::from(lat.wrapping_shr(32_u32.wrapping_sub(total / 2))),
         )
     }
 
     /// Re-interleave axis integers into a packed cell.
     fn from_axes(lon: u64, lat: u64, precision: u8) -> Self {
         let total = u32::from(precision) * 5;
-        let lon_plane = (lon << (32 - total.div_ceil(2))) as u32;
-        let lat_plane = (lat << (32 - total / 2)) as u32;
+        let lon_plane = lon.wrapping_shl(32_u32.wrapping_sub(total.div_ceil(2))) as u32;
+        let lat_plane = lat.wrapping_shl(32_u32.wrapping_sub(total / 2)) as u32;
         Self {
             bits: crate::curves::morton_interleave(lat_plane, lon_plane),
             precision,
@@ -279,14 +301,16 @@ impl RectCell for Geohash {
         // lat+1; east/west do NOT wrap the antimeridian (None at the lon edges).
         let (lon_bits, lat_bits) = self.split_axes();
         let total = u32::from(self.precision) * 5;
-        let lon_cells = 1_u64 << (total - total / 2);
+        let lon_cells = 1_u64.wrapping_shl(total.wrapping_sub(total / 2));
         let lat_cells = 1_u64 << (total / 2);
         let at = |lon: u64, lat: u64| Self::from_axes(lon, lat, self.precision);
+        let east = lon_bits.wrapping_add(1);
+        let north = lat_bits.wrapping_add(1);
         [
-            (lat_bits > 0).then(|| at(lon_bits, lat_bits - 1)), // south (miny)
-            (lon_bits + 1 < lon_cells).then(|| at(lon_bits + 1, lat_bits)), // east (maxx)
-            (lat_bits + 1 < lat_cells).then(|| at(lon_bits, lat_bits + 1)), // north (maxy)
-            (lon_bits > 0).then(|| at(lon_bits - 1, lat_bits)), // west (minx)
+            (lat_bits > 0).then(|| at(lon_bits, lat_bits.wrapping_sub(1))), // south (miny)
+            (east < lon_cells).then(|| at(east, lat_bits)),                 // east (maxx)
+            (north < lat_cells).then(|| at(lon_bits, north)),               // north (maxy)
+            (lon_bits > 0).then(|| at(lon_bits.wrapping_sub(1), lat_bits)), // west (minx)
         ]
     }
 }
@@ -324,6 +348,30 @@ mod tests {
         assert_eq!(Geohash::from_lonlat(117.0, 32.0, 3).token(), "wte");
         // Case-insensitive parse canonicalizes.
         assert_eq!(Geohash::parse("WW8P1R4T8").unwrap().token(), "ww8p1r4t8");
+    }
+
+    #[test]
+    fn parses_and_formats_every_alphabet_symbol() {
+        const EXPECTED_ALPHABET: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+
+        for (value, &symbol) in EXPECTED_ALPHABET.iter().enumerate() {
+            let token = char::from(symbol).to_string();
+            let expected = Geohash {
+                bits: (value as u64).wrapping_shl(59),
+                precision: 1,
+            };
+
+            assert_eq!(Geohash::parse(&token), Ok(expected));
+            assert_eq!(Geohash::parse(&token.to_ascii_uppercase()), Ok(expected));
+            assert_eq!(expected.token(), token);
+        }
+    }
+
+    #[test]
+    fn rejects_excluded_and_non_ascii_alphabet_symbols() {
+        for token in ["a", "i", "l", "o", "é"] {
+            assert!(Geohash::parse(token).is_err(), "accepted {token:?}");
+        }
     }
 
     #[test]

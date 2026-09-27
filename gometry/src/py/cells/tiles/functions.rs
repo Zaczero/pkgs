@@ -158,7 +158,7 @@ pub(super) fn tile_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyTile> {
         if cell.z == 0 {
             return Ok(PyTile { cell: tile_root() });
         }
-        cell = cell.parent_at(cell.z - 1);
+        cell = cell.parent_at(cell.z.wrapping_sub(1));
     }
 }
 

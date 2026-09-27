@@ -290,6 +290,19 @@ def test_children_count_closed_form_and_edges() -> None:
 
 
 @pytest.mark.parametrize(
+    'cell',
+    [
+        gm.GeohashCell('zzzzzzzzzzzz'),
+        gm.Tile(x=536_870_911, y=536_870_911, zoom=29),
+    ],
+    ids=['geohash', 'tile'],
+)
+def test_max_depth_rect_cells_have_no_default_children(cell) -> None:
+    assert len(cell.children()) == 0
+    assert cell.children_count() == 0
+
+
+@pytest.mark.parametrize(
     ('cells', 'depth', 'child_n'),
     [
         (
