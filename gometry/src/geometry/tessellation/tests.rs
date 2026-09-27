@@ -62,6 +62,38 @@ fn vertex_key(point: Point) -> (u64, u64, Option<u64>, Option<u64>) {
     )
 }
 
+fn brute_snap_sites(sites: &[super::Site], radius: f64) -> Vec<super::Site> {
+    let mut survivors: Vec<super::Site> = Vec::new();
+    for site in sites {
+        let mut snapped = false;
+        for survivor in &survivors {
+            if super::exact::distance_within(survivor.point.xy(), site.point.xy(), radius)
+                .expect("finite binary64 site distances stay within exact dyadic bounds")
+            {
+                snapped = true;
+                break;
+            }
+        }
+        if !snapped {
+            survivors.push(*site);
+        }
+    }
+    survivors
+}
+
+fn assert_snap_matches_brute(sites: &[super::Site], radius: f64) -> Vec<super::Site> {
+    let expected = brute_snap_sites(sites, radius);
+    let actual = super::snap_sites(sites, radius).unwrap();
+    let signature = |sites: &[super::Site]| {
+        sites
+            .iter()
+            .map(|site| (site.id, site.point.x.to_bits(), site.point.y.to_bits()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(signature(&actual), signature(&expected));
+    actual
+}
+
 #[test]
 fn canonical_voronoi_sites_normalize_zero_and_globally_deduplicate_snaps() {
     let input = vec![
@@ -87,6 +119,152 @@ fn canonical_voronoi_sites_normalize_zero_and_globally_deduplicate_snaps() {
     assert_eq!(
         restored.iter().map(|site| site.id).collect::<Vec<_>>(),
         vec![0, 1, 2, 3]
+    );
+}
+
+#[test]
+fn voronoi_snap_matches_exact_reference_at_strict_radius_neighbors() {
+    let below = 1.0_f64.next_down();
+    let above = 1.0_f64.next_up();
+    let sites = [
+        super::Site {
+            id: 0,
+            point: xy(0.0, 0.0),
+        },
+        super::Site {
+            id: 1,
+            point: xy(0.0, below),
+        },
+        super::Site {
+            id: 2,
+            point: xy(0.0, 1.0),
+        },
+        super::Site {
+            id: 3,
+            point: xy(0.0, above),
+        },
+    ];
+
+    assert_eq!(
+        assert_snap_matches_brute(&sites, 1.0)
+            .iter()
+            .map(|site| site.id)
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
+}
+
+#[test]
+fn voronoi_snap_matches_exact_reference_at_subnormal_and_extreme_bounds() {
+    let minimum = f64::from_bits(1);
+    let subnormal_sites = [
+        super::Site {
+            id: 0,
+            point: xy(0.0, 0.0),
+        },
+        super::Site {
+            id: 1,
+            point: xy(minimum, 0.0),
+        },
+        super::Site {
+            id: 2,
+            point: xy(2.0 * minimum, 0.0),
+        },
+    ];
+    assert_eq!(
+        assert_snap_matches_brute(&subnormal_sites, minimum)
+            .iter()
+            .map(|site| site.id)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+
+    let maximum = f64::MAX;
+    let overflowing_y_sites = [
+        super::Site {
+            id: 0,
+            point: xy(0.0, -maximum),
+        },
+        super::Site {
+            id: 1,
+            point: xy(0.0, maximum),
+        },
+    ];
+    assert_eq!(
+        assert_snap_matches_brute(&overflowing_y_sites, maximum)
+            .iter()
+            .map(|site| site.id)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+
+    let opposite_x_sites = [
+        super::Site {
+            id: 0,
+            point: xy(-maximum, 0.0),
+        },
+        super::Site {
+            id: 1,
+            point: xy(0.0, 0.0),
+        },
+        super::Site {
+            id: 2,
+            point: xy(maximum, 0.0),
+        },
+    ];
+    assert_eq!(
+        assert_snap_matches_brute(&opposite_x_sites, maximum)
+            .iter()
+            .map(|site| site.id)
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+}
+
+#[test]
+fn voronoi_snap_matches_exact_reference_when_y_order_differs() {
+    let sites = [
+        super::Site {
+            id: 0,
+            point: xy(0.0, 0.8),
+        },
+        super::Site {
+            id: 1,
+            point: xy(0.8, 0.0),
+        },
+        super::Site {
+            id: 2,
+            point: xy(0.81, 0.4),
+        },
+    ];
+
+    assert_eq!(
+        assert_snap_matches_brute(&sites, 1.0)
+            .iter()
+            .map(|site| site.id)
+            .collect::<Vec<_>>(),
+        [0, 1]
+    );
+}
+
+#[test]
+fn canonical_voronoi_keeps_4097_equal_x_sparse_y_sites_in_dense_id_order() {
+    let points = (0..4_097)
+        .map(|site| xy(0.0, 2.0 * f64::from(site)))
+        .collect::<Vec<_>>();
+    let unsnapped = canonical_voronoi_sites(points.clone(), 0.0).unwrap();
+    let snapped = canonical_voronoi_sites(points, 1.0).unwrap();
+    let signature = |sites: &[super::Site]| {
+        sites
+            .iter()
+            .map(|site| (site.id, site.point.x.to_bits(), site.point.y.to_bits()))
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(signature(&snapped), signature(&unsnapped));
+    assert_eq!(
+        snapped.iter().map(|site| site.id).collect::<Vec<_>>(),
+        (0..4_097).collect::<Vec<_>>()
     );
 }
 

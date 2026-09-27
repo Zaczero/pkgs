@@ -101,6 +101,37 @@ def test_tolerance_grid_never_overflows_at_finite_extremes() -> None:
     assert len(edges) == 0
 
 
+def test_voronoi_tolerance_keeps_strict_radius_boundary_sites() -> None:
+    sites = gm.MultiPoint([(0.0, 0.0), (0.0, 1.0)])
+    without_tolerance = sites.voronoi_polygons(tolerance=0.0, clip='padded')
+    at_boundary = sites.voronoi_polygons(tolerance=1.0, clip='padded')
+
+    assert len(at_boundary) == 2
+    assert [cell.to_wkb() for cell in at_boundary] == [
+        cell.to_wkb() for cell in without_tolerance
+    ]
+
+
+def test_voronoi_tolerance_uses_exact_distance_for_near_ulp_sites() -> None:
+    sites = gm.MultiPoint([(0.0, 1.0), (0.0, 1.0e20)])
+    without_tolerance = sites.voronoi_polygons(tolerance=0.0, clip='padded')
+    snapped = sites.voronoi_polygons(tolerance=1.0e20, clip='padded')
+
+    assert len(without_tolerance) == 2
+    assert len(snapped) == 0
+
+
+def test_voronoi_tolerance_preserves_4097_equal_x_sparse_y_sites() -> None:
+    sites = gm.MultiPoint([(0.0, 2.0 * index) for index in range(4_097)])
+    without_tolerance = sites.voronoi_polygons(tolerance=0.0, clip='padded')
+    sparse_y = sites.voronoi_polygons(tolerance=1.0, clip='padded')
+
+    assert len(sparse_y) == 4_097
+    assert [cell.to_wkb() for cell in sparse_y] == [
+        cell.to_wkb() for cell in without_tolerance
+    ]
+
+
 @pytest.mark.parametrize('exponent', [76, 77, 100, 153, 154])
 def test_reciprocal_concave_hull_covers_every_input_site(exponent: int) -> None:
     x = 10.0**exponent

@@ -1,10 +1,15 @@
+use std::collections::{BTreeSet, VecDeque};
+
 use crate::error::Result;
 use crate::geometry::tessellation::{CertifiedDelaunay, EMPTY, Site, exact};
 
 /// The sites that survive snapping at `radius`: a site within the radius of
 /// an earlier survivor joins it, any other site survives. The sites arrive
-/// sorted by x, so survivors are appended in x order and a site's candidates
-/// are the survivors whose x lies within the radius, found by binary search.
+/// sorted by x, so the active survivors are x-windowed and indexed by y.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "active and candidate ordinals come from this site's enumeration"
+)]
 pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
     let ordered = |value: f64| {
         let bits = value.to_bits();
@@ -14,21 +19,49 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
             !bits
         }
     };
+    let radius_bounds = exact::Interval::exact(radius);
     let mut survivors: Vec<Site> = Vec::new();
-    for site in sites {
+    let mut active: VecDeque<usize> = VecDeque::new();
+    let mut y_index: BTreeSet<(u64, usize)> = BTreeSet::new();
+    let mut candidates: Vec<usize> = Vec::new();
+    for (ordinal, site) in sites.iter().enumerate() {
         let point = site.point.xy();
-        let (min_x, max_x) = (ordered(point.x - radius), ordered(point.x + radius));
-        let start = survivors.partition_point(|survivor| ordered(survivor.point.x) < min_x);
-        let end = survivors.partition_point(|survivor| ordered(survivor.point.x) <= max_x);
+        let min_x = ordered(exact::Interval::exact(point.x).sub(radius_bounds).lo);
+        let y_bounds = exact::Interval::exact(point.y);
+        let min_y = ordered(y_bounds.sub(radius_bounds).lo);
+        let max_y = ordered(y_bounds.add(radius_bounds).hi);
+        while let Some(&oldest) = active.front() {
+            if ordered(sites[oldest].point.x) >= min_x {
+                break;
+            }
+            let expired = active
+                .pop_front()
+                .expect("the observed front remains present");
+            let removed = y_index.remove(&(ordered(sites[expired].point.y), expired));
+            debug_assert!(removed);
+        }
+
+        // Strict disk membership implies this closed outward y interval;
+        // exact distance still owns the decision.
+        candidates.clear();
+        // The tree visits y order, but exact calls retain source/error order.
+        candidates.extend(
+            y_index
+                .range((min_y, 0)..=(max_y, usize::MAX))
+                .map(|&(_, candidate)| candidate),
+        );
+        candidates.sort_unstable();
         let mut snapped = false;
-        for survivor in &survivors[start..end] {
-            if exact::distance_within(survivor.point.xy(), point, radius)? {
+        for &candidate in &candidates {
+            if exact::distance_within(sites[candidate].point.xy(), point, radius)? {
                 snapped = true;
                 break;
             }
         }
         if !snapped {
             survivors.push(*site);
+            active.push_back(ordinal);
+            y_index.insert((ordered(point.y), ordinal));
         }
     }
     Ok(survivors)
