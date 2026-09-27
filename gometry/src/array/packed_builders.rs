@@ -7,21 +7,29 @@ use crate::array::{
 
 impl PyGeometryArray {
     pub(crate) fn gather_logical_rows(&self, rows: &[usize]) -> crate::error::Result<Self> {
+        self.gather_logical_rows_iter(rows.iter().copied())
+    }
+
+    pub(crate) fn gather_logical_rows_iter(
+        &self,
+        rows: impl ExactSizeIterator<Item = usize> + Clone,
+    ) -> crate::error::Result<Self> {
+        let row_count = rows.len();
         let missing = self.missing().and_then(|mask| {
-            let mut bytes = vec![0; rows.len().div_ceil(8)];
+            let mut bytes = vec![0; row_count.div_ceil(8)];
             let mut valid_count = 0;
-            for (out, &row) in rows.iter().enumerate() {
+            for (out, row) in rows.clone().enumerate() {
                 if mask.is_valid(row) {
                     bytes[out / 8] |= 1 << (out % 8);
                     valid_count += 1;
                 }
             }
-            if valid_count == rows.len() {
+            if valid_count == row_count {
                 return None;
             }
-            ValidityMask::from_bitmap(crate::geometry::SharedSlice::from_vec(bytes), 0, rows.len())
+            ValidityMask::from_bitmap(crate::geometry::SharedSlice::from_vec(bytes), 0, row_count)
         });
-        self.select_logical_rows(rows.iter().copied(), missing)
+        self.select_logical_rows(rows, missing)
     }
 
     /// Gather a contiguous logical row range without allocating an index vector.

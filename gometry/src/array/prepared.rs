@@ -1123,8 +1123,8 @@ mod frame_cache_row_tests {
         for selected in [
             source.gather_logical_row_range(1..3).unwrap(),
             source.gather_logical_rows(&[1, 2]).unwrap(),
-            source.slice_rows(1, 3, 1).unwrap(),
-            source.slice_rows(1, -1, -1).unwrap(),
+            source.slice_rows(1, 3, 1, 2).unwrap(),
+            source.slice_rows(1, -1, -1, 2).unwrap(),
         ] {
             assert!(Arc::ptr_eq(
                 &selected.row_products.frame_cache(0),

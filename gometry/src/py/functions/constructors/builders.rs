@@ -40,10 +40,11 @@ fn multipart_members(
     numpy::reject_masked_array(values)?;
     // Materialize every member before frame reconciliation so a later member
     // error keeps precedence over a frame conflict.
+    // The collector retains each member, bounding this logical row counter.
     let mut row = 0_usize;
     let mut members = crate::collect_py_iter(values, |item| {
         let this_row = row;
-        row += 1;
+        row = row.wrapping_add(1);
         if let Some(geometry) = exact_geometry(&item) {
             let shape = exact(geometry.shape.shape()).ok_or_else(|| {
                 PyTypeError::new_err(format!(
@@ -940,10 +941,11 @@ pub(crate) fn build_geometry_collection(
     };
     // Fail-fast on the first missing member: GeometryCollection cannot carry
     // None (unlike GeometryArray rows).
+    // The collector retains each member, bounding this logical row counter.
     let mut row = 0_usize;
     let mut members = crate::collect_py_iter(geometries, |item| {
         let this_row = row;
-        row += 1;
+        row = row.wrapping_add(1);
         if item.is_none() {
             return Err(crate::missing_geometry_items_error());
         }

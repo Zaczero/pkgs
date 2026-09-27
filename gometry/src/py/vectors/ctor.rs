@@ -8,11 +8,20 @@ use crate::CsrBuilder;
 use crate::error::Result;
 use crate::geometry::TopologyDomain;
 use crate::py::vectors::{
-    Arc, GeometryError, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray,
-    PyOverflowError, PyResult, Range, Shape, validate_csr_offsets,
+    Arc, GridKind, Groups, GroupsValues, PyCellArray, PyGeometryArray, PyOverflowError, PyResult,
+    Shape, validate_csr_offsets,
 };
 
 impl Groups {
+    pub(super) fn from_int64_values_csr(ids: Vec<i64>, offsets: Vec<i64>) -> PyResult<Self> {
+        let row_count = validate_csr_offsets(&offsets, ids.len())?;
+        Ok(Self {
+            values: GroupsValues::Int64(ids.into()),
+            offsets: offsets.into(),
+            rows: 0..row_count,
+        })
+    }
+
     /// Adopt an already-built int64 CSR batch — the zero-copy hand-off from
     /// kernels that stream matches directly.
     pub fn from_int64_csr(ids: Vec<usize>, offsets: Vec<i64>) -> PyResult<Self> {
@@ -35,30 +44,15 @@ impl Groups {
                 Ok,
             )
         }
-        let ids = cast_usize_vec(ids)?;
-        // Validate before `len() - 1` so empty offsets never underflow.
-        validate_csr_offsets(&offsets, ids.len())?;
-        let n = offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Ok(Self {
-            values: GroupsValues::Int64(ids.into()),
-            offsets: offsets.into(),
-            rows: 0..n,
-        })
+        Self::from_int64_values_csr(cast_usize_vec(ids)?, offsets)
     }
 
-    pub(super) fn from_geometry_csr(
-        values: Arc<PyGeometryArray>,
-        offsets: Arc<[i64]>,
-        rows: Range<usize>,
-    ) -> PyResult<Self> {
-        validate_csr_offsets(&offsets, values.len())?;
+    pub(super) fn from_geometry_csr(values: PyGeometryArray, offsets: Vec<i64>) -> PyResult<Self> {
+        let row_count = validate_csr_offsets(&offsets, values.len())?;
         Ok(Self {
-            values: GroupsValues::Geometry(values),
-            offsets,
-            rows,
+            values: GroupsValues::Geometry(Arc::new(values)),
+            offsets: offsets.into(),
+            rows: 0..row_count,
         })
     }
 
@@ -71,12 +65,7 @@ impl Groups {
         group_offsets: Vec<i64>,
     ) -> PyResult<Self> {
         let values = PyGeometryArray::packed_lines(coords, line_offsets, frame)?;
-        validate_csr_offsets(&group_offsets, values.len())?;
-        let n = group_offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Self::from_geometry_csr(Arc::new(values), group_offsets.into(), 0..n)
+        Self::from_geometry_csr(values, group_offsets)
     }
 
     /// Adopt a checked geometry CSR builder after its detached row walk.
@@ -86,24 +75,23 @@ impl Groups {
     ) -> PyResult<Self> {
         let (shapes, offsets) = builder.finish();
         let values = PyGeometryArray::from_shapes(shapes, frame)?;
-        validate_csr_offsets(&offsets, values.len())?;
-        let n = offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
+        Self::from_geometry_csr(values, offsets)
     }
 
     pub(crate) fn polygonize_full_parts(
         full: crate::geometry::PolygonizeFull,
         frame: crate::Frame,
     ) -> crate::error::Result<(PyGeometryArray, Self, Self, Self)> {
-        fn diagnostic_csr(rows: Vec<Vec<Shape>>) -> crate::error::Result<(Vec<Shape>, Vec<i64>)> {
+        fn diagnostic_csr(
+            rows: Vec<Vec<Shape>>,
+        ) -> crate::error::Result<(Vec<Shape>, Vec<i64>, usize)> {
             let mut builder = CsrBuilder::with_capacity(0, rows.len());
             for row in rows {
                 builder.push_row(row)?;
             }
-            Ok(builder.finish())
+            let row_count = builder.row_count();
+            let (shapes, offsets) = builder.finish();
+            Ok((shapes, offsets, row_count))
         }
 
         let crate::geometry::PolygonizeFull {
@@ -115,15 +103,15 @@ impl Groups {
         let cuts = diagnostic_csr(cuts)?;
         let dangles = diagnostic_csr(dangles)?;
         let invalid_rings = diagnostic_csr(invalid_rings)?;
-        let adopt = |(shapes, offsets): (Vec<Shape>, Vec<i64>)| -> crate::error::Result<Self> {
-            let rows = 0..offsets.len() - 1;
+        let adopt =
+            |(shapes, offsets, row_count): (Vec<Shape>, Vec<i64>, usize)| -> crate::error::Result<Self> {
             Ok(Self {
                 values: GroupsValues::Geometry(Arc::new(PyGeometryArray::from_shapes(
                     shapes,
                     frame.clone(),
                 )?)),
                 offsets: offsets.into(),
-                rows,
+                rows: 0..row_count,
             })
         };
         Ok((
@@ -147,12 +135,7 @@ impl Groups {
         } else {
             PyGeometryArray::packed_triangles(&vertices, frame)?
         };
-        validate_csr_offsets(&offsets, values.len())?;
-        let n = offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Self::from_geometry_csr(Arc::new(values), offsets.into(), 0..n)
+        Self::from_geometry_csr(values, offsets)
     }
 
     /// Element-wise self-intersection rows as one flat geometry column.
@@ -162,16 +145,12 @@ impl Groups {
         Self::from_geometry_builder(array.frame.clone(), builder)
     }
 
-    pub(super) fn from_cell_csr(
-        values: Arc<PyCellArray>,
-        offsets: Arc<[i64]>,
-        rows: Range<usize>,
-    ) -> PyResult<Self> {
-        validate_csr_offsets(&offsets, values.len())?;
+    pub(super) fn from_cell_csr(values: PyCellArray, offsets: Vec<i64>) -> PyResult<Self> {
+        let row_count = validate_csr_offsets(&offsets, values.len())?;
         Ok(Self {
-            values: GroupsValues::Cells(values),
-            offsets,
-            rows,
+            values: GroupsValues::Cells(Arc::new(values)),
+            offsets: offsets.into(),
+            rows: 0..row_count,
         })
     }
 
@@ -180,14 +159,8 @@ impl Groups {
         ids: Vec<u64>,
         offsets: Vec<i64>,
     ) -> PyResult<Self> {
-        let values = Arc::new(PyCellArray::from_ids(kind, ids));
-        // Validate before `len() - 1` so empty offsets never underflow.
-        validate_csr_offsets(&offsets, values.len())?;
-        let n = offsets
-            .len()
-            .checked_sub(1)
-            .ok_or_else(|| GeometryError::new_err("invalid CSR offsets"))?;
-        Self::from_cell_csr(values, offsets.into(), 0..n)
+        let values = PyCellArray::from_ids(kind, ids);
+        Self::from_cell_csr(values, offsets)
     }
 }
 

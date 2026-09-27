@@ -60,7 +60,7 @@ pub(crate) trait RowContainer: HeapSize + Sized {
 /// slice/fancy-index results.
 pub(crate) trait RowGetItemContainer: RowContainer {
     fn gather_rows(&self, rows: &[usize]) -> PyResult<Self>;
-    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self>;
+    fn slice_rows(&self, start: isize, stop: isize, step: isize, count: usize) -> PyResult<Self>;
     fn empty(&self) -> PyResult<Self>;
     fn container_to_py(py: Python<'_>, value: Self) -> PyResult<Py<PyAny>>;
 
@@ -125,13 +125,16 @@ pub(crate) fn rows_from_indices(
 
 pub(crate) fn slice_row_indices(
     start: isize,
-    stop: isize,
     step: isize,
-) -> impl Iterator<Item = usize> + Clone {
-    // A valid slice can overflow on the step after its last selected row.
-    std::iter::successors(Some(start), move |index| index.checked_add(step))
-        .take_while(move |&index| (step > 0 && index < stop) || (step < 0 && index > stop))
-        .map(|index| index as usize)
+    count: usize,
+) -> impl ExactSizeIterator<Item = usize> + Clone {
+    // `count` is the normalized Python slice length, so every affine row is in
+    // range and there is no need to advance once more after the last row.
+    (0..count).map(move |offset| {
+        let offset = isize::try_from(offset).expect("normalized slice length fits in isize");
+        let row = start.wrapping_add(step.wrapping_mul(offset));
+        usize::try_from(row).expect("normalized slice rows are non-negative")
+    })
 }
 
 fn mask_rows<C: RowGetItemContainer>(
@@ -173,7 +176,12 @@ pub(crate) fn array_getitem<C: RowGetItemContainer>(
         let indices = slice.indices(len as isize)?;
         return C::container_to_py(
             py,
-            container.slice_rows(indices.start, indices.stop, indices.step)?,
+            container.slice_rows(
+                indices.start,
+                indices.stop,
+                indices.step,
+                indices.slicelength,
+            )?,
         );
     }
     if let Some(index) = numpy_fancy_index(index, C::INDEX_LABEL, C::LABEL)? {

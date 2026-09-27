@@ -366,13 +366,13 @@ impl RowGetItemContainer for PyGeometryArray {
         self.gather_logical_rows(rows).map_err(PyErr::from)
     }
 
-    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
+    fn slice_rows(&self, start: isize, stop: isize, step: isize, count: usize) -> PyResult<Self> {
         if step == 1 {
             return self
                 .gather_logical_row_range(start as usize..stop.max(start) as usize)
                 .map_err(PyErr::from);
         }
-        self.gather_logical_rows(&slice_row_indices(start, stop, step).collect::<Vec<_>>())
+        self.gather_logical_rows_iter(slice_row_indices(start, step, count))
             .map_err(PyErr::from)
     }
 

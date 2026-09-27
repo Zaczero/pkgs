@@ -352,7 +352,7 @@ impl PyCellArray {
         ))
     }
 
-    fn slice(&self, start: isize, stop: isize, step: isize) -> Self {
+    fn slice(&self, start: isize, stop: isize, step: isize, count: usize) -> Self {
         if let Some(logical) = CoordSeq::contiguous_positive_slice(start, stop, step) {
             let selection = row_selection_from_logical_rows(
                 self.selection_ref(),
@@ -361,7 +361,7 @@ impl PyCellArray {
             );
             return self.with_selection(selection);
         }
-        self.select_logical_rows(slice_row_indices(start, stop, step))
+        self.select_logical_rows(slice_row_indices(start, step, count))
     }
 
     fn logical_contiguous_ids(&self) -> Option<&[u64]> {
@@ -618,8 +618,8 @@ impl RowGetItemContainer for PyCellArray {
         Ok(self.select_logical_rows(rows.iter().copied()))
     }
 
-    fn slice_rows(&self, start: isize, stop: isize, step: isize) -> PyResult<Self> {
-        Ok(self.slice(start, stop, step))
+    fn slice_rows(&self, start: isize, stop: isize, step: isize, count: usize) -> PyResult<Self> {
+        Ok(self.slice(start, stop, step, count))
     }
 
     fn empty(&self) -> PyResult<Self> {
@@ -1840,7 +1840,7 @@ mod tests {
             arc + size_of::<Vec<u64>>() + 3 * size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1
         );
 
-        let selected = cells.slice(1, 2, 1);
+        let selected = cells.slice(1, 2, 1, 1);
         assert_eq!(
             selected.heap_bytes(),
             arc + size_of::<Vec<u64>>() + size_of::<u64>() + arc + size_of::<Vec<u8>>() + 1

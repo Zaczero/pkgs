@@ -114,7 +114,7 @@ impl InterpolatePlan {
     /// endpoints from two samples up, the start alone for one.
     fn count_fraction(index: usize, count: usize) -> f64 {
         if count > 1 {
-            index as f64 / (count - 1) as f64
+            index as f64 / count.wrapping_sub(1) as f64
         } else {
             0.0
         }

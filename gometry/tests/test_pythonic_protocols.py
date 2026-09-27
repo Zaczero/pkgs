@@ -591,6 +591,29 @@ def test_geometry_groups_range_and_strided_views_preserve_value_semantics() -> N
     assert groups[0] not in framed
 
 
+@pytest.mark.parametrize(
+    'selector',
+    [
+        pytest.param(slice(None, None, 2), id='positive-stride'),
+        pytest.param(slice(None, None, -1), id='reverse'),
+        pytest.param(slice(3, 1, 1), id='empty-forward'),
+        pytest.param(slice(1, None, sys.maxsize), id='overflow-after-selected-row'),
+    ],
+)
+def test_int64_groups_slices_match_python_normalized_rows(
+    selector: slice,
+) -> None:
+    expected_rows = [[0, 1], [2, 3], [4, 5], [6, 7]]
+    groups = _lib._unpickle_int64_groups_v1(
+        [value for row in expected_rows for value in row],
+        [0, 2, 4, 6, 8],
+    )
+
+    selected = groups[selector]
+    assert type(selected) is type(groups)
+    assert [row.tolist() for row in selected] == expected_rows[selector]
+
+
 def test_geometry_parts_has_immutable_view_value_semantics() -> None:
     geom = gm.MultiPoint([(0, 0), (1, 1)])
     parts = geom.parts
