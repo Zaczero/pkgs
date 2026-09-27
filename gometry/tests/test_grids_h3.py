@@ -6,6 +6,9 @@ import copy
 import math
 import operator
 import pickle
+import subprocess
+import sys
+import textwrap
 from itertools import pairwise
 from typing import Any, cast
 
@@ -115,6 +118,70 @@ def test_h3_pentagon_traversal_charges_actual_returned_cells() -> None:
     assert len(pentagon.grid_ring(10, max_cells=50)) == 50
     with pytest.raises(gm.GeometryError, match='max_cells'):
         pentagon.grid_ring(10, max_cells=49)
+
+
+@pytest.mark.skipif(
+    sys.platform != 'linux',
+    reason='large-radius allocation regression needs Linux RLIMIT_AS',
+)
+def test_h3_large_grid_radius_honors_budget_and_resolution_in_child() -> None:
+    script = textwrap.dedent(
+        """
+        import resource
+
+        limit = 4 * 1024**3
+        _, hard = resource.getrlimit(resource.RLIMIT_AS)
+        if hard != resource.RLIM_INFINITY:
+            limit = min(limit, hard)
+        if limit < 1024**3:
+            print('SKIP: address-space limit is below 1 GiB', flush=True)
+            raise SystemExit(77)
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+
+        import gometry as gm
+
+        pentagon = gm.h3_pentagons(0)[0]
+        try:
+            pentagon.grid_disk(13_780_510, max_cells=1)
+        except gm.GeometryError as error:
+            assert 'max_cells' in str(error)
+        else:
+            raise AssertionError('the one-cell disk budget must reject this disk')
+
+        high_resolution_pentagon = gm.h3_pentagons(15)[0]
+        try:
+            high_resolution_pentagon.grid_disk(13_780_510, max_cells=1)
+        except gm.GeometryError as error:
+            assert 'max_cells' in str(error)
+        else:
+            raise AssertionError(
+                'the one-cell high-resolution disk budget must reject this disk'
+            )
+
+        disk = pentagon.grid_disk(13_780_510, max_cells=None)
+        ring = pentagon.grid_ring(13_780_510, max_cells=1)
+        print(len(disk), len(ring))
+        """
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, '-B', '-c', script],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        pytest.fail(f'large-radius H3 child exceeded its bound: {error}')
+    if result.returncode == 77 and result.stdout.startswith(
+        'SKIP: address-space limit is below 1 GiB\n'
+    ):
+        pytest.skip(result.stdout.strip())
+    assert result.returncode == 0, (
+        f'large-radius H3 child failed with {result.returncode}:\n'
+        f'stdout={result.stdout!r}\nstderr={result.stderr!r}'
+    )
+    assert result.stdout.splitlines() == ['122 0']
 
 
 def test_h3_polygon_coverage() -> None:

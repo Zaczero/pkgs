@@ -61,8 +61,6 @@ LIBTIFF = ROOT / 'native' / 'libtiff-sys' / 'libtiff'
 LIBTIFF_PIN = ROOT / 'native' / 'libtiff-sys' / 'libtiff.pin'
 LIBTIFF_COMMIT = 'd01a94be176f5f6a87f7ee1c0b32e65416aa2b4d'
 LIBTIFF_VERSION = '4.7.2'
-H3_GIT_REV = '2b5bde491449c776cb9c1ae305a5f826f6d8e968'
-H3_SOURCE = f'git+https://github.com/Zaczero/h3o.git?rev={H3_GIT_REV}#{H3_GIT_REV}'
 REGISTRY_SOURCE = 'registry+https://github.com/rust-lang/crates.io-index'
 MATURIN_VERSION = '1.14.1'
 RELEASE_PROFILE = 'release-dist'
@@ -1270,9 +1268,9 @@ def _required_source_records(
         raise TypeError('cargo metadata has no packages array')
     expected = (
         ('geographiclib-rs', '0.2.7', REGISTRY_SOURCE, ('accurate',)),
-        ('h3o', '0.10.0', H3_SOURCE, ('std',)),
-        # PROJ is a path package in the standalone sdist. Its feature selection
-        # is the part that makes the bundled TIFF-enabled source build explicit.
+        # H3 and PROJ are path packages in the standalone sdist; their exact
+        # manifest paths and selected features attest the bundled sources.
+        ('h3o', '0.10.0', None, ('std',)),
         ('proj-sys', '0.27.0', None, ('bundled_proj', 'tiff')),
     )
     records: list[dict[str, Any]] = []
@@ -1291,15 +1289,15 @@ def _required_source_records(
                 f'from {source!r}; found {len(matches)}'
             )
         package = matches[0]
-        if name == 'proj-sys' and root is not None:
+        if source is None and root is not None:
             manifest_path = package.get('manifest_path')
-            expected_manifest = root / 'gometry' / 'native' / 'proj-sys' / 'Cargo.toml'
+            expected_manifest = root / 'gometry' / 'native' / name / 'Cargo.toml'
             if (
                 not isinstance(manifest_path, str)
                 or Path(manifest_path).resolve() != expected_manifest.resolve()
             ):
                 raise AssertionError(
-                    'proj-sys did not resolve from the bundled source path'
+                    f'{name} did not resolve from the bundled source path'
                 )
         package_id = package.get('id')
         if not isinstance(package_id, str):
@@ -1322,6 +1320,55 @@ def _required_source_records(
         ):
             raise AssertionError(f'cargo metadata feature list for {name} is malformed')
         selected_features = set(selected)
+        if name == 'h3o':
+            # Cargo metadata unions features from the workspace's implicit
+            # h3o path member with the gometry dependency edge. The member's
+            # default feature is only the std alias; attest the consumer edge
+            # separately and normalize that workspace-only alias.
+            h3o_default = package.get('features')
+            if (
+                not isinstance(h3o_default, dict)
+                or h3o_default.get('default') != ['std']
+            ):
+                raise AssertionError(
+                    'vendored h3o default feature must remain the std alias'
+                )
+            consumers = [
+                candidate
+                for candidate in packages
+                if isinstance(candidate, dict)
+                and candidate.get('name') == 'gometry'
+            ]
+            if root is not None:
+                expected_consumer = (root / 'gometry' / 'Cargo.toml').resolve()
+                consumers = [
+                    candidate
+                    for candidate in consumers
+                    if isinstance(candidate.get('manifest_path'), str)
+                    and Path(candidate['manifest_path']).resolve() == expected_consumer
+                ]
+            if len(consumers) != 1:
+                raise AssertionError('cargo metadata has no unique gometry manifest')
+            h3o_edges = [
+                dependency
+                for dependency in consumers[0].get('dependencies', [])
+                if isinstance(dependency, dict) and dependency.get('name') == 'h3o'
+            ]
+            if len(h3o_edges) != 1 or h3o_edges[0].get(
+                'uses_default_features'
+            ) is not False or h3o_edges[0].get('features') != ['std']:
+                raise AssertionError('gometry must select only the vendored h3o std feature')
+            if root is not None:
+                h3o_path = h3o_edges[0].get('path')
+                expected_h3o = (root / 'gometry' / 'native' / 'h3o').resolve()
+                if (
+                    not isinstance(h3o_path, str)
+                    or Path(h3o_path).resolve() != expected_h3o
+                ):
+                    raise AssertionError(
+                        'gometry must use the bundled h3o package path'
+                    )
+            selected_features.discard('default')
         expected_features = set(features)
         if selected_features != expected_features:
             raise AssertionError(

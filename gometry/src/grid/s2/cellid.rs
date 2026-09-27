@@ -139,8 +139,9 @@ pub(crate) const fn size_ij(level: u8) -> i32 {
     1 << (MAX_LEVEL - level) as u32
 }
 
-/// A canonical 64-bit S2 cell id. Always structurally valid by construction
-/// — fallible boundaries (`from_raw`, `from_token`) return `Option`.
+/// The 64-bit S2 cell representation. Constructors and admission boundaries
+/// produce valid cells; `child_end_at` and `next` may also produce a private
+/// one-past cursor, which must not be used as a cell.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 #[repr(transparent)]
 pub(crate) struct CellId(u64);
