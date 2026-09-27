@@ -17,7 +17,7 @@ use crate::geometry::{
     Ring, Segment, Shape, TopologyGuard, XY, dedup_consecutive_points, line_segments,
     open_point_cycle_winding, orientation, point_on_segment, point_segment_distance,
     point_segment_distance_squared, same_point, simplified_polygon_delta_is_simple,
-    simplify_chain_guarded, triangle_area, vw_area_tolerance, wrap_index,
+    simplify_chain_guarded, triangle_area, vw_area_tolerance,
 };
 
 #[cfg(test)]
@@ -55,18 +55,24 @@ pub(crate) fn rdp_keep(
     keep.clear();
     keep.reserve(count);
     keep.resize(count, false);
-    keep[0] = true;
-    keep[count - 1] = true;
+    *keep
+        .first_mut()
+        .expect("Douglas-Peucker input has two endpoints") = true;
+    *keep
+        .last_mut()
+        .expect("Douglas-Peucker input has two endpoints") = true;
     let mut kept = 2_usize;
     stack.clear();
-    stack.push((0_usize, count - 1));
+    stack.push((0_usize, count.wrapping_sub(1)));
     while let Some((start, end)) = stack.pop() {
-        if end - start < 2 {
+        if end.wrapping_sub(start) < 2 {
             continue;
         }
         if let Some(farthest) = rdp_split(xs, ys, start, end, tolerance, tolerance_squared)? {
-            keep[farthest] = true;
-            kept += 1;
+            *keep
+                .get_mut(farthest)
+                .expect("Douglas-Peucker split belongs to its source range") = true;
+            kept = kept.wrapping_add(1);
             stack.push((start, farthest));
             stack.push((farthest, end));
         }
@@ -91,21 +97,39 @@ pub(crate) fn rdp_split(
     tolerance: f64,
     tolerance_squared: f64,
 ) -> Result<Option<usize>> {
-    let (ax, ay) = (xs[start], ys[start]);
-    let (bx, by) = (xs[end], ys[end]);
+    let (ax, ay) = (
+        *xs.get(start)
+            .expect("Douglas-Peucker start belongs to its source range"),
+        *ys.get(start)
+            .expect("Douglas-Peucker start belongs to its source range"),
+    );
+    let (bx, by) = (
+        *xs.get(end)
+            .expect("Douglas-Peucker end belongs to its source range"),
+        *ys.get(end)
+            .expect("Douglas-Peucker end belongs to its source range"),
+    );
     let (dx, dy) = (bx - ax, by - ay);
     let chord_squared = dx * dx + dy * dy;
     let threshold = tolerance_squared * chord_squared;
     let mut best = 0.0_f64;
     let mut farthest = start;
+    let interior_start = start.wrapping_add(1);
+    let interior_xs = xs
+        .get(interior_start..end)
+        .expect("Douglas-Peucker interior belongs to its source range");
+    let interior_ys = ys
+        .get(interior_start..end)
+        .expect("Douglas-Peucker interior belongs to its source range");
     let exact_scan = |best: &mut f64, farthest: &mut usize| -> Result<()> {
         let chord = Segment {
             start: XY::new(ax, ay),
             end: XY::new(bx, by),
         };
         *best = f64::NEG_INFINITY;
-        for index in start + 1..end {
-            let deviation = point_segment_distance_squared(XY::new(xs[index], ys[index]), chord)?;
+        for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
+            let index = interior_start.wrapping_add(offset);
+            let deviation = point_segment_distance_squared(XY::new(x, y), chord)?;
             if deviation > *best {
                 *best = deviation;
                 *farthest = index;
@@ -139,8 +163,9 @@ pub(crate) fn rdp_split(
             };
             let mut split = None;
             let mut best_d = f64::NAN;
-            for index in start + 1..end {
-                let point = XY::new(xs[index], ys[index]);
+            for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
+                let index = interior_start.wrapping_add(offset);
+                let point = XY::new(x, y);
                 if point_on_segment(point, chord.start, chord.end) {
                     continue;
                 }
@@ -159,8 +184,9 @@ pub(crate) fn rdp_split(
             end: XY::new(bx, by),
         };
         let mut best_d = f64::NEG_INFINITY;
-        for index in start + 1..end {
-            let d = point_segment_distance(XY::new(xs[index], ys[index]), chord)?;
+        for (offset, (&x, &y)) in interior_xs.iter().zip(interior_ys).enumerate() {
+            let index = interior_start.wrapping_add(offset);
+            let d = point_segment_distance(XY::new(x, y), chord)?;
             if d > best_d {
                 best_d = d;
                 farthest = index;
@@ -168,8 +194,8 @@ pub(crate) fn rdp_split(
         }
         return Ok((best_d > tol).then_some(farthest));
     }
-    let mut index = start + 1;
-    if end - index >= REDUCE_LANES {
+    let mut index = interior_start;
+    if end.wrapping_sub(index) >= REDUCE_LANES {
         let lane_offsets =
             std::simd::Simd::<u64, REDUCE_LANES>::from_array(std::array::from_fn(|lane| {
                 lane as u64
@@ -180,40 +206,70 @@ pub(crate) fn rdp_split(
         let chord_s = ReduceSimd::splat(chord_squared);
         let mut best_scores = ReduceSimd::splat(0.0);
         let mut best_lanes = std::simd::Simd::<u64, REDUCE_LANES>::splat(0);
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "SIMD cursor lanes are bounded source ordinals"
+        )]
         let mut cursor = std::simd::Simd::<u64, REDUCE_LANES>::splat(index as u64) + lane_offsets;
-        while index + REDUCE_LANES <= end {
-            let x = ReduceSimd::from_slice(&xs[index..index + REDUCE_LANES]);
-            let y = ReduceSimd::from_slice(&ys[index..index + REDUCE_LANES]);
-            let (qx, qy) = (x - ax_s, y - ay_s);
-            let along = qx * dx_s + qy * dy_s;
-            let cross = qx * dy_s - qy * dx_s;
-            let (rx, ry) = (x - bx_s, y - by_s);
-            let score = along.simd_le(ReduceSimd::splat(0.0)).select(
-                (qx * qx + qy * qy) * chord_s,
-                along
-                    .simd_ge(chord_s)
-                    .select((rx * rx + ry * ry) * chord_s, cross * cross),
+        while index.wrapping_add(REDUCE_LANES) <= end {
+            let lane_end = index.wrapping_add(REDUCE_LANES);
+            let x = ReduceSimd::from_slice(
+                xs.get(index..lane_end)
+                    .expect("Douglas-Peucker SIMD window belongs to its source range"),
             );
+            let y = ReduceSimd::from_slice(
+                ys.get(index..lane_end)
+                    .expect("Douglas-Peucker SIMD window belongs to its source range"),
+            );
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "SIMD lanes preserve the binary64 point-to-segment score"
+            )]
+            let score = {
+                let (qx, qy) = (x - ax_s, y - ay_s);
+                let along = qx * dx_s + qy * dy_s;
+                let cross = qx * dy_s - qy * dx_s;
+                let (rx, ry) = (x - bx_s, y - by_s);
+                along.simd_le(ReduceSimd::splat(0.0)).select(
+                    (qx * qx + qy * qy) * chord_s,
+                    along
+                        .simd_ge(chord_s)
+                        .select((rx * rx + ry * ry) * chord_s, cross * cross),
+                )
+            };
             let improved = score.simd_gt(best_scores);
             best_scores = improved.select(score, best_scores);
             best_lanes = improved.cast::<i64>().select(cursor, best_lanes);
-            cursor += std::simd::Simd::splat(REDUCE_LANES as u64);
-            index += REDUCE_LANES;
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "SIMD cursor lanes are bounded source ordinals"
+            )]
+            {
+                cursor += std::simd::Simd::splat(REDUCE_LANES as u64);
+            }
+            index = index.wrapping_add(REDUCE_LANES);
         }
-        for lane in 0..REDUCE_LANES {
-            if best_scores[lane] > best {
-                best = best_scores[lane];
-                farthest = best_lanes[lane] as usize;
+        for (&score, &source_index) in best_scores.as_array().iter().zip(best_lanes.as_array()) {
+            if score > best {
+                best = score;
+                farthest = source_index as usize;
             }
         }
     }
-    for scalar_index in index..end {
-        let (qx, qy) = (xs[scalar_index] - ax, ys[scalar_index] - ay);
+    let scalar_xs = xs
+        .get(index..end)
+        .expect("Douglas-Peucker scalar suffix belongs to its source range");
+    let scalar_ys = ys
+        .get(index..end)
+        .expect("Douglas-Peucker scalar suffix belongs to its source range");
+    for (offset, (&x, &y)) in scalar_xs.iter().zip(scalar_ys).enumerate() {
+        let scalar_index = index.wrapping_add(offset);
+        let (qx, qy) = (x - ax, y - ay);
         let along = qx * dx + qy * dy;
         let score = if along <= 0.0 {
             (qx * qx + qy * qy) * chord_squared
         } else if along >= chord_squared {
-            let (rx, ry) = (xs[scalar_index] - bx, ys[scalar_index] - by);
+            let (rx, ry) = (x - bx, y - by);
             (rx * rx + ry * ry) * chord_squared
         } else {
             let cross = qx * dy - qy * dx;
@@ -241,7 +297,11 @@ pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Option<Vec<Poi
     let mut ring = Vec::with_capacity(coords.len());
     ring.extend(coords.iter_coords());
     dedup_consecutive_points(&mut ring);
-    if ring.len() > 1 && same_point(ring[0], ring[ring.len() - 1]) {
+    if ring
+        .first()
+        .zip(ring.last())
+        .is_some_and(|(first, last)| same_point(*first, *last))
+    {
         ring.pop();
     }
     if ring.len() < 3 {
@@ -251,11 +311,17 @@ pub(crate) fn strict_cycle(coords: &CoordSeq, clockwise: bool) -> Option<Vec<Poi
         ring.reverse();
     }
     let mut strict = Vec::with_capacity(ring.len());
-    for index in 0..ring.len() {
-        let previous = ring[wrap_index(index + ring.len() - 1, ring.len())];
-        let next = ring[wrap_index(index + 1, ring.len())];
-        if orientation(previous, ring[index], next) != Orientation::Collinear {
-            strict.push(ring[index]);
+    for (index, &vertex) in ring.iter().enumerate() {
+        let previous = *ring
+            .get(index.wrapping_sub(1))
+            .or_else(|| ring.last())
+            .expect("a strict cycle has a previous vertex");
+        let next = *ring
+            .get(index.wrapping_add(1))
+            .or_else(|| ring.first())
+            .expect("a strict cycle has a next vertex");
+        if orientation(previous, vertex, next) != Orientation::Collinear {
+            strict.push(vertex);
         }
     }
     (strict.len() >= 3).then_some(strict)
@@ -329,13 +395,18 @@ fn source_median_cut(shape: &Shape, split_x: bool, bounds: Bounds) -> Option<f64
     } else {
         (bounds.miny(), bounds.maxy())
     };
-    (1..ordinates.len())
-        .filter_map(|index| {
-            if ordinates[index - 1] >= ordinates[index] {
+    ordinates
+        .windows(2)
+        .enumerate()
+        .filter_map(|(lower_index, pair)| {
+            let upper_index = lower_index.wrapping_add(1);
+            let lower = *pair.first().expect("median window has a lower ordinate");
+            let upper = *pair.last().expect("median window has an upper ordinate");
+            if lower >= upper {
                 return None;
             }
-            let cut = f64::midpoint(ordinates[index - 1], ordinates[index]);
-            (low < cut && cut < high).then_some((index.abs_diff(middle), index, cut))
+            let cut = f64::midpoint(lower, upper);
+            (low < cut && cut < high).then_some((upper_index.abs_diff(middle), upper_index, cut))
         })
         .min_by_key(|&(distance, index, _)| (distance, index))
         .map(|(_, _, cut)| cut)
@@ -549,7 +620,10 @@ enum PolygonKeep {
 }
 
 fn clone_ring_prefix(holes: &[Ring], end: usize) -> Vec<Ring> {
-    holes[..end].to_vec()
+    holes
+        .get(..end)
+        .expect("hole prefix ends within the source holes")
+        .to_vec()
 }
 
 fn keep_polygon(
@@ -601,10 +675,18 @@ fn prefix_members<T: Clone>(
     members: impl ExactSizeIterator<Item = MultiMember<usize>>,
     end: usize,
 ) -> Vec<MultiMember<T>> {
+    let mut values = values.iter();
     let mut out = Vec::with_capacity(members.len());
-    out.extend(members.take(end).map(|member| match member {
-        MultiMember::Empty => MultiMember::Empty,
-        MultiMember::Value(value) => MultiMember::Value(values[value].clone()),
+    out.extend(members.take(end).map(|member| {
+        match member {
+            MultiMember::Empty => MultiMember::Empty,
+            MultiMember::Value(_) => MultiMember::Value(
+                values
+                    .next()
+                    .expect("sparse member values follow stored value order")
+                    .clone(),
+            ),
+        }
     }));
     out
 }
@@ -615,6 +697,7 @@ fn keep_multi_lines(
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<LineSeq>>> = None;
+    let mut values = lines.iter();
     for (index, member) in lines.members().enumerate() {
         match member {
             MultiMember::Empty => {
@@ -622,8 +705,10 @@ fn keep_multi_lines(
                     members.push(MultiMember::Empty);
                 }
             },
-            MultiMember::Value(value) => {
-                let line = &lines.as_slice()[value];
+            MultiMember::Value(_) => {
+                let line = values
+                    .next()
+                    .expect("sparse member values follow stored line order");
                 match kept_coords(line, scratch, keep_mask)? {
                     None => {
                         if let Some(members) = out.as_mut() {
@@ -659,6 +744,7 @@ fn keep_multi_polygons(
     keep_mask: &mut impl FnMut(&[f64], &[f64], &mut KeepScratch) -> Result<Option<usize>>,
 ) -> Result<RawSimplify> {
     let mut out: Option<Vec<MultiMember<Polygon>>> = None;
+    let mut values = polygons.iter();
     for (index, member) in polygons.members().enumerate() {
         match member {
             MultiMember::Empty => {
@@ -666,8 +752,10 @@ fn keep_multi_polygons(
                     members.push(MultiMember::Empty);
                 }
             },
-            MultiMember::Value(value) => {
-                let polygon = &polygons.as_slice()[value];
+            MultiMember::Value(_) => {
+                let polygon = values
+                    .next()
+                    .expect("sparse member values follow stored polygon order");
                 match keep_polygon(polygon, scratch, keep_mask)? {
                     PolygonKeep::Same => {
                         if let Some(members) = out.as_mut() {
@@ -773,16 +861,20 @@ impl Shape {
                 Self::Polygon,
             ),
             Self::MultiPolygon(polygons) => {
+                let mut values = polygons.iter();
                 let members = polygons
                     .members()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => crate::geometry::MultiMember::Empty,
-                        crate::geometry::MultiMember::Value(index) => {
-                            clean(&polygons.as_slice()[index]).map_or(
-                                crate::geometry::MultiMember::Empty,
-                                crate::geometry::MultiMember::Value,
-                            )
-                        },
+                        crate::geometry::MultiMember::Value(_) => clean(
+                            values
+                                .next()
+                                .expect("sparse polygon values follow member order"),
+                        )
+                        .map_or(
+                            crate::geometry::MultiMember::Empty,
+                            crate::geometry::MultiMember::Value,
+                        ),
                     })
                     .collect::<Vec<_>>();
                 if members.is_empty() {
@@ -794,7 +886,11 @@ impl Shape {
             Self::GeometryCollection(parts) => Self::GeometryCollection(
                 parts.try_map_owned_members(Self::dropping_collapsed_rings)?,
             ),
-            other => other,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Empty(..) => self,
         })
     }
 
@@ -825,7 +921,7 @@ impl Shape {
                 }
                 Ok(true)
             },
-            _ => Ok(true),
+            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(true),
         }
     }
 
@@ -869,10 +965,23 @@ impl Shape {
             let ys = points.ys();
             let count = xs.len();
             let closed = count >= 2
-                && same_point(XY::new(xs[0], ys[0]), XY::new(xs[count - 1], ys[count - 1]));
+                && xs
+                    .first()
+                    .zip(ys.first())
+                    .zip(xs.last().zip(ys.last()))
+                    .is_some_and(|((first_x, first_y), (last_x, last_y))| {
+                        same_point(XY::new(*first_x, *first_y), XY::new(*last_x, *last_y))
+                    });
             let kept = simplify_chain_guarded(
                 count,
-                |index| XY::new(xs[index], ys[index]),
+                |index| {
+                    XY::new(
+                        *xs.get(index)
+                            .expect("guarded simplification vertex belongs to its source"),
+                        *ys.get(index)
+                            .expect("guarded simplification vertex belongs to its source"),
+                    )
+                },
                 closed,
                 &candidate,
                 &guard,
@@ -978,7 +1087,14 @@ impl Shape {
                                 members.push(shape);
                             } else {
                                 let mut members = Vec::with_capacity(geometries.len());
-                                members.extend(geometries.as_slice()[..index].iter().cloned());
+                                members.extend(
+                                    geometries
+                                        .as_slice()
+                                        .get(..index)
+                                        .expect("collection prefix ends at the changed member")
+                                        .iter()
+                                        .cloned(),
+                                );
                                 members.push(shape);
                                 out = Some(members);
                             }

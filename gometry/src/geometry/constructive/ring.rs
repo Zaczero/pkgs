@@ -18,17 +18,21 @@ pub(crate) fn normalized_line(points: &CoordSeq) -> Result<CoordSeq> {
     // over the orbit: total for self-intersecting rings, no orientation
     // predicate. Open lines pick the smaller of their two directions; the
     // same "smallest presentation" principle, one comparator.
-    if count > 2 && same_point(points.point_at(0), points.point_at(count - 1)) {
-        let unique = count - 1;
+    if count > 2 && same_point(points.point_at(0), points.point_at(count.wrapping_sub(1))) {
+        let unique = count.wrapping_sub(1);
         let forward = ring_rotation_start(points, 0..unique, false);
         // Reversal retains the stored closing point, which may differ in Z/M.
         let backward = ring_rotation_start(points, 1..count, true);
-        let backward_offset = count - 1 - backward;
+        let backward_offset = count.wrapping_sub(1).wrapping_sub(backward);
         let reverse = (0..unique)
             .map(|offset| {
                 compare_points(
-                    &points.point_at(count - 1 - wrap_index(backward_offset + offset, unique)),
-                    &points.point_at(wrap_index(forward + offset, unique)),
+                    &points.point_at(
+                        count
+                            .wrapping_sub(1)
+                            .wrapping_sub(wrap_index(backward_offset.wrapping_add(offset), unique)),
+                    ),
+                    &points.point_at(wrap_index(forward.wrapping_add(offset), unique)),
                 )
             })
             .find(|order| *order != Ordering::Equal)
@@ -318,8 +322,8 @@ pub(in crate::geometry) fn canonical_ring_seq(
     clockwise: bool,
 ) -> Result<CoordSeq> {
     let count = ring.coord_count();
-    let closed = count > 1 && same_point(ring.point_at(0), ring.point_at(count - 1));
-    let unique = if closed { count - 1 } else { count };
+    let closed = count > 1 && same_point(ring.point_at(0), ring.point_at(count.wrapping_sub(1)));
+    let unique = if closed { count.wrapping_sub(1) } else { count };
     if unique <= 1 {
         return Ok(ring.clone());
     }
@@ -340,20 +344,33 @@ fn rotated_ring_columns(
     reverse: bool,
     closed: bool,
 ) -> Result<CoordSeq> {
-    let count = range.len() + usize::from(closed);
+    let count = range.len().wrapping_add(usize::from(closed));
     // After reversal the ring still starts at the min vertex; the walk
     // direction flips. Emit per ordinate column in two contiguous chunks.
     let rotate = |column: &[f64]| {
         let mut output = Vec::with_capacity(count);
+        let column = column
+            .get(range.clone())
+            .expect("ring rotation range belongs to its coordinate column");
         if reverse {
-            output.extend(column[range.start..=start].iter().rev().copied());
-            output.extend(column[start + 1..range.end].iter().rev().copied());
+            let split = start.wrapping_sub(range.start).wrapping_add(1);
+            let (prefix, suffix) = column
+                .split_at_checked(split)
+                .expect("ring rotation start belongs to its coordinate range");
+            output.extend(prefix.iter().rev().copied());
+            output.extend(suffix.iter().rev().copied());
         } else {
-            output.extend_from_slice(&column[start..range.end]);
-            output.extend_from_slice(&column[range.start..start]);
+            let split = start.wrapping_sub(range.start);
+            let (prefix, suffix) = column
+                .split_at_checked(split)
+                .expect("ring rotation start belongs to its coordinate range");
+            output.extend_from_slice(suffix);
+            output.extend_from_slice(prefix);
         }
         if closed {
-            let first = output[0];
+            let first = *output
+                .first()
+                .expect("a closed ring rotation has a first coordinate");
             output.push(first);
         }
         output
@@ -370,13 +387,24 @@ fn ring_rotation_start(ring: &CoordSeq, range: std::ops::Range<usize>, reverse: 
     let mut minimum = range.start;
     let mut repeated = false;
     if ring.zs().is_none() && ring.ms().is_none() {
-        let (xs, ys) = (ring.xs(), ring.ys());
-        for candidate in range.start + 1..range.end {
-            match compare_f64(xs[candidate], xs[minimum])
-                .then_with(|| compare_f64(ys[candidate], ys[minimum]))
-            {
+        let (xs, ys) = (
+            ring.xs()
+                .get(range.clone())
+                .expect("ring rotation range belongs to its X column"),
+            ring.ys()
+                .get(range.clone())
+                .expect("ring rotation range belongs to its Y column"),
+        );
+        let mut coordinates = xs.iter().copied().zip(ys.iter().copied()).enumerate();
+        let (_, (mut minimum_x, mut minimum_y)) = coordinates
+            .next()
+            .expect("nontrivial ring range has a minimum coordinate");
+        for (offset, (x, y)) in coordinates {
+            match compare_f64(x, minimum_x).then_with(|| compare_f64(y, minimum_y)) {
                 Ordering::Less => {
-                    minimum = candidate;
+                    minimum = range.start.wrapping_add(offset);
+                    minimum_x = x;
+                    minimum_y = y;
                     repeated = false;
                 },
                 Ordering::Equal => repeated = true,
@@ -384,10 +412,19 @@ fn ring_rotation_start(ring: &CoordSeq, range: std::ops::Range<usize>, reverse: 
             }
         }
     } else {
-        for candidate in range.start + 1..range.end {
-            match compare_points(&ring.point_at(candidate), &ring.point_at(minimum)) {
+        let mut points = ring
+            .iter_coords()
+            .skip(range.start)
+            .take(range.len())
+            .enumerate();
+        let (_, mut minimum_point) = points
+            .next()
+            .expect("nontrivial ring range has a minimum point");
+        for (offset, candidate) in points {
+            match compare_points(&candidate, &minimum_point) {
                 Ordering::Less => {
-                    minimum = candidate;
+                    minimum = range.start.wrapping_add(offset);
+                    minimum_point = candidate;
                     repeated = false;
                 },
                 Ordering::Equal => repeated = true,
@@ -400,16 +437,29 @@ fn ring_rotation_start(ring: &CoordSeq, range: std::ops::Range<usize>, reverse: 
     }
     let source = |index| {
         if reverse {
-            range.end - 1 - index
+            range.end.wrapping_sub(1).wrapping_sub(index)
         } else {
-            range.start + index
+            range.start.wrapping_add(index)
         }
     };
     let start = if ring.zs().is_none() && ring.ms().is_none() {
         let (xs, ys) = (ring.xs(), ring.ys());
         least_rotation_by(range.len(), |left, right| {
             let (left, right) = (source(left), source(right));
-            compare_f64(xs[left], xs[right]).then_with(|| compare_f64(ys[left], ys[right]))
+            compare_f64(
+                *xs.get(left)
+                    .expect("ring rotation source belongs to its X column"),
+                *xs.get(right)
+                    .expect("ring rotation source belongs to its X column"),
+            )
+            .then_with(|| {
+                compare_f64(
+                    *ys.get(left)
+                        .expect("ring rotation source belongs to its Y column"),
+                    *ys.get(right)
+                        .expect("ring rotation source belongs to its Y column"),
+                )
+            })
         })
     } else {
         least_rotation_by(range.len(), |left, right| {
@@ -424,21 +474,21 @@ fn least_rotation_by(len: usize, compare: impl Fn(usize, usize) -> Ordering) -> 
     // A mismatch rules out the losing start and every start in its equal prefix.
     while left < len && right < len && offset < len {
         match compare(
-            wrap_index(left + offset, len),
-            wrap_index(right + offset, len),
+            wrap_index(left.wrapping_add(offset), len),
+            wrap_index(right.wrapping_add(offset), len),
         ) {
-            Ordering::Equal => offset += 1,
+            Ordering::Equal => offset = offset.wrapping_add(1),
             Ordering::Less => {
-                right += offset + 1;
+                right = right.wrapping_add(offset).wrapping_add(1);
                 if right == left {
-                    right += 1;
+                    right = right.wrapping_add(1);
                 }
                 offset = 0;
             },
             Ordering::Greater => {
-                left += offset + 1;
+                left = left.wrapping_add(offset).wrapping_add(1);
                 if left == right {
-                    left += 1;
+                    left = left.wrapping_add(1);
                 }
                 offset = 0;
             },
@@ -456,7 +506,9 @@ pub(crate) const DECIMAL_SCALES: [f64; 16] = [
 
 pub(crate) fn decimal_scale(precision: i32) -> f64 {
     debug_assert!((0..=15).contains(&precision));
-    DECIMAL_SCALES[precision as usize]
+    *DECIMAL_SCALES
+        .get(usize::try_from(precision).expect("quantize precision was admitted"))
+        .expect("quantize precision fits the scale table")
 }
 
 pub(crate) fn quantize_to_scale(value: f64, scale: f64) -> f64 {
@@ -489,6 +541,10 @@ pub(crate) fn quantize_column_simd(column: &[f64], scale: f64) -> Box<[f64]> {
         &mut out,
         |value| quantize_to_scale(value, scale),
         |value| {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "the SIMD quantize lane preserves the scalar binary64 expression"
+            )]
             let quantized = (value * vscale).round() / vscale;
             // `abs() < INFINITY` is the per-lane finiteness test (±inf and NaN both fail).
             let finite = quantized.abs().simd_lt(infinity);
@@ -529,16 +585,20 @@ pub(crate) fn snap_column_simd(
             }
         },
         |value| {
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "the SIMD snap lane preserves the scalar binary64 operation order"
+            )]
             let snapped = ((value - vorigin) / vsize).round() * vsize + vorigin;
             // SIMD path may overflow extreme value/origin pairs; fall back
             // per-lane via the scalar stable form when any lane is non-finite.
             if !snapped.abs().simd_lt(infinity).all() {
                 let mut out_lane = snapped.to_array();
                 let values = value.to_array();
-                for lane in 0..REDUCE_LANES {
-                    if !out_lane[lane].is_finite() {
-                        out_lane[lane] = stable_snap_ordinate(values[lane], origin, size);
-                        if !out_lane[lane].is_finite() {
+                for (output, value) in out_lane.iter_mut().zip(values) {
+                    if !output.is_finite() {
+                        *output = stable_snap_ordinate(value, origin, size);
+                        if !output.is_finite() {
                             return Err(GeometryErrorKind::SnapGridTooFine.into());
                         }
                     }
@@ -614,13 +674,15 @@ struct VwScoringFrame {
 }
 
 fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> VwScoringFrame {
-    let ox = xs[0];
-    let oy = ys[0];
+    let (&ox, &oy) = xs
+        .first()
+        .zip(ys.first())
+        .expect("VW frame receives admitted coordinate columns");
     let mut max_abs_x = ox.abs();
     let mut max_abs_y = oy.abs();
-    for index in 0..xs.len() {
-        max_abs_x = max_abs_x.max(xs[index].abs());
-        max_abs_y = max_abs_y.max(ys[index].abs());
+    for (&x, &y) in xs.iter().zip(ys) {
+        max_abs_x = max_abs_x.max(x.abs());
+        max_abs_y = max_abs_y.max(y.abs());
     }
     let world_area_tol = crate::geometry::vw_area_tolerance(distance_tolerance);
     let max_abs = max_abs_x.max(max_abs_y);
@@ -649,15 +711,16 @@ fn vw_frame_columns(xs: &[f64], ys: &[f64], distance_tolerance: f64) -> VwScorin
     };
     let mut fxs = Vec::with_capacity(xs.len());
     let mut fys = Vec::with_capacity(xs.len());
-    for index in 0..xs.len() {
-        fxs.push(frame.frame_xy(xs[index], oy).x);
-        fys.push(frame.frame_xy(ox, ys[index]).y);
+    for (&x, &y) in xs.iter().zip(ys) {
+        fxs.push(frame.frame_xy(x, oy).x);
+        fys.push(frame.frame_xy(ox, y).y);
     }
     // A VW score is an area, so map its distance-square threshold through both
     // exact scale exponents together.  Forming the world threshold first
     // would make a valid huge tolerance `+inf` before the rescue could scale
     // it back down.
-    let exponent = power_of_two_exponent(frame.scale_x()) + power_of_two_exponent(frame.scale_y());
+    let exponent =
+        power_of_two_exponent(frame.scale_x()).wrapping_add(power_of_two_exponent(frame.scale_y()));
     let framed_area =
         0.5 * distance_tolerance * scale_by_power_of_two(distance_tolerance, exponent);
     VwScoringFrame {
@@ -687,7 +750,17 @@ pub(crate) fn vw_keep(
     let ys = framed.ys.as_deref().unwrap_or(ys);
     let area_tolerance = framed.area_tolerance;
     let area = |a: usize, b: usize, c: usize| -> f64 {
-        0.5 * ((xs[b] - xs[a]) * (ys[c] - ys[a]) - (ys[b] - ys[a]) * (xs[c] - xs[a])).abs()
+        let x_at = |index| {
+            *xs.get(index)
+                .expect("VW vertex index belongs to the admitted X column")
+        };
+        let y_at = |index| {
+            *ys.get(index)
+                .expect("VW vertex index belongs to the admitted Y column")
+        };
+        0.5 * ((x_at(b) - x_at(a)) * (y_at(c) - y_at(a))
+            - (y_at(b) - y_at(a)) * (x_at(c) - x_at(a)))
+        .abs()
     };
     keep.clear();
     keep.reserve(count);
@@ -701,57 +774,135 @@ pub(crate) fn vw_keep(
     // Interior indices 1..count-1: batch the initial heap fill with f64x8
     // shoelace crosses; neighbor refresh stays scalar (irregular indices)
     // and only re-queues vertices still below tolerance (cuts heap churn).
-    let interior_end = count - 1;
-    let interior_count = count.saturating_sub(2);
-    let simd_lanes = interior_count - interior_count % REDUCE_LANES;
+    let interior_end = count.wrapping_sub(1);
+    let interior_count = count.wrapping_sub(2);
+    let simd_lanes = interior_count.wrapping_sub(interior_count % REDUCE_LANES);
     let half = ReduceSimd::splat(0.5);
     let mut index = 1_usize;
-    while index < 1 + simd_lanes {
-        let xa = ReduceSimd::from_slice(&xs[index - 1..index - 1 + REDUCE_LANES]);
-        let xb = ReduceSimd::from_slice(&xs[index..index + REDUCE_LANES]);
-        let xc = ReduceSimd::from_slice(&xs[index + 1..index + 1 + REDUCE_LANES]);
-        let ya = ReduceSimd::from_slice(&ys[index - 1..index - 1 + REDUCE_LANES]);
-        let yb = ReduceSimd::from_slice(&ys[index..index + REDUCE_LANES]);
-        let yc = ReduceSimd::from_slice(&ys[index + 1..index + 1 + REDUCE_LANES]);
-        let cross = (xb - xa) * (yc - ya) - (yb - ya) * (xc - xa);
-        let areas = (cross * half).abs();
-        for (lane, area_value) in areas.to_array().into_iter().enumerate() {
-            let vertex = index + lane;
-            let bits = area_value.to_bits();
-            current[vertex] = bits;
-            heap.push(std::cmp::Reverse((bits, vertex as u32)));
+    if simd_lanes != 0 {
+        let middle_end = 1_usize.wrapping_add(simd_lanes);
+        let right_end = 2_usize.wrapping_add(simd_lanes);
+        let left_xs = xs
+            .get(..simd_lanes)
+            .expect("VW left SIMD span belongs to the input column");
+        let middle_xs = xs
+            .get(1..middle_end)
+            .expect("VW middle SIMD span belongs to the input column");
+        let right_xs = xs
+            .get(2..right_end)
+            .expect("VW right SIMD span belongs to the input column");
+        let left_ys = ys
+            .get(..simd_lanes)
+            .expect("VW left SIMD span belongs to the input column");
+        let middle_ys = ys
+            .get(1..middle_end)
+            .expect("VW middle SIMD span belongs to the input column");
+        let right_ys = ys
+            .get(2..right_end)
+            .expect("VW right SIMD span belongs to the input column");
+        let x_batches = left_xs
+            .chunks_exact(REDUCE_LANES)
+            .zip(middle_xs.chunks_exact(REDUCE_LANES))
+            .zip(right_xs.chunks_exact(REDUCE_LANES));
+        let y_batches = left_ys
+            .chunks_exact(REDUCE_LANES)
+            .zip(middle_ys.chunks_exact(REDUCE_LANES))
+            .zip(right_ys.chunks_exact(REDUCE_LANES));
+        for (((xa_values, xb_values), xc_values), ((ya_values, yb_values), yc_values)) in
+            x_batches.zip(y_batches)
+        {
+            let xa = ReduceSimd::from_slice(xa_values);
+            let xb = ReduceSimd::from_slice(xb_values);
+            let xc = ReduceSimd::from_slice(xc_values);
+            let ya = ReduceSimd::from_slice(ya_values);
+            let yb = ReduceSimd::from_slice(yb_values);
+            let yc = ReduceSimd::from_slice(yc_values);
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "VW's lane-wise shoelace cross preserves its binary64 score"
+            )]
+            let cross = (xb - xa) * (yc - ya) - (yb - ya) * (xc - xa);
+            #[expect(
+                clippy::arithmetic_side_effects,
+                reason = "VW's lane-wise half-area preserves the public area threshold"
+            )]
+            let areas = (cross * half).abs();
+            for (lane, area_value) in areas.to_array().into_iter().enumerate() {
+                let vertex = index.wrapping_add(lane);
+                let bits = area_value.to_bits();
+                *current
+                    .get_mut(vertex)
+                    .expect("VW SIMD vertex belongs to the keep columns") = bits;
+                heap.push(std::cmp::Reverse((bits, vertex as u32)));
+            }
+            index = index.wrapping_add(REDUCE_LANES);
         }
-        index += REDUCE_LANES;
     }
     for (index, slot) in current
         .iter_mut()
         .enumerate()
         .take(interior_end)
-        .skip(1 + simd_lanes)
+        .skip(1_usize.wrapping_add(simd_lanes))
     {
-        let bits = area(index - 1, index, index + 1).to_bits();
+        let bits = area(index.wrapping_sub(1), index, index.wrapping_add(1)).to_bits();
         *slot = bits;
         heap.push(std::cmp::Reverse((bits, index as u32)));
     }
     let tolerance_bits = area_tolerance.to_bits();
     while let Some(std::cmp::Reverse((bits, index))) = heap.pop() {
         let index = index as usize;
-        if !keep[index] || bits != current[index] {
+        if !*keep
+            .get(index)
+            .expect("VW heap vertex belongs to the keep columns")
+            || bits
+                != *current
+                    .get(index)
+                    .expect("VW heap vertex belongs to the score columns")
+        {
             continue; // stale entry
         }
         if bits >= tolerance_bits {
             break;
         }
-        keep[index] = false;
-        let (before, after) = (prev[index] as usize, next[index] as usize);
-        next[before] = after as u32;
-        prev[after] = before as u32;
+        *keep
+            .get_mut(index)
+            .expect("VW heap vertex belongs to the keep columns") = false;
+        let (before, after) = (
+            *prev
+                .get(index)
+                .expect("VW heap vertex belongs to previous links") as usize,
+            *next
+                .get(index)
+                .expect("VW heap vertex belongs to next links") as usize,
+        );
+        *next
+            .get_mut(before)
+            .expect("VW previous link belongs to next links") = after as u32;
+        *prev
+            .get_mut(after)
+            .expect("VW next link belongs to previous links") = before as u32;
         for neighbor in [before, after] {
-            if neighbor == 0 || neighbor == count - 1 || !keep[neighbor] {
+            if neighbor == 0
+                || neighbor == count.wrapping_sub(1)
+                || !*keep
+                    .get(neighbor)
+                    .expect("VW neighbor belongs to the keep columns")
+            {
                 continue;
             }
-            let bits = area(prev[neighbor] as usize, neighbor, next[neighbor] as usize).to_bits();
-            current[neighbor] = bits;
+            let bits = area(
+                *prev
+                    .get(neighbor)
+                    .expect("VW neighbor belongs to previous links") as usize,
+                neighbor,
+                *next
+                    .get(neighbor)
+                    .expect("VW neighbor belongs to next links") as usize,
+            )
+            .to_bits();
+            *current
+                .get_mut(neighbor)
+                .expect("VW neighbor belongs to score columns") = bits;
             if bits < tolerance_bits {
                 heap.push(std::cmp::Reverse((bits, neighbor as u32)));
             }

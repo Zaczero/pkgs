@@ -1,8 +1,8 @@
 use crate::geometry::constructive::Result;
 use crate::geometry::{
-    CoordSeq, CoordSeqBuilder, ExpansionBudget, GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq,
-    MOrdinate, Point, Polygon, Shape, SmoothMethod, ZOrdinate, interpolate_f64, lerp_point,
-    point_distance,
+    CoordSeq, CoordSeqBuilder, Coordinates as _, ExpansionBudget, GENERATED_ITEM_LIMIT,
+    GeometryErrorKind, LineSeq, MOrdinate, Point, Polygon, Shape, SmoothMethod, ZOrdinate,
+    interpolate_f64, lerp_point, point_distance,
 };
 
 /// Maximum coordinate count one `smooth` call may materialize across all of its
@@ -38,7 +38,7 @@ const fn chaikin_next_len<const CLOSED: bool>(count: usize) -> Option<usize> {
         if count < 4 {
             return Some(count);
         }
-        match (count - 1).checked_mul(2) {
+        match count.wrapping_sub(1).checked_mul(2) {
             Some(doubled) => doubled.checked_add(1),
             None => None,
         }
@@ -46,8 +46,16 @@ const fn chaikin_next_len<const CLOSED: bool>(count: usize) -> Option<usize> {
         if count < 3 {
             return Some(count);
         }
-        (count - 1).checked_mul(2)
+        count.wrapping_sub(1).checked_mul(2)
     }
+}
+
+/// Output count for Catmull–Rom's `samples` pieces per source segment.
+///
+/// The same checked size formula owns budget projection and the emitter's
+/// exact reservation.
+fn catmull_rom_output_len(count: usize, samples: usize) -> Option<usize> {
+    count.checked_sub(1)?.checked_mul(samples)?.checked_add(1)
 }
 
 /// Projected output coordinate count for one line/ring, computed with checked
@@ -76,10 +84,7 @@ fn part_output_len<const CLOSED: bool>(
         },
         SmoothMethod::CatmullRom => {
             let samples = catmull_rom_samples_per_segment(iterations);
-            match (count - 1)
-                .checked_mul(samples)
-                .and_then(|v| v.checked_add(1))
-            {
+            match catmull_rom_output_len(count, samples) {
                 Some(len) if len <= SMOOTH_MAX_COORDS => Ok(len),
                 Some(len) => Err(smooth_budget_error(len)),
                 None => Err(crate::error::ResourceError::SizeOverflow.into()),
@@ -107,9 +112,7 @@ pub(crate) fn smooth_coord_seq<const CLOSED: bool>(
         return Ok(points.clone());
     }
     let output_len = part_output_len::<CLOSED>(points.len(), iterations, method)?;
-    let generated = output_len
-        .checked_sub(points.len())
-        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+    let generated = output_len.wrapping_sub(points.len());
     budget.check_additional(generated)?;
     let output = match method {
         SmoothMethod::Chaikin => {
@@ -138,30 +141,33 @@ fn chaikin_open(points: &CoordSeq, keep_endpoints: bool) -> Result<CoordSeq> {
         return Ok(points.clone());
     }
     if !keep_endpoints {
-        let mut out = CoordSeqBuilder::with_capacity(points.axes(), 2 * (count - 1));
-        for index in 0..count - 1 {
-            let start = points.point_at(index);
-            let end = points.point_at(index + 1);
+        let mut out =
+            CoordSeqBuilder::with_capacity(points.axes(), count.wrapping_sub(1).wrapping_mul(2));
+        for (start, end) in points.iter_coords().zip(points.iter_coords().skip(1)) {
             out.push(lerp_point(start, end, 0.25));
             out.push(lerp_point(start, end, 0.75));
         }
         return out.finish();
     }
-    let mut out = CoordSeqBuilder::with_capacity(points.axes(), 2 * count - 2);
+    let mut out =
+        CoordSeqBuilder::with_capacity(points.axes(), count.wrapping_sub(1).wrapping_mul(2));
     out.push_at(points, 0);
-    for index in 0..count - 1 {
-        let start = points.point_at(index);
-        let end = points.point_at(index + 1);
+    let last_edge = count.wrapping_sub(2);
+    for (index, (start, end)) in points
+        .iter_coords()
+        .zip(points.iter_coords().skip(1))
+        .enumerate()
+    {
         if index == 0 {
             out.push(lerp_point(start, end, 0.75));
-        } else if index == count - 2 {
+        } else if index == last_edge {
             out.push(lerp_point(start, end, 0.25));
         } else {
             out.push(lerp_point(start, end, 0.25));
             out.push(lerp_point(start, end, 0.75));
         }
     }
-    out.push_at(points, count - 1);
+    out.push_at(points, count.wrapping_sub(1));
     out.finish()
 }
 
@@ -170,14 +176,17 @@ fn chaikin_closed(points: &CoordSeq) -> Result<CoordSeq> {
     if count < 4 {
         return Ok(points.clone());
     }
-    let edge_count = count - 1;
-    let mut out = CoordSeqBuilder::with_capacity(points.axes(), 2 * edge_count + 1);
+    let edge_count = count.wrapping_sub(1);
+    let mut out =
+        CoordSeqBuilder::with_capacity(points.axes(), edge_count.wrapping_mul(2).wrapping_add(1));
     // Capture the first emitted corner so the ring can close bit-identically
     // without reading back from the SoA builder.
     let mut first_corner = None;
-    for index in 0..edge_count {
-        let start = points.point_at(index);
-        let end = points.point_at(index + 1);
+    for (index, (start, end)) in points
+        .iter_coords()
+        .zip(points.iter_coords().skip(1))
+        .enumerate()
+    {
         let q = lerp_point(start, end, 0.25);
         let r = lerp_point(start, end, 0.75);
         if index == 0 {
@@ -200,16 +209,20 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
     if count < 2 || samples <= 1 {
         return Ok(points.clone());
     }
-    let edge_count = count - 1;
-    let total = edge_count * samples + 1;
+    let edge_count = count.wrapping_sub(1);
+    let total =
+        catmull_rom_output_len(count, samples).ok_or(crate::error::ResourceError::SizeOverflow)?;
     let mut out = CoordSeqBuilder::with_capacity(points.axes(), total);
     out.push_at(points, 0);
     let first = points.point_at(0);
-    for edge in 0..edge_count {
-        let p0 = catmull_control::<CLOSED>(points, edge as isize - 1);
-        let p1 = points.point_at(edge);
-        let p2 = points.point_at(edge + 1);
-        let p3 = catmull_control::<CLOSED>(points, edge as isize + 2);
+    for (edge_index, (p1, p2)) in points
+        .iter_coords()
+        .zip(points.iter_coords().skip(1))
+        .enumerate()
+    {
+        let edge = edge_index as isize;
+        let p0 = catmull_control::<CLOSED>(points, edge.wrapping_sub(1));
+        let p3 = catmull_control::<CLOSED>(points, edge.wrapping_add(2));
         // Knot increments are invariant for the edge — prepare once, then
         // evaluate every sample fraction from the cached t0..t3 (was 8 sqrts
         // per interior sample).
@@ -235,8 +248,8 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
             );
             out.push(point);
         }
-        if !CLOSED || edge < edge_count - 1 {
-            out.push_at(points, edge + 1);
+        if !CLOSED || edge_index < edge_count.wrapping_sub(1) {
+            out.push(p2);
         }
     }
     if CLOSED {
@@ -246,17 +259,21 @@ pub(crate) fn catmull_rom_subdivide<const CLOSED: bool>(
 }
 
 fn catmull_control<const CLOSED: bool>(points: &CoordSeq, index: isize) -> Point {
-    let count = points.len();
-    let edge_count = count - 1;
+    let count = isize::try_from(points.len()).expect("CoordSeq vertex width fits isize");
+    let edge_count = count.wrapping_sub(1);
     if CLOSED {
-        let wrapped = index.rem_euclid(edge_count as isize) as usize;
+        let wrapped = usize::try_from(index.rem_euclid(edge_count))
+            .expect("wrapped Catmull-Rom control index is nonnegative");
         points.point_at(wrapped)
     } else if index < 0 {
         reflect_endpoint(points.point_at(0), points.point_at(1))
-    } else if index >= count as isize {
-        reflect_endpoint(points.point_at(count - 1), points.point_at(count - 2))
+    } else if index >= count {
+        reflect_endpoint(
+            points.point_at(usize::try_from(count.wrapping_sub(1)).expect("count is positive")),
+            points.point_at(usize::try_from(count.wrapping_sub(2)).expect("count is at least two")),
+        )
     } else {
-        points.point_at(index as usize)
+        points.point_at(usize::try_from(index).expect("interior control index is nonnegative"))
     }
 }
 

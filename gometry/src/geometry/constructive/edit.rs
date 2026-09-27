@@ -19,6 +19,20 @@ use crate::geometry::{
     same_topological_coordinate, set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
 };
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "SIMD affine lanes preserve the declared multiply-add expression order"
+)]
+fn affine_ordinate_simd(
+    first: ReduceSimd,
+    second: ReduceSimd,
+    offset: ReduceSimd,
+    x: ReduceSimd,
+    y: ReduceSimd,
+) -> ReduceSimd {
+    first * x + second * y + offset
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct AffineLinear {
     matrix: [f64; 4],
@@ -148,7 +162,12 @@ impl CoordSeq {
                 out_x,
                 out_y,
                 |x, y| stable_affine_xy(a, b, d, e, xoff, yoff, x, y),
-                |x, y| (va * x + vb * y + vxo, vd * x + ve * y + vyo),
+                |x, y| {
+                    (
+                        affine_ordinate_simd(va, vb, vxo, x, y),
+                        affine_ordinate_simd(vd, ve, vyo, x, y),
+                    )
+                },
             );
         } else if let Some(out_x) = out_x.as_mut() {
             simd_xy_map_one_f64(
@@ -157,7 +176,13 @@ impl CoordSeq {
                 out_x,
                 |x, y| stable_affine_xy(a, b, d, e, xoff, yoff, x, y).0,
                 |x, y| {
-                    ReduceSimd::splat(a) * x + ReduceSimd::splat(b) * y + ReduceSimd::splat(xoff)
+                    affine_ordinate_simd(
+                        ReduceSimd::splat(a),
+                        ReduceSimd::splat(b),
+                        ReduceSimd::splat(xoff),
+                        x,
+                        y,
+                    )
                 },
             );
         } else if let Some(out_y) = out_y.as_mut() {
@@ -167,7 +192,13 @@ impl CoordSeq {
                 out_y,
                 |x, y| stable_affine_xy(a, b, d, e, xoff, yoff, x, y).1,
                 |x, y| {
-                    ReduceSimd::splat(d) * x + ReduceSimd::splat(e) * y + ReduceSimd::splat(yoff)
+                    affine_ordinate_simd(
+                        ReduceSimd::splat(d),
+                        ReduceSimd::splat(e),
+                        ReduceSimd::splat(yoff),
+                        x,
+                        y,
+                    )
                 },
             );
         }
@@ -175,21 +206,32 @@ impl CoordSeq {
         // non-finite lane with the scalar stable form (ordinary mid-range
         // stays bit-identical on the SIMD path when all finite).
         if let Some(out_x) = out_x.as_mut() {
-            for (index, slot) in out_x.iter_mut().enumerate() {
-                let y_out = out_y.as_ref().map_or(ys[index], |col| col[index]);
-                if !slot.is_finite() || !y_out.is_finite() {
-                    let (sx, sy) = stable_affine_xy(a, b, d, e, xoff, yoff, xs[index], ys[index]);
-                    *slot = sx;
-                    if let Some(out_y) = out_y.as_mut() {
-                        out_y[index] = sy;
+            if let Some(out_y) = out_y.as_mut() {
+                for (((&x, &y), x_out), y_out) in xs
+                    .iter()
+                    .zip(ys)
+                    .zip(out_x.iter_mut())
+                    .zip(out_y.iter_mut())
+                {
+                    if !x_out.is_finite() || !y_out.is_finite() {
+                        let (sx, sy) = stable_affine_xy(a, b, d, e, xoff, yoff, x, y);
+                        *x_out = sx;
+                        *y_out = sy;
+                    }
+                }
+            } else {
+                for ((&x, &y), x_out) in xs.iter().zip(ys).zip(out_x.iter_mut()) {
+                    if !x_out.is_finite() {
+                        let (sx, _) = stable_affine_xy(a, b, d, e, xoff, yoff, x, y);
+                        *x_out = sx;
                     }
                 }
             }
         } else if let Some(out_y) = out_y.as_mut() {
-            for (index, slot) in out_y.iter_mut().enumerate() {
-                if !slot.is_finite() {
-                    let (_, sy) = stable_affine_xy(a, b, d, e, xoff, yoff, xs[index], ys[index]);
-                    *slot = sy;
+            for ((&x, &y), y_out) in xs.iter().zip(ys).zip(out_y.iter_mut()) {
+                if !y_out.is_finite() {
+                    let (_, sy) = stable_affine_xy(a, b, d, e, xoff, yoff, x, y);
+                    *y_out = sy;
                 }
             }
         }
@@ -617,7 +659,13 @@ impl Shape {
     const fn retag_empty_axes(&self, axes: CoordinateAxes) -> Option<Self> {
         match self {
             Self::Empty(kind, _) => Some(Self::typed_empty(*kind, axes)),
-            _ => None,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_) => None,
         }
     }
 
@@ -763,7 +811,13 @@ impl Shape {
     pub fn centroid_xy(&self) -> Result<(f64, f64)> {
         Ok(match self.centroid()? {
             Self::Point(point) => (point.x, point.y),
-            _ => (0.0, 0.0),
+            Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => (0.0, 0.0),
         })
     }
 
@@ -1008,7 +1062,12 @@ pub(crate) fn empty_clip_shape(subject: &Shape) -> Shape {
             Shape::typed_empty(GeometryKind::GeometryCollection, subject.axes())
         },
         Shape::Empty(..) => subject.clone(),
-        _ => crate::geometry::empty_shape_for_dimension_with_axes(
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_) => crate::geometry::empty_shape_for_dimension_with_axes(
             subject.topological_dimension(),
             subject.axes(),
         ),
@@ -1059,13 +1118,7 @@ impl Shape {
         Ok(match self {
             Self::Point(point) => Self::Point(*point),
             Self::MultiPoint(points) => {
-                let values = points
-                    .members()
-                    .filter_map(|member| match member {
-                        crate::geometry::MultiMember::Empty => None,
-                        crate::geometry::MultiMember::Value(index) => Some(points.point_at(index)),
-                    })
-                    .collect::<Vec<_>>();
+                let values = points.iter().collect::<Vec<_>>();
                 let cleaned =
                     remove_repeated_points(&CoordSeq::try_from_points(&values)?, tolerance)?;
                 let mut cleaned = cleaned.iter();
@@ -1096,14 +1149,17 @@ impl Shape {
                 Self::Polygon,
             ),
             Self::MultiPolygon(polygons) => {
+                let mut values = polygons.iter();
                 let members = polygons
                     .members()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
-                        crate::geometry::MultiMember::Value(index) => Ok(remove_repeated_polygon(
-                            &polygons.as_slice()[index],
+                        crate::geometry::MultiMember::Value(_) => Ok(remove_repeated_polygon(
+                            values
+                                .next()
+                                .expect("sparse polygon values follow member order"),
                         )?
                         .map_or(
                             crate::geometry::MultiMember::Empty,

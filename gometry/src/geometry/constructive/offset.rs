@@ -38,7 +38,12 @@ pub(crate) fn sided_strip_parts<C: Coordinates + ?Sized>(
     Ok(match Shape::union_all(&quads, Strictness::Lenient)? {
         Shape::Polygon(polygon) => vec![polygon],
         Shape::MultiPolygon(polygons) => polygons.iter().cloned().collect(),
-        _ => Vec::new(),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => Vec::new(),
     })
 }
 
@@ -55,7 +60,7 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         return Ok(Vec::new());
     };
     let vertices = &source.vertices;
-    let segments = offset_segments(vertices, source.closed, signed);
+    let segments = offset_segments(&source, signed);
     let count = source.segment_count();
     if segments.len() != count {
         // Deduplicated vertices offset 1:1; a dropped segment means a
@@ -71,17 +76,36 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
     let joins: Vec<OffsetJoin> = if closed {
         (0..count)
             .map(|index| {
-                let previous = segments[wrap_index(index + count - 1, count)];
-                offset_join(&previous, &segments[index], vertices[index], signed)
+                let previous_index = if index == 0 {
+                    count.wrapping_sub(1)
+                } else {
+                    index.wrapping_sub(1)
+                };
+                let previous = *segments
+                    .get(previous_index)
+                    .expect("closed offset predecessor belongs to its segment cycle");
+                let current = segments
+                    .get(index)
+                    .expect("closed offset segment belongs to its source cycle");
+                let vertex = *vertices
+                    .get(index)
+                    .expect("closed offset vertex belongs to its source cycle");
+                offset_join(&previous, current, vertex, signed)
             })
             .collect()
     } else {
         (1..count)
             .map(|index| {
                 offset_join(
-                    &segments[index - 1],
-                    &segments[index],
-                    vertices[index],
+                    segments
+                        .get(index.wrapping_sub(1))
+                        .expect("open offset predecessor belongs to its source run"),
+                    segments
+                        .get(index)
+                        .expect("open offset segment belongs to its source run"),
+                    *vertices
+                        .get(index)
+                        .expect("open offset vertex belongs to its source run"),
                     signed,
                 )
             })
@@ -89,20 +113,38 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
     };
     let offset_start = |index: usize| {
         if closed {
-            joins[index].outgoing()
+            joins
+                .get(index)
+                .expect("closed offset join belongs to its source cycle")
+                .outgoing()
         } else if index == 0 {
-            segments[0].start
+            segments
+                .first()
+                .expect("an admitted open offset has a first segment")
+                .start
         } else {
-            joins[index - 1].outgoing()
+            joins
+                .get(index.wrapping_sub(1))
+                .expect("open offset join belongs to its source run")
+                .outgoing()
         }
     };
     let offset_end = |index: usize| {
         if closed {
-            joins[wrap_index(index + 1, count)].incoming()
-        } else if index + 1 == count {
-            segments[count - 1].end
+            joins
+                .get(wrap_index(index.wrapping_add(1), count))
+                .expect("closed offset successor join belongs to its cycle")
+                .incoming()
+        } else if index.wrapping_add(1) == count {
+            segments
+                .last()
+                .expect("an admitted open offset has a last segment")
+                .end
         } else {
-            joins[index].incoming()
+            joins
+                .get(index)
+                .expect("open offset join belongs to its source run")
+                .incoming()
         }
     };
     let normalized = |quad: Shape| {
@@ -112,10 +154,14 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
             quad.repair(RepairMethod::Structure, false)
         }
     };
-    let mut parts = Vec::with_capacity(count + joins.len());
+    let mut parts = Vec::with_capacity(count.wrapping_add(joins.len()));
     for index in 0..count {
-        let start = vertices[index];
-        let end = vertices[wrap_index(index + 1, vertices.len())];
+        let start = *vertices
+            .get(index)
+            .expect("offset segment starts at an admitted source vertex");
+        let end = *vertices
+            .get(wrap_index(index.wrapping_add(1), vertices.len()))
+            .expect("offset segment ends at an admitted source vertex");
         parts.push(normalized(Shape::Polygon(Polygon::new(
             xy_ring([start, end, offset_end(index), offset_start(index), start])?,
             Vec::new(),
@@ -130,7 +176,14 @@ pub(crate) fn sided_strip_quads<C: Coordinates + ?Sized>(
         if same_point(*incoming, *outgoing) {
             continue;
         }
-        let vertex = vertices[if closed { join_index } else { join_index + 1 }];
+        let vertex_index = if closed {
+            join_index
+        } else {
+            join_index.wrapping_add(1)
+        };
+        let vertex = *vertices
+            .get(vertex_index)
+            .expect("offset bevel join belongs to a source vertex");
         parts.push(normalized(Shape::Polygon(Polygon::new(
             xy_ring([vertex, *incoming, *outgoing, vertex])?,
             Vec::new(),
@@ -162,7 +215,7 @@ pub(crate) struct OffsetSource {
 impl OffsetSource {
     /// One offset segment per polyline segment (cyclic when closed).
     fn segment_count(&self) -> usize {
-        self.vertices.len() - usize::from(!self.closed)
+        self.vertices.len().wrapping_sub(usize::from(!self.closed))
     }
 }
 
@@ -175,7 +228,10 @@ pub(crate) fn offset_source<C: Coordinates + ?Sized>(points: &C) -> Option<Offse
     if vertices.len() < 2 {
         return None;
     }
-    let closed = same_point(vertices[0], vertices[vertices.len() - 1]);
+    let closed = vertices
+        .first()
+        .zip(vertices.last())
+        .is_some_and(|(first, last)| same_point(*first, *last));
     if closed {
         vertices.pop();
         if vertices.len() < 2 {
@@ -254,7 +310,9 @@ pub(crate) fn offset_curve_points<C: Coordinates + ?Sized>(
     // per-vertex Z/M carry the miter emitter always had.
     let mut result: Vec<Point> = std::iter::zip(std::iter::zip(xs, ys), sources)
         .map(|((x, y), origin)| {
-            let origin = walk[origin as usize];
+            let origin = *walk
+                .get(origin as usize)
+                .expect("offset walk source ordinal belongs to its source vertices");
             Point::new_raw_axes(x, y, ZOrdinate(origin.z()), MOrdinate(origin.m()))
         })
         .collect();
@@ -298,14 +356,14 @@ enum RawOffset {
 
 fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
     let vertices = &source.vertices;
-    let segments = offset_segments(vertices, source.closed, distance);
+    let segments = offset_segments(source, distance);
     if segments.len() != source.segment_count() {
         // Deduplicated vertices offset 1:1; a dropped segment means a
         // non-finite offset (coordinates at the f64 edge) — no offset line.
         return RawOffset::Unrepresentable;
     }
 
-    let mut result = Vec::with_capacity(vertices.len() + usize::from(source.closed));
+    let mut result = Vec::with_capacity(vertices.len().wrapping_add(usize::from(source.closed)));
     let push_join = |result: &mut Vec<Point>, join: OffsetJoin| match join {
         OffsetJoin::Miter(point) => push_distinct_point(result, point),
         OffsetJoin::Bevel { incoming, outgoing } => {
@@ -314,27 +372,33 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
         },
     };
     if source.closed {
-        for index in 0..vertices.len() {
-            let previous = segments[wrap_index(index + segments.len() - 1, segments.len())];
-            let current = segments[index];
-            let join = offset_join(&previous, &current, vertices[index], distance);
+        let mut previous = segments
+            .last()
+            .copied()
+            .expect("a closed offset source has at least two vertices");
+        for (vertex, current) in vertices.iter().zip(&segments) {
+            let join = offset_join(&previous, current, *vertex, distance);
             push_join(&mut result, join);
+            previous = *current;
         }
         if let Some(first) = result.first().copied() {
             result.push(first);
         }
     } else {
-        push_distinct_point(&mut result, segments[0].start);
-        for index in 1..vertices.len() - 1 {
-            let join = offset_join(
-                &segments[index - 1],
-                &segments[index],
-                vertices[index],
-                distance,
-            );
+        let first_segment = segments
+            .first()
+            .expect("an open offset source has at least one segment");
+        push_distinct_point(&mut result, first_segment.start);
+        for (vertex, pair) in vertices.iter().skip(1).zip(segments.windows(2)) {
+            let previous = pair.first().expect("two-segment join has a predecessor");
+            let current = pair.get(1).expect("two-segment join has a successor");
+            let join = offset_join(previous, current, *vertex, distance);
             push_join(&mut result, join);
         }
-        push_distinct_point(&mut result, segments[segments.len() - 1].end);
+        let last_segment = segments
+            .last()
+            .expect("an open offset source has at least one segment");
+        push_distinct_point(&mut result, last_segment.end);
     }
 
     if result.len() >= 2 {
@@ -344,18 +408,15 @@ fn offset_line_source(source: &OffsetSource, distance: f64) -> RawOffset {
     }
 }
 
-pub(crate) fn offset_segments(points: &[Point], closed: bool, distance: f64) -> Vec<OffsetEdge> {
-    let limit = if closed {
-        points.len()
-    } else {
-        points.len() - 1
-    };
-    (0..limit)
-        .filter_map(|index| {
-            let start = points[index];
-            let end = points[wrap_index(index + 1, points.len())];
-            offset_segment(start, end, distance)
-        })
+fn offset_segments(source: &OffsetSource, distance: f64) -> Vec<OffsetEdge> {
+    let points = source.vertices.as_slice();
+    let limit = source.segment_count();
+    points
+        .iter()
+        .copied()
+        .zip(points.iter().copied().cycle().skip(1))
+        .take(limit)
+        .filter_map(|(start, end)| offset_segment(start, end, distance))
         .collect()
 }
 
@@ -673,7 +734,17 @@ impl Shape {
                         )
                     })?,
                 )),
-                _ => Err(GeometryErrorKind::LinealRequired.into()),
+                Self::Point(_)
+                | Self::MultiPoint(_)
+                | Self::Polygon(_)
+                | Self::MultiPolygon(_)
+                | Self::Empty(
+                    GeometryKind::Point
+                    | GeometryKind::MultiPoint
+                    | GeometryKind::Polygon
+                    | GeometryKind::MultiPolygon,
+                    _,
+                ) => Err(GeometryErrorKind::LinealRequired.into()),
             };
         }
         let rule = WalkJoinRule::new(join_style, miter_limit.get());
@@ -691,14 +762,18 @@ impl Shape {
                 },
             },
             Self::MultiLineString(lines) => {
+                let mut values = lines.iter();
                 let members = lines
                     .members()
                     .map(|member| match member {
                         crate::geometry::MultiMember::Empty => {
                             Ok(crate::geometry::MultiMember::Empty)
                         },
-                        crate::geometry::MultiMember::Value(index) => offset(
-                            lines.as_slice()[index].as_coords(),
+                        crate::geometry::MultiMember::Value(_) => offset(
+                            values
+                                .next()
+                                .expect("sparse line values follow member order")
+                                .as_coords(),
                         )?
                         .map_or(Ok(crate::geometry::MultiMember::Empty), |line| {
                             Ok(crate::geometry::MultiMember::Value(LineSeq::try_new(
@@ -726,7 +801,17 @@ impl Shape {
                 | GeometryKind::GeometryCollection,
                 _,
             ) => self.clone(),
-            _ => return Err(GeometryErrorKind::LinealRequired.into()),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon,
+                _,
+            ) => return Err(GeometryErrorKind::LinealRequired.into()),
         })
     }
 }

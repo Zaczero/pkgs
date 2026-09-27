@@ -142,7 +142,11 @@ impl Shape {
                     budget,
                 ),
                 // Non-positive distances annihilate puntal/lineal input.
-                _ => Ok(Some(Self::empty_polygon())),
+                Self::Point(_)
+                | Self::MultiPoint(_)
+                | Self::LineString(_)
+                | Self::MultiLineString(_)
+                | Self::Empty(..) => Ok(Some(Self::empty_polygon())),
             };
         }
         match self {
@@ -233,7 +237,7 @@ impl Shape {
         // `offset_curve` convention); the right side mirrors the sign.
         let signed = match side {
             BufferSide::Left => distance,
-            _ => -distance,
+            BufferSide::Right | BufferSide::Both => -distance,
         };
         let strips = match self {
             Self::LineString(points) => sided_strip_parts(points, signed)?,
@@ -254,12 +258,23 @@ impl Shape {
                     match part {
                         Self::Polygon(polygon) => polygons.push(polygon),
                         Self::MultiPolygon(more) => polygons.extend(more),
-                        _ => {},
+                        Self::Point(_)
+                        | Self::MultiPoint(_)
+                        | Self::LineString(_)
+                        | Self::MultiLineString(_)
+                        | Self::GeometryCollection(_)
+                        | Self::Empty(..) => {},
                     }
                 }
                 polygons
             },
-            _ => return Err(GeometryErrorKind::SidedBufferRequiresLineal.into()),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::Empty(..) => {
+                return Err(GeometryErrorKind::SidedBufferRequiresLineal.into());
+            },
         };
         if strips.is_empty() || distance == 0.0 {
             return Ok(Self::empty_polygon());
@@ -311,9 +326,17 @@ fn sole_nonempty_collection_member(parts: &[Shape]) -> Option<&Shape> {
     while let Some(part) = stack.pop() {
         match part {
             Shape::GeometryCollection(nested) => stack.extend(nested.iter().rev()),
-            _ if part.is_empty() => {},
-            _ if only.replace(part).is_some() => return None,
-            _ => {},
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Polygon(_)
+            | Shape::MultiPolygon(_) => {
+                if !part.is_empty() && only.replace(part).is_some() {
+                    return None;
+                }
+            },
+            Shape::Empty(..) => {},
         }
     }
     only

@@ -284,7 +284,7 @@ pub(crate) fn snap_line_to_reference<C: Coordinates + ?Sized>(
         result.clear();
         result.extend([
             reference.snap_point(points.nth_coord(0)),
-            reference.snap_point(points.nth_coord(points.coord_count() - 1)),
+            reference.snap_point(points.nth_coord(points.coord_count().wrapping_sub(1))),
         ]);
     }
     Ok(result)
@@ -302,8 +302,13 @@ pub(crate) fn snap_ring_to_reference<C: Coordinates + ?Sized>(
 ) -> crate::error::Result<Vec<Point>> {
     let len = points.coord_count();
     let mut result = snap_line_to_reference(points, reference)?;
-    if result.len() > 1 && len > 1 && same_point(points.nth_coord(0), points.nth_coord(len - 1)) {
-        let first = result[0];
+    if result.len() > 1
+        && len > 1
+        && same_point(points.nth_coord(0), points.nth_coord(len.wrapping_sub(1)))
+    {
+        let first = *result
+            .first()
+            .expect("a multi-coordinate snapped ring has a first point");
         if let Some(last) = result.last_mut() {
             *last = first;
         }
@@ -324,15 +329,18 @@ pub(crate) fn remove_repeated_points(points: &CoordSeq, tolerance: f64) -> Resul
     }
     let mut keep: Vec<usize> = Vec::with_capacity(xs.len());
     keep.push(0);
-    let (mut anchor_x, mut anchor_y) = (xs[0], ys[0]);
+    let (mut anchor_x, mut anchor_y) = (
+        *xs.first().expect("nonempty coordinate column"),
+        *ys.first().expect("nonempty coordinate column"),
+    );
     // Honest distance compare: squared false-zero must not collapse distinct
     // subnormals under a zero (or tiny) tolerance.
-    for index in 1..xs.len() {
+    for (index, (&x, &y)) in xs.iter().zip(ys).enumerate().skip(1) {
         let anchor = XY::new(anchor_x, anchor_y);
-        let candidate = XY::new(xs[index], ys[index]);
+        let candidate = XY::new(x, y);
         if !points_dwithin(anchor, candidate, tolerance) {
             keep.push(index);
-            (anchor_x, anchor_y) = (xs[index], ys[index]);
+            (anchor_x, anchor_y) = (x, y);
         }
     }
     if keep.len() == xs.len() {
@@ -354,20 +362,33 @@ pub(crate) fn remove_repeated_ring_points(
     };
     let mut keep: Vec<usize> = Vec::with_capacity(xs.len());
     keep.push(0);
-    let (mut anchor_x, mut anchor_y) = (xs[0], ys[0]);
-    for index in 1..closing {
-        if !points_dwithin(
-            XY::new(anchor_x, anchor_y),
-            XY::new(xs[index], ys[index]),
-            tolerance,
-        ) {
+    let (mut anchor_x, mut anchor_y) = (
+        *xs.first().expect("nonempty ring X column"),
+        *ys.first().expect("nonempty ring Y column"),
+    );
+    for (index, (&x, &y)) in xs.iter().zip(ys).enumerate().take(closing).skip(1) {
+        if !points_dwithin(XY::new(anchor_x, anchor_y), XY::new(x, y), tolerance) {
             keep.push(index);
-            (anchor_x, anchor_y) = (xs[index], ys[index]);
+            (anchor_x, anchor_y) = (x, y);
         }
     }
-    let close = XY::new(xs[closing], ys[closing]);
-    while let [_, .., last] = keep[..]
-        && points_dwithin(XY::new(xs[last], ys[last]), close, tolerance)
+    let close = XY::new(
+        *xs.last().expect("nonempty ring X column"),
+        *ys.last().expect("nonempty ring Y column"),
+    );
+    while keep.len() > 1
+        && keep.last().is_some_and(|&last| {
+            points_dwithin(
+                XY::new(
+                    *xs.get(last)
+                        .expect("kept ring index belongs to its X column"),
+                    *ys.get(last)
+                        .expect("kept ring index belongs to its Y column"),
+                ),
+                close,
+                tolerance,
+            )
+        })
     {
         keep.pop();
     }
@@ -384,7 +405,7 @@ pub(crate) fn remove_repeated_ring_points(
 pub(crate) fn remove_repeated_line_points(points: &CoordSeq, tolerance: f64) -> Result<CoordSeq> {
     let cleaned = remove_repeated_points(points, tolerance)?;
     if points.len() >= 2 && cleaned.len() == 1 {
-        return points.select([0, points.len() - 1].into_iter());
+        return points.select([0, points.len().wrapping_sub(1)].into_iter());
     }
     Ok(cleaned)
 }
@@ -404,7 +425,12 @@ pub(crate) fn segmentize_points_budgeted(
         // zero-generated path's existing storage behavior.
         let mut solutions = Vec::new();
         let steps = collect_steps(points, |segment_index, _segment| {
-            let plan = geodesic_segment_plan(geodesic, frame, points, segment_index)?;
+            let plan = geodesic_segment_plan(
+                geodesic,
+                frame,
+                point_xy_at(points, segment_index),
+                point_xy_at(points, segment_index.wrapping_add(1)),
+            )?;
             let steps = segmentize_steps(plan.solution.3, max_segment_length);
             if steps.max(1) > 1 {
                 solutions.push(plan);
@@ -624,23 +650,30 @@ struct GeodesicSegmentPlan {
     canonical_end: XY,
 }
 
+fn point_xy_at(points: &CoordSeq, index: usize) -> Point {
+    Point::new_raw_xy(
+        *points
+            .xs()
+            .get(index)
+            .expect("geodesic source vertex belongs to the X column"),
+        *points
+            .ys()
+            .get(index)
+            .expect("geodesic source vertex belongs to the Y column"),
+    )
+}
+
 fn geodesic_segment_plan(
     geodesic: &geographiclib_rs::Geodesic,
     frame: GeographicFrame,
-    points: &CoordSeq,
-    segment_index: usize,
+    start: Point,
+    end: Point,
 ) -> Result<GeodesicSegmentPlan> {
     let start = frame
-        .to_geodesic_point(Point::new_raw_xy(
-            points.xs()[segment_index],
-            points.ys()[segment_index],
-        ))
+        .to_geodesic_point(start)
         .expect("geographic subdivision received admitted coordinates");
     let end = frame
-        .to_geodesic_point(Point::new_raw_xy(
-            points.xs()[segment_index + 1],
-            points.ys()[segment_index + 1],
-        ))
+        .to_geodesic_point(end)
         .expect("geographic subdivision received admitted coordinates");
     let solution = crate::crs::geodesic_line_solution(geodesic, start.x, start.y, end.x, end.y)?;
     Ok(GeodesicSegmentPlan {
@@ -689,16 +722,26 @@ impl<'a> GeodesicEmitter<'a> {
         segment_index: usize,
         steps: usize,
     ) -> Result<()> {
+        let geodesic = self.geodesic;
+        let frame = self.frame;
+        let recompute_plan = || {
+            geodesic_segment_plan(
+                geodesic,
+                frame,
+                point_xy_at(points, segment_index),
+                point_xy_at(points, segment_index.wrapping_add(1)),
+            )
+        };
         let plan = match &mut self.plans {
             GeodesicPlanSource::Recompute => {
                 if steps == 1 {
                     // Densify has no planning solve to reuse. Preserve the
                     // existing inverse-error boundary even when no vertex is
                     // emitted for this segment.
-                    geodesic_segment_plan(self.geodesic, self.frame, points, segment_index)?;
+                    recompute_plan()?;
                     return Ok(());
                 }
-                geodesic_segment_plan(self.geodesic, self.frame, points, segment_index)?
+                recompute_plan()?
             },
             GeodesicPlanSource::Retained(plans) => {
                 if steps == 1 {
@@ -756,7 +799,7 @@ fn emit_subdivision(steps: &[usize], sink: &mut impl SubdivisionSink) -> Result<
     sink.source(0)?;
     for (segment_index, &segment_steps) in steps.iter().enumerate() {
         sink.interior(segment_index, segment_steps.max(1))?;
-        sink.source(segment_index + 1)?;
+        sink.source(segment_index.wrapping_add(1))?;
     }
     Ok(())
 }
@@ -766,10 +809,8 @@ struct SubdivisionCount {
 }
 
 impl SubdivisionCount {
-    fn generated(&self, input_len: usize) -> Result<usize> {
-        self.emitted
-            .checked_sub(input_len)
-            .ok_or_else(|| crate::error::ResourceError::SizeOverflow.into())
+    fn generated(&self, input_len: usize) -> usize {
+        self.emitted.wrapping_sub(input_len)
     }
 }
 
@@ -785,11 +826,7 @@ impl SubdivisionSink for SubdivisionCount {
     fn interior(&mut self, _: usize, steps: usize) -> Result<()> {
         self.emitted = self
             .emitted
-            .checked_add(
-                steps
-                    .checked_sub(1)
-                    .ok_or(crate::error::ResourceError::SizeOverflow)?,
-            )
+            .checked_add(steps.wrapping_sub(1))
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
         Ok(())
     }
@@ -819,15 +856,18 @@ struct SubdivisionColumns<'a> {
 }
 
 impl<'a> SubdivisionColumns<'a> {
-    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Self {
-        Self {
+    fn new(points: &'a CoordSeq, emission: SubdivisionEmission<'a>, total: usize) -> Result<Self> {
+        crate::geometry::types::ensure_coordseq_vertex_capacity(total)?;
+        let z_column = points.zs();
+        let m_column = points.ms();
+        Ok(Self {
             points,
             emission,
             xs: Vec::with_capacity(total),
             ys: Vec::with_capacity(total),
-            zs: points.zs().map(|_| Vec::with_capacity(total)),
-            ms: points.ms().map(|_| Vec::with_capacity(total)),
-        }
+            zs: z_column.map(|_| Vec::with_capacity(total)),
+            ms: m_column.map(|_| Vec::with_capacity(total)),
+        })
     }
 
     fn finish(self) -> Result<CoordSeq> {
@@ -840,12 +880,17 @@ impl<'a> SubdivisionColumns<'a> {
         segment_index: usize,
         steps: usize,
     ) {
-        let (start, end) = (column[segment_index], column[segment_index + 1]);
+        let start = *column
+            .get(segment_index)
+            .expect("subdivision segment start belongs to its coordinate column");
+        let end = *column
+            .get(segment_index.wrapping_add(1))
+            .expect("subdivision segment end belongs to its coordinate column");
         for step in 1..steps {
             let value = interpolate_subdivision_ordinate(start, end, step as f64 / steps as f64);
             output.push(if value.is_finite() {
                 value
-            } else if step * 2 <= steps {
+            } else if step <= steps / 2 {
                 start
             } else {
                 end
@@ -893,13 +938,39 @@ fn emit_geodesic_plan(
 
 impl SubdivisionSink for SubdivisionColumns<'_> {
     fn source(&mut self, source_index: usize) -> Result<()> {
-        self.xs.push(self.points.xs()[source_index]);
-        self.ys.push(self.points.ys()[source_index]);
-        if let (Some(output), Some(column)) = (&mut self.zs, self.points.zs()) {
-            output.push(column[source_index]);
+        self.xs.push(
+            *self
+                .points
+                .xs()
+                .get(source_index)
+                .expect("subdivision source vertex belongs to the X column"),
+        );
+        self.ys.push(
+            *self
+                .points
+                .ys()
+                .get(source_index)
+                .expect("subdivision source vertex belongs to the Y column"),
+        );
+        if let Some(output) = &mut self.zs {
+            output.push(
+                *self
+                    .points
+                    .zs()
+                    .expect("Z output has an admitted source column")
+                    .get(source_index)
+                    .expect("subdivision source vertex belongs to the Z column"),
+            );
         }
-        if let (Some(output), Some(column)) = (&mut self.ms, self.points.ms()) {
-            output.push(column[source_index]);
+        if let Some(output) = &mut self.ms {
+            output.push(
+                *self
+                    .points
+                    .ms()
+                    .expect("M output has an admitted source column")
+                    .get(source_index)
+                    .expect("subdivision source vertex belongs to the M column"),
+            );
         }
         Ok(())
     }
@@ -992,7 +1063,7 @@ fn subdivide_columns_from_steps_uncommitted<'a>(
     let total = count_sink.emitted;
     // Existing source vertices are input-sized work. Charge only the vertices
     // this operation creates, once for the whole caller-owned budget.
-    let generated = count_sink.generated(count)?;
+    let generated = count_sink.generated(count);
     budget.check_additional(generated)?;
     if generated == 0 {
         // Nothing subdivides (every segment already satisfies the bound —
@@ -1000,7 +1071,7 @@ fn subdivide_columns_from_steps_uncommitted<'a>(
         // the input IS the output, share it.
         return Ok((points.clone(), 0));
     }
-    let mut output = SubdivisionColumns::new(points, emission, total);
+    let mut output = SubdivisionColumns::new(points, emission, total)?;
     emit_subdivision(steps, &mut output)?;
     output.emission.assert_exhausted();
     let output = output.finish()?;
@@ -1059,11 +1130,14 @@ impl Shape {
                 Self::Polygon,
             ),
             Self::MultiPolygon(polygons) => {
+                let mut values = polygons.iter();
                 let members = polygons
                     .members()
                     .map(|member| match member {
                         MultiMember::Empty => Ok(MultiMember::Empty),
-                        MultiMember::Value(index) => Ok(polygons.as_slice()[index]
+                        MultiMember::Value(_) => Ok(values
+                            .next()
+                            .expect("sparse polygon values follow member order")
                             .snap_to_reference(engine)?
                             .map_or(MultiMember::Empty, MultiMember::Value)),
                     })
@@ -1125,11 +1199,17 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut members = Vec::with_capacity(lines.member_count());
+                let mut values = lines.iter();
                 for member in lines.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => MultiMember::Value(
-                            LineSeq::try_new(seq_fn(&lines.as_slice()[index])?).map_err(E::from)?,
+                        MultiMember::Value(_) => MultiMember::Value(
+                            LineSeq::try_new(seq_fn(
+                                values
+                                    .next()
+                                    .expect("sparse line values follow member order"),
+                            )?)
+                            .map_err(E::from)?,
                         ),
                     };
                     members.push(member);
@@ -1146,11 +1226,15 @@ impl Shape {
             Self::Polygon(polygon) => Self::Polygon(polygon.try_map_ring_seqs(seq_fn)?),
             Self::MultiPolygon(polygons) => {
                 let mut members = Vec::with_capacity(polygons.member_count());
+                let mut values = polygons.iter();
                 for member in polygons.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => MultiMember::Value(
-                            polygons.as_slice()[index].try_map_ring_seqs(seq_fn)?,
+                        MultiMember::Value(_) => MultiMember::Value(
+                            values
+                                .next()
+                                .expect("sparse polygon values follow member order")
+                                .try_map_ring_seqs(seq_fn)?,
                         ),
                     };
                     members.push(member);
@@ -1287,11 +1371,15 @@ impl Shape {
             },
             Self::MultiLineString(lines) => {
                 let mut members = Vec::with_capacity(lines.member_count());
+                let mut values = lines.iter();
                 for member in lines.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => {
-                            let vertices = dedup_line(&lines.as_slice()[index]);
+                        MultiMember::Value(_) => {
+                            let line = values
+                                .next()
+                                .expect("sparse line values follow member order");
+                            let vertices = dedup_line(line);
                             if vertices.len() >= 2 {
                                 MultiMember::Value(LineSeq::try_new(CoordSeq::try_from_points(
                                     &vertices,
@@ -1311,11 +1399,14 @@ impl Shape {
             },
             Self::MultiPolygon(polygons) => {
                 let mut members = Vec::with_capacity(polygons.member_count());
+                let mut values = polygons.iter();
                 for member in polygons.members() {
                     let member = match member {
                         MultiMember::Empty => MultiMember::Empty,
-                        MultiMember::Value(index) => {
-                            let polygon = &polygons.as_slice()[index];
+                        MultiMember::Value(_) => {
+                            let polygon = values
+                                .next()
+                                .expect("sparse polygon values follow member order");
                             match dedup_ring(&polygon.shell)? {
                                 Some(shell) => {
                                     MultiMember::Value(Polygon::new(shell, dedup_holes(polygon)?))
@@ -1334,7 +1425,7 @@ impl Shape {
                     Ok((!geometry.is_empty()).then_some(geometry))
                 });
             },
-            other => other,
+            Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => self,
         })
     }
 }
@@ -1348,7 +1439,7 @@ mod tests {
         let steps = [GENERATED_ITEM_LIMIT + 1];
         let mut count = SubdivisionCount { emitted: 0 };
         emit_subdivision(&steps, &mut count).unwrap();
-        let generated = count.generated(2).unwrap();
+        let generated = count.generated(2);
         assert_eq!(generated, GENERATED_ITEM_LIMIT);
 
         let mut budget = ExpansionBudget::new("segmentize", "max_length");
@@ -1358,7 +1449,7 @@ mod tests {
 
         let mut count = SubdivisionCount { emitted: 0 };
         emit_subdivision(&[GENERATED_ITEM_LIMIT + 2], &mut count).unwrap();
-        let generated = count.generated(2).unwrap();
+        let generated = count.generated(2);
         let over_budget = ExpansionBudget::new("segmentize", "max_length");
         let error = over_budget.check_additional(generated).unwrap_err();
         assert!(matches!(
@@ -1369,6 +1460,20 @@ mod tests {
                     parameter: "max_length",
                     ..
                 }
+            )
+        ));
+    }
+
+    #[test]
+    fn subdivision_rejects_coordinate_width_before_reserving_columns() {
+        let points = CoordSeq::try_from_xy(&[XY::new(0.0, 0.0), XY::new(1.0, 0.0)]).unwrap();
+        let error = SubdivisionColumns::new(&points, SubdivisionEmission::Planar, usize::MAX)
+            .err()
+            .expect("unrepresentable coordinate width is rejected");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(
+                crate::geometry::GeometryErrorKind::OffsetCapacityExceeded
             )
         ));
     }

@@ -223,7 +223,7 @@ pub(crate) struct WalkCount<'a> {
     len: usize,
     previous: Option<(u64, u64)>,
     all_finite: bool,
-    budget: Option<&'a ExpansionBudget>,
+    budget: &'a ExpansionBudget,
 }
 
 impl WalkCount<'_> {
@@ -242,7 +242,7 @@ impl<'a> WalkCount<'a> {
             len: 0,
             previous: None,
             all_finite: true,
-            budget: Some(budget),
+            budget,
         }
     }
 }
@@ -254,10 +254,8 @@ impl WalkSink for WalkCount<'_> {
             return Ok(());
         }
         self.previous = Some(point);
-        let next = self.len.saturating_add(1);
-        if let Some(budget) = self.budget {
-            budget.check_additional(next)?;
-        }
+        let next = self.len.wrapping_add(1);
+        self.budget.check_additional(next)?;
         self.len = next;
         self.all_finite &= x.is_finite() && y.is_finite();
         Ok(())
@@ -328,11 +326,18 @@ impl<'a> WalkPlan<'a> {
         rule: WalkJoinRule,
     ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
-        let edges = if cyclic { count } else { count - 1 };
+        if count < 2 {
+            return Ok(None);
+        }
+        let edges = if cyclic { count } else { count.wrapping_sub(1) };
         let mut normals = Vec::with_capacity(edges);
-        for edge in 0..edges {
-            let Some(normal) = unit_right_normal(points[edge], points[wrap_index(edge + 1, count)])
-            else {
+        for (from, to) in points
+            .iter()
+            .copied()
+            .zip(points.iter().copied().cycle().skip(1))
+            .take(edges)
+        {
+            let Some(normal) = unit_right_normal(from, to) else {
                 return Ok(None);
             };
             normals.push(normal);
@@ -341,17 +346,30 @@ impl<'a> WalkPlan<'a> {
             start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
             end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),
         };
-        let join_count = if cyclic { edges } else { edges - 1 };
+        let join_count = if cyclic { edges } else { edges.wrapping_sub(1) };
         let mut joins = Vec::with_capacity(join_count);
-        for join in 0..join_count {
-            let v = points[join];
-            let w = points[wrap_index(join + 1, count)];
-            let u = points[wrap_index(join + 2, count)];
+        let path = points
+            .iter()
+            .copied()
+            .chain(points.iter().copied().take(if cyclic { 2 } else { 0 }));
+        for (join, ((v, w), u)) in path
+            .clone()
+            .zip(path.clone().skip(1))
+            .zip(path.skip(2))
+            .take(join_count)
+            .enumerate()
+        {
+            let incoming_normal = *normals
+                .get(join)
+                .expect("walk join has an incoming edge normal");
+            let outgoing_normal = *normals
+                .get(wrap_index(join.wrapping_add(1), edges))
+                .expect("walk join has an outgoing edge normal");
             let planned = match orientation(v, w, u) {
                 Orientation::CounterClockwise => match rule {
                     WalkJoinRule::Arc => {
-                        let (nx, ny) = normals[join];
-                        let (mx, my) = normals[wrap_index(join + 1, edges)];
+                        let (nx, ny) = incoming_normal;
+                        let (mx, my) = outgoing_normal;
                         let from_angle = ny.atan2(nx);
                         let mut sweep = my.atan2(mx) - from_angle;
                         if sweep < 0.0 {
@@ -365,16 +383,16 @@ impl<'a> WalkPlan<'a> {
                     },
                     WalkJoinRule::Bevel => WalkJoin::Straight,
                     WalkJoinRule::Miter { limit } => convex_miter(
-                        offset_edge(v, w, normals[join]),
-                        offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
+                        offset_edge(v, w, incoming_normal),
+                        offset_edge(w, u, outgoing_normal),
                         w,
                         distance,
                         limit,
                     ),
                 },
                 Orientation::Clockwise => match reflex_cross(
-                    offset_edge(v, w, normals[join]),
-                    offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
+                    offset_edge(v, w, incoming_normal),
+                    offset_edge(w, u, outgoing_normal),
                 )? {
                     Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
                     None => WalkJoin::Excursion,
@@ -392,7 +410,7 @@ impl<'a> WalkPlan<'a> {
         };
         plan.validate()?;
         #[cfg(test)]
-        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get().wrapping_add(1)));
         Ok(Some(plan))
     }
 
@@ -429,18 +447,38 @@ impl<'a> WalkPlan<'a> {
         let edges = self.normals.len();
         for edge in 0..edges {
             let entry_join = if edge == 0 {
-                self.cyclic.then(|| joins - 1)
+                self.cyclic.then(|| joins.wrapping_sub(1))
             } else {
-                Some(edge - 1)
+                Some(edge.wrapping_sub(1))
             };
             let exit_join = (edge < joins).then_some(edge);
-            let entry = entry_join.and_then(|join| match &self.joins[join] {
-                WalkJoin::Cross { t_out, .. } => Some(t_out),
-                _ => None,
+            let entry = entry_join.and_then(|join| {
+                match self
+                    .joins
+                    .get(join)
+                    .expect("walk entry join belongs to the validated plan")
+                {
+                    WalkJoin::Cross { t_out, .. } => Some(t_out),
+                    WalkJoin::Arc { .. }
+                    | WalkJoin::Miter { .. }
+                    | WalkJoin::MiterCut { .. }
+                    | WalkJoin::Excursion
+                    | WalkJoin::Straight => None,
+                }
             });
-            let exit = exit_join.and_then(|join| match &self.joins[join] {
-                WalkJoin::Cross { t_in, .. } => Some(t_in),
-                _ => None,
+            let exit = exit_join.and_then(|join| {
+                match self
+                    .joins
+                    .get(join)
+                    .expect("walk exit join belongs to the validated plan")
+                {
+                    WalkJoin::Cross { t_in, .. } => Some(t_in),
+                    WalkJoin::Arc { .. }
+                    | WalkJoin::Miter { .. }
+                    | WalkJoin::MiterCut { .. }
+                    | WalkJoin::Excursion
+                    | WalkJoin::Straight => None,
+                }
             });
             let backwards = match (entry, exit) {
                 (Some(entry), Some(exit)) => entry.cmp_along(exit)? != Ordering::Less,
@@ -450,8 +488,17 @@ impl<'a> WalkPlan<'a> {
             };
             if backwards {
                 for join in [entry_join, exit_join].into_iter().flatten() {
-                    if matches!(self.joins[join], WalkJoin::Cross { .. }) {
-                        self.joins[join] = WalkJoin::Excursion;
+                    if matches!(
+                        self.joins
+                            .get(join)
+                            .expect("walk endpoint join belongs to the validated plan"),
+                        WalkJoin::Cross { .. }
+                    ) {
+                        *self
+                            .joins
+                            .get_mut(join)
+                            .expect("walk endpoint join belongs to the validated plan") =
+                            WalkJoin::Excursion;
                     }
                 }
             }
@@ -472,20 +519,32 @@ impl<'a> WalkPlan<'a> {
         let count = self.points.len();
         for (edge, &(nx, ny)) in self.normals.iter().enumerate() {
             let previous = if edge == 0 {
-                self.cyclic.then(|| self.joins.len() - 1)
+                self.cyclic.then(|| self.joins.len().wrapping_sub(1))
             } else {
-                Some(edge - 1)
+                Some(edge.wrapping_sub(1))
             };
-            if !previous.is_some_and(|join| self.joins[join].replaces_endpoints()) {
-                let v = self.points[edge];
+            if !previous.is_some_and(|join| {
+                self.joins
+                    .get(join)
+                    .expect("walk predecessor join belongs to the plan")
+                    .replaces_endpoints()
+            }) {
+                let v = *self
+                    .points
+                    .get(edge)
+                    .expect("walk edge belongs to the source vertices");
                 sink.push(
                     v.x + self.distance * nx,
                     v.y + self.distance * ny,
                     edge as u32,
                 )?;
             }
-            let source = wrap_index(edge + 1, count) as u32;
-            let w = self.points[source as usize];
+            let source_index = wrap_index(edge.wrapping_add(1), count);
+            let source = source_index as u32;
+            let w = *self
+                .points
+                .get(source_index)
+                .expect("walk destination belongs to the source vertices");
             match self.joins.get(edge) {
                 Some(WalkJoin::Cross { point, .. } | WalkJoin::Miter { point }) => {
                     sink.push(point.x, point.y, source)?;
@@ -661,8 +720,11 @@ impl ShellCoverageIndex {
             contacts.push((crate::geometry::segment_projection(*end, segment)?, *end));
             crate::geometry::try_sort_by(&mut contacts, |left, right| left.0.cmp_along(&right.0))?;
 
-            let mut previous_projection = &contacts[0].0;
-            let mut previous_point = contacts[0].1;
+            let (first_projection, first_point) = contacts
+                .first()
+                .expect("hole edge contacts include both endpoints");
+            let mut previous_projection = first_projection;
+            let mut previous_point = *first_point;
             for (projection, point) in contacts.iter().skip(1) {
                 if projection.cmp_along(previous_projection)?.is_eq() {
                     continue;
@@ -751,9 +813,15 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
         // which also rejects an edge that leaves and re-enters a concave shell.
         let mut owner = None;
         for shell_index in candidates {
-            let index = &mut shell_indexes[shell_index];
+            let index = shell_indexes
+                .get_mut(shell_index)
+                .expect("R-tree shell ordinal belongs to the sorted shell list");
             if index.is_none() {
-                *index = Some(ShellCoverageIndex::new(&shells[shell_index].0)?);
+                let shell = &shells
+                    .get(shell_index)
+                    .expect("R-tree shell ordinal belongs to the sorted shell list")
+                    .0;
+                *index = Some(ShellCoverageIndex::new(shell)?);
             }
             if index
                 .as_ref()
@@ -765,7 +833,10 @@ pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Resu
             }
         }
         if let Some(owner) = owner {
-            assigned[owner].push(Ring::try_from_closed(CoordSeq::try_from_xy(&hole)?)?);
+            assigned
+                .get_mut(owner)
+                .expect("assigned shell ordinal belongs to the sorted shell list")
+                .push(Ring::try_from_closed(CoordSeq::try_from_xy(&hole)?)?);
         }
     }
     drop(shell_indexes);

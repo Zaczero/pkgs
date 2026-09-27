@@ -38,7 +38,7 @@ pub(crate) fn polygon_encloses_no_area(polygon: &Polygon) -> bool {
 pub(crate) fn ring_as_open_line(ring: &CoordSeq) -> CoordSeq {
     let n = ring.len();
     let take = if n >= 2 && ring.first() == ring.last() {
-        n - 1
+        n.wrapping_sub(1)
     } else {
         n
     };
@@ -71,16 +71,23 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
             }
             Shape::multi_line_string(polygon.shell.coords().axes(), lines)
         },
+        Shape::Polygon(_) => shape.clone(),
         Shape::MultiPolygon(polygons) => {
             let mut members = Vec::with_capacity(polygons.member_count());
+            let mut values = polygons.iter();
             for member in polygons.members() {
                 let shape = match member {
                     crate::geometry::MultiMember::Empty => {
                         Shape::typed_empty(GeometryKind::Polygon, polygons.axes())
                     },
-                    crate::geometry::MultiMember::Value(index) => degenerate_polygonal_as_linework(
-                        &Shape::Polygon(polygons.as_slice()[index].clone()),
-                    )?,
+                    crate::geometry::MultiMember::Value(_) => {
+                        degenerate_polygonal_as_linework(&Shape::Polygon(
+                            values
+                                .next()
+                                .expect("sparse polygon values follow member order")
+                                .clone(),
+                        ))?
+                    },
                 };
                 members.push(shape);
             }
@@ -89,7 +96,11 @@ pub(crate) fn degenerate_polygonal_as_linework(shape: &Shape) -> Result<Shape> {
         Shape::GeometryCollection(parts) => {
             Shape::GeometryCollection(parts.try_map_members(degenerate_polygonal_as_linework)?)
         },
-        other => other.clone(),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => shape.clone(),
     })
 }
 
@@ -184,12 +195,12 @@ fn simple_erosion_polygon(
     let mut ring_xs = Vec::with_capacity(capacity);
     let mut ring_ys = Vec::with_capacity(capacity);
     // Reverse the CW offset into CCW presentation while closing.
-    for i in (0..xs.len()).rev() {
-        ring_xs.push(xs[i]);
-        ring_ys.push(ys[i]);
+    for (&x, &y) in xs.iter().zip(ys).rev() {
+        ring_xs.push(x);
+        ring_ys.push(y);
     }
-    ring_xs.push(ring_xs[0]);
-    ring_ys.push(ring_ys[0]);
+    ring_xs.push(*ring_xs.first().expect("nonempty erosion loop"));
+    ring_ys.push(*ring_ys.first().expect("nonempty erosion loop"));
     let ring = CoordSeq::from_owned_columns(ring_xs, ring_ys, None, None)?;
     // Original CW offset → CCW here. Inversion/degenerate was non-CW open
     // and becomes non-CCW after reverse.
@@ -369,7 +380,11 @@ fn collection_polygon_operands(parts: &[Shape]) -> Vec<&Polygon> {
                 stack.reserve(inner.len());
                 stack.extend(inner.iter().rev());
             },
-            _ => {},
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::Empty(..) => {},
         }
     }
     polygons
@@ -453,8 +468,8 @@ fn simple_stroke_polygon(
     let mut ring_ys = Vec::with_capacity(capacity);
     ring_xs.extend_from_slice(xs);
     ring_ys.extend_from_slice(ys);
-    ring_xs.push(xs[0]);
-    ring_ys.push(ys[0]);
+    ring_xs.push(*xs.first().expect("nonempty stroke loop"));
+    ring_ys.push(*ys.first().expect("nonempty stroke loop"));
     let ring = CoordSeq::try_from_vecs(ring_xs, ring_ys, None, None)?;
     if ring_winding(&ring).is_ccw()
         && Shape::LineString(LineSeq::from_proven(ring.clone())).is_simple()?
@@ -686,9 +701,16 @@ pub(crate) fn stroke_loops(
             } else {
                 chain
             };
-            if chain.len() >= 3 && same_point(chain[0], chain[chain.len() - 1]) {
+            if chain.len() >= 3
+                && chain
+                    .first()
+                    .zip(chain.last())
+                    .is_some_and(|(first, last)| same_point(*first, *last))
+            {
                 let Some((right, left, clean)) = raw_closed_stroke_loops(
-                    &chain[..chain.len() - 1],
+                    chain
+                        .get(..chain.len().wrapping_sub(1))
+                        .expect("closed stroke omits its stored closure vertex"),
                     distance,
                     rule,
                     quadrant_segments,
@@ -889,10 +911,8 @@ pub(crate) fn collection_loops(
 /// that segment yields the correct stadium where stroking the folded path
 /// would not (see the caller in [`stroke_loops`]).
 pub(crate) fn collinear_extent(chain: &[Point]) -> Option<[Point; 2]> {
-    let anchor = chain[0];
-    let direction = *chain[1..]
-        .iter()
-        .find(|point| !same_point(**point, anchor))?;
+    let (&anchor, tail) = chain.split_first()?;
+    let direction = *tail.iter().find(|point| !same_point(**point, anchor))?;
     if chain
         .iter()
         .any(|&point| orientation(anchor, direction, point) != Orientation::Collinear)
@@ -931,8 +951,11 @@ pub(crate) fn raw_closed_stroke_loops(
         return Ok(None);
     };
     let mut backward = Vec::with_capacity(chain.len());
-    backward.push(chain[0]);
-    backward.extend(chain[1..].iter().rev().copied());
+    let first = *chain
+        .first()
+        .expect("a closed walk plan has a source start vertex");
+    backward.push(first);
+    backward.extend(chain.iter().skip(1).rev().copied());
     let Some(left_plan) = WalkPlan::new(&backward, true, distance, rule)? else {
         return Ok(None);
     };
@@ -970,6 +993,12 @@ pub(crate) fn raw_stroke_loop(
     let Some(right_plan) = WalkPlan::new(chain, false, distance, rule)? else {
         return Ok(None);
     };
+    let start = *chain
+        .first()
+        .expect("a planned open stroke has a source start vertex");
+    let end = *chain
+        .last()
+        .expect("a planned open stroke has a source end vertex");
     // Keep the reversed source walk alive alongside its plan. The plan is
     // immutable after validation, and retaining both plans across the count
     // and materialization passes prevents a second normal/join calculation.
@@ -994,10 +1023,10 @@ pub(crate) fn raw_stroke_loop(
         let clean = emit_stroke_loop(
             &right_plan,
             &left_plan,
-            chain[chain.len() - 1],
+            end,
             enx,
             eny,
-            chain[0],
+            start,
             snx,
             sny,
             distance,
@@ -1017,10 +1046,10 @@ pub(crate) fn raw_stroke_loop(
     let real_clean = emit_stroke_loop(
         &right_plan,
         &left_plan,
-        chain[chain.len() - 1],
+        end,
         enx,
         eny,
-        chain[0],
+        start,
         snx,
         sny,
         distance,
@@ -1062,7 +1091,7 @@ fn emit_stroke_loop<S: WalkSink>(
         distance,
         cap_style,
         step_angle,
-        (right_plan.source_len() - 1) as u32,
+        right_plan.source_len().wrapping_sub(1) as u32,
         sink,
     )?;
     let left_clean = stroke_side(left_plan, step_angle, sink)?;
@@ -1210,8 +1239,11 @@ fn cap_circle_intersections(
     }
     let (first, second) = match center.x.total_cmp(&peer.x) {
         Ordering::Less => (center, peer),
-        Ordering::Equal if center.y.total_cmp(&peer.y).is_le() => (center, peer),
-        _ => (peer, center),
+        Ordering::Equal => match center.y.total_cmp(&peer.y) {
+            Ordering::Less | Ordering::Equal => (center, peer),
+            Ordering::Greater => (peer, center),
+        },
+        Ordering::Greater => (peer, center),
     };
     let raw_dx = second.x - first.x;
     let raw_dy = second.y - first.y;
@@ -1272,9 +1304,8 @@ fn cap_circle_intersections(
         ));
     }
     let (px, py) = (-dy / separation, dx / separation);
-    let mut count = 0;
-    for index in 0..2 {
-        let sign = if index == 0 { 1.0 } else { -1.0 };
+    let mut result_slots = result.iter_mut();
+    for sign in [1.0, -1.0] {
         let (dir_x, dir_y) = if same_point(center, first) {
             (dx * 0.5 + sign * px * height, dy * 0.5 + sign * py * height)
         } else {
@@ -1287,7 +1318,8 @@ fn cap_circle_intersections(
         if offset <= 1e-12 || offset >= std::f64::consts::PI - 1e-12 {
             continue;
         }
-        let height_world = scale_by_power_of_two(height, -power_of_two_exponent(scale));
+        let height_world =
+            scale_by_power_of_two(height, power_of_two_exponent(scale).wrapping_neg());
         if !height_world.is_finite() {
             return Err(GeometryErrorKind::message(
                 "buffer calculation produced non-finite coordinates",
@@ -1302,20 +1334,15 @@ fn cap_circle_intersections(
                 "buffer calculation produced non-finite coordinates",
             ));
         }
-        result[count] = Some((offset, point));
-        count += 1;
-        if count == result.len() {
-            break;
-        }
+        let slot = result_slots
+            .next()
+            .expect("at most two cap-circle intersections exist");
+        *slot = Some((offset, point));
     }
-    if count == 2 {
-        let left = result[0].map(|(offset, _)| offset);
-        let right = result[1].map(|(offset, _)| offset);
-        if let (Some(left), Some(right)) = (left, right)
-            && right < left
-        {
-            result.swap(0, 1);
-        }
+    if let [Some((left, _)), Some((right, _))] = &result
+        && right < left
+    {
+        result.swap(0, 1);
     }
     Ok(result)
 }
@@ -1339,49 +1366,97 @@ fn emit_arc_with_breaks<S: WalkSink>(
     let mut angles = [0.0; 4];
     let mut exact = [None; 4];
     let mut count = 2;
-    angles[1] = sweep;
+    *angles
+        .get_mut(1)
+        .expect("arc endpoint fits the fixed break array") = sweep;
     for &(offset, point) in breaks.iter().flatten() {
         if offset > 0.0 && offset < sweep {
-            angles[count] = offset;
-            exact[count] = Some(point);
-            count += 1;
+            *angles
+                .get_mut(count)
+                .expect("two circle crossings fit the fixed break array") = offset;
+            *exact
+                .get_mut(count)
+                .expect("two circle crossings fit the fixed break array") = Some(point);
+            count = count.wrapping_add(1);
         }
     }
     for left in 0..count {
-        for right in left + 1..count {
-            if angles[right] < angles[left] {
+        for right in left.wrapping_add(1)..count {
+            let left_angle = *angles
+                .get(left)
+                .expect("arc sort index belongs to the break array");
+            let right_angle = *angles
+                .get(right)
+                .expect("arc sort index belongs to the break array");
+            if right_angle < left_angle {
                 angles.swap(left, right);
                 exact.swap(left, right);
             }
         }
     }
-    let mut unique = 1;
+    let mut unique = 1_usize;
     for index in 1..count {
-        if angles[index] - angles[unique - 1] <= 1e-12 {
-            if exact[unique - 1].is_none() {
-                exact[unique - 1] = exact[index];
+        let previous = unique.wrapping_sub(1);
+        let angle = *angles
+            .get(index)
+            .expect("arc break index belongs to the break array");
+        let previous_angle = *angles
+            .get(previous)
+            .expect("unique arc break index belongs to the break array");
+        if angle - previous_angle <= 1e-12 {
+            if exact
+                .get(previous)
+                .expect("unique arc break index belongs to the exact-point array")
+                .is_none()
+            {
+                let exact_point = *exact
+                    .get(index)
+                    .expect("arc break index belongs to the exact-point array");
+                *exact
+                    .get_mut(previous)
+                    .expect("unique arc break index belongs to the exact-point array") =
+                    exact_point;
             }
             continue;
         }
-        angles[unique] = angles[index];
-        exact[unique] = exact[index];
-        unique += 1;
+        *angles
+            .get_mut(unique)
+            .expect("unique arc break fits the fixed break array") = angle;
+        *exact
+            .get_mut(unique)
+            .expect("unique arc break fits the exact-point array") = *exact
+            .get(index)
+            .expect("arc break index belongs to the exact-point array");
+        unique = unique.wrapping_add(1);
     }
-    from_angle += angles[0];
-    for interval in 0..unique - 1 {
-        let span = angles[interval + 1] - angles[interval];
+    from_angle += *angles.first().expect("arc break array has a start angle");
+    let last_interval = unique.wrapping_sub(1);
+    for interval in 0..last_interval {
+        let next = interval.wrapping_add(1);
+        let span = *angles
+            .get(next)
+            .expect("arc interval endpoint belongs to the break array")
+            - *angles
+                .get(interval)
+                .expect("arc interval start belongs to the break array");
         let steps = (span / step_angle).ceil() as usize;
         for step in 1..=steps {
-            if interval + 1 == unique - 1 && step == steps {
+            if next == last_interval && step == steps {
                 continue;
             }
             if step == steps
-                && let Some(point) = exact[interval + 1]
+                && let Some(point) = *exact
+                    .get(next)
+                    .expect("arc interval endpoint belongs to the exact-point array")
             {
                 sink.push(point.x, point.y, source)?;
                 continue;
             }
-            let theta = from_angle + angles[interval] + span * step as f64 / steps as f64;
+            let theta = from_angle
+                + *angles
+                    .get(interval)
+                    .expect("arc interval start belongs to the break array")
+                + span * step as f64 / steps as f64;
             let (sin_theta, cos_theta) = theta.sin_cos();
             sink.push(
                 center.x + distance * cos_theta,
