@@ -71,25 +71,6 @@ fn check_vec_capacity<T>(len: usize, additional: usize) -> Result<()> {
     Ok(())
 }
 
-/// Reserve output storage after rejecting an impossible element layout.
-/// Allocator exhaustion follows Rust's process-fatal native contract.
-pub(crate) fn try_reserve_vec<T>(vec: &mut Vec<T>, additional: usize) -> Result<()> {
-    check_vec_capacity::<T>(vec.len(), additional)?;
-    vec.reserve(additional);
-    Ok(())
-}
-
-/// Append one value after rejecting the only recoverable failure: an
-/// impossible element layout.
-pub(crate) fn try_push_vec<T>(vec: &mut Vec<T>, value: T) -> Result<()> {
-    if vec.len() == vec.capacity() {
-        std::hint::cold_path();
-        check_vec_capacity::<T>(vec.len(), 1)?;
-    }
-    vec.push(value);
-    Ok(())
-}
-
 pub(crate) trait CsrOffset: Copy + Default + Ord {
     fn checked_end(end: usize) -> Result<Self>;
 }
@@ -234,18 +215,6 @@ pub(crate) fn reserve_from_py_len<T>(
         try_reserve_total(output, len)?;
     }
     Ok(())
-}
-
-/// Build an empty `Vec` from a validated external total.
-pub(crate) fn try_vec_with_capacity<T>(capacity: usize) -> PyResult<Vec<T>> {
-    let mut vec = Vec::new();
-    try_reserve_total(&mut vec, capacity)?;
-    Ok(vec)
-}
-
-/// Push one element while retaining a typed layout-overflow error.
-pub(crate) fn try_push<T>(vec: &mut Vec<T>, item: T) -> PyResult<()> {
-    try_push_vec(vec, item).map_err(PyErr::from)
 }
 
 /// Collect a bool mask aligned to the receiver's row count.
@@ -516,7 +485,8 @@ pub(crate) fn collect_py_iter_exact_from_iter<'py, T>(
     mut map: impl FnMut(Bound<'py, PyAny>) -> PyResult<T>,
     on_len: impl FnOnce(usize) -> PyErr,
 ) -> PyResult<Vec<T>> {
-    let mut out = try_vec_with_capacity(expected)?;
+    let mut out = Vec::new();
+    try_reserve_total(&mut out, expected)?;
     for index in 0..expected {
         check_python_signals(values.py(), index)?;
         let Some(item) = iter.next() else {
@@ -594,20 +564,9 @@ mod tests {
     fn reserve_total_accepts_above_hint_cap() {
         let mut v: Vec<u8> = Vec::new();
         // Validated totals must not share the hint cap as a rejection.
-        // Use u8 so the allocation stays ~64 MiB + 1, not f64-scale.
+        // Use u8 so a count just above the hint remains a small allocation.
         try_reserve_total(&mut v, MAX_RESERVE_HINT + 1).expect("small validated total");
         assert!(v.capacity() > MAX_RESERVE_HINT);
-    }
-
-    #[test]
-    fn try_push_grows_without_trusting_bulk_hints() {
-        // A lying bulk hint never becomes an exact allocation.
-        let mut v: Vec<u32> = Vec::new();
-        for i in 0..64 {
-            try_push(&mut v, i).expect("small growth must succeed");
-        }
-        assert_eq!(v.len(), 64);
-        assert!(v.capacity() >= 64);
     }
 
     #[test]
@@ -692,13 +651,28 @@ mod tests {
     }
 
     #[test]
-    fn try_push_has_no_element_count_ceiling() {
-        // Spot-check that ordinary growth has no advisory-hint ceiling.
-        let mut v: Vec<u8> = Vec::new();
-        for i in 0..10_000 {
-            try_push(&mut v, (i & 0xFF) as u8).expect("no artificial count ceiling");
-        }
-        assert_eq!(v.len(), 10_000);
+    fn exact_collector_rejects_unrepresentable_expected_before_next() {
+        crate::test_support::initialize_python();
+        Python::attach(|py| -> PyResult<()> {
+            let item = pyo3::types::PyString::new(py, "item");
+            let iterator =
+                crate::test_support::native_boundary_iterator(py, item.as_any(), 1, None, None)?;
+            let values = iterator.bind(py).as_any();
+            let iter = values.try_iter()?;
+            let result = collect_py_iter_exact_from_iter(
+                values,
+                iter,
+                usize::MAX,
+                |item| item.extract::<String>(),
+                |_| PyValueError::new_err("length mismatch"),
+            );
+
+            let error = result.expect_err("unrepresentable output layout must be rejected");
+            assert!(error.is_instance_of::<pyo3::exceptions::PyOverflowError>(py));
+            assert_eq!(iterator.bind(py).borrow().calls(), 0);
+            Ok(())
+        })
+        .expect("exact collector layout admission");
     }
 
     #[test]

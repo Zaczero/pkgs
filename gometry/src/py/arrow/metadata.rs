@@ -3,6 +3,7 @@ use pyo3::{IntoPyObject as _, pyclass, pyfunction, pymethods};
 use serde_json::Value;
 
 use crate::boundary::metadata::{optional_crs_labels_operationally_equal, optional_epochs_equal};
+use crate::boundary::reserve::try_reserve_total;
 use crate::py::arrow::{
     Bound, GeometryEncoding, Py, PyAny, PyAnyMethods as _, PyErr, PyModule, PyResult, PyTypeError,
     PyTypeMethods as _, Python, WkbOffsetWidth,
@@ -431,11 +432,11 @@ fn ensure_pyarrow_point_struct(
             "geoarrow point struct field names and fields length disagree",
         ));
     }
-    let mut fields = crate::try_vec_with_capacity(names.len())?;
+    let mut fields = Vec::with_capacity(names.len());
     for (index, name) in names.iter().enumerate() {
         let field_type = fields_attr.get_item(index)?.getattr("type")?;
         let is_float64 = pyarrow_type_is_float64(&types, &field_type)?;
-        crate::try_push(&mut fields, (name.as_str(), is_float64))?;
+        fields.push((name.as_str(), is_float64));
     }
     geoarrow::classify_geoarrow_ordinates(fields).map_err(PyTypeError::new_err)?;
     Ok(())
@@ -1194,29 +1195,28 @@ fn geoarrow_native_layout(
     if !is_struct {
         return Ok(None);
     }
-    let names: Vec<String> = if let Ok(names) = current.getattr("names") {
-        crate::collect_py_strings(&names, "GeoArrow field names")?
-    } else {
-        // Fall back to field-index name access (matches Python helper).
-        let num_fields = current.getattr("num_fields")?.extract::<usize>()?;
-        let mut names = crate::try_vec_with_capacity(num_fields)?;
-        for index in 0..num_fields {
-            crate::try_push(
-                &mut names,
-                current.get_item(index)?.getattr("name")?.extract()?,
-            )?;
-        }
-        names
-    };
+    let names: Vec<String> =
+        if let Some(names) = current.getattr_opt(pyo3::intern!(current.py(), "names"))? {
+            crate::collect_py_strings(&names, "GeoArrow field names")?
+        } else {
+            // Fall back to field-index name access (matches Python helper).
+            let num_fields = current.getattr("num_fields")?.extract::<usize>()?;
+            let mut names = Vec::new();
+            try_reserve_total(&mut names, num_fields)?;
+            for index in 0..num_fields {
+                names.push(current.get_item(index)?.getattr("name")?.extract()?);
+            }
+            names
+        };
     let fields = current.getattr("fields")?;
     if fields.len()? != names.len() {
         return Ok(None);
     }
-    let mut ordinate_fields = crate::try_vec_with_capacity(names.len())?;
+    let mut ordinate_fields = Vec::with_capacity(names.len());
     for (index, name) in names.iter().enumerate() {
         let field_type = fields.get_item(index)?.getattr("type")?;
         let is_float64 = pyarrow_type_is_float64(&types, &field_type)?;
-        crate::try_push(&mut ordinate_fields, (name.as_str(), is_float64))?;
+        ordinate_fields.push((name.as_str(), is_float64));
     }
     let axes = geoarrow::classify_geoarrow_ordinates(ordinate_fields).ok();
     Ok(axes.map(|axes| (depth, axes.has_z, axes.has_m)))
