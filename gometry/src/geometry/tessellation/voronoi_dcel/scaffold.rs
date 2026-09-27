@@ -104,11 +104,19 @@ pub(super) fn build_scaffold(
                 .ok_or_else(|| voronoi_error("too many clip segments"))?;
         }
     }
+    // Rectangular shells alias their four clip IDs with frame slots; other
+    // clips place all ring segments after the four frame slots.
+    let scaffold_clip_offset = if outer_is_rect { 0 } else { 4 };
     for contact in &clip.contacts {
         for segment in contact.segments {
+            // Contact ordinals belong to the segment count admitted above.
+            let clip_source = ClipSegmentId(segment as u32);
+            let scaffold_index = segment
+                .checked_add(scaffold_clip_offset)
+                .ok_or_else(|| voronoi_error("validated clip contact has no source segment"))?;
             let primitive = scaffold
-                .iter_mut()
-                .find(|primitive| primitive.clip_source == Some(ClipSegmentId(segment as u32)))
+                .get_mut(scaffold_index)
+                .filter(|primitive| primitive.clip_source == Some(clip_source))
                 .ok_or_else(|| voronoi_error("validated clip contact has no source segment"))?;
             primitive.events.push(contact.point.clone());
         }

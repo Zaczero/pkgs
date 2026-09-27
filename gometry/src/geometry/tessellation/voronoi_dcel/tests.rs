@@ -571,15 +571,164 @@ fn source_clip_contacts_keep_parameters_through_ring_normalization() {
     let scaffold = build_scaffold(&rect, &clip).unwrap();
     for segment in [3_u32, 4, 6] {
         let primitive = scaffold
-            .iter()
-            .find(|primitive| primitive.clip_source == Some(ClipSegmentId(segment)))
+            .get(segment as usize)
             .expect("each normalized contact edge has a scaffold primitive");
+        assert_eq!(primitive.clip_source, Some(ClipSegmentId(segment)));
         assert!(primitive.events.iter().any(|point| {
             point
                 .same_position(&exact::ExactPoint::from_xy(XY::new(0.0, 4.0)))
                 .unwrap()
         }));
     }
+    for event in &scaffold[3].events[..2] {
+        assert!(
+            event
+                .same_position(&exact::ExactPoint::from_xy(XY::new(0.0, 4.0)))
+                .unwrap()
+        );
+    }
+
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .unwrap();
+    assert_eq!(cells.len(), 1);
+    assert!(
+        cells.iter().all(
+            |cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+        )
+    );
+    let expected = Shape::Polygon(Polygon::new(
+        closed_ring(&[(-0.0, 4.0), (0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]),
+        vec![
+            closed_ring(&[(-0.0, 4.0), (2.0, 5.0), (2.0, 3.0)]),
+            closed_ring(&[(4.0, 4.0), (4.0, 6.0), (6.0, 6.0), (6.0, 4.0)]),
+        ],
+    ));
+    assert_eq!(
+        crate::io::to_wkb(&cells[0], None, false).unwrap(),
+        crate::io::to_wkb(&expected, None, false).unwrap()
+    );
+}
+
+#[test]
+fn nonrectangular_shell_contacts_keep_scaffold_events_in_source_order() {
+    let polygon = Polygon::new(
+        closed_ring(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (5.0, 15.0),
+            (0.0, 10.0),
+        ]),
+        vec![
+            closed_ring(&[(8.0, 12.0), (8.25, 11.5), (7.75, 11.5)]),
+            closed_ring(&[(6.0, 14.0), (6.25, 13.5), (5.75, 13.5)]),
+        ],
+    );
+    let sites = sites_xy(&[(3.0, 4.0), (7.0, 4.0)]);
+    let clip = normalize_clip(&sites, VoronoiBoundary::Polygon(&polygon), false).unwrap();
+    assert_eq!(
+        clip.contacts
+            .iter()
+            .map(|contact| contact.segments)
+            .collect::<Vec<_>>(),
+        [[2, 5], [2, 6], [2, 8], [2, 9]]
+    );
+
+    let scaffold = build_scaffold(&clip_rectangle(&clip).unwrap(), &clip).unwrap();
+    assert!(
+        scaffold[..4]
+            .iter()
+            .all(|primitive| primitive.clip_source.is_none())
+    );
+    let first_contact = exact::ExactPoint::from_xy(XY::new(6.0, 14.0));
+    let second_contact = exact::ExactPoint::from_xy(XY::new(8.0, 12.0));
+    for (actual, expected) in scaffold[6].events[..4].iter().zip([
+        &first_contact,
+        &first_contact,
+        &second_contact,
+        &second_contact,
+    ]) {
+        assert!(actual.same_position(expected).unwrap());
+    }
+    for (segment, scaffold_index, point) in [
+        (2_u32, 6_usize, &first_contact),
+        (5, 9, &first_contact),
+        (6, 10, &first_contact),
+        (8, 12, &second_contact),
+        (9, 13, &second_contact),
+    ] {
+        let primitive = scaffold
+            .get(scaffold_index)
+            .expect("normalized clip segment has its scaffold primitive");
+        assert_eq!(primitive.clip_source, Some(ClipSegmentId(segment)));
+        assert!(primitive.events[0].same_position(point).unwrap());
+    }
+
+    let source = Shape::MultiPoint(
+        sites
+            .iter()
+            .map(|site| site.point)
+            .collect::<Vec<_>>()
+            .into(),
+    );
+    let mut budget = ExpansionBudget::new("voronoi_polygons", "sites/clip topology");
+    let cells = source
+        .voronoi_polygons_budgeted(0.0, VoronoiBoundary::Polygon(&polygon), &mut budget)
+        .unwrap();
+    assert_eq!(cells.len(), 2);
+    assert!(
+        cells.iter().all(
+            |cell| matches!(cell, Shape::Polygon(polygon) if polygon_is_valid(polygon).unwrap())
+        )
+    );
+    let expected = [
+        Shape::Polygon(Polygon::new(
+            closed_ring(&[(0.0, 0.0), (5.0, 0.0), (5.0, 15.0), (0.0, 10.0)]),
+            Vec::new(),
+        )),
+        Shape::Polygon(Polygon::new(
+            closed_ring(&[
+                (5.0, 0.0),
+                (10.0, 0.0),
+                (10.0, 10.0),
+                (8.0, 12.0),
+                (6.0, 14.0),
+                (5.0, 15.0),
+            ]),
+            vec![
+                closed_ring(&[(5.75, 13.5), (6.0, 14.0), (6.25, 13.5)]),
+                closed_ring(&[(7.75, 11.5), (8.0, 12.0), (8.25, 11.5)]),
+            ],
+        )),
+    ];
+    for (actual, expected) in cells.iter().zip(expected) {
+        assert_eq!(
+            crate::io::to_wkb(actual, None, false).unwrap(),
+            crate::io::to_wkb(&expected, None, false).unwrap()
+        );
+    }
+
+    let mut edge_budget = ExpansionBudget::new("voronoi_edges", "sites/clip topology");
+    let Err(error) = source.voronoi_edge_column_budgeted(
+        0.0,
+        VoronoiBoundary::Polygon(&polygon),
+        &mut edge_budget,
+    ) else {
+        panic!("the exact nonrectangular contact case has no edge embedding")
+    };
+    assert_eq!(
+        error.to_string(),
+        "Voronoi construction failed: exact Voronoi subdivision has no topology-preserving binary64 embedding"
+    );
 }
 
 #[test]
