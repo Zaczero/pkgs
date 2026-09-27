@@ -1116,14 +1116,23 @@ struct OutputCounts {
 }
 
 impl OutputCounts {
-    fn add(&mut self, source: CoordRun<'_>) {
-        self.sequences = self.sequences.wrapping_add(1);
-        let vertices = source_len(source);
-        let total = match source_batch(source) {
+    fn add(&mut self, source: CoordRun<'_>) -> Result<()> {
+        self.add_run(source_batch(source), source_len(source))
+    }
+
+    fn add_run(&mut self, batch: OutputBatch, vertices: usize) -> Result<()> {
+        let total = match batch {
             OutputBatch::Xy => &mut self.xy_vertices,
             OutputBatch::Xyz => &mut self.xyz_vertices,
         };
-        *total = total.wrapping_add(vertices);
+        let Some(total_vertices) = total.checked_add(vertices) else {
+            return Err(GeometryErrorKind::OffsetCapacityExceeded.into());
+        };
+        types::ensure_coordseq_vertex_capacity(total_vertices)?;
+        *total = total_vertices;
+        // Sequence count sizes native staging only; it is not a wire count.
+        self.sequences = self.sequences.wrapping_add(1);
+        Ok(())
     }
 }
 
@@ -1185,13 +1194,8 @@ impl TransformOutputPlan {
     pub(crate) fn try_new(shapes: &[&Shape]) -> Result<Self> {
         let mut counts = OutputCounts::default();
         for shape in shapes {
-            let Ok(()) = shape.for_each_coord_run(&mut |source| {
-                counts.add(source);
-                Ok::<_, std::convert::Infallible>(())
-            });
+            shape.for_each_coord_run(&mut |source| counts.add(source))?;
         }
-        types::ensure_coordseq_vertex_capacity(counts.xy_vertices)?;
-        types::ensure_coordseq_vertex_capacity(counts.xyz_vertices)?;
         let mut plan = Self {
             xy: OutputColumns::with_capacity(counts.xy_vertices, false),
             xyz: OutputColumns::with_capacity(counts.xyz_vertices, true),
@@ -1437,7 +1441,41 @@ fn rebuild_seq_columns(seq: &CoordSeq, cursor: &mut TransformCursor) -> CoordSeq
 #[cfg(test)]
 mod lane_tests {
     use super::*;
+    use crate::error::ErrorKind;
     use crate::geometry::{CoordinateAxes, MultiPoint};
+
+    #[test]
+    fn output_counts_reject_one_vertex_past_each_packed_column_limit() {
+        let maximum = usize::try_from(i32::MAX).unwrap();
+        for batch in [OutputBatch::Xy, OutputBatch::Xyz] {
+            let mut counts = OutputCounts::default();
+            counts.add_run(batch, maximum).unwrap();
+
+            let error = counts.add_run(batch, 1).unwrap_err();
+            assert!(matches!(
+                error.kind(),
+                ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+            ));
+        }
+    }
+
+    #[test]
+    fn output_counts_reject_wrapping_vertex_total_before_it_can_pass_the_limit() {
+        let mut counts = OutputCounts {
+            // Seed the invalid pre-wrap total directly instead of constructing
+            // billions of coordinates to reach the same checked-add boundary.
+            xy_vertices: usize::MAX.wrapping_sub(3),
+            ..OutputCounts::default()
+        };
+
+        let error = counts
+            .add_run(OutputBatch::Xy, usize::try_from(i32::MAX).unwrap())
+            .unwrap_err();
+        assert!(matches!(
+            error.kind(),
+            ErrorKind::Geometry(GeometryErrorKind::OffsetCapacityExceeded)
+        ));
+    }
 
     #[test]
     fn chunks_cross_owners_and_run_xy_before_xyz() {
