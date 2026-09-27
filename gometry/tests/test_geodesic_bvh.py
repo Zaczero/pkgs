@@ -109,6 +109,29 @@ def test_geodesic_distance_dense_line_matches_pyproj_segment_oracle() -> None:
     assert gometry_dist == pytest.approx(best, rel=1e-05)
 
 
+@pytest.mark.parametrize(
+    ('start', 'end', 'probe'),
+    [
+        ((179.0, 0.0), (-179.0, 0.0), (180.0, 1.0)),
+        ((179.0, -1.0), (-179.0, -1.0), (0.0, 0.0)),
+    ],
+    ids=['antimeridian-seam', 'near-antipodal-probe'],
+)
+def test_dense_seam_and_near_antipodal_lines_match_coarse_twins(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    probe: tuple[float, float],
+) -> None:
+    dense = _geodesic_dense_line(start, end, 65)
+    coarse = _subsample_line(dense, stride=8)
+    point = gm.Point(*probe, crs=4326)
+    assert len(list(dense.coords)) - 1 >= MIN_BVH_SEGMENTS
+    expected = gm.distance(point, coarse)
+    actual = gm.distance(point, dense)
+    assert actual == pytest.approx(expected, rel=1e-8)
+    assert gm.dwithin(point, dense, math.nextafter(max(expected, actual), math.inf))
+
+
 def test_geodesic_dwithin_dense_ring_line_near_and_far() -> None:
     target = _dense_ring_line(0.0, 0.0, 0.5, 72)
     near = gm.Point(0.0, 0.0, crs=4326)

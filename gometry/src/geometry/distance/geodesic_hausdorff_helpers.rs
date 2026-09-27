@@ -855,7 +855,11 @@ mod tests {
             .expect("point-segment minimum should succeed")
         {
             GeodesicSegmentQueryResult::Attained { minimum, .. } => minimum,
-            result => panic!("unexpected point-segment result: {result:?}"),
+            result @ (GeodesicSegmentQueryResult::Excluded
+            | GeodesicSegmentQueryResult::ThresholdOutside
+            | GeodesicSegmentQueryResult::ThresholdResolvedOutside { .. }) => {
+                panic!("point-segment minimum did not attain: {result:?}")
+            },
         };
 
         geodesic_hausdorff_counters::reset();

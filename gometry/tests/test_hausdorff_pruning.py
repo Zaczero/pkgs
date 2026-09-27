@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 
 import gometry as gm
+import pytest
 
 _ANALYTIC_CASES = (
     (
@@ -86,6 +87,23 @@ def test_continuous_hausdorff_retains_discrete_vertex_control() -> None:
     )
     assert discrete == 0.0
     assert actual > discrete
+
+
+def test_filled_square_to_its_boundary_attains_the_interior_center() -> None:
+    square = gm.box(0.0, 0.0, 4.0, 4.0)
+    boundary = gm.LineString([
+        (0.0, 0.0),
+        (4.0, 0.0),
+        (4.0, 4.0),
+        (0.0, 4.0),
+        (0.0, 0.0),
+    ])
+    center = gm.Point(2.0, 2.0)
+
+    actual = gm.hausdorff_distance(square, boundary, max_error=1e-12)
+
+    assert actual == pytest.approx(2.0, abs=1e-12)
+    assert gm.distance(center, boundary, unit='planar') == 2.0
 
 
 def test_hausdorff_empty_and_degenerate_edges() -> None:

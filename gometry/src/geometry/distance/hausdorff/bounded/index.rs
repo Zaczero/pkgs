@@ -91,6 +91,10 @@ impl SupportIndex {
         Ok(index)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "order/item indices and child ranges are created from the same immutable SupportIndex vectors"
+    )]
     pub(super) fn build_range(&mut self, start: usize, end: usize) -> usize {
         let bounds = self.range_bounds(start, end);
         if end.saturating_sub(start) <= 4 {
@@ -119,7 +123,7 @@ impl SupportIndex {
             };
             left_key.total_cmp(&right_key).then_with(|| left.cmp(right))
         });
-        let middle = start + (end - start) / 2;
+        let middle = start.wrapping_add(end.wrapping_sub(start) / 2);
         let left = self.build_range(start, middle);
         let right = self.build_range(middle, end);
         let index = self.nodes.len();
@@ -130,10 +134,15 @@ impl SupportIndex {
         index
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "tree construction supplies a nonempty half-open range into the index's own order and item vectors"
+    )]
     pub(super) fn range_bounds(&self, start: usize, end: usize) -> FloatBox {
         let first = self.items[self.order[start]].bounds;
-        self.order[start + 1..end]
+        self.order[start..end]
             .iter()
+            .skip(1)
             .fold(first, |bounds, index| {
                 bounds.include(self.items[*index].bounds)
             })
@@ -143,6 +152,10 @@ impl SupportIndex {
     /// With `tightness`, primitives may be bounded in double-double
     /// intervals; without it every evaluation is exact and both bounds equal
     /// the exact distance.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "root, branch, leaf, and primitive IDs come from this immutable SupportIndex and its PreparedSupport"
+    )]
     pub(super) fn nearest(
         &self,
         support: &PreparedSupport,
@@ -216,6 +229,10 @@ impl SupportIndex {
     /// distance from its rounded position. Nomination only chooses which
     /// exact sites bound a patch, so an approximate ranking costs tightness,
     /// never soundness.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "frontier nodes, leaf ranges, and primitive IDs come from this immutable SupportIndex and its PreparedSupport"
+    )]
     pub(super) fn nominate(
         &self,
         support: &PreparedSupport,
@@ -286,6 +303,10 @@ impl SupportIndex {
     /// bound on the squared distance to the support over the box. One such
     /// candidate, a monotone chain of them, or a box strictly separated from
     /// the hull of all of them excludes a maximum.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "stack nodes, leaf ranges, and primitive IDs come from this immutable SupportIndex and its PreparedSupport"
+    )]
     pub(super) fn excludes_local_maximum(
         &self,
         support: &PreparedSupport,
@@ -362,6 +383,10 @@ impl SupportIndex {
 /// sides of the center: past its lowest touch point it rises in `w`, which
 /// enters the disk, and between touch points it cannot cross the disk to the
 /// other side.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "span ordinals and two-end neighbor links are built from the same candidate slice and traversed as a keyed path"
+)]
 pub(super) fn forms_monotone_chain(
     support: &PreparedSupport,
     candidates: &[IndexItem],
@@ -380,7 +405,7 @@ pub(super) fn forms_monotone_chain(
     // `i`; an endpoint shared three ways is a branch, not a chain.
     let mut links = vec![[None::<usize>; 2]; ends.len()];
     for first in 0..ends.len() {
-        for second in first + 1..ends.len() {
+        for second in first.wrapping_add(1)..ends.len() {
             for first_end in 0..2 {
                 for second_end in 0..2 {
                     if ends[first][first_end].same_position(&ends[second][second_end])? {

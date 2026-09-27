@@ -183,7 +183,12 @@ fn puntal_brute_operands<'a>(a: &'a Shape, b: &'a Shape) -> Option<(PuntalProbe<
     let puntal = |shape: &'a Shape| match shape {
         Shape::Point(point) => Some(PuntalProbe::One(*point)),
         Shape::MultiPoint(points) => Some(PuntalProbe::Many(points)),
-        _ => None,
+        Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => None,
     };
     let (points, other) = match (puntal(a), puntal(b)) {
         (Some(points), None) => (points, b),

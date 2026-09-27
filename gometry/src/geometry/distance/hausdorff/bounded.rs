@@ -92,18 +92,18 @@ impl PreparedSupport {
         debug_assert_eq!(xs.len(), ys.len());
         let mut spans = Vec::with_capacity(xs.len().saturating_sub(1));
         let mut points = Vec::new();
-        if xs.len() == 1 {
-            points.push(ExactPoint::from_xy(XY::new(xs[0], ys[0])));
-        }
-        for index in 1..xs.len() {
-            push_raw_segment(
-                Segment {
-                    start: XY::new(xs[index - 1], ys[index - 1]),
-                    end: XY::new(xs[index], ys[index]),
-                },
-                &mut spans,
-                &mut points,
-            )?;
+        let mut coordinates = xs.iter().copied().zip(ys.iter().copied());
+        if let Some((x, y)) = coordinates.next() {
+            let first = XY::new(x, y);
+            let mut start = first;
+            for (x, y) in coordinates {
+                let end = XY::new(x, y);
+                push_raw_segment(Segment { start, end }, &mut spans, &mut points)?;
+                start = end;
+            }
+            if xs.len() == 1 {
+                points.push(ExactPoint::from_xy(first));
+            }
         }
         Self::from_parts(spans, points, Vec::new())
     }
@@ -167,9 +167,11 @@ impl PreparedSupport {
                 if cycle.len() < 2 {
                     continue;
                 }
-                for index in 0..cycle.len() {
-                    let start = &cycle[index];
-                    let end = &cycle[(index + 1) % cycle.len()];
+                for (start, end) in cycle
+                    .iter()
+                    .zip(cycle.iter().cycle().skip(1))
+                    .take(cycle.len())
+                {
                     boundary_edges.push(BoundaryEdge {
                         start: start.clone(),
                         end: end.clone(),
@@ -208,38 +210,34 @@ impl PreparedSupport {
     /// already exclude shared/internal face edges and lower-dimensional
     /// support hidden by a positive-area face.
     pub(in crate::geometry) fn boundary_clone(&self) -> Result<Self> {
-        let mut spans = Vec::with_capacity(
-            self.boundary_spans
-                .as_ref()
-                .map_or(self.spans.len(), |flags| {
-                    flags.iter().filter(|&&selected| selected).count()
-                }),
-        );
-        for (index, span) in self.spans.iter().enumerate() {
-            let selected = self
-                .boundary_spans
-                .as_ref()
-                .is_none_or(|flags| flags[index]);
-            if selected {
-                spans.push(span.clone());
-            }
+        let span_flags = self.boundary_spans.as_deref();
+        let mut spans = Vec::with_capacity(span_flags.map_or(self.spans.len(), |flags| {
+            flags.iter().filter(|&&selected| selected).count()
+        }));
+        match span_flags {
+            Some(flags) => {
+                for (span, &selected) in self.spans.iter().zip(flags) {
+                    if selected {
+                        spans.push(span.clone());
+                    }
+                }
+            },
+            None => spans.extend(self.spans.iter().cloned()),
         }
 
-        let mut points = Vec::with_capacity(
-            self.boundary_points
-                .as_ref()
-                .map_or(self.points.len(), |flags| {
-                    flags.iter().filter(|&&selected| selected).count()
-                }),
-        );
-        for (index, point) in self.points.iter().enumerate() {
-            let selected = self
-                .boundary_points
-                .as_ref()
-                .is_none_or(|flags| flags[index]);
-            if selected {
-                points.push(point.clone());
-            }
+        let point_flags = self.boundary_points.as_deref();
+        let mut points = Vec::with_capacity(point_flags.map_or(self.points.len(), |flags| {
+            flags.iter().filter(|&&selected| selected).count()
+        }));
+        match point_flags {
+            Some(flags) => {
+                for (point, &selected) in self.points.iter().zip(flags) {
+                    if selected {
+                        points.push(point.clone());
+                    }
+                }
+            },
+            None => points.extend(self.points.iter().cloned()),
         }
         Self::from_parts(spans, points, Vec::new())
     }
@@ -350,9 +348,11 @@ impl PreparedSupport {
                     continue;
                 }
                 let mut area = Rational::zero();
-                for index in 0..cycle.len() {
-                    let left = &cycle[index];
-                    let right = &cycle[(index + 1) % cycle.len()];
+                for (left, right) in cycle
+                    .iter()
+                    .zip(cycle.iter().cycle().skip(1))
+                    .take(cycle.len())
+                {
                     let cross = left
                         .x
                         .try_product(&right.y)?
@@ -411,6 +411,10 @@ impl PreparedSupport {
         Ok(None)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "PrimitiveId carries a stable span/point ordinal from this immutable PreparedSupport"
+    )]
     fn primitive_distance_squared(
         &self,
         primitive: PrimitiveId,
@@ -437,6 +441,10 @@ impl PreparedSupport {
         Ok(self.index.nearest(self, point, None)?.lower)
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "PrimitiveId carries a stable span/point ordinal from this immutable PreparedSupport"
+    )]
     fn primitive_squared_bounds(
         &self,
         primitive: PrimitiveId,
@@ -773,7 +781,7 @@ fn exact_sqrt_path_forced() -> bool {
 fn record_sqrt_fast_admission() {
     SQRT_STATS.with(|stats| {
         let mut value = stats.get();
-        value.fast_admissions += 1;
+        value.fast_admissions = value.fast_admissions.wrapping_add(1);
         stats.set(value);
     });
 }
@@ -782,7 +790,7 @@ fn record_sqrt_fast_admission() {
 fn record_sqrt_fallback() {
     SQRT_STATS.with(|stats| {
         let mut value = stats.get();
-        value.fallbacks += 1;
+        value.fallbacks = value.fallbacks.wrapping_add(1);
         stats.set(value);
     });
 }
@@ -873,11 +881,20 @@ fn cycle_location(
         return Ok(CycleLocation::Clear);
     }
     let mut crossings = false;
-    let mut left_order = cycle[cycle.len() - 1].y.try_cmp(&point.y)?;
-    for index in 0..cycle.len() {
-        let left = &cycle[(index + cycle.len() - 1) % cycle.len()];
-        let right = &cycle[index];
-        let edge = edges[(index + cycle.len() - 1) % cycle.len()].bounds;
+    debug_assert_eq!(cycle.len(), edges.len());
+    let previous_count = cycle.len().wrapping_sub(1);
+    let last = cycle
+        .last()
+        .expect("a cycle of three points has a last point");
+    let mut left_order = last.y.try_cmp(&point.y)?;
+    let lefts = std::iter::once(last).chain(cycle.iter().take(previous_count));
+    let edge_first = edges
+        .iter()
+        .next_back()
+        .expect("cycle edges align with cycle points");
+    let edges = std::iter::once(edge_first).chain(edges.iter().take(previous_count));
+    for ((left, right), edge) in lefts.zip(cycle.iter()).zip(edges) {
+        let edge = edge.bounds;
         let right_order = if edge.min_y > point_bounds.max_y {
             Ordering::Greater
         } else if edge.max_y < point_bounds.min_y {
@@ -1063,9 +1080,11 @@ fn exact_segment_enters_candidate(
     let source_x = end.x.try_subtract(&start.x)?;
     let source_y = end.y.try_subtract(&start.y)?;
 
-    for index in 0..candidate.len() {
-        let left = candidate[index];
-        let right = candidate[(index + 1) % candidate.len()];
+    for (&left, &right) in candidate
+        .iter()
+        .zip(candidate.iter().cycle().skip(1))
+        .take(candidate.len())
+    {
         let edge_x = Rational::from_f64(right.x).try_subtract(&Rational::from_f64(left.x))?;
         let edge_y = Rational::from_f64(right.y).try_subtract(&Rational::from_f64(left.y))?;
         let start_x = start.x.try_subtract(&Rational::from_f64(left.x))?;
@@ -1132,6 +1151,10 @@ enum SourcePatch {
 }
 
 impl SourcePatch {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "patch span and point ordinals are created from this immutable PreparedSupport"
+    )]
     fn witness(&self, source: &PreparedSupport, center_first: bool) -> Result<Option<ExactPoint>> {
         match self {
             Self::Span { span, lo, hi } => {
@@ -1143,6 +1166,10 @@ impl SourcePatch {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "patch span and point ordinals are created from this immutable PreparedSupport"
+    )]
     fn center_and_radius_squared(
         &self,
         source: &PreparedSupport,
@@ -1177,6 +1204,10 @@ impl SourcePatch {
     }
 
     #[cfg(any(test, debug_assertions))]
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "patch span and point ordinals are created from this immutable PreparedSupport"
+    )]
     fn witness_is_valid(&self, source: &PreparedSupport, witness: &ExactPoint) -> Result<bool> {
         match self {
             Self::Span { span, lo, hi } => {
@@ -1197,6 +1228,10 @@ impl SourcePatch {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "patch span and point ordinals are created from this immutable PreparedSupport"
+    )]
     fn corners(&self, source: &PreparedSupport) -> Result<Vec<ExactPoint>> {
         Ok(match self {
             Self::Span { span, lo, hi } => {
@@ -1263,7 +1298,7 @@ impl SourcePatch {
         if !split_x && !split_y {
             return Ok(None);
         }
-        let count = (1 + usize::from(split_x)) * (1 + usize::from(split_y));
+        let count = if split_x && split_y { 4 } else { 2 };
         budget.add(count)?;
         let mut children = Vec::with_capacity(count);
         let xs = if split_x {
@@ -1276,8 +1311,8 @@ impl SourcePatch {
         } else {
             [(bounds.min_y, bounds.max_y); 2]
         };
-        for &(min_x, max_x) in &xs[..if split_x { 2 } else { 1 }] {
-            for &(min_y, max_y) in &ys[..if split_y { 2 } else { 1 }] {
+        for (min_x, max_x) in xs.into_iter().take(if split_x { 2 } else { 1 }) {
+            for (min_y, max_y) in ys.into_iter().take(if split_y { 2 } else { 1 }) {
                 children.push(Self::Box(FloatBox {
                     min_x,
                     max_x,
@@ -1572,7 +1607,7 @@ impl SqrtInterval {
 
     fn adjacent(lower: f64, upper: f64) -> Self {
         debug_assert!(lower.is_finite() && upper.is_finite());
-        debug_assert_eq!(upper.to_bits() - lower.to_bits(), 1);
+        debug_assert_eq!(upper.to_bits().checked_sub(lower.to_bits()), Some(1));
         Self {
             lower: ExactDyadic::from_f64(lower),
             upper: Some(ExactDyadic::from_f64(upper)),
@@ -1977,6 +2012,10 @@ fn add_parallel_probe(
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "nominated span ordinals index the same immutable target support that produced them"
+)]
 fn parallel_strip_upper(
     patch: &SourcePatch,
     source: &PreparedSupport,
@@ -2011,8 +2050,9 @@ fn parallel_strip_upper(
     // the span count, so allocating per pair allocated quadratically.
     let mut left_values = Vec::with_capacity(probe_count);
     let mut right_values = Vec::with_capacity(probe_count);
-    for (left_offset, &left_index) in span_indices.iter().enumerate() {
-        for &right_index in &span_indices[(left_offset + 1)..] {
+    let mut remaining = span_indices.as_slice();
+    while let Some((&left_index, right_indices)) = remaining.split_first() {
+        for &right_index in right_indices {
             let left = &target.spans[left_index];
             let right = &target.spans[right_index];
             if !exact_parallel(left, right)? {
@@ -2077,6 +2117,7 @@ fn parallel_strip_upper(
 
             min_rational(&mut best, upper)?;
         }
+        remaining = right_indices;
     }
     Ok(best)
 }

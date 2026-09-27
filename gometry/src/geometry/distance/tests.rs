@@ -225,7 +225,7 @@ pub(super) fn dense_line(start_lon: f64, start_lat: f64, count: usize) -> Shape 
     line(
         (0..count)
             .map(|index| {
-                let t = index as f64 / (count - 1) as f64;
+                let t = index as f64 / count.wrapping_sub(1) as f64;
                 p(
                     start_lon + t * 4.0,
                     start_lat + (t * std::f64::consts::TAU).sin() * 0.25,
@@ -671,6 +671,18 @@ pub(super) fn geodesic_bvh_oracle_cases() -> Vec<(&'static str, Shape, Shape, bo
             true,
         ),
         (
+            "dense_antimeridian_seam",
+            Shape::Point(p(180.0, 1.0)),
+            dense_line(179.0, 0.0, 65),
+            true,
+        ),
+        (
+            "dense_near_antipodal",
+            Shape::Point(p(0.0, 0.0)),
+            dense_line(179.0, -1.0, 65),
+            true,
+        ),
+        (
             "multipoint_fallback",
             Shape::Point(p(0.0, 0.0)),
             multipoint(vec![p(1.0, 0.0), p(-1.0, 0.0), p(0.0, 1.0)]),
@@ -864,6 +876,10 @@ fn distance_3d_with_parts_matches_brute_oracle() {
         (
             with_z(Shape::Point(p(1e-200, 1e-200)), 0.0),
             with_z(Shape::Point(p(0.0, 0.0)), 0.0),
+        ),
+        (
+            Shape::Point(pzm(0.0, 0.0, 0.0, 1e200)),
+            Shape::Point(pzm(3.0, 4.0, 12.0, -1e200)),
         ),
         (
             with_z(multipoint(vec![p(0.0, 0.0), p(10.0, 0.0)]), 0.0),

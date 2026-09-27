@@ -25,7 +25,7 @@ use crate::geometry::distance::{
 };
 use crate::geometry::{
     FrameDependentCaches, GeodesicMetric, GeodesicSegmentScratch, MOrdinate, Point, PreparedPlan,
-    Shape, ZOrdinate,
+    Shape, WitnessOrder, ZOrdinate,
 };
 
 fn disconnected_bvh_target() -> Shape {
@@ -823,7 +823,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 &target_parts,
                 metric,
                 None,
-                0,
+                WitnessOrder::ZERO,
                 false,
                 &mut rows,
                 &mut segment_scratch,
@@ -833,7 +833,7 @@ fn geodesic_facet_bvh_matches_cap_sweep_oracle() -> Result<()> {
                 &target_parts,
                 metric,
                 None,
-                0,
+                WitnessOrder::ZERO,
                 false,
             )?;
             assert_same_witness(name, actual_witness.as_ref(), expected_witness.as_ref());
@@ -944,7 +944,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
                 &target_parts,
                 metric,
                 None,
-                0,
+                WitnessOrder::ZERO,
                 false,
                 &mut rows,
                 &mut segment_scratch,
@@ -954,7 +954,7 @@ fn geodesic_bvh_coalesces_xy_across_ordinates_without_losing_witnesses() -> Resu
                 &target_parts,
                 metric,
                 None,
-                0,
+                WitnessOrder::ZERO,
                 false,
             )?;
             assert_same_witness(name, actual_witness.as_ref(), expected_witness.as_ref());
@@ -1233,13 +1233,15 @@ fn frechet_full_reference(sx: &[f64], sy: &[f64], lx: &[f64], ly: &[f64]) -> f64
         current[0] = left;
         for index in 1..width {
             let (dx, dy) = (sx[index] - lx[row], sy[index] - ly[row]);
-            let reach = previous[index].min(previous[index - 1]).min(left);
+            let reach = previous[index]
+                .min(previous[index.wrapping_sub(1)])
+                .min(left);
             left = (dx * dx + dy * dy).max(reach);
             current[index] = left;
         }
         std::mem::swap(&mut previous, &mut current);
     }
-    previous[width - 1].sqrt()
+    previous[width.wrapping_sub(1)].sqrt()
 }
 
 #[test]

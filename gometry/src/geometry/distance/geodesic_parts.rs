@@ -6,7 +6,7 @@ use crate::geometry::distance::{
 use crate::geometry::{
     FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey,
     GeodesicTargetFeature, GeodesicWitnessCandidate, Point, PreparedPlan, SegmentContact, Shape,
-    distance, geodesic_witness_is_better,
+    WitnessOrder, distance, geodesic_witness_is_better,
 };
 
 /// Validate the geodesic linework domain and reject filled areal operands.
@@ -23,7 +23,11 @@ pub(crate) fn ensure_geodesic_linework(shape: &Shape, metric: &impl GeodesicMetr
             }
             Ok(())
         },
-        _ => metric.ensure_shape(shape),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => metric.ensure_shape(shape),
     }
 }
 pub(crate) fn geodesic_cap_streaming(
@@ -117,7 +121,12 @@ fn segment_contact_parts(
                             index: right_index,
                             along: candidate.second_along,
                         },
-                        order: left_index * width + right_index,
+                        order: WitnessOrder::row_major(
+                            WitnessOrder::ZERO,
+                            left_index,
+                            width as u128,
+                            right_index as u128,
+                        ),
                         swapped: false,
                     };
                     if geodesic_witness_is_better(unresolved.as_ref(), &witness) {
@@ -141,11 +150,11 @@ pub(crate) fn geodesic_distance_with_parts(
     if contact {
         return Ok(0.0);
     }
-    if matches!(left, Shape::Point(_)) {
-        return geodesic_point_distance_with_parts(left_parts.points[0], right_parts, metric, None);
+    if let Shape::Point(point) = left {
+        return geodesic_point_distance_with_parts(*point, right_parts, metric, None);
     }
-    if matches!(right, Shape::Point(_)) {
-        return geodesic_point_distance_with_parts(right_parts.points[0], left_parts, metric, None);
+    if let Shape::Point(point) = right {
+        return geodesic_point_distance_with_parts(*point, left_parts, metric, None);
     }
     let mut best = unresolved
         .as_ref()
@@ -180,23 +189,11 @@ pub(crate) fn geodesic_dwithin_with_parts(
     if unresolved.is_some_and(|candidate| candidate.distance <= distance) {
         return Ok(true);
     }
-    if matches!(left, Shape::Point(_)) {
-        return geodesic_point_dwithin_with_parts(
-            left_parts.points[0],
-            right_parts,
-            metric,
-            distance,
-            None,
-        );
+    if let Shape::Point(point) = left {
+        return geodesic_point_dwithin_with_parts(*point, right_parts, metric, distance, None);
     }
-    if matches!(right, Shape::Point(_)) {
-        return geodesic_point_dwithin_with_parts(
-            right_parts.points[0],
-            left_parts,
-            metric,
-            distance,
-            None,
-        );
+    if let Shape::Point(point) = right {
+        return geodesic_point_dwithin_with_parts(*point, left_parts, metric, distance, None);
     }
     Ok(
         geodesic_dwithin_sweep_with_parts(&left_parts.points, right_parts, metric, distance)?
@@ -247,7 +244,12 @@ pub(crate) fn geodesic_nearest_points_with_parts(
                             index: right_index,
                             along: candidate.second_along,
                         },
-                        order: left_index * right_parts.segments.len() + right_index,
+                        order: WitnessOrder::row_major(
+                            WitnessOrder::ZERO,
+                            left_index,
+                            right_parts.segments.len() as u128,
+                            right_index as u128,
+                        ),
                         swapped: false,
                     };
                     if geodesic_witness_is_better(best.as_ref(), &candidate) {
@@ -263,7 +265,7 @@ pub(crate) fn geodesic_nearest_points_with_parts(
             right_parts,
             metric,
             best,
-            0,
+            WitnessOrder::ZERO,
             false,
         )?
         .map(|candidate| (candidate.probe, candidate.target)));
@@ -274,15 +276,24 @@ pub(crate) fn geodesic_nearest_points_with_parts(
             left_parts,
             metric,
             best,
-            0,
+            WitnessOrder::ZERO,
             true,
         )?
         .map(|candidate| (candidate.target, candidate.probe)));
     }
-    let reverse_order_offset =
-        left_parts.points.len() * (right_parts.segments.len() + right_parts.point_only.len());
-    let best =
-        geodesic_witness_sweep_with_parts(&left_parts.points, right_parts, metric, best, 0, false)?;
+    let reverse_order_offset = WitnessOrder::after_rows(
+        WitnessOrder::ZERO,
+        left_parts.points.len(),
+        WitnessOrder::feature_width(right_parts.segments.len(), right_parts.point_only.len()),
+    );
+    let best = geodesic_witness_sweep_with_parts(
+        &left_parts.points,
+        right_parts,
+        metric,
+        best,
+        WitnessOrder::ZERO,
+        false,
+    )?;
     let best = geodesic_witness_sweep_with_parts(
         &right_parts.points,
         left_parts,
