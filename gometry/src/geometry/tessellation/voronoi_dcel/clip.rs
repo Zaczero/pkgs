@@ -5,8 +5,8 @@
 //! vertex the clip did not produce.
 
 use super::{
-    ExactSign, NormalizedClip, Ordering, Result, Site, SiteId, XY, exact, lex_xy, try_dedup_by,
-    try_sort_by, voronoi_error,
+    ExactSign, FrameSide, NormalizedClip, Ordering, Result, Site, SiteId, XY, exact, lex_xy,
+    site_at, site_by_id, try_dedup_by, try_sort_by, voronoi_error,
 };
 
 pub(super) fn orient_separator(
@@ -15,10 +15,11 @@ pub(super) fn orient_separator(
     sites: [SiteId; 2],
     input: &[Site],
 ) -> Result<(exact::ExactPoint, exact::ExactPoint)> {
+    let [left_site, _] = sites;
     match exact::orient_points(
         &start,
         &end,
-        &exact::ExactPoint::from_xy(input[sites[0].0 as usize].point.xy()),
+        &exact::ExactPoint::from_xy(site_by_id(input, left_site).point.xy()),
     )? {
         ExactSign::Positive => {},
         ExactSign::Negative => std::mem::swap(&mut start, &mut end),
@@ -34,23 +35,28 @@ pub(super) fn orient_separator(
 pub(super) fn bisector_frame_intersections(
     sites: [XY; 2],
     frame: &[exact::ExactPoint; 4],
-) -> Result<Vec<(u8, exact::ExactPoint)>> {
+) -> Result<Vec<(FrameSide, exact::ExactPoint)>> {
+    let [left, right] = sites;
     if let [Some(a), Some(b), Some(c), Some(d)] = frame.each_ref().map(exact::ExactPoint::as_double)
     {
         let corners = [a, b, c, d];
         let mut hits = Vec::new();
         let mut certified = true;
-        for side in 0..4 {
-            let ends = [corners[side], corners[(side + 1) % 4]];
-            match exact::ExactPoint::certified_bisector_hit(sites, ends) {
+        for (side, ((&start, &end), (frame_start, frame_end))) in FrameSide::ALL.into_iter().zip(
+            corners
+                .iter()
+                .zip(corners.iter().cycle().skip(1))
+                .zip(frame.iter().zip(frame.iter().cycle().skip(1))),
+        ) {
+            match exact::ExactPoint::certified_bisector_hit([left, right], [start, end]) {
                 exact::FrameHit::Declined => {
                     certified = false;
                     break;
                 },
                 exact::FrameHit::Parallel => {},
                 exact::FrameHit::Point(hit) => {
-                    if between(&hit, &frame[side], &frame[(side + 1) % 4])? {
-                        hits.push((side as u8, hit));
+                    if between(&hit, frame_start, frame_end)? {
+                        hits.push((side, hit));
                     }
                 },
             }
@@ -73,7 +79,7 @@ pub(super) fn bisector_frame_intersections(
         }
     }
     frame_intersections(
-        &exact::ExactLine::perpendicular_bisector(sites[0], sites[1])?,
+        &exact::ExactLine::perpendicular_bisector(left, right)?,
         frame,
     )
 }
@@ -95,17 +101,19 @@ pub(super) fn between(
 pub(super) fn frame_intersections(
     line: &exact::ExactLine,
     frame: &[exact::ExactPoint; 4],
-) -> Result<Vec<(u8, exact::ExactPoint)>> {
+) -> Result<Vec<(FrameSide, exact::ExactPoint)>> {
     let mut hits = Vec::new();
-    for side in 0..4 {
-        let edge = exact::ExactLine::through_points(&frame[side], &frame[(side + 1) % 4])?;
+    for (side, (start, end)) in FrameSide::ALL
+        .into_iter()
+        .zip(frame.iter().zip(frame.iter().cycle().skip(1)))
+    {
+        let edge = exact::ExactLine::through_points(start, end)?;
         let hit = exact::line_intersection(line, &edge)?;
         if exact::signed_line_product(line, &hit)? == ExactSign::Zero
             && exact::point_in_cycle(frame, &hit)? != exact::PointInCycle::Outside
-            && exact::segment_intersection(&frame[side], &frame[(side + 1) % 4], &hit, &hit)?
-                .is_point()
+            && exact::segment_intersection(start, end, &hit, &hit)?.is_point()
         {
-            hits.push((side as u8, hit));
+            hits.push((side, hit));
         }
     }
     try_sort_by(&mut hits, |left, right| {
@@ -142,12 +150,13 @@ pub(super) fn clip_rectangle(clip: &NormalizedClip<'_>) -> Result<[exact::ExactP
 /// Whether the four corners form a counter-clockwise axis-aligned rectangle
 /// of positive extent, starting at its lower-left corner.
 pub(super) fn axis_aligned_rectangle(rect: &[exact::ExactPoint; 4]) -> Result<bool> {
-    Ok(rect[0].compare_y(&rect[1])?.is_eq()
-        && rect[2].compare_y(&rect[3])?.is_eq()
-        && rect[1].compare_x(&rect[2])?.is_eq()
-        && rect[3].compare_x(&rect[0])?.is_eq()
-        && rect[0].compare_x(&rect[1])?.is_lt()
-        && rect[1].compare_y(&rect[2])?.is_lt())
+    let [bottom_left, bottom_right, top_right, top_left] = rect;
+    Ok(bottom_left.compare_y(bottom_right)?.is_eq()
+        && top_right.compare_y(top_left)?.is_eq()
+        && bottom_right.compare_x(top_right)?.is_eq()
+        && top_left.compare_x(bottom_left)?.is_eq()
+        && bottom_left.compare_x(bottom_right)?.is_lt()
+        && bottom_right.compare_y(top_right)?.is_lt())
 }
 
 pub(super) fn in_rectangle(
@@ -189,9 +198,7 @@ pub(super) fn separator_rectangle_hits(
     let certified = bisector_frame_intersections(pair, rect)?;
     let mut hits = Vec::with_capacity(certified.len().saturating_add(8));
     hits.extend(certified.into_iter().map(|(_, point)| point));
-    for side in 0..4 {
-        let start = &rect[side];
-        let end = &rect[(side + 1) % 4];
+    for (start, end) in rect.iter().zip(rect.iter().cycle().skip(1)) {
         if exact::signed_line_product(line, start)? == ExactSign::Zero
             && exact::signed_line_product(line, end)? == ExactSign::Zero
         {
@@ -202,6 +209,11 @@ pub(super) fn separator_rectangle_hits(
     Ok(hits)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "fallible segment filtering uses swap compaction: kept never exceeds the current index, and both remain below the original points length"
+)]
 pub(super) fn clip_segment_to_rectangle(
     start: &exact::ExactPoint,
     end: &exact::ExactPoint,
@@ -238,11 +250,12 @@ pub(super) fn hull_point_on_ray(
     if point.same_position(center)? {
         return Ok(true);
     }
+    let [left, right] = sites;
     if center.same_position(mid)? {
-        return Ok(exact::orient_points(sites[0], sites[1], point)? != opposite_sign);
+        return Ok(exact::orient_points(left, right, point)? != opposite_sign);
     }
     Ok(
-        if exact::orient_points(sites[0], sites[1], center)? == opposite_sign {
+        if exact::orient_points(left, right, center)? == opposite_sign {
             exact::compare_along(center, mid, center, point)? != Ordering::Greater
         } else {
             exact::compare_along(mid, center, center, point)? != Ordering::Greater
@@ -258,18 +271,22 @@ pub(super) fn clip_hull_ray_to_rectangle(
     rect: &[exact::ExactPoint; 4],
     sites: &[Site],
 ) -> Result<Option<(exact::ExactPoint, exact::ExactPoint)>> {
+    let [left_site, right_site] = pair;
     let hits = separator_rectangle_hits(
-        [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
+        [
+            site_at(sites, left_site).point.xy(),
+            site_at(sites, right_site).point.xy(),
+        ],
         line,
         rect,
     )?;
-    let left = exact::ExactPoint::from_xy(sites[pair[0]].point.xy());
-    let right = exact::ExactPoint::from_xy(sites[pair[1]].point.xy());
+    let left = exact::ExactPoint::from_xy(site_at(sites, left_site).point.xy());
+    let right = exact::ExactPoint::from_xy(site_at(sites, right_site).point.xy());
     let mid = left.midpoint(&right)?;
     let opposite_sign = exact::orient_points(
         &left,
         &right,
-        &exact::ExactPoint::from_xy(sites[opposite].point.xy()),
+        &exact::ExactPoint::from_xy(site_at(sites, opposite).point.xy()),
     )?;
     let mut points = Vec::with_capacity(hits.len().saturating_add(1));
     if in_rectangle(rect, center)? {

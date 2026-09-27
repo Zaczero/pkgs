@@ -6,10 +6,11 @@
 
 use super::{
     AtomSeed, AtomicEdge, CertifiedPrimalEdge, ClipSegmentId, ClippedSeparator, DelaunayComplex,
-    ExactSign, IndexedTopology, NodedAtoms, NodedVertex, NormalizedClip, Ordering, OwnerTransition,
-    PointKey, PrimitiveOwner, Result, ScaffoldPrimitive, Site, SiteAdjacency, SiteId, Transition,
-    VertexId, XY, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact, nearest_site_walk,
-    orient_separator, sort_unique_along, try_dedup_by, try_sort_by, voronoi_error,
+    ExactSign, FrameSide, IndexedTopology, NodedAtoms, NodedVertex, NormalizedClip, Ordering,
+    OwnerTransition, PointKey, PrimitiveOwner, Result, ScaffoldPrimitive, Site, SiteAdjacency,
+    SiteId, Transition, VertexId, XY, clip_hull_ray_to_rectangle, clip_segment_to_rectangle, exact,
+    nearest_site_walk, noded_vertex, orient_separator, site_at, site_by_id, sort_unique_along,
+    try_dedup_by, try_sort_by, voronoi_error,
 };
 
 pub(super) fn coincident_frame_owner(
@@ -19,11 +20,11 @@ pub(super) fn coincident_frame_owner(
     sites: &[Site],
 ) -> Result<SiteId> {
     let mut inside = None;
-    for &id in &pair {
+    for id in pair {
         match exact::orient_points(
             ccw_start,
             ccw_end,
-            &exact::ExactPoint::from_xy(sites[id.0 as usize].point.xy()),
+            &exact::ExactPoint::from_xy(site_by_id(sites, id).point.xy()),
         )? {
             ExactSign::Positive => {
                 if inside.replace(id).is_some() {
@@ -45,12 +46,29 @@ pub(super) fn build_scaffold(
     rect: &[exact::ExactPoint; 4],
     clip: &NormalizedClip<'_>,
 ) -> Result<Vec<ScaffoldPrimitive>> {
-    let mut outer_is_rect = clip.rings.first().is_some_and(|ring| ring.len() == 4);
-    for side in 0..4 {
-        outer_is_rect = outer_is_rect && clip.rings[0][side].same_position(&rect[side])?;
-    }
+    let (outer_ring, remaining_rings) = clip.rings.split_first().map_or(
+        (None, clip.rings.as_slice()),
+        |(outer_ring, remaining_rings)| (Some(outer_ring), remaining_rings),
+    );
+    let outer_is_rect = match outer_ring {
+        Some(outer_ring) => {
+            if let [bottom_left, bottom_right, top_right, top_left] = outer_ring.as_slice() {
+                let mut matches_frame = true;
+                for (point, frame_point) in [bottom_left, bottom_right, top_right, top_left]
+                    .into_iter()
+                    .zip(rect)
+                {
+                    matches_frame &= point.same_position(frame_point)?;
+                }
+                matches_frame
+            } else {
+                false
+            }
+        },
+        None => false,
+    };
     let clip_rings = if outer_is_rect {
-        &clip.rings[1..]
+        remaining_rings
     } else {
         clip.rings.as_slice()
     };
@@ -69,29 +87,29 @@ pub(super) fn build_scaffold(
     })?;
     u32::try_from(clip_segment_count).map_err(|_| crate::error::ResourceError::SizeOverflow)?;
     let mut scaffold = Vec::with_capacity(scaffold_count);
-    for side in 0..4 {
+    for (side, (start, end)) in FrameSide::ALL
+        .into_iter()
+        .zip(rect.iter().zip(rect.iter().cycle().skip(1)))
+    {
         scaffold.push(ScaffoldPrimitive {
-            line: exact::ExactLine::through_points(&rect[side], &rect[(side + 1) % 4])?,
-            start: rect[side].clone(),
-            end: rect[(side + 1) % 4].clone(),
+            line: exact::ExactLine::through_points(start, end)?,
+            start: start.clone(),
+            end: end.clone(),
             frame_delta: 1,
             clip_delta: i32::from(outer_is_rect),
             owner: PrimitiveOwner::FrameNearest,
-            clip_source: outer_is_rect.then_some(ClipSegmentId(side as u32)),
-            frame_side: Some(side as u8),
+            clip_source: outer_is_rect.then_some(side.clip_segment()),
+            frame_side: Some(side),
             events: Vec::new(),
         });
     }
     let mut clip_segment = if outer_is_rect { 4 } else { 0 };
     for ring in clip_rings {
-        for index in 0..ring.len() {
+        for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
             scaffold.push(ScaffoldPrimitive {
-                line: exact::ExactLine::through_points(
-                    &ring[index],
-                    &ring[(index + 1) % ring.len()],
-                )?,
-                start: ring[index].clone(),
-                end: ring[(index + 1) % ring.len()].clone(),
+                line: exact::ExactLine::through_points(start, end)?,
+                start: start.clone(),
+                end: end.clone(),
                 frame_delta: 0,
                 clip_delta: 1,
                 owner: PrimitiveOwner::Preserve,
@@ -148,21 +166,25 @@ pub(super) fn emit_clipped_separators(
     for &primal in primal_edges {
         let (pair, span, line) = match primal {
             CertifiedPrimalEdge::Interior { sites: pair, faces } => {
+                let [left_site, right_site] = pair;
+                let [left_face, right_face] = faces;
                 let components = [
-                    complex.component_of_face(faces[0]),
-                    complex.component_of_face(faces[1]),
+                    complex.component_of_face(left_face),
+                    complex.component_of_face(right_face),
                 ];
                 if components[0] == components[1] {
                     continue;
                 }
-                let line = exact::ExactLine::perpendicular_bisector(
-                    sites[pair[0]].point.xy(),
-                    sites[pair[1]].point.xy(),
-                )?;
+                let pair_points = [
+                    site_at(sites, left_site).point.xy(),
+                    site_at(sites, right_site).point.xy(),
+                ];
+                let [left, right] = pair_points;
+                let line = exact::ExactLine::perpendicular_bisector(left, right)?;
                 let Some(span) = clip_segment_to_rectangle(
                     complex.center(components[0]),
                     complex.center(components[1]),
-                    [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()],
+                    pair_points,
                     &line,
                     rect,
                 )?
@@ -176,10 +198,13 @@ pub(super) fn emit_clipped_separators(
                 face,
                 opposite,
             } => {
-                let line = exact::ExactLine::perpendicular_bisector(
-                    sites[pair[0]].point.xy(),
-                    sites[pair[1]].point.xy(),
-                )?;
+                let [left_site, right_site] = pair;
+                let pair_points = [
+                    site_at(sites, left_site).point.xy(),
+                    site_at(sites, right_site).point.xy(),
+                ];
+                let [left, right] = pair_points;
+                let line = exact::ExactLine::perpendicular_bisector(left, right)?;
                 let Some(span) = clip_hull_ray_to_rectangle(
                     complex.center(complex.component_of_face(face)),
                     pair,
@@ -194,7 +219,8 @@ pub(super) fn emit_clipped_separators(
                 (pair, span, line)
             },
         };
-        let ids = [SiteId(pair[0] as u32), SiteId(pair[1] as u32)];
+        let [left_site, right_site] = pair;
+        let ids = [SiteId(left_site as u32), SiteId(right_site as u32)];
         let (start, end) = orient_separator(span.0, span.1, ids, sites)?;
         if exact::signed_line_product(&line, &start)? != ExactSign::Zero
             || exact::signed_line_product(&line, &end)? != ExactSign::Zero
@@ -242,27 +268,41 @@ pub(super) fn fixed_coordinates(
     {
         let point = exact::ExactPoint::from_xy(candidate);
         if let Some(index) = lex_position(points, &point)? {
-            if let Some(existing) = fixed[index]
-                && PointKey::new(existing) != PointKey::new(candidate)
-            {
-                return Err(voronoi_error(
-                    "one exact Voronoi vertex has conflicting source coordinates",
-                ));
-            }
-            fixed[index] = Some(candidate);
+            set_fixed_coordinate(&mut fixed, index, candidate)?;
         }
     }
     Ok(fixed)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "lex_position returns an ordinal from the exact_points slice that initialized this parallel fixed-coordinate column"
+)]
+fn set_fixed_coordinate(fixed: &mut [Option<XY>], index: usize, candidate: XY) -> Result<()> {
+    if let Some(existing) = fixed[index]
+        && PointKey::new(existing) != PointKey::new(candidate)
+    {
+        return Err(voronoi_error(
+            "one exact Voronoi vertex has conflicting source coordinates",
+        ));
+    }
+    fixed[index] = Some(candidate);
+    Ok(())
+}
+
 /// The index of `point` in lexicographically sorted distinct `points`.
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "binary search maintains low <= middle < high <= points.len(), so the midpoint lookup and lower-bound advance stay inside this sorted source column"
+)]
 pub(super) fn lex_position(
     points: &[exact::ExactPoint],
     point: &exact::ExactPoint,
 ) -> Result<Option<usize>> {
     let (mut low, mut high) = (0, points.len());
     while low < high {
-        let middle = low + (high - low) / 2;
+        let middle = low.midpoint(high);
         match points[middle].compare_lex(point)? {
             Ordering::Less => low = middle + 1,
             Ordering::Greater => high = middle,
@@ -281,7 +321,7 @@ pub(super) fn emit_atom_windows(
     owner: PrimitiveOwner,
     separator: Option<[SiteId; 2]>,
     clip_source: Option<ClipSegmentId>,
-    frame_side: Option<u8>,
+    frame_side: Option<FrameSide>,
     seeds: &mut Vec<AtomSeed>,
 ) -> Result<()> {
     sort_unique_along(start, end, events)?;
@@ -394,6 +434,7 @@ pub(super) fn node_scaffold_and_separators(
         )?;
     }
     for separator in &mut separators {
+        let [left, right] = separator.pair;
         emit_atom_windows(
             &separator.start,
             &separator.end,
@@ -401,8 +442,8 @@ pub(super) fn node_scaffold_and_separators(
             0,
             0,
             PrimitiveOwner::Boundary {
-                left: Some(separator.pair[0]),
-                right: Some(separator.pair[1]),
+                left: Some(left),
+                right: Some(right),
             },
             Some(separator.pair),
             None,
@@ -432,31 +473,34 @@ pub(super) fn node_scaffold_and_separators(
         owner: PrimitiveOwner,
         separator: Option<[SiteId; 2]>,
         clip_source: Option<ClipSegmentId>,
-        frame_side: Option<u8>,
+        frame_side: Option<FrameSide>,
     }
     let mut mapped = Vec::with_capacity(seeds.len());
     for seed in seeds {
         let mut endpoints = [vertex_id(&seed.start)?, vertex_id(&seed.end)?];
-        if endpoints[0] == endpoints[1] {
+        let [start_vertex, end_vertex] = endpoints;
+        if start_vertex == end_vertex {
             return Err(voronoi_error("exact primitive produced a zero-length atom"));
         }
-        let reversed = endpoints[0] > endpoints[1];
+        let reversed = start_vertex > end_vertex;
         if reversed {
             endpoints.swap(0, 1);
         }
+        let transition = Transition {
+            frame_delta: seed.frame_delta,
+            clip_delta: seed.clip_delta,
+            owner: OwnerTransition::Preserve,
+        };
+        let transition = if reversed {
+            transition.reversed()
+        } else {
+            transition
+        };
         mapped.push(MappedSeed {
             endpoints,
             reversed,
-            frame_delta: if reversed {
-                -seed.frame_delta
-            } else {
-                seed.frame_delta
-            },
-            clip_delta: if reversed {
-                -seed.clip_delta
-            } else {
-                seed.clip_delta
-            },
+            frame_delta: transition.frame_delta,
+            clip_delta: transition.clip_delta,
             owner: seed.owner,
             separator: seed.separator,
             clip_source: seed.clip_source,
@@ -474,20 +518,19 @@ pub(super) fn node_scaffold_and_separators(
             .map(|(point, fixed_xy)| NodedVertex { fixed_xy, point }),
     );
     let mut edges = Vec::new();
-    let mut start = 0;
     let mut frame_owner = SiteId(0);
-    while start < mapped.len() {
-        let mut end = start + 1;
-        while end < mapped.len() && mapped[end].endpoints == mapped[start].endpoints {
-            end += 1;
-        }
+    for group in mapped.chunk_by(|left, right| left.endpoints == right.endpoints) {
+        let endpoints = group
+            .first()
+            .map(|seed| seed.endpoints)
+            .expect("chunk_by returns nonempty endpoint groups");
         let mut frame_delta = 0_i8;
         let mut clip_delta = 0_i32;
         let mut owner = OwnerTransition::Preserve;
         let mut separator = None;
         let mut clip_sources = Vec::new();
         let mut frame_side = None;
-        for seed in &mapped[start..end] {
+        for seed in group {
             frame_delta = frame_delta
                 .checked_add(seed.frame_delta)
                 .ok_or_else(|| voronoi_error("exact frame winding overflow"))?;
@@ -511,15 +554,16 @@ pub(super) fn node_scaffold_and_separators(
             }
         }
         if let (Some(pair), Some(side)) = (separator, frame_side) {
-            let ccw_start = &rect[side as usize];
-            let ccw_end = &rect[(side as usize + 1) % 4];
+            let ccw_start = side.start(rect);
+            let ccw_end = side.end(rect);
             let inside = coincident_frame_owner(pair, ccw_start, ccw_end, sites)?;
             let mut coincident = OwnerTransition::Boundary {
                 left: Some(inside),
                 right: None,
             };
-            let stored_start = &vertices[mapped[start].endpoints[0].0 as usize].point;
-            let stored_end = &vertices[mapped[start].endpoints[1].0 as usize].point;
+            let [start_vertex, end_vertex] = endpoints;
+            let stored_start = &noded_vertex(&vertices, start_vertex).point;
+            let stored_end = &noded_vertex(&vertices, end_vertex).point;
             if exact::compare_along(ccw_start, ccw_end, stored_start, stored_end)?
                 == Ordering::Greater
             {
@@ -533,7 +577,7 @@ pub(super) fn node_scaffold_and_separators(
             }
             owner = coincident;
         } else {
-            for seed in &mapped[start..end] {
+            for seed in group {
                 let resolved = match seed.owner {
                     PrimitiveOwner::Preserve => OwnerTransition::Preserve,
                     PrimitiveOwner::Boundary { left, right } => {
@@ -551,9 +595,10 @@ pub(super) fn node_scaffold_and_separators(
                         }
                     },
                     PrimitiveOwner::FrameNearest => {
-                        let midpoint = vertices[seed.endpoints[0].0 as usize]
+                        let [start_vertex, end_vertex] = seed.endpoints;
+                        let midpoint = noded_vertex(&vertices, start_vertex)
                             .point
-                            .midpoint(&vertices[seed.endpoints[1].0 as usize].point)?;
+                            .midpoint(&noded_vertex(&vertices, end_vertex).point)?;
                         frame_owner = nearest_site_walk(&midpoint, sites, adjacency, frame_owner)?;
                         let owner = OwnerTransition::Boundary {
                             left: Some(frame_owner),
@@ -579,7 +624,7 @@ pub(super) fn node_scaffold_and_separators(
         clip_sources.dedup();
         if frame_delta != 0 || clip_delta != 0 || separator.is_some() {
             edges.push(AtomicEdge {
-                endpoints: mapped[start].endpoints,
+                endpoints,
                 forward: Transition {
                     frame_delta,
                     clip_delta,
@@ -590,7 +635,6 @@ pub(super) fn node_scaffold_and_separators(
                 frame_side,
             });
         }
-        start = end;
     }
     Ok(NodedAtoms { vertices, edges })
 }

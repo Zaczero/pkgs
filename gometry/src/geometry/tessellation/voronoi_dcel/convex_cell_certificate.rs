@@ -47,16 +47,16 @@ fn reversing_a_tagged_ring_keeps_each_edge_with_its_tag() {
     };
     // v0 -(a)-> v1 -(b)-> v2 -(c)-> v0
     let mut ring = vec![
-        tagged(0.0, EdgeTag::Bisector(0)),
-        tagged(1.0, EdgeTag::Bisector(1)),
+        tagged(0.0, EdgeTag::Bisector(SiteId(0))),
+        tagged(1.0, EdgeTag::Bisector(SiteId(1))),
         tagged(2.0, EdgeTag::Axis),
     ];
     reverse_tagged(&mut ring);
     // v2 -(b)-> v1 -(a)-> v0 -(c)-> v2
     let leaving: Vec<EdgeTag> = ring.iter().map(|tagged| tagged.leaving).collect();
     assert_eq!(leaving, [
-        EdgeTag::Bisector(1),
-        EdgeTag::Bisector(0),
+        EdgeTag::Bisector(SiteId(1)),
+        EdgeTag::Bisector(SiteId(0)),
         EdgeTag::Axis
     ]);
     let xs: Vec<f64> = ring
@@ -80,7 +80,8 @@ fn one_construction_reached_from_two_cells_is_one_position() {
         sites, side,
     ) {
         exact::FrameHit::Point(point) => point,
-        other => panic!("expected a certified hit, got {other:?}"),
+        exact::FrameHit::Declined => panic!("certified bisector hit was declined"),
+        exact::FrameHit::Parallel => panic!("certified bisector hit was parallel"),
     };
     let forward = hit([a, b], side);
     let swapped = hit([b, a], [side[1], side[0]]);

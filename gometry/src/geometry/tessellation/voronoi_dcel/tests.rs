@@ -421,6 +421,10 @@ fn reversed_cycles(cycles: &[Vec<exact::ExactPoint>]) -> Vec<Vec<exact::ExactPoi
         .collect()
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the Euler characteristic arithmetic is bounded by the admitted u32 vertex, edge, face, and component counts"
+)]
 fn assert_boundary_walk_euler(subdivision: &ExactSubdivision) {
     let components = subdivision
         .topology
@@ -429,7 +433,11 @@ fn assert_boundary_walk_euler(subdivision: &ExactSubdivision) {
         .copied()
         .collect::<std::collections::BTreeSet<_>>()
         .len();
-    let faces = subdivision.topology.face_starts.len() - 1;
+    let faces = subdivision
+        .topology
+        .face_starts
+        .array_windows::<2>()
+        .count();
     assert_eq!(
         subdivision.vertices.len() as isize - subdivision.edges.len() as isize + faces as isize,
         2 * components as isize
@@ -834,11 +842,8 @@ fn assert_directed_partition(cells: &[Shape], bounds: [f64; 4]) {
         let Shape::Polygon(polygon) = cell else {
             panic!("Voronoi cells are polygons");
         };
-        for index in 0..polygon.shell.len() - 1 {
-            let edge = [
-                polygon.shell.point_at(index).xy(),
-                polygon.shell.point_at(index + 1).xy(),
-            ];
+        for (start, end) in polygon.shell.iter().zip(polygon.shell.iter().skip(1)) {
+            let edge = [start.xy(), end.xy()];
             let keys = edge.map(PointKey::new);
             let key = if keys[0] <= keys[1] {
                 keys
@@ -944,9 +949,11 @@ fn extreme_cluster_is_a_valid_binary64_partition() {
         .voronoi_polygons(0.0, VoronoiBoundary::Padded)
         .expect("extreme cluster should be a valid partition");
     assert_eq!(cells.len(), points.len());
-    assert!(cells.iter().all(|cell| match cell {
-        Shape::Polygon(polygon) => polygon_is_valid(polygon).unwrap(),
-        _ => false,
+    assert!(cells.iter().all(|cell| {
+        let Shape::Polygon(polygon) = cell else {
+            return false;
+        };
+        polygon_is_valid(polygon).unwrap()
     }));
     let canonical = shape::canonical_voronoi_sites(
         points
@@ -1412,17 +1419,16 @@ fn coincident_frame_separator_seeds_inside_owner_without_nearest_tie() {
         .collect();
     assert!(!coincident.is_empty());
     for edge in &coincident {
-        match edge.forward.owner {
-            OwnerTransition::Boundary {
-                left: Some(SiteId(1)),
-                right: None,
-            }
-            | OwnerTransition::Boundary {
-                left: None,
-                right: Some(SiteId(1)),
-            } => {},
-            other => panic!("coincident frame owner {other:?}"),
-        }
+        let OwnerTransition::Boundary { left, right } = edge.forward.owner else {
+            panic!("coincident frame owner is not a boundary");
+        };
+        assert!(
+            matches!(
+                (left, right),
+                (Some(SiteId(1)), None) | (None, Some(SiteId(1)))
+            ),
+            "coincident frame owner has wrong sites: {left:?}, {right:?}"
+        );
         let midpoint = atoms.vertices[edge.endpoints[0].0 as usize]
             .point
             .midpoint(&atoms.vertices[edge.endpoints[1].0 as usize].point)
@@ -1660,9 +1666,11 @@ fn closed_ring(points: &[(f64, f64)]) -> Ring {
 
 fn assert_cells_cover_clip(cells: &[Shape], clip: &Polygon) {
     assert!(!cells.is_empty());
-    assert!(cells.iter().all(|cell| match cell {
-        Shape::Polygon(polygon) => polygon_is_valid(polygon).unwrap(),
-        _ => false,
+    assert!(cells.iter().all(|cell| {
+        let Shape::Polygon(polygon) = cell else {
+            return false;
+        };
+        polygon_is_valid(polygon).unwrap()
     }));
     let union = Shape::union_all(cells, Strictness::Lenient).unwrap();
     let clip_shape = Shape::Polygon(clip.clone());
@@ -1678,17 +1686,17 @@ fn assert_cells_cover_clip(cells: &[Shape], clip: &Polygon) {
             .unwrap()
             .is_empty()
     );
-    for (left, right) in cells
-        .iter()
-        .enumerate()
-        .flat_map(|(index, left)| cells[index + 1..].iter().map(move |right| (left, right)))
-    {
-        assert_eq!(
-            left.intersection(right, Strictness::Lenient)
-                .unwrap()
-                .area(),
-            0.0
-        );
+    let mut right_rows = cells.iter();
+    for left in cells {
+        right_rows.next();
+        for right in right_rows.clone() {
+            assert_eq!(
+                left.intersection(right, Strictness::Lenient)
+                    .unwrap()
+                    .area(),
+                0.0
+            );
+        }
     }
 }
 
@@ -2018,8 +2026,8 @@ fn collinear_holed_clip_splits_each_separator_into_two_pieces() {
     let mut endpoints: Vec<_> = edges
         .iter()
         .map(|edge| {
-            let first = edge.get(0).unwrap().xy();
-            let last = edge.get(edge.len() - 1).unwrap().xy();
+            let first = edge.first().expect("collinear edge has a first point").xy();
+            let last = edge.last().expect("collinear edge has a last point").xy();
             (first.x, first.y, last.x, last.y)
         })
         .collect();

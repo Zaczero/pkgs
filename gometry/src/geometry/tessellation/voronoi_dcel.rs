@@ -56,6 +56,101 @@ dense_id!(BoundaryFaceId);
 dense_id!(EmbeddedVertexId);
 dense_id!(ClipSegmentId);
 
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum FrameSide {
+    Bottom,
+    Right,
+    Top,
+    Left,
+}
+
+impl FrameSide {
+    const ALL: [Self; 4] = [Self::Bottom, Self::Right, Self::Top, Self::Left];
+
+    const fn clip_segment(self) -> ClipSegmentId {
+        ClipSegmentId(self as u32)
+    }
+
+    const fn next(self) -> Self {
+        match self {
+            Self::Bottom => Self::Right,
+            Self::Right => Self::Top,
+            Self::Top => Self::Left,
+            Self::Left => Self::Bottom,
+        }
+    }
+
+    const fn previous(self) -> Self {
+        match self {
+            Self::Bottom => Self::Left,
+            Self::Right => Self::Bottom,
+            Self::Top => Self::Right,
+            Self::Left => Self::Top,
+        }
+    }
+
+    fn start(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
+        let [bottom_left, bottom_right, top_right, top_left] = rectangle;
+        match self {
+            Self::Bottom => bottom_left,
+            Self::Right => bottom_right,
+            Self::Top => top_right,
+            Self::Left => top_left,
+        }
+    }
+
+    fn end(self, rectangle: &[exact::ExactPoint; 4]) -> &exact::ExactPoint {
+        self.next().start(rectangle)
+    }
+
+    fn start_xy(self, rectangle: &[XY; 4]) -> XY {
+        let [bottom_left, bottom_right, top_right, top_left] = rectangle;
+        match self {
+            Self::Bottom => *bottom_left,
+            Self::Right => *bottom_right,
+            Self::Top => *top_right,
+            Self::Left => *top_left,
+        }
+    }
+
+    fn end_xy(self, rectangle: &[XY; 4]) -> XY {
+        self.next().start_xy(rectangle)
+    }
+
+    fn endpoints_xy(self, rectangle: &[XY; 4]) -> [XY; 2] {
+        [self.start_xy(rectangle), self.end_xy(rectangle)]
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the loop walks the four closed FrameSide variants and returns before exceeding that finite cycle"
+    )]
+    fn steps_counterclockwise_to(self, end: Self) -> usize {
+        let mut side = self;
+        let mut steps = 0;
+        while side != end {
+            side = side.next();
+            steps += 1;
+        }
+        steps
+    }
+
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the loop walks the four closed FrameSide variants and returns before exceeding that finite cycle"
+    )]
+    fn steps_clockwise_to(self, end: Self) -> usize {
+        let mut side = self;
+        let mut steps = 0;
+        while side != end {
+            side = side.previous();
+            steps += 1;
+        }
+        steps
+    }
+}
+
 mod assembly;
 mod clip;
 mod scaffold;
@@ -77,7 +172,7 @@ use scaffold::{
 };
 use subdivision::{
     ExactSubdivision, ExactVertex, build_exact_subdivision, graft_components, selected_cell_label,
-    uf_root, walk_label,
+    uf_union, walk_label,
 };
 #[cfg(test)]
 use subdivision::{RegionLabel, crossed_label, validate_exact_subdivision};
@@ -108,6 +203,10 @@ struct Transition {
     owner: OwnerTransition,
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "frame and clip deltas are sums of validated frame/clip segment multiplicities, bounded away from the signed minimum before reversal"
+)]
 impl Transition {
     const fn reversed(self) -> Self {
         Self {
@@ -132,7 +231,7 @@ struct ScaffoldPrimitive {
     clip_delta: i32,
     owner: PrimitiveOwner,
     clip_source: Option<ClipSegmentId>,
-    frame_side: Option<u8>,
+    frame_side: Option<FrameSide>,
     events: Vec<exact::ExactPoint>,
 }
 
@@ -162,7 +261,11 @@ impl NormalizedClip<'_> {
             f64::INFINITY,
             f64::NEG_INFINITY,
         ];
-        for point in &self.fixed[0] {
+        for point in self
+            .fixed
+            .first()
+            .expect("normalized clips have an outer ring")
+        {
             bounds[0] = bounds[0].min(point.x);
             bounds[1] = bounds[1].max(point.x);
             bounds[2] = bounds[2].min(point.y);
@@ -181,7 +284,7 @@ struct AtomSeed {
     owner: PrimitiveOwner,
     separator: Option<[SiteId; 2]>,
     clip_source: Option<ClipSegmentId>,
-    frame_side: Option<u8>,
+    frame_side: Option<FrameSide>,
 }
 
 struct NodedVertex {
@@ -194,7 +297,7 @@ struct AtomicEdge {
     forward: Transition,
     separator: Option<[SiteId; 2]>,
     clip_sources: Vec<ClipSegmentId>,
-    frame_side: Option<u8>,
+    frame_side: Option<FrameSide>,
 }
 
 struct NodedAtoms {
@@ -340,6 +443,26 @@ fn voronoi_error(message: impl Into<String>) -> crate::error::Error {
     GeometryErrorKind::voronoi(message.into())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the ordinal comes from CertifiedDelaunay built against this admitted canonical site slice"
+)]
+pub(super) fn site_at(sites: &[Site], ordinal: usize) -> &Site {
+    &sites[ordinal]
+}
+
+fn site_by_id(sites: &[Site], site: SiteId) -> &Site {
+    site_at(sites, site.0 as usize)
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    reason = "VertexId was assigned from the lexicographically interned event_points that produced this NodedVertex column"
+)]
+fn noded_vertex(vertices: &[NodedVertex], id: VertexId) -> &NodedVertex {
+    &vertices[id.0 as usize]
+}
+
 /// The one failure every direct-dual certificate reports: the exact
 /// subdivision is correct but no binary64 rounding of it preserves the
 /// topology, so the caller must not receive a silently repaired diagram.
@@ -382,6 +505,10 @@ fn admit_box_ordinals(count: usize) -> crate::error::Result<()> {
 }
 
 impl BoxIndex {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "bounded item ordinals are collected from this exact boxes slice only when their bounds are present"
+    )]
     fn build(boxes: &[Option<Bounds>]) -> Result<Self> {
         admit_box_ordinals(boxes.len())?;
         let mut bounded = Vec::new();
@@ -395,10 +522,9 @@ impl BoxIndex {
             }
         }
         let index = YStabbingIndex::build(bounded, |&item| {
-            let bounds = boxes
-                .get(item)
-                .and_then(Option::as_ref)
-                .expect("indexed boxes are present");
+            let bounds = boxes[item]
+                .as_ref()
+                .expect("bounded box ordinals are collected only for present bounds");
             (bounds.minx(), bounds.maxx(), bounds.miny(), bounds.maxy())
         })?;
         Ok(Self {
@@ -483,20 +609,19 @@ fn indexed_exact_segment_candidates(
     Ok((offsets, candidates))
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "binary search maintains low <= middle < high <= points.len(), so both the midpoint read and lower-bound advance remain in this admitted sorted column"
+)]
 fn exact_point_index(points: &[exact::ExactPoint], point: &exact::ExactPoint) -> Result<usize> {
     let mut low = 0;
     let mut high = points.len();
     while low < high {
         let middle = low.midpoint(high);
-        match points
-            .get(middle)
-            .expect("binary-search midpoint is below the upper bound")
-            .compare_lex(point)?
-        {
+        match points[middle].compare_lex(point)? {
             Ordering::Less => {
-                low = middle
-                    .checked_add(1)
-                    .expect("a midpoint below high can advance by one");
+                low = middle + 1;
             },
             Ordering::Equal => return Ok(middle),
             Ordering::Greater => high = middle,
@@ -568,22 +693,22 @@ fn validate_exact_contact_graph(
     incidences.sort_unstable();
     incidences.dedup();
     for (point, ring) in incidences {
-        let left = uf_root(&mut parents, ring);
         let point_node = cycles
             .len()
             .checked_add(point)
             .ok_or(crate::error::ResourceError::SizeOverflow)?;
-        let right = uf_root(&mut parents, point_node);
-        if left == right {
+        if !uf_union(&mut parents, ring, point_node) {
             return Err(exact_cycle_error());
         }
-        *parents
-            .get_mut(right)
-            .expect("union-find root is in the admitted parent set") = left;
     }
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "segment ordinals come from the candidate builder's validated cycle columns; offset partitioning selects their owner rows, modulo selects each closed ring's next endpoint, and touch ordinals come from this function's own enumeration"
+)]
 fn validate_exact_cycles(
     cycles: &[&[exact::ExactPoint]],
     shell: usize,
@@ -733,6 +858,10 @@ fn position_of<P: std::borrow::Borrow<exact::ExactPoint>>(
     Ok(None)
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "Ring stores its explicit closing coordinate, so its length is positive and one subtraction opens the cycle"
+)]
 fn open_ring(ring: &Ring) -> Result<OpenClipRing> {
     let open = ring.len() - 1;
     let mut exact_points = Vec::new();
@@ -778,6 +907,11 @@ fn reverse_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) {
     fixed.reverse();
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "least cyclic rotation compares random offsets modulo this admitted nonempty ring; direct access preserves constant-time candidate steps without a linear nth lookup"
+)]
 fn rotate_ring(points: &mut [exact::ExactPoint], fixed: &mut [XY]) -> Result<usize> {
     let count = points.len();
     let mut least = 0;
@@ -1041,9 +1175,9 @@ fn normalize_clip<'a>(
                 }
                 clip_rings.push((ring_index, points, coordinates, source_edges, reversed));
             }
-            let Some((_, holes)) = clip_rings.split_first_mut() else {
-                return Err(exact_cycle_error());
-            };
+            let (_, holes) = clip_rings
+                .split_first_mut()
+                .expect("the normalized clip ring sequence begins with its shell");
             try_sort_by(holes, |(_, left, ..), (_, right, ..)| {
                 compare_exact_sequences(left, right)
             })?;
@@ -1133,6 +1267,24 @@ struct SiteAdjacency {
     neighbors: Vec<SiteId>,
 }
 
+impl SiteAdjacency {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "SiteId is admitted against the canonical site count and offsets has one terminal entry for each site row"
+    )]
+    fn neighbors(&self, site: SiteId) -> &[SiteId] {
+        let site = site.0 as usize;
+        let start = self.offsets[site] as usize;
+        let end = self.offsets[site + 1] as usize;
+        &self.neighbors[start..end]
+    }
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "CertifiedPrimalEdge endpoints are site ordinals from the already-admitted mesh; degrees/cursors/neighbors share that domain, and cumulative u32 offsets are checked before publication"
+)]
 fn certified_site_adjacency(
     edges: &[CertifiedPrimalEdge],
     site_count: usize,
@@ -1143,8 +1295,9 @@ fn certified_site_adjacency(
             CertifiedPrimalEdge::Interior { sites, .. }
             | CertifiedPrimalEdge::Hull { sites, .. } => sites,
         };
-        degrees[sites[0]] = degrees[sites[0]].saturating_add(1);
-        degrees[sites[1]] = degrees[sites[1]].saturating_add(1);
+        let [left, right] = sites;
+        degrees[left] += 1;
+        degrees[right] += 1;
     }
     let mut offsets = Vec::with_capacity(site_count + 1);
     offsets.push(0_u32);
@@ -1158,19 +1311,25 @@ fn certified_site_adjacency(
     let mut neighbors = Vec::with_capacity(neighbor_count);
     neighbors.resize(neighbor_count, SiteId(0));
     let mut cursors = Vec::with_capacity(site_count);
-    cursors.extend(offsets[..site_count].iter().map(|offset| *offset as usize));
+    cursors.extend(
+        offsets
+            .iter()
+            .take(site_count)
+            .map(|offset| *offset as usize),
+    );
     for edge in edges {
         let sites = match *edge {
             CertifiedPrimalEdge::Interior { sites, .. }
             | CertifiedPrimalEdge::Hull { sites, .. } => sites,
         };
-        neighbors[cursors[sites[0]]] = SiteId(sites[1] as u32);
-        cursors[sites[0]] += 1;
-        neighbors[cursors[sites[1]]] = SiteId(sites[0] as u32);
-        cursors[sites[1]] += 1;
+        let [left, right] = sites;
+        neighbors[cursors[left]] = SiteId(right as u32);
+        cursors[left] += 1;
+        neighbors[cursors[right]] = SiteId(left as u32);
+        cursors[right] += 1;
     }
-    for site in 0..site_count {
-        neighbors[offsets[site] as usize..offsets[site + 1] as usize].sort_unstable();
+    for &[start, end] in offsets.array_windows::<2>() {
+        neighbors[start as usize..end as usize].sort_unstable();
     }
     Ok(SiteAdjacency { offsets, neighbors })
 }
@@ -1182,17 +1341,16 @@ fn nearest_site_walk(
     mut current: SiteId,
 ) -> Result<SiteId> {
     for _ in 0..sites.len() {
-        let start = adjacency.offsets[current.0 as usize] as usize;
-        let end = adjacency.offsets[current.0 as usize + 1] as usize;
+        let neighbors = adjacency.neighbors(current);
         let mut best = current;
         let nearer = |candidate: SiteId, known: SiteId| {
             exact::squared_distance_cmp_point(
                 point,
-                sites[candidate.0 as usize].point.xy(),
-                sites[known.0 as usize].point.xy(),
+                site_by_id(sites, candidate).point.xy(),
+                site_by_id(sites, known).point.xy(),
             )
         };
-        for &candidate in &adjacency.neighbors[start..end] {
+        for &candidate in neighbors {
             if nearer(candidate, best)? == Ordering::Less {
                 best = candidate;
             }
@@ -1201,7 +1359,7 @@ fn nearest_site_walk(
             current = best;
             continue;
         }
-        for &candidate in &adjacency.neighbors[start..end] {
+        for &candidate in neighbors {
             if nearer(candidate, current)? == Ordering::Equal {
                 return Err(voronoi_error(
                     "private exact frame atom has a tied nearest site",
@@ -1401,7 +1559,7 @@ impl EmbeddedEdges {
                     xs.extend([a.x, b.x]);
                     ys.extend([a.y, b.y]);
                 }
-                ends.extend((0..=segments.len()).map(|edge| edge * 2));
+                ends.extend((0..vertices).step_by(2).chain(std::iter::once(vertices)));
                 Ok((
                     CoordSeq::try_from_vecs(xs, ys, None, None)?,
                     CsrOffsetColumn::try_new(ends, vertices)?,
@@ -1422,11 +1580,103 @@ impl EmbeddedVoronoi {
 }
 
 fn fan_target(subdivision: &ExactSubdivision, edge: EdgeId, vertex: VertexId) -> VertexId {
-    let endpoints = subdivision.edges[edge.0 as usize].endpoints;
-    if endpoints[0] == vertex {
-        endpoints[1]
-    } else {
-        endpoints[0]
+    let [start, end] = subdivision.edge(edge).endpoints;
+    if start == vertex { end } else { start }
+}
+
+struct LiveVertices(Vec<bool>);
+
+impl LiveVertices {
+    fn new(vertex_count: usize) -> Self {
+        Self(vec![false; vertex_count])
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "VertexId values are minted from the exact vertex column that sized this liveness map"
+    )]
+    fn mark(&mut self, vertex: VertexId) {
+        self.0[vertex.0 as usize] = true;
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, bool> {
+        self.0.iter()
+    }
+}
+
+struct LiveEdgeIncidence {
+    offsets: Vec<usize>,
+    edges: Vec<EdgeId>,
+}
+
+impl LiveEdgeIncidence {
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "live edges are a subset of the admit_counts-checked subdivision, so endpoint counts fit its u32 slot bound; each VertexId indexes the prefix, cursor, and incident-edge columns built from those same endpoints"
+    )]
+    fn build(subdivision: &ExactSubdivision, live_edges: &[EdgeId], vertex_count: usize) -> Self {
+        let mut offsets = vec![0_usize; vertex_count + 1];
+        for &edge_id in live_edges {
+            for vertex in subdivision.edge(edge_id).endpoints {
+                offsets[vertex.0 as usize + 1] += 1;
+            }
+        }
+        let mut total = 0;
+        for offset in offsets.iter_mut().skip(1) {
+            total += *offset;
+            *offset = total;
+        }
+
+        let mut edges = Vec::with_capacity(total);
+        edges.resize(total, EdgeId(0));
+        let mut cursors = Vec::with_capacity(vertex_count);
+        cursors.extend(offsets.iter().take(vertex_count).copied());
+        for &edge_id in live_edges {
+            for vertex in subdivision.edge(edge_id).endpoints {
+                let cursor = &mut cursors[vertex.0 as usize];
+                edges[*cursor] = edge_id;
+                *cursor += 1;
+            }
+        }
+        Self { offsets, edges }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "adjacent prefix offsets delimit every live-edge row in this same CSR column"
+    )]
+    fn rows(&self) -> impl Iterator<Item = (VertexId, &[EdgeId])> + '_ {
+        self.offsets
+            .array_windows::<2>()
+            .enumerate()
+            .map(|(vertex, &[start, end])| (VertexId(vertex as u32), &self.edges[start..end]))
+    }
+}
+
+struct EmbeddedVertices(Vec<Option<EmbeddedVertexId>>);
+
+impl EmbeddedVertices {
+    fn new(vertex_count: usize) -> Self {
+        Self(vec![None; vertex_count])
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "VertexId values are minted from the exact vertex column that sized this exact-to-embedded map"
+    )]
+    fn set(&mut self, vertex: VertexId, embedded: EmbeddedVertexId) {
+        self.0[vertex.0 as usize] = Some(embedded);
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "live VertexId entries map to EmbeddedVertexId values assigned as points are appended to the paired output column"
+    )]
+    fn point(&self, vertex: VertexId, points: &[XY]) -> Result<XY> {
+        let embedded = self.0[vertex.0 as usize]
+            .ok_or_else(|| voronoi_error("live edge has a non-live endpoint"))?;
+        Ok(points[embedded.0 as usize])
     }
 }
 
@@ -1448,16 +1698,13 @@ fn sort_fan(
     incident: &[EdgeId],
     rounded: bool,
     subdivision: &ExactSubdivision,
-    exact_to_embedded: &[Option<EmbeddedVertexId>],
+    exact_to_embedded: &EmbeddedVertices,
     points: &[XY],
     order: &mut Vec<EdgeId>,
 ) -> Result<()> {
-    let embedded_point = |vertex: VertexId| -> Result<XY> {
-        let embedded = exact_to_embedded[vertex.0 as usize]
-            .ok_or_else(|| voronoi_error("live edge has a non-live endpoint"))?;
-        Ok(points[embedded.0 as usize])
-    };
-    let exact_origin = &subdivision.vertices[vertex.0 as usize].point;
+    let embedded_point =
+        |vertex: VertexId| -> Result<XY> { exact_to_embedded.point(vertex, points) };
+    let exact_origin = &subdivision.vertex(vertex).point;
     let rounded_origin = rounded.then(|| embedded_point(vertex)).transpose()?;
     let compare = |left: EdgeId, right: EdgeId| -> Result<Ordering> {
         let left = fan_target(subdivision, left, vertex);
@@ -1467,8 +1714,8 @@ fn sort_fan(
         } else {
             exact::angle_ccw_cmp(
                 exact_origin,
-                &subdivision.vertices[left.0 as usize].point,
-                &subdivision.vertices[right.0 as usize].point,
+                &subdivision.vertex(left).point,
+                &subdivision.vertex(right).point,
             )
         }
     };
@@ -1480,8 +1727,10 @@ fn sort_fan(
     for &[left, right] in order.array_windows::<2>() {
         compare(left, right)?;
     }
-    if order.len() > 1 {
-        compare(*order.last().unwrap(), order[0])?;
+    if let Some((&first, rest)) = order.split_first()
+        && let Some(&last) = rest.last()
+    {
+        compare(last, first)?;
     }
     if let Some((least, _)) = order.iter().enumerate().min_by_key(|(_, edge)| *edge) {
         order.rotate_left(least);
@@ -1532,29 +1781,14 @@ fn embed(
     product: VoronoiProduct,
     budget: &mut ExpansionBudget,
 ) -> Result<EmbeddedVoronoi> {
-    // The subdivision's vertices are the lexicographically sorted distinct
-    // event points, so a position is found by binary search.
-    let vertex_at = |point: &exact::ExactPoint| -> Result<Option<usize>> {
-        let (mut low, mut high) = (0, subdivision.vertices.len());
-        while low < high {
-            let middle = low + (high - low) / 2;
-            match subdivision.vertices[middle].point.compare_lex(point)? {
-                Ordering::Less => low = middle + 1,
-                Ordering::Greater => high = middle,
-                Ordering::Equal => return Ok(Some(middle)),
-            }
-        }
-        Ok(None)
-    };
-    let mut live = Vec::with_capacity(subdivision.vertices.len());
-    live.resize(subdivision.vertices.len(), false);
+    let mut live = LiveVertices::new(subdivision.vertices.len());
     let mut live_edges = Vec::new();
     for part in &parts {
         for ring in std::iter::once(&part.shell).chain(&part.holes) {
             live_edges.reserve(ring.edges.len());
             live_edges.extend_from_slice(&ring.edges);
             for vertex in &ring.vertices {
-                live[vertex.0 as usize] = true;
+                live.mark(*vertex);
             }
         }
     }
@@ -1562,35 +1796,36 @@ fn embed(
         live_edges.reserve(chain.edges.len());
         live_edges.extend_from_slice(&chain.edges);
         for vertex in &chain.vertices {
-            live[vertex.0 as usize] = true;
+            live.mark(*vertex);
         }
     }
     for (edge_index, edge) in subdivision.edges.iter().enumerate() {
         if !edge.clip_sources.is_empty() {
             live_edges.push(EdgeId(edge_index as u32));
-            live[edge.endpoints[0].0 as usize] = true;
-            live[edge.endpoints[1].0 as usize] = true;
+            for vertex in edge.endpoints {
+                live.mark(vertex);
+            }
         }
     }
     live_edges.sort_unstable();
     live_edges.dedup();
     for point in clip.rings.iter().flatten() {
-        let vertex = vertex_at(point)?
+        let vertex = subdivision
+            .vertex_at(point)?
             .ok_or_else(|| voronoi_error("exact clip vertex is absent from the snap arena"))?;
-        live[vertex] = true;
+        live.mark(vertex);
     }
     let mut points = Vec::new();
-    let mut exact_to_embedded = Vec::with_capacity(subdivision.vertices.len());
-    exact_to_embedded.resize(subdivision.vertices.len(), None);
-    for (index, vertex) in subdivision.vertices.iter().enumerate() {
-        if !live[index] {
+    let mut exact_to_embedded = EmbeddedVertices::new(subdivision.vertices.len());
+    for (index, (vertex, &is_live)) in subdivision.vertices.iter().zip(live.iter()).enumerate() {
+        if !is_live {
             continue;
         }
         let point = vertex
             .fixed_xy
             .map_or_else(|| vertex.point.round_nearest_even(), Ok)?;
         let embedded = EmbeddedVertexId(points.len() as u32);
-        exact_to_embedded[index] = Some(embedded);
+        exact_to_embedded.set(VertexId(index as u32), embedded);
         points.push(point);
     }
     let mut keys = Vec::with_capacity(points.len());
@@ -1599,18 +1834,15 @@ fn embed(
     if keys.array_windows::<2>().any(|[a, b]| a == b) {
         return Err(embedding_failure());
     }
-    let embedded_point = |vertex: VertexId| -> Result<XY> {
-        let embedded = exact_to_embedded[vertex.0 as usize]
-            .ok_or_else(|| voronoi_error("live edge has a non-live endpoint"))?;
-        Ok(points[embedded.0 as usize])
+    let rounded_exact = |vertex| {
+        exact_to_embedded
+            .point(vertex, &points)
+            .map(exact::ExactPoint::from_xy)
     };
-    let rounded_exact = |vertex| embedded_point(vertex).map(exact::ExactPoint::from_xy);
     for &edge_id in &live_edges {
-        let edge = &subdivision.edges[edge_id.0 as usize];
-        let rounded = [
-            rounded_exact(edge.endpoints[0])?,
-            rounded_exact(edge.endpoints[1])?,
-        ];
+        let edge = subdivision.edge(edge_id);
+        let [start, end] = edge.endpoints;
+        let rounded = [rounded_exact(start)?, rounded_exact(end)?];
         if rounded[0].same_position(&rounded[1])? {
             return Err(embedding_failure());
         }
@@ -1621,7 +1853,7 @@ fn embed(
             exact::orient_points(
                 &rounded[0],
                 &rounded[1],
-                &exact::ExactPoint::from_xy(sites[site.0 as usize].point.xy()),
+                &exact::ExactPoint::from_xy(site_by_id(sites, site).point.xy()),
             )
         };
         let (left, right) = match edge.forward.owner {
@@ -1648,9 +1880,11 @@ fn embed(
     let mut marked = Vec::new();
     let mut marked_boxes = Vec::new();
     for &edge_id in &live_edges {
-        let edge = &subdivision.edges[edge_id.0 as usize];
+        let edge = subdivision.edge(edge_id);
         if edge.separator.is_some() {
-            let [start, end] = edge.endpoints.map(embedded_point);
+            let [start, end] = edge
+                .endpoints
+                .map(|vertex| exact_to_embedded.point(vertex, &points));
             let (start, end) = (start?, end?);
             marked.push([start, end]);
             marked_boxes.push(Some(Bounds::new_raw(
@@ -1664,21 +1898,27 @@ fn embed(
     let marked_index = BoxIndex::build(&marked_boxes)?;
     for site in sites {
         let point = site.point.xy();
-        marked_index.for_each_containing(Some(point), |separator| {
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "marked_index was built from marked_boxes in one-to-one order with this marked segment column"
+        )]
+        let visit = |separator: usize| {
             let [start, end] = marked[separator].map(exact::ExactPoint::from_xy);
             let site = exact::ExactPoint::from_xy(point);
             if exact::segment_intersection(&start, &end, &site, &site)?.is_point() {
                 return Err(embedding_failure());
             }
             Ok(())
-        })?;
+        };
+        marked_index.for_each_containing(Some(point), |separator| visit(separator))?;
     }
     let mut emitted_incidence = Vec::new();
     for &edge_id in &live_edges {
-        let edge = &subdivision.edges[edge_id.0 as usize];
-        emitted_incidence.push(([edge.endpoints[0].0, edge.endpoints[1].0], Segment {
-            start: embedded_point(edge.endpoints[0])?,
-            end: embedded_point(edge.endpoints[1])?,
+        let edge = subdivision.edge(edge_id);
+        let [start, end] = edge.endpoints;
+        emitted_incidence.push(([start.0, end.0], Segment {
+            start: exact_to_embedded.point(start, &points)?,
+            end: exact_to_embedded.point(end, &points)?,
         }));
     }
     certify_emitted_incidence(&emitted_incidence).map_err(|error| {
@@ -1688,36 +1928,13 @@ fn embed(
             embedding_failure()
         }
     })?;
-    let mut incidence_offsets = vec![0_usize; subdivision.vertices.len() + 1];
-    for &edge_id in &live_edges {
-        for endpoint in subdivision.edges[edge_id.0 as usize].endpoints {
-            incidence_offsets[endpoint.0 as usize + 1] += 1;
-        }
-    }
-    for index in 1..incidence_offsets.len() {
-        incidence_offsets[index] = incidence_offsets[index]
-            .checked_add(incidence_offsets[index - 1])
-            .ok_or_else(|| voronoi_error("too many live edge incidences"))?;
-    }
-    let mut incident_edges = Vec::with_capacity(live_edges.len().saturating_mul(2));
-    incident_edges.resize(live_edges.len().saturating_mul(2), EdgeId(0));
-    let mut cursors = incidence_offsets[..subdivision.vertices.len()].to_vec();
-    for &edge_id in &live_edges {
-        for endpoint in subdivision.edges[edge_id.0 as usize].endpoints {
-            let cursor = &mut cursors[endpoint.0 as usize];
-            incident_edges[*cursor] = edge_id;
-            *cursor += 1;
-        }
-    }
+    let incidence = LiveEdgeIncidence::build(subdivision, &live_edges, subdivision.vertices.len());
     let mut exact_order = Vec::new();
     let mut rounded_order = Vec::new();
-    for vertex_index in 0..subdivision.vertices.len() {
-        let vertex = VertexId(vertex_index as u32);
-        if !live[vertex_index] {
+    for (is_live, (vertex, incident)) in live.iter().zip(incidence.rows()) {
+        if !is_live {
             continue;
         }
-        let incident =
-            &incident_edges[incidence_offsets[vertex_index]..incidence_offsets[vertex_index + 1]];
         sort_fan(
             vertex,
             incident,
@@ -1779,12 +1996,13 @@ fn embed(
     // the canonical form both lanes publish.
     let closed_ring = |vertices: &[VertexId], orientation: ExactSign| -> Result<Ring> {
         ensure_coordseq_vertex_capacity(vertices.len())?;
-        let open = vertices.len() - 1;
+        let (_, open_vertices) = vertices
+            .split_last()
+            .expect("simple Voronoi rings are closed");
+        let open = open_vertices.len();
         let mut coordinates = Vec::with_capacity(vertices.len());
-        for vertex in &vertices[..open] {
-            let embedded = exact_to_embedded[vertex.0 as usize]
-                .ok_or_else(|| voronoi_error("non-live exact vertex was rendered"))?;
-            let point = points[embedded.0 as usize];
+        for &vertex in open_vertices {
+            let point = exact_to_embedded.point(vertex, &points)?;
             coordinates.push(Point::new_raw_xy(point.x, point.y));
         }
         let mut rounded = Vec::with_capacity(open);
@@ -1797,12 +2015,17 @@ fn embed(
             return Err(embedding_failure());
         }
         if open > 2 {
-            let start = (0..open)
-                .min_by(|&left, &right| lex_xy(coordinates[left].xy(), coordinates[right].xy()))
+            let (start, _) = coordinates
+                .iter()
+                .enumerate()
+                .min_by(|(_, left), (_, right)| lex_xy(left.xy(), right.xy()))
                 .expect("non-empty ring");
             coordinates.rotate_left(start);
         }
-        coordinates.push(coordinates[0]);
+        let first = *coordinates
+            .first()
+            .expect("an exact boundary ring has at least three open vertices");
+        coordinates.push(first);
         Ring::closed(coordinates)
     };
     let mut labelled = Vec::with_capacity(parts.len());
@@ -1831,18 +2054,24 @@ fn embed(
             ensure_coordseq_vertex_capacity(capacity)?;
             let mut coordinates = Vec::with_capacity(capacity);
             for point in ring {
-                let vertex = vertex_at(point)?
+                let vertex = subdivision
+                    .vertex_at(point)?
                     .ok_or_else(|| voronoi_error("generated clip vertex is not live"))?;
-                let embedded = exact_to_embedded[vertex]
-                    .ok_or_else(|| voronoi_error("generated clip vertex is not embedded"))?;
-                let xy = points[embedded.0 as usize];
+                let xy = exact_to_embedded.point(vertex, &points)?;
                 coordinates.push(Point::new_raw_xy(xy.x, xy.y));
             }
-            coordinates.push(coordinates[0]);
+            let first = *coordinates
+                .first()
+                .expect("normalized clip rings contain at least one coordinate");
+            coordinates.push(first);
             Ring::closed(coordinates)
         };
-        let shell = embedded_ring(&clip.rings[0])?;
-        let holes = clip.rings[1..]
+        let (clip_shell, clip_holes) = clip
+            .rings
+            .split_first()
+            .expect("normalized Voronoi clips contain their outer ring");
+        let shell = embedded_ring(clip_shell)?;
+        let holes = clip_holes
             .iter()
             .map(|ring| embedded_ring(ring))
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -1874,7 +2103,7 @@ fn embed(
         Shape::Polygon(certify_separator_chains_inside_clip(
             chains,
             clip,
-            embedded_point,
+            |vertex| exact_to_embedded.point(vertex, &points),
         )?)
     };
     if product.includes_polygons() && labelled.is_empty() {
@@ -1901,7 +2130,11 @@ fn embed(
                 continue;
             }
             let mut own = false;
-            row_index.for_each_containing(Some(site.point.xy()), |row| {
+            #[expect(
+                clippy::indexing_slicing,
+                reason = "row_index is built from shape_rows cloned in the same order as labelled, so every hit is an ordinal into this parallel cell table"
+            )]
+            let verify_row = |row: usize| {
                 let (owner, polygon) = &labelled[row];
                 if Shape::Polygon(polygon.clone()).covers(&point)? {
                     if owner.0 as usize != site_index {
@@ -1910,7 +2143,8 @@ fn embed(
                     own = true;
                 }
                 Ok(())
-            })?;
+            };
+            row_index.for_each_containing(Some(site.point.xy()), verify_row)?;
             if !own {
                 return Err(embedding_failure());
             }
@@ -1922,7 +2156,9 @@ fn embed(
         // equality is deliberately not part of the topological-snap contract.
     }
     let edges = if product.includes_edges() {
-        pack_separator_chains(chains, edge_positions, embedded_point)?
+        pack_separator_chains(chains, edge_positions, |vertex| {
+            exact_to_embedded.point(vertex, &points)
+        })?
     } else {
         EmbeddedEdges::Segments(Vec::new())
     };
@@ -2344,10 +2580,11 @@ fn certify_separator_chains_inside_clip(
     }
     let edge_ids: Vec<_> = (0..clip_edge_count).collect();
     let y_index = YStabbingIndex::build(edge_ids, |&edge| {
-        let [start, end] = clip_edges
-            .get(edge)
-            .expect("clip-edge IDs were generated from the clip-edge count")
-            .rounded;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "YStabbingIndex is built from 0..clip_edge_count, and clip_edges contains exactly one row for every clip-edge ordinal"
+        )]
+        let [start, end] = clip_edges[edge].rounded;
         (
             start.x.min(end.x),
             start.x.max(end.x),
@@ -2403,16 +2640,20 @@ pub(super) fn build_collinear_polygons(
         .collinear_order()
         .ok_or_else(|| voronoi_error("non-collinear sites entered the collinear Voronoi lane"))?;
     if matches!(boundary, VoronoiBoundary::Envelope) {
-        let first = sites[0].point;
-        if sites.iter().all(|site| site.point.x == first.x)
-            || sites.iter().all(|site| site.point.y == first.y)
-        {
+        if sites.first().is_some_and(|first| {
+            sites.iter().all(|site| site.point.x == first.point.x)
+                || sites.iter().all(|site| site.point.y == first.point.y)
+        }) {
             return Ok(Vec::new());
         }
     }
     let clip = normalize_clip(sites, boundary, true)?;
     let frame = match clip.source {
-        None => clip.rings[0].clone(),
+        None => clip
+            .rings
+            .first()
+            .cloned()
+            .expect("generated Voronoi clips contain their frame ring"),
         Some(polygon) => {
             let extent = |values: &[f64]| {
                 values
@@ -2436,16 +2677,17 @@ pub(super) fn build_collinear_polygons(
     let mut cells = Vec::new();
     let baseline = clip.polygon_baseline.unwrap_or(0);
     let mut published = 0_usize;
-    for (position, &site) in order.iter().enumerate() {
-        let here = sites[site].point.xy();
+    let mut ordered_sites = order.iter().copied().peekable();
+    let mut previous = None;
+    while let Some(site_index) = ordered_sites.next() {
+        let next = ordered_sites.peek().copied();
+        let here = site_at(sites, site_index).point.xy();
         let mut ring = frame.clone();
-        let neighbours = [
-            position.checked_sub(1),
-            (position + 1 < order.len()).then_some(position + 1),
-        ];
-        for neighbour in neighbours.into_iter().flatten() {
-            let line =
-                exact::ExactLine::perpendicular_bisector(here, sites[order[neighbour]].point.xy())?;
+        for neighbor in previous.into_iter().chain(next) {
+            let line = exact::ExactLine::perpendicular_bisector(
+                here,
+                site_at(sites, neighbor).point.xy(),
+            )?;
             let keep = exact::signed_line_product(&line, &exact::ExactPoint::from_xy(here))?;
             ring = clip_to_half_plane(&ring, &line, keep)?;
         }
@@ -2475,14 +2717,17 @@ pub(super) fn build_collinear_polygons(
             published = next_published;
         }
         // Start at the least vertex, as every other emitted cell does.
-        let least = (0..vertices.len())
-            .min_by(|&left, &right| {
-                let (left, right) = (vertices[left], vertices[right]);
+        let (least, _) = vertices
+            .iter()
+            .enumerate()
+            .min_by(|(_, left), (_, right)| {
                 left.x.total_cmp(&right.x).then(left.y.total_cmp(&right.y))
             })
-            .unwrap_or(0);
+            .expect("a nondegenerate Voronoi strip has a least vertex");
         vertices.rotate_left(least);
-        let first = vertices[0];
+        let first = *vertices
+            .first()
+            .expect("a nondegenerate Voronoi strip has a first vertex");
         vertices.push(first);
         let strip = Polygon::new(
             Ring::try_from_closed(CoordSeq::try_from_xy(&vertices)?)?,
@@ -2515,6 +2760,7 @@ pub(super) fn build_collinear_polygons(
                 }
             },
         }
+        previous = Some(site_index);
     }
     budget.add(published.saturating_sub(baseline))?;
     Ok(cells)
@@ -2527,9 +2773,7 @@ fn clip_to_half_plane(
     keep: ExactSign,
 ) -> Result<Vec<exact::ExactPoint>> {
     let mut kept = Vec::new();
-    for index in 0..ring.len() {
-        let start = &ring[index];
-        let end = &ring[(index + 1) % ring.len()];
+    for (start, end) in ring.iter().zip(ring.iter().cycle().skip(1)) {
         let start_side = exact::signed_line_product(line, start)?;
         let end_side = exact::signed_line_product(line, end)?;
         if start_side == keep || start_side == ExactSign::Zero {
@@ -2981,13 +3225,10 @@ pub(super) fn build_collinear_edges(
     let clip_segments = split_clip
         .rings
         .iter()
-        .flat_map(|ring| (0..ring.len()).map(move |edge| (ring, edge)));
-    for (clip_source, (ring, edge)) in (0..clip_source_count).zip(clip_segments) {
+        .flat_map(|ring| ring.iter().zip(ring.iter().cycle().skip(1)));
+    for (clip_source, (start, end)) in (0..clip_source_count).zip(clip_segments) {
         edges.push(AtomicEdge {
-            endpoints: [
-                vertex_id(&ring[edge])?,
-                vertex_id(&ring[(edge + 1) % ring.len()])?,
-            ],
+            endpoints: [vertex_id(start)?, vertex_id(end)?],
             forward: Transition {
                 frame_delta: 0,
                 clip_delta: 1,
@@ -3048,6 +3289,10 @@ mod tests;
 // be established geometrically.
 // =====================================================================
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "edge is an admitted ordinal in a three-slot Delaunay face, so its side is 0, 1, or 2 and the wrapped face-local successor stays in range"
+)]
 const fn dual_next_halfedge(edge: usize) -> usize {
     if edge % 3 == 2 { edge - 2 } else { edge + 1 }
 }
@@ -3080,7 +3325,7 @@ fn same_undirected_dual_edge(left: DirectedDualEdge, right: DirectedDualEdge) ->
 /// crossings with another axis-aligned line are exact doubles.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EdgeTag {
-    Bisector(u32),
+    Bisector(SiteId),
     Axis,
 }
 
@@ -3111,11 +3356,12 @@ fn reverse_tagged(ring: &mut [Tagged]) {
     // is the one that used to arrive at it.
     ring.reverse();
     if let Some(first) = ring.first().map(|tagged| tagged.leaving) {
-        for index in 0..ring.len() - 1 {
-            ring[index].leaving = ring[index + 1].leaving;
+        let mut next = first;
+        for tagged in ring.iter_mut().rev() {
+            let previous = tagged.leaving;
+            tagged.leaving = next;
+            next = previous;
         }
-        let last = ring.len() - 1;
-        ring[last].leaving = first;
     }
 }
 
@@ -3139,7 +3385,10 @@ fn dedup_tagged(ring: &mut Vec<Tagged>, centers: &[exact::ExactPoint]) -> Result
     if let Some(error) = failure {
         return Err(error);
     }
-    while ring.len() > 1 && same(&ring[0], ring.last().expect("non-empty"))? {
+    while let (Some(first), Some(last)) = (ring.first(), ring.last()) {
+        if ring.len() <= 1 || !same(first, last)? {
+            break;
+        }
         ring.pop();
     }
     Ok(())
@@ -3159,10 +3408,15 @@ struct DualRings {
 #[cfg(test)]
 mod convex_cell_certificate;
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "half-edge and site ordinals come from the same certified mesh and admitted site slice; the count pass bounds each row and its total slots"
+)]
 fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentFaces {
     let triangles = mesh.triangles();
     let halfedges = mesh.halfedges();
-    let flat = |edge: usize| triangles[edge / 3][edge % 3];
+    let flat = |edge: usize| dual_site_at_halfedge(triangles, edge);
     let mut start_edge = Vec::with_capacity(site_count);
     start_edge.resize(site_count, usize::MAX);
     for edge in 0..halfedges.len() {
@@ -3188,16 +3442,14 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     faces.reserve(total);
     neighbors.reserve(total);
     faces.resize(total, 0);
-    neighbors.resize(total, 0);
-    for site in 0..site_count {
-        let start = start_edge[site];
-        let range = offsets[site]..offsets[site + 1];
+    neighbors.resize(total, SiteId(0));
+    for (&start, &[row_start, row_end]) in start_edge.iter().zip(offsets.array_windows::<2>()) {
         incident_faces_for_site(
             start,
             halfedges,
             Some(IncidenceOutput {
-                faces: &mut faces[range.clone()],
-                neighbors: &mut neighbors[range],
+                faces: &mut faces[row_start..row_end],
+                neighbors: &mut neighbors[row_start..row_end],
                 flat: &flat,
             }),
         );
@@ -3210,23 +3462,59 @@ fn dual_incident_faces(mesh: &CertifiedDelaunay, site_count: usize) -> IncidentF
     }
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "each certified Delaunay face owns exactly three consecutive half-edge origins"
+)]
+fn dual_site_at_halfedge(triangles: &[[usize; 3]], halfedge: usize) -> usize {
+    triangles[halfedge / 3][halfedge % 3]
+}
+
 struct IncidentFaces {
     offsets: Vec<usize>,
     faces: Vec<usize>,
     /// Parallel to `faces`: the site across the edge from each face to the
     /// next one around the site (for the last face of a hull cell, the far
     /// end of the outgoing hull edge).
-    neighbors: Vec<u32>,
+    neighbors: Vec<SiteId>,
     boundaries: Vec<Option<(usize, usize)>>,
+}
+
+struct IncidentFaceRow<'a> {
+    faces: &'a [usize],
+    neighbors: &'a [SiteId],
+    boundary: Option<(usize, usize)>,
+}
+
+impl IncidentFaces {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "offsets, face rows, neighbor rows, and boundary records are built in the same dense site order"
+    )]
+    fn rows(&self) -> impl Iterator<Item = IncidentFaceRow<'_>> + '_ {
+        self.offsets
+            .array_windows::<2>()
+            .zip(self.boundaries.iter())
+            .map(move |(&[start, end], &boundary)| IncidentFaceRow {
+                faces: &self.faces[start..end],
+                neighbors: &self.neighbors[start..end],
+                boundary,
+            })
+    }
 }
 
 /// Where one site's walk writes its faces and neighbours.
 struct IncidenceOutput<'a> {
     faces: &'a mut [usize],
-    neighbors: &'a mut [u32],
+    neighbors: &'a mut [SiteId],
     flat: &'a dyn Fn(usize) -> usize,
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "the certified half-edge walk's count pass reserves this site's face/neighbor row and every next-halfedge ordinal belongs to its mesh"
+)]
 fn incident_faces_for_site(
     start: usize,
     halfedges: &[usize],
@@ -3243,7 +3531,7 @@ fn incident_faces_for_site(
             output.faces[length] = incoming / 3;
             // `outgoing` runs from the site to the neighbour shared with the
             // next face around it.
-            output.neighbors[length] = (output.flat)(dual_next_halfedge(outgoing)) as u32;
+            output.neighbors[length] = SiteId((output.flat)(dual_next_halfedge(outgoing)) as u32);
         }
         length += 1;
         let next = halfedges[outgoing];
@@ -3266,16 +3554,20 @@ fn dual_ray_hit(
     pair: [usize; 2],
     opposite: usize,
     frame: &[exact::ExactPoint; 4],
-) -> Result<(u8, exact::ExactPoint)> {
-    let bisector_sites = [sites[pair[0]].point.xy(), sites[pair[1]].point.xy()];
-    let left = exact::ExactPoint::from_xy(bisector_sites[0]);
-    let right = exact::ExactPoint::from_xy(bisector_sites[1]);
+) -> Result<(FrameSide, exact::ExactPoint)> {
+    let [left_site, right_site] = pair;
+    let [left_xy, right_xy] = [
+        site_at(sites, left_site).point.xy(),
+        site_at(sites, right_site).point.xy(),
+    ];
+    let left = exact::ExactPoint::from_xy(left_xy);
+    let right = exact::ExactPoint::from_xy(right_xy);
     let opposite_sign = exact::orient_points(
         &left,
         &right,
-        &exact::ExactPoint::from_xy(sites[opposite].point.xy()),
+        &exact::ExactPoint::from_xy(site_at(sites, opposite).point.xy()),
     )?;
-    for hit in bisector_frame_intersections(bisector_sites, frame)? {
+    for hit in bisector_frame_intersections([left_xy, right_xy], frame)? {
         if exact::orient_points(&left, &right, &hit.1)? != opposite_sign {
             return Ok(hit);
         }
@@ -3287,12 +3579,12 @@ fn dual_ray_hit(
 
 fn dual_close_hull_chain(
     faces: &[usize],
-    neighbors: &[u32],
-    entry_site: u32,
+    neighbors: &[SiteId],
+    entry_site: SiteId,
     complex: &DelaunayComplex,
     center_points: &[exact::ExactPoint],
-    entry_ray: &(u8, exact::ExactPoint),
-    exit_ray: &(u8, exact::ExactPoint),
+    entry_ray: &(FrameSide, exact::ExactPoint),
+    exit_ray: &(FrameSide, exact::ExactPoint),
     frame: &[exact::ExactPoint; 4],
     exterior: bool,
 ) -> Result<Vec<Tagged>> {
@@ -3302,7 +3594,9 @@ fn dual_close_hull_chain(
             leaving,
         })
     };
-    let mut ring = Vec::with_capacity(faces.len() + 6);
+    let entry_side = entry_ray.0;
+    let exit_side = exit_ray.0;
+    let mut ring = Vec::with_capacity(faces.len().saturating_add(6));
     ring.push(generated(&entry_ray.1, EdgeTag::Bisector(entry_site))?);
     ring.extend(
         faces
@@ -3314,24 +3608,22 @@ fn dual_close_hull_chain(
             }),
     );
     ring.push(generated(&exit_ray.1, EdgeTag::Axis)?);
-    let exit_side = exit_ray.0 as usize;
-    let entry_side = entry_ray.0 as usize;
     if exterior {
-        let steps = match (exit_side + 4 - entry_side) % 4 {
-            0 => 4,
+        let steps = match exit_side.steps_clockwise_to(entry_side) {
+            0 => FrameSide::ALL.len(),
             steps => steps,
         };
         let mut side = exit_side;
         for _ in 0..steps {
-            ring.push(generated(&frame[side], EdgeTag::Axis)?);
-            side = (side + 3) % 4;
+            ring.push(generated(side.start(frame), EdgeTag::Axis)?);
+            side = side.previous();
         }
     } else {
-        let steps = (entry_side + 4 - exit_side) % 4;
+        let steps = exit_side.steps_counterclockwise_to(entry_side);
         let mut side = exit_side;
         for _ in 0..steps {
-            side = (side + 1) % 4;
-            ring.push(generated(&frame[side], EdgeTag::Axis)?);
+            side = side.next();
+            ring.push(generated(side.start(frame), EdgeTag::Axis)?);
         }
     }
     dedup_tagged(&mut ring, center_points)?;
@@ -3341,14 +3633,16 @@ fn dual_close_hull_chain(
     Ok(ring)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "center component IDs come from the same DelaunayComplex whose exact centers are passed to every dual traversal"
+)]
 fn dual_vertex_point<'a>(
     vertex: &'a DualVertex,
     centers: &'a [exact::ExactPoint],
 ) -> &'a exact::ExactPoint {
     match vertex {
-        DualVertex::Center(component) => centers
-            .get(*component)
-            .expect("dual center component is in the center array"),
+        DualVertex::Center(component) => &centers[*component],
         DualVertex::Generated(point) => point,
     }
 }
@@ -3357,25 +3651,40 @@ fn dual_cycle_orientation(ring: &[Tagged], centers: &[exact::ExactPoint]) -> Res
     if ring.len() < 3 {
         return Err(voronoi_error("exact cycle has fewer than three vertices"));
     }
-    let point = |index: usize| dual_vertex_point(&ring[index % ring.len()].vertex, centers);
-    for index in 0..ring.len() {
-        let sign = exact::orient_points(point(index), point(index + 1), point(index + 2))?;
+    let mut points = ring
+        .iter()
+        .chain(ring.iter().take(2))
+        .map(|tagged| dual_vertex_point(&tagged.vertex, centers));
+    let mut start = points
+        .next()
+        .expect("an exact cycle has at least three vertices");
+    let mut middle = points
+        .next()
+        .expect("an exact cycle has at least three vertices");
+    for end in points {
+        let sign = exact::orient_points(start, middle, end)?;
         if sign != ExactSign::Zero {
             return Ok(sign);
         }
+        start = middle;
+        middle = end;
     }
     Err(voronoi_error("exact cycle has zero orientation"))
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "an admitted simple Voronoi cell has exact winding 0, 1, or -1 for this point-in-cycle query"
+)]
 fn dual_point_in_cycle(
     cycle: &[Tagged],
     centers: &[exact::ExactPoint],
     point: &exact::ExactPoint,
 ) -> Result<exact::PointInCycle> {
     let mut winding = 0_i32;
-    for index in 0..cycle.len() {
-        let start = dual_vertex_point(&cycle[index].vertex, centers);
-        let end = dual_vertex_point(&cycle[(index + 1) % cycle.len()].vertex, centers);
+    for (start, end) in cycle.iter().zip(cycle.iter().cycle().skip(1)) {
+        let start = dual_vertex_point(&start.vertex, centers);
+        let end = dual_vertex_point(&end.vertex, centers);
         let orientation = exact::orient_points(start, end, point)?;
         if orientation == ExactSign::Zero && between(point, start, end)? {
             return Ok(exact::PointInCycle::Boundary);
@@ -3429,20 +3738,20 @@ fn dual_clip_convex(
         _ => None,
     };
     let mut current = ring;
-    for side in 0..4 {
+    for side in FrameSide::ALL {
         if current.is_empty() {
             return Ok(current);
         }
-        let (a, b) = (&rect[side], &rect[(side + 1) % 4]);
+        let (a, b) = (side.start(rect), side.end(rect));
         let inside = |point: &exact::ExactPoint| -> Result<bool> {
             if !axis_aligned {
                 return Ok(exact::orient_points(a, b, point)? != ExactSign::Negative);
             }
             Ok(match side {
-                0 => point.compare_y(&rect[0])? != Ordering::Less,
-                1 => point.compare_x(&rect[1])? != Ordering::Greater,
-                2 => point.compare_y(&rect[2])? != Ordering::Greater,
-                _ => point.compare_x(&rect[3])? != Ordering::Less,
+                FrameSide::Bottom => point.compare_y(a)? != Ordering::Less,
+                FrameSide::Right => point.compare_x(a)? != Ordering::Greater,
+                FrameSide::Top => point.compare_y(a)? != Ordering::Greater,
+                FrameSide::Left => point.compare_x(a)? != Ordering::Less,
             })
         };
         // The crossing of the edge `from -> to` with this side. A bisector
@@ -3454,12 +3763,15 @@ fn dual_clip_convex(
                         to: &exact::ExactPoint|
          -> Result<Option<exact::ExactPoint>> {
             if let Some(corners) = corners {
-                let ends = [corners[side], corners[(side + 1) % 4]];
+                let [corner_start, corner_end] = side.endpoints_xy(&corners);
                 match tag {
                     EdgeTag::Bisector(neighbor) => {
-                        let pair = [site, sites[neighbor as usize].point.xy()];
+                        let pair = [site, site_by_id(sites, neighbor).point.xy()];
                         if let exact::FrameHit::Point(hit) =
-                            exact::ExactPoint::certified_bisector_hit(pair, ends)
+                            exact::ExactPoint::certified_bisector_hit(pair, [
+                                corner_start,
+                                corner_end,
+                            ])
                         {
                             return Ok(Some(hit));
                         }
@@ -3469,14 +3781,19 @@ fn dual_clip_convex(
                         // coordinate: a ray hit's side coordinate is exact in
                         // its bounds, a corner is a double. The crossing with
                         // a perpendicular side is then an exact double.
-                        let shared = |axis: usize| {
-                            let (from, to) = (from.bounds()[axis], to.bounds()[axis]);
+                        let [from_x, from_y] = from.bounds();
+                        let [to_x, to_y] = to.bounds();
+                        let shared = |from: exact::Interval, to: exact::Interval| {
                             (from.lo == from.hi && to.lo == to.hi && from.lo == to.lo)
                                 .then_some(from.lo)
                         };
                         let hit = match side {
-                            0 | 2 => shared(0).map(|x| XY::new(x, ends[0].y)),
-                            _ => shared(1).map(|y| XY::new(ends[0].x, y)),
+                            FrameSide::Bottom | FrameSide::Top => {
+                                shared(from_x, to_x).map(|x| XY::new(x, corner_start.y))
+                            },
+                            FrameSide::Right | FrameSide::Left => {
+                                shared(from_y, to_y).map(|y| XY::new(corner_start.x, y))
+                            },
                         };
                         if let Some(hit) = hit
                             && hit.x.is_finite()
@@ -3492,15 +3809,17 @@ fn dual_clip_convex(
             let hit = exact::line_intersection(&boundary, &edge)?;
             Ok(hit.is_finite().then_some(hit))
         };
-        let mut next = Vec::with_capacity(current.len() + 1);
-        let mut previous = current.len() - 1;
-        let mut previous_in = inside(dual_vertex_point(&current[previous].vertex, centers))?;
-        for index in 0..current.len() {
-            let this_point = dual_vertex_point(&current[index].vertex, centers);
+        let mut next = Vec::with_capacity(current.len().saturating_add(1));
+        let Some(mut previous) = current.last() else {
+            return Ok(current);
+        };
+        let mut previous_in = inside(dual_vertex_point(&previous.vertex, centers))?;
+        for this in &current {
+            let this_point = dual_vertex_point(&this.vertex, centers);
             let this_in = inside(this_point)?;
             if this_in != previous_in {
-                let tag = current[previous].leaving;
-                let previous_point = dual_vertex_point(&current[previous].vertex, centers);
+                let tag = previous.leaving;
+                let previous_point = dual_vertex_point(&previous.vertex, centers);
                 if let Some(hit) = crossing(previous_point, tag, this_point)? {
                     next.push(Tagged {
                         vertex: DualVertex::Generated(Box::new(hit)),
@@ -3511,9 +3830,10 @@ fn dual_clip_convex(
                 }
             }
             if this_in {
-                next.push(current[index].clone_tagged());
+                next.push(this.clone_tagged());
             }
-            (previous, previous_in) = (index, this_in);
+            previous = this;
+            previous_in = this_in;
         }
         dedup_tagged(&mut next, centers)?;
         current = next;
@@ -3547,7 +3867,12 @@ fn dual_build_rings(
         inputs.extend(frame_inputs().cloned());
         exact::enclosing_frame(&inputs)?
     };
-    let [a, b, c, d] = clip.rings[0].as_slice() else {
+    let [clip_outer] = clip.rings.as_slice() else {
+        return Err(voronoi_error(
+            "certified rectangular clip requires one outer ring",
+        ));
+    };
+    let [a, b, c, d] = clip_outer.as_slice() else {
         return Err(voronoi_error(
             "certified rectangular clip requires four corners",
         ));
@@ -3564,63 +3889,52 @@ fn dual_build_rings(
     // it; an unbounded interval fails every strict comparison and keeps the
     // cell on the exact lane.
     let interior_bounds = axis_aligned.then(|| {
-        let (low, high) = (rect[0].bounds(), rect[2].bounds());
-        [low[0].hi, high[0].lo, low[1].hi, high[1].lo]
+        let [bottom_left, _, top_right, _] = &rect;
+        let [low_x, low_y] = bottom_left.bounds();
+        let [high_x, high_y] = top_right.bounds();
+        [low_x.hi, high_x.lo, low_y.hi, high_y.lo]
     });
     // The incidence walk has one rotational sense for the whole mesh; the
     // first interior cell settles it exactly and every later one reuses it.
     let mut walk_clockwise: Option<bool> = None;
 
     let triangles = mesh.triangles();
-    let halfedges = mesh.halfedges();
-    let flat = |edge: usize| triangles[edge / 3][edge % 3];
+    let flat = |edge: usize| dual_site_at_halfedge(triangles, edge);
     let incidence = dual_incident_faces(mesh, sites.len());
     let mut rings = Vec::with_capacity(sites.len());
 
-    for site in 0..sites.len() {
-        let faces = &incidence.faces[incidence.offsets[site]..incidence.offsets[site + 1]];
-        let boundary = incidence.boundaries[site];
-        let neighbors = &incidence.neighbors[incidence.offsets[site]..incidence.offsets[site + 1]];
+    for (site, incidence_row) in sites.iter().zip(incidence.rows()) {
+        let faces = incidence_row.faces;
+        let boundary = incidence_row.boundary;
+        let neighbors = incidence_row.neighbors;
         let ring = if let Some((first_hull, last_hull)) = boundary {
             // (q -> site) and (site -> r): the two hull edges bounding the cell.
-            let entry = [flat(first_hull), flat(dual_next_halfedge(first_hull))];
+            let entry_site = flat(first_hull);
+            let entry_neighbor = flat(dual_next_halfedge(first_hull));
             let entry_opposite = flat(dual_next_halfedge(dual_next_halfedge(first_hull)));
-            let exit = [flat(last_hull), flat(dual_next_halfedge(last_hull))];
+            let exit_site = flat(last_hull);
+            let exit_neighbor = flat(dual_next_halfedge(last_hull));
             let exit_opposite = flat(dual_next_halfedge(dual_next_halfedge(last_hull)));
-            debug_assert_eq!(halfedges[first_hull], EMPTY);
-            debug_assert_eq!(halfedges[last_hull], EMPTY);
-            let entry_ray = dual_ray_hit(sites, entry, entry_opposite, &frame)?;
-            let exit_ray = dual_ray_hit(sites, exit, exit_opposite, &frame)?;
-            let site_point = exact::ExactPoint::from_xy(sites[site].point.xy());
+            let entry_pair = [entry_site, entry_neighbor];
+            let exit_pair = [exit_site, exit_neighbor];
+            let entry_ray = dual_ray_hit(sites, entry_pair, entry_opposite, &frame)?;
+            let exit_ray = dual_ray_hit(sites, exit_pair, exit_opposite, &frame)?;
+            let site_id = SiteId(entry_site as u32);
+            let site_point = exact::ExactPoint::from_xy(site.point.xy());
             // Positive topology fixes the open center chain. The two frame
             // paths are complementary clipped faces; exact ownership decides
             // only which one contains this site, including the zero-separator
             // isolated-ring case. Ring handedness is normalization, not a
             // second candidate.
             let interior = dual_close_hull_chain(
-                faces,
-                neighbors,
-                entry[0] as u32,
-                &complex,
-                centers,
-                &entry_ray,
-                &exit_ray,
-                &frame,
-                false,
+                faces, neighbors, site_id, &complex, centers, &entry_ray, &exit_ray, &frame, false,
             )?;
             if dual_point_in_cycle(&interior, centers, &site_point)? == exact::PointInCycle::Inside
             {
                 interior
             } else {
                 let exterior = dual_close_hull_chain(
-                    faces,
-                    neighbors,
-                    entry[0] as u32,
-                    &complex,
-                    centers,
-                    &entry_ray,
-                    &exit_ray,
-                    &frame,
+                    faces, neighbors, site_id, &complex, centers, &entry_ray, &exit_ray, &frame,
                     true,
                 )?;
                 if dual_point_in_cycle(&exterior, centers, &site_point)?
@@ -3640,7 +3954,7 @@ fn dual_build_rings(
             // faces counter-clockwise, and every center strictly inside the
             // rectangle means the clip is the identity; the embedding's
             // certificate still proves the rounded cell.
-            let mut ring: Vec<Tagged> = Vec::with_capacity(faces.len() + 6);
+            let mut ring: Vec<Tagged> = Vec::with_capacity(faces.len().saturating_add(6));
             let mut interior = interior_bounds.is_some();
             for (&face, &neighbor) in faces.iter().zip(neighbors) {
                 let component = complex.component_of_face(face);
@@ -3658,16 +3972,24 @@ fn dual_build_rings(
                 }
                 interior = interior
                     && interior_bounds
-                        .is_some_and(|bounds| centers[component].strictly_inside(bounds));
+                        .is_some_and(|bounds| complex.center(component).strictly_inside(bounds));
             }
-            if ring.len() > 1
-                && let (DualVertex::Center(first), DualVertex::Center(last)) =
-                    (&ring[0].vertex, &ring[ring.len() - 1].vertex)
-                && first == last
-            {
-                let leaving = ring[ring.len() - 1].leaving;
-                ring.pop();
-                ring[0].leaving = leaving;
+            if ring.len() > 1 {
+                let first = ring.first().map(|tagged| &tagged.vertex);
+                let last = ring.last().map(|tagged| &tagged.vertex);
+                if let (Some(DualVertex::Center(first)), Some(DualVertex::Center(last))) =
+                    (first, last)
+                    && first == last
+                {
+                    let leaving = ring
+                        .last()
+                        .expect("a repeated closing center has a final edge")
+                        .leaving;
+                    ring.pop();
+                    ring.first_mut()
+                        .expect("a repeated closing center has a first edge")
+                        .leaving = leaving;
+                }
             }
             if interior && ring.len() >= 3 {
                 let clockwise = if let Some(clockwise) = walk_clockwise {
@@ -3690,14 +4012,7 @@ fn dual_build_rings(
             }
             ring
         };
-        let clipped = dual_clip_convex(
-            ring,
-            sites[site].point.xy(),
-            sites,
-            &rect,
-            axis_aligned,
-            centers,
-        )?;
+        let clipped = dual_clip_convex(ring, site.point.xy(), sites, &rect, axis_aligned, centers)?;
         if clipped.len() < 3 {
             return Err(voronoi_error(
                 "dual Voronoi cell degenerated under the clip",
@@ -3726,15 +4041,20 @@ fn lex_xy(left: XY, right: XY) -> Ordering {
 /// predicate, so a declined float filter costs one dyadic evaluation, never a
 /// whole exact cell, and a refusal here only routes the cell to the exact
 /// certificates.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "direction_changes is bounded by the number of vertices in this admitted ring"
+)]
 fn certify_convex_cell(ring: &[XY], site: XY) -> bool {
     let count = ring.len();
     if count < 3 {
         return false;
     }
-    let at = |index: usize| ring[index % count];
     let mut direction_changes = 0_usize;
-    for index in 0..count {
-        let (a, b, c) = (at(index), at(index + 1), at(index + 2));
+    let mut cyclic = ring.iter().cycle();
+    let mut a = *cyclic.next().expect("ring has at least three vertices");
+    let mut b = *cyclic.next().expect("ring has at least three vertices");
+    for &c in cyclic.take(count) {
         let (ahead, onward) = (lex_xy(a, b), lex_xy(b, c));
         // Three vertices on one axis-aligned side (a clipped hull cell's
         // frame or clip edge) are exactly collinear; no filter can certify
@@ -3755,6 +4075,7 @@ fn certify_convex_cell(ring: &[XY], site: XY) -> bool {
         if exact::orient2d(a, b, site) == ExactSign::Negative {
             return false;
         }
+        (a, b) = (b, c);
     }
     direction_changes == 2
 }
@@ -3814,6 +4135,10 @@ fn dual_embed(
     let mut interned = try_hash_map_with_capacity(rings.centers.len())?;
     let mut vertex_xy: Vec<XY> = Vec::with_capacity(rings.centers.len());
     vertex_xy.resize(rings.centers.len(), XY::new(0.0, 0.0));
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "center components index the admitted center map; dense IDs occupy its prefix or are assigned immediately before their coordinate is published, and the intern table only returns those IDs"
+    )]
     fn resolve<'r>(
         vertex: &'r DualVertex,
         centers: &'r [exact::ExactPoint],
@@ -3821,10 +4146,10 @@ fn dual_embed(
         interned: &mut crate::collections::HashMap<PointKey, (&'r exact::ExactPoint, u32)>,
         vertex_xy: &mut Vec<XY>,
     ) -> Result<(XY, u32)> {
-        if let DualVertex::Center(component) = *vertex
-            && let Some(Some(memo)) = center_rounded.get(component).copied()
-        {
-            return Ok(memo);
+        if let DualVertex::Center(component) = *vertex {
+            if let Some(memo) = center_rounded[component] {
+                return Ok(memo);
+            }
         }
         let point = dual_vertex_point(vertex, centers);
         let mut xy = point.round_nearest_even()?;
@@ -3855,9 +4180,7 @@ fn dual_embed(
             },
         };
         if let DualVertex::Center(component) = *vertex {
-            *center_rounded
-                .get_mut(component)
-                .expect("dual center component is in the center array") = Some((xy, id));
+            center_rounded[component] = Some((xy, id));
         }
         vertex_xy[id as usize] = xy;
         Ok((xy, id))
@@ -3865,6 +4188,10 @@ fn dual_embed(
     let mut offsets = Vec::new();
     let mut rounded_all: Vec<XY> = Vec::new();
     let mut ids_all: Vec<u32> = Vec::new();
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the offset column has one terminal sentinel in addition to one row per existing non-zero-sized ring"
+    )]
     offsets.reserve(rings.rings.len() + 1);
     rounded_all.reserve(total);
     ids_all.reserve(total);
@@ -3885,9 +4212,11 @@ fn dual_embed(
     }
     for (window, site) in offsets.array_windows::<2>().zip(sites) {
         let [start, end] = *window;
-        let rounded = rounded_all
-            .get_mut(start..end)
-            .ok_or_else(embedding_failure)?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "each row offset was pushed around appending this same ring's rounded vertices"
+        )]
+        let rounded = &mut rounded_all[start..end];
         // The ring starts at its lexicographically smallest rounded vertex,
         // the canonical form both lanes publish; rounding is injective here,
         // so the minimum is unique.
@@ -3941,7 +4270,11 @@ fn dual_embed(
     let mut directed: Vec<DirectedDualEdge> = Vec::with_capacity(total);
     for window in offsets.array_windows::<2>() {
         let [start, end] = *window;
-        let ids = ids_all.get(start..end).ok_or_else(embedding_failure)?;
+        #[expect(
+            clippy::indexing_slicing,
+            reason = "each row offset was pushed around appending this same ring's dense vertex IDs"
+        )]
+        let ids = &ids_all[start..end];
         if ids.is_empty() {
             return Err(embedding_failure());
         }
@@ -3955,9 +4288,9 @@ fn dual_embed(
         }
     }
     directed.sort_unstable();
-    let bounds = clip.frame_bounds();
-    // side 0: y == miny, 1: x == maxx, 2: y == maxy, 3: x == minx
+    let [min_x, max_x, min_y, max_y] = clip.frame_bounds();
     let mut sides: [Vec<(f64, f64)>; 4] = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let [bottom, right, top, left] = &mut sides;
     // Each interior edge takes two directed entries.
     let mut internal_edge_count = 0_usize;
     for run in directed.chunk_by(|left, right| same_undirected_dual_edge(*left, *right)) {
@@ -3981,39 +4314,43 @@ fn dual_embed(
             *vertex_xy.get(high).ok_or_else(embedding_failure)?,
         );
         let (a, b) = if forward { (a, b) } else { (b, a) };
-        let side = if a.y == bounds[2] && b.y == bounds[2] {
-            0
-        } else if a.x == bounds[1] && b.x == bounds[1] {
-            1
-        } else if a.y == bounds[3] && b.y == bounds[3] {
-            2
-        } else if a.x == bounds[0] && b.x == bounds[0] {
-            3
+        let side = if a.y == min_y && b.y == min_y {
+            FrameSide::Bottom
+        } else if a.x == max_x && b.x == max_x {
+            FrameSide::Right
+        } else if a.y == max_y && b.y == max_y {
+            FrameSide::Top
+        } else if a.x == min_x && b.x == min_x {
+            FrameSide::Left
         } else {
             return Err(embedding_failure());
         };
         let correctly_directed = match side {
-            0 => a.x < b.x,
-            1 => a.y < b.y,
-            2 => a.x > b.x,
-            _ => a.y > b.y,
+            FrameSide::Bottom => a.x < b.x,
+            FrameSide::Right => a.y < b.y,
+            FrameSide::Top => a.x > b.x,
+            FrameSide::Left => a.y > b.y,
         };
         if !correctly_directed {
             return Err(embedding_failure());
         }
-        let (lo, hi) = if side % 2 == 0 {
-            (a.x.min(b.x), a.x.max(b.x))
-        } else {
-            (a.y.min(b.y), a.y.max(b.y))
+        let (lo, hi) = match side {
+            FrameSide::Bottom | FrameSide::Top => (a.x.min(b.x), a.x.max(b.x)),
+            FrameSide::Right | FrameSide::Left => (a.y.min(b.y), a.y.max(b.y)),
         };
-        sides[side].push((lo, hi));
+        match side {
+            FrameSide::Bottom => &mut *bottom,
+            FrameSide::Right => &mut *right,
+            FrameSide::Top => &mut *top,
+            FrameSide::Left => &mut *left,
+        }
+        .push((lo, hi));
     }
-    for (index, side) in sides.iter_mut().enumerate() {
+    for (frame_side, side) in FrameSide::ALL.into_iter().zip([bottom, right, top, left]) {
         side.sort_unstable_by(|left, right| left.0.total_cmp(&right.0));
-        let (start, end) = if index % 2 == 0 {
-            (bounds[0], bounds[1])
-        } else {
-            (bounds[2], bounds[3])
+        let (start, end) = match frame_side {
+            FrameSide::Bottom | FrameSide::Top => (min_x, max_x),
+            FrameSide::Right | FrameSide::Left => (min_y, max_y),
         };
         let mut cursor = start;
         for &(lo, hi) in side.iter() {

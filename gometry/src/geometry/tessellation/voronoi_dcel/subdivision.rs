@@ -5,9 +5,9 @@
 //! the label of the face that contains it.
 
 use super::{
-    AtomicEdge, BoundaryFaceId, ExactSign, IndexedTopology, IndexedTopologyScratch, NodedAtoms,
-    Ordering, OwnerTransition, Result, Site, SiteAdjacency, SiteId, Transition, VecDeque, XY,
-    exact, nearest_site_walk, voronoi_error,
+    AtomicEdge, BoundaryFaceId, EdgeId, ExactSign, IndexedTopology, IndexedTopologyScratch,
+    NodedAtoms, Ordering, OwnerTransition, Result, Site, SiteAdjacency, SiteId, Transition,
+    VecDeque, VertexId, XY, exact, nearest_site_walk, voronoi_error,
 };
 
 pub(super) struct ExactVertex {
@@ -15,6 +15,10 @@ pub(super) struct ExactVertex {
     pub(super) fixed_xy: Option<XY>,
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "union-find nodes and parent links are dense indices from the same initialized parent column"
+)]
 pub(super) fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     while parents[node] != node {
         parents[node] = parents[parents[node]];
@@ -23,6 +27,26 @@ pub(super) fn uf_root(parents: &mut [usize], mut node: usize) -> usize {
     node
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "both roots are returned by uf_root over this same admitted parent column"
+)]
+pub(super) fn uf_union(parents: &mut [usize], left: usize, right: usize) -> bool {
+    let left = uf_root(parents, left);
+    let right = uf_root(parents, right);
+    if left == right {
+        false
+    } else {
+        parents[right] = left;
+        true
+    }
+}
+
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "admit_counts bounds the vertex, slot, and terminal-offset widths; scatter IDs come from the admitted endpoint columns, and insertion-sort predecessors stay inside the admitted row"
+)]
 pub(super) fn build_exact_subdivision(atoms: NodedAtoms) -> Result<ExactSubdivision> {
     let vertices = atoms.vertices.len();
     let edges = atoms.edges.len();
@@ -98,18 +122,20 @@ pub(super) fn build_exact_subdivision(atoms: NodedAtoms) -> Result<ExactSubdivis
         fixed_xy: vertex.fixed_xy,
     }));
     topology.finish(&edge_of_slot, &mut scratch);
-    for slot in 0..slots {
-        if topology.face_of[slot] == topology.face_of[topology.twins[slot] as usize] {
-            return Err(voronoi_error("exact Voronoi subdivision contains a bridge"));
-        }
-    }
-    Ok(ExactSubdivision {
+    let subdivision = ExactSubdivision {
         vertices: exact_vertices,
         edges: atoms.edges,
         topology,
         edge_of_slot,
         labels: Vec::new(),
-    })
+    };
+    for slot in 0..slots {
+        let dart = subdivision.dart(slot as u32);
+        if dart.face == subdivision.dart(dart.twin).face {
+            return Err(voronoi_error("exact Voronoi subdivision contains a bridge"));
+        }
+    }
+    Ok(subdivision)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -117,6 +143,43 @@ pub(super) struct RegionLabel {
     pub(super) frame_winding: i8,
     pub(super) clip_winding: i32,
     pub(super) owner: Option<SiteId>,
+}
+
+struct FaceLabels {
+    values: Vec<Option<RegionLabel>>,
+}
+
+impl FaceLabels {
+    fn new(count: usize) -> Self {
+        Self {
+            values: vec![None; count],
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "BoundaryFaceId is minted from the completed face CSR and this column has exactly one label slot per face"
+    )]
+    fn slot(&self, face: BoundaryFaceId) -> &Option<RegionLabel> {
+        &self.values[face.0 as usize]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "BoundaryFaceId is minted from the completed face CSR and this column has exactly one label slot per face"
+    )]
+    fn slot_mut(&mut self, face: BoundaryFaceId) -> &mut Option<RegionLabel> {
+        &mut self.values[face.0 as usize]
+    }
+
+    fn required(&self, face: BoundaryFaceId) -> RegionLabel {
+        self.slot(face)
+            .expect("a queued boundary face has an assigned label")
+    }
+
+    fn into_values(self) -> Vec<Option<RegionLabel>> {
+        self.values
+    }
 }
 
 pub(super) struct ExactSubdivision {
@@ -127,9 +190,115 @@ pub(super) struct ExactSubdivision {
     pub(super) labels: Vec<RegionLabel>,
 }
 
-pub(super) fn slot_transition(subdivision: &ExactSubdivision, slot: usize) -> Transition {
-    let atomic = &subdivision.edges[subdivision.edge_of_slot[slot] as usize];
-    if subdivision.topology.owners[slot] == atomic.endpoints[0].0 {
+#[derive(Clone, Copy)]
+pub(super) struct DartSlot {
+    pub(super) origin: VertexId,
+    pub(super) target: VertexId,
+    pub(super) twin: u32,
+    pub(super) face: BoundaryFaceId,
+    pub(super) edge: EdgeId,
+}
+
+impl ExactSubdivision {
+    #[expect(
+        clippy::indexing_slicing,
+        clippy::arithmetic_side_effects,
+        reason = "vertices are stored in exact lexicographic order, and binary search keeps its midpoint and lower-bound advance inside this admitted column"
+    )]
+    pub(super) fn vertex_at(&self, point: &exact::ExactPoint) -> Result<Option<VertexId>> {
+        let (mut low, mut high) = (0, self.vertices.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match self.vertices[middle].point.compare_lex(point)? {
+                Ordering::Less => low = middle + 1,
+                Ordering::Greater => high = middle,
+                Ordering::Equal => return Ok(Some(VertexId(middle as u32))),
+            }
+        }
+        Ok(None)
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "VertexId values are minted from the lexicographically interned vertex column after IndexedTopology::admit_counts"
+    )]
+    pub(super) fn vertex(&self, id: VertexId) -> &ExactVertex {
+        &self.vertices[id.0 as usize]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "EdgeId values are minted from the admitted AtomicEdge column"
+    )]
+    pub(super) fn edge(&self, id: EdgeId) -> &AtomicEdge {
+        &self.edges[id.0 as usize]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "BoundaryFaceId values are assigned from the completed face_starts/labels rows"
+    )]
+    pub(super) fn label(&self, face: BoundaryFaceId) -> RegionLabel {
+        self.labels[face.0 as usize]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face_starts has one terminal offset, and each BoundaryFaceId comes from its completed CSR rows"
+    )]
+    pub(super) fn face_slots(&self, face: BoundaryFaceId) -> &[u32] {
+        let face = face.0 as usize;
+        let start = self.topology.face_starts[face] as usize;
+        let end = self.topology.face_starts[face + 1] as usize;
+        &self.topology.face_slots[start..end]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "face_rows walks adjacent admitted offsets; each half-open slot row is published by IndexedTopology::finish"
+    )]
+    pub(super) fn face_rows(&self) -> impl Iterator<Item = (BoundaryFaceId, &[u32])> + '_ {
+        self.topology
+            .face_starts
+            .array_windows::<2>()
+            .enumerate()
+            .map(move |(face, &[start, end])| {
+                (
+                    BoundaryFaceId(face as u32),
+                    &self.topology.face_slots[start as usize..end as usize],
+                )
+            })
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "slot IDs and edge_of_slot/topology columns are parallel outputs of the same admitted IndexedTopology::finish"
+    )]
+    pub(super) fn dart(&self, slot: u32) -> DartSlot {
+        let slot = slot as usize;
+        DartSlot {
+            origin: VertexId(self.topology.owners[slot]),
+            target: VertexId(self.topology.targets[slot]),
+            twin: self.topology.twins[slot],
+            face: BoundaryFaceId(self.topology.face_of[slot]),
+            edge: EdgeId(self.edge_of_slot[slot]),
+        }
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "component IDs are densely assigned by IndexedTopology::finish from the admitted vertex column"
+    )]
+    pub(super) fn component(&self, vertex: VertexId) -> usize {
+        self.topology.component_of[vertex.0 as usize] as usize
+    }
+}
+
+pub(super) fn slot_transition(subdivision: &ExactSubdivision, slot: u32) -> Transition {
+    let dart = subdivision.dart(slot);
+    let atomic = subdivision.edge(dart.edge);
+    let [start, _] = atomic.endpoints;
+    if dart.origin == start {
         atomic.forward
     } else {
         atomic.forward.reversed()
@@ -141,12 +310,12 @@ pub(super) fn selected_cell_label(label: RegionLabel) -> bool {
 }
 
 pub(super) fn walk_label(subdivision: &ExactSubdivision, face: BoundaryFaceId) -> RegionLabel {
-    subdivision.labels[face.0 as usize]
+    subdivision.label(face)
 }
 
 pub(super) fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Result<()> {
     let topology = &subdivision.topology;
-    let boundary_faces = topology.face_starts.len().saturating_sub(1);
+    let boundary_faces = topology.face_starts.array_windows::<2>().count();
     if subdivision.labels.len() != boundary_faces {
         return Err(voronoi_error("one exact boundary face has no label"));
     }
@@ -159,23 +328,21 @@ pub(super) fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Resu
             ));
         }
     }
-    for slot in 0..topology.targets.len() {
-        let twin = topology.twins[slot] as usize;
-        let edge = subdivision.edge_of_slot[slot] as usize;
-        let left = BoundaryFaceId(topology.face_of[slot]);
-        let right = BoundaryFaceId(topology.face_of[twin]);
+    for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
+        let slot = slot as u32;
+        let dart = subdivision.dart(slot);
+        let twin = subdivision.dart(dart.twin);
         let transition = slot_transition(subdivision, slot);
-        if topology.twins[twin] != slot as u32
-            || topology.owners[slot] != topology.targets[twin]
-            || topology.targets[slot] != topology.owners[twin]
-            || subdivision.edge_of_slot[twin] as usize != edge
-            || topology.component_of[topology.owners[slot] as usize]
-                != topology.component_of[topology.owners[twin] as usize]
-            || topology.predecessor_slot(topology.successor_slot(slot as u32)) != slot as u32
-            || crossed_label(walk_label(subdivision, left), transition)?
-                != walk_label(subdivision, right)
-            || crossed_label(walk_label(subdivision, right), transition.reversed())?
-                != walk_label(subdivision, left)
+        if twin.twin != slot
+            || dart.origin != twin.target
+            || dart.target != twin.origin
+            || dart.edge != EdgeId(edge)
+            || subdivision.component(dart.origin) != subdivision.component(twin.origin)
+            || topology.predecessor_slot(topology.successor_slot(slot)) != slot
+            || crossed_label(walk_label(subdivision, dart.face), transition)?
+                != walk_label(subdivision, twin.face)
+            || crossed_label(walk_label(subdivision, twin.face), transition.reversed())?
+                != walk_label(subdivision, dart.face)
         {
             return Err(voronoi_error(
                 "exact indexed topology invariants or twin labels disagree",
@@ -195,6 +362,10 @@ pub(super) fn validate_exact_subdivision(subdivision: &ExactSubdivision) -> Resu
     Ok(())
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "validated transitions carry frame/clip deltas within the exact label domain, so the propagated 0-or-1 windings remain representable"
+)]
 pub(super) fn crossed_label(left: RegionLabel, transition: Transition) -> Result<RegionLabel> {
     let owner = match transition.owner {
         OwnerTransition::Preserve => left.owner,
@@ -217,15 +388,15 @@ pub(super) fn crossed_label(left: RegionLabel, transition: Transition) -> Result
     })
 }
 
-pub(super) fn assign_walk_label(
-    labels: &mut [Option<RegionLabel>],
+fn assign_walk_label(
+    labels: &mut FaceLabels,
     queue: &mut VecDeque<BoundaryFaceId>,
     face: BoundaryFaceId,
     label: RegionLabel,
 ) -> Result<()> {
-    match labels[face.0 as usize] {
+    match *labels.slot(face) {
         None => {
-            labels[face.0 as usize] = Some(label);
+            *labels.slot_mut(face) = Some(label);
             queue.push_back(face);
             Ok(())
         },
@@ -234,19 +405,17 @@ pub(super) fn assign_walk_label(
     }
 }
 
-pub(super) fn propagate_walk_labels(
+fn propagate_walk_labels(
     subdivision: &ExactSubdivision,
-    labels: &mut [Option<RegionLabel>],
+    labels: &mut FaceLabels,
     queue: &mut VecDeque<BoundaryFaceId>,
 ) -> Result<()> {
-    let topology = &subdivision.topology;
     while let Some(left) = queue.pop_front() {
-        let label = labels[left.0 as usize].expect("queued walk is labelled");
-        let walk = &topology.face_slots[topology.face_starts[left.0 as usize] as usize
-            ..topology.face_starts[left.0 as usize + 1] as usize];
+        let label = labels.required(left);
+        let walk = subdivision.face_slots(left);
         for &slot in walk {
-            let transition = slot_transition(subdivision, slot as usize);
-            let right = BoundaryFaceId(topology.face_of[topology.twins[slot as usize] as usize]);
+            let transition = slot_transition(subdivision, slot);
+            let right = subdivision.dart(subdivision.dart(slot).twin).face;
             let right_label = crossed_label(label, transition)?;
             if crossed_label(right_label, transition.reversed())? != label {
                 return Err(voronoi_error("twin label equations are not inverses"));
@@ -257,13 +426,17 @@ pub(super) fn propagate_walk_labels(
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "component IDs are densely assigned within IndexedTopology::finish's admitted vertex count and exterior has one slot per component"
+)]
 pub(super) fn graft_components(
     subdivision: &mut ExactSubdivision,
     sites: &[Site],
     adjacency: &SiteAdjacency,
 ) -> Result<()> {
     let topology = &subdivision.topology;
-    let boundary_faces = topology.face_starts.len() - 1;
+    let boundary_faces = topology.face_starts.array_windows::<2>().count();
     let components = topology
         .component_of
         .iter()
@@ -273,19 +446,16 @@ pub(super) fn graft_components(
     subdivision.labels.reserve(boundary_faces);
     let mut exterior = Vec::with_capacity(components);
     exterior.resize(components, None);
-    for face in 0..boundary_faces {
-        let walk = &topology.face_slots
-            [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize];
-        let sign =
-            exact::cycle_orientation(walk.iter().map(|&slot| {
-                &subdivision.vertices[topology.owners[slot as usize] as usize].point
-            }))?;
-        let component = topology.component_of[topology.owners[walk[0] as usize] as usize] as usize;
-        if sign == ExactSign::Negative
-            && exterior[component]
-                .replace(BoundaryFaceId(face as u32))
-                .is_some()
-        {
+    for (face, walk) in subdivision.face_rows() {
+        let sign = exact::cycle_orientation(walk.iter().map(|&slot| {
+            let dart = subdivision.dart(slot);
+            &subdivision.vertex(dart.origin).point
+        }))?;
+        let first_slot = *walk
+            .first()
+            .expect("face rows produced by IndexedTopology contain at least one slot");
+        let component = subdivision.component(subdivision.dart(first_slot).origin);
+        if sign == ExactSign::Negative && exterior[component].replace(face).is_some() {
             return Err(voronoi_error(
                 "edge component has more than one negative boundary face",
             ));
@@ -299,11 +469,11 @@ pub(super) fn graft_components(
     let frame_edge = subdivision
         .edges
         .iter()
-        .position(|edge| edge.frame_side.is_some())
+        .find(|edge| edge.frame_side.is_some())
         .ok_or_else(|| voronoi_error("private frame is absent"))?;
-    let frame_component =
-        topology.component_of[subdivision.edges[frame_edge].endpoints[0].0 as usize] as usize;
-    let mut labels = vec![None; boundary_faces];
+    let [frame_vertex, _] = frame_edge.endpoints;
+    let frame_component = subdivision.component(frame_vertex);
+    let mut labels = FaceLabels::new(boundary_faces);
     let mut queue = VecDeque::with_capacity(boundary_faces);
     let outside_frame = RegionLabel {
         frame_winding: 0,
@@ -318,11 +488,15 @@ pub(super) fn graft_components(
     )?;
     propagate_walk_labels(subdivision, &mut labels, &mut queue)?;
     for outside in exterior.iter().copied().map(Option::unwrap) {
-        if labels[outside.0 as usize].is_some() {
+        if labels.slot(outside).is_some() {
             continue;
         }
-        let slot = topology.face_slots[topology.face_starts[outside.0 as usize] as usize] as usize;
-        let edge = &subdivision.edges[subdivision.edge_of_slot[slot] as usize];
+        let slot = *subdivision
+            .face_slots(outside)
+            .first()
+            .expect("an exterior face came from a nonempty boundary walk");
+        let dart = subdivision.dart(slot);
+        let edge = subdivision.edge(dart.edge);
         if edge.clip_sources.is_empty() || edge.frame_side.is_some() {
             return Err(voronoi_error("unvisited exact component has no clip seed"));
         }
@@ -332,8 +506,8 @@ pub(super) fn graft_components(
                 "unvisited exact component has no simple clip seed",
             ));
         }
-        let start = &subdivision.vertices[topology.owners[slot] as usize].point;
-        let end = &subdivision.vertices[topology.targets[slot] as usize].point;
+        let start = &subdivision.vertex(dart.origin).point;
+        let end = &subdivision.vertex(dart.target).point;
         let owner = nearest_site_walk(&start.midpoint(end)?, sites, adjacency, SiteId(0))?;
         let label = RegionLabel {
             frame_winding: 1,
@@ -344,7 +518,7 @@ pub(super) fn graft_components(
         propagate_walk_labels(subdivision, &mut labels, &mut queue)?;
     }
     subdivision.labels.clear();
-    for label in labels {
+    for label in labels.into_values() {
         subdivision.labels.push(
             label.ok_or_else(|| {
                 voronoi_error("exact subdivision left an unlabelled boundary face")

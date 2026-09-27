@@ -4,9 +4,9 @@
 //! incidence is walked once to emit each shared edge exactly one time.
 
 use super::{
-    BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, Ordering, Result, SiteId,
-    VertexId, exact, rounded_box, selected_cell_label, try_sort_by, validate_exact_cycles,
-    voronoi_error, walk_label,
+    BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, Result, SiteId, VertexId, exact,
+    rounded_box, selected_cell_label, try_sort_by, validate_exact_cycles, voronoi_error,
+    walk_label,
 };
 
 pub(super) struct ExactSimpleRing {
@@ -29,21 +29,53 @@ pub(super) struct ExactEdgeChain {
     pub(super) edges: Vec<EdgeId>,
 }
 
+struct VertexPathPositions(Vec<Option<usize>>);
+
+impl VertexPathPositions {
+    fn new(vertex_count: usize) -> Self {
+        Self(vec![None; vertex_count])
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "VertexId values belong to the ExactSubdivision whose vertex count sized this pinch-position column"
+    )]
+    fn get(&self, vertex: VertexId) -> Option<usize> {
+        self.0[vertex.0 as usize]
+    }
+
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "VertexId values belong to the ExactSubdivision whose vertex count sized this pinch-position column"
+    )]
+    fn set(&mut self, vertex: VertexId, position: Option<usize>) {
+        self.0[vertex.0 as usize] = position;
+    }
+
+    fn clear_after(&mut self, path: &[VertexId], position: usize) {
+        for &vertex in path.iter().skip(position).skip(1) {
+            self.set(vertex, None);
+        }
+    }
+}
+
 pub(super) fn canonicalize_ring(vertices: &mut [VertexId], edges: &mut [EdgeId]) {
-    let open = vertices.len() - 1;
-    let least = (0..open)
-        .min_by(|&left, &right| {
-            (0..open)
-                .map(|offset| {
-                    vertices[(left + offset) % open].cmp(&vertices[(right + offset) % open])
-                })
-                .find(|order| order.is_ne())
-                .unwrap_or(Ordering::Equal)
-        })
-        .unwrap();
-    vertices[..open].rotate_left(least);
-    vertices[open] = vertices[0];
+    // Interned vertex IDs follow exact lexicographic point order, and a simple
+    // open ring has unique vertices, so its least vertex identifies its least
+    // cyclic rotation.
+    let Some((closing, open)) = vertices.split_last_mut() else {
+        unreachable!("simple exact rings are closed and nonempty")
+    };
+    let least = open
+        .iter()
+        .enumerate()
+        .min_by(|(_, left), (_, right)| left.cmp(right))
+        .map_or(0, |(index, _)| index);
+    open.rotate_left(least);
     edges.rotate_left(least);
+    *closing = *open
+        .first()
+        .expect("simple exact rings have at least three open vertices");
 }
 
 /// The simple ring through `vertices` (closed) and `edges`, canonically
@@ -54,10 +86,13 @@ pub(super) fn simple_ring(
     mut vertices: Vec<VertexId>,
     mut edges: Vec<EdgeId>,
 ) -> Result<ExactSimpleRing> {
+    let (_, open_vertices) = vertices
+        .split_last()
+        .expect("boundary face walks are closed exact rings");
     let orientation = exact::cycle_orientation(
-        vertices[..vertices.len() - 1]
+        open_vertices
             .iter()
-            .map(|vertex| &subdivision.vertices[vertex.0 as usize].point),
+            .map(|&vertex| &subdivision.vertex(vertex).point),
     )?;
     canonicalize_ring(&mut vertices, &mut edges);
     Ok(ExactSimpleRing {
@@ -68,16 +103,19 @@ pub(super) fn simple_ring(
     })
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "face walks are nonempty admitted cycles, and repeated-vertex positions come from this path; the matching edge suffix is one item shorter and remains in bounds too"
+)]
 pub(super) fn split_boundary_face(
     subdivision: &ExactSubdivision,
     boundary_face: BoundaryFaceId,
     result: &mut Vec<ExactSimpleRing>,
 ) -> Result<()> {
-    let topology = &subdivision.topology;
-    let walk = &topology.face_slots[topology.face_starts[boundary_face.0 as usize] as usize
-        ..topology.face_starts[boundary_face.0 as usize + 1] as usize];
-    let owner = |slot: u32| VertexId(topology.owners[slot as usize]);
-    let edge = |slot: u32| EdgeId(subdivision.edge_of_slot[slot as usize]);
+    let walk = subdivision.face_slots(boundary_face);
+    let owner = |slot: u32| subdivision.dart(slot).origin;
+    let edge = |slot: u32| subdivision.dart(slot).edge;
     let mut distinct = Vec::with_capacity(walk.len());
     distinct.extend(walk.iter().map(|&slot| owner(slot)));
     distinct.sort_unstable();
@@ -87,7 +125,11 @@ pub(super) fn split_boundary_face(
         vertices.reserve(walk.len() + 1);
         edges.reserve(walk.len());
         vertices.extend(walk.iter().map(|&slot| owner(slot)));
-        vertices.push(vertices[0]);
+        vertices.push(
+            *vertices
+                .first()
+                .expect("a boundary face contains at least one slot"),
+        );
         edges.extend(walk.iter().map(|&slot| edge(slot)));
         result.push(simple_ring(subdivision, boundary_face, vertices, edges)?);
         return Ok(());
@@ -96,12 +138,14 @@ pub(super) fn split_boundary_face(
     let mut path_edges = Vec::new();
     path.reserve(walk.len());
     path_edges.reserve(walk.len());
-    let mut positions = Vec::with_capacity(subdivision.vertices.len());
-    positions.resize(subdivision.vertices.len(), None);
-    for step in 0..=walk.len() {
-        let vertex = owner(walk[step % walk.len()]);
-        let incoming = (step > 0).then(|| edge(walk[(step - 1) % walk.len()]));
-        if let Some(position) = positions[vertex.0 as usize] {
+    let mut positions = VertexPathPositions::new(subdivision.vertices.len());
+    let first_slot = *walk
+        .first()
+        .expect("a boundary face contains at least one slot");
+    let mut incoming = None;
+    for &slot in walk.iter().chain(std::iter::once(&first_slot)) {
+        let vertex = owner(slot);
+        if let Some(position) = positions.get(vertex) {
             let mut vertices = Vec::new();
             let mut edges = Vec::new();
             vertices.reserve(path.len() - position + 1);
@@ -109,23 +153,22 @@ pub(super) fn split_boundary_face(
             vertices.extend_from_slice(&path[position..]);
             vertices.push(vertex);
             edges.extend_from_slice(&path_edges[position..]);
-            edges.push(incoming.expect("repeated boundary vertex has an incoming edge"));
+            edges.push(incoming.expect("a repeated boundary vertex has an incoming edge"));
             if vertices.len() < 4 {
                 return Err(voronoi_error("pinch split produced a short exact ring"));
             }
-            for removed in &path[position + 1..] {
-                positions[removed.0 as usize] = None;
-            }
+            positions.clear_after(&path, position);
             path.truncate(position + 1);
             path_edges.truncate(position);
             result.push(simple_ring(subdivision, boundary_face, vertices, edges)?);
         } else {
-            positions[vertex.0 as usize] = Some(path.len());
+            positions.set(vertex, Some(path.len()));
             path.push(vertex);
             if let Some(edge) = incoming {
                 path_edges.push(edge);
             }
         }
+        incoming = Some(edge(slot));
     }
     if path.len() != 1 || !path_edges.is_empty() {
         return Err(voronoi_error(
@@ -135,6 +178,10 @@ pub(super) fn split_boundary_face(
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "ring ordinals, shell slots, and hole positions are parallel tables populated from this same ring sequence and its BoxIndex"
+)]
 pub(super) fn assemble_owner_parts(
     subdivision: &ExactSubdivision,
     owner: SiteId,
@@ -159,12 +206,15 @@ pub(super) fn assemble_owner_parts(
     }
     let mut ring_points = Vec::with_capacity(rings.len());
     for ring in &rings {
-        let count = ring.vertices.len().saturating_sub(1);
-        let mut points = Vec::with_capacity(count);
+        let (_, open_vertices) = ring
+            .vertices
+            .split_last()
+            .expect("simple exact rings are closed");
+        let mut points = Vec::with_capacity(open_vertices.len());
         points.extend(
-            ring.vertices[..count]
+            open_vertices
                 .iter()
-                .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()),
+                .map(|&vertex| subdivision.vertex(vertex).point.clone()),
         );
         ring_points.push(points);
     }
@@ -228,15 +278,23 @@ pub(super) fn assemble_owner_parts(
         let mut candidates = candidates.into_iter();
         let mut parent = candidates.next().expect("nonempty ring candidates");
         for candidate in candidates {
-            let parent_point =
-                &subdivision.vertices[rings[positives[parent]].vertices[0].0 as usize].point;
+            let parent_ring = &rings[positives[parent]];
+            let parent_vertex = *parent_ring
+                .vertices
+                .first()
+                .expect("canonicalized exact rings are nonempty");
+            let parent_point = &subdivision.vertex(parent_vertex).point;
             if exact::point_in_cycle(&ring_points[positives[candidate]], parent_point)?
                 == exact::PointInCycle::Inside
             {
                 continue;
             }
-            let candidate_point =
-                &subdivision.vertices[rings[positives[candidate]].vertices[0].0 as usize].point;
+            let candidate_ring = &rings[positives[candidate]];
+            let candidate_vertex = *candidate_ring
+                .vertices
+                .first()
+                .expect("canonicalized exact rings are nonempty");
+            let candidate_point = &subdivision.vertex(candidate_vertex).point;
             if exact::point_in_cycle(&ring_points[positives[parent]], candidate_point)?
                 != exact::PointInCycle::Inside
             {
@@ -264,9 +322,13 @@ pub(super) fn assemble_owner_parts(
         {
             return Err(voronoi_error("exact ring escaped its owner group"));
         }
-        let mut edge_ids: Vec<EdgeId> = Vec::with_capacity(
-            shell.edges.len() + holes.iter().map(|hole| hole.edges.len()).sum::<usize>(),
-        );
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the shell and hole edge vectors are simultaneously live, non-zero-sized allocations whose combined lengths fit the process address space"
+        )]
+        let edge_count =
+            shell.edges.len() + holes.iter().map(|hole| hole.edges.len()).sum::<usize>();
+        let mut edge_ids: Vec<EdgeId> = Vec::with_capacity(edge_count);
         edge_ids.extend(
             shell
                 .edges
@@ -279,13 +341,22 @@ pub(super) fn assemble_owner_parts(
                 "exact face shell and holes share an atomic edge",
             ));
         }
-        let mut exact_rings = Vec::with_capacity(1 + holes.len());
+        #[expect(
+            clippy::arithmetic_side_effects,
+            reason = "the non-zero-sized hole vector and its additional shell entry fit in the process address space"
+        )]
+        let ring_count = holes.len() + 1;
+        let mut exact_rings = Vec::with_capacity(ring_count);
         for ring in std::iter::once(&shell).chain(holes.iter()) {
-            let mut points = Vec::with_capacity(ring.vertices.len() - 1);
+            let (_, open_vertices) = ring
+                .vertices
+                .split_last()
+                .expect("simple exact rings are closed");
+            let mut points = Vec::with_capacity(open_vertices.len());
             points.extend(
-                ring.vertices[..ring.vertices.len() - 1]
+                open_vertices
                     .iter()
-                    .map(|vertex| subdivision.vertices[vertex.0 as usize].point.clone()),
+                    .map(|&vertex| subdivision.vertex(vertex).point.clone()),
             );
             exact_rings.push(points);
         }
@@ -315,20 +386,17 @@ pub(super) fn assemble_cells(subdivision: &ExactSubdivision) -> Result<Vec<Exact
     }
     selected.sort_unstable();
     let mut parts = Vec::new();
-    let mut start = 0;
-    while start < selected.len() {
-        let owner = selected[start].0;
-        let mut end = start + 1;
-        while end < selected.len() && selected[end].0 == owner {
-            end += 1;
-        }
+    for group in selected.chunk_by(|left, right| left.0 == right.0) {
+        let owner = group
+            .first()
+            .map(|(owner, _)| *owner)
+            .expect("chunk_by returns nonempty owner groups");
         assemble_owner_parts(
             subdivision,
             owner,
-            selected[start..end].iter().map(|(_, face)| *face),
+            group.iter().map(|(_, face)| *face),
             &mut parts,
         )?;
-        start = end;
     }
     try_sort_by(&mut parts, |left, right| {
         Ok(left
@@ -346,9 +414,17 @@ pub(super) type SeparatorIncidence = [(VertexId, usize, VertexId)];
 pub(super) fn incident_at(incidence: &SeparatorIncidence, vertex: VertexId) -> &SeparatorIncidence {
     let start = incidence.partition_point(|&(known, ..)| known < vertex);
     let end = incidence.partition_point(|&(known, ..)| known <= vertex);
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "partition_point returns an ordered half-open range within this vertex-sorted incidence slice"
+    )]
     &incidence[start..end]
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "incidence slots were enumerated from this exact group and `used` has one flag per group edge"
+)]
 pub(super) fn walk_separator_from(
     separator: [SiteId; 2],
     group: &[([SiteId; 2], EdgeId)],
@@ -388,6 +464,10 @@ pub(super) fn walk_separator_from(
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "used has one flag per group edge, and both traversal passes obtain slots by enumerating that same group"
+)]
 pub(super) fn assemble_separator_group(
     subdivision: &ExactSubdivision,
     separator: [SiteId; 2],
@@ -396,7 +476,7 @@ pub(super) fn assemble_separator_group(
 ) -> Result<()> {
     let mut incidence = Vec::with_capacity(group.len().saturating_mul(2));
     for (slot, (_, edge_id)) in group.iter().enumerate() {
-        let [left, right] = subdivision.edges[edge_id.0 as usize].endpoints;
+        let [left, right] = subdivision.edge(*edge_id).endpoints;
         incidence.extend([(left, slot, right), (right, slot, left)]);
     }
     incidence.sort_unstable();
@@ -413,7 +493,7 @@ pub(super) fn assemble_separator_group(
         if used[slot] {
             continue;
         }
-        let [left, right] = subdivision.edges[edge_id.0 as usize].endpoints;
+        let [left, right] = subdivision.edge(*edge_id).endpoints;
         let start = if end_of_path(left) {
             left
         } else if end_of_path(right) {
@@ -427,18 +507,24 @@ pub(super) fn assemble_separator_group(
         if used[slot] {
             continue;
         }
-        let start = subdivision.edges[edge_id.0 as usize].endpoints[0];
+        let [start, _] = subdivision.edge(*edge_id).endpoints;
         walk_separator_from(separator, group, &incidence, &mut used, start, result)?;
     }
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "forward_slot is a dense edge-keyed map sized from subdivision.edges and populated from that same admitted edge_of_slot column"
+)]
 pub(super) fn assemble_edges(subdivision: &ExactSubdivision) -> Result<Vec<ExactEdgeChain>> {
     let mut forward_slot = Vec::with_capacity(subdivision.edges.len());
     forward_slot.resize(subdivision.edges.len(), u32::MAX);
     for (slot, &edge) in subdivision.edge_of_slot.iter().enumerate() {
-        let atomic = &subdivision.edges[edge as usize];
-        if subdivision.topology.owners[slot] == atomic.endpoints[0].0 {
+        let dart = subdivision.dart(slot as u32);
+        let atomic = subdivision.edge(dart.edge);
+        let [start, _] = atomic.endpoints;
+        if dart.origin == start {
             forward_slot[edge as usize] = slot as u32;
         }
     }
@@ -449,15 +535,10 @@ pub(super) fn assemble_edges(subdivision: &ExactSubdivision) -> Result<Vec<Exact
         };
         let slot = forward_slot[index] as usize;
         debug_assert_ne!(slot, u32::MAX as usize);
-        let left = walk_label(
-            subdivision,
-            BoundaryFaceId(subdivision.topology.face_of[slot]),
-        );
-        let twin = subdivision.topology.twins[slot] as usize;
-        let right = walk_label(
-            subdivision,
-            BoundaryFaceId(subdivision.topology.face_of[twin]),
-        );
+        let dart = subdivision.dart(slot as u32);
+        let twin = subdivision.dart(dart.twin);
+        let left = walk_label(subdivision, dart.face);
+        let right = walk_label(subdivision, twin.face);
         if selected_cell_label(left) || selected_cell_label(right) {
             selected.push((separator, EdgeId(index as u32)));
         }
