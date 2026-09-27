@@ -214,6 +214,27 @@ def test_is_valid_is_uniform_across_scalar_and_array() -> None:
     assert repaired.is_valid and repaired.crs == 'EPSG:4326'
 
 
+def test_one_ulp_distinct_touching_holes_are_valid_in_every_row_order() -> None:
+    below_one = math.nextafter(1.0, 0.0)
+    shell = [(-20, -20), (20, -20), (20, 20), (-20, 20), (-20, -20)]
+    first = [(0, 0), (1, 1), (0, 10), (-1, -1), (0, 0)]
+    second = [(0, 0), (1, -1), (10, 0), (1, below_one), (0, 0)]
+    hole_sets = [
+        [first, second],
+        [second, first],
+        [list(reversed(first)), list(reversed(second))],
+        [list(reversed(second)), list(reversed(first))],
+    ]
+    polygons = [gm.Polygon(shell, holes) for holes in hole_sets]
+
+    assert all(polygon.is_valid for polygon in polygons)
+    assert all(polygon.validate().valid for polygon in polygons)
+
+    values = gm.GeometryArray(polygons)
+    np.testing.assert_array_equal(values.is_valid, [True] * len(polygons))
+    assert all(report.valid for report in values.validate())
+
+
 BOWTIE_WKT = 'POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))'
 
 
