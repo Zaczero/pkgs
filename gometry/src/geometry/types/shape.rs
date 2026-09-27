@@ -182,8 +182,10 @@ impl ShapeHeapMemo {
     }
 
     fn collection_stats(&mut self, collection: &GeometryCollection) -> ShapeHeapStats {
-        let owner = ShapeOwnerKey::new(collection.as_slice());
-        if let Some(&stats) = self.collections.get(&owner) {
+        let owner = collection
+            .members_are_shared()
+            .then(|| ShapeOwnerKey::new(collection.as_slice()));
+        if let Some(&stats) = owner.as_ref().and_then(|owner| self.collections.get(owner)) {
             return stats;
         }
         let stats = collection.as_slice().iter().fold(
@@ -201,7 +203,9 @@ impl ShapeHeapMemo {
                 }
             },
         );
-        self.collections.insert(owner, stats);
+        if let Some(owner) = owner {
+            self.collections.insert(owner, stats);
+        }
         stats
     }
 }
