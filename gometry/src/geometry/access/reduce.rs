@@ -106,21 +106,25 @@ pub(crate) fn simd_select_indices(
     let chunks = len / REDUCE_LANES;
     let mut count = 0_usize;
     for chunk in 0..chunks {
-        count += vector(chunk * REDUCE_LANES).to_bitmask().count_ones() as usize;
+        count = count.wrapping_add(
+            vector(chunk.wrapping_mul(REDUCE_LANES))
+                .to_bitmask()
+                .count_ones() as usize,
+        );
     }
-    let lanes = chunks * REDUCE_LANES;
+    let lanes = chunks.wrapping_mul(REDUCE_LANES);
     for index in lanes..len {
         if scalar(index) {
-            count += 1;
+            count = count.wrapping_add(1);
         }
     }
     let mut indices = Vec::with_capacity(count);
     for chunk in 0..chunks {
-        let start = chunk * REDUCE_LANES;
+        let start = chunk.wrapping_mul(REDUCE_LANES);
         let bitmask = vector(start).to_bitmask();
         for lane in 0..REDUCE_LANES {
             if bitmask & (1_u64 << lane) != 0 {
-                indices.push(start + lane);
+                indices.push(start.wrapping_add(lane));
             }
         }
     }
@@ -154,7 +158,7 @@ pub(crate) fn simd_argmin_f64(
     let mut best_score = scalar_score(0);
     let chunks = len / REDUCE_LANES;
     for chunk in 0..chunks {
-        let start = chunk * REDUCE_LANES;
+        let start = chunk.wrapping_mul(REDUCE_LANES);
         let scores = vector_score(start);
         if scores.is_finite().all() {
             // Vector min + first-set-bit: preserves first-minimum ties (the
@@ -166,10 +170,10 @@ pub(crate) fn simd_argmin_f64(
                 let bitmask = scores.simd_eq(ReduceSimd::splat(chunk_min)).to_bitmask();
                 let lane = bitmask.trailing_zeros() as usize;
                 best_score = chunk_min;
-                best_index = start + lane;
+                best_index = start.wrapping_add(lane);
             }
         } else {
-            for index in start..start + REDUCE_LANES {
+            for index in start..start.wrapping_add(REDUCE_LANES) {
                 let score = scalar_score(index);
                 if score.total_cmp(&best_score).is_lt() {
                     best_score = score;
@@ -178,7 +182,7 @@ pub(crate) fn simd_argmin_f64(
             }
         }
     }
-    let lanes = chunks * REDUCE_LANES;
+    let lanes = chunks.wrapping_mul(REDUCE_LANES);
     for index in lanes..len {
         let score = scalar_score(index);
         if score.total_cmp(&best_score).is_lt() {
@@ -212,12 +216,12 @@ pub(crate) fn simd_indexed_map_f64(
     {
         let (out_chunks, _) = out.as_chunks_mut::<REDUCE_LANES>();
         for (chunk, out_chunk) in out_chunks.iter_mut().enumerate().take(chunks) {
-            vector(chunk * REDUCE_LANES).copy_to_slice(out_chunk);
+            vector(chunk.wrapping_mul(REDUCE_LANES)).copy_to_slice(out_chunk);
         }
     }
-    let lanes = chunks * REDUCE_LANES;
-    for (offset, value) in out[lanes..].iter_mut().enumerate() {
-        *value = scalar(lanes + offset);
+    let lanes = chunks.wrapping_mul(REDUCE_LANES);
+    for (offset, value) in out.split_at_mut(lanes).1.iter_mut().enumerate() {
+        *value = scalar(lanes.wrapping_add(offset));
     }
 }
 
@@ -265,12 +269,12 @@ fn simd_mask_reduce(
     let chunks = len / REDUCE_LANES;
     let mut acc = std::simd::Mask::<i64, REDUCE_LANES>::splat(identity);
     for chunk in 0..chunks {
-        acc = combine_mask(acc, vector(chunk * REDUCE_LANES));
+        acc = combine_mask(acc, vector(chunk.wrapping_mul(REDUCE_LANES)));
     }
     if let Some(done) = done_mask(acc) {
         return done;
     }
-    let lanes = chunks * REDUCE_LANES;
+    let lanes = chunks.wrapping_mul(REDUCE_LANES);
     scalar_mask_reduce(lanes..len, identity, scalar, combine_scalar, done_scalar)
 }
 
@@ -313,11 +317,11 @@ pub(in crate::geometry) fn simd_reduce_f64<A, R, O>(
     let mut acc = simd_seed;
     let mut scalar = scalar_seed;
     for chunk in 0..chunks {
-        let (next_acc, next_scalar) = fold_simd(acc, scalar, chunk * REDUCE_LANES);
+        let (next_acc, next_scalar) = fold_simd(acc, scalar, chunk.wrapping_mul(REDUCE_LANES));
         acc = next_acc;
         scalar = next_scalar;
     }
-    let lanes = chunks * REDUCE_LANES;
+    let lanes = chunks.wrapping_mul(REDUCE_LANES);
     if lanes < len {
         scalar = fold_scalar(scalar, lanes..len);
     }
@@ -349,16 +353,19 @@ pub(crate) fn pair_map4_guarded_f64(
     debug_assert_eq!(lx.len(), out.len());
     let len = lx.len();
     if len < REDUCE_SIMD_MIN {
-        for index in 0..len {
-            out[index] = scalar(lx[index], ly[index], rx[index], ry[index]);
+        let inputs = std::iter::zip(
+            std::iter::zip(lx.iter(), ly.iter()),
+            std::iter::zip(rx.iter(), ry.iter()),
+        );
+        for (((&lx, &ly), (&rx, &ry)), out) in std::iter::zip(inputs, out.iter_mut()) {
+            *out = scalar(lx, ly, rx, ry);
         }
         return;
     }
-    let (lx_chunks, _) = lx.as_chunks::<REDUCE_LANES>();
-    let (ly_chunks, _) = ly.as_chunks::<REDUCE_LANES>();
-    let (rx_chunks, _) = rx.as_chunks::<REDUCE_LANES>();
-    let (ry_chunks, _) = ry.as_chunks::<REDUCE_LANES>();
-    let chunk_count = lx_chunks.len();
+    let (lx_chunks, lx_tail) = lx.as_chunks::<REDUCE_LANES>();
+    let (ly_chunks, ly_tail) = ly.as_chunks::<REDUCE_LANES>();
+    let (rx_chunks, rx_tail) = rx.as_chunks::<REDUCE_LANES>();
+    let (ry_chunks, ry_tail) = ry.as_chunks::<REDUCE_LANES>();
     {
         // Zip rather than index. The five chunk slices come from five
         // independent `&[f64]` parameters, so nothing tells the optimizer they
@@ -372,11 +379,11 @@ pub(crate) fn pair_map4_guarded_f64(
         // `geometry/util.rs` is the same shape.
         let (out_chunks, _) = out.as_chunks_mut::<REDUCE_LANES>();
         let inputs = std::iter::zip(
-            std::iter::zip(lx_chunks, ly_chunks),
-            std::iter::zip(rx_chunks, ry_chunks),
+            std::iter::zip(lx_chunks.iter(), ly_chunks.iter()),
+            std::iter::zip(rx_chunks.iter(), ry_chunks.iter()),
         );
-        for (chunk, (((lx_chunk, ly_chunk), (rx_chunk, ry_chunk)), out_chunk)) in
-            std::iter::zip(inputs, out_chunks).enumerate()
+        for (((lx_chunk, ly_chunk), (rx_chunk, ry_chunk)), out_chunk) in
+            std::iter::zip(inputs, out_chunks)
         {
             let (distance, bad) = vector(
                 ReduceSimd::from_array(*lx_chunk),
@@ -385,17 +392,21 @@ pub(crate) fn pair_map4_guarded_f64(
                 ReduceSimd::from_array(*ry_chunk),
             );
             // Materialize the lane array only on the rescue path. Writing it
-            // unconditionally and then patching lanes *by index* makes it an
+            // unconditionally and then patching individual lanes makes it an
             // address-taken local, which forces a stack round-trip (8 stores +
             // 8 loads per 64-byte chunk) on the overwhelmingly common
             // all-good-lanes path.
             if bad.any() {
                 let mut chunk_out = distance.to_array();
-                let start = chunk * REDUCE_LANES;
-                for (lane, value) in chunk_out.iter_mut().enumerate() {
+                let lane_inputs = std::iter::zip(
+                    std::iter::zip(lx_chunk.iter(), ly_chunk.iter()),
+                    std::iter::zip(rx_chunk.iter(), ry_chunk.iter()),
+                );
+                for (lane, (value, ((&lx, &ly), (&rx, &ry)))) in
+                    std::iter::zip(chunk_out.iter_mut(), lane_inputs).enumerate()
+                {
                     if bad.test(lane) {
-                        let index = start + lane;
-                        *value = scalar(lx[index], ly[index], rx[index], ry[index]);
+                        *value = scalar(lx, ly, rx, ry);
                     }
                 }
                 *out_chunk = chunk_out;
@@ -404,9 +415,13 @@ pub(crate) fn pair_map4_guarded_f64(
             }
         }
     }
-    let lanes = chunk_count * REDUCE_LANES;
-    for index in lanes..len {
-        out[index] = scalar(lx[index], ly[index], rx[index], ry[index]);
+    let (_, out_tail) = out.as_chunks_mut::<REDUCE_LANES>();
+    let inputs = std::iter::zip(
+        std::iter::zip(lx_tail.iter(), ly_tail.iter()),
+        std::iter::zip(rx_tail.iter(), ry_tail.iter()),
+    );
+    for (((&lx, &ly), (&rx, &ry)), out) in std::iter::zip(inputs, out_tail.iter_mut()) {
+        *out = scalar(lx, ly, rx, ry);
     }
 }
 
@@ -434,20 +449,24 @@ pub(crate) fn pair_select_mask(
     debug_assert_eq!(lx.len(), out.len());
     let len = lx.len();
     if len < REDUCE_SIMD_MIN {
-        for index in 0..len {
-            out[index] = scalar(lx[index], ly[index], rx[index], ry[index]);
+        let inputs = std::iter::zip(
+            std::iter::zip(lx.iter(), ly.iter()),
+            std::iter::zip(rx.iter(), ry.iter()),
+        );
+        for (((&lx, &ly), (&rx, &ry)), out) in std::iter::zip(inputs, out.iter_mut()) {
+            *out = scalar(lx, ly, rx, ry);
         }
         return;
     }
-    let (lx_chunks, _) = lx.as_chunks::<REDUCE_LANES>();
-    let (ly_chunks, _) = ly.as_chunks::<REDUCE_LANES>();
-    let (rx_chunks, _) = rx.as_chunks::<REDUCE_LANES>();
-    let (ry_chunks, _) = ry.as_chunks::<REDUCE_LANES>();
+    let (lx_chunks, lx_tail) = lx.as_chunks::<REDUCE_LANES>();
+    let (ly_chunks, ly_tail) = ly.as_chunks::<REDUCE_LANES>();
+    let (rx_chunks, rx_tail) = rx.as_chunks::<REDUCE_LANES>();
+    let (ry_chunks, ry_tail) = ry.as_chunks::<REDUCE_LANES>();
     {
         let (out_chunks, _) = out.as_chunks_mut::<REDUCE_LANES>();
         let inputs = std::iter::zip(
-            std::iter::zip(lx_chunks, ly_chunks),
-            std::iter::zip(rx_chunks, ry_chunks),
+            std::iter::zip(lx_chunks.iter(), ly_chunks.iter()),
+            std::iter::zip(rx_chunks.iter(), ry_chunks.iter()),
         );
         for (((lx_chunk, ly_chunk), (rx_chunk, ry_chunk)), out_chunk) in
             std::iter::zip(inputs, out_chunks)
@@ -461,9 +480,13 @@ pub(crate) fn pair_select_mask(
             *out_chunk = mask.to_array();
         }
     }
-    let lanes = lx_chunks.len() * REDUCE_LANES;
-    for index in lanes..len {
-        out[index] = scalar(lx[index], ly[index], rx[index], ry[index]);
+    let (_, out_tail) = out.as_chunks_mut::<REDUCE_LANES>();
+    let inputs = std::iter::zip(
+        std::iter::zip(lx_tail.iter(), ly_tail.iter()),
+        std::iter::zip(rx_tail.iter(), ry_tail.iter()),
+    );
+    for (((&lx, &ly), (&rx, &ry)), out) in std::iter::zip(inputs, out_tail.iter_mut()) {
+        *out = scalar(lx, ly, rx, ry);
     }
 }
 
@@ -471,6 +494,10 @@ pub(crate) fn pair_select_mask(
 ///
 /// Full `REDUCE_LANES` chunks run `vector`; the tail and inputs below
 /// [`REDUCE_SIMD_MIN`] use `scalar` exclusively.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the caller admits equal-length source and destination columns before mapping"
+)]
 pub(crate) fn simd_map_f64(
     src: &[f64],
     dst: &mut [f64],
@@ -492,7 +519,7 @@ pub(crate) fn simd_map_f64(
             vector(ReduceSimd::from_array(src_chunks[chunk])).copy_to_slice(&mut dst_chunks[chunk]);
         }
     }
-    let lanes = src_chunks.len() * REDUCE_LANES;
+    let lanes = src_chunks.len().wrapping_mul(REDUCE_LANES);
     for index in lanes..len {
         dst[index] = scalar(src[index]);
     }
@@ -506,24 +533,19 @@ pub(crate) fn try_simd_map_f64<E>(
     mut vector: impl FnMut(ReduceSimd) -> Result<ReduceSimd, E>,
 ) -> Result<(), E> {
     debug_assert_eq!(src.len(), dst.len());
-    let len = src.len();
-    if len < REDUCE_SIMD_MIN {
-        for index in 0..len {
-            dst[index] = scalar(src[index])?;
+    if src.len() < REDUCE_SIMD_MIN {
+        for (&src, dst) in std::iter::zip(src.iter(), dst.iter_mut()) {
+            *dst = scalar(src)?;
         }
         return Ok(());
     }
-    let (src_chunks, _) = src.as_chunks::<REDUCE_LANES>();
-    {
-        let (dst_chunks, _) = dst.as_chunks_mut::<REDUCE_LANES>();
-        for chunk in 0..src_chunks.len() {
-            vector(ReduceSimd::from_array(src_chunks[chunk]))?
-                .copy_to_slice(&mut dst_chunks[chunk]);
-        }
+    let (src_chunks, src_tail) = src.as_chunks::<REDUCE_LANES>();
+    let (dst_chunks, dst_tail) = dst.as_chunks_mut::<REDUCE_LANES>();
+    for (src_chunk, dst_chunk) in std::iter::zip(src_chunks, dst_chunks) {
+        vector(ReduceSimd::from_array(*src_chunk))?.copy_to_slice(dst_chunk);
     }
-    let lanes = src_chunks.len() * REDUCE_LANES;
-    for index in lanes..len {
-        dst[index] = scalar(src[index])?;
+    for (&src, dst) in std::iter::zip(src_tail, dst_tail) {
+        *dst = scalar(src)?;
     }
     Ok(())
 }
@@ -543,34 +565,36 @@ pub(crate) fn simd_xy_map_f64(
     debug_assert_eq!(xs.len(), ys.len());
     debug_assert_eq!(xs.len(), out_x.len());
     debug_assert_eq!(xs.len(), out_y.len());
-    let len = xs.len();
-    if len < REDUCE_SIMD_MIN {
-        for index in 0..len {
-            let (x, y) = scalar(xs[index], ys[index]);
-            out_x[index] = x;
-            out_y[index] = y;
+    if xs.len() < REDUCE_SIMD_MIN {
+        let inputs = std::iter::zip(xs.iter(), ys.iter());
+        let outputs = std::iter::zip(out_x.iter_mut(), out_y.iter_mut());
+        for ((&x, &y), (out_x, out_y)) in std::iter::zip(inputs, outputs) {
+            let (x, y) = scalar(x, y);
+            *out_x = x;
+            *out_y = y;
         }
         return;
     }
-    let (x_chunks, _) = xs.as_chunks::<REDUCE_LANES>();
-    let (y_chunks, _) = ys.as_chunks::<REDUCE_LANES>();
-    {
-        let (ox_chunks, _) = out_x.as_chunks_mut::<REDUCE_LANES>();
-        let (oy_chunks, _) = out_y.as_chunks_mut::<REDUCE_LANES>();
-        for chunk in 0..x_chunks.len() {
-            let (vx, vy) = vector(
-                ReduceSimd::from_array(x_chunks[chunk]),
-                ReduceSimd::from_array(y_chunks[chunk]),
-            );
-            vx.copy_to_slice(&mut ox_chunks[chunk]);
-            vy.copy_to_slice(&mut oy_chunks[chunk]);
-        }
+    let (x_chunks, x_tail) = xs.as_chunks::<REDUCE_LANES>();
+    let (y_chunks, y_tail) = ys.as_chunks::<REDUCE_LANES>();
+    let (ox_chunks, ox_tail) = out_x.as_chunks_mut::<REDUCE_LANES>();
+    let (oy_chunks, oy_tail) = out_y.as_chunks_mut::<REDUCE_LANES>();
+    let inputs = std::iter::zip(x_chunks, y_chunks);
+    let outputs = std::iter::zip(ox_chunks, oy_chunks);
+    for ((x_chunk, y_chunk), (ox_chunk, oy_chunk)) in std::iter::zip(inputs, outputs) {
+        let (vx, vy) = vector(
+            ReduceSimd::from_array(*x_chunk),
+            ReduceSimd::from_array(*y_chunk),
+        );
+        vx.copy_to_slice(ox_chunk);
+        vy.copy_to_slice(oy_chunk);
     }
-    let lanes = x_chunks.len() * REDUCE_LANES;
-    for index in lanes..len {
-        let (x, y) = scalar(xs[index], ys[index]);
-        out_x[index] = x;
-        out_y[index] = y;
+    let inputs = std::iter::zip(x_tail.iter(), y_tail.iter());
+    let outputs = std::iter::zip(ox_tail.iter_mut(), oy_tail.iter_mut());
+    for ((&x, &y), (out_x, out_y)) in std::iter::zip(inputs, outputs) {
+        let (x, y) = scalar(x, y);
+        *out_x = x;
+        *out_y = y;
     }
 }
 
@@ -587,28 +611,29 @@ pub(crate) fn simd_xy_map_one_f64(
 ) {
     debug_assert_eq!(xs.len(), ys.len());
     debug_assert_eq!(xs.len(), out.len());
-    let len = xs.len();
-    if len < REDUCE_SIMD_MIN {
-        for index in 0..len {
-            out[index] = scalar(xs[index], ys[index]);
+    if xs.len() < REDUCE_SIMD_MIN {
+        for ((&x, &y), out) in std::iter::zip(std::iter::zip(xs.iter(), ys.iter()), out.iter_mut())
+        {
+            *out = scalar(x, y);
         }
         return;
     }
-    let (x_chunks, _) = xs.as_chunks::<REDUCE_LANES>();
-    let (y_chunks, _) = ys.as_chunks::<REDUCE_LANES>();
-    {
-        let (out_chunks, _) = out.as_chunks_mut::<REDUCE_LANES>();
-        for chunk in 0..x_chunks.len() {
-            vector(
-                ReduceSimd::from_array(x_chunks[chunk]),
-                ReduceSimd::from_array(y_chunks[chunk]),
-            )
-            .copy_to_slice(&mut out_chunks[chunk]);
-        }
+    let (x_chunks, x_tail) = xs.as_chunks::<REDUCE_LANES>();
+    let (y_chunks, y_tail) = ys.as_chunks::<REDUCE_LANES>();
+    let (out_chunks, out_tail) = out.as_chunks_mut::<REDUCE_LANES>();
+    let inputs = std::iter::zip(x_chunks, y_chunks);
+    for ((x_chunk, y_chunk), out_chunk) in std::iter::zip(inputs, out_chunks) {
+        vector(
+            ReduceSimd::from_array(*x_chunk),
+            ReduceSimd::from_array(*y_chunk),
+        )
+        .copy_to_slice(out_chunk);
     }
-    let lanes = x_chunks.len() * REDUCE_LANES;
-    for index in lanes..len {
-        out[index] = scalar(xs[index], ys[index]);
+    for ((&x, &y), out) in std::iter::zip(
+        std::iter::zip(x_tail.iter(), y_tail.iter()),
+        out_tail.iter_mut(),
+    ) {
+        *out = scalar(x, y);
     }
 }
 
@@ -670,7 +695,7 @@ pub(crate) fn column_mean(values: &[f64]) -> Option<f64> {
 fn online_mean(values: &[f64]) -> f64 {
     let mut mean = 0.0_f64;
     for (index, &value) in values.iter().enumerate() {
-        mean += (value - mean) / (index + 1) as f64;
+        mean += (value - mean) / index.wrapping_add(1) as f64;
     }
     mean
 }
@@ -691,20 +716,18 @@ pub(crate) fn column_minmax(values: &[f64]) -> Option<(f64, f64)> {
     // vector (`SIMD_VECTOR_BITS`) that LLVM unrolls into `REDUCE_LANES / 2` = 4
     // independent 128-bit `minpd` chains on the v2 (SSE) baseline — the wide
     // logical width is the unrolling lever, giving enough ILP to hide op latency.
+    let mut chunks = chunks.iter();
     Some(simd_reduce_f64(
         values.len(),
         (ReduceSimd::splat(first), ReduceSimd::splat(first)),
         (first, first),
-        |(lo, hi), scalar, start| {
-            let lane = ReduceSimd::from_array(chunks[start / REDUCE_LANES]);
+        |(lo, hi), scalar, _start| {
+            let lane =
+                ReduceSimd::from_array(*chunks.next().expect("one aligned column chunk per fold"));
             ((lo.simd_min(lane), hi.simd_max(lane)), scalar)
         },
         |(mut lo, mut hi), range| {
-            let values = if range.start == 0 {
-                rest
-            } else {
-                &tail[..range.len()]
-            };
+            let values = if range.start == 0 { rest } else { tail };
             for &value in values {
                 lo = lo.min(value);
                 hi = hi.max(value);
@@ -866,6 +889,14 @@ pub(crate) fn line_length_3d_columns(xs: &[f64], ys: &[f64], zs: &[f64]) -> f64 
 /// `sqrt`, then cold scalar-hypot rescue only for flagged lanes. The residual
 /// tail (segments not filling a full SIMD chunk) is a plain scalar fold — no
 /// overlapping tail that re-evaluates already-reduced segments.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the SIMD squared-distance and ordered length folds define the existing measurement and rescue boundary"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "the chunk indices are bounded by equal-length windows from admitted coordinate columns"
+)]
 fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64]) -> f64 {
     let segments = xs.len().saturating_sub(1);
     if segments == 0 {
@@ -877,9 +908,27 @@ fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64
     // overlapping replay. Measured crossover stays at one full chunk for the
     // long-line path below.
     if segments < REDUCE_SIMD_MIN {
-        return (0..segments)
-            .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
-            .sum();
+        return if HAS_Z {
+            std::iter::zip(
+                std::iter::zip(xs.array_windows::<2>(), ys.array_windows::<2>()),
+                zs.array_windows::<2>(),
+            )
+            .map(|((x, y), z)| {
+                let [x0, x1] = *x;
+                let [y0, y1] = *y;
+                let [z0, z1] = *z;
+                line_length_segment_values::<HAS_Z>(x0, x1, y0, y1, z0, z1)
+            })
+            .sum()
+        } else {
+            std::iter::zip(xs.array_windows::<2>(), ys.array_windows::<2>())
+                .map(|(x, y)| {
+                    let [x0, x1] = *x;
+                    let [y0, y1] = *y;
+                    line_length_segment_values::<HAS_Z>(x0, x1, y0, y1, 0.0, 0.0)
+                })
+                .sum()
+        };
     }
     // Contiguous SoA columns → consecutive-vertex deltas in wide lanes with no
     // gather. Compact guard: one combined squared-value bad mask before sqrt;
@@ -917,7 +966,12 @@ fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64
                 let mut chunk = length.to_array();
                 for (lane, slot) in chunk.iter_mut().enumerate() {
                     if bits & (1_u64 << lane) != 0 {
-                        *slot = line_length_segment_hypot::<HAS_Z>(xs, ys, zs, start + lane);
+                        *slot = line_length_segment_hypot::<HAS_Z>(
+                            xs,
+                            ys,
+                            zs,
+                            start.wrapping_add(lane),
+                        );
                     }
                 }
                 scalar += chunk.iter().sum::<f64>();
@@ -935,7 +989,8 @@ fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64
             let mut chunk = length.to_array();
             for (lane, slot) in chunk.iter_mut().enumerate() {
                 if bits & (1_u64 << lane) != 0 {
-                    *slot = line_length_segment_hypot::<HAS_Z>(xs, ys, zs, start + lane);
+                    *slot =
+                        line_length_segment_hypot::<HAS_Z>(xs, ys, zs, start.wrapping_add(lane));
                 }
             }
             scalar += chunk.iter().sum::<f64>();
@@ -950,6 +1005,7 @@ fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64
         0.0,
         simd_fold,
         |scalar, range| {
+            debug_assert!(range.start >= REDUCE_SIMD_MIN);
             scalar
                 + range
                     .map(|segment| line_length_segment_hypot::<HAS_Z>(xs, ys, zs, segment))
@@ -961,16 +1017,18 @@ fn line_length_columns_dims<const HAS_Z: bool>(xs: &[f64], ys: &[f64], zs: &[f64
 
 /// Scalar segment length: 2-D via [`point_distance`]; 3-D via guarded sqrt with
 /// chained-`hypot` rescue (full underflow with a nonzero delta, or overflow).
-fn line_length_segment_hypot<const HAS_Z: bool>(
-    xs: &[f64],
-    ys: &[f64],
-    zs: &[f64],
-    segment: usize,
+fn line_length_segment_values<const HAS_Z: bool>(
+    x0: f64,
+    x1: f64,
+    y0: f64,
+    y1: f64,
+    z0: f64,
+    z1: f64,
 ) -> f64 {
     if HAS_Z {
-        let dx = xs[segment + 1] - xs[segment];
-        let dy = ys[segment + 1] - ys[segment];
-        let dz = zs[segment + 1] - zs[segment];
+        let dx = x1 - x0;
+        let dy = y1 - y0;
+        let dz = z1 - z0;
         let squared = dx * dx + dy * dy + dz * dz;
         if squared_norm_is_trustworthy(squared, dx == 0.0 && dy == 0.0 && dz == 0.0) {
             squared.sqrt()
@@ -978,9 +1036,28 @@ fn line_length_segment_hypot<const HAS_Z: bool>(
             dx.hypot(dy).hypot(dz)
         }
     } else {
-        point_distance(
-            Point::new_raw_xy(xs[segment], ys[segment]),
-            Point::new_raw_xy(xs[segment + 1], ys[segment + 1]),
-        )
+        point_distance(Point::new_raw_xy(x0, y0), Point::new_raw_xy(x1, y1))
     }
+}
+
+/// Locate and measure one segment on the scalar fallback path.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "scalar segment ordinals come from the admitted line range and read its adjacent vertices"
+)]
+fn line_length_segment_hypot<const HAS_Z: bool>(
+    xs: &[f64],
+    ys: &[f64],
+    zs: &[f64],
+    segment: usize,
+) -> f64 {
+    let next = segment.wrapping_add(1);
+    let (x0, x1) = (xs[segment], xs[next]);
+    let (y0, y1) = (ys[segment], ys[next]);
+    let [z0, z1] = if HAS_Z {
+        [zs[segment], zs[next]]
+    } else {
+        [0.0, 0.0]
+    };
+    line_length_segment_values::<HAS_Z>(x0, x1, y0, y1, z0, z1)
 }

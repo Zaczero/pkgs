@@ -78,7 +78,13 @@ impl Shape {
                 .map(Self::topological_dimension)
                 .max()
                 .unwrap_or(Dimension::Point),
-            _ => GeometryKind::of(self).topological_dimension(),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::Empty(..) => GeometryKind::of(self).topological_dimension(),
         }
     }
 
@@ -143,7 +149,21 @@ impl Shape {
         match self {
             Self::Point(point) => Ok(Some(*point)),
             Self::Empty(GeometryKind::Point, _) => Ok(None),
-            _ => Err(GeometryErrorKind::PointRequired { operation }.into()),
+            Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(
+                GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => Err(GeometryErrorKind::PointRequired { operation }.into()),
         }
     }
 
@@ -155,7 +175,19 @@ impl Shape {
             Self::Empty(GeometryKind::LineString | GeometryKind::MultiLineString, _) => {
                 Some(Lineal::Empty)
             },
-            _ => None,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => None,
         }
     }
 
@@ -167,7 +199,19 @@ impl Shape {
             Self::Empty(GeometryKind::Polygon | GeometryKind::MultiPolygon, _) => {
                 Some(Polygonal::Empty)
             },
-            _ => None,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => None,
         }
     }
 
@@ -177,7 +221,19 @@ impl Shape {
             Self::Point(point) => Some(PointSet::Point(*point)),
             Self::MultiPoint(points) => Some(PointSet::MultiPoint(points)),
             Self::Empty(GeometryKind::Point | GeometryKind::MultiPoint, _) => Some(PointSet::Empty),
-            _ => None,
+            Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::Polygon(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(
+                GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::Polygon
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => None,
         }
     }
 
@@ -479,6 +535,10 @@ impl Shape {
     /// The `index`-th top-level part, cloning only that part. `None` when out
     /// of range. Avoids the `parts().collect()` that clones every part to
     /// reach one.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "member_at returns stored-value indices admitted by the multipart layout"
+    )]
     pub fn part_at(&self, index: usize) -> Option<Self> {
         match self {
             Self::Point(_) | Self::LineString(_) | Self::Polygon(_) => {
@@ -527,7 +587,21 @@ impl Shape {
             Self::Empty(GeometryKind::Polygon, axes) => {
                 Some(Self::typed_empty(GeometryKind::LineString, *axes))
             },
-            _ => None,
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(
+                GeometryKind::Point
+                | GeometryKind::MultiPoint
+                | GeometryKind::LineString
+                | GeometryKind::MultiLineString
+                | GeometryKind::MultiPolygon
+                | GeometryKind::GeometryCollection,
+                _,
+            ) => None,
         }
     }
 
@@ -540,7 +614,13 @@ impl Shape {
                 .iter()
                 .map(|hole| Self::LineString(hole.as_line()))
                 .collect(),
-            _ => Vec::new(),
+            Self::Point(_)
+            | Self::MultiPoint(_)
+            | Self::LineString(_)
+            | Self::MultiLineString(_)
+            | Self::MultiPolygon(_)
+            | Self::GeometryCollection(_)
+            | Self::Empty(..) => Vec::new(),
         }
     }
 
@@ -704,6 +784,10 @@ pub enum ShapePartsIter<'a> {
 impl Iterator for ShapePartsIter<'_> {
     type Item = Shape;
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "member_at returns stored-value indices admitted by the multipart layout"
+    )]
     fn next(&mut self) -> Option<Shape> {
         match self {
             Self::Single(shape) => shape.take().cloned(),
@@ -745,6 +829,10 @@ impl Iterator for ShapePartsIter<'_> {
 }
 
 impl DoubleEndedIterator for ShapePartsIter<'_> {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "member_at returns stored-value indices admitted by the multipart layout"
+    )]
     fn next_back(&mut self) -> Option<Shape> {
         match self {
             Self::Single(shape) => shape.take().cloned(),
