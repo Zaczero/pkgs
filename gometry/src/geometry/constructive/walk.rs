@@ -319,6 +319,10 @@ impl<'a> WalkPlan<'a> {
     /// offset cannot be represented. A numerically ambiguous near-fold is
     /// emitted as an excursion inside this walk rather than switching to a
     /// different geometry engine.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "count >= 2 and edge/join bounds keep wrapped point and normal indices in range"
+    )]
     pub(crate) fn new(
         points: &'a [Point],
         cyclic: bool,
@@ -331,13 +335,11 @@ impl<'a> WalkPlan<'a> {
         }
         let edges = if cyclic { count } else { count.wrapping_sub(1) };
         let mut normals = Vec::with_capacity(edges);
-        for (from, to) in points
-            .iter()
-            .copied()
-            .zip(points.iter().copied().cycle().skip(1))
-            .take(edges)
-        {
-            let Some(normal) = unit_right_normal(from, to) else {
+        for edge in 0..edges {
+            let Some(normal) = unit_right_normal(
+                points[edge],
+                points[wrap_index(edge.wrapping_add(1), count)],
+            ) else {
                 return Ok(None);
             };
             normals.push(normal);
@@ -348,28 +350,15 @@ impl<'a> WalkPlan<'a> {
         };
         let join_count = if cyclic { edges } else { edges.wrapping_sub(1) };
         let mut joins = Vec::with_capacity(join_count);
-        let path = points
-            .iter()
-            .copied()
-            .chain(points.iter().copied().take(if cyclic { 2 } else { 0 }));
-        for (join, ((v, w), u)) in path
-            .clone()
-            .zip(path.clone().skip(1))
-            .zip(path.skip(2))
-            .take(join_count)
-            .enumerate()
-        {
-            let incoming_normal = *normals
-                .get(join)
-                .expect("walk join has an incoming edge normal");
-            let outgoing_normal = *normals
-                .get(wrap_index(join.wrapping_add(1), edges))
-                .expect("walk join has an outgoing edge normal");
+        for join in 0..join_count {
+            let v = points[join];
+            let w = points[wrap_index(join.wrapping_add(1), count)];
+            let u = points[wrap_index(join.wrapping_add(2), count)];
             let planned = match orientation(v, w, u) {
                 Orientation::CounterClockwise => match rule {
                     WalkJoinRule::Arc => {
-                        let (nx, ny) = incoming_normal;
-                        let (mx, my) = outgoing_normal;
+                        let (nx, ny) = normals[join];
+                        let (mx, my) = normals[wrap_index(join.wrapping_add(1), edges)];
                         let from_angle = ny.atan2(nx);
                         let mut sweep = my.atan2(mx) - from_angle;
                         if sweep < 0.0 {
@@ -383,16 +372,16 @@ impl<'a> WalkPlan<'a> {
                     },
                     WalkJoinRule::Bevel => WalkJoin::Straight,
                     WalkJoinRule::Miter { limit } => convex_miter(
-                        offset_edge(v, w, incoming_normal),
-                        offset_edge(w, u, outgoing_normal),
+                        offset_edge(v, w, normals[join]),
+                        offset_edge(w, u, normals[wrap_index(join.wrapping_add(1), edges)]),
                         w,
                         distance,
                         limit,
                     ),
                 },
                 Orientation::Clockwise => match reflex_cross(
-                    offset_edge(v, w, incoming_normal),
-                    offset_edge(w, u, outgoing_normal),
+                    offset_edge(v, w, normals[join]),
+                    offset_edge(w, u, normals[wrap_index(join.wrapping_add(1), edges)]),
                 )? {
                     Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
                     None => WalkJoin::Excursion,
