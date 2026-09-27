@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import math
 from fractions import Fraction
+from itertools import pairwise
 
 import gometry as gm
+import numpy as np
 import pytest
 
 
@@ -22,6 +24,23 @@ def _assert_close_to_stored_reference(actual: float, expected: Fraction) -> None
     reference = float(expected)
     assert math.isfinite(actual)
     assert actual == pytest.approx(reference, rel=2e-14, abs=0.0)
+
+
+def _lineal_centroid_reference(
+    runs: list[list[tuple[float, float]]],
+) -> tuple[float, float]:
+    total = Fraction()
+    moment_x = Fraction()
+    moment_y = Fraction()
+    for run in runs:
+        for (x0, y0), (x1, y1) in pairwise(run):
+            length = Fraction(math.hypot(x1 - x0, y1 - y0))
+            midpoint_x = Fraction(float((_stored(x0) + _stored(x1)) / 2))
+            midpoint_y = Fraction(float((_stored(y0) + _stored(y1)) / 2))
+            total += length
+            moment_x += length * midpoint_x
+            moment_y += length * midpoint_y
+    return float(moment_x / total), float(moment_y / total)
 
 
 def test_multiline_centroid_normalizes_finite_component_weights_before_sum() -> None:
@@ -44,6 +63,252 @@ def test_multiline_centroid_normalizes_finite_component_weights_before_sum() -> 
     expected_y = second_weight * (_stored(second[1][1]) / 2) / total
     _assert_close_to_stored_reference(float(centroid.x), expected_x)
     _assert_close_to_stored_reference(float(centroid.y), expected_y)
+
+
+def test_lineal_component_weight_underflow_preserves_min_subnormal_scalar() -> None:
+    tiny = math.ulp(0.0)
+    large = [(-5.0e307, 0.0), (5.0e307, 0.0)]
+    small = [(1.0e308, 0.0), (1.0e308, tiny)]
+    large_weight = Fraction(math.hypot(large[1][0] - large[0][0], 0.0))
+    small_weight = Fraction(math.hypot(0.0, tiny))
+    assert small_weight > 0
+    assert float(small_weight / large_weight) == 0.0
+
+    expected = _lineal_centroid_reference([large, small])
+    assert expected == (tiny, 0.0)
+    large_line = gm.LineString(large)
+    small_line = gm.LineString(small)
+    aggregates = [
+        gm.MultiLineString([large, small]),
+        gm.MultiLineString([small, large]),
+        gm.GeometryCollection([large_line, small_line]),
+        gm.GeometryCollection([small_line, large_line]),
+        gm.GeometryCollection([
+            gm.GeometryCollection([large_line]),
+            gm.GeometryCollection([gm.GeometryCollection([small_line])]),
+        ]),
+        gm.GeometryCollection([
+            gm.GeometryCollection([small_line]),
+            gm.GeometryCollection([gm.GeometryCollection([large_line])]),
+        ]),
+    ]
+    for aggregate in aggregates:
+        centroid = aggregate.centroid()
+        assert (float(centroid.x), float(centroid.y)) == expected
+
+
+def test_lineal_merge_normalization_underflow_is_detected_in_fast_path() -> None:
+    tiny = math.ulp(0.0)
+    ordinary = [(0.0, 0.0), (0.0, 4.0)]
+    small = [(4.0, 0.0), (4.0, tiny)]
+    zero_length = [(100.0, 100.0), (100.0, 100.0)]
+    assert Fraction(tiny) > 0
+    assert float(Fraction(tiny) / 4) == 0.0
+
+    expected = _lineal_centroid_reference([ordinary, small, zero_length])
+    assert expected == (tiny, 2.0)
+
+    ordinary_line = gm.LineString(ordinary)
+    ordinary_reversed_line = gm.LineString(ordinary[::-1])
+    small_line = gm.LineString(small)
+    small_reversed_line = gm.LineString(small[::-1])
+    zero_line = gm.LineString(zero_length)
+    geometries = [
+        gm.MultiLineString([ordinary, small, zero_length]),
+        gm.MultiLineString([small, ordinary, zero_length]),
+        gm.MultiLineString([ordinary[::-1], small[::-1], zero_length]),
+        gm.MultiLineString([small[::-1], ordinary[::-1], zero_length]),
+        gm.GeometryCollection([ordinary_line, small_line, zero_line]),
+        gm.GeometryCollection([small_line, ordinary_line, zero_line]),
+        gm.GeometryCollection([
+            ordinary_reversed_line,
+            small_reversed_line,
+            zero_line,
+        ]),
+        gm.GeometryCollection([
+            small_reversed_line,
+            ordinary_reversed_line,
+            zero_line,
+        ]),
+    ]
+    for geometry in geometries:
+        centroid = geometry.centroid()
+        assert (float(centroid.x), float(centroid.y)) == expected
+
+    dense = gm.GeometryArray(geometries)
+    assert [(float(point.x), float(point.y)) for point in dense.centroid()] == [
+        expected
+    ] * len(geometries)
+    gathered = dense[np.array([3, 1, 2], dtype=np.intp)]
+    assert [(float(point.x), float(point.y)) for point in gathered.centroid()] == [
+        expected,
+        expected,
+        expected,
+    ]
+
+
+def test_lineal_component_weight_underflow_preserves_dense_and_gathered_arrays() -> (
+    None
+):
+    tiny = math.ulp(0.0)
+    large = [(-5.0e307, 0.0), (5.0e307, 0.0)]
+    small = [(1.0e308, 0.0), (1.0e308, tiny)]
+    expected = _lineal_centroid_reference([large, small])
+    ordinary = gm.MultiLineString([
+        [(0.0, 0.0), (4.0, 0.0)],
+        [(0.0, 2.0), (0.0, 6.0)],
+    ])
+    ordinary_expected = (1.0, 2.0)
+    multi = gm.MultiLineString([large, small])
+    multi_reversed = gm.MultiLineString([small, large])
+
+    dense = gm.GeometryArray([multi, multi_reversed, ordinary, multi])
+    dense_centroids = dense.centroid()
+    expected_rows = [expected, expected, ordinary_expected, expected]
+    assert [
+        (float(point.x), float(point.y)) for point in dense_centroids
+    ] == expected_rows
+
+    gathered = dense[np.array([3, 0, 2], dtype=np.intp)]
+    gathered_centroids = gathered.centroid()
+    assert [(float(point.x), float(point.y)) for point in gathered_centroids] == [
+        expected,
+        expected,
+        ordinary_expected,
+    ]
+
+    large_line = gm.LineString(large)
+    small_line = gm.LineString(small)
+    collections = gm.GeometryArray([
+        gm.GeometryCollection([large_line, small_line]),
+        gm.GeometryCollection([small_line, large_line]),
+        gm.GeometryCollection([
+            gm.GeometryCollection([large_line]),
+            gm.GeometryCollection([gm.GeometryCollection([small_line])]),
+        ]),
+    ])
+    assert [(float(point.x), float(point.y)) for point in collections.centroid()] == [
+        expected
+    ] * 3
+    gathered_collections = collections[np.array([2, 0], dtype=np.intp)]
+    assert [
+        (float(point.x), float(point.y)) for point in gathered_collections.centroid()
+    ] == [expected] * 2
+
+
+def test_lineal_component_weight_underflow_keeps_zero_x_and_finite_order_controls() -> (
+    None
+):
+    vertical = gm.MultiLineString([
+        [(0.0, 0.0), (0.0, 1.0)],
+        [(0.0, 1.0), (0.0, 2.0)],
+    ])
+    assert (float(vertical.centroid().x), float(vertical.centroid().y)) == (0.0, 1.0)
+
+    parts = [
+        [(0.0, 0.0), (4.0, 0.0)],
+        [(0.0, 2.0), (0.0, 6.0)],
+    ]
+    for ordered in (parts, list(reversed(parts))):
+        aggregate = gm.MultiLineString(ordered)
+        assert (float(aggregate.centroid().x), float(aggregate.centroid().y)) == (
+            1.0,
+            2.0,
+        )
+
+
+def test_multiline_component_online_rescue_keeps_finite_maximum_coordinate() -> None:
+    maximum = float.fromhex('0x1.fffffffffffffp+1023')
+    large_line = [(maximum, 0.0), (maximum, 4.0)]
+    centered_line = [(0.0, 0.0), (0.0, 4.0)]
+    expected = (maximum / 2, 2.0)
+
+    aggregates = [
+        gm.MultiLineString([large_line, centered_line]),
+        gm.MultiLineString([centered_line, large_line]),
+        gm.GeometryCollection([
+            gm.LineString(large_line),
+            gm.LineString(centered_line),
+        ]),
+        gm.GeometryCollection([
+            gm.LineString(centered_line),
+            gm.LineString(large_line),
+        ]),
+    ]
+    for aggregate in aggregates:
+        centroid = aggregate.centroid()
+        assert (float(centroid.x), float(centroid.y)) == expected
+
+
+def test_geometry_collection_centroid_preserves_nonfinite_replay_error() -> None:
+    maximum = float.fromhex('0x1.fffffffffffffp+1023')
+    anchor = math.ldexp(3.0, 970)
+    minimum = float(2 * Fraction(anchor) - Fraction(maximum))
+    zero_line = gm.LineString([(minimum, 0.0), (minimum, 0.0)])
+    infinite_line = gm.LineString([(maximum, -maximum), (maximum, maximum)])
+    geometry = gm.GeometryCollection([zero_line, infinite_line])
+
+    assert math.isinf(float(infinite_line.length))
+    assert (float(infinite_line.centroid().x), float(infinite_line.centroid().y)) == (
+        maximum,
+        0.0,
+    )
+    with pytest.raises(gm.InvalidGeometryError, match='coordinates must be finite'):
+        geometry.centroid()
+
+
+def _assert_line_centroid_exact(
+    points: list[tuple[float, float]], expected: tuple[float, float]
+) -> None:
+    assert _lineal_centroid_reference([points]) == expected
+    line = gm.LineString(points)
+    centroids = (line.centroid(), gm.GeometryArray([line]).centroid()[0])
+    assert [(float(centroid.x), float(centroid.y)) for centroid in centroids] == [
+        expected,
+        expected,
+    ]
+
+
+def test_translated_short_line_centroid_is_exact_when_reversed() -> None:
+    magnitude = 2.0**500
+    height = 2.0**445
+    offset = 2.0**476
+    cycle = [
+        (offset, 0.0),
+        (offset + magnitude, 0.0),
+        (offset + magnitude, height),
+        (offset - magnitude, height),
+        (offset, 0.0),
+    ]
+    expected = (1.9510928441746322e143, 5.678427533559429e133)
+
+    _assert_line_centroid_exact(list(reversed(cycle)), expected)
+
+
+def test_translated_alternating_line_centroid_is_exact_through_simd_tail() -> None:
+    magnitude = 2.0**500
+    height = 2.0**445
+    offset = 2.0**476
+    cycle = [
+        (offset, 0.0),
+        (offset + magnitude, 0.0),
+        (offset + magnitude, height),
+        (offset - magnitude, height),
+        (offset, 0.0),
+    ]
+    vertices = cycle[:-1]
+    points = [vertices[0]]
+    for repetition in range(1025):
+        ordered = (
+            [vertices[0], *reversed(vertices[1:]), vertices[0]]
+            if repetition % 2
+            else cycle
+        )
+        points.extend(ordered[1:])
+    expected = (1.9510928441746322e143, 5.678427533559429e133)
+
+    assert len(points) - 1 == 4100
+    _assert_line_centroid_exact(points, expected)
 
 
 @pytest.mark.parametrize('height', [1e-308, 1e-300, 1e-200])
@@ -112,13 +377,26 @@ def test_multi_component_centroid_keeps_unequal_unrepresentable_weights() -> Non
     low_line = [(-1e308, 0.0), (1e308, 0.0)]
     high_line = [(-9e307, 10.0), (9e307, 10.0)]
     lines = gm.MultiLineString([low_line, high_line])
+    reversed_lines = gm.MultiLineString([high_line, low_line])
+    collection = gm.GeometryCollection([
+        gm.LineString(low_line),
+        gm.LineString(high_line),
+    ])
+    reversed_collection = gm.GeometryCollection([
+        gm.LineString(high_line),
+        gm.LineString(low_line),
+    ])
     assert math.isinf(gm.LineString(low_line).length)
     assert math.isinf(gm.LineString(high_line).length)
     low_weight = _stored(low_line[1][0]) - _stored(low_line[0][0])
     high_weight = _stored(high_line[1][0]) - _stored(high_line[0][0])
     expected_line_y = 10 * high_weight / (low_weight + high_weight)
-    _assert_close_to_stored_reference(float(lines.centroid().y), expected_line_y)
-    assert float(lines.centroid().y) == pytest.approx(4.736842105263158, rel=2e-14)
+    for aggregate in (lines, reversed_lines, collection, reversed_collection):
+        packed = gm.GeometryArray([aggregate])
+        for centroid in (aggregate.centroid(), packed.centroid()[0]):
+            _assert_close_to_stored_reference(float(centroid.x), Fraction(0))
+            _assert_close_to_stored_reference(float(centroid.y), expected_line_y)
+            assert float(centroid.y) == pytest.approx(4.736842105263158, rel=2e-14)
 
     low = gm.box(-1e308, 0.0, 1e308, 2.0)
     high = gm.box(-1e308, 7.5, 1e308, 8.5)
