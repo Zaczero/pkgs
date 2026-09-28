@@ -182,7 +182,7 @@ def resolve_process_identity(config: Config) -> ProcessIdentity:
             passwd = pwd.getpwuid(uid)
         except KeyError:
             passwd = None
-        else:
+        if passwd is not None:
             username = passwd.pw_name
             primary_gid = passwd.pw_gid
     elif isinstance(user, str):
@@ -591,9 +591,7 @@ class Server:
             )
             holder.append(generation)
             released.add_done_callback(
-                lambda task, generation=generation: self._clear_generation(
-                    generation, task
-                )
+                lambda task: self._clear_generation(generation, task)
             )
             self._generation = generation
             # Publication is one transaction: a cross-thread shutdown must

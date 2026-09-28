@@ -34,6 +34,9 @@ if TYPE_CHECKING:
     from h2corn._cli import ImportSettings
     from h2corn._config import Config
 
+    class _DarwinOS(Protocol):
+        O_EVTONLY: int
+
     class _KEvent(Protocol):
         """What this module reads off a `select.kevent`.
 
@@ -637,7 +640,7 @@ class _KqueueNotifier:
         self, path: Path, *, directory: bool, changelist: list[object]
     ) -> None:
         try:
-            fd = os.open(path, os.O_EVTONLY)
+            fd = os.open(path, cast('_DarwinOS', os).O_EVTONLY)
         except OSError:
             return
         self._fds.append(fd)

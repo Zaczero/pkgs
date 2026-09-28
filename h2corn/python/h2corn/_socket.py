@@ -439,9 +439,9 @@ def lease_owned_fds(
         # Construct leases only after the complete transferred set has one
         # owner and has passed the duplicate check. A wrapped fd leaves the
         # raw rollback set as soon as the wrapper owns it.
-        for index, fd in enumerate(raw_fds):
-            assert fd is not None
-            listener = _InheritedListener(fd=fd)
+        for index, raw_fd in enumerate(raw_fds):
+            assert raw_fd is not None
+            listener = _InheritedListener(fd=raw_fd)
             raw_fds[index] = None
             try:
                 listeners.append(listener)

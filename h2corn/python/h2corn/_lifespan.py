@@ -140,8 +140,9 @@ class LifespanRunner:
         event_task = asyncio.create_task(self._send.get())
         try:
             await self._recv.put(message)
+            waiters: set[asyncio.Future[Any]] = {self._task, event_task}
             done, _pending = await asyncio.wait(
-                {self._task, event_task},
+                waiters,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:

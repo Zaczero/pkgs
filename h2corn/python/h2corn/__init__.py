@@ -142,13 +142,16 @@ __all__ = (
 
 def __getattr__(name: str) -> _Any:
     if name in {'Server', 'serve'}:
-        import h2corn._server as module
+        import h2corn._server as server_module
+
+        value = getattr(server_module, name)
     elif name in __all__:
-        import h2corn._types as module
+        import h2corn._types as types_module
+
+        value = getattr(types_module, name)
     else:
         raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
-    value = getattr(module, name)
     globals()[name] = value
     return value
 
