@@ -8,8 +8,8 @@ use crate::py::index::{
     AABB, Arc, BinaryHeap, Bounds, CapBound, Crs, DistanceUnit, Frame, GeodesicCapsCache,
     GeodesicPruner, GeodesicRowCaps, IndexEntry, IndexEnvelope, IndexPredicate, IndexRowOperation,
     NearestCandidate, NonNegative, Point, PointRows, Predicate, PreparedIndexQuery, PyGeometry,
-    PyGeometryArray, PyResult, PySpatialIndex, RowMatches, Shape, ShapeData, ShapeRow,
-    bounds_envelope, crs, crs_label, epoch_label, global_geographic_candidate_envelope,
+    PyGeometryArray, PyResult, PySpatialIndex, QueryDomain, RowMatches, Shape, ShapeData, ShapeRow,
+    bounds_envelope, crs, crs_label, csr_rows, epoch_label, global_geographic_candidate_envelope,
     index_envelopes, pair_distance_geodesic, pair_dwithin_geodesic, pair_dwithin_planar,
     point_from_bounds, retain_row, sort_unique_row_ids, topology_pair_after_gates,
     topology_scalar_pair,
@@ -107,9 +107,10 @@ impl PySpatialIndex {
         };
         let plan = PreparedIndexQuery::for_index(self, Some(predicate), distance, unit)?;
         let domain = self.domain()?;
-        let resolved = match &plan {
-            PreparedIndexQuery::Dwithin { resolved, .. } => Some(resolved),
-            _ => None,
+        let resolved = if let PreparedIndexQuery::Dwithin { resolved, .. } = &plan {
+            Some(resolved)
+        } else {
+            None
         };
         let radius = distance.map_or(0.0, NonNegative::get);
         let live = self.live_handles_sorted();
@@ -119,7 +120,7 @@ impl PySpatialIndex {
             // Symmetric relation: keep only j > i *before* the exact refine,
             // so each unordered pair is refined exactly once.
             let row = products.row(i)?;
-            let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset)?;
+            let prepared = plan.row(self, row, crate::array::BoundsSeed::Unset, None)?;
             let (predicate, distance, metric) = plan.candidate_parts();
             candidates.clear();
             if let Some(spec) = spec {
@@ -658,6 +659,7 @@ impl PySpatialIndex {
             self,
             ShapeRow::Handle(&query_plan),
             crate::array::BoundsSeed::Unset,
+            None,
         )?;
         let mut ids = Vec::new();
         if distance.is_none() {
@@ -689,9 +691,10 @@ impl PySpatialIndex {
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
+        logical_row: Option<usize>,
     ) -> PyResult<()> {
         matches.clear();
-        self.planar_dwithin_query_row_matches_append(row, plan, matches, seeded_bounds)
+        self.planar_dwithin_query_row_matches_append(row, plan, matches, seeded_bounds, logical_row)
     }
 
     /// Append one dwithin result row directly to a flat CSR values column.
@@ -701,9 +704,10 @@ impl PySpatialIndex {
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
+        logical_row: Option<usize>,
     ) -> PyResult<()> {
         let row_start = matches.len();
-        let prepared = plan.row(self, row, seeded_bounds)?;
+        let prepared = plan.row(self, row, seeded_bounds, logical_row)?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
@@ -740,9 +744,10 @@ impl PySpatialIndex {
         plan: &PreparedIndexQuery,
         matches: &mut Vec<usize>,
         seeded_bounds: crate::array::BoundsSeed,
+        logical_row: Option<usize>,
     ) -> PyResult<()> {
         let row_start = matches.len();
-        let prepared = plan.row(self, row, seeded_bounds)?;
+        let prepared = plan.row(self, row, seeded_bounds, logical_row)?;
         let (predicate, candidate_distance, candidate_metric) = plan.candidate_parts();
         self.candidate_ids_core_append(
             prepared.bounds,
@@ -783,6 +788,7 @@ impl PySpatialIndex {
         points: &PointRows<'_>,
         missing: Option<&ValidityMask>,
         predicate: Predicate,
+        query_domain: QueryDomain,
     ) -> PyResult<RowMatches> {
         let domain = self.domain()?;
         let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
@@ -795,6 +801,11 @@ impl PySpatialIndex {
                 queries.push(None);
                 continue;
             }
+            query_domain.admit_shape(
+                &Shape::Point(point),
+                Some(Bounds::from_point(point)),
+                Some(row),
+            )?;
             let row_start = builder.len();
             self.collect_point_candidates(point, builder.values_mut())?;
             let end = builder.len();
@@ -813,15 +824,14 @@ impl PySpatialIndex {
         }
 
         let mut candidates = Vec::with_capacity(ids.len());
-        #[expect(
-            clippy::needless_range_loop,
-            reason = "the position is data: it is stored beside the id it indexes"
-        )]
-        for row in 0..points.len() {
-            for position in offsets[row] as usize..offsets[row + 1] as usize {
-                candidates.push((ids[position], row, position));
+        let mut position = 0_usize;
+        for (row, row_ids) in csr_rows(&ids, &offsets).enumerate() {
+            for &idx in row_ids {
+                candidates.push((idx, row, position));
+                position = position.wrapping_add(1);
             }
         }
+        debug_assert_eq!(position, ids.len());
         // Refinement is indexed-row-local, while the tuple tie-breakers retain
         // the candidate's original read order within that row.
         candidates.sort_unstable_by_key(|candidate| *candidate);
@@ -834,19 +844,19 @@ impl PySpatialIndex {
             Vec::new()
         };
         let mut index_products = self.rows.operation();
-        let mut start = 0;
-        while start < candidates.len() {
-            let idx = candidates[start].0;
+        let mut candidates = candidates.iter().peekable();
+        while let Some(first) = candidates.next() {
+            let idx = first.0;
             let data = index_products.prepared(idx)?;
             let candidate_cache = index_products.frame_cache(idx)?;
             let mut candidate_proof = None;
-            let mut end = start;
-            while end < candidates.len() && candidates[end].0 == idx {
-                let (_, row, position) = candidates[end];
-                let (query, query_cache) = queries[row]
-                    .as_ref()
+            let mut refine = |candidate: &(usize, usize, usize)| -> PyResult<()> {
+                let (_, row, position) = candidate;
+                let (query, query_cache) = queries
+                    .get(*row)
+                    .and_then(Option::as_ref)
                     .expect("every grouped point row has a candidate plan");
-                keep[position] = match domain {
+                let keep_match = match domain {
                     TopologyDomain::Cartesian => topology_scalar_pair(
                         &spec,
                         &PreparedTopologyPair::try_for_domain(
@@ -864,8 +874,10 @@ impl PySpatialIndex {
                         ) {
                             verdict
                         } else {
-                            let query =
-                                admitted_query(&mut query_proofs[row], query, query_cache, frame)?;
+                            let query_proof = query_proofs
+                                .get_mut(*row)
+                                .expect("geographic query proofs align with rows");
+                            let query = admitted_query(query_proof, query, query_cache, frame)?;
                             let candidate = admitted_query(
                                 &mut candidate_proof,
                                 &data,
@@ -876,25 +888,39 @@ impl PySpatialIndex {
                         }
                     },
                 };
-                end += 1;
+                *keep
+                    .get_mut(*position)
+                    .expect("candidate position belongs to the CSR values") = keep_match;
+                Ok(())
+            };
+            refine(first)?;
+            while let Some(candidate) = candidates.next_if(|candidate| candidate.0 == idx) {
+                refine(candidate)?;
             }
-            start = end;
         }
 
-        let mut refined_ids = 0;
+        let mut refined_ids = 0_usize;
         let mut refined_offsets = CsrBuilder::<()>::with_capacity(0, points.len());
-        for row in 0..points.len() {
-            for position in offsets[row] as usize..offsets[row + 1] as usize {
-                if keep[position] {
-                    ids[refined_ids] = ids[position];
-                    refined_ids += 1;
-                }
-            }
+        let mut keep_rows = keep.iter().copied();
+        for row_ids in csr_rows(&ids, &offsets) {
+            let kept_in_row = keep_rows
+                .by_ref()
+                .take(row_ids.len())
+                .filter(|&keep| keep)
+                .count();
+            refined_ids = refined_ids.wrapping_add(kept_in_row);
             refined_offsets
                 .push_end(refined_ids)
                 .map_err(pyo3::PyErr::from)?;
         }
-        ids.truncate(refined_ids);
+        debug_assert_eq!(keep_rows.len(), 0);
+        let mut keep_values = keep.into_iter();
+        ids.retain(|_| {
+            keep_values
+                .next()
+                .expect("keep mask aligns with CSR values")
+        });
+        debug_assert_eq!(keep_values.len(), 0);
         let (_, refined_offsets) = refined_offsets.finish();
         Ok(RowMatches {
             ids,
@@ -965,7 +991,7 @@ impl PySpatialIndex {
         let domain = self.domain()?;
         let mut products = self.rows.operation();
         match plan {
-            PreparedIndexQuery::Topological { predicate } => {
+            PreparedIndexQuery::Topological { predicate, .. } => {
                 let spec = predicate.spec();
                 // `query OP item`: the query is the fixed left operand of the
                 // shared batch engine (prepared/cached exactly like the
@@ -1033,14 +1059,15 @@ impl PySpatialIndex {
                             &data,
                             &*products.frame_cache(idx)?,
                             &query_plan,
-                            &*geometry.frame_cache(),
+                            &geometry.frame_cache(),
                             distance,
                         )
                         .map_err(Into::into)
                     })?,
                 }
             },
-            PreparedIndexQuery::Candidates | PreparedIndexQuery::CandidatesDwithin { .. } => {
+            PreparedIndexQuery::Candidates { .. }
+            | PreparedIndexQuery::CandidatesDwithin { .. } => {
                 unreachable!("exact refinement is called only with a predicate plan")
             },
         }
@@ -1062,12 +1089,19 @@ impl PySpatialIndex {
         if let IndexPredicate::Topological(predicate) = predicate
             && distance.is_none()
         {
-            return self.topological_matches(&query_plan, &*geometry.frame_cache(), predicate);
+            return self.topological_matches(
+                &query_plan,
+                &geometry.frame_cache(),
+                predicate,
+                plan.query_domain(),
+                None,
+            );
         }
         let prepared = plan.row(
             self,
             ShapeRow::Handle(&query_plan),
             crate::array::BoundsSeed::Unset,
+            None,
         )?;
         let mut candidates = Vec::new();
         let (candidate_predicate, candidate_distance, metric) = plan.candidate_parts();
@@ -1092,9 +1126,18 @@ impl PySpatialIndex {
         shape: &PreparedPlan,
         query_cache: &crate::geometry::FrameDependentCaches,
         predicate: Predicate,
+        query_domain: QueryDomain,
+        logical_row: Option<usize>,
     ) -> PyResult<Vec<usize>> {
         let mut matches = Vec::new();
-        self.topological_matches_append(shape, query_cache, predicate, &mut matches)?;
+        self.topological_matches_append(
+            shape,
+            query_cache,
+            predicate,
+            query_domain,
+            logical_row,
+            &mut matches,
+        )?;
         Ok(matches)
     }
 
@@ -1105,12 +1148,15 @@ impl PySpatialIndex {
         shape: &PreparedPlan,
         query_cache: &crate::geometry::FrameDependentCaches,
         predicate: Predicate,
+        query_domain: QueryDomain,
+        logical_row: Option<usize>,
         out: &mut Vec<usize>,
     ) -> PyResult<()> {
         let row_start = out.len();
         let Some(query_bounds) = shape.bounds() else {
             return Ok(());
         };
+        query_domain.admit_shape(shape.shape(), Some(query_bounds), logical_row)?;
         let spec = predicate.spec();
         let Some(frame) = self.metadata.as_ref() else {
             return Ok(());
@@ -1178,12 +1224,19 @@ impl PySpatialIndex {
         if distance.is_none()
             && let Some(IndexPredicate::Topological(predicate)) = predicate
         {
-            return self.point_rows_join_matches(array, points, missing, predicate);
+            return self.point_rows_join_matches(
+                array,
+                points,
+                missing,
+                predicate,
+                plan.query_domain(),
+            );
         }
         if let PreparedIndexQuery::Dwithin {
             distance,
             metric,
             resolved,
+            ..
         } = &plan
         {
             let mut query_rows = array.row_operation();
@@ -1193,6 +1246,7 @@ impl PySpatialIndex {
                     missing,
                     *distance,
                     metric,
+                    plan.query_domain(),
                     |_, query, ids, row_start, products| {
                         retain_row(ids, row_start, |idx| {
                             let data = products.prepared(idx)?;
@@ -1206,6 +1260,7 @@ impl PySpatialIndex {
                     missing,
                     *distance,
                     metric,
+                    plan.query_domain(),
                     |row, query, ids, row_start, products| {
                         let query_cache = query_rows.frame_cache(row);
                         retain_row(ids, row_start, |idx| {
@@ -1231,7 +1286,7 @@ impl PySpatialIndex {
         let model = match &plan {
             PreparedIndexQuery::CandidatesDwithin { metric, .. }
             | PreparedIndexQuery::Dwithin { metric, .. } => Some(metric),
-            _ => None,
+            PreparedIndexQuery::Candidates { .. } | PreparedIndexQuery::Topological { .. } => None,
         };
         let coordinate_distance =
             distance.and_then(|distance| model.and_then(|m| m.coordinate_radius(distance.get())));
@@ -1264,6 +1319,11 @@ impl PySpatialIndex {
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
+            plan.query_domain().admit_shape(
+                &Shape::Point(point),
+                Some(Bounds::from_point(point)),
+                Some(row),
+            )?;
             let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
             match (coordinate_distance, distance) {
@@ -1367,6 +1427,7 @@ impl PySpatialIndex {
         missing: Option<&ValidityMask>,
         distance: NonNegative,
         model: &crs::MetricModel,
+        query_domain: QueryDomain,
         mut refine: impl FnMut(
             usize,
             &PreparedPlan,
@@ -1382,7 +1443,7 @@ impl PySpatialIndex {
             {
                 (*frame == crate::geographic::GeographicFrame::crs84()).then_some((crs, state))
             },
-            _ => None,
+            crs::MetricModel::Planar { .. } | crs::MetricModel::Geodesic { .. } => None,
         };
         let mut builder = CsrBuilder::<usize>::with_capacity(0, points.len());
         let mut products = self.rows.operation();
@@ -1392,6 +1453,11 @@ impl PySpatialIndex {
                 builder.push_end(end).map_err(pyo3::PyErr::from)?;
                 continue;
             }
+            query_domain.admit_shape(
+                &Shape::Point(point),
+                Some(Bounds::from_point(point)),
+                Some(row),
+            )?;
             let query = PreparedPlan::new(ShapeData::new(Shape::Point(point)));
             let row_start = builder.len();
             if let Some(radius) = coordinate_distance {
@@ -1455,7 +1521,10 @@ mod tests {
             frame,
         );
         for predicate in [Predicate::Crosses, Predicate::Overlaps] {
-            let plan = PreparedIndexQuery::Topological { predicate };
+            let plan = PreparedIndexQuery::Topological {
+                query_domain: QueryDomain::default(),
+                predicate,
+            };
             assert_eq!(
                 index.refine_prepared(&query, vec![0], &plan).unwrap(),
                 Vec::<usize>::new()
@@ -1496,6 +1565,7 @@ mod tests {
                 &plan,
                 &mut matches,
                 BoundsSeed::Unset,
+                None,
             )
             .unwrap();
 
@@ -1532,7 +1602,7 @@ mod tests {
             .row();
         let bounds = row.quick_bounds().expect("polygon bounds");
         let prepared = crate::test_support::assert_no_allocations(|| {
-            plan.row(&index, row, BoundsSeed::Value(Some(bounds)))
+            plan.row(&index, row, BoundsSeed::Value(Some(bounds)), None)
         })
         .expect("seeded projected candidate preparation must not allocate");
         assert_eq!(prepared.bounds, Some(bounds));
@@ -1551,6 +1621,8 @@ mod tests {
                 &query,
                 &crate::geometry::FrameDependentCaches::default(),
                 Predicate::Intersects,
+                QueryDomain::default(),
+                None,
             )
             .unwrap();
         assert!(matches.is_empty());

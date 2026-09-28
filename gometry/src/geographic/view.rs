@@ -1,12 +1,164 @@
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fmt;
+use std::marker::PhantomData;
 
 use super::{
     CanonicalLongitude, GeographicError, GeographicFrame, Latitude, RingTurn, SeamIdentity,
 };
 use crate::array::CheckedRingWindow;
+use crate::collections::HashSet;
 use crate::geometry::{CoordSeq, MultiMember, Point, Ring, Shape, XY};
 
 const INLINE_MEMBER_DEPTH: usize = 4;
+
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
+pub(crate) struct CollectionOwnerKey<'owner> {
+    address: usize,
+    len: usize,
+    owner: PhantomData<&'owner [Shape]>,
+}
+
+impl<'owner> CollectionOwnerKey<'owner> {
+    pub(crate) fn new(members: &'owner [Shape]) -> Self {
+        Self {
+            address: members.as_ptr().addr(),
+            len: members.len(),
+            owner: PhantomData,
+        }
+    }
+}
+
+impl Ord for CollectionOwnerKey<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.address
+            .cmp(&other.address)
+            .then_with(|| self.len.cmp(&other.len))
+    }
+}
+
+impl PartialOrd for CollectionOwnerKey<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct GeographicAdmissionWork {
+    pub(crate) collection_occurrences: usize,
+    pub(crate) collection_descents: usize,
+    pub(crate) collection_member_slots: usize,
+    pub(crate) coordinate_visits: usize,
+    pub(crate) repeated_owner_occurrences: usize,
+    pub(crate) owner_set_initializations: usize,
+}
+
+/// Tracks immutable collection payload identities across admission and census.
+///
+/// The first shared payload is stored inline; ordinary unshared collections
+/// leave all owner storage empty.
+#[derive(Default)]
+pub(crate) struct GeographicCollectionOwners<'owner> {
+    inline: Option<CollectionOwnerKey<'owner>>,
+    hashed: Option<HashSet<CollectionOwnerKey<'owner>>>,
+    entropy_fallback: Option<BTreeSet<CollectionOwnerKey<'owner>>>,
+    entropy_error: Option<crate::error::Error>,
+    #[cfg(test)]
+    work: GeographicAdmissionWork,
+}
+
+impl<'owner> GeographicCollectionOwners<'owner> {
+    pub(crate) fn observe(&mut self, key: CollectionOwnerKey<'owner>) -> bool {
+        if let Some(owners) = self.hashed.as_mut() {
+            return owners.insert(key);
+        }
+        if let Some(owners) = self.entropy_fallback.as_mut() {
+            return owners.insert(key);
+        }
+        let Some(first) = self.inline else {
+            self.inline = Some(key);
+            return true;
+        };
+        if first == key {
+            return false;
+        }
+        match crate::collections::collection_hash_state() {
+            Ok(state) => {
+                let mut owners = HashSet::with_capacity_and_hasher(2, state.clone());
+                let _ = owners.insert(first);
+                let first = owners.insert(key);
+                self.inline = None;
+                self.hashed = Some(owners);
+                #[cfg(test)]
+                {
+                    self.work.owner_set_initializations =
+                        self.work.owner_set_initializations.wrapping_add(1);
+                }
+                first
+            },
+            Err(error) => {
+                let mut owners = BTreeSet::new();
+                let _ = owners.insert(first);
+                let first = owners.insert(key);
+                self.inline = None;
+                self.entropy_fallback = Some(owners);
+                self.entropy_error = Some(error);
+                first
+            },
+        }
+    }
+
+    pub(crate) fn reset_for_census(&mut self) {
+        self.inline = None;
+        if let Some(owners) = self.hashed.as_mut() {
+            owners.clear();
+        }
+        if let Some(owners) = self.entropy_fallback.as_mut() {
+            owners.clear();
+        }
+    }
+
+    pub(crate) fn discard(&mut self) {
+        self.inline = None;
+        self.hashed = None;
+        self.entropy_fallback = None;
+    }
+
+    pub(crate) const fn take_entropy_error(&mut self) -> Option<crate::error::Error> {
+        self.entropy_error.take()
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn work(&self) -> GeographicAdmissionWork {
+        self.work
+    }
+
+    #[cfg(test)]
+    const fn record_collection_occurrence(&mut self) {
+        self.work.collection_occurrences = self.work.collection_occurrences.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    const fn record_collection_descent(&mut self) {
+        self.work.collection_descents = self.work.collection_descents.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    const fn record_collection_member_slot(&mut self) {
+        self.work.collection_member_slots = self.work.collection_member_slots.wrapping_add(1);
+    }
+
+    #[cfg(test)]
+    const fn record_coordinate_visits(&mut self, count: usize) {
+        self.work.coordinate_visits = self.work.coordinate_visits.wrapping_add(count);
+    }
+
+    #[cfg(test)]
+    const fn record_repeated_owner_occurrence(&mut self) {
+        self.work.repeated_owner_occurrences = self.work.repeated_owner_occurrences.wrapping_add(1);
+    }
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct GeographicMemberPath {
@@ -101,6 +253,12 @@ impl fmt::Display for GeographicDiagnostic {
 }
 
 pub(crate) type GeographicViewError = Box<GeographicDiagnostic>;
+
+#[derive(Debug)]
+pub(crate) enum GeographicAdmissionError {
+    Geographic(GeographicViewError),
+    Resource(crate::error::Error),
+}
 
 impl GeographicDiagnostic {
     fn boxed(location: GeographicLocation, native: XY, source: GeographicError) -> Box<Self> {
@@ -200,11 +358,12 @@ fn visit_coordseq(
     Ok(())
 }
 
-fn visit_shape(
+fn visit_shape<'owner>(
     frame: GeographicFrame,
-    shape: &Shape,
+    shape: &'owner Shape,
     row: Option<usize>,
     members: &mut MemberPathBuilder,
+    mut collection_owners: Option<&mut GeographicCollectionOwners<'owner>>,
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
 ) -> Result<(), GeographicViewError> {
     match shape {
@@ -268,9 +427,42 @@ fn visit_shape(
             Ok(())
         },
         Shape::GeometryCollection(collection) => {
+            #[cfg(test)]
+            if let Some(owners) = collection_owners.as_deref_mut() {
+                owners.record_collection_occurrence();
+            }
+            let repeated = collection_owners.as_deref_mut().is_some_and(|owners| {
+                collection.members_are_shared()
+                    && !owners.observe(CollectionOwnerKey::new(collection.as_slice()))
+            });
+            if repeated {
+                // This immutable payload was fully admitted at its first
+                // source occurrence; an invalid coordinate there already
+                // returned its original member path.
+                #[cfg(test)]
+                if let Some(owners) = collection_owners.as_deref_mut() {
+                    owners.record_repeated_owner_occurrence();
+                }
+                return Ok(());
+            }
+            #[cfg(test)]
+            if let Some(owners) = collection_owners.as_deref_mut() {
+                owners.record_collection_descent();
+            }
             for (member, shape) in collection.iter().enumerate() {
+                #[cfg(test)]
+                if let Some(owners) = collection_owners.as_deref_mut() {
+                    owners.record_collection_member_slot();
+                }
                 members.push(member);
-                visit_shape(frame, shape, row, members, visit)?;
+                visit_shape(
+                    frame,
+                    shape,
+                    row,
+                    members,
+                    collection_owners.as_deref_mut(),
+                    visit,
+                )?;
                 members.pop();
             }
             Ok(())
@@ -295,13 +487,43 @@ impl<'a> ScalarGeographicView<'a> {
             shape,
             None,
             &mut MemberPathBuilder::default(),
+            None,
             &mut |_| Ok(()),
         )?;
         Ok(Self { frame, shape })
     }
 
-    /// A view of a shape whose coordinates a prior [`Self::try_new`] admitted
-    /// in `frame`; the coordinates are immutable, so the admission holds.
+    pub(crate) fn try_new_with_collection_owners(
+        frame: GeographicFrame,
+        shape: &'a Shape,
+        owners: &mut GeographicCollectionOwners<'a>,
+    ) -> Result<Self, GeographicAdmissionError> {
+        #[cfg(test)]
+        let coordinate_visits = std::cell::Cell::new(0_usize);
+        let mut visit = |_: GeographicCoordinate| {
+            #[cfg(test)]
+            coordinate_visits.set(coordinate_visits.get().wrapping_add(1));
+            Ok(())
+        };
+        let admitted = visit_shape(
+            frame,
+            shape,
+            None,
+            &mut MemberPathBuilder::default(),
+            Some(&mut *owners),
+            &mut visit,
+        );
+        #[cfg(test)]
+        owners.record_coordinate_visits(coordinate_visits.get());
+        admitted.map_err(GeographicAdmissionError::Geographic)?;
+        if let Some(error) = owners.take_entropy_error() {
+            return Err(GeographicAdmissionError::Resource(error));
+        }
+        Ok(Self { frame, shape })
+    }
+
+    /// A view of a shape whose coordinates a prior admission validated in
+    /// `frame`; the coordinates are immutable, so the admission holds.
     pub(crate) const fn previously_admitted(frame: GeographicFrame, shape: &'a Shape) -> Self {
         Self { frame, shape }
     }

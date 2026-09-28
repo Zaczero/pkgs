@@ -7,9 +7,9 @@ use crate::py::crs::PyCrs;
 use crate::py::index::{
     BinaryHeap, Bound, DistanceUnit, GeometryError, Groups, HeapSize as _, IndexPredicate,
     IntoPyObject as _, NearestCandidate, NearestOptions, PreparedIndexQuery, Py, PyAny,
-    PyAnyMethods as _, PyResult, PySpatialIndex, Python, build_spatial_index, exact_geometry,
-    exact_geometry_array, format_nearest, format_nearest_rows, geometry_items, join_indexed,
-    parse_max_distance, pyfunction, pymethods, query_distance, resolve_metric,
+    PyAnyMethods as _, PyResult, PySpatialIndex, Python, QueryDomain, build_spatial_index,
+    exact_geometry, exact_geometry_array, format_nearest, format_nearest_rows, geometry_items,
+    join_indexed, parse_max_distance, pyfunction, pymethods, query_distance, resolve_metric,
     restore_spatial_index, spatial_index, usize_array, validate_nearest_k,
 };
 use crate::py::numpy::int64_array;
@@ -408,17 +408,14 @@ impl PySpatialIndex {
                 })?;
                 return Groups::from_int64_csr(results.ids, results.offsets)?.into_py_any(py);
             }
+            let plan =
+                PreparedIndexQuery::for_array(self, &array, Some(predicate), distance, unit)?;
             if let IndexPredicate::Topological(topological) = predicate
                 && distance.is_none()
             {
                 // One frame check for the whole array; rows feed the
                 // shape-level core with no per-row wrapper. Matches append
                 // straight into the CSR values column (one pass).
-                self.ensure_frame_compatible(
-                    array.crs_ref(),
-                    array.epoch(),
-                    "spatial index query",
-                )?;
                 let (ids, offsets) = py.detach(move || {
                     let row_count = array.len();
                     let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
@@ -429,8 +426,10 @@ impl PySpatialIndex {
                             let shape = rows.prepared(row)?;
                             self.topological_matches_append(
                                 &shape,
-                                &*rows.frame_cache(row_index),
+                                &rows.frame_cache(row_index),
                                 topological,
+                                plan.query_domain(),
+                                Some(row_index),
                                 builder.values_mut(),
                             )?;
                         }
@@ -445,8 +444,6 @@ impl PySpatialIndex {
             // one frame check + one metric resolution; rows run the shared
             // candidate core and the pair kernel on stack handles — no
             // per-row PyGeometry staging.
-            let plan =
-                PreparedIndexQuery::for_array(self, &array, Some(predicate), distance, unit)?;
             let (ids, offsets) = py.detach(move || {
                 let row_count = array.len();
                 let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
@@ -465,6 +462,7 @@ impl PySpatialIndex {
                                     &plan,
                                     builder.values_mut(),
                                     array.row_bounds_seed(row_index),
+                                    Some(row_index),
                                 )?;
                             }
                             let end = builder.len();
@@ -485,6 +483,7 @@ impl PySpatialIndex {
                                     &plan,
                                     builder.values_mut(),
                                     array.row_bounds_seed(row_index),
+                                    Some(row_index),
                                 )?;
                             }
                             let end = builder.len();
@@ -690,10 +689,11 @@ impl PySpatialIndex {
             // element bounds are the whole answer, streamed straight off the
             // packed columns; mixed storage takes the row loop below.
             let domain = self.domain()?;
-            let envelope_only =
-                matches!(plan, PreparedIndexQuery::Candidates) && !domain.is_geographic();
+            let envelope_only = matches!(plan, PreparedIndexQuery::Candidates { .. })
+                && !domain.is_geographic()
+                && !plan.query_domain().needs_admission();
             let geographic_envelopes =
-                matches!(plan, PreparedIndexQuery::Candidates) && domain.is_geographic();
+                matches!(plan, PreparedIndexQuery::Candidates { .. }) && domain.is_geographic();
             let row_count = array.len();
             let mut builder = CsrBuilder::<usize>::with_capacity(0, row_count);
             if envelope_only {
@@ -742,7 +742,7 @@ impl PySpatialIndex {
                             })?;
                         }
                     } else {
-                        let prepared = plan.row(self, row, seeded)?;
+                        let prepared = plan.row(self, row, seeded, Some(row_index))?;
                         self.candidate_ids_core_append(
                             prepared.bounds,
                             prepared.pruner_point,
@@ -870,11 +870,22 @@ impl PySpatialIndex {
                     include_ties: ties,
                 };
                 let resolved = crate::crs::ResolvedMetric::from_model(&metric)?;
+                let query_domain = if k > 0 {
+                    QueryDomain::for_query_frame(self, Some(&array.frame))?
+                } else {
+                    QueryDomain::default()
+                };
                 match &resolved {
                     crate::crs::ResolvedMetric::Planar { to_metre } => {
                         let mut rows = array.row_operation();
                         for logical_row in rows.rows_with_missing(|| ()) {
                             if let crate::array::ArrayRow::Present(row) = logical_row {
+                                let row_index = row.logical();
+                                let _ = query_domain.admit_row(
+                                    row.row(),
+                                    array.row_bounds_seed(row_index),
+                                    Some(row_index),
+                                )?;
                                 let query = rows.prepared(row)?;
                                 let candidates = self.planar_nearest_core_ties(
                                     to_metre.get(),
@@ -902,6 +913,11 @@ impl PySpatialIndex {
                         for logical_row in rows.rows_with_missing(|| ()) {
                             if let crate::array::ArrayRow::Present(row) = logical_row {
                                 let row_index = row.logical();
+                                let _ = query_domain.admit_row(
+                                    row.row(),
+                                    array.row_bounds_seed(row_index),
+                                    Some(row_index),
+                                )?;
                                 let query = rows.prepared(row)?;
                                 let mut query_cache = || rows.frame_cache(row_index);
                                 let candidates = self.geodesic_nearest_core_ties(

@@ -87,7 +87,7 @@ impl StaticStrTree {
             level_count = level_count.wrapping_add(1);
         }
         let root = leaf_count.isqrt();
-        let strips = root + usize::from(root * root != leaf_count);
+        let strips = root.wrapping_add(usize::from(root.wrapping_mul(root) != leaf_count));
         let strip_len = entry_count.div_ceil(strips).max(NODE_CAP);
         // Ordering by the coordinate SUM is ordering by the midpoint (the
         // halving is monotone), one add per key. At +-1e308 the sum can reach
@@ -96,7 +96,14 @@ impl StaticStrTree {
         // absurd-coordinate data, never query correctness (envelopes stay
         // exact; see `str_centers_stay_ordered_for_huge_finite_envelopes`).
         let center = |entry: &IndexEntry, axis: usize| {
-            entry.envelope.lower()[axis] + entry.envelope.upper()[axis]
+            let lower = entry.envelope.lower();
+            let upper = entry.envelope.upper();
+            *lower
+                .get(axis)
+                .expect("index envelopes have exactly two axes")
+                + *upper
+                    .get(axis)
+                    .expect("index envelopes have exactly two axes")
         };
         entries.sort_unstable_by(|a, b| center(a, 0).total_cmp(&center(b, 0)));
         for strip in entries.chunks_mut(strip_len) {
@@ -161,7 +168,12 @@ impl StaticStrTree {
         &'a self,
         live: &'a [u8],
     ) -> impl Iterator<Item = &'a IndexEntry> {
-        self.entries.iter().filter(|entry| live[entry.idx] != 0)
+        self.entries.iter().filter(|entry| {
+            *live
+                .get(entry.idx)
+                .expect("tree handle belongs to the row liveness table")
+                != 0
+        })
     }
 
     /// The root layer (empty tree → empty slice) — descent seeds.
@@ -175,12 +187,18 @@ impl StaticStrTree {
     }
 
     pub(super) fn node(&self, level: usize, index: u32) -> &StrNode {
-        &self.levels[level][index as usize]
+        self.levels
+            .get(level)
+            .and_then(|nodes| nodes.get(index as usize))
+            .expect("frontier node was admitted from this tree's root or child range")
     }
 
     /// The level-0-children entries of a LEAF node.
     pub(super) fn leaf_entries(&self, node: &StrNode) -> &[IndexEntry] {
-        &self.entries[node.children.start as usize..node.children.end as usize]
+        let range = node.children.start as usize..node.children.end as usize;
+        self.entries
+            .get(range)
+            .expect("leaf child range was admitted when the tree was built")
     }
 
     /// Append the live handles whose envelope intersects `query`.
@@ -247,11 +265,16 @@ impl StaticStrTree {
             leaf(self.leaf_entries(node));
             return;
         }
-        let children =
-            &self.levels[level - 1][node.children.start as usize..node.children.end as usize];
+        let child_level = level.wrapping_sub(1);
+        let children = self
+            .levels
+            .get(child_level)
+            .expect("non-leaf node has a child level")
+            .get(node.children.start as usize..node.children.end as usize)
+            .expect("node child range was admitted when the tree was built");
         for child in children {
             if enter(&child.envelope) {
-                self.visit(level - 1, child, enter, leaf);
+                self.visit(child_level, child, enter, leaf);
             }
         }
     }
@@ -268,7 +291,12 @@ fn append_live(
 ) {
     out.reserve(entries.len());
     for entry in entries {
-        if live[entry.idx] != 0 && keep(entry) {
+        if *live
+            .get(entry.idx)
+            .expect("tree handle belongs to the row liveness table")
+            != 0
+            && keep(entry)
+        {
             out.push(entry.idx);
         }
     }
@@ -309,7 +337,9 @@ crate::heapless!(IndexEntry, StrNode);
 
 impl HeapSize for StaticStrTree {
     fn heap_bytes(&self) -> usize {
-        self.entries.heap_bytes() + self.levels.heap_bytes()
+        self.entries
+            .heap_bytes()
+            .saturating_add(self.levels.heap_bytes())
     }
 }
 
@@ -494,27 +524,36 @@ impl StaticStrForest {
             carry.extend((&mut entries).take(chunk_len));
             debug_assert_eq!(carry.len(), chunk_len);
             let mut rank = chunk_len.trailing_zeros() as usize;
-            offset += chunk_len;
+            offset = offset.wrapping_add(chunk_len);
 
             loop {
                 debug_assert!(rank < pending.len());
-                if let Some(staged) = pending[rank].take() {
+                let staged_slot = pending
+                    .get_mut(rank)
+                    .expect("carry rank is within the prepared forest");
+                if let Some(staged) = staged_slot.take() {
                     carry.reserve(staged.len());
                     carry.extend_from_slice(&staged);
-                    rank += 1;
+                    rank = rank.wrapping_add(1);
                     continue;
                 }
                 if rank < self.runs.len()
-                    && !consumed[rank]
-                    && let Some(existing) = self.runs[rank].as_ref()
+                    && !*consumed
+                        .get(rank)
+                        .expect("occupied carry rank has a consumed flag")
+                    && let Some(existing) = self.runs.get(rank).and_then(Option::as_ref)
                 {
-                    consumed[rank] = true;
+                    *consumed
+                        .get_mut(rank)
+                        .expect("occupied carry rank has a consumed flag") = true;
                     carry.reserve(existing.entry_count());
                     carry.extend_from_slice(existing.entries());
-                    rank += 1;
+                    rank = rank.wrapping_add(1);
                     continue;
                 }
-                pending[rank] = Some(carry);
+                *pending
+                    .get_mut(rank)
+                    .expect("carry rank is within the prepared forest") = Some(carry);
                 break;
             }
         }
@@ -539,17 +578,27 @@ impl StaticStrForest {
     /// point is a move, drop, or infallible push into capacity reserved by the
     /// caller.
     pub(super) fn commit_insert(&mut self, prepared: PreparedForest, entry_counts: &[usize]) {
-        let added_entries = prepared.total_entries - self.total_entries;
+        debug_assert!(prepared.total_entries >= self.total_entries);
+        let added_entries = prepared.total_entries.wrapping_sub(self.total_entries);
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), added_entries);
         if !prepared.runs.is_empty() {
             let old_runs = std::mem::take(&mut self.runs);
             let mut runs = prepared.runs;
             debug_assert!(old_runs.len() <= runs.len());
-            for (rank, old) in old_runs.into_iter().enumerate() {
-                if runs[rank].is_none() && !prepared.consumed[rank] {
-                    runs[rank] = old;
+            let existing_count = old_runs.len();
+            let runs_prefix = runs
+                .get_mut(..existing_count)
+                .expect("prepared forest retains every prior rank");
+            let consumed_prefix = prepared
+                .consumed
+                .get(..existing_count)
+                .expect("prepared forest retains every prior rank flag");
+            for ((run, &consumed), old) in runs_prefix.iter_mut().zip(consumed_prefix).zip(old_runs)
+            {
+                if run.is_none() && !consumed {
+                    *run = old;
                 } else {
-                    debug_assert!(old.is_none() || prepared.consumed[rank]);
+                    debug_assert!(old.is_none() || consumed);
                 }
             }
             while runs.last().is_some_and(Option::is_none) {
@@ -559,26 +608,29 @@ impl StaticStrForest {
         }
         self.entry_counts.extend_from_slice(entry_counts);
         self.total_entries = prepared.total_entries;
-        self.live_entries += added_entries;
-        debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+        self.live_entries = self.live_entries.wrapping_add(added_entries);
+        debug_assert_eq!(
+            self.total_entries,
+            self.live_entries.wrapping_add(self.dead_entries)
+        );
     }
 
     pub(super) const fn should_compact(&self, removed_entries: usize) -> bool {
-        let live_after = self
-            .live_entries
-            .checked_sub(removed_entries)
-            .expect("removed overflow entries are live");
-        self.dead_entries
-            .checked_add(removed_entries)
-            .expect("overflow entry counters fit usize")
-            > live_after
+        debug_assert!(removed_entries <= self.live_entries);
+        let live_after = self.live_entries.wrapping_sub(removed_entries);
+        let dead_after = self.dead_entries.wrapping_add(removed_entries);
+        debug_assert!(self.total_entries == live_after.wrapping_add(dead_after));
+        dead_after > live_after
     }
 
     pub(super) fn mark_removed(&mut self, removed_entries: usize) {
         debug_assert!(removed_entries <= self.live_entries);
-        self.live_entries -= removed_entries;
-        self.dead_entries += removed_entries;
-        debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+        self.live_entries = self.live_entries.wrapping_sub(removed_entries);
+        self.dead_entries = self.dead_entries.wrapping_add(removed_entries);
+        debug_assert_eq!(
+            self.total_entries,
+            self.live_entries.wrapping_add(self.dead_entries)
+        );
     }
 
     /// Prepare a fresh forest containing every currently live entry except
@@ -592,7 +644,7 @@ impl StaticStrForest {
         removed_entries: usize,
     ) -> crate::error::Result<PreparedForest> {
         debug_assert!(removed_entries <= self.live_entries);
-        let remaining = self.live_entries - removed_entries;
+        let remaining = self.live_entries.wrapping_sub(removed_entries);
         let mut entries = LiveEntriesExcept {
             entries: self.live_entries(live),
             removed_handle,
@@ -610,7 +662,10 @@ impl StaticStrForest {
         self.total_entries = prepared.total_entries;
         self.live_entries = prepared.total_entries;
         self.dead_entries = 0;
-        debug_assert_eq!(self.total_entries, self.live_entries + self.dead_entries);
+        debug_assert_eq!(
+            self.total_entries,
+            self.live_entries.wrapping_add(self.dead_entries)
+        );
     }
 }
 
@@ -679,25 +734,31 @@ pub(super) struct PreparedForest {
 
 impl HeapSize for StaticStrForest {
     fn heap_bytes(&self) -> usize {
-        self.runs.heap_bytes() + self.entry_counts.heap_bytes()
+        self.runs
+            .heap_bytes()
+            .saturating_add(self.entry_counts.heap_bytes())
     }
 }
 
 fn required_rank_count(existing: usize, total_entries: usize) -> usize {
-    let highest_rank = (usize::BITS - 1 - total_entries.leading_zeros()) as usize;
-    existing.max(highest_rank + 1)
+    debug_assert!(total_entries != 0);
+    let highest_rank = total_entries.ilog2() as usize;
+    existing.max(highest_rank.wrapping_add(1))
 }
 
 fn highest_power_of_two(value: usize) -> usize {
     debug_assert!(value != 0);
-    1_usize << (usize::BITS - 1 - value.leading_zeros())
+    1_usize.wrapping_shl(value.ilog2())
 }
 
 /// The half-open child range of chunk `node` (every chunk before it is
 /// full).
+///
+/// `StaticStrTree::build` admits the physical entry count as `u32` before
+/// reaching this constructor, and every caller's chunk lies within that range.
 const fn range_at(node: usize, len: usize) -> std::ops::Range<u32> {
-    let start = (node * NODE_CAP) as u32;
-    start..start + len as u32
+    let start = node.wrapping_mul(NODE_CAP) as u32;
+    start..start.wrapping_add(len as u32)
 }
 
 #[cfg(test)]
@@ -715,9 +776,9 @@ mod tests {
         // Deterministic scatter with varied extents.
         (0..count)
             .map(|idx| {
-                let x = ((idx * 73) % 311) as f64;
-                let y = ((idx * 131) % 257) as f64;
-                let w = ((idx * 7) % 11) as f64 * 0.5;
+                let x = (idx.wrapping_mul(73) % 311) as f64;
+                let y = (idx.wrapping_mul(131) % 257) as f64;
+                let w = (idx.wrapping_mul(7) % 11) as f64 * 0.5;
                 entry(idx, [x, y], [x + w, y + w * 0.5])
             })
             .collect()
@@ -805,7 +866,12 @@ mod tests {
 
     fn forest_entries(start: usize, count: usize) -> Vec<IndexEntry> {
         (0..count)
-            .map(|offset| entry(start + offset, [offset as f64, 0.0], [offset as f64, 0.0]))
+            .map(|offset| {
+                entry(start.wrapping_add(offset), [offset as f64, 0.0], [
+                    offset as f64,
+                    0.0,
+                ])
+            })
             .collect()
     }
 

@@ -235,8 +235,13 @@ fn join_array_pairs(
                 };
                 let logical = row.logical();
                 let shape = rows.prepared(row)?;
-                let matches =
-                    index.topological_matches(&shape, &*rows.frame_cache(logical), topological)?;
+                let matches = index.topological_matches(
+                    &shape,
+                    &rows.frame_cache(logical),
+                    topological,
+                    plan.query_domain(),
+                    Some(logical),
+                )?;
                 append_join_matches(&mut left_ids, &mut right_ids, logical, &matches);
             }
             return Ok((left_ids, right_ids));
@@ -259,6 +264,7 @@ fn join_array_pairs(
                         &plan,
                         &mut scratch,
                         array.row_bounds_seed(logical),
+                        Some(logical),
                     )?;
                     append_join_matches(&mut left_ids, &mut right_ids, logical, &scratch);
                 }
@@ -280,6 +286,7 @@ fn join_array_pairs(
                         &plan,
                         &mut scratch,
                         array.row_bounds_seed(logical),
+                        Some(logical),
                     )?;
                     append_join_matches(&mut left_ids, &mut right_ids, logical, &scratch);
                 }

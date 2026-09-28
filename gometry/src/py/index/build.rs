@@ -466,7 +466,12 @@ mod ownership_tests {
         let mut rows = index.rows.operation();
         let mut point = |handle| match rows.row(handle).unwrap() {
             crate::array::ShapeRow::Point(point) => point,
-            _ => panic!("compact point index resolved a non-point row"),
+            crate::array::ShapeRow::Handle(_)
+            | crate::array::ShapeRow::Shape(_)
+            | crate::array::ShapeRow::Line(..)
+            | crate::array::ShapeRow::Rings(..) => {
+                panic!("compact point index resolved a non-point row")
+            },
         };
         assert_eq!(point(1), Point::new_raw_xy(0.0, 0.0));
         assert_eq!(point(3), Point::new_raw_xy(10.0, 0.0));
@@ -507,7 +512,12 @@ mod ownership_tests {
         let mut rows = index.rows.operation();
         let mut point_x = |handle| match rows.row(handle).unwrap() {
             crate::array::ShapeRow::Point(point) => point.x,
-            _ => panic!("compact point window resolved a non-point row"),
+            crate::array::ShapeRow::Handle(_)
+            | crate::array::ShapeRow::Shape(_)
+            | crate::array::ShapeRow::Line(..)
+            | crate::array::ShapeRow::Rings(..) => {
+                panic!("compact point window resolved a non-point row")
+            },
         };
         assert_eq!(point_x(0), 0.0);
         assert_eq!(point_x(1), 10.0);
@@ -519,7 +529,12 @@ mod ownership_tests {
         let mut gathered_rows = gathered_index.rows.operation();
         let mut point_x = |handle| match gathered_rows.row(handle).unwrap() {
             crate::array::ShapeRow::Point(point) => point.x,
-            _ => panic!("duplicate point gather resolved a non-point row"),
+            crate::array::ShapeRow::Handle(_)
+            | crate::array::ShapeRow::Shape(_)
+            | crate::array::ShapeRow::Line(..)
+            | crate::array::ShapeRow::Rings(..) => {
+                panic!("duplicate point gather resolved a non-point row")
+            },
         };
         assert_eq!(
             (point_x(0), point_x(1), point_x(2), point_x(3)),
@@ -584,11 +599,21 @@ mod ownership_tests {
             crate::array::PreparedRow::Owned(data) => data,
             crate::array::PreparedRow::Transient(_) => panic!("long packed row must persist"),
         };
-        let indexed_arc = index.rows.prepared_row(0).unwrap().into_owned_plan();
+        let indexed_arc = index
+            .rows
+            .operation()
+            .prepared(0)
+            .unwrap()
+            .into_owned_plan();
         assert!(Arc::ptr_eq(&source_arc, &indexed_arc));
 
         let inverse = packed_spatial_index(&source).unwrap().unwrap();
-        let indexed_first = inverse.rows.prepared_row(0).unwrap().into_owned_plan();
+        let indexed_first = inverse
+            .rows
+            .operation()
+            .prepared(0)
+            .unwrap()
+            .into_owned_plan();
         let source_second = source
             .prepared_row(0, source.storage().row(0))
             .unwrap()

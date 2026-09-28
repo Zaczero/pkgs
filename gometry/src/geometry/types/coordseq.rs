@@ -655,6 +655,10 @@ impl CoordSeq {
         self.window(&self.ys)
     }
 
+    pub(crate) fn xy_shared_owner_count(&self) -> usize {
+        self.xs.owner_count().min(self.ys.owner_count())
+    }
+
     pub fn zs(&self) -> Option<&[f64]> {
         self.zs.as_deref().map(|column| self.window(column))
     }

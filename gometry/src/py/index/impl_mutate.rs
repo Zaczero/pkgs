@@ -36,31 +36,27 @@ impl PySpatialIndex {
     /// yields the base `Geometry` class.
     pub(crate) fn geometry_at_handle(&self, handle: usize) -> PyResult<crate::Typed> {
         let frame = self.metadata.clone().unwrap_or_default();
-        let packed_len = self
-            .rows
-            .packed
-            .as_ref()
-            .map_or(0, |packed| packed.source.len());
-        if handle < packed_len {
-            let geometry = self
-                .rows
-                .packed
-                .as_ref()
-                .expect("packed length implies packed storage")
-                .source
-                .geometry_at(handle)
-                .map_err(crate::PyErr::from)?;
-            let plan = self.rows.prepared_row(handle)?.into_owned_plan();
-            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
+        let mut rows = self.rows.operation();
+        match rows.resolve(handle).map_err(crate::PyErr::from)? {
+            super::IndexRowSource::Packed {
+                operation,
+                logical,
+                row,
+            } => {
+                let geometry = operation.geometry_for_resolved_row(logical, row)?;
+                let plan = operation.prepared_at(logical, row)?.into_owned_plan();
+                Ok(crate::Typed(geometry.with_prepared_plan(plan)))
+            },
+            super::IndexRowSource::Boxed(geometry) => {
+                if let Some(plan) = geometry.cached_prepared_plan() {
+                    return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
+                }
+                Ok(crate::Typed(crate::PyGeometry::with_frame(
+                    crate::ShapeData::new(geometry.shape.shape().clone()),
+                    frame,
+                )))
+            },
         }
-        let geometry = &self.rows.boxed[handle - packed_len];
-        if let Some(plan) = geometry.cached_prepared_plan() {
-            return Ok(crate::Typed(geometry.with_prepared_plan(plan)));
-        }
-        Ok(crate::Typed(crate::PyGeometry::with_frame(
-            crate::ShapeData::new(geometry.shape.shape().clone()),
-            frame,
-        )))
     }
 
     pub(crate) fn insert_one(&mut self, geometry: &PyGeometry) -> PyResult<usize> {
@@ -92,8 +88,7 @@ impl PySpatialIndex {
         let non_prunable_live = usize::from(!geodesic_prunable_point(&geometry.shape));
         let adopt_frame = self.metadata.is_none().then(|| geometry.frame.clone());
         let mut entry_counts = [0_usize; 1];
-        let mut entries = Vec::new();
-        entries.reserve(cover.entries().len());
+        let mut entries = Vec::with_capacity(cover.entries().len());
         let idx = self.rows.len();
         entries.extend(
             cover
@@ -135,7 +130,7 @@ impl PySpatialIndex {
                 .or(self.metadata.as_ref())
                 .expect("non-empty batch has a frame"),
         )?;
-        let mut non_prunable_live = 0;
+        let mut non_prunable_live = 0_usize;
         for (offset, geometry) in items.iter().enumerate() {
             let bounds = geometry
                 .shape
@@ -144,12 +139,13 @@ impl PySpatialIndex {
             let cover = index_envelopes(geometry.shape.shape(), bounds, domain)?;
             for &envelope in cover.entries() {
                 entries.push(IndexEntry {
-                    idx: start + offset,
+                    idx: start.wrapping_add(offset),
                     envelope,
                 });
             }
             entry_counts.push(cover.entries().len());
-            non_prunable_live += usize::from(!geodesic_prunable_point(&geometry.shape));
+            non_prunable_live = non_prunable_live
+                .wrapping_add(usize::from(!geodesic_prunable_point(&geometry.shape)));
         }
         self.insert_prepared_batch(
             items,
@@ -181,7 +177,7 @@ impl PySpatialIndex {
         let mut items = Vec::with_capacity(len);
         let mut entry_counts = Vec::with_capacity(len);
         let domain = crate::geometry::topology_domain(&array.frame)?;
-        let mut non_prunable_live = 0;
+        let mut non_prunable_live = 0_usize;
         for (offset, row) in array.storage().iter_rows().enumerate() {
             let bounds = row
                 .quick_bounds()
@@ -190,13 +186,14 @@ impl PySpatialIndex {
             let cover = index_envelopes(&shape, bounds, domain)?;
             for &envelope in cover.entries() {
                 entries.push(IndexEntry {
-                    idx: start + offset,
+                    idx: start.wrapping_add(offset),
                     envelope,
                 });
             }
             entry_counts.push(cover.entries().len());
             let plan = array.prepared_row(offset, row)?.into_owned_plan();
-            non_prunable_live += usize::from(!geodesic_prunable_point(plan.shape()));
+            non_prunable_live =
+                non_prunable_live.wrapping_add(usize::from(!geodesic_prunable_point(plan.shape())));
             items.push(PyGeometry::from_prepared_plan(plan, array.frame.clone()));
         }
         self.insert_prepared_batch(
@@ -232,7 +229,7 @@ impl PySpatialIndex {
         debug_assert_eq!(entry_counts.iter().copied().sum::<usize>(), entries.len());
         let total_rows = checked_total_rows(start, count)?;
         let mut handles = Vec::with_capacity(count);
-        handles.extend((0..count).map(|offset| start + offset));
+        handles.extend((0..count).map(|offset| start.wrapping_add(offset)));
         self.insert_prepared_rows(
             items.into_iter(),
             entries,
@@ -271,10 +268,10 @@ impl PySpatialIndex {
         }
         for (offset, geometry) in items.into_iter().enumerate() {
             let handle = self.rows.push(geometry);
-            debug_assert_eq!(handle, start + offset);
+            debug_assert_eq!(handle, start.wrapping_add(offset));
         }
         self.overflow.commit_insert(prepared, entry_counts);
-        self.non_prunable_live += non_prunable_live;
+        self.non_prunable_live = self.non_prunable_live.wrapping_add(non_prunable_live);
         self.mutation_gen = self.mutation_gen.wrapping_add(1);
         Ok(start)
     }
@@ -317,7 +314,7 @@ impl PySpatialIndex {
         if removed {
             if non_prunable {
                 debug_assert!(self.non_prunable_live > 0);
-                self.non_prunable_live -= 1;
+                self.non_prunable_live = self.non_prunable_live.wrapping_sub(1);
             }
             self.mutation_gen = self.mutation_gen.wrapping_add(1);
         }

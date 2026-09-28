@@ -1628,6 +1628,72 @@ def test_empty_index_answers_every_method_gracefully() -> None:
     assert ids(idx.candidates(probe)) == []
     assert pair_rows(idx.self_join()) == []
     assert ids(idx.query(gm.Point(0, 0, crs=3857))) == []
+    unframed_probe = gm.Point(0, 95)
+    assert ids(idx.query(unframed_probe)) == []
+    assert ids(idx.candidates(unframed_probe)) == []
+    assert ids(idx.nearest(unframed_probe)) == []
+    geographic_probe = gm.Point(10, 20, crs=4326)
+    assert ids(idx.query(geographic_probe)) == []
+    assert ids(idx.candidates(geographic_probe)) == []
+    assert ids(idx.nearest(geographic_probe)) == []
+    assert match_rows(idx.query(gm.GeometryArray([geographic_probe, None]))) == [[], []]
+
+
+def test_unframed_empty_index_validates_geographic_query_coordinates() -> None:
+    idx = gm.SpatialIndex()
+    invalid = gm.Point(0, 95, crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+        idx.query(invalid, predicate='crosses')
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+        idx.candidates(invalid)
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+        idx.nearest(invalid)
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95'):
+        idx.join(invalid)
+
+    queries = gm.GeometryArray([
+        gm.Point(0, 0, crs=4326),
+        None,
+        invalid,
+    ])
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+        idx.query(queries, predicate='crosses')
+    assert error.value.__notes__ == ['while processing array element 2']
+
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+        idx.candidates(queries)
+    assert error.value.__notes__ == ['while processing array element 2']
+
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+        idx.nearest(queries)
+    assert error.value.__notes__ == ['while processing array element 2']
+
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+        idx.join(queries)
+    assert error.value.__notes__ == ['while processing array element 2']
+
+    line_queries = gm.GeometryArray([
+        gm.LineString([(0, 0), (1, 0)], crs=4326),
+        None,
+        gm.LineString([(0, 95), (1, 95)], crs=4326),
+    ])
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+        idx.join(line_queries)
+    assert error.value.__notes__ == ['while processing array element 2']
+
+    with pytest.raises(gm.InvalidGeometryError, match='latitude 95') as error:
+        idx.join(line_queries, predicate='dwithin', distance=1.0)
+    assert error.value.__notes__ == ['while processing array element 2']
+
+
+def test_empty_index_query_parameters_precede_geographic_admission() -> None:
+    idx = gm.SpatialIndex()
+    invalid = gm.Point(0, 95, crs=4326)
+    with pytest.raises(
+        gm.GeometryError,
+        match="predicate 'dwithin' requires a non-negative distance",
+    ):
+        idx.query(invalid, predicate='dwithin')
 
 
 def test_empty_geometry_queries_return_nothing() -> None:
@@ -1754,7 +1820,9 @@ def test_geodesic_nearest_mixed_shapes_match_brute_force() -> None:
             ]
 
 
-def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone() -> None:
+def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone() -> (
+    None
+):
     # Line rows disable the all-point envelope pruner; the seam-crossing row
     # also appears through multiple geographic cover windows.
     live_coordinates = [
@@ -1844,11 +1912,9 @@ def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone()
     small_clone = copy.copy(small)
     large_clone = copy.copy(large)
 
-    small_distances, small_within = scalar_answers(small, small_handles)
-    large_distances, large_within = scalar_answers(large, large_handles)
-    small_clone_distances, small_clone_within = scalar_answers(
-        small_clone, small_handles
-    )
+    small_distances, _ = scalar_answers(small, small_handles)
+    large_distances, _ = scalar_answers(large, large_handles)
+    _, small_clone_within = scalar_answers(small_clone, small_handles)
     large_clone_distances, large_clone_within = scalar_answers(
         large_clone, large_handles
     )
@@ -1860,9 +1926,7 @@ def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone()
 
     seam_handle = large_handles[1]
     assert large.remove(seam_handle)
-    inserted = large.insert(
-        gm.LineString([(179.95, -0.05), (-179.95, 0.05)], crs=4326)
-    )
+    inserted = large.insert(gm.LineString([(179.95, -0.05), (-179.95, 0.05)], crs=4326))
     assert inserted == large_history
     changed_handles = (
         large_handles[0],
@@ -1893,9 +1957,9 @@ def test_sparse_geodesic_caps_scale_with_live_lines_through_mutation_and_clone()
         0 < large_nearest_growth < 2 * small_nearest_growth
         and 0 < large_dwithin_growth < 2 * small_dwithin_growth
     ), (
-        f"cap-cache growth followed history: nearest {small_nearest_growth} "
-        f"to {large_nearest_growth}, dwithin {small_dwithin_growth} "
-        f"to {large_dwithin_growth}"
+        f'cap-cache growth followed history: nearest {small_nearest_growth} '
+        f'to {large_nearest_growth}, dwithin {small_dwithin_growth} '
+        f'to {large_dwithin_growth}'
     )
 
 
@@ -2000,6 +2064,31 @@ def test_compaction_removing_antimeridian_row_preserves_live_handles() -> None:
     assert index.remove(192)
     assert len(index) == 63
     assert ids(index.candidates(east_candidates)) == list(range(193, 256))
+
+
+def test_overflow_compaction_preserves_five_sparse_live_handles() -> None:
+    row_count = 20_000
+    values = gm.points(
+        np.arange(row_count, dtype=np.float64),
+        np.zeros(row_count, dtype=np.float64),
+    )
+    index = gm.SpatialIndex()
+    handles = ids(index.insert(values))
+    assert handles == list(range(row_count))
+
+    for handle in range(row_count - 5):
+        assert index.remove(handle)
+
+    live_handles = list(range(row_count - 5, row_count))
+    assert list(index) == live_handles
+    query = gm.Point(19_997.25, 0.0)
+    matches, distances = index.nearest(query, k=5, return_distance=True)
+    assert ids(matches) == [19_997, 19_998, 19_996, 19_999, 19_995]
+    np.testing.assert_array_equal(distances, [0.25, 0.75, 1.25, 1.75, 2.25])
+    assert ids(index.query(query, predicate='dwithin', distance=0.8)) == [
+        19_997,
+        19_998,
+    ]
 
 
 def test_array_dwithin_query_widens_an_antimeridian_crossing_row() -> None:

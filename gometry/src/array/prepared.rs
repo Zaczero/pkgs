@@ -279,6 +279,18 @@ impl<'a> ArrayRowOperation<'a> {
             .geometry_from_present_row(&mut self.products, row)
     }
 
+    /// Publish a geometry from a row whose logical identity another owner resolved.
+    ///
+    /// The scalar wrapper keeps this array's row-product owner, including its
+    /// frame-dependent caches, without resolving compact validity a second time.
+    pub(crate) fn geometry_for_resolved_row(
+        &mut self,
+        logical: usize,
+        row: ShapeRow<'a>,
+    ) -> crate::error::Result<PyGeometry> {
+        self.geometry(PresentRow::new(self.array, logical, row))
+    }
+
     /// Resolve one logical row into the owner-bound present-row value used by
     /// indexed and other arbitrary-order operations. Compact points build one
     /// directory for this operation; sequential callers should keep using

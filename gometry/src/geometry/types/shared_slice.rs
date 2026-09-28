@@ -50,10 +50,12 @@ impl<T> SharedSlice<T> {
         self.as_slice().len()
     }
 
+    pub(crate) fn owner_count(&self) -> usize {
+        self.owner.as_ref().map_or(0, Arc::strong_count)
+    }
+
     pub(crate) fn is_shared(&self) -> bool {
-        self.owner
-            .as_ref()
-            .is_some_and(|owner| Arc::strong_count(owner) > 1)
+        self.owner_count() > 1
     }
 
     #[cfg(test)]

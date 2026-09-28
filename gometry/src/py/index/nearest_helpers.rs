@@ -163,10 +163,20 @@ pub(crate) struct RowMatches {
 
 impl RowMatches {
     pub(crate) fn rows(&self) -> impl Iterator<Item = &[usize]> {
-        self.offsets
-            .array_windows::<2>()
-            .map(|[start, end]| &self.ids[*start as usize..*end as usize])
+        csr_rows(&self.ids, &self.offsets)
     }
+}
+
+pub(crate) fn csr_rows<'a>(
+    ids: &'a [usize],
+    offsets: &'a [i64],
+) -> impl Iterator<Item = &'a [usize]> + 'a {
+    offsets.array_windows::<2>().map(move |[start, end]| {
+        let start = usize::try_from(*start).expect("CSR offsets are nonnegative");
+        let end = usize::try_from(*end).expect("CSR offsets are nonnegative");
+        ids.get(start..end)
+            .expect("CSR builder offsets bound the match values")
+    })
 }
 
 /// Compact `ids[row_start..]` in place to the entries `keep` accepts —
@@ -176,15 +186,30 @@ pub(crate) fn retain_row(
     row_start: usize,
     mut keep: impl FnMut(usize) -> PyResult<bool>,
 ) -> PyResult<()> {
-    let mut write = row_start;
-    for read in row_start..ids.len() {
-        let idx = ids[read];
-        if keep(idx)? {
-            ids[write] = idx;
-            write += 1;
+    debug_assert!(row_start <= ids.len());
+    let failed = std::cell::Cell::new(false);
+    let mut failure = None;
+    let mut removed = ids.extract_if(row_start.., |idx| {
+        if failed.get() {
+            return false;
         }
+        match keep(*idx) {
+            Ok(keep) => !keep,
+            Err(error) => {
+                failed.set(true);
+                failure = Some(error);
+                // This is temporary candidate storage and the caller discards
+                // it on error. Removing this row makes extract_if stop before
+                // evaluating any later candidate.
+                true
+            },
+        }
+    });
+    while !failed.get() && removed.next().is_some() {}
+    drop(removed);
+    if let Some(error) = failure {
+        return Err(error);
     }
-    ids.truncate(write);
     Ok(())
 }
 
@@ -228,7 +253,39 @@ pub(crate) fn format_nearest(
 
 #[cfg(test)]
 mod tests {
+    use pyo3::types::{PyAnyMethods as _, PyStringMethods as _};
+
     use super::*;
+
+    #[test]
+    fn retain_row_stops_after_the_first_refinement_error() {
+        crate::test_support::initialize_python();
+        let (message, visited) = pyo3::Python::attach(|py| {
+            let mut ids = vec![0, 1, 2, 3];
+            let mut visited = Vec::new();
+            let error = retain_row(&mut ids, 1, |id| {
+                visited.push(id);
+                if id == 2 {
+                    Err(pyo3::exceptions::PyValueError::new_err(
+                        "first refinement error",
+                    ))
+                } else {
+                    Ok(id % 2 == 0)
+                }
+            })
+            .expect_err("the second candidate fails");
+            let message = error
+                .value(py)
+                .str()
+                .expect("PyValueError has a string representation")
+                .to_str()
+                .expect("error message is valid UTF-8")
+                .to_owned();
+            (message, visited)
+        });
+        assert_eq!(message, "first refinement error");
+        assert_eq!(visited, [1, 2]);
+    }
 
     #[test]
     fn cap_bound_heap_pops_smallest_bound_then_row() {

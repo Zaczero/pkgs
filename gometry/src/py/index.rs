@@ -22,7 +22,7 @@ use str_tree::{StaticStrForest, StaticStrTree};
 
 use crate::array::{ArrayRowOperation, BoundsSeed};
 use crate::collections::sort_unique_row_ids;
-use crate::geometry::{Bounds, Point, Shape, ShapeData};
+use crate::geometry::{Bounds, Point, Shape, ShapeData, TopologyDomain};
 use crate::py::errors::{GeometryError, parameter_error};
 use crate::py::numpy::{float64_array, int64_array, usize_array};
 use crate::py::vectors::Groups;
@@ -47,7 +47,7 @@ mod pymethods;
 pub(crate) use build::{build_spatial_index, index_metadata, restore_spatial_index, spatial_index};
 pub(crate) use free_functions::{join, join_indexed, nearest};
 pub(crate) use nearest_helpers::{
-    CapBound, Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2,
+    CapBound, Frontier, FrontierNode, NearestCandidate, RowMatches, aabb_box_distance_2, csr_rows,
     format_nearest, format_nearest_rows, nearest_candidates_from_heap, parse_max_distance,
     push_nearest_candidate, retain_row,
 };
@@ -148,22 +148,97 @@ pub(crate) fn query_distance(
     Ok(Some(validate_distance_arg(distance)?))
 }
 
+/// Query domain needed only when an unframed empty index has no stored frame
+/// whose periodic window construction would admit a geographic query.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct QueryDomain(Option<crate::geographic::GeographicFrame>);
+
+impl QueryDomain {
+    pub(crate) fn for_query_frame(
+        index: &PySpatialIndex,
+        query_frame: Option<&Frame>,
+    ) -> PyResult<Self> {
+        if index.metadata.is_some() {
+            return Ok(Self(None));
+        }
+        let Some(query_frame) = query_frame else {
+            return Ok(Self(None));
+        };
+        let TopologyDomain::Geographic(frame) = crate::geometry::topology_domain(query_frame)?
+        else {
+            return Ok(Self(None));
+        };
+        Ok(Self(Some(frame)))
+    }
+
+    pub(crate) const fn needs_admission(self) -> bool {
+        self.0.is_some()
+    }
+
+    pub(crate) fn admit_shape(
+        self,
+        shape: &Shape,
+        bounds: Option<Bounds>,
+        logical_row: Option<usize>,
+    ) -> PyResult<()> {
+        let Some(frame) = self.0 else {
+            return Ok(());
+        };
+        let result = bounds.map_or(Ok(()), |bounds| {
+            index_envelopes(shape, bounds, TopologyDomain::Geographic(frame)).map(|_| ())
+        });
+        match logical_row {
+            Some(row) => result.map_err(|error| crate::note_array_row(error, row)),
+            None => result,
+        }
+    }
+
+    pub(crate) fn admit_row(
+        self,
+        row: ShapeRow<'_>,
+        seeded_bounds: BoundsSeed,
+        logical_row: Option<usize>,
+    ) -> PyResult<Option<Bounds>> {
+        if !self.needs_admission() {
+            return Ok(None);
+        }
+        let bounds = match seeded_bounds {
+            BoundsSeed::Unset => row.quick_bounds(),
+            BoundsSeed::Value(bounds) => bounds,
+        };
+        let Some(bounds) = bounds else {
+            return Ok(None);
+        };
+        let result = row.with_shape(|shape| self.admit_shape(shape, Some(bounds), None))?;
+        match logical_row {
+            Some(row) => result.map_err(|error| crate::note_array_row(error, row))?,
+            None => result?,
+        }
+        Ok(Some(bounds))
+    }
+}
+
 /// Validated, frame-level query state shared by scalar, bulk, join, self-join,
-/// candidate-only lanes. Geometry-specific bounds/pruner state is
+/// and candidate-only lanes. Geometry-specific bounds/pruner state is
 /// prepared separately per row so hot bulk loops reuse predicate and metric
 /// resolution without allocating a `PyGeometry` wrapper.
 pub(crate) enum PreparedIndexQuery {
     /// Candidate-only query without a distance expansion.
-    Candidates,
+    Candidates { query_domain: QueryDomain },
     /// Candidate-only query with a resolved metric distance expansion.
     CandidatesDwithin {
+        query_domain: QueryDomain,
         distance: NonNegative,
         metric: crs::MetricModel,
     },
     /// Exact topology refinement needs no metric state.
-    Topological { predicate: Predicate },
+    Topological {
+        query_domain: QueryDomain,
+        predicate: Predicate,
+    },
     /// Exact distance refinement always carries every metric prerequisite.
     Dwithin {
+        query_domain: QueryDomain,
         distance: NonNegative,
         metric: crs::MetricModel,
         resolved: crs::ResolvedMetric,
@@ -191,14 +266,25 @@ impl PreparedIndexQuery {
         Option<&crs::MetricModel>,
     ) {
         match self {
-            Self::Candidates => (None, None, None),
-            Self::CandidatesDwithin { distance, metric } => (None, Some(*distance), Some(metric)),
-            Self::Topological { predicate } => {
+            Self::Candidates { .. } => (None, None, None),
+            Self::CandidatesDwithin {
+                distance, metric, ..
+            } => (None, Some(*distance), Some(metric)),
+            Self::Topological { predicate, .. } => {
                 (Some(IndexPredicate::Topological(*predicate)), None, None)
             },
             Self::Dwithin {
                 distance, metric, ..
             } => (Some(IndexPredicate::Dwithin), Some(*distance), Some(metric)),
+        }
+    }
+
+    pub(crate) const fn query_domain(&self) -> QueryDomain {
+        match self {
+            Self::Candidates { query_domain }
+            | Self::CandidatesDwithin { query_domain, .. }
+            | Self::Topological { query_domain, .. }
+            | Self::Dwithin { query_domain, .. } => *query_domain,
         }
     }
 
@@ -208,12 +294,9 @@ impl PreparedIndexQuery {
         distance: Option<NonNegative>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
-        let crs = index.metadata.as_ref().and_then(Frame::crs_ref);
-        let epoch = index.metadata.as_ref().and_then(Frame::epoch);
         Self::for_frame(
             index,
-            crs,
-            epoch,
+            index.metadata.as_ref(),
             index.metadata.as_ref().and_then(Frame::crs_str),
             predicate,
             distance,
@@ -228,11 +311,9 @@ impl PreparedIndexQuery {
         distance: Option<NonNegative>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
-        index.ensure_query_compatible(geometry, "spatial index query")?;
         Self::for_frame(
             index,
-            geometry.crs_ref(),
-            geometry.epoch(),
+            Some(&geometry.frame),
             index.metric_crs_str(geometry.crs_str()),
             predicate,
             distance,
@@ -249,8 +330,7 @@ impl PreparedIndexQuery {
     ) -> PyResult<Self> {
         Self::for_frame(
             index,
-            array.crs_ref(),
-            array.epoch(),
+            Some(&array.frame),
             index.metric_crs_str(array.crs_str()),
             predicate,
             distance,
@@ -260,27 +340,35 @@ impl PreparedIndexQuery {
 
     fn for_frame(
         index: &PySpatialIndex,
-        crs: Option<&Crs>,
-        epoch: Option<f64>,
+        query_frame: Option<&Frame>,
         metric_crs: Option<&str>,
         predicate: Option<IndexPredicate>,
         distance: Option<NonNegative>,
         unit: Option<DistanceUnit>,
     ) -> PyResult<Self> {
+        let crs = query_frame.and_then(Frame::crs_ref);
+        let epoch = query_frame.and_then(Frame::epoch);
         index.ensure_frame_compatible(crs, epoch, "spatial index query")?;
         match (predicate, distance) {
-            (None, None) => Ok(Self::Candidates),
-            (None, Some(distance)) => Ok(Self::CandidatesDwithin {
-                distance,
-                metric: resolve_metric(
+            (None, None) => Ok(Self::Candidates {
+                query_domain: QueryDomain::for_query_frame(index, query_frame)?,
+            }),
+            (None, Some(distance)) => {
+                let metric = resolve_metric(
                     metric_crs,
                     unit,
                     crate::dispatch::MetricOp::SpatialIndexDistanceQuery,
-                )?,
-            }),
-            (Some(IndexPredicate::Topological(predicate)), None) => {
-                Ok(Self::Topological { predicate })
+                )?;
+                Ok(Self::CandidatesDwithin {
+                    query_domain: QueryDomain::for_query_frame(index, query_frame)?,
+                    distance,
+                    metric,
+                })
             },
+            (Some(IndexPredicate::Topological(predicate)), None) => Ok(Self::Topological {
+                query_domain: QueryDomain::for_query_frame(index, query_frame)?,
+                predicate,
+            }),
             (Some(IndexPredicate::Dwithin), Some(distance)) => {
                 let metric = resolve_metric(
                     metric_crs,
@@ -289,6 +377,7 @@ impl PreparedIndexQuery {
                 )?;
                 let resolved = crs::ResolvedMetric::from_model(&metric)?;
                 Ok(Self::Dwithin {
+                    query_domain: QueryDomain::for_query_frame(index, query_frame)?,
                     distance,
                     metric,
                     resolved,
@@ -317,46 +406,56 @@ impl PreparedIndexQuery {
         _index: &PySpatialIndex,
         row: ShapeRow<'_>,
         seeded_bounds: BoundsSeed,
-    ) -> crate::error::Result<PreparedIndexRow> {
+        logical_row: Option<usize>,
+    ) -> PyResult<PreparedIndexRow> {
+        let admitted_bounds = self
+            .query_domain()
+            .admit_row(row, seeded_bounds, logical_row)?;
         let pruner_point = match row {
             ShapeRow::Point(point) => Some(point),
-            _ => None,
+            ShapeRow::Handle(_) | ShapeRow::Shape(_) | ShapeRow::Line(..) | ShapeRow::Rings(..) => {
+                None
+            },
         };
         // Gate shape materialization: only pay `with_shape` when a geodesic
         // distance cap is actually needed, or when geographic antimeridian
         // correction may apply. Candidates with `distance=None` on a
         // projected/CRS-free index never build a temporary polygon.
-        let geodesic_metric = match self {
-            Self::CandidatesDwithin {
-                metric: crs::MetricModel::Geodesic { crs, state, .. },
-                ..
-            }
-            | Self::Dwithin {
-                metric: crs::MetricModel::Geodesic { crs, state, .. },
-                ..
-            } => Some((crs, state)),
-            _ => None,
+        let geodesic_metric = if let Self::CandidatesDwithin {
+            metric: crs::MetricModel::Geodesic { crs, state, .. },
+            ..
+        }
+        | Self::Dwithin {
+            metric: crs::MetricModel::Geodesic { crs, state, .. },
+            ..
+        } = self
+        {
+            Some((crs, state))
+        } else {
+            None
         };
         let need_geodesic_cap = pruner_point.is_none() && geodesic_metric.is_some();
         let cap = match pruner_point {
             Some(point) => Some((point, 0.0)),
-            None if need_geodesic_cap => row.try_with_shape(|shape| {
-                Ok::<Option<(Point, f64)>, crate::error::Error>(geodesic_metric.and_then(
-                    |(crs, state)| {
-                        crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
-                            shape.geodesic_cap(ellipsoid)
-                        })
-                        .ok()
-                        .flatten()
-                    },
-                ))
-            })?,
+            None if need_geodesic_cap => row
+                .try_with_shape(|shape| {
+                    Ok::<Option<(Point, f64)>, crate::error::Error>(geodesic_metric.and_then(
+                        |(crs, state)| {
+                            crs::with_ellipsoid_metric_at(crs, &[shape], state, |ellipsoid| {
+                                shape.geodesic_cap(ellipsoid)
+                            })
+                            .ok()
+                            .flatten()
+                        },
+                    ))
+                })
+                .map_err(pyo3::PyErr::from)?,
             None => None,
         };
-        let bounds = match seeded_bounds {
+        let bounds = admitted_bounds.or_else(|| match seeded_bounds {
             BoundsSeed::Unset => row.quick_bounds(),
             BoundsSeed::Value(bounds) => bounds,
-        };
+        });
         Ok(PreparedIndexRow {
             bounds,
             pruner_point,
@@ -481,6 +580,15 @@ pub(crate) struct IndexRowOperation<'a> {
     packed: Option<ArrayRowOperation<'a>>,
 }
 
+enum IndexRowSource<'operation, 'data> {
+    Packed {
+        operation: &'operation mut ArrayRowOperation<'data>,
+        logical: usize,
+        row: ShapeRow<'data>,
+    },
+    Boxed(&'data PyGeometry),
+}
+
 impl<'a> IndexRowOperation<'a> {
     fn new(rows: &'a IndexRows) -> Self {
         Self {
@@ -498,50 +606,66 @@ impl<'a> IndexRowOperation<'a> {
         ))
     }
 
-    pub(crate) fn row(&mut self, handle: usize) -> crate::error::Result<ShapeRow<'a>> {
+    fn resolve<'operation>(
+        &'operation mut self,
+        handle: usize,
+    ) -> crate::error::Result<IndexRowSource<'operation, 'a>> {
         let packed_len = self.rows.packed_len();
-        if handle < packed_len
-            && let Some(packed) = &mut self.packed
-        {
-            return packed
+        if handle < packed_len {
+            let packed = self
+                .packed
+                .as_mut()
+                .expect("packed length implies an operation-owned packed row view");
+            let row = packed
                 .present_row_at(handle)
-                .map(|row| row.row())
                 .ok_or_else(|| Self::missing_handle(handle));
+            return row.map(|row| IndexRowSource::Packed {
+                operation: packed,
+                logical: row.logical(),
+                row: row.row(),
+            });
         }
-        Ok(self.rows.boxed_row(handle))
+        let boxed_index = handle.wrapping_sub(packed_len);
+        let rows: &'a IndexRows = self.rows;
+        rows.boxed
+            .get(boxed_index)
+            .map(IndexRowSource::Boxed)
+            .ok_or_else(|| Self::missing_handle(handle))
+    }
+
+    pub(crate) fn row(&mut self, handle: usize) -> crate::error::Result<ShapeRow<'a>> {
+        match self.resolve(handle)? {
+            IndexRowSource::Packed { row, .. } => Ok(row),
+            IndexRowSource::Boxed(geometry) => Ok(ShapeRow::Shape(geometry.shape.shape())),
+        }
     }
 
     pub(crate) fn prepared(
         &mut self,
         handle: usize,
     ) -> crate::error::Result<crate::array::PreparedRow<'a>> {
-        let packed_len = self.rows.packed_len();
-        if handle < packed_len
-            && let Some(packed) = &mut self.packed
-        {
-            let row = packed
-                .present_row_at(handle)
-                .ok_or_else(|| Self::missing_handle(handle))?;
-            return packed.prepared(row);
+        match self.resolve(handle)? {
+            IndexRowSource::Packed {
+                operation,
+                logical,
+                row,
+            } => operation.prepared_at(logical, row),
+            IndexRowSource::Boxed(geometry) => {
+                Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
+            },
         }
-        let geometry = &self.rows.boxed[handle - packed_len];
-        Ok(crate::array::PreparedRow::Owned(geometry.prepared_plan()))
     }
 
     pub(crate) fn frame_cache(
         &mut self,
         handle: usize,
     ) -> crate::error::Result<Arc<crate::geometry::FrameDependentCaches>> {
-        let packed_len = self.rows.packed_len();
-        if handle < packed_len
-            && let Some(packed) = &mut self.packed
-        {
-            let _ = packed
-                .present_row_at(handle)
-                .ok_or_else(|| Self::missing_handle(handle))?;
-            return Ok(packed.frame_cache(handle));
+        match self.resolve(handle)? {
+            IndexRowSource::Packed {
+                operation, logical, ..
+            } => Ok(operation.frame_cache(logical)),
+            IndexRowSource::Boxed(geometry) => Ok(geometry.frame_cache()),
         }
-        Ok(self.rows.boxed[handle - packed_len].frame_cache())
     }
 }
 
@@ -554,7 +678,10 @@ impl IndexRows {
         self.live_count
     }
     fn len(&self) -> usize {
-        debug_assert_eq!(self.packed_len() + self.boxed.len(), self.live.len());
+        debug_assert_eq!(
+            self.packed_len().checked_add(self.boxed.len()),
+            Some(self.live.len())
+        );
         self.live.len()
     }
 
@@ -562,22 +689,11 @@ impl IndexRows {
         self.packed.as_ref().map_or(0, |packed| packed.source.len())
     }
 
-    /// The boxed row behind `handle` (packed rows are resolved through the
-    /// operation-owned array cursor above).
-    fn boxed_row(&self, handle: usize) -> ShapeRow<'_> {
-        ShapeRow::Shape(self.boxed[handle - self.packed_len()].shape.shape())
-    }
-
-    fn prepared_row(&self, handle: usize) -> crate::error::Result<crate::array::PreparedRow<'_>> {
-        let mut operation = self.operation();
-        operation.prepared(handle)
-    }
-
     fn push(&mut self, geometry: PyGeometry) -> usize {
         let handle = self.len();
         self.boxed.push(geometry);
         self.live.push(1);
-        self.live_count += 1;
+        self.live_count = self.live_count.wrapping_add(1);
         handle
     }
 
@@ -591,18 +707,19 @@ impl IndexRows {
     fn pickle_array(&self, frame: Frame) -> PyResult<PyGeometryArray> {
         let mut shapes = Vec::with_capacity(self.live_count);
         let mut rows = self.operation();
-        for handle in 0..self.len() {
-            if self.is_live(handle) {
-                let shape = rows
-                    .row(handle)?
-                    .with_shape(std::clone::Clone::clone)
-                    .map_err(pyo3::PyErr::from)?;
-                shapes.push(shape);
+        for (handle, &live) in self.live.iter().enumerate() {
+            if live == 0 {
+                continue;
             }
+            let shape = rows
+                .row(handle)?
+                .with_shape(std::clone::Clone::clone)
+                .map_err(pyo3::PyErr::from)?;
+            shapes.push(shape);
         }
         let present = PyGeometryArray::from_shapes(shapes, frame)?;
         let Some(missing) = crate::array::ValidityMask::from_missing_iter(
-            self.len(),
+            self.live.len(),
             self.live.iter().map(|&live| live == 0),
         ) else {
             return Ok(present);
@@ -627,7 +744,7 @@ impl IndexRows {
             return false;
         }
         *live = 0;
-        self.live_count -= 1;
+        self.live_count = self.live_count.wrapping_sub(1);
         true
     }
 
@@ -653,11 +770,12 @@ impl PySpatialIndex {
     }
 
     fn retained_heap_bytes(&self) -> usize {
-        self.rows.heap_bytes()
-            + self.bulk.heap_bytes()
-            + self.overflow.heap_bytes()
-            + self.metadata_heap_bytes()
-            + self.geodesic_caps_heap_bytes()
+        self.rows
+            .heap_bytes()
+            .saturating_add(self.bulk.heap_bytes())
+            .saturating_add(self.overflow.heap_bytes())
+            .saturating_add(self.metadata_heap_bytes())
+            .saturating_add(self.geodesic_caps_heap_bytes())
     }
 }
 
@@ -672,8 +790,8 @@ impl HeapSize for IndexRows {
         self.packed
             .as_ref()
             .map_or(0, |packed| HeapSize::heap_bytes(&packed.source))
-            + self.boxed.heap_bytes()
-            + self.live.heap_bytes()
+            .saturating_add(self.boxed.heap_bytes())
+            .saturating_add(self.live.heap_bytes())
     }
 }
 
@@ -703,6 +821,12 @@ pub(crate) fn geodesic_prunable_point(shape: &Shape) -> bool {
 pub(crate) const fn shape_pruner_point(shape: &Shape) -> Option<Point> {
     match shape {
         Shape::Point(point) => Some(*point),
-        _ => None,
+        Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => None,
     }
 }

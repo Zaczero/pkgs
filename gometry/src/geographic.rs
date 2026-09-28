@@ -10,9 +10,12 @@ pub(crate) use value::{
     AngularFactor, CanonicalLongitude, GeographicFrame, Latitude, PeriodicAxis, RingTurn,
     SeamIdentity, TurnDirection,
 };
+#[cfg(test)]
+pub(crate) use view::GeographicAdmissionWork;
 pub(crate) use view::{
-    GeographicDiagnostic, GeographicInputs, GeographicRing, GeographicViewError, RingDomain,
-    RingSummary, ScalarGeographicView,
+    CollectionOwnerKey, GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic,
+    GeographicInputs, GeographicRing, GeographicViewError, RingDomain, RingSummary,
+    ScalarGeographicView,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq)]

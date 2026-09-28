@@ -62,8 +62,11 @@ impl DwithinWindows {
     }
 
     #[cfg(test)]
-    fn len(&self) -> usize {
-        1 + usize::from(self.second.is_some())
+    const fn len(&self) -> usize {
+        match self.second {
+            Some(_) => 2,
+            None => 1,
+        }
     }
 }
 

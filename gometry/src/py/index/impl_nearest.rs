@@ -2,9 +2,9 @@ use super::str_tree::{StaticStrTree, StrNode};
 use crate::geometry::PreparedPlan;
 use crate::py::index::{
     AABB, BinaryHeap, DistanceUnit, Frontier, FrontierNode, NearestCandidate, NearestOptions,
-    NonNegative, PyGeometry, PyResult, PySpatialIndex, Shape, aabb_box_distance_2, crs,
-    index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic, pair_distance_planar,
-    push_nearest_candidate, resolve_metric, shape_pruner_point,
+    NonNegative, PyGeometry, PyResult, PySpatialIndex, QueryDomain, Shape, aabb_box_distance_2,
+    crs, index_envelopes, nearest_candidates_from_heap, pair_distance_geodesic,
+    pair_distance_planar, push_nearest_candidate, resolve_metric, shape_pruner_point,
 };
 
 #[derive(Default)]
@@ -16,22 +16,31 @@ pub(crate) struct NearestVisited {
 impl NearestVisited {
     fn reset(&mut self, len: usize) {
         for idx in self.touched.drain(..) {
-            self.values[idx] = 0;
+            *self
+                .values
+                .get_mut(idx)
+                .expect("touched bitmap word remains allocated until reset") = 0;
         }
         let words = len.div_ceil(usize::BITS as usize);
         self.values.resize(words, 0);
     }
 
     fn visit(&mut self, idx: usize) -> bool {
-        let word = idx / usize::BITS as usize;
-        let bit = 1_usize << (idx % usize::BITS as usize);
-        if self.values[word] & bit != 0 {
+        let word = idx.div_euclid(usize::BITS as usize);
+        let shift = u32::try_from(idx.rem_euclid(usize::BITS as usize))
+            .expect("bitmap shift is less than usize::BITS");
+        let bit = 1_usize.wrapping_shl(shift);
+        let word_value = self
+            .values
+            .get_mut(word)
+            .expect("nearest handle belongs to the reset bitmap");
+        if *word_value & bit != 0 {
             return false;
         }
-        if self.values[word] == 0 {
+        if *word_value == 0 {
             self.touched.push(word);
         }
-        self.values[word] |= bit;
+        *word_value |= bit;
         true
     }
 }
@@ -62,7 +71,7 @@ impl NearestState for HeapNearest {
     }
 
     fn accept(&mut self, candidate: NearestCandidate) {
-        push_nearest_candidate(&mut self.nearest, self.k, candidate)
+        push_nearest_candidate(&mut self.nearest, self.k, candidate);
     }
 
     fn finish(self) -> Vec<NearestCandidate> {
@@ -133,11 +142,12 @@ impl HeapLeafPolicy<'_> {
     {
         self.leaf_frontier.clear();
         self.leaf_frontier.reserve(tree.leaf_entries(node).len());
-        for entry in tree
-            .leaf_entries(node)
-            .iter()
-            .filter(|entry| live[entry.idx] != 0)
-        {
+        for entry in tree.leaf_entries(node).iter().filter(|entry| {
+            *live
+                .get(entry.idx)
+                .expect("STR entry handle belongs to the index row table")
+                != 0
+        }) {
             self.leaf_frontier.push(LeafFrontierEntry {
                 bound: bound(&entry.envelope),
                 idx: entry.idx,
@@ -177,6 +187,12 @@ impl PySpatialIndex {
         let mut leaf_frontier = Vec::new();
         let mut visited = NearestVisited::default();
         let resolved = crs::ResolvedMetric::from_model(&metric)?;
+        let query_domain = if k > 0 {
+            QueryDomain::for_query_frame(self, Some(&geometry.frame))?
+        } else {
+            QueryDomain::default()
+        };
+        query_domain.admit_shape(query_plan.shape(), query_plan.bounds(), None)?;
         let mut query_cache = || geometry.frame_cache();
         match &resolved {
             crs::ResolvedMetric::Planar { to_metre } => self.planar_nearest_core_ties(
@@ -568,10 +584,11 @@ impl PySpatialIndex {
                             frontier,
                         );
                     } else {
+                        let child_level = level.wrapping_sub(1);
                         for child in bulk_node.children.clone() {
                             frontier.push(FrontierNode {
-                                bound: bound(&self.bulk.node(level - 1, child).envelope),
-                                node: Frontier::Bulk(level - 1, child),
+                                bound: bound(&self.bulk.node(child_level, child).envelope),
+                                node: Frontier::Bulk(child_level, child),
                             });
                         }
                     }
@@ -589,11 +606,12 @@ impl PySpatialIndex {
                             frontier,
                         );
                     } else {
+                        let child_level = level.wrapping_sub(1);
                         for child in run_node.children.clone() {
-                            let child_node = tree.node(level - 1, child);
+                            let child_node = tree.node(child_level, child);
                             frontier.push(FrontierNode {
                                 bound: bound(&child_node.envelope),
-                                node: Frontier::Run(run, level - 1, child),
+                                node: Frontier::Run(run, child_level, child),
                             });
                         }
                     }

@@ -28,7 +28,7 @@ impl PySpatialIndexIter {
     }
 
     fn __sizeof__(&self, py: Python<'_>) -> usize {
-        size_of_val(self) + self.source.borrow(py).__sizeof__()
+        size_of_val(self).saturating_add(self.source.borrow(py).__sizeof__())
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<usize>> {
@@ -38,14 +38,18 @@ impl PySpatialIndexIter {
                 "spatial index changed during iteration",
             ));
         }
-        while self.next_handle < index.rows.len() {
-            let handle = self.next_handle;
-            self.next_handle += 1;
-            if index.is_live_handle(handle) {
-                self.remaining -= 1;
-                return Ok(Some(handle));
-            }
+        let live_rows = index
+            .rows
+            .live
+            .get(self.next_handle..)
+            .expect("iterator cursor stays within the stable handle table");
+        if let Some((offset, _)) = live_rows.iter().enumerate().find(|(_, live)| **live != 0) {
+            let handle = self.next_handle.wrapping_add(offset);
+            self.next_handle = handle.wrapping_add(1);
+            self.remaining = self.remaining.wrapping_sub(1);
+            return Ok(Some(handle));
         }
+        self.next_handle = index.rows.len();
         self.remaining = 0;
         Ok(None)
     }
