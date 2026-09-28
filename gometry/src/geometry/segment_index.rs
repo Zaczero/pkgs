@@ -14,6 +14,7 @@ use rstar::{RTreeNode, RTreeObject};
 use super::BulkRTree;
 
 mod index;
+mod order_tree;
 mod stabbing;
 mod sweep;
 
@@ -45,6 +46,7 @@ fn bulk_rtree_heap_bytes<T: RTreeObject>(tree: &BulkRTree<T>) -> usize {
 }
 
 pub(crate) use index::{PointSetIndex, SegmentIndex};
+pub(in crate::geometry) use order_tree::OrderTree;
 pub(crate) use stabbing::{
     EdgeId, EdgeYIndex, YStabbingIndex, checked_index_count, uses_linear_plan_for_len,
 };

@@ -63,8 +63,9 @@ pub(in crate::geometry) use metrics::{
 pub(crate) use metrics::{partition_calls, reset_partition_calls};
 #[cfg(test)]
 use metrics::{record_partition_call, update as update_partition_metrics};
-use rays::{RayPoints as _, shoot_left};
+pub(in crate::geometry) use rays::{RayPoints, shoot_left};
 
+pub(in crate::geometry) use self::Axis as RayAxis;
 #[cfg(test)]
 use crate::geometry::segments::crossing_homogeneous;
 #[cfg(test)]
@@ -348,7 +349,7 @@ pub(in crate::geometry) enum NodeRecipe {
 }
 
 #[derive(Clone, Copy)]
-enum Axis {
+pub(in crate::geometry) enum Axis {
     X,
     Y,
 }

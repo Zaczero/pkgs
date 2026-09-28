@@ -94,6 +94,7 @@ mod relate;
 mod relate_pattern;
 pub(crate) use relate_pattern::CompiledPattern;
 mod segment_index;
+pub(in crate::geometry) use segment_index::OrderTree;
 pub(crate) use segment_index::{EdgeId, EdgeYIndex, uses_linear_plan_for_len};
 mod segments;
 mod source_support;

@@ -15,7 +15,7 @@ use super::metrics::update as update_partition_metrics;
 use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::segments::{stored_orientation_sign, try_sort_by};
 use crate::geometry::tessellation::exact::{Interval, compare_ratios};
-use crate::geometry::{GeometryErrorKind, Result, XY};
+use crate::geometry::{GeometryErrorKind, OrderTree, Result, XY};
 
 #[derive(Clone, Copy)]
 struct SweepEdge {
@@ -24,9 +24,74 @@ struct SweepEdge {
     item: usize,
 }
 
+trait SweepStatus: Sized {
+    fn new_status(capacity: usize) -> Self;
+
+    fn prefix_rank<F>(&self, before: F) -> Result<usize>
+    where
+        F: FnMut(SweepEdge) -> Result<bool>;
+
+    fn get_at_rank(&self, rank: usize) -> Option<SweepEdge>;
+
+    fn insert_rank(&mut self, rank: usize, edge: SweepEdge);
+
+    fn remove_rank(&mut self, rank: usize) -> SweepEdge;
+}
+
+impl SweepStatus for OrderTree<SweepEdge> {
+    fn new_status(capacity: usize) -> Self {
+        Self::with_capacity(capacity)
+    }
+
+    fn prefix_rank<F>(&self, before: F) -> Result<usize>
+    where
+        F: FnMut(SweepEdge) -> Result<bool>,
+    {
+        Self::partition_point_by(self, before)
+    }
+
+    fn get_at_rank(&self, rank: usize) -> Option<SweepEdge> {
+        Self::item_at(self, rank)
+    }
+
+    fn insert_rank(&mut self, rank: usize, edge: SweepEdge) {
+        Self::insert_at_rank(self, rank, edge);
+    }
+
+    fn remove_rank(&mut self, rank: usize) -> SweepEdge {
+        Self::remove_at_rank(self, rank)
+    }
+}
+
+#[cfg(test)]
+impl SweepStatus for Vec<SweepEdge> {
+    fn new_status(capacity: usize) -> Self {
+        Self::with_capacity(capacity)
+    }
+
+    fn prefix_rank<F>(&self, before: F) -> Result<usize>
+    where
+        F: FnMut(SweepEdge) -> Result<bool>,
+    {
+        first_not_left(self, before)
+    }
+
+    fn get_at_rank(&self, rank: usize) -> Option<SweepEdge> {
+        self.get(rank).copied()
+    }
+
+    fn insert_rank(&mut self, rank: usize, edge: SweepEdge) {
+        self.insert(rank, edge);
+    }
+
+    fn remove_rank(&mut self, rank: usize) -> SweepEdge {
+        self.remove(rank)
+    }
+}
+
 /// Points a leftward ray sweep reads: rounded coordinates, an order on each
 /// axis, and orientation.
-pub(super) trait RayPoints {
+pub(in crate::geometry) trait RayPoints {
     fn rounded(&self, index: u32) -> XY;
     fn compare_axis(&self, left: u32, right: u32, axis: Axis) -> Result<Ordering>;
     fn orientation(&self, a: u32, b: u32, c: u32) -> Result<ExactSign>;
@@ -211,14 +276,34 @@ impl RayPoints for EmittedPoints<'_> {
 /// Answers follow `queries`, as native indices into `edges`.
 ///
 /// The status holds the edges crossing the sweep line in x order: an edge
-/// enters at its lower endpoint and leaves at its upper one, placed and found
-/// by binary search on orientations, so the sweep costs O((n + q) log n)
-/// comparisons plus the status shifts.
+/// enters at its lower endpoint and leaves at its upper one. An implicit AVL
+/// sequence locates and updates each edge by rank using the exact left-above
+/// and left-below orientation comparisons. Sorting and status work cost
+/// O((n + q) log(n + q)); no update shifts the remaining edges.
+pub(in crate::geometry) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
+    points: &R,
+    edge_count: usize,
+    edge: E,
+    queries: &[u32],
+) -> Result<Vec<Option<usize>>> {
+    shoot_left_with_status::<OrderTree<SweepEdge>, _, _>(points, edge_count, edge, queries)
+}
+
+#[cfg(test)]
+pub(super) fn shoot_left_vector_reference<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
+    points: &R,
+    edge_count: usize,
+    edge: E,
+    queries: &[u32],
+) -> Result<Vec<Option<usize>>> {
+    shoot_left_with_status::<Vec<SweepEdge>, _, _>(points, edge_count, edge, queries)
+}
+
 #[expect(
     clippy::indexing_slicing,
-    reason = "query positions come from order and status positions from first_not_left over those same slices"
+    reason = "query positions come from the order permutation; status ranks come from prefix searches"
 )]
-pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
+fn shoot_left_with_status<S: SweepStatus, R: RayPoints, E: Fn(usize) -> [u32; 2]>(
     points: &R,
     edge_count: usize,
     edge: E,
@@ -284,7 +369,7 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
             negative(edge.lower, edge.upper, ending.upper)
         }
     };
-    let mut status: Vec<SweepEdge> = Vec::with_capacity(starts.len());
+    let mut status = S::new_status(starts.len());
     let (mut next_start, mut next_end, mut next_query) = (0, 0, 0);
     while next_query < order.len() {
         let mut height = queries[order[next_query]];
@@ -301,31 +386,31 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
         while let Some(&ending) = ends.get(next_end)
             && points.compare_axis(ending.upper, height, Axis::Y)? == Ordering::Equal
         {
-            let index = first_not_left(&status, |edge| left_below(edge, ending))?;
-            if status.get(index).map(|edge| edge.item) != Some(ending.item) {
+            let index = status.prefix_rank(|edge| left_below(edge, ending))?;
+            if status.get_at_rank(index).map(|edge| edge.item) != Some(ending.item) {
                 return Err(GeometryErrorKind::Invalid(
                     "leftward ray sweep lost an edge from its status".into(),
                 )
                 .into());
             }
-            status.remove(index);
+            status.remove_rank(index);
             next_end = next_end.wrapping_add(1);
         }
         while let Some(&starting) = starts.get(next_start)
             && points.compare_axis(starting.lower, height, Axis::Y)? == Ordering::Equal
         {
-            let index = first_not_left(&status, |edge| left_above(edge, starting))?;
-            status.insert(index, starting);
+            let index = status.prefix_rank(|edge| left_above(edge, starting))?;
+            status.insert_rank(index, starting);
             next_start = next_start.wrapping_add(1);
         }
         while let Some(&query) = order.get(next_query)
             && points.compare_axis(queries[query], height, Axis::Y)? == Ordering::Equal
         {
             let point = queries[query];
-            let index = first_not_left(&status, |edge| negative(edge.lower, edge.upper, point))?;
-            answers[query] = index
+            let rank = status.prefix_rank(|edge| negative(edge.lower, edge.upper, point))?;
+            answers[query] = rank
                 .checked_sub(1)
-                .and_then(|left| status.get(left))
+                .and_then(|left| status.get_at_rank(left))
                 .map(|edge| edge.item);
             next_query = next_query.wrapping_add(1);
         }
@@ -339,10 +424,7 @@ pub(super) fn shoot_left<R: RayPoints, E: Fn(usize) -> [u32; 2]>(
     clippy::indexing_slicing,
     reason = "binary-search middle is strictly below high, which starts at items.len()"
 )]
-pub(super) fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(
-    items: &[T],
-    mut left: L,
-) -> Result<usize> {
+fn first_not_left<T: Copy, L: FnMut(T) -> Result<bool>>(items: &[T], mut left: L) -> Result<usize> {
     let (mut low, mut high) = (0, items.len());
     while low < high {
         let middle = low.wrapping_add(high.wrapping_sub(low) / 2);
