@@ -18,10 +18,11 @@ use std::sync::Arc;
 
 use pyo3::exceptions::{PyOverflowError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyList, PySequence};
+use pyo3::types::{PyInt, PyList, PySequence};
 use pyo3::{IntoPyObjectExt as _, ffi};
 
 use crate::array::PyGeometryArray;
+use crate::boundary::coordinates::measure_storage_payload_bytes;
 use crate::geometry::Shape;
 use crate::py::buffer::{fill_typed_view, release_typed_view};
 use crate::py::cells::{GridKind, PyCellArray};
@@ -30,6 +31,7 @@ use crate::py::numpy::{ImmutableI64Owner, frozen_i64_owner, frozen_i64_view, int
 use crate::py::row::{
     RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice, slice_row_indices,
 };
+use crate::py::sizeof::python_sizeof;
 use crate::{CsrBuilder, HeapSize};
 
 /// Format a short preview list of already-rendered row strings.
@@ -242,7 +244,10 @@ impl Groups {
     }
 
     fn logical_offsets_bytes(&self) -> usize {
-        (self.rows.len() + 1) * std::mem::size_of::<i64>()
+        self.rows
+            .len()
+            .wrapping_add(1)
+            .wrapping_mul(std::mem::size_of::<i64>())
     }
 
     pub(crate) fn geometry_values_view(&self) -> PyResult<Option<PyGeometryArray>> {
@@ -256,35 +261,45 @@ impl Groups {
         ))
     }
 
-    fn logical_payload_bytes(&self) -> usize {
-        let values_bytes = match &self.values {
-            GroupsValues::Int64(_) => self.values_window().len() * std::mem::size_of::<i64>(),
+    fn logical_payload_pyint<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
+        let rows = self.values_window();
+        let value_width = match &self.values {
+            GroupsValues::Int64(_) => std::mem::size_of::<i64>(),
+            GroupsValues::Cells(_) => std::mem::size_of::<u64>(),
             GroupsValues::Geometry(values) => {
-                values.logical_coordinate_bytes_range(self.values_window())
+                let bytes =
+                    measure_storage_payload_bytes(py, values.storage(), values.missing(), rows)?;
+                return Ok(bytes
+                    .add_native_bytes(py, self.logical_offsets_bytes())?
+                    .into_pyint(py));
             },
-            GroupsValues::Cells(_) => self.values_window().len() * std::mem::size_of::<u64>(),
         };
-        values_bytes + self.logical_offsets_bytes()
+        // These fixed-width ranges are backed by Vec-sized owners. Each byte
+        // count is at most isize::MAX, so their sum fits usize.
+        let value_bytes = rows.len().wrapping_mul(value_width);
+        Ok(PyInt::new(
+            py,
+            value_bytes.wrapping_add(self.logical_offsets_bytes()),
+        ))
     }
 
     fn logical_heap_bytes(&self) -> usize {
         let values_bytes = match &self.values {
-            GroupsValues::Int64(_) => {
-                crate::heap_size::ARC_CONTROL_BYTES
-                    + self.values_window().len() * std::mem::size_of::<i64>()
-            },
-            GroupsValues::Geometry(values) => {
-                crate::heap_size::ARC_CONTROL_BYTES
-                    + std::mem::size_of::<PyGeometryArray>()
-                    + values.logical_heap_bytes_range(self.values_window())
-            },
-            GroupsValues::Cells(values) => {
-                crate::heap_size::ARC_CONTROL_BYTES
-                    + std::mem::size_of::<PyCellArray>()
-                    + values.logical_heap_bytes_range(self.values_window())
-            },
+            GroupsValues::Int64(_) => crate::heap_size::ARC_CONTROL_BYTES.saturating_add(
+                self.values_window()
+                    .len()
+                    .saturating_mul(std::mem::size_of::<i64>()),
+            ),
+            GroupsValues::Geometry(values) => crate::heap_size::ARC_CONTROL_BYTES
+                .saturating_add(std::mem::size_of::<PyGeometryArray>())
+                .saturating_add(values.logical_heap_bytes_range(self.values_window())),
+            GroupsValues::Cells(values) => crate::heap_size::ARC_CONTROL_BYTES
+                .saturating_add(std::mem::size_of::<PyCellArray>())
+                .saturating_add(values.logical_heap_bytes_range(self.values_window())),
         };
-        values_bytes + crate::heap_size::ARC_CONTROL_BYTES + self.logical_offsets_bytes()
+        values_bytes
+            .saturating_add(crate::heap_size::ARC_CONTROL_BYTES)
+            .saturating_add(self.logical_offsets_bytes())
     }
 
     fn row_pyobject(
@@ -512,15 +527,20 @@ impl Groups {
     /// -------
     /// int
     #[getter]
-    fn nbytes(&self) -> usize {
-        self.logical_payload_bytes()
+    fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
+        self.logical_payload_pyint(py)
     }
 
     /// ``sys.getsizeof`` support: the wrapper plus this group's logical CSR
     /// payload. Sliced groups report the visible values window and rebased
     /// logical offsets, not the whole shared backing allocation.
-    fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>() + self.logical_heap_bytes()
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.logical_heap_bytes())
     }
 
     /// The flat backing column (int64 ndarray, `GeometryArray`, or

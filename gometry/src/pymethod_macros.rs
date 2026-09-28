@@ -42,8 +42,16 @@ macro_rules! row_iter_pymethods {
 
             /// ``sys.getsizeof`` support: the iterator plus the logical
             /// payload it keeps alive while iterating.
-            fn __sizeof__(&self) -> usize {
-                crate::HeapSize::total_size(self)
+            ///
+            /// Raises
+            /// ------
+            /// OverflowError
+            ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+            fn __sizeof__(&self) -> pyo3::PyResult<isize> {
+                crate::py::sizeof::python_sizeof(
+                    std::mem::size_of_val(self),
+                    crate::HeapSize::heap_bytes(self),
+                )
             }
 
             fn __next__(

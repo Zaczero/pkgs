@@ -22,9 +22,10 @@ use crate::array::{
     Python, Shape, StorageLayout, Typed, ValidityMask, exact_geometry, exact_geometry_array,
     missing, overlay_operator,
 };
-use crate::boundary::coordinates::measure_storage;
+use crate::boundary::coordinates::measure_storage_payload_bytes;
 use crate::py::numpy::{false_bool_array, reject_masked_array};
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
+use crate::py::sizeof::python_sizeof;
 
 pub(crate) enum NumpyFancyIndex {
     Scalar(isize),
@@ -957,8 +958,13 @@ impl PyGeometryArray {
     /// int
     #[getter]
     pub fn nbytes<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyInt>> {
-        let measure = measure_storage(py, self.storage(), self.missing())?;
-        Ok(measure.bytes_pyint(py))
+        let bytes = measure_storage_payload_bytes(
+            py,
+            self.storage(),
+            self.missing(),
+            0..self.len(),
+        )?;
+        Ok(bytes.into_pyint(py))
     }
 
     /// `sys.getsizeof` support: the wrapper plus this array's logical
@@ -969,8 +975,13 @@ impl PyGeometryArray {
     /// Lazy cache slots that have not been populated do not inflate the total.
     /// Shared backing buffers are accounted like NumPy views: the logical view
     /// is reported, not the whole shared parent allocation.
-    pub fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(self.heap_bytes())
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    pub fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
     }
 
     pub fn __repr__(&self) -> PyResult<String> {

@@ -6,6 +6,7 @@ use pyo3::types::{PyAny, PyDict, PyList};
 
 use crate::py::numpy::float64_matrix;
 use crate::py::row::{RowIndexOrSlice, parse_row_index_or_slice};
+use crate::py::sizeof::python_sizeof;
 use crate::{
     Arc, Bound, CoordSeq, CoordinateAxes, CoordinateAxis, GeometryArrayStorage, GeometryError,
     HeapSize, Point, Py, PyAnyMethods, PyDictMethods, PyErr, PyGeometryArray, PyRef, PyResult,
@@ -119,8 +120,13 @@ impl PyCoordinatesIter {
     }
 
     /// ``sys.getsizeof`` support for the iterator and its retained view.
-    fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(self.source.heap_bytes())
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.source.heap_bytes())
     }
 
     fn __next__(&self, py: Python<'_>) -> PyResult<Option<Py<PyAny>>> {

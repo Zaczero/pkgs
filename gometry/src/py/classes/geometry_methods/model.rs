@@ -9,6 +9,7 @@ use crate::boundary::coordinates::measure_shape;
 use crate::geometry::PreparedPlan;
 use crate::geometry::types::ShapeHeapMemo;
 use crate::py::row::{RowContainer, RowIndexOrSlice, RowIterState, parse_row_index_or_slice};
+use crate::py::sizeof::python_sizeof;
 use crate::{
     Bound, Crs, Frame, GeometryKind, HeapSize, IntoPyObject, Py, PyAny, PyAnyMethods as _,
     PyClassInitializer, PyErr, PyRef, PyResult, Python, Result, ShapeData, exact_geometry, pyclass,
@@ -415,8 +416,13 @@ impl PyGeometryParts {
     /// ``sys.getsizeof`` support: this lazy view plus the source geometry's
     /// logical coordinate heap. The view shares the geometry; it does not
     /// materialize individual parts.
-    fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(self.heap_bytes())
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
     }
 
     fn __repr__(&self) -> String {

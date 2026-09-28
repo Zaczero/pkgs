@@ -7,8 +7,10 @@
 use pyo3::prelude::*;
 
 use crate::array::GeometryArrayStorage;
+use crate::geometry::types::ShapeHeapMemo;
 use crate::py::errors::crs_mismatch_error;
 use crate::py::functions::bulk_rows::{StreamedRow, stream_bulk};
+use crate::py::sizeof::python_sizeof;
 use crate::py::wire_crs::{resolve_wire_crs, split_ewkt_srid};
 use crate::py::{errors, support, vectors};
 use crate::{
@@ -504,8 +506,13 @@ impl PyValidationReport {
 
     /// ``sys.getsizeof`` support: the report plus the retained geometry
     /// coordinate payload and any validation issue strings.
-    pub fn __sizeof__(&self) -> usize {
-        self.total_size()
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    pub fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
     }
 
     pub const fn __bool__(&self) -> bool {
@@ -554,10 +561,8 @@ impl PyValidationReport {
 
 impl HeapSize for PyValidationReport {
     fn heap_bytes(&self) -> usize {
-        self.geometry
-            .shape
-            .shape()
-            .coordinate_bytes()
+        ShapeHeapMemo::default()
+            .coordinate_bytes(self.geometry.shape.shape())
             .saturating_add(self.issue.heap_bytes())
     }
 }

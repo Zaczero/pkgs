@@ -28,60 +28,6 @@ fn selected_row_map_heap_bytes(
 }
 
 impl PyGeometryArray {
-    /// Coordinate payload for a contiguous logical row range without building
-    /// a selected `GeometryArray` or composing a row map.
-    pub(crate) fn logical_coordinate_bytes_range(&self, rows: std::ops::Range<usize>) -> usize {
-        debug_assert!(rows.end <= self.len());
-        match self.storage() {
-            GeometryArrayStorage::Mixed(shapes) => rows
-                .filter(|&logical| !self.is_row_missing(logical))
-                .map(|logical| shapes[logical].coordinate_bytes())
-                .sum(),
-            GeometryArrayStorage::Packed(PackedStorage::Points { coords, .. }) => {
-                let count = if self.is_compact_nullable() {
-                    if let Some(missing) = self.missing() {
-                        rows.filter(|&logical| missing.is_valid(logical)).count()
-                    } else {
-                        rows.len()
-                    }
-                } else {
-                    rows.len()
-                };
-                coords.axes().byte_width(count)
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => {
-                let map = row_map.as_deref();
-                let vertices = rows
-                    .map(|logical| map.csr_window(offsets, logical).len())
-                    .sum();
-                coords.axes().byte_width(vertices)
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) => {
-                let map = row_map.as_deref();
-                let vertices = rows
-                    .map(|logical| {
-                        let rings = map.csr_window(polygon_offsets, logical);
-                        if rings.is_empty() {
-                            0
-                        } else {
-                            csr_value_window(ring_offsets, rings).len()
-                        }
-                    })
-                    .sum();
-                coords.axes().byte_width(vertices)
-            },
-        }
-    }
-
     /// Logical heap footprint for a contiguous logical row range without
     /// materializing its row-selection metadata.
     pub(crate) fn logical_heap_bytes_range(&self, rows: std::ops::Range<usize>) -> usize {

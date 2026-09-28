@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use crate::boundary::coordinates::measure_shape;
 use crate::py::classes::geometry_methods::{Bound, Py, PyAny, PyErr, PyGeometry, PyResult, Python};
 use crate::py::functions::polyline;
+use crate::py::sizeof::python_sizeof;
 use crate::py::{arrow, arrow_c, errors, functions};
 use crate::{
     ArrowEncoding, OverlayOp, PyValueError, exact_geometry, io, overlay_operator, py_bool,
@@ -323,8 +324,16 @@ pub fn to_arrow(&self, py: Python<'_>, encoding: ArrowEncoding) -> PyResult<Py<P
     /// Returns
     /// -------
     /// int
-    pub fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(crate::HeapSize::heap_bytes(self))
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    pub fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(
+            std::mem::size_of::<Self>(),
+            crate::HeapSize::heap_bytes(self),
+        )
     }
 }
 }

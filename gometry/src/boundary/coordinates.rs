@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::convert::Infallible;
-use std::ops::ControlFlow;
+use std::ops::{ControlFlow, Range};
 use std::sync::Arc;
 
 use pyo3::exceptions::PyOverflowError;
@@ -56,14 +56,13 @@ impl<'py> ExactUnsigned<'py> {
     }
 
     fn add_python_ints(left: &Bound<'py, PyInt>, right: &Bound<'py, PyInt>) -> PyResult<Self> {
-        Ok(Self::Big(
-            left.as_any().add(right.as_any())?.cast_into::<PyInt>()?,
-        ))
+        add_python_integers(left, right).map(Self::Big)
     }
 
     fn into_pyint(self, py: Python<'py>) -> Bound<'py, PyInt> {
         match self {
-            Self::Small(value) => PyInt::new(py, value),
+            Self::Small(value) => usize::try_from(value)
+                .map_or_else(|_| PyInt::new(py, value), |value| PyInt::new(py, value)),
             Self::Big(value) => value,
         }
     }
@@ -81,6 +80,153 @@ impl<'py> ExactUnsigned<'py> {
             (Self::Big(left), Self::Big(right)) => left.as_any().eq(right.as_any()),
             (Self::Big(left), Self::Small(right)) => left.as_any().eq(PyInt::new(py, *right)),
             (Self::Small(left), Self::Big(right)) => right.as_any().eq(PyInt::new(py, *left)),
+        }
+    }
+}
+
+#[derive(Clone)]
+enum ExactPayloadValue<'py> {
+    Small(usize),
+    Wide(u128),
+    Big(Bound<'py, PyInt>),
+}
+
+fn add_python_integers<'py>(
+    left: &Bound<'py, PyInt>,
+    right: &Bound<'py, PyInt>,
+) -> PyResult<Bound<'py, PyInt>> {
+    Ok(left.as_any().add(right.as_any())?.cast_into::<PyInt>()?)
+}
+
+#[derive(Clone)]
+pub(crate) struct ExactPayloadBytes<'py>(ExactPayloadValue<'py>);
+
+impl<'py> ExactPayloadBytes<'py> {
+    const ZERO: Self = Self(ExactPayloadValue::Small(0));
+
+    const fn from_native_bytes(bytes: usize) -> Self {
+        Self(ExactPayloadValue::Small(bytes))
+    }
+
+    const fn from_wide_bytes(bytes: u128) -> Self {
+        Self(ExactPayloadValue::Wide(bytes))
+    }
+
+    fn from_count_and_axes(count: u128, axes: CoordinateAxes) -> Self {
+        let width = u128::try_from(axes.byte_width(1)).expect("coordinate byte width fits u128");
+        if let Ok(count) = usize::try_from(count)
+            && let Some(bytes) =
+                count.checked_mul(usize::try_from(width).expect("f64 axes fit usize"))
+        {
+            return Self(ExactPayloadValue::Small(bytes));
+        }
+        Self(ExactPayloadValue::Wide(count.wrapping_mul(width)))
+    }
+
+    fn from_native_count_and_axes(count: usize, axes: CoordinateAxes) -> Self {
+        let width = axes.byte_width(1);
+        if let Some(bytes) = count.checked_mul(width) {
+            return Self(ExactPayloadValue::Small(bytes));
+        }
+        let count = u128::try_from(count).expect("usize coordinate count fits u128");
+        let width = u128::try_from(width).expect("f64 axes fit u128");
+        Self(ExactPayloadValue::Wide(count.wrapping_mul(width)))
+    }
+
+    fn add(&self, py: Python<'py>, other: &Self) -> PyResult<Self> {
+        match (&self.0, &other.0) {
+            (ExactPayloadValue::Small(left), ExactPayloadValue::Small(right)) => {
+                Ok(Self(left.checked_add(*right).map_or_else(
+                    || {
+                        // Two usize operands fit in u128 even when their sum
+                        // does not fit in usize.
+                        ExactPayloadValue::Wide(
+                            u128::try_from(*left)
+                                .expect("usize byte count fits u128")
+                                .wrapping_add(
+                                    u128::try_from(*right).expect("usize byte count fits u128"),
+                                ),
+                        )
+                    },
+                    ExactPayloadValue::Small,
+                )))
+            },
+            (ExactPayloadValue::Small(left), ExactPayloadValue::Wide(right)) => Self::add_wide(
+                py,
+                u128::try_from(*left).expect("usize byte count fits u128"),
+                *right,
+            ),
+            (ExactPayloadValue::Wide(left), ExactPayloadValue::Small(right)) => Self::add_wide(
+                py,
+                *left,
+                u128::try_from(*right).expect("usize byte count fits u128"),
+            ),
+            (ExactPayloadValue::Wide(left), ExactPayloadValue::Wide(right)) => {
+                Self::add_wide(py, *left, *right)
+            },
+            (ExactPayloadValue::Big(left), ExactPayloadValue::Small(right)) => {
+                let right = PyInt::new(py, *right);
+                add_python_integers(left, &right)
+                    .map(ExactPayloadValue::Big)
+                    .map(Self)
+            },
+            (ExactPayloadValue::Big(left), ExactPayloadValue::Wide(right)) => {
+                let right = PyInt::new(py, *right);
+                add_python_integers(left, &right)
+                    .map(ExactPayloadValue::Big)
+                    .map(Self)
+            },
+            (ExactPayloadValue::Big(left), ExactPayloadValue::Big(right)) => {
+                add_python_integers(left, right)
+                    .map(ExactPayloadValue::Big)
+                    .map(Self)
+            },
+            (ExactPayloadValue::Small(left), ExactPayloadValue::Big(right)) => {
+                let left = PyInt::new(py, *left);
+                add_python_integers(&left, right)
+                    .map(ExactPayloadValue::Big)
+                    .map(Self)
+            },
+            (ExactPayloadValue::Wide(left), ExactPayloadValue::Big(right)) => {
+                let left = PyInt::new(py, *left);
+                add_python_integers(&left, right)
+                    .map(ExactPayloadValue::Big)
+                    .map(Self)
+            },
+        }
+    }
+
+    fn add_wide(py: Python<'py>, left: u128, right: u128) -> PyResult<Self> {
+        left.checked_add(right).map_or_else(
+            || {
+                let left = PyInt::new(py, left);
+                let right = PyInt::new(py, right);
+                add_python_integers(&left, &right)
+                    .map(ExactPayloadValue::Big)
+                    .map(Self)
+            },
+            |sum| Ok(Self(ExactPayloadValue::Wide(sum))),
+        )
+    }
+
+    pub(crate) fn add_native_bytes(self, py: Python<'py>, bytes: usize) -> PyResult<Self> {
+        self.add(py, &Self(ExactPayloadValue::Small(bytes)))
+    }
+
+    pub(crate) fn into_pyint(self, py: Python<'py>) -> Bound<'py, PyInt> {
+        match self.0 {
+            ExactPayloadValue::Small(value) => PyInt::new(py, value),
+            ExactPayloadValue::Wide(value) => usize::try_from(value)
+                .map_or_else(|_| PyInt::new(py, value), |value| PyInt::new(py, value)),
+            ExactPayloadValue::Big(value) => value,
+        }
+    }
+
+    fn as_usize(&self) -> Option<usize> {
+        match &self.0 {
+            ExactPayloadValue::Small(value) => Some(*value),
+            ExactPayloadValue::Wide(value) => usize::try_from(*value).ok(),
+            ExactPayloadValue::Big(_) => None,
         }
     }
 }
@@ -188,6 +334,156 @@ impl<'py> CoordinateMeasure<'py> {
 type CollectionMeasures<'py> = Option<HashMap<ShapeOwnerKey, CoordinateMeasure<'py>>>;
 
 #[derive(Default)]
+enum CollectionPayloadMemo<'py> {
+    #[default]
+    Empty,
+    One {
+        owner: ShapeOwnerKey,
+        bytes: ExactPayloadBytes<'py>,
+    },
+    Many(HashMap<ShapeOwnerKey, ExactPayloadBytes<'py>>),
+}
+
+impl<'py> CollectionPayloadMemo<'py> {
+    fn get(&self, owner: ShapeOwnerKey) -> Option<&ExactPayloadBytes<'py>> {
+        match self {
+            Self::Empty => None,
+            Self::One {
+                owner: cached_owner,
+                bytes,
+            } => (*cached_owner == owner).then_some(bytes),
+            Self::Many(collections) => collections.get(&owner),
+        }
+    }
+
+    fn insert(&mut self, owner: ShapeOwnerKey, bytes: ExactPayloadBytes<'py>) {
+        let previous = std::mem::replace(self, Self::Empty);
+        *self = match previous {
+            Self::Empty => Self::One { owner, bytes },
+            Self::One {
+                owner: cached_owner,
+                ..
+            } if cached_owner == owner => Self::One { owner, bytes },
+            Self::One {
+                owner: cached_owner,
+                bytes: cached_bytes,
+            } => {
+                let mut collections = HashMap::with_capacity(2);
+                collections.insert(cached_owner, cached_bytes);
+                collections.insert(owner, bytes);
+                Self::Many(collections)
+            },
+            Self::Many(mut collections) => {
+                collections.insert(owner, bytes);
+                Self::Many(collections)
+            },
+        };
+    }
+}
+
+fn packed_range_count_and_axes(
+    storage: &PackedStorage,
+    missing: Option<&ValidityMask>,
+    rows: Range<usize>,
+) -> (u128, CoordinateAxes) {
+    // Vec-bounded row selections and i32 CSR coordinates keep totals below 2^92.
+    match storage {
+        PackedStorage::Points { coords, row_map } => {
+            let storage_rows = crate::array::point_logical_len(coords, row_map.as_deref());
+            let logical_len = missing.map_or(storage_rows, ValidityMask::len);
+            debug_assert!(rows.start <= rows.end);
+            debug_assert!(rows.end <= logical_len);
+            debug_assert_eq!(
+                missing.map_or(storage_rows, ValidityMask::present_count),
+                storage_rows
+            );
+            let present = missing.map_or_else(
+                || rows.len(),
+                |mask| {
+                    mask.window(rows.start, rows.len())
+                        .map_or_else(|| rows.len(), |window| window.present_count())
+                },
+            );
+            (
+                u128::try_from(present).expect("logical point count fits u128"),
+                if present == 0 {
+                    CoordinateAxes::XY
+                } else {
+                    coords.axes()
+                },
+            )
+        },
+        PackedStorage::Lines {
+            coords,
+            offsets,
+            row_map,
+        } => {
+            let offsets = offsets.as_slice();
+            let map = row_map.as_deref();
+            let storage_rows = crate::array::line_logical_len(offsets, map);
+            let logical_len = missing.map_or(storage_rows, ValidityMask::len);
+            debug_assert!(rows.start <= rows.end);
+            debug_assert!(rows.end <= logical_len);
+            debug_assert_eq!(storage_rows, logical_len);
+            let mut count = 0_u128;
+            for row in rows {
+                if missing.is_some_and(|mask| mask.is_missing(row)) {
+                    continue;
+                }
+                count = count.wrapping_add(
+                    u128::try_from(map.csr_window(offsets, row).len())
+                        .expect("packed line count fits u128"),
+                );
+            }
+            (
+                count,
+                if count == 0 {
+                    CoordinateAxes::XY
+                } else {
+                    coords.axes()
+                },
+            )
+        },
+        PackedStorage::Polygons {
+            coords,
+            ring_offsets,
+            polygon_offsets,
+            row_map,
+        } => {
+            let rings = ring_offsets.as_slice();
+            let polygons = polygon_offsets.as_slice();
+            let map = row_map.as_deref();
+            let storage_rows = crate::array::polygon_logical_len(polygons, map);
+            let logical_len = missing.map_or(storage_rows, ValidityMask::len);
+            debug_assert!(rows.start <= rows.end);
+            debug_assert!(rows.end <= logical_len);
+            debug_assert_eq!(storage_rows, logical_len);
+            let mut count = 0_u128;
+            for row in rows {
+                if missing.is_some_and(|mask| mask.is_missing(row)) {
+                    continue;
+                }
+                let row_rings = map.csr_window(polygons, row);
+                if !row_rings.is_empty() {
+                    let vertices = csr_value_window(rings, row_rings).len();
+                    count = count.wrapping_add(
+                        u128::try_from(vertices).expect("packed polygon count fits u128"),
+                    );
+                }
+            }
+            (
+                count,
+                if count == 0 {
+                    CoordinateAxes::XY
+                } else {
+                    coords.axes()
+                },
+            )
+        },
+    }
+}
+
+#[derive(Default)]
 pub(crate) struct CoordinateMeasureQuery<'py> {
     collections: CollectionMeasures<'py>,
 }
@@ -199,6 +495,163 @@ impl<'py> CoordinateMeasureQuery<'py> {
         shape: &Shape,
     ) -> PyResult<CoordinateMeasure<'py>> {
         shape_measure(py, shape, &mut self.collections)
+    }
+
+    fn storage_range(
+        &mut self,
+        py: Python<'py>,
+        storage: &GeometryArrayStorage,
+        missing: Option<&ValidityMask>,
+        rows: Range<usize>,
+    ) -> PyResult<CoordinateMeasure<'py>> {
+        match storage {
+            GeometryArrayStorage::Mixed(shapes) => {
+                let logical_len = missing.map_or(shapes.len(), ValidityMask::len);
+                debug_assert!(rows.start <= rows.end);
+                debug_assert!(rows.end <= logical_len);
+                debug_assert_eq!(shapes.len(), logical_len);
+                let mut measure = CoordinateMeasure::ZERO;
+                let selected = shapes
+                    .get(rows.clone())
+                    .expect("logical row range is within mixed shape storage");
+                for (shape, logical) in selected.iter().zip(rows) {
+                    if missing.is_some_and(|mask| mask.is_missing(logical)) {
+                        continue;
+                    }
+                    let shape_measure = self.shape(py, shape)?;
+                    measure = measure.add(py, &shape_measure.present_only())?;
+                }
+                Ok(measure)
+            },
+            GeometryArrayStorage::Packed(packed) => {
+                let (count, axes) = packed_range_count_and_axes(packed, missing, rows);
+                Ok(CoordinateMeasure::from_count_and_axes(count, axes))
+            },
+        }
+    }
+}
+
+/// Expand leaf byte counts at hot row folds so they avoid an out-of-line call
+/// through the recursive collection matcher. Returns `None` for aggregates and
+/// does not perform caller control flow.
+macro_rules! simple_shape_payload_bytes {
+    ($shape:expr) => {
+        match $shape {
+            Shape::Point(point) => Some(CoordinateAxes::from_point(*point).byte_width(1)),
+            Shape::MultiPoint(seq) => Some(sequence_payload_bytes_usize(seq)),
+            Shape::LineString(line) => Some(sequence_payload_bytes_usize(line.as_coords())),
+            Shape::Empty(..) => Some(0),
+            Shape::MultiLineString(..)
+            | Shape::Polygon(..)
+            | Shape::MultiPolygon(..)
+            | Shape::GeometryCollection(..) => None,
+        }
+    };
+}
+
+#[derive(Default)]
+struct PayloadBytesQuery<'py> {
+    collections: CollectionPayloadMemo<'py>,
+}
+
+impl<'py> PayloadBytesQuery<'py> {
+    fn storage_range(
+        &mut self,
+        py: Python<'py>,
+        storage: &GeometryArrayStorage,
+        missing: Option<&ValidityMask>,
+        rows: Range<usize>,
+    ) -> PyResult<ExactPayloadBytes<'py>> {
+        match storage {
+            GeometryArrayStorage::Mixed(shapes) => {
+                let logical_len = missing.map_or(shapes.len(), ValidityMask::len);
+                debug_assert!(rows.start <= rows.end);
+                debug_assert!(rows.end <= logical_len);
+                debug_assert_eq!(shapes.len(), logical_len);
+                let selected = shapes
+                    .get(rows.clone())
+                    .expect("logical row range is within mixed shape storage");
+                let mut selected_rows = selected.iter().zip(rows);
+                // A selected range is bounded by its `Vec<Shape>` owner. Even
+                // `isize::MAX` rows of `usize::MAX` bytes fit in `u128`.
+                match selected_rows.try_fold(0_u128, |bytes, (shape, logical)| {
+                    if missing.is_some_and(|mask| mask.is_missing(logical)) {
+                        return ControlFlow::Continue(bytes);
+                    }
+                    let Some(shape_bytes) = simple_shape_payload_bytes!(shape)
+                        .or_else(|| self.complex_shape_payload_bytes_usize(shape))
+                    else {
+                        return ControlFlow::Break((bytes, shape));
+                    };
+                    ControlFlow::Continue(bytes.wrapping_add(
+                        u128::try_from(shape_bytes).expect("usize payload fits u128"),
+                    ))
+                }) {
+                    ControlFlow::Continue(bytes) => Ok(ExactPayloadBytes::from_wide_bytes(bytes)),
+                    ControlFlow::Break((native_bytes, shape)) => {
+                        let mut bytes = ExactPayloadBytes::from_wide_bytes(native_bytes)
+                            .add(py, &self.shape(py, shape)?)?;
+                        for (shape, logical) in selected_rows {
+                            if missing.is_some_and(|mask| mask.is_missing(logical)) {
+                                continue;
+                            }
+                            bytes = if let Some(shape_bytes) = simple_shape_payload_bytes!(shape)
+                                .or_else(|| self.complex_shape_payload_bytes_usize(shape))
+                            {
+                                bytes.add_native_bytes(py, shape_bytes)?
+                            } else {
+                                bytes.add(py, &self.shape(py, shape)?)?
+                            };
+                        }
+                        Ok(bytes)
+                    },
+                }
+            },
+            GeometryArrayStorage::Packed(packed) => {
+                let (count, axes) = packed_range_count_and_axes(packed, missing, rows);
+                Ok(ExactPayloadBytes::from_count_and_axes(count, axes))
+            },
+        }
+    }
+
+    fn shape(&mut self, py: Python<'py>, shape: &Shape) -> PyResult<ExactPayloadBytes<'py>> {
+        shape_payload_bytes(py, shape, &mut self.collections)
+    }
+
+    fn complex_shape_payload_bytes_usize(&mut self, shape: &Shape) -> Option<usize> {
+        match shape {
+            Shape::MultiLineString(lines) => lines.iter().try_fold(0_usize, |bytes, line| {
+                bytes.checked_add(sequence_payload_bytes_usize(line.as_coords()))
+            }),
+            Shape::Polygon(polygon) => polygon_payload_bytes_usize(polygon),
+            Shape::MultiPolygon(polygons) => polygons.iter().try_fold(0_usize, |bytes, polygon| {
+                bytes.checked_add(polygon_payload_bytes_usize(polygon)?)
+            }),
+            Shape::GeometryCollection(collection) => {
+                let members = collection.as_slice();
+                let owner = collection
+                    .members_are_shared()
+                    .then(|| ShapeOwnerKey::new(members));
+                if let Some(owner) = owner
+                    && let Some(bytes) = self.collections.get(owner)
+                {
+                    return bytes.as_usize();
+                }
+                let bytes = members.iter().try_fold(0_usize, |bytes, member| {
+                    let member_bytes = simple_shape_payload_bytes!(member)
+                        .or_else(|| self.complex_shape_payload_bytes_usize(member))?;
+                    bytes.checked_add(member_bytes)
+                })?;
+                if let Some(owner) = owner {
+                    self.collections
+                        .insert(owner, ExactPayloadBytes::from_native_bytes(bytes));
+                }
+                Some(bytes)
+            },
+            Shape::Point(..) | Shape::MultiPoint(..) | Shape::LineString(..) | Shape::Empty(..) => {
+                None
+            },
+        }
     }
 }
 
@@ -272,6 +725,83 @@ fn shape_measure<'py>(
     }
 }
 
+fn sequence_payload_bytes<'py>(seq: &CoordSeq) -> ExactPayloadBytes<'py> {
+    ExactPayloadBytes::from_native_count_and_axes(seq.len(), seq.axes())
+}
+
+fn sequence_payload_bytes_usize(seq: &CoordSeq) -> usize {
+    // CoordSeq admission caps visible rows at i32::MAX, so even XYZM fits usize.
+    seq.coordinate_bytes()
+}
+
+fn polygon_payload_bytes<'py>(
+    py: Python<'py>,
+    polygon: &Polygon,
+) -> PyResult<ExactPayloadBytes<'py>> {
+    let mut bytes = sequence_payload_bytes(polygon.shell.coords());
+    for ring in polygon.holes.iter() {
+        bytes = bytes.add(py, &sequence_payload_bytes(ring.coords()))?;
+    }
+    Ok(bytes)
+}
+
+fn polygon_payload_bytes_usize(polygon: &Polygon) -> Option<usize> {
+    polygon.holes.iter().try_fold(
+        sequence_payload_bytes_usize(polygon.shell.coords()),
+        |bytes, ring| bytes.checked_add(sequence_payload_bytes_usize(ring.coords())),
+    )
+}
+
+fn shape_payload_bytes<'py>(
+    py: Python<'py>,
+    shape: &Shape,
+    collections: &mut CollectionPayloadMemo<'py>,
+) -> PyResult<ExactPayloadBytes<'py>> {
+    match shape {
+        Shape::Point(point) => Ok(ExactPayloadBytes::from_native_count_and_axes(
+            1,
+            CoordinateAxes::from_point(*point),
+        )),
+        Shape::MultiPoint(seq) => Ok(sequence_payload_bytes(seq)),
+        Shape::LineString(line) => Ok(sequence_payload_bytes(line.as_coords())),
+        Shape::MultiLineString(lines) => {
+            let mut bytes = ExactPayloadBytes::ZERO;
+            for line in lines.iter() {
+                bytes = bytes.add(py, &sequence_payload_bytes(line.as_coords()))?;
+            }
+            Ok(bytes)
+        },
+        Shape::Polygon(polygon) => polygon_payload_bytes(py, polygon),
+        Shape::MultiPolygon(polygons) => {
+            let mut bytes = ExactPayloadBytes::ZERO;
+            for polygon in polygons.iter() {
+                bytes = bytes.add(py, &polygon_payload_bytes(py, polygon)?)?;
+            }
+            Ok(bytes)
+        },
+        Shape::GeometryCollection(collection) => {
+            let members = collection.as_slice();
+            let owner = collection
+                .members_are_shared()
+                .then(|| ShapeOwnerKey::new(members));
+            if let Some(owner) = owner
+                && let Some(bytes) = collections.get(owner)
+            {
+                return Ok(bytes.clone());
+            }
+            let mut bytes = ExactPayloadBytes::ZERO;
+            for member in members {
+                bytes = bytes.add(py, &shape_payload_bytes(py, member, collections)?)?;
+            }
+            if let Some(owner) = owner {
+                collections.insert(owner, bytes.clone());
+            }
+            Ok(bytes)
+        },
+        Shape::Empty(..) => Ok(ExactPayloadBytes::ZERO),
+    }
+}
+
 pub(crate) fn measure_shape<'py>(
     py: Python<'py>,
     shape: &Shape,
@@ -284,95 +814,32 @@ pub(crate) fn measure_storage<'py>(
     storage: &GeometryArrayStorage,
     missing: Option<&ValidityMask>,
 ) -> PyResult<CoordinateMeasure<'py>> {
-    match storage {
-        GeometryArrayStorage::Mixed(shapes) => {
-            let mut measure = CoordinateMeasure::ZERO;
-            let mut query = CoordinateMeasureQuery::default();
-            for (row, shape) in shapes.iter().enumerate() {
-                if missing.is_some_and(|mask| mask.is_missing(row)) {
-                    continue;
-                }
-                let shape_measure = query.shape(py, shape)?;
-                measure = measure.add(py, &shape_measure.present_only())?;
-            }
-            Ok(measure)
-        },
-        GeometryArrayStorage::Packed(PackedStorage::Points { coords, row_map }) => {
-            let rows = crate::array::point_logical_len(coords, row_map.as_deref());
-            let present = missing.map_or(rows, ValidityMask::present_count);
-            Ok(CoordinateMeasure::from_count_and_axes(
-                u128::try_from(present).expect("logical point count fits u128"),
-                if present == 0 {
-                    CoordinateAxes::XY
-                } else {
-                    coords.axes()
-                },
-            ))
-        },
-        GeometryArrayStorage::Packed(PackedStorage::Lines {
-            coords,
-            offsets,
-            row_map,
-        }) => {
-            let offsets = offsets.as_slice();
-            let map = row_map.as_deref();
-            let rows = crate::array::line_logical_len(offsets, map);
-            let mut count = 0_u128;
-            for row in 0..rows {
-                if missing.is_some_and(|mask| mask.is_missing(row)) {
-                    continue;
-                }
-                count = count
-                    .checked_add(
-                        u128::try_from(map.csr_window(offsets, row).len())
-                            .expect("packed line count fits u128"),
-                    )
-                    .expect("logical packed line count fits u128");
-            }
-            Ok(CoordinateMeasure::from_count_and_axes(
-                count,
-                if count == 0 {
-                    CoordinateAxes::XY
-                } else {
-                    coords.axes()
-                },
-            ))
-        },
-        GeometryArrayStorage::Packed(PackedStorage::Polygons {
-            coords,
-            ring_offsets,
-            polygon_offsets,
-            row_map,
-        }) => {
-            let rings = ring_offsets.as_slice();
-            let polygons = polygon_offsets.as_slice();
-            let map = row_map.as_deref();
-            let rows = crate::array::polygon_logical_len(polygons, map);
-            let mut count = 0_u128;
-            for row in 0..rows {
-                if missing.is_some_and(|mask| mask.is_missing(row)) {
-                    continue;
-                }
-                let row_rings = map.csr_window(polygons, row);
-                if !row_rings.is_empty() {
-                    let vertices = csr_value_window(rings, row_rings).len();
-                    count = count
-                        .checked_add(
-                            u128::try_from(vertices).expect("packed polygon count fits u128"),
-                        )
-                        .expect("logical packed polygon count fits u128");
-                }
-            }
-            Ok(CoordinateMeasure::from_count_and_axes(
-                count,
-                if count == 0 {
-                    CoordinateAxes::XY
-                } else {
-                    coords.axes()
-                },
-            ))
-        },
-    }
+    let logical_len = missing.map_or_else(|| storage.len(), ValidityMask::len);
+    measure_storage_range(py, storage, missing, 0..logical_len)
+}
+
+pub(crate) fn measure_storage_range<'py>(
+    py: Python<'py>,
+    storage: &GeometryArrayStorage,
+    missing: Option<&ValidityMask>,
+    rows: Range<usize>,
+) -> PyResult<CoordinateMeasure<'py>> {
+    // ShapeOwnerKey holds addresses into these owners; keep its memo inside the
+    // borrow that names them instead of returning a reusable query.
+    let mut query = CoordinateMeasureQuery::default();
+    query.storage_range(py, storage, missing, rows)
+}
+
+pub(crate) fn measure_storage_payload_bytes<'py>(
+    py: Python<'py>,
+    storage: &GeometryArrayStorage,
+    missing: Option<&ValidityMask>,
+    rows: Range<usize>,
+) -> PyResult<ExactPayloadBytes<'py>> {
+    // ShapeOwnerKey addresses storage-backed members, so the memo cannot
+    // outlive the storage and mask borrowed for this range.
+    let mut query = PayloadBytesQuery::default();
+    query.storage_range(py, storage, missing, rows)
 }
 
 pub(crate) fn checked_vector_len<T>(count: usize, label: &str) -> PyResult<usize> {

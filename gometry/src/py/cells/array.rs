@@ -37,6 +37,7 @@ use crate::py::numpy::{
     uint64_slice_array,
 };
 use crate::py::row::{RowContainer, RowGetItemContainer, array_getitem, slice_row_indices};
+use crate::py::sizeof::python_sizeof;
 use crate::py::vectors::Groups;
 
 /// An immutable array of one grid cell type backed by a shared ``uint64`` id
@@ -279,13 +280,15 @@ impl PyCellArray {
             0
         } else {
             crate::heap_size::ARC_CONTROL_BYTES
-                + size_of::<Vec<u64>>()
-                + range.len() * size_of::<u64>()
+                .saturating_add(size_of::<Vec<u64>>())
+                .saturating_add(range.len().saturating_mul(size_of::<u64>()))
         };
         let missing = self.storage.missing.as_ref().map_or(0, |_| {
-            crate::heap_size::ARC_CONTROL_BYTES + size_of::<Vec<u8>>() + range.len().div_ceil(8)
+            crate::heap_size::ARC_CONTROL_BYTES
+                .saturating_add(size_of::<Vec<u8>>())
+                .saturating_add(range.len().div_ceil(8))
         });
-        ids + missing
+        ids.saturating_add(missing)
     }
 
     /// The grid kind of these cells.
@@ -618,7 +621,8 @@ enum CellNumpyArrayKind {
 
 impl HeapSize for PyCellArray {
     fn heap_bytes(&self) -> usize {
-        self.logical_heap_bytes_range(0..self.len()) + self.selection.heap_bytes()
+        self.logical_heap_bytes_range(0..self.len())
+            .saturating_add(self.selection.heap_bytes())
     }
 }
 
@@ -694,8 +698,13 @@ impl PyCellArray {
     /// ``uint64`` id payload, missing flags, and any row-selection map. Shared
     /// backing buffers are reported like NumPy views, not as the full parent
     /// allocation.
-    fn __sizeof__(&self) -> usize {
-        self.total_size()
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(size_of::<Self>(), self.heap_bytes())
     }
 
     /// Grid-system token for the stored cell type.

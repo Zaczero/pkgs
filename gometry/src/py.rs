@@ -20,6 +20,7 @@ pub(crate) mod index;
 pub(crate) mod numpy;
 pub(crate) mod replace;
 pub(crate) mod row;
+pub(crate) mod sizeof;
 pub(crate) mod support;
 /// Test-owned PEP-3118 producers (private `_indirect_*` surface).
 pub(crate) mod test_buffers;

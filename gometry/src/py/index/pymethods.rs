@@ -13,6 +13,7 @@ use crate::py::index::{
     restore_spatial_index, spatial_index, usize_array, validate_nearest_k,
 };
 use crate::py::numpy::int64_array;
+use crate::py::sizeof::python_sizeof;
 use crate::{CsrBuilder, parse_spatial_index_handle};
 
 type SpatialIndexReduce = (Py<PyAny>, (crate::PyGeometryArray, bool));
@@ -323,8 +324,13 @@ impl PySpatialIndex {
     /// STR tree, overflow STR runs, frame metadata, and any built geodesic cap
     /// cache. Shared buffers are reported as this index's logical retained
     /// footprint.
-    pub(crate) fn __sizeof__(&self) -> usize {
-        self.total_size()
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    pub(crate) fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.heap_bytes())
     }
 
     /// Return exact predicate-refined matches for a query geometry or array.

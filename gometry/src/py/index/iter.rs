@@ -3,7 +3,9 @@
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::{Py, PyRef, PyResult, Python, pyclass, pymethods};
 
+use crate::HeapSize as _;
 use crate::py::index::PySpatialIndex;
+use crate::py::sizeof::python_sizeof;
 
 /// Lazy ascending-handle iterator over a live index. It scans the sparse handle
 /// table on demand instead of collecting and sorting the live entries before
@@ -27,8 +29,18 @@ impl PySpatialIndexIter {
         self.remaining
     }
 
-    fn __sizeof__(&self, py: Python<'_>) -> usize {
-        size_of_val(self).saturating_add(self.source.borrow(py).__sizeof__())
+    /// ``sys.getsizeof`` support for this iterator and its retained index.
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    fn __sizeof__(&self, py: Python<'_>) -> PyResult<isize> {
+        let source = self.source.borrow(py);
+        python_sizeof(
+            size_of_val(self).saturating_add(size_of_val(&*source)),
+            source.heap_bytes(),
+        )
     }
 
     fn __next__(&mut self, py: Python<'_>) -> PyResult<Option<usize>> {

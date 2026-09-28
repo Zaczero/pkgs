@@ -476,7 +476,13 @@ class CoordinatesIterator:
     def __length_hint__(self) -> int:
         """Advisory remaining count, capped at Python's largest sequence length."""
     def __sizeof__(self) -> int:
-        """``sys.getsizeof`` support for the iterator and its retained view."""
+        """``sys.getsizeof`` support for the iterator and its retained view.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
+        """
     def __iter__(self) -> Self:
         """Implement iter(self)."""
     def __next__(self) -> tuple[float | None, ...]:
@@ -565,6 +571,11 @@ class Coordinates(Sequence[tuple[float | None, ...]]):
         reported like NumPy views, not as the full parent allocation. Parent
         geometry/array sidecars (prepared caches, coverage membership, …) are
         not owned by the view and are not counted here.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this coordinate view."""
@@ -935,6 +946,11 @@ class Geometry:
         Returns
         -------
         int
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     @property
     def nbytes(self) -> int:
@@ -5564,6 +5580,11 @@ class GeometryPartsIterator(Generic[_GeometryT_co]):
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
 
     def __iter__(self) -> Self:
@@ -5595,6 +5616,11 @@ class GeometryParts(Sequence[_GeometryT_co], Generic[_GeometryT_co]):
         """``sys.getsizeof`` support: this lazy view plus the source geometry's
         logical coordinate heap. The view shares the geometry; it does not
         materialize individual parts.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this parts view."""
@@ -5698,6 +5724,11 @@ class GeometryArrayIterator(Generic[_GeometryT_co]):
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
 
     def __iter__(self) -> Self:
@@ -6021,6 +6052,11 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Lazy cache slots that have not been populated do not inflate the total.
         Shared backing buffers are accounted like NumPy views: the logical view
         is reported, not the whole shared parent allocation.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def index(self, value: object, start: int = 0, stop: int | None = None) -> int:
         """First index of a structurally equal element in `[start, stop)`
@@ -10133,6 +10169,11 @@ class Groups(Sequence[_GroupValuesT_co], Generic[_GroupValuesT_co]):
         """``sys.getsizeof`` support: the wrapper plus this group's logical CSR
         payload. Sliced groups report the visible values window and rebased
         logical offsets, not the whole shared backing allocation.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __class_getitem__(cls, key: Any) -> types.GenericAlias:
         """See PEP 585"""
@@ -10253,6 +10294,11 @@ class GroupsIterator(Iterator[_GroupValuesT_co]):
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
 
 @final
@@ -10265,7 +10311,14 @@ class SpatialIndexIterator(Iterator[int]):
     def __iter__(self) -> Self: ...
     def __next__(self) -> int: ...
     def __length_hint__(self) -> int: ...
-    def __sizeof__(self) -> int: ...
+    def __sizeof__(self) -> int:
+        """``sys.getsizeof`` support for this iterator and its retained index.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
+        """
 
 @final
 class SpatialIndex(Mapping[int, Geometry]):
@@ -10321,6 +10374,11 @@ class SpatialIndex(Mapping[int, Geometry]):
         STR tree, overflow STR runs, frame metadata, and any built geodesic cap
         cache. Shared buffers are reported as this index's logical retained
         footprint.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this spatial index."""
@@ -11694,6 +11752,11 @@ class CellArrayIterator(Generic[_CellT_co]):
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
 
     def __iter__(self) -> Self:
@@ -11728,6 +11791,11 @@ class CellArray(Sequence[_CellT_co]):
         ``uint64`` id payload, missing flags, and any row-selection map. Shared
         backing buffers are reported like NumPy views, not as the full parent
         allocation.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this cell array."""
@@ -12481,6 +12549,11 @@ class H3VertexArrayIterator:
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __iter__(self) -> Self:
         """Implement iter(self)."""
@@ -12735,6 +12808,11 @@ class H3EdgeArrayIterator:
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the iterator plus the logical
         payload it keeps alive while iterating.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __iter__(self) -> Self:
         """Implement iter(self)."""
@@ -14458,6 +14536,11 @@ class ValidationReport:
     def __sizeof__(self) -> int:
         """``sys.getsizeof`` support: the report plus the retained geometry
         coordinate payload and any validation issue strings.
+
+        Raises
+        ------
+        OverflowError
+            If the reported size exceeds Python's ``Py_ssize_t`` range.
         """
     def __repr__(self) -> str:
         """Return the bounded representation of this validation report."""

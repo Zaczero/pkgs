@@ -1045,6 +1045,130 @@ def test_packed_geometry_array_nbytes_is_logical_for_slices() -> None:
     assert sys.getsizeof(polys[0:10]) > polys[0:10].nbytes
 
 
+def test_mixed_geometry_array_nbytes_counts_multipart_members_and_holes() -> None:
+    multipoint = gm.MultiPoint([(0.0, 0.0), (1.0, 1.0)])
+    multiline = gm.MultiLineString([
+        [(0.0, 0.0), (1.0, 0.0)],
+        [(2.0, 0.0), (3.0, 0.0), (4.0, 0.0)],
+    ])
+    shell = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+    hole = [(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0)]
+    polygon_with_hole = gm.Polygon(shell, holes=[hole])
+    multipolygon = gm.MultiPolygon(
+        [gm.box(20.0, 20.0, 21.0, 21.0), polygon_with_hole]
+    )
+    line_zm = gm.LineString(
+        [(30.0, 0.0), (31.0, 0.0)], z=[1.0, 2.0], m=[3.0, 4.0]
+    )
+    values = gm.GeometryArray([
+        multipoint,
+        multiline,
+        multipolygon,
+        polygon_with_hole,
+        gm.GeometryCollection([]),
+        line_zm,
+    ])
+
+    assert multipoint.nbytes == 2 * 16
+    assert multiline.nbytes == 5 * 16
+    assert multipolygon.nbytes == 15 * 16
+    assert polygon_with_hole.nbytes == 10 * 16
+    assert line_zm.nbytes == 2 * 4 * 8
+    assert values.nbytes == 32 + 80 + 240 + 160 + 64
+
+
+def test_groups_nbytes_uses_exact_shared_nested_range_measure() -> None:
+    geometry = gm.Point(0.0, 0.0)
+    for _ in range(128):
+        geometry = gm.GeometryCollection([geometry, geometry])
+    one_row_bytes = 16 * (1 << 128)
+
+    values = gm.GeometryArray([geometry])[[0, 0, 0]]
+    assert values.nbytes == 3 * one_row_bytes
+
+    groups = _lib._unpickle_geometry_groups_v1(values, [0, 1, 3])
+    assert groups.nbytes == 3 * one_row_bytes + 3 * 8
+    assert groups[:1].nbytes == one_row_bytes + 2 * 8
+    assert groups[1:].nbytes == 2 * one_row_bytes + 2 * 8
+
+
+def test_geometry_nbytes_preserves_u128_values_above_usize() -> None:
+    geometry = gm.Point(0.0, 0.0)
+    for _ in range(64):
+        geometry = gm.GeometryCollection([geometry, geometry])
+    one_row_bytes = 16 * (1 << 64)
+
+    values = gm.GeometryArray([geometry])
+    assert values.nbytes == one_row_bytes
+
+    groups = _lib._unpickle_geometry_groups_v1(values, [0, 1])
+    assert groups.nbytes == one_row_bytes + 2 * 8
+
+
+def test_shared_shape_sizeof_raises_when_py_ssize_t_would_overflow() -> None:
+    geometry = gm.Point(0.0, 0.0)
+    for _ in range(128):
+        geometry = gm.GeometryCollection([geometry, geometry])
+    values = gm.GeometryArray([geometry])
+    groups = _lib._unpickle_geometry_groups_v1(values, [0, 1])
+    sized = (
+        geometry,
+        geometry.parts,
+        geometry.coords,
+        values,
+        groups,
+        iter(geometry.parts),
+        iter(values),
+        iter(groups),
+    )
+
+    for value in sized:
+        with pytest.raises(OverflowError):
+            value.__sizeof__()
+        with pytest.raises(OverflowError):
+            sys.getsizeof(value)
+
+
+def test_group_size_payload_preserves_nullable_packed_rows_and_cells() -> None:
+    points = gm.GeometryArray([gm.Point(0.0, 0.0), None, gm.Point(1.0, 1.0)])
+    point_groups = _lib._unpickle_geometry_groups_v1(points, [0, 1, 3])
+    assert points.nbytes == 2 * 2 * 8
+    assert point_groups.nbytes == points.nbytes + 3 * 8
+    assert point_groups[1:].nbytes == 2 * 8 + 2 * 8
+
+    mixed = gm.GeometryArray([
+        gm.Point(0.0, 0.0),
+        gm.LineString([(0.0, 0.0), (1.0, 1.0)]),
+        None,
+    ])
+    mixed_groups = _lib._unpickle_geometry_groups_v1(mixed, [0, 1, 3])
+    assert mixed.nbytes == 16 + 2 * 2 * 8
+    assert mixed_groups.nbytes == mixed.nbytes + 3 * 8
+    assert mixed_groups[1:].nbytes == 2 * 2 * 8 + 2 * 8
+
+    first_line = gm.LineString([(0.0, 0.0), (1.0, 1.0)], z=[1.0, 2.0], m=[3.0, 4.0])
+    last_line = gm.LineString([(2.0, 0.0), (3.0, 1.0)], z=[5.0, 6.0], m=[7.0, 8.0])
+    lines = gm.GeometryArray([first_line, None, last_line])
+    line_groups = _lib._unpickle_geometry_groups_v1(lines, [0, 2, 3])
+    assert lines.nbytes == 2 * 2 * 4 * 8
+    assert line_groups.nbytes == lines.nbytes + 3 * 8
+    assert line_groups[1:].nbytes == 2 * 4 * 8 + 2 * 8
+
+    polygons = gm.GeometryArray([gm.box(0, 0, 1, 1), None, gm.box(2, 2, 3, 3)])
+    polygon_groups = _lib._unpickle_geometry_groups_v1(polygons, [0, 2, 3])
+    assert polygons.nbytes == 2 * 5 * 2 * 8
+    assert polygon_groups.nbytes == polygons.nbytes + 3 * 8
+    assert polygon_groups[1:].nbytes == 5 * 2 * 8 + 2 * 8
+
+    dense_cells = gm.h3_cells([0.0], [0.0], resolution=1)
+    cells = gm.CellArray([dense_cells[0], None])
+    cell_groups = _lib._unpickle_cell_groups_v1(cells, [0, 2])
+    assert cells.nbytes == 2 * 8
+    assert cell_groups.nbytes == cells.nbytes + 2 * 8
+    cell_groups_with_empty = _lib._unpickle_cell_groups_v1(cells, [0, 0, 2])
+    assert cell_groups_with_empty[:1].nbytes == 2 * 8
+
+
 def test_cellarray_coordinates_and_groups_memory_protocols() -> None:
     cells = gm.h3_cells([0.0, 1.0, 2.0], [0.0, 1.0, 2.0], resolution=1)
     assert cells.nbytes == 3 * 8

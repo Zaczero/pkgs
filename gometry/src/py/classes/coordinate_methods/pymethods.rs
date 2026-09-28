@@ -11,6 +11,7 @@ use crate::py::classes::coordinate_methods::{
 };
 use crate::py::numpy::{astype_readonly, int64_array, numpy_module};
 use crate::py::row::normalize_row;
+use crate::py::sizeof::python_sizeof;
 
 #[pymethods]
 impl PyCoordinates {
@@ -50,8 +51,13 @@ impl PyCoordinates {
     /// reported like NumPy views, not as the full parent allocation. Parent
     /// geometry/array sidecars (prepared caches, coverage membership, …) are
     /// not owned by the view and are not counted here.
-    pub fn __sizeof__(&self) -> usize {
-        std::mem::size_of::<Self>().saturating_add(self.view.logical_heap_bytes())
+    ///
+    /// Raises
+    /// ------
+    /// OverflowError
+    ///     If the reported size exceeds Python's ``Py_ssize_t`` range.
+    pub fn __sizeof__(&self) -> PyResult<isize> {
+        python_sizeof(std::mem::size_of::<Self>(), self.view.logical_heap_bytes())
     }
 
     /// Select vertices by integer or slice.
