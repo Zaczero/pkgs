@@ -23,8 +23,8 @@ line needs.
     ```
 
 `h2corn` supports **Python 3.11 or newer**. Wheels are published for Linux,
-macOS, and Windows, including ABI-matched free-threaded CPython (`cp3XXt`)
-builds. The multi-worker supervisor is Unix-only — see
+macOS, and Windows, including ABI-matched free-threaded CPython 3.14t builds.
+The multi-worker supervisor is Unix-only — see
 [Operations](deployment/operations.md#worker-pool).
 
 ## Run your first server
