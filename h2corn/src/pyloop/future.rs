@@ -9,11 +9,11 @@ use std::mem;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use parking_lot::Mutex;
-use pyo3::exceptions::PyStopIteration;
 use pyo3::exceptions::asyncio::{CancelledError, InvalidStateError};
+use pyo3::exceptions::{PyBaseException, PyStopIteration, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::sync::PyOnceLock;
-use pyo3::types::PyDict;
+use pyo3::types::{PyDict, PyTraceback, PyType};
 use smallvec::SmallVec;
 use tokio::task::AbortHandle;
 
@@ -343,10 +343,52 @@ impl RustFuture {
         exc_val: Option<Py<PyAny>>,
         exc_tb: Option<Py<PyAny>>,
     ) -> PyResult<Py<PyAny>> {
-        drop((exc_val, exc_tb));
-        Err(PyErr::from_value(
-            exc_type.call0().unwrap_or_else(|_| exc_type.clone()),
-        ))
+        let py = exc_type.py();
+        let traceback = match exc_tb {
+            Some(traceback) => Some(
+                traceback
+                    .bind(py)
+                    .cast::<PyTraceback>()
+                    .map_err(|_| {
+                        PyTypeError::new_err("throw() third argument must be a traceback object")
+                    })?
+                    .clone(),
+            ),
+            None => None,
+        };
+
+        let error = if exc_type.is_instance_of::<PyBaseException>() {
+            if exc_val.is_some() {
+                return Err(PyTypeError::new_err(
+                    "instance exception may not have a separate value",
+                ));
+            }
+            PyErr::from_value(exc_type.clone())
+        } else {
+            let Ok(exception_type) = exc_type.cast::<PyType>() else {
+                return Err(invalid_throw_exception_type(exc_type)?);
+            };
+            if !exception_type.is_subclass_of::<PyBaseException>()? {
+                return Err(invalid_throw_exception_type(exc_type)?);
+            }
+
+            match exc_val {
+                None => PyErr::from_type(exception_type.clone(), ()),
+                Some(value) => {
+                    let value = value.bind(py);
+                    if value.is_instance(exception_type.as_any())? {
+                        PyErr::from_value(value.clone())
+                    } else {
+                        PyErr::from_type(exception_type.clone(), value.clone().unbind())
+                    }
+                },
+            }
+        };
+
+        if let Some(traceback) = traceback {
+            error.set_traceback(py, Some(traceback));
+        }
+        Err(error)
     }
 
     fn close(self_: &Bound<'_, Self>) -> PyResult<()> {
@@ -366,6 +408,13 @@ impl fmt::Debug for RustFuture {
             .field("state", &state)
             .finish_non_exhaustive()
     }
+}
+
+fn invalid_throw_exception_type(exc_type: &Bound<'_, PyAny>) -> PyResult<PyErr> {
+    let type_name = exc_type.get_type().name()?.extract::<String>()?;
+    Ok(PyTypeError::new_err(format!(
+        "exceptions must be classes or instances deriving from BaseException, not {type_name}"
+    )))
 }
 
 fn cancelled_error(py: Python<'_>, msg: Option<&Py<PyAny>>) -> PyErr {
@@ -417,12 +466,62 @@ fn schedule_done_callback(
 
 #[cfg(test)]
 mod tests {
-    use pyo3::Python;
+    use std::ffi::CStr;
+
     use pyo3::ffi::c_str;
     use pyo3::types::{PyAnyMethods as _, PyDict, PyDictMethods as _};
+    use pyo3::{PyResult, Python};
 
     use super::{FutureState, new_rust_future};
     use crate::pyloop::ShardHandle;
+
+    fn run_throw_test(py: Python<'_>, test: &CStr) -> PyResult<()> {
+        let future = new_rust_future(py, ShardHandle::test_stub(py))?;
+        let locals = PyDict::new(py);
+        locals.set_item("future", &future)?;
+        drop(future);
+        py.run(
+            c_str!(
+                r#"
+import warnings
+
+async def dormant():
+    await object()
+
+def observe_native(*args):
+    coroutine = dormant()
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            coroutine.throw(*args)
+    except BaseException as error:
+        return error
+    else:
+        raise AssertionError("native coroutine.throw() returned")
+    finally:
+        coroutine.close()
+
+def observe_future(*args):
+    try:
+        future.throw(*args)
+    except BaseException as error:
+        return error
+    else:
+        raise AssertionError("_RustFuture.throw() returned")
+
+def assert_matches_native(*args):
+    expected = observe_native(*args)
+    actual = observe_future(*args)
+    assert type(actual) is type(expected), (type(actual), type(expected))
+    assert actual.args == expected.args, (actual.args, expected.args)
+    return expected, actual
+"#
+            ),
+            Some(&locals),
+            Some(&locals),
+        )?;
+        py.run(test, Some(&locals), Some(&locals))
+    }
 
     #[test]
     fn callback_equality_can_reenter_done() {
@@ -681,6 +780,202 @@ event_loop.close()
                 Some(&locals),
             )
             .expect("completion must take callback ownership exactly once");
+        });
+    }
+
+    #[test]
+    fn throw_preserves_exception_instance() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+error = ValueError("same instance")
+expected, actual = assert_matches_native(error)
+assert expected is error
+assert actual is error
+assert not future.done()
+"#
+                ),
+            )
+            .expect("throwing an exception instance must preserve its identity");
+        });
+    }
+
+    #[test]
+    fn throw_preserves_matching_exception_instance() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+error = ValueError("same instance")
+expected, actual = assert_matches_native(ValueError, error)
+assert expected is error
+assert actual is error
+"#
+                ),
+            )
+            .expect("a matching exception value must be preserved");
+        });
+    }
+
+    #[test]
+    fn throw_constructs_class_without_value_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+expected, actual = assert_matches_native(ValueError)
+assert actual.args == ()
+"#
+                ),
+            )
+            .expect("an exception class without a value must be instantiated");
+        });
+    }
+
+    #[test]
+    fn throw_constructs_class_from_value_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+expected, actual = assert_matches_native(ValueError, "single value")
+assert actual.args == ("single value",)
+"#
+                ),
+            )
+            .expect("an exception class must be called with its supplied value");
+        });
+    }
+
+    #[test]
+    fn throw_wraps_nonmatching_exception_instance_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+other_exception = TypeError("constructor argument")
+expected, actual = assert_matches_native(ValueError, other_exception)
+assert actual.args == (other_exception,)
+assert actual.args[0] is other_exception
+"#
+                ),
+            )
+            .expect("a nonmatching exception instance must be passed to the class");
+        });
+    }
+
+    #[test]
+    fn throw_constructs_class_from_tuple_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+expected, actual = assert_matches_native(ValueError, ("first", "second"))
+assert actual.args == ("first", "second")
+"#
+                ),
+            )
+            .expect("a tuple value must be unpacked as exception arguments");
+        });
+    }
+
+    #[test]
+    fn throw_attaches_traceback_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+try:
+    raise LookupError("traceback source")
+except LookupError as source:
+    supplied_traceback = source.__traceback__
+
+expected, actual = assert_matches_native(RuntimeError, "with traceback", supplied_traceback)
+
+def contains_traceback(error, target):
+    traceback = error.__traceback__
+    while traceback is not None:
+        if traceback is target:
+            return True
+        traceback = traceback.tb_next
+    return False
+
+assert contains_traceback(expected, supplied_traceback)
+assert contains_traceback(actual, supplied_traceback)
+"#
+                ),
+            )
+            .expect("the supplied traceback must remain attached");
+        });
+    }
+
+    #[test]
+    fn throw_rejects_instance_with_separate_value_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+error = ValueError("instance")
+expected, actual = assert_matches_native(error, "separate value")
+"#
+                ),
+            )
+            .expect("an exception instance cannot have a separate value");
+        });
+    }
+
+    #[test]
+    fn throw_rejects_non_exception_type_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+expected, actual = assert_matches_native(object)
+"#
+                ),
+            )
+            .expect("throw must reject non-exception types");
+        });
+    }
+
+    #[test]
+    fn throw_rejects_non_traceback_like_native_coroutine() {
+        Python::initialize();
+        Python::attach(|py| {
+            run_throw_test(
+                py,
+                c_str!(
+                    r#"
+expected, actual = assert_matches_native(RuntimeError, "value", object())
+
+class ConstructorFailure(Exception):
+    def __new__(cls, *args):
+        raise LookupError("constructor must not run")
+
+expected, actual = assert_matches_native(ConstructorFailure, "value", object())
+"#
+                ),
+            )
+            .expect("throw must reject a non-traceback third argument");
         });
     }
 }
