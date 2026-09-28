@@ -19,6 +19,7 @@ from h2corn import Config, Server
 from h2corn import _server as server_module
 
 from tests._support import (
+    HANG_BOUND,
     assert_serve_reusable,
     find_free_port,
     h2_request,
@@ -3058,7 +3059,11 @@ async def test_sigkilled_supervisor_leaves_no_orphan_workers(
     try:
         await wait_for_port(port)
         await _wait_for_h2_success(port=port, body=b'alive')
-        worker_pids = _worker_pids(process.pid)
+        worker_pids = await _wait_for_worker_count(
+            supervisor_pid=process.pid,
+            count=workers,
+            timeout=HANG_BOUND,
+        )
         assert len(worker_pids) == workers
 
         # Hard-kill the supervisor (no graceful teardown): PR_SET_PDEATHSIG
