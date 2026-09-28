@@ -529,12 +529,12 @@ impl CoordSeq {
         physical_len: usize,
     ) -> Option<CoordWindow> {
         let first = *rows.first()?;
-        let end = first + rows.len();
+        let end = first.checked_add(rows.len())?;
         (rows.len() <= 1
             || rows
                 .iter()
                 .enumerate()
-                .all(|(offset, &row)| row == first + offset))
+                .all(|(offset, &row)| row.checked_sub(first) == Some(offset)))
         .then(|| CoordWindow::checked(first..end, physical_len).ok())
         .flatten()
     }
@@ -949,12 +949,12 @@ impl<'a> IntoIterator for &'a CoordSeq {
 #[cfg(test)]
 pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<CoordSeq> {
     debug_assert_eq!(left.axes(), right.axes());
-    let len = left.len() + right.len();
+    let len = left.len().saturating_add(right.len());
     ensure_coordseq_vertex_capacity(len)?;
-    let xs = concat_f64_slices(left.xs(), right.xs());
-    let ys = concat_f64_slices(left.ys(), right.ys());
+    let xs = concat_f64_slices(left.xs(), right.xs(), len);
+    let ys = concat_f64_slices(left.ys(), right.ys(), len);
     let zs = match (left.zs(), right.zs()) {
-        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs)),
+        (Some(left_zs), Some(right_zs)) => Some(concat_f64_slices(left_zs, right_zs, len)),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
@@ -966,7 +966,7 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
         },
     };
     let ms = match (left.ms(), right.ms()) {
-        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms)),
+        (Some(left_ms), Some(right_ms)) => Some(concat_f64_slices(left_ms, right_ms, len)),
         (None, None) => None,
         _ => {
             debug_assert!(false, "concat_coord_columns requires matching axes");
@@ -983,8 +983,8 @@ pub(crate) fn concat_coord_columns(left: &CoordSeq, right: &CoordSeq) -> Result<
 /// Two-slice join into mutable storage whose original capacity is retained by
 /// the final shared owner.
 #[cfg(test)]
-fn concat_f64_slices(left: &[f64], right: &[f64]) -> Vec<f64> {
-    let mut values = Vec::with_capacity(left.len() + right.len());
+fn concat_f64_slices(left: &[f64], right: &[f64], output_len: usize) -> Vec<f64> {
+    let mut values = Vec::with_capacity(output_len);
     values.extend_from_slice(left);
     values.extend_from_slice(right);
     values
@@ -1312,7 +1312,7 @@ mod select_soundness_tests {
         fn next(&mut self) -> Option<usize> {
             (self.index < self.items.len()).then(|| {
                 let item = self.items[self.index];
-                self.index += 1;
+                self.index = self.index.wrapping_add(1);
                 item
             })
         }

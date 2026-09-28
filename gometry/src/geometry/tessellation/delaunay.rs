@@ -31,7 +31,7 @@ thread_local! {
 
 #[cfg(test)]
 fn note_constrained_output_reserve() {
-    CONSTRAINED_OUTPUT_RESERVES.with(|cell| cell.set(cell.get() + 1));
+    CONSTRAINED_OUTPUT_RESERVES.with(|cell| cell.set(cell.get().saturating_add(1)));
 }
 
 #[cfg(test)]

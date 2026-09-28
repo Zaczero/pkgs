@@ -517,11 +517,16 @@ fn exact_periodic_oracle(value: f64, period: f64) -> f64 {
     let negative = value.is_sign_negative();
     let (significand, exponent) = decompose(value.abs());
     let (period_significand, period_exponent) = decompose(period);
-    let shift = exponent - period_exponent;
+    let shift = exponent
+        .checked_sub(period_exponent)
+        .expect("binary64 exponent difference fits i32");
     assert!(shift >= 0);
-    let mut remainder = significand % period_significand;
+    let mut remainder = significand.rem_euclid(period_significand);
     for _ in 0..shift {
-        remainder = ((u128::from(remainder) * 2) % u128::from(period_significand)) as u64;
+        let doubled = u128::from(remainder)
+            .checked_mul(2)
+            .expect("a reduced binary64 significand fits in u128");
+        remainder = doubled.rem_euclid(u128::from(period_significand)) as u64;
     }
     let mut result = (remainder as f64) * 2.0_f64.powi(period_exponent);
     if negative {
@@ -543,7 +548,10 @@ fn decompose(value: f64) -> (u64, i32) {
     assert!(biased > 0);
     (
         (bits & ((1_u64 << 52) - 1)) | (1_u64 << 52),
-        biased - 1023 - 52,
+        biased
+            .checked_sub(1023)
+            .and_then(|exponent| exponent.checked_sub(52))
+            .expect("normal binary64 exponent fits i32"),
     )
 }
 

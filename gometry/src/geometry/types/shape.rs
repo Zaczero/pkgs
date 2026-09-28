@@ -1929,11 +1929,12 @@ mod mapping_error_tests {
         let error = collection
             .try_map_members(|shape| {
                 seen += 1;
-                match shape {
-                    Shape::Point(point) if point.x == 1.0 => {
-                        Err(GeometryErrorKind::message("second member"))
-                    },
-                    _ => Ok(shape.clone()),
+                if let Shape::Point(point) = shape
+                    && point.x == 1.0
+                {
+                    Err(GeometryErrorKind::message("second member"))
+                } else {
+                    Ok(shape.clone())
                 }
             })
             .unwrap_err();
@@ -1962,10 +1963,7 @@ mod mapping_error_tests {
         let collection = two_point_collection();
         let filtered = collection
             .try_filter_map_owned_members(|shape| {
-                Ok(match shape {
-                    Shape::Point(point) if point.x == 1.0 => Some(Shape::Point(point)),
-                    _ => None,
-                })
+                Ok(matches!(&shape, Shape::Point(point) if point.x == 1.0).then_some(shape))
             })
             .unwrap();
         let Shape::GeometryCollection(collection) = filtered else {

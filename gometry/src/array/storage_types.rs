@@ -26,7 +26,7 @@ pub(crate) fn shape_iter_materializations() -> usize {
 
 #[cfg(test)]
 fn record_shape_iter_materialization() {
-    SHAPE_ITER_MATERIALIZATIONS.with(|count| count.set(count.get() + 1));
+    SHAPE_ITER_MATERIALIZATIONS.with(|count| count.set(count.get().saturating_add(1)));
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -924,8 +924,12 @@ mod tests {
         assert_eq!(hi, Some(expected_len));
         let mut yielded = 0_usize;
         while iter.next().is_some() {
-            yielded += 1;
-            let remaining = expected_len - yielded;
+            yielded = yielded
+                .checked_add(1)
+                .expect("an iterator cannot yield more than usize::MAX rows");
+            let remaining = expected_len
+                .checked_sub(yielded)
+                .expect("ShapesIter cannot yield beyond its exact size");
             let (lo, hi) = iter.size_hint();
             assert_eq!(lo, remaining, "size_hint lower after {yielded} yields");
             assert_eq!(

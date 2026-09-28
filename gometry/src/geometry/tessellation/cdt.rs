@@ -526,7 +526,9 @@ impl ConstrainedMesh {
     /// crossing a constraint toggles, crossing anything else does not.
     pub(super) fn inside_faces(&self) -> Vec<bool> {
         #[cfg(test)]
-        update_work(|counters| counters.inside_label_passes += 1);
+        update_work(|counters| {
+            counters.inside_label_passes = counters.inside_label_passes.saturating_add(1);
+        });
         let count = self.mesh.triangle_count();
         let mut labels = FaceLabels::new(count);
         let mut queue = VecDeque::with_capacity(count);
@@ -583,7 +585,9 @@ impl ConstrainedMesh {
             let xy = |site, points: &[Point]| site_xy(points, site);
             let mut bad = None;
             #[cfg(test)]
-            update_work(|counters| counters.bad_face_scans += 1);
+            update_work(|counters| {
+                counters.bad_face_scans = counters.bad_face_scans.saturating_add(1);
+            });
             for (face, &kept) in self.mesh.face_ids().zip(&inside) {
                 if !kept || !self.mesh.alive(face) {
                     continue;
@@ -803,7 +807,10 @@ impl ConstrainedMesh {
 
     fn constrained_pairs(&self) -> Result<HashSet<(usize, usize)>> {
         #[cfg(test)]
-        update_work(|counters| counters.constraint_reconstruction_passes += 1);
+        update_work(|counters| {
+            counters.constraint_reconstruction_passes =
+                counters.constraint_reconstruction_passes.saturating_add(1);
+        });
         let mut pairs = crate::collections::try_hash_set_with_capacity(self.mesh.edge_count())?;
         for edge in self.mesh.edge_ids() {
             if self.is_constrained(edge) && self.mesh.alive(edge.face()) {
@@ -818,7 +825,9 @@ impl ConstrainedMesh {
     /// an insertion has renumbered the cavity's slots.
     fn remark(&mut self, pairs: &HashSet<(usize, usize)>) {
         #[cfg(test)]
-        update_work(|counters| counters.flag_remark_passes += 1);
+        update_work(|counters| {
+            counters.flag_remark_passes = counters.flag_remark_passes.saturating_add(1);
+        });
         self.constrained = vec![false; self.mesh.edge_count()];
         for edge in self.mesh.edge_ids() {
             if !self.mesh.alive(edge.face()) {
@@ -1262,7 +1271,9 @@ mod regressions {
         xy.iter().map(|&(x, y)| Point::new_raw_xy(x, y)).collect()
     }
     fn ring_edges(n: usize) -> Vec<[usize; 2]> {
-        (0..n).map(|i| [i, (i + 1) % n]).collect()
+        (0..n)
+            .map(|i| [i, i.wrapping_add(1).rem_euclid(n)])
+            .collect()
     }
     fn inside_count(cdt: &ConstrainedMesh) -> usize {
         let inside = cdt.inside_faces();

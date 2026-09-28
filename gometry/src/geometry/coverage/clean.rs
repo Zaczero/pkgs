@@ -272,7 +272,11 @@ mod tests {
         maxy: f64,
         subdivisions: usize,
     ) -> Shape {
-        let mut points = Vec::with_capacity(subdivisions * 4 + 1);
+        let point_capacity = subdivisions
+            .checked_mul(4)
+            .and_then(|count| count.checked_add(1))
+            .expect("test rectangle point count fits usize");
+        let mut points = Vec::with_capacity(point_capacity);
         for index in 0..=subdivisions {
             let fraction = index as f64 / subdivisions as f64;
             points.push(Point::new_raw_xy(minx + (maxx - minx) * fraction, miny));

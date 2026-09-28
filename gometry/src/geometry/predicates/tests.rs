@@ -117,13 +117,15 @@ mod convex_tests {
     /// ONE side (this also rejects self-intersecting "stars", whose chords
     /// straddle vertices). A zero-area (all-collinear) ring is not a region.
     fn oracle_convex(ring: &[Point]) -> bool {
-        let n = ring.len();
-        if n < 3 {
+        if ring.len() < 3 {
             return true;
         }
         let mut any_turn = false;
-        for i in 0..n {
-            let (a, b) = (ring[i], ring[(i + 1) % n]);
+        for (a, b) in ring
+            .iter()
+            .copied()
+            .zip(ring.iter().copied().cycle().skip(1))
+        {
             let (mut cw, mut ccw) = (false, false);
             for &c in ring {
                 match orientation(a, b, c) {

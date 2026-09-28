@@ -139,7 +139,7 @@ impl RowProductOwner {
     fn cell(&self, physical: usize) -> Arc<RowProductChunk> {
         let chunk_index = physical / ROWS_PER_CHUNK;
         #[cfg(test)]
-        DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
+        DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get().saturating_add(1)));
         let mut chunks = self
             .chunks
             .lock()
@@ -156,7 +156,7 @@ impl RowProductOwner {
     fn existing_cell(&self, physical: usize) -> Option<Arc<RowProductChunk>> {
         let chunk_index = physical / ROWS_PER_CHUNK;
         #[cfg(test)]
-        DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get() + 1));
+        DIRECTORY_RESOLUTIONS.with(|count| count.set(count.get().saturating_add(1)));
         let chunks = self
             .chunks
             .lock()
@@ -866,9 +866,11 @@ mod frame_cache_row_tests {
                 .rows_with_missing(|| Option::<f64>::None)
                 .map(|row| match row {
                     ArrayRow::Missing { value, .. } => value,
-                    ArrayRow::Present(row) => match row.row() {
-                        ShapeRow::Point(point) => Some(point.x),
-                        _ => unreachable!("point fixture yields point rows"),
+                    ArrayRow::Present(row) => {
+                        let ShapeRow::Point(point) = row.row() else {
+                            unreachable!("point fixture yields point rows");
+                        };
+                        Some(point.x)
                     },
                 })
                 .collect::<Vec<_>>()

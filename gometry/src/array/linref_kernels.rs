@@ -252,10 +252,10 @@ mod tests {
     }
 
     fn point_xyzm(shape: &Shape) -> (f64, f64, Option<f64>, Option<f64>) {
-        match shape {
-            Shape::Point(point) => (point.x, point.y, point.z(), point.m()),
-            other => panic!("expected point, got {other:?}"),
-        }
+        let Shape::Point(point) = shape else {
+            panic!("expected point, got {shape:?}");
+        };
+        (point.x, point.y, point.z(), point.m())
     }
 
     #[test]

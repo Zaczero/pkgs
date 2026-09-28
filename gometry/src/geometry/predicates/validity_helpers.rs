@@ -20,13 +20,16 @@ pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
     }
 
     let count = segments.len();
-    let mut degree: HashMap<PointKey, u32> = HashMap::with_capacity(count * 2);
-    let mut adjacency: HashMap<PointKey, Vec<usize>> = HashMap::with_capacity(count * 2);
+    let map_capacity = count.saturating_mul(2);
+    let mut degree: HashMap<PointKey, usize> = HashMap::with_capacity(map_capacity);
+    let mut adjacency: HashMap<PointKey, Vec<usize>> = HashMap::with_capacity(map_capacity);
     for (index, segment) in segments.iter().enumerate() {
         let start = PointKey::new(segment.start);
         let end = PointKey::new(segment.end);
-        *degree.entry(start).or_insert(0) += 1;
-        *degree.entry(end).or_insert(0) += 1;
+        let start_degree = degree.entry(start).or_insert(0);
+        *start_degree = start_degree.saturating_add(1);
+        let end_degree = degree.entry(end).or_insert(0);
+        *end_degree = end_degree.saturating_add(1);
         adjacency.entry(start).or_default().push(index);
         adjacency.entry(end).or_default().push(index);
     }
@@ -52,7 +55,9 @@ pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
             let segment = &segments[index];
             for endpoint in [PointKey::new(segment.start), PointKey::new(segment.end)] {
                 if let Some(value) = degree.get_mut(&endpoint) {
-                    *value -= 1;
+                    *value = value
+                        .checked_sub(1)
+                        .expect("each live segment contributes to endpoint degree");
                     if *value == 1 {
                         worklist.push(endpoint);
                     }
@@ -64,7 +69,7 @@ pub(crate) fn prune_dangles(segments: &mut Vec<Segment>) {
     let mut index = 0;
     segments.retain(|_| {
         let keep = !removed[index];
-        index += 1;
+        index = index.wrapping_add(1);
         keep
     });
 }
@@ -453,10 +458,13 @@ mod prune_dangles_tests {
 
     fn prune_dangles_reference(segments: &mut Vec<Segment>) {
         loop {
-            let mut degree: HashMap<PointKey, u32> = HashMap::with_capacity(segments.len() * 2);
+            let mut degree: HashMap<PointKey, usize> =
+                HashMap::with_capacity(segments.len().saturating_mul(2));
             for segment in segments.iter() {
-                *degree.entry(PointKey::new(segment.start)).or_insert(0) += 1;
-                *degree.entry(PointKey::new(segment.end)).or_insert(0) += 1;
+                let start_degree = degree.entry(PointKey::new(segment.start)).or_insert(0);
+                *start_degree = start_degree.saturating_add(1);
+                let end_degree = degree.entry(PointKey::new(segment.end)).or_insert(0);
+                *end_degree = end_degree.saturating_add(1);
             }
             let before = segments.len();
             segments.retain(|segment| {

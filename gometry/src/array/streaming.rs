@@ -49,13 +49,13 @@ pub(crate) fn stream_bulk_rows() -> usize {
 
 #[cfg(test)]
 fn record_stream_row_advance() {
-    STREAM_ROW_ADVANCES.with(|count| count.set(count.get() + 1));
+    STREAM_ROW_ADVANCES.with(|count| count.set(count.get().saturating_add(1)));
 }
 
 #[cfg(test)]
 fn record_stream_bulk_extension(rows: usize) {
-    STREAM_BULK_EXTENSIONS.with(|count| count.set(count.get() + 1));
-    STREAM_BULK_ROWS.with(|count| count.set(count.get() + rows));
+    STREAM_BULK_EXTENSIONS.with(|count| count.set(count.get().saturating_add(1)));
+    STREAM_BULK_ROWS.with(|count| count.set(count.get().saturating_add(rows)));
 }
 
 /// Streaming row accumulator for parse-time bulk imports and native array

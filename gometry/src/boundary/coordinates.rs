@@ -2245,8 +2245,14 @@ mod tests {
         polygon_ends: Vec<usize>,
         rows: std::ops::Range<usize>,
     ) -> PyGeometryArray {
-        let n_rings = ring_ends.len() - 1;
-        let n_polygons = polygon_ends.len() - 1;
+        let n_rings = ring_ends
+            .len()
+            .checked_sub(1)
+            .expect("ring offsets include their initial zero");
+        let n_polygons = polygon_ends
+            .len()
+            .checked_sub(1)
+            .expect("polygon offsets include their initial zero");
         let ring_offsets = CsrOffsetColumn::<RingLevel>::try_new(ring_ends, coords.len()).unwrap();
         let polygon_offsets =
             CsrOffsetColumn::<PolygonLevel>::try_new(polygon_ends, n_rings).unwrap();
@@ -2373,27 +2379,21 @@ mod tests {
         let (_, allocations) =
             crate::test_support::allocation_count(|| view.column(CoordinateAxis::X));
         assert_eq!(allocations, 0);
-        match view.column(CoordinateAxis::X) {
-            CoordinateColumnRef::Borrowed(column) => {
-                assert_eq!(column, &coords.xs()[5..10]);
-                assert_eq!(column.as_ptr(), coords.xs()[5..10].as_ptr());
-            },
-            _ => panic!("expected borrowed X"),
-        }
-        match view.column(CoordinateAxis::Z) {
-            CoordinateColumnRef::Borrowed(column) => {
-                assert_eq!(column, &zs[5..10]);
-                assert_eq!(column.as_ptr(), coords.zs().unwrap()[5..10].as_ptr());
-            },
-            _ => panic!("expected borrowed Z"),
-        }
-        match view.column(CoordinateAxis::M) {
-            CoordinateColumnRef::Borrowed(column) => {
-                assert_eq!(column, &m_owner.as_slice()[8..13]);
-                assert_eq!(column.as_ptr(), m_owner.as_slice()[8..13].as_ptr());
-            },
-            _ => panic!("expected borrowed M"),
-        }
+        let CoordinateColumnRef::Borrowed(column) = view.column(CoordinateAxis::X) else {
+            panic!("expected borrowed X");
+        };
+        assert_eq!(column, &coords.xs()[5..10]);
+        assert_eq!(column.as_ptr(), coords.xs()[5..10].as_ptr());
+        let CoordinateColumnRef::Borrowed(column) = view.column(CoordinateAxis::Z) else {
+            panic!("expected borrowed Z");
+        };
+        assert_eq!(column, &zs[5..10]);
+        assert_eq!(column.as_ptr(), coords.zs().unwrap()[5..10].as_ptr());
+        let CoordinateColumnRef::Borrowed(column) = view.column(CoordinateAxis::M) else {
+            panic!("expected borrowed M");
+        };
+        assert_eq!(column, &m_owner.as_slice()[8..13]);
+        assert_eq!(column.as_ptr(), m_owner.as_slice()[8..13].as_ptr());
         let xy_only = packed_polygons(
             CoordSeq::try_from_points(&concat3(
                 &closed_box(0.0, 0.0, 1.0, 1.0),
@@ -2444,13 +2444,11 @@ mod tests {
         let (_, allocations) =
             crate::test_support::allocation_count(|| view.column(CoordinateAxis::X));
         assert_eq!(allocations, 0);
-        match view.column(CoordinateAxis::X) {
-            CoordinateColumnRef::Borrowed(xs) => {
-                assert_eq!(xs, &coords.xs()[2..7]);
-                assert_eq!(xs.as_ptr(), coords.xs()[2..7].as_ptr());
-            },
-            _ => panic!("expected borrowed X"),
-        }
+        let CoordinateColumnRef::Borrowed(xs) = view.column(CoordinateAxis::X) else {
+            panic!("expected borrowed X");
+        };
+        assert_eq!(xs, &coords.xs()[2..7]);
+        assert_eq!(xs.as_ptr(), coords.xs()[2..7].as_ptr());
     }
 
     #[test]

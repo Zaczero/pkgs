@@ -543,7 +543,11 @@ fn count_valid(bytes: &[u8], offset: usize, len: usize) -> usize {
     let last_byte = (end - 1) / 8;
     #[cfg(test)]
     COUNT_VALID_BYTES.with(|count| {
-        count.set(count.get().saturating_add(last_byte - first_byte + 1));
+        count.set(
+            count
+                .get()
+                .saturating_add(last_byte.saturating_sub(first_byte).saturating_add(1)),
+        );
     });
     if first_byte == last_byte {
         let low = (offset % 8) as u32;

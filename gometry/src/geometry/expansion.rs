@@ -177,46 +177,46 @@ mod tests {
             output[..right.len()].copy_from_slice(right);
             return right.len();
         }
-        let (mut li, mut ri) = (0, 0);
+        let (mut li, mut ri) = (0_usize, 0_usize);
         let (mut l, mut r) = (left[0], right[0]);
         let mut q;
         if (r > l) == (r > -l) {
             q = l;
-            li += 1;
+            li = li.wrapping_add(1);
         } else {
             q = r;
-            ri += 1;
+            ri = ri.wrapping_add(1);
         }
         let mut oi = 0;
         if li < left.len() && ri < right.len() {
             l = left[li];
             r = right[ri];
             let (next, tail) = if (r > l) == (r > -l) {
-                li += 1;
+                li = li.wrapping_add(1);
                 (l + q, q - ((l + q) - l))
             } else {
-                ri += 1;
+                ri = ri.wrapping_add(1);
                 (r + q, q - ((r + q) - r))
             };
             q = next;
             if tail != 0.0 {
                 output[oi] = tail;
-                oi += 1;
+                oi = oi.wrapping_add(1);
             }
             while li < left.len() && ri < right.len() {
                 l = left[li];
                 r = right[ri];
                 let (next, tail) = if (r > l) == (r > -l) {
-                    li += 1;
+                    li = li.wrapping_add(1);
                     old_two_sum(q, l)
                 } else {
-                    ri += 1;
+                    ri = ri.wrapping_add(1);
                     old_two_sum(q, r)
                 };
                 q = next;
                 if tail != 0.0 {
                     output[oi] = tail;
-                    oi += 1;
+                    oi = oi.wrapping_add(1);
                 }
             }
         }
@@ -224,25 +224,25 @@ mod tests {
             l = left[li];
             let (next, tail) = old_two_sum(q, l);
             q = next;
-            li += 1;
+            li = li.wrapping_add(1);
             if tail != 0.0 {
                 output[oi] = tail;
-                oi += 1;
+                oi = oi.wrapping_add(1);
             }
         }
         while ri < right.len() {
             r = right[ri];
             let (next, tail) = old_two_sum(q, r);
             q = next;
-            ri += 1;
+            ri = ri.wrapping_add(1);
             if tail != 0.0 {
                 output[oi] = tail;
-                oi += 1;
+                oi = oi.wrapping_add(1);
             }
         }
         if q != 0.0 || oi == 0 {
             output[oi] = q;
-            oi += 1;
+            oi = oi.wrapping_add(1);
         }
         oi
     }

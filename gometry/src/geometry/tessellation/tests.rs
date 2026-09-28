@@ -1,5 +1,6 @@
 use crate::geometry::XY;
 use crate::geometry::exact_arith::ExactSign;
+use crate::geometry::segments::stored_orientation_sign;
 use crate::geometry::tessellation::delaunay::take_constrained_output_reserves;
 use crate::geometry::tessellation::shape::{
     BudgetedPackedTriangleSink, BudgetedTriangleSink, canonical_voronoi_sites,
@@ -888,8 +889,8 @@ fn triangle_corners(triangle: &Shape) -> Option<[Point; 3]> {
     (shell.coord_count() >= 3).then(|| [shell.nth_coord(0), shell.nth_coord(1), shell.nth_coord(2)])
 }
 
-fn triangle_shape(corners: [Point; 3]) -> Shape {
-    Shape::Polygon(polygon(corners.into(), Vec::new()))
+fn triangle_shape(corners: &[Point; 3]) -> Shape {
+    Shape::Polygon(polygon(corners.to_vec(), Vec::new()))
 }
 
 fn polygon_vertices(polygon: &Polygon) -> Vec<Point> {
@@ -1009,7 +1010,11 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
 
     for (position, &left) in order.iter().enumerate() {
         let left_max_x = span(&all_corners[left]).1;
-        for &right in &order[position + 1..] {
+        let (_, at_or_after_left) = order.split_at(position);
+        let Some((_, right_candidates)) = at_or_after_left.split_first() else {
+            unreachable!("position was enumerated from the same order");
+        };
+        for &right in right_candidates {
             if span(&all_corners[right]).0 > left_max_x {
                 break;
             }
@@ -1036,9 +1041,7 @@ fn triangle_separates_interiors_from(triangle: &[Point; 3], other: &[Point; 3]) 
         .any(|(from, to)| {
             other.iter().all(|corner| {
                 matches!(
-                    crate::geometry::segments::stored_orientation_sign(
-                        from.x, from.y, to.x, to.y, corner.x, corner.y
-                    ),
+                    stored_orientation_sign(from.x, from.y, to.x, to.y, corner.x, corner.y),
                     ExactSign::Negative | ExactSign::Zero
                 )
             })
@@ -1058,7 +1061,7 @@ fn triangles_have_disjoint_interiors(left: &[Point; 3], right: &[Point; 3]) -> b
 #[test]
 fn exact_triangle_oracle_matches_overlay_for_overlap_contact_and_disjoint_pairs() {
     let left_corners = [xy(0.0, 0.0), xy(2.0, 0.0), xy(0.0, 2.0)];
-    let left = triangle_shape(left_corners);
+    let left = triangle_shape(&left_corners);
     let cases = [
         (
             "positive-area overlap",
@@ -1079,7 +1082,7 @@ fn exact_triangle_oracle_matches_overlay_for_overlap_contact_and_disjoint_pairs(
     ];
 
     for (case, right_corners, interiors_are_disjoint) in cases {
-        let right = triangle_shape(right_corners);
+        let right = triangle_shape(&right_corners);
         assert_eq!(
             triangles_have_disjoint_interiors(&left_corners, &right_corners),
             interiors_are_disjoint,

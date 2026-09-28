@@ -33,7 +33,9 @@ impl Cell {
     const fn ascii(self) -> u8 {
         match self {
             Self::Empty => b'F',
-            Self::Dim(dim) => b'0' + dim.code(),
+            Self::Dim(Dimension::Point) => b'0',
+            Self::Dim(Dimension::Curve) => b'1',
+            Self::Dim(Dimension::Surface) => b'2',
         }
     }
 

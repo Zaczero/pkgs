@@ -178,7 +178,18 @@ impl<T, Offset: CsrOffset> CsrBuilder<T, Offset> {
 #[cfg(test)]
 impl<T> CsrBuilder<T> {
     pub(crate) fn row_range(&self, row: usize) -> std::ops::Range<usize> {
-        self.offsets[row] as usize..self.offsets[row + 1] as usize
+        let next_row = row
+            .checked_add(1)
+            .expect("a CSR row index has a following offset");
+        let start = self
+            .offsets
+            .get(row)
+            .expect("row index belongs to the CSR builder");
+        let end = self
+            .offsets
+            .get(next_row)
+            .expect("every CSR row has a terminal offset");
+        *start as usize..*end as usize
     }
 }
 

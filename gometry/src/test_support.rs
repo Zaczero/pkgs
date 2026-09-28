@@ -44,12 +44,13 @@ thread_local! {
 fn count_allocation() {
     COUNT_ALLOCATIONS.with(|enabled| {
         if enabled.get() {
-            ALLOCATIONS.with(|allocations| allocations.set(allocations.get() + 1));
+            ALLOCATIONS.with(|allocations| allocations.set(allocations.get().saturating_add(1)));
             ALLOCATION_PHASE.with(|phase| {
                 if let Some(phase) = phase.get() {
                     PHASE_ALLOCATIONS.with(|allocations| {
                         let mut current = allocations.get();
-                        current[phase.index()] += 1;
+                        let index = phase.index();
+                        current[index] = current[index].saturating_add(1);
                         allocations.set(current);
                     });
                 }
@@ -180,39 +181,54 @@ pub(crate) mod binary_dispatch_counters {
     }
 
     pub(crate) fn classification() {
-        update(|snapshot| snapshot.classifications += 1);
+        update(|snapshot| snapshot.classifications = snapshot.classifications.saturating_add(1));
     }
 
     pub(crate) fn paired_array_validation() {
-        update(|snapshot| snapshot.paired_array_validations += 1);
+        update(|snapshot| {
+            snapshot.paired_array_validations = snapshot.paired_array_validations.saturating_add(1);
+        });
     }
 
     pub(crate) fn frame_resolution() {
-        update(|snapshot| snapshot.frame_resolutions += 1);
+        update(|snapshot| {
+            snapshot.frame_resolutions = snapshot.frame_resolutions.saturating_add(1);
+        });
     }
 
     pub(crate) fn metric_context_acquisition() {
-        update(|snapshot| snapshot.metric_context_acquisitions += 1);
+        update(|snapshot| {
+            snapshot.metric_context_acquisitions =
+                snapshot.metric_context_acquisitions.saturating_add(1);
+        });
     }
 
     pub(crate) fn runtime_state_snapshot() {
-        update(|snapshot| snapshot.runtime_state_snapshots += 1);
+        update(|snapshot| {
+            snapshot.runtime_state_snapshots = snapshot.runtime_state_snapshots.saturating_add(1);
+        });
     }
 
     pub(crate) fn fast_path_attempt() {
-        update(|snapshot| snapshot.fast_path_attempts += 1);
+        update(|snapshot| {
+            snapshot.fast_path_attempts = snapshot.fast_path_attempts.saturating_add(1);
+        });
     }
 
     pub(crate) fn fast_path_taken() {
-        update(|snapshot| snapshot.fast_path_taken += 1);
+        update(|snapshot| snapshot.fast_path_taken = snapshot.fast_path_taken.saturating_add(1));
     }
 
     pub(crate) fn fast_path_declined() {
-        update(|snapshot| snapshot.fast_path_declines += 1);
+        update(|snapshot| {
+            snapshot.fast_path_declines = snapshot.fast_path_declines.saturating_add(1);
+        });
     }
 
     pub(crate) fn general_lane() {
-        update(|snapshot| snapshot.general_lane_runs += 1);
+        update(|snapshot| {
+            snapshot.general_lane_runs = snapshot.general_lane_runs.saturating_add(1);
+        });
     }
 }
 
@@ -242,7 +258,10 @@ impl NativeBoundaryIterator {
         {
             return Err(PyErr::from_value(error.bind(py).clone()));
         }
-        self.remaining -= 1;
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .expect("remaining was checked nonzero");
         if self.interrupt_at == Some(call) {
             // Queue the interrupt while this native protocol method still owns
             // control; the consumer's explicit checkpoint observes it later.

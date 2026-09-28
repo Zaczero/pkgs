@@ -174,8 +174,11 @@ fn assert_plan_count_matches_materialization(
     assert_eq!(output_budget.used(), expected);
     if closes {
         close_xy_loop(&mut xs, &mut ys, &mut output_budget).unwrap();
-        assert_eq!(xs.len(), expected + 1);
-        assert_eq!(output_budget.used(), expected + 1);
+        let closed_len = expected
+            .checked_add(1)
+            .expect("closing a test loop adds one coordinate");
+        assert_eq!(xs.len(), closed_len);
+        assert_eq!(output_budget.used(), closed_len);
     }
 }
 
@@ -969,10 +972,10 @@ mod winding_buffer_tests {
             "{:?}",
             buffered.validate()
         );
-        for part in match &collection {
-            Shape::GeometryCollection(parts) => parts,
-            _ => unreachable!(),
-        } {
+        let Shape::GeometryCollection(parts) = &collection else {
+            unreachable!("collection fixture produces a geometry collection");
+        };
+        for part in parts {
             assert!(buffered.covers(part).unwrap(), "missing {part:?}");
         }
         // Negative distance keeps only the eroded polygon: the exact

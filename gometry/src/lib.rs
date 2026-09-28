@@ -360,7 +360,10 @@ mod above_gate_parity_tests {
     ];
 
     fn repeated_probe_batch(repetitions: usize) -> (Vec<f64>, Vec<f64>, Vec<bool>) {
-        let count = NAMED_PROBES.len() * repetitions;
+        let count = NAMED_PROBES
+            .len()
+            .checked_mul(repetitions)
+            .expect("test probe batch size fits usize");
         let mut xs = Vec::with_capacity(count);
         let mut ys = Vec::with_capacity(count);
         let mut expected = Vec::with_capacity(count);

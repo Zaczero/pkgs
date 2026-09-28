@@ -1262,7 +1262,8 @@ fn certified_materialization_preserves_exact_homogeneous_coordinates() {
         XY::new(10.0, 7.0),
     ]) {
         FrameHit::Point(point) => point,
-        other => panic!("expected a certified bisector hit, got {other:?}"),
+        FrameHit::Declined => panic!("expected a certified bisector hit, got a declined hit"),
+        FrameHit::Parallel => panic!("expected a certified bisector hit, got a parallel bisector"),
     };
     assert_eq!(
         compare_ratios(

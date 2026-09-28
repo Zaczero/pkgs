@@ -734,7 +734,7 @@ mod tests {
     fn decrement(words: &mut [u64; CUBIC_LIMBS]) {
         for word in words {
             if *word != 0 {
-                *word -= 1;
+                *word = word.wrapping_sub(1);
                 return;
             }
             *word = u64::MAX;
@@ -771,7 +771,10 @@ mod tests {
     fn multiply_small(words: &mut [u64; CUBIC_LIMBS], factor: u64) {
         let mut carry = 0_u64;
         for word in words {
-            let product = u128::from(*word) * u128::from(factor) + u128::from(carry);
+            // A u64 product plus a u64 carry is strictly less than 2^128.
+            let product = u128::from(*word)
+                .wrapping_mul(u128::from(factor))
+                .wrapping_add(u128::from(carry));
             *word = product as u64;
             carry = (product >> 64) as u64;
         }
@@ -920,14 +923,21 @@ mod tests {
                 let mut index = bit / 64;
                 let mut add = 1_u64 << (bit % 64);
                 while add != 0 {
-                    let (sum, carry) = limbs[index].overflowing_add(add);
-                    limbs[index] = sum;
+                    let limb = limbs
+                        .get_mut(index)
+                        .expect("the exact product fits the test limb array");
+                    let (sum, carry) = limb.overflowing_add(add);
+                    *limb = sum;
                     add = u64::from(carry);
-                    index += 1;
+                    index = index
+                        .checked_add(1)
+                        .expect("the exact product limb index fits usize");
                 }
             }
             value >>= 1;
-            bit += 1;
+            bit = bit
+                .checked_add(1)
+                .expect("the exact product bit index fits usize");
         }
     }
 
@@ -940,8 +950,10 @@ mod tests {
             if lhs_mantissa == 0 || rhs_mantissa == 0 {
                 continue;
             }
-            let product = u128::from(lhs_mantissa) * u128::from(rhs_mantissa);
-            let shift = usize::try_from(lhs_exponent + rhs_exponent - PRODUCT_MIN_EXP).unwrap();
+            let product = u128::from(lhs_mantissa)
+                .checked_mul(u128::from(rhs_mantissa))
+                .expect("binary64 significands fit in u128");
+            let shift = product_bit_offset_from_exponents(lhs_exponent, rhs_exponent);
             let sign_negative = match sign {
                 TestOperation::Add => false,
                 TestOperation::Subtract => true,
@@ -1095,7 +1107,15 @@ mod tests {
     fn product_bit_offset(lhs: f64, rhs: f64) -> usize {
         let (_, _, left) = decompose(lhs);
         let (_, _, right) = decompose(rhs);
-        usize::try_from(left + right - PRODUCT_MIN_EXP).unwrap()
+        product_bit_offset_from_exponents(left, right)
+    }
+
+    fn product_bit_offset_from_exponents(left: i32, right: i32) -> usize {
+        let bit_offset = left
+            .checked_add(right)
+            .and_then(|exponent| exponent.checked_sub(PRODUCT_MIN_EXP))
+            .expect("binary64 product exponent fits i32");
+        usize::try_from(bit_offset).expect("binary64 product exponent offset is nonnegative")
     }
 
     #[test]

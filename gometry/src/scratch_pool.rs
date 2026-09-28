@@ -195,7 +195,7 @@ mod tests {
     impl RetainScratch for ObservedScratch {
         fn clear_for_reuse(&mut self) {
             self.values.clear();
-            self.clears.set(self.clears.get() + 1);
+            self.clears.set(self.clears.get().saturating_add(1));
         }
 
         fn retained_bytes(&self) -> usize {
