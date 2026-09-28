@@ -317,7 +317,9 @@ def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
     (package / 'native' / 'visible' / 'input.c').write_text('int changed = 1;\n')
     changed = wheel_smoke.source_input_digests(package)
     assert changed['source_inputs_sha256'] != before['source_inputs_sha256']
-    assert changed['native_source_inputs_sha256'] != before['native_source_inputs_sha256']
+    assert (
+        changed['native_source_inputs_sha256'] != before['native_source_inputs_sha256']
+    )
 
     bootstrap = tmp_path / 'bootstrap'
     final = tmp_path / 'final'
