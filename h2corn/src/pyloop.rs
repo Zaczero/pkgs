@@ -252,12 +252,15 @@ pub(crate) struct ShardHandle {
     call_soon_threadsafe: Py<PyAny>,
     call_soon: Py<PyAny>,
     event_loop: Py<PyAny>,
+    task_factory_accessor: TaskFactoryAccessor,
     /// `asyncio.tasks.Task` type object (C-accelerated).
     task_type: Py<PyAny>,
     /// Immutable keyword arguments reused by every Task construction on this
     /// shard. CPython's type call must materialize the positional tuple, but
     /// the loop/eager/name dictionary need not be rebuilt per request.
     task_kwargs: Py<PyDict>,
+    /// Arguments for the loop's `create_task` path, without its bound `loop`.
+    create_task_kwargs: Py<PyDict>,
     /// `asyncio.ensure_future` (cold path: [`PumpEvent::SpawnAwaitable`]).
     ensure_future: Py<PyAny>,
     /// The bound pump callable handed to `call_soon*`. Set once right after
@@ -271,6 +274,14 @@ pub(crate) struct ShardHandle {
     /// Mutable lifespan state owned by this loop. The pump shallow-copies it
     /// into each request scope; no cross-loop asyncio object is shared.
     scope_state: PyOnceLock<Py<PyDict>>,
+}
+
+enum TaskFactoryAccessor {
+    Stock,
+    Custom {
+        get_task_factory: Py<PyAny>,
+        stock_create_task: bool,
+    },
 }
 
 impl ShardHandle {
@@ -291,6 +302,24 @@ impl ShardHandle {
     ) -> PyResult<Shard> {
         let asyncio = py.import("asyncio")?;
         let event_loop = event_loop.clone();
+        let base_event_loop = asyncio.getattr("BaseEventLoop")?;
+        let base_get_task_factory = base_event_loop.getattr("get_task_factory")?;
+        let base_create_task = base_event_loop.getattr("create_task")?;
+        let event_loop_type = event_loop.get_type();
+        let stock_get_task_factory = event_loop_type
+            .getattr("get_task_factory")?
+            .is(&base_get_task_factory);
+        let stock_create_task = event_loop_type
+            .getattr("create_task")?
+            .is(&base_create_task);
+        let task_factory_accessor = if stock_get_task_factory && stock_create_task {
+            TaskFactoryAccessor::Stock
+        } else {
+            TaskFactoryAccessor::Custom {
+                get_task_factory: event_loop.getattr("get_task_factory")?.unbind(),
+                stock_create_task,
+            }
+        };
         #[cfg(unix)]
         let doorbell = Doorbell::new().map_err(|err| {
             PyRuntimeError::new_err(format!("failed to create shard doorbell: {err}"))
@@ -307,6 +336,15 @@ impl ShardHandle {
         if eager {
             task_kwargs.set_item(pyo3::intern!(py, "eager_start"), PyBool::new(py, true))?;
         }
+        let create_task_kwargs = PyDict::new(py);
+        create_task_kwargs.set_item(
+            pyo3::intern!(py, "name"),
+            pyo3::intern!(py, "h2corn.request"),
+        )?;
+        // Only the stock signature guarantees this keyword; custom loop methods may reject it.
+        if stock_create_task && py.version_info() >= (3, 14) {
+            create_task_kwargs.set_item(pyo3::intern!(py, "eager_start"), PyBool::new(py, true))?;
+        }
 
         #[cfg(windows)]
         let call_soon_threadsafe = event_loop.getattr("call_soon_threadsafe")?.unbind();
@@ -320,8 +358,10 @@ impl ShardHandle {
             call_soon_threadsafe,
             call_soon,
             event_loop: event_loop.unbind(),
+            task_factory_accessor,
             task_type: task_type.unbind(),
             task_kwargs: task_kwargs.unbind(),
+            create_task_kwargs: create_task_kwargs.unbind(),
             ensure_future: asyncio.getattr("ensure_future")?.unbind(),
             pump: PyOnceLock::new(),
             ready_none: Py::new(py, ReadyNone)?,
@@ -360,8 +400,10 @@ impl ShardHandle {
             call_soon_threadsafe: py.None(),
             call_soon: py.None(),
             event_loop: py.None(),
+            task_factory_accessor: TaskFactoryAccessor::Stock,
             task_type: py.None(),
             task_kwargs: PyDict::new(py).unbind(),
+            create_task_kwargs: PyDict::new(py).unbind(),
             ensure_future: py.None(),
             pump: PyOnceLock::new(),
             ready_none: Py::new(py, ReadyNone).expect("test ready_none"),
@@ -369,20 +411,45 @@ impl ShardHandle {
         })
     }
 
-    /// Construct `asyncio.tasks.Task(coro, loop=..., [eager_start=True,]
-    /// name="h2corn.request")` through PyO3's vectorcall-dict path. The Task
-    /// type has no vectorcall slot, so CPython must materialize its positional
-    /// tuple; caching the immutable kwargs dictionary avoids rebuilding that
-    /// second call container for every request.
+    /// Construct Task directly only with no factory and the stock create_task
+    /// implementation; otherwise use the loop's task-creation contract.
     /// Pump-only: must run from a plain loop callback.
     pub(super) fn construct_task<'py>(
         &self,
         py: Python<'py>,
         coroutine: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        self.task_type
-            .bind(py)
-            .call((coroutine,), Some(self.task_kwargs.bind(py)))
+        let (factory_is_none, stock_create_task) = match &self.task_factory_accessor {
+            TaskFactoryAccessor::Stock => {
+                // This equals BaseEventLoop.get_task_factory() because setup verified both methods.
+                (
+                    self.event_loop
+                        .bind(py)
+                        .getattr(pyo3::intern!(py, "_task_factory"))?
+                        .is_none(),
+                    true,
+                )
+            },
+            TaskFactoryAccessor::Custom {
+                get_task_factory,
+                stock_create_task,
+            } => (
+                get_task_factory.bind(py).call0()?.is_none(),
+                *stock_create_task,
+            ),
+        };
+
+        if factory_is_none && stock_create_task {
+            self.task_type
+                .bind(py)
+                .call((coroutine,), Some(self.task_kwargs.bind(py)))
+        } else {
+            self.event_loop.bind(py).call_method(
+                pyo3::intern!(py, "create_task"),
+                (coroutine,),
+                Some(self.create_task_kwargs.bind(py)),
+            )
+        }
     }
 
     /// Cold path: `asyncio.ensure_future(awaitable, loop=...)`.

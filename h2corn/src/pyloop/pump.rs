@@ -146,7 +146,7 @@ fn process_event(py: Python<'_>, shard: &Shard, event: PumpEvent) {
     }
 }
 
-/// Build args, call the app, and run it as an eagerly-started asyncio Task.
+/// Build args, call the app, and schedule the request as an asyncio Task.
 fn start_task(
     py: Python<'_>,
     shard: &Shard,
