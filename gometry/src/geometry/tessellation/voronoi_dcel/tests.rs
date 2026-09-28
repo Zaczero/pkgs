@@ -391,14 +391,184 @@ fn validates(cycles: &[Vec<exact::ExactPoint>]) -> bool {
     validate_exact_cycles(&refs, 0).is_ok()
 }
 
+fn noded_fixture(
+    cycles: &[Vec<exact::ExactPoint>],
+) -> Result<(ExactSubdivision, Vec<ExactSimpleRing>)> {
+    let mut vertices: Vec<ExactVertex> = Vec::new();
+    let mut edges = Vec::new();
+    let mut rings = Vec::with_capacity(cycles.len());
+    for (ring_index, cycle) in cycles.iter().enumerate() {
+        let vertex_capacity = cycle
+            .len()
+            .checked_add(1)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        let mut ring_vertices = Vec::with_capacity(vertex_capacity);
+        for point in cycle {
+            let mut vertex = None;
+            for (index, known) in vertices.iter().enumerate() {
+                if known.point.same_position(point)? {
+                    vertex = Some(VertexId(
+                        u32::try_from(index)
+                            .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                    ));
+                    break;
+                }
+            }
+            let vertex = if let Some(vertex) = vertex {
+                vertex
+            } else {
+                let vertex = VertexId(
+                    u32::try_from(vertices.len())
+                        .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+                );
+                vertices.push(ExactVertex {
+                    point: point.clone(),
+                    fixed_xy: None,
+                });
+                vertex
+            };
+            ring_vertices.push(vertex);
+        }
+        let closing = *ring_vertices.first().ok_or_else(exact_cycle_error)?;
+        ring_vertices.push(closing);
+        let mut ring_edges = Vec::with_capacity(cycle.len());
+        for pair in ring_vertices.windows(2) {
+            let [start, end] = pair else {
+                return Err(exact_cycle_error());
+            };
+            let edge = EdgeId(
+                u32::try_from(edges.len())
+                    .map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            );
+            let endpoints = if start < end {
+                [*start, *end]
+            } else {
+                [*end, *start]
+            };
+            edges.push(AtomicEdge {
+                endpoints,
+                forward: Transition {
+                    frame_delta: 0,
+                    clip_delta: 0,
+                    owner: OwnerTransition::Preserve,
+                },
+                separator: None,
+                clip_sources: Vec::new(),
+                frame_side: None,
+            });
+            ring_edges.push(edge);
+        }
+        rings.push(ExactSimpleRing {
+            face: BoundaryFaceId(
+                u32::try_from(ring_index).map_err(|_| crate::error::ResourceError::SizeOverflow)?,
+            ),
+            vertices: ring_vertices,
+            edges: ring_edges,
+            orientation: ExactSign::Positive,
+        });
+    }
+    Ok((
+        ExactSubdivision {
+            vertices,
+            edges,
+            topology: IndexedTopology::default(),
+            edge_of_slot: Vec::new(),
+            labels: Vec::new(),
+        },
+        rings,
+    ))
+}
+
 #[test]
-fn finite_max_exact_candidate_boxes_remain_sparse() {
-    let high = cycle(&[(f64::MAX, f64::MAX), (f64::MAX, f64::MAX.next_down())]);
-    let low = cycle(&[(0.0, 0.0), (0.0, 1.0)]);
-    let cycles = [high.as_slice(), low.as_slice()];
-    let (offsets, candidates) = indexed_exact_segment_candidates(&cycles).unwrap();
-    assert_eq!(offsets, [0, 2]);
-    assert_eq!(candidates, [[0, 1], [2, 3]]);
+fn exact_cycle_oracle_accepts_a_finite_max_triangle() {
+    let below = f64::MAX.next_down();
+    assert!(validates(&[cycle(&[
+        (below, below),
+        (f64::MAX, below),
+        (f64::MAX, f64::MAX)
+    ])]));
+}
+
+#[test]
+fn exact_rectangle_contact_validator_rejects_crossings_and_overlaps() {
+    let rectangle = cycle(&[(0.0, 0.0), (4.0, 0.0), (4.0, 3.0), (0.0, 3.0)]);
+    validate_exact_rectangle(rectangle.as_slice().try_into().unwrap()).unwrap();
+
+    let crossed = cycle(&[(0.0, 0.0), (4.0, 3.0), (4.0, 0.0), (0.0, 3.0)]);
+    assert!(validate_exact_rectangle(crossed.as_slice().try_into().unwrap()).is_err());
+
+    let overlapping = cycle(&[(0.0, 0.0), (4.0, 0.0), (2.0, 0.0), (0.0, 3.0)]);
+    assert!(validate_exact_rectangle(overlapping.as_slice().try_into().unwrap()).is_err());
+}
+
+#[test]
+fn assembled_and_generic_validators_preserve_a_one_ulp_boundary_gap() {
+    let inner_right = 1.0_f64.next_down();
+    assert_eq!(inner_right.next_up(), 1.0);
+    let cycles = [
+        cycle(&[(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)]),
+        cycle(&[
+            (0.5, 0.25),
+            (inner_right, 0.25),
+            (inner_right, 0.75),
+            (0.5, 0.75),
+        ]),
+    ];
+    let (subdivision, rings) = noded_fixture(&cycles).unwrap();
+    let noded_cycles: Vec<_> = cycles
+        .iter()
+        .zip(&rings)
+        .map(|(points, ring)| NodedExactCycle { points, ring })
+        .collect();
+    let point_cycles: Vec<_> = cycles.iter().map(Vec::as_slice).collect();
+
+    validate_assembled_exact_cycles(&subdivision, &noded_cycles, 0).unwrap();
+    let generic = validate_exact_cycles(&point_cycles, 0).unwrap();
+    assert!(generic.contacts.is_empty());
+
+    let index = NodedSegmentIndex::new(&noded_cycles).unwrap();
+    let mut endpoint_pairs = 0_usize;
+    for_each_assembled_pair(&point_cycles, &index, |_, contact| {
+        endpoint_pairs = endpoint_pairs.checked_add(1).unwrap();
+        assert!(contact.is_none());
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(endpoint_pairs, 8);
+    assert_eq!(
+        for_each_touch_fan(&index, |_, _, _, _, _| Ok(())).unwrap(),
+        0
+    );
+}
+
+#[test]
+fn arbitrary_exact_cycle_oracle_keeps_crossing_t_and_overlap_rejections() {
+    let make = |points: &[(f64, f64)]| cycle(points);
+    let square = make(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)]);
+    let crossing_diamond = make(&[(4.0, -2.0), (10.0, 4.0), (4.0, 10.0), (-2.0, 4.0)]);
+    assert!(!validates(&[square.clone(), crossing_diamond]));
+
+    let bowtie = make(&[(0.0, 0.0), (4.0, 4.0), (0.0, 4.0), (4.0, 0.0)]);
+    assert!(!validates(&[bowtie]));
+
+    let one_t = make(&[(0.0, 4.0), (2.0, 5.0), (2.0, 3.0)]);
+    assert!(validates(&[square.clone(), one_t.clone()]));
+    let noded_square = make(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0), (0.0, 4.0)]);
+    assert!(validates(&[noded_square, one_t]));
+
+    let two_t = make(&[(0.0, 2.0), (2.0, 4.0), (0.0, 6.0)]);
+    assert!(!validates(&[square, two_t]));
+
+    let overlap_shell = make(&[(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)]);
+    let unshared_overlap = make(&[(-1.0, -2.0), (1.0, -2.0), (1.0, -3.0), (-1.0, -3.0)]);
+    assert!(!validates(&[overlap_shell, unshared_overlap]));
+
+    let shared_overlap_shell = make(&[(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]);
+    let shared_overlap = make(&[(0.0, 0.0), (2.0, 0.0), (2.0, -2.0), (0.0, -2.0)]);
+    assert!(!validates(&[shared_overlap_shell, shared_overlap]));
+
+    let adjacent_overlap = make(&[(0.0, 0.0), (4.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)]);
+    assert!(!validates(&[adjacent_overlap]));
 }
 
 #[test]
@@ -419,6 +589,264 @@ fn reversed_cycles(cycles: &[Vec<exact::ExactPoint>]) -> Vec<Vec<exact::ExactPoi
         .chain(cycles[1..].iter().rev())
         .map(|cycle| cycle.iter().cloned().rev().collect())
         .collect()
+}
+
+fn assert_exact_contacts_equal(actual: &[ExactCycleContact], expected: &[ExactCycleContact]) {
+    assert_eq!(actual.len(), expected.len());
+    for (actual, expected) in actual.iter().zip(expected) {
+        assert_eq!(actual.segments, expected.segments);
+        assert!(actual.point.same_position(&expected.point).unwrap());
+    }
+}
+
+fn with_part_cycles<T>(
+    subdivision: &ExactSubdivision,
+    part: &ExactCellPart,
+    visit: impl FnOnce(&[&[exact::ExactPoint]], &[NodedExactCycle<'_>]) -> Result<T>,
+) -> Result<T> {
+    let rings: Vec<_> = std::iter::once(&part.shell)
+        .chain(part.holes.iter())
+        .collect();
+    let mut owned_cycles = Vec::with_capacity(rings.len());
+    for ring in &rings {
+        let (_, vertices) = ring
+            .vertices
+            .split_last()
+            .expect("assembled rings are closed");
+        let mut points = Vec::with_capacity(vertices.len());
+        points.extend(
+            vertices
+                .iter()
+                .map(|&vertex| subdivision.vertex(vertex).point.clone()),
+        );
+        owned_cycles.push(points);
+    }
+    let point_cycles: Vec<_> = owned_cycles.iter().map(Vec::as_slice).collect();
+    let noded_cycles: Vec<_> = owned_cycles
+        .iter()
+        .zip(&rings)
+        .map(|(points, ring)| NodedExactCycle { points, ring })
+        .collect();
+    visit(&point_cycles, &noded_cycles)
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct AssembledContactWork {
+    edges: usize,
+    endpoint_pairs: usize,
+    exact_contacts: usize,
+    touch_fans: usize,
+    incidence_records: usize,
+    aabb_pairs: usize,
+}
+
+fn actual_producer_contact_work(sites: &[Site], clip: &Polygon) -> Result<AssembledContactWork> {
+    let subdivision = grafted_clip_subdivision(sites, clip);
+    let parts = assemble_cells(&subdivision)?;
+    let mut work = AssembledContactWork::default();
+    for part in &parts {
+        with_part_cycles(&subdivision, part, |cycles, noded_cycles| {
+            let index = NodedSegmentIndex::new(noded_cycles)?;
+            work.edges = work
+                .edges
+                .checked_add(index.endpoints.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            work.incidence_records = work
+                .incidence_records
+                .checked_add(index.incidences.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            work.touch_fans = work
+                .touch_fans
+                .checked_add(for_each_touch_fan(&index, |_, _, _, _, _| Ok(()))?)
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            for_each_assembled_pair(cycles, &index, |_, contact| {
+                work.endpoint_pairs = work
+                    .endpoint_pairs
+                    .checked_add(1)
+                    .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                if contact.is_some() {
+                    work.exact_contacts = work
+                        .exact_contacts
+                        .checked_add(1)
+                        .ok_or(crate::error::ResourceError::SizeOverflow)?;
+                }
+                Ok(())
+            })?;
+
+            let mut boxes = Vec::with_capacity(index.endpoints.len());
+            for cycle in cycles {
+                for (start, end) in cycle.iter().zip(cycle.iter().cycle().skip(1)) {
+                    let endpoints: [&exact::ExactPoint; 2] = (start, end).into();
+                    boxes.push(rounded_box(endpoints)?);
+                }
+            }
+            let mut aabb_pairs = Vec::new();
+            let _completion = for_each_indexed_overlapping_bounds_pair(&boxes, |left, right| {
+                aabb_pairs.push([left, right]);
+                std::ops::ControlFlow::<()>::Continue(())
+            })?;
+            work.aabb_pairs = work
+                .aabb_pairs
+                .checked_add(aabb_pairs.len())
+                .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            Ok(())
+        })?;
+    }
+    Ok(work)
+}
+
+#[test]
+fn assembled_touch_fans_match_generic_exact_contacts_in_source_order() {
+    let shell = cycle(&[(-10.0, -10.0), (10.0, -10.0), (10.0, 10.0), (-10.0, 10.0)]);
+    let holes = [
+        cycle(&[(0.0, 0.0), (4.0, -1.0), (4.0, 1.0)]),
+        cycle(&[(0.0, 0.0), (1.0, 4.0), (-1.0, 4.0)]),
+        cycle(&[(0.0, 0.0), (-4.0, 1.0), (-4.0, -1.0)]),
+        cycle(&[(0.0, 0.0), (-1.0, -4.0), (1.0, -4.0)]),
+    ];
+    let cycles = std::iter::once(shell).chain(holes).collect::<Vec<_>>();
+    let (subdivision, rings) = noded_fixture(&cycles).unwrap();
+    let noded_cycles: Vec<_> = cycles
+        .iter()
+        .zip(&rings)
+        .map(|(points, ring)| NodedExactCycle { points, ring })
+        .collect();
+    let point_cycles: Vec<_> = cycles.iter().map(Vec::as_slice).collect();
+    validate_assembled_exact_cycles(&subdivision, &noded_cycles, 0).unwrap();
+    let expected = validate_exact_cycles(&point_cycles, 0).unwrap().contacts;
+    let index = NodedSegmentIndex::new(&noded_cycles).unwrap();
+    let mut actual = Vec::new();
+    for_each_assembled_pair(&point_cycles, &index, |segments, contact| {
+        if let Some(contact) = contact {
+            assert_eq!(contact.segments, segments);
+            actual.push(contact);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(actual.len(), 24);
+    assert_exact_contacts_equal(&actual, &expected);
+    assert!(
+        actual
+            .array_windows::<2>()
+            .all(|[left, right]| left.segments < right.segments)
+    );
+}
+
+#[test]
+fn actual_voronoi_ring_contacts_match_the_exhaustive_oracle() {
+    let holes = (0..8)
+        .map(|index| {
+            let x = 2.0 + f64::from(index) * 2.0;
+            closed_ring(&[(x, 10.0), (x + 0.25, 9.5), (x - 0.25, 9.5)])
+        })
+        .collect();
+    let clip = Polygon::new(rectangle(0.0, 0.0, 20.0, 10.0), holes);
+    assert!(polygon_is_valid(&clip).unwrap());
+    let sites = sites_xy(&[(5.0, 5.0), (15.0, 5.0), (10.0, 7.0)]);
+    let subdivision = grafted_clip_subdivision(&sites, &clip);
+    let parts = assemble_cells(&subdivision).unwrap();
+    let mut contact_count = 0;
+
+    for part in &parts {
+        with_part_cycles(&subdivision, part, |point_cycles, noded_cycles| {
+            validate_assembled_exact_cycles(&subdivision, noded_cycles, 0)?;
+            let expected = validate_exact_cycles(point_cycles, 0)?.contacts;
+            let index = NodedSegmentIndex::new(noded_cycles)?;
+            let mut actual = Vec::new();
+            for_each_assembled_pair(point_cycles, &index, |segments, contact| {
+                if let Some(contact) = contact {
+                    assert_eq!(contact.segments, segments);
+                    actual.push(contact);
+                }
+                Ok(())
+            })?;
+            assert_exact_contacts_equal(&actual, &expected);
+            assert!(
+                actual
+                    .array_windows::<2>()
+                    .all(|[left, right]| left.segments < right.segments)
+            );
+            contact_count += actual.len();
+            Ok(())
+        })
+        .unwrap();
+    }
+    assert!(contact_count > 0);
+}
+
+#[test]
+fn actual_producer_pair_work_scales_with_ring_contacts() {
+    let tangent_sites = sites_xy(&[(5.0, 5.0), (15.0, 5.0), (10.0, 7.0)]);
+    let tangent_clip = |count: usize| {
+        let holes = (0..count)
+            .map(|index| {
+                let ordinal =
+                    f64::from(u32::try_from(index).expect("the fixture has fewer than u32 holes"));
+                let x = 2.0 + ordinal;
+                closed_ring(&[(x, 10.0), (x + 0.25, 9.5), (x - 0.25, 9.5)])
+            })
+            .collect();
+        Polygon::new(rectangle(0.0, 0.0, 20.0, 10.0), holes)
+    };
+    let tangent_small = actual_producer_contact_work(&tangent_sites, &tangent_clip(8)).unwrap();
+    let tangent_large = actual_producer_contact_work(&tangent_sites, &tangent_clip(16)).unwrap();
+    for work in [tangent_small, tangent_large] {
+        assert_eq!(
+            work.incidence_records,
+            work.edges.checked_mul(2).unwrap(),
+            "{work:?}"
+        );
+        assert_eq!(
+            work.endpoint_pairs,
+            work.edges.checked_add(work.exact_contacts).unwrap(),
+            "{work:?}"
+        );
+        assert!(work.exact_contacts > 0);
+        assert!(work.touch_fans > 0);
+    }
+    assert!(tangent_large.endpoint_pairs > tangent_small.endpoint_pairs);
+
+    let thin_sites = sites_xy(&[(16.0, 1.0), (16.0, 1_000_000.0), (1_000_000.0, 1.0)]);
+    let thin_clip = |count: usize| {
+        let holes = (0..count)
+            .map(|index| {
+                let ordinal =
+                    f64::from(u32::try_from(index).expect("the fixture has fewer than u32 holes"));
+                let base = 0.5 + ordinal / 128.0;
+                let slope = 1.0 / 32.0 + ordinal / 32_768.0;
+                let thickness = 1.0 / 1_024.0;
+                closed_ring(&[
+                    (1.0, base),
+                    (31.0, base + slope * 30.0),
+                    (31.0, base + slope * 30.0 + thickness),
+                    (1.0, base + thickness),
+                ])
+            })
+            .collect();
+        Polygon::new(rectangle(0.0, 0.0, 32.0, 2.0), holes)
+    };
+    let thin_small = actual_producer_contact_work(&thin_sites, &thin_clip(8)).unwrap();
+    let thin_large = actual_producer_contact_work(&thin_sites, &thin_clip(16)).unwrap();
+    for work in [thin_small, thin_large] {
+        assert_eq!(
+            work.incidence_records,
+            work.edges.checked_mul(2).unwrap(),
+            "{work:?}"
+        );
+        assert_eq!(work.endpoint_pairs, work.edges, "{work:?}");
+        assert_eq!(work.exact_contacts, 0, "{work:?}");
+        assert_eq!(work.touch_fans, 0, "{work:?}");
+        assert!(work.aabb_pairs > work.endpoint_pairs, "{work:?}");
+    }
+    assert!(
+        thin_large.aabb_pairs > thin_small.aabb_pairs.checked_mul(2).unwrap(),
+        "{thin_small:?} -> {thin_large:?}"
+    );
+    assert!(
+        thin_large.endpoint_pairs < thin_small.endpoint_pairs.checked_mul(3).unwrap(),
+        "{thin_small:?} -> {thin_large:?}"
+    );
 }
 
 #[expect(

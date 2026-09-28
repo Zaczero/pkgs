@@ -4,9 +4,9 @@
 //! incidence is walked once to emit each shared edge exactly one time.
 
 use super::{
-    BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, Result, SiteId, VertexId, exact,
-    rounded_box, selected_cell_label, try_sort_by, validate_exact_cycles, voronoi_error,
-    walk_label,
+    BoundaryFaceId, BoxIndex, EdgeId, ExactSign, ExactSubdivision, NodedExactCycle, Result, SiteId,
+    VertexId, exact, rounded_box, selected_cell_label, try_sort_by,
+    validate_assembled_exact_cycles, voronoi_error, walk_label,
 };
 
 pub(super) struct ExactSimpleRing {
@@ -360,9 +360,14 @@ pub(super) fn assemble_owner_parts(
             );
             exact_rings.push(points);
         }
-        let mut exact_ring_refs = Vec::with_capacity(exact_rings.len());
-        exact_ring_refs.extend(exact_rings.iter().map(Vec::as_slice));
-        validate_exact_cycles(&exact_ring_refs, 0)?;
+        let mut noded_cycles = Vec::with_capacity(exact_rings.len());
+        noded_cycles.extend(
+            exact_rings
+                .iter()
+                .zip(std::iter::once(&shell).chain(holes.iter()))
+                .map(|(points, ring)| NodedExactCycle { points, ring }),
+        );
+        validate_assembled_exact_cycles(subdivision, &noded_cycles, 0)?;
         parts.push(ExactCellPart {
             owner,
             face: shell.face,
