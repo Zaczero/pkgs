@@ -640,12 +640,13 @@ fn direct_preimages_for_envelope(
             continue;
         }
         if lower > i64::MIN {
-            let previous = match compare_expansion_query_copy(minimum, query, lower - 1) {
+            let previous_turn = lower.checked_sub(1).expect("lower turn is above i64::MIN");
+            let previous = match compare_expansion_query_copy(minimum, query, previous_turn) {
                 Ok(previous) => previous,
                 Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
             };
             if previous != Ordering::Greater {
-                lower -= 1;
+                lower = previous_turn;
                 continue;
             }
         }
@@ -664,12 +665,13 @@ fn direct_preimages_for_envelope(
             continue;
         }
         if upper < i64::MAX {
-            let next = match compare_expansion_query_copy(maximum, query, upper + 1) {
+            let next_turn = upper.checked_add(1).expect("upper turn is below i64::MAX");
+            let next = match compare_expansion_query_copy(maximum, query, next_turn) {
                 Ok(next) => next,
                 Err(ExactFailure::Arithmetic) => return DirectPreimages::Uncertain,
             };
             if next != Ordering::Less {
-                upper += 1;
+                upper = next_turn;
                 continue;
             }
         }
@@ -747,11 +749,12 @@ impl PeriodicParityBuckets {
 
     fn any_interior(&self) -> bool {
         let mut parity = self.parity_at_first;
-        for (index, event) in self.events.iter().enumerate() {
+        let mut events = self.events.iter().peekable();
+        while let Some(event) = events.next() {
             if parity {
                 return true;
             }
-            if index + 1 != self.events.len() {
+            if events.peek().is_some() {
                 parity ^= *event;
             }
         }
@@ -765,16 +768,19 @@ impl LiftedChain {
         if points.len() < minimum || !points.iter().all(|(x, y)| x.is_finite() && y.is_finite()) {
             return Err(ExactFailure::Arithmetic);
         }
+        let (first_point, remaining_points) = points
+            .split_first()
+            .expect("the minimum chain length is at least two");
         let mut vertices = Vec::with_capacity(points.len());
-        let mut edges = Vec::with_capacity(points.len().saturating_sub(1));
+        let mut edges = Vec::with_capacity(remaining_points.len());
         vertices.push(LiftedVertex {
             longitude: LiftedLongitude {
-                raw: points[0].0,
+                raw: first_point.0,
                 turns: 0,
             },
-            latitude: points[0].1,
+            latitude: first_point.1,
         });
-        for &(longitude, latitude) in &points[1..] {
+        for &(longitude, latitude) in remaining_points {
             let previous = exact(vertices.last().copied())?;
             let step = lifted_step(previous.longitude.raw, longitude)?;
             let turns = previous
@@ -791,25 +797,23 @@ impl LiftedChain {
             });
             edges.push(step.kind);
             while vertices.len() > minimum {
-                let last = vertices
-                    .len()
-                    .checked_sub(1)
-                    .ok_or(ExactFailure::Arithmetic)?;
-                let previous =
-                    *exact(vertices.get(last.checked_sub(2).ok_or(ExactFailure::Arithmetic)?))?;
-                let current =
-                    *exact(vertices.get(last.checked_sub(1).ok_or(ExactFailure::Arithmetic)?))?;
-                let next = *exact(vertices.get(last))?;
+                let [previous, current, next] = *vertices
+                    .as_slice()
+                    .last_chunk::<3>()
+                    .expect("a chain longer than its minimum has three trailing vertices");
                 if !can_coalesce(previous, current, next)? {
                     break;
                 }
                 // `can_coalesce` has already certified this exact direct lift;
                 // retain its edge kind while removing the middle vertex.
                 let direct = lifted_step(previous.longitude.raw, next.longitude.raw)?;
-                vertices.remove(last - 1);
-                edges.remove(last - 1);
-                *exact(edges.get_mut(last.checked_sub(2).ok_or(ExactFailure::Arithmetic)?))? =
-                    direct.kind;
+                let last = vertices.pop().expect("the chain has a trailing vertex");
+                vertices.pop().expect("the chain has a middle vertex");
+                edges.pop().expect("the chain has a trailing edge");
+                *edges
+                    .last_mut()
+                    .expect("the chain retains the edge before its middle vertex") = direct.kind;
+                vertices.push(last);
             }
         }
         let mut result = Self {
@@ -852,7 +856,10 @@ impl LiftedChain {
             .ok_or(ExactFailure::Arithmetic)?
             .checked_add(raw_alias_turn)
             .ok_or(ExactFailure::Arithmetic)?;
-        if !(-edge_count..=edge_count).contains(&degree) {
+        let minimum_degree = edge_count
+            .checked_neg()
+            .expect("the admitted edge count is nonnegative");
+        if !(minimum_degree..=edge_count).contains(&degree) {
             return Ok(None);
         }
         let expected = ExactExpansion::exact_degree_turns(degree)?;
@@ -882,10 +889,11 @@ impl LiftedChain {
     }
 
     fn longitude_envelope(&self) -> ExactResult<(ExactExpansion, ExactExpansion)> {
-        let first = *exact(self.vertices.first())?;
+        let mut vertices = self.vertices.iter();
+        let first = *exact(vertices.next())?;
         let mut minimum = ExactPlanarPoint::from_lifted(first)?.longitude;
         let mut maximum = minimum.clone();
-        for &vertex in &self.vertices[1..] {
+        for &vertex in vertices {
             let value = ExactPlanarPoint::from_lifted(vertex)?.longitude;
             if value.sub(&minimum)?.ordering() == Ordering::Less {
                 minimum = value.clone();
@@ -1062,7 +1070,7 @@ impl SymbolicAffineEdge {
     fn insert_ratio(&mut self, key: ParentParameterKey, ratio: ExactRatio) -> ExactResult<()> {
         let parameter = ExactParentParameter::new(key, ratio)?;
         let mut insert_at = self.parameters.len();
-        for (index, existing) in self.parameters.iter().enumerate() {
+        for (index, existing) in self.parameters.iter_mut().enumerate() {
             match parameter.ratio.ordering(&existing.ratio)? {
                 Ordering::Less => {
                     insert_at = index;
@@ -1074,7 +1082,7 @@ impl SymbolicAffineEdge {
                     if matches!(existing.key, ParentParameterKey::Partition(_))
                         && !matches!(parameter.key, ParentParameterKey::Partition(_))
                     {
-                        self.parameters[index] = parameter;
+                        *existing = parameter;
                     }
                     return Ok(());
                 },
@@ -2135,6 +2143,9 @@ fn selection_image_point(point: &SourcePoint) -> ExactResult<SelectionPoint> {
 
 const PACKED_BVH_LEAF_SIZE: usize = 8;
 
+#[derive(Clone, Copy, Debug)]
+struct PackedBvhNodeId(usize);
+
 #[derive(Debug)]
 pub(crate) struct PackedBvhEntry<T> {
     value: T,
@@ -2157,15 +2168,15 @@ struct PackedBvhNode {
     envelope: AABB<[f64; 2]>,
     start: usize,
     end: usize,
-    left: Option<usize>,
-    right: Option<usize>,
+    left: Option<PackedBvhNodeId>,
+    right: Option<PackedBvhNodeId>,
 }
 
 #[derive(Debug)]
 pub(crate) struct PackedBvh<T> {
     entries: Vec<PackedBvhEntry<T>>,
     nodes: Vec<PackedBvhNode>,
-    root: Option<usize>,
+    root: Option<PackedBvhNodeId>,
 }
 
 impl<T> PackedBvh<T> {
@@ -2201,9 +2212,13 @@ impl<T> PackedBvh<T> {
         nodes: &mut Vec<PackedBvhNode>,
         start: usize,
         end: usize,
-    ) -> usize {
-        let envelope = envelope_for_entries(&entries[start..end]);
-        let node = nodes.len();
+    ) -> PackedBvhNodeId {
+        let envelope = envelope_for_entries(
+            entries
+                .get(start..end)
+                .expect("BVH node range belongs to its entry column"),
+        );
+        let node = PackedBvhNodeId(nodes.len());
         nodes.push(PackedBvhNode {
             envelope,
             start,
@@ -2211,19 +2226,28 @@ impl<T> PackedBvh<T> {
             left: None,
             right: None,
         });
-        if end - start > PACKED_BVH_LEAF_SIZE {
+        let range_len = end.checked_sub(start).expect("BVH node ranges are ordered");
+        if range_len > PACKED_BVH_LEAF_SIZE {
             let axis = longest_axis(envelope);
-            entries[start..end].sort_unstable_by(|left, right| {
-                proxy_center(left.envelope, axis)
-                    .total_cmp(&proxy_center(right.envelope, axis))
-                    .then_with(|| compare_envelopes(left.envelope, right.envelope))
-                    .then_with(|| left.order.cmp(&right.order))
-            });
-            let middle = start + (end - start) / 2;
+            entries
+                .get_mut(start..end)
+                .expect("BVH node range belongs to its entry column")
+                .sort_unstable_by(|left, right| {
+                    proxy_center(left.envelope, axis)
+                        .total_cmp(&proxy_center(right.envelope, axis))
+                        .then_with(|| compare_envelopes(left.envelope, right.envelope))
+                        .then_with(|| left.order.cmp(&right.order))
+                });
+            let middle = start
+                .checked_add(range_len / 2)
+                .expect("middle of a BVH node range is representable");
             let left = Self::build_node(entries, nodes, start, middle);
             let right = Self::build_node(entries, nodes, middle, end);
-            nodes[node].left = Some(left);
-            nodes[node].right = Some(right);
+            let node = nodes
+                .get_mut(node.0)
+                .expect("BVH node slot was appended before its children");
+            node.left = Some(left);
+            node.right = Some(right);
         }
         node
     }
@@ -2241,14 +2265,14 @@ impl<T> PackedBvh<T> {
 
     fn visit_node(
         &self,
-        node: usize,
+        node: PackedBvhNodeId,
         query: AABB<[f64; 2]>,
         visit: &mut impl FnMut(&T) -> crate::error::Result<()>,
     ) -> crate::error::Result<()> {
         let current = self
             .nodes
-            .get(node)
-            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+            .get(node.0)
+            .expect("BVH node IDs are constructed by the owning builder");
         if !aabbs_intersect(current.envelope, query) {
             return Ok(());
         }
@@ -2258,13 +2282,19 @@ impl<T> PackedBvh<T> {
                 self.visit_node(right, query, visit)?;
             },
             (None, None) => {
-                for entry in &self.entries[current.start..current.end] {
+                let entries = self
+                    .entries
+                    .get(current.start..current.end)
+                    .expect("BVH leaf range belongs to its entry column");
+                for entry in entries {
                     if aabbs_intersect(entry.envelope, query) {
                         visit(&entry.value)?;
                     }
                 }
             },
-            _ => return Err(crate::error::ResourceError::SizeOverflow.into()),
+            (Some(_), None) | (None, Some(_)) => {
+                unreachable!("BVH nodes have both child IDs or neither")
+            },
         }
         Ok(())
     }
@@ -2293,10 +2323,13 @@ fn build_authority_edge_index(
 }
 
 fn envelope_for_entries<T>(entries: &[PackedBvhEntry<T>]) -> AABB<[f64; 2]> {
-    let first = entries[0].envelope;
+    let (first, remaining) = entries
+        .split_first()
+        .expect("BVH node entry ranges are nonempty");
+    let first = first.envelope;
     let mut lower = first.lower();
     let mut upper = first.upper();
-    for entry in &entries[1..] {
+    for entry in remaining {
         let entry_lower = entry.envelope.lower();
         let entry_upper = entry.envelope.upper();
         lower[0] = lower[0].min(entry_lower[0]);
@@ -2307,18 +2340,31 @@ fn envelope_for_entries<T>(entries: &[PackedBvhEntry<T>]) -> AABB<[f64; 2]> {
     AABB::from_bounds(lower, upper)
 }
 
-fn longest_axis(envelope: AABB<[f64; 2]>) -> usize {
+#[derive(Clone, Copy)]
+enum PackedBvhAxis {
+    X,
+    Y,
+}
+
+fn longest_axis(envelope: AABB<[f64; 2]>) -> PackedBvhAxis {
     let lower = envelope.lower();
     let upper = envelope.upper();
     let x = upper[0] - lower[0];
     let y = upper[1] - lower[1];
-    usize::from(y > x)
+    if y > x {
+        PackedBvhAxis::Y
+    } else {
+        PackedBvhAxis::X
+    }
 }
 
-fn proxy_center(envelope: AABB<[f64; 2]>, axis: usize) -> f64 {
+fn proxy_center(envelope: AABB<[f64; 2]>, axis: PackedBvhAxis) -> f64 {
     let lower = envelope.lower();
     let upper = envelope.upper();
-    f64::midpoint(lower[axis], upper[axis])
+    match axis {
+        PackedBvhAxis::X => f64::midpoint(lower[0], upper[0]),
+        PackedBvhAxis::Y => f64::midpoint(lower[1], upper[1]),
+    }
 }
 
 fn compare_envelopes(left: AABB<[f64; 2]>, right: AABB<[f64; 2]>) -> Ordering {
@@ -2526,7 +2572,14 @@ impl GeographicCoverageSource {
         input: impl Into<RectangularCandidateInput>,
     ) -> RectangularCandidate {
         #[cfg(test)]
-        RECTANGULAR_CANDIDATE_ADMISSIONS.with(|count| count.set(count.get() + 1));
+        RECTANGULAR_CANDIDATE_ADMISSIONS.with(|count| {
+            count.set(
+                count
+                    .get()
+                    .checked_add(1)
+                    .expect("test candidate-admission counter fits usize"),
+            );
+        });
         let (bounds, windows) = match input.into() {
             RectangularCandidateInput::Bounds(bounds) => {
                 (bounds, degree_windows_from_bounds(bounds))
@@ -3170,7 +3223,19 @@ fn append_lifted_chain(
         },
     };
     let chain_index = lifted.len();
-    for (ordinal, edge_kind) in chain.edges.iter().copied().enumerate() {
+    let vertex_pairs = chain.vertices.as_slice().array_windows::<2>();
+    debug_assert_eq!(
+        chain.edges.len(),
+        vertex_pairs.len(),
+        "one source edge joins each adjacent lifted vertex pair"
+    );
+    for (ordinal, (edge_kind, [start, end])) in chain
+        .edges
+        .iter()
+        .copied()
+        .zip(vertex_pairs.copied())
+        .enumerate()
+    {
         let Some(next) = ordinal.checked_add(1) else {
             *unknown = true;
             break;
@@ -3195,8 +3260,8 @@ fn append_lifted_chain(
                 },
             ],
             input.closed,
-            chain.vertices[ordinal],
-            chain.vertices[next],
+            start,
+            end,
             edge_kind,
         ) {
             Ok(edge) => edge,

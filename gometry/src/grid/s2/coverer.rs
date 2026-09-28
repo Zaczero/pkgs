@@ -41,6 +41,14 @@ use crate::grid::spherical_arc::{
 };
 use crate::grid::{CoverBudgetExceeded, CoverError, ensure_cover_budget};
 
+fn cover_total(counts: &[usize]) -> usize {
+    counts.iter().fold(0_usize, |total, &count| {
+        total
+            .checked_add(count)
+            .expect("simultaneous S2 frontier lengths fit usize")
+    })
+}
+
 #[cfg(test)]
 const S2_LEVEL_COUNT: usize = MAX_LEVEL as usize + 1;
 
@@ -157,55 +165,69 @@ pub(crate) struct CoverStats {
     )
 )]
 impl CoverStats {
-    const fn raw_classify(&mut self, level: u8) {
-        #[cfg(not(test))]
-        let _ = level;
-        #[cfg(test)]
-        {
-            self.raw_classify_calls += 1;
-            self.classifications_by_level[level as usize] += 1;
-            self.visited_unique_candidates += 1;
-        }
+    #[cfg(test)]
+    const fn increment(counter: &mut usize) {
+        *counter = counter.checked_add(1).expect("S2 test counter fits usize");
     }
+
+    #[cfg(test)]
+    fn raw_classify(&mut self, level: u8) {
+        Self::increment(&mut self.raw_classify_calls);
+        Self::increment(
+            self.classifications_by_level
+                .get_mut(usize::from(level))
+                .expect("CellId level fits the classification counter"),
+        );
+        Self::increment(&mut self.visited_unique_candidates);
+    }
+
+    #[cfg(not(test))]
+    const fn raw_classify(&mut self, _level: u8) {}
 
     const fn unique_local_point_probe(&mut self) {
         #[cfg(test)]
         {
-            self.unique_local_point_probes += 1;
+            Self::increment(&mut self.unique_local_point_probes);
         }
     }
 
     const fn local_duplicate_hit(&mut self) {
         #[cfg(test)]
         {
-            self.local_duplicate_hits += 1;
+            Self::increment(&mut self.local_duplicate_hits);
         }
     }
 
-    const fn carried_certificate_hit(&mut self, level: u8) {
-        #[cfg(not(test))]
-        let _ = level;
-        #[cfg(test)]
-        {
-            self.carried_certificate_hits += 1;
-            self.carried_certificates_by_level[level as usize] += 1;
-        }
+    #[cfg(test)]
+    fn carried_certificate_hit(&mut self, level: u8) {
+        Self::increment(&mut self.carried_certificate_hits);
+        Self::increment(
+            self.carried_certificates_by_level
+                .get_mut(usize::from(level))
+                .expect("CellId level fits the carried-certificate counter"),
+        );
     }
 
-    const fn productive_path_reuse(&mut self, level: u8) {
-        #[cfg(not(test))]
-        let _ = level;
-        #[cfg(test)]
-        {
-            self.productive_path_reuses += 1;
-            self.productive_path_reuses_by_level[level as usize] += 1;
-        }
+    #[cfg(not(test))]
+    const fn carried_certificate_hit(&mut self, _level: u8) {}
+
+    #[cfg(test)]
+    fn productive_path_reuse(&mut self, level: u8) {
+        Self::increment(&mut self.productive_path_reuses);
+        Self::increment(
+            self.productive_path_reuses_by_level
+                .get_mut(usize::from(level))
+                .expect("CellId level fits the productivity counter"),
+        );
     }
+
+    #[cfg(not(test))]
+    const fn productive_path_reuse(&mut self, _level: u8) {}
 
     const fn productive_path_hit(&mut self) {
         #[cfg(test)]
         {
-            self.productive_path_hits += 1;
+            Self::increment(&mut self.productive_path_hits);
         }
     }
 
@@ -225,7 +247,9 @@ impl CoverStats {
         let _ = (emitted, queued);
         #[cfg(test)]
         {
-            let len = emitted.saturating_add(queued);
+            let len = emitted
+                .checked_add(queued)
+                .expect("S2 test frontier cardinality fits usize");
             if len > self.productive_frontier_peak {
                 self.productive_frontier_peak = len;
             }
@@ -235,7 +259,7 @@ impl CoverStats {
     const fn committed_emission(&mut self) {
         #[cfg(test)]
         {
-            self.committed_emissions += 1;
+            Self::increment(&mut self.committed_emissions);
         }
     }
 
@@ -385,10 +409,11 @@ impl Candidate {
 
     #[cfg(test)]
     fn certificate_storage(&self) -> usize {
-        1 + self
-            .productivity
+        self.productivity
             .as_ref()
             .map_or(0, Productivity::certificate_storage)
+            .checked_add(1)
+            .expect("certificate-storage estimate fits usize")
     }
 }
 
@@ -498,11 +523,18 @@ impl Coverer {
         // Non-visible boundary candidates can still have visible descendants.
         // Keep them depth-first so scratch scales with depth/fanout, not the
         // number of discarded candidates.
-        let mut invisible: Vec<Candidate> = Vec::with_capacity(3 * MAX_LEVEL as usize);
+        let stack_depth_capacity = usize::from(MAX_LEVEL)
+            .checked_mul(3)
+            .expect("S2 stack depth capacity fits usize");
+        let mut invisible: Vec<Candidate> = Vec::with_capacity(stack_depth_capacity);
         // Phase-1 DFS stack: unresolved candidates still below min_level.
         // Fail-open Boundary entries may later classify Outside — do not
         // charge them until proven productive.
-        let mut dfs: Vec<Candidate> = Vec::with_capacity(6 + 3 * MAX_LEVEL as usize);
+        let dfs_capacity = Face::ALL
+            .len()
+            .checked_add(stack_depth_capacity)
+            .expect("S2 DFS capacity fits usize");
+        let mut dfs: Vec<Candidate> = Vec::with_capacity(dfs_capacity);
         // Reusable staging buffer for 4/16/64 target descendants.
         let mut staged: Vec<Candidate> = Vec::with_capacity(64);
 
@@ -586,7 +618,7 @@ impl Coverer {
             let mut candidate = classify_one(ctx, id, stats)?;
             match candidate.certificate.class {
                 CellClass::Outside => {},
-                _class => {
+                CellClass::Interior | CellClass::Boundary => {
                     if self.min_level == 0 {
                         // Only charge proven-productive faces (fail-open may
                         // prune entirely under adaptive max_level).
@@ -597,13 +629,9 @@ impl Coverer {
                         };
                         candidate.productivity = Some(productivity);
                         let visible = is_visible(rule, candidate.certificate);
-                        ensure_cover_budget(
-                            cells
-                                .len()
-                                .saturating_add(queue.len())
-                                .saturating_add(usize::from(visible)),
-                            self.hard_budget(),
-                        )?;
+                        let projected =
+                            cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
+                        ensure_cover_budget(projected, self.hard_budget())?;
                         if visible {
                             queue.push((
                                 Reverse(candidate.certificate.id.level()),
@@ -650,7 +678,7 @@ impl Coverer {
             let certificate = candidate.certificate;
             debug_assert!(certificate.id.level() < self.min_level);
             // Proven base: emitted + phase-2 queue (not the unresolved DFS).
-            let proven = cells.len() + queue.len();
+            let proven = cover_total(&[cells.len(), queue.len()]);
             match certificate.class {
                 CellClass::Outside => unreachable!("Outside never enters the frontier"),
                 CellClass::Interior => {
@@ -666,28 +694,21 @@ impl Coverer {
                     debug_assert_budget(cells.len(), queue.len(), self.hard_budget());
                 },
                 CellClass::Boundary => {
-                    stage_children_at(
-                        ctx,
-                        certificate.id,
-                        certificate.id.level() + 1,
-                        None,
-                        staged,
-                        stats,
-                    )?;
-                    let child_level = certificate.id.level() + 1;
+                    let child_level = certificate
+                        .id
+                        .level()
+                        .checked_add(1)
+                        .expect("unresolved candidate is below the admitted min_level");
+                    stage_children_at(ctx, certificate.id, child_level, None, staged, stats)?;
                     if child_level >= self.min_level {
                         // Drop fail-open children that resolve to Outside
                         // before charging the phase-2 queue.
                         retain_productive(ctx, staged, self, stats)?;
                         for child in staged.drain(..) {
                             let visible = is_visible(rule, child.certificate);
-                            ensure_cover_budget(
-                                cells
-                                    .len()
-                                    .saturating_add(queue.len())
-                                    .saturating_add(usize::from(visible)),
-                                self.hard_budget(),
-                            )?;
+                            let projected =
+                                cover_total(&[cells.len(), queue.len(), usize::from(visible)]);
+                            ensure_cover_budget(projected, self.hard_budget())?;
                             if visible {
                                 queue.push((
                                     Reverse(child.certificate.id.level()),
@@ -788,8 +809,9 @@ impl Coverer {
         stats: &mut CoverStats,
     ) -> Result<(), CoverError> {
         let certificate = candidate.certificate;
-        if self.can_refine(certificate.id.level(), certificate.class) {
-            let target = certificate.id.level() + self.level_mod;
+        if certificate.class == CellClass::Boundary
+            && let Some(target) = self.refinement_target(certificate.id.level())
+        {
             stage_children_at(
                 ctx,
                 certificate.id,
@@ -807,8 +829,8 @@ impl Coverer {
                 .iter()
                 .filter(|child| is_visible(rule, child.certificate))
                 .count();
-            let base = cells.len() + queue.len();
-            let projected = base.saturating_add(staged_visible);
+            let base = cover_total(&[cells.len(), queue.len()]);
+            let projected = cover_total(&[base, staged_visible]);
             let fits_target = projected <= self.target_budget();
             let fits_hard = self.hard_budget().is_none_or(|limit| projected <= limit);
             if fits_target && fits_hard {
@@ -839,7 +861,7 @@ impl Coverer {
         // Emit at this level (interior, max-level boundary, or unaffordable
         // split). Invisible terminal candidates drop immediately.
         if visible {
-            let projected = cells.len().saturating_add(queue.len()).saturating_add(1);
+            let projected = cover_total(&[cells.len(), queue.len(), 1]);
             ensure_cover_budget(projected, self.hard_budget())?;
             cells.push((certificate.id, certificate.class == CellClass::Interior));
             stats.committed_emission();
@@ -850,9 +872,12 @@ impl Coverer {
 
     /// Whether a queue entry can still subdivide under this coverer.
     fn can_refine(self, level: u8, class: CellClass) -> bool {
-        class == CellClass::Boundary
-            && level + self.level_mod <= self.max_level
-            && level + self.level_mod <= MAX_LEVEL
+        class == CellClass::Boundary && self.refinement_target(level).is_some()
+    }
+
+    fn refinement_target(self, level: u8) -> Option<u8> {
+        let target = level.checked_add(self.level_mod)?;
+        (target <= self.max_level && target <= MAX_LEVEL).then_some(target)
     }
 }
 
@@ -863,25 +888,33 @@ fn retain_productive(
     coverer: Coverer,
     stats: &mut CoverStats,
 ) -> Result<(), CoverError> {
-    let mut index = 0;
-    while index < staged.len() {
-        if staged[index].certificate.class == CellClass::Outside {
-            staged.remove(index);
-            continue;
+    let mut failure = None;
+    staged.retain_mut(|candidate| {
+        if failure.is_some() {
+            return true;
         }
-        if staged[index].productivity.is_some() {
+        if candidate.certificate.class == CellClass::Outside {
+            return false;
+        }
+        if candidate.productivity.is_some() {
             stats.productive_path_hit();
-            index += 1;
-            continue;
+            return true;
         }
-        let certificate = staged[index].certificate;
-        let Some(productivity) = productive_state(ctx, certificate, coverer, stats)? else {
-            staged.remove(index);
-            continue;
-        };
-        staged[index].productivity = Some(productivity);
-        stats.observe_candidate(&staged[index]);
-        index += 1;
+        match productive_state(ctx, candidate.certificate, coverer, stats) {
+            Err(error) => {
+                failure = Some(error);
+                true
+            },
+            Ok(None) => false,
+            Ok(Some(productivity)) => {
+                candidate.productivity = Some(productivity);
+                stats.observe_candidate(candidate);
+                true
+            },
+        }
+    });
+    if let Some(error) = failure {
+        return Err(error);
     }
     Ok(())
 }
@@ -901,31 +934,33 @@ fn productive_state(
         CellClass::Outside => Ok(None),
         CellClass::Interior => Ok(Some(Productivity::Terminal)),
         CellClass::Boundary => {
-            if !coverer.can_refine(root.id.level(), root.class) {
+            let Some(target) = coverer.refinement_target(root.id.level()) else {
                 return Ok(Some(Productivity::Terminal));
-            }
-            let target = root.id.level() + coverer.level_mod;
+            };
             let mut children = Vec::with_capacity(fan_size(root.id.level(), target));
             stage_children_at(ctx, root.id, target, None, &mut children, stats)?;
-            for index in 0..children.len() {
-                let child_certificate = children[index].certificate;
+            let mut productive = false;
+            for child in &mut children {
+                let child_certificate = child.certificate;
                 if child_certificate.class == CellClass::Outside {
                     continue;
                 }
                 if child_certificate.class == CellClass::Interior
                     || !coverer.can_refine(child_certificate.id.level(), child_certificate.class)
                 {
-                    children[index].productivity = Some(Productivity::Terminal);
-                    stats.observe_batch(&children);
-                    return Ok(Some(Productivity::Children(CertificateBatch {
-                        candidates: children,
-                    })));
+                    child.productivity = Some(Productivity::Terminal);
+                    productive = true;
+                    break;
                 }
                 let Some(productivity) = productive_state(ctx, child_certificate, coverer, stats)?
                 else {
                     continue;
                 };
-                children[index].productivity = Some(productivity);
+                child.productivity = Some(productivity);
+                productive = true;
+                break;
+            }
+            if productive {
                 stats.observe_batch(&children);
                 return Ok(Some(Productivity::Children(CertificateBatch {
                     candidates: children,
@@ -1031,7 +1066,7 @@ fn emit_interior_descendants(
 /// `4^(min_level - level)` interior terminals, or `None` on overflow.
 fn interior_multiplicity(level: u8, min_level: u8) -> Option<usize> {
     debug_assert!(level <= min_level);
-    let delta = u32::from(min_level - level);
+    let delta = u32::from(min_level.checked_sub(level)?);
     // 4^delta = 2^(2*delta). delta ≤ 30 ⇒ shift ≤ 60, fits in u64/usize on
     // 64-bit; checked_shl covers smaller pointer widths.
     let shift = 2_u32.checked_mul(delta)?;
@@ -1041,7 +1076,12 @@ fn interior_multiplicity(level: u8, min_level: u8) -> Option<usize> {
 /// Number of descendants in one supported 1/2/3-level fan.
 fn fan_size(parent_level: u8, target: u8) -> usize {
     debug_assert!(target > parent_level);
-    let shift = 2 * u32::from(target - parent_level);
+    let delta = target
+        .checked_sub(parent_level)
+        .expect("fan target is finer than its parent");
+    let shift = u32::from(delta)
+        .checked_mul(2)
+        .expect("S2 fan shift fits u32");
     1_usize
         .checked_shl(shift)
         .expect("S2 fan depth is limited to three levels")
@@ -1148,23 +1188,27 @@ fn local_probe_index(
     }) {
         stats.local_duplicate_hit();
         if let Some(known) = known {
-            if let Some(existing) = probes[index].covered {
+            let existing = probes
+                .get_mut(index)
+                .expect("probe position came from the probe vector");
+            if let Some(existing_covered) = existing.covered {
                 debug_assert_eq!(
-                    existing, known,
+                    existing_covered, known,
                     "local probe {:?} has conflicting carried membership",
-                    probes[index].point
+                    existing.point
                 );
             } else {
-                probes[index].covered = Some(known);
+                existing.covered = Some(known);
             }
         }
         return index;
     }
+    let index = probes.len();
     probes.push(LocalProbe {
         point,
         covered: known,
     });
-    probes.len() - 1
+    index
 }
 
 /// Classify a finite fan after its local point probes have been deduplicated.
@@ -1181,7 +1225,7 @@ fn classify_ids(
 ) -> Result<(), CoverError> {
     out.clear();
     if out.capacity() < fan_capacity {
-        out.reserve(fan_capacity - out.capacity());
+        out.reserve(fan_capacity);
     }
     let mut reuse = reuse;
     let mut probes = Vec::with_capacity(fan_capacity.saturating_mul(5));
@@ -1192,11 +1236,12 @@ fn classify_ids(
         debug_assert_eq!(id.level(), level);
         let vertices = cell.vertices_lonlat();
         let rect = cell.rect_bound(&vertices);
+        let [southwest, southeast, northeast, northwest] = vertices;
         let points = [
-            vertices[0],
-            vertices[1],
-            vertices[2],
-            vertices[3],
+            southwest,
+            southeast,
+            northeast,
+            northwest,
             cell.center_lonlat(),
         ];
         let reused = reuse.as_mut().and_then(|candidates| {
@@ -1236,20 +1281,26 @@ fn classify_ids(
         } else {
             0
         };
-        let probe_order = if probe_count == 1 && ctx.point_leaves.is_some() && reused.is_none() {
-            [4, usize::MAX, usize::MAX, usize::MAX, usize::MAX]
-        } else {
-            [0, 1, 2, 3, 4]
-        };
-        for &index in &probe_order[..probe_count] {
-            let known = known_membership.map(|membership| {
-                if index < 4 {
-                    membership.vertices[index]
-                } else {
-                    membership.center
-                }
+        if probe_count == 1 && ctx.point_leaves.is_some() && reused.is_none() {
+            let center = points.last().copied().expect("one cell center probe");
+            let center_probe = probe_indices.last_mut().expect("center probe slot exists");
+            *center_probe = local_probe_index(&mut probes, center, None, stats);
+        } else if probe_count == 5 {
+            let known_points = known_membership.map_or([None; 5], |membership| {
+                let [southwest, southeast, northeast, northwest] = membership.vertices;
+                [
+                    Some(southwest),
+                    Some(southeast),
+                    Some(northeast),
+                    Some(northwest),
+                    Some(membership.center),
+                ]
             });
-            probe_indices[index] = local_probe_index(&mut probes, points[index], known, stats);
+            for ((probe_index, point), known) in
+                probe_indices.iter_mut().zip(points).zip(known_points)
+            {
+                *probe_index = local_probe_index(&mut probes, point, known, stats);
+            }
         }
         pending.push(PendingCandidate {
             id,
@@ -1282,18 +1333,18 @@ fn classify_ids(
             vertices: [false; 4],
             center: false,
         };
-        for index in 0..5 {
-            let Some(covered) = probes
-                .get(pending.probe_indices[index])
-                .and_then(|probe| probe.covered)
-            else {
-                continue;
-            };
-            if index < 4 {
-                membership.vertices[index] = covered;
-            } else {
-                membership.center = covered;
+        let [southwest, southeast, northeast, northwest, center] = pending.probe_indices;
+        for (vertex, probe_index) in membership
+            .vertices
+            .iter_mut()
+            .zip([southwest, southeast, northeast, northwest])
+        {
+            if let Some(covered) = probes.get(probe_index).and_then(|probe| probe.covered) {
+                *vertex = covered;
             }
+        }
+        if let Some(covered) = probes.get(center).and_then(|probe| probe.covered) {
+            membership.center = covered;
         }
         let membership = pending.membership_known.then_some(membership);
         let class = classify_candidate(
@@ -1317,7 +1368,7 @@ fn classify_ids(
 fn debug_assert_budget(emitted: usize, frontier: usize, max_cells: Option<usize>) {
     if let Some(limit) = max_cells {
         debug_assert!(
-            emitted.saturating_add(frontier) <= limit,
+            cover_total(&[emitted, frontier]) <= limit,
             "cover budget invariant broken: E={emitted} + Q={frontier} > M={limit}"
         );
     }

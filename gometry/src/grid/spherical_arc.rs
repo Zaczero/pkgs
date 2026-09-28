@@ -408,7 +408,20 @@ fn certified_arc_latitude_bounds(arc: &OrderedMinorArc) -> Option<Bound> {
 /// The native H3 boundary holds at most five original pentagon vertices plus
 /// five face-crossing insertions.  Keep that vendor bound structural: arc
 /// construction must not make allocation failure a numeric uncertainty.
+const MIN_H3_BOUNDARY_ARCS: usize = 3;
 const MAX_H3_BOUNDARY_ARCS: usize = 10;
+
+fn push_fixed_prefix<T: Copy, const N: usize>(
+    values: &mut [Option<T>; N],
+    len: &mut u8,
+    value: T,
+) -> Option<()> {
+    let index = usize::from(*len);
+    let next_len = len.checked_add(1)?;
+    *values.get_mut(index)? = Some(value);
+    *len = next_len;
+    Some(())
+}
 
 /// Ordered raw H3 boundary pieces in their vendor-supplied order.
 #[derive(Clone, Copy, Debug)]
@@ -435,19 +448,15 @@ impl H3BboxWitnesses {
     }
 
     fn push(&mut self, value: CertifiedDegreeWindows) -> Option<()> {
-        let index = usize::from(self.len);
-        if index == self.values.len() {
-            return None;
-        }
-        self.values[index] = Some(value);
-        self.len += 1;
-        Some(())
+        push_fixed_prefix(&mut self.values, &mut self.len, value)
     }
 
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = CertifiedDegreeWindows> + '_ {
-        self.values[..usize::from(self.len)]
+        self.values
+            .get(..usize::from(self.len))
+            .expect("H3 witness prefix fits its fixed array")
             .iter()
-            .map(|value| value.expect("H3 witness prefix is initialized"))
+            .map(|value| *value.as_ref().expect("H3 witness prefix is initialized"))
     }
 }
 
@@ -500,24 +509,22 @@ impl H3ArcSet {
         self.len == 0
     }
 
+    #[cfg(test)]
     fn get(&self, index: usize) -> Option<&OrderedMinorArc> {
-        (index < self.len())
-            .then(|| self.values[index].as_ref())
-            .flatten()
-    }
-
-    const fn push(&mut self, arc: &OrderedMinorArc) -> Option<()> {
-        let index = self.len();
-        if index == MAX_H3_BOUNDARY_ARCS {
+        if index >= self.len() {
             return None;
         }
-        self.values[index] = Some(*arc);
-        self.len += 1;
-        Some(())
+        self.values.get(index)?.as_ref()
+    }
+
+    fn push(&mut self, arc: &OrderedMinorArc) -> Option<()> {
+        push_fixed_prefix(&mut self.values, &mut self.len, *arc)
     }
 
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &OrderedMinorArc> {
-        self.values[..self.len()]
+        self.values
+            .get(..self.len())
+            .expect("H3 arc prefix fits its fixed array")
             .iter()
             .map(|arc| arc.as_ref().expect("H3 arc set prefix is initialized"))
     }
@@ -529,7 +536,7 @@ impl H3ArcSet {
 pub(crate) fn h3_ordered_arcs(cell: h3o::CellIndex) -> Option<H3ArcSet> {
     let boundary = cell.boundary_with_seeds();
     let count = boundary.public.len();
-    if !(3..=MAX_H3_BOUNDARY_ARCS).contains(&count)
+    if !(MIN_H3_BOUNDARY_ARCS..=MAX_H3_BOUNDARY_ARCS).contains(&count)
         || count != boundary.projection_seeds().len()
         || count != boundary.projection_seed_edges().len()
     {
@@ -553,17 +560,22 @@ pub(crate) fn h3_ordered_arcs(cell: h3o::CellIndex) -> Option<H3ArcSet> {
             },
         };
         let point = project_h3_seed(&seed)?;
-        points[usize::from(ordinal)] = Some((
+        *points.get_mut(usize::from(ordinal))? = Some((
             key,
             PhysicalEndpointKey::CellVertex(key),
             point,
             certified_vector_longitude(point)?,
         ));
     }
+    let point_prefix = points.get(..count)?;
+    let next_points = point_prefix
+        .iter()
+        .skip(1)
+        .chain(point_prefix.iter().take(1));
     let mut arcs = H3ArcSet::empty();
-    for index in 0..count {
-        let (start_vertex, start_key, start, start_longitude) = points[index]?;
-        let (end_vertex, end_key, end, end_longitude) = points[(index + 1) % count]?;
+    for (start, end) in point_prefix.iter().zip(next_points) {
+        let (start_vertex, start_key, start, start_longitude) = (*start)?;
+        let (end_vertex, end_key, end, end_longitude) = (*end)?;
         let normal = start.cross(end)?;
         let normal_norm = normal.dot(normal)?.sqrt()?;
         if normal_norm.contains_zero() || start.dot(end)?.lo <= -1.0 {
@@ -603,7 +615,9 @@ pub(crate) fn h3_ordered_arcs(cell: h3o::CellIndex) -> Option<H3ArcSet> {
 pub(crate) fn h3_bbox_positive_witnesses(cell: h3o::CellIndex) -> Option<H3BboxWitnesses> {
     let boundary = cell.boundary_with_seeds();
     let count = boundary.public.len();
-    if !(3..=MAX_H3_BOUNDARY_ARCS).contains(&count) || count != boundary.projection_seeds().len() {
+    if !(MIN_H3_BOUNDARY_ARCS..=MAX_H3_BOUNDARY_ARCS).contains(&count)
+        || count != boundary.projection_seeds().len()
+    {
         return None;
     }
     let mut witnesses = H3BboxWitnesses::empty();
@@ -632,15 +646,15 @@ fn certified_h3_point_degree_window(point: Vec3Bound) -> Option<CertifiedDegreeW
 /// accumulated only across vendor-adjacent endpoint identities; interpreting
 /// the same spans as an unordered circular union loses the 2π sheet.
 fn certified_h3_longitude(arcs: &H3ArcSet) -> Option<CertifiedLongitudeRad> {
-    let first = arcs.get(0)?;
+    let mut ordered = arcs.iter().peekable();
+    let first = *ordered.peek()?;
     let first_span = first.longitude?;
     let tau = Bound::new(2.0 * PI_LO, 2.0 * PI_HI)?;
     let mut sheet = 0_i64;
     let mut minimum = first_span.start;
     let mut maximum = first_span.start;
-    for index in 0..arcs.len() {
-        let arc = arcs.get(index)?;
-        let next = arcs.get((index + 1) % arcs.len())?;
+    while let Some(arc) = ordered.next() {
+        let next = ordered.peek().copied().unwrap_or(first);
         if arc.endpoints[1] != next.endpoints[0] || arc.kind != ExactArcKind::General {
             return None;
         }
@@ -682,14 +696,22 @@ fn exact_h3_bbox(arcs: &H3ArcSet) -> DegreeWindowResult {
     let Some(bounds) = (|| {
         let mut latitude: Option<Bound> = None;
         let mut vertex_latitudes = [None; MAX_H3_BOUNDARY_ARCS];
-        for (index, arc) in arcs.iter().enumerate() {
-            vertex_latitudes[index] = Some(certified_vector_latitude(arc.start)?);
+        for (latitude, arc) in vertex_latitudes.iter_mut().zip(arcs.iter()) {
+            *latitude = Some(certified_vector_latitude(arc.start)?);
         }
-        for (index, arc) in arcs.iter().enumerate() {
+        let vertex_latitudes = vertex_latitudes.get(..arcs.len())?;
+        let first_latitude = vertex_latitudes.first()?;
+        let next_latitudes = vertex_latitudes
+            .iter()
+            .skip(1)
+            .chain(std::iter::once(first_latitude));
+        for ((arc, start_latitude), end_latitude) in
+            arcs.iter().zip(vertex_latitudes).zip(next_latitudes)
+        {
             let arc_latitude = certified_arc_latitude_bounds_from_endpoints(
                 arc,
-                vertex_latitudes[index]?,
-                vertex_latitudes[(index + 1) % arcs.len()]?,
+                start_latitude.as_ref().copied()?,
+                end_latitude.as_ref().copied()?,
             )?;
             latitude = Some(match latitude {
                 Some(current) => Bound::new(
@@ -759,11 +781,11 @@ pub(crate) fn h3_cell_contains_windows(cell: h3o::CellIndex, windows: &[H3Boundi
     };
 
     let mut inward = [None; MAX_H3_BOUNDARY_ARCS];
-    for (index, arc) in arcs.iter().enumerate() {
+    for (normal, arc) in inward.iter_mut().zip(arcs.iter()) {
         let Some(side) = arc.normal.dot(center) else {
             return false;
         };
-        inward[index] = if side.strictly_positive() {
+        *normal = if side.strictly_positive() {
             Some(arc.normal)
         } else if side.strictly_negative() {
             Some(arc.normal.neg())
@@ -788,9 +810,9 @@ pub(crate) fn h3_cell_contains_windows(cell: h3o::CellIndex, windows: &[H3Boundi
         if window.west > window.east || window.south > window.north {
             return false;
         }
-        (0..arcs.len()).all(|index| {
-            inward[index].is_some_and(|normal| {
-                h3_plane_min_with_uncertainty(normal, lon0, lon1, lat0, lat1)
+        inward.iter().take(arcs.len()).all(|normal| {
+            normal.as_ref().is_some_and(|normal| {
+                h3_plane_min_with_uncertainty(*normal, lon0, lon1, lat0, lat1)
                     .is_some_and(|value| value >= 0.0)
             })
         })
@@ -1093,7 +1115,9 @@ fn triangle_point_class(triangle: &[Vec3Bound; 3], point: Vec3Bound) -> H3FanPoi
 
 impl H3Fan {
     fn vertices(&self) -> impl ExactSizeIterator<Item = &H3FanVertex> {
-        self.vertices[..usize::from(self.len)]
+        self.vertices
+            .get(..usize::from(self.len))
+            .expect("H3 fan prefix fits its fixed array")
             .iter()
             .map(|vertex| vertex.as_ref().expect("H3 fan prefix is initialized"))
     }
@@ -1103,17 +1127,23 @@ impl H3Fan {
     /// diagonal locally; general fan point location must retain both or a
     /// single wedge would falsely cover the exterior half of the cell.
     fn triangle_at(&self, index: usize) -> Option<[Vec3Bound; 3]> {
+        let next_index = next_h3_boundary_index(index, usize::from(self.len))?;
         let current = self.vertices.get(index)?.as_ref()?;
-        let next = self
-            .vertices
-            .get((index + 1) % usize::from(self.len))?
-            .as_ref()?;
+        let next = self.vertices.get(next_index)?.as_ref()?;
         Some([
             current.next.real_edge,
             current.next.diagonal,
             next.previous.diagonal,
         ])
     }
+}
+
+fn next_h3_boundary_index(index: usize, count: usize) -> Option<usize> {
+    if index >= count {
+        return None;
+    }
+    let next = index.checked_add(1)?;
+    Some(if next == count { 0 } else { next })
 }
 
 /// Builds the per-cell certificate required before any H3 vertex side can
@@ -1147,7 +1177,14 @@ pub(crate) fn h3_cell_plan(cell: h3o::CellIndex, target: Resolution) -> H3CellPl
 
 fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
     #[cfg(test)]
-    H3_FAN_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
+    H3_FAN_PLAN_CONSTRUCTIONS.with(|count| {
+        count.set(
+            count
+                .get()
+                .checked_add(1)
+                .expect("H3 fan-plan test counter fits usize"),
+        );
+    });
 
     let Some(center) = cell
         .target_substrate_center_seed(cell.resolution())
@@ -1162,15 +1199,13 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
         return H3FanPlan::Uncertain;
     };
     let count = arcs.len();
-    if !(3..=10).contains(&count) {
+    if !(MIN_H3_BOUNDARY_ARCS..=MAX_H3_BOUNDARY_ARCS).contains(&count) {
         return H3FanPlan::Uncertain;
     }
 
     let mut inputs = [None; MAX_H3_BOUNDARY_ARCS];
-    for (index, arc) in arcs.iter().enumerate() {
-        let Some(next) = arcs.get((index + 1) % count) else {
-            return H3FanPlan::Uncertain;
-        };
+    let next_arcs = arcs.iter().skip(1).chain(arcs.iter().take(1));
+    for ((arc, next), slot) in arcs.iter().zip(next_arcs).zip(inputs.iter_mut()) {
         if arc.vertex_keys[1] != next.vertex_keys[0] {
             return H3FanPlan::Uncertain;
         }
@@ -1183,13 +1218,16 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
         if !tangent_nonzero(projected) {
             return H3FanPlan::Uncertain;
         }
-        inputs[index] = Some(FanInputVertex {
+        *slot = Some(FanInputVertex {
             key: arc.vertex_keys[0],
             endpoint: arc.endpoints[0],
             ray: arc.start,
             projected,
         });
     }
+    let Some(input_prefix) = inputs.get(..count) else {
+        return H3FanPlan::Uncertain;
+    };
 
     let input = |index: usize| inputs.get(index).copied().flatten();
 
@@ -1205,9 +1243,12 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
     else {
         return H3FanPlan::Uncertain;
     };
-    for index in 0..count {
-        let next = (index + 1) % count;
-        let (Some(current), Some(next)) = (input(index), input(next)) else {
+    let next_inputs = input_prefix
+        .iter()
+        .skip(1)
+        .chain(input_prefix.iter().take(1));
+    for (current, next) in input_prefix.iter().zip(next_inputs) {
+        let (Some(current), Some(next)) = (*current, *next) else {
             return H3FanPlan::Uncertain;
         };
         if orientation(current.projected, next.projected, origin).and_then(strict_sign)
@@ -1216,16 +1257,28 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
             return H3FanPlan::Uncertain;
         }
     }
+    let last_index = count
+        .checked_sub(1)
+        .expect("a certified H3 fan has boundary vertices");
     for first in 0..count {
-        for second in (first + 1)..count {
-            if second == first + 1 || (first == 0 && second + 1 == count) {
+        let Some(first_next) = next_h3_boundary_index(first, count) else {
+            return H3FanPlan::Uncertain;
+        };
+        let second_start = first
+            .checked_add(1)
+            .expect("H3 fan index is below the boundary count");
+        for second in second_start..count {
+            if second == first_next || (first == 0 && second == last_index) {
                 continue;
             }
+            let Some(second_next) = next_h3_boundary_index(second, count) else {
+                return H3FanPlan::Uncertain;
+            };
             let (Some(first_start), Some(first_end), Some(second_start), Some(second_end)) = (
                 input(first),
-                input((first + 1) % count),
+                input(first_next),
                 input(second),
-                input((second + 1) % count),
+                input(second_next),
             ) else {
                 return H3FanPlan::Uncertain;
             };
@@ -1244,11 +1297,14 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
     }
     for diagonal in 0..count {
         for edge in 0..count {
-            if edge == diagonal || (edge + 1) % count == diagonal {
+            let Some(edge_next) = next_h3_boundary_index(edge, count) else {
+                return H3FanPlan::Uncertain;
+            };
+            if edge == diagonal || edge_next == diagonal {
                 continue;
             }
             let (Some(diagonal_input), Some(edge_start), Some(edge_end)) =
-                (input(diagonal), input(edge), input((edge + 1) % count))
+                (input(diagonal), input(edge), input(edge_next))
             else {
                 return H3FanPlan::Uncertain;
             };
@@ -1264,7 +1320,10 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
                 return H3FanPlan::Uncertain;
             }
         }
-        for other in (diagonal + 1)..count {
+        let other_start = diagonal
+            .checked_add(1)
+            .expect("H3 fan index is below the boundary count");
+        for other in other_start..count {
             let (Some(diagonal_input), Some(other_input)) = (input(diagonal), input(other)) else {
                 return H3FanPlan::Uncertain;
             };
@@ -1282,12 +1341,22 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
     }
 
     let mut vertices = [None; MAX_H3_BOUNDARY_ARCS];
-    for (index, slot) in vertices.iter_mut().enumerate().take(count) {
-        let previous = (index + count - 1) % count;
-        let next = (index + 1) % count;
-        let (Some(previous_input), Some(current), Some(next_input)) =
-            (input(previous), input(index), input(next))
-        else {
+    let Some(first_input_slot) = input_prefix.first() else {
+        return H3FanPlan::Uncertain;
+    };
+    let Some(mut previous_input) = input_prefix.last().copied().flatten() else {
+        return H3FanPlan::Uncertain;
+    };
+    let mut current_inputs = input_prefix.iter().peekable();
+    for slot in vertices.iter_mut().take(count) {
+        let Some(current_slot) = current_inputs.next() else {
+            return H3FanPlan::Uncertain;
+        };
+        let Some(current) = *current_slot else {
+            return H3FanPlan::Uncertain;
+        };
+        let next_slot = current_inputs.peek().copied().unwrap_or(first_input_slot);
+        let Some(next_input) = *next_slot else {
             return H3FanPlan::Uncertain;
         };
         let Some(previous_real) = previous_input
@@ -1329,6 +1398,7 @@ fn h3_fan_plan_from_arcs(cell: h3o::CellIndex, arcs: &H3ArcSet) -> H3FanPlan {
                 diagonal: next_diagonal,
             },
         });
+        previous_input = current;
     }
     H3FanPlan::Certified(H3Fan {
         cell,
@@ -1660,7 +1730,7 @@ impl AffineSourceArc {
     fn endpoint_pole(self, endpoint: usize) -> Option<PhysicalEndpointKey> {
         match self.endpoint_roles.get(endpoint)? {
             SourceEndpointRole::ParentStart | SourceEndpointRole::ParentEnd => {
-                self.endpoint_poles[endpoint]
+                self.endpoint_poles.get(endpoint).copied().flatten()
             },
             SourceEndpointRole::Partition => None,
         }
@@ -2205,12 +2275,12 @@ fn certify_derivative_sign(
         return None;
     }
     let mut stack = [(Bound::exact(0.0)?, 0_u8); MAX_D_BOXES];
-    stack[0].0 = lambda;
-    let mut length = 1;
+    stack.first_mut()?.0 = lambda;
+    let mut length = 1_usize;
     let mut common = None;
     while length != 0 {
-        length -= 1;
-        let (box_lambda, depth) = stack[length];
+        length = length.checked_sub(1)?;
+        let (box_lambda, depth) = *stack.get(length)?;
         let midpoint = box_lambda.lo.certified_midpoint(box_lambda.hi)?;
         let sign = (|| {
             let value = source.plane_derivative(arc, Bound::exact(midpoint)?)?;
@@ -2230,7 +2300,7 @@ fn certify_derivative_sign(
                 }
             },
             CertSign::Uncertain => {
-                if depth == MAX_D_DEPTH || length + 2 > MAX_D_BOXES {
+                if depth == MAX_D_DEPTH {
                     return None;
                 }
                 let lower = Bound::new(box_lambda.lo, midpoint)?;
@@ -2238,9 +2308,15 @@ fn certify_derivative_sign(
                 if lower.width() == 0.0 || upper.width() == 0.0 {
                     return None;
                 }
-                stack[length] = (lower, depth + 1);
-                stack[length + 1] = (upper, depth + 1);
-                length += 2;
+                let next_depth = depth.checked_add(1)?;
+                let next_length = length.checked_add(2)?;
+                let children = stack.get_mut(length..next_length)?;
+                let [lower_slot, upper_slot] = children else {
+                    return None;
+                };
+                *lower_slot = (lower, next_depth);
+                *upper_slot = (upper, next_depth);
+                length = next_length;
             },
         }
     }
@@ -2740,7 +2816,7 @@ fn adjacent_float(mut value: f64, direction: i8, count: u64) -> Option<f64> {
         if count == 1 {
             return Some(value);
         }
-        count - 1
+        count.checked_sub(1)?
     } else {
         count
     };
@@ -2879,7 +2955,10 @@ fn rational_intersection_parameter(
         denominator = denominator.checked_neg()?;
     }
     let divisor = gcd_i128(numerator, denominator);
-    Some((numerator / divisor, denominator / divisor))
+    Some((
+        numerator.checked_div(divisor)?,
+        denominator.checked_div(divisor)?,
+    ))
 }
 
 fn gcd_i128(numerator: i128, denominator: i128) -> i128 {
@@ -2887,7 +2966,8 @@ fn gcd_i128(numerator: i128, denominator: i128) -> i128 {
     let mut left = numerator.unsigned_abs();
     let mut right = denominator as u128;
     while right != 0 {
-        (left, right) = (right, left % right);
+        let remainder = left.checked_rem(right).expect("gcd divisor is nonzero");
+        (left, right) = (right, remainder);
     }
     // The denominator is positive i128, therefore its divisor is representable
     // as i128 even when the numerator is i128::MIN.
@@ -3021,6 +3101,10 @@ const FACTORIALS: [f64; 29] = [
 
 /// Outward enclosures of `1/k!`: the neighbouring floats of the binary64
 /// `k!` enclose the integer, and each reciprocal is rounded outward.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "this compile-time table is written in a bounded length loop; the pinned compiler has no const-stable checked array access"
+)]
 const RECIPROCAL_FACTORIALS: [Bound; 29] = {
     let mut table = [Bound { lo: 0.0, hi: 0.0 }; 29];
     let mut index = 0;
@@ -3037,7 +3121,12 @@ const RECIPROCAL_FACTORIALS: [Bound; 29] = {
 
 /// `(-1)^(k/2) / k!` for the Taylor term of order `k`.
 fn taylor_coefficient(order: usize) -> Bound {
-    let value = RECIPROCAL_FACTORIALS[order - 2];
+    let index = order
+        .checked_sub(2)
+        .expect("Taylor coefficients start at order two");
+    let value = *RECIPROCAL_FACTORIALS
+        .get(index)
+        .expect("Taylor order fits the reciprocal-factorial table");
     if (order / 2) % 2 == 1 {
         value.neg()
     } else {

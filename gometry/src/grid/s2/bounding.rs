@@ -93,7 +93,11 @@ fn normalize_admitted_bbox_latitudes(bounds: Bounds) -> Bounds {
 fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
     let bounds = normalize_admitted_bbox_latitudes(bounds);
     let windows = longitude_windows(bounds);
-    let mut leaves = Vec::with_capacity(windows.len() * 4);
+    let leaf_capacity = windows
+        .len()
+        .checked_mul(4)
+        .expect("S2 extent has at most two longitude windows");
+    let mut leaves = Vec::with_capacity(leaf_capacity);
     for window in &windows {
         leaves.extend([
             CellId::from_lonlat(window.lon0.to_degrees(), bounds.miny()),
@@ -107,19 +111,20 @@ fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
     if leaves.is_empty() {
         return None;
     }
-    let mut level = leaves[0].level();
+    let mut level = leaves.first()?.level();
     let mut candidate = loop {
         let at = leaves
             .iter()
             .map(|leaf| leaf.parent(level).unwrap_or(*leaf))
             .collect::<Vec<_>>();
-        if at.iter().all(|c| *c == at[0]) {
-            break at[0];
+        let (common, remaining) = at.split_first()?;
+        if remaining.iter().all(|cell| cell == common) {
+            break *common;
         }
         if level == 0 {
             return None;
         }
-        level -= 1;
+        level = level.checked_sub(1)?;
     };
     loop {
         let vertices = Cell::from_id(candidate).vertices_point();
@@ -132,7 +137,7 @@ fn bounding_cell_regions(bounds: Bounds) -> Option<CellId> {
         if candidate.level() == 0 {
             return None;
         }
-        candidate = candidate.parent(candidate.level() - 1)?;
+        candidate = candidate.parent(candidate.level().checked_sub(1)?)?;
     }
 }
 
@@ -221,23 +226,24 @@ pub(crate) fn bounding_cell_bbox(bounds: Bounds) -> Option<CellId> {
     // margin root when it is that same closed root.
     let mut closed_root: Option<CellId> = None;
     let mut margin_root: Option<CellId> = None;
-    let mut n_closed = 0_usize;
+    let mut multiple_closed_roots = false;
     for face in Face::ALL {
         let root = CellId::from_face(face);
         let vertices = Cell::from_id(root).vertices_point();
         if !bbox_closed_in_cell(&vertices, &bbox) {
             continue;
         }
-        n_closed += 1;
-        closed_root = Some(root);
+        if closed_root.replace(root).is_some() {
+            multiple_closed_roots = true;
+        }
         if bbox_margin_in_cell(&vertices, &bbox) {
             margin_root = Some(root);
         }
     }
-    if n_closed != 1 {
+    if multiple_closed_roots || closed_root.is_none() {
         return None;
     }
-    let root = margin_root.unwrap_or_else(|| closed_root.expect("n_closed == 1"));
+    let root = margin_root.unwrap_or_else(|| closed_root.expect("one closed face root"));
 
     Some(deepest_margin_child(root, &bbox))
 }
@@ -297,20 +303,18 @@ fn deepest_margin_child(root: CellId, bbox: &LonLatBBox) -> CellId {
             return current;
         };
 
-        let mut margin = [CellId::from_face(Face::ALL[0]); 4];
-        let mut n = 0_usize;
+        let mut margin_child = None;
         for child in children {
             let vertices = Cell::from_id(child).vertices_point();
-            if bbox_margin_in_cell(&vertices, bbox) {
-                margin[n] = child;
-                n += 1;
+            if bbox_margin_in_cell(&vertices, bbox) && margin_child.replace(child).is_some() {
+                return current;
             }
         }
 
-        match n {
-            1 => current = margin[0],
-            _ => return current,
-        }
+        let Some(child) = margin_child else {
+            return current;
+        };
+        current = child;
     }
 }
 
@@ -362,9 +366,11 @@ fn margin_eps(normal: Point3) -> f64 {
 
 /// Closed containment with relative root slack: min ≥ −[`closed_eps`].
 fn bbox_closed_in_cell(vertices: &[Point3; 4], bbox: &LonLatBBox) -> bool {
-    for k in 0..4 {
-        let a = vertices[k];
-        let b = vertices[(k + 1) & 3];
+    for (a, b) in vertices
+        .iter()
+        .copied()
+        .zip(vertices.iter().copied().cycle().skip(1))
+    {
         let normal = a.cross(b);
         if side_plane_min(normal, bbox) < -closed_eps(normal) {
             return false;
@@ -375,9 +381,11 @@ fn bbox_closed_in_cell(vertices: &[Point3; 4], bbox: &LonLatBBox) -> bool {
 
 /// Provable positive-margin containment used for **descent** only.
 fn bbox_margin_in_cell(vertices: &[Point3; 4], bbox: &LonLatBBox) -> bool {
-    for k in 0..4 {
-        let a = vertices[k];
-        let b = vertices[(k + 1) & 3];
+    for (a, b) in vertices
+        .iter()
+        .copied()
+        .zip(vertices.iter().copied().cycle().skip(1))
+    {
         let normal = a.cross(b);
         if side_plane_min(normal, bbox) < margin_eps(normal) {
             return false;

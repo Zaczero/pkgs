@@ -16,7 +16,7 @@ use crate::grid::s2::projection::MAX_LEVEL;
 
 enum CellIdChildren {
     Leaf,
-    Active { index: usize, children: [CellId; 4] },
+    Active(std::array::IntoIter<CellId, 4>),
 }
 
 impl Iterator for CellIdChildren {
@@ -25,24 +25,14 @@ impl Iterator for CellIdChildren {
     fn next(&mut self) -> Option<CellId> {
         match self {
             Self::Leaf => None,
-            Self::Active { index, children } => {
-                if *index >= 4 {
-                    return None;
-                }
-                let child = children[*index];
-                *index += 1;
-                Some(child)
-            },
+            Self::Active(children) => children.next(),
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
             Self::Leaf => (0, Some(0)),
-            Self::Active { index, .. } => {
-                let remaining = 4 - *index;
-                (remaining, Some(remaining))
-            },
+            Self::Active(children) => (children.len(), Some(children.len())),
         }
     }
 }
@@ -51,7 +41,7 @@ impl ExactSizeIterator for CellIdChildren {
     fn len(&self) -> usize {
         match self {
             Self::Leaf => 0,
-            Self::Active { index, .. } => 4 - *index,
+            Self::Active(children) => children.len(),
         }
     }
 }
@@ -78,15 +68,14 @@ impl HierarchicalCell for CellId {
     }
 
     fn parent(self) -> Option<Self> {
-        (self.level() > 0)
-            .then(|| Self::parent(self, self.level() - 1))
-            .flatten()
+        self.level()
+            .checked_sub(1)
+            .and_then(|level| Self::parent(self, level))
     }
 
     fn children(self) -> impl ExactSizeIterator<Item = Self> {
-        Self::children(self).map_or(CellIdChildren::Leaf, |children| CellIdChildren::Active {
-            index: 0,
-            children,
+        Self::children(self).map_or(CellIdChildren::Leaf, |children| {
+            CellIdChildren::Active(children.into_iter())
         })
     }
 }

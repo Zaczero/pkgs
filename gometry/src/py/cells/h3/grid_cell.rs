@@ -26,8 +26,14 @@ impl Iterator for H3ImmediateChildren {
             return None;
         }
         let child = self.cell.child_at(self.position, finer)?;
-        self.position += 1;
-        self.remaining -= 1;
+        self.position = self
+            .position
+            .checked_add(1)
+            .expect("immediate H3 child position fits u64");
+        self.remaining = self
+            .remaining
+            .checked_sub(1)
+            .expect("a yielded child consumes one remaining position");
         Some(child)
     }
 
@@ -43,9 +49,18 @@ impl ExactSizeIterator for H3ImmediateChildren {
     }
 }
 
-fn h3_unused_digit_mask(resolution: u8) -> u64 {
-    let unused = 3 * (15 - u32::from(resolution));
-    if unused == 0 { 0 } else { (1 << unused) - 1 }
+fn h3_unused_digit_mask(resolution: Resolution) -> u64 {
+    let remaining = H3_MAX_RESOLUTION
+        .checked_sub(u8::from(resolution))
+        .expect("h3o Resolution is within its admitted range");
+    let unused = u32::from(remaining)
+        .checked_mul(3)
+        .expect("H3 unused-digit shift fits u32");
+    1_u64
+        .checked_shl(unused)
+        .expect("H3 unused-digit mask fits u64")
+        .checked_sub(1)
+        .expect("H3 unused-digit mask starts with a set bit")
 }
 
 impl HierarchicalCell for CellIndex {
@@ -62,26 +77,25 @@ impl HierarchicalCell for CellIndex {
     }
 
     fn range_min(self) -> u64 {
-        let depth = self.depth();
         let raw = u64::from(self);
-        raw & !h3_unused_digit_mask(depth) & ((1 << 52) - 1)
+        raw & !h3_unused_digit_mask(self.resolution()) & ((1 << 52) - 1)
     }
 
     fn range_max(self) -> u64 {
-        self.range_min() | h3_unused_digit_mask(self.depth())
+        self.range_min() | h3_unused_digit_mask(self.resolution())
     }
 
     fn parent(self) -> Option<Self> {
         let depth = self.depth();
-        (depth > 0).then(|| {
-            self.parent(Resolution::try_from(depth - 1).expect("coarser resolution"))
-                .expect("non-zero resolution has a parent")
-        })
+        let parent_depth = depth.checked_sub(1)?;
+        self.parent(Resolution::try_from(parent_depth).ok()?)
     }
 
     fn children(self) -> impl ExactSizeIterator<Item = Self> {
         let depth = self.depth();
-        let finer = Resolution::try_from(depth + 1).ok();
+        let finer = depth
+            .checked_add(1)
+            .and_then(|finer| Resolution::try_from(finer).ok());
         let remaining = finer.map_or(0, |resolution| self.children_count(resolution));
         H3ImmediateChildren {
             cell: self,

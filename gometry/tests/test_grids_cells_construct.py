@@ -675,6 +675,11 @@ def test_cell_array_value_counts_and_factorize() -> None:
     np.testing.assert_array_equal(counts, [3, 2, 1])
     assert not counts.flags.writeable
 
+    tied = gm.CellArray([c, a, b, a, b, c], type=gm.H3Cell)
+    tied_counted, tied_counts = tied.value_counts()
+    assert list(tied_counted) == [c, a, b]
+    np.testing.assert_array_equal(tied_counts, [2, 2, 2])
+
     empty = gm.CellArray([], type=gm.H3Cell)
     empty_codes, empty_uniques = empty.factorize()
     empty_counted, empty_counts = empty.value_counts()

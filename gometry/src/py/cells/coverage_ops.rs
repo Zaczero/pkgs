@@ -148,7 +148,12 @@ fn multipolygon_from_cell_shapes(shapes: Vec<Shape>) -> PyResult<Typed> {
             },
             // A cell boundary split at the antimeridian is polygonal; nothing
             // else reaches here, and an empty result is the error below.
-            _ => {},
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => {},
         }
     }
     if polygons.is_empty() {
@@ -172,7 +177,13 @@ pub(super) fn polygonize_outline(outline: Vec<CoordSeq>) -> PyResult<Option<Type
         .into_iter()
         .filter_map(|shape| match shape {
             Shape::Polygon(polygon) => Some(polygon),
-            _ => None,
+            Shape::Point(_)
+            | Shape::MultiPoint(_)
+            | Shape::LineString(_)
+            | Shape::MultiLineString(_)
+            | Shape::MultiPolygon(_)
+            | Shape::GeometryCollection(_)
+            | Shape::Empty(..) => None,
         })
         .collect();
     if polygons.is_empty() {
@@ -399,13 +410,22 @@ impl GridSourceAdmission {
                         .iter()
                         .position(|(logical, _)| *logical == row)
                         .expect("transform failure row came from the source batch");
-                    let prefix = Self::transform_shapes(transformer, &source_rows[..rank])?;
-                    for ((logical, _), shape) in source_rows[..rank].iter().zip(prefix) {
-                        output[*logical] = Self::normalize_shape(shape)
-                            .map(Some)
-                            .map_err(|error| error.at_row(*logical));
+                    let source_prefix = source_rows
+                        .get(..rank)
+                        .expect("transform failure rank belongs to source rows");
+                    let prefix = Self::transform_shapes(transformer, source_prefix)?;
+                    for ((logical, _), shape) in source_prefix.iter().zip(prefix) {
+                        *output
+                            .get_mut(*logical)
+                            .expect("source logical row fits admission output") =
+                            Self::normalize_shape(shape)
+                                .map(Some)
+                                .map_err(|error| error.at_row(*logical));
                     }
-                    output[row] = Err(GridCoverError::NativeRow { row, error });
+                    *output
+                        .get_mut(row)
+                        .expect("transform failure row fits admission output") =
+                        Err(GridCoverError::NativeRow { row, error });
                     return Ok(output);
                 },
                 Err(error) => return Err(error),
@@ -417,7 +437,9 @@ impl GridSourceAdmission {
             let shape = transformed.as_mut().map_or(source, |shapes| {
                 shapes.next().expect("one transformed shape per source row")
             });
-            output[logical] = Self::normalize_shape(shape)
+            *output
+                .get_mut(logical)
+                .expect("source logical row fits admission output") = Self::normalize_shape(shape)
                 .map(Some)
                 .map_err(|error| error.at_row(logical));
         }

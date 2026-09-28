@@ -1,4 +1,3 @@
-use std::collections::hash_map::Entry;
 use std::sync::Arc;
 
 use numpy::PyArrayMethods as _;
@@ -19,7 +18,9 @@ use crate::py::cells::h3::{
     DirectedEdgeIndex, LatLng, PyH3Edge, PyH3Vertex, VertexIndex, collect_h3_index_ids,
     h3_edge_index, h3_vertex_index, validate_h3_index_ids,
 };
-use crate::py::cells::{FactorizationError, GridKind, Point, PyCellArray, Shape};
+use crate::py::cells::{
+    FactorizationError, GridKind, Point, PyCellArray, Shape, sort_value_counts,
+};
 use crate::py::numpy::float64_array;
 use crate::py::row::{RowContainer, RowGetItemContainer, RowIterState, array_getitem};
 
@@ -168,7 +169,10 @@ macro_rules! h3_index_array_common {
             }
 
             fn id_at(&self, logical: usize) -> u64 {
-                self.ids[physical_row(self.selection_ref(), logical)]
+                *self
+                    .ids
+                    .get(physical_row(self.selection_ref(), logical))
+                    .expect("logical H3 index row maps to a stored id")
             }
 
             fn scalar_at(&self, logical: usize) -> $scalar {
@@ -206,7 +210,9 @@ macro_rules! h3_index_array_common {
             fn logical_contiguous_ids(&self) -> Option<&[u64]> {
                 match self.selection_ref() {
                     RowSelectionRef::Identity => Some(&self.ids),
-                    RowSelectionRef::Window { start, len } => self.ids.get(start..start + len),
+                    RowSelectionRef::Window { start, len } => {
+                        self.ids.get(start..).and_then(|ids| ids.get(..len))
+                    },
                     RowSelectionRef::Gather(_) => None,
                 }
             }
@@ -220,25 +226,12 @@ macro_rules! h3_index_array_common {
             ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
                 let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
                 let mut uniques = Vec::with_capacity(self.len());
-                let mut counts = Vec::with_capacity(self.len());
+                let mut counts = Vec::<i64>::with_capacity(self.len());
                 for row in 0..self.len() {
                     let id = self.id_at(row);
-                    let slot = match slot_of.entry(id) {
-                        Entry::Occupied(entry) => *entry.get(),
-                        Entry::Vacant(entry) => {
-                            let slot = uniques.len();
-                            entry.insert(slot);
-                            uniques.push(id);
-                            counts.push(0_i64);
-                            slot
-                        },
-                    };
-                    let Some(count) = counts[slot].checked_add(1) else {
-                        return Err(FactorizationError::CountOverflow);
-                    };
-                    counts[slot] = count;
+                    crate::py::cells::record_first_seen_count!(slot_of, uniques, counts, id);
                 }
-                Ok((uniques, counts))
+                Ok(sort_value_counts(uniques, counts))
             }
 
             fn factorize_entries(
@@ -249,18 +242,8 @@ macro_rules! h3_index_array_common {
                 let mut codes = Vec::with_capacity(self.len());
                 for row in 0..self.len() {
                     let id = self.id_at(row);
-                    let slot = match slot_of.entry(id) {
-                        Entry::Occupied(entry) => *entry.get(),
-                        Entry::Vacant(entry) => {
-                            let slot = uniques.len();
-                            entry.insert(slot);
-                            uniques.push(id);
-                            slot
-                        },
-                    };
-                    let Ok(code) = i64::try_from(slot) else {
-                        return Err(FactorizationError::CodeOverflow);
-                    };
+                    let slot = crate::py::cells::first_seen_slot!(slot_of, uniques, id);
+                    let code = i64::try_from(slot).map_err(|_| FactorizationError::CodeOverflow)?;
                     codes.push(code);
                 }
                 Ok((uniques, codes))
@@ -283,8 +266,8 @@ macro_rules! h3_index_array_common {
         impl HeapSize for $array {
             fn heap_bytes(&self) -> usize {
                 crate::heap_size::ARC_CONTROL_BYTES
-                    + self.len() * size_of::<u64>()
-                    + self.selection.heap_bytes()
+                    .saturating_add(self.len().saturating_mul(size_of::<u64>()))
+                    .saturating_add(self.selection.heap_bytes())
             }
         }
 
@@ -340,7 +323,8 @@ macro_rules! h3_index_array_common {
             /// int
             #[getter]
             fn nbytes(&self) -> usize {
-                self.len() * size_of::<u64>()
+                // ID and gather vector allocations bound the logical length.
+                self.len().wrapping_mul(size_of::<u64>())
             }
 
             /// Number of edges or vertices.
@@ -458,7 +442,9 @@ macro_rules! h3_index_array_common {
                 let len = self.len();
                 let clamp = |bound: i64| -> usize {
                     let resolved = if bound < 0 {
-                        bound + i64::try_from(len).unwrap_or(i64::MAX)
+                        bound
+                            .checked_add(i64::try_from(len).unwrap_or(i64::MAX))
+                            .expect("negative index adjustment fits i64")
                     } else {
                         bound
                     };
@@ -499,7 +485,8 @@ macro_rules! h3_index_array_common {
                     .count())
             }
 
-            /// Unique values and counts, ordered by descending count.
+            /// Unique values and counts, ordered by descending count, with
+            /// first appearance breaking ties.
             ///
             /// Returns
             /// -------
@@ -515,24 +502,8 @@ macro_rules! h3_index_array_common {
     /// >>> unique, counts = edges.value_counts()
     /// >>> counts.tolist()
     /// [1, 1, 1, 1, 1, 1]
-fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-                let result = (|| -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-                    let (uniques, counts) = self.value_count_entries()?;
-                    let mut order: Vec<_> = (0..uniques.len()).collect();
-                    order.sort_unstable_by(|&left, &right| {
-                        counts[right]
-                            .cmp(&counts[left])
-                            .then_with(|| left.cmp(&right))
-                    });
-                    let mut sorted_uniques = Vec::with_capacity(order.len());
-                    let mut sorted_counts = Vec::with_capacity(order.len());
-                    for &slot in &order {
-                        sorted_uniques.push(uniques[slot]);
-                        sorted_counts.push(counts[slot]);
-                    }
-                    Ok((sorted_uniques, sorted_counts))
-                })();
-                let (values, sorted_counts) = match result {
+            fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+                let (values, sorted_counts) = match self.value_count_entries() {
                     Ok(values) => values,
                     Err(error) => {
                         return Err(error.into_py_err(
@@ -574,7 +545,7 @@ fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
     /// >>> codes, unique = edges.factorize()
     /// >>> len(codes) == len(edges)
     /// True
-fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
+            fn factorize(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
                 let (uniques, codes) = match self.factorize_entries() {
                     Ok(values) => values,
                     Err(error) => {

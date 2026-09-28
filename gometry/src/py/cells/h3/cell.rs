@@ -666,11 +666,17 @@ pub(super) fn h3_immediate_neighbors(cell: CellIndex) -> Vec<CellIndex> {
             cells.clear();
             let mut neighbors = [None; 6];
             for edge in cell.edges() {
-                neighbors[usize::from(u8::from(edge.edge())) - 1] = Some(edge.destination());
+                let index = usize::from(u8::from(edge.edge()))
+                    .checked_sub(1)
+                    .expect("H3 edge directions use one-based codes");
+                let slot = neighbors
+                    .get_mut(index)
+                    .expect("H3 edge direction fits the six neighbor slots");
+                *slot = Some(edge.destination());
             }
             // Match the safe disk's J, JK, K, IK, I, IJ traversal order.
             for index in [1, 2, 0, 4, 3, 5] {
-                if let Some(neighbor) = neighbors[index] {
+                if let Some(neighbor) = neighbors.get(index).copied().flatten() {
                     cells.push(neighbor);
                 }
             }

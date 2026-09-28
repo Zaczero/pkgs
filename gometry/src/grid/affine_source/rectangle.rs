@@ -578,7 +578,14 @@ pub(super) fn exact_authority_edge_touches_rectangle(
     latitude: Bound,
 ) -> ExactResult<bool> {
     #[cfg(test)]
-    AUTHORITY_EDGE_EXACT_REFINEMENTS.with(|count| count.set(count.get() + 1));
+    AUTHORITY_EDGE_EXACT_REFINEMENTS.with(|count| {
+        count.set(
+            count
+                .get()
+                .checked_add(1)
+                .expect("test exact-refinement counter fits usize"),
+        );
+    });
     let start = ExactPlanarPoint::from_lifted(edge.start)?;
     let end = ExactPlanarPoint::from_lifted(edge.end)?;
     let start_latitude = degree_expansion_bound(&start.latitude)?;

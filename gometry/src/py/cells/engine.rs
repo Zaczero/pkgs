@@ -295,7 +295,14 @@ pub(super) fn coverage_to_polygon(shapes: &[Shape]) -> PyResult<Typed> {
         Shape::MultiPolygon(polygons) if polygons.len() == 1 => {
             Shape::Polygon(polygons.into_iter().next().expect("one polygon"))
         },
-        shape => shape,
+        shape @ (Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..)) => shape,
     };
     Ok(PyGeometry::typed_wgs84(shape))
 }
@@ -332,18 +339,20 @@ pub(super) fn rect_dissolve<C: RectCell>(cells: &SortedCells<C>) -> PyResult<Opt
             Point::new_raw_xy(bounds.maxx(), bounds.maxy()),
             Point::new_raw_xy(bounds.minx(), bounds.maxy()),
         ];
-        // edge_neighbors() is [south, east, north, west], matching side `k` =
-        // corners[k] -> corners[k+1].
-        for (side, neighbor) in cell.edge_neighbors().into_iter().enumerate() {
+        // edge_neighbors() is [south, east, north, west], matching the cyclic
+        // corner pairs, including the closing north-west -> south-west edge.
+        let [south_west, south_east, north_east, north_west] = corners;
+        let closed_corners = [south_west, south_east, north_east, north_west, south_west];
+        for (neighbor, endpoints) in cell
+            .edge_neighbors()
+            .into_iter()
+            .zip(closed_corners.array_windows::<2>())
+        {
             let interior =
                 neighbor.is_some_and(|across| cells.as_slice().binary_search(&across).is_ok());
             if !interior {
                 outline.push(
-                    crate::geometry::CoordSeq::try_from_points(&[
-                        corners[side],
-                        corners[(side + 1) % 4],
-                    ])
-                    .map_err(PyErr::from)?,
+                    crate::geometry::CoordSeq::try_from_points(endpoints).map_err(PyErr::from)?,
                 );
             }
         }

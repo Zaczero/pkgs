@@ -295,22 +295,32 @@ fn h3_tile_polygon_seeds_center(
 }
 
 fn h3_one_ring(cell: CellIndex, scratch: &mut [u64; 7]) -> &[u64] {
-    let mut count = 0;
+    let mut count = 0_usize;
     for candidate in cell.grid_disk_fast(1) {
         let Some(neighbor) = candidate else {
             count = 0;
             break;
         };
-        scratch[count] = neighbor.into();
-        count += 1;
+        *scratch
+            .get_mut(count)
+            .expect("H3 grid disk k=1 fits the seven-cell scratch") = neighbor.into();
+        count = count
+            .checked_add(1)
+            .expect("H3 grid disk k=1 has at most seven cells");
     }
     if count == 0 {
         for neighbor in cell.grid_disk_safe(1) {
-            scratch[count] = neighbor.into();
-            count += 1;
+            *scratch
+                .get_mut(count)
+                .expect("H3 safe disk k=1 fits the seven-cell scratch") = neighbor.into();
+            count = count
+                .checked_add(1)
+                .expect("H3 safe disk k=1 has at most seven cells");
         }
     }
-    &scratch[..count]
+    scratch
+        .get(..count)
+        .expect("H3 one-ring scratch prefix was initialized")
 }
 
 /// Stream the conservative edge-owner trace to a caller-owned sink.
@@ -429,7 +439,9 @@ pub(super) fn line_hex_estimate(start: Point, end: Point, resolution: Resolution
         0.000_000_362_024_123_008_734_75,
         0.000_000_129_150_135_232_098_86,
     ];
-    let pentagon_diameter = PENT_DIAMETER_RADS[usize::from(resolution)];
+    let pentagon_diameter = *PENT_DIAMETER_RADS
+        .get(usize::from(resolution))
+        .expect("H3 resolution fits the pentagon-diameter table");
     match (h3_latlng(start), h3_latlng(end)) {
         (Ok(origin), Ok(destination)) => {
             let distance = origin.distance_rads(destination);

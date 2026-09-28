@@ -86,7 +86,7 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
         let id = CellId::from_face(face);
         match classify_relate(&ctx, id) {
             CellClass::Outside => {},
-            class => {
+            class @ (CellClass::Interior | CellClass::Boundary) => {
                 if coverer.min_level == 0 {
                     queue.push((Reverse(0), id, class));
                 } else {
@@ -108,16 +108,20 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
             },
             CellClass::Boundary => {
                 staged.clear();
-                let end = id.child_end_at(level + 1);
-                let mut cursor = id.child_begin_at(level + 1);
+                let child_level = level
+                    .checked_add(1)
+                    .expect("DFS candidates are below the supported maximum level");
+                let end = id.child_end_at(child_level);
+                let mut cursor = id.child_begin_at(child_level);
                 while cursor != end {
                     match classify_relate(&ctx, cursor) {
                         CellClass::Outside => {},
-                        c => staged.push((cursor, c)),
+                        class @ (CellClass::Interior | CellClass::Boundary) => {
+                            staged.push((cursor, class));
+                        },
                     }
                     cursor = cursor.next();
                 }
-                let child_level = level + 1;
                 if child_level >= coverer.min_level {
                     for &(child, c) in &staged {
                         queue.push((Reverse(child_level), child, c));
@@ -131,22 +135,27 @@ fn cover_with_relate_oracle(coverer: Coverer, source: &Shape) -> Covering {
         }
     }
     while let Some((Reverse(level), id, class)) = queue.pop() {
-        let can_refine = class == CellClass::Boundary
-            && level + coverer.level_mod <= coverer.max_level
-            && level + coverer.level_mod <= MAX_LEVEL;
-        if can_refine {
-            let target = level + coverer.level_mod;
+        if class == CellClass::Boundary
+            && let Some(target) = level
+                .checked_add(coverer.level_mod)
+                .filter(|&target| target <= coverer.max_level && target <= MAX_LEVEL)
+        {
             staged.clear();
             let end = id.child_end_at(target);
             let mut cursor = id.child_begin_at(target);
             while cursor != end {
                 match classify_relate(&ctx, cursor) {
                     CellClass::Outside => {},
-                    c => staged.push((cursor, c)),
+                    class @ (CellClass::Interior | CellClass::Boundary) => {
+                        staged.push((cursor, class));
+                    },
                 }
                 cursor = cursor.next();
             }
-            let base = cells.len() + queue.len();
+            let base = cells
+                .len()
+                .checked_add(queue.len())
+                .expect("S2 reference frontier cardinality fits usize");
             let k = staged.len();
             let fits = limit.is_none_or(|m| base.saturating_add(k) <= m);
             if fits {

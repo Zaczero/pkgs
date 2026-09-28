@@ -65,7 +65,7 @@ where
             Ok(Some(target))
         },
         _ if current >= G::MAX_DEPTH => Ok(None),
-        _ => Ok(Some(current + 1)),
+        _ => Ok(Some(current.wrapping_add(1))),
     }
 }
 

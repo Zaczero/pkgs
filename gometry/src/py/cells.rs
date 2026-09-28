@@ -16,6 +16,42 @@ use crate::{
     py_i64_required,
 };
 
+/// Expands the entry match at each monomorphic call site so the hot loop
+/// keeps one hash lookup per row.
+macro_rules! first_seen_slot {
+    ($slot_of:ident, $unique_ids:ident, $id:ident $(, $on_first_seen:block)?) => {{
+        match $slot_of.entry($id) {
+            std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let slot = $unique_ids.len();
+                entry.insert(slot);
+                $unique_ids.push($id);
+                $($on_first_seen)?
+                slot
+            },
+        }
+    }};
+}
+pub(crate) use first_seen_slot;
+
+/// Expands the entry match and count update at each monomorphic call site,
+/// keeping one hash lookup per hot-loop row. Its `?` propagates
+/// `FactorizationError` from the caller.
+macro_rules! record_first_seen_count {
+    ($slot_of:ident, $unique_ids:ident, $counts:ident, $id:ident) => {{
+        let slot = $crate::py::cells::first_seen_slot!($slot_of, $unique_ids, $id, {
+            $counts.push(0_i64);
+        });
+        let count = $counts
+            .get_mut(slot)
+            .expect("first-seen id slot has a count");
+        *count = (*count)
+            .checked_add(1)
+            .ok_or(FactorizationError::CountOverflow)?;
+    }};
+}
+pub(crate) use record_first_seen_count;
+
 mod array;
 mod array_iter;
 mod cell_ops;
@@ -52,6 +88,34 @@ enum FactorizationError {
     CodeOverflow,
 }
 
+// The source must be quiescent during `tobytes`; copying does not synchronize
+// native writers.
+fn copy_numeric_ids_from_tobytes<T>(
+    ids: &pyo3::Bound<'_, pyo3::types::PyAny>,
+    invalid_buffer: impl FnOnce() -> pyo3::PyErr,
+    invalid_value: impl Fn() -> pyo3::PyErr,
+) -> PyResult<Vec<u64>>
+where
+    T: Copy + TryInto<u64>,
+{
+    use pyo3::types::PyBytes;
+
+    let py_bytes = ids.call_method0("tobytes")?;
+    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
+    let width = std::mem::size_of::<T>();
+    if width == 0 || !bytes.len().is_multiple_of(width) {
+        return Err(invalid_buffer());
+    }
+    let chunks = bytes.chunks_exact(width);
+    let mut output = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        // SAFETY: dtype matched by extract; tobytes is native-endian for T.
+        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
+        output.push(value.try_into().map_err(|_| invalid_value())?);
+    }
+    Ok(output)
+}
+
 impl FactorizationError {
     fn into_py_err(self, count_overflow: &'static str, code_overflow: &'static str) -> PyErr {
         match self {
@@ -59,6 +123,30 @@ impl FactorizationError {
             Self::CodeOverflow => PyOverflowError::new_err(code_overflow),
         }
     }
+}
+
+fn sort_value_counts(uniques: Vec<u64>, counts: Vec<i64>) -> (Vec<u64>, Vec<i64>) {
+    let mut order: Vec<_> = (0..uniques.len()).collect();
+    order.sort_unstable_by(|left, right| {
+        let left_count = counts
+            .get(*left)
+            .expect("value-count slot matches its count");
+        let right_count = counts
+            .get(*right)
+            .expect("value-count slot matches its count");
+        right_count.cmp(left_count).then_with(|| left.cmp(right))
+    });
+    let mut sorted_uniques = Vec::with_capacity(order.len());
+    let mut sorted_counts = Vec::with_capacity(order.len());
+    for slot in order {
+        sorted_uniques.push(*uniques.get(slot).expect("value-count slot matches its id"));
+        sorted_counts.push(
+            *counts
+                .get(slot)
+                .expect("value-count slot matches its count"),
+        );
+    }
+    (sorted_uniques, sorted_counts)
 }
 
 pub(crate) fn checked_depth(

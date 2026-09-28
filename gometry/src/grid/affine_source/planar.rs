@@ -153,7 +153,7 @@ pub(super) fn classify_lifted_ring_bucket(
             },
             None => return Ok(GridPointClass::Unknown),
         };
-        for vertex in &chain.vertices[1..] {
+        for vertex in chain.vertices.iter().skip(1) {
             let current = match ExactPlanarPoint::from_lifted(*vertex) {
                 Ok(point) => point,
                 Err(ExactFailure::Arithmetic) => return Ok(GridPointClass::Unknown),
@@ -508,6 +508,9 @@ pub(super) fn classify_lifted_ring_copy<Q: ExactPlanarCoordinates + ?Sized>(
     roof: Option<&PeriodicPoleRoof>,
     query: &Q,
 ) -> GridPointClass {
+    let Some(&first_vertex) = chain.vertices.first() else {
+        return GridPointClass::Unknown;
+    };
     let Some(mut previous) = chain
         .vertices
         .first()
@@ -517,23 +520,20 @@ pub(super) fn classify_lifted_ring_copy<Q: ExactPlanarCoordinates + ?Sized>(
         return GridPointClass::Unknown;
     };
     let mut parity = false;
-    for vertex in &chain.vertices[1..] {
+    for vertex in chain.vertices.iter().skip(1) {
         let Some(current) = ExactPlanarPoint::from_lifted(*vertex).ok() else {
             return GridPointClass::Unknown;
         };
         match classify_lifted_edge(&previous, &current, query, false, &mut parity) {
             GridPointClass::Exterior => {},
-            result => return result,
+            result @ (GridPointClass::Boundary
+            | GridPointClass::Interior
+            | GridPointClass::Unknown) => return result,
         }
         previous = current;
     }
     if let Some(roof) = roof {
-        let Some(first) = chain
-            .vertices
-            .first()
-            .copied()
-            .and_then(|vertex| ExactPlanarPoint::from_lifted(vertex).ok())
-        else {
+        let Some(first) = ExactPlanarPoint::from_lifted(first_vertex).ok() else {
             return GridPointClass::Unknown;
         };
         let pole_latitude = match roof.pole {
@@ -568,7 +568,9 @@ pub(super) fn classify_lifted_ring_copy<Q: ExactPlanarCoordinates + ?Sized>(
         ] {
             match classify_lifted_edge(start, end, query, true, &mut parity) {
                 GridPointClass::Exterior => {},
-                result => return result,
+                result @ (GridPointClass::Boundary
+                | GridPointClass::Interior
+                | GridPointClass::Unknown) => return result,
             }
         }
     }

@@ -149,7 +149,11 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
         ([ordinary, ordinary], 1)
     };
     let max_res = h3_resolution(H3_MAX_RESOLUTION)?;
-    let mut corners = Vec::with_capacity(windows.len() * 4);
+    let corner_capacity = windows
+        .len()
+        .checked_mul(4)
+        .expect("two H3 longitude windows have at most eight corners");
+    let mut corners = Vec::with_capacity(corner_capacity);
     for window in windows.iter().take(window_count) {
         for (lon, lat) in [
             (window.west, window.south),
@@ -160,28 +164,36 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
             corners.push(h3_corner_cell(lon, lat, max_res)?);
         }
     }
-    if corners.is_empty() {
+    let Some(mut candidate) = corners.first().copied() else {
         return Err(InvalidGeometryError::new_err(
             "bounding cell requires a non-empty geometry",
         ));
-    }
-    while !corners.iter().all(|cell| *cell == corners[0]) {
-        let current = u8::from(corners[0].resolution());
+    };
+    while corners.iter().any(|&cell| cell != candidate) {
+        let current = u8::from(candidate.resolution());
         if current == 0 {
             return Err(GeometryError::new_err(
                 "no single H3 cell contains the bounds (they straddle the resolution-0 grid)",
             ));
         }
-        let resolution = h3_resolution(current - 1)?;
+        let parent_depth = current
+            .checked_sub(1)
+            .expect("non-root H3 corner cell has a parent resolution");
+        let resolution = h3_resolution(parent_depth)?;
         for corner in &mut corners {
             *corner = corner
                 .parent(resolution)
                 .ok_or_else(|| GeometryError::new_err("no single H3 cell contains the bounds"))?;
         }
+        candidate = *corners
+            .first()
+            .expect("H3 bounding-cell corner set remains nonempty");
     }
-    let mut candidate = corners[0];
+    let windows = windows
+        .get(..window_count)
+        .expect("H3 bounding-cell window count fits its two-slot array");
     loop {
-        if h3_cell_contains_windows(candidate, &windows[..window_count]) {
+        if h3_cell_contains_windows(candidate, windows) {
             return Ok(PyH3Cell { cell: candidate });
         }
         let current = u8::from(candidate.resolution());
@@ -190,8 +202,11 @@ pub(super) fn h3_bounding_cell(value: &Bound<'_, PyAny>) -> PyResult<PyH3Cell> {
                 "no single H3 cell contains the bounds (they straddle the resolution-0 grid)",
             ));
         }
+        let parent_depth = current
+            .checked_sub(1)
+            .expect("non-root H3 candidate has a parent resolution");
         candidate = candidate
-            .parent(h3_resolution(current - 1)?)
+            .parent(h3_resolution(parent_depth)?)
             .ok_or_else(|| GeometryError::new_err("no single H3 cell contains the bounds"))?;
     }
 }

@@ -434,7 +434,11 @@ fn collect_area(source: &Shape, out: &mut Vec<Polygon>) {
                 collect_area(geometry, out);
             }
         },
-        _ => {},
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => {},
     }
 }
 
@@ -452,7 +456,11 @@ fn collect_line_sequences<'a>(source: &'a Shape, out: &mut Vec<&'a CoordSeq>) {
                 collect_line_sequences(geometry, out);
             }
         },
-        _ => {},
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => {},
     }
 }
 
@@ -467,7 +475,12 @@ fn polygon_segment_index(source: &Shape) -> crate::error::Result<SegmentBroadPha
                 .flat_map(Polygon::rings)
                 .flat_map(line_segments),
         ),
-        _ => unreachable!("dissolved area is polygonal"),
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::GeometryCollection(_)
+        | Shape::Empty(..) => unreachable!("dissolved area is polygonal"),
     }
 }
 
@@ -485,7 +498,11 @@ fn collect_points(source: &Shape, out: &mut Vec<Point>) {
                 collect_points(geometry, out);
             }
         },
-        _ => {},
+        Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => {},
     }
 }
 
@@ -538,7 +555,8 @@ pub(crate) fn cover<C: RectCell>(
             let candidate = classifier.admit_bounds(bounds);
             match classifier.classify_candidate(&candidate)? {
                 RectClass::Boundary => Ok(classifier.refine_candidate(&candidate)?),
-                settled => Ok(settled),
+                RectClass::Outside => Ok(RectClass::Outside),
+                RectClass::Interior => Ok(RectClass::Interior),
             }
         },
         |bounds| match rule {

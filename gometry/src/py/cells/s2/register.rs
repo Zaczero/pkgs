@@ -1,9 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::num::NonZeroUsize;
 
 use rstar::{AABB, RTree, RTreeObject};
 
 use crate::error::ResourceError;
-use crate::geometry::{Component, Coordinates as _, Shape};
+use crate::geometry::{Bounds, Component, Coordinates as _, Shape};
 use crate::grid::affine_source::{
     GeographicCoverageSource, SphericalGridTarget, WorkingShapeRelation,
 };
@@ -144,6 +145,12 @@ struct IndexedS2Component {
     envelope: AABB<[f64; 2]>,
 }
 
+struct S2SourceComponent {
+    key: Vec<u64>,
+    shape: Shape,
+    bounds: Option<Bounds>,
+}
+
 impl RTreeObject for IndexedS2Component {
     type Envelope = AABB<[f64; 2]>;
 
@@ -170,17 +177,23 @@ fn bounds_contain(outer: crate::geometry::Bounds, inner: crate::geometry::Bounds
 fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCoverError> {
     let mut components = Vec::new();
     source.for_each_component(&mut |component| {
-        components.push((s2_component_key(component), component.to_shape()));
+        components.push(S2SourceComponent {
+            key: s2_component_key(component),
+            shape: component.to_shape(),
+            bounds: None,
+        });
     });
-    components.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-    components.dedup_by(|left, right| left.0 == right.0);
+    components.sort_unstable_by(|left, right| left.key.cmp(&right.key));
+    components.dedup_by(|left, right| left.key == right.key);
 
-    let bounds: Vec<_> = components.iter().map(|(_, shape)| shape.bounds()).collect();
-    let indexed_bounds = bounds
+    for component in &mut components {
+        component.bounds = component.shape.bounds();
+    }
+    let indexed_bounds = components
         .iter()
         .enumerate()
-        .filter_map(|(entry, bounds)| {
-            bounds.map(|bounds| IndexedS2Component {
+        .filter_map(|(entry, component)| {
+            component.bounds.map(|bounds| IndexedS2Component {
                 index: entry,
                 envelope: AABB::from_corners([bounds.minx(), bounds.miny()], [
                     bounds.maxx(),
@@ -197,9 +210,9 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
     // never a cell or chord proxy. A component can be discarded only when an
     // exact larger/equal support covers it; the lower key wins an equal pair.
     let mut canonical = Vec::with_capacity(components.len());
-    for (candidate_index, (_, candidate)) in components.iter().enumerate() {
-        let Some(candidate_bounds) = bounds[candidate_index] else {
-            canonical.push(candidate.clone());
+    for (candidate_index, candidate) in components.iter().enumerate() {
+        let Some(candidate_bounds) = candidate.bounds else {
+            canonical.push(candidate.shape.clone());
             continue;
         };
         let candidate_envelope =
@@ -212,13 +225,16 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
             if support.index == candidate_index {
                 continue;
             }
-            let Some(support_bounds) = bounds[support.index] else {
+            let support_component = components
+                .get(support.index)
+                .expect("R-tree entries retain their source-component index");
+            let Some(support_bounds) = support_component.bounds else {
                 continue;
             };
             if !bounds_contain(support_bounds, candidate_bounds)
-                || !components[support.index]
-                    .1
-                    .covers(candidate)
+                || !support_component
+                    .shape
+                    .covers(&candidate.shape)
                     .map_err(S2ComponentCoverError::Preparation)?
             {
                 continue;
@@ -228,7 +244,8 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
             // always wins regardless of its raw ordering.
             if support.index < candidate_index
                 || !candidate
-                    .covers(&components[support.index].1)
+                    .shape
+                    .covers(&support_component.shape)
                     .map_err(S2ComponentCoverError::Preparation)?
             {
                 subsumed = true;
@@ -236,7 +253,7 @@ fn canonical_s2_components(source: &Shape) -> Result<Vec<Shape>, S2ComponentCove
             }
         }
         if !subsumed {
-            canonical.push(candidate.clone());
+            canonical.push(candidate.shape.clone());
         }
     }
     Ok(canonical)
@@ -276,7 +293,6 @@ fn cover_s2_shapes(
     if components.is_empty() {
         return Ok(Vec::new());
     }
-
     // A finite hard cap also bounds the aggregate adaptive target. Otherwise
     // each independent bbox window can spend the full quality target before
     // the deduplicated aggregate sink sees its cells.
@@ -289,6 +305,8 @@ fn cover_s2_shapes(
     let component_targets = if min_level == max_level {
         vec![target_cells; components.len()]
     } else {
+        let component_count =
+            NonZeroUsize::new(components.len()).expect("empty bbox windows returned above");
         let floors = components
             .iter()
             .map(|component| -> Result<usize, S2ComponentCoverError> {
@@ -306,12 +324,23 @@ fn cover_s2_shapes(
                 S2ComponentCoverError::Preparation(ResourceError::SizeOverflow.into())
             })?;
         let remaining = target_cells.saturating_sub(floor_total);
-        let per_component = remaining / components.len();
-        let remainder = remaining % components.len();
+        let per_component = remaining
+            .checked_div(component_count.get())
+            .expect("bbox component count is nonzero");
+        let remainder = remaining
+            .checked_rem(component_count.get())
+            .expect("bbox component count is nonzero");
         floors
             .into_iter()
             .enumerate()
-            .map(|(index, floor)| floor + per_component + usize::from(index < remainder))
+            .map(|(index, floor)| {
+                let share = per_component
+                    .checked_add(usize::from(index < remainder))
+                    .expect("one component's share fits the remaining target");
+                floor
+                    .checked_add(share)
+                    .expect("one component's target fits usize")
+            })
             .collect()
     };
     let mut tagged = Vec::new();
@@ -334,7 +363,11 @@ fn cover_s2_shapes(
                     continue;
                 }
                 let limit = max_cells.expect("unique map has a finite budget");
-                crate::grid::ensure_cover_budget(unique.len().saturating_add(1), Some(limit))
+                let next_len = unique
+                    .len()
+                    .checked_add(1)
+                    .expect("unique S2 cell count fits usize");
+                crate::grid::ensure_cover_budget(next_len, Some(limit))
                     .map_err(S2ComponentCoverError::Budget)?;
                 unique.insert(cell, interior);
             }

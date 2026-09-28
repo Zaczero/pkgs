@@ -653,6 +653,11 @@ def test_h3_vertex_and_edge_value_counts_and_factorize() -> None:
         assert counts.dtype == np.int64
         assert not counts.flags.writeable
 
+        tied = array_type([third, first, second, first, second, third])
+        tied_counted, tied_counts = tied.value_counts()
+        assert list(tied_counted) == [third, first, second]
+        np.testing.assert_array_equal(tied_counts, [2, 2, 2])
+
         empty = array_type([])
         empty_codes, empty_uniques = empty.factorize()
         empty_counted, empty_counts = empty.value_counts()

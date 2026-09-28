@@ -12583,7 +12583,8 @@ class H3VertexArray(Sequence[H3Vertex]):
         numpy.ndarray
         """
     def value_counts(self) -> tuple[H3VertexArray, npt.NDArray[np.int64]]:
-        """Unique values and counts, ordered by descending count.
+        """Unique values and counts, ordered by descending count, with
+        first appearance breaking ties.
 
         Returns
         -------
@@ -12879,7 +12880,8 @@ class H3EdgeArray(Sequence[H3Edge]):
         numpy.ndarray
         """
     def value_counts(self) -> tuple[H3EdgeArray, npt.NDArray[np.int64]]:
-        """Unique values and counts, ordered by descending count.
+        """Unique values and counts, ordered by descending count, with
+        first appearance breaking ties.
 
         Returns
         -------

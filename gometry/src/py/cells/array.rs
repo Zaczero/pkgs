@@ -3,7 +3,6 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 //! Typed bulk cell storage — the CellArray Python surface.
-use std::collections::hash_map::Entry;
 use std::ops::Range;
 
 use numpy::PyArrayMethods as _;
@@ -31,7 +30,7 @@ use crate::py::cells::grid_kind::{
 use crate::py::cells::{
     FactorizationError, GeometryError, GridKind, H3_MAX_RESOLUTION, IntoPyObject as _,
     PyAnyMethods as _, PyCellArrayIter, PyRef, cell_ops, checked_depth, py_i64_required,
-    pyfunction, rect_cells_to_polygon, uncompact_floor_error,
+    pyfunction, rect_cells_to_polygon, sort_value_counts, uncompact_floor_error,
 };
 use crate::py::numpy::{
     astype_readonly, bool_array, float64_array, int64_array, numpy_module, uint64_array,
@@ -327,7 +326,11 @@ impl PyCellArray {
     }
 
     pub(super) fn id_at(&self, logical: usize) -> u64 {
-        self.storage.ids[physical_row(self.selection_ref(), logical)]
+        *self
+            .storage
+            .ids
+            .get(physical_row(self.selection_ref(), logical))
+            .expect("logical cell row maps to a stored id")
     }
 
     pub(super) fn cell_at(&self, py: Python<'_>, logical: usize) -> PyResult<Py<PyAny>> {
@@ -367,7 +370,9 @@ impl PyCellArray {
     fn logical_contiguous_ids(&self) -> Option<&[u64]> {
         match self.selection_ref() {
             RowSelectionRef::Identity => Some(&self.storage.ids),
-            RowSelectionRef::Window { start, len } => self.storage.ids.get(start..start + len),
+            RowSelectionRef::Window { start, len } => {
+                self.storage.ids.get(start..).and_then(|ids| ids.get(..len))
+            },
             RowSelectionRef::Gather(_) => None,
         }
     }
@@ -384,32 +389,57 @@ impl PyCellArray {
     fn value_count_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
         let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
         let mut uniques = Vec::with_capacity(self.len());
-        let mut counts = Vec::with_capacity(self.len());
+        let mut counts = Vec::<i64>::with_capacity(self.len());
         for row in 0..self.len() {
             if self.is_row_missing(row) {
                 continue;
             }
             let id = self.id_at(row);
-            let slot = match slot_of.entry(id) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    let slot = uniques.len();
-                    entry.insert(slot);
-                    uniques.push(id);
-                    counts.push(0_i64);
-                    slot
-                },
-            };
-            let Some(count) = counts[slot].checked_add(1) else {
-                return Err(FactorizationError::CountOverflow);
-            };
-            counts[slot] = count;
+            crate::py::cells::record_first_seen_count!(slot_of, uniques, counts, id);
         }
-        Ok((uniques, counts))
+        Ok(sort_value_counts(uniques, counts))
+    }
+
+    fn factorize_identity_entries(
+        &self,
+    ) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+        let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
+        let mut uniques = Vec::with_capacity(self.len());
+        let mut codes = Vec::with_capacity(self.len());
+        macro_rules! append_code {
+            ($id:ident) => {{
+                let slot = crate::py::cells::first_seen_slot!(slot_of, uniques, $id);
+                let Ok(code) = i64::try_from(slot) else {
+                    return Err(FactorizationError::CodeOverflow);
+                };
+                codes.push(code);
+            }};
+        }
+        let ids = self.storage.ids.as_slice();
+        match self.storage.missing.as_ref() {
+            None => {
+                for id in ids.iter().copied() {
+                    append_code!(id);
+                }
+            },
+            Some(missing) => {
+                for (id, is_missing) in ids.iter().copied().zip(missing.iter()) {
+                    if is_missing {
+                        codes.push(-1);
+                    } else {
+                        append_code!(id);
+                    }
+                }
+            },
+        }
+        Ok((uniques, codes))
     }
 
     /// Unique ids + dense codes (factorize pass).
     fn factorize_entries(&self) -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
+        if let RowSelectionRef::Identity = self.selection_ref() {
+            return self.factorize_identity_entries();
+        }
         let mut slot_of: HashMap<u64, usize> = HashMap::with_capacity(self.len());
         let mut uniques = Vec::with_capacity(self.len());
         let mut codes = Vec::with_capacity(self.len());
@@ -419,15 +449,7 @@ impl PyCellArray {
                 continue;
             }
             let id = self.id_at(row);
-            let slot = match slot_of.entry(id) {
-                Entry::Occupied(entry) => *entry.get(),
-                Entry::Vacant(entry) => {
-                    let slot = uniques.len();
-                    entry.insert(slot);
-                    uniques.push(id);
-                    slot
-                },
-            };
+            let slot = crate::py::cells::first_seen_slot!(slot_of, uniques, id);
             let Ok(code) = i64::try_from(slot) else {
                 return Err(FactorizationError::CodeOverflow);
             };
@@ -901,7 +923,9 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
         let len = self.len();
         let clamp = |bound: i64| -> usize {
             let resolved = if bound < 0 {
-                bound + i64::try_from(len).unwrap_or(i64::MAX)
+                bound
+                    .checked_add(i64::try_from(len).unwrap_or(i64::MAX))
+                    .expect("negative index adjustment fits i64")
             } else {
                 bound
             };
@@ -967,23 +991,7 @@ fn intersects(&self, py: Python<'_>, other: &Bound<'_, PyAny>) -> PyResult<Py<Py
     /// >>> counts.tolist()
     /// [2]
 fn value_counts(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {
-        let result = (|| -> std::result::Result<(Vec<u64>, Vec<i64>), FactorizationError> {
-            let (uniques, counts) = self.value_count_entries()?;
-            let mut order: Vec<_> = (0..uniques.len()).collect();
-            order.sort_unstable_by(|&left, &right| {
-                counts[right]
-                    .cmp(&counts[left])
-                    .then_with(|| left.cmp(&right))
-            });
-            let mut sorted_uniques = Vec::with_capacity(order.len());
-            let mut sorted_counts = Vec::with_capacity(order.len());
-            for &slot in &order {
-                sorted_uniques.push(uniques[slot]);
-                sorted_counts.push(counts[slot]);
-            }
-            Ok((sorted_uniques, sorted_counts))
-        })();
-        let (sorted_uniques, sorted_counts) = match result {
+        let (sorted_uniques, sorted_counts) = match self.value_count_entries() {
             Ok(values) => values,
             Err(error) => {
                 return Err(error.into_py_err(
@@ -1706,7 +1714,12 @@ impl PyCellArray {
             }
             let cell = Geohash::from_validated_id(self.id_at(row));
             let (bytes, length) = cell.token_bytes();
-            let token = std::str::from_utf8(&bytes[..length]).expect("geohash alphabet is ASCII");
+            let token = std::str::from_utf8(
+                bytes
+                    .get(..length)
+                    .expect("geohash token length fits its buffer"),
+            )
+            .expect("geohash alphabet is ASCII");
             tokens.append(PyString::new(py, token))?;
         }
         Ok(tokens.into_any().unbind())
@@ -1733,10 +1746,10 @@ pub(crate) fn _unpickle_cell_array_v1(
             .cast::<PyBytes>()
             .map_err(|_| PyValueError::new_err("CellArray pickle mask must be bytes or None"))?;
         let bytes = mask.as_bytes();
-        let mut present_count = 0;
+        let mut present_count = 0_usize;
         for &value in bytes {
             match value {
-                0 => present_count += 1,
+                0 => present_count = present_count.wrapping_add(1),
                 1 => {},
                 _ => {
                     return Err(PyValueError::new_err(
@@ -1758,12 +1771,12 @@ pub(crate) fn _unpickle_cell_array_v1(
             ));
         }
         let mut logical_ids = Vec::with_capacity(bytes.len());
-        let mut present_index = 0;
+        let mut present = present.into_iter();
         for &value in bytes {
             logical_ids.push(if value == 0 {
-                let id = present[present_index];
-                present_index += 1;
-                id
+                present
+                    .next()
+                    .expect("mask present count matches identities")
             } else {
                 0
             });

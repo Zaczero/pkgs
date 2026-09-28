@@ -15,8 +15,44 @@ use crate::grid::s2::projection::{
 const POS_BITS: u32 = 2 * (MAX_LEVEL as u32) + 1;
 const LOOKUP_BITS: u32 = 4;
 const LOOKUP_SIZE: usize = 1 << (2 * LOOKUP_BITS + 2);
+const LOOKUP_VALUE_SHIFT: u32 = LOOKUP_BITS + 2;
+const LOOKUP_DIGIT_MASK: u16 = (1_u16 << LOOKUP_BITS) - 1;
 const SWAP_MASK: u8 = 0x01;
 const INVERT_MASK: u8 = 0x02;
+
+const fn hilbert_child_position(orientation: u8, position: u8) -> Option<u8> {
+    match orientation {
+        0 => match position {
+            0 => Some(0),
+            1 => Some(1),
+            2 => Some(3),
+            3 => Some(2),
+            _ => None,
+        },
+        1 => match position {
+            0 => Some(0),
+            1 => Some(2),
+            2 => Some(3),
+            3 => Some(1),
+            _ => None,
+        },
+        2 => match position {
+            0 => Some(3),
+            1 => Some(2),
+            2 => Some(0),
+            3 => Some(1),
+            _ => None,
+        },
+        3 => match position {
+            0 => Some(3),
+            1 => Some(1),
+            2 => Some(0),
+            3 => Some(2),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -55,6 +91,8 @@ impl Face {
 pub(crate) struct S2Level(u8);
 
 impl S2Level {
+    pub(crate) const ROOT: Self = Self(0);
+
     pub(crate) const fn try_new(level: u8) -> Option<Self> {
         if level <= MAX_LEVEL {
             Some(Self(level))
@@ -74,13 +112,13 @@ impl From<Face> for u8 {
     }
 }
 
-/// Hilbert sub-cell traversal order per orientation (canonical S2 tables).
-const POS_TO_IJ: [[u8; 4]; 4] = [[0, 1, 3, 2], [0, 2, 3, 1], [3, 2, 0, 1], [3, 1, 0, 2]];
-const POS_TO_ORIENTATION: [u8; 4] = [SWAP_MASK, 0, 0, SWAP_MASK | INVERT_MASK];
-
 /// Build the 4-level Hilbert lookup tables at compile time: IJ→position and
 /// position→IJ, 10-bit entries (`(value << 2) | orientation`), 4 `KiB` total —
 /// no runtime init, no heap (the reference crates pay a lazy heap `Vec`).
+#[expect(
+    clippy::indexing_slicing,
+    reason = "const table construction has no const-safe checked mutation; the packed 4-bit coordinates and orientation prove both keys fit the fixed table"
+)]
 const fn fill_lookup(
     level: u32,
     i: u16,
@@ -93,24 +131,38 @@ const fn fill_lookup(
 ) {
     if level == LOOKUP_BITS {
         let ij = (i << LOOKUP_BITS) | j;
-        lookup_pos[((ij as usize) << 2) | orig as usize] = (pos << 2) | orient as u16;
-        lookup_ij[((pos as usize) << 2) | orig as usize] = (ij << 2) | orient as u16;
+        let position_key = ((ij as usize) << 2) | orig as usize;
+        let identity_key = ((pos as usize) << 2) | orig as usize;
+        lookup_pos[position_key] = (pos << 2) | orient as u16;
+        lookup_ij[identity_key] = (ij << 2) | orient as u16;
         return;
     }
-    let mut p = 0;
+    let mut p = 0_u8;
     while p < 4 {
-        let child = POS_TO_IJ[orient as usize][p];
+        let child = hilbert_child_position(orient, p)
+            .expect("S2 Hilbert orientation and child position are below four");
+        let orientation_delta = match p {
+            0 => Some(SWAP_MASK),
+            1 | 2 => Some(0),
+            3 => Some(SWAP_MASK | INVERT_MASK),
+            _ => None,
+        }
+        .expect("S2 Hilbert child position is below four");
         fill_lookup(
-            level + 1,
+            level
+                .checked_add(1)
+                .expect("compile-time Hilbert lookup depth is bounded"),
             (i << 1) | (child >> 1) as u16,
             (j << 1) | (child & 1) as u16,
             orig,
             (pos << 2) | p as u16,
-            orient ^ POS_TO_ORIENTATION[p],
+            orient ^ orientation_delta,
             lookup_pos,
             lookup_ij,
         );
-        p += 1;
+        p = p
+            .checked_add(1)
+            .expect("four Hilbert child positions fit usize");
     }
 }
 
@@ -120,7 +172,9 @@ const fn build_lookup() -> ([u16; LOOKUP_SIZE], [u16; LOOKUP_SIZE]) {
     let mut orientation = 0;
     while orientation < 4 {
         fill_lookup(0, 0, 0, orientation, 0, orientation, &mut pos, &mut ij);
-        orientation += 1;
+        orientation = orientation
+            .checked_add(1)
+            .expect("four S2 orientations fit u8");
     }
     (pos, ij)
 }
@@ -130,13 +184,26 @@ const LOOKUP_POS: &[u16; LOOKUP_SIZE] = &LOOKUP.0;
 const LOOKUP_IJ: &[u16; LOOKUP_SIZE] = &LOOKUP.1;
 
 /// The sentinel bit for a cell at `level` (place encodes the level).
-const fn lsb_for_level(level: u8) -> u64 {
-    1 << (2 * (MAX_LEVEL - level) as u32)
+const fn lsb_for_level(level: S2Level) -> u64 {
+    let remaining = MAX_LEVEL
+        .checked_sub(level.get())
+        .expect("admitted S2 level is at or below MAX_LEVEL");
+    let shift = (remaining as u32)
+        .checked_mul(2)
+        .expect("S2 sentinel shift fits u32");
+    1_u64
+        .checked_shl(shift)
+        .expect("S2 sentinel shift fits the 64-bit cell ID")
 }
 
 /// Leaf-grid edge length of a cell at `level`, in IJ units.
-pub(crate) const fn size_ij(level: u8) -> i32 {
-    1 << (MAX_LEVEL - level) as u32
+pub(crate) const fn size_ij(level: S2Level) -> i32 {
+    let shift = MAX_LEVEL
+        .checked_sub(level.get())
+        .expect("admitted S2 level is at or below MAX_LEVEL") as u32;
+    1_i32
+        .checked_shl(shift)
+        .expect("S2 IJ size fits a signed 32-bit coordinate")
 }
 
 /// The 64-bit S2 cell representation. Constructors and admission boundaries
@@ -172,7 +239,9 @@ impl CellId {
             return None;
         }
         let value = u64::from_str_radix(token, 16).ok()?;
-        Self::from_raw(value << (4 * (16 - token.len())))
+        let padding = 16_usize.checked_sub(token.len())?;
+        let shift = u32::try_from(padding).ok()?.checked_mul(4)?;
+        Self::from_raw(value.wrapping_shl(shift))
     }
 
     /// The token: 16 hex nibbles with trailing zeros stripped.
@@ -187,7 +256,7 @@ impl CellId {
     /// The face cell `face` (level 0).
     pub(crate) fn from_face(face: impl Into<Face>) -> Self {
         let face = face.into();
-        Self((u64::from(face.get()) << POS_BITS) + lsb_for_level(0))
+        Self(u64::from(face.get()).wrapping_shl(POS_BITS) | lsb_for_level(S2Level::ROOT))
     }
 
     /// The leaf cell containing validated-finite lon/lat degrees.
@@ -205,24 +274,26 @@ impl CellId {
     /// The leaf cell at in-range face/IJ coordinates (the Hilbert encode).
     pub(crate) fn from_face_ij(face: impl Into<Face>, i: i32, j: i32) -> Self {
         let face = face.into().get();
-        let mut id = u64::from(face) << (POS_BITS - 1);
+        let mut id = u64::from(face).wrapping_shl(POS_BITS - 1);
         let mut bits = u16::from(face & SWAP_MASK);
-        let mask = (1 << LOOKUP_BITS) - 1;
-        let mut k = 7_u32;
-        loop {
-            let shift = k * LOOKUP_BITS;
+        let mask = i32::from(LOOKUP_DIGIT_MASK);
+        for shift in (0..u32::from(MAX_LEVEL))
+            .step_by(LOOKUP_BITS as usize)
+            .rev()
+        {
             let key = usize::from(bits)
-                | ((((i >> shift) & mask) as usize) << (LOOKUP_BITS + 2))
+                | ((((i >> shift) & mask) as usize) << LOOKUP_VALUE_SHIFT as usize)
                 | ((((j >> shift) & mask) as usize) << 2);
-            let entry = LOOKUP_POS[key];
-            id |= u64::from(entry >> 2) << (k * 2 * LOOKUP_BITS);
+            let entry = *LOOKUP_POS
+                .get(key)
+                .expect("S2 face/IJ bits form a valid Hilbert lookup key");
+            let output_shift = shift
+                .checked_mul(2)
+                .expect("S2 Hilbert position shift fits u32");
+            id |= u64::from(entry >> 2).wrapping_shl(output_shift);
             bits = entry & u16::from(SWAP_MASK | INVERT_MASK);
-            if k == 0 {
-                break;
-            }
-            k -= 1;
         }
-        Self(id * 2 + 1)
+        Self(id.wrapping_shl(1) | 1)
     }
 
     /// The leaf cell for face/IJ coordinates that may lie one step outside
@@ -257,7 +328,9 @@ impl CellId {
 
     /// The subdivision level (`0..=30`).
     pub(crate) const fn level(self) -> u8 {
-        MAX_LEVEL - (self.0.trailing_zeros() >> 1) as u8
+        MAX_LEVEL
+            .checked_sub((self.0.trailing_zeros() >> 1) as u8)
+            .expect("valid S2 cell ID has a sentinel within the supported levels")
     }
 
     /// Whether this is a deepest-level cell.
@@ -275,7 +348,7 @@ impl CellId {
     /// above a leaf's, so unlike [`Self::parent`] this cannot decline.
     pub(crate) fn leaf_parent(self, level: S2Level) -> Self {
         debug_assert!(self.is_leaf());
-        let lsb = lsb_for_level(level.get());
+        let lsb = lsb_for_level(level);
         Self((self.0 & lsb.wrapping_neg()) | lsb)
     }
 
@@ -285,10 +358,12 @@ impl CellId {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) fn parent(self, level: u8) -> Option<Self> {
-        (level <= self.level()).then(|| {
-            let lsb = lsb_for_level(level);
-            Self((self.0 & lsb.wrapping_neg()) | lsb)
-        })
+        if level > self.level() {
+            return None;
+        }
+        let level = S2Level::try_new(level)?;
+        let lsb = lsb_for_level(level);
+        Some(Self((self.0 & lsb.wrapping_neg()) | lsb))
     }
 
     /// The four immediate children, in Hilbert order; `None` for a leaf.
@@ -301,26 +376,35 @@ impl CellId {
             return None;
         }
         let lsb = self.lsb();
-        let first = self.0 - lsb + (lsb >> 2);
-        let step = lsb >> 1;
+        let first = self.0.wrapping_sub(lsb).wrapping_add(lsb.wrapping_shr(2));
+        let step = lsb.wrapping_shr(1);
         Some([
             Self(first),
-            Self(first + step),
-            Self(first + 2 * step),
-            Self(first + 3 * step),
+            Self(first.wrapping_add(step)),
+            Self(first.wrapping_add(step.wrapping_mul(2))),
+            Self(first.wrapping_add(step.wrapping_mul(3))),
         ])
     }
 
     /// First descendant cell at `level` (Hilbert traversal order); `level`
     /// must not be coarser than this cell's.
     pub(crate) const fn child_begin_at(self, level: u8) -> Self {
-        Self(self.0 - self.lsb() + lsb_for_level(level))
+        let level = S2Level::try_new(level).expect("S2 descendant level is within 0..=MAX_LEVEL");
+        Self(self.0.wrapping_sub(self.lsb()) | lsb_for_level(level))
     }
 
     /// One past the last descendant at `level` (may be structurally
     /// invalid; pair with [`Self::next`]).
     pub(crate) const fn child_end_at(self, level: u8) -> Self {
-        Self(self.0 + self.lsb() + lsb_for_level(level))
+        let level = S2Level::try_new(level).expect("S2 descendant level is within 0..=MAX_LEVEL");
+        let cell_end = self
+            .0
+            .checked_add(self.lsb())
+            .expect("one-past S2 cell range fits u64");
+        let end = cell_end
+            .checked_add(lsb_for_level(level))
+            .expect("one-past S2 descendant range fits u64");
+        Self(end)
     }
 
     /// The next cell at this level along the Hilbert curve.
@@ -334,7 +418,7 @@ impl CellId {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) const fn range_min(self) -> Self {
-        Self(self.0 - (self.lsb() - 1))
+        Self(self.0.wrapping_sub(self.lsb()) | 1)
     }
 
     /// The largest leaf id contained in this cell.
@@ -343,7 +427,7 @@ impl CellId {
         reason = "the inherent operation deliberately shares the domain vocabulary of its trait contract"
     )]
     pub(crate) const fn range_max(self) -> Self {
-        Self(self.0 + (self.lsb() - 1))
+        Self(self.0 | self.lsb().wrapping_sub(1))
     }
 
     /// Whether this cell contains `other` (itself included).
@@ -359,19 +443,39 @@ impl CellId {
     /// The four edge-adjacent cells at this cell's level (down, right, up,
     /// left in face space), exact across cube edges.
     pub(crate) fn edge_neighbors(self) -> [Self; 4] {
-        let level = self.level();
+        let level = S2Level::try_new(self.level()).expect("valid S2 cell level");
         let size = size_ij(level);
         let (face, i, j, _) = self.face_ij_orientation();
         [
-            Self::from_face_ij_wrap(face, i, j - size).parent_at_level(level),
-            Self::from_face_ij_wrap(face, i + size, j).parent_at_level(level),
-            Self::from_face_ij_wrap(face, i, j + size).parent_at_level(level),
-            Self::from_face_ij_wrap(face, i - size, j).parent_at_level(level),
+            Self::from_face_ij_wrap(
+                face,
+                i,
+                j.checked_sub(size).expect("south neighbor IJ fits i32"),
+            )
+            .parent_at_level(level),
+            Self::from_face_ij_wrap(
+                face,
+                i.checked_add(size).expect("east neighbor IJ fits i32"),
+                j,
+            )
+            .parent_at_level(level),
+            Self::from_face_ij_wrap(
+                face,
+                i,
+                j.checked_add(size).expect("north neighbor IJ fits i32"),
+            )
+            .parent_at_level(level),
+            Self::from_face_ij_wrap(
+                face,
+                i.checked_sub(size).expect("west neighbor IJ fits i32"),
+                j,
+            )
+            .parent_at_level(level),
         ]
     }
 
     /// `parent` for levels known to be coarser-or-equal (leaf → `level`).
-    const fn parent_at_level(self, level: u8) -> Self {
+    const fn parent_at_level(self, level: S2Level) -> Self {
         let lsb = lsb_for_level(level);
         Self((self.0 & lsb.wrapping_neg()) | lsb)
     }
@@ -383,21 +487,33 @@ impl CellId {
         let mut i = 0_i32;
         let mut j = 0_i32;
         let mut orient = u16::from(face.get() & SWAP_MASK);
-        let mut nbits = u32::from(MAX_LEVEL) - 7 * LOOKUP_BITS;
-        let mut k = 7_u32;
-        loop {
-            let shift = k * 2 * LOOKUP_BITS + 1;
-            let mask = (1_u64 << (2 * nbits)) - 1;
-            let key = usize::from(orient) | ((((self.0 >> shift) & mask) as usize) << 2);
-            let entry = LOOKUP_IJ[key];
-            i |= i32::from(entry >> (LOOKUP_BITS + 2)) << (k * LOOKUP_BITS);
-            j |= i32::from((entry >> 2) & ((1 << LOOKUP_BITS) - 1)) << (k * LOOKUP_BITS);
+        for shift in (0..u32::from(MAX_LEVEL))
+            .step_by(LOOKUP_BITS as usize)
+            .rev()
+        {
+            let remaining = u32::from(MAX_LEVEL)
+                .checked_sub(shift)
+                .expect("S2 lookup chunk shift is within MAX_LEVEL");
+            let chunk_bits = remaining.min(LOOKUP_BITS);
+            let mask_bits = chunk_bits
+                .checked_mul(2)
+                .expect("S2 lookup mask width fits u32");
+            let mask = 1_u64
+                .checked_shl(mask_bits)
+                .expect("S2 lookup mask fits u64")
+                .wrapping_sub(1);
+            let packed_shift = shift
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(1))
+                .expect("S2 packed ID lookup shift fits u32");
+            let key = usize::from(orient) | ((((self.0 >> packed_shift) & mask) as usize) << 2);
+            let entry = *LOOKUP_IJ
+                .get(key)
+                .expect("valid S2 ID bits form a position lookup key");
+            i |= i32::from(entry >> LOOKUP_VALUE_SHIFT).wrapping_shl(shift);
+            let j_digit = i32::from((entry >> 2) & LOOKUP_DIGIT_MASK);
+            j |= j_digit.wrapping_shl(shift);
             orient = entry & u16::from(SWAP_MASK | INVERT_MASK);
-            if k == 0 {
-                break;
-            }
-            nbits = LOOKUP_BITS;
-            k -= 1;
         }
         if self.lsb() & 0x1111_1111_1111_1110 != 0 {
             orient ^= u16::from(SWAP_MASK);
@@ -416,7 +532,15 @@ impl CellId {
         } else {
             0
         };
-        (face, (2 * i + delta) as u32, (2 * j + delta) as u32)
+        let siti_i = i
+            .checked_mul(2)
+            .and_then(|coordinate| coordinate.checked_add(delta))
+            .expect("S2 half-leaf center coordinate fits i32");
+        let siti_j = j
+            .checked_mul(2)
+            .and_then(|coordinate| coordinate.checked_add(delta))
+            .expect("S2 half-leaf center coordinate fits i32");
+        (face, siti_i as u32, siti_j as u32)
     }
 
     /// The cell's (u, v) bounds on its face.
@@ -428,11 +552,23 @@ impl CellId {
     /// UV bounds plus cancellation-free axis spans (area-local only).
     pub(crate) fn bound_uv_with_spans(self) -> (f64, f64, f64, f64, f64, f64) {
         let (_, i, j, _) = self.face_ij_orientation();
-        let size = size_ij(self.level());
-        let s_lo = ij_to_st_min(i & -size);
-        let s_hi = ij_to_st_min((i & -size) + size);
-        let t_lo = ij_to_st_min(j & -size);
-        let t_hi = ij_to_st_min((j & -size) + size);
+        let level = S2Level::try_new(self.level()).expect("valid S2 cell level");
+        let size = size_ij(level);
+        let negative_size = size.checked_neg().expect("S2 cell size fits i32");
+        let i_origin = i & negative_size;
+        let j_origin = j & negative_size;
+        let s_lo = ij_to_st_min(i_origin);
+        let s_hi = ij_to_st_min(
+            i_origin
+                .checked_add(size)
+                .expect("S2 cell IJ upper bound fits i32"),
+        );
+        let t_lo = ij_to_st_min(j_origin);
+        let t_hi = ij_to_st_min(
+            j_origin
+                .checked_add(size)
+                .expect("S2 cell IJ upper bound fits i32"),
+        );
         let u_lo = st_to_uv(s_lo);
         let u_hi = st_to_uv(s_hi);
         let v_lo = st_to_uv(t_lo);

@@ -223,32 +223,31 @@ impl Cell {
         let u = self.uv.u_lo + self.uv.u_hi;
         let v = self.uv.v_lo + self.uv.v_hi;
         let face_index = usize::from(self.face.get());
-        let i = usize::from(if U_AXIS_Z[face_index] == 0.0 {
-            u < 0.0
-        } else {
-            u > 0.0
-        });
-        let j = usize::from(if V_AXIS_Z[face_index] == 0.0 {
-            v < 0.0
-        } else {
-            v > 0.0
-        });
+        let u_axis_z = *U_AXIS_Z
+            .get(face_index)
+            .expect("S2 face index fits the axis table");
+        let v_axis_z = *V_AXIS_Z
+            .get(face_index)
+            .expect("S2 face index fits the axis table");
+        let i = if u_axis_z == 0.0 { u < 0.0 } else { u > 0.0 };
+        let j = if v_axis_z == 0.0 { v < 0.0 } else { v > 0.0 };
         // Corner (i, j) maps to the CCW vertex order of `vertices_lonlat`:
         // (0,0) -> 0, (1,0) -> 1, (1,1) -> 2, (0,1) -> 3 — reusing the four
         // conversions the caller already paid for.
-        let corner = |i: usize, j: usize| -> (f64, f64) {
-            let vertex = vertices[match (i, j) {
-                (0, 0) => 0,
-                (1, 0) => 1,
-                (1, 1) => 2,
-                _ => 3,
-            }];
+        let [southwest, southeast, northeast, northwest] = *vertices;
+        let corner = |i: bool, j: bool| -> (f64, f64) {
+            let vertex = match (i, j) {
+                (false, false) => southwest,
+                (true, false) => southeast,
+                (true, true) => northeast,
+                (false, true) => northwest,
+            };
             (vertex.x, vertex.y)
         };
         let (_, lat_a) = corner(i, j);
-        let (_, lat_b) = corner(1 - i, 1 - j);
-        let (lng_a, _) = corner(i, 1 - j);
-        let (lng_b, _) = corner(1 - i, j);
+        let (_, lat_b) = corner(!i, !j);
+        let (lng_a, _) = corner(i, !j);
+        let (lng_b, _) = corner(!i, j);
         // 2 * DBL_EPSILON covers normalization/rounding drift (canonical).
         let err = (2.0 * f64::EPSILON).to_degrees();
         let rect = LatLngRect {

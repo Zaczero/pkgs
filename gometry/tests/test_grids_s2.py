@@ -1010,6 +1010,19 @@ def test_s2_cover_within_polar_and_antimeridian_honors_source_geometry() -> None
     assert b_within <= b_overlap
 
 
+def test_s2_within_certifies_against_the_complete_component_union() -> None:
+    """Two touching components jointly, but not individually, contain a cell."""
+    cell = gm.S2Cell(0.0, 0.0, level=6)
+    split = cell.center.x
+    left = gm.box(-10.0, -10.0, split, 10.0, crs=4326)
+    right = gm.box(split, -10.0, 10.0, 10.0, crs=4326)
+    source = gm.MultiPolygon([left, right], crs=4326)
+
+    assert cell not in gm.s2_cover(left, level=6, cell_rule='within')
+    assert cell not in gm.s2_cover(right, level=6, cell_rule='within')
+    assert cell in gm.s2_cover(source, level=6, cell_rule='within')
+
+
 def test_s2_within_line_drops_invisible_candidates_at_every_level_mod() -> None:
     line = gm.LineString([(-50.0, -40.0), (50.0, -40.0)], crs=4326)
     for level_mod in (1, 2, 3):

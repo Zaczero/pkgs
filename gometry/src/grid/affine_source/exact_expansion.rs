@@ -58,14 +58,18 @@ impl CompactLimbs {
 
     pub(super) fn as_slice(&self) -> &[f64] {
         match self {
-            Self::Inline { limbs, len } => &limbs[..usize::from(*len)],
+            Self::Inline { limbs, len } => limbs
+                .get(..usize::from(*len))
+                .expect("inline expansion length fits its limb array"),
             Self::Heap(limbs) => limbs,
         }
     }
 
     pub(super) fn as_mut_slice(&mut self) -> &mut [f64] {
         match self {
-            Self::Inline { limbs, len } => &mut limbs[..usize::from(*len)],
+            Self::Inline { limbs, len } => limbs
+                .get_mut(..usize::from(*len))
+                .expect("inline expansion length fits its limb array"),
             Self::Heap(limbs) => limbs,
         }
     }
@@ -95,7 +99,14 @@ impl CompactLimbs {
             },
             Self::Inline { limbs, len } => {
                 let mut expanded = vec![0.0; required];
-                expanded[..usize::from(*len)].copy_from_slice(&limbs[..usize::from(*len)]);
+                let initialized = usize::from(*len);
+                let source = limbs
+                    .get(..initialized)
+                    .expect("inline expansion length fits its limb array");
+                expanded
+                    .get_mut(..initialized)
+                    .expect("initialized expansion prefix fits its new storage")
+                    .copy_from_slice(source);
                 *self = Self::Heap(expanded);
             },
             Self::Heap(limbs) => {
@@ -262,19 +273,29 @@ impl ExactExpansion {
                 } else {
                     [tail, 0.0]
                 };
-                let term_len = if tail == 0.0 {
-                    usize::from(head != 0.0)
-                } else {
-                    1 + usize::from(head != 0.0)
+                let term_len = match (tail == 0.0, head == 0.0) {
+                    (true, true) => 0,
+                    (true, false) | (false, true) => 1,
+                    (false, false) => 2,
                 };
                 if term_len == 0 {
                     continue;
                 }
                 if result.is_empty() {
                     result.prepare(term_len)?;
-                    result.as_mut_slice()[..term_len].copy_from_slice(&term[..term_len]);
+                    let source = term
+                        .get(..term_len)
+                        .expect("product term has at most two limbs");
+                    result
+                        .as_mut_slice()
+                        .get_mut(..term_len)
+                        .expect("prepared expansion has room for its product term")
+                        .copy_from_slice(source);
                 } else {
-                    sum_expansions::<false>(result.as_slice(), &term[..term_len], &mut scratch)?;
+                    let source = term
+                        .get(..term_len)
+                        .expect("product term has at most two limbs");
+                    sum_expansions::<false>(result.as_slice(), source, &mut scratch)?;
                     std::mem::swap(&mut result, &mut scratch);
                 }
             }

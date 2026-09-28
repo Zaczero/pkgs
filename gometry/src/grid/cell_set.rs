@@ -64,15 +64,24 @@ fn normalize_with_floor<C: HierarchicalCell>(mut cells: Vec<C>, floor: u8) -> Ve
             if out.len() < count {
                 break;
             }
-            let child_depth = parent.depth() + 1;
-            let tail = &out[out.len() - count..];
+            let child_depth = parent
+                .depth()
+                .checked_add(1)
+                .expect("a parent with children has a representable child depth");
+            let tail_start = out
+                .len()
+                .checked_sub(count)
+                .expect("a complete child group fits in the output prefix");
+            let tail = out
+                .get(tail_start..)
+                .expect("the complete child group lies in the output prefix");
             if !tail
                 .iter()
                 .all(|&cell| cell.depth() == child_depth && parent.contains(cell))
             {
                 break;
             }
-            out.truncate(out.len() - count);
+            out.truncate(tail_start);
             out.push(parent);
         }
     }
@@ -128,7 +137,10 @@ fn uncompact_canonical<C: HierarchicalCell>(
             let children = cell.children();
             stack.reserve(children.len());
             stack.extend(children);
-            stack[children_start..].reverse();
+            stack
+                .get_mut(children_start..)
+                .expect("all children were appended to the expansion stack")
+                .reverse();
         }
     }
     Ok(CanonicalCellSet::from_range_sorted(out))
@@ -151,19 +163,19 @@ pub(crate) fn intersection<C: HierarchicalCell>(
     right: &CanonicalCellSet<C>,
 ) -> CanonicalCellSet<C> {
     let mut out = Vec::with_capacity(left.cells.len().min(right.cells.len()));
-    let (mut i, mut j) = (0, 0);
-    while i < left.cells.len() && j < right.cells.len() {
-        let (a, b) = (left.cells[i], right.cells[j]);
+    let mut left_cells = left.cells.iter().copied().peekable();
+    let mut right_cells = right.cells.iter().copied().peekable();
+    while let (Some(&a), Some(&b)) = (left_cells.peek(), right_cells.peek()) {
         if a.range_max() < b.range_min() {
-            i += 1;
+            left_cells.next();
         } else if b.range_max() < a.range_min() {
-            j += 1;
+            right_cells.next();
         } else {
             out.push(if a.contains(b) { b } else { a });
             if a.range_max() < b.range_max() {
-                i += 1;
+                left_cells.next();
             } else {
-                j += 1;
+                right_cells.next();
             }
         }
     }
@@ -179,15 +191,24 @@ pub(crate) fn difference<C: HierarchicalCell>(
 ) -> CanonicalCellSet<C> {
     fn subtract<C: HierarchicalCell>(cell: C, subtrahend: &[C], out: &mut Vec<C>) {
         let start = subtrahend.partition_point(|member| member.range_max() < cell.range_min());
+        let suffix = subtrahend
+            .get(start..)
+            .expect("partition point is within the normalized set");
+        let overlap_len = suffix.partition_point(|member| member.range_min() <= cell.range_max());
         let end = start
-            + subtrahend[start..].partition_point(|member| member.range_min() <= cell.range_max());
-        let overlapping = &subtrahend[start..end];
-        if overlapping.is_empty() {
-            out.push(cell);
-        } else if !overlapping[0].contains(cell) && cell.depth() < C::max_depth() {
-            for child in cell.children() {
-                subtract(child, overlapping, out);
-            }
+            .checked_add(overlap_len)
+            .expect("overlap end is within the normalized set");
+        let overlapping = subtrahend
+            .get(start..end)
+            .expect("overlap range is within the normalized set");
+        match overlapping.first().copied() {
+            None => out.push(cell),
+            Some(first) if !first.contains(cell) && cell.depth() < C::max_depth() => {
+                for child in cell.children() {
+                    subtract(child, overlapping, out);
+                }
+            },
+            Some(_) => {},
         }
     }
     let mut out = Vec::with_capacity(left.cells.len());
@@ -202,7 +223,10 @@ pub(crate) fn difference<C: HierarchicalCell>(
 #[cfg(test)]
 pub(crate) fn contains_any<C: HierarchicalCell>(cells: &[C], cell: C) -> bool {
     let index = cells.partition_point(|member| member.range_min() <= cell.range_min());
-    index > 0 && cells[index - 1].range_max() >= cell.range_max()
+    cells
+        .get(..index)
+        .and_then(|prefix| prefix.last())
+        .is_some_and(|previous| previous.range_max() >= cell.range_max())
 }
 
 /// Whether a NORMALIZED set overlaps `cell` at all (test oracle helper; the

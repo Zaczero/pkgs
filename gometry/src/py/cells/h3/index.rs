@@ -12,6 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::PyBool;
 
 use crate::boundary::buffer_endian::{buffer_item_count, try_typed_buffer};
+use crate::py::cells::copy_numeric_ids_from_tobytes;
 use crate::py::errors::{ParseFormat, parse_error};
 use crate::py::numpy::reject_masked_array;
 
@@ -142,29 +143,16 @@ fn owned_h3_ids_from_tobytes<I: H3Index, T>(ids: &Bound<'_, PyAny>) -> PyResult<
 where
     T: Copy + TryInto<u64>,
 {
-    use pyo3::types::PyBytes;
-    let py_bytes = ids.call_method0("tobytes")?;
-    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
-    let width = std::mem::size_of::<T>();
-    if width == 0 || !bytes.len().is_multiple_of(width) {
-        return Err(PyTypeError::new_err(format!(
-            "{} ids buffer length is invalid",
-            I::ARRAY_ENTITY
-        )));
-    }
-    let mut out = Vec::with_capacity(bytes.len() / width);
-    for chunk in bytes.chunks_exact(width) {
-        // SAFETY: dtype matched by extract; tobytes is native-endian for T.
-        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
-        let id = value.try_into().map_err(|_| {
+    copy_numeric_ids_from_tobytes::<T>(
+        ids,
+        || PyTypeError::new_err(format!("{} ids buffer length is invalid", I::ARRAY_ENTITY)),
+        || {
             PyTypeError::new_err(format!(
                 "{} ids must be unsigned 64-bit integers",
                 I::ARRAY_ENTITY
             ))
-        })?;
-        out.push(id);
-    }
-    Ok(out)
+        },
+    )
 }
 
 fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
@@ -182,10 +170,6 @@ fn parse_uint64_ids<I: H3Index>(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u
         ($($ty:ty),* $(,)?) => {
             $(
                 if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
-                    // Owned capture via `tobytes()` — never an ArrayView over
-                    // writable NumPy memory, so no borrow outlives this call.
-                    // The copy does not synchronize a native writer; the
-                    // producer must remain quiescent until it returns.
                     return Ok(Some(owned_h3_ids_from_tobytes::<I, $ty>(ids)?));
                 }
             )*

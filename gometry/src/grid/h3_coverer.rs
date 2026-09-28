@@ -171,7 +171,7 @@ impl H3CoverAccumulator {
         }
         #[cfg(test)]
         {
-            self.stats.submitted_occurrences += component.len();
+            H3AggregationStats::add_counter(&mut self.stats.submitted_occurrences, component.len());
         }
         let state = std::mem::replace(&mut self.state, H3CoverAccumulatorState::Empty);
         match state {
@@ -187,7 +187,10 @@ impl H3CoverAccumulator {
             H3CoverAccumulatorState::Single(previous) => {
                 #[cfg(test)]
                 {
-                    self.stats.old_equivalent_prefix_entries_copied += previous.len();
+                    H3AggregationStats::add_counter(
+                        &mut self.stats.old_equivalent_prefix_entries_copied,
+                        previous.len(),
+                    );
                 }
                 let mut unique =
                     H3UniqueCells::with_capacity(previous.len(), component.len(), max_cells)?;
@@ -198,7 +201,10 @@ impl H3CoverAccumulator {
             H3CoverAccumulatorState::Many(mut unique) => {
                 #[cfg(test)]
                 {
-                    self.stats.old_equivalent_prefix_entries_copied += unique.cells.len();
+                    H3AggregationStats::add_counter(
+                        &mut self.stats.old_equivalent_prefix_entries_copied,
+                        unique.cells.len(),
+                    );
                 }
                 unique.reserve_for_component(component.len(), max_cells)?;
                 self.insert_entries(&mut unique, component, max_cells)?;
@@ -225,9 +231,9 @@ impl H3CoverAccumulator {
             #[cfg(test)]
             {
                 let duplicate = unique.insert(entry, max_cells)?;
-                self.stats.accumulator_entries_moved += 1;
+                H3AggregationStats::add_counter(&mut self.stats.accumulator_entries_moved, 1);
                 if duplicate {
-                    self.stats.duplicate_merges += 1;
+                    H3AggregationStats::add_counter(&mut self.stats.duplicate_merges, 1);
                 }
                 self.stats.unique_cells = unique.cells.len();
                 self.stats.accumulator_peak_entries =
@@ -262,6 +268,15 @@ pub(crate) struct H3AggregationStats {
     pub(crate) old_equivalent_prefix_entries_copied: usize,
     pub(crate) accumulator_entries_moved: usize,
     pub(crate) accumulator_peak_entries: usize,
+}
+
+#[cfg(test)]
+impl H3AggregationStats {
+    fn add_counter(counter: &mut usize, amount: usize) {
+        *counter = counter
+            .checked_add(amount)
+            .expect("H3 aggregation test counter fits usize");
+    }
 }
 
 /// Target-wide cap state.  A cap that cannot certify is never approximated:
@@ -364,8 +379,9 @@ pub(crate) fn h3_cover(
                 },
             },
             RectClass::Boundary => {
-                let next = Resolution::try_from(u8::from(depth) + 1)
-                    .map_err(|_| H3CoverError::CapacityOverflow)?;
+                let next = depth
+                    .succ()
+                    .expect("a boundary cell below target has a child resolution");
                 stack.extend(cell.children(next));
             },
         }
@@ -516,7 +532,11 @@ fn emit_interior_descendants(
         cell,
         interior: true,
     }));
-    debug_assert_eq!(covered.len() - start, count, "vendor child count changed");
+    let emitted = covered
+        .get(start..)
+        .expect("interior descendants append after the existing prefix")
+        .len();
+    debug_assert_eq!(emitted, count, "vendor child count changed");
     Ok(())
 }
 

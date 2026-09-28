@@ -112,8 +112,11 @@ impl<T: RectGridCell> HierarchicalCell for T {
     }
 
     fn parent(self) -> Option<Self> {
-        (self.depth() > T::MIN_DEPTH)
-            .then(|| <Self as RectGridCell>::grid_parent_at(self, self.depth() - 1))
+        let depth = self.depth();
+        (depth > T::MIN_DEPTH).then(|| {
+            let parent_depth = depth.checked_sub(1).expect("parent depth is below child");
+            <Self as RectGridCell>::grid_parent_at(self, parent_depth)
+        })
     }
 
     fn children(self) -> impl ExactSizeIterator<Item = Self> {
@@ -206,11 +209,12 @@ impl RectGridCell for Tile {
     }
 
     fn range_min(self) -> u64 {
-        crate::curves::morton_interleave(self.x, self.y) << (58 - 2 * u32::from(self.z))
+        crate::curves::morton_interleave(self.x, self.y).wrapping_shl(tile_range_shift(self.z))
     }
 
     fn range_max(self) -> u64 {
-        <Self as RectGridCell>::range_min(self) | ((1_u64 << (58 - 2 * u32::from(self.z))) - 1)
+        let mask = 1_u64.wrapping_shl(tile_range_shift(self.z)).wrapping_sub(1);
+        <Self as RectGridCell>::range_min(self) | mask
     }
 
     fn grid_token(self) -> String {
@@ -228,4 +232,14 @@ impl RectGridCell for Tile {
     fn pickle_arg(self) -> CellPickleArg {
         CellPickleArg::U64(self.id())
     }
+}
+
+fn tile_range_shift(zoom: u8) -> u32 {
+    58_u32
+        .checked_sub(
+            u32::from(zoom)
+                .checked_mul(2)
+                .expect("Tile zoom fits the packed Morton key"),
+        )
+        .expect("Tile zoom fits the packed Morton key")
 }

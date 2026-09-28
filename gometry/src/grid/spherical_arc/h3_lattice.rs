@@ -146,7 +146,7 @@ impl CertifiedH3DescendantCap {
             if radius.hi >= HALF_PI_LO {
                 return None;
             }
-            angular_radii[usize::from(depth)] = radius;
+            *angular_radii.get_mut(usize::from(depth))? = radius;
         }
         Some(Self {
             target,
@@ -162,7 +162,10 @@ impl CertifiedH3DescendantCap {
     }
 
     pub(super) fn angular_radius(&self, depth: Resolution) -> Option<Bound> {
-        (depth <= self.target).then(|| self.angular_radii[usize::from(depth)])
+        if depth > self.target {
+            return None;
+        }
+        self.angular_radii.get(usize::from(depth)).copied()
     }
 
     pub(crate) fn descendant_windows(&self, cell: h3o::CellIndex) -> DegreeWindowResult {
@@ -311,7 +314,7 @@ pub(super) fn certified_angular_radius(
 impl CertifiedTargetLatticeProfile {
     pub(crate) fn for_target(target: Resolution) -> Option<Self> {
         let raw = CapLatticeProfile::for_target(target);
-        let adjusted = target_value(target)? + u8::from(target.is_class3());
+        let adjusted = target_value(target)?.checked_add(u8::from(target.is_class3()))?;
         if raw.target() != target
             || raw.adjusted_resolution() != adjusted
             || raw.max_dim() <= 0
@@ -326,7 +329,8 @@ impl CertifiedTargetLatticeProfile {
         for raw_resolution in 1..=target_value(target)? {
             let resolution = Resolution::try_from(raw_resolution).ok()?;
             let offsets = raw.suffix_offsets(resolution)?;
-            suffix_max[usize::from(raw_resolution - 1)] = certified_lattice_max(offsets, sqrt3_2)?;
+            let index = usize::from(raw_resolution.checked_sub(1)?);
+            *suffix_max.get_mut(index)? = certified_lattice_max(offsets, sqrt3_2)?;
         }
         let vertex_max = certified_lattice_max(raw.vertex_offsets(), sqrt3_2)?;
         let rotation_norm = certified_native_rotation_norm(sqrt3_2)?;
@@ -353,8 +357,11 @@ impl CertifiedTargetLatticeProfile {
             return None;
         }
         let mut radius = self.vertex_max;
-        for raw_resolution in (target_value(depth)? + 1)..=target_value(self.raw.target())? {
-            radius = radius.add_nonnegative(self.suffix_max[usize::from(raw_resolution - 1)])?;
+        let first_resolution = target_value(depth)?.checked_add(1)?;
+        for raw_resolution in first_resolution..=target_value(self.raw.target())? {
+            let index = usize::from(raw_resolution.checked_sub(1)?);
+            let suffix = self.suffix_max.get(index).copied()?;
+            radius = radius.add_nonnegative(suffix)?;
         }
         Some(radius)
     }
@@ -568,10 +575,12 @@ pub(super) fn certified_seam_delta(
 /// `SQRT3_2` is intentionally not treated as mathematical sqrt(3)/2.
 pub(super) fn certified_face_radius(max_dim: i64, sqrt3_2: Bound) -> Option<Bound> {
     let max_dim = i128::from(max_dim);
+    let three_dim = 3_i128.checked_mul(max_dim)?;
+    let negative_three_dim = three_dim.checked_neg()?;
     let coordinates = [
         (6_i128.checked_mul(max_dim)?, 0),
-        (-3_i128.checked_mul(max_dim)?, 3_i128.checked_mul(max_dim)?),
-        (-3_i128.checked_mul(max_dim)?, -3_i128.checked_mul(max_dim)?),
+        (negative_three_dim, three_dim),
+        (negative_three_dim, negative_three_dim),
     ];
     let mut maximum = Bound::exact(0.0)?;
     for (x2, y_sqrt3) in coordinates {
@@ -601,7 +610,8 @@ pub(super) fn certified_ideal_face_ratio(target: Resolution, depth: Resolution) 
     } else {
         Bound::exact(3.0)?.sqrt()?
     };
-    for k in (depth_resolution + 1)..=target_resolution {
+    let first_resolution = depth_resolution.checked_add(1)?;
+    for k in first_resolution..=target_resolution {
         let exponent = target_resolution.checked_sub(k)?.checked_add(class_iii)?;
         let suffix = Bound::exact(3.0)?.mul_nonnegative(integer_power_bound(sqrt7, exponent)?)?;
         ideal = ideal.add_nonnegative(suffix)?;

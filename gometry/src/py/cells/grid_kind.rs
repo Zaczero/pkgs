@@ -20,7 +20,6 @@ use crate::py::errors::{GeometryError, ParseError, ParseFormat, parse_error};
 use crate::py::numpy::reject_masked_array;
 
 /// Which scalar cell type a `CellArray` stores.
-#[repr(usize)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum GridKind {
     H3Cell,
@@ -29,49 +28,14 @@ pub(crate) enum GridKind {
     GeohashCell,
 }
 
+#[derive(Clone, Copy)]
 struct GridMeta {
-    kind: GridKind,
     token: &'static str,
     item_name: &'static str,
     label: &'static str,
     class_name: &'static str,
     format: ParseFormat,
 }
-
-const GRID_META: [GridMeta; 4] = [
-    GridMeta {
-        kind: GridKind::H3Cell,
-        token: "h3",
-        item_name: "cell",
-        label: "H3 cell id",
-        class_name: "H3Cell",
-        format: ParseFormat::H3,
-    },
-    GridMeta {
-        kind: GridKind::S2Cell,
-        token: "s2",
-        item_name: "cell",
-        label: "S2 cell id",
-        class_name: "S2Cell",
-        format: ParseFormat::S2,
-    },
-    GridMeta {
-        kind: GridKind::Tile,
-        token: "tile",
-        item_name: "tile",
-        label: "tile id",
-        class_name: "Tile",
-        format: ParseFormat::Tile,
-    },
-    GridMeta {
-        kind: GridKind::GeohashCell,
-        token: "geohash",
-        item_name: "cell",
-        label: "geohash cell token",
-        class_name: "GeohashCell",
-        format: ParseFormat::Geohash,
-    },
-];
 
 pub(crate) fn invalid_cell_id(kind: GridKind, id: impl std::fmt::Display) -> PyErr {
     let meta = kind.meta();
@@ -90,12 +54,37 @@ pub(crate) fn uncompact_floor_error(
 }
 
 impl GridKind {
-    const fn idx(self) -> usize {
-        self as usize
-    }
-
-    const fn meta(self) -> &'static GridMeta {
-        &GRID_META[self.idx()]
+    const fn meta(self) -> GridMeta {
+        match self {
+            Self::H3Cell => GridMeta {
+                token: "h3",
+                item_name: "cell",
+                label: "H3 cell id",
+                class_name: "H3Cell",
+                format: ParseFormat::H3,
+            },
+            Self::S2Cell => GridMeta {
+                token: "s2",
+                item_name: "cell",
+                label: "S2 cell id",
+                class_name: "S2Cell",
+                format: ParseFormat::S2,
+            },
+            Self::Tile => GridMeta {
+                token: "tile",
+                item_name: "tile",
+                label: "tile id",
+                class_name: "Tile",
+                format: ParseFormat::Tile,
+            },
+            Self::GeohashCell => GridMeta {
+                token: "geohash",
+                item_name: "cell",
+                label: "geohash cell token",
+                class_name: "GeohashCell",
+                format: ParseFormat::Geohash,
+            },
+        }
     }
 
     pub(super) const fn token(self) -> &'static str {
@@ -111,11 +100,20 @@ impl GridKind {
     }
 
     pub(super) fn parse(token: &str) -> PyResult<Self> {
-        GRID_META
-            .iter()
-            .find(|meta| meta.token == token)
-            .map(|meta| meta.kind)
-            .ok_or_else(|| GeometryError::new_err(format!("unknown cell array grid {token:?}")))
+        let kind = if token == Self::H3Cell.meta().token {
+            Self::H3Cell
+        } else if token == Self::S2Cell.meta().token {
+            Self::S2Cell
+        } else if token == Self::Tile.meta().token {
+            Self::Tile
+        } else if token == Self::GeohashCell.meta().token {
+            Self::GeohashCell
+        } else {
+            return Err(GeometryError::new_err(format!(
+                "unknown cell array grid {token:?}"
+            )));
+        };
+        Ok(kind)
     }
 
     pub(super) const fn class_name(self) -> &'static str {
@@ -360,7 +358,9 @@ pub(super) fn geohash_from_identity_key(id: u64) -> Result<Geohash, ()> {
     // bits, so any bit set there marks a non-canonical id.
     let used = u32::from(precision) * 5;
     if used < 64 {
-        let mask = (1_u64 << (64 - used)) - 1;
+        let mask = u64::MAX
+            .checked_shr(used)
+            .expect("geohash precision leaves fewer than 64 data bits");
         if bits & mask != 0 {
             return Err(());
         }
@@ -403,33 +403,6 @@ fn grid_kind_from_cell(value: &Bound<'_, PyAny>) -> Option<GridKind> {
         .then_some(GridKind::GeohashCell)
 }
 
-/// Copy a numeric ndarray into owned ids. The source must remain quiescent
-/// until `tobytes` returns; that copy does not synchronize native writers.
-fn owned_u64_ids_from_tobytes<T>(ids: &Bound<'_, PyAny>) -> PyResult<Vec<u64>>
-where
-    T: Copy + TryInto<u64>,
-{
-    use pyo3::types::PyBytes;
-    let py_bytes = ids.call_method0("tobytes")?;
-    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
-    let width = std::mem::size_of::<T>();
-    if width == 0 || !bytes.len().is_multiple_of(width) {
-        return Err(PyTypeError::new_err(
-            "cell array ids buffer length is invalid",
-        ));
-    }
-    let mut out = Vec::with_capacity(bytes.len() / width);
-    for chunk in bytes.chunks_exact(width) {
-        // SAFETY: dtype matched by extract; tobytes is native-endian for T.
-        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
-        let id = value.try_into().map_err(|_| {
-            PyTypeError::new_err("cell array ids must be integers representable as uint64")
-        })?;
-        out.push(id);
-    }
-    Ok(out)
-}
-
 fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     let Ok(array) = ids.cast::<PyUntypedArray>() else {
         return Ok(None);
@@ -444,12 +417,11 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
         ($($ty:ty),* $(,)?) => {
             $(
                 if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
-                    // Owned capture via `tobytes()` — the result is not an
-                    // ArrayView over writable NumPy memory, so no borrow
-                    // outlives this call. The copy does not synchronize a
-                    // native writer; the producer must remain quiescent until
-                    // it returns.
-                    return Ok(Some(owned_u64_ids_from_tobytes::<$ty>(ids)?));
+                    return Ok(Some(super::copy_numeric_ids_from_tobytes::<$ty>(
+                        ids,
+                        || PyTypeError::new_err("cell array ids buffer length is invalid"),
+                        || PyTypeError::new_err("cell array ids must be integers representable as uint64"),
+                    )?));
                 }
             )*
         };
@@ -562,7 +534,9 @@ fn collect_inferred_from_iter<'py>(
         if kind.is_none() {
             kind = Some(item_kind);
             for (index, pending_item) in std::mem::take(&mut pending) {
-                ids[index] = item_kind.id_from_value(&pending_item)?;
+                *ids.get_mut(index)
+                    .expect("pending item row was reserved in ids") =
+                    item_kind.id_from_value(&pending_item)?;
             }
         }
         let id = item_kind.id_from_value(&item)?;
