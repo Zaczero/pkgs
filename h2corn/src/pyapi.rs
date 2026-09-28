@@ -1,7 +1,7 @@
 //! Python FFI entry: config extraction, serve_fds, and related helpers.
 
 use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -425,22 +425,7 @@ fn parse_bind_target(raw: &str) -> PyResult<BindTarget> {
 }
 
 fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
-    static TOKIO_WORKER_THREADS: OnceLock<usize> = OnceLock::new();
-
-    if let Some(initialized_threads) = TOKIO_WORKER_THREADS.get() {
-        if *initialized_threads != worker_threads {
-            return Err(into_pyerr(
-                ConfigError::runtime_threads_already_initialized(
-                    *initialized_threads,
-                    worker_threads,
-                ),
-            ));
-        }
-    } else {
-        let _set_result = TOKIO_WORKER_THREADS.set(worker_threads);
-    }
-
-    init_runtime(|| {
+    init_runtime(worker_threads, |worker_threads| {
         TokioRuntimeBuilder::new_multi_thread()
             .worker_threads(worker_threads)
             .event_interval(TOKIO_EVENT_INTERVAL)
@@ -448,8 +433,13 @@ fn init_tokio_runtime(worker_threads: usize) -> PyResult<()> {
             .enable_all()
             .build()
             .expect("tokio runtime construction succeeds")
-    });
-    Ok(())
+    })
+    .map_err(|initialized_threads| {
+        into_pyerr(ConfigError::runtime_threads_already_initialized(
+            initialized_threads,
+            worker_threads,
+        ))
+    })
 }
 
 #[pyfunction]
@@ -999,6 +989,8 @@ pub(crate) fn serve_fds<'py>(
 #[cfg(test)]
 mod tests {
     use std::net::{IpAddr, Ipv4Addr};
+    use std::process::Command;
+    use std::sync::Barrier;
 
     use pyo3::types::PyTuple;
 
@@ -1052,6 +1044,74 @@ mod tests {
             let expected = true;
             assert_eq!(detected, expected);
         });
+    }
+
+    #[test]
+    fn concurrent_runtime_initialization_admits_one_worker_count() {
+        if std::env::var_os("H2CORN_RUNTIME_INIT_RACE_CHILD").is_some() {
+            Python::initialize();
+            let start = Arc::new(Barrier::new(3));
+            let threads = [1, 2].map(|worker_threads| {
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    init_tokio_runtime(worker_threads)
+                        .map(|()| worker_threads)
+                        .map_err(|error| {
+                            Python::attach(|py| {
+                                (
+                                    error.is_instance_of::<PyValueError>(py),
+                                    error.value(py).str().unwrap().to_string(),
+                                )
+                            })
+                        })
+                })
+            });
+
+            start.wait();
+            let outcomes = threads.map(|thread| thread.join().unwrap());
+            let mut admitted = outcomes.iter().filter_map(|outcome| outcome.as_ref().ok());
+            let admitted_threads = *admitted.next().expect("one runtime initializer succeeds");
+            assert!(
+                admitted.next().is_none(),
+                "both concurrent runtime initializers succeeded: {outcomes:?}"
+            );
+            let rejected_threads = if admitted_threads == 1 { 2 } else { 1 };
+            let rejection = outcomes
+                .iter()
+                .find_map(|outcome| outcome.as_ref().err())
+                .expect("one runtime initializer receives a mismatch");
+            assert!(
+                rejection.0,
+                "runtime thread mismatch must stay a ValueError"
+            );
+            assert_eq!(
+                rejection.1,
+                format!(
+                    "runtime_threads is process-global and was already initialized with \
+                     {admitted_threads}; cannot change it to {rejected_threads}"
+                )
+            );
+            assert_eq!(runtime().metrics().num_workers(), admitted_threads);
+            return;
+        }
+
+        let test_name = std::thread::current().name().unwrap().to_owned();
+        for attempt in 0..32 {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .arg("--exact")
+                .arg(&test_name)
+                .arg("--nocapture")
+                .env("H2CORN_RUNTIME_INIT_RACE_CHILD", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "runtime initialization race attempt {attempt} failed:\n{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
     }
 
     #[test]

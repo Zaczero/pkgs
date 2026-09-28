@@ -49,7 +49,12 @@ use crate::runtime::{AppRuntimeHandle, RequestTaskGuard};
 const PUMP_BATCH_MAX: usize = 64;
 
 /// The process-global Tokio runtime owned by h2corn.
-static TOKIO_RUNTIME: OnceLock<Runtime> = OnceLock::new();
+static TOKIO_RUNTIME: OnceLock<TokioRuntime> = OnceLock::new();
+
+struct TokioRuntime {
+    worker_threads: usize,
+    runtime: Runtime,
+}
 
 pub(crate) type BuildAwaitable =
     Box<dyn for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send>;
@@ -599,16 +604,31 @@ pub(crate) fn spawn_shard_thread(
     }
 }
 
-/// Initialize the global tokio runtime exactly once.
-pub(crate) fn init_runtime(build: impl FnOnce() -> Runtime) -> &'static Runtime {
-    TOKIO_RUNTIME.get_or_init(build)
+/// Initialize the global Tokio runtime with its first requested worker count.
+///
+/// A panicking builder publishes neither the runtime nor its worker count, so
+/// the next caller can retry initialization.
+pub(crate) fn init_runtime(
+    worker_threads: usize,
+    build: impl FnOnce(usize) -> Runtime,
+) -> Result<(), usize> {
+    let initialized = TOKIO_RUNTIME.get_or_init(|| TokioRuntime {
+        worker_threads,
+        runtime: build(worker_threads),
+    });
+    if initialized.worker_threads == worker_threads {
+        Ok(())
+    } else {
+        Err(initialized.worker_threads)
+    }
 }
 
 /// The global tokio runtime. Panics if [`init_runtime`] has not run.
 pub(crate) fn runtime() -> &'static Runtime {
-    TOKIO_RUNTIME
+    &TOKIO_RUNTIME
         .get()
         .expect("tokio runtime is initialized during server startup")
+        .runtime
 }
 
 /// Construct and await a lifecycle operation on its owning Python loop.
