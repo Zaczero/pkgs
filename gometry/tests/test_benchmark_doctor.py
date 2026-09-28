@@ -290,7 +290,6 @@ def test_source_identity_ignores_packaging_metadata_but_detects_code_changes(
     (package / 'native' / 'visible').mkdir(parents=True)
     (package / 'Cargo.toml').write_text('[package]\nname = "gometry"\n')
     (package / 'build.rs').write_text('fn main() {}\n')
-    (package / 'rust-toolchain.toml').write_text('[toolchain]\nchannel = "nightly"\n')
     (package / 'src' / 'lib.rs').write_text('')
     (package / 'native' / 'visible' / 'input.c').write_text('')
     for relative in (

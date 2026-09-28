@@ -96,10 +96,7 @@ def _git_build_inputs_dirty() -> bool | None:
 def _source_input_files(*, native_only: bool = False) -> list[tuple[str, Path]] | None:
     files: list[tuple[str, Path]] = []
     if not native_only:
-        files.extend([
-            ('gometry/rust-toolchain.toml', GOMETRY_ROOT / 'rust-toolchain.toml'),
-            ('gometry/build.rs', GOMETRY_ROOT / 'build.rs'),
-        ])
+        files.append(('gometry/build.rs', GOMETRY_ROOT / 'build.rs'))
     for directory in ('native',) if native_only else ('src', 'native'):
         root = GOMETRY_ROOT / directory
         if not root.is_dir():

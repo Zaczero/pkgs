@@ -374,7 +374,6 @@ def _source_input_records(
     root: Path,
 ) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]]]:
     fixed = [
-        ('gometry/rust-toolchain.toml', root / 'rust-toolchain.toml'),
         ('gometry/build.rs', root / 'build.rs'),
     ]
     source_files: list[tuple[str, Path]] = []
@@ -1067,7 +1066,7 @@ def inspect_sdist(
     )
     if channel != _package_toolchain_channel():
         raise AssertionError(
-            'sdist package Rust toolchain channel is not the dated release pin: '
+            'sdist package Rust toolchain channel does not match the checkout: '
             f'{channel!r}'
         )
     forbidden_parts = {'site', 'dev', '__pycache__'}
@@ -2090,7 +2089,9 @@ def _validate_source_identity(value: Any, *, field: str = 'source') -> dict[str,
     if not isinstance(toolchain, dict):
         raise TypeError(f'{field} toolchain identity is missing')
     if toolchain.get('channel') != _package_toolchain_channel():
-        raise AssertionError(f'{field} toolchain channel is not the dated release pin')
+        raise AssertionError(
+            f'{field} toolchain channel does not match the checkout toolchain'
+        )
     if toolchain.get('maturin') != MATURIN_VERSION:
         raise AssertionError(f'{field} maturin identity is not pinned')
     if toolchain.get('maturin_pep517_args') != RELEASE_MATURIN_ARGS:

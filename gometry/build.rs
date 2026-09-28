@@ -49,7 +49,6 @@ fn main() {
     // Exactly the digested inputs: Cargo's own fingerprints already rebuild
     // on dependency and profile changes, so watching the workspace lock only
     // re-ran this script whenever a sibling package touched it.
-    println!("cargo:rerun-if-changed=rust-toolchain.toml");
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src");
@@ -174,15 +173,9 @@ fn validate_release_compiler_policy(target: &str) {
 }
 
 fn source_input_digests(manifest_dir: &Path) -> (String, String) {
-    // The package pin is the compiler input. The monorepo's rolling root
-    // toolchain is deliberately not part of the package identity.
-    let mut files = vec![
-        (
-            "gometry/rust-toolchain.toml".to_owned(),
-            manifest_dir.join("rust-toolchain.toml"),
-        ),
-        ("gometry/build.rs".to_owned(), manifest_dir.join("build.rs")),
-    ];
+    // The compiler is identified by the release manifest's `rustc --version`,
+    // not by the rolling monorepo toolchain channel.
+    let mut files = vec![("gometry/build.rs".to_owned(), manifest_dir.join("build.rs"))];
     // Maturin normalizes Cargo manifests and pyproject.toml, omits the
     // checkout-only Cargo config, and prunes unrelated workspace packages from
     // Cargo.lock when it builds from an sdist. Hash only inputs preserved
