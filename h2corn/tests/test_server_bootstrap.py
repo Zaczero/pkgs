@@ -3246,17 +3246,12 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
     """Workers retain only stdio, listeners, control-write, and quiesce-read."""
     import signal
 
-    worker_ready_dir = tmp_path / 'worker-ready'
-    worker_ready_dir.mkdir()
     app = tmp_path / 'app.py'
     app.write_text(
-        'import os\n'
-        'from pathlib import Path\n'
         'async def app(scope, receive, send):\n'
         "    if scope['type'] == 'lifespan':\n"
         '        message = await receive()\n'
         "        if message['type'] == 'lifespan.startup':\n"
-        f'            Path({str(worker_ready_dir)!r}, str(os.getpid())).touch()\n'
         "            await send({'type': 'lifespan.startup.complete'})\n"
         '            message = await receive()\n'
         "        if message['type'] == 'lifespan.shutdown':\n"
@@ -3275,55 +3270,49 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
     env['PYTHONPATH'] = (
         f'{tmp_path}:{env["PYTHONPATH"]}' if env.get('PYTHONPATH') else str(tmp_path)
     )
-    process = subprocess.Popen(
-        [
-            sys.executable,
-            '-m',
-            'h2corn',
-            'app:app',
-            '--app-dir',
-            str(tmp_path),
-            '--host',
-            '127.0.0.1',
-            '--port',
-            str(port),
-            '--workers',
-            '4',
-            '--pid',
-            str(pidfile),
-            '--no-access-log',
-            '--timeout-worker-healthcheck',
-            '0',
-            '--timeout-graceful-shutdown',
-            '0.5',
-        ],
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        start_new_session=True,
-    )
+    # The supervisor publishes READY=1 only after every worker is serving.
+    notify_name = f'h2corn-fd-provenance-{os.getpid()}'
+    notify_socket = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
     try:
-        deadline = time.monotonic() + HANG_BOUND
-        workers: list[int] = []
-        worker_ready_pids: set[int] = set()
-        while time.monotonic() < deadline:
-            try:
-                raw = Path(
-                    f'/proc/{process.pid}/task/{process.pid}/children'
-                ).read_text()
-            except OSError:
-                raw = ''
-            workers = [int(item) for item in raw.split()]
-            worker_ready_pids = {int(path.name) for path in worker_ready_dir.iterdir()}
-            if (
-                len(workers) == 4
-                and set(workers) == worker_ready_pids
-                and pidfile.exists()
-            ):
-                break
-            time.sleep(0.05)
+        notify_socket.bind(f'\0{notify_name}')
+        notify_socket.settimeout(HANG_BOUND)
+        env['NOTIFY_SOCKET'] = f'@{notify_name}'
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                '-m',
+                'h2corn',
+                'app:app',
+                '--app-dir',
+                str(tmp_path),
+                '--host',
+                '127.0.0.1',
+                '--port',
+                str(port),
+                '--workers',
+                '4',
+                '--pid',
+                str(pidfile),
+                '--no-access-log',
+                '--timeout-worker-healthcheck',
+                '0',
+                '--timeout-graceful-shutdown',
+                '0.5',
+            ],
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except BaseException:
+        notify_socket.close()
+        raise
+    try:
+        assert notify_socket.recv(64) == b'READY=1'
+        raw = Path(f'/proc/{process.pid}/task/{process.pid}/children').read_text()
+        workers = [int(item) for item in raw.split()]
         assert len(workers) == 4, f'expected 4 workers, got {workers}'
-        assert worker_ready_pids == set(workers)
+        assert pidfile.exists()
 
         def fd_targets(pid: int) -> dict[int, str]:
             result: dict[int, str] = {}
@@ -3345,24 +3334,24 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
         # Workers create their own epoll for asyncio; that is expected.
         assert not parent_eventpoll
 
-        shared_counts: list[int] = []
+        shared_targets: dict[int, dict[int, str]] = {}
         for worker in workers:
             targets = fd_targets(worker)
             pidfile_fds = [
                 fd for fd, target in targets.items() if target == str(pidfile)
             ]
             assert pidfile_fds == [], f'worker {worker} held pidfile: {pidfile_fds}'
-            shared_with_parent = sum(
-                1 for target in targets.values() if target in parent_pipes
-            )
-            shared_counts.append(shared_with_parent)
+            shared_targets[worker] = {
+                fd: target for fd, target in targets.items() if target in parent_pipes
+            }
+        shared_counts = [len(targets) for targets in shared_targets.values()]
         # Multiprocessing keeps a few process-management pipes in every child.
         # What must not grow is *prior* worker sentinels and parent control
         # ends: later workers would share more parent pipe inodes than the
         # first if those were left open. Equality across the set is the kill.
         assert len(set(shared_counts)) == 1, (
             f'workers held unequal parent-pipe sets {dict(zip(workers, shared_counts, strict=True))}; '
-            f'later workers leaking prior sentinels/control ends'
+            f'shared targets {shared_targets}; parent pipes {sorted(parent_pipes)}'
         )
     finally:
         if process.poll() is None:
@@ -3374,3 +3363,4 @@ def test_four_worker_children_drop_supervisor_provenance_fds(
                 process.wait(timeout=HANG_BOUND)
         if process.stderr is not None:
             process.stderr.close()
+        notify_socket.close()

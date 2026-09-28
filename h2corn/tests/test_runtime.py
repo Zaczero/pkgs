@@ -2213,7 +2213,8 @@ async def test_worker_supervisor_shutdown_is_not_blocked_by_limit_connections(
     finally:
         if writer is not None:
             writer.close()
-            await writer.wait_closed()
+            with suppress(ConnectionResetError):
+                await writer.wait_closed()
         elif reader is not None:
             reader.feed_eof()
         if process.returncode is None:
@@ -2456,6 +2457,7 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
 ) -> None:
     delay_replacements = tmp_path / 'delay-replacements'
     replacement_started = tmp_path / 'replacement-started'
+    replacement_started_tmp = tmp_path / 'replacement-started.tmp'
     release_replacement = tmp_path / 'release-replacement'
     process, port = await _spawn_server_process(
         tmp_path=tmp_path,
@@ -2464,14 +2466,19 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
         import asyncio
         import os
 
+        replacement_started = {os.fspath(replacement_started)!r}
+        replacement_started_tmp = {os.fspath(replacement_started_tmp)!r}
+
         async def app(scope, receive, send):
             if scope['type'] == 'lifespan':
                 while True:
                     message = await receive()
                     if message['type'] == 'lifespan.startup':
                         if os.path.exists({os.fspath(delay_replacements)!r}):
-                            with open({os.fspath(replacement_started)!r}, 'x') as started:
+                            with open(replacement_started_tmp, 'x') as started:
                                 started.write(str(os.getpid()))
+                            # The parent reads the PID as soon as the final path appears.
+                            os.replace(replacement_started_tmp, replacement_started)
                             while not os.path.exists({os.fspath(release_replacement)!r}):
                                 await asyncio.sleep(0.01)
                         await send({{'type': 'lifespan.startup.complete'}})
@@ -2485,13 +2492,26 @@ async def test_scale_down_during_reload_keeps_unready_replacement(
     )
 
     try:
-        await _wait_for_h2_body_any(port=port, timeout=5)
+        status, first_worker_body = await _wait_for_h2_body_any(port=port, timeout=5)
+        assert status == 200
         old_workers = set(
             await _wait_for_worker_count(
                 supervisor_pid=process.pid,
                 count=2,
             )
         )
+        first_worker = int(first_worker_body)
+        assert first_worker in old_workers
+        # The process count can include an unready worker; both original PIDs
+        # must serve a request before the startup delay is enabled.
+        second_worker = int(
+            await _wait_for_pid_change(
+                port=port,
+                previous_pid=first_worker_body,
+            )
+        )
+        assert second_worker in old_workers
+
         delay_replacements.write_text('delay\n')
         process.send_signal(signal.SIGHUP)
 
