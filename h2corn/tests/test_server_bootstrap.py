@@ -68,19 +68,96 @@ def _gil_is_disabled() -> bool:
 
 
 def test_event_loop_factory_selection_is_explicit() -> None:
-    import asyncio
-
     from h2corn._server import event_loop_factory
 
-    assert event_loop_factory('asyncio') is asyncio.new_event_loop
-    auto = event_loop_factory('auto')
     try:
-        import uvloop
-    except ImportError:
-        assert auto is asyncio.new_event_loop
-    else:
-        assert auto is uvloop.new_event_loop
-        assert event_loop_factory('uvloop') is uvloop.new_event_loop
+        original_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        original_loop = None
+
+    previous_loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(previous_loop)
+    created_loops = []
+    try:
+        standard_loop = event_loop_factory('asyncio')()
+        created_loops.append(standard_loop)
+        assert isinstance(standard_loop, asyncio.BaseEventLoop)
+        assert asyncio.get_event_loop() is standard_loop
+
+        try:
+            import uvloop
+        except ImportError:
+            automatic_loop = event_loop_factory('auto')()
+            created_loops.append(automatic_loop)
+            assert asyncio.get_event_loop() is automatic_loop
+            assert isinstance(automatic_loop, asyncio.BaseEventLoop)
+            with pytest.raises(RuntimeError, match="loop='uvloop' requires"):
+                event_loop_factory('uvloop')
+        else:
+            if sys.version_info >= (3, 14):
+                assert callable(event_loop_factory('auto'))
+                assert callable(event_loop_factory('uvloop'))
+            else:
+                automatic_loop = event_loop_factory('auto')()
+                created_loops.append(automatic_loop)
+                assert asyncio.get_event_loop() is automatic_loop
+                assert isinstance(automatic_loop, uvloop.Loop)
+                uvloop_loop = event_loop_factory('uvloop')()
+                created_loops.append(uvloop_loop)
+                assert isinstance(uvloop_loop, uvloop.Loop)
+                assert asyncio.get_event_loop() is uvloop_loop
+    finally:
+        asyncio.set_event_loop(original_loop)
+        for loop in created_loops:
+            loop.close()
+        previous_loop.close()
+
+
+@pytest.mark.parametrize(
+    'current_loop_before',
+    [False, True],
+    ids=['unset-current-loop', 'existing-current-loop'],
+)
+def test_serve_runner_factory_registers_and_clears_current_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    current_loop_before: bool,
+) -> None:
+    from h2corn import _server as server_module
+
+    factory_loops: list[asyncio.AbstractEventLoop] = []
+    serving_loops: list[asyncio.AbstractEventLoop] = []
+
+    class RecordingServer:
+        def __init__(self, _app, _config) -> None:
+            factory_loops.append(asyncio.get_event_loop())
+
+        async def serve(self) -> None:
+            serving_loops.append(asyncio.get_running_loop())
+
+    try:
+        original_loop = asyncio.get_event_loop()
+    except RuntimeError:
+        original_loop = None
+    previous_loop = asyncio.new_event_loop() if current_loop_before else None
+    asyncio.set_event_loop(previous_loop)
+
+    async def app(*_args: Any) -> None:
+        return None
+
+    monkeypatch.setattr(server_module.sys, 'platform', 'win32')
+    monkeypatch.setattr(server_module, 'Server', RecordingServer)
+    try:
+        server_module.serve(app, Config(loop='asyncio'))
+        with pytest.raises(RuntimeError):
+            asyncio.get_event_loop()
+    finally:
+        asyncio.set_event_loop(original_loop)
+        if previous_loop is not None:
+            previous_loop.close()
+
+    assert len(factory_loops) == 1
+    assert len(serving_loops) == 1
+    assert factory_loops[0] is serving_loops[0]
 
 
 def test_python_m_h2corn_runs_cli_without_target() -> None:

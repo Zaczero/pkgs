@@ -27,7 +27,7 @@ from h2corn._systemd import notify_ready, notify_stopping
 TYPE_CHECKING = False
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Iterable, Sequence
+    from collections.abc import Awaitable, Callable, Generator, Iterable, Sequence
     from pathlib import Path
 
     from h2corn._lib import _LifespanHandoff, _PreparedTls
@@ -38,7 +38,7 @@ _ENV_KEY_PATTERN = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
 
 
 def event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
-    """Return the explicit worker-loop constructor for ``loop``."""
+    """Return a worker-loop constructor that registers its loop as current."""
     import importlib.util
 
     if loop == 'asyncio' or importlib.util.find_spec('uvloop') is None:
@@ -47,10 +47,33 @@ def event_loop_factory(loop: str) -> Callable[[], asyncio.AbstractEventLoop]:
                 "loop='uvloop' requires the uvloop package — install the "
                 "'h2corn[uvloop]' extra"
             )
-        return asyncio.new_event_loop
-    import uvloop
+        new_event_loop = asyncio.new_event_loop
+    else:
+        import uvloop
 
-    return uvloop.new_event_loop
+        new_event_loop = uvloop.new_event_loop
+
+    def create_current_event_loop() -> asyncio.AbstractEventLoop:
+        event_loop = new_event_loop()
+        asyncio.set_event_loop(event_loop)
+        return event_loop
+
+    return create_current_event_loop
+
+
+@contextmanager
+def event_loop_runner(loop: str) -> Generator[asyncio.Runner, None, None]:
+    """Run on a new current loop and leave no current loop behind.
+
+    This matches `asyncio.run`, which also clears the current loop on exit.
+    Reading the previous loop first would call `asyncio.get_event_loop()`,
+    which on Python 3.12 and 3.13 creates and leaks a loop in a fresh process.
+    """
+    try:
+        with asyncio.Runner(loop_factory=event_loop_factory(loop)) as runner:
+            yield runner
+    finally:
+        asyncio.set_event_loop(None)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1155,7 +1178,7 @@ def serve(app: Application, config: Config | None = None) -> None:
             serve_with_supervisor(app, config, pid_fd=pid_fd)
         return
 
-    with asyncio.Runner(loop_factory=event_loop_factory(config.loop)) as runner:
+    with event_loop_runner(config.loop) as runner:
         runner.run(Server(app, config).serve())
 
 

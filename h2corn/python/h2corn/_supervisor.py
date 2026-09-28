@@ -182,7 +182,7 @@ def _worker_entry(
     from h2corn._server import (
         Server,
         drop_process_privileges,
-        event_loop_factory,
+        event_loop_runner,
         import_target,
     )
 
@@ -215,7 +215,6 @@ def _worker_entry(
 
     drop_process_privileges(identity)
     _install_parent_death_signal(expected_supervisor_pid)
-    loop_factory = event_loop_factory(config.loop)
     active_app = import_target(app) if isinstance(app, ImportSettings) else app
     server = Server(active_app, _clone_config(config, workers=1))
     ready = False
@@ -289,7 +288,7 @@ def _worker_entry(
             if control_write_fd is not None:
                 os.close(control_write_fd)
 
-    with asyncio.Runner(loop_factory=loop_factory) as runner:
+    with event_loop_runner(config.loop) as runner:
         runner.run(_run_worker())
 
 
