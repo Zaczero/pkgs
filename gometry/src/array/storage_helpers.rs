@@ -15,6 +15,10 @@ pub(crate) fn row_bounds(xs: &[f64], ys: &[f64]) -> Option<Bounds> {
 
 /// Borrow a CSR column window without `Range::clone()` — `std::ops::Range` is
 /// not `Copy` on our toolchain, but indexing via `start`/`end` is zero-cost.
+#[expect(
+    clippy::indexing_slicing,
+    reason = "callers pass coordinate windows admitted by PackedRow or validated CSR offsets"
+)]
 pub(crate) fn column_window<'a, T>(data: &'a [T], range: &std::ops::Range<usize>) -> &'a [T] {
     &data[range.start..range.end]
 }
@@ -78,40 +82,41 @@ pub(crate) fn packed_line_bounds_center_pivot(
 /// [`OriginSpec::resolve`] on a `Polygon` row (all rings for bounds center).
 pub(crate) fn packed_polygon_row_pivot(
     spec: OriginSpec,
-    xs: &[f64],
-    ys: &[f64],
-    ring_offsets: &[i32],
-    rings: std::ops::Range<usize>,
+    row: crate::array::PackedRow<'_>,
 ) -> Result<(f64, f64)> {
+    let crate::array::PackedRow::Polygons {
+        coords,
+        ring_offsets,
+        ..
+    } = row
+    else {
+        unreachable!("polygon pivot requires a packed polygon row")
+    };
+    let rings = row
+        .polygon_rings()
+        .expect("packed polygon row carries its ring range");
     match spec {
-        OriginSpec::Centroid => {
-            match crate::geometry::centroid_polygon_row_columns(xs, ys, ring_offsets, rings) {
-                Some((x, y)) => {
-                    let point = Point::new(x, y)?;
-                    Ok((point.x, point.y))
-                },
-                None => Ok((0.0, 0.0)),
-            }
-        },
-        OriginSpec::Center => Ok(packed_polygon_bounds_center_pivot(
-            xs,
-            ys,
-            ring_offsets,
+        OriginSpec::Centroid => match crate::geometry::centroid_polygon_row_columns(
+            coords.xs(),
+            coords.ys(),
+            ring_offsets.as_slice(),
             rings,
-        )),
+        ) {
+            Some((x, y)) => {
+                let point = Point::new(x, y)?;
+                Ok((point.x, point.y))
+            },
+            None => Ok((0.0, 0.0)),
+        },
+        OriginSpec::Center => Ok(row.vertex_window().map_or((0.0, 0.0), |window| {
+            row_bounds(
+                column_window(coords.xs(), &window),
+                column_window(coords.ys(), &window),
+            )
+            .map_or((0.0, 0.0), bounds_center)
+        })),
         OriginSpec::Fixed(x, y) => Ok((x, y)),
     }
-}
-
-pub(crate) fn packed_polygon_bounds_center_pivot(
-    xs: &[f64],
-    ys: &[f64],
-    ring_offsets: &[i32],
-    rings: std::ops::Range<usize>,
-) -> (f64, f64) {
-    let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-    row_bounds(column_window(xs, &vertices), column_window(ys, &vertices))
-        .map_or((0.0, 0.0), bounds_center)
 }
 
 const fn bounds_center(bounds: Bounds) -> (f64, f64) {
@@ -137,5 +142,5 @@ pub(crate) fn row_ord_extremes(
     if range.is_empty() {
         return None;
     }
-    crate::geometry::column_minmax(&column[range])
+    crate::geometry::column_minmax(column_window(column, &range))
 }

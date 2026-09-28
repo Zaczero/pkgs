@@ -688,13 +688,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
 
 /// Declared kind + emptiness for one storage row (no materialize for packed).
 pub(crate) fn row_kind_empty(row: ShapeRow<'_>) -> (GeometryKind, bool) {
-    match row {
-        ShapeRow::Point(_) => (GeometryKind::Point, false),
-        ShapeRow::Line(_, start, end) => (GeometryKind::LineString, start == end),
-        ShapeRow::Rings(_, _, start, end) => (GeometryKind::Polygon, start == end),
-        ShapeRow::Handle(handle) => (GeometryKind::of(handle.shape()), handle.shape().is_empty()),
-        ShapeRow::Shape(shape) => (GeometryKind::of(shape), shape.is_empty()),
-    }
+    (row.kind(), row.is_empty())
 }
 
 pub(crate) fn topology_scalar_pair(
@@ -1340,12 +1334,20 @@ mod tests {
             Point::new_raw_xy(170.0, 40.0),
         ])
         .expect("test ring coordinates are valid");
-        let offsets = [0, 5];
+        let ring_offsets =
+            crate::geometry::CsrOffsetColumn::<crate::geometry::RingLevel>::try_new(vec![0, 5], 5)
+                .expect("test ring offsets are valid");
+        let row = ShapeRow::from_packed(crate::array::PackedRow::polygon_window(
+            0,
+            &coords,
+            &ring_offsets,
+            0..1,
+        ));
         let cache = crate::geometry::FrameDependentCaches::default();
         let actual = scalar_vs_shapes(
             &Predicate::Intersects.spec(),
             &query,
-            [(0, Some(ShapeRow::Rings(&coords, &offsets, 0, 1)))].into_iter(),
+            [(0, Some(row))].into_iter(),
             true,
             None,
             TopologyDomain::Geographic(degrees()),

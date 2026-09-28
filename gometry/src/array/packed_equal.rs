@@ -82,8 +82,6 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
     use crate::geometry::columns_within;
     let left_coords = left.coords();
     let right_coords = right.coords();
-    let left_rings = left.ring_offsets();
-    let right_rings = right.ring_offsets();
     let rows = left.rows();
     if rows != right.rows()
         || (Z && left_coords.zs().is_some() != right_coords.zs().is_some())
@@ -110,19 +108,37 @@ fn packed_polygons_equal_exact_columns_impl<const Z: bool, const M: bool>(
             if left.is_missing(row) || right.is_missing(row) {
                 return false;
             }
-            let lr = left.polygon_rings(row);
-            let rr = right.polygon_rings(row);
-            let (lr_start, lr_end) = (lr.start, lr.end);
-            let (rr_start, rr_end) = (rr.start, rr.end);
-            if lr_end - lr_start != rr_end - rr_start
-                || (lr_start..lr_end).zip(rr_start..rr_end).any(|(l, r)| {
-                    left_rings[l + 1] - left_rings[l] != right_rings[r + 1] - right_rings[r]
+            let left_row = left.packed_row(row);
+            let right_row = right.packed_row(row);
+            let left_rings = left_row
+                .polygon_rings()
+                .expect("packed polygon row has a ring range");
+            let right_rings = right_row
+                .polygon_rings()
+                .expect("packed polygon row has a ring range");
+            if left_rings.len() != right_rings.len()
+                || left_rings.clone().zip(right_rings).any(|(left, right)| {
+                    left_row
+                        .polygon_ring_window(left)
+                        .expect("ring lies in its admitted polygon row")
+                        .len()
+                        != right_row
+                            .polygon_ring_window(right)
+                            .expect("ring lies in its admitted polygon row")
+                            .len()
                 })
             {
                 return false;
             }
-            let lw = left_rings[lr_start] as usize..left_rings[lr_end] as usize;
-            let rw = right_rings[rr_start] as usize..right_rings[rr_end] as usize;
+            if left_rings.is_empty() {
+                return true;
+            }
+            let lw = left_row
+                .vertex_window()
+                .expect("present polygon row has a vertex window");
+            let rw = right_row
+                .vertex_window()
+                .expect("present polygon row has a vertex window");
             columns_within(
                 column_window(left_xs, &lw),
                 column_window(right_xs, &rw),

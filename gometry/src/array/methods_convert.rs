@@ -1,9 +1,9 @@
 use crate::array::packed_columns::{LineColumns, PolygonColumns};
 use crate::array::{
     Arc, Bounds, ComputedCaches, CoordSeq, F64Param, GeometryArrayStorage, OriginSpec,
-    PackedColumnError, PackedColumns, PackedStorage, PyErr, PyGeometryArray, PyResult, Python,
-    Result, RowSelection, Shape, StorageLayout, clip_lines_packed_xy, geometry, note_array_row,
-    reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
+    PackedColumnError, PackedColumns, PackedRow, PackedStorage, PyErr, PyGeometryArray, PyResult,
+    Python, Result, RowSelection, Shape, StorageLayout, clip_lines_packed_xy, geometry,
+    note_array_row, reverse_coord_windows, subdivide_line_columns, subdivide_polygon_columns,
     validate_densify_fraction, validate_max_segment_length,
 };
 use crate::geographic::GeographicFrame;
@@ -17,17 +17,22 @@ fn verify_planar_segmentize_array(
     match result.storage() {
         GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => Ok(()),
         GeometryArrayStorage::Packed(PackedStorage::Lines {
-            coords, offsets, ..
+            coords,
+            offsets,
+            row_map,
         }) => {
-            let offsets = offsets.as_slice();
             for row in 0..result.len() {
                 if result.is_row_missing(row) {
                     continue;
                 }
+                let packed_row = PackedRow::line(row, coords, offsets, row_map.as_deref());
+                let window = packed_row
+                    .vertex_window()
+                    .expect("packed line row has a coordinate window");
                 verify_planar_segmentize_window(
                     coords,
-                    offsets[row] as usize,
-                    offsets[row + 1] as usize,
+                    window.start,
+                    window.end,
                     max_segment_length.get(row) / to_metre,
                     row,
                 )?;
@@ -38,19 +43,30 @@ fn verify_planar_segmentize_array(
             coords,
             ring_offsets,
             polygon_offsets,
-            ..
+            row_map,
         }) => {
-            let ring_offsets = ring_offsets.as_slice();
-            let polygon_offsets = polygon_offsets.as_slice();
             for row in 0..result.len() {
                 if result.is_row_missing(row) {
                     continue;
                 }
-                for ring in polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize {
+                let packed_row = PackedRow::polygon(
+                    row,
+                    coords,
+                    ring_offsets,
+                    polygon_offsets,
+                    row_map.as_deref(),
+                );
+                for ring in packed_row
+                    .polygon_rings()
+                    .expect("packed polygon row has a ring range")
+                {
+                    let window = packed_row
+                        .polygon_ring_window(ring)
+                        .expect("ring lies in its admitted polygon row");
                     verify_planar_segmentize_window(
                         coords,
-                        ring_offsets[ring] as usize,
-                        ring_offsets[ring + 1] as usize,
+                        window.start,
+                        window.end,
                         max_segment_length.get(row) / to_metre,
                         row,
                     )?;

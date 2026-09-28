@@ -188,7 +188,7 @@ pub(crate) use distance::{
 pub(crate) use domain::{
     ensure_geodesic_lonlat_crs_at, ensure_geographic_columns_in_frame,
     ensure_geographic_coordseq_in_frame, ensure_geographic_domain_in_frame,
-    ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame,
+    ensure_geographic_lonlat, ensure_geographic_lonlat_in_frame, geographic_lonlat_result,
 };
 pub(crate) use ellipsoid_metric::{
     EllipsoidMetric, inverse_azimuths, inverse_distance, inverse_distance_azimuths,

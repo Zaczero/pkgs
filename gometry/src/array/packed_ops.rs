@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use crate::array::{
-    ArrayRow, Bound, CoordSeq, GeometryArrayStorage, PackedColumnBuilder, PackedStorage, Point,
-    PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result, RowSelectionRef, Shape,
-    column_window, csr_value_window, curves, note_array_row, parse_curve_bounds, physical_row,
-    rows_err,
+    ArrayRow, Bound, CoordSeq, CsrOffsetColumn, GeometryArrayStorage, PackedColumnBuilder,
+    PackedRow, PackedStorage, Point, PyAny, PyGeometry, PyGeometryArray, PyResult, Python, Result,
+    RowSelectionRef, Shape, column_window, csr_value_window, curves, line_logical_len,
+    note_array_row, parse_curve_bounds, physical_row, rows_err,
 };
 use crate::boundary::input;
 use crate::geometry::types::ShapeHeapMemo;
@@ -140,7 +140,7 @@ impl PyGeometryArray {
     pub(crate) fn simplify_vw_packed_lines(
         &self,
         coords: &CoordSeq,
-        offsets: &[i32],
+        offsets: &CsrOffsetColumn,
         tolerance: f64,
     ) -> PyResult<Self> {
         self.simplify_packed_lines_mask(coords, offsets, |xs, ys, keep| {
@@ -153,7 +153,7 @@ impl PyGeometryArray {
     pub(crate) fn simplify_dp_packed_lines(
         &self,
         coords: &CoordSeq,
-        offsets: &[i32],
+        offsets: &CsrOffsetColumn,
         tolerance: f64,
     ) -> PyResult<Self> {
         // One batch-local DP work stack reused across rows (clear+push, no
@@ -172,23 +172,24 @@ impl PyGeometryArray {
     pub(crate) fn simplify_packed_lines_mask(
         &self,
         coords: &CoordSeq,
-        offsets: &[i32],
+        offsets: &CsrOffsetColumn,
         mut keep_mask: impl FnMut(&[f64], &[f64], &mut Vec<bool>) -> crate::error::Result<Option<usize>>,
     ) -> Result<Self> {
         let (xs, ys) = (coords.xs(), coords.ys());
-        let rows = offsets.len() - 1;
+        let rows = line_logical_len(offsets.as_slice(), RowSelectionRef::Identity);
         let mut builder = PackedColumnBuilder::like(coords, xs.len(), rows);
         let mut keep: Vec<bool> = Vec::new();
         for row in 0..rows {
-            let (start, end) = (offsets[row] as usize, offsets[row + 1] as usize);
-            let window = start..end;
+            let window = PackedRow::line(row, coords, offsets, RowSelectionRef::Identity)
+                .vertex_window()
+                .expect("packed line row has a coordinate window");
             let kept = keep_mask(
                 column_window(xs, &window),
                 column_window(ys, &window),
                 &mut keep,
             )?;
             // Too short or nothing removable: the row passes through whole.
-            if kept.is_none_or(|count| count == end - start) {
+            if kept.is_none_or(|count| count == window.len()) {
                 builder.push_window_admitted(coords, window)?;
                 continue;
             }

@@ -334,6 +334,26 @@ def test_geodesic_distance_scalar_batch_latitude_domain_parity() -> None:
         gm.distance(gm.GeometryArray([outside]), end)
 
 
+def test_packed_geodesic_measures_validate_present_line_and_polygon_rows() -> None:
+    valid_line = gm.LineString([(0, 0), (1, 0)], crs=4326)
+    invalid_line = gm.LineString([(0, 0), (0, 95)], crs=4326)
+    lines = gm.GeometryArray([valid_line, None, invalid_line], crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG):
+        _ = lines.length
+
+    valid_polygon = gm.from_wkt(
+        'POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))',
+        crs=4326,
+    )
+    invalid_polygon = gm.from_wkt(
+        'POLYGON ((0 0, 2 0, 0 95, 0 0))',
+        crs=4326,
+    )
+    polygons = gm.GeometryArray([valid_polygon, None, invalid_polygon], crs=4326)
+    with pytest.raises(gm.InvalidGeometryError, match=LATITUDE_DOMAIN_MSG):
+        _ = polygons.length
+
+
 def test_transform_broadcasts_source_epoch_to_every_vertex() -> None:
     # A time-dependent (plate-motion) transform: ITRF2014 -> GDA2020, where the
     # coordinate epoch materially changes each vertex. The batch transform packs

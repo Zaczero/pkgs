@@ -187,6 +187,22 @@ def test_is_valid_packed_arrays_match_mixed() -> None:
     np.testing.assert_array_equal(packed_polys.is_valid, [True, False])
 
 
+def test_is_valid_preserves_nullable_packed_and_empty_polygon_rows() -> None:
+    empty = gm.from_wkt('POLYGON EMPTY')
+    valid = gm.box(0, 0, 1, 1)
+    invalid = gm.from_wkt('POLYGON ((2 0, 4 2, 4 0, 2 2, 2 0))')
+    values = gm.GeometryArray([empty, None, valid, invalid], crs=4326)
+
+    # This object-constructor fixture keeps the zero-ring row in Mixed storage;
+    # the packable nullable sibling below proves the packed polygon bool path.
+    np.testing.assert_array_equal(values.is_valid, [True, False, True, False])
+
+    packed = gm.GeometryArray([valid, None, invalid], crs=4326)
+    packed_unpickle, _ = packed.drop_missing().__reduce_ex__(5)
+    assert packed_unpickle.__name__ == '_unpickle_packed_array_v1'
+    np.testing.assert_array_equal(packed.is_valid, [True, False, False])
+
+
 def test_is_valid_packed_polygons_reject_topology_counterexamples() -> None:
     """The packed validity route must not accept crossing or external holes."""
     valid = gm.from_wkt(

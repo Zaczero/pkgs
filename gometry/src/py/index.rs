@@ -411,12 +411,7 @@ impl PreparedIndexQuery {
         let admitted_bounds = self
             .query_domain()
             .admit_row(row, seeded_bounds, logical_row)?;
-        let pruner_point = match row {
-            ShapeRow::Point(point) => Some(point),
-            ShapeRow::Handle(_) | ShapeRow::Shape(_) | ShapeRow::Line(..) | ShapeRow::Rings(..) => {
-                None
-            },
-        };
+        let pruner_point = row.point();
         // Gate shape materialization: only pay `with_shape` when a geodesic
         // distance cap is actually needed, or when geographic antimeridian
         // correction may apply. Candidates with `distance=None` on a

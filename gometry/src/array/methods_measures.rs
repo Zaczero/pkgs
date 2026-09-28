@@ -5,10 +5,10 @@ use crate::array::{
     Bound, DistanceUnit, GeometryArrayStorage, GeometryError, IntoPyObject as _, PackedColumnError,
     PackedColumns, PackedStorage, Py, PyAny, PyAnyMethods as _, PyDictMethods as _, PyErr,
     PyGeometryArray, PyResult, PyTupleMethods as _, PyTypeError, PyTypeMethods as _, Python, Shape,
-    SpatialCurve, bounds_values_from_columns_masked, crs, crs_label,
-    ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
-    polygon_measure_masked, pymethods, reduce_lines_or_polygons, resolve_metric,
-    segmented_planar_lengths, segmented_planar_lengths_3d,
+    SpatialCurve, bounds_values_from_columns_masked, crs, crs_label, geodesic_line_measure,
+    geodesic_polygon_measure, geographic_bounds_values_from_columns, pymethods,
+    reduce_lines_or_polygons, resolve_metric, segmented_planar_lengths,
+    segmented_planar_lengths_3d,
 };
 use crate::dispatch::{MetricOp, kernels};
 use crate::py::errors;
@@ -487,26 +487,14 @@ impl PyGeometryArray {
                 };
                 let geodesic = metric.geodesic;
                 self.reduce_packed_columns_detached(py, move |columns| {
-                    ensure_geographic_columns_present(&columns, frame)
-                        .map_err(PackedColumnError::Batch)?;
                     let values = match columns {
                         PackedColumns::Lines(line_columns) => {
-                            let XyColumns { xs, ys } = line_columns.physical_xy();
-                            line_measure_masked(
-                                xs,
-                                ys,
-                                line_columns.offsets(),
-                                line_columns.selection(),
-                                missing.as_ref(),
-                                |xs, ys, _window| {
-                                    crate::crs::geodesic_line_length_columns(
-                                        &geodesic, xs, ys, frame,
-                                    )
-                                },
-                            )
+                            geodesic_line_measure(&line_columns, frame, |xs, ys| {
+                                crate::crs::geodesic_line_length_columns(&geodesic, xs, ys, frame)
+                            })
+                            .map_err(PackedColumnError::Batch)?
                         },
                         PackedColumns::Polygons(polygon_columns) => {
-                            let XyColumns { xs, ys } = polygon_columns.physical_xy();
                             let ring_measure =
                                 |xs: &[f64], ys: &[f64], _window: std::ops::Range<usize>| {
                                     crate::crs::geodesic_ring_measure_columns(
@@ -514,23 +502,8 @@ impl PyGeometryArray {
                                     )
                                     .0
                                 };
-                            polygon_measure_masked(
-                                xs,
-                                ys,
-                                polygon_columns.ring_offsets(),
-                                polygon_columns.polygon_offsets(),
-                                polygon_columns.selection(),
-                                missing.as_ref(),
-                                ring_measure,
-                                // Mirror the scalar `shell + holes.sum()` order exactly
-                                // so packed and scalar geodesic perimeter stay bit-identical.
-                                |rings, ring| {
-                                    let (start, end) = (rings.start, rings.end);
-                                    let shell = ring(start);
-                                    let holes: f64 = (start + 1..end).map(ring).sum();
-                                    shell + holes
-                                },
-                            )
+                            geodesic_polygon_measure(&polygon_columns, frame, ring_measure)
+                                .map_err(PackedColumnError::Batch)?
                         },
                         PackedColumns::Points(_) => {
                             unreachable!("length packed lane requires line or polygon storage")

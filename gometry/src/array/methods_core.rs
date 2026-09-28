@@ -12,10 +12,9 @@ use crate::array::{
     Python, Result, RingLevel, SVG_ARRAY_PREVIEW, Shape, bool_array, coerce_present_geometry_items,
     coordinate_epoch_option, crs, crs_arc, exact_geometry, geometry,
     geometry_array_svg_grid_html_masked, line_is_ccw, line_is_closed, line_is_simple,
-    line_is_valid, line_logical_len, map_coordinates_callback, parse_coordinate_replacement,
-    parse_crs, physical_row, polygon_is_valid, polygon_logical_len, polygon_rings_range, pymethods,
-    replace_shape_coordinates, require_geojson_crs, slice_replacement_for_shape,
-    total_bounds_from_columns,
+    line_is_valid, map_coordinates_callback, parse_coordinate_replacement, parse_crs, physical_row,
+    polygon_is_valid, pymethods, replace_shape_coordinates, require_geojson_crs,
+    slice_replacement_for_shape, total_bounds_from_columns,
 };
 use crate::boundary::coordinates::checked_vector_len;
 use crate::boundary::metadata;
@@ -31,6 +30,10 @@ use crate::py::viz;
 
 fn type_module(value: &Bound<'_, PyAny>) -> PyResult<String> {
     value.get_type().getattr("__module__")?.extract()
+}
+
+fn polygon_row_is_valid(polygon: Option<&crate::geometry::Polygon>) -> Result<bool> {
+    polygon.map_or(Ok(true), polygon_is_valid)
 }
 
 fn normalize_streamed_geometry(
@@ -1037,25 +1040,11 @@ impl PyGeometryArray {
             GeometryArrayStorage::Packed(PackedStorage::Points { .. }) => {
                 output.resize(self.len(), false);
             },
-            GeometryArrayStorage::Packed(PackedStorage::Lines {
-                offsets, row_map, ..
-            }) => {
-                let map = row_map.as_deref();
-                for logical in 0..line_logical_len(offsets.as_slice(), map) {
-                    output.push(map.csr_window(offsets.as_slice(), logical).is_empty());
-                }
-            },
-            GeometryArrayStorage::Packed(PackedStorage::Polygons {
-                polygon_offsets,
-                row_map,
-                ..
-            }) => {
-                let map = row_map.as_deref();
-                for logical in 0..polygon_logical_len(polygon_offsets.as_slice(), map) {
-                    output.push({
-                        let rings = polygon_rings_range(polygon_offsets.as_slice(), map, logical);
-                        rings.is_empty()
-                    });
+            GeometryArrayStorage::Packed(
+                PackedStorage::Lines { .. } | PackedStorage::Polygons { .. },
+            ) => {
+                for logical in 0..self.len() {
+                    output.push(self.storage().row(logical).is_empty());
                 }
             },
             GeometryArrayStorage::Mixed(_) => {
@@ -1105,7 +1094,7 @@ impl PyGeometryArray {
             if let Some(simple) = self.storage().lines_bool(line_is_simple) {
                 return Some(simple.map_err(PyErr::from));
             }
-            if let Some(simple) = self.storage().polygons_bool(polygon_is_valid) {
+            if let Some(simple) = self.storage().polygons_bool(polygon_row_is_valid) {
                 return Some(simple.map_err(PyErr::from));
             }
             if let GeometryArrayStorage::Packed(PackedStorage::Points { .. }) = self.storage() {
@@ -1119,7 +1108,7 @@ impl PyGeometryArray {
         }
         if let Some(simple) = self
             .storage()
-            .polygons_bool_masked(missing, polygon_is_valid)
+            .polygons_bool_masked(missing, polygon_row_is_valid)
         {
             return Some(simple.map_err(PyErr::from));
         }
@@ -1171,7 +1160,7 @@ impl PyGeometryArray {
         }
         if let Some(valid) = self
             .storage()
-            .polygons_bool_masked(missing, polygon_is_valid)
+            .polygons_bool_masked(missing, polygon_row_is_valid)
         {
             return Some(valid.map_err(PyErr::from));
         }

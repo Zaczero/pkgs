@@ -49,6 +49,18 @@ def _polygon_permuted_take_20() -> tuple[gm.GeometryArray, gm.GeometryArray]:
     return (permuted, oracle)
 
 
+def test_packed_polygon_empty_rows_compare_exactly_after_gather() -> None:
+    empty = gm.from_wkt('POLYGON EMPTY')
+    nonempty = gm.box(0.0, 0.0, 1.0, 1.0)
+    source = gm.GeometryArray([empty, nonempty])
+    gathered = source[[0, 0]]
+    same = source[[0, 0]]
+    different = source[[0, 1]]
+
+    assert bools(gm.equals_exact(gathered, same, 0.0)) == [True, True]
+    assert bools(gm.equals_exact(gathered, different, 0.0)) == [True, False]
+
+
 def _line_total_bounds_case() -> tuple[
     gm.GeometryArray, gm.GeometryArray, tuple[float, ...]
 ]:

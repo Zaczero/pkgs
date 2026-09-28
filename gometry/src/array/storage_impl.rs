@@ -3,14 +3,13 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 use crate::array::{
-    Bounds, CoordSeq, CoordinateAxes, GeometryArrayStorage, PackedStorage, Polygon, Ring,
-    RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window, csr_value_window,
-    line_logical_len, physical_row, point_logical_len, polygon_logical_len, polygon_rings_range,
-    row_bounds,
+    Bounds, CoordSeq, CoordinateAxes, CsrOffsetColumn, GeometryArrayStorage, PackedRow,
+    PackedStorage, Polygon, RowSelectionRef, RowsIter, Shape, ShapeRow, ShapesIter, column_window,
+    csr_value_window, line_logical_len, point_logical_len, polygon_logical_len,
 };
 use crate::error::Result;
+use crate::geometry::GeometryKind;
 use crate::geometry::types::ShapeHeapMemo;
-use crate::geometry::{CoordWindow, GeometryKind};
 
 impl GeometryArrayStorage {
     /// The one coordinate layout carried by homogeneous packed storage.
@@ -58,22 +57,24 @@ impl GeometryArrayStorage {
                     let len = line_logical_len(offsets.as_slice(), map);
                     let mut output = Vec::with_capacity(len);
                     for logical in 0..len {
-                        let window = map.csr_window(offsets.as_slice(), logical);
-                        output.push(line(
-                            &coords.view(CoordWindow::from_range(window, coords.len())),
-                        )?);
+                        let row = PackedRow::line(logical, coords, offsets, map);
+                        let window = row
+                            .coordinate_window()
+                            .expect("packed line row has a coordinate window");
+                        output.push(line(&coords.view(window))?);
                     }
                     Ok(output)
                 })())
             },
-            _ => None,
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. })
+            | Self::Mixed(_) => None,
         }
     }
 
     /// Dense polygon-row bool kernel (no missing-mask branch).
     pub(crate) fn polygons_bool(
         &self,
-        polygon: impl Fn(&Polygon) -> Result<bool>,
+        polygon: impl Fn(Option<&Polygon>) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         match self {
             Self::Packed(PackedStorage::Polygons {
@@ -83,20 +84,23 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let map = row_map.as_deref();
+                let coords = coords.as_ref();
+                let ring_offsets = ring_offsets.as_slice();
+                let polygon_offsets = polygon_offsets.as_slice();
                 Some((|| {
-                    let len = polygon_logical_len(polygon_offsets.as_slice(), map);
+                    let len = polygon_logical_len(polygon_offsets, map);
                     let mut output = Vec::with_capacity(len);
                     for logical in 0..len {
-                        output.push(polygon(&Self::polygon_view(
-                            coords,
-                            ring_offsets,
-                            polygon_rings_range(polygon_offsets.as_slice(), map, logical),
-                        )?)?);
+                        let rings = map.csr_window(polygon_offsets, logical);
+                        let polygon_value =
+                            crate::array::packed_polygon_view!(coords, ring_offsets, rings)?;
+                        output.push(polygon(polygon_value.as_ref())?);
                     }
                     Ok(output)
                 })())
             },
-            _ => None,
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Lines { .. })
+            | Self::Mixed(_) => None,
         }
     }
 
@@ -125,15 +129,19 @@ impl GeometryArrayStorage {
                         let value = if mask.is_missing(logical) {
                             false
                         } else {
-                            let window = map.csr_window(offsets.as_slice(), logical);
-                            line(&coords.view(CoordWindow::from_range(window, coords.len())))?
+                            let row = PackedRow::line(logical, coords, offsets, map);
+                            let window = row
+                                .coordinate_window()
+                                .expect("packed line row has a coordinate window");
+                            line(&coords.view(window))?
                         };
                         output.push(value);
                     }
                     Ok(output)
                 })())
             },
-            _ => None,
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Polygons { .. })
+            | Self::Mixed(_) => None,
         }
     }
 
@@ -143,7 +151,7 @@ impl GeometryArrayStorage {
     pub(crate) fn polygons_bool_masked(
         &self,
         missing: Option<&crate::array::ValidityMask>,
-        polygon: impl Fn(&Polygon) -> Result<bool>,
+        polygon: impl Fn(Option<&Polygon>) -> Result<bool>,
     ) -> Option<Result<Vec<bool>>> {
         let Some(mask) = missing else {
             return self.polygons_bool(polygon);
@@ -156,25 +164,28 @@ impl GeometryArrayStorage {
                 row_map,
             }) => {
                 let map = row_map.as_deref();
+                let coords = coords.as_ref();
+                let ring_offsets = ring_offsets.as_slice();
+                let polygon_offsets = polygon_offsets.as_slice();
                 Some((|| {
-                    let len = polygon_logical_len(polygon_offsets.as_slice(), map);
+                    let len = polygon_logical_len(polygon_offsets, map);
                     let mut output = Vec::with_capacity(len);
                     for logical in 0..len {
                         let value = if mask.is_missing(logical) {
                             false
                         } else {
-                            polygon(&Self::polygon_view(
-                                coords,
-                                ring_offsets,
-                                polygon_rings_range(polygon_offsets.as_slice(), map, logical),
-                            )?)?
+                            let rings = map.csr_window(polygon_offsets, logical);
+                            let polygon_value =
+                                crate::array::packed_polygon_view!(coords, ring_offsets, rings)?;
+                            polygon(polygon_value.as_ref())?
                         };
                         output.push(value);
                     }
                     Ok(output)
                 })())
             },
-            _ => None,
+            Self::Packed(PackedStorage::Points { .. } | PackedStorage::Lines { .. })
+            | Self::Mixed(_) => None,
         }
     }
 
@@ -277,29 +288,15 @@ impl GeometryArrayStorage {
 
     pub(crate) fn line_view<'a>(
         coords: &CoordSeq,
-        offsets: &[i32],
+        offsets: &CsrOffsetColumn,
         row_map: impl Into<RowSelectionRef<'a>>,
         logical: usize,
     ) -> CoordSeq {
-        let window = row_map.into().csr_window(offsets, logical);
-        coords.view(CoordWindow::from_range(window, coords.len()))
-    }
-
-    pub(crate) fn polygon_view(
-        coords: &CoordSeq,
-        ring_offsets: &[i32],
-        mut rings: std::ops::Range<usize>,
-    ) -> crate::error::Result<Polygon> {
-        let ring = |index: usize| {
-            let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-            Ring::try_from_closed(coords.view(CoordWindow::from_range(window, coords.len())))
-        };
-        let shell = ring(rings.next().expect("polygon row has a shell"))?;
-        let mut holes = Vec::with_capacity(rings.len());
-        for index in rings {
-            holes.push(ring(index)?);
-        }
-        Ok(Polygon::new(shell, holes))
+        let row = PackedRow::line(logical, coords, offsets, row_map.into());
+        coords.view(
+            row.coordinate_window()
+                .expect("packed line row has a coordinate window"),
+        )
     }
 
     /// Combined bounds ``(minx, miny, maxx, maxy)`` over all geometries, or
@@ -309,25 +306,14 @@ impl GeometryArrayStorage {
     /// -------
     /// tuple or None
     pub(crate) fn total_bounds(&self) -> Option<Bounds> {
-        if let Self::Packed(PackedStorage::Polygons {
-            coords,
-            ring_offsets,
-            polygon_offsets,
-            row_map,
-        }) = self
+        if let Self::Packed(PackedStorage::Polygons { row_map, .. }) = self
             && row_map.is_identity()
         {
             let mut total: Option<Bounds> = None;
-            for row in 0..polygon_offsets.len().saturating_sub(1) {
-                let rings = polygon_offsets[row] as usize..polygon_offsets[row + 1] as usize;
-                if rings.is_empty() {
+            for row in 0..self.len() {
+                let Some(bounds) = self.row(row).quick_bounds() else {
                     continue;
-                }
-                let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                let bounds = row_bounds(
-                    column_window(coords.xs(), &vertices),
-                    column_window(coords.ys(), &vertices),
-                )?;
+                };
                 match &mut total {
                     Some(current) => current.include_bounds(bounds),
                     None => total = Some(bounds),
@@ -381,53 +367,10 @@ impl GeometryArrayStorage {
         &self,
         mut visit: impl FnMut(Option<Bounds>) -> std::result::Result<(), E>,
     ) -> std::result::Result<bool, E> {
-        let window_bounds = |xs: &[f64], ys: &[f64], range: std::ops::Range<usize>| {
-            row_bounds(column_window(xs, &range), column_window(ys, &range))
-        };
         match self {
-            Self::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) => {
-                let (xs, ys) = (coords.xs(), coords.ys());
-                let map = row_map.as_deref();
-                for logical in 0..polygon_logical_len(polygon_offsets.as_slice(), map) {
-                    let rings = polygon_rings_range(polygon_offsets.as_slice(), map, logical);
-                    let vertices =
-                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                    visit(window_bounds(xs, ys, vertices))?;
-                }
-            },
-            Self::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => {
-                let (xs, ys) = (coords.xs(), coords.ys());
-                let map = row_map.as_deref();
-                for logical in 0..line_logical_len(offsets.as_slice(), map) {
-                    visit(window_bounds(
-                        xs,
-                        ys,
-                        map.csr_window(offsets.as_slice(), logical),
-                    ))?;
-                }
-            },
-            // A point's envelope is the degenerate box at its coordinate. This
-            // lets the metric broadcasts' box-separation refuter settle
-            // far-apart pairs against a point array without materializing the
-            // other operand; a non-finite (empty) point defers to the exact
-            // per-pair path.
-            Self::Packed(PackedStorage::Points { coords, row_map }) => {
-                let map = row_map.as_deref();
-                for logical in 0..point_logical_len(coords, map) {
-                    let point = coords.point_at(physical_row(map, logical));
-                    visit(
-                        (point.x.is_finite() && point.y.is_finite())
-                            .then_some(Bounds::from_point(point)),
-                    )?;
+            Self::Packed(_) => {
+                for logical in 0..self.len() {
+                    visit(self.row(logical).quick_bounds())?;
                 }
             },
             Self::Mixed(_) => return Ok(false),
@@ -445,33 +388,17 @@ impl GeometryArrayStorage {
 
     /// Borrow one logical row without materializing a `Shape`.
     ///
-    /// This is the random-access counterpart to [`Self::iter_rows`]. Keep
-    /// packed row selection and CSR-window resolution here so consumers such
-    /// as the spatial index cannot grow a second interpretation of storage.
+    /// This is the random-access counterpart to [`Self::iter_rows`]. Delegate
+    /// packed selectors and CSR windows to [`PackedRow`] so consumers such as
+    /// the spatial index cannot grow a second interpretation of storage.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "mixed logical indices are admitted by the array row operation; retain O(1) random access"
+    )]
     pub(crate) fn row(&self, index: usize) -> ShapeRow<'_> {
         match self {
             Self::Mixed(shapes) => ShapeRow::Shape(&shapes[index]),
-            Self::Packed(PackedStorage::Points { coords, row_map }) => {
-                ShapeRow::Point(coords.point_at(physical_row(row_map.as_deref(), index)))
-            },
-            Self::Packed(PackedStorage::Lines {
-                coords,
-                offsets,
-                row_map,
-            }) => {
-                let window = row_map.as_deref().csr_window(offsets.as_slice(), index);
-                ShapeRow::line(coords, CoordWindow::from_range(window, coords.len()))
-            },
-            Self::Packed(PackedStorage::Polygons {
-                coords,
-                ring_offsets,
-                polygon_offsets,
-                row_map,
-            }) => {
-                let rings =
-                    polygon_rings_range(polygon_offsets.as_slice(), row_map.as_deref(), index);
-                ShapeRow::rings(coords, ring_offsets, rings)
-            },
+            Self::Packed(packed) => ShapeRow::from_packed(PackedRow::from_storage(packed, index)),
         }
     }
 }
@@ -486,7 +413,8 @@ pub(crate) fn reverse_coord_windows(coords: &CoordSeq, boundaries: &[i32]) -> Re
             return output;
         }
         for &[start, end] in boundaries.array_windows::<2>() {
-            output.extend(column[start as usize..end as usize].iter().rev().copied());
+            let window = start as usize..end as usize;
+            output.extend(column_window(column, &window).iter().rev().copied());
         }
         output
     };

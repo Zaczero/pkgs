@@ -305,6 +305,39 @@ def test_geodesic_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
     )
 
 
+def test_packed_geodesic_polygon_length_uses_selected_ring_windows() -> None:
+    shell = [
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (1.0, 1.0),
+        (0.0, 1.0),
+        (0.0, 0.0),
+    ]
+    hole = [
+        (0.25, 0.25),
+        (0.75, 0.25),
+        (0.75, 0.75),
+        (0.25, 0.75),
+        (0.25, 0.25),
+    ]
+    polygon = gm.Polygon(shell, holes=[hole], crs=4326)
+    expected = GEOD.line_length(
+        [point[0] for point in shell], [point[1] for point in shell]
+    ) + GEOD.line_length([point[0] for point in hole], [point[1] for point in hole])
+    source = gm.GeometryArray(
+        [polygon, gm.from_wkt('POLYGON EMPTY', crs=4326), None, polygon],
+        crs=4326,
+    )
+
+    measured = gm.length(source[[3, 1, 2, 0, 3]], unit='meters')
+
+    assert measured[0] == pytest.approx(expected, rel=1e-12)
+    assert measured[1] == 0.0
+    assert math.isnan(measured[2])
+    assert measured[3] == pytest.approx(expected, rel=1e-12)
+    assert measured[4] == pytest.approx(expected, rel=1e-12)
+
+
 def test_antimeridian_crossing_lines_have_zero_distance() -> None:
     """Lines crossing the antimeridian register as intersecting (distance 0)."""
     crossing = gm.LineString([(170, 10), (-170, 10)], crs=4326)

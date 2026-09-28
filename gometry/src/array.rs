@@ -381,11 +381,10 @@ mod packed_columns;
 mod packed_gather;
 pub(crate) use packed_column_kernels::{
     bounds_values_from_columns_masked, buffer_point_columns, clip_lines_packed_xy,
-    ensure_geographic_columns_present, geographic_bounds_values_from_columns, line_measure_masked,
+    geodesic_line_measure, geodesic_polygon_measure, geographic_bounds_values_from_columns,
     map_masked_point_columns_to_crs, packed_per_row_self_origin_affine_columns,
-    polygon_measure_masked, reduce_lines_or_polygons, segmented_planar_lengths,
-    segmented_planar_lengths_3d, subdivide_line_columns, subdivide_polygon_columns,
-    total_bounds_from_columns,
+    reduce_lines_or_polygons, segmented_planar_lengths, segmented_planar_lengths_3d,
+    subdivide_line_columns, subdivide_polygon_columns, total_bounds_from_columns,
 };
 pub(crate) use packed_columns::{PackedColumnError, PackedColumnOutput, PackedColumns};
 pub(crate) use packed_gather::materialized_gather;
@@ -406,12 +405,13 @@ mod tests;
 
 pub(crate) use shape_row::ShapeRow;
 pub(crate) use storage_types::{
-    GeometryArrayStorage, LineRows, PackedStorage, PointRows, RowSelection, RowSelectionRef,
-    RowsIter, ShapesIter, admit_packed_coord_count, admit_packed_total, contiguous_physical_range,
-    csr_value_window, line_logical_len, materialized_packed_lines_len,
-    materialized_packed_polygons_len, packed_lines_coord_len, packed_polygons_coord_len,
-    packed_polygons_ring_len, physical_row, point_logical_len, polygon_logical_len,
-    polygon_rings_range, row_map_is_identity, row_selection_from_logical_rows,
+    GeometryArrayStorage, LineRows, PackedRow, PackedStorage, PointRows, RowSelection,
+    RowSelectionRef, RowsIter, ShapesIter, admit_packed_coord_count, admit_packed_total,
+    admitted_csr_window, contiguous_physical_range, csr_value_window, line_logical_len,
+    materialized_packed_lines_len, materialized_packed_polygons_len, packed_line_row,
+    packed_lines_coord_len, packed_polygon_bounds, packed_polygon_vertex_window,
+    packed_polygon_view, packed_polygons_coord_len, packed_polygons_ring_len, physical_row,
+    point_logical_len, polygon_logical_len, row_map_is_identity, row_selection_from_logical_rows,
 };
 #[cfg(test)]
 pub(crate) use storage_types::{reset_shape_iter_materializations, shape_iter_materializations};

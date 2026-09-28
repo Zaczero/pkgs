@@ -6,6 +6,7 @@ import ctypes
 import io
 import json as _json
 import math
+import pickle
 import struct
 import subprocess
 import sys
@@ -1955,12 +1956,62 @@ def test_from_arrow_stream_discards_zero_row_batches() -> None:
 def test_geoarrow_outer_empty_polygon_is_polygon_empty() -> None:
     """D06: zero-ring outer list is valid POLYGON EMPTY (not a ring error)."""
     polygon_type = gm.GeometryArray([gm.box(0, 0, 1, 1)]).to_arrow().type
+    shell = [
+        {'x': 0.0, 'y': 0.0},
+        {'x': 1.0, 'y': 0.0},
+        {'x': 1.0, 'y': 1.0},
+        {'x': 0.0, 'y': 1.0},
+        {'x': 0.0, 'y': 0.0},
+    ]
     empty = pa.ExtensionArray.from_storage(
-        polygon_type, pa.array([[]], type=polygon_type.storage_type)
+        polygon_type,
+        pa.array([[], None, [shell], []], type=polygon_type.storage_type),
     )
     recovered = gm.from_arrow(empty)
-    assert recovered.to_wkt() == ['POLYGON EMPTY']
+    assert recovered.to_wkt() == [
+        'POLYGON EMPTY',
+        None,
+        'POLYGON ((0 0, 1 0, 1 1, 0 1, 0 0))',
+        'POLYGON EMPTY',
+    ]
+    assert recovered.is_missing.tolist() == [False, True, False, False]
+    assert recovered.is_simple.tolist() == [True, False, True, True]
+    assert recovered.is_valid.tolist() == [True, False, True, True]
     assert recovered[0].coordinate_axes == 'XY'
+    assert recovered[[3, 0, 3]].to_wkt() == [
+        'POLYGON EMPTY',
+        'POLYGON EMPTY',
+        'POLYGON EMPTY',
+    ]
+    restored = pickle.loads(pickle.dumps(recovered, protocol=5))
+    assert restored.to_wkt() == recovered.to_wkt()
+    assert restored.is_missing.tolist() == [False, True, False, False]
+
+
+def test_geoarrow_zero_ring_polygon_preserves_xyzm_axes() -> None:
+    source = gm.GeometryArray([
+        gm.from_wkt(
+            'POLYGON ZM ((0 0 1 10, 1 0 2 20, 1 1 3 30, 0 1 4 40, 0 0 1 10))'
+        )
+    ])
+    polygon_type = source.to_arrow().type
+    empty = pa.ExtensionArray.from_storage(
+        polygon_type,
+        pa.array([[], None], type=polygon_type.storage_type),
+    )
+
+    recovered = cast('gm.GeometryArray', gm.from_arrow(empty))
+
+    assert recovered.to_wkt() == ['POLYGON ZM EMPTY', None]
+    assert recovered[0].coordinate_axes == 'XYZM'
+    assert recovered.is_missing.tolist() == [False, True]
+    assert recovered.is_simple.tolist() == [True, False]
+    assert recovered.is_valid.tolist() == [True, False]
+    gathered = recovered[[0, 1, 0]]
+    assert gathered.to_wkt() == ['POLYGON ZM EMPTY', None, 'POLYGON ZM EMPTY']
+    assert gathered.is_missing.tolist() == [False, True, False]
+    assert gathered.is_simple.tolist() == [True, False, True]
+    assert gathered.is_valid.tolist() == [True, False, True]
 
 
 def test_from_arrow_accepts_plain_binary_wkb_arrays() -> None:

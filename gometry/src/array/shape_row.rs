@@ -1,17 +1,9 @@
 use std::sync::Arc;
 
-use crate::array::{GeometryArrayStorage, row_bounds};
-use crate::error::Result;
+use crate::array::{PackedRow, Result};
 use crate::geometry::{
-    Bounds, CoordSeq, CoordWindow, CoordinateAxes, LineSeq, Point, PreparedPlan, Shape,
-    ShapeCountQuery,
+    Bounds, CoordinateAxes, GeometryKind, Point, PreparedPlan, Shape, ShapeCountQuery,
 };
-
-#[derive(Clone, Copy)]
-pub(crate) struct VertexWindow {
-    pub start: usize,
-    pub end: usize,
-}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ShapeRow<'a> {
@@ -21,17 +13,38 @@ pub(crate) enum ShapeRow<'a> {
     /// array-side prepared-row cache (see [`PyGeometryArray::prepared_row`]).
     Shape(&'a Shape),
     Point(Point),
-    Line(&'a CoordSeq, usize, usize),
-    Rings(&'a CoordSeq, &'a [i32], usize, usize),
+    /// Homogeneous packed row with its admitted selector/CSR windows.
+    Packed(PackedRow<'a>),
 }
 
 impl<'a> ShapeRow<'a> {
+    pub(crate) fn from_packed(row: PackedRow<'a>) -> Self {
+        row.point_value().map_or(Self::Packed(row), Self::Point)
+    }
+
+    pub(crate) fn kind(self) -> GeometryKind {
+        match self {
+            Self::Handle(handle) => GeometryKind::of(handle.shape()),
+            Self::Shape(shape) => GeometryKind::of(shape),
+            Self::Point(_) => GeometryKind::Point,
+            Self::Packed(row) => row.kind(),
+        }
+    }
+
     pub(crate) fn axes(self) -> CoordinateAxes {
         match self {
             Self::Handle(handle) => handle.shape().axes(),
             Self::Shape(shape) => shape.axes(),
             Self::Point(point) => CoordinateAxes::from_point(point),
-            Self::Line(coords, ..) | Self::Rings(coords, ..) => coords.axes(),
+            Self::Packed(row) => row.axes(),
+        }
+    }
+
+    pub(crate) fn point(self) -> Option<Point> {
+        match self {
+            Self::Point(point) => Some(point),
+            Self::Packed(row) => row.point_value(),
+            Self::Handle(_) | Self::Shape(_) => None,
         }
     }
 
@@ -40,45 +53,36 @@ impl<'a> ShapeRow<'a> {
             Self::Handle(handle) => counts.coordinates(handle.shape()),
             Self::Shape(shape) => counts.coordinates(shape),
             Self::Point(_) => Ok(1),
-            Self::Line(_, start, end) => Ok(end.wrapping_sub(start)),
-            Self::Rings(_, offsets, start, end) => {
-                let start = offsets.get(start).expect("admitted ring start");
-                let end = offsets.get(end).expect("admitted ring end");
-                Ok(end.wrapping_sub(*start) as usize)
-            },
+            Self::Packed(row) => Ok(row.coord_count()),
         }
     }
 
-    pub(crate) const fn line(coords: &'a CoordSeq, window: CoordWindow) -> Self {
-        Self::Line(coords, window.start(), window.end())
+    pub(crate) fn is_empty(self) -> bool {
+        match self {
+            Self::Handle(handle) => handle.shape().is_empty(),
+            Self::Shape(shape) => shape.is_empty(),
+            Self::Point(_) => false,
+            Self::Packed(row) => row.is_empty(),
+        }
     }
 
-    pub(crate) fn rings(
-        coords: &'a CoordSeq,
-        ring_offsets: &'a [i32],
-        rings: std::ops::Range<usize>,
-    ) -> Self {
-        assert!(
-            rings.start <= rings.end && rings.end < ring_offsets.len(),
-            "polygon row must reference admitted ring offsets"
-        );
-        Self::Rings(coords, ring_offsets, rings.start, rings.end)
+    pub(crate) fn to_shape(self) -> Result<Shape> {
+        match self {
+            Self::Handle(handle) => Ok(handle.shape().clone()),
+            Self::Shape(shape) => Ok(shape.clone()),
+            Self::Point(point) => Ok(Shape::Point(point)),
+            Self::Packed(row) => row.to_shape(),
+        }
     }
 
-    fn line_shape(coords: &CoordSeq, start: usize, end: usize) -> Shape {
-        let window = CoordWindow::from_range(start..end, coords.len());
-        Shape::LineString(LineSeq::row_view(coords, window))
-    }
-
-    pub(crate) fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> crate::error::Result<R> {
+    pub(crate) fn with_shape<R>(self, f: impl FnOnce(&Shape) -> R) -> Result<R> {
         match self {
             Self::Handle(handle) => Ok(f(handle.shape())),
             Self::Shape(shape) => Ok(f(shape)),
             Self::Point(point) => Ok(f(&Shape::Point(point))),
-            Self::Line(coords, start, end) => Ok(f(&Self::line_shape(coords, start, end))),
-            Self::Rings(coords, ring_offsets, start, end) => {
-                let polygon = GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end)?;
-                Ok(f(&Shape::Polygon(polygon)))
+            Self::Packed(row) => {
+                let shape = row.to_shape()?;
+                Ok(f(&shape))
             },
         }
     }
@@ -96,22 +100,10 @@ impl<'a> ShapeRow<'a> {
         match self {
             Self::Handle(handle) => handle.bounds(),
             Self::Shape(shape) => shape.bounds(),
-            Self::Point(point) => Some(Bounds::from_point(point)),
-            Self::Line(coords, start, end) => {
-                let window = VertexWindow { start, end };
-                let (xs, ys) = (
-                    &coords.xs()[window.start..window.end],
-                    &coords.ys()[window.start..window.end],
-                );
-                row_bounds(xs, ys)
+            Self::Point(point) => {
+                (point.x.is_finite() && point.y.is_finite()).then_some(Bounds::from_point(point))
             },
-            Self::Rings(coords, ring_offsets, start, end) => {
-                let window = VertexWindow {
-                    start: ring_offsets[start] as usize,
-                    end: ring_offsets[end] as usize,
-                };
-                ShapeRow::Line(coords, window.start, window.end).quick_bounds()
-            },
+            Self::Packed(row) => row.quick_bounds(),
         }
     }
 }

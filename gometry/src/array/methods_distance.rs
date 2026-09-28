@@ -6,9 +6,10 @@
 use crate::array::packed_columns::{PackedColumnResult, XyColumns};
 use crate::array::{
     Arc, ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
-    PackedColumnError, PackedColumnOutput, PackedColumns, PackedStorage, Point, PointColumnBuilder,
-    PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel, RowSelection, Shape,
-    StorageLayout, column_window, packed_centroid_xy, packed_surface_point, row_bounds,
+    PackedColumnError, PackedColumnOutput, PackedColumns, PackedRow, PackedStorage, Point,
+    PointColumnBuilder, PolygonLevel, PyGeometryArray, PyResult, Python, Result, RingLevel,
+    RowSelection, Shape, StorageLayout, column_window, packed_centroid_xy, packed_polygon_bounds,
+    packed_surface_point,
 };
 use crate::geometry::{CoordWindow, DerivedPointStrategy, LineSeq};
 
@@ -53,14 +54,22 @@ fn line_window_crosses_antimeridian(
 }
 
 fn polygon_row_crosses_antimeridian(
-    coords: &CoordSeq,
-    ring_offsets: &[i32],
-    rings: std::ops::Range<usize>,
+    row: PackedRow<'_>,
     domain: crate::geometry::TopologyDomain,
 ) -> bool {
-    rings
-        .map(|ring| ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize)
-        .any(|window| line_window_crosses_antimeridian(coords, window, domain))
+    let crate::array::PackedRow::Polygons { coords, .. } = row else {
+        unreachable!("antimeridian ring traversal requires a packed polygon row")
+    };
+    row.polygon_rings()
+        .expect("packed polygon row has a ring range")
+        .any(|ring| {
+            line_window_crosses_antimeridian(
+                coords,
+                row.polygon_ring_window(ring)
+                    .expect("ring lies in its admitted polygon row"),
+                domain,
+            )
+        })
 }
 
 fn longitude_span_cannot_cross_antimeridian(xs: &[f64]) -> bool {
@@ -79,17 +88,7 @@ fn packed_point_unary<L, P>(
 ) -> PyResult<Option<PyGeometryArray>>
 where
     L: Fn(&CoordSeq, &[f64], &[f64], std::ops::Range<usize>) -> Result<Point> + Send + Sync,
-    P: FnMut(
-            &CoordSeq,
-            &[f64],
-            &[f64],
-            &[i32],
-            std::ops::Range<usize>,
-            Option<std::ops::Range<usize>>,
-            &mut Vec<f64>,
-        ) -> Result<Point>
-        + Send
-        + Sync,
+    P: FnMut(&[f64], &[f64], PackedRow<'_>, &mut Vec<f64>) -> Result<Point> + Send + Sync,
 {
     let has_missing = array.has_missing();
     array.map_packed_columns_detached(py, frame, |columns| match &columns {
@@ -103,11 +102,11 @@ where
             let mut builder =
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
-                let row_index = row.index();
-                if row.is_missing() {
+                let Some(row) = row else {
                     builder.push(Point::new_raw_xy(f64::NAN, f64::NAN));
                     return Ok(());
-                }
+                };
+                let row_index = row.index();
                 let window = row.vertex_window().expect("line rows have a vertex window");
                 let crosses = may_cross_antimeridian
                     && line_window_crosses_antimeridian(coords, window.clone(), domain);
@@ -141,9 +140,7 @@ where
             }))
         },
         PackedColumns::Polygons(polygon_columns) => {
-            let coords = polygon_columns.coords();
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
-            let ring_offsets = polygon_columns.ring_offsets();
             let may_cross_antimeridian =
                 domain.is_geographic() && !longitude_span_cannot_cross_antimeridian(xs);
             crate::array::admit_packed_coord_count(columns.row_count())
@@ -152,34 +149,20 @@ where
                 PointColumnBuilder::with_capacity(CoordinateAxes::XY, columns.row_count());
             let mut crossings = Vec::new();
             columns.collect_rows::<_, PackedColumnResult<()>>(|row| {
-                let row_index = row.index();
-                if row.is_missing() {
+                let Some(row) = row else {
                     builder.push(Point::new_raw_xy(f64::NAN, f64::NAN));
                     return Ok(());
-                }
-                let rings = row.polygon_rings().expect("polygon rows have rings");
-                let shell = row.polygon_shell_window();
-                let crosses = may_cross_antimeridian
-                    && polygon_row_crosses_antimeridian(
-                        coords,
-                        ring_offsets,
-                        rings.clone(),
-                        domain,
-                    );
-                let shape_rings = rings.clone();
+                };
+                let row_index = row.index();
+                let crosses =
+                    may_cross_antimeridian && polygon_row_crosses_antimeridian(row, domain);
                 let point = packed_point_row(
                     crosses,
-                    move || {
-                        Ok(Shape::Polygon(GeometryArrayStorage::polygon_view(
-                            coords,
-                            ring_offsets,
-                            shape_rings,
-                        )?))
-                    },
+                    move || row.to_shape(),
                     domain,
                     strategy,
                     op,
-                    || polygon_point(coords, xs, ys, ring_offsets, rings, shell, &mut crossings),
+                    || polygon_point(xs, ys, row, &mut crossings),
                 )
                 .map_err(|error| PackedColumnError::Row {
                     row: row_index,
@@ -222,12 +205,16 @@ impl PyGeometryArray {
                         column_window(ys, &window),
                     ))
                 },
-                |_, xs, ys, ring_offsets, rings, _, _crossings| {
+                |xs, ys, row, _crossings| {
+                    let crate::array::PackedRow::Polygons { ring_offsets, .. } = row else {
+                        unreachable!("packed polygon centroid requires polygon storage")
+                    };
                     packed_centroid_xy(crate::geometry::centroid_polygon_row_columns(
                         xs,
                         ys,
-                        ring_offsets,
-                        rings,
+                        ring_offsets.as_slice(),
+                        row.polygon_rings()
+                            .expect("packed polygon row has a ring range"),
                     ))
                 },
             )
@@ -264,17 +251,28 @@ impl PyGeometryArray {
                         column_window(ys, &window),
                     ))
                 },
-                |_, xs, ys, ring_offsets, rings, _, crossings| {
-                    let vertices =
-                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                    let row_bounds =
-                        row_bounds(column_window(xs, &vertices), column_window(ys, &vertices));
+                |xs, ys, row, crossings| {
+                    let crate::array::PackedRow::Polygons {
+                        coords,
+                        ring_offsets,
+                        rings_start,
+                        rings_end,
+                        ..
+                    } = row
+                    else {
+                        unreachable!("packed polygon point-on-surface requires polygon storage")
+                    };
                     packed_surface_point(crate::geometry::point_on_surface_polygon_row_columns(
                         xs,
                         ys,
-                        ring_offsets,
-                        rings,
-                        row_bounds,
+                        ring_offsets.as_slice(),
+                        rings_start..rings_end,
+                        packed_polygon_bounds!(
+                            coords,
+                            ring_offsets.as_slice(),
+                            rings_start,
+                            rings_end,
+                        ),
                         crossings,
                     ))
                 },

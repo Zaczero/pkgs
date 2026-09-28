@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use crate::array::{
-    ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind,
+    ComputedCaches, CoordSeq, CoordinateAxes, Frame, GeometryArrayStorage, GeometryKind, PackedRow,
     PackedStorage, PolygonLevel, PyGeometryArray, RingLevel, RowSelectionRef, Shape, ShapeRow,
     StorageLayout, ValidityBuilder, ValidityMask, admit_packed_total, csr_value_window,
     materialized_packed_lines_len, materialized_packed_polygons_len,
@@ -394,12 +394,24 @@ impl StreamingShapes {
     fn try_push_row_native(&mut self, row: ShapeRow<'_>) -> crate::error::Result<bool> {
         match row {
             ShapeRow::Point(point) => self.push_point_native(point),
-            ShapeRow::Line(coords, start, end) => {
-                self.try_push_line_span_native(coords, start..end)
-            },
-            ShapeRow::Rings(coords, ring_offsets, start, end) => {
-                self.try_push_polygon_spans_native(coords, ring_offsets, start..end)
-            },
+            ShapeRow::Packed(PackedRow::Lines {
+                coords,
+                vertices_start,
+                vertices_end,
+                ..
+            }) => self.try_push_line_span_native(coords, vertices_start..vertices_end),
+            ShapeRow::Packed(PackedRow::Polygons {
+                coords,
+                ring_offsets,
+                rings_start,
+                rings_end,
+                ..
+            }) => self.try_push_polygon_spans_native(
+                coords,
+                ring_offsets.as_slice(),
+                rings_start..rings_end,
+            ),
+            ShapeRow::Packed(_) => Ok(false),
             ShapeRow::Handle(handle) => self.try_push_shape_native(handle.shape()),
             ShapeRow::Shape(shape) => self.try_push_shape_native(shape),
         }
@@ -897,20 +909,20 @@ impl StreamingPolygons {
         let (coords, ring_offsets, polygon_offsets) = self.into_parts()?;
         let capacity = shape_vec_capacity(validity.present_count(), capacity)?;
         let mut shapes = Vec::with_capacity(capacity);
-        for (logical, [start, end]) in polygon_offsets.array_windows::<2>().enumerate() {
+        for logical in 0..polygon_offsets.len().saturating_sub(1) {
             if !validity.is_present(logical) {
                 continue;
             }
-            let rings = *start as usize..*end as usize;
-            if rings.is_empty() {
-                shapes.push(Shape::typed_empty(GeometryKind::Polygon, coords.axes()));
-                continue;
-            }
-            shapes.push(Shape::Polygon(GeometryArrayStorage::polygon_view(
-                &coords,
-                ring_offsets.as_slice(),
-                rings,
-            )?));
+            shapes.push(
+                PackedRow::polygon(
+                    logical,
+                    &coords,
+                    &ring_offsets,
+                    &polygon_offsets,
+                    RowSelectionRef::Identity,
+                )
+                .to_shape()?,
+            );
         }
         Ok(shapes)
     }

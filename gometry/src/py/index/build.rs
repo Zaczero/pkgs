@@ -468,8 +468,7 @@ mod ownership_tests {
             crate::array::ShapeRow::Point(point) => point,
             crate::array::ShapeRow::Handle(_)
             | crate::array::ShapeRow::Shape(_)
-            | crate::array::ShapeRow::Line(..)
-            | crate::array::ShapeRow::Rings(..) => {
+            | crate::array::ShapeRow::Packed(_) => {
                 panic!("compact point index resolved a non-point row")
             },
         };
@@ -514,8 +513,7 @@ mod ownership_tests {
             crate::array::ShapeRow::Point(point) => point.x,
             crate::array::ShapeRow::Handle(_)
             | crate::array::ShapeRow::Shape(_)
-            | crate::array::ShapeRow::Line(..)
-            | crate::array::ShapeRow::Rings(..) => {
+            | crate::array::ShapeRow::Packed(_) => {
                 panic!("compact point window resolved a non-point row")
             },
         };
@@ -531,8 +529,7 @@ mod ownership_tests {
             crate::array::ShapeRow::Point(point) => point.x,
             crate::array::ShapeRow::Handle(_)
             | crate::array::ShapeRow::Shape(_)
-            | crate::array::ShapeRow::Line(..)
-            | crate::array::ShapeRow::Rings(..) => {
+            | crate::array::ShapeRow::Packed(_) => {
                 panic!("duplicate point gather resolved a non-point row")
             },
         };

@@ -594,16 +594,7 @@ impl<'a> PreparedRow<'a> {
             },
             ShapeRow::Shape(shape) => PreparedPlan::new(ShapeData::new(shape.clone())),
             ShapeRow::Point(point) => PreparedPlan::new(ShapeData::new(Shape::Point(point))),
-            ShapeRow::Line(coords, start, end) => PreparedPlan::new(ShapeData::new(
-                Shape::LineString(crate::geometry::LineSeq::try_new(coords.view(
-                    crate::geometry::CoordWindow::from_range(start..end, coords.len()),
-                ))?),
-            )),
-            ShapeRow::Rings(coords, ring_offsets, start, end) => {
-                PreparedPlan::new(ShapeData::new(Shape::Polygon(
-                    GeometryArrayStorage::polygon_view(coords, ring_offsets, start..end)?,
-                )))
-            },
+            ShapeRow::Packed(row) => PreparedPlan::new(ShapeData::new(row.to_shape()?)),
         };
         Ok(Self::Transient(match seeded_bounds {
             BoundsSeed::Value(bounds) => data.with_seeded_bounds(bounds),
@@ -679,25 +670,25 @@ fn selection_touches_chunk(
 fn packed_row_persistent(row: ShapeRow<'_>) -> bool {
     use crate::geometry::uses_linear_plan_for_len;
     match row {
-        ShapeRow::Line(_, start, end) => {
-            !uses_linear_plan_for_len(end.wrapping_sub(start).saturating_sub(1))
-        },
-        ShapeRow::Rings(_, offsets, start, end) => {
-            let ring_offsets = offsets
-                .get(start..=end)
-                .expect("shape row ring range is bounded by its admitted offsets");
-            let rings_non_linear = ring_offsets.windows(2).any(|window| {
-                let [ring_start, ring_end] = window else {
-                    unreachable!("ring offset window contains two boundaries");
-                };
-                let open = ring_end.wrapping_sub(*ring_start).saturating_sub(1) as usize;
+        ShapeRow::Packed(row @ crate::array::PackedRow::Lines { .. }) => row
+            .vertex_window()
+            .is_some_and(|window| !uses_linear_plan_for_len(window.len().saturating_sub(1))),
+        ShapeRow::Packed(row @ crate::array::PackedRow::Polygons { .. }) => {
+            let rings = row
+                .polygon_rings()
+                .expect("packed polygon rows carry a ring range");
+            let rings_non_linear = rings.clone().any(|ring| {
+                let open = row
+                    .polygon_ring_window(ring)
+                    .expect("ring lies in its packed polygon row")
+                    .len()
+                    .saturating_sub(1);
                 !uses_linear_plan_for_len(open)
             });
-            rings_non_linear
-                || !uses_linear_plan_for_len(end.saturating_sub(start).saturating_sub(1))
+            rings_non_linear || !uses_linear_plan_for_len(rings.len().saturating_sub(1))
         },
         ShapeRow::Shape(_) => true,
-        ShapeRow::Handle(_) | ShapeRow::Point(_) => false,
+        ShapeRow::Handle(_) | ShapeRow::Point(_) | ShapeRow::Packed(_) => false,
     }
 }
 
@@ -755,9 +746,7 @@ impl PyGeometryArray {
                 });
                 Ok(PreparedRow::Owned(Arc::clone(handle)))
             },
-            packed @ (ShapeRow::Line(..) | ShapeRow::Rings(..))
-                if packed_row_persistent(packed) =>
-            {
+            packed @ ShapeRow::Packed(_) if packed_row_persistent(packed) => {
                 let (chunk, offset) = products.cell(index);
                 if let Some(plan) = chunk.cell(offset).prepared.get() {
                     return Ok(PreparedRow::Owned(Arc::clone(plan)));
@@ -772,7 +761,7 @@ impl PyGeometryArray {
                 });
                 Ok(PreparedRow::Owned(Arc::clone(handle)))
             },
-            packed @ (ShapeRow::Line(..) | ShapeRow::Rings(..)) => {
+            packed @ ShapeRow::Packed(_) => {
                 PreparedRow::transient_with_seed(packed, self.row_bounds_seed(index))
             },
             ShapeRow::Point(point) => PreparedRow::transient_with_seed(
@@ -833,7 +822,7 @@ impl PyGeometryArray {
         let frame = self.frame.clone();
         if matches!(self.storage(), GeometryArrayStorage::Mixed(_)) {
             let plan = products.prepared_plan(row.logical, || -> crate::error::Result<_> {
-                Ok(Arc::new(ShapeData::new(row.row.with_shape(Clone::clone)?)))
+                Ok(Arc::new(ShapeData::new(row.row.to_shape()?)))
             })?;
             return Ok(PyGeometry::with_row_products(
                 Arc::clone(plan.shape_arc()),
@@ -843,7 +832,7 @@ impl PyGeometryArray {
             ));
         }
         Ok(PyGeometry::with_row_products(
-            Arc::new(ShapeData::new(row.row.with_shape(Clone::clone)?)),
+            Arc::new(ShapeData::new(row.row.to_shape()?)),
             frame,
             self.row_products.clone(),
             row.logical,

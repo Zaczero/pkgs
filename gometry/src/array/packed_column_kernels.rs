@@ -3,12 +3,10 @@
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
 //! Kernels that consume resolved packed columns: CRS transform, per-row
-//! bounds, segmentize/densify, and per-row affine — plus the sanctioned
-//! `line_measure`/`polygon_measure` lane over raw storage columns.
+//! bounds, segmentize/densify, per-row affine, and packed length reduction.
 //!
-//! Row-map normalization and GIL release happen in `packed_columns.rs` (the
-//! detached execution seam); everything here operates on already-logical
-//! contiguous columns.
+//! `PackedRow` owns selected CSR and coordinate windows; `SegmentedRuns`
+//! retains its separate ordered length-reduction contract.
 use std::num::NonZeroU32;
 
 use crate::array::packed_columns::{
@@ -17,15 +15,44 @@ use crate::array::packed_columns::{
 };
 use crate::array::storage_helpers::{packed_line_row_pivot, packed_polygon_row_pivot};
 use crate::array::{
-    Bounds, CoordSeq, CsrOffsetBuilder, GeometryArrayStorage, OriginSpec, PackedColumnBuilder,
-    PackedColumnOutput, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
-    column_window, crs, line_logical_len, polygon_logical_len, polygon_rings_range, row_bounds,
-    row_bounds_values,
+    Bounds, CoordSeq, CsrOffsetBuilder, OriginSpec, PackedColumnBuilder, PackedColumnOutput,
+    PackedRow, PointRowLayout, Result, RingLevel, RowSelectionRef, Shape, ValidityMask,
+    column_window, crs, packed_line_row, packed_polygon_bounds, packed_polygon_vertex_window,
+    row_bounds, row_bounds_values,
 };
 use crate::geometry::{
     CoordSeqBuilder, CoordWindow, LineSeq, MOrdinate, Point, XY, ZOrdinate, clip_segment,
     same_point,
 };
+
+/// Expand coordinate validation into the packed row loop. Its `?` returns the
+/// first invalid coordinate through the detached batch operation.
+macro_rules! validate_geographic_columns {
+    ($frame:expr, $longitude:expr, $xs:expr, $ys:expr $(,)?) => {{
+        let __frame = $frame;
+        let __longitude = $longitude;
+        let __xs = $xs;
+        let __ys = $ys;
+        for (&__lon, &__lat) in std::iter::zip(__xs, __ys) {
+            crate::crs::geographic_lonlat_result!(__frame, __longitude, __lon, __lat,)?;
+        }
+        Ok::<(), crate::error::Error>(())
+    }};
+}
+
+/// Expand an admitted ring lookup inside the perimeter reduction. The caller
+/// iterates the row's admitted ring range, so the hot loop needs no per-ring
+/// range check or `Option` callback.
+macro_rules! measure_admitted_polygon_ring {
+    ($ring_offsets:expr, $ring:expr, $xs:expr, $ys:expr, $measure:expr $(,)?) => {{
+        let __window = $crate::array::admitted_csr_window!($ring_offsets, $ring);
+        ($measure)(
+            column_window($xs, &__window),
+            column_window($ys, &__window),
+            __window,
+        )
+    }};
+}
 
 /// Emit one round buffer polygon per packed point without per-row shapes.
 ///
@@ -76,19 +103,29 @@ pub(crate) fn buffer_point_columns(
         unit_y.push(sin_theta);
     }
 
-    let XyColumns {
-        xs: source_xs,
-        ys: source_ys,
-    } = points.physical_xy();
+    let first_unit_x = *unit_x
+        .first()
+        .expect("nonzero expansion has a first vertex");
+    let first_unit_y = *unit_y
+        .first()
+        .expect("nonzero expansion has a first vertex");
     let mut xs = Vec::with_capacity(total);
     let mut ys = Vec::with_capacity(total);
     let mut ring_offsets = CsrOffsetBuilder::with_capacity(present_rows);
     let mut polygon_offsets = CsrOffsetBuilder::with_capacity(rows);
     for (_row, physical) in point_rows.cursor() {
         if let Some(physical) = physical {
-            let center_x = source_xs[physical];
-            let center_y = source_ys[physical];
-            for (&unit_x, &unit_y) in unit_x.iter().zip(&unit_y) {
+            let (center_x, center_y) = points.physical_xy_at(physical);
+            let first = (
+                center_x + distance * first_unit_x,
+                center_y + distance * first_unit_y,
+            );
+            if !first.0.is_finite() || !first.1.is_finite() {
+                return Ok(None);
+            }
+            xs.push(first.0);
+            ys.push(first.1);
+            for (&unit_x, &unit_y) in unit_x.iter().skip(1).zip(unit_y.iter().skip(1)) {
                 let x = center_x + distance * unit_x;
                 let y = center_y + distance * unit_y;
                 if !x.is_finite() || !y.is_finite() {
@@ -97,10 +134,8 @@ pub(crate) fn buffer_point_columns(
                 xs.push(x);
                 ys.push(y);
             }
-            let first = xs[xs.len() - steps];
-            let first_y = ys[ys.len() - steps];
-            xs.push(first);
-            ys.push(first_y);
+            xs.push(first.0);
+            ys.push(first.1);
             ring_offsets
                 .push_end(xs.len(), i32::MAX as usize)
                 .map_err(batch_err)?;
@@ -166,9 +201,9 @@ pub(crate) fn clip_lines_packed_xy(
             continue;
         }
         let window = line_columns.row_window(row);
-        let (start, end) = (window.start, window.end);
-        let Some(bounds) = row_bounds(column_window(xs, &window), column_window(ys, &window))
-        else {
+        let row_xs = column_window(xs, &window);
+        let row_ys = column_window(ys, &window);
+        let Some(bounds) = row_bounds(row_xs, row_ys) else {
             return Ok(None);
         };
         if let crate::geometry::TopologyDomain::Geographic(frame) = domain {
@@ -192,15 +227,14 @@ pub(crate) fn clip_lines_packed_xy(
             continue;
         }
 
-        let mut part_count = 0;
+        let mut part_count = 0_usize;
         let mut last_end = None;
-        for index in start..end.saturating_sub(1) {
-            let Some((clipped_start, clipped_end)) = clip_segment(
-                XY::new(xs[index], ys[index]),
-                XY::new(xs[index + 1], ys[index + 1]),
-                rect,
-            )
-            .map_err(|error| row_err(row, error))?
+        for (x_pair, y_pair) in row_xs.array_windows::<2>().zip(row_ys.array_windows::<2>()) {
+            let [x0, x1] = *x_pair;
+            let [y0, y1] = *y_pair;
+            let Some((clipped_start, clipped_end)) =
+                clip_segment(XY::new(x0, y0), XY::new(x1, y1), rect)
+                    .map_err(|error| row_err(row, error))?
             else {
                 continue;
             };
@@ -212,7 +246,7 @@ pub(crate) fn clip_lines_packed_xy(
                     .push_xy(clipped_end.x, clipped_end.y)
                     .map_err(batch_err)?;
             } else {
-                part_count += 1;
+                part_count = part_count.wrapping_add(1);
                 if part_count > 1 {
                     return Ok(None);
                 }
@@ -308,7 +342,7 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
             // whole array (roads is homogeneous). Mixed arrays fall to partition.
             let sample_short = group_is_short(&runs, 0)
                 && group_is_short(&runs, n_groups / 2)
-                && group_is_short(&runs, n_groups - 1);
+                && group_is_short(&runs, n_groups.wrapping_sub(1));
             if sample_short {
                 let mut out = vec![0.0; n_groups];
                 column_stream_identity_lengths::<HAS_Z>(
@@ -334,7 +368,9 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
         let mut mask = vec![false; runs.n_leaves()];
         for (group, is_missing) in missing.iter().enumerate() {
             if is_missing {
-                mask[runs.group_leaves(group)].fill(true);
+                mask.get_mut(runs.group_leaves(group))
+                    .expect("admitted polygon group leaves fit the ring mask")
+                    .fill(true);
             }
         }
         ValidityMask::from_vec(runs.n_leaves(), mask)
@@ -352,7 +388,9 @@ fn segmented_planar_lengths_dims<const HAS_Z: bool>(
         let value = if runs.is_missing(group) {
             f64::NAN
         } else {
-            let total: f64 = leaf_lengths[runs.group_leaves(group)].iter().sum();
+            let total: f64 = column_window(&leaf_lengths, &runs.group_leaves(group))
+                .iter()
+                .sum();
             if scale_is_one { total } else { total * scale }
         };
         output.push(value);
@@ -373,11 +411,11 @@ fn partitioned_identity_lengths<const HAS_Z: bool>(
     while group < n_groups {
         let short = group_is_short(runs, group);
         let span_start = group;
-        group += 1;
+        group = group.wrapping_add(1);
         while group < n_groups && group_is_short(runs, group) == short {
-            group += 1;
+            group = group.wrapping_add(1);
         }
-        if short && group - span_start >= COLUMN_STREAM_MIN_GROUPS {
+        if short && group.wrapping_sub(span_start) >= COLUMN_STREAM_MIN_GROUPS {
             column_stream_identity_lengths::<HAS_Z>(
                 runs,
                 span_start..group,
@@ -431,19 +469,21 @@ fn tight_identity_per_run<const HAS_Z: bool>(
             *slot = f64::NAN;
             continue;
         }
-        let start = offsets[g] as usize;
-        let end = offsets[g + 1] as usize;
-        if end <= start + 1 {
+        let window = RowSelectionRef::Identity.csr_window(offsets, g);
+        if window.len() < 2 {
             continue;
         }
         let total = if HAS_Z {
             crate::geometry::line_length_3d_columns(
-                &xs[start..end],
-                &ys[start..end],
-                &zs[start..end],
+                column_window(xs, &window),
+                column_window(ys, &window),
+                column_window(zs, &window),
             )
         } else {
-            crate::geometry::line_length_columns(&xs[start..end], &ys[start..end])
+            crate::geometry::line_length_columns(
+                column_window(xs, &window),
+                column_window(ys, &window),
+            )
         };
         *slot = if scale_is_one { total } else { total * scale };
     }
@@ -467,16 +507,17 @@ fn per_run_group_length<const HAS_Z: bool>(
         if window.len() < 2 {
             continue;
         }
-        let start = window.start;
-        let end = window.end;
         total += if HAS_Z {
             crate::geometry::line_length_3d_columns(
-                &xs[start..end],
-                &ys[start..end],
-                &zs[start..end],
+                column_window(xs, &window),
+                column_window(ys, &window),
+                column_window(zs, &window),
             )
         } else {
-            crate::geometry::line_length_columns(&xs[start..end], &ys[start..end])
+            crate::geometry::line_length_columns(
+                column_window(xs, &window),
+                column_window(ys, &window),
+            )
         };
     }
     total * scale
@@ -501,6 +542,11 @@ const STREAM_LANES: usize = 4;
 type StreamSimd = std::simd::Simd<f64, STREAM_LANES>;
 type StreamSimdU64 = std::simd::Simd<u64, STREAM_LANES>;
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the measured ColumnStream keeps IEEE vector/scalar arithmetic and ordered accumulation over admitted row windows"
+)]
 fn column_stream_identity_lengths<const HAS_Z: bool>(
     runs: &SegmentedRuns<'_>,
     groups: std::ops::Range<usize>,
@@ -524,29 +570,32 @@ fn column_stream_identity_lengths<const HAS_Z: bool>(
             out[g] = f64::NAN;
             continue;
         }
-        let start = offsets[g] as usize;
-        let end = offsets[g + 1] as usize;
+        let window = RowSelectionRef::Identity.csr_window(offsets, g);
+        let start = window.start;
+        let end = window.end;
         // Valid pairs: [start, end - 1). Boundary pair at end-1 → next leaf is
         // never entered here — mask-by-construction.
-        if end <= start + 1 {
+        if end <= start.wrapping_add(1) {
             out[g] = 0.0;
             continue;
         }
-        let pair_end = end - 1; // exclusive absolute pair-start index
+        let pair_end = end.wrapping_sub(1); // exclusive absolute pair-start index
         let mut total = 0.0_f64;
         let mut pair = start;
 
         // Full SIMD chunks entirely inside this group's valid pair range.
-        while pair + STREAM_LANES <= pair_end {
-            let x0 = StreamSimd::from_slice(&xs[pair..]);
-            let x1 = StreamSimd::from_slice(&xs[pair + 1..]);
-            let y0 = StreamSimd::from_slice(&ys[pair..]);
-            let y1 = StreamSimd::from_slice(&ys[pair + 1..]);
+        while pair.wrapping_add(STREAM_LANES) <= pair_end {
+            let pair_window = pair..pair_end;
+            let shifted_pair_window = pair.wrapping_add(1)..pair_end.wrapping_add(1);
+            let x0 = StreamSimd::from_slice(column_window(xs, &pair_window));
+            let x1 = StreamSimd::from_slice(column_window(xs, &shifted_pair_window));
+            let y0 = StreamSimd::from_slice(column_window(ys, &pair_window));
+            let y1 = StreamSimd::from_slice(column_window(ys, &shifted_pair_window));
             let dx = x1 - x0;
             let dy = y1 - y0;
             let (squared, zero_delta) = if HAS_Z {
-                let z0 = StreamSimd::from_slice(&zs[pair..]);
-                let z1 = StreamSimd::from_slice(&zs[pair + 1..]);
+                let z0 = StreamSimd::from_slice(column_window(zs, &pair_window));
+                let z1 = StreamSimd::from_slice(column_window(zs, &shifted_pair_window));
                 let dz = z1 - z0;
                 (
                     dx * dx + dy * dy + dz * dz,
@@ -570,23 +619,28 @@ fn column_stream_identity_lengths<const HAS_Z: bool>(
             let bad = (is_normal | (is_zero & zero_delta)).not();
             if bad.any() {
                 // Cold: one hypot-safe segment at a time for this chunk only.
-                for p in pair..pair + STREAM_LANES {
+                for p in pair..pair.wrapping_add(STREAM_LANES) {
                     total += stream_segment_length::<HAS_Z>(xs, ys, zs, p);
                 }
             } else {
                 total += squared.sqrt().reduce_sum();
             }
-            pair += STREAM_LANES;
+            pair = pair.wrapping_add(STREAM_LANES);
         }
         // Scalar residual — no overlap replay of the last full chunk.
         while pair < pair_end {
             total += stream_segment_length::<HAS_Z>(xs, ys, zs, pair);
-            pair += 1;
+            pair = pair.wrapping_add(1);
         }
         out[g] = if scale_is_one { total } else { total * scale };
     }
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "the scalar residual uses adjacent coordinates admitted by the ColumnStream row boundary and preserves its IEEE length arithmetic"
+)]
 fn stream_segment_length<const HAS_Z: bool>(
     xs: &[f64],
     ys: &[f64],
@@ -616,158 +670,115 @@ fn stream_segment_length<const HAS_Z: bool>(
     }
 }
 
-pub(crate) fn line_measure<'a, F>(
-    xs: &[f64],
-    ys: &[f64],
-    offsets: &[i32],
-    map: impl Into<RowSelectionRef<'a>>,
-    measure: F,
-) -> Vec<f64>
+pub(crate) fn geodesic_line_measure<F>(
+    columns: &LineColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
+    mut measure: F,
+) -> Result<Vec<f64>>
 where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
+    F: FnMut(&[f64], &[f64]) -> f64,
 {
-    let map = map.into();
-    let rows = line_logical_len(offsets, map);
+    let coords = columns.coords();
+    let xs = coords.xs();
+    let ys = coords.ys();
+    let rows = columns.rows();
+    let row_map = columns.selection();
+    let offsets = columns.offsets();
+    let longitude = frame.longitude();
     let mut output = Vec::with_capacity(rows);
     for logical in 0..rows {
-        let window = map.csr_window(offsets, logical);
-        output.push(measure(
-            column_window(xs, &window),
-            column_window(ys, &window),
-            window,
-        ));
-    }
-    output
-}
-
-/// Mask-aware variant of [`line_measure`]. Missing rows retain their output
-/// slot but never expose their rectangular NaN placeholder to a measure.
-pub(crate) fn line_measure_masked<'a, F>(
-    xs: &[f64],
-    ys: &[f64],
-    offsets: &[i32],
-    map: impl Into<RowSelectionRef<'a>>,
-    missing: Option<&ValidityMask>,
-    measure: F,
-) -> Vec<f64>
-where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
-{
-    let Some(missing) = missing else {
-        return line_measure(xs, ys, offsets, map, measure);
-    };
-    let map = map.into();
-    let rows = line_logical_len(offsets, map);
-    let mut output = Vec::with_capacity(rows);
-    for logical in 0..rows {
-        let value = if missing.is_missing(logical) {
-            f64::NAN
-        } else {
-            let window = map.csr_window(offsets, logical);
-            measure(
-                column_window(xs, &window),
-                column_window(ys, &window),
-                window,
-            )
+        if columns.is_missing(logical) {
+            output.push(f64::NAN);
+            continue;
+        }
+        let row = packed_line_row!(logical, coords, offsets, row_map);
+        let PackedRow::Lines {
+            vertices_start,
+            vertices_end,
+            ..
+        } = row
+        else {
+            unreachable!("line columns produce packed line rows")
         };
-        output.push(value);
+        let window = vertices_start..vertices_end;
+        let row_xs = column_window(xs, &window);
+        let row_ys = column_window(ys, &window);
+        validate_geographic_columns!(frame, longitude, row_xs, row_ys)?;
+        output.push(measure(row_xs, row_ys));
     }
-    output
+    Ok(output)
 }
 
-pub(crate) fn polygon_measure<'a, F, C>(
-    xs: &[f64],
-    ys: &[f64],
-    ring_offsets: &[i32],
-    polygon_offsets: &[i32],
-    map: impl Into<RowSelectionRef<'a>>,
+pub(crate) fn geodesic_polygon_measure<F>(
+    columns: &PolygonColumns<'_>,
+    frame: crate::geographic::GeographicFrame,
     ring_measure: F,
-    combine: C,
-) -> Vec<f64>
+) -> Result<Vec<f64>>
 where
     F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
-    C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
 {
-    let map = map.into();
-    let rows = polygon_logical_len(polygon_offsets, map);
+    let coords = columns.coords();
+    let xs = coords.xs();
+    let ys = coords.ys();
+    let rows = columns.rows();
+    let longitude = frame.longitude();
     let mut output = Vec::with_capacity(rows);
     for logical in 0..rows {
-        let rings = polygon_rings_range(polygon_offsets, map, logical);
-        let ring = |index: usize| {
-            let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-            ring_measure(
-                column_window(xs, &window),
-                column_window(ys, &window),
-                window,
-            )
+        if columns.is_missing(logical) {
+            output.push(f64::NAN);
+            continue;
+        }
+        let row = columns.packed_row(logical);
+        let PackedRow::Polygons {
+            ring_offsets,
+            rings_start,
+            rings_end,
+            ..
+        } = row
+        else {
+            unreachable!("polygon columns produce packed polygon rows")
         };
-        output.push(combine(rings, &ring));
-    }
-    output
-}
-
-/// Mask-aware variant of [`polygon_measure`]. Missing polygon rows emit the
-/// numeric sentinel without invoking ring measurement or combination.
-pub(crate) fn polygon_measure_masked<'a, F, C>(
-    xs: &[f64],
-    ys: &[f64],
-    ring_offsets: &[i32],
-    polygon_offsets: &[i32],
-    map: impl Into<RowSelectionRef<'a>>,
-    missing: Option<&ValidityMask>,
-    ring_measure: F,
-    combine: C,
-) -> Vec<f64>
-where
-    F: Fn(&[f64], &[f64], std::ops::Range<usize>) -> f64,
-    C: Fn(std::ops::Range<usize>, &dyn Fn(usize) -> f64) -> f64,
-{
-    let Some(missing) = missing else {
-        return polygon_measure(
+        if rings_start == rings_end {
+            output.push(0.0);
+            continue;
+        }
+        let vertices =
+            packed_polygon_vertex_window!(ring_offsets.as_slice(), rings_start..rings_end,);
+        let row_xs = column_window(xs, &vertices);
+        let row_ys = column_window(ys, &vertices);
+        validate_geographic_columns!(frame, longitude, row_xs, row_ys)?;
+        let shell = measure_admitted_polygon_ring!(
+            ring_offsets.as_slice(),
+            rings_start,
             xs,
             ys,
-            ring_offsets,
-            polygon_offsets,
-            map,
             ring_measure,
-            combine,
         );
-    };
-    let map = map.into();
-    let rows = polygon_logical_len(polygon_offsets, map);
-    let mut output = Vec::with_capacity(rows);
-    for logical in 0..rows {
-        let value = if missing.is_missing(logical) {
-            f64::NAN
-        } else {
-            let rings = polygon_rings_range(polygon_offsets, map, logical);
-            let ring = |index: usize| {
-                let window = ring_offsets[index] as usize..ring_offsets[index + 1] as usize;
-                ring_measure(
-                    column_window(xs, &window),
-                    column_window(ys, &window),
-                    window,
-                )
-            };
-            combine(rings, &ring)
-        };
-        output.push(value);
+        let holes: f64 = (rings_start.wrapping_add(1)..rings_end)
+            .map(|ring| {
+                measure_admitted_polygon_ring!(ring_offsets.as_slice(), ring, xs, ys, ring_measure,)
+            })
+            .sum();
+        output.push(shell + holes);
     }
-    output
+    Ok(output)
 }
 
 /// Validate geographic ordinates for present packed rows only. Nullable
 /// storage deliberately uses NaN placeholder coordinates; the mask, rather
 /// than the placeholder payload, is the trust boundary.
+#[cfg(test)]
 pub(crate) fn ensure_geographic_columns_present(
     columns: &PackedColumns<'_>,
     frame: crate::geographic::GeographicFrame,
 ) -> crate::error::Result<()> {
     let XyColumns { xs, ys } = columns.physical_xy();
+    let longitude = frame.longitude();
     columns.collect_rows(|row| {
-        if let Some(window) = row.vertex_window() {
-            crate::crs::ensure_geographic_columns_in_frame(
+        if let Some(window) = row.and_then(|row| row.vertex_window()) {
+            validate_geographic_columns!(
                 frame,
+                longitude,
                 column_window(xs, &window),
                 column_window(ys, &window),
             )?;
@@ -800,13 +811,14 @@ pub(crate) fn map_masked_point_columns_to_crs(
         let Some(physical) = physical else {
             continue;
         };
-        xs.push(coords.xs()[physical]);
-        ys.push(coords.ys()[physical]);
-        if let (Some(output), Some(source)) = (zs.as_mut(), coords.zs()) {
-            output.push(source[physical]);
+        let point = coords.point_at(physical);
+        xs.push(point.x);
+        ys.push(point.y);
+        if let Some(output) = zs.as_mut() {
+            output.push(point.z().expect("Z output preserves the source axis"));
         }
-        if let (Some(output), Some(source)) = (ms.as_mut(), coords.ms()) {
-            output.push(source[physical]);
+        if let Some(output) = ms.as_mut() {
+            output.push(point.m().expect("M output preserves the source axis"));
         }
     }
     let zt = zs.as_mut().map_or(crate::Zt::None, |values| {
@@ -821,16 +833,20 @@ pub(crate) fn map_masked_point_columns_to_crs(
     }
 
     let mut output = CoordSeqBuilder::with_capacity(coords.axes(), rows.len());
-    let mut present_row = 0;
+    let mut xs = xs.into_iter();
+    let mut ys = ys.into_iter();
+    let mut zs = zs.map(Vec::into_iter);
+    let mut ms = ms.map(Vec::into_iter);
     for (_, physical) in rows.cursor() {
         if physical.is_some() {
             output.push_xyzm(
-                xs[present_row],
-                ys[present_row],
-                zs.as_ref().map(|values| values[present_row]),
-                ms.as_ref().map(|values| values[present_row]),
+                xs.next().expect("present point has transformed X"),
+                ys.next().expect("present point has transformed Y"),
+                zs.as_mut()
+                    .map(|values| values.next().expect("present point has transformed Z")),
+                ms.as_mut()
+                    .map(|values| values.next().expect("present point has transformed M")),
             );
-            present_row += 1;
         } else {
             output.push_xyzm(
                 f64::NAN,
@@ -840,7 +856,6 @@ pub(crate) fn map_masked_point_columns_to_crs(
             );
         }
     }
-    debug_assert_eq!(present_row, present_count);
     Ok(output.finish()?)
 }
 
@@ -857,6 +872,25 @@ pub(crate) fn reduce_lines_or_polygons<R>(
         PackedColumns::Polygons(polygon_columns) => polygons(polygon_columns),
         PackedColumns::Points(_) => unreachable!("lines/polygons packed lane excludes points"),
     }
+}
+
+/// Expand the shared polygon row-bounds body into masked and dense loops so
+/// each loop can keep its mask decision outside per-row geometry resolution.
+macro_rules! packed_polygon_bounds_values {
+    ($columns:expr, $ring_offsets:expr, $xs:expr, $ys:expr, $row:expr $(,)?) => {{
+        let __columns = $columns;
+        let __ring_offsets = $ring_offsets;
+        let __xs = $xs;
+        let __ys = $ys;
+        let __row = $row;
+        let __rings = __columns.polygon_rings(__row);
+        if __rings.is_empty() {
+            [f64::NAN; 4]
+        } else {
+            let __vertices = packed_polygon_vertex_window!(__ring_offsets, __rings);
+            row_bounds_values(__xs, __ys, __vertices)
+        }
+    }};
 }
 
 fn bounds_values_from_columns_impl<const MASKED: bool>(
@@ -876,7 +910,7 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
                     values.push([f64::NAN; 4]);
                     continue;
                 };
-                let (x, y) = (xs[physical], ys[physical]);
+                let (x, y) = point_columns.physical_xy_at(physical);
                 values.push([x, y, x, y]);
             }
         },
@@ -892,20 +926,32 @@ fn bounds_values_from_columns_impl<const MASKED: bool>(
         },
         PackedColumns::Polygons(polygon_columns) => {
             let ring_offsets = polygon_columns.ring_offsets();
-            for row in 0..polygon_columns.rows() {
-                if MASKED && missing.is_some_and(|mask| mask.is_missing(row)) {
-                    values.push([f64::NAN; 4]);
-                    continue;
+            let rows = polygon_columns.rows();
+            let missing = if MASKED { missing } else { None };
+            if let Some(mask) = missing {
+                for (row, is_missing) in mask.iter().enumerate() {
+                    if is_missing {
+                        values.push([f64::NAN; 4]);
+                        continue;
+                    }
+                    values.push(packed_polygon_bounds_values!(
+                        polygon_columns,
+                        ring_offsets,
+                        xs,
+                        ys,
+                        row,
+                    ));
                 }
-                let rings = polygon_columns.polygon_rings(row);
-                let bounds = if rings.is_empty() {
-                    [f64::NAN; 4]
-                } else {
-                    let vertices =
-                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                    row_bounds_values(xs, ys, vertices)
-                };
-                values.push(bounds);
+            } else {
+                for row in 0..rows {
+                    values.push(packed_polygon_bounds_values!(
+                        polygon_columns,
+                        ring_offsets,
+                        xs,
+                        ys,
+                        row,
+                    ));
+                }
             }
         },
     }
@@ -987,31 +1033,23 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
             }
         },
         PackedColumns::Polygons(polygon_columns) => {
-            let coords = polygon_columns.coords();
             let XyColumns { xs, ys } = polygon_columns.physical_xy();
-            let ring_offsets = polygon_columns.ring_offsets();
             for row in 0..polygon_columns.rows() {
                 if MASKED && missing.is_some_and(|mask| mask.is_missing(row)) {
                     values.push([f64::NAN; 4]);
                     continue;
                 }
-                let rings = polygon_columns.polygon_rings(row);
-                let bounds = if rings.is_empty() {
-                    [f64::NAN; 4]
-                } else {
-                    let vertices =
-                        ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-                    let shape = Shape::Polygon(GeometryArrayStorage::polygon_view(
-                        coords,
-                        ring_offsets,
-                        rings,
-                    )?);
+                let packed_row = polygon_columns.packed_row(row);
+                let bounds = if let Some(vertices) = packed_row.vertex_window() {
+                    let shape = packed_row.to_shape()?;
                     if crate::geometry::crosses_antimeridian_in_frame(&shape, frame) {
                         crate::geometry::geographic_crossing_bounds_in_frame(&shape, frame)
                             .map_or([f64::NAN; 4], Bounds::into_array)
                     } else {
                         row_bounds_values(xs, ys, vertices)
                     }
+                } else {
+                    [f64::NAN; 4]
                 };
                 values.push(bounds);
             }
@@ -1022,7 +1060,7 @@ fn geographic_bounds_values_from_columns_impl<const MASKED: bool>(
 
 pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<Bounds> {
     if let PackedColumns::Polygons(polygons) = columns {
-        let XyColumns { xs, ys } = polygons.physical_xy();
+        let coords = polygons.coords();
         let ring_offsets = polygons.ring_offsets();
         let mut total: Option<Bounds> = None;
         for row in 0..polygons.rows() {
@@ -1030,11 +1068,11 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
                 continue;
             }
             let rings = polygons.polygon_rings(row);
-            if rings.is_empty() {
+            let Some(bounds) =
+                packed_polygon_bounds!(coords, ring_offsets, rings.start, rings.end,)
+            else {
                 continue;
-            }
-            let vertices = ring_offsets[rings.start] as usize..ring_offsets[rings.end] as usize;
-            let bounds = row_bounds(column_window(xs, &vertices), column_window(ys, &vertices))?;
+            };
             match &mut total {
                 Some(current) => current.include_bounds(bounds),
                 None => total = Some(bounds),
@@ -1045,7 +1083,7 @@ pub(crate) fn total_bounds_from_columns(columns: &PackedColumns<'_>) -> Option<B
     let XyColumns { xs, ys } = columns.physical_xy();
     let mut total: Option<Bounds> = None;
     columns.collect_rows::<_, ()>(|row| {
-        let Some(window) = row.vertex_window() else {
+        let Some(window) = row.and_then(|row| row.vertex_window()) else {
             return;
         };
         let Some(bounds) = row_bounds(column_window(xs, &window), column_window(ys, &window))
@@ -1094,7 +1132,6 @@ pub(crate) fn subdivide_polygon_columns(
     subdivide: impl Fn(&CoordSeq, &mut crate::geometry::ExpansionBudget) -> Result<CoordSeq>,
 ) -> Result<PackedColumnOutput> {
     let coords = columns.coords();
-    let ring_offsets = columns.ring_offsets();
     let (selected_len, rings) = columns.materialized_present_sizes()?;
     let mut builder = PackedColumnBuilder::like(coords, selected_len, rings);
     let mut polygon_builder = CsrOffsetBuilder::with_capacity(columns.rows());
@@ -1105,9 +1142,14 @@ pub(crate) fn subdivide_polygon_columns(
             continue;
         }
         let mut budget = crate::geometry::ExpansionBudget::new(operation, parameter);
-        let row_rings = columns.polygon_rings(row);
+        let packed_row = columns.packed_row(row);
+        let row_rings = packed_row
+            .polygon_rings()
+            .expect("packed polygon row has a ring range");
         for ring in row_rings.clone() {
-            let ring_window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
+            let ring_window = packed_row
+                .polygon_ring_window(ring)
+                .expect("ring lies in its admitted polygon row");
             builder.push_subdivided(coords, ring_window, &subdivide, &mut budget)?;
         }
         output_rings = output_rings.wrapping_add(row_rings.len());
@@ -1226,8 +1268,6 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
         },
         PackedColumns::Polygons(polygon_columns) => {
             let coords = polygon_columns.coords();
-            let ring_offsets = polygon_columns.ring_offsets();
-            let XyColumns { xs, ys } = polygon_columns.physical_xy();
             let rows = polygon_columns.rows();
             let (capacity, rings) = polygon_columns.materialized_present_sizes()?;
             let mut builder = PackedColumnBuilder::like(coords, capacity, rings);
@@ -1240,12 +1280,17 @@ pub(crate) fn packed_per_row_self_origin_affine_columns(
                         .map_err(batch_err)?;
                     continue;
                 }
-                let row_rings = polygon_columns.polygon_rings(row);
-                let pivot = packed_polygon_row_pivot(spec, xs, ys, ring_offsets, row_rings.clone())
+                let packed_row = polygon_columns.packed_row(row);
+                let row_rings = packed_row
+                    .polygon_rings()
+                    .expect("packed polygon row has a ring range");
+                let pivot = packed_polygon_row_pivot(spec, packed_row)
                     .map_err(|error| row_err(row, error))?;
                 let transform = linear.at(pivot).map_err(|error| row_err(row, error))?;
                 for ring in row_rings.clone() {
-                    let window = ring_offsets[ring] as usize..ring_offsets[ring + 1] as usize;
+                    let window = packed_row
+                        .polygon_ring_window(ring)
+                        .expect("ring lies in its admitted polygon row");
                     builder
                         .push_affine_about_origin_admitted(coords, window, transform)
                         .map_err(|error| row_err(row, error))?;
