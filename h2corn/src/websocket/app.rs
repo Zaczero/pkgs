@@ -272,7 +272,8 @@ mod tests {
     ) -> SlotFuture<Result<(), H2CornError>, RequestTaskGuard> {
         let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(app));
         let future = Arc::clone(&slot).wait(Arc::clone(shard));
-        slot.fill(Ok(()));
+        slot.fill(Ok(()))
+            .expect("completed websocket task slot accepts outcome");
         future
     }
 

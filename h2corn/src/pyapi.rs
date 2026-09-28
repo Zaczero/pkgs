@@ -18,15 +18,17 @@ use crate::config::{
     BindTarget, ClientCertMode, ConfiguredResponseHeader, ForwardedFields, Http1Config,
     Http2Config, ProxyConfig, ResponseHeaderConfig, ServerConfig, TlsConfig, WebSocketConfig,
 };
-use crate::error::{ConfigError, H2CornError, IntoPyResult as _, into_pyerr};
+use crate::error::{
+    ConfigError, H2CornError, IntoPyResult as _, into_pyerr, unexpected_join_error,
+};
 use crate::http::header::{configured_response_field_is_forbidden, lowercase_header_name_is_valid};
 use crate::http::header_value::header_value_is_valid;
 use crate::log::emit_banner as emit_access_banner;
 use crate::proxy_protocol::{ProxyProtocolMode, TrustedPeer, parse_trusted_peer};
 use crate::pyloop::{
     PumpEvent, ResolvePayload, RustFuture, SecondaryLoopFactory, Shard, ShardHandle, ShardThread,
-    SlotFuture, call_awaitable, init_runtime, new_rust_future, release_app, runtime,
-    spawn_shard_thread,
+    SlotFuture, call_awaitable, init_runtime, new_rust_future, release_app,
+    report_shard_thread_panic, runtime, spawn_shard_thread,
 };
 use crate::runtime::{AppRuntime, AppRuntimeHandle, RuntimeLimits};
 use crate::server::{
@@ -640,6 +642,9 @@ async fn start_secondary_lifespans(
         match joined {
             Ok((_, outcome)) => outcomes.push(outcome),
             Err(err) => {
+                let Some(err) = unexpected_join_error(err) else {
+                    continue;
+                };
                 let index = secondary_loop_index(&task_indices, &err);
                 if let Some(shard) = shards.get(1..).and_then(|secondary| secondary.get(index)) {
                     outcomes.push((index, Arc::clone(shard), None, Err(err.into())));
@@ -690,12 +695,16 @@ async fn start_secondary_lifespans(
         return (runner_slots.into_iter().flatten().collect(), None);
     }
 
-    // Prefer the lowest-index startup error, then any rollback failure.
-    let first_startup_error = {
+    // Keep the lowest-index startup error primary and report rollback failures.
+    let mut startup_errors = {
         let mut errors: Vec<(usize, H2CornError)> = error_slots.into_iter().flatten().collect();
         errors.sort_unstable_by_key(|(index, _)| *index);
-        errors.into_iter().next().map(|(_, err)| err)
+        errors.into_iter().map(|(_, err)| err).collect::<Vec<_>>()
     };
+    let first_startup_error = startup_errors.remove(0);
+    for err in startup_errors {
+        crate::server::report_failure("secondary lifespan startup", Err(err));
+    }
     // Roll back every retained runner, including successful higher-index ones.
     // Collect into the call so Py owners are not bound past the await.
     let shutdown_error = stop_secondary_lifespans(
@@ -703,7 +712,10 @@ async fn start_secondary_lifespans(
         config.shutdown_timeout,
     )
     .await;
-    (Vec::new(), first_startup_error.or(shutdown_error))
+    if let Some(err) = shutdown_error {
+        crate::server::report_failure("secondary lifespan rollback", Err(err));
+    }
+    (Vec::new(), Some(first_startup_error))
 }
 
 async fn stop_secondary_lifespans(
@@ -731,6 +743,9 @@ async fn stop_secondary_lifespans(
         match joined {
             Ok((_, outcome)) => outcomes.push(outcome),
             Err(err) => {
+                let Some(err) = unexpected_join_error(err) else {
+                    continue;
+                };
                 let index = secondary_loop_index(&task_indices, &err);
                 errors.push((index, err.into()));
             },
@@ -743,9 +758,30 @@ async fn stop_secondary_lifespans(
         }
     }
     errors.sort_unstable_by_key(|(index, _)| *index);
-    errors.into_iter().next().map(|(_, err)| err)
+    let mut errors = errors.into_iter().map(|(_, err)| err);
+    let first = errors.next();
+    for err in errors {
+        crate::server::report_failure("secondary lifespan shutdown", Err(err));
+    }
+    first
 }
 
+fn record_shutdown_failure(
+    result: &mut Result<(), H2CornError>,
+    subject: &str,
+    failure: H2CornError,
+) {
+    if result.is_ok() {
+        *result = Err(failure);
+    } else {
+        crate::server::report_failure(subject, Err(failure));
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "one lifecycle owner must keep startup errors, shutdown priority, and final resolution in order"
+)]
 async fn run_serve_task(task: ServeTask) {
     let ServeTask {
         app,
@@ -792,10 +828,8 @@ async fn run_serve_task(task: ServeTask) {
     if let Some(cfg) = lifespan_config {
         let shutdown_error =
             stop_secondary_lifespans(secondary_runners, cfg.shutdown_timeout).await;
-        if result.is_ok()
-            && let Some(err) = shutdown_error
-        {
-            result = Err(err);
+        if let Some(err) = shutdown_error {
+            record_shutdown_failure(&mut result, "secondary lifespan shutdown", err);
         }
     }
 
@@ -810,15 +844,50 @@ async fn run_serve_task(task: ServeTask) {
         },
         Err(app) => {
             let owners = Arc::strong_count(&app);
-            result = Err(H2CornError::from(PyRuntimeError::new_err(format!(
-                "server teardown retained {owners} AppRuntime owners after draining"
-            ))));
-            release_app(Arc::clone(&main_shard), app).await;
+            record_shutdown_failure(
+                &mut result,
+                "server teardown",
+                H2CornError::from(PyRuntimeError::new_err(format!(
+                    "server teardown retained {owners} AppRuntime owners after draining"
+                ))),
+            );
+            if let Err(err) = release_app(Arc::clone(&main_shard), app).await {
+                record_shutdown_failure(&mut result, "application release", err);
+            }
             None
         },
     };
     if !shard_threads.is_empty() {
-        drop(spawn_blocking(move || drop(shard_threads)).await);
+        match spawn_blocking(move || {
+            shard_threads
+                .into_iter()
+                .filter_map(|thread| thread.shutdown().err())
+                .collect::<Vec<_>>()
+        })
+        .await
+        {
+            Ok(errors) => {
+                for detail in errors {
+                    report_shard_thread_panic(&detail);
+                    record_shutdown_failure(
+                        &mut result,
+                        "shard thread shutdown",
+                        H2CornError::from(PyRuntimeError::new_err(format!(
+                            "shard thread panicked: {detail}"
+                        ))),
+                    );
+                }
+            },
+            Err(error) => {
+                if let Some(error) = unexpected_join_error(error) {
+                    record_shutdown_failure(
+                        &mut result,
+                        "shard thread shutdown",
+                        H2CornError::from(error),
+                    );
+                }
+            },
+        }
     }
     main_shard.push(PumpEvent::Resolve {
         fut: resolve_fut,
@@ -870,6 +939,14 @@ async fn run_serve_task(task: ServeTask) {
 #[expect(
     clippy::needless_pass_by_value,
     reason = "PyO3 requires PyRef by value for class arguments"
+)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "listener adoption, shard ownership, and the awaitable handoff form one startup transaction"
+)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "startup owners transfer together into ServeTask, while each fallible exit releases them before detaching the loop"
 )]
 pub(crate) fn serve_fds<'py>(
     py: Python<'py>,
@@ -931,7 +1008,14 @@ pub(crate) fn serve_fds<'py>(
             Ok(thread) => thread,
             Err(err) => {
                 for thread in shard_threads {
-                    thread.shutdown();
+                    if let Err(detail) = thread.shutdown() {
+                        crate::server::report_failure(
+                            "shard thread startup cleanup",
+                            Err(H2CornError::from(PyRuntimeError::new_err(format!(
+                                "shard thread panicked: {detail}"
+                            )))),
+                        );
+                    }
                 }
                 main_shard.detach(py);
                 return Err(err);
@@ -970,7 +1054,9 @@ pub(crate) fn serve_fds<'py>(
             return Err(err);
         },
     };
-    runtime().spawn(run_serve_task(ServeTask {
+    let panic_shard = Arc::clone(&main_shard);
+    let panic_future = server_done.clone_ref(py);
+    let task = ServeTask {
         app,
         fds,
         config,
@@ -982,7 +1068,21 @@ pub(crate) fn serve_fds<'py>(
         shard_threads,
         main_shard,
         resolve_fut: server_done.clone_ref(py),
-    }));
+    };
+    runtime().spawn(async move {
+        let task = runtime().spawn(run_serve_task(task));
+        if let Err(error) = task.await
+            && let Some(error) = unexpected_join_error(error)
+        {
+            let message = format!("server task panicked: {error}");
+            panic_shard.push(PumpEvent::Resolve {
+                fut: panic_future,
+                payload: ResolvePayload::Simple(Box::new(move |_| {
+                    Err(PyRuntimeError::new_err(message))
+                })),
+            });
+        }
+    });
     Ok(server_done.into_bound(py).into_any())
 }
 
@@ -1125,6 +1225,34 @@ mod tests {
             effective_loop_count(false, 4, SecondaryLoopFactory::Uvloop).unwrap(),
             4
         );
+    }
+
+    #[test]
+    fn shutdown_failure_becomes_primary_only_without_an_existing_error() {
+        Python::initialize();
+        Python::attach(|py| {
+            let mut result = Ok(());
+            record_shutdown_failure(
+                &mut result,
+                "test cleanup",
+                H2CornError::from(PyRuntimeError::new_err("cleanup failed")),
+            );
+            let error = result.into_pyresult().unwrap_err();
+            assert!(error.is_instance_of::<PyRuntimeError>(py));
+            assert_eq!(
+                error.value(py).str().unwrap().to_string_lossy(),
+                "cleanup failed"
+            );
+
+            let mut result = Err(H2CornError::from(PyRuntimeError::new_err("serving failed")));
+            record_shutdown_failure(
+                &mut result,
+                "test cleanup",
+                H2CornError::from(PyRuntimeError::new_err("cleanup failed")),
+            );
+            let error = result.unwrap_err();
+            assert!(error.to_string().contains("serving failed"));
+        });
     }
 
     #[test]

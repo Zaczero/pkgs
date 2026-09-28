@@ -50,7 +50,9 @@ use crate::http::types::{
     BytesStr, EarlyHintLinks, FinalResponseStatus, HttpStatusCode, ResponseHeaderName,
     ResponseHeaderValue, ResponseHeaders, ResponseTrailers,
 };
-use crate::pyloop::{PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, runtime};
+use crate::pyloop::{
+    PumpEvent, ResolveOp, ResolvePayload, Shard, new_rust_future, observe_waiter, runtime,
+};
 use crate::python::{StaticPyKey, py_dict};
 use crate::runtime::H2InputCredit;
 use crate::websocket::{
@@ -908,6 +910,8 @@ where
     // dropped after the clone, so Clippy's merge suggestion is invalid here.
     let fut = new_rust_future(py, Arc::clone(shard))?;
     let waiter_fut = fut.clone_ref(py);
+    let panic_fut = fut.clone_ref(py);
+    let panic_shard = Arc::clone(shard);
     let waiter_shard = Arc::clone(shard);
     let state = Arc::clone(state);
     let join = runtime().spawn(async move {
@@ -930,6 +934,7 @@ where
         drop(wait_guard);
     });
     fut.get().set_abort(join.abort_handle());
+    observe_waiter(join, panic_shard, panic_fut, "receive waiter");
     Ok(fut.into_bound(py).into_any())
 }
 
@@ -1337,6 +1342,8 @@ where
 {
     let fut = new_rust_future(py, Arc::clone(&shard))?;
     let waiter_fut = fut.clone_ref(py);
+    let panic_fut = fut.clone_ref(py);
+    let panic_shard = Arc::clone(&shard);
     let waiter_shard = shard;
     let join = runtime().spawn(async move {
         let sent = deliver.await;
@@ -1353,6 +1360,7 @@ where
         });
     });
     fut.get().set_abort(join.abort_handle());
+    observe_waiter(join, panic_shard, panic_fut, "send waiter");
     Ok(fut.into_bound(py).into_any())
 }
 

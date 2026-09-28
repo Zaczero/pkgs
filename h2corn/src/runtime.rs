@@ -1211,7 +1211,7 @@ mod tests {
     async fn request_settlement_normal_completion_releases_on_final_owner_drop() {
         let app = test_app_runtime();
         let slot = TaskSlot::<(), RequestTaskGuard>::with_guard(request_task_guard(&app));
-        slot.fill(());
+        slot.fill(()).expect("runtime-test slot has a waiter");
         let shard = app.main_shard();
 
         Arc::clone(&slot).wait(shard).await;

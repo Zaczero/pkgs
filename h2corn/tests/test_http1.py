@@ -1521,11 +1521,19 @@ async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_repa
 ):
     seen = []
     app_started = asyncio.Event()
+    disconnected = asyncio.Event()
 
     async def app(scope, receive, send):
         seen.append((scope['method'], scope['path']))
         app_started.set()
-        await read_http_request_body(receive)
+        while True:
+            message = await receive()
+            if message['type'] == 'http.disconnect':
+                disconnected.set()
+                return
+            assert message['type'] == 'http.request', message
+            if not message.get('more_body', False):
+                break
         await send({'type': 'http.response.start', 'status': 200, 'headers': []})
         await send({'type': 'http.response.body', 'body': scope['path'].encode()})
 
@@ -1567,6 +1575,7 @@ async def test_http1_body_limit_closes_connection_before_buffered_bytes_are_repa
     assert body == b''
     assert trailing == b''
     assert seen == [('POST', '/first')]
+    assert disconnected.is_set()
 
 
 async def test_upgrade_header_is_a_list_of_protocols() -> None:

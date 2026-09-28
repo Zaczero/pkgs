@@ -2,16 +2,19 @@ use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
 use std::mem::replace;
 use std::num::{NonZeroU32, NonZeroU64};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant as TokioInstant;
 
 use crate::async_util::{TryPush, try_push};
 use crate::bridge::{RequestBodyCounter, RequestInputShared};
+use crate::error::{H2CornError, unexpected_join_error};
 use crate::h2::deadline::DeadlineQueue;
 use crate::h2::request::{HeaderBlockTarget, HeaderLimits, PendingHeaderBlock};
 use crate::h2::writer::{H2WriterHandle, WriterState};
@@ -399,6 +402,7 @@ pub(super) struct RequestSpawnContext<'a> {
 pub(super) struct RequestTasks {
     active: StreamMap<RequestTask>,
     limit: usize,
+    runtime: tokio::runtime::Handle,
     completed_tx: mpsc::Sender<StreamId>,
     completed_rx: mpsc::Receiver<StreamId>,
 }
@@ -422,16 +426,38 @@ impl RequestTask {
             self.cancellation.take()
             && let Some(pending) = disconnect.pending_resolution()
         {
-            // The handle deliberately stays inside `self` across this await:
-            // if the connection's grace deadline drops this future here, the
-            // task has to be aborted by the drop above, not detached.
-            pending.wait().await;
+            let pending = pending.wait();
+            tokio::pin!(pending);
+            let joined = {
+                let task = self.task.as_mut().expect("live request task is retained");
+                tokio::select! {
+                    biased;
+                    () = &mut pending => None,
+                    joined = task => Some(joined),
+                }
+            };
+            if let Some(joined) = joined {
+                Self::report_join(joined);
+                self.task = None;
+                // A task may panic before the pending receive settles. Observe
+                // it now, but retain the disconnect-before-cancel ordering.
+                pending.await;
+                return;
+            }
         }
         if let Some(task) = self.task.as_mut() {
             task.abort();
-            drop(task.await);
+            Self::report_join(task.await);
         }
         self.task = None;
+    }
+
+    fn report_join(joined: Result<(), JoinError>) {
+        if let Err(join_error) = joined
+            && let Some(join_error) = unexpected_join_error(join_error)
+        {
+            crate::server::report_request_failure(Err(H2CornError::from(join_error)));
+        }
     }
 }
 
@@ -446,6 +472,7 @@ impl RequestTasks {
         Self {
             active: new_stream_map(),
             limit,
+            runtime: tokio::runtime::Handle::current(),
             completed_tx,
             completed_rx,
         }
@@ -506,10 +533,42 @@ impl RequestTasks {
         self.reap_completed();
     }
 
-    pub(super) fn reap_completed(&mut self) {
-        while let Ok(stream_id) = self.completed_rx.try_recv() {
-            self.active.remove(&stream_id);
+    fn take_completed_task(&mut self, stream_id: StreamId, joins: &mut Vec<JoinHandle<()>>) {
+        if let Some(mut request) = self.active.remove(&stream_id)
+            && let Some(task) = request.task.take()
+        {
+            joins.push(task);
         }
+    }
+
+    fn take_completed_tasks(&mut self, joins: &mut Vec<JoinHandle<()>>) {
+        while let Ok(stream_id) = self.completed_rx.try_recv() {
+            self.take_completed_task(stream_id, joins);
+        }
+    }
+
+    fn observe_join_handles(runtime: &tokio::runtime::Handle, joins: Vec<JoinHandle<()>>) {
+        let mut pending = Vec::new();
+        let mut context = Context::from_waker(Waker::noop());
+        for mut task in joins {
+            match Pin::new(&mut task).poll(&mut context) {
+                Poll::Ready(joined) => RequestTask::report_join(joined),
+                Poll::Pending => pending.push(task),
+            }
+        }
+        if !pending.is_empty() {
+            runtime.spawn(async move {
+                for task in pending {
+                    RequestTask::report_join(task.await);
+                }
+            });
+        }
+    }
+
+    pub(super) fn reap_completed(&mut self) {
+        let mut joins = Vec::new();
+        self.take_completed_tasks(&mut joins);
+        Self::observe_join_handles(&self.runtime, joins);
     }
 
     pub(super) async fn wait_for_completion(&mut self) {
@@ -518,8 +577,10 @@ impl RequestTasks {
             .recv()
             .await
             .expect("RequestTasks retains the completion sender");
-        self.active.remove(&stream_id);
-        self.reap_completed();
+        let mut joins = Vec::new();
+        self.take_completed_task(stream_id, &mut joins);
+        self.take_completed_tasks(&mut joins);
+        Self::observe_join_handles(&self.runtime, joins);
     }
 
     pub(super) fn active_count(&self) -> usize {
@@ -537,15 +598,21 @@ impl Drop for RequestTasks {
         // running with nothing left to wait on it. This only runs when the
         // connection itself is going away, so anything still here is
         // abandoned; a task that finished on its own was reaped long before.
+        let active = replace(&mut self.active, new_stream_map());
         #[expect(
             clippy::iter_over_hash_type,
             reason = "order-independent: every task is aborted, and nothing observes which went first"
         )]
-        for (_, mut task) in self.active.drain() {
-            if let Some(task) = task.task.take() {
+        for request in active.values() {
+            if let Some(task) = request.task.as_ref() {
                 task.abort();
             }
         }
+        let active = active
+            .into_values()
+            .filter_map(|mut request| request.task.take())
+            .collect::<Vec<_>>();
+        Self::observe_join_handles(&self.runtime, active);
     }
 }
 
@@ -962,6 +1029,7 @@ mod tests {
     use std::future::pending;
     use std::num::NonZeroU32;
     use std::pin::Pin;
+    use std::process::Command;
     use std::sync::Arc;
     use std::task::{Context, Poll, Waker};
     use std::time::{Duration, Instant};
@@ -977,6 +1045,16 @@ mod tests {
     };
     use crate::h2_frame::{STREAM_ID_MASK, StreamId, WindowIncrement};
     use crate::runtime::{H2InputCreditQueue, StreamInput};
+
+    struct JoinReportSignal(Option<oneshot::Sender<()>>);
+
+    impl Drop for JoinReportSignal {
+        fn drop(&mut self) {
+            if let Some(signal) = self.0.take() {
+                let _signal_result = signal.send(());
+            }
+        }
+    }
 
     fn data(byte: &'static [u8]) -> StreamInput {
         StreamInput::data(Bytes::from_static(byte))
@@ -1115,6 +1193,76 @@ mod tests {
         dropped_rx
             .await
             .expect("request task was aborted and dropped");
+    }
+
+    #[test]
+    fn reaped_stream_task_panics_are_reported_and_cancellation_is_silent() {
+        const CHILD: &str = "H2CORN_STREAM_JOIN_CHILD";
+        const TEST: &str =
+            "h2::state::tests::reaped_stream_task_panics_are_reported_and_cancellation_is_silent";
+        if std::env::var_os(CHILD).is_some() {
+            tokio::runtime::Builder::new_current_thread()
+                .build()
+                .expect("current-thread runtime builds")
+                .block_on(async {
+                    let mut tasks = RequestTasks::new(1);
+                    let cancelled = StreamId::new(1).expect("non-zero stream id");
+                    let completion = tasks.reserve_completion(cancelled);
+                    tasks.spawn(cancelled, RequestTaskCancellation::Immediate, async move {
+                        let _completion = completion;
+                        pending::<()>().await;
+                    });
+                    tasks.cancel(cancelled).await;
+                    assert_eq!(tasks.active_count(), 0);
+
+                    let panicked = StreamId::new(3).expect("non-zero stream id");
+                    let completion = tasks.reserve_completion(panicked);
+                    let (started_tx, started_rx) = oneshot::channel();
+                    let (continue_tx, continue_rx) = oneshot::channel();
+                    let (reported_tx, reported_rx) = oneshot::channel();
+                    tasks.spawn(panicked, RequestTaskCancellation::Immediate, async move {
+                        drop(completion);
+                        started_tx
+                            .send(())
+                            .expect("test observes completion publication");
+                        continue_rx.await.expect("test releases the pending task");
+                        std::panic::panic_any(JoinReportSignal(Some(reported_tx)));
+                    });
+                    started_rx
+                        .await
+                        .expect("task published completion and is pending");
+                    let reaping = {
+                        let mut reaping = Box::pin(tasks.wait_for_completion());
+                        poll_once(reaping.as_mut())
+                    };
+                    assert!(
+                        matches!(reaping, Poll::Ready(())),
+                        "connection-side reaping must not wait for task completion"
+                    );
+                    assert_eq!(tasks.active_count(), 0);
+                    continue_tx
+                        .send(())
+                        .expect("test releases the pending task");
+                    reported_rx
+                        .await
+                        .expect("background observer reports the later panic");
+                });
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("child test process starts");
+        assert!(
+            output.status.success(),
+            "child failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("request failed:").count(), 1);
+        assert!(stderr.contains("panicked"));
     }
 
     /// Poll a future exactly once, without a dependency on a combinator crate.

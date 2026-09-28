@@ -275,7 +275,8 @@ mod tests {
     fn completed_app_task(app: &AppRuntimeHandle) -> WebSocketAppTask {
         let slot = TaskSlot::with_guard(test_fixtures::request_task_guard(app));
         let task = WebSocketAppTask::new(std::sync::Arc::clone(&slot).wait(app.main_shard()));
-        slot.fill(Ok(()));
+        slot.fill(Ok(()))
+            .expect("completed websocket task slot accepts outcome");
         task
     }
 

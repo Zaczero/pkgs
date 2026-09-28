@@ -1169,20 +1169,19 @@ where
     state.request_tasks.cancel_all().await;
     match result {
         Ok(()) => {
-            drop(
-                state
-                    .writer
-                    .goaway(
-                        state.last_client_stream_id,
-                        ErrorCode::NO_ERROR,
-                        Vec::new(),
-                        true,
-                    )
-                    .await,
-            );
+            let result = state
+                .writer
+                .goaway(
+                    state.last_client_stream_id,
+                    ErrorCode::NO_ERROR,
+                    Vec::new(),
+                    true,
+                )
+                .await
+                .map(drop);
             state.writer.close_ingress().await;
             drop(state.connection);
-            Ok(())
+            result
         },
         Err(error) => {
             // The fatal GOAWAY was already written. Linger briefly
@@ -1190,7 +1189,9 @@ where
             // socket with unread inbound bytes makes the kernel RST the
             // connection, and the peer's kernel then discards the unread
             // GOAWAY from its receive buffer.
-            linger_after_fatal_goaway(&mut state).await;
+            if let Err(shutdown_error) = linger_after_fatal_goaway(&mut state).await {
+                crate::server::report_failure("connection shutdown", Err(shutdown_error));
+            }
             Err(error)
         },
     }
@@ -1198,14 +1199,16 @@ where
 
 /// Bounded lingering close: half-close the write side, then discard inbound
 /// bytes until the peer closes or the linger window expires.
-async fn linger_after_fatal_goaway<R, W>(state: &mut H2ConnectionState<R, W>)
+async fn linger_after_fatal_goaway<R, W>(
+    state: &mut H2ConnectionState<R, W>,
+) -> Result<(), H2CornError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + WriteTarget,
 {
     const FATAL_GOAWAY_LINGER: Duration = Duration::from_secs(1);
 
-    state.writer.shutdown_write().await;
+    let shutdown_result = state.writer.shutdown_write().await;
     let deadline = TokioInstant::now()
         .checked_add(FATAL_GOAWAY_LINGER)
         .expect("GOAWAY linger fits monotonic clock");
@@ -1217,6 +1220,7 @@ where
             _ => break, // peer closed, read error, or linger window expired
         }
     }
+    shutdown_result
 }
 
 async fn drive_h2_connection<R, W>(state: &mut H2ConnectionState<R, W>) -> Result<(), H2CornError>

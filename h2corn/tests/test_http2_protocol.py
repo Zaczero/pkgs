@@ -1718,11 +1718,15 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream(
 ) -> None:
     padded = idle_data != b''
     slow_bodies: list[bytes] = []
+    slow_disconnects: list[None] = []
 
     async def app(scope, receive, send):
         if scope['path'] == '/slow':
             while True:
                 message = await receive()
+                if message['type'] == 'http.disconnect':
+                    slow_disconnects.append(None)
+                    return
                 assert message['type'] == 'http.request'
                 slow_bodies.append(message.get('body', b''))
                 if not message.get('more_body', False):
@@ -1819,6 +1823,7 @@ async def test_request_body_idle_timeout_only_resets_stalled_stream(
     assert fast_status == 200
     assert fast_body == b'fast'
     assert b'late' not in slow_bodies
+    assert slow_disconnects == [None]
 
 
 async def test_h2_header_block_size_limit_resets_stream() -> None:

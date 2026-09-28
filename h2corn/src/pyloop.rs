@@ -19,6 +19,7 @@ mod future;
 mod pump;
 mod slot;
 
+use std::any::Any;
 use std::collections::VecDeque;
 #[cfg(unix)]
 use std::os::fd::{AsRawFd as _, OwnedFd, RawFd};
@@ -36,10 +37,11 @@ use pyo3::types::{PyBool, PyDict};
 use rustix::io::{Result as RustixResult, read, retry_on_intr, write};
 use tokio::runtime::Runtime;
 use tokio::sync::oneshot;
+use tokio::task::JoinHandle as TokioJoinHandle;
 
 use crate::app_call::AppCallArgs;
 use crate::bridge::ReadyNone;
-use crate::error::H2CornError;
+use crate::error::{H2CornError, unexpected_join_error};
 pub(crate) use crate::pyloop::future::{ResolveOp, ResolvePayload, RustFuture, new_rust_future};
 pub(crate) use crate::pyloop::slot::{SlotFuture, TaskSlot};
 use crate::runtime::{AppRuntimeHandle, RequestTaskGuard};
@@ -59,12 +61,15 @@ struct TokioRuntime {
 pub(crate) type BuildAwaitable =
     Box<dyn for<'py> FnOnce(Python<'py>, Shard) -> PyResult<Py<PyAny>> + Send>;
 
+pub(crate) enum UnraisableError {
+    Python(PyErr),
+    H2Corn(H2CornError),
+}
+
 /// Scoped ownership of one loop-affine bridge. Requests clone this handle only
 /// when they cross an ownership boundary; the pump keeps a `Weak` reference so
 /// a completed embedded `serve()` can release the doorbell and Python caches.
 pub(crate) type Shard = Arc<ShardHandle>;
-
-pub(crate) type SlotHandle<T, Guard = ()> = Arc<TaskSlot<T, Guard>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SecondaryLoopFactory {
@@ -192,7 +197,7 @@ pub(crate) enum PumpEvent {
     /// eager task, deliver the outcome through the slot.
     StartTask {
         args: Box<AppCallArgs>,
-        slot: SlotHandle<Result<(), H2CornError>, RequestTaskGuard>,
+        slot: Arc<TaskSlot<Result<(), H2CornError>, RequestTaskGuard>>,
     },
     /// Resolve a pending duck future with a payload produced by Rust I/O.
     Resolve {
@@ -203,13 +208,13 @@ pub(crate) enum PumpEvent {
     /// (cold path: the shutdown trigger).
     SpawnAwaitable {
         awaitable: Py<PyAny>,
-        slot: SlotHandle<PyResult<Py<PyAny>>>,
+        slot: Arc<TaskSlot<PyResult<Py<PyAny>>>>,
     },
     /// Construct and run an awaitable on this loop. Used for transactional
     /// secondary-loop lifecycle operations; construction is loop-affine.
     CallAwaitable {
         build: BuildAwaitable,
-        slot: SlotHandle<PyResult<Py<PyAny>>>,
+        slot: Arc<TaskSlot<PyResult<Py<PyAny>>>>,
     },
     /// Drop a fallback shared-app owner on the main loop, then acknowledge so
     /// secondary shards can be stopped without cross-loop final destruction.
@@ -219,6 +224,8 @@ pub(crate) enum PumpEvent {
     },
     /// Cancel an abandoned Python task on the event loop that owns it.
     CancelTask { task: Py<PyAny> },
+    /// Report a failed slot result whose waiter was abandoned after completion.
+    ReportUnraisable { error: UnraisableError },
     /// Call a zero-argument Python callable on the loop thread — the
     /// supervisor notifications (ready, retire) whose Rust-side trigger can
     /// fire from any tokio thread, which must never attach to Python.
@@ -398,8 +405,10 @@ impl ShardHandle {
     /// Schedule another pump pass on the same thread (remainder batches),
     /// suppressing redundant cross-thread doorbells from producers.
     pub(super) fn reschedule_local(&self, py: Python<'_>) {
-        if !self.armed.swap(true, Ordering::AcqRel) {
-            drop(self.schedule_pump(py, &self.call_soon));
+        if !self.armed.swap(true, Ordering::AcqRel)
+            && let Err(error) = self.schedule_pump(py, &self.call_soon)
+        {
+            error.write_unraisable(py, Some(self.call_soon.bind(py)));
         }
     }
 
@@ -421,7 +430,9 @@ impl ShardHandle {
         // teardown case as a POSIX loop that stopped reading the fd.
         #[cfg(windows)]
         Python::attach(|py| {
-            drop(self.schedule_pump(py, &self.call_soon_threadsafe));
+            if let Err(error) = self.schedule_pump(py, &self.call_soon_threadsafe) {
+                error.write_unraisable(py, Some(self.call_soon_threadsafe.bind(py)));
+            }
         });
     }
 
@@ -483,10 +494,12 @@ impl ShardHandle {
     pub(crate) fn detach(&self, py: Python<'_>) {
         #[cfg(unix)]
         {
-            drop(self.event_loop.bind(py).call_method1(
+            if let Err(error) = self.event_loop.bind(py).call_method1(
                 pyo3::intern!(py, "remove_reader"),
                 (self.doorbell.reader_fd(),),
-            ));
+            ) {
+                error.write_unraisable(py, Some(self.event_loop.bind(py)));
+            }
         }
         #[cfg(windows)]
         let _ = py;
@@ -494,11 +507,13 @@ impl ShardHandle {
 
     pub(super) fn stop_loop(&self, py: Python<'_>) {
         self.detach(py);
-        drop(
-            self.event_loop
-                .bind(py)
-                .call_method0(pyo3::intern!(py, "stop")),
-        );
+        if let Err(error) = self
+            .event_loop
+            .bind(py)
+            .call_method0(pyo3::intern!(py, "stop"))
+        {
+            error.write_unraisable(py, Some(self.event_loop.bind(py)));
+        }
     }
 
     /// Drain up to [`PUMP_BATCH_MAX`] events into a LIFO work buffer in
@@ -524,29 +539,49 @@ impl ShardThread {
     }
 
     /// Stop the shard's loop and join its thread.
-    pub(crate) fn shutdown(mut self) {
-        self.shutdown_inner();
+    pub(crate) fn shutdown(mut self) -> Result<(), String> {
+        self.shutdown_inner()
     }
 
-    fn shutdown_inner(&mut self) {
-        let Some(shard) = self.shard.take() else {
-            return;
-        };
-        shard.push(PumpEvent::StopLoop);
-        // The loop thread retains its own handle until after `loop.close()`.
-        // Drop this cross-thread owner before joining so Python caches and the
-        // doorbell are finally destroyed on their owning loop thread.
-        drop(shard);
-        if let Some(join) = self.join.take() {
-            drop(join.join());
+    fn shutdown_inner(&mut self) -> Result<(), String> {
+        if let Some(shard) = self.shard.take() {
+            shard.push(PumpEvent::StopLoop);
+            // The loop thread retains its own handle until after `loop.close()`.
+            // Drop this cross-thread owner before joining so Python caches and the
+            // doorbell are finally destroyed on their owning loop thread.
+            drop(shard);
         }
+        self.join.take().map_or(Ok(()), |join| {
+            join.join().map_err(|panic| panic_message(panic.as_ref()))
+        })
     }
 }
 
 impl Drop for ShardThread {
     fn drop(&mut self) {
-        self.shutdown_inner();
+        if let Err(detail) = self.shutdown_inner() {
+            report_shard_thread_panic(&detail);
+        }
     }
+}
+
+fn panic_message(panic: &(dyn Any + Send)) -> String {
+    panic.downcast_ref::<String>().map_or_else(
+        || {
+            panic.downcast_ref::<&'static str>().map_or_else(
+                || "non-string panic payload".to_owned(),
+                |message| (*message).to_owned(),
+            )
+        },
+        String::clone,
+    )
+}
+
+pub(crate) fn report_shard_thread_panic(detail: &str) {
+    crate::log::Event::Failed.emit(format_args!("shard thread panicked: {detail}"), |fields| {
+        fields.str("subject", "shard thread");
+        fields.str("detail", detail);
+    });
 }
 
 /// Spawn a dedicated Python thread running a fresh event loop with its own
@@ -565,7 +600,9 @@ pub(crate) fn spawn_shard_thread(
                     let event_loop = factory.create(py)?;
                     let actual = SecondaryLoopFactory::classify(&event_loop)?;
                     if actual != factory {
-                        drop(event_loop.call_method0("close"));
+                        if let Err(error) = event_loop.call_method0("close") {
+                            error.write_unraisable(py, Some(&event_loop));
+                        }
                         return Err(PyRuntimeError::new_err(format!(
                             "{factory:?} secondary-loop factory returned {actual:?} loop"
                         )));
@@ -577,9 +614,12 @@ pub(crate) fn spawn_shard_thread(
                     Ok((shard, event_loop)) => {
                         drop(tx.send(Ok(Arc::clone(&shard))));
                         // Blocks this thread until ShardHandle::stop.
-                        let result = event_loop.bind(py).call_method0("run_forever");
-                        drop(result);
-                        drop(event_loop.bind(py).call_method0("close"));
+                        if let Err(error) = event_loop.bind(py).call_method0("run_forever") {
+                            error.write_unraisable(py, Some(event_loop.bind(py)));
+                        }
+                        if let Err(error) = event_loop.bind(py).call_method0("close") {
+                            error.write_unraisable(py, Some(event_loop.bind(py)));
+                        }
                         drop(shard);
                     },
                     Err(err) => {
@@ -598,7 +638,9 @@ pub(crate) fn spawn_shard_thread(
             join: Some(join),
         }),
         Ok(Err(err)) | Err(err) => {
-            drop(join.join());
+            if let Err(panic) = join.join() {
+                report_shard_thread_panic(&panic_message(panic.as_ref()));
+            }
             Err(err)
         },
     }
@@ -644,14 +686,41 @@ where
     Arc::clone(&slot).wait(shard)
 }
 
-pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) {
+pub(crate) fn observe_waiter(
+    task: TokioJoinHandle<()>,
+    shard: Shard,
+    future: Py<RustFuture>,
+    subject: &'static str,
+) {
+    runtime().spawn(async move {
+        if let Err(error) = task.await
+            && let Some(error) = unexpected_join_error(error)
+        {
+            let detail = format!("background task failed: {error}");
+            crate::server::report_failure(subject, Err(H2CornError::from(error)));
+            shard.push(PumpEvent::Resolve {
+                fut: future,
+                payload: ResolvePayload::Simple(Box::new(move |_| {
+                    Err(PyRuntimeError::new_err(detail))
+                })),
+            });
+        }
+    });
+}
+
+pub(crate) async fn release_app(shard: Shard, app: AppRuntimeHandle) -> Result<(), H2CornError> {
     let (done, wait) = oneshot::channel();
     shard.push(PumpEvent::ReleaseApp { app, done });
-    let _release_result = wait.await;
+    wait.await.map_err(|_| {
+        H2CornError::from(PyRuntimeError::new_err(
+            "Python loop stopped before releasing the application",
+        ))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+    use std::process::Command;
     #[cfg(Py_GIL_DISABLED)]
     use std::sync::Arc;
 
@@ -676,6 +745,42 @@ mod tests {
             SecondaryLoopFactory::Custom
         );
     }
+
+    #[test]
+    fn shard_thread_shutdown_returns_join_panic() {
+        const CHILD: &str = "H2CORN_SHARD_JOIN_CHILD";
+        const TEST: &str = "pyloop::tests::shard_thread_shutdown_returns_join_panic";
+        if std::env::var_os(CHILD).is_some() {
+            pyo3::Python::initialize();
+            pyo3::Python::attach(|py| {
+                let shard = super::ShardHandle::test_stub(py);
+                let join = std::thread::spawn(|| panic!("injected shard thread panic"));
+                let detail = super::ShardThread {
+                    shard: Some(shard),
+                    join: Some(join),
+                }
+                .shutdown()
+                .expect_err("thread panic must be returned to the shutdown owner");
+                super::report_shard_thread_panic(&detail);
+            });
+            return;
+        }
+
+        let output = Command::new(std::env::current_exe().expect("test executable path"))
+            .args(["--exact", TEST, "--nocapture"])
+            .env(CHILD, "1")
+            .output()
+            .expect("child test process starts");
+        assert!(
+            output.status.success(),
+            "child failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("shard thread panicked:").count(), 1);
+        assert!(stderr.contains("injected shard thread panic"));
+    }
+
     #[cfg(Py_GIL_DISABLED)]
     #[test]
     fn dropping_shard_thread_stops_loop_and_releases_handle() {

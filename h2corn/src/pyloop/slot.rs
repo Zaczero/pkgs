@@ -10,7 +10,8 @@ use std::task::{Context, Poll, Waker};
 use parking_lot::Mutex;
 use pyo3::prelude::*;
 
-use crate::pyloop::Shard;
+use crate::error::H2CornError;
+use crate::pyloop::{PumpEvent, Shard, UnraisableError};
 
 enum SlotState<T> {
     Pending {
@@ -22,10 +23,39 @@ enum SlotState<T> {
     Abandoned,
 }
 
-enum SlotAbandonment {
+enum SlotAbandonment<T> {
     Unresolved(Option<Py<PyAny>>),
+    Completed(T),
     Settled,
     AlreadyAbandoned,
+}
+
+pub(crate) trait SlotValue {
+    fn report_unaccepted(self, shard: &Shard);
+}
+
+impl SlotValue for () {
+    fn report_unaccepted(self, _shard: &Shard) {}
+}
+
+impl SlotValue for Result<(), H2CornError> {
+    fn report_unaccepted(self, shard: &Shard) {
+        if let Err(error) = self {
+            shard.push(PumpEvent::ReportUnraisable {
+                error: UnraisableError::H2Corn(error),
+            });
+        }
+    }
+}
+
+impl SlotValue for PyResult<Py<PyAny>> {
+    fn report_unaccepted(self, shard: &Shard) {
+        if let Err(error) = self {
+            shard.push(PumpEvent::ReportUnraisable {
+                error: UnraisableError::Python(error),
+            });
+        }
+    }
 }
 
 /// Single-value rendezvous filled by the pump (loop thread) and awaited by a
@@ -34,18 +64,18 @@ enum SlotAbandonment {
 /// `Guard` is slot-owned state that drops with the slot's final owner —
 /// request slots use it for teardown accounting keyed to their own drop
 /// order (see `runtime::RequestTaskGuard`).
-pub(crate) struct TaskSlot<T, Guard = ()> {
+pub(crate) struct TaskSlot<T: SlotValue, Guard = ()> {
     state: Mutex<SlotState<T>>,
     guard: Guard,
 }
 
-impl<T> TaskSlot<T> {
+impl<T: SlotValue> TaskSlot<T> {
     pub(crate) fn new() -> Arc<Self> {
         Self::with_guard(())
     }
 }
 
-impl<T, Guard> TaskSlot<T, Guard> {
+impl<T: SlotValue, Guard> TaskSlot<T, Guard> {
     pub(crate) const fn guard(&self) -> &Guard {
         &self.guard
     }
@@ -60,8 +90,8 @@ impl<T, Guard> TaskSlot<T, Guard> {
         })
     }
 
-    /// Fill the slot and wake the awaiting tokio task. Called by the pump.
-    pub(crate) fn fill(&self, value: T) {
+    /// Fill the slot and wake its waiter, returning any outcome no waiter took.
+    pub(crate) fn fill(&self, value: T) -> Result<(), T> {
         let waker = {
             let mut state = self.state.lock();
             match &mut *state {
@@ -70,14 +100,13 @@ impl<T, Guard> TaskSlot<T, Guard> {
                     *state = SlotState::Done(value);
                     waker
                 },
-                // A second completion (e.g. done-callback after an error was
-                // already recorded) is dropped; first outcome wins.
-                SlotState::Done(_) | SlotState::Taken | SlotState::Abandoned => None,
+                SlotState::Done(_) | SlotState::Taken | SlotState::Abandoned => return Err(value),
             }
         };
         if let Some(waker) = waker {
             waker.wake();
         }
+        Ok(())
     }
 
     /// Record the `asyncio.Task` driving this slot. The strong reference is
@@ -102,24 +131,25 @@ impl<T, Guard> TaskSlot<T, Guard> {
     /// be cancelled on its owning loop. If task construction has not happened
     /// yet, [`set_task`](Self::set_task) observes `Abandoned` and returns it to
     /// the pump for immediate cancellation.
-    fn abandon(&self) -> SlotAbandonment {
+    fn abandon(&self) -> SlotAbandonment<T> {
         let mut state = self.state.lock();
-        let completed = match &mut *state {
+        let abandonment = match &mut *state {
             SlotState::Pending { task, .. } => {
                 let task = task.take();
                 *state = SlotState::Abandoned;
-                return SlotAbandonment::Unresolved(task);
+                SlotAbandonment::Unresolved(task)
             },
-            SlotState::Done(_) => mem::replace(&mut *state, SlotState::Taken),
-            SlotState::Taken => return SlotAbandonment::Settled,
-            SlotState::Abandoned => return SlotAbandonment::AlreadyAbandoned,
+            SlotState::Done(_) => {
+                let SlotState::Done(value) = mem::replace(&mut *state, SlotState::Taken) else {
+                    unreachable!()
+                };
+                SlotAbandonment::Completed(value)
+            },
+            SlotState::Taken => SlotAbandonment::Settled,
+            SlotState::Abandoned => SlotAbandonment::AlreadyAbandoned,
         };
         drop(state);
-        let SlotState::Done(value) = completed else {
-            unreachable!()
-        };
-        drop(value);
-        SlotAbandonment::Settled
+        abandonment
     }
 
     /// Await the outcome from the tokio side.
@@ -132,13 +162,13 @@ impl<T, Guard> TaskSlot<T, Guard> {
     }
 }
 
-pub(crate) struct SlotFuture<T, Guard = ()> {
+pub(crate) struct SlotFuture<T: SlotValue, Guard = ()> {
     slot: Arc<TaskSlot<T, Guard>>,
     shard: Shard,
     completed: bool,
 }
 
-impl<T, Guard> Future for SlotFuture<T, Guard> {
+impl<T: SlotValue, Guard> Future for SlotFuture<T, Guard> {
     type Output = T;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -182,15 +212,19 @@ impl<T, Guard> Future for SlotFuture<T, Guard> {
     }
 }
 
-impl<T, Guard> Drop for SlotFuture<T, Guard> {
+impl<T: SlotValue, Guard> Drop for SlotFuture<T, Guard> {
     fn drop(&mut self) {
         if self.completed {
             return;
         }
-        if let SlotAbandonment::Unresolved(task) = self.slot.abandon()
-            && let Some(task) = task
-        {
-            self.shard.push(super::PumpEvent::CancelTask { task });
+        match self.slot.abandon() {
+            SlotAbandonment::Unresolved(Some(task)) => {
+                self.shard.push(super::PumpEvent::CancelTask { task });
+            },
+            SlotAbandonment::Unresolved(None)
+            | SlotAbandonment::Settled
+            | SlotAbandonment::AlreadyAbandoned => {},
+            SlotAbandonment::Completed(value) => value.report_unaccepted(&self.shard),
         }
     }
 }
@@ -234,7 +268,7 @@ mod tests {
         Python::initialize();
         let shard = Python::attach(ShardHandle::test_stub);
         let slot = TaskSlot::<()>::new();
-        slot.fill(());
+        slot.fill(()).expect("completed slot accepts its value");
 
         drop(Arc::clone(&slot).wait(shard));
         assert!(matches!(*slot.state.lock(), SlotState::Taken));
@@ -250,22 +284,29 @@ mod tests {
             let fill_slot = Arc::clone(&slot);
             let barrier = Arc::new(Barrier::new(2));
 
-            thread::scope(|scope| {
+            let fill_result = thread::scope(|scope| {
                 let fill_barrier = Arc::clone(&barrier);
-                scope.spawn(move || {
+                let fill = scope.spawn(move || {
                     fill_barrier.wait();
-                    fill_slot.fill(());
+                    fill_slot.fill(())
                 });
-                scope.spawn(move || {
+                let abandon = scope.spawn(move || {
                     barrier.wait();
                     drop(future);
                 });
+                abandon.join().expect("waiter abandonment does not panic");
+                fill.join().expect("slot completion does not panic")
             });
 
+            let state = slot.state.lock();
             assert!(
-                matches!(&*slot.state.lock(), SlotState::Taken | SlotState::Abandoned),
-                "both racing transitions completed"
+                matches!(
+                    (&*state, fill_result),
+                    (SlotState::Taken, Ok(())) | (SlotState::Abandoned, Err(()))
+                ),
+                "completion acceptance and abandonment state agree"
             );
+            drop(state);
         }
     }
 }

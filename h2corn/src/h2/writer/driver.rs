@@ -418,8 +418,8 @@ where
 
     /// Flush and half-close the write side (TCP FIN / TLS `close_notify`),
     /// prompting the peer to read pending output and close.
-    pub(crate) async fn shutdown_write(&mut self) {
-        drop(self.writer.shutdown().await);
+    pub(crate) async fn shutdown_write(&mut self) -> Result<(), H2CornError> {
+        self.writer.shutdown().await.map_err(H2CornError::from)
     }
 
     pub(crate) async fn close_ingress(&self) {

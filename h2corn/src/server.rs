@@ -58,7 +58,10 @@ use tokio_rustls::server::TlsStream;
 
 use crate::async_util::with_optional_timeout;
 use crate::config::{BindTarget, ServerConfig};
-use crate::error::{ErrorExt as _, ErrorKind, FailureDomain, H2CornError, H2Error, ProxyError};
+use crate::error::{
+    ErrorExt as _, ErrorKind, FailureDomain, H2CornError, H2Error, ProxyError,
+    unexpected_join_error,
+};
 use crate::h2_frame::{self, BufferedConnectionReader, ErrorCode};
 use crate::proxy_protocol::{
     ConnectionInfo, ConnectionPeer, ConnectionStart, DetectedProtocol, ProxyInfo,
@@ -435,7 +438,7 @@ fn configure_tcp_stream(stream: &TcpStream) {
 /// logging those would bury the ones that matter. An application contract
 /// breach, a broken internal invariant or a configuration fault is somebody's
 /// bug, and used to vanish entirely.
-fn report_failure(subject: &str, result: Result<(), H2CornError>) {
+pub(crate) fn report_failure(subject: &str, result: Result<(), H2CornError>) {
     let Err(error) = result else {
         return;
     };
@@ -477,6 +480,23 @@ fn report_connection_failure(result: Result<(), H2CornError>) {
 /// operator-facing failure policy at that task boundary instead.
 pub(crate) fn report_request_failure(result: Result<(), H2CornError>) {
     report_failure("request", result);
+}
+
+fn report_connection_join(joined: Result<(), tokio::task::JoinError>) {
+    if let Err(join_error) = joined
+        && let Some(join_error) = unexpected_join_error(join_error)
+    {
+        log::Event::ConnectionPanicked.emit(
+            format_args!("connection task panicked: {join_error}"),
+            |f| f.text("detail", &join_error),
+        );
+    }
+}
+
+async fn join_connection_task(tasks: &mut JoinSet<()>) {
+    if let Some(joined) = tasks.join_next().await {
+        report_connection_join(joined);
+    }
 }
 
 fn spawn_connection(
@@ -606,18 +626,12 @@ async fn serve_listeners(
                     // its loop-owned Python task. Drain every JoinSet result so
                     // native connection ownership is settled before teardown.
                     tasks.abort_all();
-                    while tasks.join_next().await.is_some() {}
+                    while !tasks.is_empty() {
+                        join_connection_task(&mut tasks).await;
+                    }
                     break;
                 }
-                joined = tasks.join_next(), if !tasks.is_empty() => {
-                    if let Some(Err(join_error)) = joined
-                        && !join_error.is_cancelled()
-                    {
-                        log::Event::ConnectionPanicked.emit(
-                            format_args!("connection task panicked: {join_error}"),
-                            |f| f.text("detail", &join_error),
-                        );
-                    }
+                () = join_connection_task(&mut tasks), if !tasks.is_empty() => {
                     continue;
                 }
             }
@@ -641,8 +655,7 @@ async fn serve_listeners(
                     shutdown_tx.send(ShutdownState::Graceful(shutdown_kind));
                 continue;
             }
-            joined = tasks.join_next(), if !tasks.is_empty() => {
-                drop(joined);
+            () = join_connection_task(&mut tasks), if !tasks.is_empty() => {
                 continue;
             }
             accepted = accept_one(&listeners, accept_start),
@@ -655,7 +668,9 @@ async fn serve_listeners(
                             // explicitly so no request admission can enter the
                             // closed settlement set after teardown starts.
                             tasks.abort_all();
-                            while tasks.join_next().await.is_some() {}
+                            while !tasks.is_empty() {
+                                join_connection_task(&mut tasks).await;
+                            }
                             return Err(err.into());
                         },
                     }

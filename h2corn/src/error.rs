@@ -1199,6 +1199,10 @@ where
     }
 }
 
+pub(crate) fn unexpected_join_error(error: JoinError) -> Option<JoinError> {
+    (!error.is_cancelled()).then_some(error)
+}
+
 #[cfg(test)]
 mod tests {
     use std::io;

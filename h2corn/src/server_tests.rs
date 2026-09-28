@@ -2,6 +2,7 @@ use std::io;
 use std::iter::repeat_with;
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::UnixListener;
+use std::process::Command;
 
 use rustix::fs::{OFlags, fcntl_setfl};
 use rustix::io::{FdFlags, fcntl_getfd};
@@ -219,4 +220,42 @@ fn application_failures_keep_the_python_traceback() {
         assert!(message.contains("line 2, in crash"));
         assert!(message.contains("ZeroDivisionError: division by zero"));
     });
+}
+
+#[test]
+fn normal_connection_join_reports_panics_and_keeps_cancellation_silent() {
+    const CHILD: &str = "H2CORN_CONNECTION_JOIN_CHILD";
+    const TEST: &str =
+        "server::tests::normal_connection_join_reports_panics_and_keeps_cancellation_silent";
+    if std::env::var_os(CHILD).is_some() {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime builds")
+            .block_on(async {
+                let mut tasks = tokio::task::JoinSet::new();
+                tasks.spawn(std::future::pending::<()>());
+                tasks.abort_all();
+                super::join_connection_task(&mut tasks).await;
+
+                tasks.spawn(async {
+                    panic!("injected connection task panic");
+                });
+                super::join_connection_task(&mut tasks).await;
+            });
+        return;
+    }
+
+    let output = Command::new(std::env::current_exe().expect("test executable path"))
+        .args(["--exact", TEST, "--nocapture"])
+        .env(CHILD, "1")
+        .output()
+        .expect("child test process starts");
+    assert!(
+        output.status.success(),
+        "child failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stderr.matches("connection task panicked:").count(), 1);
+    assert!(stderr.contains("injected connection task panic"));
 }
