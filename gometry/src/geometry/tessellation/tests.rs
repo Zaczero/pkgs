@@ -1,4 +1,5 @@
 use crate::geometry::XY;
+use crate::geometry::exact_arith::ExactSign;
 use crate::geometry::tessellation::delaunay::take_constrained_output_reserves;
 use crate::geometry::tessellation::shape::{
     BudgetedPackedTriangleSink, BudgetedTriangleSink, canonical_voronoi_sites,
@@ -887,6 +888,10 @@ fn triangle_corners(triangle: &Shape) -> Option<[Point; 3]> {
     (shell.coord_count() >= 3).then(|| [shell.nth_coord(0), shell.nth_coord(1), shell.nth_coord(2)])
 }
 
+fn triangle_shape(corners: [Point; 3]) -> Shape {
+    Shape::Polygon(polygon(corners.into(), Vec::new()))
+}
+
 fn polygon_vertices(polygon: &Polygon) -> Vec<Point> {
     let mut vertices = open_ring(polygon.shell.coords());
     for hole in polygon.holes.iter() {
@@ -949,9 +954,8 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
         "triangle area {triangle_area} differs from polygon area {source_area}"
     );
 
-    // Cached once per triangle: the pairwise disjointness scan below is
-    // quadratic in the triangle count, so it must not pay for a geometric
-    // intersection on pairs that cannot overlap.
+    // Cache corners once: the pairwise disjointness scan is quadratic in the
+    // triangle count, and each candidate uses exact orientation predicates.
     let mut all_corners: Vec<[Point; 3]> = Vec::with_capacity(triangles.len());
 
     for triangle in &triangles {
@@ -992,11 +996,8 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
         }
     }
 
-    // Sweep in x rather than comparing all pairs: the largest fixtures reach a
-    // few thousand triangles, where even a cheap quadratic scan dominates the
-    // whole test. Sorting by the left edge lets each triangle stop as soon as
-    // it reaches one that starts beyond its own right edge — every triangle
-    // after that starts further right still, so none of them can overlap it.
+    // The x-range rejection uses only stored-coordinate minima and maxima, so
+    // it cannot discard a pair with positive-area overlap.
     let span = |corners: &[Point; 3]| {
         (
             corners[0].x.min(corners[1].x).min(corners[2].x),
@@ -1012,66 +1013,127 @@ fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shap
             if span(&all_corners[right]).0 > left_max_x {
                 break;
             }
-            // A separating axis proves the pair cannot share interior area, so
-            // the exact overlay below only runs on pairs that might genuinely
-            // overlap — in a correct triangulation, just the edge- and
-            // corner-adjacent ones. Axis-aligned boxes are not enough on their
-            // own here: star fixtures produce long thin slivers radiating from
-            // the centre whose boxes overlap even when the triangles do not.
-            if triangles_are_separated(&all_corners[left], &all_corners[right]) {
-                continue;
-            }
-            let intersection = triangles[left]
-                .intersection(&triangles[right], Strictness::Strict)
-                .expect("triangle intersection");
-            let overlap_area = intersection.area();
             assert!(
-                overlap_area.abs() <= tolerance,
-                "triangles {left} and {right} overlap with area {overlap_area}"
-            );
-            assert!(
-                !triangles[left].overlaps(&triangles[right]).unwrap(),
-                "triangles {left} and {right} overlap"
+                triangles_have_disjoint_interiors(&all_corners[left], &all_corners[right]),
+                "triangles {left} and {right} overlap with positive area"
             );
         }
     }
     triangles
 }
 
-/// Separating-axis test over the two triangles' six edge normals.
+/// True when one triangle's edge has the other triangle entirely outside it.
 ///
-/// `true` means some axis separates them, which for convex shapes proves they
-/// share no interior area. Contact along a shared edge or corner also reports
-/// separated — the projections meet without crossing — and that is exactly
-/// right: such a pair has zero intersection area and does not overlap, so
-/// screening it out cannot change either assertion below.
+/// Both triangles must be counterclockwise: their interiors lie on the
+/// positive side of each edge, and the exact non-positive side includes the
+/// exterior and boundary.
+fn triangle_separates_interiors_from(triangle: &[Point; 3], other: &[Point; 3]) -> bool {
+    triangle
+        .iter()
+        .copied()
+        .zip(triangle.iter().copied().cycle().skip(1))
+        .take(3)
+        .any(|(from, to)| {
+            other.iter().all(|corner| {
+                matches!(
+                    crate::geometry::segments::stored_orientation_sign(
+                        from.x, from.y, to.x, to.y, corner.x, corner.y
+                    ),
+                    ExactSign::Negative | ExactSign::Zero
+                )
+            })
+        })
+}
+
+/// Exact separating-axis test for two counterclockwise convex triangles.
 ///
-/// `false` is the conservative answer: the caller falls through to the exact
-/// overlay, so a genuine overlap is never screened away.
-fn triangles_are_separated(left: &[Point; 3], right: &[Point; 3]) -> bool {
-    let project = |corners: &[Point; 3], nx: f64, ny: f64| {
-        let mut lo = f64::INFINITY;
-        let mut hi = f64::NEG_INFINITY;
-        for corner in corners {
-            let value = corner.x * nx + corner.y * ny;
-            lo = lo.min(value);
-            hi = hi.max(value);
-        }
-        (lo, hi)
-    };
-    for corners in [left, right] {
-        for edge in 0..3 {
-            let from = corners[edge];
-            let to = corners[(edge + 1) % 3];
-            let (nx, ny) = (-(to.y - from.y), to.x - from.x);
-            let (left_lo, left_hi) = project(left, nx, ny);
-            let (right_lo, right_hi) = project(right, nx, ny);
-            if left_hi <= right_lo || right_hi <= left_lo {
-                return true;
-            }
-        }
+/// By the separating-axis theorem, their interiors are disjoint exactly when
+/// some edge of either triangle places every vertex of the other on or beyond
+/// the exterior side. Stored-coordinate orientation keeps this decision exact;
+/// edge and corner contact therefore count as disjoint interiors.
+fn triangles_have_disjoint_interiors(left: &[Point; 3], right: &[Point; 3]) -> bool {
+    triangle_separates_interiors_from(left, right) || triangle_separates_interiors_from(right, left)
+}
+
+#[test]
+fn exact_triangle_oracle_matches_overlay_for_overlap_contact_and_disjoint_pairs() {
+    let left_corners = [xy(0.0, 0.0), xy(2.0, 0.0), xy(0.0, 2.0)];
+    let left = triangle_shape(left_corners);
+    let cases = [
+        (
+            "positive-area overlap",
+            [xy(0.5, 0.5), xy(2.5, 0.5), xy(0.5, 2.5)],
+            false,
+        ),
+        (
+            "shared edge",
+            [xy(2.0, 0.0), xy(4.0, 0.0), xy(0.0, 2.0)],
+            true,
+        ),
+        (
+            "shared corner",
+            [xy(2.0, 0.0), xy(3.0, -1.0), xy(3.0, 1.0)],
+            true,
+        ),
+        ("disjoint", [xy(3.0, 0.0), xy(4.0, 0.0), xy(3.0, 1.0)], true),
+    ];
+
+    for (case, right_corners, interiors_are_disjoint) in cases {
+        let right = triangle_shape(right_corners);
+        assert_eq!(
+            triangles_have_disjoint_interiors(&left_corners, &right_corners),
+            interiors_are_disjoint,
+            "{case}: exact half-plane classification"
+        );
+
+        let intersection = left.intersection(&right, Strictness::Strict).expect(case);
+        assert_eq!(
+            intersection.area() > 0.0,
+            !interiors_are_disjoint,
+            "{case}: intersection area"
+        );
+        assert_eq!(
+            left.overlaps(&right).expect(case),
+            !interiors_are_disjoint,
+            "{case}: overlaps predicate"
+        );
     }
-    false
+}
+
+#[test]
+fn exact_triangle_oracle_rejects_overflowed_projection_false_separation() {
+    let base = 1.0e200_f64;
+    let upper = base.next_up();
+    let triangle = [xy(base, base), xy(upper, base), xy(base, upper)];
+    let [origin, along_x, top] = triangle;
+    assert_eq!(
+        orientation(origin, along_x, top),
+        Orientation::CounterClockwise
+    );
+
+    // The former dot-product projection collapses this identical pair to
+    // [infinity, infinity], making its `high <= low` separation check true.
+    let normal_x = -(along_x.y - origin.y);
+    let normal_y = along_x.x - origin.x;
+    let mut projected_low = f64::INFINITY;
+    let mut projected_high = f64::NEG_INFINITY;
+    for corner in &triangle {
+        let projection = corner.x * normal_x + corner.y * normal_y;
+        projected_low = projected_low.min(projection);
+        projected_high = projected_high.max(projection);
+    }
+    assert!(
+        projected_low.is_infinite()
+            && projected_low.is_sign_positive()
+            && projected_high.is_infinite()
+            && projected_high.is_sign_positive()
+            && projected_high <= projected_low,
+        "the old projection should falsely separate identical triangles"
+    );
+    assert!(
+        !triangles_have_disjoint_interiors(&triangle, &triangle),
+        "an identical triangle has positive-area overlap"
+    );
 }
 
 #[test]
