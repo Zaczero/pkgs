@@ -319,24 +319,32 @@ fn plan_geometry_array_wkb(array: &PyGeometryArray) -> NativeArrowExportResult<S
     let sizes = array
         .row_operation()
         .rows_with_missing(|| ())
-        .filter_map(|row| {
-            if let ArrayRow::Present(row) = row {
+        .filter_map(|row| match row {
+            ArrayRow::Present(row) => {
+                let logical = row.logical();
                 Some(
                     row.row()
                         .try_with_shape(|shape| crate::io::wkb_len(shape, false))
-                        .map_err(NativeArrowExportError::from),
+                        .map_err(|error| NativeArrowExportError::CoreRow {
+                            row: logical,
+                            error,
+                        }),
                 )
-            } else {
-                None
-            }
+            },
+            ArrayRow::Missing { .. } => None,
         });
     let total = checked_wkb_total(sizes)? as usize;
     let mut data = Vec::with_capacity(total);
     let mut offsets = initial_offsets(array.len());
     for row in array.row_operation().rows_with_missing(|| ()) {
         if let ArrayRow::Present(row) = row {
+            let logical = row.logical();
             row.row()
-                .try_with_shape(|shape| crate::io::write_wkb_to_srid(&mut data, shape, None))?;
+                .try_with_shape(|shape| crate::io::write_wkb_to_srid(&mut data, shape, None))
+                .map_err(|error| NativeArrowExportError::CoreRow {
+                    row: logical,
+                    error,
+                })?;
         }
         offsets.push(i32::try_from(data.len()).map_err(|_| {
             NativeArrowExportError::overflow(
@@ -817,15 +825,21 @@ fn gather_coordseqs<'a>(
 }
 
 fn plan_wkb_refs(shapes: &[&Shape]) -> NativeArrowExportResult<StoragePlan> {
-    let total = checked_wkb_total(
-        shapes
-            .iter()
-            .map(|shape| crate::io::wkb_len(shape, false).map_err(NativeArrowExportError::from)),
-    )? as usize;
+    let total = checked_wkb_total(shapes.iter().enumerate().map(|(logical, shape)| {
+        crate::io::wkb_len(shape, false).map_err(|error| NativeArrowExportError::CoreRow {
+            row: logical,
+            error,
+        })
+    }))? as usize;
     let mut data = Vec::with_capacity(total);
     let mut offsets = initial_offsets(shapes.len());
-    for shape in shapes {
-        crate::io::write_wkb_to_srid(&mut data, shape, None)?;
+    for (logical, shape) in shapes.iter().enumerate() {
+        crate::io::write_wkb_to_srid(&mut data, shape, None).map_err(|error| {
+            NativeArrowExportError::CoreRow {
+                row: logical,
+                error,
+            }
+        })?;
         offsets.push(i32::try_from(data.len()).map_err(|_| offset_error())?);
     }
     validate_binary_offsets(&offsets, data.len())?;
@@ -965,6 +979,36 @@ mod tests {
         let error = checked_wkb_total([Ok(maximum), Ok(1)].into_iter())
             .expect_err("WKB data total must fit Arrow i32 offsets");
         assert!(matches!(error, NativeArrowExportError::Overflow(_)));
+    }
+
+    #[test]
+    fn wkb_shape_width_preflight_retains_the_logical_row() {
+        let mut wide = Shape::Point(crate::geometry::Point::new_raw_xy(0.0, 0.0));
+        for _ in 0..128 {
+            let child = wide.clone();
+            wide = Shape::geometry_collection(vec![child.clone(), child])
+                .expect("collection stays within the nesting limit");
+        }
+        let shapes = [
+            Shape::Point(crate::geometry::Point::new_raw_xy(1.0, 1.0)),
+            wide,
+        ];
+        let refs = shapes.iter().collect::<Vec<_>>();
+
+        let error = plan_wkb_refs(&refs)
+            .err()
+            .expect("the second shape exceeds the WKB byte limit");
+        assert!(matches!(&error, NativeArrowExportError::CoreRow {
+            row: 1,
+            ..
+        }));
+        if let NativeArrowExportError::CoreRow { row, error } = error {
+            assert_eq!(row, 1);
+            assert!(matches!(
+                error.kind(),
+                crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+            ));
+        }
     }
 
     #[test]

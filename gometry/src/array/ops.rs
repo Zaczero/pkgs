@@ -144,31 +144,36 @@ impl PyGeometryArray {
                 "GeoJSON has no M ordinate; remove M with set_m(None), or use WKT/GeoArrow",
             ));
         }
+        let crs = self.crs_ref().cloned();
+        let domain = py.detach(move || io::geojson_domain(crs.as_deref()))?;
         // GeoJSON treats CRS-free coordinates as WGS84 lon/lat too. A
         // domain-invalid row is a spec violation, not a degradable data
         // condition, so it fails the batch (like the M-ordinate refusal above).
-        Ok(py.detach(|| {
-            let domain = io::geojson_domain(self.crs_str())?;
-            if include_z {
-                self.geojson_rows::<true>(domain)
-            } else {
-                self.geojson_rows::<false>(domain)
-            }
-        })?)
+        if include_z {
+            py.detach(|| self.geojson_rows::<true>(domain))
+                .map_err(rows_err)
+        } else {
+            py.detach(|| self.geojson_rows::<false>(domain))
+                .map_err(rows_err)
+        }
     }
 
     fn geojson_rows<const INCLUDE_Z: bool>(
         &self,
         domain: geometry::TopologyDomain,
-    ) -> Result<Vec<String>> {
+    ) -> std::result::Result<Vec<String>, (usize, crate::error::Error)> {
         let mut output = Vec::with_capacity(self.len());
         for row in self.row_operation().rows_with_missing(String::new) {
-            output.push(match row {
+            let value = match row {
                 ArrayRow::Missing { value, .. } => value,
-                ArrayRow::Present(row) => row
-                    .row()
-                    .try_with_shape(|shape| io::to_geojson_string::<INCLUDE_Z>(shape, domain))?,
-            });
+                ArrayRow::Present(row) => {
+                    let logical = row.logical();
+                    row.row()
+                        .try_with_shape(|shape| io::to_geojson_string::<INCLUDE_Z>(shape, domain))
+                        .map_err(|error| (logical, error))?
+                },
+            };
+            output.push(value);
         }
         Ok(output)
     }

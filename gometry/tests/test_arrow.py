@@ -831,6 +831,17 @@ def test_arrow_capsule_roundtrip_via_pyarrow_array_protocol() -> None:
         assert [str(g) for g in restored] == [str(g) for g in values]
 
 
+def test_arrow_c_wkb_width_error_keeps_logical_row_note() -> None:
+    shape = gm.Point(0.0, 0.0)
+    for _ in range(128):
+        shape = gm.GeometryCollection([shape, shape])
+    values = gm.GeometryArray([None, shape, None])
+
+    with pytest.raises(OverflowError) as error:
+        values.to_arrow(encoding='wkb')
+    assert error.value.__notes__ == ['while processing array element 1']
+
+
 def test_arrow_capsules_can_be_consumed_without_pyarrow_materialization() -> None:
     values = gm.GeometryArray([
         gm.Point(0, 0, crs=4326, epoch=2015.5),

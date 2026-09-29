@@ -95,20 +95,24 @@ fn serialize_feature_shapes(
     py: Python<'_>,
     shapes: Vec<Option<(Shape, Option<String>)>>,
 ) -> PyResult<Vec<Option<String>>> {
-    py.detach(move || {
-        shapes
-            .into_iter()
-            .map(|shape| {
-                shape
-                    .map(|(shape, crs)| {
-                        let domain = crate::io::geojson_domain(crs.as_deref())?;
-                        crate::io::to_geojson_string::<true>(&shape, domain)
-                    })
-                    .transpose()
-            })
-            .collect::<crate::error::Result<Vec<_>>>()
-    })
-    .map_err(PyErr::from)
+    py.detach(
+        move || -> std::result::Result<_, (usize, crate::error::Error)> {
+            let mut output = Vec::with_capacity(shapes.len());
+            for (logical, shape) in shapes.into_iter().enumerate() {
+                output.push(
+                    shape
+                        .map(|(shape, crs)| {
+                            let domain = crate::io::geojson_domain(crs.as_deref())?;
+                            crate::io::to_geojson_string::<true>(&shape, domain)
+                        })
+                        .transpose()
+                        .map_err(|error| (logical, error))?,
+                );
+            }
+            Ok(output)
+        },
+    )
+    .map_err(crate::broadcast::rows_err)
 }
 
 fn serialize_array_feature_shapes(
@@ -116,23 +120,28 @@ fn serialize_array_feature_shapes(
     array: crate::PyGeometryArray,
     crs: Option<String>,
 ) -> PyResult<Vec<Option<String>>> {
+    let domain = py.detach(move || crate::io::geojson_domain(crs.as_deref()))?;
     py.detach(move || {
-        let domain = crate::io::geojson_domain(crs.as_deref())?;
         let mut output = Vec::with_capacity(array.len());
         for row in array.row_operation().rows_with_missing(|| ()) {
             let text = match row {
                 crate::array::ArrayRow::Missing { .. } => None,
                 crate::array::ArrayRow::Present(row) => {
-                    Some(row.row().try_with_shape(|shape| {
-                        crate::io::to_geojson_string::<true>(shape, domain)
-                    })?)
+                    let logical = row.logical();
+                    Some(
+                        row.row()
+                            .try_with_shape(|shape| {
+                                crate::io::to_geojson_string::<true>(shape, domain)
+                            })
+                            .map_err(|error| (logical, error))?,
+                    )
                 },
             };
             output.push(text);
         }
-        Ok::<_, crate::error::Error>(output)
+        Ok::<_, (usize, crate::error::Error)>(output)
     })
-    .map_err(PyErr::from)
+    .map_err(crate::broadcast::rows_err)
 }
 
 fn side_rows<'py>(

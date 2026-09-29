@@ -30,6 +30,26 @@ def test_recursive_geometry_inputs_fail_at_a_bounded_depth() -> None:
         gm.from_geojson({'type': 'Point', 'coordinates': coordinates})
 
 
+def test_array_serialization_width_errors_keep_logical_rows() -> None:
+    shape = gm.Point(0.0, 0.0)
+    for _ in range(128):
+        shape = gm.GeometryCollection([shape, shape])
+    values = gm.GeometryArray([None, shape, None])
+
+    for serialize in (values.to_wkb, values.to_wkt, values.to_geojson):
+        with pytest.raises(OverflowError) as error:
+            serialize()
+        assert error.value.__notes__ == ['while processing array element 1']
+
+    with pytest.raises(OverflowError) as error:
+        gm.to_feature_collection(values)
+    assert error.value.__notes__ == ['while processing array element 1']
+
+    with pytest.raises(OverflowError) as error:
+        gm.to_feature_collection([None, shape, None])
+    assert error.value.__notes__ == ['while processing array element 1']
+
+
 def test_ingress_epoch_from_wkt_wkb_and_geojson() -> None:
     point = gm.Point(1, 2, crs=4326)
     wkt = gm.from_wkt('POINT (1 2)', crs=4326, epoch=2020.0)
