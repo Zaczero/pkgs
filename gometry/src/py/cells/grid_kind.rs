@@ -416,17 +416,20 @@ fn parse_uint64_ids(ids: &Bound<'_, PyAny>) -> PyResult<Option<Vec<u64>>> {
     macro_rules! try_array {
         ($($ty:ty),* $(,)?) => {
             $(
-                if ids.extract::<PyReadonlyArrayDyn<'_, $ty>>().is_ok() {
-                    return Ok(Some(super::copy_numeric_ids_from_tobytes::<$ty>(
-                        ids,
-                        || PyTypeError::new_err("cell array ids buffer length is invalid"),
+                if let Ok(array) = ids.extract::<PyReadonlyArrayDyn<'_, $ty>>() {
+                    return Ok(Some(super::copy_numeric_ids(
+                        &array,
                         || PyTypeError::new_err("cell array ids must be integers representable as uint64"),
                     )?));
                 }
             )*
         };
     }
-    try_array!(u8, u16, u32, u64, usize);
+    try_array!(u8, u16, u32);
+    if let Ok(array) = ids.extract::<PyReadonlyArrayDyn<'_, u64>>() {
+        return Ok(Some(super::copy_u64_ids(&array)));
+    }
+    try_array!(usize);
     try_array!(i8, i16, i32, i64, isize);
     if array
         .getattr("dtype")?

@@ -88,32 +88,56 @@ enum FactorizationError {
     CodeOverflow,
 }
 
-// The source must be quiescent during `tobytes`; copying does not synchronize
-// native writers.
-fn copy_numeric_ids_from_tobytes<T>(
-    ids: &pyo3::Bound<'_, pyo3::types::PyAny>,
-    invalid_buffer: impl FnOnce() -> pyo3::PyErr,
+/// The caller must keep the source quiescent; this readonly borrow does not
+/// synchronize native writers.
+fn copy_numeric_ids<T>(
+    ids: &numpy::PyReadonlyArrayDyn<'_, T>,
     invalid_value: impl Fn() -> pyo3::PyErr,
 ) -> PyResult<Vec<u64>>
 where
-    T: Copy + TryInto<u64>,
+    T: numpy::Element + Copy + TryInto<u64>,
 {
-    use pyo3::types::PyBytes;
-
-    let py_bytes = ids.call_method0("tobytes")?;
-    let bytes = py_bytes.cast::<PyBytes>()?.as_bytes();
-    let width = std::mem::size_of::<T>();
-    if width == 0 || !bytes.len().is_multiple_of(width) {
-        return Err(invalid_buffer());
-    }
-    let chunks = bytes.chunks_exact(width);
-    let mut output = Vec::with_capacity(chunks.len());
-    for chunk in chunks {
-        // SAFETY: dtype matched by extract; tobytes is native-endian for T.
-        let value = unsafe { std::ptr::read_unaligned(chunk.as_ptr().cast::<T>()) };
-        output.push(value.try_into().map_err(|_| invalid_value())?);
+    let view = ids.as_array();
+    let mut output = Vec::with_capacity(view.len());
+    {
+        let mut append = |value: T| -> PyResult<()> {
+            output.push(value.try_into().map_err(|_| invalid_value())?);
+            Ok(())
+        };
+        if let Ok(values) = ids.as_slice() {
+            for &value in values {
+                append(value)?;
+            }
+        } else if view.ndim() == 1 {
+            let view = view
+                .into_dimensionality::<numpy::Ix1>()
+                .expect("one-dimensional numeric ID view keeps one dimension");
+            for &value in &view {
+                append(value)?;
+            }
+        } else {
+            for &value in &view {
+                append(value)?;
+            }
+        }
     }
     Ok(output)
+}
+
+fn copy_u64_ids(ids: &numpy::PyReadonlyArrayDyn<'_, u64>) -> Vec<u64> {
+    let view = ids.as_array();
+    let mut output = Vec::with_capacity(view.len());
+    if let Ok(values) = ids.as_slice() {
+        output.extend_from_slice(values);
+    } else if view.ndim() == 1 {
+        let view = view
+            .into_dimensionality::<numpy::Ix1>()
+            .expect("one-dimensional numeric ID view keeps one dimension");
+        output.extend(view.iter().copied());
+    } else {
+        output.extend(view.iter().copied());
+    }
+    output
 }
 
 impl FactorizationError {
