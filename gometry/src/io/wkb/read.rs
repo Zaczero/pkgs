@@ -149,12 +149,9 @@ impl WkbReader<'_> {
 
 /// Resolve runtime axes to the const-generic decoder instantiations.
 fn decode_coordseq_axes<const BIG: bool>(bytes: &[u8], axes: CoordinateAxes) -> Result<CoordSeq> {
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => decode_coordseq::<BIG, false, false>(bytes),
-        (true, false) => decode_coordseq::<BIG, true, false>(bytes),
-        (false, true) => decode_coordseq::<BIG, false, true>(bytes),
-        (true, true) => decode_coordseq::<BIG, true, true>(bytes),
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        decode_coordseq::<BIG, HAS_Z, HAS_M>(bytes)
+    })
 }
 
 /// Decode one coordinate run into separated columns, monomorphized over

@@ -740,6 +740,8 @@ fn list_range(node: &NativeNode, index: usize) -> DecodeResult<std::ops::Range<u
     })
 }
 
+type InterleavedColumns = (Vec<f64>, Vec<f64>, Option<Vec<f64>>, Option<Vec<f64>>);
+
 struct NativeCoordinates {
     coords: CoordSeq,
     validity: Option<crate::array::ValidityMask>,
@@ -839,6 +841,51 @@ impl NativeCoordinates {
         Ok(Self { coords, validity })
     }
 
+    fn deinterleave_interleaved_values<const HAS_Z: bool, const HAS_M: bool>(
+        values: &[f64],
+        count: usize,
+    ) -> InterleavedColumns {
+        let mut xs = Vec::with_capacity(count);
+        let mut ys = Vec::with_capacity(count);
+        let mut zs = HAS_Z.then(|| Vec::with_capacity(count));
+        let mut ms = HAS_M.then(|| Vec::with_capacity(count));
+        if HAS_Z && HAS_M {
+            let (coordinates, _) = values.as_chunks::<4>();
+            let (Some(zs), Some(ms)) = (zs.as_mut(), ms.as_mut()) else {
+                unreachable!("XYZM coordinates have Z and M columns")
+            };
+            for [x, y, z, m] in coordinates {
+                xs.push(*x);
+                ys.push(*y);
+                zs.push(*z);
+                ms.push(*m);
+            }
+        } else if HAS_Z {
+            let zs = zs.as_mut().expect("XYZ coordinates have a Z column");
+            let (coordinates, _) = values.as_chunks::<3>();
+            for [x, y, z] in coordinates {
+                xs.push(*x);
+                ys.push(*y);
+                zs.push(*z);
+            }
+        } else if HAS_M {
+            let ms = ms.as_mut().expect("XYM coordinates have an M column");
+            let (coordinates, _) = values.as_chunks::<3>();
+            for [x, y, m] in coordinates {
+                xs.push(*x);
+                ys.push(*y);
+                ms.push(*m);
+            }
+        } else {
+            let (coordinates, _) = values.as_chunks::<2>();
+            for [x, y] in coordinates {
+                xs.push(*x);
+                ys.push(*y);
+            }
+        }
+        (xs, ys, zs, ms)
+    }
+
     fn interleaved(node: &NativeNode, size: usize) -> DecodeResult<Self> {
         if !(2..=4).contains(&size) {
             return Err(NativeArrowDecodeError::geoarrow(
@@ -867,49 +914,9 @@ impl NativeCoordinates {
             (4, _) => (true, true),
             _ => unreachable!("size is checked above"),
         };
-        let mut xs = Vec::with_capacity(node.length);
-        let mut ys = Vec::with_capacity(node.length);
-        let mut zs = has_z.then(|| Vec::with_capacity(node.length));
-        let mut ms = has_m.then(|| Vec::with_capacity(node.length));
-        match (has_z, has_m) {
-            (false, false) => {
-                let (coordinates, _) = values.as_chunks::<2>();
-                for [x, y] in coordinates {
-                    xs.push(*x);
-                    ys.push(*y);
-                }
-            },
-            (true, false) => {
-                let zs = zs.as_mut().expect("XYZ coordinates have a Z column");
-                let (coordinates, _) = values.as_chunks::<3>();
-                for [x, y, z] in coordinates {
-                    xs.push(*x);
-                    ys.push(*y);
-                    zs.push(*z);
-                }
-            },
-            (false, true) => {
-                let ms = ms.as_mut().expect("XYM coordinates have an M column");
-                let (coordinates, _) = values.as_chunks::<3>();
-                for [x, y, m] in coordinates {
-                    xs.push(*x);
-                    ys.push(*y);
-                    ms.push(*m);
-                }
-            },
-            (true, true) => {
-                let (Some(zs), Some(ms)) = (zs.as_mut(), ms.as_mut()) else {
-                    unreachable!("XYZM coordinates have Z and M columns")
-                };
-                let (coordinates, _) = values.as_chunks::<4>();
-                for [x, y, z, m] in coordinates {
-                    xs.push(*x);
-                    ys.push(*y);
-                    zs.push(*z);
-                    ms.push(*m);
-                }
-            },
-        }
+        let (xs, ys, zs, ms) = crate::geometry::dispatch_axes!((has_z, has_m), HAS_Z, HAS_M, {
+            Self::deinterleave_interleaved_values::<HAS_Z, HAS_M>(values, node.length)
+        });
         let validity = combined_validity(node.length, |row| {
             node.missing_at(row)
                 || (0..size).any(|offset| {

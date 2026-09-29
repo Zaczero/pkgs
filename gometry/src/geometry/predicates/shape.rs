@@ -222,12 +222,9 @@ impl Shape {
         include_z: bool,
         include_m: bool,
     ) -> bool {
-        match (include_z, include_m) {
-            (false, false) => self.equals_exact_impl::<false, false>(other, tolerance),
-            (true, false) => self.equals_exact_impl::<true, false>(other, tolerance),
-            (false, true) => self.equals_exact_impl::<false, true>(other, tolerance),
-            (true, true) => self.equals_exact_impl::<true, true>(other, tolerance),
-        }
+        crate::geometry::dispatch_axes!((include_z, include_m), HAS_Z, HAS_M, {
+            self.equals_exact_impl::<HAS_Z, HAS_M>(other, tolerance)
+        })
     }
 
     pub(crate) fn equals_exact_impl<const Z: bool, const M: bool>(

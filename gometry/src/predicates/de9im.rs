@@ -263,12 +263,9 @@ pub(crate) fn equals_exact(
         DefaultedF64Input::Supplied(value) => finite_f64_required("tolerance", value.bind(py))?,
     };
     let tolerance = validate_equals_exact_tolerance(tolerance)?.get();
-    match (include_z, include_m) {
-        (false, false) => equals_exact_broadcast::<false, false>(py, left, right, tolerance),
-        (true, false) => equals_exact_broadcast::<true, false>(py, left, right, tolerance),
-        (false, true) => equals_exact_broadcast::<false, true>(py, left, right, tolerance),
-        (true, true) => equals_exact_broadcast::<true, true>(py, left, right, tolerance),
-    }
+    crate::geometry::dispatch_axes!((include_z, include_m), HAS_Z, HAS_M, {
+        equals_exact_broadcast::<HAS_Z, HAS_M>(py, left, right, tolerance)
+    })
 }
 
 fn equals_exact_broadcast<const Z: bool, const M: bool>(

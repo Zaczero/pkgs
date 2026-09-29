@@ -284,12 +284,9 @@ pub(crate) fn pair_packed_equals_exact(
     include_z: bool,
     include_m: bool,
 ) -> PyResult<Option<Vec<bool>>> {
-    match (include_z, include_m) {
-        (false, false) => pair_packed_equals_exact_impl::<false, false>(py, left, right, tolerance),
-        (true, false) => pair_packed_equals_exact_impl::<true, false>(py, left, right, tolerance),
-        (false, true) => pair_packed_equals_exact_impl::<false, true>(py, left, right, tolerance),
-        (true, true) => pair_packed_equals_exact_impl::<true, true>(py, left, right, tolerance),
-    }
+    crate::geometry::dispatch_axes!((include_z, include_m), HAS_Z, HAS_M, {
+        pair_packed_equals_exact_impl::<HAS_Z, HAS_M>(py, left, right, tolerance)
+    })
 }
 
 fn pair_packed_equals_exact_impl<const Z: bool, const M: bool>(

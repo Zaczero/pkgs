@@ -531,20 +531,9 @@ fn parse_wkt_multi_points(value: &str, axes: CoordinateAxes) -> Result<MultiPoin
                 .collect::<Result<_>>()?,
         );
     }
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => {
-            parse_wkt_points_impl::<false, false>(value).and_then(MultiPoint::from_coordseq)
-        },
-        (true, false) => {
-            parse_wkt_points_impl::<true, false>(value).and_then(MultiPoint::from_coordseq)
-        },
-        (false, true) => {
-            parse_wkt_points_impl::<false, true>(value).and_then(MultiPoint::from_coordseq)
-        },
-        (true, true) => {
-            parse_wkt_points_impl::<true, true>(value).and_then(MultiPoint::from_coordseq)
-        },
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        parse_wkt_points_impl::<HAS_Z, HAS_M>(value).and_then(MultiPoint::from_coordseq)
+    })
 }
 
 /// True when the multipoint body uses parenthesized members and/or EMPTY
@@ -638,12 +627,9 @@ fn is_wkt_empty_keyword(bytes: &[u8], index: usize) -> bool {
 }
 
 fn parse_wkt_points(value: &str, axes: CoordinateAxes) -> Result<CoordSeq> {
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => parse_wkt_points_impl::<false, false>(value),
-        (true, false) => parse_wkt_points_impl::<true, false>(value),
-        (false, true) => parse_wkt_points_impl::<false, true>(value),
-        (true, true) => parse_wkt_points_impl::<true, true>(value),
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        parse_wkt_points_impl::<HAS_Z, HAS_M>(value)
+    })
 }
 
 fn parse_wkt_points_impl<const Z: bool, const M: bool>(value: &str) -> Result<CoordSeq> {
@@ -736,12 +722,9 @@ fn parse_wkt_float_token(token: &str, name: &str) -> Result<f64> {
 }
 
 fn parse_wkt_point(value: &str, axes: CoordinateAxes) -> Result<Point> {
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => parse_wkt_point_impl::<false, false>(value),
-        (true, false) => parse_wkt_point_impl::<true, false>(value),
-        (false, true) => parse_wkt_point_impl::<false, true>(value),
-        (true, true) => parse_wkt_point_impl::<true, true>(value),
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        parse_wkt_point_impl::<HAS_Z, HAS_M>(value)
+    })
 }
 
 fn parse_wkt_point_impl<const Z: bool, const M: bool>(value: &str) -> Result<Point> {

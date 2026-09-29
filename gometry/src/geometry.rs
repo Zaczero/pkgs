@@ -14,6 +14,37 @@
 //! `types` (the data model). Children reach the shared kernel via `use
 //! super::*`.
 
+/// Runtime axis flags select const-generic loops at their callers, avoiding
+/// per-coordinate axis checks. The expanded block remains in the caller, so
+/// its `?`, returns, and error order do too.
+macro_rules! dispatch_axes {
+    (($has_z:expr, $has_m:expr), $z:ident, $m:ident, $body:block) => {
+        match ($has_z, $has_m) {
+            (false, false) => {
+                const $z: bool = false;
+                const $m: bool = false;
+                $body
+            },
+            (true, false) => {
+                const $z: bool = true;
+                const $m: bool = false;
+                $body
+            },
+            (false, true) => {
+                const $z: bool = false;
+                const $m: bool = true;
+                $body
+            },
+            (true, true) => {
+                const $z: bool = true;
+                const $m: bool = true;
+                $body
+            },
+        }
+    };
+}
+pub(crate) use dispatch_axes;
+
 mod access;
 mod frame;
 pub(crate) use frame::{

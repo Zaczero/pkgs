@@ -307,36 +307,14 @@ impl PyGeometryArray {
                 }
                 return bool_array(py, results);
             }
-            let results = match (include_z, include_m) {
-                (false, false) => {
-                    array_equals_exact_scalar_tolerance::<false, false>(py, self, other, scalar_tol)
-                },
-                (true, false) => {
-                    array_equals_exact_scalar_tolerance::<true, false>(py, self, other, scalar_tol)
-                },
-                (false, true) => {
-                    array_equals_exact_scalar_tolerance::<false, true>(py, self, other, scalar_tol)
-                },
-                (true, true) => {
-                    array_equals_exact_scalar_tolerance::<true, true>(py, self, other, scalar_tol)
-                },
-            }?;
+            let results = crate::geometry::dispatch_axes!((include_z, include_m), HAS_Z, HAS_M, {
+                array_equals_exact_scalar_tolerance::<HAS_Z, HAS_M>(py, self, other, scalar_tol)
+            })?;
             return bool_array(py, results);
         }
-        let results = match (include_z, include_m) {
-            (false, false) => {
-                array_equals_exact_row_tolerance::<false, false>(py, self, other, &tolerance)
-            },
-            (true, false) => {
-                array_equals_exact_row_tolerance::<true, false>(py, self, other, &tolerance)
-            },
-            (false, true) => {
-                array_equals_exact_row_tolerance::<false, true>(py, self, other, &tolerance)
-            },
-            (true, true) => {
-                array_equals_exact_row_tolerance::<true, true>(py, self, other, &tolerance)
-            },
-        }?;
+        let results = crate::geometry::dispatch_axes!((include_z, include_m), HAS_Z, HAS_M, {
+            array_equals_exact_row_tolerance::<HAS_Z, HAS_M>(py, self, other, &tolerance)
+        })?;
         bool_array(py, results)
     }
 

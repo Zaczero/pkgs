@@ -334,12 +334,9 @@ fn write_wkt_ring<C: Coordinates + ?Sized>(
     format: WktNumberFormat,
     limit: usize,
 ) {
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => write_wkt_ring_impl::<false, false, C>(out, points, format, limit),
-        (true, false) => write_wkt_ring_impl::<true, false, C>(out, points, format, limit),
-        (false, true) => write_wkt_ring_impl::<false, true, C>(out, points, format, limit),
-        (true, true) => write_wkt_ring_impl::<true, true, C>(out, points, format, limit),
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        write_wkt_ring_impl::<HAS_Z, HAS_M, C>(out, points, format, limit);
+    });
 }
 
 fn write_wkt_ring_impl<const Z: bool, const M: bool, C: Coordinates + ?Sized>(
@@ -439,12 +436,9 @@ fn write_wkt_polygon(
     format: WktNumberFormat,
     limit: usize,
 ) -> Result<()> {
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => write_wkt_polygon_impl::<false, false>(out, polygon, axes, format, limit),
-        (true, false) => write_wkt_polygon_impl::<true, false>(out, polygon, axes, format, limit),
-        (false, true) => write_wkt_polygon_impl::<false, true>(out, polygon, axes, format, limit),
-        (true, true) => write_wkt_polygon_impl::<true, true>(out, polygon, axes, format, limit),
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        write_wkt_polygon_impl::<HAS_Z, HAS_M>(out, polygon, axes, format, limit)
+    })
 }
 
 fn write_wkt_polygon_impl<const Z: bool, const M: bool>(
@@ -471,12 +465,9 @@ fn write_wkt_polygon_impl<const Z: bool, const M: bool>(
 }
 
 fn write_wkt_point(out: &mut String, point: Point, axes: CoordinateAxes, format: WktNumberFormat) {
-    match (axes.has_z(), axes.has_m()) {
-        (false, false) => write_wkt_point_impl::<false, false>(out, point, format),
-        (true, false) => write_wkt_point_impl::<true, false>(out, point, format),
-        (false, true) => write_wkt_point_impl::<false, true>(out, point, format),
-        (true, true) => write_wkt_point_impl::<true, true>(out, point, format),
-    }
+    crate::geometry::dispatch_axes!((axes.has_z(), axes.has_m()), HAS_Z, HAS_M, {
+        write_wkt_point_impl::<HAS_Z, HAS_M>(out, point, format);
+    });
 }
 
 fn write_wkt_point_impl<const Z: bool, const M: bool>(
