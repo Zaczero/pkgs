@@ -1,4 +1,4 @@
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU32, NonZeroUsize};
 
 use crate::geometry::{
     CoordinateAxes, HasM, HasZ, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
@@ -254,34 +254,23 @@ const fn wkb_container_name(code: u32) -> &'static str {
     }
 }
 
-/// PostGIS SRID 0 is unknown/unspecified — same as a missing flag (top-level
-/// [`crate::io::crs_from_srid`] rule). Normalize before nested reconciliation so
-/// outer-0/child-4326, outer-4326/child-0, and sibling 0/4326 never invent a
-/// conflict against the unknown sentinel.
-const fn normalize_ewkb_srid(srid: Option<u32>) -> Option<u32> {
-    match srid {
-        Some(0) | None => None,
-        some => some,
-    }
-}
-
 /// Reconcile an element's own EWKB SRID with the SRID inherited from an
 /// enclosing element. PostGIS may stamp the SRID flag on nested members, so a
 /// nested SRID equal to (or absent against) the parent's is accepted; only a
 /// genuine parent/child disagreement is rejected, naming both codes and the
-/// member path. SRID 0 is treated as absent on both sides first.
+/// member path. Wire SRID 0 is normalized to `None` before this comparison.
 fn resolve_nested_srid(
-    inherited: Option<u32>,
-    local: Option<u32>,
+    inherited: Option<NonZeroU32>,
+    local: Option<NonZeroU32>,
     path: Option<&WkbMemberPath<'_>>,
-) -> Result<Option<u32>> {
-    let inherited = normalize_ewkb_srid(inherited);
-    let local = normalize_ewkb_srid(local);
+) -> Result<Option<NonZeroU32>> {
     match (inherited, local) {
         (Some(parent), Some(child)) if parent != child => {
             let location = path.map_or_else(|| "nested geometry".to_owned(), WkbMemberPath::render);
             Err(IoError::wkb(format!(
-                "nested WKB SRID {child} conflicts with enclosing SRID {parent} at {location}"
+                "nested WKB SRID {} conflicts with enclosing SRID {} at {location}",
+                child.get(),
+                parent.get(),
             )))
         },
         (_, Some(child)) => Ok(Some(child)),
@@ -292,10 +281,10 @@ fn resolve_nested_srid(
 impl WkbReader<'_> {
     /// Decode one top-level geometry and its normalized embedded SRID.
     ///
-    /// SRID resolution is deferred to the caller ([`crate::io::crs_from_srid`]
-    /// / [`crate::io::SridCrsCache`]) so bulk ingest resolves each distinct
-    /// code once. Nested SRID conflicts are still checked here.
-    fn read_shape(&mut self) -> Result<(Shape, Option<u32>)> {
+    /// SRID resolution is deferred to the caller ([`crate::io::crs_from_srid`])
+    /// until a fallback check or final frame resolution needs the definition.
+    /// Nested SRID conflicts are still checked here.
+    fn read_shape(&mut self) -> Result<(Shape, Option<NonZeroU32>)> {
         self.read_geometry(None, None, 0)
     }
 
@@ -305,10 +294,10 @@ impl WkbReader<'_> {
     /// resolved SRID so it flows down to this geometry's own members.
     fn read_geometry(
         &mut self,
-        inherited: Option<u32>,
+        inherited: Option<NonZeroU32>,
         path: Option<&WkbMemberPath<'_>>,
         depth: usize,
-    ) -> Result<(Shape, Option<u32>)> {
+    ) -> Result<(Shape, Option<NonZeroU32>)> {
         if depth > MAX_NESTING {
             return Err(IoError::wkb(format!(
                 "WKB geometry nesting exceeds the limit of {MAX_NESTING}"
@@ -326,6 +315,7 @@ impl WkbReader<'_> {
         } else {
             None
         };
+        let local_srid = crate::io::normalize_wire_srid(local_srid);
         let mut srid = resolve_nested_srid(inherited, local_srid, path)?;
         let shape = match geometry_type {
             WKB_POINT => self.read_point_shape(byte_order, axes)?,
@@ -610,10 +600,10 @@ impl WkbReader<'_> {
         &mut self,
         byte_order: WkbByteOrder,
         container: u32,
-        inherited: Option<u32>,
+        inherited: Option<NonZeroU32>,
         parent: Option<&WkbMemberPath<'_>>,
         depth: usize,
-    ) -> Result<(Vec<Shape>, Option<u32>)> {
+    ) -> Result<(Vec<Shape>, Option<NonZeroU32>)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_element_count(count)?;
         let mut shapes = Vec::with_capacity(count);
@@ -643,11 +633,11 @@ impl WkbReader<'_> {
         &mut self,
         byte_order: WkbByteOrder,
         container: u32,
-        inherited: Option<u32>,
+        inherited: Option<NonZeroU32>,
         parent: Option<&WkbMemberPath<'_>>,
         mut extract: impl FnMut(Shape) -> Result<MultiMember<T>>,
         depth: usize,
-    ) -> Result<(Vec<MultiMember<T>>, Option<u32>)> {
+    ) -> Result<(Vec<MultiMember<T>>, Option<NonZeroU32>)> {
         let count = self.read_u32(byte_order)? as usize;
         self.validate_element_count(count)?;
         let mut items = Vec::with_capacity(count);

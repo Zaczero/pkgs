@@ -1,5 +1,7 @@
 //! Geometry serialization codecs: WKT, WKB, and GeoJSON.
 
+use std::num::NonZeroU32;
+
 use thiserror::Error;
 
 use crate::crs;
@@ -287,43 +289,46 @@ where
     Ok(axes.unwrap_or(CoordinateAxes::XY))
 }
 
-/// Map an EWKT/EWKB SRID integer to a CRS.
-///
-/// PostGIS reserves SRID 0 as unknown/unspecified — it becomes CRS-free
-/// (``None``), never a false ``EPSG:0``. Every nonzero code is resolved
-/// through the canonical PROJ-backed CRS parser so invalid codes fail at
-/// parse time rather than later on first introspection.
-pub(crate) fn crs_from_srid(code: u32) -> Result<Option<smol_str::SmolStr>> {
-    if code == 0 {
-        return Ok(None);
+/// Normalize an EWKB/EWKT SRID at its wire boundary. PostGIS reserves SRID 0
+/// as unknown/unspecified, so it becomes `None`.
+pub(crate) const fn normalize_wire_srid(srid: Option<u32>) -> Option<NonZeroU32> {
+    match srid {
+        Some(code) => NonZeroU32::new(code),
+        None => None,
     }
-    Ok(Some(crs::definition(&format!("EPSG:{code}"))?))
+}
+
+/// Map a nonzero EWKT/EWKB SRID to a CRS.
+///
+/// Every code is resolved through the canonical PROJ-backed CRS parser so
+/// invalid codes fail at parse time rather than later on first introspection.
+pub(crate) fn crs_from_srid(code: NonZeroU32) -> Result<smol_str::SmolStr> {
+    crs::definition(&format!("EPSG:{}", code.get()))
 }
 
 /// Resolve an optional normalized EWKB/EWKT SRID (`None` = CRS-free).
-pub(crate) fn crs_from_optional_srid(srid: Option<u32>) -> Result<Option<smol_str::SmolStr>> {
-    srid.map_or(Ok(None), crs_from_srid)
+pub(crate) fn crs_from_optional_srid(
+    srid: Option<NonZeroU32>,
+) -> Result<Option<smol_str::SmolStr>> {
+    srid.map(crs_from_srid).transpose()
 }
 
-/// Resolve each distinct nonzero EWKB/EWKT SRID at most once per batch.
+/// Reuse the most recently resolved nonzero EWKB/EWKT SRID.
 ///
-/// Uniform multi-row ingest (the common case) hits the one-slot cache on every
-/// row after the first, so bulk `from_wkb` / EWKT / Arrow WKB no longer pay
-/// `format!("EPSG:{code}")` + definition resolution per row. A second distinct code
-/// still resolves (and fails SharedCrs / conflict guards with the same
-/// messages) without re-canonicalizing the first.
+/// Per-row explicit/storage CRS checks reuse the cached result for adjacent
+/// repeated codes. Without those checks, a uniform batch resolves its shared
+/// SRID once when the frame is finished. A non-adjacent repeat is resolved
+/// again after another code replaces this one-slot cache.
 #[derive(Default)]
 pub(crate) struct SridCrsCache {
-    last: Option<(u32, Option<smol_str::SmolStr>)>,
+    /// Uniform explicit-CRS WKB uses 2.06× more instructions without this cache.
+    last: Option<(NonZeroU32, smol_str::SmolStr)>,
 }
 
 impl SridCrsCache {
-    /// Resolve `srid` through [`crs_from_srid`], reusing the previous result
-    /// when the code repeats.
-    pub(crate) fn resolve(&mut self, srid: Option<u32>) -> Result<Option<smol_str::SmolStr>> {
-        let Some(code) = srid else {
-            return Ok(None);
-        };
+    /// Resolve a nonzero `srid` through [`crs_from_srid`], reusing the previous
+    /// result when the code repeats.
+    pub(crate) fn resolve(&mut self, code: NonZeroU32) -> Result<smol_str::SmolStr> {
         if let Some((cached, crs)) = &self.last
             && *cached == code
         {
@@ -338,12 +343,12 @@ impl SridCrsCache {
 /// Decoded WKB/EWKB payload: shape plus the normalized embedded SRID.
 ///
 /// `srid` is `None` for plain WKB and for PostGIS SRID 0 (unknown). Nonzero
-/// codes stay numeric until a consumer resolves them through
-/// [`crs_from_srid`] / [`SridCrsCache`] so bulk ingest resolves each distinct
-/// code once.
+/// codes stay numeric until a consumer resolves them through [`crs_from_srid`];
+/// bulk admission defers resolution until a fallback check or final frame
+/// resolution needs the definition.
 pub(crate) struct WkbGeometry {
     pub shape: Shape,
-    pub srid: Option<u32>,
+    pub srid: Option<NonZeroU32>,
 }
 
 struct WktHeader<'a> {

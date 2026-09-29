@@ -1,6 +1,7 @@
 //! Arrow interchange: attached protocol/metadata handling and the native
 //! owned batch decoder entry point.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use pyo3::exceptions::{PyModuleNotFoundError, PyTypeError};
@@ -167,7 +168,7 @@ pub(crate) struct NativeArrowAccumulator {
     crs: Option<Arc<String>>,
     epoch: Option<f64>,
     storage: Vec<NativeDecodedStorage>,
-    srids: Vec<Option<u32>>,
+    srids: Vec<Option<NonZeroU32>>,
     missing: Vec<usize>,
     length: usize,
 }

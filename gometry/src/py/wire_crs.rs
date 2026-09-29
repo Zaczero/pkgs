@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use crate::boundary::metadata;
 use crate::boundary::metadata::FrameError;
 use crate::{Crs, PyResult, crs_arc, io};
@@ -63,13 +65,13 @@ enum SharedSrid {
     /// No present row admitted yet.
     Unseen,
     /// Every present row so far carries this normalized SRID (`None` = CRS-free).
-    Agreed(Option<u32>),
+    Agreed(Option<NonZeroU32>),
 }
 
-/// Serialized-frame admission: accumulate raw `Option<u32>` SRIDs, resolve
-/// each distinct code once, compare to explicit/storage CRS once, yield one
-/// shared final [`Crs`]. Replaces per-row `SharedRowCrs` clone/compare on
-/// Arrow WKB, BinaryView, bulk `from_wkb`, EWKT, and pickle.
+/// Serialized-frame admission: accumulate normalized SRID agreement across
+/// rows, check explicit/storage CRS on each row, and yield one shared final
+/// [`Crs`]. Replaces per-row `SharedRowCrs` clone/compare on Arrow WKB,
+/// BinaryView, bulk `from_wkb`, EWKT, and pickle.
 pub(crate) struct SridFrameAdmission {
     /// Explicit caller `crs=` (wins the final frame when set).
     explicit: Option<Crs>,
@@ -78,8 +80,6 @@ pub(crate) struct SridFrameAdmission {
     storage: Option<Crs>,
     /// First present row's normalized SRID agreement.
     shared_srid: SharedSrid,
-    /// One definition resolution per distinct nonzero code (finish + conflict
-    /// messages).
     cache: io::SridCrsCache,
 }
 
@@ -99,7 +99,7 @@ impl SridFrameAdmission {
     /// `source` is the conflict label (`"EWKB SRID"` / `"EWKT SRID"`).
     pub(crate) fn admit_srid(
         &mut self,
-        srid: Option<u32>,
+        srid: Option<NonZeroU32>,
         row: usize,
         context: &str,
         source: &str,
@@ -114,10 +114,10 @@ impl SridFrameAdmission {
             },
             SharedSrid::Agreed(_) => {},
         }
-        // Explicit crs= vs embedded: resolve this code once and compare strings.
+        // Explicit CRS versus embedded SRID: compare using cached resolution.
         if let (Some(explicit), Some(code)) = (self.explicit.as_deref(), srid) {
-            let embedded = self.cache.resolve(Some(code))?;
-            guard_embedded_crs_conflict(embedded.as_deref(), Some(explicit), source)?;
+            let embedded = self.cache.resolve(code)?;
+            guard_embedded_crs_conflict(Some(embedded.as_str()), Some(explicit), source)?;
         }
         Ok(())
     }
@@ -125,19 +125,19 @@ impl SridFrameAdmission {
     /// Storage-metadata CRS vs embedded SRID (Arrow column CRS).
     pub(crate) fn guard_storage_srid(
         &mut self,
-        srid: Option<u32>,
+        srid: Option<NonZeroU32>,
         storage_crs: Option<&str>,
         _row: usize,
     ) -> crate::error::Result<()> {
         if let (Some(storage), Some(code)) = (storage_crs, srid) {
-            let embedded = self.cache.resolve(Some(code))?;
-            guard_embedded_crs_conflict(embedded.as_deref(), Some(storage), "EWKB SRID")?;
+            let embedded = self.cache.resolve(code)?;
+            guard_embedded_crs_conflict(Some(embedded.as_str()), Some(storage), "EWKB SRID")?;
         }
         Ok(())
     }
 
     /// Finish: one shared final CRS. Explicit wins; else storage; else the
-    /// resolved shared SRID (each distinct code resolved once via the cache).
+    /// resolved shared SRID.
     pub(crate) fn finish(mut self) -> crate::error::Result<Option<Crs>> {
         if let Some(explicit) = self.explicit {
             return Ok(Some(explicit));
@@ -147,22 +147,23 @@ impl SridFrameAdmission {
         }
         match self.shared_srid {
             SharedSrid::Unseen | SharedSrid::Agreed(None) => Ok(None),
-            SharedSrid::Agreed(Some(code)) => {
-                let crs = self.cache.resolve(Some(code))?;
-                Ok(crs.map(crs_arc))
-            },
+            SharedSrid::Agreed(Some(code)) => Ok(Some(crs_arc(self.cache.resolve(code)?))),
         }
     }
 
     fn srid_conflict(
         &mut self,
         row: usize,
-        first: Option<u32>,
-        other: Option<u32>,
+        first: Option<NonZeroU32>,
+        other: Option<NonZeroU32>,
         context: &str,
     ) -> crate::error::Result<()> {
-        let first_crs = self.cache.resolve(first)?.map(crs_arc);
-        let other_crs = self.cache.resolve(other)?.map(crs_arc);
+        let first_crs = first
+            .map(|code| self.cache.resolve(code).map(crs_arc))
+            .transpose()?;
+        let other_crs = other
+            .map(|code| self.cache.resolve(code).map(crs_arc))
+            .transpose()?;
         Err(FrameError::SharedCrs {
             context: context.into(),
             index: row,
@@ -220,8 +221,7 @@ pub(crate) fn resolve_wire_crs(
 /// returning the WKT body and the normalized embedded SRID.
 ///
 /// `None` means no CRS (missing prefix or PostGIS SRID 0). Nonzero codes are
-/// unresolved — callers resolve through [`io::crs_from_srid`] /
-/// [`io::SridCrsCache`].
+/// unresolved — callers resolve them through [`io::crs_from_srid`].
 /// Does `text` carry the EWKT `SRID=` prefix?
 ///
 /// The ONE rule [`split_ewkt_srid`] and `validation::is_wkt_string` genuinely
@@ -237,7 +237,7 @@ pub(crate) fn has_ewkt_srid_prefix(text: &str) -> bool {
         .is_some_and(|head| head.eq_ignore_ascii_case("SRID="))
 }
 
-pub(crate) fn split_ewkt_srid(text: &str) -> crate::error::Result<(&str, Option<u32>)> {
+pub(crate) fn split_ewkt_srid(text: &str) -> crate::error::Result<(&str, Option<NonZeroU32>)> {
     // The EWKT prefix is `SRID=<code>;` — recognized ASCII-case-insensitively
     // and after any leading whitespace, matching PostGIS's lenient acceptance.
     // A bare WKT body is returned verbatim (the WKT parser trims it itself).
@@ -255,6 +255,5 @@ pub(crate) fn split_ewkt_srid(text: &str) -> crate::error::Result<(&str, Option<
         .trim()
         .parse()
         .map_err(|_| io::IoError::wkt(format!("EWKT SRID {code:?}; expected an EPSG code")))?;
-    // SRID 0 is PostGIS "unknown" → CRS-free (same normalize as EWKB).
-    Ok((body, if code == 0 { None } else { Some(code) }))
+    Ok((body, io::normalize_wire_srid(Some(code))))
 }

@@ -4,6 +4,7 @@
 //! entered.  The decoder therefore works only with `NativeNode` accessors and
 //! can run entirely inside `Python::detach`.
 
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use super::{ArrowFormat, NativeArrowBatch, NativeNode};
@@ -90,7 +91,7 @@ pub(crate) struct NativeDecodedBatch {
     pub(crate) length: usize,
     pub(crate) storage: NativeDecodedStorage,
     /// One entry per present shape, in logical row order.
-    pub(crate) srids: Vec<Option<u32>>,
+    pub(crate) srids: Vec<Option<NonZeroU32>>,
     /// Local logical row indexes whose outer geometry value is null.
     pub(crate) missing: Vec<usize>,
 }

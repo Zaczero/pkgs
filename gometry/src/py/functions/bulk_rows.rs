@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use pyo3::prelude::*;
 
 use crate::boundary::metadata;
@@ -24,10 +26,10 @@ pub(crate) enum StreamedShape {
     },
 }
 
-/// Bulk stream row carrying a raw normalized SRID (`None` = CRS-free).
+/// Bulk stream row carrying a normalized SRID (`None` = CRS-free).
 pub(crate) struct StreamedSridRow {
     pub(crate) shape: Shape,
-    pub(crate) srid: Option<u32>,
+    pub(crate) srid: Option<NonZeroU32>,
 }
 
 struct BulkState {
