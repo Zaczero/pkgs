@@ -84,13 +84,9 @@ impl Shape {
         GeometryKind::of(self).geometry_type()
     }
 
-    pub fn topological_dimension(&self) -> Dimension {
+    pub const fn topological_dimension(&self) -> Dimension {
         match self {
-            Self::GeometryCollection(geometries) => geometries
-                .iter()
-                .map(Self::topological_dimension)
-                .max()
-                .unwrap_or(Dimension::Point),
+            Self::GeometryCollection(geometries) => geometries.topological_dimension(),
             Self::Point(_)
             | Self::MultiPoint(_)
             | Self::LineString(_)

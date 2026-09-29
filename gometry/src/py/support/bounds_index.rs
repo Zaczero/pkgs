@@ -4,11 +4,11 @@ use std::marker::PhantomData;
 use rstar::Envelope as _;
 
 use crate::geographic::{
-    CircularInterval, CollectionOwnerKey, GeographicAdmissionError, GeographicCollectionOwners,
-    GeographicFrame, GeographicRing, GeographicViewError, LongitudeWindows, RingDomain,
-    RingSummary, RingTurn, ScalarGeographicView, SeamIdentity, union_circular_intervals,
+    CircularInterval, GeographicAdmissionError, GeographicCollectionOwners, GeographicFrame,
+    GeographicRing, GeographicViewError, LongitudeWindows, RingDomain, RingSummary, RingTurn,
+    ScalarGeographicView, SeamIdentity, union_circular_intervals,
 };
-use crate::geometry::{CoordSeq, TopologyDomain};
+use crate::geometry::{CoordSeq, ShapeOwnerKey, TopologyDomain};
 use crate::predicates::engine::IndexEnvelope;
 use crate::py::errors::InvalidGeometryError;
 use crate::py::support::{AABB, Bounds, Point, Shape};
@@ -310,7 +310,7 @@ impl<'owner> CoordinateRunKey<'owner> {
 
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum GeographicOwnerKey<'owner> {
-    Collection(CollectionOwnerKey<'owner>),
+    Collection(ShapeOwnerKey),
     Coordinates(CoordinateRunKey<'owner>),
 }
 
@@ -444,7 +444,7 @@ impl<'owner> GeographicIndexOwnerMemo<'owner> {
         if repeated { Ok(false) } else { Ok(true) }
     }
 
-    fn note_repeated_collection(&mut self, key: CollectionOwnerKey<'owner>) -> pyo3::PyResult<()> {
+    fn note_repeated_collection(&mut self, key: ShapeOwnerKey) -> pyo3::PyResult<()> {
         self.owner_entry(GeographicOwnerKey::Collection(key))?
             .repeated = true;
         Ok(())
@@ -555,7 +555,7 @@ fn collect_geographic_owner_keys<'owner>(
             }
             // An unshared member slice cannot recur in this immutable shape.
             if collection.members_are_shared()
-                && !collection_owners.observe(CollectionOwnerKey::new(members))
+                && !collection_owners.observe(ShapeOwnerKey::new(members))
             {
                 #[cfg(test)]
                 {
@@ -564,7 +564,7 @@ fn collect_geographic_owner_keys<'owner>(
                         .repeated_owner_occurrences
                         .wrapping_add(1);
                 }
-                owners.note_repeated_collection(CollectionOwnerKey::new(members))?;
+                owners.note_repeated_collection(ShapeOwnerKey::new(members))?;
                 return Ok(());
             }
             #[cfg(test)]
@@ -686,9 +686,9 @@ fn geographic_coordinate_summary<'owner>(
     }
     match shape {
         Shape::GeometryCollection(collection) => {
-            let key = collection.members_are_shared().then(|| {
-                GeographicOwnerKey::Collection(CollectionOwnerKey::new(collection.as_slice()))
-            });
+            let key = collection
+                .members_are_shared()
+                .then(|| GeographicOwnerKey::Collection(ShapeOwnerKey::new(collection.as_slice())));
             if let Some(key) = key
                 && let Some(summary) = owners.coordinates(key)
             {
@@ -819,8 +819,7 @@ fn append_geographic_segment_intervals<'owner>(
     match shape {
         Shape::GeometryCollection(collection) => {
             if collection.members_are_shared() {
-                let key =
-                    GeographicOwnerKey::Collection(CollectionOwnerKey::new(collection.as_slice()));
+                let key = GeographicOwnerKey::Collection(ShapeOwnerKey::new(collection.as_slice()));
                 if !owners.first_segment_owner(key) {
                     return;
                 }
@@ -923,9 +922,9 @@ fn ring_effects<'owner>(
     let mut effects = RingEnvelopeEffects::default();
     match shape {
         Shape::GeometryCollection(collection) => {
-            let key = collection.members_are_shared().then(|| {
-                GeographicOwnerKey::Collection(CollectionOwnerKey::new(collection.as_slice()))
-            });
+            let key = collection
+                .members_are_shared()
+                .then(|| GeographicOwnerKey::Collection(ShapeOwnerKey::new(collection.as_slice())));
             if let Some(key) = key
                 && let Some(cached) = owners.ring_effects(key)
             {

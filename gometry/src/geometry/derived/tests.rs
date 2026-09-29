@@ -103,8 +103,9 @@ fn areal_centroid_replays_multipolygon_when_positive_child_weight_rounds_to_zero
     let shape =
         Shape::MultiPolygon(MultiPolygon::from_dense(vec![ordinary, small]).expect("two polygons"));
 
-    let (centroid_x, centroid_y) =
-        super::areal_centroid(&shape).expect("positive exact aggregate area");
+    let (centroid_x, centroid_y) = super::areal_centroid(&shape)
+        .expect("exact areal summary")
+        .expect("positive exact aggregate area");
     let expected_x = f64::from_bits(1_u64 << 50);
     assert_eq!(centroid_x.to_bits(), expected_x.to_bits());
     assert_eq!(centroid_y.to_bits(), 0.0_f64.to_bits());
@@ -131,8 +132,9 @@ fn areal_centroid_propagates_rounded_zero_through_nested_collections() {
         .expect("inner collection");
     let nested = Shape::geometry_collection(vec![inner]).expect("outer collection");
 
-    let (centroid_x, centroid_y) =
-        super::areal_centroid(&nested).expect("positive exact nested area");
+    let (centroid_x, centroid_y) = super::areal_centroid(&nested)
+        .expect("exact areal summary")
+        .expect("positive exact nested area");
     assert_eq!(centroid_x.to_bits(), (2.25 * side).to_bits());
     assert_eq!(centroid_y.to_bits(), (0.375 * side).to_bits());
 }
@@ -143,8 +145,15 @@ fn exact_zero_area_collection_still_uses_its_lineal_centroid() {
     let collection =
         Shape::geometry_collection(vec![Shape::Polygon(degenerate)]).expect("collection");
 
-    assert!(super::areal_centroid(&collection).is_none());
-    assert_eq!(super::lineal_centroid(&collection), Some((1.0, 0.0)),);
+    assert!(
+        super::areal_centroid(&collection)
+            .expect("exact area summary")
+            .is_none()
+    );
+    assert_eq!(
+        super::lineal_centroid(&collection).expect("lineal summary"),
+        Some((1.0, 0.0)),
+    );
 }
 
 fn origin_on(hull: &Shape) -> Point {
@@ -451,7 +460,9 @@ fn lineal_centroid_keeps_world_metric_weights_in_an_axis_frame() {
         ]
         .into(),
     );
-    let (_, y) = super::lineal_centroid(&unequal).expect("lineal centroid");
+    let (_, y) = super::lineal_centroid(&unequal)
+        .expect("lineal summary")
+        .expect("lineal centroid");
     assert!((y - 4.736_842_105_263_158).abs() <= 1e-14);
 
     let opposite = Shape::MultiLineString(
@@ -461,7 +472,9 @@ fn lineal_centroid_keeps_world_metric_weights_in_an_axis_frame() {
         ]
         .into(),
     );
-    let (x, y) = super::lineal_centroid(&opposite).expect("lineal centroid");
+    let (x, y) = super::lineal_centroid(&opposite)
+        .expect("lineal summary")
+        .expect("lineal centroid");
     assert_eq!(x.to_bits(), 0.0_f64.to_bits());
     assert_eq!(y.to_bits(), 0.0_f64.to_bits());
 }

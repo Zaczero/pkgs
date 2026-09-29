@@ -13,9 +13,8 @@ pub(crate) use value::{
 #[cfg(test)]
 pub(crate) use view::GeographicAdmissionWork;
 pub(crate) use view::{
-    CollectionOwnerKey, GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic,
-    GeographicInputs, GeographicRing, GeographicViewError, RingDomain, RingSummary,
-    ScalarGeographicView,
+    GeographicAdmissionError, GeographicCollectionOwners, GeographicDiagnostic, GeographicInputs,
+    GeographicRing, GeographicViewError, RingDomain, RingSummary, ScalarGeographicView,
 };
 
 #[derive(Clone, Copy, Debug, Error, PartialEq)]

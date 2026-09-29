@@ -5,11 +5,11 @@ use std::ops::Deref;
 
 use crate::HeapSize;
 use crate::error::Result;
-use crate::geometry::GeometryKind;
 use crate::geometry::types::{
     CoordIter, CoordSeq, CoordSeqBuilder, CoordWindow, CoordinateAxes, Coordinates,
     GeometryErrorKind, Point, Polygon, SharedSlice, SharedSliceIter, coordseq,
 };
+use crate::geometry::{Dimension, GeometryKind};
 
 /// Maximum number of nested `GeometryCollection` containers in one shape.
 pub(crate) const MAX_NESTING: usize = 128;
@@ -105,14 +105,14 @@ pub enum Shape {
     Empty(GeometryKind, CoordinateAxes),
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct ShapeOwnerKey {
     address: usize,
     len: usize,
     kind: ShapeOwnerKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 enum ShapeOwnerKind {
     Collection,
     MultiLineValues,
@@ -730,13 +730,14 @@ impl<T: crate::HeapSize> crate::HeapSize for NonEmptyVec<T> {
     }
 }
 
-/// A checked, immutable collection payload carrying its exact nesting depth.
-/// The members stay behind this type so no operation can mutate them without
-/// rebuilding and rechecking the enclosing collection.
+/// A checked, immutable collection payload carrying its exact nesting depth
+/// and topological dimension. The members stay behind this type so no
+/// operation can mutate them without rebuilding the enclosing collection.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct GeometryCollection {
     members: NonEmptyVec<Shape>,
     depth: NonZeroU8,
+    topological_dimension: Dimension,
 }
 
 impl GeometryCollection {
@@ -746,18 +747,20 @@ impl GeometryCollection {
     }
 
     fn from_members(members: NonEmptyVec<Shape>, limit: usize) -> Result<Self> {
-        let depth = members
-            .iter()
-            .map(Shape::nesting_depth)
-            .max()
-            .expect("non-empty collection payload")
-            + 1;
+        let mut child_depth = 0;
+        let mut topological_dimension = Dimension::Point;
+        for member in &members {
+            child_depth = child_depth.max(member.nesting_depth());
+            topological_dimension = topological_dimension.max(member.topological_dimension());
+        }
+        let depth = child_depth.saturating_add(1);
         if depth > MAX_NESTING || depth > limit {
             return Err(collection_depth_error());
         }
         Ok(Self {
             members,
             depth: NonZeroU8::new(depth as u8).expect("collection depth is non-zero"),
+            topological_dimension,
         })
     }
 
@@ -817,6 +820,10 @@ impl GeometryCollection {
 
     pub(crate) const fn depth(&self) -> usize {
         self.depth.get() as usize
+    }
+
+    pub(crate) const fn topological_dimension(&self) -> Dimension {
+        self.topological_dimension
     }
 
     pub(crate) fn as_slice(&self) -> &[Shape] {
@@ -1877,6 +1884,31 @@ mod multipart_layout_tests {
         let deep = raw_nested(3);
         let collection = Shape::geometry_collection(vec![shallow, deep]).unwrap();
         assert_eq!(collection.nesting_depth(), 4);
+    }
+
+    #[test]
+    fn collection_topological_dimension_tracks_members_and_rebuilds() {
+        let curve = Shape::geometry_collection(vec![Shape::typed_empty(
+            GeometryKind::LineString,
+            CoordinateAxes::XY,
+        )])
+        .unwrap();
+        let source = Shape::geometry_collection(vec![
+            Shape::empty_point(),
+            curve.clone(),
+            Shape::typed_empty(GeometryKind::Polygon, CoordinateAxes::XY),
+        ])
+        .unwrap();
+        assert_eq!(source.topological_dimension(), Dimension::Surface);
+
+        let Shape::GeometryCollection(collection) = source else {
+            unreachable!("collection fixture")
+        };
+        let rebuilt = collection.try_rebuild_members(vec![curve]).unwrap();
+        assert_eq!(
+            Shape::GeometryCollection(rebuilt).topological_dimension(),
+            Dimension::Curve
+        );
     }
 
     #[test]

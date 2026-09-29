@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 
 use crate::error::Result;
 use crate::geometry::derived::{
-    areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points,
+    areal_centroid, build_inscribed_circle, canonicalize_concave_hull_points, centroid_is_empty,
     collection_surface_point, emit_minimum_bounding_circle, emit_zero_radius_point,
     lineal_centroid, lineal_surface_point, minimum_area_rectangle, monotone_chain_hull,
     multipoint_surface_point, native_concave_hull, point_centroid, polygonal_surface_point,
@@ -56,16 +56,26 @@ impl Shape {
         // never pays the lineal pass's per-edge `sqrt` that its result would
         // discard. The per-dimension sums are independent and require no
         // per-call geometry conversion.
-        if self.is_empty() {
+        let is_empty = if let Self::GeometryCollection(collection) = self
+            && collection.depth() > 1
+        {
+            centroid_is_empty(self)
+        } else {
+            self.is_empty()
+        };
+        if is_empty {
             return Ok(Self::empty_point());
         }
-        areal_centroid(self)
-            .or_else(|| lineal_centroid(self))
-            .or_else(|| point_centroid(self))
-            .map_or_else(
-                || Ok(Self::empty_point()),
-                |(x, y)| Ok(Self::Point(Point::new(x, y)?)),
-            )
+        if let Some((x, y)) = areal_centroid(self)? {
+            return Ok(Self::Point(Point::new(x, y)?));
+        }
+        if let Some((x, y)) = lineal_centroid(self)? {
+            return Ok(Self::Point(Point::new(x, y)?));
+        }
+        if let Some((x, y)) = point_centroid(self)? {
+            return Ok(Self::Point(Point::new(x, y)?));
+        }
+        Ok(Self::empty_point())
     }
 
     /// A representative point guaranteed to lie *on* the geometry — for a

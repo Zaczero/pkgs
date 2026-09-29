@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
@@ -8,40 +7,9 @@ use super::{
 };
 use crate::array::CheckedRingWindow;
 use crate::collections::HashSet;
-use crate::geometry::{CoordSeq, MultiMember, Point, Ring, Shape, XY};
+use crate::geometry::{CoordSeq, MultiMember, Point, Ring, Shape, ShapeOwnerKey, XY};
 
 const INLINE_MEMBER_DEPTH: usize = 4;
-
-#[derive(Clone, Copy, Eq, Hash, PartialEq)]
-pub(crate) struct CollectionOwnerKey<'owner> {
-    address: usize,
-    len: usize,
-    owner: PhantomData<&'owner [Shape]>,
-}
-
-impl<'owner> CollectionOwnerKey<'owner> {
-    pub(crate) fn new(members: &'owner [Shape]) -> Self {
-        Self {
-            address: members.as_ptr().addr(),
-            len: members.len(),
-            owner: PhantomData,
-        }
-    }
-}
-
-impl Ord for CollectionOwnerKey<'_> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.address
-            .cmp(&other.address)
-            .then_with(|| self.len.cmp(&other.len))
-    }
-}
-
-impl PartialOrd for CollectionOwnerKey<'_> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -60,16 +28,17 @@ pub(crate) struct GeographicAdmissionWork {
 /// leave all owner storage empty.
 #[derive(Default)]
 pub(crate) struct GeographicCollectionOwners<'owner> {
-    inline: Option<CollectionOwnerKey<'owner>>,
-    hashed: Option<HashSet<CollectionOwnerKey<'owner>>>,
-    entropy_fallback: Option<BTreeSet<CollectionOwnerKey<'owner>>>,
+    inline: Option<ShapeOwnerKey>,
+    hashed: Option<HashSet<ShapeOwnerKey>>,
+    entropy_fallback: Option<BTreeSet<ShapeOwnerKey>>,
     entropy_error: Option<crate::error::Error>,
+    _owner: PhantomData<&'owner Shape>,
     #[cfg(test)]
     work: GeographicAdmissionWork,
 }
 
-impl<'owner> GeographicCollectionOwners<'owner> {
-    pub(crate) fn observe(&mut self, key: CollectionOwnerKey<'owner>) -> bool {
+impl GeographicCollectionOwners<'_> {
+    pub(crate) fn observe(&mut self, key: ShapeOwnerKey) -> bool {
         if let Some(owners) = self.hashed.as_mut() {
             return owners.insert(key);
         }
@@ -433,7 +402,7 @@ fn visit_shape<'owner>(
             }
             let repeated = collection_owners.as_deref_mut().is_some_and(|owners| {
                 collection.members_are_shared()
-                    && !owners.observe(CollectionOwnerKey::new(collection.as_slice()))
+                    && !owners.observe(ShapeOwnerKey::new(collection.as_slice()))
             });
             if repeated {
                 // This immutable payload was fully admitted at its first

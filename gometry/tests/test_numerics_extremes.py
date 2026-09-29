@@ -217,7 +217,7 @@ def test_lineal_component_weight_underflow_keeps_zero_x_and_finite_order_control
         )
 
 
-def test_multiline_component_online_rescue_keeps_finite_maximum_coordinate() -> None:
+def test_multiline_component_exact_rescue_keeps_finite_maximum_coordinate() -> None:
     maximum = float.fromhex('0x1.fffffffffffffp+1023')
     large_line = [(maximum, 0.0), (maximum, 4.0)]
     centered_line = [(0.0, 0.0), (0.0, 4.0)]
@@ -240,21 +240,79 @@ def test_multiline_component_online_rescue_keeps_finite_maximum_coordinate() -> 
         assert (float(centroid.x), float(centroid.y)) == expected
 
 
-def test_geometry_collection_centroid_preserves_nonfinite_replay_error() -> None:
+def test_zero_length_collection_line_does_not_move_positive_length_frame() -> None:
+    """Zero-measure coordinates cannot move a finite centroid into an error."""
     maximum = float.fromhex('0x1.fffffffffffffp+1023')
     anchor = math.ldexp(3.0, 970)
     minimum = float(2 * Fraction(anchor) - Fraction(maximum))
     zero_line = gm.LineString([(minimum, 0.0), (minimum, 0.0)])
-    infinite_line = gm.LineString([(maximum, -maximum), (maximum, maximum)])
-    geometry = gm.GeometryCollection([zero_line, infinite_line])
+    positive_line = gm.LineString([(maximum, -maximum), (maximum, maximum)])
+    assert math.isinf(float(positive_line.length))
+    expected = (float(Fraction(maximum)), 0.0)
+    assert (float(positive_line.centroid().x), float(positive_line.centroid().y)) == expected
 
-    assert math.isinf(float(infinite_line.length))
-    assert (float(infinite_line.centroid().x), float(infinite_line.centroid().y)) == (
-        maximum,
-        0.0,
-    )
-    with pytest.raises(gm.InvalidGeometryError, match='coordinates must be finite'):
-        geometry.centroid()
+    geometries = [
+        gm.GeometryCollection([zero_line, positive_line]),
+        gm.GeometryCollection([positive_line, zero_line]),
+    ]
+    for geometry in geometries:
+        centroid = geometry.centroid()
+        assert (float(centroid.x), float(centroid.y)) == expected
+
+    dense = gm.GeometryArray(geometries)
+    assert [
+        (float(point.x), float(point.y)) for point in dense.centroid()
+    ] == [expected, expected]
+    gathered = dense[np.array([1, 0], dtype=np.intp)]
+    assert [
+        (float(point.x), float(point.y)) for point in gathered.centroid()
+    ] == [expected, expected]
+
+
+def test_repeated_shared_collection_centroid_preserves_occurrence_weights() -> None:
+    first = gm.box(0.0, 0.0, 2.0, 2.0)
+    shared = gm.GeometryCollection([first])
+    area = gm.GeometryCollection([
+        gm.GeometryCollection([shared, gm.box(20.0, 0.0, 22.0, 2.0)]),
+        gm.GeometryCollection([shared, gm.box(40.0, 0.0, 42.0, 2.0)]),
+    ])
+    line = gm.LineString([(0.0, 0.0), (2.0, 0.0)])
+    lineal = gm.GeometryCollection([
+        line,
+        line,
+        gm.LineString([(10.0, 0.0), (10.0, 4.0)]),
+    ])
+    points = gm.MultiPoint([(0.0, 0.0), (2.0, 0.0)])
+    puntal = gm.GeometryCollection([points, points, gm.Point(10.0, 0.0)])
+    expected = [(16.0, 1.0), (5.5, 1.0), (2.8, 0.0)]
+
+    for geometry, answer in zip([area, lineal, puntal], expected, strict=True):
+        centroid = geometry.centroid()
+        assert (float(centroid.x), float(centroid.y)) == answer
+
+    rows = gm.GeometryArray([area, lineal, puntal, None])
+    assert [
+        None if point is None else (float(point.x), float(point.y))
+        for point in rows.centroid()
+    ] == [*expected, None]
+    gathered = rows[np.array([2, 0, 3, 1], dtype=np.intp)]
+    assert [
+        None if point is None else (float(point.x), float(point.y))
+        for point in gathered.centroid()
+    ] == [expected[2], expected[0], None, expected[1]]
+
+
+def test_repeated_zero_length_lines_keep_puntal_anchors() -> None:
+    zero_line = gm.LineString([(2.0, 4.0), (2.0, 4.0)])
+    aggregate = gm.GeometryCollection([
+        zero_line,
+        zero_line,
+        gm.Point(10.0, 0.0),
+    ])
+
+    centroid = aggregate.centroid()
+
+    assert (float(centroid.x), float(centroid.y)) == (14.0 / 3.0, 8.0 / 3.0)
 
 
 def _assert_line_centroid_exact(
