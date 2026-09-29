@@ -99,6 +99,12 @@ SCENARIOS = (
     'h1_file',
     'h2_file',
     'h2_upload',
+    'h1_upload_fast',
+    'h2_upload_fast',
+    'h1_response_stream',
+    'h2_response_stream',
+    'h1_response_content_length',
+    'h2_response_content_length',
 )
 
 

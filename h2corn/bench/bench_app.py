@@ -8,6 +8,9 @@ from starlette.routing import Route, WebSocketRoute
 
 FILE_RESPONSE_SIZE = 128 * 1024
 FILE_RESPONSE_PATH = Path(__file__).with_name('_file_response_payload.bin')
+SMALL_STREAM_CHUNK = b'x' * 128
+SMALL_STREAM_CHUNKS = 8
+SMALL_STREAM_LENGTH = len(SMALL_STREAM_CHUNK) * SMALL_STREAM_CHUNKS
 
 
 def ensure_file_response_payload():
@@ -59,6 +62,25 @@ async def streaming_post_fast(request):
     return Response(str(body_len).encode(), media_type='text/plain')
 
 
+async def small_stream_chunks():
+    for _ in range(SMALL_STREAM_CHUNKS):
+        yield SMALL_STREAM_CHUNK
+
+
+async def response_stream(request):
+    return StreamingResponse(
+        small_stream_chunks(), media_type='application/octet-stream'
+    )
+
+
+async def response_content_length(request):
+    return StreamingResponse(
+        small_stream_chunks(),
+        media_type='application/octet-stream',
+        headers={'content-length': str(SMALL_STREAM_LENGTH)},
+    )
+
+
 async def streaming_download(request):
     async def chunks():
         for _ in range(8):
@@ -85,6 +107,8 @@ app = Starlette(
         Route('/static-file', static_file),
         Route('/streaming-post', streaming_post, methods=['POST']),
         Route('/streaming-post-fast', streaming_post_fast, methods=['POST']),
+        Route('/response-stream', response_stream),
+        Route('/response-content-length', response_content_length),
         Route('/streaming-download', streaming_download),
         WebSocketRoute('/ws', websocket_endpoint),
     ]

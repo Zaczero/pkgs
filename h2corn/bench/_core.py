@@ -71,6 +71,12 @@ BenchmarkType = Literal[
     'h1_stream',
     'h2_stream',
     'h2_upload',
+    'h1_upload_fast',
+    'h2_upload_fast',
+    'h1_response_stream',
+    'h2_response_stream',
+    'h1_response_content_length',
+    'h2_response_content_length',
     'ws',
 ]
 
@@ -113,6 +119,7 @@ class ResponseContract:
     request_body_path: Path | None = None
     response_body: bytes = b''
     content_type: str = 'text/plain'
+    response_content_length: int | None = None
 
     def load_url(self) -> str:
         if self.driver == 'k6':
@@ -171,6 +178,43 @@ RESPONSE_CONTRACTS: dict[BenchmarkType, ResponseContract] = {
         request_body=b'x' * 1024,
         request_body_path=LARGE_UPLOAD_PATH,
         response_body=b'1024',
+    ),
+    'h1_upload_fast': ResponseContract(
+        '/streaming-post-fast',
+        method='POST',
+        request_body=b'x' * 1024,
+        response_body=b'1024',
+    ),
+    'h2_upload_fast': ResponseContract(
+        '/streaming-post-fast',
+        protocol='2',
+        method='POST',
+        request_body=b'x' * 1024,
+        response_body=b'1024',
+    ),
+    'h1_response_stream': ResponseContract(
+        '/response-stream',
+        response_body=b'x' * 1024,
+        content_type='application/octet-stream',
+    ),
+    'h2_response_stream': ResponseContract(
+        '/response-stream',
+        protocol='2',
+        response_body=b'x' * 1024,
+        content_type='application/octet-stream',
+    ),
+    'h1_response_content_length': ResponseContract(
+        '/response-content-length',
+        response_body=b'x' * 1024,
+        content_type='application/octet-stream',
+        response_content_length=1024,
+    ),
+    'h2_response_content_length': ResponseContract(
+        '/response-content-length',
+        protocol='2',
+        response_body=b'x' * 1024,
+        content_type='application/octet-stream',
+        response_content_length=1024,
     ),
     'ws': ResponseContract(
         '/ws',
@@ -876,6 +920,15 @@ def _check_body(contract: ResponseContract, body: bytes, content_type: str) -> N
         )
 
 
+def _check_content_length(contract: ResponseContract, headers: dict[str, str]) -> None:
+    expected = contract.response_content_length
+    if expected is not None and headers.get('content-length') != str(expected):
+        raise BenchmarkError(
+            f'expected response content-length {expected}, '
+            f'got {headers.get("content-length")!r}'
+        )
+
+
 def _probe_http1(contract: ResponseContract, socket_path: Path | None) -> None:
     lines = [
         f'{contract.method} {contract.path} HTTP/1.1',
@@ -913,6 +966,7 @@ def _probe_http1(contract: ResponseContract, socket_path: Path | None) -> None:
         for name, separator, value in [line.partition(b':')]
         if separator
     }
+    _check_content_length(contract, headers)
     if headers.get('transfer-encoding', '').lower() == 'chunked':
         body = _decode_chunked(body)
     _check_body(contract, body, headers.get('content-type', ''))
@@ -964,6 +1018,7 @@ def _probe_http2(contract: ResponseContract) -> None:
                     }
                     status = response.get(':status')
                     content_type = response.get('content-type', '')
+                    _check_content_length(contract, response)
                 elif isinstance(event, h2.events.DataReceived):
                     body.extend(event.data)
                     connection.acknowledge_received_data(

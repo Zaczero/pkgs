@@ -39,7 +39,6 @@ import matplotlib.pyplot as plt
 
 try:
     from bench._core import (
-        RESPONSE_CONTRACTS,
         RESULTS_DIRECTORY,
         BenchmarkError,
         MeasuredMetrics,
@@ -59,7 +58,6 @@ try:
     )
 except ModuleNotFoundError:  # Direct ``python bench/bench.py`` execution.
     from _core import (  # type: ignore[import-not-found, no-redef]
-        RESPONSE_CONTRACTS,
         RESULTS_DIRECTORY,
         BenchmarkError,
         MeasuredMetrics,
@@ -1203,7 +1201,10 @@ def main() -> int:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument('--servers', nargs='+', choices=list(SERVERS))
-    parser.add_argument('--types', nargs='+', choices=list(RESPONSE_CONTRACTS))
+    benchmark_types = sorted({
+        scenario.type for scenario in (*benchmark_scenarios(), *rtt50_scenarios())
+    })
+    parser.add_argument('--types', nargs='+', choices=benchmark_types)
     parser.add_argument(
         '--network-profile', choices=('all', 'loopback', 'rtt50'), default='all'
     )

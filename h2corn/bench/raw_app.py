@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 FILE_RESPONSE_PATH = Path('bench/_file_response_payload.bin')
 DOWNLOAD_CHUNK = b'x' * (16 * 1024)
 DOWNLOAD_CHUNKS = 8
+SMALL_STREAM_CHUNK = b'x' * 128
+SMALL_STREAM_CHUNKS = 8
+SMALL_STREAM_LENGTH = len(SMALL_STREAM_CHUNK) * SMALL_STREAM_CHUNKS
 
 PLAIN_START: HTTPResponseStart = {
     'type': 'http.response.start',
@@ -39,6 +42,14 @@ OCTET_START: HTTPResponseStart = {
     'type': 'http.response.start',
     'status': 200,
     'headers': [(b'content-type', b'application/octet-stream')],
+}
+CONTENT_LENGTH_START: HTTPResponseStart = {
+    'type': 'http.response.start',
+    'status': 200,
+    'headers': [
+        (b'content-type', b'application/octet-stream'),
+        (b'content-length', str(SMALL_STREAM_LENGTH).encode()),
+    ],
 }
 RESPONSE_BODY: HTTPResponseBody = {
     'type': 'http.response.body',
@@ -67,6 +78,26 @@ async def app(scope: Scope, receive: Receive, send: Send) -> None:
     if path == '/':
         await send(PLAIN_START)
         await send(RESPONSE_BODY)
+        return
+
+    if path == '/response-stream':
+        await send(OCTET_START)
+        for index in range(SMALL_STREAM_CHUNKS):
+            await send({
+                'type': 'http.response.body',
+                'body': SMALL_STREAM_CHUNK,
+                'more_body': index + 1 < SMALL_STREAM_CHUNKS,
+            })
+        return
+
+    if path == '/response-content-length':
+        await send(CONTENT_LENGTH_START)
+        for index in range(SMALL_STREAM_CHUNKS):
+            await send({
+                'type': 'http.response.body',
+                'body': SMALL_STREAM_CHUNK,
+                'more_body': index + 1 < SMALL_STREAM_CHUNKS,
+            })
         return
 
     if path == '/streaming-download':

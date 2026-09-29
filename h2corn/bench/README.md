@@ -117,6 +117,14 @@ This uses `bench/raw_app.py`, counts successful requests exactly, and reports
 instructions, cycles, branch misses, cache misses, and IPC per request. It
 requires Linux `perf` and `oha`.
 
+`instr.py` also provides paired checks for small streamed responses
+(`h1_response_stream`, `h2_response_stream`), responses with a declared
+`Content-Length` (`h1_response_content_length`, `h2_response_content_length`),
+and small request bodies (`h1_upload_fast`, `h2_upload_fast`). The declared
+length probes stream eight 128-byte chunks and verify the response header before
+measurement. These focused probes are available to `instr.py` and `compare.py`
+but are not included in the cross-server benchmark matrix.
+
 ## Other Focused Tools
 
 Capture and compare Rust layout changes without mixing the capture with the

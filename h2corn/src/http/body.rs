@@ -18,6 +18,8 @@ pub(crate) enum RequestBodyFinish {
 #[derive(Debug)]
 pub(crate) struct RequestBodyState {
     expected_length: Option<u64>,
+    // Chunked parsing previews size before recording it. Reusing the optional
+    // shared access-log counter would add an atomic read per preview.
     received_length: u64,
     access_log_bytes: Option<RequestBodyCounter>,
     max_body_size: Option<NonZeroU64>,

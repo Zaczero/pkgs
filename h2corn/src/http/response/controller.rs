@@ -37,13 +37,7 @@ impl ResponseState {
 struct StartedResponse {
     start: actions::ResponseStart,
     body: StartedBody,
-    declared_length: Option<DeclaredLength>,
-}
-
-#[derive(Clone, Copy, Debug)]
-struct DeclaredLength {
-    expected: usize,
-    sent: usize,
+    sent_length: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -94,20 +88,24 @@ impl StartedResponse {
         len: usize,
         final_chunk: bool,
     ) -> Result<(), error::H2CornError> {
-        let Some(declared) = &mut self.declared_length else {
+        let Some(sent_length) = &mut self.sent_length else {
             return Ok(());
         };
-        let Some(sent) = declared.sent.checked_add(len) else {
+        let expected = self
+            .start
+            .declared_content_length()
+            .expect("sent-length accounting requires a declared content-length");
+        let Some(sent) = sent_length.checked_add(len) else {
             return Err(error::H2CornError::from(PyValueError::new_err(
                 "streamed response body exceeds its declared content-length",
             )));
         };
-        if sent > declared.expected || (final_chunk && sent != declared.expected) {
+        if sent > expected || (final_chunk && sent != expected) {
             return Err(error::H2CornError::from(PyValueError::new_err(
                 "streamed response body does not match its declared content-length",
             )));
         }
-        declared.sent = sent;
+        *sent_length = sent;
         Ok(())
     }
 }
@@ -247,16 +245,16 @@ impl ResponseController {
         }
         self.payload = ResponsePayload::resolve(self.head_only, status.get());
         let start = actions::ResponseStart::from_final(status, headers, control);
-        let declared_length = matches!(self.payload, ResponsePayload::Send)
+        let sent_length = matches!(self.payload, ResponsePayload::Send)
             .then(|| start.declared_content_length())
             .flatten()
-            .map(|expected| DeclaredLength { expected, sent: 0 });
+            .map(|_| 0);
         self.state = ResponseState::Started(StartedResponse {
             start,
             body: StartedBody::Unsent {
                 expects_trailers: trailers,
             },
-            declared_length,
+            sent_length,
         });
         Ok(())
     }
@@ -333,12 +331,11 @@ impl ResponseController {
                 // `send()` does not fail against a closed stream.
                 let expects = expects_trailers;
                 let described = started.start.declared_content_length();
+                let len = self.payload.described_len(described, len);
                 let state = complete_response(
                     actions,
                     &mut started,
-                    actions::FinalResponseBody::Suppressed {
-                        len: self.payload.described_len(described, len),
-                    },
+                    actions::FinalResponseBody::Suppressed { len },
                 );
                 if expects {
                     ResponseState::DiscardingTrailers
@@ -439,12 +436,11 @@ impl ResponseController {
         if self.payload.suppresses_body() {
             let expects_trailers = started.expects_trailers();
             let described = started.start.declared_content_length();
+            let len = self.payload.described_len(described, len);
             let state = complete_response(
                 actions,
                 &mut started,
-                actions::FinalResponseBody::Suppressed {
-                    len: self.payload.described_len(described, len),
-                },
+                actions::FinalResponseBody::Suppressed { len },
             );
             self.state = if expects_trailers {
                 ResponseState::DiscardingTrailers
@@ -659,10 +655,9 @@ impl ResponseController {
                     unreachable!()
                 };
                 let described = started.start.declared_content_length();
+                let len = self.payload.described_len(described, len);
                 actions.push(
-                    started.into_final_action(actions::FinalResponseBody::Suppressed {
-                        len: self.payload.described_len(described, len),
-                    }),
+                    started.into_final_action(actions::FinalResponseBody::Suppressed { len }),
                 );
                 Ok(())
             },
@@ -1095,6 +1090,32 @@ mod tests {
         assert!(matches!(
             actions.last(),
             Some(http::response::ResponseAction::AbortIncomplete)
+        ));
+    }
+
+    #[test]
+    fn rejected_start_can_be_retried_and_duplicate_start_error_wins() {
+        let mut controller = ResponseController::new(false, false);
+        let start = |controller: &mut ResponseController, trailers| {
+            controller.handle_start(
+                final_status(http::types::status_code::OK),
+                Vec::new(),
+                trailers,
+                http::header::ResponseConnectionDirective::default(),
+            )
+        };
+
+        let error = start(&mut controller, true).expect_err("unadvertised trailers are rejected");
+        assert!(matches!(
+            error.kind(),
+            error::ErrorKind::HttpResponse(error::HttpResponseError::TrailersNotAdvertised)
+        ));
+
+        start(&mut controller, false).expect("a rejected start leaves the controller waiting");
+        let error = start(&mut controller, true).expect_err("a second start is rejected first");
+        assert!(matches!(
+            error.kind(),
+            error::ErrorKind::HttpResponse(error::HttpResponseError::StartAlreadyReceived)
         ));
     }
 
