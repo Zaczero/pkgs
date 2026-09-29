@@ -72,6 +72,24 @@ def _physical_coordinates(box: gm.Geometry, crs: object) -> list[tuple[float, fl
     ]
 
 
+def _geod_signed_area(points: list[list[float]] | list[tuple[float, float]]) -> float:
+    return GEOD.polygon_area_perimeter(
+        [point[0] for point in points],
+        [point[1] for point in points],
+    )[0]
+
+
+def _wgs84_surface_area() -> float:
+    eccentricity_squared = GEOD.es
+    eccentricity = math.sqrt(eccentricity_squared)
+    return 2.0 * math.pi * GEOD.a**2 * (
+        1.0
+        + (1.0 - eccentricity_squared)
+        * math.atanh(eccentricity)
+        / eccentricity
+    )
+
+
 def test_huge_coordinate_distance_is_panic_free() -> None:
     """Huge-but-finite coordinates return a finite distance, never a PanicException."""
     huge = gm.LineString([(-1e308, 0), (1e308, 0)])
@@ -303,6 +321,111 @@ def test_geodesic_exterior_length_is_ellipsoidal_and_excludes_holes() -> None:
     assert z_line.length == pytest.approx(
         GEOD.line_length([0.0, 1.0], [0.0, 0.0]), rel=1e-12
     )
+
+
+def test_geodesic_area_uses_the_chart_interior_for_large_regions() -> None:
+    ellipsoid_area = _wgs84_surface_area()
+    origin = gm.Point(0.0, 0.0, crs=4326)
+    for bounds in (
+        (-170.0, -60.0, 170.0, 60.0),
+        (-180.0, -85.0, 180.0, 85.0),
+    ):
+        geometry = gm.box(*bounds, crs=4326)
+        coordinates = gm.get_coordinates(geometry).tolist()
+        expected = ellipsoid_area - abs(_geod_signed_area(coordinates))
+        for ring in (coordinates[:-1], list(reversed(coordinates[:-1]))):
+            polygon = gm.Polygon(ring, crs=4326)
+            assert gm.contains(polygon, origin)
+            assert polygon.area == pytest.approx(expected, rel=2e-15)
+
+
+def test_geodesic_polar_cap_area_is_orientation_independent() -> None:
+    ring = [
+        (0.0, 80.0),
+        (60.0, 80.0),
+        (120.0, 80.0),
+        (180.0, 80.0),
+        (-120.0, 80.0),
+        (-60.0, 80.0),
+    ]
+    north_pole = gm.Point(0.0, 90.0, crs=4326)
+    expected = abs(_geod_signed_area([*ring, ring[0]]))
+    for vertices in (ring, list(reversed(ring))):
+        polygon = gm.Polygon(vertices, crs=4326)
+        assert gm.contains(polygon, north_pole)
+        assert polygon.area == pytest.approx(expected, rel=1e-15)
+
+
+def test_geodesic_area_subtracts_holes_from_a_large_chart_interior() -> None:
+    shell = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
+    shell_coordinates = gm.get_coordinates(shell).tolist()
+    hole = [
+        (-10.0, -10.0),
+        (10.0, -10.0),
+        (10.0, 10.0),
+        (-10.0, 10.0),
+        (-10.0, -10.0),
+    ]
+    polygon = gm.Polygon(shell_coordinates[:-1], holes=[hole], crs=4326)
+    ellipsoid_area = _wgs84_surface_area()
+    expected = (
+        ellipsoid_area
+        - abs(_geod_signed_area(shell_coordinates))
+        - abs(_geod_signed_area(hole))
+    )
+
+    assert expected > ellipsoid_area / 2.0
+    assert gm.contains(polygon, gm.Point(100.0, 0.0, crs=4326))
+    assert not gm.contains(polygon, gm.Point(0.0, 0.0, crs=4326))
+    assert polygon.area == pytest.approx(expected, rel=2e-15)
+
+
+def test_geodesic_area_array_matches_scalar_in_packed_and_mixed_storage() -> None:
+    wide = gm.box(-170.0, -60.0, 170.0, 60.0, crs=4326)
+    coordinates = gm.get_coordinates(wide).tolist()
+    reversed_wide = gm.Polygon(list(reversed(coordinates[:-1])), crs=4326)
+    expected = [wide.area, reversed_wide.area]
+
+    packed = gm.GeometryArray([wide, reversed_wide], crs=4326)
+    mixed = gm.GeometryArray(
+        [wide, gm.Point(0.0, 0.0, crs=4326), reversed_wide],
+        crs=4326,
+    )
+
+    assert packed.area.tolist() == pytest.approx(expected, rel=0.0, abs=0.0)
+    assert mixed.area.tolist() == pytest.approx(
+        [expected[0], 0.0, expected[1]],
+        rel=0.0,
+        abs=0.0,
+    )
+
+
+def test_geodesic_area_keeps_the_existing_small_polygon_result() -> None:
+    polygon = gm.box(2.0, 48.0, 3.0, 49.0, crs=4326)
+    coordinates = gm.get_coordinates(polygon).tolist()
+    expected = abs(_geod_signed_area(coordinates))
+
+    assert polygon.area == 8217589924.770447
+    assert polygon.area == pytest.approx(expected, rel=1e-15)
+
+
+def test_degenerate_geodesic_chart_rings_have_zero_area() -> None:
+    seam_aliases = gm.Polygon(
+        [(180.0, -10.0), (-180.0, -10.0), (-180.0, 10.0), (180.0, 10.0)],
+        crs=4326,
+    )
+    equatorial = gm.Polygon(
+        [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)],
+        crs=4326,
+    )
+    chart_collinear = gm.Polygon(
+        [(0.0, 0.0), (1.0, 1.0), (2.0, 2.0)],
+        crs=4326,
+    )
+
+    assert seam_aliases.area == 0.0
+    assert equatorial.area == 0.0
+    assert chart_collinear.area == 0.0
 
 
 def test_packed_geodesic_polygon_length_uses_selected_ring_windows() -> None:

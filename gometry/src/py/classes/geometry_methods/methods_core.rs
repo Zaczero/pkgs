@@ -358,7 +358,8 @@ impl PyGeometry {
     /// A geographic CRS gives ellipsoidal square meters (geodesic, on the CRS's
     /// own ellipsoid); a projected CRS gives squared native coordinate units;
     /// a CRS-free geometry gives squared coordinate units. Use ``to_crs`` to
-    /// change frame.
+    /// change frame. Geographic polygons measure their lon/lat chart interior,
+    /// including regions larger than half the ellipsoid.
     ///
     /// Returns
     /// -------

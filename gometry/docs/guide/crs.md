@@ -801,7 +801,12 @@ spatial index, and validation/repair ([`is_valid`][gometry.Geometry.is_valid],
 seam-crossing input at their chokepoints. A seam split is coordinate-planar:
 it inserts affine crossing vertices into straight edges in the unwrapped
 longitude/latitude chart. Geodesic measures (`distance`,
-[`length`][gometry.length], [`area`][gometry.area], …) take the short way across the seam and still interpret each stored edge from its endpoints on the CRS ellipsoid, so inserting chart vertices does not promise geodesic area or length conservation. The **stay-planar**
+[`length`][gometry.length], [`area`][gometry.area], …) take the short way across
+the seam and still interpret each stored edge from its endpoints on the CRS
+ellipsoid, so inserting chart vertices does not promise geodesic area or length
+conservation. Geodesic area measures the polygon's lon/lat chart interior,
+including regions larger than half the ellipsoid, independent of ring order.
+The **stay-planar**
 constructive ops ([`convex_hull`][gometry.Geometry.convex_hull], [`concave_hull`][gometry.Geometry.concave_hull], [`buffer`][gometry.Geometry.buffer], [`offset_curve`][gometry.Geometry.offset_curve],
 [`simplify`][gometry.Geometry.simplify], Voronoi, Delaunay) do **not** auto-split; call
 [`split_antimeridian`][gometry.Geometry.split_antimeridian] first on crossing

@@ -9,6 +9,7 @@ use crate::crs::geodesic::{
 use crate::crs::local::normalize_longitude;
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
+use crate::geometry::exact_arith::product_sum::ExactSum;
 use crate::geometry::{
     Coordinates, Point, Polygon, Shape, canonicalize_zero, same_topological_coordinate,
 };
@@ -143,15 +144,14 @@ pub(crate) fn geodesic_polygon_area(
     polygon: &Polygon,
     frame: GeographicFrame,
 ) -> f64 {
-    // Orientation-independent, matching planar `Polygon::area`: the unsigned
-    // shell area less the unsigned hole areas. The raw geodesic area is signed
-    // (negative for clockwise rings), so take magnitudes.
+    // Every ring area selects its interior in the unwrapped longitude/latitude
+    // chart, independent of vertex order. Holes subtract that same interior.
     compensated_sum(
-        std::iter::once(geodesic_ring_area(geodesic, &polygon.shell, frame).abs()).chain(
+        std::iter::once(geodesic_ring_area(geodesic, &polygon.shell, frame)).chain(
             polygon
                 .holes
                 .iter()
-                .map(|hole| -geodesic_ring_area(geodesic, hole, frame).abs()),
+                .map(|hole| -geodesic_ring_area(geodesic, hole, frame)),
         ),
     )
 }
@@ -176,16 +176,17 @@ pub(crate) fn geodesic_ring_measure<C: Coordinates + ?Sized>(
     ring: &C,
     frame: GeographicFrame,
 ) -> (f64, f64) {
-    geodesic_ring_measure_lonlat(
-        geodesic,
-        ring.coord_count(),
+    let points = || {
         ring.iter_coords().map(|point| {
             let point = frame
                 .to_geodesic_point(point)
                 .expect("geographic metric received admitted coordinates");
             (point.x, point.y)
-        }),
-    )
+        })
+    };
+    geodesic_ring_measure_lonlat(geodesic, ring.coord_count(), points(), || {
+        exact_chart_orientation(points())
+    })
 }
 
 pub(crate) fn geodesic_ring_measure_columns(
@@ -195,19 +196,20 @@ pub(crate) fn geodesic_ring_measure_columns(
     frame: GeographicFrame,
 ) -> (f64, f64) {
     debug_assert_eq!(xs.len(), ys.len());
-    geodesic_ring_measure_lonlat(
-        geodesic,
-        xs.len(),
+    let points = || {
         std::iter::zip(xs, ys).map(|(&lon, &lat)| {
             let point = frame
                 .to_geodesic_point(Point::new_raw_xy(lon, lat))
                 .expect("geographic metric received admitted coordinates");
             (point.x, point.y)
-        }),
-    )
+        })
+    };
+    geodesic_ring_measure_lonlat(geodesic, xs.len(), points(), || {
+        exact_chart_orientation(points())
+    })
 }
 
-/// Compute only the signed Karney area of a ring.
+/// Compute a ring's chart-interior geodesic area without its perimeter.
 ///
 /// `PolygonArea::add_point` requests both distance and area from every inverse
 /// edge, but area measurement discards the distance. The public raw inverse
@@ -230,18 +232,19 @@ fn geodesic_ring_area<C: Coordinates + ?Sized>(
     let Some((initial_lon, initial_lat)) = points.next() else {
         return 0.0;
     };
+    let mut chart = ChartRing::new();
+    chart.add_point(initial_lon, initial_lat);
     let mut latest_lon = initial_lon;
     let mut latest_lat = initial_lat;
     let mut area = 0.0;
     let mut correction = 0.0;
-    let mut crossings = 0_i64;
 
     for (lon, lat) in points {
         let s12 = geodesic
             ._gen_inverse(latest_lat, latest_lon, lat, lon, caps::AREA)
             .9;
         add_compensated(&mut area, &mut correction, s12);
-        crossings = crossings.wrapping_add(longitude_transit(latest_lon, lon));
+        chart.add_point(lon, lat);
         latest_lon = lon;
         latest_lat = lat;
     }
@@ -250,11 +253,11 @@ fn geodesic_ring_area<C: Coordinates + ?Sized>(
         ._gen_inverse(latest_lat, latest_lon, initial_lat, initial_lon, caps::AREA)
         .9;
     add_compensated(&mut area, &mut correction, s12);
-    crossings = crossings.wrapping_add(longitude_transit(latest_lon, initial_lon));
+    chart.close();
 
     let geoid_area = geodesic.area();
     area %= geoid_area;
-    if crossings % 2 != 0 {
+    if chart.crossings % 2 != 0 {
         area += if area < 0.0 {
             geoid_area / 2.0
         } else {
@@ -270,7 +273,19 @@ fn geodesic_ring_area<C: Coordinates + ?Sized>(
     } else if area <= -geoid_area / 2.0 {
         area += geoid_area;
     }
-    area
+    let orientation = if chart.crossings % 2 != 0 {
+        None
+    } else {
+        Some(chart.orientation().unwrap_or_else(|| {
+            exact_chart_orientation(ring.iter_coords().map(|point| {
+                let point = frame
+                    .to_geodesic_point(point)
+                    .expect("geographic metric received admitted coordinates");
+                (point.x, point.y)
+            }))
+        }))
+    };
+    chart_interior_area(area, &chart, orientation, geoid_area)
 }
 
 fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
@@ -280,15 +295,7 @@ fn add_compensated(sum: &mut f64, correction: &mut f64, value: f64) {
     *sum = next;
 }
 
-fn longitude_transit(lon1: f64, lon2: f64) -> i64 {
-    let lon1 = normalize_longitude(lon1);
-    let lon2 = normalize_longitude(lon2);
-    let mut difference = lon2 - lon1;
-    if difference > 180.0 {
-        difference -= 360.0;
-    } else if difference <= -180.0 {
-        difference += 360.0;
-    }
+fn longitude_transit(lon1: f64, lon2: f64, difference: f64) -> i64 {
     if difference > 0.0 && ((lon1 < 0.0 && lon2 >= 0.0) || (lon1 > 0.0 && lon2 == 0.0)) {
         1
     } else if difference < 0.0 && lon1 >= 0.0 && lon2 < 0.0 {
@@ -298,23 +305,205 @@ fn longitude_transit(lon1: f64, lon2: f64) -> i64 {
     }
 }
 
+fn longitude_step(lon1: f64, lon2: f64) -> (f64, f64) {
+    let difference = lon2 - lon1;
+    if difference > 180.0 {
+        (difference - 360.0, -360.0)
+    } else if difference <= -180.0 {
+        (difference + 360.0, 360.0)
+    } else {
+        (difference, 0.0)
+    }
+}
+
+struct ChartRing {
+    twice_area: f64,
+    absolute_products: f64,
+    edge_count: usize,
+    exact_area: Option<Box<ExactSum>>,
+    count: usize,
+    initial_lon: f64,
+    initial_lat: f64,
+    previous_lon: f64,
+    previous_lat: f64,
+    previous_unwrapped_lon: f64,
+    longitude_offset: f64,
+    crossings: i64,
+}
+
+impl ChartRing {
+    fn new() -> Self {
+        Self {
+            twice_area: 0.0,
+            absolute_products: 0.0,
+            edge_count: 0,
+            exact_area: None,
+            count: 0,
+            initial_lon: 0.0,
+            initial_lat: 0.0,
+            previous_lon: 0.0,
+            previous_lat: 0.0,
+            previous_unwrapped_lon: 0.0,
+            longitude_offset: 0.0,
+            crossings: 0,
+        }
+    }
+
+    fn exact() -> Self {
+        Self {
+            exact_area: Some(Box::new(ExactSum::zero())),
+            ..Self::new()
+        }
+    }
+
+    fn add_point(&mut self, lon: f64, lat: f64) {
+        let lon = normalize_longitude(lon);
+        if self.count == 0 {
+            self.initial_lon = lon;
+            self.initial_lat = lat;
+            self.previous_lon = lon;
+            self.previous_lat = lat;
+            self.previous_unwrapped_lon = lon;
+            self.count = 1;
+            return;
+        }
+
+        let (difference, offset_delta) = longitude_step(self.previous_lon, lon);
+        self.longitude_offset += offset_delta;
+        let unwrapped_lon = lon + self.longitude_offset;
+        self.add_edge(
+            self.previous_unwrapped_lon,
+            self.previous_lat,
+            unwrapped_lon,
+            lat,
+        );
+        self.crossings =
+            self.crossings
+                .wrapping_add(longitude_transit(self.previous_lon, lon, difference));
+        self.previous_lon = lon;
+        self.previous_lat = lat;
+        self.previous_unwrapped_lon = unwrapped_lon;
+        self.count += 1;
+    }
+
+    fn close(&mut self) {
+        if self.count == 0 {
+            return;
+        }
+
+        let (difference, offset_delta) = longitude_step(self.previous_lon, self.initial_lon);
+        let longitude_offset = self.longitude_offset + offset_delta;
+        let unwrapped_lon = self.initial_lon + longitude_offset;
+        self.add_edge(
+            self.previous_unwrapped_lon,
+            self.previous_lat,
+            unwrapped_lon,
+            self.initial_lat,
+        );
+        self.crossings = self.crossings.wrapping_add(longitude_transit(
+            self.previous_lon,
+            self.initial_lon,
+            difference,
+        ));
+    }
+
+    fn add_edge(&mut self, x0: f64, y0: f64, x1: f64, y1: f64) {
+        let forward = x0 * y1;
+        let reverse = x1 * y0;
+        self.twice_area += forward - reverse;
+        self.absolute_products += forward.abs() + reverse.abs();
+        self.edge_count += 1;
+        if let Some(exact_area) = &mut self.exact_area {
+            exact_area.add_cross(x0, y0, x1, y1);
+        }
+    }
+
+    fn orientation(&self) -> Option<std::cmp::Ordering> {
+        if let Some(exact_area) = &self.exact_area {
+            return Some(exact_area.ordering());
+        }
+
+        // Admit the rounded sign only outside a bound for product, sum, and
+        // subnormal rounding; callers replay uncertain rings with ExactSum.
+        let operations = 16.0 * self.edge_count as f64 + 8.0;
+        let error = operations * (self.absolute_products * f64::EPSILON + f64::from_bits(1));
+        if !self.twice_area.is_finite() || !error.is_finite() || self.twice_area.abs() <= error {
+            return None;
+        }
+        Some(if self.twice_area < 0.0 {
+            std::cmp::Ordering::Less
+        } else {
+            std::cmp::Ordering::Greater
+        })
+    }
+}
+
+fn exact_chart_orientation(points: impl IntoIterator<Item = (f64, f64)>) -> std::cmp::Ordering {
+    let mut chart = ChartRing::exact();
+    for (lon, lat) in points {
+        chart.add_point(lon, lat);
+    }
+    chart.close();
+    chart
+        .orientation()
+        .expect("an exact chart accumulator always determines orientation")
+}
+
+fn chart_interior_area(
+    area: f64,
+    chart: &ChartRing,
+    orientation: Option<std::cmp::Ordering>,
+    ellipsoid_area: f64,
+) -> f64 {
+    if chart.crossings % 2 != 0 {
+        // The transit correction already selected the pole-side cap; reverse
+        // traversal changes only its sign.
+        return area.abs();
+    }
+    match orientation.expect("non-polar rings resolve chart orientation") {
+        std::cmp::Ordering::Equal => 0.0,
+        orientation => {
+            let oriented = if orientation == std::cmp::Ordering::Less {
+                -area
+            } else {
+                area
+            };
+            let area = oriented % ellipsoid_area;
+            if area < 0.0 {
+                area + ellipsoid_area
+            } else {
+                area
+            }
+        },
+    }
+}
+
 fn geodesic_ring_measure_lonlat(
     geodesic: &Geodesic,
     coord_count: usize,
     points: impl IntoIterator<Item = (f64, f64)>,
+    exact_orientation: impl FnOnce() -> std::cmp::Ordering,
 ) -> (f64, f64) {
     if coord_count < 3 {
         return (0.0, 0.0);
     }
     let mut area = PolygonArea::new(geodesic, Winding::CounterClockwise);
+    let mut chart = ChartRing::new();
     for (lon, lat) in points {
         area.add_point(lat, lon);
+        chart.add_point(lon, lat);
     }
-    // `sign = true` bounds the result to (-half-planet, half-planet], so a
-    // clockwise ring yields the small enclosed area negated rather than the
-    // huge complement. Callers take the magnitude for orientation independence.
+    chart.close();
     let (perimeter, area, _) = area.compute(true);
-    (perimeter, area)
+    let orientation = if chart.crossings % 2 != 0 {
+        None
+    } else {
+        Some(chart.orientation().unwrap_or_else(exact_orientation))
+    };
+    (
+        perimeter,
+        chart_interior_area(area, &chart, orientation, geodesic.area()),
+    )
 }
 
 pub(crate) fn geodesic_length_at(crs: &str, shape: &Shape, state: &RuntimeState) -> Result<f64> {
