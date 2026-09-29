@@ -111,10 +111,11 @@ pub(crate) fn parts_boundary_witness(
             crate::geometry::OverlayOp::Intersection,
             crate::geometry::Strictness::Lenient,
         )?;
-        let mut witness = None;
-        intersection.for_each_point(|point| {
-            witness.get_or_insert(point);
-        });
+        let witness = match intersection.try_for_each_first_point_run(std::ops::ControlFlow::Break)
+        {
+            std::ops::ControlFlow::Break(point) => Some(point),
+            std::ops::ControlFlow::Continue(()) => None,
+        };
         return Ok(witness);
     }
     if let Some((left_segment, right_segment)) = parts_crossing_pair(left_parts, right_parts)

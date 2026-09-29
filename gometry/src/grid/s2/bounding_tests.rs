@@ -2,7 +2,7 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
-use crate::geometry::{Bounds, CoordSeq, LineSeq, Point, Polygon, Ring, Shape};
+use crate::geometry::{Bounds, CoordSeq, LineSeq, Point, Polygon, Ring, Shape, ShapeCountQuery};
 use crate::grid::s2::bounding::{
     LonLatBBox, bbox_closed_in_cell, bbox_hilbert_samples, bbox_margin_in_cell, bounding_cell,
     bounding_cell_bbox, hilbert_samples_ok,
@@ -29,6 +29,18 @@ fn assert_hilbert_contains_samples(cell: CellId, samples: &[(f64, f64)]) {
             cell.level(),
         );
     }
+}
+
+#[test]
+fn s2_point_leaf_route_counts_occurrences_not_unique_xy_sites() {
+    let point = Shape::Point(Point::new_raw_xy(13.4, 52.5));
+    let once = Shape::geometry_collection(vec![point.clone()]).unwrap();
+    let twice = Shape::geometry_collection(vec![once.clone(), once]).unwrap();
+    let mut counts = ShapeCountQuery::default();
+
+    assert_eq!(counts.coordinates(&point).unwrap(), 1);
+    assert_eq!(counts.coordinates(&twice).unwrap(), 2);
+    assert_eq!(bounding_cell(&point), bounding_cell(&twice));
 }
 
 /// Geometric soundness: closed halfspaces cover the whole bbox; no child

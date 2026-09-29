@@ -229,6 +229,26 @@ fn scalar_errors_preserve_nested_logical_members_and_ring_indices() {
     assert_bits(error.native.y, 91.0);
 }
 
+#[test]
+fn shared_dag_domain_error_keeps_the_first_member_path() {
+    use crate::geometry::Shape;
+
+    let invalid = Shape::geometry_collection(vec![
+        Shape::Point(crate::geometry::Point::new_raw_xy(10.0, 20.0)),
+        Shape::Point(crate::geometry::Point::new_raw_xy(f64::NAN, 30.0)),
+        Shape::Point(crate::geometry::Point::new_raw_xy(0.0, 91.0)),
+    ])
+    .unwrap();
+    let shape = Shape::geometry_collection(vec![invalid.clone(), invalid]).unwrap();
+
+    let error = ScalarGeographicView::try_new(degrees(), &shape).unwrap_err();
+
+    assert_eq!(error.location.members.as_slice(), [0, 1]);
+    assert_eq!(error.location.coordinate, 0);
+    assert!(error.native.x.is_nan());
+    assert_bits(error.native.y, 30.0);
+}
+
 fn deeply_nested_line(coordinate_count: usize) -> crate::geometry::Shape {
     use crate::geometry::Shape;
 

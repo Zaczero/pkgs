@@ -1,13 +1,16 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::marker::PhantomData;
+use std::ops::ControlFlow;
 
 use super::{
     CanonicalLongitude, GeographicError, GeographicFrame, Latitude, RingTurn, SeamIdentity,
 };
 use crate::array::CheckedRingWindow;
 use crate::collections::HashSet;
-use crate::geometry::{CoordSeq, MultiMember, Point, Ring, Shape, ShapeOwnerKey, XY};
+use crate::geometry::{
+    CoordSeq, MultiMember, Point, Ring, RunIdentity, Shape, ShapeOwnerKey, SharedShapeOwners, XY,
+};
 
 const INLINE_MEMBER_DEPTH: usize = 4;
 
@@ -310,8 +313,15 @@ fn visit_coordseq(
     row: Option<usize>,
     members: &MemberPathBuilder,
     ring: Option<usize>,
+    run_owners: &mut Option<SharedShapeOwners>,
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
 ) -> Result<(), GeographicViewError> {
+    if run_owners
+        .as_mut()
+        .is_some_and(|owners| !owners.first_coord_seq(coords, RunIdentity::XY))
+    {
+        return Ok(());
+    }
     for coordinate_index in 0..coords.len() {
         visit(coordinate(
             frame,
@@ -333,6 +343,7 @@ fn visit_shape<'owner>(
     row: Option<usize>,
     members: &mut MemberPathBuilder,
     mut collection_owners: Option<&mut GeographicCollectionOwners<'owner>>,
+    run_owners: &mut Option<SharedShapeOwners>,
     visit: &mut impl FnMut(GeographicCoordinate) -> Result<(), GeographicViewError>,
 ) -> Result<(), GeographicViewError> {
     match shape {
@@ -343,6 +354,12 @@ fn visit_shape<'owner>(
             coordinate: 0,
         })?),
         Shape::MultiPoint(points) => {
+            if run_owners
+                .as_mut()
+                .is_some_and(|owners| !owners.first_coord_seq(points, RunIdentity::XY))
+            {
+                return Ok(());
+            }
             for (logical, member) in points.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
                     members.push(logical);
@@ -359,7 +376,9 @@ fn visit_shape<'owner>(
             }
             Ok(())
         },
-        Shape::LineString(line) => visit_coordseq(frame, line, row, members, None, visit),
+        Shape::LineString(line) => {
+            visit_coordseq(frame, line, row, members, None, run_owners, visit)
+        },
         Shape::MultiLineString(lines) => {
             for (logical, member) in lines.members().enumerate() {
                 if let MultiMember::Value(physical) = member {
@@ -370,6 +389,7 @@ fn visit_shape<'owner>(
                         row,
                         members,
                         None,
+                        run_owners,
                         visit,
                     )?;
                     members.pop();
@@ -379,7 +399,7 @@ fn visit_shape<'owner>(
         },
         Shape::Polygon(polygon) => {
             for (ring, coords) in polygon.rings().enumerate() {
-                visit_coordseq(frame, coords, row, members, Some(ring), visit)?;
+                visit_coordseq(frame, coords, row, members, Some(ring), run_owners, visit)?;
             }
             Ok(())
         },
@@ -388,7 +408,7 @@ fn visit_shape<'owner>(
                 if let MultiMember::Value(physical) = member {
                     members.push(logical);
                     for (ring, coords) in polygons.as_slice()[physical].rings().enumerate() {
-                        visit_coordseq(frame, coords, row, members, Some(ring), visit)?;
+                        visit_coordseq(frame, coords, row, members, Some(ring), run_owners, visit)?;
                     }
                     members.pop();
                 }
@@ -396,14 +416,22 @@ fn visit_shape<'owner>(
             Ok(())
         },
         Shape::GeometryCollection(collection) => {
-            #[cfg(test)]
-            if let Some(owners) = collection_owners.as_deref_mut() {
-                owners.record_collection_occurrence();
-            }
-            let repeated = collection_owners.as_deref_mut().is_some_and(|owners| {
-                collection.members_are_shared()
-                    && !owners.observe(ShapeOwnerKey::new(collection.as_slice()))
-            });
+            let repeated = collection_owners.as_deref_mut().map_or_else(
+                || {
+                    run_owners.as_mut().is_some_and(|owners| {
+                        !owners.first_collection(
+                            collection.as_slice(),
+                            collection.members_are_shared(),
+                        )
+                    })
+                },
+                |owners| {
+                    #[cfg(test)]
+                    owners.record_collection_occurrence();
+                    collection.members_are_shared()
+                        && !owners.observe(ShapeOwnerKey::new(collection.as_slice()))
+                },
+            );
             if repeated {
                 // This immutable payload was fully admitted at its first
                 // source occurrence; an invalid coordinate there already
@@ -430,6 +458,7 @@ fn visit_shape<'owner>(
                     row,
                     members,
                     collection_owners.as_deref_mut(),
+                    run_owners,
                     visit,
                 )?;
                 members.pop();
@@ -451,12 +480,14 @@ impl<'a> ScalarGeographicView<'a> {
         frame: GeographicFrame,
         shape: &'a Shape,
     ) -> Result<Self, GeographicViewError> {
+        let mut owners = SharedShapeOwners::for_shape(shape);
         visit_shape(
             frame,
             shape,
             None,
             &mut MemberPathBuilder::default(),
             None,
+            &mut owners,
             &mut |_| Ok(()),
         )?;
         Ok(Self { frame, shape })
@@ -474,12 +505,14 @@ impl<'a> ScalarGeographicView<'a> {
             coordinate_visits.set(coordinate_visits.get().wrapping_add(1));
             Ok(())
         };
+        let mut run_owners = SharedShapeOwners::for_shape(shape);
         let admitted = visit_shape(
             frame,
             shape,
             None,
             &mut MemberPathBuilder::default(),
             Some(&mut *owners),
+            &mut run_owners,
             &mut visit,
         );
         #[cfg(test)]
@@ -509,6 +542,26 @@ impl<'a> ScalarGeographicView<'a> {
         self.shape.for_each_point(|point| {
             visit(admitted_coordinate(self.frame, point));
         });
+    }
+
+    /// Test a predicate over first occurrences of each shared XY run.
+    ///
+    /// Use after admission for idempotent queries; topology consumers keep the
+    /// occurrence-based `for_each_coordinate` traversal.
+    pub(crate) fn any_first_xy_coordinate(
+        self,
+        mut predicate: impl FnMut(GeographicCoordinate) -> bool,
+    ) -> bool {
+        matches!(
+            self.shape.try_for_each_first_xy_point_run(|point| {
+                if predicate(admitted_coordinate(self.frame, point)) {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            }),
+            ControlFlow::Break(())
+        )
     }
 }
 

@@ -8,9 +8,7 @@ use pyo3::types::{PyAny, PyAnyMethods as _};
 
 use crate::array::{ArrayRow, GeometryArrayStorage, LineRows, PackedStorage, ValidityMask};
 use crate::broadcast::metrics;
-use crate::broadcast::metrics::pair::{
-    contains_filled_area, ensure_hausdorff_geodesic_shape, metric_hausdorff,
-};
+use crate::broadcast::metrics::pair::{ensure_hausdorff_geodesic_shape, metric_hausdorff};
 use crate::broadcast::metrics::{
     Arc, Bound, CollectRows as _, DistanceUnit, F64Param, Frame, GeometryInput, Py,
     PyGeometryArray, PyResult, Python, Shape, crs, float64_array, resolve_metric, rows_err,
@@ -164,7 +162,7 @@ impl SimilarityOp {
                 if let crs::MetricModel::Geodesic { frame, .. } = model {
                     ensure_hausdorff_geodesic_shape(*frame, shape)?;
                 }
-                Ok(contains_filled_area(shape))
+                Ok(shape.has_area_parts())
             })?;
             has_areal_support |= areal;
         }

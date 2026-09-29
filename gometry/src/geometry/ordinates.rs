@@ -8,9 +8,9 @@ use crate::collections::HashMap;
 use crate::error::Result;
 use crate::geometry::{
     CoordinateAxes, GeometryErrorKind, HasM, HasZ, MOrdinate, ON_SEGMENT_EPSILON, OverlayOp, Point,
-    PointKey, Segment, Shape, ShapeCountQuery, XY, ZOrdinate, axis_pow2_scale, overlay,
-    point_distance, point_on_segment, point_segment_distance_and_projection, same_point,
-    scaled_residual, segment_projection,
+    PointKey, RunIdentity, Segment, Shape, XY, ZOrdinate, axis_pow2_scale, overlay, point_distance,
+    point_on_segment, point_segment_distance_and_projection, same_point, scaled_residual,
+    segment_projection,
 };
 /// Z/M lookup table built from an operation's input vertices and segments,
 /// used to restore ordinates on XY-only geometry-engine output. Exact vertex
@@ -37,12 +37,14 @@ const OVERLAY_SNAP_RELATIVE: f64 = 1.0 / (1_u64 << 28) as f64;
 
 impl OrdinateSource {
     fn new<S: Borrow<Shape>>(inputs: &[S]) -> Result<Self> {
-        // Upper bound: every input vertex carries ordinates (the common
-        // case — XYZ/XYM inputs are usually uniformly dimensioned).
-        let mut counts = ShapeCountQuery::default();
-        let capacity = counts
-            .coordinates_for_shapes(inputs.iter().map(|shape| Borrow::<Shape>::borrow(shape)))
-            .ok();
+        // Shared XY owners bound dedup storage without expanding logical
+        // occurrences. Non-collection shapes use their exact count.
+        let capacity = inputs.iter().try_fold(0_usize, |total, input| {
+            let shape = Borrow::<Shape>::borrow(input);
+            shape
+                .point_set_capacity_hint(RunIdentity::XY)
+                .map(|count| total.wrapping_add(count))
+        });
         let mut vertices = crate::collections::try_hash_map()?;
         let mut segments = Vec::new();
         if let Some(capacity) = capacity {

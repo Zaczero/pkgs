@@ -332,53 +332,60 @@ pub(crate) fn metric_concave_hull(
         crate::crs::MetricModel::Planar { to_metre } => {
             shape.concave_hull(concavity, length_threshold / to_metre.get())
         },
-        crate::crs::MetricModel::Geodesic { state, .. } => geodesic_by_identity(
-            shape,
-            crs,
-            state,
-            |projected| {
-                let capacity = ShapeCountQuery::default().coordinates(projected).ok();
-                let mut seen = crate::collections::try_hash_set()?;
-                let mut pairs = Vec::new();
-                if let Some(capacity) = capacity {
-                    let _seen_reservation = seen.try_reserve(capacity);
-                    let _pairs_reservation = pairs.try_reserve(capacity);
-                }
-                let mut point_index = 0_usize;
-                projected.for_each_point(|point| {
-                    // Projected vertices are 1:1 with the source; the original
-                    // index is the enumeration order (no identity-index slice).
-                    let original_index = point_index;
-                    point_index = point_index.wrapping_add(1);
-                    if seen.insert(PointKey::new(point)) {
-                        // A count-derived reservation, when representable,
-                        // covers every source vertex.
-                        pairs.push((point, original_index));
+        crate::crs::MetricModel::Geodesic { state, .. } => {
+            let compact = shape
+                .has_repeated_shared_owner()
+                .then(|| shape.distinct_point_cloud())
+                .transpose()?;
+            let source = compact.as_ref().unwrap_or(shape);
+            geodesic_by_identity(
+                source,
+                crs,
+                state,
+                |projected| {
+                    let capacity = ShapeCountQuery::default().coordinates(projected).ok();
+                    let mut seen = crate::collections::try_hash_set()?;
+                    let mut pairs = Vec::new();
+                    if let Some(capacity) = capacity {
+                        let _seen_reservation = seen.try_reserve(capacity);
+                        let _pairs_reservation = pairs.try_reserve(capacity);
                     }
-                });
-                if pairs.is_empty() {
-                    return Ok(Vec::new());
-                }
-                pairs.sort_unstable_by(|(left, _), (right, _)| geometric_xy_cmp(*left, *right));
-                let mut projected_points = Vec::with_capacity(pairs.len());
-                for &(point, _) in &pairs {
-                    projected_points.push(point.to_xy());
-                }
-                let mut provenance = Vec::with_capacity(projected_points.len());
-                for index in crate::geometry::native_concave_hull(
-                    &projected_points,
-                    concavity,
-                    length_threshold,
-                )? {
-                    let (_, original_index) = pairs
-                        .get(index)
-                        .expect("hull vertex index is in the projected input");
-                    provenance.push(VertexProvenance::Input(*original_index));
-                }
-                Ok(provenance)
-            },
-            |points| shape_from_selected_hull(&points, Shape::empty_polygon),
-        ),
+                    let mut point_index = 0_usize;
+                    projected.for_each_point(|point| {
+                        // Projected vertices are 1:1 with the source; the original
+                        // index is the enumeration order (no identity-index slice).
+                        let original_index = point_index;
+                        point_index = point_index.wrapping_add(1);
+                        if seen.insert(PointKey::new(point)) {
+                            // A count-derived reservation, when representable,
+                            // covers every source vertex.
+                            pairs.push((point, original_index));
+                        }
+                    });
+                    if pairs.is_empty() {
+                        return Ok(Vec::new());
+                    }
+                    pairs.sort_unstable_by(|(left, _), (right, _)| geometric_xy_cmp(*left, *right));
+                    let mut projected_points = Vec::with_capacity(pairs.len());
+                    for &(point, _) in &pairs {
+                        projected_points.push(point.to_xy());
+                    }
+                    let mut provenance = Vec::with_capacity(projected_points.len());
+                    for index in crate::geometry::native_concave_hull(
+                        &projected_points,
+                        concavity,
+                        length_threshold,
+                    )? {
+                        let (_, original_index) = pairs
+                            .get(index)
+                            .expect("hull vertex index is in the projected input");
+                        provenance.push(VertexProvenance::Input(*original_index));
+                    }
+                    Ok(provenance)
+                },
+                |points| shape_from_selected_hull(&points, Shape::empty_polygon),
+            )
+        },
     }
 }
 
@@ -422,7 +429,12 @@ pub(crate) fn metric_minimum_bounding_circle(
         // the scale-error fit check (`checked = false`) and stays usable at
         // city-to-continental extent — unlike buffer/offset above.
         crate::crs::MetricModel::Geodesic { state, .. } => {
-            geodesic_local_shape(shape, crs, false, state, Shape::minimum_bounding_circle)
+            let compact = shape
+                .has_repeated_shared_owner()
+                .then(|| shape.distinct_point_cloud())
+                .transpose()?;
+            let source = compact.as_ref().unwrap_or(shape);
+            geodesic_local_shape(source, crs, false, state, Shape::minimum_bounding_circle)
         },
     }
 }
@@ -452,12 +464,7 @@ pub(crate) fn metric_minimum_bounding_radius(
             crs: geodesic_crs,
             state,
             ..
-        } => {
-            if shape.is_empty() {
-                return Ok(f64::NAN);
-            }
-            geodesic_minimum_bounding_radius(shape, geodesic_crs, state)
-        },
+        } => geodesic_minimum_bounding_radius(shape, geodesic_crs, state),
     }
 }
 

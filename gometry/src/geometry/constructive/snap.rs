@@ -1,11 +1,14 @@
+use std::convert::Infallible;
+use std::ops::ControlFlow;
+
 use crate::NonNegative;
 use crate::geographic::GeographicFrame;
 use crate::geometry::constructive::Result;
 use crate::geometry::{
     Bounds, BulkRTree, CoordSeq, Coordinates, ExpansionBudget, GENERATED_ITEM_LIMIT,
     GeometryErrorKind, GeometryKind, LineSeq, MultiLineString, MultiMember, MultiPolygon, Point,
-    PointKey, Polygon, RepairMethod, Ring, Segment, SegmentProjection, Shape, ShapeCountQuery,
-    TopologyDomain, XY, axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
+    Polygon, RepairMethod, Ring, RunIdentity, Segment, SegmentProjection, Shape, TopologyDomain,
+    XY, axis_pow2_scale, bounds_distance_squared, dedup_consecutive_points,
     interpolate_subdivision_ordinate, line_segments, point_distance,
     point_segment_distance_and_projection, points_dwithin, repair_shape_in_frame, same_point,
     same_topological_coordinate, scaled_residual, validate_shape_in_frame,
@@ -238,23 +241,6 @@ fn outward_padded_bounds(
         .into_iter()
         .all(f64::is_finite)
         .then(|| rstar::AABB::from_corners([min_x, min_y], [max_x, max_y]))
-}
-
-fn try_unique_xy_points(shape: &Shape) -> crate::error::Result<Vec<XY>> {
-    let capacity = ShapeCountQuery::default().coordinates(shape).ok();
-    let mut seen = crate::collections::try_hash_set()?;
-    let mut points = Vec::new();
-    if let Some(capacity) = capacity {
-        let _seen_reservation = seen.try_reserve(capacity);
-        let _points_reservation = points.try_reserve(capacity);
-    }
-    shape.for_each_point(|point| {
-        let point = point.xy();
-        if seen.insert(PointKey::new(point)) {
-            points.push(point);
-        }
-    });
-    Ok(points)
 }
 
 pub(crate) fn snap_points_to_reference<C: Coordinates + ?Sized>(
@@ -1093,7 +1079,15 @@ impl Shape {
         if self.outside_snap_range(reference_bounds, tolerance) {
             return Ok(self.clone());
         }
-        let reference_points = try_unique_xy_points(reference)?;
+        let mut reference_points = Vec::new();
+        if let Some(capacity) = reference.point_set_capacity_hint(RunIdentity::XY) {
+            let _reservation = reference_points.try_reserve(capacity);
+        }
+        let ControlFlow::Continue(()): ControlFlow<Infallible> = reference
+            .try_for_each_distinct_xy_point(|point| {
+                reference_points.push(point.xy());
+                ControlFlow::Continue(())
+            })?;
         if reference_points.is_empty() {
             return Ok(self.clone());
         }

@@ -2,7 +2,7 @@ use std::sync::OnceLock;
 
 use crate::HeapSize;
 use crate::geometry::facet_bvh::BVH_MIN_INDEXED_SEGMENTS;
-use crate::geometry::{BvhCode, BvhNode, CoordSeq, Shape, ShapeCountQuery, linear};
+use crate::geometry::{BvhCode, BvhNode, CoordSeq, MetricSupportRun, RunIdentity, Shape, linear};
 
 type Aabb3d = [f64; 6];
 
@@ -252,54 +252,33 @@ fn push_segments_3d(coords: &CoordSeq, out: &mut Vec<Segment3d>) {
     }
 }
 
-fn collect_segments_3d(shape: &Shape, out: &mut Vec<Segment3d>) {
-    match shape {
-        Shape::Point(point) => {
-            let point = point_xyz(*point);
-            push_segment_3d(point, point, out);
-        },
-        Shape::MultiPoint(coords) => {
-            for point in points_xyz(coords) {
-                push_segment_3d(point, point, out);
-            }
-        },
-        Shape::LineString(coords) => push_segments_3d(coords, out),
-        Shape::MultiLineString(lines) => {
-            for line in lines {
-                push_segments_3d(line, out);
-            }
-        },
-        Shape::Polygon(polygon) => {
-            push_segments_3d(polygon.shell.coords(), out);
-            for hole in polygon.holes.iter() {
-                push_segments_3d(hole.coords(), out);
-            }
-        },
-        Shape::MultiPolygon(polygons) => {
-            for polygon in polygons {
-                push_segments_3d(polygon.shell.coords(), out);
-                for hole in polygon.holes.iter() {
-                    push_segments_3d(hole.coords(), out);
-                }
-            }
-        },
-        Shape::GeometryCollection(parts) => {
-            for part in parts {
-                collect_segments_3d(part, out);
-            }
-        },
-        Shape::Empty(..) => {},
-    }
-}
-
 impl Distance3dParts {
     pub(crate) fn build(shape: &Shape) -> Self {
-        let capacity = ShapeCountQuery::default().coordinates(shape).ok();
+        let capacity = shape.metric_support_capacity_hint(RunIdentity::Full);
         let mut segments = Vec::new();
         if let Some(capacity) = capacity {
             let _reservation = segments.try_reserve(capacity);
         }
-        collect_segments_3d(shape, &mut segments);
+        let outcome: std::ops::ControlFlow<()> =
+            shape.for_each_first_support_run(RunIdentity::Full, |run| {
+                match run {
+                    MetricSupportRun::Point(point) => {
+                        let point = point_xyz(point);
+                        push_segment_3d(point, point, &mut segments);
+                    },
+                    MetricSupportRun::MultiPoint(points) => {
+                        for point in points {
+                            let point = point_xyz(point);
+                            push_segment_3d(point, point, &mut segments);
+                        }
+                    },
+                    MetricSupportRun::SegmentChain(coords) => {
+                        push_segments_3d(coords, &mut segments);
+                    },
+                }
+                std::ops::ControlFlow::Continue(())
+            });
+        debug_assert!(outcome.is_continue());
         Self {
             segments,
             bvh: OnceLock::new(),

@@ -56,7 +56,7 @@ pub(crate) fn ensure_geodesic_shape(
     shape: &Shape,
 ) -> crate::error::Result<()> {
     crs::ensure_geographic_domain_in_frame(frame, shape)?;
-    if contains_filled_area(shape) {
+    if shape.has_area_parts() {
         return Err(crs::CrsError::message(
             "geodesic distance for polygon interiors is unsupported",
         ));
@@ -69,7 +69,7 @@ pub(crate) fn ensure_hausdorff_geodesic_shape(
     shape: &Shape,
 ) -> crate::error::Result<()> {
     crs::ensure_geographic_domain_in_frame(frame, shape)?;
-    if contains_filled_area(shape) {
+    if shape.has_area_parts() {
         return Err(crs::CrsError::message(
             "geodesic distance for polygon interiors is unsupported",
         ));
@@ -402,7 +402,7 @@ fn split_geodesic_operands(
     // Filled polygon interiors are not a geodesic linework operand. Leave
     // them untouched so the shared geometry guard reports that contract
     // instead of seam-splitting an unsupported shape first.
-    if contains_filled_area(a.shape()) || contains_filled_area(b.shape()) {
+    if a.shape().has_area_parts() || b.shape().has_area_parts() {
         return Ok(None);
     }
     if !a.shape().is_empty() && !b.shape().is_empty() {
@@ -437,18 +437,6 @@ fn split_geodesic_operands(
         }
     }
     Ok(None)
-}
-
-pub(crate) fn contains_filled_area(shape: &Shape) -> bool {
-    match shape {
-        Shape::Polygon(_) | Shape::MultiPolygon(_) => true,
-        Shape::GeometryCollection(geometries) => geometries.iter().any(contains_filled_area),
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Empty(..) => false,
-    }
 }
 
 pub(crate) fn pair_distance_planar(
@@ -634,7 +622,7 @@ pub(crate) fn metric_hausdorff(
     if a.is_empty() || b.is_empty() {
         return Ok(f64::INFINITY);
     }
-    if a == b && !contains_filled_area(a) {
+    if a == b && !a.has_area_parts() {
         return Ok(0.0);
     }
     dispatch_metric_model(

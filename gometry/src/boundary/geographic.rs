@@ -4,8 +4,12 @@
 //! `point_xy` is the shared `Shape` -> coordinate adapter.
 //! Re-exported at the crate root for `use super::*` and `crate::` consumers.
 
+use std::collections::HashMap;
+use std::ops::ControlFlow;
+
 use pyo3::prelude::*;
 
+use crate::geometry::ShapeOwnerKey;
 use crate::py::errors::geometry_type_err;
 use crate::{GeometryErrorKind, Shape};
 
@@ -58,13 +62,57 @@ pub(crate) fn normalized_geographic_pole(latitude: f64) -> Option<bool> {
 /// bounds, chains, or point witnesses.  The map is otherwise bit-preserving,
 /// including longitude and Z/M ordinates.
 pub(crate) fn normalize_accepted_geographic_latitudes(shape: &Shape) -> Shape {
-    shape
-        .map_points(&|point| {
-            Ok::<_, crate::error::Error>(
-                point.with_xy_raw(point.x, normalize_accepted_latitude(point.y)),
-            )
-        })
-        .expect("geographic latitude normalization is an infallible finite-coordinate map")
+    let changes = matches!(
+        shape.try_for_each_first_xy_point_run(|point| {
+            if normalize_accepted_latitude(point.y).to_bits() == point.y.to_bits() {
+                ControlFlow::Continue(())
+            } else {
+                ControlFlow::Break(())
+            }
+        }),
+        ControlFlow::Break(())
+    );
+    if !changes {
+        return shape.clone();
+    }
+    normalize_grid_shape(shape, &mut HashMap::new())
+}
+
+fn normalize_grid_shape(shape: &Shape, collections: &mut HashMap<ShapeOwnerKey, Shape>) -> Shape {
+    match shape {
+        Shape::GeometryCollection(collection) => {
+            let owner = collection
+                .members_are_shared()
+                .then(|| ShapeOwnerKey::new(collection.as_slice()));
+            if let Some(mapped) = owner.as_ref().and_then(|owner| collections.get(owner)) {
+                return mapped.clone();
+            }
+            let mapped = Shape::GeometryCollection(
+                collection
+                    .try_map_members(|member| {
+                        Ok::<_, crate::error::Error>(normalize_grid_shape(member, collections))
+                    })
+                    .expect("geographic latitude normalization preserves admitted collections"),
+            );
+            if let Some(owner) = owner {
+                collections.insert(owner, mapped.clone());
+            }
+            mapped
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => shape
+            .map_points(&|point| {
+                Ok::<_, crate::error::Error>(
+                    point.with_xy_raw(point.x, normalize_accepted_latitude(point.y)),
+                )
+            })
+            .expect("geographic latitude normalization is an infallible finite-coordinate map"),
+    }
 }
 
 /// Earth's authalic radius in meters — the sphere model the H3 backend uses
@@ -81,7 +129,15 @@ pub(crate) fn lonlat_rect_area_m2(bounds: crate::geometry::Bounds) -> f64 {
 }
 
 pub(crate) fn validate_lonlat_shape(shape: &Shape) -> crate::error::Result<()> {
-    shape.try_for_each_point(|point| validate_lonlat_xy(point.x, point.y))
+    match shape.try_for_each_first_xy_point_run(|point| {
+        match validate_lonlat_xy(point.x, point.y) {
+            Ok(()) => ControlFlow::Continue(()),
+            Err(error) => ControlFlow::Break(error),
+        }
+    }) {
+        ControlFlow::Continue(()) => Ok(()),
+        ControlFlow::Break(error) => Err(error),
+    }
 }
 
 pub(crate) fn validate_lonlat_xy(lon: f64, lat: f64) -> crate::error::Result<()> {

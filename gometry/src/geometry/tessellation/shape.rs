@@ -6,13 +6,13 @@ use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::tessellation::{
     CdtRefinement, CertifiedDelaunay, Site, certified_delaunay, collect_sample_triangles,
     constrained_triangle_vertices, earcut_polygon_with, line_boundary, multiline_boundary,
-    rings_to_boundary, sample_weighted, selected_source_sites, selected_triangle_points,
-    snap_sites, try_triangle_shape, uniform_f64, voronoi_dcel, weight_scale,
+    rings_to_boundary, sample_weighted, selected_triangle_points, snap_sites, try_triangle_shape,
+    uniform_f64, voronoi_dcel, weight_scale,
 };
 use crate::geometry::{
     AxisFrame, CoordSeq, CoordinateAxes, CsrOffsetColumn, Dimension, ExpansionBudget,
     GeometryErrorKind, GeometryKind, Point, PointKey, Polygon, Polygonal, PolygonizeFull, Ring,
-    Segment, Shape, ShapeCountQuery, VoronoiBoundary, XY, admit_shape_vector_capacity, axis_extent,
+    Segment, Shape, ShapeCountQuery, VoronoiBoundary, admit_shape_vector_capacity, axis_extent,
     carry_each, empty_geometry, line_segments,
 };
 
@@ -32,7 +32,13 @@ thread_local! {
 
 #[cfg(test)]
 fn note_delaunay_output_reserve() {
-    DELAUNAY_OUTPUT_RESERVES.with(|count| count.set(count.get() + 1));
+    DELAUNAY_OUTPUT_RESERVES.with(|count| {
+        let reserves = count
+            .get()
+            .checked_add(1)
+            .expect("Delaunay output reserve test counter overflow");
+        count.set(reserves);
+    });
 }
 
 #[cfg(test)]
@@ -128,11 +134,14 @@ impl Shape {
     }
 
     fn delaunay_points(&self) -> Result<Vec<Point>> {
-        // XY-unique vertices keeping FULL ordinates (first-seen Z/M): triangle
-        // corners are input vertices, so carrying their Z/M here preserves it
-        // directly — no post-hoc XY re-lookup (the old `carry_each` step).
-        let source_points = self.points_vec()?;
-        let (points, _) = selected_source_sites(source_points)?;
+        // Sites are an XY set, but each one carries the first full source Point
+        // so triangle corners retain its Z/M without a post-hoc lookup.
+        let mut points = self.first_seen_xy_vertices()?;
+        points.sort_unstable_by(|left, right| {
+            left.x
+                .total_cmp(&right.x)
+                .then_with(|| left.y.total_cmp(&right.y))
+        });
         if points.len() < 3 {
             return Ok(Vec::new());
         }
@@ -641,10 +650,7 @@ impl Shape {
 
 impl Shape {
     fn voronoi_sites(&self, tolerance: f64) -> Result<Vec<Site>> {
-        let count = ShapeCountQuery::default().coordinates(self)?;
-        let capacity = admit_shape_vector_capacity::<XY>(count)?;
-        let mut points = Vec::with_capacity(capacity);
-        self.for_each_point(|point| points.push(point.to_xy()));
+        let points = self.try_unique_xy_points()?;
         canonical_voronoi_sites(points, tolerance)
     }
 

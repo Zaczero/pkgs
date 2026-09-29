@@ -912,6 +912,20 @@ fn distance_3d_rejects_mixed_z_collection() {
     mixed.distance_3d(&target).unwrap_err();
 }
 
+#[test]
+fn distance_3d_distinguishes_shared_point_and_segment_runs() {
+    let coords =
+        CoordSeq::try_from_points(&[pzm(0.0, 0.0, 0.0, 1.0), pzm(10.0, 0.0, 0.0, 2.0)]).unwrap();
+    let source = Shape::geometry_collection(vec![
+        Shape::MultiPoint(MultiPoint::from_coordseq(coords.clone()).unwrap()),
+        Shape::LineString(LineSeq::from_proven(coords)),
+    ])
+    .unwrap();
+    let target = Shape::Point(pzm(5.0, 0.0, 0.0, 0.0));
+
+    assert_eq!(source.distance_3d(&target).unwrap(), 0.0);
+}
+
 fn extreme_coord_line(segment_count: usize) -> Shape {
     // Just inside the squared-space gate so the facet BVH uses the SIMD
     // kernel — segment deltas stay below the per-pair overflow ceiling.

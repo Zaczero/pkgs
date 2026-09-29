@@ -741,6 +741,29 @@ fn areal_fold(
     try_areal_relate_geographic(left, || sound(left), right, || sound(right))
 }
 
+#[test]
+fn raw_geographic_bounds_guard_handles_shared_depth128_pole_members() {
+    let frame = GeographicFrame::crs84();
+    let disjoint_bounds = Bounds::new_raw(10.0, -1.0, 20.0, 1.0);
+    let mut pole = Shape::Point(Point::new_raw_xy(0.0, 90.0));
+    let mut ordinary = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+    for _ in 0..128 {
+        pole = Shape::geometry_collection(vec![pole.clone(), pole]).unwrap();
+        ordinary = Shape::geometry_collection(vec![ordinary.clone(), ordinary]).unwrap();
+    }
+
+    assert!(!crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+        Some(&pole),
+        disjoint_bounds,
+        frame,
+    ));
+    assert!(crate::geometry::raw_coordinate_bounds_are_sound_in_frame(
+        Some(&ordinary),
+        disjoint_bounds,
+        frame,
+    ));
+}
+
 fn geographic_graph_oracle(
     left: &Shape,
     right: &Shape,

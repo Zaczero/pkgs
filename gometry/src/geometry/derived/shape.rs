@@ -23,12 +23,12 @@ impl Shape {
         reason = "monotone_chain_hull returns source ordinals into this points vector"
     )]
     pub fn minimum_rotated_rectangle(&self) -> Result<Self> {
+        let points = self.first_seen_xy_vertices()?;
         // Empty input has no rectangle: `POLYGON EMPTY` (the operation's areal
         // output type), not the untyped collection the hull yields.
-        if self.is_empty() {
+        if points.is_empty() {
             return Ok(Self::empty_polygon());
         }
-        let points = self.points_vec()?;
         let open: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
             .map(|index| points[index])
@@ -139,15 +139,15 @@ impl Shape {
         reason = "monotone_chain_hull returns source ordinals into this points vector"
     )]
     pub fn convex_hull(&self) -> Result<Self> {
-        if self.is_empty() {
-            return Ok(Self::empty_polygon());
-        }
         // Native monotone chain over first-seen XY vertices (robust
         // orientation turns, collinear vertices dropped). Degenerate hulls
         // reduce to Point/LineString like every degenerate polygon. Surviving
         // vertices are copies of those source points, including Z/M and
         // signed-zero spelling.
         let points = self.first_seen_xy_vertices()?;
+        if points.is_empty() {
+            return Ok(Self::empty_polygon());
+        }
         let hull: Vec<Point> = monotone_chain_hull(&points)
             .into_iter()
             .map(|index| points[index])
@@ -180,7 +180,7 @@ impl Shape {
     /// Z/M ride along). `None` for empty geometry.
     pub fn extremes(&self) -> Option<[Point; 4]> {
         let mut found: Option<[Point; 4]> = None;
-        self.for_each_point(|point| {
+        self.for_each_first_point_run(|point| {
             let extremes = found.get_or_insert([point; 4]);
             if point.x < extremes[0].x {
                 extremes[0] = point;
@@ -219,13 +219,16 @@ impl Shape {
     /// certified circumscribed 64-gon whose edges enclose that minimum disk and
     /// whose vertices lie outside it.
     pub fn minimum_bounding_circle(&self) -> Result<Self> {
-        if self.is_empty() {
-            return Ok(Self::empty_polygon());
-        }
-        let mut source_finite = true;
-        self.for_each_point(|point| {
-            source_finite &= point.x.is_finite() && point.y.is_finite();
-        });
+        let source_finite = matches!(
+            self.try_for_each_first_xy_point_run(|point| {
+                if point.x.is_finite() && point.y.is_finite() {
+                    std::ops::ControlFlow::Continue(())
+                } else {
+                    std::ops::ControlFlow::Break(())
+                }
+            }),
+            std::ops::ControlFlow::Continue(())
+        );
         if !source_finite {
             return Err(GeometryErrorKind::unrepresentable_output(
                 "minimum_bounding_circle",
@@ -253,9 +256,6 @@ impl Shape {
     /// returns ``NaN``; a single distinct vertex returns ``0``.
     #[cfg(test)]
     pub fn minimum_bounding_radius(&self) -> Result<f64> {
-        if self.is_empty() {
-            return Ok(f64::NAN);
-        }
         let points = self.try_unique_xy_points()?;
         if points.is_empty() {
             return Ok(f64::NAN);
@@ -349,10 +349,16 @@ impl Shape {
         operation: &'static str,
         scale: f64,
     ) -> Result<DirectedOptimizationResult> {
-        let mut finite = true;
-        self.for_each_point(|point| {
-            finite &= point.x.is_finite() && point.y.is_finite();
-        });
+        let finite = matches!(
+            self.try_for_each_first_xy_point_run(|point| {
+                if point.x.is_finite() && point.y.is_finite() {
+                    std::ops::ControlFlow::Continue(())
+                } else {
+                    std::ops::ControlFlow::Break(())
+                }
+            }),
+            std::ops::ControlFlow::Continue(())
+        );
         if !finite {
             return Err(GeometryErrorKind::unrepresentable_output(operation));
         }

@@ -1,7 +1,8 @@
 use crate::geometry::access::*;
 use crate::geometry::{
-    CoordSeq, CoordinateAxes, GeometryKind, LineSeq, MOrdinate, MultiLineString, MultiMember,
-    MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape, ZOrdinate,
+    CoordSeq, CoordWindow, CoordinateAxes, GeometryKind, LineSeq, MColumn, MOrdinate,
+    MultiLineString, MultiMember, MultiPoint, MultiPolygon, Point, Polygon, Ring, Shape,
+    ShapeCountQuery, SharedSlice, ZOrdinate,
 };
 
 fn point(x: f64, y: f64, z: f64, m: f64) -> Point {
@@ -14,6 +15,285 @@ fn line(points: &[Point]) -> LineSeq {
 
 fn ring(points: &[Point]) -> Ring {
     Ring::closed(points.to_vec()).expect("ring is valid")
+}
+
+fn repeated_point_tree(point: Point, depth: usize) -> Shape {
+    let mut shape = Shape::Point(point);
+    for _ in 0..depth {
+        shape = Shape::geometry_collection(vec![shape.clone(), shape])
+            .expect("repeated DAG stays within the accepted collection depth");
+    }
+    shape
+}
+
+#[test]
+fn owner_aware_point_sets_and_summaries_finish_at_depth_128() {
+    let source = point(0.0, -0.0, 7.0, 29.0);
+    let shape = repeated_point_tree(source, 128);
+
+    let unique = shape.unique_points().expect("one full-identity point");
+    assert_eq!(ShapeCountQuery::default().coordinates(&unique).unwrap(), 1);
+    assert_eq!(unique.axes(), CoordinateAxes::XYZM);
+    let unique_points = unique.points_vec().unwrap();
+    let [unique] = unique_points.as_slice() else {
+        panic!("the point set contains one Point");
+    };
+    assert_eq!(unique.z().unwrap(), 7.0);
+    assert_eq!(unique.m().unwrap(), 29.0);
+    assert_eq!(unique.x.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(unique.y.to_bits(), (-0.0_f64).to_bits());
+
+    let bounds = shape.bounds().expect("nonempty point bounds");
+    assert_eq!(bounds.minx().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(bounds.maxx().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(bounds.miny().to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(bounds.maxy().to_bits(), (-0.0_f64).to_bits());
+    assert_eq!(shape.z_extremes(), Some((7.0, 7.0)));
+    assert_eq!(shape.m_extremes(), Some((29.0, 29.0)));
+    assert_eq!(shape.axes(), CoordinateAxes::XYZM);
+    assert!(shape.axes_all_z());
+    assert!(!shape.is_empty());
+    assert_eq!(
+        shape.topological_dimension(),
+        crate::geometry::Dimension::Point
+    );
+}
+
+#[test]
+fn empty_axes_fold_over_a_depth_128_shared_dag() {
+    let mut shape = Shape::typed_empty(GeometryKind::Point, CoordinateAxes::XYZ);
+    for _ in 0..128 {
+        shape = Shape::geometry_collection(vec![shape.clone(), shape])
+            .expect("repeated empty DAG stays within the collection depth");
+    }
+
+    let unique = shape.unique_points().unwrap();
+
+    assert!(unique.is_empty());
+    assert_eq!(unique.axes(), CoordinateAxes::XYZ);
+    assert_eq!(shape.axes(), CoordinateAxes::XYZ);
+}
+
+#[test]
+fn owner_aware_sets_leave_occurrence_point_walks_unchanged() {
+    let shape = repeated_point_tree(point(2.0, 3.0, 7.0, 29.0), 10);
+    let mut occurrences = 0;
+    shape.for_each_point(|_| occurrences += 1);
+    assert_eq!(occurrences, 1024);
+    let mut counts = ShapeCountQuery::default();
+    assert_eq!(counts.coordinates(&shape).unwrap(), 1024);
+    assert_eq!(
+        counts.coordinates(&shape.unique_points().unwrap()).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn shared_segment_occurrences_remain_visible_to_walkers_and_counts() {
+    let mut shape = Shape::LineString(line(&[
+        point(0.0, 0.0, 1.0, 1.0),
+        point(1.0, 0.0, 1.0, 1.0),
+    ]));
+    for _ in 0..10 {
+        shape = Shape::geometry_collection(vec![shape.clone(), shape])
+            .expect("repeated line DAG stays within the accepted collection depth");
+    }
+
+    let mut segments = 0;
+    shape.for_each_segment(|_| segments += 1);
+    let mut counts = ShapeCountQuery::default();
+
+    assert_eq!(segments, 1_usize << 10);
+    assert_eq!(counts.segments(&shape).unwrap(), 1_usize << 10);
+}
+
+#[test]
+fn distinct_point_sets_handle_a_depth_31_shared_dag() {
+    let expected = point(1.0, 2.0, 3.0, 4.0);
+    let shape = repeated_point_tree(expected, 31);
+    let mut counts = ShapeCountQuery::default();
+
+    assert_eq!(counts.coordinates(&shape).unwrap(), 1_usize << 31);
+
+    let xy = shape.try_unique_xy_points().unwrap();
+    let vertices = shape.first_seen_xy_vertices().unwrap();
+    let full_points = shape.distinct_point_values();
+    let unique = shape.unique_points().unwrap();
+
+    assert_eq!(xy, vec![Point::new_raw_xy(1.0, 2.0)]);
+    assert_eq!(vertices, vec![expected]);
+    assert_eq!(full_points, vec![expected]);
+    assert_eq!(unique.points_vec().unwrap(), vec![expected]);
+}
+
+#[test]
+fn shared_coordinate_runs_keep_distinct_point_set_results() {
+    let source = Shape::LineString(line(&[
+        point(0.0, 0.0, 3.0, 4.0),
+        point(1.0, 0.0, 5.0, 6.0),
+    ]));
+    let shape = Shape::geometry_collection(vec![source; 64]).unwrap();
+
+    let mut counts = ShapeCountQuery::default();
+    assert_eq!(counts.coordinates(&shape).unwrap(), 128);
+
+    let xy = shape.try_unique_xy_points().unwrap();
+    let full_points = shape.distinct_point_values();
+    let expected = vec![point(0.0, 0.0, 3.0, 4.0), point(1.0, 0.0, 5.0, 6.0)];
+    assert_eq!(xy, vec![
+        Point::new_raw_xy(0.0, 0.0),
+        Point::new_raw_xy(1.0, 0.0)
+    ]);
+    assert_eq!(full_points, expected);
+}
+
+#[test]
+fn xy_and_full_point_sets_keep_their_ordinate_identities() {
+    let xs = SharedSlice::from_vec(vec![0.0, 1.0]);
+    let ys = SharedSlice::from_vec(vec![10.0, 11.0]);
+    let ms = SharedSlice::from_vec((0_u32..128).map(f64::from).collect());
+    let members = (0..64)
+        .map(|line| {
+            let coords = CoordSeq::from_shared_columns_with_window(
+                xs.clone(),
+                ys.clone(),
+                None,
+                Some(MColumn::Local {
+                    owner: ms.clone(),
+                    offset: line * 2,
+                }),
+                CoordWindow::from_range(0..2, xs.len()),
+            )
+            .unwrap();
+            Shape::LineString(LineSeq::from_proven(coords))
+        })
+        .collect();
+    let shape = Shape::geometry_collection(members).unwrap();
+
+    let xy = shape.try_unique_xy_points().unwrap();
+    let full = shape.distinct_point_values();
+    let expected_xy = vec![Point::new_raw_xy(0.0, 10.0), Point::new_raw_xy(1.0, 11.0)];
+    let xy_representatives = [
+        Point::new_axes(0.0, 10.0, ZOrdinate(None), MOrdinate(None)).unwrap(),
+        Point::new_axes(1.0, 11.0, ZOrdinate(None), MOrdinate(None)).unwrap(),
+    ];
+    let expected_full = xy_representatives
+        .into_iter()
+        .cycle()
+        .zip(0_u32..128)
+        .map(|(point, measure)| {
+            Point::new_axes(
+                point.x,
+                point.y,
+                ZOrdinate(None),
+                MOrdinate(Some(f64::from(measure))),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(xy, expected_xy);
+    assert_eq!(full, expected_full);
+}
+
+#[test]
+fn summary_memos_replay_nonadjacent_signed_zero_bounds_and_extrema() {
+    let positive = Shape::geometry_collection(vec![Shape::Point(point(0.0, 0.0, 0.0, 0.0))])
+        .expect("positive-zero member");
+    let negative = Shape::Point(point(-0.0, 0.0, -0.0, -0.0));
+    let shape = Shape::geometry_collection(vec![positive.clone(), negative, positive])
+        .expect("interleaved shared member");
+
+    let bounds = shape.bounds().expect("nonempty bounds");
+    for value in [bounds.minx(), bounds.maxx(), bounds.miny(), bounds.maxy()] {
+        assert_eq!(value.to_bits(), 0.0_f64.to_bits());
+    }
+    let (min_z, max_z) = shape.z_extremes().expect("Z present");
+    assert_eq!((min_z.to_bits(), max_z.to_bits()), (0, 0));
+    let (min_m, max_m) = shape.m_extremes().expect("M present");
+    assert_eq!((min_m.to_bits(), max_m.to_bits()), (0, 0));
+
+    let extremes = shape.extremes().expect("nonempty extremes");
+    assert_eq!(extremes[0].x.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn shared_run_summaries_replay_nonadjacent_signed_zero_occurrences() {
+    let line = Shape::LineString(line(&[
+        point(0.0, 0.0, 0.0, 0.0),
+        point(1.0, 0.0, 0.0, 0.0),
+    ]));
+    let middle = Shape::Point(point(0.0, -0.0, -0.0, -0.0));
+    let shape = Shape::geometry_collection(vec![line.clone(), middle, line]).unwrap();
+
+    let bounds = shape.bounds().unwrap();
+
+    assert_eq!(bounds.miny().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(bounds.maxy().to_bits(), 0.0_f64.to_bits());
+    assert_eq!(shape.z_extremes().unwrap().0.to_bits(), 0.0_f64.to_bits());
+    assert_eq!(shape.m_extremes().unwrap().0.to_bits(), 0.0_f64.to_bits());
+}
+
+#[test]
+fn bounds_summary_replays_nan_payload_and_infinity_occurrences() {
+    let nan_a = f64::from_bits(0x7FF8_0000_0000_0001);
+    let nan_b = f64::from_bits(0x7FF8_0000_0000_0002);
+    let first =
+        Shape::geometry_collection(vec![Shape::Point(Point::new_raw_xy(nan_a, f64::INFINITY))])
+            .unwrap();
+    let shape = Shape::geometry_collection(vec![
+        first.clone(),
+        Shape::Point(Point::new_raw_xy(nan_b, f64::NEG_INFINITY)),
+        first,
+    ])
+    .unwrap();
+
+    let bounds = shape.bounds().expect("three point occurrences");
+    assert_eq!(bounds.minx().to_bits(), nan_a.to_bits());
+    assert_eq!(bounds.maxx().to_bits(), nan_a.to_bits());
+    assert_eq!(bounds.miny(), f64::NEG_INFINITY);
+    assert_eq!(bounds.maxy(), f64::INFINITY);
+}
+
+#[test]
+fn shared_collection_extrema_preserve_nan_payload_and_infinity_folds() {
+    let nan_a = f64::from_bits(0x7FF8_0000_0000_0001);
+    let nan_b = f64::from_bits(0x7FF8_0000_0000_0002);
+    let raw_point = |z, m| {
+        Shape::Point(Point::new_raw_axes(
+            1.0,
+            2.0,
+            ZOrdinate(Some(z)),
+            MOrdinate(Some(m)),
+        ))
+    };
+    let shared = Shape::geometry_collection(vec![raw_point(nan_a, f64::INFINITY)]).unwrap();
+    let with_shared_owner = Shape::geometry_collection(vec![
+        shared.clone(),
+        raw_point(nan_b, f64::NEG_INFINITY),
+        shared,
+    ])
+    .unwrap();
+    let without_shared_owner = Shape::geometry_collection(vec![
+        Shape::geometry_collection(vec![raw_point(nan_a, f64::INFINITY)]).unwrap(),
+        raw_point(nan_b, f64::NEG_INFINITY),
+        Shape::geometry_collection(vec![raw_point(nan_a, f64::INFINITY)]).unwrap(),
+    ])
+    .unwrap();
+
+    let actual_z = with_shared_owner.z_extremes().unwrap();
+    let expected_z = without_shared_owner.z_extremes().unwrap();
+    assert!(actual_z.0.is_nan() && actual_z.1.is_nan());
+    assert_eq!(actual_z.0.to_bits(), expected_z.0.to_bits());
+    assert_eq!(actual_z.1.to_bits(), expected_z.1.to_bits());
+
+    assert_eq!(
+        with_shared_owner.m_extremes(),
+        Some((f64::NEG_INFINITY, f64::INFINITY))
+    );
+    assert_eq!(
+        with_shared_owner.m_extremes(),
+        without_shared_owner.m_extremes()
+    );
 }
 
 #[test]

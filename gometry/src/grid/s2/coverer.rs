@@ -26,7 +26,7 @@ use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::sync::Arc;
 
-use crate::geometry::{Bounds, Point, PointBatchTester, Shape, same_point};
+use crate::geometry::{Bounds, Coordinates as _, Point, PointBatchTester, Shape, same_point};
 use crate::grid::affine_source::{
     GeographicCoverageSource, RectClass as AffineRectClass, RectangularCandidate,
     SphericalGridTarget, WorkingShapeRelation,
@@ -997,16 +997,24 @@ impl<'a> CoverContext<'a> {
 /// `Point`, so it deliberately enters this exact owner path too; a nonzero
 /// segment stays on the general certificate traversal.
 fn closed_point_leaves(source: &Shape) -> Option<Vec<CellId>> {
-    let mut has_nonzero_segment = false;
-    source.for_each_segment(|segment| {
-        has_nonzero_segment |= !same_point(segment.start, segment.end);
-    });
-    if has_nonzero_segment {
+    if matches!(
+        source.for_each_first_xy_segment_chain(|chain| {
+            if chain
+                .segment_pairs()
+                .any(|[start, end]| !same_point(start, end))
+            {
+                std::ops::ControlFlow::Break(())
+            } else {
+                std::ops::ControlFlow::Continue(())
+            }
+        }),
+        std::ops::ControlFlow::Break(())
+    ) {
         return None;
     }
 
     let mut leaves = Vec::new();
-    source.for_each_point(|point| {
+    source.for_each_first_xy_point_run(|point| {
         let xyz = super::projection::lonlat_to_closed_owner_point(point.x, point.y);
         let leaf = CellId::from_point(xyz);
         leaves.push(leaf);

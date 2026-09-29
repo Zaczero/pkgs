@@ -2,8 +2,8 @@ use crate::error::Result;
 #[cfg(test)]
 use crate::geometry::{CompiledPattern, GeometryErrorKind, PreparedPlan};
 use crate::geometry::{
-    Loc, Point, Shape, cartesian_point_location, graph_relate_shapes, point_equals_exact,
-    points_equal_exact,
+    Loc, Point, RunIdentity, Shape, SharedShapeOwners, SupportRunKind, cartesian_point_location,
+    graph_relate_shapes, point_equals_exact, points_equal_exact,
 };
 #[cfg(test)]
 use crate::predicates::engine::{PreparedTopologyPair, topology_scalar_pattern};
@@ -67,25 +67,72 @@ impl Shape {
     /// vertex of each line/shell), short-circuiting on the first `true`.
     /// With no boundary contact between two geometries, each component is
     /// uniformly inside or outside the other, so its representative decides
-    /// area containment for the whole component.
+    /// area containment for the whole component. Shared immutable owners keep
+    /// their first representative; later identical occurrences cannot change
+    /// the existential result.
     pub(crate) fn any_component_representative(
         &self,
         predicate: &mut impl FnMut(Point) -> bool,
     ) -> bool {
+        let mut owners = SharedShapeOwners::for_shape(self);
+        self.any_component_representative_inner(&mut owners, predicate)
+    }
+
+    fn any_component_representative_inner(
+        &self,
+        owners: &mut Option<SharedShapeOwners>,
+        predicate: &mut impl FnMut(Point) -> bool,
+    ) -> bool {
         match self {
             Self::Point(point) => predicate(*point),
-            Self::MultiPoint(points) => points.iter().any(&mut *predicate),
-            Self::LineString(points) => points.first().is_some_and(&mut *predicate),
-            Self::MultiLineString(lines) => lines
-                .iter()
-                .any(|line| line.first().is_some_and(&mut *predicate)),
-            Self::Polygon(polygon) => polygon.shell.first().is_some_and(&mut *predicate),
-            Self::MultiPolygon(polygons) => polygons
-                .iter()
-                .any(|polygon| polygon.shell.first().is_some_and(&mut *predicate)),
-            Self::GeometryCollection(geometries) => geometries
-                .iter()
-                .any(|geometry| geometry.any_component_representative(predicate)),
+            Self::MultiPoint(points) => {
+                owners.as_mut().is_none_or(|owners| {
+                    owners.first_support_run(points, RunIdentity::Full, SupportRunKind::PointSet)
+                }) && points.iter().any(&mut *predicate)
+            },
+            Self::LineString(line) => {
+                owners.as_mut().is_none_or(|owners| {
+                    owners.first_support_run(
+                        line.as_coords(),
+                        RunIdentity::Full,
+                        SupportRunKind::SegmentChain,
+                    )
+                }) && line.first().is_some_and(&mut *predicate)
+            },
+            Self::MultiLineString(lines) => lines.iter().any(|line| {
+                owners.as_mut().is_none_or(|owners| {
+                    owners.first_support_run(
+                        line.as_coords(),
+                        RunIdentity::Full,
+                        SupportRunKind::SegmentChain,
+                    )
+                }) && line.first().is_some_and(&mut *predicate)
+            }),
+            Self::Polygon(polygon) => {
+                owners.as_mut().is_none_or(|owners| {
+                    owners.first_support_run(
+                        polygon.shell.coords(),
+                        RunIdentity::Full,
+                        SupportRunKind::SegmentChain,
+                    )
+                }) && polygon.shell.first().is_some_and(&mut *predicate)
+            },
+            Self::MultiPolygon(polygons) => polygons.iter().any(|polygon| {
+                owners.as_mut().is_none_or(|owners| {
+                    owners.first_support_run(
+                        polygon.shell.coords(),
+                        RunIdentity::Full,
+                        SupportRunKind::SegmentChain,
+                    )
+                }) && polygon.shell.first().is_some_and(&mut *predicate)
+            }),
+            Self::GeometryCollection(geometries) => {
+                owners.as_mut().is_none_or(|owners| {
+                    owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
+                }) && geometries
+                    .iter()
+                    .any(|geometry| geometry.any_component_representative_inner(owners, predicate))
+            },
             Self::Empty(..) => false,
         }
     }
@@ -95,9 +142,18 @@ impl Shape {
     /// self-crossing shell can have zero signed area while enclosing filled
     /// lobes.
     pub(crate) fn has_area_parts(&self) -> bool {
+        self.has_area_parts_with_owners(&mut SharedShapeOwners::for_collections())
+    }
+
+    fn has_area_parts_with_owners(&self, owners: &mut SharedShapeOwners) -> bool {
         match self {
             Self::Polygon(_) | Self::MultiPolygon(_) => true,
-            Self::GeometryCollection(geometries) => geometries.iter().any(Self::has_area_parts),
+            Self::GeometryCollection(geometries) => {
+                owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
+                    && geometries
+                        .iter()
+                        .any(|geometry| geometry.has_area_parts_with_owners(owners))
+            },
             _ => false,
         }
     }

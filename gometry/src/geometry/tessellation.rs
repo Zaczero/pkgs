@@ -16,8 +16,7 @@ mod voronoi_dcel;
 pub(crate) use boundary::{line_boundary, multiline_boundary, rings_to_boundary};
 pub(crate) use delaunay::{CdtRefinement, constrained_triangle_vertices, delaunay_triangulation};
 use delaunay::{
-    CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay, selected_source_sites,
-    selected_triangle_points,
+    CertifiedDelaunay, CertifiedPrimalEdge, Site, certified_delaunay, selected_triangle_points,
 };
 pub(crate) use earcut::{earcut_polygon_with, point_in_ccw_triangle, try_triangle_shape};
 pub(crate) use sampling::{

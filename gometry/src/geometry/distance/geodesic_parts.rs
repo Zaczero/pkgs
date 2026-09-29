@@ -4,22 +4,36 @@ use crate::geometry::distance::{
     geodesic_witness_sweep_with_parts,
 };
 use crate::geometry::{
-    FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts, GeodesicPartsKey,
-    GeodesicTargetFeature, GeodesicWitnessCandidate, Point, PreparedPlan, SegmentContact, Shape,
-    WitnessOrder, distance, geodesic_witness_is_better,
+    Coordinates as _, FrameDependentCaches, GeodesicFacetBvh, GeodesicMetric, GeodesicParts,
+    GeodesicPartsKey, GeodesicTargetFeature, GeodesicWitnessCandidate, Point, PreparedPlan,
+    RunIdentity, SegmentContact, Shape, SharedShapeOwners, WitnessOrder, distance,
+    geodesic_witness_is_better,
 };
 
 /// Validate the geodesic linework domain and reject filled areal operands.
 /// Filled polygon interiors need a geodesic point-in-polygon certificate;
 /// using planar containment here would manufacture a false zero distance.
 pub(crate) fn ensure_geodesic_linework(shape: &Shape, metric: &impl GeodesicMetric) -> Result<()> {
+    ensure_geodesic_linework_inner(shape, metric, &mut SharedShapeOwners::for_shape(shape))
+}
+
+fn ensure_geodesic_linework_inner(
+    shape: &Shape,
+    metric: &impl GeodesicMetric,
+    owners: &mut Option<SharedShapeOwners>,
+) -> Result<()> {
     match shape {
         Shape::Polygon(_) | Shape::MultiPolygon(_) => Err(crate::crs::CrsError::message(
             "geodesic distance for polygon interiors is unsupported",
         )),
         Shape::GeometryCollection(geometries) => {
+            if owners.as_mut().is_some_and(|owners| {
+                !owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
+            }) {
+                return Ok(());
+            }
             for geometry in geometries {
-                ensure_geodesic_linework(geometry, metric)?;
+                ensure_geodesic_linework_inner(geometry, metric, owners)?;
             }
             Ok(())
         },
@@ -35,25 +49,24 @@ pub(crate) fn geodesic_cap_streaming(
     metric: &impl GeodesicMetric,
 ) -> Result<Option<(Point, f64)>> {
     ensure_geodesic_linework(shape, metric)?;
-    let mut anchor = None;
-    shape.any_point(|point| {
-        anchor = Some(point);
-        true
-    });
+    let anchor = match shape.try_for_each_first_point_run(std::ops::ControlFlow::Break) {
+        std::ops::ControlFlow::Break(point) => Some(point),
+        std::ops::ControlFlow::Continue(()) => None,
+    };
     let Some(anchor) = anchor else {
         return Ok(None);
     };
     let mut reach = 0.0_f64;
-    shape.try_for_each_vertex_pair(|start, end| {
-        let length = metric.make_segment(start, end)?.length;
-        let from_anchor = metric.segment_length(anchor, start);
-        reach = reach.max(from_anchor + length);
+    shape.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
+        for [start, end] in chain.segment_pairs() {
+            let length = metric.make_segment(start, end)?.length;
+            let from_anchor = metric.segment_length(anchor, start);
+            reach = reach.max(from_anchor + length);
+        }
         Ok::<_, crate::error::Error>(())
     })?;
-    shape.for_each_component(&mut |component| {
-        if let crate::geometry::Component::Point(point) = component {
-            reach = reach.max(metric.segment_length(anchor, point));
-        }
+    shape.for_each_first_point_only(RunIdentity::Full, |point| {
+        reach = reach.max(metric.segment_length(anchor, point));
     });
     Ok(Some((anchor, reach)))
 }

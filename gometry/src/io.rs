@@ -6,7 +6,7 @@ use crate::crs;
 use crate::error::{Error as CrateError, ParseFormat, Result};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, LineSeq, Point,
-    Polygon, Ring, Shape,
+    Polygon, Ring, Shape, SharedShapeOwners,
 };
 
 const WKB_MULTIPOINT: u32 = 4;
@@ -217,6 +217,10 @@ pub(crate) fn text_structure_count(shape: &Shape) -> usize {
 /// Reject polygon layouts that would invent missing Z/M under a union axes
 /// header when admitting or writing a multipart geometry.
 pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
+    require_serializable_axes_inner(shape, &mut SharedShapeOwners::for_collections())
+}
+
+fn require_serializable_axes_inner(shape: &Shape, owners: &mut SharedShapeOwners) -> Result<()> {
     match shape {
         Shape::Polygon(polygon) => {
             polygon_output_axes(polygon)?;
@@ -227,8 +231,11 @@ pub(crate) fn require_serializable_axes(shape: &Shape) -> Result<()> {
             }
         },
         Shape::GeometryCollection(members) => {
+            if !owners.first_collection(members.as_slice(), members.members_are_shared()) {
+                return Ok(());
+            }
             for member in members {
-                require_serializable_axes(member)?;
+                require_serializable_axes_inner(member, owners)?;
             }
         },
         Shape::Point(_)

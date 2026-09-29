@@ -9,8 +9,8 @@ use crate::geometry::overlay::{ExactMetricSpan, ExactMetricSupport, ExactSourceI
 use crate::geometry::tessellation::exact;
 use crate::geometry::tessellation::exact::{ExactDyadic, ExactRational as Rational};
 use crate::geometry::{
-    CoordSeq, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point, Segment, Shape,
-    ShapeCountQuery, XY,
+    CoordSeq, Coordinates as _, DdInterval, ExpansionBudget, LineSeq, PackedLineColumnView, Point,
+    RunIdentity, Segment, Shape, XY,
 };
 
 mod index;
@@ -51,26 +51,27 @@ impl PreparedSupport {
         budget: &mut ExpansionBudget,
     ) -> Result<Self> {
         if !shape.has_area_parts() {
-            let capacity = ShapeCountQuery::default().segments(shape).ok();
+            let capacity = shape.segment_count_capacity_hint(RunIdentity::XY);
             let mut spans = Vec::new();
             if let Some(capacity) = capacity {
                 let _reservation = spans.try_reserve(capacity);
             }
             let mut points = Vec::new();
-            shape.try_for_each_vertex_pair(|start, end| -> crate::error::Result<()> {
-                push_raw_segment(
-                    Segment {
-                        start: start.xy(),
-                        end: end.xy(),
-                    },
-                    &mut spans,
-                    &mut points,
-                )
-            })?;
-            shape.for_each_component(&mut |component| {
-                if let crate::geometry::Component::Point(point) = component {
-                    points.push(ExactPoint::from_xy(point.xy()));
+            shape.try_for_each_first_segment_chain(RunIdentity::XY, |chain| {
+                for [start, end] in chain.segment_pairs() {
+                    push_raw_segment(
+                        Segment {
+                            start: start.xy(),
+                            end: end.xy(),
+                        },
+                        &mut spans,
+                        &mut points,
+                    )?;
                 }
+                Ok::<(), crate::error::Error>(())
+            })?;
+            shape.for_each_first_point_only(RunIdentity::XY, |point| {
+                points.push(ExactPoint::from_xy(point.xy()));
             });
             return Self::from_parts(spans, points, Vec::new());
         }

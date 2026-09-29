@@ -2,7 +2,7 @@ use std::collections::BinaryHeap;
 
 use super::geodesic_hausdorff_helpers::HausdorffInterval;
 use crate::geometry::distance::RowProbe;
-use crate::geometry::{GeodesicSegmentScratch, Point, Shape};
+use crate::geometry::{GeodesicSegmentScratch, Point, RunIdentity, Shape};
 #[derive(Default)]
 pub(crate) struct GeodesicScratch {
     pub(crate) rows: Vec<RowProbe>,
@@ -53,5 +53,5 @@ pub(crate) fn geodesic_scratch() -> crate::scratch_pool::ScratchLease<GeodesicSc
 
 pub(crate) fn collect_point_only_into(shape: &Shape, out: &mut Vec<Point>) {
     out.clear();
-    shape.append_point_only(out);
+    shape.append_first_point_only(RunIdentity::Full, out);
 }

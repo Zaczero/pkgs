@@ -2,12 +2,14 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
+use std::collections::HashMap;
+
 use crate::error::Result;
 use crate::geographic::GeographicFrame;
 use crate::geometry::{
     Bounds, CoordSeq, Coordinates as _, GeometryErrorKind, Point, Polygon, PreparedPlan,
-    RepairMethod, Segment, Shape, TopologyDomain, ValidationIssue, shape_encloses_pole_in_frame,
-    shape_has_polar_ring_in_frame, shared_segment_part,
+    RepairMethod, Segment, Shape, ShapeOwnerKey, TopologyDomain, ValidationIssue, VisibleXYKey,
+    shape_encloses_pole_in_frame, shape_has_polar_ring_in_frame, shared_segment_part,
 };
 
 fn try_topology_split(shape: &Shape, domain: TopologyDomain) -> Result<Shape> {
@@ -460,32 +462,24 @@ pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
     frame: GeographicFrame,
 ) -> Option<Bounds> {
     let axis = frame.longitude();
-    let mut eastern_min = None::<f64>;
-    let mut western_max = None::<f64>;
-    let mut miny = None::<f64>;
-    let mut maxy = None::<f64>;
+    let mut point_memo = CrossingBoundsMemo::default();
+    let mut summary = CrossingBoundsSummary::default();
     let mut encloses_north = false;
     let mut encloses_south = false;
     let mut has_polar_ring = false;
     for shape in shapes {
         let shape = shape.borrow();
-        shape.for_each_point(|point| {
-            let longitude = axis
-                .canonicalize(point.x)
-                .map_or(point.x, |value| value.get());
-            if longitude >= 0.0 {
-                eastern_min = Some(eastern_min.map_or(longitude, |min| min.min(longitude)));
-            } else {
-                western_max = Some(western_max.map_or(longitude, |max| max.max(longitude)));
-            }
-            miny = Some(miny.map_or(point.y, |min| min.min(point.y)));
-            maxy = Some(maxy.map_or(point.y, |max| max.max(point.y)));
-        });
+        summary.merge(point_memo.shape_summary(shape, frame));
         encloses_north |= shape_encloses_pole_in_frame(shape, frame, true);
         encloses_south |= shape_encloses_pole_in_frame(shape, frame, false);
         has_polar_ring |= shape_has_polar_ring_in_frame(shape, frame);
     }
-    let (mut minx, mut miny, mut maxx, mut maxy) = (eastern_min?, miny?, western_max?, maxy?);
+    let (mut minx, mut miny, mut maxx, mut maxy) = (
+        summary.eastern_min?,
+        summary.miny?,
+        summary.western_max?,
+        summary.maxy?,
+    );
     // A pole-enclosing ring covers the whole polar cap, so its envelope reaches
     // the pole and spans every longitude — the eastern_min/western_max sliver
     // (which only describes the seam window) would otherwise drop the cap. Mirrors
@@ -501,4 +495,138 @@ pub(crate) fn geographic_crossing_bounds_for_shapes_in_frame(
         miny = -frame.pole();
     }
     Some(Bounds::new_raw(minx, miny, maxx, maxy))
+}
+
+#[derive(Clone, Copy, Default)]
+struct CrossingBoundsSummary {
+    eastern_min: Option<f64>,
+    western_max: Option<f64>,
+    miny: Option<f64>,
+    maxy: Option<f64>,
+}
+
+impl CrossingBoundsSummary {
+    fn include_point(&mut self, point: Point, frame: GeographicFrame) {
+        let longitude = frame
+            .longitude()
+            .canonicalize(point.x)
+            .map_or(point.x, |value| value.get());
+        if longitude >= 0.0 {
+            include_min(&mut self.eastern_min, longitude);
+        } else {
+            include_max(&mut self.western_max, longitude);
+        }
+        include_min(&mut self.miny, point.y);
+        include_max(&mut self.maxy, point.y);
+    }
+
+    fn merge(&mut self, other: Self) {
+        if let Some(value) = other.eastern_min {
+            include_min(&mut self.eastern_min, value);
+        }
+        if let Some(value) = other.western_max {
+            include_max(&mut self.western_max, value);
+        }
+        if let Some(value) = other.miny {
+            include_min(&mut self.miny, value);
+        }
+        if let Some(value) = other.maxy {
+            include_max(&mut self.maxy, value);
+        }
+    }
+}
+
+fn include_min(accumulator: &mut Option<f64>, value: f64) {
+    *accumulator = Some(accumulator.map_or(value, |current| current.min(value)));
+}
+
+fn include_max(accumulator: &mut Option<f64>, value: f64) {
+    *accumulator = Some(accumulator.map_or(value, |current| current.max(value)));
+}
+
+#[derive(Default)]
+struct CrossingBoundsMemo {
+    collections: HashMap<ShapeOwnerKey, CrossingBoundsSummary>,
+    xy_runs: HashMap<VisibleXYKey, CrossingBoundsSummary>,
+}
+
+impl CrossingBoundsMemo {
+    fn coord_summary(
+        &mut self,
+        coords: &CoordSeq,
+        frame: GeographicFrame,
+    ) -> CrossingBoundsSummary {
+        if let Some(key) = coords.shared_xy_key()
+            && let Some(&summary) = self.xy_runs.get(&key)
+        {
+            return summary;
+        }
+        let summary = coords
+            .iter()
+            .fold(CrossingBoundsSummary::default(), |mut acc, point| {
+                acc.include_point(point, frame);
+                acc
+            });
+        if let Some(key) = coords.shared_xy_key() {
+            self.xy_runs.insert(key, summary);
+        }
+        summary
+    }
+
+    fn polygon_summary(
+        &mut self,
+        polygon: &Polygon,
+        frame: GeographicFrame,
+    ) -> CrossingBoundsSummary {
+        let mut summary = CrossingBoundsSummary::default();
+        for ring in polygon.rings() {
+            summary.merge(self.coord_summary(ring.coords(), frame));
+        }
+        summary
+    }
+
+    fn shape_summary(&mut self, shape: &Shape, frame: GeographicFrame) -> CrossingBoundsSummary {
+        if let Shape::GeometryCollection(collection) = shape {
+            let owner = collection
+                .members_are_shared()
+                .then(|| ShapeOwnerKey::new(collection.as_slice()));
+            if let Some(&summary) = owner.as_ref().and_then(|owner| self.collections.get(owner)) {
+                return summary;
+            }
+            let mut summary = CrossingBoundsSummary::default();
+            for member in collection {
+                summary.merge(self.shape_summary(member, frame));
+            }
+            if let Some(owner) = owner {
+                self.collections.insert(owner, summary);
+            }
+            return summary;
+        }
+        match shape {
+            Shape::Point(point) => {
+                let mut summary = CrossingBoundsSummary::default();
+                summary.include_point(*point, frame);
+                summary
+            },
+            Shape::MultiPoint(coords) => self.coord_summary(coords, frame),
+            Shape::LineString(coords) => self.coord_summary(coords, frame),
+            Shape::MultiLineString(lines) => {
+                let mut summary = CrossingBoundsSummary::default();
+                for line in lines {
+                    summary.merge(self.coord_summary(line.as_coords(), frame));
+                }
+                summary
+            },
+            Shape::Polygon(polygon) => self.polygon_summary(polygon, frame),
+            Shape::MultiPolygon(polygons) => {
+                let mut summary = CrossingBoundsSummary::default();
+                for polygon in polygons {
+                    summary.merge(self.polygon_summary(polygon, frame));
+                }
+                summary
+            },
+            Shape::GeometryCollection(_) => unreachable!("handled above"),
+            Shape::Empty(..) => CrossingBoundsSummary::default(),
+        }
+    }
 }

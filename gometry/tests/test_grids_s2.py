@@ -861,6 +861,19 @@ def test_s2_bounding_cell_single_point_uses_canonical_seam_owner() -> None:
     assert all(cell == poles[0] for cell in poles)
 
 
+def test_s2_bounding_cell_keeps_one_vs_two_point_occurrence_paths() -> None:
+    point = gm.Point(13.4, 52.5, crs=4326)
+    one = gm.GeometryCollection([point])
+    two = gm.GeometryCollection([one, one])
+
+    single = gm.s2_bounding_cell(one)
+    repeated = gm.s2_bounding_cell(two)
+
+    assert single.level == 30
+    assert repeated.level == 30
+    assert repeated == single
+
+
 def test_s2_bounding_cell_cube_vertex_microbox_never_non_containing() -> None:
     """Cube-vertex 1e-4° boxes: containing cell or multi-face raise (never non-contain).
 

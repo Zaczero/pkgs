@@ -41,15 +41,23 @@ pub(crate) fn antimeridian_frame(
 /// Whether any chain of `shape` crosses the seam of `frame`
 /// ([`chain_crosses_antimeridian`]).
 pub(crate) fn crosses_antimeridian_in_frame(shape: &Shape, frame: GeographicFrame) -> bool {
-    shape
-        .try_for_each_segment_chain(|chain| {
-            if chain_crosses_antimeridian(chain, frame) {
-                Err(())
-            } else {
-                Ok(())
-            }
-        })
-        .is_err()
+    match shape {
+        Shape::LineString(chain) => chain_crosses_antimeridian(chain, frame),
+        Shape::Point(_) | Shape::MultiPoint(_) | Shape::Empty(..) => false,
+        Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::GeometryCollection(_) => matches!(
+            shape.for_each_first_xy_segment_chain(|chain| {
+                if chain_crosses_antimeridian(chain, frame) {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            }),
+            std::ops::ControlFlow::Break(())
+        ),
+    }
 }
 
 /// Whether a stored chain leaves the planar chart of `frame`: an edge takes

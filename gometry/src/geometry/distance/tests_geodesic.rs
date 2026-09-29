@@ -204,6 +204,30 @@ fn geodesic_parts_retain_all_degenerate_line_support() -> Result<()> {
 }
 
 #[test]
+fn geodesic_caps_and_parts_coalesce_depth_128_shared_line_owners() -> Result<()> {
+    let mut shared = line(vec![p(0.0, 0.0), p(1.0, 0.0)]);
+    for _ in 0..128 {
+        shared = Shape::geometry_collection(vec![shared.clone(), shared])
+            .expect("shared line DAG stays within the collection depth");
+    }
+
+    with_ellipsoid_metric("EPSG:4326", &[&shared], |metric| {
+        let (anchor, reach) = shared
+            .geodesic_cap(metric)?
+            .expect("the shared line has an anchor");
+        assert_eq!(anchor, p(0.0, 0.0));
+        assert!(reach.is_finite() && reach > 0.0);
+
+        let parts = shared.geodesic_parts(metric)?;
+        assert_eq!(parts.points, vec![p(0.0, 0.0), p(1.0, 0.0)]);
+        assert_eq!(parts.segments.len(), 1);
+        assert!(parts.point_only.is_empty());
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
 fn geodesic_contact_consumes_prepared_parts_without_reconstruction() -> Result<()> {
     let first_shape = line(vec![p(0.0, 0.0), p(10.0, 0.0)]);
     let second_shape = line(vec![p(5.0, -1.0), p(5.0, 1.0)]);

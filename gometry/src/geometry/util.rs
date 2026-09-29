@@ -3,13 +3,15 @@
 //! topology-coordinate bit canonicalization. Ring admission lives on
 //! [`crate::geometry::Ring`] (single owner for all untrusted ingresses).
 
+use std::convert::Infallible;
+use std::ops::ControlFlow;
 use std::simd::Select as _;
 use std::simd::cmp::{SimdPartialEq as _, SimdPartialOrd as _};
 use std::simd::num::SimdFloat as _;
 
 use crate::geometry::{
     Borrow, Bounds, CoordSeq, CoordinateAxes, Coordinates, GeometryKind, LineSeq, Point, PointKey,
-    Polygon, REDUCE_LANES, ReduceSimd, Ring, Shape, ShapeCountQuery, XY, rect_polygon,
+    Polygon, REDUCE_LANES, ReduceSimd, Ring, RunIdentity, Shape, XY, rect_polygon,
 };
 
 pub(crate) const fn empty_geometry() -> Shape {
@@ -96,36 +98,30 @@ pub(crate) fn geographic_bounds_to_shape(
 impl Shape {
     /// XY-unique vertices in first-seen order.
     pub(crate) fn try_unique_xy_points(&self) -> crate::error::Result<Vec<Point>> {
-        let capacity = ShapeCountQuery::default().coordinates(self).ok();
-        let mut seen = crate::collections::try_hash_set()?;
         let mut unique = Vec::new();
-        if let Some(capacity) = capacity {
-            let _seen_reservation = seen.try_reserve(capacity);
-            let _unique_reservation = unique.try_reserve(capacity);
+        if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
+            let _reservation = unique.try_reserve(capacity);
         }
-        self.for_each_point(|point| {
-            if seen.insert(PointKey::new(point)) {
+        let ControlFlow::Continue(()): ControlFlow<Infallible> = self
+            .try_for_each_distinct_xy_point(|point| {
                 unique.push(point.to_xy());
-            }
-        });
+                ControlFlow::Continue(())
+            })?;
         Ok(unique)
     }
 
     /// XY-unique vertices in first-seen order, keeping each survivor's full
     /// coordinates (Z/M and signed-zero spelling).
     pub(crate) fn first_seen_xy_vertices(&self) -> crate::error::Result<Vec<Point>> {
-        let capacity = ShapeCountQuery::default().coordinates(self).ok();
-        let mut seen = crate::collections::try_hash_set()?;
         let mut unique = Vec::new();
-        if let Some(capacity) = capacity {
-            let _seen_reservation = seen.try_reserve(capacity);
-            let _unique_reservation = unique.try_reserve(capacity);
+        if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::XY) {
+            let _reservation = unique.try_reserve(capacity);
         }
-        self.for_each_point(|point| {
-            if seen.insert(PointKey::new(point)) {
+        let ControlFlow::Continue(()): ControlFlow<Infallible> = self
+            .try_for_each_distinct_xy_point(|point| {
                 unique.push(point);
-            }
-        });
+                ControlFlow::Continue(())
+            })?;
         Ok(unique)
     }
 }

@@ -624,6 +624,72 @@ mod coordseq_m_storage_tests {
     }
 
     #[test]
+    fn visible_owner_keys_include_xy_windows_axes_and_local_m_offsets() {
+        let xs = SharedSlice::from_vec(vec![0.0, 1.0, 2.0]);
+        let ys = SharedSlice::from_vec(vec![10.0, 11.0, 12.0]);
+        let ms = SharedSlice::from_vec(vec![20.0, 21.0, 22.0]);
+        let visible = CoordWindow::from_range(0..2, xs.len());
+        let make = |m_offset| {
+            CoordSeq::from_shared_columns_with_window(
+                xs.clone(),
+                ys.clone(),
+                None,
+                Some(MColumn::Local {
+                    owner: ms.clone(),
+                    offset: m_offset,
+                }),
+                visible,
+            )
+            .unwrap()
+        };
+        let first = make(0);
+        let clone = first.clone();
+        let different_m = make(1);
+        let different_xy = CoordSeq::from_shared_columns_with_window(
+            xs.clone(),
+            ys.clone(),
+            None,
+            Some(MColumn::Local {
+                owner: ms.clone(),
+                offset: 1,
+            }),
+            CoordWindow::from_range(1..3, xs.len()),
+        )
+        .unwrap();
+
+        assert_eq!(first.shared_xy_key(), clone.shared_xy_key());
+        assert_eq!(first.shared_point_run_key(), clone.shared_point_run_key());
+        assert_eq!(first.shared_xy_key(), different_m.shared_xy_key());
+        assert_ne!(
+            first.shared_point_run_key(),
+            different_m.shared_point_run_key(),
+            "the visible M slice carries its independent local offset",
+        );
+        assert_ne!(
+            first.shared_xy_key(),
+            different_xy.shared_xy_key(),
+            "the visible XY start is part of the key",
+        );
+
+        let measured = Shape::geometry_collection(vec![
+            Shape::LineString(LineSeq::from_proven(first)),
+            Shape::LineString(LineSeq::from_proven(different_m)),
+        ])
+        .unwrap()
+        .unique_points()
+        .unwrap();
+        let measured_points = measured.points_vec().unwrap();
+        assert_eq!(measured_points.len(), 4);
+        assert_eq!(
+            measured_points
+                .iter()
+                .map(|point| point.m().unwrap())
+                .collect::<Vec<_>>(),
+            [20.0, 21.0, 21.0, 22.0]
+        );
+    }
+
+    #[test]
     fn shared_middle_m_carry_reuses_owner_as_local_without_allocation() {
         use crate::test_support::allocation_count;
 

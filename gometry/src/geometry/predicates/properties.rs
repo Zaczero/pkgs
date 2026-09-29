@@ -11,15 +11,13 @@ use crate::geometry::predicates::{
 };
 use crate::geometry::{
     CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
-    MultiLineString, Point, PointKey, RepairMethod, Shape, ValidationIssue, carry_ordinates,
-    emit_from_original, point_distance, unique_xy_points,
+    MultiLineString, Point, PointKey, RepairMethod, Shape, SharedShapeOwners, ValidationIssue,
+    carry_ordinates, emit_from_original, point_distance, unique_xy_points,
 };
 
 impl Shape {
     pub fn is_empty(&self) -> bool {
-        // `any_point` recurses into collections, so a collection whose members
-        // are all empty (e.g. `GEOMETRYCOLLECTION (POINT EMPTY)`) is empty too.
-        !self.any_point(|_| true)
+        !shape_has_any_point(self, &mut SharedShapeOwners::for_collections())
     }
 
     pub fn is_closed(&self) -> bool {
@@ -98,6 +96,24 @@ impl Shape {
     }
 }
 
+fn shape_has_any_point(shape: &Shape, owners: &mut SharedShapeOwners) -> bool {
+    match shape {
+        Shape::Point(_) => true,
+        Shape::MultiPoint(points) => !points.is_empty(),
+        Shape::LineString(points) => !points.is_empty(),
+        Shape::MultiLineString(lines) => lines.iter().any(|line| !line.is_empty()),
+        Shape::Polygon(polygon) => polygon.rings().any(|ring| !ring.is_empty()),
+        Shape::MultiPolygon(polygons) => polygons
+            .iter()
+            .any(|polygon| polygon.rings().any(|ring| !ring.is_empty())),
+        Shape::GeometryCollection(parts) => {
+            owners.first_collection(parts.as_slice(), parts.members_are_shared())
+                && parts.iter().any(|part| shape_has_any_point(part, owners))
+        },
+        Shape::Empty(..) => false,
+    }
+}
+
 impl Shape {
     pub fn minimum_clearance(&self) -> Result<f64> {
         Ok(match minimum_clearance_witness(self)? {
@@ -145,6 +161,13 @@ impl Shape {
     }
 
     pub fn validate(&self) -> crate::error::Result<Option<ValidationIssue>> {
+        self.validate_with_shared_owners(&mut SharedShapeOwners::for_collections())
+    }
+
+    fn validate_with_shared_owners(
+        &self,
+        owners: &mut SharedShapeOwners,
+    ) -> crate::error::Result<Option<ValidationIssue>> {
         match self {
             Self::Point(point) => Ok(validate_point(*point, "$")),
             Self::MultiPoint(points) => Ok(validate_points(points, "$")),
@@ -163,8 +186,12 @@ impl Shape {
                 multi_polygon_members_issue(polygons, "$")
             },
             Self::GeometryCollection(geometries) => {
+                if !owners.first_collection(geometries.as_slice(), geometries.members_are_shared())
+                {
+                    return Ok(None);
+                }
                 for (idx, geometry) in geometries.iter().enumerate() {
-                    if let Some(issue) = geometry.validate()? {
+                    if let Some(issue) = geometry.validate_with_shared_owners(owners)? {
                         return Ok(Some(issue.with_path_prefix(&format!("$[{idx}]"))));
                     }
                 }

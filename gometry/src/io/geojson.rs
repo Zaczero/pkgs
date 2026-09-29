@@ -1,12 +1,13 @@
 use std::borrow::Cow;
 use std::fmt::Write as _;
+use std::ops::ControlFlow;
 
 use serde_json::Value;
 
 use crate::boundary::metadata;
 use crate::geometry::{
     CoordSeqBuilder, MOrdinate, MultiLineString, MultiMember, MultiPoint, MultiPolygon,
-    ShapeCountQuery, TopologyDomain, ZOrdinate,
+    ShapeCountQuery, SharedShapeOwners, TopologyDomain, ZOrdinate,
 };
 use crate::io::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, IoError, LineSeq,
@@ -79,16 +80,29 @@ pub(crate) fn geojson_domain(crs: Option<&str>) -> Result<TopologyDomain> {
 }
 
 pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Result<()> {
+    if let Shape::Empty(_, axes) = shape {
+        return validate_geojson_empty_axes(*axes);
+    }
+    if shape.has_m() {
+        return Err(GeometryErrorKind::OrdinateDropped("GeoJSON M ordinate".into()).into());
+    }
+    if !INCLUDE_Z && shape.has_z() {
+        return Err(GeometryErrorKind::OrdinateDropped("GeoJSON Z ordinate".into()).into());
+    }
+    validate_geojson_structure(shape, &mut SharedShapeOwners::for_collections())
+}
+
+fn validate_geojson_empty_axes(axes: CoordinateAxes) -> Result<()> {
+    if axes == CoordinateAxes::XY {
+        Ok(())
+    } else {
+        Err(GeometryErrorKind::OrdinateDropped("GeoJSON empty geometry".into()).into())
+    }
+}
+
+fn validate_geojson_structure(shape: &Shape, owners: &mut SharedShapeOwners) -> Result<()> {
     match shape {
-        Shape::Empty(_, axes) if *axes != CoordinateAxes::XY => {
-            Err(GeometryErrorKind::OrdinateDropped("GeoJSON empty geometry".into()).into())
-        },
-        shape if shape.has_m() => {
-            Err(GeometryErrorKind::OrdinateDropped("GeoJSON M ordinate".into()).into())
-        },
-        shape if !INCLUDE_Z && shape.has_z() => {
-            Err(GeometryErrorKind::OrdinateDropped("GeoJSON Z ordinate".into()).into())
-        },
+        Shape::Empty(_, axes) => validate_geojson_empty_axes(*axes),
         Shape::MultiPoint(points) => {
             if points.has_empty_members() {
                 return Err(GeometryErrorKind::OrdinateDropped(
@@ -116,10 +130,16 @@ pub(crate) fn validate_geojson_value<const INCLUDE_Z: bool>(shape: &Shape) -> Re
             }
             Ok(())
         },
-        Shape::GeometryCollection(geometries) => geometries
-            .iter()
-            .try_for_each(validate_geojson_value::<INCLUDE_Z>),
-        Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) | Shape::Empty(..) => Ok(()),
+        Shape::GeometryCollection(geometries) => {
+            if !owners.first_collection(geometries.as_slice(), geometries.members_are_shared()) {
+                return Ok(());
+            }
+            for geometry in geometries {
+                validate_geojson_structure(geometry, owners)?;
+            }
+            Ok(())
+        },
+        Shape::Point(_) | Shape::LineString(_) | Shape::Polygon(_) => Ok(()),
     }
 }
 /// The serialization-only view of `shape` normalized for RFC 7946 output.
@@ -170,12 +190,13 @@ fn geojson_domain_violation(x: f64, y: f64) -> Option<(&'static str, f64)> {
 /// `[-180, 180]` and are cut) — so the writer fails loudly rather than
 /// emitting non-conforming output.
 fn validate_geojson_domain(shape: &Shape) -> Result<()> {
-    let mut violation = None;
-    shape.for_each_point(|point| {
-        if violation.is_none() {
-            violation = geojson_domain_violation(point.x, point.y);
-        }
-    });
+    let violation = match shape.try_for_each_first_xy_point_run(|point| {
+        geojson_domain_violation(point.x, point.y)
+            .map_or(ControlFlow::Continue(()), ControlFlow::Break)
+    }) {
+        ControlFlow::Continue(()) => None,
+        ControlFlow::Break(value) => Some(value),
+    };
     if let Some((label, value)) = violation {
         return Err(GeometryErrorKind::message(format!(
             "GeoJSON {label} {value} is outside the WGS84 domain (longitude \

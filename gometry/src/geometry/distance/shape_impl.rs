@@ -6,8 +6,8 @@ use crate::geometry::distance::{
     geodesic_directed_hausdorff_distance, geodesic_scratch, min_parts_to_parts, squared_space_safe,
 };
 use crate::geometry::{
-    DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework, Shape, ShapeCountQuery,
-    distance, finish_planar_squared_min, nearest_points,
+    Coordinates as _, DistanceParts, GeodesicMetric, GeodesicParts, Point, PreparedLinework,
+    RunIdentity, Shape, distance, finish_planar_squared_min, nearest_points,
 };
 impl Shape {
     /// Build this shape's [`DistanceParts`] (vertices, packed linework,
@@ -29,26 +29,32 @@ impl Shape {
     /// validation happens before any allocation is cached by `ShapeData`.
     pub(crate) fn geodesic_parts(&self, metric: &impl GeodesicMetric) -> Result<GeodesicParts> {
         ensure_geodesic_linework(self, metric)?;
-        let mut points = self.points_vec()?;
+        let mut points = Vec::new();
+        if let Some(capacity) = self.point_set_capacity_hint(RunIdentity::Full) {
+            let _reservation = points.try_reserve(capacity);
+        }
+        self.for_each_first_point_run(|point| points.push(point));
         let mut point_only = Vec::new();
         collect_point_only_into(self, &mut point_only);
-        let segment_count = ShapeCountQuery::default().segments(self).ok();
+        let segment_count = self.segment_count_capacity_hint(RunIdentity::Full);
         let mut segments = Vec::new();
         if let Some(segment_count) = segment_count {
             let _reservation = segments.try_reserve(segment_count);
         }
         let mut caps_accum = GeodesicSweepCapsAccum::new(segment_count);
-        self.try_for_each_vertex_pair(|start, end| {
-            let segment = metric.make_segment(start, end)?;
-            if segment.length == 0.0 {
-                if points.last().is_some_and(|point| *point == end) {
-                    points.pop();
+        self.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
+            for [start, end] in chain.segment_pairs() {
+                let segment = metric.make_segment(start, end)?;
+                if segment.length == 0.0 {
+                    if points.last().is_some_and(|point| *point == end) {
+                        points.pop();
+                    }
+                    point_only.push(start);
+                    continue;
                 }
-                point_only.push(start);
-                return Ok::<_, crate::error::Error>(());
+                caps_accum.push_segment(&segment, metric);
+                segments.push(segment);
             }
-            caps_accum.push_segment(&segment, metric);
-            segments.push(segment);
             Ok::<_, crate::error::Error>(())
         })?;
         let caps = caps_accum.finish(&point_only, metric);

@@ -11,6 +11,7 @@
 //! `z0` world tile). Zoom caps at 29 — the deliberate pre-v1 limit the
 //! packed id affords.
 use std::f64::consts::PI;
+use std::ops::ControlFlow;
 
 use crate::boundary::geographic::normalized_geographic_pole;
 use crate::curves::{morton_deinterleave, morton_interleave};
@@ -41,15 +42,16 @@ pub(crate) fn latitude_in_tile_domain(lat: f64) -> bool {
 /// Returns the first latitude outside the square tile grid, or `Ok(())` when
 /// every vertex is in the grid (or the shape has no vertices).
 pub(crate) fn ensure_cover_shape_in_tile_domain(shape: &Shape) -> Result<(), f64> {
-    let mut bad = None;
-    shape.for_each_point(|point: Point| {
-        if bad.is_none()
-            && !latitude_in_tile_domain(point.y)
-            && normalized_geographic_pole(point.y).is_none()
-        {
-            bad = Some(point.y);
+    let bad = match shape.try_for_each_first_xy_point_run(|point: Point| {
+        if !latitude_in_tile_domain(point.y) && normalized_geographic_pole(point.y).is_none() {
+            ControlFlow::Break(point.y)
+        } else {
+            ControlFlow::Continue(())
         }
-    });
+    }) {
+        ControlFlow::Continue(()) => None,
+        ControlFlow::Break(latitude) => Some(latitude),
+    };
     bad.map_or(Ok(()), Err)
 }
 
@@ -365,6 +367,24 @@ impl RectCell for Tile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tile_cover_domain_keeps_first_bad_latitude_and_the_pole_exception() {
+        let shape = Shape::geometry_collection(vec![
+            Shape::Point(Point::new_raw_xy(0.0, 86.0)),
+            Shape::Point(Point::new_raw_xy(0.0, 89.0)),
+        ])
+        .unwrap();
+        let Err(latitude) = ensure_cover_shape_in_tile_domain(&shape) else {
+            panic!("the first latitude is outside the tile domain");
+        };
+        assert_eq!(latitude, 86.0);
+
+        for latitude in [90.0, 90.0 + 0.5e-12] {
+            let pole = Shape::Point(Point::new_raw_xy(0.0, latitude));
+            assert_eq!(ensure_cover_shape_in_tile_domain(&pole), Ok(()));
+        }
+    }
 
     #[test]
     fn push_children_bounds_match_child_bounds_bit_exact() {

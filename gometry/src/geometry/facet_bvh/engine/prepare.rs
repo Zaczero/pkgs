@@ -6,8 +6,8 @@ use crate::geometry::facet_bvh::{
     simd_point_facet_distance_squared,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, Point, Segment, Shape, XY, point_on_segment, point_segment_distance,
-    point_segment_distance_squared, segments_intersect, xy_bounds_columns,
+    Bounds, CoordSeq, Point, RunIdentity, Segment, Shape, XY, point_on_segment,
+    point_segment_distance, point_segment_distance_squared, segments_intersect, xy_bounds_columns,
 };
 
 /// One run of up to [`FACET_SEGMENTS`] consecutive segments inside a single
@@ -108,7 +108,7 @@ impl PreparedLinework {
         let mut uniform_ordinates = true;
         let mut global_vertices = 0_usize;
         let mut global_segments = 0_usize;
-        shape.try_for_each_segment_chain(|chain| {
+        shape.try_for_each_first_segment_chain(RunIdentity::Full, |chain| {
             let vertices = chain.len();
             if vertices < 2 {
                 return Ok::<(), crate::error::Error>(());

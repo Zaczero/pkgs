@@ -58,6 +58,12 @@ impl Clone for MColumn {
 }
 
 impl MColumn {
+    fn is_shared(&self) -> bool {
+        match self {
+            Self::Shared(owner) | Self::Local { owner, .. } => owner.is_shared(),
+        }
+    }
+
     fn owner(&self) -> SharedSlice<f64> {
         match self {
             Self::Shared(owner) | Self::Local { owner, .. } => owner.clone(),
@@ -186,6 +192,28 @@ impl CoordWindow {
     }
 }
 
+/// Address-only identity for one visible XY window.
+///
+/// The owning CoordSeq borrow keeps both immutable Arc-backed columns alive;
+/// including the visible starts distinguishes views into one backing owner.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct VisibleXYKey {
+    x: usize,
+    y: usize,
+    len: usize,
+}
+
+/// Address-only identity for one visible coordinate run with all active axes.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct VisiblePointRunKey {
+    x: usize,
+    y: usize,
+    z: usize,
+    m: usize,
+    axes: u8,
+    len: usize,
+}
+
 /// Struct-of-arrays coordinate storage: parallel ordinate columns in place of a
 /// `Vec<Point>` (40 B/vertex, every vertex carrying inactive Z/M sentinels).
 ///
@@ -258,6 +286,53 @@ impl crate::HeapSize for CoordSeq {
 }
 
 impl CoordSeq {
+    /// Identity of a visible XY window when its backing columns are shared.
+    /// Empty runs have no point payload and need no owner key.
+    pub(crate) fn shared_xy_key(&self) -> Option<VisibleXYKey> {
+        if self.is_empty() || !(self.xs.is_shared() || self.ys.is_shared()) {
+            return None;
+        }
+        Some(VisibleXYKey {
+            x: self.xs().as_ptr().addr(),
+            y: self.ys().as_ptr().addr(),
+            len: self.len(),
+        })
+    }
+
+    pub(crate) fn shared_z_key(&self) -> Option<(usize, usize)> {
+        let owner = self.zs.as_ref()?;
+        let values = self.zs()?;
+        (owner.is_shared() && !values.is_empty()).then(|| (values.as_ptr().addr(), values.len()))
+    }
+
+    pub(crate) fn shared_m_key(&self) -> Option<(usize, usize)> {
+        let owner = self.ms.as_ref()?;
+        let values = self.ms()?;
+        (owner.is_shared() && !values.is_empty()).then(|| (values.as_ptr().addr(), values.len()))
+    }
+
+    /// Identity of a visible full-ordinate window when any active column is
+    /// shared. The M address comes from the visible slice so local offsets are
+    /// part of the key.
+    pub(crate) fn shared_point_run_key(&self) -> Option<VisiblePointRunKey> {
+        if self.is_empty()
+            || !(self.xs.is_shared()
+                || self.ys.is_shared()
+                || self.zs.as_ref().is_some_and(SharedSlice::is_shared)
+                || self.ms.as_ref().is_some_and(MColumn::is_shared))
+        {
+            return None;
+        }
+        Some(VisiblePointRunKey {
+            x: self.xs().as_ptr().addr(),
+            y: self.ys().as_ptr().addr(),
+            z: self.zs().map_or(0, |values| values.as_ptr().addr()),
+            m: self.ms().map_or(0, |values| values.as_ptr().addr()),
+            axes: self.axes().bits(),
+            len: self.len(),
+        })
+    }
+
     pub(crate) fn heap_bytes_saturating(&self) -> usize {
         self.xs
             .shallow_heap_bytes()

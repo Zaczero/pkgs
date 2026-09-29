@@ -132,8 +132,18 @@ impl LocalExtent {
         source_crs: &str,
         state: &RuntimeState,
     ) -> Result<Option<Self>> {
+        let mut sources = Vec::with_capacity(shapes.len());
+        for &shape in shapes {
+            if matches!(shape, Shape::GeometryCollection(_)) && shape.has_repeated_shared_owner() {
+                sources.push(Cow::Owned(shape.distinct_point_cloud()?));
+            } else {
+                sources.push(Cow::Borrowed(shape));
+            }
+        }
         let mut counts = ShapeCountQuery::default();
-        let coordinate_count = counts.coordinates_for_shapes(shapes.iter().copied())?;
+        let coordinate_count =
+            counts.coordinates_for_shapes(sources.iter().map(|shape| shape.as_ref()))?;
+        drop(counts);
         let capacity = if coordinate_count == 0 {
             0
         } else {
@@ -143,7 +153,8 @@ impl LocalExtent {
         };
         let capacity = admit_shape_vector_capacity::<(f64, f64)>(capacity)?;
         let mut points = Vec::with_capacity(capacity);
-        for &shape in shapes {
+        for shape in &sources {
+            let shape = shape.as_ref();
             let lonlat: Cow<'_, Shape> = if is_wgs84_lonlat(source_crs) {
                 Cow::Borrowed(shape)
             } else {
@@ -153,6 +164,7 @@ impl LocalExtent {
                 points.push((normalize_longitude(point.x), point.y));
             });
         }
+
         if points.is_empty() {
             return Ok(None);
         }
