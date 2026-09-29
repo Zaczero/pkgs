@@ -6,10 +6,6 @@ use crate::geometry::tessellation::{CertifiedDelaunay, EMPTY, Site, exact};
 /// The sites that survive snapping at `radius`: a site within the radius of
 /// an earlier survivor joins it, any other site survives. The sites arrive
 /// sorted by x, so the active survivors are x-windowed and indexed by y.
-#[expect(
-    clippy::indexing_slicing,
-    reason = "active and candidate ordinals come from this site's enumeration"
-)]
 pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
     let ordered = |value: f64| {
         let bits = value.to_bits();
@@ -31,13 +27,29 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
         let min_y = ordered(y_bounds.sub(radius_bounds).lo);
         let max_y = ordered(y_bounds.add(radius_bounds).hi);
         while let Some(&oldest) = active.front() {
-            if ordered(sites[oldest].point.x) >= min_x {
+            if ordered(
+                sites
+                    .get(oldest)
+                    .expect("active ordinals come from the source site enumeration")
+                    .point
+                    .x,
+            ) >= min_x
+            {
                 break;
             }
             let expired = active
                 .pop_front()
                 .expect("the observed front remains present");
-            let removed = y_index.remove(&(ordered(sites[expired].point.y), expired));
+            let removed = y_index.remove(&(
+                ordered(
+                    sites
+                        .get(expired)
+                        .expect("expired ordinals come from the active site queue")
+                        .point
+                        .y,
+                ),
+                expired,
+            ));
             debug_assert!(removed);
         }
 
@@ -53,7 +65,15 @@ pub(super) fn snap_sites(sites: &[Site], radius: f64) -> Result<Vec<Site>> {
         candidates.sort_unstable();
         let mut snapped = false;
         for &candidate in &candidates {
-            if exact::distance_within(sites[candidate].point.xy(), point, radius)? {
+            if exact::distance_within(
+                sites
+                    .get(candidate)
+                    .expect("candidate ordinals come from the source site enumeration")
+                    .point
+                    .xy(),
+                point,
+                radius,
+            )? {
                 snapped = true;
                 break;
             }
@@ -81,20 +101,35 @@ pub(super) struct DelaunayComplex {
 
 impl DelaunayComplex {
     pub(super) fn component_of_face(&self, face: usize) -> usize {
-        self.face_component[face]
+        *self
+            .face_component
+            .get(face)
+            .expect("face ordinal comes from the certified Delaunay mesh")
     }
 
     pub(super) fn center(&self, component: usize) -> &exact::ExactPoint {
-        &self.centers[component]
+        self.centers
+            .get(component)
+            .expect("component ordinal comes from the Delaunay complex")
     }
 }
 
-const fn complex_root(parents: &mut [usize], mut node: usize) -> usize {
-    while parents[node] != node {
-        parents[node] = parents[parents[node]];
-        node = parents[node];
+fn complex_root(parents: &mut [usize], mut node: usize) -> usize {
+    loop {
+        let parent = *parents
+            .get(node)
+            .expect("union-find node comes from the certified mesh");
+        if parent == node {
+            return node;
+        }
+        let grandparent = *parents
+            .get(parent)
+            .expect("union-find parent comes from the parent column");
+        *parents
+            .get_mut(node)
+            .expect("union-find node comes from the certified mesh") = grandparent;
+        node = grandparent;
     }
-    node
 }
 
 /// Collapse every exact-cocircular connected face fan in the certified mesh.
@@ -119,7 +154,9 @@ pub(super) fn delaunay_complex(
             let right = complex_root(&mut parents, right);
             if left != right {
                 let (keep, merge) = (left.min(right), left.max(right));
-                parents[merge] = keep;
+                *parents
+                    .get_mut(merge)
+                    .expect("merged root comes from the parent column") = keep;
                 // Distinct roots prove the remaining count cannot wrap here.
                 remaining_roots = remaining_roots.wrapping_sub(1);
             }
@@ -135,12 +172,27 @@ pub(super) fn delaunay_complex(
     let mut centers = Vec::with_capacity(remaining_roots);
     for (face, &[a, b, c]) in triangles.iter().enumerate() {
         let root = complex_root(&mut parents, face);
-        if component_of_root[root] == usize::MAX {
-            component_of_root[root] = centers.len();
+        let component = component_of_root
+            .get_mut(root)
+            .expect("face root comes from the Delaunay parent column");
+        if *component == usize::MAX {
+            *component = centers.len();
             centers.push(exact::circumcenter(
-                sites[a].point.xy(),
-                sites[b].point.xy(),
-                sites[c].point.xy(),
+                sites
+                    .get(a)
+                    .expect("triangle site comes from the canonical site set")
+                    .point
+                    .xy(),
+                sites
+                    .get(b)
+                    .expect("triangle site comes from the canonical site set")
+                    .point
+                    .xy(),
+                sites
+                    .get(c)
+                    .expect("triangle site comes from the canonical site set")
+                    .point
+                    .xy(),
             )?);
         }
     }
@@ -149,10 +201,15 @@ pub(super) fn delaunay_complex(
     // parent points directly at a root, replacing it with the component id
     // cannot change a later root lookup.
     for face in 0..triangles.len() {
-        parents[face] = complex_root(&mut parents, face);
+        let root = complex_root(&mut parents, face);
+        *parents
+            .get_mut(face)
+            .expect("face ordinal comes from the triangle iterator") = root;
     }
-    for face in 0..triangles.len() {
-        parents[face] = component_of_root[parents[face]];
+    for parent in &mut parents {
+        *parent = *component_of_root
+            .get(*parent)
+            .expect("face root comes from the Delaunay parent column");
     }
     Ok(DelaunayComplex {
         face_component: parents,

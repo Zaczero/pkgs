@@ -100,7 +100,9 @@ pub(in crate::geometry) fn lattice_integers<const N: usize>(values: [f64; N]) ->
     const LIMIT_BITS: u32 = 21;
     let mut mantissas = [0_i64; N];
     let mut exponents = [i32::MAX; N];
-    for (index, &value) in values.iter().enumerate() {
+    for ((mantissa_slot, exponent_slot), value) in
+        mantissas.iter_mut().zip(&mut exponents).zip(values)
+    {
         if !value.is_finite() {
             return None;
         }
@@ -113,30 +115,31 @@ pub(in crate::geometry) fn lattice_integers<const N: usize>(values: [f64; N]) ->
         let (mut mantissa, mut exponent) = if biased == 0 {
             (fraction, -1074)
         } else {
-            (fraction | (1_u64 << 52), biased - 1075)
+            (fraction | (1_u64 << 52), biased.wrapping_sub(1075))
         };
         let trailing = mantissa.trailing_zeros();
-        mantissa >>= trailing;
-        exponent += trailing as i32;
-        mantissas[index] = if value < 0.0 {
-            -(mantissa as i64)
+        mantissa = mantissa.wrapping_shr(trailing);
+        exponent = exponent.wrapping_add(trailing as i32);
+        *mantissa_slot = if value < 0.0 {
+            (mantissa as i64).wrapping_neg()
         } else {
             mantissa as i64
         };
-        exponents[index] = exponent;
+        *exponent_slot = exponent;
     }
     let common = exponents.iter().copied().min().unwrap_or(i32::MAX);
     let mut scaled = [0_i128; N];
-    for index in 0..N {
-        if mantissas[index] == 0 {
+    for ((&mantissa, &exponent), scaled_value) in mantissas.iter().zip(&exponents).zip(&mut scaled)
+    {
+        if mantissa == 0 {
             continue;
         }
-        let shift = exponents[index] - common;
-        let bits = 64 - mantissas[index].unsigned_abs().leading_zeros();
-        if shift < 0 || shift as u32 + bits > LIMIT_BITS {
+        let shift = exponent.wrapping_sub(common);
+        let bits = 64_u32.wrapping_sub(mantissa.unsigned_abs().leading_zeros());
+        if shift < 0 || (shift as u32).wrapping_add(bits) > LIMIT_BITS {
             return None;
         }
-        scaled[index] = i128::from(mantissas[index]) << shift;
+        *scaled_value = i128::from(mantissa) << shift;
     }
     Some(scaled)
 }
@@ -151,22 +154,31 @@ pub(in crate::geometry) fn sign_of_i128(value: i128) -> ExactSign {
 
 pub(in crate::geometry) fn orient2d_lattice(a: XY, b: XY, c: XY) -> Option<ExactSign> {
     let [ax, ay, bx, by, cx, cy] = lattice_integers([a.x, a.y, b.x, b.y, c.x, c.y])?;
-    Some(sign_of_i128((bx - ax) * (cy - ay) - (by - ay) * (cx - ax)))
+    Some(sign_of_i128(
+        bx.wrapping_sub(ax)
+            .wrapping_mul(cy.wrapping_sub(ay))
+            .wrapping_sub(by.wrapping_sub(ay).wrapping_mul(cx.wrapping_sub(ax))),
+    ))
 }
 
 pub(in crate::geometry) fn incircle_lattice(a: XY, b: XY, c: XY, d: XY) -> Option<ExactSign> {
     let [ax, ay, bx, by, cx, cy, dx, dy] =
         lattice_integers([a.x, a.y, b.x, b.y, c.x, c.y, d.x, d.y])?;
-    let (adx, ady) = (ax - dx, ay - dy);
-    let (bdx, bdy) = (bx - dx, by - dy);
-    let (cdx, cdy) = (cx - dx, cy - dy);
-    let alift = adx * adx + ady * ady;
-    let blift = bdx * bdx + bdy * bdy;
-    let clift = cdx * cdx + cdy * cdy;
-    let bcdet = bdx * cdy - cdx * bdy;
-    let cadet = cdx * ady - adx * cdy;
-    let abdet = adx * bdy - bdx * ady;
-    Some(sign_of_i128(alift * bcdet + blift * cadet + clift * abdet))
+    let (adx, ady) = (ax.wrapping_sub(dx), ay.wrapping_sub(dy));
+    let (bdx, bdy) = (bx.wrapping_sub(dx), by.wrapping_sub(dy));
+    let (cdx, cdy) = (cx.wrapping_sub(dx), cy.wrapping_sub(dy));
+    let alift = adx.wrapping_mul(adx).wrapping_add(ady.wrapping_mul(ady));
+    let blift = bdx.wrapping_mul(bdx).wrapping_add(bdy.wrapping_mul(bdy));
+    let clift = cdx.wrapping_mul(cdx).wrapping_add(cdy.wrapping_mul(cdy));
+    let bcdet = bdx.wrapping_mul(cdy).wrapping_sub(cdx.wrapping_mul(bdy));
+    let cadet = cdx.wrapping_mul(ady).wrapping_sub(adx.wrapping_mul(cdy));
+    let abdet = adx.wrapping_mul(bdy).wrapping_sub(bdx.wrapping_mul(ady));
+    Some(sign_of_i128(
+        alift
+            .wrapping_mul(bcdet)
+            .wrapping_add(blift.wrapping_mul(cadet))
+            .wrapping_add(clift.wrapping_mul(abdet)),
+    ))
 }
 
 pub(in crate::geometry) fn orient2d(a: XY, b: XY, c: XY) -> ExactSign {

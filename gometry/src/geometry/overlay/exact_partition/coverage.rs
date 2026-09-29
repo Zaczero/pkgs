@@ -127,10 +127,6 @@ impl ScaledLengthSum {
     }
 }
 
-#[expect(
-    clippy::indexing_slicing,
-    reason = "callers provide row IDs from the parallel border-rank column"
-)]
 fn longest_border_owner(
     rows: impl IntoIterator<Item = usize>,
     overflowed_ranks: &[ScaledLength],
@@ -139,7 +135,9 @@ fn longest_border_owner(
 ) -> Option<usize> {
     let mut best: Option<(usize, ScaledLength)> = None;
     for row in rows {
-        let rank = overflowed_ranks[row];
+        let rank = *overflowed_ranks
+            .get(row)
+            .expect("row ordinal comes from the parallel border-rank column");
         if !include_zero && !rank.is_positive() {
             continue;
         }
@@ -196,6 +194,29 @@ fn scaled_point_distance(start: XY, end: XY) -> ScaledLength {
         scale_by_power_of_two(dy, dy_base_exponent.wrapping_sub(common_exponent))
     });
     ScaledLength::from_scaled(dx.hypot(dy), common_exponent)
+}
+
+fn coverage_edge_owners(
+    slot: usize,
+    twin: usize,
+    topology: &IndexedTopology,
+    global: &GlobalFaces,
+    face_owners: &[u32],
+) -> (u32, u32) {
+    let owner = |edge| {
+        let walk_face = *topology
+            .face_of
+            .get(edge)
+            .expect("half-edge ordinal comes from the exact topology");
+        let global_face = *global
+            .walk_faces
+            .get(walk_face as usize)
+            .expect("walk face comes from the global face map");
+        *face_owners
+            .get(global_face as usize)
+            .expect("global face comes from the coverage owner column")
+    };
+    (owner(slot), owner(twin))
 }
 
 // Return a framed difference and base exponent, representing the coordinate
@@ -266,10 +287,6 @@ impl ExactSourceInventory {
         Ok(())
     }
 
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "the admitted face CSR and partition spans own these indices"
-    )]
     fn overflowed_border_ranks(
         &self,
         partition: &ExactPartition<'_>,
@@ -281,17 +298,31 @@ impl ExactSourceInventory {
         seen_rows: &mut Vec<u32>,
     ) -> Result<Vec<ScaledLength>> {
         let mut lengths = vec![ScaledLengthSum::default(); row_count];
-        let start = face_starts[face] as usize;
-        let end = face_starts[face.wrapping_add(1)] as usize;
-        for &slot in &face_slots[start..end] {
-            let span = edges[slot as usize] as usize;
-            let atomic = partition.spans[span];
+        let (&start, &end) = face_starts
+            .get(face)
+            .zip(face_starts.get(face.wrapping_add(1)))
+            .expect("global face ordinal comes from the face CSR");
+        let slots = face_slots
+            .get(start as usize..end as usize)
+            .expect("face offsets delimit the admitted face CSR");
+        for &slot in slots {
+            let span = *edges
+                .get(slot as usize)
+                .expect("face slot comes from the global edge list")
+                as usize;
+            let atomic = *partition
+                .spans
+                .get(span)
+                .expect("global edge comes from the exact partition");
             let length = scaled_point_distance(
                 partition.node_xy(atomic.start),
                 partition.node_xy(atomic.end),
             );
             self.for_each_span_row(partition, span, seen_rows, |row| {
-                lengths[row].add(length);
+                lengths
+                    .get_mut(row)
+                    .expect("span row comes from the coverage operand inventory")
+                    .add(length);
                 Ok(())
             })?;
         }
@@ -390,18 +421,17 @@ impl ExactSourceInventory {
                 } else {
                     (0.0, 0.0, false)
                 };
-                #[expect(
-                    clippy::indexing_slicing,
-                    reason = "candidate rows are admitted and border_lengths is row_count-sized"
-                )]
                 let border_overflowed = if !needs_stats {
                     false
                 } else if candidates.is_empty() {
                     any_border_overflowed
                 } else {
-                    candidates
-                        .iter()
-                        .any(|&row| border_lengths[row].is_infinite())
+                    candidates.iter().any(|&row| {
+                        border_lengths
+                            .get(row)
+                            .expect("candidate row comes from the coverage operand inventory")
+                            .is_infinite()
+                    })
                 };
                 let owner = match candidates.as_slice() {
                     [] if gap_width > 0.0
@@ -425,9 +455,11 @@ impl ExactSourceInventory {
                                 false,
                             )
                         } else {
-                            (0..row_count)
-                                .filter_map(|row| {
-                                    let border = border_lengths[row];
+                            border_lengths
+                                .iter()
+                                .copied()
+                                .enumerate()
+                                .filter_map(|(row, border)| {
                                     (border > 0.0).then_some((row, border))
                                 })
                                 // The ascending scan and ordinary `max_by` tie
@@ -440,16 +472,36 @@ impl ExactSourceInventory {
                     [] => None,
                     [only] => Some(*only),
                     _ => Some(match overlaps {
-                        CoverageOverlapRule::MinIndex => candidates[0],
+                        CoverageOverlapRule::MinIndex => *candidates
+                            .first()
+                            .expect("the multiple-candidate branch is non-empty"),
                         CoverageOverlapRule::MaxArea => candidates
                             .iter()
                             .copied()
-                            .max_by(|left, right| row_areas[*left].total_cmp(&row_areas[*right]))
+                            .max_by(|left, right| {
+                                row_areas
+                                    .get(*left)
+                                    .expect("candidate row comes from the coverage operand inventory")
+                                    .total_cmp(
+                                        row_areas
+                                            .get(*right)
+                                            .expect("candidate row comes from the coverage operand inventory"),
+                                    )
+                            })
                             .expect("non-empty face candidates"),
                         CoverageOverlapRule::MinArea => candidates
                             .iter()
                             .copied()
-                            .min_by(|left, right| row_areas[*left].total_cmp(&row_areas[*right]))
+                            .min_by(|left, right| {
+                                row_areas
+                                    .get(*left)
+                                    .expect("candidate row comes from the coverage operand inventory")
+                                    .total_cmp(
+                                        row_areas
+                                            .get(*right)
+                                            .expect("candidate row comes from the coverage operand inventory"),
+                                    )
+                            })
                             .expect("non-empty face candidates"),
                         CoverageOverlapRule::LongestBorder => {
                             if border_overflowed {
@@ -473,7 +525,14 @@ impl ExactSourceInventory {
                                 candidates
                                     .iter()
                                     .copied()
-                                    .map(|row| (row, border_lengths[row]))
+                                    .map(|row| {
+                                        (
+                                            row,
+                                            *border_lengths.get(row).expect(
+                                                "candidate row comes from the coverage operand inventory",
+                                            ),
+                                        )
+                                    })
                                     // Reversed row comparison retains the historical
                                     // lowest row on equal overlap borders.
                                     .max_by(|left, right| {
@@ -486,8 +545,11 @@ impl ExactSourceInventory {
                     }),
                 };
                 if let Some(owner) = owner {
-                    face_owners[face as usize] =
-                        u32::try_from(owner).map_err(|_| ResourceError::SizeOverflow)?;
+                    *face_owners.get_mut(face_index).ok_or_else(|| {
+                        GeometryErrorKind::Invalid(
+                            "exact coverage winding visited an unknown global face".into(),
+                        )
+                    })? = u32::try_from(owner).map_err(|_| ResourceError::SizeOverflow)?;
                 }
                 Ok(())
             },
@@ -569,7 +631,7 @@ impl ExactSourceInventory {
             )
             .into());
         }
-        for &owner in &face_owners[1..] {
+        for &owner in face_owners.iter().skip(1) {
             if owner != u32::MAX && owner as usize >= row_count {
                 return Err(GeometryErrorKind::Invalid(
                     "exact coverage face owner is out of range".into(),
@@ -579,12 +641,15 @@ impl ExactSourceInventory {
         }
         let mut boundary_spans = 0_usize;
         for (slot, _) in edges.iter().enumerate() {
-            let twin = topology.twins[slot] as usize;
+            let twin = *topology
+                .twins
+                .get(slot)
+                .expect("edge ordinal comes from the exact topology")
+                as usize;
             if slot > twin {
                 continue;
             }
-            let left = face_owners[global.walk_faces[topology.face_of[slot] as usize] as usize];
-            let right = face_owners[global.walk_faces[topology.face_of[twin] as usize] as usize];
+            let (left, right) = coverage_edge_owners(slot, twin, topology, global, face_owners);
             if left != right && (left != u32::MAX || right != u32::MAX) {
                 boundary_spans = boundary_spans
                     .checked_add(1)
@@ -597,16 +662,22 @@ impl ExactSourceInventory {
             .ok_or(ResourceError::SizeOverflow)?;
         output_nodes.reserve(node_capacity);
         for (slot, &edge) in edges.iter().enumerate() {
-            let twin = topology.twins[slot] as usize;
+            let twin = *topology
+                .twins
+                .get(slot)
+                .expect("edge ordinal comes from the exact topology")
+                as usize;
             if slot > twin {
                 continue;
             }
-            let left = face_owners[global.walk_faces[topology.face_of[slot] as usize] as usize];
-            let right = face_owners[global.walk_faces[topology.face_of[twin] as usize] as usize];
+            let (left, right) = coverage_edge_owners(slot, twin, topology, global, face_owners);
             if left == right || (left == u32::MAX && right == u32::MAX) {
                 continue;
             }
-            let span = partition.spans[edge as usize];
+            let span = partition
+                .spans
+                .get(edge as usize)
+                .expect("global edge comes from the exact partition");
             output_nodes.push(span.start);
             output_nodes.push(span.end);
         }
@@ -628,25 +699,46 @@ impl ExactSourceInventory {
         measure_area: bool,
     ) -> Result<(f64, f64, bool)> {
         border_lengths.fill(0.0);
-        let start = face_starts[face] as usize;
-        let end = face_starts[face + 1] as usize;
+        let (&start, &end) = face_starts
+            .get(face)
+            .zip(face_starts.get(face.wrapping_add(1)))
+            .expect("global face ordinal comes from the face CSR");
+        let slots = face_slots
+            .get(start as usize..end as usize)
+            .expect("face offsets delimit the admitted face CSR");
         let mut area = measure_area.then(ExactRationalArea::new);
         let mut perimeter = 0.0;
         // Perimeter remains in distance space; only border ranking needs an
         // extended exponent when its binary64 sum overflows.
         let mut border_overflowed = false;
-        for &slot in &face_slots[start..end] {
+        for &slot in slots {
             let slot = slot as usize;
-            let span_index = edges[slot] as usize;
-            let span = partition.spans[span_index];
+            let span_index = *edges
+                .get(slot)
+                .expect("face slot comes from the global edge list")
+                as usize;
+            let span = *partition
+                .spans
+                .get(span_index)
+                .expect("global edge comes from the exact partition");
             let start_xy = partition.node_xy(span.start);
             let end_xy = partition.node_xy(span.end);
             let length = point_distance(start_xy, end_xy);
             perimeter += length;
             if let Some(area) = &mut area {
                 area.add_homogeneous_cross(
-                    &*partition.exact(NodeId(topology.owners[slot]))?,
-                    &*partition.exact(NodeId(topology.targets[slot]))?,
+                    &*partition.exact(NodeId(
+                        *topology
+                            .owners
+                            .get(slot)
+                            .expect("face slot comes from the exact topology"),
+                    ))?,
+                    &*partition.exact(NodeId(
+                        *topology
+                            .targets
+                            .get(slot)
+                            .expect("face slot comes from the exact topology"),
+                    ))?,
                 )?;
             }
             self.for_each_span_row(partition, span_index, seen_rows, |operand| {
