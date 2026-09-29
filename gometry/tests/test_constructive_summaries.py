@@ -231,17 +231,63 @@ def test_concave_hull_contract_invariants_and_parameters() -> None:
     points = gm.MultiPoint(coords)
     convex = points.convex_hull()
     permissive = points.concave_hull(concavity=0.0)
-    tight = points.concave_hull(concavity=0.75)
-    loose = points.concave_hull(concavity=3.0)
     thresholded = points.concave_hull(concavity=0.75, length_threshold=5.0)
-    for hull in (permissive, tight, loose, thresholded):
+    for hull in (permissive, thresholded):
         assert hull.is_valid
         assert all((gm.covers(hull, gm.Point(x, y)) for x, y in coords))
-    assert permissive.area <= tight.area + 1e-09
-    assert tight.area <= loose.area + 1e-09
-    assert loose.area <= convex.area + 1e-09
-    assert thresholded.area >= tight.area - 1e-09
+        assert hull.area <= convex.area + 1e-09
     assert gm.equals_exact(thresholded, convex)
+
+
+def test_concave_hull_larger_length_threshold_contains_previous_hull() -> None:
+    sites = [
+        (16.34, 28.58),
+        (29.7, 85.74),
+        (30.12, 52.31),
+        (48.05, 46.18),
+        (48.46, 36.23),
+        (50.07, 79.63),
+        (59.0, 65.59),
+        (63.85, 46.2),
+        (65.39, 94.34),
+        (88.05, 51.6),
+        (89.45, 78.21),
+        (93.66, 10.48),
+        (94.44, 21.21),
+    ]
+    clouds = [('13-site cloud', sites)]
+    for seed in (7, 29, 2025):
+        cloud = np.random.default_rng(seed).uniform(-50.0, 50.0, size=(40, 2))
+        clouds.append((f'fixed-seed cloud {seed}', cloud.tolist()))
+
+    thresholds = (0.0, 2.0, 5.0, 10.0, 25.0, 1_000.0)
+    found_distinct_hulls = False
+    for name, coords in clouds:
+        points = gm.MultiPoint(coords)
+        hulls = [
+            points.concave_hull(concavity=0.0, length_threshold=threshold)
+            for threshold in thresholds
+        ]
+        for lower_threshold, upper_threshold, smaller, larger in zip(
+            thresholds[:-1],
+            thresholds[1:],
+            hulls[:-1],
+            hulls[1:],
+            strict=True,
+        ):
+            assert gm.covers(larger, smaller), (
+                f'{name}: threshold {upper_threshold} did not contain '
+                f'threshold {lower_threshold}'
+            )
+            assert larger.area >= smaller.area, (
+                f'{name}: area decreased from threshold {lower_threshold} '
+                f'to {upper_threshold}'
+            )
+        found_distinct_hulls |= any(
+            not gm.equals(hulls[0], hull) for hull in hulls[1:]
+        )
+
+    assert found_distinct_hulls, 'threshold ladder never changed a hull'
 
 
 def test_concave_hull_is_permutation_invariant() -> None:

@@ -2853,13 +2853,17 @@ class Geometry:
         Parameters
         ----------
         concavity : float, default 2.0
-            Higher values are looser: fewer edges are peeled and area grows toward
-            the convex hull. ``0`` disables the distance guard.
+            Sets the peel distance guard: a candidate triangle's opposite vertex must
+            lie within ``edge_length / concavity`` of its boundary edge. ``0`` disables
+            this guard. Higher values typically keep more area, but the greedy peel
+            does not guarantee area monotonicity as ``concavity`` increases.
         length_threshold : float, default 0.0
-            Boundary edges at or below this length are kept, so higher values also
-            make the hull looser; interpreted for the CRS (see ``unit``). On a
-            geographic CRS the threshold is evaluated in a local projection, while the
-            output vertices are emitted from the original input coordinates.
+            Boundary edges at or below this length are kept. For fixed input and
+            ``concavity``, a larger threshold always gives a hull that contains the
+            smaller-threshold hull, so area never decreases. Interpreted for the CRS
+            (see ``unit``). On a geographic CRS the threshold is evaluated in a local
+            projection, while the output vertices are emitted from the original input
+            coordinates.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
             forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS
@@ -8722,15 +8726,19 @@ class GeometryArray(Sequence[_GeometryT_co]):
         Parameters
         ----------
         concavity : float or sequence of float, default 2.0
-            Higher values are looser: fewer edges are peeled and area grows toward
-            the convex hull. ``0`` disables the distance guard — a scalar applies
-            to every geometry, or pass one value per geometry.
-        length_threshold : float or sequence of float, default 0.0
-            Boundary edges at or below this length are kept, so higher values also
-            make the hull looser; interpreted for the CRS (see ``unit``). On a
-            geographic CRS the threshold is evaluated in a local projection, while the
-            output vertices are emitted from the original input coordinates — a scalar
+            Sets the peel distance guard: a candidate triangle's opposite vertex must
+            lie within ``edge_length / concavity`` of its boundary edge. ``0`` disables
+            this guard. Higher values typically keep more area, but the greedy peel
+            does not guarantee area monotonicity as ``concavity`` increases — a scalar
             applies to every geometry, or pass one value per geometry.
+        length_threshold : float or sequence of float, default 0.0
+            Boundary edges at or below this length are kept. For fixed input and
+            ``concavity``, a larger threshold always gives a hull that contains the
+            smaller-threshold hull, so area never decreases. Interpreted for the CRS
+            (see ``unit``). On a geographic CRS the threshold is evaluated in a local
+            projection, while the output vertices are emitted from the original input
+            coordinates — a scalar applies to every geometry, or pass one value per
+            geometry.
         unit : {'planar', 'meters'}, default None
             Omitted follows the CRS: geodesic meters on a geographic CRS, native units on a projected one, coordinate units without a CRS. ``planar``
             forces raw coordinate units (native angular units as Cartesian coordinates on a geographic CRS

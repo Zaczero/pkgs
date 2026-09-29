@@ -401,14 +401,12 @@ fn native_concave_hull_contract_invariants_and_reference_envelope() {
         super::shape_from_open_hull(&hull, empty_geometry).unwrap()
     };
     let native = shape_from_indices(native_concave_hull(&points, 1.0, 0.0).unwrap());
-    let native_lo = shape_from_indices(native_concave_hull(&points, 0.75, 0.0).unwrap());
-    let native_hi = shape_from_indices(native_concave_hull(&points, 3.0, 0.0).unwrap());
+    let native_baseline = shape_from_indices(native_concave_hull(&points, 0.75, 0.0).unwrap());
     let native_threshold = shape_from_indices(native_concave_hull(&points, 0.75, 5.0).unwrap());
 
     assert_covers_points(&native, &points);
     assert!(native.area() <= convex);
-    assert!(native_lo.area() <= native_hi.area());
-    assert!(native_threshold.area() >= native_lo.area());
+    assert!(native_threshold.area() >= native_baseline.area());
 }
 
 #[test]

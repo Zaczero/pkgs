@@ -369,9 +369,11 @@ print('center:', circle.centroid().to_wkt(), 'radius:', round(room.maximum_inscr
 
 ```
 
-`concave_hull`'s `concavity` controls how tightly the hull follows the points:
-larger values give a smoother, more convex result; smaller values hug the
-points more closely.
+`concavity` sets the greedy peel's distance guard: a candidate triangle's
+opposite vertex must lie within `edge_length / concavity` of its boundary edge
+(`0` disables the guard). Higher values typically keep more area, but the
+greedy peel does not guarantee area monotonicity in `concavity`. For fixed
+input and `concavity`, increasing `length_threshold` never shrinks the hull.
 
 ```python exec="on" source="block" result="text"
 import gometry as gm
