@@ -644,6 +644,10 @@ impl Coordinates for LineSeq {
         self.point_at(index)
     }
 
+    fn iter_coords(&self) -> impl DoubleEndedIterator<Item = Point> + '_ {
+        self.iter()
+    }
+
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {
         Some((self.xs(), self.ys()))
     }
@@ -1552,6 +1556,10 @@ impl Coordinates for MultiPoint {
 
     fn nth_coord(&self, index: usize) -> Point {
         self.point_at(index)
+    }
+
+    fn iter_coords(&self) -> impl DoubleEndedIterator<Item = Point> + '_ {
+        self.coords.iter()
     }
 
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {

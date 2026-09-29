@@ -266,11 +266,20 @@ fn write_geojson_to_impl<const INCLUDE_Z: bool>(out: &mut String, shape: &Shape)
 }
 
 fn write_geojson_position<const INCLUDE_Z: bool>(out: &mut String, point: Point) {
+    write_geojson_position_values::<INCLUDE_Z>(out, point.x, point.y, point.z());
+}
+
+fn write_geojson_position_values<const INCLUDE_Z: bool>(
+    out: &mut String,
+    x: f64,
+    y: f64,
+    z: Option<f64>,
+) {
     out.push('[');
-    write_geojson_number(out, point.x);
+    write_geojson_number(out, x);
     out.push(',');
-    write_geojson_number(out, point.y);
-    if INCLUDE_Z && let Some(z) = point.z() {
+    write_geojson_number(out, y);
+    if INCLUDE_Z && let Some(z) = z {
         out.push(',');
         write_geojson_number(out, z);
     }
@@ -282,11 +291,29 @@ fn write_geojson_positions<const INCLUDE_Z: bool, C: Coordinates + ?Sized>(
     points: &C,
 ) {
     out.push('[');
-    for (idx, point) in points.iter_coords().enumerate() {
-        if idx > 0 {
-            out.push(',');
+    if let Some((xs, ys)) = points.xy_columns() {
+        if INCLUDE_Z && let Some(zs) = points.z_column() {
+            for (idx, ((&x, &y), &z)) in xs.iter().zip(ys).zip(zs).enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                write_geojson_position_values::<true>(out, x, y, Some(z));
+            }
+        } else {
+            for (idx, (&x, &y)) in xs.iter().zip(ys).enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                write_geojson_position_values::<INCLUDE_Z>(out, x, y, None);
+            }
         }
-        write_geojson_position::<INCLUDE_Z>(out, point);
+    } else {
+        for (idx, point) in points.iter_coords().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            write_geojson_position::<INCLUDE_Z>(out, point);
+        }
     }
     out.push(']');
 }

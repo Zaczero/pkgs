@@ -155,10 +155,10 @@ impl<'a> IntoIterator for &'a Ring {
 /// Uniform read access over the coordinate-sequence representations.
 ///
 /// The geometry kernels run the same way on stored [`CoordSeq`]/[`Ring`]
-/// columns and on scratch `Vec<Point>`/`[Point]` slices without per-call-site
-/// conversions. Accessors reconstruct `Point`s by value; the hot reducers that
-/// want contiguous ordinates instead take a concrete `&CoordSeq` and read its
-/// [`xs`](CoordSeq::xs)/[`ys`](CoordSeq::ys) columns directly.
+/// columns and on scratch `Vec<Point>`/`[Point]` or `Vec<XY>`/`[XY]` slices
+/// without per-call-site conversions. Column-backed implementations iterate
+/// the ordinate columns; point-backed implementations use the `nth_coord`
+/// adapter.
 ///
 /// Method names are deliberately distinct from the slice/`CoordSeq` inherent
 /// methods (`coord_count`/`nth_coord`/…) so calls never resolve ambiguously.
@@ -184,38 +184,43 @@ pub(crate) trait Coordinates {
             .map(|index| self.nth_coord(index))
     }
 
-    /// Iterate the coordinates as `Point`s by value.
+    /// Iterate coordinates as `Point`s by value.
+    ///
+    /// The default fits Point/XY-backed storage. `CoordSeq`-backed
+    /// implementations use the axis-specialized column iterator instead.
     fn iter_coords(&self) -> impl DoubleEndedIterator<Item = Point> + '_ {
         (0..self.coord_count()).map(|index| self.nth_coord(index))
     }
 
     /// Adjacent vertex pairs `[v[i - 1], v[i]]` — the slice-`array_windows`
-    /// replacement.
+    /// replacement. XY columns use array windows; other storage streams the
+    /// coordinate iterator once so each endpoint is read only once.
     fn segment_pairs(&self) -> impl Iterator<Item = [Point; 2]> + '_ {
         let mut columns = self
             .xy_columns()
             .filter(|_| self.z_column().is_none() && self.m_column().is_none())
             .map(|(xs, ys)| (xs.array_windows::<2>(), ys.array_windows::<2>()));
-        let mut index = 1;
-        let len = self.coord_count();
+        let mut points = (columns.is_none() && self.coord_count() > 1).then(|| self.iter_coords());
+        let mut previous = None;
         std::iter::from_fn(move || {
             if let Some((xs, ys)) = &mut columns {
                 let x = xs.next()?;
                 let y = ys.next()?;
                 return Some([Point::new_raw_xy(x[0], y[0]), Point::new_raw_xy(x[1], y[1])]);
             }
-            (index < len).then(|| {
-                let pair = [self.nth_coord(index - 1), self.nth_coord(index)];
-                index += 1;
-                pair
-            })
+            let points = points.as_mut()?;
+            let start = previous.take().or_else(|| points.next())?;
+            let end = points.next()?;
+            previous = Some(end);
+            Some([start, end])
         })
     }
 
     /// The contiguous `x`/`y` ordinate columns, when the representation stores
-    /// them (`SoA` [`CoordSeq`]/[`Ring`]). `None` for `Point` slices, whose hot
-    /// reducers gather into scratch buffers instead. Lets the shoelace/length
-    /// kernels read columns directly with no per-vertex gather.
+    /// them (`SoA` [`CoordSeq`], [`LineSeq`], [`Ring`], or [`MultiPoint`]). `None`
+    /// for Point/XY slices, whose hot reducers gather into scratch buffers instead.
+    /// Lets the shoelace/length kernels read columns directly with no per-vertex
+    /// gather.
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {
         None
     }
@@ -263,6 +268,10 @@ impl Coordinates for CoordSeq {
         self.point_at(index)
     }
 
+    fn iter_coords(&self) -> impl DoubleEndedIterator<Item = Point> + '_ {
+        self.iter()
+    }
+
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {
         Some((self.xs(), self.ys()))
     }
@@ -283,6 +292,10 @@ impl Coordinates for Ring {
 
     fn nth_coord(&self, index: usize) -> Point {
         self.0.point_at(index)
+    }
+
+    fn iter_coords(&self) -> impl DoubleEndedIterator<Item = Point> + '_ {
+        self.0.iter()
     }
 
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {
@@ -328,6 +341,10 @@ impl<C: Coordinates + ?Sized> Coordinates for &C {
 
     fn nth_coord(&self, index: usize) -> Point {
         (**self).nth_coord(index)
+    }
+
+    fn iter_coords(&self) -> impl DoubleEndedIterator<Item = Point> + '_ {
+        (**self).iter_coords()
     }
 
     fn xy_columns(&self) -> Option<(&[f64], &[f64])> {

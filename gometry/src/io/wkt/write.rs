@@ -348,6 +348,60 @@ fn write_wkt_ring_impl<const Z: bool, const M: bool, C: Coordinates + ?Sized>(
     format: WktNumberFormat,
     limit: usize,
 ) {
+    if let Some((xs, ys)) = points.xy_columns() {
+        if Z {
+            let zs = points.z_column().expect("WKT Z axis was preflighted");
+            if M {
+                let ms = points.m_column().expect("WKT M axis was preflighted");
+                write_wkt_column_rows::<Z, M, _>(
+                    out,
+                    format,
+                    limit,
+                    xs.iter()
+                        .copied()
+                        .zip(ys.iter().copied())
+                        .zip(zs.iter().copied())
+                        .zip(ms.iter().copied())
+                        .map(|(((x, y), z), m)| (x, y, z, m)),
+                );
+            } else {
+                write_wkt_column_rows::<Z, M, _>(
+                    out,
+                    format,
+                    limit,
+                    xs.iter()
+                        .copied()
+                        .zip(ys.iter().copied())
+                        .zip(zs.iter().copied())
+                        .map(|((x, y), z)| (x, y, z, 0.0)),
+                );
+            }
+        } else if M {
+            let ms = points.m_column().expect("WKT M axis was preflighted");
+            write_wkt_column_rows::<Z, M, _>(
+                out,
+                format,
+                limit,
+                xs.iter()
+                    .copied()
+                    .zip(ys.iter().copied())
+                    .zip(ms.iter().copied())
+                    .map(|((x, y), m)| (x, y, 0.0, m)),
+            );
+        } else {
+            write_wkt_column_rows::<Z, M, _>(
+                out,
+                format,
+                limit,
+                xs.iter()
+                    .copied()
+                    .zip(ys.iter().copied())
+                    .map(|(x, y)| (x, y, 0.0, 0.0)),
+            );
+        }
+        return;
+    }
+
     for (index, point) in points.iter_coords().enumerate() {
         if out.len() >= limit {
             break;
@@ -356,6 +410,25 @@ fn write_wkt_ring_impl<const Z: bool, const M: bool, C: Coordinates + ?Sized>(
             out.push_str(", ");
         }
         write_wkt_point_impl::<Z, M>(out, point, format);
+    }
+}
+
+fn write_wkt_column_rows<const Z: bool, const M: bool, I>(
+    out: &mut String,
+    format: WktNumberFormat,
+    limit: usize,
+    rows: I,
+) where
+    I: Iterator<Item = (f64, f64, f64, f64)>,
+{
+    for (index, (x, y, z, m)) in rows.enumerate() {
+        if out.len() >= limit {
+            break;
+        }
+        if index > 0 {
+            out.push_str(", ");
+        }
+        write_wkt_coordinate_impl::<Z, M>(out, x, y, z, m, format);
     }
 }
 
@@ -411,16 +484,37 @@ fn write_wkt_point_impl<const Z: bool, const M: bool>(
     point: Point,
     format: WktNumberFormat,
 ) {
-    format.write(out, point.x);
+    let z = if Z {
+        point.z().expect("WKT Z axis was preflighted")
+    } else {
+        0.0
+    };
+    let m = if M {
+        point.m().expect("WKT M axis was preflighted")
+    } else {
+        0.0
+    };
+    write_wkt_coordinate_impl::<Z, M>(out, point.x, point.y, z, m, format);
+}
+
+fn write_wkt_coordinate_impl<const Z: bool, const M: bool>(
+    out: &mut String,
+    x: f64,
+    y: f64,
+    z: f64,
+    m: f64,
+    format: WktNumberFormat,
+) {
+    format.write(out, x);
     out.push(' ');
-    format.write(out, point.y);
+    format.write(out, y);
     if Z {
         out.push(' ');
-        format.write(out, point.z().expect("WKT Z axis was preflighted"));
+        format.write(out, z);
     }
     if M {
         out.push(' ');
-        format.write(out, point.m().expect("WKT M axis was preflighted"));
+        format.write(out, m);
     }
 }
 

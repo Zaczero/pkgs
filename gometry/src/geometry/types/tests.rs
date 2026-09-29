@@ -109,17 +109,70 @@ mod multipoint_iteration_tests {
     }
 
     #[test]
-    fn borrowed_iteration_preserves_each_coordinate_layout() {
-        for (axes, point) in [
-            (CoordinateAxes::XY, point(1.0, 2.0, None, None)),
-            (CoordinateAxes::XYZ, point(1.0, 2.0, Some(3.0), None)),
-            (CoordinateAxes::XYM, point(1.0, 2.0, None, Some(4.0))),
-            (CoordinateAxes::XYZM, point(1.0, 2.0, Some(3.0), Some(4.0))),
+    fn column_iteration_and_segment_pairs_preserve_each_coordinate_layout() {
+        for (axes, first, second) in [
+            (
+                CoordinateAxes::XY,
+                point(1.0, 2.0, None, None),
+                point(5.0, 6.0, None, None),
+            ),
+            (
+                CoordinateAxes::XYZ,
+                point(1.0, 2.0, Some(3.0), None),
+                point(5.0, 6.0, Some(7.0), None),
+            ),
+            (
+                CoordinateAxes::XYM,
+                point(1.0, 2.0, None, Some(4.0)),
+                point(5.0, 6.0, None, Some(8.0)),
+            ),
+            (
+                CoordinateAxes::XYZM,
+                point(1.0, 2.0, Some(3.0), Some(4.0)),
+                point(5.0, 6.0, Some(7.0), Some(8.0)),
+            ),
         ] {
-            let multipoint =
-                MultiPoint::try_new(axes, vec![MultiMember::Value(point)]).expect("matching axes");
-            assert_eq!((&multipoint).into_iter().next(), Some(point));
+            let expected = vec![first, second];
+            let coords = CoordSeq::try_from_points(&expected).expect("matching axes");
+            assert_eq!(coords.axes(), axes);
+            assert_eq!(coords.iter_coords().collect::<Vec<_>>(), expected);
+            assert_eq!(expected.iter_coords().collect::<Vec<_>>(), expected);
+
+            let empty = CoordSeq::try_from_vecs(
+                Vec::new(),
+                Vec::new(),
+                axes.has_z().then(Vec::new),
+                axes.has_m().then(Vec::new),
+            )
+            .expect("empty columns have matching axes");
+            assert_eq!(empty.segment_pairs().next(), None);
+            let singleton = CoordSeq::try_from_points(&[first]).expect("one coordinate");
+            assert_eq!(singleton.segment_pairs().next(), None);
+
+            let line = LineSeq::from_proven(coords.clone());
+            assert_eq!(line.iter_coords().collect::<Vec<_>>(), expected);
+            assert_eq!(line.iter_coords().rev().collect::<Vec<_>>(), vec![
+                second, first
+            ],);
+            assert_eq!(line.segment_pairs().collect::<Vec<_>>(), vec![[
+                first, second
+            ]]);
+
+            let forwarded: &LineSeq = &line;
+            assert_eq!(
+                Coordinates::iter_coords(&forwarded).collect::<Vec<_>>(),
+                expected,
+            );
+
+            let multipoint = MultiPoint::from_coordseq(coords).expect("nonempty sequence");
+            assert_eq!(multipoint.iter_coords().collect::<Vec<_>>(), expected);
         }
+
+        let xy_points = vec![XY::new(1.0, 2.0), XY::new(5.0, 6.0)];
+        assert_eq!(xy_points.iter_coords().collect::<Vec<_>>(), vec![
+            Point::new_raw_xy(1.0, 2.0),
+            Point::new_raw_xy(5.0, 6.0)
+        ],);
     }
 
     #[test]
