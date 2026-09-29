@@ -787,6 +787,10 @@ pub(crate) fn xy_bounds_columns(xs: &[f64], ys: &[f64]) -> [f64; 4] {
 /// Extreme rings may return non-finite moments; the areal centroid drivers
 /// then re-accumulate with one shared local scale so multi-ring weights stay
 /// consistent and the world moment (~e³) is never formed.
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "SIMD floating-point expressions retain the centroid's established binary64 operation order"
+)]
 pub(crate) fn centroid_ring_sums(
     xs: &[f64],
     ys: &[f64],
@@ -795,33 +799,49 @@ pub(crate) fn centroid_ring_sums(
 ) -> (f64, f64, f64) {
     let (ax, ay) = anchor;
     let scalar_fold = |range: std::ops::Range<usize>| {
-        range.fold((0.0_f64, 0.0_f64, 0.0_f64), |(sa, sx, sy), index| {
-            let (x1, y1) = (xs[index], ys[index]);
-            let (x2, y2) = (xs[index + 1], ys[index + 1]);
+        let xs = xs
+            .get(range.start..=range.end)
+            .expect("ring segment range fits the x column");
+        let ys = ys
+            .get(range.start..=range.end)
+            .expect("ring segment range fits the y column");
+        let mut sums = (0.0_f64, 0.0_f64, 0.0_f64);
+        for (&[x1, x2], &[y1, y2]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
             let area2 = x1
                 .algebraic_sub(ax)
                 .algebraic_mul(y2.algebraic_sub(ay))
                 .algebraic_sub(x2.algebraic_sub(ax).algebraic_mul(y1.algebraic_sub(ay)));
-            (
-                sa.algebraic_add(area2),
-                sx.algebraic_add(area2.algebraic_mul(ax.algebraic_add(x1).algebraic_add(x2))),
-                sy.algebraic_add(area2.algebraic_mul(ay.algebraic_add(y1).algebraic_add(y2))),
-            )
-        })
+            sums.0 = sums.0.algebraic_add(area2);
+            sums.1 = sums
+                .1
+                .algebraic_add(area2.algebraic_mul(ax.algebraic_add(x1).algebraic_add(x2)));
+            sums.2 = sums
+                .2
+                .algebraic_add(area2.algebraic_mul(ay.algebraic_add(y1).algebraic_add(y2)));
+        }
+        sums
     };
     if pairs < super::crossover::OFFSET_PAIR_MEASURE {
         return scalar_fold(0..pairs);
     }
-    let (x0, _) = xs[..pairs].as_chunks::<REDUCE_LANES>();
-    let (x1c, _) = xs[1..=pairs].as_chunks::<REDUCE_LANES>();
-    let (y0, _) = ys[..pairs].as_chunks::<REDUCE_LANES>();
-    let (y1c, _) = ys[1..=pairs].as_chunks::<REDUCE_LANES>();
+    let x_pairs = xs.get(..pairs).expect("ring pairs fit the x column");
+    let x_shifted = xs.get(1..).expect("ring pairs have a following x ordinate");
+    let y_pairs = ys.get(..pairs).expect("ring pairs fit the y column");
+    let y_shifted = ys.get(1..).expect("ring pairs have a following y ordinate");
+    let (x0, _) = x_pairs.as_chunks::<REDUCE_LANES>();
+    let (x1c, _) = x_shifted.as_chunks::<REDUCE_LANES>();
+    let (y0, _) = y_pairs.as_chunks::<REDUCE_LANES>();
+    let (y1c, _) = y_shifted.as_chunks::<REDUCE_LANES>();
     let (avx, avy) = (ReduceSimd::splat(ax), ReduceSimd::splat(ay));
     let edge = |x1: ReduceSimd, x2: ReduceSimd, y1: ReduceSimd, y2: ReduceSimd| {
         let area2 = (x1 - avx) * (y2 - avy) - (x2 - avx) * (y1 - avy);
         (area2, area2 * (avx + x1 + x2), area2 * (avy + y1 + y2))
     };
-    let lanes = x0.len() * REDUCE_LANES;
+    let mut chunks = std::iter::zip(
+        std::iter::zip(x0.iter(), x1c.iter()),
+        std::iter::zip(y0.iter(), y1c.iter()),
+    );
+    let lanes = x0.len().wrapping_mul(REDUCE_LANES);
     simd_reduce_f64(
         pairs,
         (
@@ -830,13 +850,13 @@ pub(crate) fn centroid_ring_sums(
             ReduceSimd::splat(0.0),
         ),
         (),
-        |(sa, sx, sy), (), start| {
-            let chunk = start / REDUCE_LANES;
+        |(sa, sx, sy), (), _start| {
+            let ((x0, x1), (y0, y1)) = chunks.next().expect("SIMD chunks match the ring pairs");
             let (da, dx, dy) = edge(
-                ReduceSimd::from_array(x0[chunk]),
-                ReduceSimd::from_array(x1c[chunk]),
-                ReduceSimd::from_array(y0[chunk]),
-                ReduceSimd::from_array(y1c[chunk]),
+                ReduceSimd::from_array(*x0),
+                ReduceSimd::from_array(*x1),
+                ReduceSimd::from_array(*y0),
+                ReduceSimd::from_array(*y1),
             );
             ((sa + da, sx + dx, sy + dy), ())
         },
@@ -847,11 +867,19 @@ pub(crate) fn centroid_ring_sums(
         },
         |(mut sa, mut sx, mut sy), ()| {
             if lanes < pairs {
+                let x0 = xs.get(lanes..pairs).expect("ring tail fits the x column");
+                let x1 = xs
+                    .get(lanes.wrapping_add(1)..=pairs)
+                    .expect("shifted ring tail fits the x column");
+                let y0 = ys.get(lanes..pairs).expect("ring tail fits the y column");
+                let y1 = ys
+                    .get(lanes.wrapping_add(1)..=pairs)
+                    .expect("shifted ring tail fits the y column");
                 let (da, dx, dy) = edge(
-                    ReduceSimd::load_or_default(&xs[lanes..pairs]),
-                    ReduceSimd::load_or_default(&xs[lanes + 1..=pairs]),
-                    ReduceSimd::load_or_default(&ys[lanes..pairs]),
-                    ReduceSimd::load_or_default(&ys[lanes + 1..=pairs]),
+                    ReduceSimd::load_or_default(x0),
+                    ReduceSimd::load_or_default(x1),
+                    ReduceSimd::load_or_default(y0),
+                    ReduceSimd::load_or_default(y1),
                 );
                 sa += da;
                 sx += dx;

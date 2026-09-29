@@ -184,6 +184,31 @@ fn centroid_is_empty_with_work(shape: &Shape) -> (bool, EmptyProbeWork) {
     (is_empty, memo.work)
 }
 
+fn polygon_ring_columns<'a>(
+    xs: &'a [f64],
+    ys: &'a [f64],
+    ring_offsets: &'a [i32],
+    rings: std::ops::Range<usize>,
+) -> impl Iterator<Item = (bool, &'a [f64], &'a [f64])> + 'a {
+    let offsets = ring_offsets
+        .get(rings.start..=rings.end)
+        .expect("ring offsets cover the admitted ring range");
+    offsets
+        .array_windows::<2>()
+        .enumerate()
+        .map(move |(index, &[start, end])| {
+            let start = usize::try_from(start).expect("ring offsets are nonnegative");
+            let end = usize::try_from(end).expect("ring offsets are nonnegative");
+            let xs = xs
+                .get(start..end)
+                .expect("ring offsets fit the admitted x column");
+            let ys = ys
+                .get(start..end)
+                .expect("ring offsets fit the admitted y column");
+            (index != 0, xs, ys)
+        })
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CentroidDimension {
     Areal,
@@ -224,7 +249,7 @@ impl OwnerAdmission<'_> {
         false
     }
 
-    fn charge_work(&mut self, amount: usize) -> bool {
+    const fn charge_work(&mut self, amount: usize) -> bool {
         if self.repeated_owner {
             self.repeated_work = self.repeated_work.saturating_add(amount);
         }
@@ -353,7 +378,10 @@ fn accumulate_ring_centroid(
     // fold sums the ring's SIGNED triangle-fan contributions (cross-product
     // areas about the anchor); shells and holes receive opposite signs based
     // on their declared role and winding.
-    let anchor = *base.get_or_insert((xs[0], ys[0]));
+    let Some((&x, &y)) = xs.first().zip(ys.first()) else {
+        return;
+    };
+    let anchor = *base.get_or_insert((x, y));
     let ccw = closed_columns_winding(xs, ys, pairs).is_ccw();
     let sign = if hole == ccw { 1.0 } else { -1.0 };
     let (area2, cgx, cgy) = centroid_ring_sums(xs, ys, pairs, anchor);
@@ -392,10 +420,9 @@ fn exact_areal_centroid(
 ) -> Option<(f64, f64, f64)> {
     let mut sums = FixedExactCentroidSums::zero();
     visit(&mut |xs, ys, hole| {
-        let pairs = xs.len().saturating_sub(1);
         let mut ring = FixedExactCentroidSums::zero();
-        for index in 0..pairs {
-            ring.add_edge(xs[index], ys[index], xs[index + 1], ys[index + 1]);
+        for (&[x0, x1], &[y0, y1]) in xs.array_windows::<2>().zip(ys.array_windows::<2>()) {
+            ring.add_edge(x0, y0, x1, y1);
         }
         sums.merge_ring(&ring, hole);
     });
@@ -417,10 +444,10 @@ fn centroid_polygon_columns(
 ) -> Option<(f64, f64, f64)> {
     let exact = || {
         exact_areal_centroid(|visit| {
-            for ring_index in rings.clone() {
-                let start = ring_offsets[ring_index] as usize;
-                let end = ring_offsets[ring_index + 1] as usize;
-                visit(&xs[start..end], &ys[start..end], ring_index > rings.start);
+            for (hole, ring_xs, ring_ys) in
+                polygon_ring_columns(xs, ys, ring_offsets, rings.clone())
+            {
+                visit(ring_xs, ring_ys, hole);
             }
         })
     };
@@ -432,25 +459,14 @@ fn centroid_polygon_columns(
     let mut max_x = f64::NEG_INFINITY;
     let mut min_y = f64::INFINITY;
     let mut max_y = f64::NEG_INFINITY;
-    for ring_index in rings.clone() {
-        let start = ring_offsets[ring_index] as usize;
-        let end = ring_offsets[ring_index + 1] as usize;
-        let rxs = &xs[start..end];
-        let rys = &ys[start..end];
+    for (hole, rxs, rys) in polygon_ring_columns(xs, ys, ring_offsets, rings.clone()) {
         for (&x, &y) in rxs.iter().zip(rys.iter()) {
             min_x = min_x.min(x);
             max_x = max_x.max(x);
             min_y = min_y.min(y);
             max_y = max_y.max(y);
         }
-        accumulate_ring_centroid(
-            rxs,
-            rys,
-            ring_index > rings.start,
-            &mut base,
-            &mut area_sum2,
-            &mut cg3,
-        );
+        accumulate_ring_centroid(rxs, rys, hole, &mut base, &mut area_sum2, &mut cg3);
     }
     let extreme = if min_x.is_finite() {
         let extent = (max_x - min_x).max(max_y - min_y);
@@ -470,6 +486,14 @@ fn centroid_polygon_columns(
     finish_areal_centroid(area_sum2, cg3).or_else(exact)
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    reason = "segment and shifted coordinates stay inside admitted equal-length coordinate columns"
+)]
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the incremented segment index is bounded by the admitted coordinate columns"
+)]
 fn lineal_centroid_segment_contrib(xs: &[f64], ys: &[f64], segment: usize) -> (f64, f64, f64) {
     let length = point_distance(
         Point::new_raw_xy(xs[segment], ys[segment]),
@@ -560,6 +584,14 @@ fn lineal_centroid_scalar_algebraic(
     })
 }
 
+#[expect(
+    clippy::arithmetic_side_effects,
+    reason = "the SIMD floating-point expressions and reducer-bounded chunk arithmetic preserve the centroid's established operation order"
+)]
+#[expect(
+    clippy::indexing_slicing,
+    reason = "simd_reduce_f64 supplies lane-aligned starts within the full shifted as_chunks slices derived from equal-length columns"
+)]
 fn lineal_centroid_column_sums(xs: &[f64], ys: &[f64]) -> (f64, f64, f64) {
     let segments = xs.len().saturating_sub(1);
     if segments < REDUCE_SIMD_MIN {
@@ -782,21 +814,12 @@ fn centroid_polygon_lineal_columns(
 ) -> Option<(f64, f64)> {
     let mut total_length = 0.0_f64;
     let mut line_sum = (0.0_f64, 0.0_f64);
-    for ring_index in rings.clone() {
-        let start = ring_offsets[ring_index] as usize;
-        let end = ring_offsets[ring_index + 1] as usize;
-        accumulate_lineal_centroid(
-            &xs[start..end],
-            &ys[start..end],
-            &mut total_length,
-            &mut line_sum,
-        );
+    for (_, ring_xs, ring_ys) in polygon_ring_columns(xs, ys, ring_offsets, rings.clone()) {
+        accumulate_lineal_centroid(ring_xs, ring_ys, &mut total_length, &mut line_sum);
     }
     finish_lineal_centroid_rescued(total_length, line_sum, |visit| {
-        for ring_index in rings.clone() {
-            let start = ring_offsets[ring_index] as usize;
-            let end = ring_offsets[ring_index + 1] as usize;
-            visit(&xs[start..end], &ys[start..end]);
+        for (_, ring_xs, ring_ys) in polygon_ring_columns(xs, ys, ring_offsets, rings.clone()) {
+            visit(ring_xs, ring_ys);
         }
     })
 }
@@ -819,8 +842,13 @@ pub(crate) fn centroid_polygon_row_columns(
         .map(|(_, x, y)| (x, y))
         .or_else(|| {
             centroid_polygon_lineal_columns(xs, ys, ring_offsets, rings.clone()).or_else(|| {
-                let start = ring_offsets[rings.start] as usize;
-                (start < xs.len()).then(|| (xs[start], ys[start]))
+                let start = usize::try_from(
+                    *ring_offsets
+                        .get(rings.start)
+                        .expect("polygon row has an admitted ring start"),
+                )
+                .expect("ring offsets are nonnegative");
+                xs.get(start).zip(ys.get(start)).map(|(&x, &y)| (x, y))
             })
         })
 }
@@ -988,8 +1016,8 @@ fn weighted_centroid_merge<
         let mut sy = 0.0_f64;
         let mut w_sum = 0.0_f64;
         for &(w, cx, cy) in parts {
-            if !LINEAL_PARTS_ADMITTED
-                && !(w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite())
+            if !(LINEAL_PARTS_ADMITTED
+                || (w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite()))
             {
                 continue;
             }
@@ -1031,7 +1059,8 @@ fn weighted_centroid_merge<
     let mut x_sum = NeumaierSum::default();
     let mut y_sum = NeumaierSum::default();
     for &(w, cx, cy) in parts {
-        if !LINEAL_PARTS_ADMITTED && !(w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite())
+        if !(LINEAL_PARTS_ADMITTED
+            || (w > 0.0 && w.is_finite() && cx.is_finite() && cy.is_finite()))
         {
             continue;
         }
@@ -1481,7 +1510,7 @@ fn areal_centroid_summary_direct(shape: &Shape) -> Option<(f64, f64, f64)> {
         Shape::Polygon(polygon) => areal_centroid_polygon(polygon),
         Shape::MultiPolygon(polygons) => {
             if polygons.len() == 1 {
-                return areal_centroid_polygon(&polygons[0]);
+                return polygons.first().and_then(areal_centroid_polygon);
             }
             let mut parts = Vec::with_capacity(polygons.len());
             let mut area = 0.0_f64;
