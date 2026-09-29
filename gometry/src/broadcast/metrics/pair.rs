@@ -223,7 +223,12 @@ impl LonLatPointRows<'_> {
     pub(crate) fn get(&self, row: usize) -> Point {
         match self {
             Self::Source(points) => points.get(row),
-            Self::Columns { xs, ys } => Point::new_raw_xy(xs[row], ys[row]),
+            Self::Columns { xs, ys } => Point::new_raw_xy(
+                *xs.get(row)
+                    .expect("longitude columns cover every logical row"),
+                *ys.get(row)
+                    .expect("latitude columns cover every logical row"),
+            ),
         }
     }
 }
@@ -250,8 +255,14 @@ fn transform_present(
     let mut px = Vec::with_capacity(present.len());
     let mut py = Vec::with_capacity(present.len());
     for &row in present {
-        px.push(xs[row]);
-        py.push(ys[row]);
+        px.push(
+            *xs.get(row)
+                .expect("present logical row is inside longitude columns"),
+        );
+        py.push(
+            *ys.get(row)
+                .expect("present logical row is inside latitude columns"),
+        );
     }
     let plan =
         crate::crs::TransformPlan::new(crs, "EPSG:4326").map_err(LonLatPointsError::Setup)?;
@@ -259,8 +270,10 @@ fn transform_present(
         .map_err(LonLatPointsError::Setup)?;
     for ((&row, x), y) in present.iter().zip(px).zip(py) {
         lonlat_domain(row, x, y)?;
-        xs[row] = x;
-        ys[row] = y;
+        *xs.get_mut(row)
+            .expect("present logical row is inside longitude columns") = x;
+        *ys.get_mut(row)
+            .expect("present logical row is inside latitude columns") = y;
     }
     Ok(())
 }
@@ -294,7 +307,13 @@ fn compact_lonlat_points(
     }
     let Some(crs) = projected_crs else {
         for &logical in &present {
-            lonlat_domain(logical, xs[logical], ys[logical])?;
+            lonlat_domain(
+                logical,
+                *xs.get(logical)
+                    .expect("present logical row is inside longitude columns"),
+                *ys.get(logical)
+                    .expect("present logical row is inside latitude columns"),
+            )?;
         }
         return Ok(LonLatPointRows::Columns { xs, ys });
     };
@@ -424,7 +443,11 @@ pub(crate) fn contains_filled_area(shape: &Shape) -> bool {
     match shape {
         Shape::Polygon(_) | Shape::MultiPolygon(_) => true,
         Shape::GeometryCollection(geometries) => geometries.iter().any(contains_filled_area),
-        _ => false,
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => false,
     }
 }
 

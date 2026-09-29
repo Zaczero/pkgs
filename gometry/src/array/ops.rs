@@ -396,7 +396,12 @@ impl PyGeometryArray {
                 "triangulate",
                 "min_angle/max_area",
                 move |row, shape, budget| {
-                    shape.constrained_delaunay_triangles_budgeted(refinements[row], budget)
+                    shape.constrained_delaunay_triangles_budgeted(
+                        *refinements
+                            .get(row)
+                            .expect("refinement values match the admitted array rows"),
+                        budget,
+                    )
                 },
             );
         }
@@ -405,7 +410,12 @@ impl PyGeometryArray {
             "triangulate",
             "min_angle/max_area",
             move |row, shape, budget| {
-                shape.constrained_delaunay_vertices_budgeted(refinements[row], budget)
+                shape.constrained_delaunay_vertices_budgeted(
+                    *refinements
+                        .get(row)
+                        .expect("refinement values match the admitted array rows"),
+                    budget,
+                )
             },
         )
     }
@@ -481,9 +491,7 @@ impl PyGeometryArray {
                         // rows independent AND agree with the scalar surface.
                         let seed = match &seed {
                             I64Param::Scalar(value) => row_sample_seed(*value as u64, logical),
-                            I64Param::PerElement(values) => {
-                                row_sample_seed(values[logical] as u64, 0)
-                            },
+                            I64Param::PerElement(_) => row_sample_seed(seed.get(logical) as u64, 0),
                         };
                         let points = row
                             .row()

@@ -12,6 +12,28 @@ const RANK_BLOCK_BITS: usize = 512;
 #[cfg(test)]
 const RANK_BLOCK_BYTES: usize = RANK_BLOCK_BITS / 8;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct LogicalRowIndex(usize);
+
+impl LogicalRowIndex {
+    pub(crate) const fn new(index: usize) -> Self {
+        Self(index)
+    }
+
+    pub(crate) const fn get(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct PresentRowIndex(usize);
+
+impl PresentRowIndex {
+    pub(crate) const fn get(self) -> usize {
+        self.0
+    }
+}
+
 #[cfg(test)]
 std::thread_local! {
     static COUNT_VALID_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -65,9 +87,13 @@ impl ValidityBuilder {
 
     pub(crate) fn is_present(&self, row: usize) -> bool {
         assert!(row < self.len, "validity row must be in bounds");
-        self.bytes
-            .as_ref()
-            .is_none_or(|bytes| bytes[row / 8] & (1 << (row % 8)) != 0)
+        self.bytes.as_ref().is_none_or(|bytes| {
+            bytes
+                .get(row / 8)
+                .expect("validity bitmap covers every admitted row")
+                & (1 << (row % 8))
+                != 0
+        })
     }
 
     pub(crate) fn push(&mut self, present: bool) {
@@ -111,23 +137,34 @@ impl ValidityBuilder {
             bytes.resize(required, 0);
             let start = self.len;
             let first = start / 8;
-            let last = (end - 1) / 8;
+            let last = end.wrapping_sub(1) / 8;
             if first == last {
                 let high = end % 8;
                 let high_mask = if high == 0 {
                     u8::MAX
                 } else {
-                    (1_u8 << high) - 1
+                    (1_u8 << high).wrapping_sub(1)
                 };
-                bytes[first] |= high_mask & (u8::MAX << (start % 8));
+                *bytes
+                    .get_mut(first)
+                    .expect("validity bitmap covers the present run") |=
+                    high_mask & (u8::MAX << (start % 8));
             } else {
-                bytes[first] |= u8::MAX << (start % 8);
-                bytes[first + 1..last].fill(u8::MAX);
+                let row_bytes = bytes
+                    .get_mut(first..=last)
+                    .expect("validity bitmap covers the present run");
+                let (first_byte, rest) = row_bytes
+                    .split_first_mut()
+                    .expect("present run has a first byte");
+                let (last_byte, middle) =
+                    rest.split_last_mut().expect("present run has a last byte");
+                *first_byte |= u8::MAX << (start % 8);
+                middle.fill(u8::MAX);
                 let high = end % 8;
-                bytes[last] |= if high == 0 {
+                *last_byte |= if high == 0 {
                     u8::MAX
                 } else {
-                    (1_u8 << high) - 1
+                    (1_u8 << high).wrapping_sub(1)
                 };
             }
         }
@@ -147,8 +184,16 @@ impl ValidityBuilder {
             bytes
         });
         bytes.resize(end.div_ceil(8), 0);
-        bytes[start / 8] &= (1_u8 << (start % 8)) - 1;
-        bytes[start / 8 + 1..].fill(0);
+        *bytes
+            .get_mut(start / 8)
+            .expect("validity bitmap covers the missing run") &=
+            (1_u8 << (start % 8)).wrapping_sub(1);
+        bytes
+            .get_mut(start / 8..)
+            .expect("validity bitmap covers the missing run")
+            .iter_mut()
+            .skip(1)
+            .for_each(|byte| *byte = 0);
         self.len = end;
     }
 
@@ -189,12 +234,17 @@ impl ValidityMask {
         let mut rows = missing.into_iter().enumerate();
         let (first, _) = rows.find(|&(_, missing)| missing)?;
         let mut bytes = vec![u8::MAX; len.div_ceil(8)];
-        bytes[first / 8] &= !(1 << (first % 8));
-        let mut missing_count = 1;
+        *bytes
+            .get_mut(first / 8)
+            .expect("missing row is inside the declared validity length") &= !(1 << (first % 8));
+        let mut missing_count = 1_usize;
         for (row, is_missing) in rows {
             if is_missing {
-                bytes[row / 8] &= !(1 << (row % 8));
-                missing_count += 1;
+                *bytes
+                    .get_mut(row / 8)
+                    .expect("missing row is inside the declared validity length") &=
+                    !(1 << (row % 8));
+                missing_count = missing_count.wrapping_add(1);
             }
         }
         if let Some(last) = bytes.last_mut() {
@@ -204,7 +254,7 @@ impl ValidityMask {
             bytes: SharedSlice::from_vec(bytes),
             bit_offset: 0,
             len,
-            valid_count: len - missing_count,
+            valid_count: len.wrapping_sub(missing_count),
         })
     }
 
@@ -233,7 +283,9 @@ impl ValidityMask {
         }
         for &row in missing_rows {
             assert!(row < len, "missing row must be in bounds");
-            bytes[row / 8] &= !(1 << (row % 8));
+            *bytes
+                .get_mut(row / 8)
+                .expect("missing row is inside the declared validity length") &= !(1 << (row % 8));
         }
         let valid_count = count_valid(&bytes, 0, len);
         Some(Self {
@@ -254,7 +306,7 @@ impl ValidityMask {
 
     pub(crate) fn is_valid(&self, row: usize) -> bool {
         assert!(row < self.len, "validity row must be in bounds");
-        bit(&self.bytes, self.bit_offset + row)
+        bit(&self.bytes, self.bit_offset.wrapping_add(row))
     }
 
     pub(crate) fn is_missing(&self, row: usize) -> bool {
@@ -321,7 +373,7 @@ impl ValidityMask {
     }
 
     pub(crate) const fn missing_count(&self) -> usize {
-        self.len - self.valid_count
+        self.len.wrapping_sub(self.valid_count)
     }
 
     pub(crate) const fn present_count(&self) -> usize {
@@ -340,7 +392,7 @@ impl ValidityMask {
             .checked_add(len)
             .expect("validity window end overflowed");
         assert!(end <= self.len, "validity window must be in bounds");
-        let bit_offset = self.bit_offset + start;
+        let bit_offset = self.bit_offset.wrapping_add(start);
         let valid_count = count_valid(&self.bytes, bit_offset, len);
         (valid_count != len).then(|| Self {
             bytes: self.bytes.clone(),
@@ -369,10 +421,16 @@ pub(crate) struct ValidityRank<'a> {
 
 impl ValidityRank<'_> {
     pub(crate) fn resolve(&self, logical: usize) -> Option<usize> {
+        self.resolve_present(LogicalRowIndex::new(logical))
+            .map(PresentRowIndex::get)
+    }
+
+    pub(crate) fn resolve_present(&self, logical: LogicalRowIndex) -> Option<PresentRowIndex> {
+        let logical = logical.get();
         if !self.mask.is_valid(logical) {
             return None;
         }
-        Some(self.rank(logical))
+        Some(PresentRowIndex(self.rank(logical)))
     }
 
     pub(crate) fn rank(&self, logical: usize) -> usize {
@@ -381,13 +439,15 @@ impl ValidityRank<'_> {
             return self.mask.present_before(logical);
         };
         let block = logical / RANK_BLOCK_BITS;
-        let block_start = block * RANK_BLOCK_BITS;
-        blocks[block]
-            + count_valid(
+        let block_start = block.wrapping_mul(RANK_BLOCK_BITS);
+        blocks
+            .get(block)
+            .expect("rank directory covers every logical block")
+            .wrapping_add(count_valid(
                 &self.mask.bytes,
-                self.mask.bit_offset + block_start,
-                logical - block_start,
-            )
+                self.mask.bit_offset.wrapping_add(block_start),
+                logical.wrapping_sub(block_start),
+            ))
     }
 }
 
@@ -395,11 +455,15 @@ fn build_rank_blocks(mask: &ValidityMask) -> Vec<usize> {
     let block_count = mask.len.div_ceil(RANK_BLOCK_BITS);
     let mut blocks = Vec::with_capacity(block_count.wrapping_add(1));
     blocks.push(0);
-    let mut present = 0;
+    let mut present = 0_usize;
     for block in 0..block_count {
-        let start = block * RANK_BLOCK_BITS;
-        let len = (mask.len - start).min(RANK_BLOCK_BITS);
-        present += count_valid(&mask.bytes, mask.bit_offset + start, len);
+        let start = block.wrapping_mul(RANK_BLOCK_BITS);
+        let len = mask.len.wrapping_sub(start).min(RANK_BLOCK_BITS);
+        present = present.wrapping_add(count_valid(
+            &mask.bytes,
+            mask.bit_offset.wrapping_add(start),
+            len,
+        ));
         blocks.push(present);
     }
     blocks
@@ -410,8 +474,8 @@ const fn rank_scan_bytes(bit_offset: usize, logical: usize) -> usize {
         return 0;
     }
     let first = bit_offset / 8;
-    let last = (bit_offset + logical - 1) / 8;
-    last - first + 1
+    let last = bit_offset.wrapping_add(logical).wrapping_sub(1) / 8;
+    last.wrapping_sub(first).wrapping_add(1)
 }
 
 const fn rank_block_scan_bytes(bit_offset: usize, logical: usize) -> usize {
@@ -419,7 +483,7 @@ const fn rank_block_scan_bytes(bit_offset: usize, logical: usize) -> usize {
     if within == 0 {
         0
     } else {
-        (within + bit_offset % 8).div_ceil(8)
+        within.wrapping_add(bit_offset % 8).div_ceil(8)
     }
 }
 
@@ -463,7 +527,14 @@ impl<'a> MissingIter<'a> {
         let (bits, bits_left) = if mask.len == 0 {
             (0, 0)
         } else {
-            (mask.bytes[byte] >> bit, 8 - bit)
+            (
+                *mask
+                    .bytes
+                    .get(byte)
+                    .expect("validity bitmap covers every nonempty window")
+                    >> bit,
+                8_u8.wrapping_sub(bit),
+            )
         };
         Self {
             bytes: &mask.bytes,
@@ -483,14 +554,17 @@ impl Iterator for MissingIter<'_> {
             return None;
         }
         if self.bits_left == 0 {
-            self.byte += 1;
-            self.bits = self.bytes[self.byte];
+            self.byte = self.byte.wrapping_add(1);
+            self.bits = *self
+                .bytes
+                .get(self.byte)
+                .expect("validity iterator remains inside its admitted bitmap window");
             self.bits_left = 8;
         }
         let missing = self.bits & 1 == 0;
         self.bits >>= 1;
-        self.bits_left -= 1;
-        self.remaining -= 1;
+        self.bits_left = self.bits_left.wrapping_sub(1);
+        self.remaining = self.remaining.wrapping_sub(1);
         Some(missing)
     }
 
@@ -514,10 +588,10 @@ impl Iterator for ValidityCursor<'_> {
     fn next(&mut self) -> Option<Self::Item> {
         let missing = self.missing.next()?;
         let logical = self.logical;
-        self.logical += 1;
+        self.logical = self.logical.wrapping_add(1);
         let present = (!missing).then(|| {
             let present = self.present;
-            self.present += 1;
+            self.present = self.present.wrapping_add(1);
             present
         });
         Some((logical, present))
@@ -530,17 +604,21 @@ impl Iterator for ValidityCursor<'_> {
 
 impl ExactSizeIterator for ValidityCursor<'_> {}
 
-const fn bit(bytes: &[u8], index: usize) -> bool {
-    bytes[index / 8] & (1 << (index % 8)) != 0
+fn bit(bytes: &[u8], index: usize) -> bool {
+    bytes
+        .get(index / 8)
+        .expect("validity bitmap covers the requested bit")
+        & (1 << (index % 8))
+        != 0
 }
 
 fn count_valid(bytes: &[u8], offset: usize, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
-    let end = offset + len;
+    let end = offset.wrapping_add(len);
     let first_byte = offset / 8;
-    let last_byte = (end - 1) / 8;
+    let last_byte = end.wrapping_sub(1) / 8;
     #[cfg(test)]
     COUNT_VALID_BYTES.with(|count| {
         count.set(
@@ -555,22 +633,34 @@ fn count_valid(bytes: &[u8], offset: usize, len: usize) -> usize {
         let high_mask = if high == 0 {
             u8::MAX
         } else {
-            (1_u8 << high) - 1
+            (1_u8 << high).wrapping_sub(1)
         };
-        return (bytes[first_byte] & high_mask & (u8::MAX << low)).count_ones() as usize;
+        return (*bytes
+            .get(first_byte)
+            .expect("validity bitmap covers the requested byte")
+            & high_mask
+            & (u8::MAX << low))
+            .count_ones() as usize;
     }
-    let mut count = (bytes[first_byte] & (u8::MAX << (offset % 8))).count_ones() as usize;
-    count += bytes[first_byte + 1..last_byte]
-        .iter()
-        .map(|byte| byte.count_ones() as usize)
-        .sum::<usize>();
+    let byte_window = bytes
+        .get(first_byte..=last_byte)
+        .expect("validity bitmap covers the requested byte range");
+    let (first, remaining) = byte_window
+        .split_first()
+        .expect("validity byte range includes its first byte");
+    let (last, middle) = remaining
+        .split_last()
+        .expect("multi-byte validity range includes its last byte");
+    let mut count = (*first & (u8::MAX << (offset % 8))).count_ones() as usize;
+    for byte in middle {
+        count = count.wrapping_add(byte.count_ones() as usize);
+    }
     let trailing = end % 8;
-    count
-        + if trailing == 0 {
-            bytes[last_byte].count_ones() as usize
-        } else {
-            (bytes[last_byte] & ((1_u8 << trailing) - 1)).count_ones() as usize
-        }
+    count.wrapping_add(if trailing == 0 {
+        last.count_ones() as usize
+    } else {
+        (last & ((1_u8 << trailing).wrapping_sub(1))).count_ones() as usize
+    })
 }
 
 const fn trailing_mask(len: usize) -> u8 {
@@ -578,7 +668,7 @@ const fn trailing_mask(len: usize) -> u8 {
     if bits == 0 {
         u8::MAX
     } else {
-        (1_u8 << bits) - 1
+        (1_u8 << bits).wrapping_sub(1)
     }
 }
 
@@ -598,17 +688,23 @@ pub(crate) fn union_many<'a>(
             mask.len(),
             "validity union requires row alignment"
         );
-        let source = &mask.bytes[mask.bit_offset / 8..];
+        let source = mask
+            .bytes
+            .get(mask.bit_offset / 8..)
+            .expect("validity bitmap covers its logical window");
         let shift = mask.bit_offset % 8;
         if shift == 0 {
             for (output, &input) in bytes.iter_mut().zip(source) {
                 *output &= input;
             }
         } else {
-            for (index, output) in bytes.iter_mut().enumerate() {
-                let low = source[index] >> shift;
-                let high = source.get(index + 1).copied().unwrap_or(0) << (8 - shift);
-                *output &= low | high;
+            let zero = 0_u8;
+            for (output, (&low, &high)) in bytes.iter_mut().zip(
+                source
+                    .iter()
+                    .zip(source.iter().skip(1).chain(std::iter::once(&zero))),
+            ) {
+                *output &= (low >> shift) | (high << 8_usize.wrapping_sub(shift));
             }
         }
     }

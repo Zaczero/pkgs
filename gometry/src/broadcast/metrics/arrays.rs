@@ -274,8 +274,10 @@ where
                         let index = left_row.logical();
                         let left_row = left_row.row();
                         let right_row = right_row.row();
-                        if let (Some(lb), Some(rb)) = (left_bounds[index], right_bounds[index])
-                            && let Some(verdict) = refute(lb, rb)
+                        if let (Some(lb), Some(rb)) = (
+                            left_bounds.get(index).copied().flatten(),
+                            right_bounds.get(index).copied().flatten(),
+                        ) && let Some(verdict) = refute(lb, rb)
                         {
                             return Ok(verdict);
                         }
@@ -522,9 +524,12 @@ pub(crate) fn array_crs_distances(
                                     )
                                 },
                                 |lx, ly, rx, ry| {
-                                    let dx = lx - rx;
-                                    let dy = ly - ry;
-                                    let squared = dx * dx + dy * dy;
+                                    let dx = std::ops::Sub::sub(lx, rx);
+                                    let dy = std::ops::Sub::sub(ly, ry);
+                                    let squared = std::ops::Add::add(
+                                        std::ops::Mul::mul(dx, dx),
+                                        std::ops::Mul::mul(dy, dy),
+                                    );
                                     let distance = squared.sqrt();
                                     let zero = ReduceSimd::splat(0.0);
                                     let zero_delta = dx.simd_eq(zero) & dy.simd_eq(zero);
@@ -660,16 +665,34 @@ pub(crate) fn array_crs_dwithin(
                                         )
                                     },
                                     |lx, ly, rx, ry| {
-                                        let dx = lx - rx;
-                                        let dy = ly - ry;
-                                        (dx * dx + dy * dy).simd_le(ReduceSimd::splat(limit_sq))
+                                        let dx = std::ops::Sub::sub(lx, rx);
+                                        let dy = std::ops::Sub::sub(ly, ry);
+                                        std::ops::Add::add(
+                                            std::ops::Mul::mul(dx, dx),
+                                            std::ops::Mul::mul(dy, dy),
+                                        )
+                                        .simd_le(ReduceSimd::splat(limit_sq))
                                     },
                                 );
                             } else {
-                                for (index, slot) in out.iter_mut().enumerate() {
+                                let left_y = ly
+                                    .get(..out.len())
+                                    .expect("latitude columns cover every logical row");
+                                let right_x = rx
+                                    .get(..out.len())
+                                    .expect("right longitude covers every logical row");
+                                let right_y = ry
+                                    .get(..out.len())
+                                    .expect("right latitude covers every logical row");
+                                for (((left_x, left_y), (right_x, right_y)), slot) in lx
+                                    .iter()
+                                    .zip(left_y)
+                                    .zip(right_x.iter().zip(right_y))
+                                    .zip(out.iter_mut())
+                                {
                                     *slot = points_dwithin(
-                                        Point::new_raw_xy(lx[index], ly[index]),
-                                        Point::new_raw_xy(rx[index], ry[index]),
+                                        Point::new_raw_xy(*left_x, *left_y),
+                                        Point::new_raw_xy(*right_x, *right_y),
                                         limit,
                                     );
                                 }
@@ -1100,7 +1123,7 @@ pub(crate) fn array_crs_dwithin_scalar(
                             let row = row.row();
                             if let (Some(sq_limit), Some(other_bounds), Some(element_bounds)) =
                                 (sq_limit, other_bounds, element_bounds.as_ref())
-                                && let Some(element) = element_bounds[index]
+                                && let Some(element) = element_bounds.get(index).copied().flatten()
                                 && bounds_distance_squared(element, other_bounds) > sq_limit
                             {
                                 return Ok(false);

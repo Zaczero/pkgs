@@ -39,7 +39,11 @@ impl SimilarityDensify {
         match self {
             Self::None => None,
             Self::Scalar(fraction) => Some(*fraction),
-            Self::PerElement(fractions) => Some(fractions[row]),
+            Self::PerElement(fractions) => Some(
+                *fractions
+                    .get(row)
+                    .expect("densify values match the admitted array rows"),
+            ),
         }
     }
 }

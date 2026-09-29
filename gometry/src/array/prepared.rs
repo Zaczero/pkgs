@@ -36,6 +36,12 @@ impl RowProductChunk {
         Self { cells }
     }
 
+    fn cell(&self, offset: usize) -> &RowProductCell {
+        self.cells
+            .get(offset)
+            .expect("row product offset belongs to its fixed-size chunk")
+    }
+
     fn heap_bytes_for_cell(&self, offset: usize) -> usize {
         crate::heap_size::ARC_CONTROL_BYTES
             .saturating_add(std::mem::size_of::<Self>())
@@ -44,12 +50,7 @@ impl RowProductChunk {
                     .capacity()
                     .saturating_mul(std::mem::size_of::<RowProductCell>()),
             )
-            .saturating_add(
-                self.cells
-                    .get(offset)
-                    .expect("row product offset belongs to its fixed-size chunk")
-                    .heap_bytes(),
-            )
+            .saturating_add(self.cell(offset).heap_bytes())
     }
 
     fn heap_bytes_for_selection(
@@ -84,7 +85,7 @@ impl RowProductChunk {
                 let mut selected = 0_u64;
                 for &row in rows {
                     if row / ROWS_PER_CHUNK == chunk_index {
-                        selected |= 1_u64 << (row - chunk_start);
+                        selected |= 1_u64 << (row % ROWS_PER_CHUNK);
                     }
                 }
                 for (offset, cell) in self.cells.iter().enumerate() {
@@ -395,7 +396,8 @@ impl RowProductsHandle {
     pub(crate) fn frame_cache(&mut self, logical: usize) -> Arc<FrameDependentCaches> {
         let (chunk, offset) = self.cell(logical);
         Arc::clone(
-            chunk.cells[offset]
+            chunk
+                .cell(offset)
                 .frame
                 .get_or_init(|| Arc::new(FrameDependentCaches::default())),
         )
@@ -407,14 +409,16 @@ impl RowProductsHandle {
         shape: impl FnOnce() -> Result<Arc<ShapeData>, E>,
     ) -> Result<Arc<PreparedPlan>, E> {
         let (chunk, offset) = self.cell(logical);
-        Ok(Arc::clone(chunk.cells[offset].prepared.get_or_try_init(
-            || shape().map(|shape| Arc::new(PreparedPlan::new(shape))),
-        )?))
+        let plan = chunk
+            .cell(offset)
+            .prepared
+            .get_or_try_init(|| shape().map(|shape| Arc::new(PreparedPlan::new(shape))))?;
+        Ok(Arc::clone(plan))
     }
 
     pub(crate) fn cached_prepared_plan(&mut self, logical: usize) -> Option<Arc<PreparedPlan>> {
         let (chunk, offset) = self.existing_cell(logical)?;
-        chunk.cells[offset].prepared.get().cloned()
+        chunk.cell(offset).prepared.get().cloned()
     }
 
     pub(crate) fn install_prepared_plan(
@@ -423,7 +427,7 @@ impl RowProductsHandle {
         plan: Arc<PreparedPlan>,
     ) -> Arc<PreparedPlan> {
         let (chunk, offset) = self.cell(logical);
-        Arc::clone(chunk.cells[offset].prepared.get_or_init(|| plan))
+        Arc::clone(chunk.cell(offset).prepared.get_or_init(|| plan))
     }
 }
 
@@ -635,7 +639,8 @@ impl HeapSize for RowProducts {
                             .map(HeapSize::heap_bytes)
                             .fold(0, usize::saturating_add),
                     ),
-                selection => chunks
+                selection @ (crate::array::RowSelectionRef::Window { .. }
+                | crate::array::RowSelectionRef::Gather(_)) => chunks
                     .iter()
                     .filter(|&(&chunk_index, chunk)| {
                         selection_touches_chunk(selection, chunk_index, chunk.cells.len())
@@ -674,16 +679,25 @@ fn selection_touches_chunk(
 fn packed_row_persistent(row: ShapeRow<'_>) -> bool {
     use crate::geometry::uses_linear_plan_for_len;
     match row {
-        ShapeRow::Line(_, start, end) => !uses_linear_plan_for_len((end - start).saturating_sub(1)),
+        ShapeRow::Line(_, start, end) => {
+            !uses_linear_plan_for_len(end.wrapping_sub(start).saturating_sub(1))
+        },
         ShapeRow::Rings(_, offsets, start, end) => {
-            let rings_non_linear = (start..end).any(|ring| {
-                let open = (offsets[ring + 1] - offsets[ring]).saturating_sub(1) as usize;
+            let ring_offsets = offsets
+                .get(start..=end)
+                .expect("shape row ring range is bounded by its admitted offsets");
+            let rings_non_linear = ring_offsets.windows(2).any(|window| {
+                let [ring_start, ring_end] = window else {
+                    unreachable!("ring offset window contains two boundaries");
+                };
+                let open = ring_end.wrapping_sub(*ring_start).saturating_sub(1) as usize;
                 !uses_linear_plan_for_len(open)
             });
-            rings_non_linear || !uses_linear_plan_for_len(end.saturating_sub(start + 1))
+            rings_non_linear
+                || !uses_linear_plan_for_len(end.saturating_sub(start).saturating_sub(1))
         },
         ShapeRow::Shape(_) => true,
-        _ => false,
+        ShapeRow::Handle(_) | ShapeRow::Point(_) => false,
     }
 }
 
@@ -729,7 +743,7 @@ impl PyGeometryArray {
                 // Mixed storage has no packed fold until first materialization,
                 // so leave ShapeData's OnceLock unset and let it compute.
                 let (chunk, offset) = products.cell(index);
-                let handle = chunk.cells[offset].prepared.get_or_init(|| {
+                let handle = chunk.cell(offset).prepared.get_or_init(|| {
                     let data = PreparedPlan::new(ShapeData::new(shape.clone()));
                     if let Some(element_bounds) = self.existing_element_bounds() {
                         Arc::new(
@@ -745,22 +759,26 @@ impl PyGeometryArray {
                 if packed_row_persistent(packed) =>
             {
                 let (chunk, offset) = products.cell(index);
-                if let Some(plan) = chunk.cells[offset].prepared.get() {
+                if let Some(plan) = chunk.cell(offset).prepared.get() {
                     return Ok(PreparedRow::Owned(Arc::clone(plan)));
                 }
                 // Seeded only for the row being built: a warm row returns above.
                 let bounds = self.row_bounds_seed(index);
                 let transient = PreparedRow::transient_with_seed(packed, bounds)?;
-                let handle = chunk.cells[offset]
-                    .prepared
-                    .get_or_init(|| match transient {
-                        PreparedRow::Transient(data) => Arc::new(data),
-                        PreparedRow::Shared(data) => Arc::clone(data),
-                        PreparedRow::Owned(data) => data,
-                    });
+                let handle = chunk.cell(offset).prepared.get_or_init(|| match transient {
+                    PreparedRow::Transient(data) => Arc::new(data),
+                    PreparedRow::Shared(data) => Arc::clone(data),
+                    PreparedRow::Owned(data) => data,
+                });
                 Ok(PreparedRow::Owned(Arc::clone(handle)))
             },
-            packed => PreparedRow::transient_with_seed(packed, self.row_bounds_seed(index)),
+            packed @ (ShapeRow::Line(..) | ShapeRow::Rings(..)) => {
+                PreparedRow::transient_with_seed(packed, self.row_bounds_seed(index))
+            },
+            ShapeRow::Point(point) => PreparedRow::transient_with_seed(
+                ShapeRow::Point(point),
+                self.row_bounds_seed(index),
+            ),
         }
     }
 
@@ -788,7 +806,7 @@ impl PyGeometryArray {
         let Some((chunk, offset)) = products.existing_cell(index) else {
             return PreparedRow::transient_with_bounds(row, bounds);
         };
-        chunk.cells[offset].prepared.get().map_or_else(
+        chunk.cell(offset).prepared.get().map_or_else(
             || PreparedRow::transient_with_bounds(row, bounds),
             |plan| Ok(PreparedRow::Owned(Arc::clone(plan))),
         )

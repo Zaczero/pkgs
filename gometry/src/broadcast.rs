@@ -149,13 +149,14 @@ pub(crate) fn linref_error_degrades(
     lane: crate::dispatch::Lane,
 ) -> bool {
     use crate::geometry::GeometryErrorKind as G;
-    match error.kind() {
-        crate::error::ErrorKind::Geometry(G::EmptyLinework) => true,
-        crate::error::ErrorKind::Geometry(G::MissingMeasure | G::NonMonotonicMeasure) => {
-            lane.is_array()
-        },
-        _ => false,
-    }
+    matches!(
+        error.kind(),
+        crate::error::ErrorKind::Geometry(G::EmptyLinework)
+    ) || (lane.is_array()
+        && matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(G::MissingMeasure | G::NonMonotonicMeasure)
+        ))
 }
 
 fn degrade_linref<T>(

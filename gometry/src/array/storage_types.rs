@@ -256,7 +256,10 @@ impl PointRows<'_> {
                 coords.point_at(physical_row(*row_map, index))
             },
             PointRowSource::Mixed(points) => {
-                let Shape::Point(point) = &points[index] else {
+                let Shape::Point(point) = points
+                    .get(index)
+                    .expect("point row index is bounded by its admitted mixed slice")
+                else {
                     unreachable!("point row admission excludes other shapes");
                 };
                 *point
@@ -612,7 +615,10 @@ impl LineRows<'_> {
                 )
             },
             LineRowSource::Mixed(lines) => {
-                let Shape::LineString(seq) = &lines[index] else {
+                let Shape::LineString(seq) = lines
+                    .get(index)
+                    .expect("line row index is bounded by its admitted mixed slice")
+                else {
                     unreachable!("line row admission excludes other shapes");
                 };
                 (seq.xs(), seq.ys())
@@ -729,8 +735,12 @@ impl<'a> Iterator for PhysicalRowsIter<'a> {
                 if *index >= items.len() {
                     return None;
                 }
-                let item = PhysicalRow::Mixed(&items[*index]);
-                *index += 1;
+                let item = PhysicalRow::Mixed(
+                    items
+                        .get(*index)
+                        .expect("mixed row index is bounded by its admitted slice"),
+                );
+                *index = (*index).wrapping_add(1);
                 Some(item)
             },
             Self::Points {
@@ -743,7 +753,7 @@ impl<'a> Iterator for PhysicalRowsIter<'a> {
                     return None;
                 }
                 let point = coords.point_at(physical_row(*row_map, *index));
-                *index += 1;
+                *index = (*index).wrapping_add(1);
                 Some(PhysicalRow::Point(point))
             },
             Self::Lines {
@@ -757,7 +767,7 @@ impl<'a> Iterator for PhysicalRowsIter<'a> {
                     return None;
                 }
                 let window = row_map.csr_window(offsets, *index);
-                *index += 1;
+                *index = (*index).wrapping_add(1);
                 Some(PhysicalRow::Line(coords, window))
             },
             Self::Polygons {
@@ -772,7 +782,7 @@ impl<'a> Iterator for PhysicalRowsIter<'a> {
                     return None;
                 }
                 let window = polygon_rings_range(polygon_offsets, *row_map, *index);
-                *index += 1;
+                *index = (*index).wrapping_add(1);
                 Some(PhysicalRow::Polygon(coords, ring_offsets, window))
             },
         }

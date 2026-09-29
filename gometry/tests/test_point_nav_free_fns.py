@@ -328,6 +328,60 @@ def test_point_binary_plan_mixed_axes_and_masks_preserve_rows() -> None:
         assert actual[2].coordinate_axes == 'XYZM'
 
 
+def test_point_between_compact_nullable_pair_masks_preserve_rows() -> None:
+    indices = np.arange(12, dtype=np.float64)
+    left_points = gm.points(indices + 0.25, indices + 0.5)
+    right_points = gm.points(indices + 3.25, indices + 4.5)
+    left = gm.GeometryArray([
+        None if row % 3 == 0 else left_points[row] for row in range(12)
+    ])
+    right = gm.GeometryArray([
+        None if row % 4 == 0 else right_points[row] for row in range(12)
+    ])
+
+    result = gm.point_between(left, right, 0.5, normalized=True, unit='planar')
+
+    expected_missing = [
+        True,
+        False,
+        False,
+        True,
+        True,
+        False,
+        True,
+        False,
+        True,
+        True,
+        False,
+        False,
+    ]
+    assert result.is_missing.tolist() == expected_missing
+    expected_points = [
+        None if missing else gm.Point(row + 1.75, row + 2.5).to_wkb()
+        for row, missing in enumerate(expected_missing)
+    ]
+    actual = [None if geometry is None else geometry.to_wkb() for geometry in result]
+    assert actual == expected_points
+    assert result[1].to_wkb() == gm.Point(2.75, 3.5).to_wkb()
+
+
+def test_point_between_all_missing_compact_rows_stay_missing() -> None:
+    points = gm.GeometryArray([
+        gm.Point(0.0, 0.0),
+        None,
+        gm.Point(2.0, 0.0),
+        None,
+    ])
+    all_missing = points[[1, 3]]
+    other = points[[0, 2]]
+
+    result = gm.point_between(all_missing, other, 0.5, normalized=True)
+
+    assert result.is_missing.tolist() == [True, True]
+    assert result[0] is None
+    assert result[1] is None
+
+
 def test_point_nav_array_errors_keep_row_notes() -> None:
     origin = gm.Point(0.0, 0.0, crs=4326)
     targets = gm.GeometryArray([
