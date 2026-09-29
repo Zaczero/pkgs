@@ -10697,11 +10697,11 @@
     },
     "point_on_surface:antimeridian_line": {
       "kind": "geometry",
-      "wkt": "POINT (-175 5)"
+      "wkt": "POINT (175 -5)"
     },
     "point_on_surface:collinear_line": {
       "kind": "geometry",
-      "wkt": "POINT (2.5 0)"
+      "wkt": "POINT (2 0)"
     },
     "point_on_surface:empty_point": {
       "kind": "geometry",
@@ -10713,7 +10713,7 @@
     },
     "point_on_surface:multipart": {
       "kind": "geometry",
-      "wkt": "POINT (3 3)"
+      "wkt": "POINT (1 1)"
     },
     "point_on_surface:point": {
       "kind": "geometry",
@@ -10729,11 +10729,11 @@
     },
     "point_on_surface:random_line_1": {
       "kind": "geometry",
-      "wkt": "POINT (-5.466467053378228 -3.9750482382849253)"
+      "wkt": "POINT (-2.0868296731887934 -2.701470335107945)"
     },
     "point_on_surface:random_line_3": {
       "kind": "geometry",
-      "wkt": "POINT (-4.198033064677433 1.0201872904998037)"
+      "wkt": "POINT (-1.4304915211489442 -0.02272925925283098)"
     },
     "point_on_surface:random_polygon_0": {
       "kind": "geometry",
