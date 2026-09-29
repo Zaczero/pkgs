@@ -144,6 +144,16 @@ def test_crs_free_geojson_uses_wgs84_antimeridian_rules() -> None:
     )
 
 
+def test_geojson_width_summary_counts_coordinates_after_antimeridian_normalization() -> None:
+    source = [(-170.0, 10.0)] * 50 + [(170.0, 10.0)]
+    geometry = gm.LineString(source)
+
+    assert geometry.to_geojson() == (
+        '{"type":"MultiLineString","coordinates":'
+        '[[[-170.0,10.0],[-180.0,10.0]],[[180.0,10.0],[170.0,10.0]]]}'
+    )
+
+
 def test_b1_to_feature_splits_antimeridian_seam() -> None:
     poly = gm.from_wkt(
         'POLYGON((170 0, -170 0, -170 10, 170 10, 170 0))',

@@ -4,6 +4,8 @@
 
 use serde_json::{Value, json};
 
+use super::to_geojson_string_with_limit;
+use crate::error::{ErrorKind, ResourceError};
 use crate::io::*;
 use crate::test_support::allocation_count;
 
@@ -55,6 +57,111 @@ fn assert_mixed_ring_axes_error(shape: &Shape) {
     assert!(matches!(
         error.kind(),
         crate::error::ErrorKind::Geometry(crate::geometry::GeometryErrorKind::Invalid(_))
+    ));
+}
+
+#[test]
+fn checked_writer_runs_when_geojson_upper_bound_exceeds_fitting_lower_bound() {
+    let shape = Shape::Point(Point::new_raw_xy(f64::MAX, 0.0));
+    let limit = 50;
+    let summary = geojson_text_summary(&shape);
+    assert!(matches!(
+        summary.geojson_lower_bound(limit),
+        TextWidthBound::Within { lower_bound, .. } if lower_bound <= limit
+    ));
+    assert!(
+        summary
+            .geojson_upper_bound()
+            .is_some_and(|upper_bound| upper_bound > limit)
+    );
+
+    let error = to_geojson_string_with_limit::<false>(
+        &shape,
+        crate::geometry::TopologyDomain::Cartesian,
+        limit,
+    )
+    .expect_err("GeoJSON position exceeds the output limit");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
+    ));
+}
+
+#[test]
+fn geojson_upper_bound_covers_each_geometry_kind() {
+    for source in [
+        "POINT (0 0)",
+        "POINT EMPTY",
+        "MULTIPOINT ((0 0), (1 1))",
+        "LINESTRING (0 0, 1 1)",
+        "MULTILINESTRING ((0 0, 1 1), (2 2, 3 3))",
+        "POLYGON ((0 0, 2 0, 2 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5))",
+        "MULTIPOLYGON (((0 0, 2 0, 2 2, 0 0)), ((3 3, 4 3, 4 4, 3 3)))",
+        "MULTIPOLYGON EMPTY",
+        "GEOMETRYCOLLECTION (POINT (0 0), GEOMETRYCOLLECTION (POINT EMPTY))",
+        "GEOMETRYCOLLECTION EMPTY",
+    ] {
+        let shape = parse_wkt(source).expect("fixture WKT parses");
+        let output = to_geojson_string::<false>(&shape, crate::geometry::TopologyDomain::Cartesian)
+            .expect("fixture GeoJSON serializes");
+        let upper_bound = geojson_text_summary(&shape)
+            .geojson_upper_bound()
+            .expect("fixture upper bound is representable");
+        assert!(
+            output.len() <= upper_bound,
+            "upper bound {upper_bound} is below output length {} for {source}",
+            output.len()
+        );
+    }
+}
+
+#[test]
+fn checked_geojson_writer_runs_when_upper_bound_exceeds_fitting_lower_bound() {
+    let small_shape = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+    let small_limit = 40;
+    let small_summary = geojson_text_summary(&small_shape);
+    assert!(matches!(
+        small_summary.geojson_lower_bound(small_limit),
+        TextWidthBound::Within { lower_bound, .. } if lower_bound <= small_limit
+    ));
+    assert!(
+        small_summary
+            .geojson_upper_bound()
+            .is_some_and(|upper_bound| upper_bound > small_limit)
+    );
+    assert_eq!(
+        to_geojson_string_with_limit::<false>(
+            &small_shape,
+            crate::geometry::TopologyDomain::Cartesian,
+            small_limit,
+        )
+        .expect("checked fallback emits a Point below the limit"),
+        to_geojson_string::<false>(&small_shape, crate::geometry::TopologyDomain::Cartesian)
+            .expect("base writer emits a Point")
+    );
+
+    let shape = Shape::Point(Point::new_raw_xy(f64::MAX, 0.0));
+    let limit = 50;
+    let summary = geojson_text_summary(&shape);
+    assert!(matches!(
+        summary.geojson_lower_bound(limit),
+        TextWidthBound::Within { lower_bound, .. } if lower_bound <= limit
+    ));
+    assert!(
+        summary
+            .geojson_upper_bound()
+            .is_some_and(|upper_bound| upper_bound > limit)
+    );
+
+    let error = to_geojson_string_with_limit::<false>(
+        &shape,
+        crate::geometry::TopologyDomain::Cartesian,
+        limit,
+    )
+    .expect_err("GeoJSON position exceeds the output limit");
+    assert!(matches!(
+        error.kind(),
+        ErrorKind::Resource(ResourceError::SizeOverflow)
     ));
 }
 

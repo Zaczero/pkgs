@@ -2,6 +2,8 @@
     clippy::similar_names,
     reason = "axis and formula symbols name paired quantities here (minx/miny, xs/ys, lat_rad/lam_rad, step/stop), which this lint reads as typos"
 )]
+use std::collections::HashMap;
+
 use crate::NonNegative;
 use crate::geometry::constructive::{
     Result, SegmentPlacement, decimal_scale, normalized_line, quantize_column_simd,
@@ -13,10 +15,11 @@ use crate::geometry::overlay::{OverlayOp, overlay_all_geographic_from, overlay_v
 use crate::geometry::{
     Bounds, CoordSeq, CoordinateAxes, ExpansionBudget, GeometryErrorKind, GeometryKind, HasM, HasZ,
     LineSeq, MOrdinate, MultiPoint, MultiPolygon, OrdinateAxis, Point, Polygon, ReduceSimd, Shape,
-    Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates, clip_multipoint_columns,
-    clip_polygonal, clipped_line_parts, clipped_linestring, column_all_finite,
-    compare_point_slices, compare_points, compare_polygons, compare_shapes, line_parts_to_shape,
-    same_topological_coordinate, set_point_ordinate, simd_xy_map_f64, simd_xy_map_one_f64,
+    ShapeOwnerKey, Strictness, ZOrdinate, axis_pow2_scale, carry_ordinates,
+    clip_multipoint_columns, clip_polygonal, clipped_line_parts, clipped_linestring,
+    column_all_finite, compare_point_slices, compare_points, compare_polygons, compare_shapes,
+    line_parts_to_shape, same_topological_coordinate, set_point_ordinate, simd_xy_map_f64,
+    simd_xy_map_one_f64,
 };
 
 #[expect(
@@ -1294,14 +1297,40 @@ impl Shape {
     }
 
     pub fn orient_polygons(&self, exterior_cw: bool) -> Result<Self> {
+        self.orient_polygons_with_owners(exterior_cw, &mut None)
+    }
+
+    fn orient_polygons_with_owners(
+        &self,
+        exterior_cw: bool,
+        owners: &mut Option<HashMap<ShapeOwnerKey, Self>>,
+    ) -> Result<Self> {
         Ok(match self {
             Self::Polygon(polygon) => Self::Polygon(polygon.orient(exterior_cw)?),
             Self::MultiPolygon(polygons) => Self::MultiPolygon(
                 polygons.try_map_values(polygons.axes(), |polygon| polygon.orient(exterior_cw))?,
             ),
-            Self::GeometryCollection(geometries) => Self::GeometryCollection(
-                geometries.try_map_members(|geometry| geometry.orient_polygons(exterior_cw))?,
-            ),
+            Self::GeometryCollection(geometries) => {
+                let owner = geometries
+                    .members_are_shared()
+                    .then(|| ShapeOwnerKey::new(geometries.as_slice()));
+                if let Some(oriented) = owner
+                    .and_then(|owner| owners.as_ref()?.get(&owner))
+                    .cloned()
+                {
+                    return Ok(oriented);
+                }
+                let oriented =
+                    Self::GeometryCollection(geometries.try_map_members(|geometry| {
+                        geometry.orient_polygons_with_owners(exterior_cw, owners)
+                    })?);
+                if let Some(owner) = owner {
+                    owners
+                        .get_or_insert_with(HashMap::new)
+                        .insert(owner, oriented.clone());
+                }
+                oriented
+            },
             Self::Point(_)
             | Self::MultiPoint(_)
             | Self::LineString(_)

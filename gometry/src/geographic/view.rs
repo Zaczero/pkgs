@@ -256,9 +256,11 @@ pub(crate) struct GeographicCoordinate {
 }
 
 impl GeographicCoordinate {
+    #[cfg(test)]
     pub(crate) const fn native(self) -> Point {
         self.native
     }
+
     pub(crate) const fn longitude(self) -> CanonicalLongitude {
         self.longitude
     }

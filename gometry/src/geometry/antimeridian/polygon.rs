@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::error::Result;
 use crate::geographic::{
     GeographicFrame, GeographicRing, GeographicViewError, Latitude, RingDomain, RingSummary,
@@ -8,9 +10,29 @@ use crate::geometry::antimeridian::{
 };
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates as _, GeometryErrorKind, LineSeq, MOrdinate,
-    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, Strictness, ZOrdinate,
-    open_point_cycle_winding, polygon_is_valid, ring_encloses_pole, ring_winding, same_point,
+    MultiLineString, MultiMember, MultiPolygon, Point, Polygon, Ring, Shape, ShapeOwnerKey,
+    Strictness, ZOrdinate, open_point_cycle_winding, polygon_is_valid, ring_encloses_pole,
+    ring_winding, same_point,
 };
+
+#[derive(Default)]
+struct ShapeTransformMemo {
+    owners: Option<HashMap<ShapeOwnerKey, Shape>>,
+}
+
+impl ShapeTransformMemo {
+    fn get(&self, owner: Option<ShapeOwnerKey>) -> Option<Shape> {
+        owner.and_then(|owner| self.owners.as_ref()?.get(&owner).cloned())
+    }
+
+    fn insert(&mut self, owner: Option<ShapeOwnerKey>, shape: Shape) {
+        if let Some(owner) = owner {
+            self.owners
+                .get_or_insert_with(HashMap::new)
+                .insert(owner, shape);
+        }
+    }
+}
 
 impl Shape {
     /// Validate and split in the periodic coordinate frame. Canonical chart
@@ -31,7 +53,7 @@ impl Shape {
     /// own seam sign), with affine chart crossings and automatic pole closure.
     /// Geometries that do not cross are returned unchanged.
     /// The caller supplies an already-admitted canonical operation chart.
-    fn split_antimeridian_chart(&self) -> Result<Self> {
+    fn split_antimeridian_chart(&self, memo: &mut ShapeTransformMemo) -> Result<Self> {
         match self {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Ok(self.clone()),
             Self::LineString(points) => {
@@ -105,9 +127,19 @@ impl Shape {
                     split,
                 )?))
             },
-            Self::GeometryCollection(geometries) => Ok(Self::GeometryCollection(
-                geometries.try_map_members(|member| member.split_antimeridian_chart())?,
-            )),
+            Self::GeometryCollection(geometries) => {
+                let owner = geometries
+                    .members_are_shared()
+                    .then(|| ShapeOwnerKey::new(geometries.as_slice()));
+                if let Some(split) = memo.get(owner) {
+                    return Ok(split);
+                }
+                let split = Self::GeometryCollection(
+                    geometries.try_map_members(|member| member.split_antimeridian_chart(memo))?,
+                );
+                memo.insert(owner, split.clone());
+                Ok(split)
+            },
         }
     }
 
@@ -165,9 +197,13 @@ fn split_view_error(error: &GeographicViewError) -> crate::error::Error {
 fn source_longitudes_are_canonical(view: ScalarGeographicView<'_>) -> bool {
     let frame = view.frame();
     let mut canonical = true;
-    view.for_each_coordinate(|coordinate| {
-        let native = coordinate.native().x;
-        let wrapped = coordinate.longitude().get();
+    view.shape().for_each_first_xy_point_run(|point| {
+        let native = point.x;
+        let wrapped = frame
+            .longitude()
+            .canonicalize(point.x)
+            .expect("geographic view admitted every longitude")
+            .get();
         let positive_seam = native.to_bits() == frame.longitude().half_period().to_bits();
         let ordinary_identity = native.to_bits() == wrapped.to_bits()
             || (native.to_bits() == (-0.0_f64).to_bits() && wrapped.to_bits() == 0.0_f64.to_bits());
@@ -184,21 +220,31 @@ pub(crate) fn split_geographic_view(view: ScalarGeographicView<'_>) -> Result<Sh
     }
     let longitude_scale = frame.longitude().unit().radians_per_unit().to_degrees();
     let latitude_scale = frame.latitude_unit().radians_per_unit().to_degrees();
-    let chart = chart_shape(view.shape(), frame, longitude_scale, latitude_scale)?;
+    let chart = chart_shape(
+        view.shape(),
+        frame,
+        longitude_scale,
+        latitude_scale,
+        &mut ShapeTransformMemo::default(),
+    )?;
     if canonical && !chart.crosses_antimeridian() {
         return Ok(view.shape().clone());
     }
-    let split = chart.split_antimeridian_chart()?;
-    split.map_xy_with(|x, y| {
-        let latitude = if y == 90.0 {
-            frame.pole()
-        } else if y == -90.0 {
-            -frame.pole()
-        } else {
-            y / latitude_scale
-        };
-        Ok((x / longitude_scale, latitude))
-    })
+    let split = chart.split_antimeridian_chart(&mut ShapeTransformMemo::default())?;
+    map_xy_with_shared_owners(
+        &split,
+        &|x, y| {
+            let latitude = if y == 90.0 {
+                frame.pole()
+            } else if y == -90.0 {
+                -frame.pole()
+            } else {
+                y / latitude_scale
+            };
+            Ok((x / longitude_scale, latitude))
+        },
+        &mut ShapeTransformMemo::default(),
+    )
 }
 
 fn chart_point(
@@ -291,6 +337,7 @@ fn chart_shape(
     frame: GeographicFrame,
     longitude_scale: f64,
     latitude_scale: f64,
+    memo: &mut ShapeTransformMemo,
 ) -> Result<Shape> {
     match shape {
         Shape::Polygon(polygon) => Ok(Shape::Polygon(chart_polygon(
@@ -319,16 +366,58 @@ fn chart_shape(
             )?))
         },
         Shape::GeometryCollection(collection) => {
-            Ok(Shape::GeometryCollection(collection.try_map_members(
-                |member| chart_shape(member, frame, longitude_scale, latitude_scale),
-            )?))
+            let owner = collection
+                .members_are_shared()
+                .then(|| ShapeOwnerKey::new(collection.as_slice()));
+            if let Some(chart) = memo.get(owner) {
+                return Ok(chart);
+            }
+            let chart = Shape::GeometryCollection(collection.try_map_members(|member| {
+                chart_shape(member, frame, longitude_scale, latitude_scale, memo)
+            })?);
+            memo.insert(owner, chart.clone());
+            Ok(chart)
         },
-        _ => shape.map_xy_with(|x, y| {
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => shape.map_xy_with(|x, y| {
             Ok((
                 chart_longitude(x, frame, longitude_scale)?,
                 chart_latitude(y, frame, latitude_scale)?,
             ))
         }),
+    }
+}
+
+fn map_xy_with_shared_owners(
+    shape: &Shape,
+    map: &impl Fn(f64, f64) -> Result<(f64, f64)>,
+    memo: &mut ShapeTransformMemo,
+) -> Result<Shape> {
+    match shape {
+        Shape::GeometryCollection(collection) => {
+            let owner = collection
+                .members_are_shared()
+                .then(|| ShapeOwnerKey::new(collection.as_slice()));
+            if let Some(mapped) = memo.get(owner) {
+                return Ok(mapped);
+            }
+            let mapped = Shape::GeometryCollection(
+                collection
+                    .try_map_members(|member| map_xy_with_shared_owners(member, map, memo))?,
+            );
+            memo.insert(owner, mapped.clone());
+            Ok(mapped)
+        },
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Polygon(_)
+        | Shape::MultiPolygon(_)
+        | Shape::Empty(..) => shape.map_xy_with(map),
     }
 }
 

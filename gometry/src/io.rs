@@ -1,5 +1,7 @@
 //! Geometry serialization codecs: WKT, WKB, and GeoJSON.
 
+use std::collections::HashMap;
+use std::fmt;
 use std::num::NonZeroU32;
 
 use thiserror::Error;
@@ -8,7 +10,7 @@ use crate::crs;
 use crate::error::{Error as CrateError, ParseFormat, Result};
 use crate::geometry::{
     CoordSeq, CoordinateAxes, Coordinates, GeometryErrorKind, GeometryKind, LineSeq, Point,
-    Polygon, Ring, Shape, SharedShapeOwners,
+    Polygon, Ring, Shape, ShapeCountQuery, ShapeOwnerKey, SharedShapeOwners,
 };
 
 const WKB_Z_OFFSET: u32 = 1000;
@@ -191,24 +193,416 @@ pub(crate) fn admit_closed_ring(coords: CoordSeq) -> Result<Ring> {
     Ring::closed_coordseq(coords)
 }
 
-/// Bracketed containers in a text encoding of `shape`: one for the geometry
-/// and one per member, ring, or nested geometry.
-pub(crate) fn text_structure_count(shape: &Shape) -> usize {
+#[derive(Clone, Copy)]
+enum BoundedCount {
+    Within(usize),
+    Exceeds,
+}
+
+const WKT_MIN_KEYWORD_BYTES: usize = 5;
+const WKT_MIN_XY_POSITION_BYTES: usize = 3;
+const WKT_AXIS_TAG_MAX_BYTES: usize = 3;
+pub(crate) const GEOJSON_POSITION_UPPER_BYTES: usize = 80;
+const GEOJSON_OBJECT_FRAMING_UPPER_BYTES: usize = 64;
+const GEOJSON_ARRAY_FRAMING_UPPER_BYTES: usize = 3;
+
+impl BoundedCount {
+    fn add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Within(left), Self::Within(right)) => left
+                .checked_add(right)
+                .filter(|count| isize::try_from(*count).is_ok())
+                .map_or(Self::Exceeds, Self::Within),
+            _ => Self::Exceeds,
+        }
+    }
+
+    const fn get(self) -> Option<usize> {
+        match self {
+            Self::Within(count) => Some(count),
+            Self::Exceeds => None,
+        }
+    }
+}
+
+/// Shape and visible-coordinate occurrences admitted for a full text output.
+#[derive(Clone, Copy)]
+pub(crate) struct TextShapeSummary {
+    shapes: BoundedCount,
+    coordinates: BoundedCount,
+    structures: BoundedCount,
+    /// Fixed WKT keywords, delimiters, and separators beyond the 5-byte
+    /// keyword and 3-byte XY-position minima; float spelling stays in writer.
+    wkt_extra: BoundedCount,
+}
+
+impl TextShapeSummary {
+    fn lower_bound(
+        self,
+        bytes_per_shape: usize,
+        bytes_per_coordinate: usize,
+        extra: BoundedCount,
+        limit: usize,
+    ) -> TextWidthBound {
+        let Some(shape_bytes) = self
+            .shapes
+            .get()
+            .and_then(|count| count.checked_mul(bytes_per_shape))
+        else {
+            return TextWidthBound::Exceeds { limit };
+        };
+        let Some(coordinate_bytes) = self
+            .coordinates
+            .get()
+            .and_then(|count| count.checked_mul(bytes_per_coordinate))
+        else {
+            return TextWidthBound::Exceeds { limit };
+        };
+        let Some(length) = shape_bytes
+            .checked_add(coordinate_bytes)
+            .and_then(|length| length.checked_add(extra.get()?))
+            .filter(|length| *length <= limit)
+        else {
+            return TextWidthBound::Exceeds { limit };
+        };
+        TextWidthBound::Within {
+            lower_bound: length,
+            limit,
+        }
+    }
+
+    pub(crate) fn wkt_lower_bound(self, limit: usize) -> TextWidthBound {
+        self.lower_bound(
+            WKT_MIN_KEYWORD_BYTES,
+            WKT_MIN_XY_POSITION_BYTES,
+            self.wkt_extra,
+            limit,
+        )
+    }
+
+    pub(crate) fn geojson_lower_bound(self, limit: usize) -> TextWidthBound {
+        // A Point EMPTY object is the smallest GeoJSON geometry object (33
+        // bytes). Each emitted position replaces its `[]` coordinate value by
+        // at least `[0,0]`, adding three bytes without double-counting brackets.
+        self.lower_bound(33, 3, BoundedCount::Within(0), limit)
+    }
+
+    pub(crate) fn wkt_upper_bound(
+        self,
+        dimensions: usize,
+        maximum_ordinate_bytes: usize,
+    ) -> Option<usize> {
+        // The summary keeps exact fixed syntax in `wkt_extra`; each shape
+        // contributes its base keyword and at most a three-byte axis tag.
+        let shapes = self.shapes.get()?;
+        let coordinates = self.coordinates.get()?;
+        let keyword_and_axis_bytes = shapes
+            .checked_mul(WKT_MIN_KEYWORD_BYTES)?
+            .checked_add(shapes.checked_mul(WKT_AXIS_TAG_MAX_BYTES)?)?;
+        let ordinate_width = dimensions
+            .checked_mul(maximum_ordinate_bytes)?
+            .checked_add(dimensions.checked_sub(1)?)?;
+        let coordinate_bytes = coordinates.checked_mul(ordinate_width)?;
+        keyword_and_axis_bytes
+            .checked_add(self.wkt_extra.get()?)?
+            .checked_add(coordinate_bytes)
+    }
+
+    pub(crate) fn geojson_upper_bound(self) -> Option<usize> {
+        let shapes = self.shapes.get()?;
+        let coordinates = self.coordinates.get()?;
+        let structures = self.structures.get()?;
+        // XYZ positions fit in 80 bytes including their own delimiters; the
+        // extra coordinate byte bounds their list separators. A geometry
+        // object needs under 64 bytes for its framing, and each non-position
+        // array needs two brackets plus at most one separator per child.
+        let position_bytes = coordinates.checked_mul(GEOJSON_POSITION_UPPER_BYTES)?;
+        let position_separators = coordinates;
+        let object_and_collection_separators = shapes
+            .checked_mul(GEOJSON_OBJECT_FRAMING_UPPER_BYTES)?
+            .checked_add(shapes)?;
+        let array_delimiters_and_separators =
+            structures.checked_mul(GEOJSON_ARRAY_FRAMING_UPPER_BYTES)?;
+        position_bytes
+            .checked_add(position_separators)?
+            .checked_add(object_and_collection_separators)?
+            .checked_add(array_delimiters_and_separators)
+    }
+
+    pub(crate) const fn coordinate_count(self) -> Option<usize> {
+        self.coordinates.get()
+    }
+
+    pub(crate) const fn structure_count(self) -> Option<usize> {
+        self.structures.get()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TextWidthBound {
+    Within { lower_bound: usize, limit: usize },
+    Exceeds { limit: usize },
+}
+
+impl TextWidthBound {
+    pub(crate) fn require_within(self) -> Result<()> {
+        match self {
+            Self::Within { .. } => Ok(()),
+            Self::Exceeds { .. } => Err(crate::error::ResourceError::SizeOverflow.into()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TextShapeSummaryMemo {
+    collections: Option<HashMap<ShapeOwnerKey, TextShapeSummary>>,
+}
+
+impl TextShapeSummaryMemo {
+    fn collection(&self, owner: ShapeOwnerKey) -> Option<TextShapeSummary> {
+        self.collections
+            .as_ref()
+            .and_then(|collections| collections.get(&owner))
+            .copied()
+    }
+
+    fn insert_collection(&mut self, owner: ShapeOwnerKey, summary: TextShapeSummary) {
+        self.collections
+            .get_or_insert_with(HashMap::new)
+            .insert(owner, summary);
+    }
+}
+
+#[derive(Clone, Copy)]
+enum TextCodec {
+    Wkt,
+    GeoJson,
+}
+
+/// Count text-output occurrences while summarizing each shared collection
+/// owner once. Cached summaries are still added for every member edge.
+fn text_shape_summary(shape: &Shape, codec: TextCodec) -> TextShapeSummary {
+    fn summarize(
+        shape: &Shape,
+        codec: TextCodec,
+        memo: &mut TextShapeSummaryMemo,
+    ) -> TextShapeSummary {
+        if let Shape::GeometryCollection(collection) = shape {
+            let owner = collection
+                .members_are_shared()
+                .then(|| ShapeOwnerKey::new(collection.as_slice()));
+            if let Some(summary) = owner.and_then(|owner| memo.collection(owner)) {
+                return summary;
+            }
+            let mut summary = TextShapeSummary {
+                shapes: BoundedCount::Within(1),
+                coordinates: BoundedCount::Within(0),
+                structures: BoundedCount::Within(1),
+                wkt_extra: text_wkt_collection_extra(collection.len(), codec)
+                    .map_or(BoundedCount::Exceeds, BoundedCount::Within),
+            };
+            for member in collection {
+                let child = summarize(member, codec, memo);
+                summary.shapes = summary.shapes.add(child.shapes);
+                summary.coordinates = summary.coordinates.add(child.coordinates);
+                summary.structures = summary.structures.add(child.structures);
+                summary.wkt_extra = summary.wkt_extra.add(child.wkt_extra);
+            }
+            if let Some(owner) = owner {
+                memo.insert_collection(owner, summary);
+            }
+            return summary;
+        }
+        TextShapeSummary {
+            shapes: BoundedCount::Within(1),
+            coordinates: ShapeCountQuery::default()
+                .coordinate_count(shape)
+                .filter(|count| isize::try_from(*count).is_ok())
+                .map_or(BoundedCount::Exceeds, BoundedCount::Within),
+            structures: text_structure_count_hint(shape)
+                .filter(|count| isize::try_from(*count).is_ok())
+                .map_or(BoundedCount::Exceeds, BoundedCount::Within),
+            wkt_extra: match codec {
+                TextCodec::Wkt => text_wkt_shape_extra(shape)
+                    .filter(|count| isize::try_from(*count).is_ok())
+                    .map_or(BoundedCount::Exceeds, BoundedCount::Within),
+                TextCodec::GeoJson => BoundedCount::Within(0),
+            },
+        }
+    }
+
+    summarize(shape, codec, &mut TextShapeSummaryMemo::default())
+}
+
+pub(crate) fn wkt_text_summary(shape: &Shape) -> TextShapeSummary {
+    text_shape_summary(shape, TextCodec::Wkt)
+}
+
+pub(crate) fn geojson_text_summary(shape: &Shape) -> TextShapeSummary {
+    text_shape_summary(shape, TextCodec::GeoJson)
+}
+
+fn text_structure_count_hint(shape: &Shape) -> Option<usize> {
     match shape {
-        Shape::MultiPoint(points) => points.member_count().wrapping_add(1),
-        Shape::MultiLineString(lines) => lines.member_count().wrapping_add(1),
-        Shape::Polygon(polygon) => polygon.holes.len().wrapping_add(2),
-        Shape::MultiPolygon(polygons) => polygons
-            .iter()
-            .fold(polygons.member_count().wrapping_add(1), |total, polygon| {
-                total.wrapping_add(polygon.holes.len().wrapping_add(1))
-            }),
-        Shape::GeometryCollection(geometries) => {
-            geometries.iter().fold(1_usize, |total, geometry| {
-                total.wrapping_add(text_structure_count(geometry))
-            })
+        Shape::MultiPoint(points) => points.member_count().checked_add(1),
+        Shape::MultiLineString(lines) => lines.member_count().checked_add(1),
+        Shape::Polygon(polygon) => polygon.holes.len().checked_add(2),
+        Shape::MultiPolygon(polygons) => {
+            let mut total = polygons.member_count().checked_add(1)?;
+            for polygon in polygons.iter() {
+                total = total.checked_add(polygon.holes.len().checked_add(1)?)?;
+            }
+            Some(total)
         },
-        Shape::Point(_) | Shape::LineString(_) | Shape::Empty(..) => 1,
+        Shape::GeometryCollection(_) => unreachable!("collections are summarized recursively"),
+        Shape::Point(_) | Shape::LineString(_) | Shape::Empty(..) => Some(1),
+    }
+}
+
+fn text_wkt_collection_extra(member_count: usize, codec: TextCodec) -> Option<usize> {
+    if matches!(codec, TextCodec::GeoJson) {
+        return Some(0);
+    }
+    let type_extra = "GEOMETRYCOLLECTION"
+        .len()
+        .checked_sub(WKT_MIN_KEYWORD_BYTES)?;
+    let separators = member_count.saturating_sub(1).checked_mul(2)?;
+    type_extra.checked_add(3)?.checked_add(separators)
+}
+
+fn text_wkt_shape_extra(shape: &Shape) -> Option<usize> {
+    let type_extra = shape
+        .geometry_type()
+        .len()
+        .checked_sub(WKT_MIN_KEYWORD_BYTES)?;
+    match shape {
+        Shape::Point(_) => type_extra.checked_add(3),
+        Shape::MultiPoint(points) => {
+            let mut extra = type_extra
+                .checked_add(3)?
+                .checked_add(points.member_count().saturating_sub(1).checked_mul(2)?)?;
+            for member in points.members() {
+                extra = extra.checked_add(match member {
+                    crate::geometry::MultiMember::Empty => 5,
+                    crate::geometry::MultiMember::Value(_) => 2,
+                })?;
+            }
+            Some(extra)
+        },
+        Shape::LineString(line) => type_extra
+            .checked_add(3)?
+            .checked_add(line.len().saturating_sub(1).checked_mul(2)?),
+        Shape::MultiLineString(lines) => {
+            let mut extra = type_extra
+                .checked_add(3)?
+                .checked_add(lines.member_count().saturating_sub(1).checked_mul(2)?)?;
+            for member in lines.members_with_values() {
+                extra = extra.checked_add(match member {
+                    crate::geometry::MultiMember::Empty => 5,
+                    crate::geometry::MultiMember::Value(line) => {
+                        2_usize.checked_add(line.len().saturating_sub(1).checked_mul(2)?)?
+                    },
+                })?;
+            }
+            Some(extra)
+        },
+        Shape::Polygon(polygon) => polygon_wkt_ring_extra(polygon)
+            .and_then(|rings| type_extra.checked_add(3)?.checked_add(rings)),
+        Shape::MultiPolygon(polygons) => {
+            let mut extra = type_extra
+                .checked_add(3)?
+                .checked_add(polygons.member_count().saturating_sub(1).checked_mul(2)?)?;
+            for member in polygons.members_with_values() {
+                extra = extra.checked_add(match member {
+                    crate::geometry::MultiMember::Empty => 5,
+                    crate::geometry::MultiMember::Value(polygon) => {
+                        2_usize.checked_add(polygon_wkt_ring_extra(polygon)?)?
+                    },
+                })?;
+            }
+            Some(extra)
+        },
+        Shape::GeometryCollection(_) => unreachable!("collections are summarized recursively"),
+        Shape::Empty(..) => type_extra.checked_add(6),
+    }
+}
+
+fn polygon_wkt_ring_extra(polygon: &Polygon) -> Option<usize> {
+    let mut extra = 2_usize.checked_add(polygon.shell.len().saturating_sub(1).checked_mul(2)?)?;
+    for hole in polygon.holes.iter() {
+        extra = extra
+            .checked_add(4_usize.checked_add(hole.len().saturating_sub(1).checked_mul(2)?)?)?;
+    }
+    Some(extra)
+}
+
+/// A string sink that rejects an append before its byte length exceeds the
+/// representable Rust string length.
+pub(crate) struct CheckedText {
+    value: String,
+    remaining: usize,
+}
+
+impl CheckedText {
+    pub(crate) fn with_capacity_hint(capacity: usize, limit: usize) -> Self {
+        let limit = limit.min(isize::MAX.unsigned_abs());
+        let capacity = capacity.min(limit);
+        let mut value = String::new();
+        if isize::try_from(capacity).is_ok() {
+            let _reservation = value.try_reserve(capacity);
+        }
+        Self {
+            value,
+            remaining: limit,
+        }
+    }
+
+    pub(crate) fn push_str(&mut self, value: &str) -> Result<()> {
+        self.check_append(value.len())?;
+        self.value.push_str(value);
+        Ok(())
+    }
+
+    pub(crate) fn push(&mut self, value: char) -> Result<()> {
+        self.check_append(value.len_utf8())?;
+        self.value.push(value);
+        Ok(())
+    }
+
+    pub(crate) fn write_formatted(&mut self, arguments: fmt::Arguments<'_>) -> Result<()> {
+        fmt::write(self, arguments).map_err(|_| crate::error::ResourceError::SizeOverflow.into())
+    }
+
+    pub(crate) const fn len(&self) -> usize {
+        self.value.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn as_str(&self) -> &str {
+        &self.value
+    }
+
+    pub(crate) fn into_string(self) -> String {
+        self.value
+    }
+
+    fn check_append(&mut self, bytes: usize) -> Result<()> {
+        self.remaining = self
+            .remaining
+            .checked_sub(bytes)
+            .ok_or(crate::error::ResourceError::SizeOverflow)?;
+        Ok(())
+    }
+}
+
+impl fmt::Write for CheckedText {
+    fn write_str(&mut self, value: &str) -> fmt::Result {
+        let Some(remaining) = self.remaining.checked_sub(value.len()) else {
+            return Err(fmt::Error);
+        };
+        self.remaining = remaining;
+        self.value.push_str(value);
+        Ok(())
     }
 }
 
@@ -403,6 +797,72 @@ mod tests {
         Ring::from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap()
     }
 
+    fn doubled_collection(depth: usize) -> Shape {
+        let mut shape = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        for _ in 0..depth {
+            let child = shape.clone();
+            shape = Shape::geometry_collection(vec![child.clone(), child])
+                .expect("collection remains within its nesting limit");
+        }
+        shape
+    }
+
+    #[test]
+    fn text_lower_bounds_reject_depth_58_doubled_geometry() {
+        let shape = doubled_collection(58);
+        let limit = isize::MAX.unsigned_abs();
+        assert!(matches!(
+            wkt_text_summary(&shape).wkt_lower_bound(limit),
+            TextWidthBound::Exceeds { limit: got } if got == limit
+        ));
+        assert!(matches!(
+            geojson_text_summary(&shape).geojson_lower_bound(limit),
+            TextWidthBound::Exceeds { limit: got } if got == limit
+        ));
+    }
+
+    #[test]
+    fn geojson_lower_bound_fits_a_point_document() {
+        let shape = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let bound = geojson_text_summary(&shape).geojson_lower_bound(isize::MAX.unsigned_abs());
+        assert!(matches!(bound, TextWidthBound::Within { .. }));
+        let lower_bound = match bound {
+            TextWidthBound::Within { lower_bound, .. } => lower_bound,
+            TextWidthBound::Exceeds { .. } => 0,
+        };
+        let output = to_geojson_string::<false>(&shape, crate::geometry::TopologyDomain::Cartesian)
+            .expect("Point GeoJSON writes");
+        assert!(lower_bound <= output.len());
+    }
+
+    #[test]
+    fn wkt_syntax_lower_bound_fits_each_geometry_kind() {
+        for source in [
+            "POINT (0 0)",
+            "POINT EMPTY",
+            "MULTIPOINT (EMPTY, (0 0))",
+            "LINESTRING (0 0, 1 1)",
+            "MULTILINESTRING (EMPTY, (0 0, 1 1))",
+            "POLYGON ((0 0, 2 0, 2 2, 0 0), (0.5 0.5, 1 0.5, 1 1, 0.5 0.5))",
+            "MULTIPOLYGON (EMPTY, ((0 0, 2 0, 2 2, 0 0)))",
+            "GEOMETRYCOLLECTION (POINT (0 0), GEOMETRYCOLLECTION (POINT EMPTY))",
+        ] {
+            let shape = parse_wkt(source).expect("fixture WKT parses");
+            let output = to_wkt(&shape).expect("fixture geometry serializes");
+            let bound = wkt_text_summary(&shape).wkt_lower_bound(isize::MAX.unsigned_abs());
+            assert!(matches!(bound, TextWidthBound::Within { .. }), "{source}");
+            let lower_bound = match bound {
+                TextWidthBound::Within { lower_bound, .. } => lower_bound,
+                TextWidthBound::Exceeds { .. } => 0,
+            };
+            assert!(
+                lower_bound <= output.len(),
+                "lower bound {lower_bound} exceeds output length {} for {source}",
+                output.len()
+            );
+        }
+    }
+
     #[test]
     fn serializable_axes_reject_mixed_multipolygon_rings() {
         let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
@@ -416,5 +876,35 @@ mod tests {
                 .to_string()
                 .contains("Polygon rings must share one coordinate axes layout")
         );
+    }
+
+    #[test]
+    fn checked_text_rejects_an_append_before_crossing_its_limit() {
+        let mut out = CheckedText {
+            value: String::new(),
+            remaining: 3,
+        };
+        out.push_str("abc").expect("initial bytes fit");
+        let error = out
+            .push('d')
+            .expect_err("the fourth byte exceeds the limit");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+        assert_eq!(out.as_str(), "abc");
+
+        let mut out = CheckedText {
+            value: String::new(),
+            remaining: 3,
+        };
+        let error = out
+            .write_formatted(format_args!("abcd"))
+            .expect_err("formatted bytes obey the same limit");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+        assert_eq!(out.as_str(), "");
     }
 }

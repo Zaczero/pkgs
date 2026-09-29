@@ -286,6 +286,49 @@ else:
         assert message in result.stderr
 
 
+def test_shared_depth_128_serializers_reject_width_but_repr_stays_bounded() -> None:
+    script = r"""
+import gometry as gm
+
+point = gm.Point(0.0, 0.0)
+for _ in range(58):
+    point = gm.GeometryCollection([point, point])
+for serialize in (point.to_wkt, point.to_geojson):
+    try:
+        serialize()
+    except OverflowError as error:
+        assert str(error) == 'resource size arithmetic overflowed'
+    else:
+        raise AssertionError('depth-58 doubled Point output exceeded Vec capacity')
+
+shape = gm.LineString([(170.0, 0.0), (-170.0, 0.0)])
+for _ in range(128):
+    shape = gm.GeometryCollection([shape, shape])
+
+for serialize in (shape.to_wkb, shape.to_wkt, shape.to_geojson):
+    try:
+        serialize()
+    except OverflowError as error:
+        assert str(error) == 'resource size arithmetic overflowed'
+    else:
+        raise AssertionError('full serialization accepted an unrepresentable width')
+
+rendered = repr(shape)
+assert rendered.startswith('<GEOMETRYCOLLECTION (')
+assert len(rendered[1:121]) == 120
+assert rendered[121:124] == '...'
+assert rendered.endswith('>')
+"""
+    result = subprocess.run(
+        [sys.executable, '-c', script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def test_shared_depth_8_geojson_output_matches_expanded_occurrences() -> None:
     def expanded(depth: int) -> gm.Geometry:
         if depth == 0:
