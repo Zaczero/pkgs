@@ -1,5 +1,6 @@
 import math
 import warnings
+from collections.abc import Iterable
 from typing import Any, cast
 
 import gometry as gm
@@ -295,6 +296,106 @@ def test_predicates_and_overlay_match_shapely_oracle() -> None:
     ) == pytest.approx(
         frechet_distance(shapely_reference_line, from_wkt('LINESTRING (0 1, 3 5, 6 5)'))
     )
+
+
+def test_polygonize_full_diagnostics_match_shapely_polygonizer() -> None:
+    from shapely.geometry import LineString as ShapelyLineString
+    from shapely.ops import polygonize, polygonize_full
+
+    def normalized_wkb(geometries: Iterable[Any]) -> set[bytes]:
+        return {shapely.to_wkb(shapely.normalize(geometry)) for geometry in geometries}
+
+    def gometry_wkb(geometries: Iterable[Any]) -> set[bytes]:
+        return normalized_wkb(
+            shapely.from_wkt(geometry.to_wkt()) for geometry in geometries
+        )
+
+    square_edges: list[list[tuple[float, float]]] = [
+        [(0, 0), (2, 0)],
+        [(2, 0), (2, 2)],
+        [(2, 2), (0, 2)],
+        [(0, 2), (0, 0)],
+    ]
+    square_ring: list[tuple[float, float]] = [
+        (0, 0),
+        (2, 0),
+        (2, 2),
+        (0, 2),
+        (0, 0),
+    ]
+    second_square: list[list[tuple[float, float]]] = [
+        [(4, 0), (6, 0)],
+        [(6, 0), (6, 2)],
+        [(6, 2), (4, 2)],
+        [(4, 2), (4, 0)],
+    ]
+    cases: list[tuple[str, list[list[tuple[float, float]]], tuple[int, ...]]] = [
+        ('plain ring', square_edges, (1, 0, 0, 0)),
+        (
+            'free segment inside a face',
+            [square_ring, [(0.5, 0.5), (1.5, 1.5)]],
+            (1, 0, 1, 0),
+        ),
+        (
+            'two-segment chain attached to a ring',
+            [*square_edges, [(0, 0), (-1, 0)], [(-1, 0), (-2, 0)]],
+            (1, 0, 2, 0),
+        ),
+        (
+            'branch hanging off a dangle chain',
+            [
+                *square_edges,
+                [(0, 0), (-1, 0)],
+                [(-1, 0), (-2, 0)],
+                [(-1, 0), (-1, 1)],
+            ],
+            (1, 0, 3, 0),
+        ),
+        (
+            'chord between two polygonized faces',
+            [*square_edges, [(0, 0), (2, 2)]],
+            (2, 0, 0, 0),
+        ),
+        (
+            'bridge between disjoint rings',
+            [
+                *square_edges,
+                *second_square,
+                [(0, 0), (2, -1)],
+                [(2, -1), (4, 0)],
+            ],
+            (2, 2, 0, 0),
+        ),
+        (
+            'duplicate edge forms an invalid ring',
+            [[(0, 0), (1, 0)], [(0, 0), (1, 0)]],
+            (0, 0, 0, 1),
+        ),
+    ]
+
+    for name, coordinates, expected_sizes in cases:
+        gometry_lines = [gm.LineString(line) for line in coordinates]
+        shapely_lines = [ShapelyLineString(line) for line in coordinates]
+        full = gm.polygonize_full(gometry_lines)
+        expected_full = polygonize_full(shapely_lines)
+
+        observed_sizes = tuple(len(group.geoms) for group in expected_full)
+        assert observed_sizes == expected_sizes, name
+        actual_polygons = gometry_wkb(full.polygons)
+        expected_polygons = normalized_wkb(expected_full[0].geoms)
+        assert actual_polygons == expected_polygons, name
+
+        actual_diagnostics = [
+            [geometry for row in groups for geometry in row]
+            for groups in (full.cut_edges, full.dangles, full.invalid_rings)
+        ]
+        for actual, expected in zip(actual_diagnostics, expected_full[1:], strict=True):
+            assert gometry_wkb(actual) == normalized_wkb(expected.geoms), name
+
+        non_full = gm.polygonize(gometry_lines)
+        expected_non_full = polygonize(shapely_lines)
+        assert gometry_wkb(non_full) == normalized_wkb(expected_non_full), name
+        assert gometry_wkb(non_full) == gometry_wkb(full.polygons), name
 
 
 def test_mixed_point_line_polygon_overlay_matches_shapely_oracle() -> None:

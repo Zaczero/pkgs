@@ -1087,17 +1087,56 @@ impl ExactSourceInventory {
         let emission = self.line_emission(partition)?;
         let (topology, edges) = partition.local_topology()?;
         let global = partition.global_faces(&topology, &edges)?;
-        let mut used = Vec::with_capacity(partition.spans.len());
-        used.resize(partition.spans.len(), false);
+        let mut same_face = vec![false; partition.spans.len()];
         for (slot, &span) in edges.iter().enumerate() {
-            used[span as usize] |= global.walk_faces[topology.face_of[slot] as usize] != 0;
+            let twin = topology.twins[slot] as usize;
+            if slot > twin {
+                continue;
+            }
+            let span = span as usize;
+            let face = global.walk_faces[topology.face_of[slot] as usize];
+            let other_face = global.walk_faces[topology.face_of[twin] as usize];
+            same_face[span] = face == other_face;
         }
 
-        let mut degree = vec![0_usize; partition.node_count()];
-        for span in &partition.spans {
-            degree[span.start.0 as usize] = degree[span.start.0 as usize].saturating_add(1);
-            degree[span.end.0 as usize] = degree[span.end.0 as usize].saturating_add(1);
+        let mut degree: Vec<usize> = topology
+            .starts
+            .array_windows::<2>()
+            .map(|&[start, end]| end.wrapping_sub(start) as usize)
+            .collect();
+        let mut pending: Vec<usize> = degree
+            .iter()
+            .enumerate()
+            .filter_map(|(node, &degree)| (degree == 1).then_some(node))
+            .collect();
+        let mut dangle_spans = vec![false; partition.spans.len()];
+        while let Some(node) = pending.pop() {
+            if degree[node] != 1 {
+                continue;
+            }
+            let start = topology.starts[node] as usize;
+            let end = topology.starts[node.wrapping_add(1)] as usize;
+            let span = edges[start..end]
+                .iter()
+                .map(|&span| span as usize)
+                .find(|&span| !dangle_spans[span])
+                .expect("a degree-one node has one remaining incident span");
+            dangle_spans[span] = true;
+
+            let span = partition.spans[span];
+            let other = if span.start.0 as usize == node {
+                span.end.0 as usize
+            } else {
+                span.start.0 as usize
+            };
+            degree[node] = 0;
+            degree[other] = degree[other].wrapping_sub(1);
+            if degree[other] == 1 {
+                pending.push(other);
+            }
         }
+        drop(pending);
+        drop(degree);
 
         let mut cuts = Vec::new();
         let mut dangles = Vec::new();
@@ -1107,8 +1146,7 @@ impl ExactSourceInventory {
             rows.resize_with(self.polygon_rings.len(), Vec::new);
         }
 
-        for (index, (span, &segment)) in partition.spans.iter().zip(&emission.segments).enumerate()
-        {
+        for (index, (_, &segment)) in partition.spans.iter().zip(&emission.segments).enumerate() {
             let owners = emission.sources(index);
             let mut rows = Vec::with_capacity(owners.len());
             for source in owners {
@@ -1120,11 +1158,9 @@ impl ExactSourceInventory {
                 let row = row as usize;
                 if owners.len() > 1 {
                     invalid_rings[row].push(diagnostic_line(segment, true)?);
-                } else if !used[index]
-                    && (degree[span.start.0 as usize] <= 1 || degree[span.end.0 as usize] <= 1)
-                {
+                } else if dangle_spans[index] {
                     dangles[row].push(diagnostic_line(segment, false)?);
-                } else if !used[index] {
+                } else if same_face[index] {
                     cuts[row].push(diagnostic_line(segment, false)?);
                 }
             }
