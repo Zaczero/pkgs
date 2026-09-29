@@ -9,11 +9,11 @@ use rstar::primitives::{GeomWithData, Rectangle};
 use crate::curves::morton_interleave;
 use crate::error::Result;
 use crate::geometry::{
-    AreaSign, Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind,
-    HasM, HasZ, HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding,
-    Segment, SegmentIndex, Shape, XY, ZOrdinate, dedup_consecutive_points,
-    open_point_cycle_decision, open_point_cycle_winding, orientation, orientation_xy,
-    point_on_segment, ring_contains_interior, same_point, segments_intersect, wrap_index,
+    Bounds, BulkRTree, CoordSeqBuilder, CoordinateAxes, Coordinates, GeometryErrorKind, HasM, HasZ,
+    HashSet, MOrdinate, Orientation, Point, PointKey, Polygon, Ring, RingWinding, Segment,
+    SegmentIndex, Shape, XY, ZOrdinate, dedup_consecutive_points, open_point_cycle_winding,
+    orientation, orientation_xy, point_on_segment, ring_contains_interior, same_point,
+    segments_intersect, wrap_index,
 };
 
 /// Walk a polygon's ear-cut triangles through one caller-owned sink. The
@@ -24,14 +24,14 @@ pub(crate) fn earcut_polygon_with(
     emit: &mut impl FnMut(Point, Point, Point) -> Result<()>,
 ) -> Result<()> {
     let mut ring = cleaned_earcut_ring(&polygon.shell, false)?;
-    if ring.len() < 3 || open_point_cycle_decision(&ring).sign() == AreaSign::Zero {
+    if ring.len() < 3 || open_point_cycle_winding(&ring).is_degenerate() {
         return Ok(());
     }
 
     let mut holes = Vec::with_capacity(polygon.holes.len());
     for hole in polygon.holes.iter() {
         let hole = cleaned_earcut_ring(hole, true)?;
-        if hole.len() < 3 || open_point_cycle_decision(&hole).sign() == AreaSign::Zero {
+        if hole.len() < 3 || open_point_cycle_winding(&hole).is_degenerate() {
             return Err(GeometryErrorKind::triangulation("polygon hole degenerates"));
         }
         validate_hole_inside_shell(&ring, &hole)?;

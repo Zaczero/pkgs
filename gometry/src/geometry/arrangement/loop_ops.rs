@@ -11,21 +11,9 @@ pub(crate) struct LoopCut {
     pub(crate) group: u32,
 }
 
-/// Phase 1 of [`Arrangement::from_single_loop`] — pure analysis, no pooled
-/// buffers touched: noding events, crossing groups, and every structural
-/// bail. Returns the cuts ordered per ordinal exactly like
-/// `split_segment_at`, plus the group count.
-#[cfg(test)]
-pub(crate) fn single_loop_cuts(
-    segments: &[Segment],
-) -> crate::error::Result<Option<(Vec<LoopCut>, u32)>> {
-    positional_loop_cuts(segments, &[(0, segments.len() as u32)])
-}
-
-/// [`single_loop_cuts`] over MULTIPLE positional loops: the same noding
-/// events, crossing groups, and bails, with the bit-level chain closure
-/// checked per loop range and the duplicate-key bail covering CROSS-LOOP
-/// vertex coincidence for free (all loops' start keys share one set).
+/// Find noding events and crossing groups for multiple positional loops.
+/// Bit-level chain closure is checked per loop range, and duplicate starts
+/// reject cross-loop vertex coincidence before noding.
 pub(crate) fn positional_loop_cuts(
     segments: &[Segment],
     loop_ranges: &[(u32, u32)],
@@ -160,68 +148,13 @@ pub(crate) fn positional_loop_cuts(
     Ok(Some((cuts, group_count)))
 }
 
-/// The ordinal walk of [`Arrangement::from_single_loop`]: dense ids in
-/// first-encounter order — exactly the general dedup's assignment over the
-/// atomic chain — filling `points` (pooled) and returning the cut flag per
-/// id plus the atomic pieces as id pairs.
-#[cfg(test)]
-pub(crate) fn single_loop_pieces(
-    segments: &[Segment],
-    cuts: &[LoopCut],
-    group_count: u32,
-    points: &mut Vec<XY>,
-) -> (Vec<bool>, Vec<(u32, u32)>) {
-    let n = segments.len();
-    let mut is_cut: Vec<bool> = Vec::with_capacity(n + group_count as usize);
-    let mut group_vertex = vec![u32::MAX; group_count as usize];
-    let mut pieces: Vec<(u32, u32)> = Vec::with_capacity(n + cuts.len());
-    points.push(segments[0].start);
-    is_cut.push(false);
-    let mut cursor = 0;
-    let mut current = 0_u32;
-    for (ordinal, segment) in segments.iter().enumerate() {
-        while cursor < cuts.len() && cuts[cursor].ordinal as usize == ordinal {
-            let cut = cuts[cursor];
-            cursor += 1;
-            let slot = &mut group_vertex[cut.group as usize];
-            let id = if *slot == u32::MAX {
-                let id = points.len() as u32;
-                points.push(cut.point);
-                is_cut.push(true);
-                *slot = id;
-                id
-            } else {
-                *slot
-            };
-            pieces.push((current, id));
-            current = id;
-        }
-        let end = if ordinal + 1 < n {
-            let id = points.len() as u32;
-            // FIRST-ENCOUNTER raw bits, exactly like the general dedup: the
-            // chain vertex is first seen as this segment's END (its key may
-            // match the next start through ±0.0 canonicalization while the
-            // bits differ).
-            points.push(segment.end);
-            is_cut.push(false);
-            id
-        } else {
-            0
-        };
-        pieces.push((current, end));
-        current = end;
-    }
-    (is_cut, pieces)
-}
-
 /// Positional multi-loop decomposition: per-vertex cut flags, atomic
 /// pieces as `(from, to, loop_index)`, and each loop's anchor vertex id.
 type LoopDecomposition = (Vec<bool>, Vec<(u32, u32, u32)>, Vec<u32>);
 
-/// [`single_loop_pieces`] across loop ranges: dense first-encounter ids
-/// per loop (each loop's last segment closes to ITS first id), crossing
-/// groups shared globally — a cross-loop crossing merges the loops into
-/// one component exactly like a self-crossing merges a figure-eight.
+/// Materialize positional pieces across loop ranges. Each loop's final
+/// segment closes to its own first id, while crossing groups are shared
+/// globally so a cross-loop crossing joins the embedding components.
 /// Pieces carry their loop index so the CSR fill can apply per-loop
 /// winding weights.
 pub(crate) fn positional_loop_pieces(

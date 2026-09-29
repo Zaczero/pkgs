@@ -23,16 +23,6 @@ pub(crate) enum PreparedTopologyPair<'a> {
         left: GeographicPrepared<'a>,
         right: GeographicPrepared<'a>,
     },
-    GeographicLeftGraph {
-        left: &'a PreparedPlan,
-        right: GeographicPrepared<'a>,
-        left_graph: &'a crate::geometry::TopologyGraph,
-    },
-    GeographicRightGraph {
-        left: GeographicPrepared<'a>,
-        right: &'a PreparedPlan,
-        right_graph: &'a crate::geometry::TopologyGraph,
-    },
 }
 
 impl<'a> PreparedTopologyPair<'a> {
@@ -71,21 +61,17 @@ impl<'a> PreparedTopologyPair<'a> {
         })
     }
 
-    /// The two operands as the pre-topology gates read them, when this pair
-    /// still holds plain plans. A variant carrying an already-built graph has
-    /// paid the cost the gates exist to avoid, so it goes straight to the
-    /// relation.
-    fn gate_operands(&self) -> Option<(GateOperand<'a>, GateOperand<'a>)> {
+    /// The two operands as the pre-topology gates read them.
+    fn gate_operands(&self) -> (GateOperand<'a>, GateOperand<'a>) {
         match *self {
-            Self::Cartesian { left, right } => Some((
+            Self::Cartesian { left, right } => (
                 GateOperand::cartesian(ShapeRow::Shape(left.shape()), left.bounds()),
                 GateOperand::cartesian(ShapeRow::Shape(right.shape()), right.bounds()),
-            )),
-            Self::Geographic { left, right } => Some((
+            ),
+            Self::Geographic { left, right } => (
                 GateOperand::from_prepared(&left),
                 GateOperand::from_prepared(&right),
-            )),
-            Self::GeographicLeftGraph { .. } | Self::GeographicRightGraph { .. } => None,
+            ),
         }
     }
 
@@ -95,22 +81,6 @@ impl<'a> PreparedTopologyPair<'a> {
             Self::Geographic { left, right } => {
                 crate::geometry::graph_relate_data_geographic(left, right)
             },
-            Self::GeographicLeftGraph {
-                left,
-                right,
-                left_graph,
-            } => crate::geometry::graph_relate_data_geographic_with_left_graph(
-                left, left_graph, right,
-            ),
-            Self::GeographicRightGraph {
-                left,
-                right,
-                right_graph,
-            } => crate::geometry::graph_relate_data_geographic_with_right_graph(
-                left,
-                right,
-                right_graph,
-            ),
         }
     }
 }
@@ -299,7 +269,14 @@ impl Predicate {
             Self::Contains | Self::ContainsProperly | Self::Covers => {
                 IndexEnvelope::ContainedInQuery
             },
-            _ => IndexEnvelope::Intersecting,
+            Self::Within
+            | Self::CoveredBy
+            | Self::Intersects
+            | Self::Disjoint
+            | Self::Touches
+            | Self::Crosses
+            | Self::Overlaps
+            | Self::Equals => IndexEnvelope::Intersecting,
         });
         PredicateSpec {
             predicate: self,
@@ -321,7 +298,15 @@ impl PredicateSpec {
             return match self.predicate {
                 Predicate::Disjoint => Some(true),
                 Predicate::Intersects => Some(false),
-                _ => None,
+                Predicate::Contains
+                | Predicate::ContainsProperly
+                | Predicate::Within
+                | Predicate::Covers
+                | Predicate::CoveredBy
+                | Predicate::Touches
+                | Predicate::Crosses
+                | Predicate::Overlaps
+                | Predicate::Equals => None,
             };
         }
         None
@@ -372,7 +357,15 @@ impl PredicateSpec {
         let meeting = match self.predicate {
             Predicate::Intersects => true,
             Predicate::Disjoint => false,
-            _ => return Ok(None),
+            Predicate::Contains
+            | Predicate::ContainsProperly
+            | Predicate::Within
+            | Predicate::Covers
+            | Predicate::CoveredBy
+            | Predicate::Touches
+            | Predicate::Crosses
+            | Predicate::Overlaps
+            | Predicate::Equals => return Ok(None),
         };
         if left.rectangle == Some(false) || right.rectangle == Some(false) {
             return Ok(None);
@@ -464,7 +457,7 @@ impl<'a> GateOperand<'a> {
 }
 
 /// Evaluate `spec` between one fixed `scalar` operand and every row of
-/// `elements`, building the scalar's cached/prepared state at most once.
+/// `elements`, preparing the scalar's frame view at most once.
 ///
 /// `scalar_is_left` names the operand order: `true` evaluates
 /// `scalar OP element`, `false` evaluates `element OP scalar`. This is the
@@ -577,7 +570,7 @@ pub(crate) fn scalar_vs_shapes<'a>(
         TopologyDomain::Geographic(frame) => {
             let (scalar_kind, _) = row_kind_empty(ShapeRow::Shape(scalar.shape()));
             let scalar_prepared = OnceCell::new();
-            let scalar_geographic_graph = OnceCell::new();
+            let scalar_exact_topology = OnceCell::new();
             let mut results = Vec::with_capacity(elements.len());
             for (index, row) in elements {
                 if row_is_missing(index) {
@@ -648,33 +641,29 @@ pub(crate) fn scalar_vs_shapes<'a>(
                     let rectangle = element_prepared.plan().shape();
                     if let Some(bounds) = rectangle.bounds()
                         && crate::geometry::is_axis_aligned_rectangle(rectangle, bounds)
-                    {
-                        let scalar_graph = scalar_geographic_graph
-                            .get_or_try_init(|| prepared.graph())
+                        && let Some(location) = scalar_exact_topology
+                            .get_or_try_init(|| prepared.exact_topology())
                             .map_err(|error| (index, error))?
-                            .as_ref();
-                        results.push(crate::geometry::graph_intersects_bounds(
-                            scalar_graph,
-                            bounds,
+                            .classify_rectangle(bounds)
+                            .map_err(|error| (index, error))?
+                    {
+                        results.push(matches!(
+                            location,
+                            crate::geometry::ExactGeographicRectangleLocation::Interior
+                                | crate::geometry::ExactGeographicRectangleLocation::Boundary
                         ));
                         continue;
                     }
                 }
-                let scalar_graph = scalar_geographic_graph
-                    .get_or_try_init(|| prepared.graph())
-                    .map_err(|error| (index, error))?
-                    .as_ref();
                 let operands = if scalar_is_left {
-                    PreparedTopologyPair::GeographicLeftGraph {
-                        left: scalar,
+                    PreparedTopologyPair::Geographic {
+                        left: prepared,
                         right: element_prepared,
-                        left_graph: scalar_graph,
                     }
                 } else {
-                    PreparedTopologyPair::GeographicRightGraph {
+                    PreparedTopologyPair::Geographic {
                         left: element_prepared,
-                        right: scalar,
-                        right_graph: scalar_graph,
+                        right: prepared,
                     }
                 };
                 let verdict =
@@ -698,11 +687,9 @@ pub(crate) fn topology_scalar_pair(
     // The array, index and coverer paths all run the pre-topology gates before
     // admitting a pair to the relation; the scalar pair was the one lane that
     // did not, so `gm.intersects(a, b)` on two operands a hundred units apart
-    // still built both topology graphs and paired their edges to discover
-    // they share no point.
-    if let Some((left, right)) = operands.gate_operands()
-        && let Some(verdict) = spec.pre_topology(&left, &right)?
-    {
+    // still built the exact pair topology to discover they share no point.
+    let (left, right) = operands.gate_operands();
+    if let Some(verdict) = spec.pre_topology(&left, &right)? {
         return Ok(verdict);
     }
     topology_pair_after_gates(spec, operands)
@@ -801,9 +788,8 @@ pub(crate) fn topology_scalar_pattern(
     pattern: CompiledPattern,
     operands: &PreparedTopologyPair<'_>,
 ) -> crate::error::Result<bool> {
-    if let Some((left, right)) = operands.gate_operands()
-        && let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)?
-    {
+    let (left, right) = operands.gate_operands();
+    if let Some(verdict) = pattern_bounds_gate(pattern, &left, &right)? {
         return Ok(verdict);
     }
     Ok(operands.relate()?.matches(pattern))
@@ -1107,7 +1093,7 @@ mod tests {
             .expect("fixture admits"),
             [false]
         );
-        assert_eq!(geographic_cache.geographic_topology_accesses(), 0);
+        assert_eq!(geographic_cache.geographic_exact_topology_accesses(), 0);
     }
 
     #[test]
@@ -1167,7 +1153,6 @@ mod tests {
             .expect("fixture admits"),
             [true, true]
         );
-        assert_eq!(geographic_cache.geographic_topology_accesses(), 1);
     }
 
     #[test]
@@ -1232,8 +1217,8 @@ mod tests {
 
     /// The pre-topology gates are wired into the array, index and coverer
     /// lanes; the scalar lane went straight to the relation, so
-    /// `gm.intersects(a, b)` on operands that do not overlap still built two
-    /// topology graphs. The gate can only be an admission filter, never an
+    /// `gm.intersects(a, b)` on operands that do not overlap still built exact
+    /// pair topology. The gate can only be an admission filter, never an
     /// answer change, so this asserts it against the relation it short-circuits
     /// — including the operands it does *not* gate.
     #[test]
@@ -1347,6 +1332,46 @@ mod tests {
         )
         .expect("fixture admits");
         assert_eq!(actual, [true]);
+    }
+
+    #[test]
+    fn prepared_intersects_rectangle_queries_reuse_exact_q_and_respect_holes() {
+        let outer = rectangle(0.0, 0.0, 10.0, 10.0);
+        let Shape::Polygon(outer) = outer else {
+            unreachable!("rectangle helper returns a polygon");
+        };
+        let hole = Ring::from_closed(
+            CoordSeq::try_from_points(&[
+                Point::new_raw_xy(3.0, 3.0),
+                Point::new_raw_xy(7.0, 3.0),
+                Point::new_raw_xy(7.0, 7.0),
+                Point::new_raw_xy(3.0, 7.0),
+                Point::new_raw_xy(3.0, 3.0),
+            ])
+            .unwrap(),
+        )
+        .unwrap();
+        let scalar = PreparedPlan::new(Shape::Polygon(Polygon::new(outer.shell, vec![hole])));
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let inside_hole = rectangle(4.0, 4.0, 6.0, 6.0);
+        let inside_shell = rectangle(1.0, 1.0, 2.0, 2.0);
+        let actual = scalar_vs_shapes(
+            &Predicate::Intersects.spec(),
+            &scalar,
+            [
+                (0, Some(ShapeRow::Shape(&inside_hole))),
+                (1, Some(ShapeRow::Shape(&inside_shell))),
+            ]
+            .into_iter(),
+            true,
+            None,
+            TopologyDomain::Geographic(degrees()),
+            &cache,
+        )
+        .expect("rectangle queries admit");
+        assert_eq!(actual, [false, true]);
+        assert_eq!(cache.geographic_exact_topology_builds(), 1);
+        assert_eq!(cache.geographic_exact_topology_accesses(), 1);
     }
 
     #[test]

@@ -1,4 +1,3 @@
-use super::value::EdgeDirection;
 use super::view::RingLatitudeSpan;
 use super::*;
 
@@ -112,6 +111,7 @@ fn ring_summary_preserves_exact_full_turn_direction_and_world_band() {
     ]);
     let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&positive)).unwrap();
     assert_eq!(summary.turn, RingTurn::Full(TurnDirection::Positive));
+    assert!(!summary.exact_axis_band);
     assert_eq!(
         summary.domain,
         RingDomain::FullLongitude(RingLatitudeSpan::PoleToPole)
@@ -146,12 +146,14 @@ fn exact_axis_boxes_are_world_bands_without_fabricating_turns() {
         let half = frame.longitude().half_period();
         let summary = axis_box(frame, -half, half, -frame.pole() / 2.0, frame.pole() / 2.0);
         assert_eq!(summary.turn, RingTurn::None);
+        assert!(summary.exact_axis_band);
         assert_eq!(
             summary.domain,
             RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)
         );
         let reverse = axis_box(frame, half, -half, -frame.pole(), frame.pole());
         assert_eq!(reverse.turn, RingTurn::None);
+        assert!(reverse.exact_axis_band);
         assert_eq!(
             reverse.domain,
             RingDomain::FullLongitude(RingLatitudeSpan::PoleToPole)
@@ -759,22 +761,18 @@ fn seam_transits_preserve_direction_aliases_and_multiple_windings() {
         0.0;
         7
     ]);
-    assert_eq!(
-        RingSummary::try_new(degrees(), &GeographicRing::from_ring(&positive))
-            .unwrap()
-            .turn,
-        RingTurn::Other
-    );
+    let positive_summary =
+        RingSummary::try_new(degrees(), &GeographicRing::from_ring(&positive)).unwrap();
+    assert_eq!(positive_summary.turn, RingTurn::Other);
+    assert_eq!(positive_summary.seam_transits, 2);
     let negative = ring(
         vec![0.0, -120.0, -240.0, -360.0, -480.0, -600.0, -720.0],
         vec![0.0; 7],
     );
-    assert_eq!(
-        RingSummary::try_new(degrees(), &GeographicRing::from_ring(&negative))
-            .unwrap()
-            .turn,
-        RingTurn::Other
-    );
+    let negative_summary =
+        RingSummary::try_new(degrees(), &GeographicRing::from_ring(&negative)).unwrap();
+    assert_eq!(negative_summary.turn, RingTurn::Other);
+    assert_eq!(negative_summary.seam_transits, -2);
 }
 
 #[test]
@@ -782,6 +780,7 @@ fn seam_transit_summary_accepts_the_polar_cap_without_numeric_winding() {
     let cap = ring(vec![0.1, 90.1, -179.8, -89.7], vec![80.0; 4]);
     let summary = RingSummary::try_new(degrees(), &GeographicRing::from_ring(&cap)).unwrap();
     assert_eq!(summary.turn, RingTurn::Full(TurnDirection::Positive));
+    assert!(!summary.exact_axis_band);
     assert_eq!(
         summary.domain,
         RingDomain::FullLongitude(RingLatitudeSpan::Ordinary)

@@ -63,11 +63,12 @@ pub(crate) use access::{
     simd_select_indices, simd_xy_map_f64, squared_norm_untrusted_mask, try_simd_map_f64,
     xy_bounds_columns,
 };
+#[cfg(test)]
+pub(crate) use area::{AreaSign, open_point_cycle_magnitude, open_xy_cycle_sign};
 pub(crate) use area::{
-    AreaSign, ExactRationalArea, RingWinding, closed_columns_winding,
-    cmp_area_keys_then_open_columns, open_point_cycle_decision, open_point_cycle_winding,
-    open_xy_cycle_decision, open_xy_cycle_magnitude, open_xy_cycle_sign, open_xy_cycle_winding,
-    polygon_area_measure_columns, polygon_area_measure_with, ring_winding,
+    ExactRationalArea, RingWinding, closed_columns_winding, open_point_cycle_winding,
+    open_xy_cycle_magnitude, open_xy_cycle_winding, polygon_area_measure_columns,
+    polygon_area_measure_with, ring_winding,
 };
 pub(crate) use segments::{Orientation, held_axis_interpolate, orientation};
 pub(crate) mod types;
@@ -138,7 +139,11 @@ pub(crate) use source_support::{
 };
 mod tessellation;
 mod topology;
-pub(crate) use topology::{TopologyDomain, TopologyGraph};
+#[cfg(test)]
+pub(crate) use topology::TopologyGraph;
+pub(crate) use topology::{
+    ExactGeographicRectangleLocation, ExactGeographicTopology, TopologyDomain,
+};
 mod util;
 use std::borrow::Borrow;
 use std::cmp::Ordering;
@@ -149,6 +154,7 @@ use access::{
     compare_f64, compare_point_slices, compare_points, compare_polygons, compare_shapes,
     line_length, linework_first_point, simd_reduce_f64, simd_xy_map_one_f64,
 };
+#[cfg(test)]
 pub(crate) use arrangement::Arrangement;
 pub(crate) use bvh_code::{BvhCode, BvhNode};
 pub(crate) use constructive::{
@@ -158,8 +164,7 @@ pub(crate) use constructive::{
     verify_planar_segmentize_output, verify_planar_segmentize_shape, vw_keep, vw_keep_geographic,
 };
 use constructive::{
-    SnapReference, assemble_region_polygons, decimal_scale, orient_ring, quantize_to_scale,
-    snap_ring_to_reference, winding_region,
+    SnapReference, decimal_scale, orient_ring, quantize_to_scale, snap_ring_to_reference,
 };
 pub(crate) use coverage::{
     CoverageOverlapRule, HashMapExt, coverage_clean, coverage_invalid_edges, coverage_is_valid,
@@ -279,15 +284,14 @@ pub(crate) fn raw_coordinate_bounds_are_sound_in_frame(
 }
 
 pub(crate) use relate::{
-    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, graph_intersects_bounds,
-    graph_relate_data, graph_relate_data_geographic, graph_relate_data_geographic_with_left_graph,
-    graph_relate_data_geographic_with_right_graph, graph_relate_shapes, is_axis_aligned_rectangle,
+    De9im, De9imInterval, GeographicPrepared, Loc, OperandShape, graph_relate_data,
+    graph_relate_data_geographic, graph_relate_shapes, is_axis_aligned_rectangle,
     line_scalar_prefers_direct_polygon_relate,
 };
 pub(in crate::geometry) use segment_index::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
-    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_pair, sign_of,
-    single_chain,
+    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
+    for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
 pub(crate) use segment_index::{PointSetIndex, SEGMENT_INDEX_MIN_PAIRS, SegmentIndex};
 use segments::{
@@ -678,14 +682,6 @@ impl Polygon {
                 .holes
                 .iter()
                 .any(|hole| ring_classify_point(hole.coords(), point) != RingClass::Exterior)
-    }
-
-    fn covers_point(&self, point: Point) -> bool {
-        ring_classify_point(self.shell.coords(), point) != RingClass::Exterior
-            && !self
-                .holes
-                .iter()
-                .any(|hole| ring_classify_point(hole.coords(), point) == RingClass::Interior)
     }
 
     fn quantize(&self, precision: i32) -> Result<Self> {

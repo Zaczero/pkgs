@@ -56,6 +56,7 @@ impl IndexedTopology {
         self.twins[next]
     }
 
+    #[cfg(test)]
     pub(crate) fn clear(&mut self) {
         self.starts.clear();
         self.targets.clear();
@@ -173,6 +174,7 @@ impl IndexedTopology {
     }
 }
 
+#[cfg(test)]
 impl IndexedTopologyScratch {
     pub(crate) fn clear(&mut self) {
         self.component_stack.clear();
@@ -191,13 +193,20 @@ mod tests {
             targets: targets.to_vec(),
             ..Default::default()
         };
-        let vertices = starts.len() - 1;
+        let vertices = starts
+            .len()
+            .checked_sub(1)
+            .expect("CSR starts include their initial sentinel");
         let slots = targets.len();
         topology.owners.reserve(slots);
         topology.twins.reserve(slots);
         topology.component_of.reserve(vertices);
         topology.face_of.reserve(slots);
-        topology.face_starts.reserve(slots + 1);
+        topology.face_starts.reserve(
+            slots
+                .checked_add(1)
+                .expect("face starts include their terminal sentinel"),
+        );
         topology.face_slots.reserve(slots);
         let mut scratch = IndexedTopologyScratch::default();
         scratch.component_stack.reserve(vertices);

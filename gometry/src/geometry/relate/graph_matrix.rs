@@ -2,20 +2,27 @@
 use ahash::HashMapExt as _;
 
 use crate::boundary::geographic::invalid_lonlat_error;
+#[cfg(test)]
 use crate::collections::HashSet;
 use crate::error::Result;
 use crate::geographic::{GeographicFrame, ScalarGeographicView};
 use crate::geometry::overlay::ExactSourceInventory;
+use crate::geometry::relate::De9im;
 #[cfg(test)]
-use crate::geometry::predicates;
-use crate::geometry::relate::{De9im, Loc, polygon_has_nondegenerate_area};
+use crate::geometry::relate::{Loc, polygon_has_nondegenerate_area};
+#[cfg(test)]
 use crate::geometry::topology::{
     AreaSupport, TopologyGraph, TopologyKey, TopologyLocation, TopologyNodeId,
 };
 use crate::geometry::{
-    Bounds, CoordSeq, Coordinates as _, HashMap, PointKey, Polygon, PreparedPlan, Ring, Segment,
-    Shape, XY, overlay, same_point, segments_intersect, topology,
+    Bounds, Coordinates as _, ExactGeographicTopology, PreparedPlan, Ring, Shape,
 };
+#[cfg(test)]
+use crate::geometry::{CoordSeq, HashMap, PointKey, Polygon, overlay, same_point, topology};
+#[cfg(test)]
+use crate::geometry::{GeometryErrorKind, predicates};
+#[cfg(test)]
+use crate::geometry::{Segment, XY};
 
 #[derive(Clone, Copy)]
 pub(crate) struct GeographicPrepared<'a> {
@@ -80,8 +87,13 @@ impl<'a> GeographicPrepared<'a> {
 }
 
 impl GeographicPrepared<'_> {
+    #[cfg(test)]
     pub(crate) fn graph(self) -> Result<std::sync::Arc<TopologyGraph>> {
-        self.frame_cache.geographic_topology_graph(self.view)
+        Ok(std::sync::Arc::new(TopologyGraph::geographic(self.view)?))
+    }
+
+    pub(crate) fn exact_topology(self) -> Result<std::sync::Arc<ExactGeographicTopology>> {
+        self.frame_cache.geographic_exact_topology(self.view)
     }
 }
 
@@ -134,94 +146,8 @@ pub(crate) fn graph_relate_data_geographic(
     right: GeographicPrepared<'_>,
 ) -> Result<De9im> {
     debug_assert_eq!(left.frame(), right.frame());
-    if let Some(matrix) = try_areal_relate_geographic(
-        left.plan.shape(),
-        || left.bounds_sound(),
-        right.plan.shape(),
-        || right.bounds_sound(),
-    )? {
-        return Ok(matrix);
-    }
-    if let Some(point) = shape_point(right.plan.shape()) {
-        if let Some(left_point) = shape_point(left.plan.shape()) {
-            return Ok(point_relate_point(left_point, point, left.frame()).transpose());
-        }
-        let left_graph = left.graph()?;
-        return Ok(graph_relate_to_point(&left_graph, point));
-    }
-    if let Some(point) = shape_point(left.plan.shape()) {
-        let right_graph = right.graph()?;
-        return Ok(graph_relate_to_point(&right_graph, point).transpose());
-    }
-    let left_graph = left.graph()?;
-    let right_graph = right.graph()?;
-    graph_relate(&left_graph, &right_graph)
-}
-
-/// Compute a geographic relation from topology graphs already resolved by the
-/// caller. This keeps the direct areal fold ahead of graph assembly.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
-)]
-pub(crate) fn graph_relate_data_geographic_with_left_graph(
-    left: &PreparedPlan,
-    left_graph: &TopologyGraph,
-    right: GeographicPrepared<'_>,
-) -> Result<De9im> {
-    if let Some(matrix) = try_areal_relate_geographic(
-        left.shape(),
-        || plan_bounds_sound(left, right.frame()),
-        right.plan.shape(),
-        || right.bounds_sound(),
-    )? {
-        return Ok(matrix);
-    }
-    if let Some(point) = shape_point(right.plan.shape()) {
-        if let Some(left_point) = shape_point(left.shape()) {
-            return Ok(point_relate_point(left_point, point, right.frame()).transpose());
-        }
-        return Ok(graph_relate_to_point(left_graph, point));
-    }
-    if let Some(point) = shape_point(left.shape()) {
-        let right_graph = right.graph()?;
-        return Ok(graph_relate_to_point(&right_graph, point).transpose());
-    }
-    let right_graph = right.graph()?;
-    graph_relate(left_graph, &right_graph)
-}
-
-/// Compute a geographic relation while reusing the right operand's resolved
-/// graph. The left graph remains lazy so direct areal pairs do no graph work.
-#[expect(
-    clippy::large_types_passed_by_value,
-    reason = "GeographicPrepared is a Copy view of three borrows; the relate functions take the completed prepare step by value"
-)]
-pub(crate) fn graph_relate_data_geographic_with_right_graph(
-    left: GeographicPrepared<'_>,
-    right: &PreparedPlan,
-    right_graph: &TopologyGraph,
-) -> Result<De9im> {
-    if let Some(matrix) = try_areal_relate_geographic(
-        left.plan.shape(),
-        || left.bounds_sound(),
-        right.shape(),
-        || plan_bounds_sound(right, left.frame()),
-    )? {
-        return Ok(matrix);
-    }
-    if let Some(point) = shape_point(right.shape()) {
-        if let Some(left_point) = shape_point(left.plan.shape()) {
-            return Ok(point_relate_point(left_point, point, left.frame()).transpose());
-        }
-        let left_graph = left.graph()?;
-        return Ok(graph_relate_to_point(&left_graph, point));
-    }
-    if let Some(point) = shape_point(left.plan.shape()) {
-        return Ok(graph_relate_to_point(right_graph, point).transpose());
-    }
-    let left_graph = left.graph()?;
-    graph_relate(&left_graph, right_graph)
+    ExactGeographicTopology::from_views(left.frame(), [left.view(), right.view()].into_iter())?
+        .relate_pair()
 }
 
 /// Whether a scalar operand broadcast against `row` reaches the direct
@@ -235,226 +161,10 @@ pub(crate) const fn line_scalar_prefers_direct_polygon_relate(scalar: &Shape, ro
     matches!((scalar, row), (Shape::LineString(_), Shape::Polygon(_)))
 }
 
-/// The direct areal fold reads raw coordinate boxes, so it runs only when both
-/// boxes stand in for their operands; points and lines never take it.
-fn try_areal_relate_geographic(
-    left: &Shape,
-    left_bounds_sound: impl FnOnce() -> bool,
-    right: &Shape,
-    right_bounds_sound: impl FnOnce() -> bool,
-) -> Result<Option<De9im>> {
-    let areal = |shape: &Shape| {
-        matches!(
-            shape,
-            Shape::Polygon(_) | Shape::MultiPolygon(_) | Shape::GeometryCollection(_)
-        )
-    };
-    if areal(left) && areal(right) && left_bounds_sound() && right_bounds_sound() {
-        try_areal_relate(left, right)
-    } else {
-        Ok(None)
-    }
-}
-
-fn plan_bounds_sound(plan: &PreparedPlan, frame: crate::geographic::GeographicFrame) -> bool {
-    plan.bounds().is_some_and(|bounds| {
-        crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(plan.shape()), bounds, frame)
-    })
-}
-
-/// Fold a complete DE-9IM matrix from the one arrangement shared by two
-/// nondegenerate Cartesian areal operands. Source graphs retain boundary-only
-/// degeneracies, so those inputs deliberately stay on the graph path.
-pub(super) fn try_areal_relate(left: &Shape, right: &Shape) -> Result<Option<De9im>> {
-    let mut left_polygons = Vec::new();
-    let mut right_polygons = Vec::new();
-    if collect_areal_polygons(left, &mut left_polygons).is_none()
-        || collect_areal_polygons(right, &mut right_polygons).is_none()
-        || left_polygons.is_empty()
-        || right_polygons.is_empty()
-    {
-        return Ok(None);
-    }
-
-    let built = overlay::build_areal_arrangement(&left_polygons, &right_polygons)?;
-    let mut matrix = De9im::empty_disjoint();
-    for winding in &built.windings {
-        matrix.set_at_least(
-            areal_location(winding[0]),
-            areal_location(winding[1]),
-            crate::geometry::Dimension::Surface,
-        );
-    }
-    built
-        .arrangement
-        .for_each_edge_piece(|_multiplicity, _from, _to, left_face, right_face| {
-            matrix.set_at_least(
-                areal_edge_location(
-                    built.windings[left_face as usize][0],
-                    built.windings[right_face as usize][0],
-                ),
-                areal_edge_location(
-                    built.windings[left_face as usize][1],
-                    built.windings[right_face as usize][1],
-                ),
-                crate::geometry::Dimension::Curve,
-            );
-        });
-    for vertex in 0..built.arrangement.points.len() {
-        let range = built.arrangement.starts[vertex] as usize
-            ..built.arrangement.starts[vertex + 1] as usize;
-        let mut left_any = false;
-        let mut left_all = true;
-        let mut right_any = false;
-        let mut right_all = true;
-        for slot in range {
-            let winding = built.windings[built.arrangement.face_of[slot] as usize];
-            let left_inside = winding[0] != 0;
-            let right_inside = winding[1] != 0;
-            left_any |= left_inside;
-            left_all &= left_inside;
-            right_any |= right_inside;
-            right_all &= right_inside;
-        }
-        matrix.set_at_least(
-            areal_vertex_location(left_any, left_all),
-            areal_vertex_location(right_any, right_all),
-            crate::geometry::Dimension::Point,
-        );
-    }
-    Ok(Some(matrix))
-}
-
-/// The polygons of an areal shape whose every ring is sound (see
-/// [`ring_is_sound`]), or `None` when the shape is not areal or any ring
-/// is not.
-fn collect_areal_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
-    let first = polygons.len();
-    collect_polygons(shape, polygons)?;
-    polygons[first..]
-        .iter()
-        .all(|polygon| polygon.rings().all(ring_is_sound))
-        .then_some(())
-}
-
-/// Every polygon of an areal shape, structurally, or `None` when the shape
-/// is not areal at all.
-fn collect_polygons<'a>(shape: &'a Shape, polygons: &mut Vec<&'a Polygon>) -> Option<()> {
-    match shape {
-        Shape::Polygon(polygon) => {
-            polygons.push(polygon);
-            Some(())
-        },
-        Shape::MultiPolygon(parts) => {
-            for polygon in parts.iter() {
-                polygons.push(polygon);
-            }
-            Some(())
-        },
-        Shape::GeometryCollection(parts) => {
-            for part in parts {
-                collect_polygons(part, polygons)?;
-            }
-            Some(())
-        },
-        Shape::Point(_)
-        | Shape::MultiPoint(_)
-        | Shape::LineString(_)
-        | Shape::MultiLineString(_)
-        | Shape::Empty(..) => None,
-    }
-}
-
-/// A ring the areal engines can reason about: closed with real extent and
-/// a nonzero exact area, and for the arrangement fold no zero-length
-/// segment either.
-pub(crate) fn ring_is_sound(ring: &Ring) -> bool {
-    ring_has_area(ring)
-        && !ring
-            .segment_pairs()
-            .any(|[start, end]| same_point(start, end))
-}
-
 /// A closed ring with real extent and a nonzero exact area.
 pub(crate) fn ring_has_area(ring: &Ring) -> bool {
     ring.coord_count() >= Ring::MIN_VERTICES_CLOSED
         && !crate::geometry::ring_winding(ring).is_degenerate()
-}
-
-const fn areal_location(winding: i32) -> Loc {
-    if winding != 0 {
-        Loc::Interior
-    } else {
-        Loc::Exterior
-    }
-}
-
-const fn areal_edge_location(left_winding: i32, right_winding: i32) -> Loc {
-    match (left_winding != 0, right_winding != 0) {
-        (true, true) => Loc::Interior,
-        (false, false) => Loc::Exterior,
-        _ => Loc::Boundary,
-    }
-}
-
-const fn areal_vertex_location(any: bool, all: bool) -> Loc {
-    if all {
-        Loc::Interior
-    } else if any {
-        Loc::Boundary
-    } else {
-        Loc::Exterior
-    }
-}
-
-/// Exact `intersects` check for a supported rectangle against a source graph.
-/// A closed rectangle intersects a source iff one of its corners is on the
-/// source, one source graph node lies in the rectangle, or their boundary
-/// segments meet. Callers own rectangle admission before reaching this scan.
-pub(crate) fn graph_intersects_bounds(graph: &TopologyGraph, bounds: Bounds) -> bool {
-    if bounds
-        .corners()
-        .into_iter()
-        .map(|[x, y]| XY::new(x, y))
-        .any(|point| graph.locate_point(point) != TopologyLocation::Exterior)
-        || graph
-            .nodes
-            .iter()
-            .any(|node| bounds.contains_xy(node.point))
-    {
-        return true;
-    }
-    let rectangle_edges = rectangle_edges(bounds);
-    graph.edges.iter().any(|edge| {
-        bounds.contains_xy(edge.segment.start)
-            || bounds.contains_xy(edge.segment.end)
-            || rectangle_edges
-                .iter()
-                .copied()
-                .any(|candidate| segments_intersect(edge.segment, candidate))
-    })
-}
-
-const fn rectangle_edges(bounds: Bounds) -> [Segment; 4] {
-    let corners = bounds.corners();
-    [
-        Segment {
-            start: XY::new(corners[0][0], corners[0][1]),
-            end: XY::new(corners[1][0], corners[1][1]),
-        },
-        Segment {
-            start: XY::new(corners[1][0], corners[1][1]),
-            end: XY::new(corners[2][0], corners[2][1]),
-        },
-        Segment {
-            start: XY::new(corners[2][0], corners[2][1]),
-            end: XY::new(corners[3][0], corners[3][1]),
-        },
-        Segment {
-            start: XY::new(corners[3][0], corners[3][1]),
-            end: XY::new(corners[0][0], corners[0][1]),
-        },
-    ]
 }
 
 #[expect(
@@ -480,20 +190,25 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
     }
     let (xs, ys) = (shell.xs(), shell.ys());
     let mut seen = [false; 4];
-    for point in shell.points().take(shell.coord_count() - 1) {
+    for point in shell.points().take(shell.coord_count().saturating_sub(1)) {
         let on_vertical = point.x == bounds.minx() || point.x == bounds.maxx();
         let on_horizontal = point.y == bounds.miny() || point.y == bounds.maxy();
         if !on_vertical && !on_horizontal {
             return false;
         }
         if on_vertical && on_horizontal {
-            let col = usize::from(point.x == bounds.maxx());
-            let row = usize::from(point.y == bounds.maxy());
-            seen[col * 2 + row] = true;
+            match (point.x == bounds.maxx(), point.y == bounds.maxy()) {
+                (false, false) => seen[0] = true,
+                (false, true) => seen[1] = true,
+                (true, false) => seen[2] = true,
+                (true, true) => seen[3] = true,
+            }
         }
     }
-    if (0..shell.coord_count() - 1)
-        .any(|index| xs[index] != xs[index + 1] && ys[index] != ys[index + 1])
+    if xs
+        .windows(2)
+        .zip(ys.windows(2))
+        .any(|(x_pair, y_pair)| x_pair.first() != x_pair.get(1) && y_pair.first() != y_pair.get(1))
     {
         return false;
     }
@@ -504,6 +219,7 @@ pub(crate) fn is_axis_aligned_rectangle(shape: &Shape, bounds: Bounds) -> bool {
     clippy::panic_in_result_fn,
     reason = "a shared frame is an internal construction invariant, not a public input"
 )]
+#[cfg(test)]
 fn graph_relate(left: &TopologyGraph, right: &TopologyGraph) -> Result<De9im> {
     assert_eq!(
         left.frame, right.frame,
@@ -518,6 +234,7 @@ fn graph_relate(left: &TopologyGraph, right: &TopologyGraph) -> Result<De9im> {
     graph_relate_with_node_cells(left, right, add_node_cells)
 }
 
+#[cfg(test)]
 fn graph_relate_with_node_cells(
     left: &TopologyGraph,
     right: &TopologyGraph,
@@ -591,57 +308,13 @@ fn graph_relate_with_full_node_locations(left: &TopologyGraph, right: &TopologyG
     .unwrap()
 }
 
+#[cfg(test)]
 fn single_point(graph: &TopologyGraph) -> Option<XY> {
     (graph.edges.is_empty() && graph.area_support.is_empty() && graph.source_points.len() == 1)
         .then(|| graph.source_points[0].point.xy())
 }
 
-const fn shape_point(shape: &Shape) -> Option<XY> {
-    match shape {
-        Shape::Point(point) => Some(point.xy()),
-        _ => None,
-    }
-}
-
-fn point_relate_point(left: XY, right: XY, frame: crate::geographic::GeographicFrame) -> De9im {
-    let mut matrix = De9im::empty_disjoint();
-    let left_latitude = crate::geographic::Latitude::try_new(frame, left.y)
-        .expect("validated geographic latitude")
-        .get();
-    let right_latitude = crate::geographic::Latitude::try_new(frame, right.y)
-        .expect("validated geographic latitude")
-        .get();
-    let same_latitude = left_latitude.to_bits() == right_latitude.to_bits();
-    let latitude_is_pole = left_latitude.abs().to_bits() == frame.pole().to_bits();
-    let same_longitude = frame
-        .longitude()
-        .canonicalize(left.x)
-        .expect("validated geographic longitude")
-        == frame
-            .longitude()
-            .canonicalize(right.x)
-            .expect("validated geographic longitude");
-    if same_latitude && (latitude_is_pole || same_longitude) {
-        matrix.set_at_least(
-            Loc::Interior,
-            Loc::Interior,
-            crate::geometry::Dimension::Point,
-        );
-    } else {
-        matrix.set_at_least(
-            Loc::Interior,
-            Loc::Exterior,
-            crate::geometry::Dimension::Point,
-        );
-        matrix.set_at_least(
-            Loc::Exterior,
-            Loc::Interior,
-            crate::geometry::Dimension::Point,
-        );
-    }
-    matrix
-}
-
+#[cfg(test)]
 fn graph_relate_to_point(graph: &TopologyGraph, point: XY) -> De9im {
     let mut matrix = De9im::empty_disjoint();
     let location = graph.locate_point(point);
@@ -665,6 +338,7 @@ fn graph_relate_to_point(graph: &TopologyGraph, point: XY) -> De9im {
     matrix
 }
 
+#[cfg(test)]
 fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGraph) -> Result<()> {
     let left_polygons = area_polygons(left);
     let right_polygons = area_polygons(right);
@@ -700,8 +374,8 @@ fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGrap
         ),
         (false, false) => {
             let (left_polygons, right_polygons) = geographic_area_polygons(left, right)?;
-            let arrangement = overlay::build_areal_arrangement(&left_polygons, &right_polygons)?;
-            for winding in arrangement.windings {
+            let windings = overlay::build_areal_arrangement(&left_polygons, &right_polygons)?;
+            for winding in windings {
                 let left_loc = if winding[0] != 0 {
                     Loc::Interior
                 } else {
@@ -747,6 +421,7 @@ fn add_face_cells(matrix: &mut De9im, left: &TopologyGraph, right: &TopologyGrap
     Ok(())
 }
 
+#[cfg(test)]
 const fn set_dimension(
     matrix: &mut De9im,
     row: Loc,
@@ -758,6 +433,7 @@ const fn set_dimension(
     }
 }
 
+#[cfg(test)]
 fn geographic_area_polygons(
     left: &TopologyGraph,
     right: &TopologyGraph,
@@ -773,6 +449,7 @@ fn geographic_area_polygons(
     ))
 }
 
+#[cfg(test)]
 fn area_center(graph: &TopologyGraph) -> Option<f64> {
     graph
         .area_support
@@ -785,6 +462,7 @@ fn area_center(graph: &TopologyGraph) -> Option<f64> {
         .next()
 }
 
+#[cfg(test)]
 fn chart_area_polygons(
     graph: &TopologyGraph,
     anchor: f64,
@@ -813,6 +491,7 @@ fn chart_area_polygons(
     Ok(polygons)
 }
 
+#[cfg(test)]
 fn ring_center(points: &[XY]) -> f64 {
     let (min, max) = points
         .iter()
@@ -822,10 +501,12 @@ fn ring_center(points: &[XY]) -> f64 {
     f64::midpoint(min, max)
 }
 
+#[cfg(test)]
 fn chart_shift(anchor: f64, center: f64, period: f64) -> f64 {
     period * ((anchor - center) / period).round()
 }
 
+#[cfg(test)]
 fn chart_ring(points: &[XY], shift: f64) -> crate::error::Result<Option<Ring>> {
     if points.len() < 3 {
         return Ok(None);
@@ -839,6 +520,7 @@ fn chart_ring(points: &[XY], shift: f64) -> crate::error::Result<Option<Ring>> {
     Ok(Ring::from_closed(CoordSeq::try_from_points(&coords)?))
 }
 
+#[cfg(test)]
 fn area_polygons(graph: &TopologyGraph) -> Vec<&AreaSupport> {
     let mut polygons = Vec::with_capacity(graph.area_support.len());
     for support in &graph.area_support {
@@ -849,14 +531,17 @@ fn area_polygons(graph: &TopologyGraph) -> Vec<&AreaSupport> {
     polygons
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy)]
 struct EdgeLabel {
     left: Option<TopologyLocation>,
     right: Option<TopologyLocation>,
 }
 
+#[cfg(test)]
 type PairedEdges = (Vec<(Segment, EdgeLabel)>, HashMap<PointKey, EdgeLabel>);
 
+#[cfg(test)]
 fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Result<PairedEdges> {
     if left.edges.is_empty() || right.edges.is_empty() {
         let (graph, left_present) = if left.edges.is_empty() {
@@ -912,16 +597,22 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
     {
         let mut edges = Vec::with_capacity(atomic.len());
         for (segment, owners) in atomic.into_iter().zip(provenance.iter()) {
-            let owner = owners[0].0 as usize;
-            let label = if owner < split {
+            let Some((owner, _)) = owners.first() else {
+                return Err(GeometryErrorKind::Invalid(
+                    "noded relation edge has no source owner".into(),
+                )
+                .into());
+            };
+            let (left_owned, location) = paired_edge_location(*owner, split, left, right)?;
+            let label = if left_owned {
                 EdgeLabel {
-                    left: Some(edge_location(&left.edges[owner])),
+                    left: Some(location),
                     right: None,
                 }
             } else {
                 EdgeLabel {
                     left: None,
-                    right: Some(edge_location(&right.edges[owner - split])),
+                    right: Some(location),
                 }
             };
             edges.push((segment, label));
@@ -941,11 +632,11 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
             right: None,
         };
         for &(owner, _) in owners {
-            let owner = owner as usize;
-            let (slot, location) = if owner < split {
-                (&mut label.left, edge_location(&left.edges[owner]))
+            let (left_owned, location) = paired_edge_location(owner, split, left, right)?;
+            let slot = if left_owned {
+                &mut label.left
             } else {
-                (&mut label.right, edge_location(&right.edges[owner - split]))
+                &mut label.right
             };
             merge_coincident_piece(slot, location);
             for point in [segment.start, segment.end] {
@@ -953,7 +644,7 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
                     left: None,
                     right: None,
                 });
-                let slot = if owner < split {
+                let slot = if left_owned {
                     &mut hint.left
                 } else {
                     &mut hint.right
@@ -988,6 +679,32 @@ fn pair_edges(left: &TopologyGraph, right: &TopologyGraph) -> crate::error::Resu
     Ok((edges, hints))
 }
 
+#[cfg(test)]
+fn paired_edge_location(
+    owner: u32,
+    split: usize,
+    left: &TopologyGraph,
+    right: &TopologyGraph,
+) -> crate::error::Result<(bool, TopologyLocation)> {
+    let owner = owner as usize;
+    let edge = if owner < split {
+        left.edges.get(owner).map(|edge| (true, edge))
+    } else {
+        owner
+            .checked_sub(split)
+            .and_then(|index| right.edges.get(index))
+            .map(|edge| (false, edge))
+    };
+    let Some((left_owned, edge)) = edge else {
+        return Err(GeometryErrorKind::Invalid(
+            "noded relation edge owner is outside its source edge columns".into(),
+        )
+        .into());
+    };
+    Ok((left_owned, edge_location(edge)))
+}
+
+#[cfg(test)]
 const fn edge_location(edge: &topology::TopologyEdge) -> TopologyLocation {
     if edge.is_boundary {
         TopologyLocation::Boundary
@@ -1002,6 +719,7 @@ const fn edge_location(edge: &topology::TopologyEdge) -> TopologyLocation {
 /// the boundary flag is the one that means something. A node, by contrast,
 /// merges through [`merge_location`], where an interior edge outranks a
 /// boundary one.
+#[cfg(test)]
 const fn merge_coincident_piece(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
     *slot = Some(match (*slot, location) {
         (Some(TopologyLocation::Boundary), _) | (_, TopologyLocation::Boundary) => {
@@ -1014,6 +732,7 @@ const fn merge_coincident_piece(slot: &mut Option<TopologyLocation>, location: T
     });
 }
 
+#[cfg(test)]
 const fn merge_location(slot: &mut Option<TopologyLocation>, location: TopologyLocation) {
     *slot = Some(match (*slot, location) {
         (Some(TopologyLocation::Interior), _) | (_, TopologyLocation::Interior) => {
@@ -1026,6 +745,7 @@ const fn merge_location(slot: &mut Option<TopologyLocation>, location: TopologyL
     });
 }
 
+#[cfg(test)]
 fn add_edge_cells(
     matrix: &mut De9im,
     left: &TopologyGraph,
@@ -1049,12 +769,14 @@ fn add_edge_cells(
     }
 }
 
+#[cfg(test)]
 #[derive(Clone, Copy, Eq, Hash, PartialEq)]
 enum NodeToken {
     Left(TopologyNodeId),
     Right(TopologyNodeId),
 }
 
+#[cfg(test)]
 fn push_node(
     nodes: &mut Vec<XY>,
     seen: &mut HashSet<NodeToken>,
@@ -1082,6 +804,7 @@ fn push_node(
     }
 }
 
+#[cfg(test)]
 fn add_node_cells(
     matrix: &mut De9im,
     left: &TopologyGraph,
@@ -1115,6 +838,7 @@ fn add_node_cells(
     }
 }
 
+#[cfg(test)]
 fn suppress_lineal_overlap_artifacts(
     matrix: &mut De9im,
     left: &TopologyGraph,
@@ -1140,6 +864,7 @@ fn suppress_lineal_overlap_artifacts(
     }
 }
 
+#[cfg(test)]
 fn locate_node_with_hint(
     graph: &TopologyGraph,
     point: XY,
@@ -1166,6 +891,7 @@ fn locate_node_with_hint(
     }
 }
 
+#[cfg(test)]
 const fn to_loc(location: TopologyLocation) -> Loc {
     match location {
         TopologyLocation::Interior => Loc::Interior,

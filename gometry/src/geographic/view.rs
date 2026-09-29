@@ -598,19 +598,6 @@ impl<'a> GeographicInputs<'a> {
         Ok(Self { frame, views })
     }
 
-    /// Copy indexed views from this batch. Frame comes from `self`; indices
-    /// are this batch's positions. Does not re-admit.
-    pub(crate) fn selected(&self, indices: &[usize]) -> Self {
-        let mut views = Vec::with_capacity(indices.len());
-        for &index in indices {
-            views.push(self.views[index]);
-        }
-        Self {
-            frame: self.frame,
-            views,
-        }
-    }
-
     pub(crate) const fn frame(&self) -> GeographicFrame {
         self.frame
     }
@@ -678,7 +665,12 @@ impl<'a> GeographicRing<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RingSummary {
     pub(crate) turn: RingTurn,
+    /// Signed seam-transit total; `turn` is only its coarse semantic class.
+    pub(crate) seam_transits: i64,
     pub(crate) domain: RingDomain,
+    /// True only for an explicit axis-aligned world-band ring. Winding rings
+    /// can share the same domain while retaining source-edge fill semantics.
+    pub(crate) exact_axis_band: bool,
     pub(crate) south: Latitude,
     pub(crate) north: Latitude,
 }
@@ -734,8 +726,8 @@ impl RingSummary {
             -1 => RingTurn::Full(super::TurnDirection::Negative),
             _ => RingTurn::Other,
         };
-        let full_longitude = matches!(turn, RingTurn::Full(_))
-            || is_exact_axis_band(frame, ring, west, east, south, north);
+        let exact_axis_band = is_exact_axis_band(frame, ring, west, east, south, north);
+        let full_longitude = matches!(turn, RingTurn::Full(_)) || exact_axis_band;
         let domain = if full_longitude {
             #[expect(
                 clippy::float_cmp,
@@ -753,7 +745,9 @@ impl RingSummary {
         };
         Ok(Self {
             turn,
+            seam_transits,
             domain,
+            exact_axis_band,
             south,
             north,
         })

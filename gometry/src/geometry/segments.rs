@@ -2452,6 +2452,7 @@ fn touch_endpoint(a: Segment, b: Segment, orientations: PairOrientations) -> Opt
 /// The single point shared by a pair of segments that are not collinear:
 /// a touching endpoint bit-exactly, or the nearest-even rounding of a
 /// proper crossing; `None` when they do not meet.
+#[cfg(test)]
 pub(crate) fn segment_cross_point_with_orientations(
     a: Segment,
     b: Segment,
@@ -3037,6 +3038,7 @@ pub(crate) fn points_dwithin(left: impl Into<XY>, right: impl Into<XY>, limit: f
 /// straight segment, so X suffices unless it is constant. The other axis
 /// makes rounded off-support cuts deterministic and keeps equal point keys
 /// adjacent for deduplication.
+#[cfg(test)]
 #[expect(
     clippy::float_cmp,
     reason = "cut order uses exact coordinate identity along a stored segment; a tolerance would reorder distinct cuts"

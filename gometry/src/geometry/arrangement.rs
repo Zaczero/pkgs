@@ -1,36 +1,24 @@
-//! Columnar half-edge arrangement — the shared planar-subdivision core.
-//!
-//! Built from NODED directed segments (segments only touch at endpoints):
-//! vertices dedup to `u32` ids, adjacency is one CSR sorted CCW by
-//! departure angle, and a single global walk assigns every directed
-//! half-edge its face. Faces keep their ring, signed doubled area, and the
-//! component they belong to; directed multiplicities (how many source
-//! segments cover each half-edge, net of direction) drive an exact
-//! winding-number fill: one seed probe per CONNECTED COMPONENT, then BFS
-//! across twin half-edges (`w(right) = w(left) − multiplicity(a→b)`).
-//!
-//! Consumers classify faces by winding and extract the kept region's
-//! boundary — every cost is a flat array pass; the retained map is the vertex
-//! dedup, while construction uses a transient reciprocal-edge index.
+//! CSR topology shared by the exact Cartesian partition and geographic
+//! quotient tests. The winding-based [`Arrangement`] implementation exists
+//! only for the geographic test oracle.
 
+#[cfg(test)]
 mod build;
 mod indexed;
+#[cfg(test)]
 mod loop_ops;
 mod walk;
+#[cfg(test)]
 mod winding;
 
 pub(crate) use indexed::{IndexedTopology, IndexedTopologyScratch};
-pub(crate) use loop_ops::{order_single_loop_rows, positional_loop_cuts, positional_loop_pieces};
 #[cfg(test)]
-pub(crate) use loop_ops::{single_loop_cuts, single_loop_pieces};
-pub(crate) use walk::{
-    build_csr, compare_departures, dedup_vertices_and_edges, sort_rows_counterclockwise,
-    split_ring_at_pinches,
-};
+pub(crate) use loop_ops::{order_single_loop_rows, positional_loop_cuts, positional_loop_pieces};
+pub(crate) use walk::compare_departures;
+#[cfg(test)]
+pub(crate) use walk::{build_csr, dedup_vertices_and_edges, sort_rows_counterclockwise};
+#[cfg(test)]
 pub(crate) use winding::{
     Arrangement, ArrangementSpares, Face, TypedSpares, WindingWeight, arrangement_spares,
-    region_spares, typed_spares,
+    typed_spares,
 };
-
-#[cfg(test)]
-mod tests;

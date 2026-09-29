@@ -21,6 +21,8 @@ pub(crate) const SEGMENT_INDEX_MIN_PAIRS: usize = 4096;
 /// Brute-force when item count is strictly below this threshold (equivalent
 /// to the historical `count * count < 32` pair-count floor).
 const SWEEP_MIN_ITEMS: usize = 6;
+const CROSS_LEFT_SIDE: u8 = 1;
+const CROSS_RIGHT_SIDE: u8 = 2;
 
 /// Entry count from which the sweep bands its cross axis (below it the
 /// plain forward window is already short), and the per-band grain the
@@ -234,6 +236,39 @@ pub(in crate::geometry) fn for_each_overlapping_bounds_pair<B>(
     try_overlapping_bounds_sweep(bounds, &mut visit)
 }
 
+/// Visit every overlapping pair across two bounds sets, preserving each
+/// operand's own ordinal even when the sweep interleaves their entries.
+pub(in crate::geometry) fn for_each_overlapping_bounds_cross_pair<B>(
+    left: &[Bounds],
+    right: &[Bounds],
+    mut visit: impl FnMut(usize, usize) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>> {
+    let (Some(left_last), Some(right_last)) =
+        (left.len().checked_sub(1), right.len().checked_sub(1))
+    else {
+        return Ok(ControlFlow::Continue(()));
+    };
+    u32_ordinal(left_last)?;
+    u32_ordinal(right_last)?;
+    let count = left
+        .len()
+        .checked_add(right.len())
+        .ok_or(ResourceError::SizeOverflow)?;
+    if count < SWEEP_MIN_ITEMS {
+        for (left_index, left_bounds) in left.iter().enumerate() {
+            for (right_index, right_bounds) in right.iter().enumerate() {
+                if left_bounds.intersects(*right_bounds)
+                    && let ControlFlow::Break(value) = visit(left_index, right_index)
+                {
+                    return Ok(ControlFlow::Break(value));
+                }
+            }
+        }
+        return Ok(ControlFlow::Continue(()));
+    }
+    try_overlapping_bounds_cross_sweep(left, right, count, &mut visit)
+}
+
 fn try_overlapping_bounds_sweep<B>(
     bounds: &[Bounds],
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
@@ -284,6 +319,58 @@ fn try_overlapping_bounds_sweep<B>(
         ))
     } else {
         Ok(plain_windows(&entries, visit))
+    }
+}
+
+fn try_overlapping_bounds_cross_sweep<B>(
+    left: &[Bounds],
+    right: &[Bounds],
+    count: usize,
+    visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
+) -> Result<ControlFlow<B>> {
+    let mut entries = crate::scratch_pool::ScratchPool::checkout(&SWEEP_ENTRY_SCRATCH);
+    entries.reserve(count);
+    let (mut min_x, mut max_x) = (f64::INFINITY, f64::NEG_INFINITY);
+    let (mut min_y, mut max_y) = (f64::INFINITY, f64::NEG_INFINITY);
+    for (side, bounds) in [(CROSS_LEFT_SIDE, left), (CROSS_RIGHT_SIDE, right)] {
+        for (ordinal, bound) in bounds.iter().enumerate() {
+            let (x_lo, x_hi, y_lo, y_hi) = (bound.minx(), bound.maxx(), bound.miny(), bound.maxy());
+            min_x = min_x.min(x_lo);
+            max_x = max_x.max(x_hi);
+            min_y = min_y.min(y_lo);
+            max_y = max_y.max(y_hi);
+            entries.push(SweepEntry {
+                sweep_min: x_lo,
+                sweep_max: x_hi,
+                cross_min: y_lo,
+                cross_max: y_hi,
+                ordinal: u32_ordinal(ordinal)?,
+                side,
+            });
+        }
+    }
+    finish_sweep_entries(&mut entries, wider_axis_swapped(min_x, max_x, min_y, max_y));
+    let mut cross_visit = |left: usize, right: usize| visit(left, right);
+    if count >= SWEEP_BAND_MIN {
+        let bands = (count / SWEEP_BAND_GRAIN).clamp(2, 64);
+        let cross_lo = entries
+            .iter()
+            .map(|entry| entry.cross_min)
+            .fold(f64::INFINITY, f64::min);
+        let cross_hi = entries
+            .iter()
+            .map(|entry| entry.cross_max)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let band_height = ((cross_hi - cross_lo) / bands as f64).max(f64::EPSILON);
+        Ok(banded_windows(
+            &entries,
+            bands,
+            cross_lo,
+            band_height,
+            &mut cross_visit,
+        ))
+    } else {
+        Ok(plain_windows(&entries, &mut cross_visit))
     }
 }
 
@@ -721,7 +808,7 @@ fn plain_windows<B>(
                 && right.cross_min <= left.cross_max
                 && right.cross_max >= left.cross_min
             {
-                visit_ordered(left, right, visit)?;
+                visit_pair(left, right, visit)?;
             }
         }
         remaining = right_entries;
@@ -783,7 +870,7 @@ fn banded_windows<B>(
                     && right.cross_min <= left.cross_max
                     && right.cross_max >= left.cross_min
                     && band_of(left.cross_min).max(band_of(right.cross_min)) == band
-                    && let ControlFlow::Break(value) = visit_ordered(left, right, visit)
+                    && let ControlFlow::Break(value) = visit_pair(left, right, visit)
                 {
                     return ControlFlow::Break(value);
                 }
@@ -794,12 +881,21 @@ fn banded_windows<B>(
     ControlFlow::Continue(())
 }
 
-/// Forward one candidate pair in input-ordinal order (`low < high`).
-fn visit_ordered<B>(
+/// Preserve operand order for cross joins and ascending ordinals for self joins.
+fn visit_pair<B>(
     left: &SweepEntry,
     right: &SweepEntry,
     visit: &mut impl FnMut(usize, usize) -> ControlFlow<B>,
 ) -> ControlFlow<B> {
+    match (left.side, right.side) {
+        (CROSS_LEFT_SIDE, CROSS_RIGHT_SIDE) => {
+            return visit(left.ordinal as usize, right.ordinal as usize);
+        },
+        (CROSS_RIGHT_SIDE, CROSS_LEFT_SIDE) => {
+            return visit(right.ordinal as usize, left.ordinal as usize);
+        },
+        _ => {},
+    }
     let (low, high) = if left.ordinal < right.ordinal {
         (left.ordinal, right.ordinal)
     } else {

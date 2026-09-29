@@ -136,12 +136,6 @@ impl ExactSum {
         self.subtract_product(x1, y0);
     }
 
-    pub(crate) fn compare_unsigned(&self, other: &Self) -> Ordering {
-        let (_, left) = self.signed_magnitude();
-        let (_, right) = other.signed_magnitude();
-        cmp_magnitude(&left, &right)
-    }
-
     /// Round doubled area `/ 2` to binary64, ties-to-even. Exact zero and
     /// either-signed underflow become `+0.0`; overflow becomes `±∞`.
     pub(crate) fn round_to_area(&self) -> f64 {

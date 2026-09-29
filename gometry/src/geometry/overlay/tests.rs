@@ -1357,10 +1357,10 @@ mod binary_areal_overlay_tests {
         let result = point_intersection(&points, &z_polygon, Strictness::Strict);
         assert_eq!(result.coordinate_axes(), "XYZ");
         assert_eq!(result.points_vec().unwrap()[0].z(), Some(12.0));
-        let z_multipolygon = match &z_polygon {
-            Shape::Polygon(polygon) => Shape::MultiPolygon(vec![polygon.clone()].into()),
-            _ => unreachable!("z_square returns a polygon"),
+        let Shape::Polygon(polygon) = &z_polygon else {
+            unreachable!("z_square returns a polygon");
         };
+        let z_multipolygon = Shape::MultiPolygon(vec![polygon.clone()].into());
         let scalar = point(2.0, 0.0);
         let scalar_result = point_intersection(&scalar, &z_multipolygon, Strictness::Strict);
         assert_eq!(scalar_result.coordinate_axes(), "XYZ");
@@ -2745,5 +2745,439 @@ mod rectangle_clip_tests {
         let actual = source.clip_by_rect(rect, false).unwrap();
         assert!(actual.equals_exact(&expected, 0.0, true, true));
         let _error = source.clip_by_rect(rect, true).unwrap_err();
+    }
+}
+mod exact_geographic_nary_tests {
+    use super::*;
+
+    fn frame() -> crate::geographic::GeographicFrame {
+        crate::geographic::GeographicFrame::crs84()
+    }
+
+    fn polygon(points: &[(f64, f64)]) -> Shape {
+        let points = points
+            .iter()
+            .map(|&(x, y)| Point::new_raw_xy(x, y))
+            .collect::<Vec<_>>();
+        Shape::Polygon(Polygon::new(
+            Ring::try_from_closed(CoordSeq::try_from_points(&points).unwrap()).unwrap(),
+            Vec::new(),
+        ))
+    }
+
+    fn line(points: &[Point]) -> Shape {
+        Shape::LineString(LineSeq::try_new(CoordSeq::try_from_points(points).unwrap()).unwrap())
+    }
+
+    fn exact_location(shape: &Shape, point: Point) -> Loc {
+        let frame = frame();
+        let plan = crate::geometry::PreparedPlan::transient(shape);
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let prepared = crate::geometry::GeographicPrepared::try_new(&plan, &cache, frame).unwrap();
+        prepared
+            .exact_topology()
+            .unwrap()
+            .locate_point(point)
+            .unwrap()
+            .geometry
+    }
+
+    #[test]
+    fn nary_global_q_preserves_seam_and_disconnected_area_rows() {
+        let seam = polygon(&[
+            (170.0, -10.0),
+            (-170.0, -10.0),
+            (-170.0, 10.0),
+            (170.0, 10.0),
+            (170.0, -10.0),
+        ]);
+        let distant = polygon(&[
+            (30.0, 40.0),
+            (32.0, 40.0),
+            (32.0, 42.0),
+            (30.0, 42.0),
+            (30.0, 40.0),
+        ]);
+        let output = super::super::nary::overlay_all(
+            &[&seam, &distant],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(175.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(-175.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 0.0)),
+            Loc::Exterior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(31.0, 41.0)),
+            Loc::Interior
+        );
+    }
+
+    #[test]
+    fn nary_intersection_keeps_a_pole_only_contact() {
+        let left = polygon(&[(0.0, 90.0), (10.0, 80.0), (-10.0, 80.0), (0.0, 90.0)]);
+        let right = polygon(&[(100.0, 90.0), (90.0, 80.0), (110.0, 80.0), (100.0, 90.0)]);
+        let output = super::super::nary::overlay_all(
+            &[&left, &right],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(matches!(output, Shape::Point(_)), "{output:?}");
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(-120.0, 90.0)),
+            Loc::Interior
+        );
+    }
+
+    #[test]
+    fn nary_difference_uses_global_face_rows_to_emit_a_hole() {
+        let shell = polygon(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+            (0.0, 0.0),
+        ]);
+        let first_hole = polygon(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0), (2.0, 4.0), (2.0, 2.0)]);
+        let second_hole = polygon(&[(6.0, 6.0), (8.0, 6.0), (8.0, 8.0), (6.0, 8.0), (6.0, 6.0)]);
+        let output = super::super::nary::overlay_all(
+            &[&shell, &first_hole, &second_hole],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Difference,
+            Strictness::Strict,
+        )
+        .unwrap();
+        let Shape::Polygon(output) = output else {
+            panic!("a nested polygon difference has one holed shell: {output:?}");
+        };
+        assert_eq!(output.holes.len(), 2);
+        assert_eq!(
+            exact_location(&Shape::Polygon(output.clone()), Point::new_raw_xy(1.0, 1.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&Shape::Polygon(output.clone()), Point::new_raw_xy(3.0, 3.0)),
+            Loc::Exterior
+        );
+        assert_eq!(
+            exact_location(&Shape::Polygon(output), Point::new_raw_xy(7.0, 7.0)),
+            Loc::Exterior
+        );
+    }
+
+    #[test]
+    fn nary_line_overlay_selects_exact_spans_for_union_intersection_and_difference() {
+        let source = line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(10.0, 0.0)]);
+        let mask = line(&[Point::new_raw_xy(4.0, 0.0), Point::new_raw_xy(6.0, 0.0)]);
+
+        let union = super::super::nary::overlay_all(
+            &[&source, &mask],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&union, Point::new_raw_xy(2.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&union, Point::new_raw_xy(5.0, 0.0)),
+            Loc::Interior
+        );
+
+        let intersection = super::super::nary::overlay_all(
+            &[&source, &mask],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&intersection, Point::new_raw_xy(5.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&intersection, Point::new_raw_xy(2.0, 0.0)),
+            Loc::Exterior
+        );
+
+        let difference = super::super::nary::overlay_all(
+            &[&source, &mask],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Difference,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&difference, Point::new_raw_xy(2.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&difference, Point::new_raw_xy(5.0, 0.0)),
+            Loc::Exterior
+        );
+        assert_eq!(
+            exact_location(&difference, Point::new_raw_xy(8.0, 0.0)),
+            Loc::Interior
+        );
+    }
+
+    #[test]
+    fn nary_point_overlay_selects_points_and_absorbs_them_in_area() {
+        let area = polygon(&[
+            (-10.0, -10.0),
+            (10.0, -10.0),
+            (10.0, 10.0),
+            (-10.0, 10.0),
+            (-10.0, -10.0),
+        ]);
+        let inside = Shape::Point(Point::new_raw_xy(0.0, 0.0));
+        let outside = Shape::Point(Point::new_raw_xy(30.0, 30.0));
+
+        let intersection = super::super::nary::overlay_all(
+            &[&area, &inside],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(matches!(&intersection, Shape::Point(_)), "{intersection:?}");
+        assert_eq!(
+            exact_location(&intersection, Point::new_raw_xy(0.0, 0.0)),
+            Loc::Interior
+        );
+
+        let empty = super::super::nary::overlay_all(
+            &[&area, &outside],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(empty.is_empty());
+
+        let union = super::super::nary::overlay_all(
+            &[&area, &inside],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert!(matches!(union, Shape::Polygon(_)), "{union:?}");
+
+        let union = super::super::nary::overlay_all(
+            &[&area, &outside],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&union, Point::new_raw_xy(30.0, 30.0)),
+            Loc::Interior
+        );
+    }
+
+    #[test]
+    fn nary_union_emits_a_horizontal_full_turn_ring_as_its_selected_cap() {
+        let cap = polygon(&[
+            (0.0, 80.0),
+            (90.0, 80.0),
+            (180.0, 80.0),
+            (-90.0, 80.0),
+            (0.0, 80.0),
+        ]);
+        let output = super::super::nary::overlay_all(
+            &[&cap],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 85.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 70.0)),
+            Loc::Exterior
+        );
+    }
+
+    #[test]
+    fn nary_union_emits_a_full_longitude_axis_band_without_turn_fill() {
+        let band = polygon(&[
+            (-180.0, -10.0),
+            (180.0, -10.0),
+            (180.0, 10.0),
+            (-180.0, 10.0),
+            (-180.0, -10.0),
+        ]);
+        let output = super::super::nary::overlay_all(
+            &[&band],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 20.0)),
+            Loc::Exterior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 80.0)),
+            Loc::Exterior
+        );
+    }
+
+    #[test]
+    fn nary_union_emits_a_source_owned_whole_sphere() {
+        let middle = polygon(&[
+            (-180.0, -80.0),
+            (180.0, -80.0),
+            (180.0, 80.0),
+            (-180.0, 80.0),
+            (-180.0, -80.0),
+        ]);
+        let south_cap = polygon(&[
+            (0.0, -80.0),
+            (90.0, -80.0),
+            (180.0, -80.0),
+            (-90.0, -80.0),
+            (0.0, -80.0),
+        ]);
+        let north_cap = polygon(&[
+            (0.0, 80.0),
+            (90.0, 80.0),
+            (180.0, 80.0),
+            (-90.0, 80.0),
+            (0.0, 80.0),
+        ]);
+        assert_eq!(
+            exact_location(&middle, Point::new_raw_xy(0.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&south_cap, Point::new_raw_xy(0.0, -85.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&north_cap, Point::new_raw_xy(0.0, 85.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&north_cap, Point::new_raw_xy(0.0, 89.0)),
+            Loc::Interior
+        );
+        let source_union =
+            Shape::geometry_collection(vec![south_cap.clone(), middle.clone(), north_cap.clone()])
+                .unwrap();
+        assert_eq!(
+            exact_location(&source_union, Point::new_raw_xy(0.0, 89.0)),
+            Loc::Interior
+        );
+        let one_row = super::super::nary::overlay_all(
+            &[&source_union],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&one_row, Point::new_raw_xy(0.0, 89.0)),
+            Loc::Interior,
+            "{one_row:?}"
+        );
+        let output = super::super::nary::overlay_all(
+            &[&south_cap, &middle, &north_cap],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Union,
+            Strictness::Strict,
+        )
+        .unwrap();
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 0.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, 89.0)),
+            Loc::Interior,
+            "{output:?}"
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(0.0, -89.0)),
+            Loc::Interior
+        );
+        assert_eq!(
+            exact_location(&output, Point::new_raw_xy(40.0, 90.0)),
+            Loc::Interior
+        );
+    }
+
+    #[test]
+    fn nary_seam_intersection_carries_the_original_source_interval() {
+        let crossing = line(&[
+            Point::new_axes(170.0, 0.0, ZOrdinate(Some(0.0)), MOrdinate(Some(10.0))).unwrap(),
+            Point::new_axes(-170.0, 0.0, ZOrdinate(Some(20.0)), MOrdinate(Some(30.0))).unwrap(),
+        ]);
+        let meridian = line(&[
+            Point::new_raw_xy(180.0, -1.0),
+            Point::new_raw_xy(180.0, 1.0),
+        ]);
+        let output = super::super::nary::overlay_all(
+            &[&crossing, &meridian],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Intersection,
+            Strictness::Strict,
+        )
+        .unwrap();
+        let Shape::Point(point) = output else {
+            panic!("a crossing of two lines is a point: {output:?}");
+        };
+        assert_eq!(point.z(), Some(10.0));
+        assert_eq!(point.m(), Some(20.0));
+        assert_eq!(point.y, 0.0);
+    }
+
+    #[test]
+    fn nary_emission_rejects_distinct_exact_crossings_that_round_together() {
+        let sources = Shape::geometry_collection(vec![
+            line(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(3.0, 1.0)]),
+            line(&[Point::new_raw_xy(1.0, -1.0), Point::new_raw_xy(1.0, 1.0)]),
+            line(&[
+                Point::new_raw_xy(0.0, 1.0),
+                Point::new_raw_xy(2.0, -1.0 / 3.0),
+            ]),
+        ])
+        .unwrap();
+        let error = super::super::nary::overlay_all(
+            &[&sources],
+            TopologyDomain::Geographic(frame()),
+            OverlayOp::Intersection,
+            Strictness::Lenient,
+        )
+        .expect_err("the output cannot preserve both exact crossing nodes");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Geometry(GeometryErrorKind::ExactNodeCollision { .. })
+        ));
     }
 }

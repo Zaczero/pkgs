@@ -6,28 +6,27 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::HeapSize;
 use crate::error::Result;
-use crate::geometry::topology::TopologyGraph;
+use crate::geometry::topology::ExactGeographicTopology;
 use crate::geometry::types::{Bounds, GeodesicSegment, Point, Segment, Shape, XY};
 use crate::geometry::{
     DistanceParts, GeodesicParts, GeodesicPartsKey, GeodesicSweepCaps, LineIndex, LineIndexSlot,
     MeasuredLineIndex, MeasuredLineIndexSlot, PlanarMetric, PointBatchTester, SegmentMetric,
 };
 
-/// One-frame sidecar for state that depends on the coordinate frame rather
-/// than immutable coordinates alone. Ownership guarantees one logical
-/// CRS/ellipsoid per sidecar; the key remains explicit so a PROJ runtime
-/// generation change atomically replaces stale products.
+/// Sidecar for products derived from immutable coordinates. Geodesic products
+/// are keyed by ellipsoid and PROJ runtime generation; exact geographic
+/// topology is keyed only by its mathematical frame.
 #[derive(Default)]
 pub(crate) struct FrameDependentCaches {
     entry: Mutex<Option<(GeodesicPartsKey, FrameDependentEntry)>>,
-    geographic_topology: Mutex<GeographicTopologySlot>,
+    geographic_exact_topology: Mutex<GeographicExactTopologySlot>,
     /// The frame the stored coordinates were admitted in, with whether their
     /// raw box then stands in for the shape.
     admission: Mutex<Option<(crate::geographic::GeographicFrame, bool)>>,
     #[cfg(test)]
-    geographic_topology_accesses: AtomicUsize,
+    geographic_exact_topology_accesses: AtomicUsize,
     #[cfg(test)]
-    geographic_topology_builds: AtomicUsize,
+    geographic_exact_topology_builds: AtomicUsize,
 }
 
 impl fmt::Debug for FrameDependentCaches {
@@ -40,10 +39,10 @@ impl fmt::Debug for FrameDependentCaches {
 impl HeapSize for FrameDependentCaches {
     fn heap_bytes(&self) -> usize {
         self.entry.heap_bytes().saturating_add(
-            self.geographic_topology
+            self.geographic_exact_topology
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .graph
+                .exact
                 .as_ref()
                 .map_or(0, HeapSize::heap_bytes),
         )
@@ -80,10 +79,10 @@ fn canonical_bits(value: f64) -> u64 {
 }
 
 #[derive(Default)]
-struct GeographicTopologySlot {
+struct GeographicExactTopologySlot {
     key: Option<GeographicTopologyKey>,
     generation: u64,
-    graph: Option<Arc<TopologyGraph>>,
+    exact: Option<Arc<ExactGeographicTopology>>,
 }
 
 #[derive(Clone, Default)]
@@ -117,58 +116,63 @@ impl FrameDependentCaches {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((frame, bounds_sound));
     }
 
-    pub(crate) fn geographic_topology_graph(
+    pub(crate) fn geographic_exact_topology(
         &self,
         view: crate::geographic::ScalarGeographicView<'_>,
-    ) -> Result<Arc<TopologyGraph>> {
+    ) -> Result<Arc<ExactGeographicTopology>> {
         #[cfg(test)]
-        self.geographic_topology_accesses
+        self.geographic_exact_topology_accesses
             .fetch_add(1, Ordering::Relaxed);
         let key = GeographicTopologyKey::new(view.frame());
         let generation = {
             let mut slot = self
-                .geographic_topology
+                .geographic_exact_topology
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             if slot.key == Some(key) {
-                if let Some(graph) = &slot.graph {
-                    return Ok(Arc::clone(graph));
+                if let Some(exact) = &slot.exact {
+                    return Ok(Arc::clone(exact));
                 }
                 slot.generation
             } else {
                 slot.generation = slot.generation.wrapping_add(1);
                 slot.key = Some(key);
-                slot.graph = None;
+                slot.exact = None;
                 slot.generation
             }
         };
 
         #[cfg(test)]
-        self.geographic_topology_builds
+        self.geographic_exact_topology_builds
             .fetch_add(1, Ordering::Relaxed);
-        let built = Arc::new(TopologyGraph::geographic(view)?);
+        let built = Arc::new(ExactGeographicTopology::from_views(
+            view.frame(),
+            std::iter::once(view),
+        )?);
         let mut slot = self
-            .geographic_topology
+            .geographic_exact_topology
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.key == Some(key) && slot.generation == generation {
-            if let Some(graph) = &slot.graph {
-                return Ok(Arc::clone(graph));
+            if let Some(exact) = &slot.exact {
+                return Ok(Arc::clone(exact));
             }
-            slot.graph = Some(Arc::clone(&built));
+            slot.exact = Some(Arc::clone(&built));
         }
         drop(slot);
         Ok(built)
     }
 
     #[cfg(test)]
-    pub(crate) fn geographic_topology_accesses(&self) -> usize {
-        self.geographic_topology_accesses.load(Ordering::Relaxed)
+    pub(crate) fn geographic_exact_topology_accesses(&self) -> usize {
+        self.geographic_exact_topology_accesses
+            .load(Ordering::Relaxed)
     }
 
     #[cfg(test)]
-    pub(crate) fn geographic_topology_builds(&self) -> usize {
-        self.geographic_topology_builds.load(Ordering::Relaxed)
+    pub(crate) fn geographic_exact_topology_builds(&self) -> usize {
+        self.geographic_exact_topology_builds
+            .load(Ordering::Relaxed)
     }
 
     fn get(&self, key: &GeodesicPartsKey) -> Option<FrameDependentEntry> {
@@ -969,29 +973,26 @@ mod frame_cache_tests {
     }
 
     #[test]
-    fn geographic_graph_heap_bytes_survive_poison() {
+    fn geographic_exact_topology_heap_bytes_survive_poison() {
         let cache = FrameDependentCaches::default();
         let frame = crate::crs::info("EPSG:4326")
             .unwrap()
             .geographic_frame()
             .unwrap();
         let point = Shape::Point(Point::new_raw_xy(1.0, 2.0));
-        let graph = Arc::new(
-            crate::geometry::TopologyGraph::geographic(
-                crate::geographic::ScalarGeographicView::try_new(frame, &point)
-                    .expect("fixture admits"),
-            )
-            .unwrap(),
-        );
-        let expected = HeapSize::heap_bytes(&graph);
+        let view = crate::geographic::ScalarGeographicView::try_new(frame, &point)
+            .expect("fixture admits");
+        let exact = cache
+            .geographic_exact_topology(view)
+            .expect("fixture builds exact geographic topology");
+        let expected = HeapSize::heap_bytes(&exact);
         assert!(expected > 0);
-        cache.geographic_topology.lock().unwrap().graph = Some(Arc::clone(&graph));
         let before = cache.heap_bytes();
         assert_eq!(before, expected);
 
         let result = catch_unwind(AssertUnwindSafe(|| {
-            let _guard = cache.geographic_topology.lock().unwrap();
-            panic!("poison the geographic graph mutex");
+            let _guard = cache.geographic_exact_topology.lock().unwrap();
+            panic!("poison the exact geographic topology mutex");
         }));
         assert!(result.is_err());
 
@@ -1433,14 +1434,6 @@ impl PointKey {
             x: canonical_f64_bits(point.x),
             y: canonical_f64_bits(point.y),
         }
-    }
-}
-
-pub(crate) fn ordered_edge(left: PointKey, right: PointKey) -> (PointKey, PointKey) {
-    if (left.x, left.y) <= (right.x, right.y) {
-        (left, right)
-    } else {
-        (right, left)
     }
 }
 

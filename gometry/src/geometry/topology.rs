@@ -8,10 +8,32 @@ use crate::geometry::{
     CCW_ERRBOUND_A, REDUCE_LANES, ReduceSimd, XY, ray_crossing_is_right, simd_reduce_f64,
 };
 
+/// Coordinate domain of a topology operation. Geographic operations carry
+/// the frame that defines their longitude quotient and poles.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum TopologyDomain {
+    Cartesian,
+    Geographic(crate::geographic::GeographicFrame),
+}
+
+impl TopologyDomain {
+    pub(crate) const fn is_geographic(self) -> bool {
+        matches!(self, Self::Geographic(_))
+    }
+}
+
+mod exact;
+#[cfg(test)]
 mod graph;
+pub(in crate::geometry) mod overlay;
+mod q;
+#[cfg(test)]
 mod staging;
-pub(crate) use graph::{AreaSupport, TopologyDomain, TopologyGraph, TopologyKey};
-pub(super) use graph::{TopologyEdge, TopologyLocation, TopologyNodeId};
+#[cfg(test)]
+pub(crate) use graph::TopologyGraph;
+#[cfg(test)]
+pub(super) use graph::{AreaSupport, TopologyEdge, TopologyKey, TopologyLocation, TopologyNodeId};
+pub(crate) use q::{ExactGeographicRectangleLocation, ExactGeographicTopology};
 
 /// SIMD ray-crossing decision for one chunk of ring edges, or `None` when any
 /// straddling lane's crossing sign cannot be trusted in plain `f64` (the
@@ -227,10 +249,17 @@ mod tests {
     }
 
     fn edge_probes(ring: &[XY]) -> Vec<XY> {
-        let mut probes = Vec::with_capacity(ring.len() * 4);
-        for i in 0..ring.len() {
-            let a = ring[i];
-            let b = ring[(i + 1) % ring.len()];
+        let mut probes = Vec::with_capacity(
+            ring.len()
+                .checked_mul(4)
+                .expect("each test-ring edge produces four probes"),
+        );
+        for (a, b) in ring
+            .iter()
+            .copied()
+            .zip(ring.iter().copied().cycle().skip(1))
+            .take(ring.len())
+        {
             let mid = XY::new(a.x.midpoint(b.x), a.y.midpoint(b.y));
             probes.push(a);
             probes.push(XY::new(a.x - 10.0, a.y));

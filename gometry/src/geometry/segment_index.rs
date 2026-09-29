@@ -53,8 +53,8 @@ pub(crate) use stabbing::{
 pub(crate) use sweep::SEGMENT_INDEX_MIN_PAIRS;
 pub(in crate::geometry) use sweep::{
     MonotoneRun, candidate_pairs_over_staged_runs, for_each_candidate_pair,
-    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_pair, sign_of,
-    single_chain,
+    for_each_indexed_overlapping_bounds_pair, for_each_overlapping_bounds_cross_pair,
+    for_each_overlapping_bounds_pair, sign_of, single_chain,
 };
 
 #[cfg(test)]

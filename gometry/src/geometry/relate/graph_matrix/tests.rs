@@ -158,16 +158,10 @@ fn geographic_near_vertical_box_keeps_planar_boundary_dimension() {
     }
 }
 
-fn assert_areal_fast_path(name: &str, left: &Shape, right: &Shape) {
-    let expected = graph_relate_shapes(left, right).unwrap();
-    let fast = try_areal_relate(left, right)
-        .expect("areal fast-path topology")
-        .expect("areal fast-path admission");
-    assert_eq!(fast.0, expected.0, "{name}: forward");
-    let reverse = try_areal_relate(right, left)
-        .expect("reverse areal fast-path topology")
-        .expect("reverse areal fast-path admission");
-    assert_eq!(reverse.0, expected.transpose().0, "{name}: reverse");
+fn assert_exact_relation_transposes(name: &str, left: &Shape, right: &Shape) {
+    let forward = graph_relate_shapes(left, right).unwrap();
+    let reverse = graph_relate_shapes(right, left).unwrap();
+    assert_eq!(reverse.0, forward.transpose().0, "{name}: transpose");
 }
 
 fn assert_relation_case(name: &str, left: &Shape, right: &Shape, expected: &str) {
@@ -267,6 +261,33 @@ fn external_hole_boundary_is_not_polygon_support() {
         graph_relate_data(&left, &right).unwrap().text(),
         "FF2FF10F2"
     );
+}
+
+#[test]
+fn geographic_collapsed_shell_keeps_curve_support_outside_an_areal_hole() {
+    let shell = polygon(&[[0.0, 0.0], [10.0, 0.0], [5.0, 0.0], [0.0, 0.0]]).shell;
+    let hole = rectangle(2.0, -1.0, 8.0, 1.0).shell;
+    let trimmed = Shape::Polygon(Polygon::new(shell, vec![hole]));
+    let residual = line(&[[0.5, 0.0], [1.5, 0.0]]);
+    assert!(graph_relate_shapes_geographic(&trimmed, &residual).is_intersects());
+}
+
+#[test]
+fn geographic_areal_hole_removes_collapsed_shell_curve_support() {
+    let shell = polygon(&[[0.0, 0.0], [10.0, 0.0], [5.0, 0.0], [0.0, 0.0]]).shell;
+    let hole = rectangle(2.0, -1.0, 8.0, 1.0).shell;
+    let trimmed = Shape::Polygon(Polygon::new(shell, vec![hole]));
+    let inside_hole = line(&[[4.0, 0.0], [6.0, 0.0]]);
+    assert!(graph_relate_shapes_geographic(&trimmed, &inside_hole).is_disjoint());
+}
+
+#[test]
+fn geographic_areal_hole_trims_collapsed_shell_point_support() {
+    let shell = polygon(&[[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]).shell;
+    let hole = rectangle(1.0, 1.0, 3.0, 3.0).shell;
+    let trimmed = Shape::Polygon(Polygon::new(shell, vec![hole]));
+    let point = Shape::Point(Point::new_raw_xy(1.0, 1.0));
+    assert!(graph_relate_shapes_geographic(&trimmed, &point).is_disjoint());
 }
 
 #[test]
@@ -401,7 +422,7 @@ fn strict_convexity_rejects_short_rings_but_permissive_convexity_remains() {
 }
 
 #[test]
-fn direct_areal_relation_matches_exact_relation() {
+fn exact_areal_relation_transposes_for_curated_pairs() {
     let shell_with_hole = Shape::Polygon(donut());
     let cases = vec![
         (
@@ -528,7 +549,7 @@ fn direct_areal_relation_matches_exact_relation() {
         ),
     ];
     for (name, left, right) in cases {
-        assert_areal_fast_path(name, &left, &right);
+        assert_exact_relation_transposes(name, &left, &right);
     }
 
     let adjacent = Shape::MultiPolygon(
@@ -604,46 +625,16 @@ fn direct_areal_relation_matches_exact_relation() {
             Shape::Polygon(rectangle(11.0, -2.0, 51.0, 2.0)),
         ),
     ] {
-        assert_areal_fast_path(name, &left, &right);
+        assert_exact_relation_transposes(name, &left, &right);
     }
 }
 
 #[test]
-fn direct_areal_relation_declines_unsupported_operands() {
+fn collapsed_cartesian_polygon_relation_uses_exact_partition() {
     let areal = Shape::Polygon(rectangle(0.0, 0.0, 2.0, 2.0));
-    let line = Shape::LineString(
-        LineSeq::try_new(
-            CoordSeq::try_from_points(&[Point::new_raw_xy(0.0, 0.0), Point::new_raw_xy(2.0, 2.0)])
-                .unwrap(),
-        )
-        .expect("line has two vertices"),
-    );
-    let zero_length_edge = Shape::Polygon(polygon(&[
-        [0.0, 0.0],
-        [2.0, 0.0],
-        [2.0, 0.0],
-        [2.0, 2.0],
-        [0.0, 2.0],
-        [0.0, 0.0],
-    ]));
-    for (name, left, right) in [
-        ("line member", &areal, &line),
-        ("zero length edge", &zero_length_edge, &areal),
-    ] {
-        assert!(
-            try_areal_relate(left, right)
-                .expect("areal relation topology")
-                .is_none(),
-            "{name}: admission"
-        );
-    }
     let collapsed = Shape::Polygon(polygon(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [0.0, 0.0]]));
-    let collapsed_left = PreparedPlan::transient(&collapsed);
-    let areal_right = PreparedPlan::transient(&areal);
     assert_eq!(
-        graph_relate_data(&collapsed_left, &areal_right)
-            .unwrap()
-            .text(),
+        graph_relate_shapes(&collapsed, &areal).unwrap().text(),
         "F1FF0F212"
     );
 }
@@ -726,19 +717,6 @@ fn empty_graph_keeps_the_nonempty_operand_dimensions() {
         graph_relate_shapes(&empty, &empty).unwrap().text(),
         "FFFFFFFF2"
     );
-}
-
-fn areal_fold(
-    left: &Shape,
-    right: &Shape,
-    frame: crate::geographic::GeographicFrame,
-) -> Result<Option<De9im>> {
-    let sound = |shape: &Shape| {
-        shape.bounds().is_some_and(|bounds| {
-            crate::geometry::raw_coordinate_bounds_are_sound_in_frame(Some(shape), bounds, frame)
-        })
-    };
-    try_areal_relate_geographic(left, || sound(left), right, || sound(right))
 }
 
 #[test]
@@ -975,7 +953,7 @@ fn rectangle_cover_certificate_fails_open_at_geographic_singularities() {
 }
 
 #[test]
-fn geographic_areal_relation_uses_the_safe_cartesian_fold() {
+fn geographic_pair_q_matches_reference_on_ordinary_areal_pairs() {
     let frame = crate::crs::info("EPSG:4326")
         .unwrap()
         .geographic_frame()
@@ -1026,14 +1004,6 @@ fn geographic_areal_relation_uses_the_safe_cartesian_fold() {
         ),
     ] {
         let expected = geographic_graph_oracle(&left, &right, frame);
-        assert_eq!(
-            areal_fold(&left, &right, frame)
-                .expect("safe geographic areal topology")
-                .expect("safe geographic areal admission")
-                .0,
-            expected.0,
-            "{name}: fold"
-        );
         let left_plan = PreparedPlan::transient(&left);
         let right_plan = PreparedPlan::transient(&right);
         let left_cache = crate::geometry::FrameDependentCaches::default();
@@ -1059,7 +1029,7 @@ fn geographic_areal_relation_uses_the_safe_cartesian_fold() {
 }
 
 #[test]
-fn geographic_areal_relation_declines_quotient_aliases() {
+fn geographic_pair_q_matches_reference_at_quotient_aliases() {
     let frame = crate::crs::info("EPSG:4326")
         .unwrap()
         .geographic_frame()
@@ -1079,12 +1049,6 @@ fn geographic_areal_relation_declines_quotient_aliases() {
         ("pole", pole),
         ("longitude 360", noncanonical),
     ] {
-        assert!(
-            areal_fold(&left, &ordinary, frame)
-                .expect("geographic areal relation")
-                .is_none(),
-            "{name}: fold admission"
-        );
         let expected = geographic_graph_oracle(&left, &ordinary, frame);
         let left_plan = PreparedPlan::transient(&left);
         let right_plan = PreparedPlan::transient(&ordinary);
@@ -1114,6 +1078,7 @@ fn geographic_cap_point_matrices_are_stable() {
                 Point::new_raw_xy(-170.0, 80.0),
                 Point::new_raw_xy(-170.0, 90.0),
                 Point::new_raw_xy(170.0, 90.0),
+                Point::new_raw_xy(170.0, 80.0),
             ])
             .unwrap(),
         )
@@ -1346,6 +1311,131 @@ fn geographic_pole_line_intersects_cap_in_both_orders() {
     ]));
     assert!(graph_relate_shapes_geographic(&line, &cap).is_intersects());
     assert!(graph_relate_shapes_geographic(&cap, &line).is_intersects());
+}
+
+#[test]
+fn geographic_exact_query_handle_reuses_the_frame_cached_q() {
+    let source = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
+    let plan = PreparedPlan::transient(&source);
+    let cache = crate::geometry::FrameDependentCaches::default();
+    let frame = crate::geographic::GeographicFrame::crs84();
+    let prepared = GeographicPrepared::try_new(&plan, &cache, frame).expect("fixture admits");
+    let first = prepared.exact_topology().unwrap();
+    let inside_point = Point::new_raw_xy(2.0, 2.0);
+    let inside_location = first.locate_point(inside_point).unwrap();
+    assert_eq!(inside_location.geometry, Loc::Interior);
+    let point_relation = graph_relate_shapes_geographic(&source, &Shape::Point(inside_point));
+    assert!(point_relation.is_covers());
+    assert_eq!(
+        inside_location.geometry != Loc::Exterior,
+        point_relation.is_intersects()
+    );
+    let outside_point = Point::new_raw_xy(8.0, 8.0);
+    assert_eq!(
+        first.locate_point(outside_point).unwrap().geometry,
+        Loc::Exterior
+    );
+    assert!(!graph_relate_shapes_geographic(&source, &Shape::Point(outside_point)).is_intersects());
+
+    let bounds = Bounds::new_raw(1.0, 1.0, 3.0, 3.0);
+    let rectangle_relation = graph_relate_shapes_geographic(
+        &source,
+        &Shape::Polygon(rectangle(
+            bounds.minx(),
+            bounds.miny(),
+            bounds.maxx(),
+            bounds.maxy(),
+        )),
+    );
+    assert_eq!(
+        first.classify_rectangle(bounds).unwrap(),
+        Some(crate::geometry::ExactGeographicRectangleLocation::Interior)
+    );
+    assert!(rectangle_relation.is_covers());
+    assert!(rectangle_relation.is_intersects());
+    let second = prepared.exact_topology().unwrap();
+    assert!(std::sync::Arc::ptr_eq(&first, &second));
+    assert_eq!(
+        second
+            .locate_point(Point::new_raw_xy(8.0, 8.0))
+            .unwrap()
+            .geometry,
+        Loc::Exterior
+    );
+    assert_eq!(cache.geographic_exact_topology_builds(), 1);
+}
+
+#[test]
+fn cached_q_point_locations_match_pair_relations_across_geographic_support() {
+    let square = Shape::Polygon(rectangle(0.0, 0.0, 4.0, 4.0));
+    let donut = Shape::Polygon(donut());
+    let line_source = line(&[[0.0, 0.0], [10.0, 0.0]]);
+    let seam_line = line(&[[170.0, 0.0], [-170.0, 0.0]]);
+    let isolated = Shape::Point(Point::new_raw_xy(5.0, 5.0));
+    let seam = Shape::Polygon(polygon(&[
+        [170.0, -10.0],
+        [-170.0, -10.0],
+        [-170.0, 10.0],
+        [170.0, 10.0],
+        [170.0, -10.0],
+    ]));
+    let polar = Shape::Polygon(polygon(&[
+        [-10.0, 80.0],
+        [10.0, 80.0],
+        [10.0, 90.0],
+        [-10.0, 90.0],
+        [-10.0, 80.0],
+    ]));
+    let connected_lines = Shape::geometry_collection(vec![
+        line(&[[0.0, 0.0], [1.0, 0.0]]),
+        line(&[[1.0, 0.0], [2.0, 0.0]]),
+    ])
+    .unwrap();
+    let cases = [
+        ("square interior", &square, Point::new_raw_xy(2.0, 2.0)),
+        ("square boundary", &square, Point::new_raw_xy(0.0, 2.0)),
+        ("square exterior", &square, Point::new_raw_xy(8.0, 8.0)),
+        ("hole interior", &donut, Point::new_raw_xy(5.0, 5.0)),
+        ("line interior", &line_source, Point::new_raw_xy(5.0, 0.0)),
+        ("line boundary", &line_source, Point::new_raw_xy(0.0, 0.0)),
+        (
+            "seam line interior",
+            &seam_line,
+            Point::new_raw_xy(175.0, 0.0),
+        ),
+        ("isolated point", &isolated, Point::new_raw_xy(5.0, 5.0)),
+        ("seam alias", &seam, Point::new_raw_xy(-180.0, 0.0)),
+        ("pole cap", &polar, Point::new_raw_xy(37.0, 85.0)),
+        ("pole boundary", &polar, Point::new_raw_xy(37.0, 90.0)),
+        (
+            "mod-2 multiline node",
+            &connected_lines,
+            Point::new_raw_xy(1.0, 0.0),
+        ),
+    ];
+    for (name, source, point) in cases {
+        let plan = PreparedPlan::transient(source);
+        let cache = crate::geometry::FrameDependentCaches::default();
+        let prepared =
+            GeographicPrepared::try_new(&plan, &cache, crate::geographic::GeographicFrame::crs84())
+                .unwrap();
+        let actual = prepared
+            .exact_topology()
+            .unwrap()
+            .locate_point(point)
+            .unwrap();
+        let relation = graph_relate_shapes_geographic(source, &Shape::Point(point));
+        assert_eq!(
+            actual.geometry != Loc::Exterior,
+            relation.is_covers(),
+            "{name} exact Q location"
+        );
+        assert_eq!(
+            relation.is_covers(),
+            relation.is_intersects(),
+            "{name} point relation is symmetric in support"
+        );
+    }
 }
 
 #[test]
@@ -1639,4 +1729,34 @@ fn point_polygon_relation_matches_known_matrices() {
             "{name} point-first is the transpose"
         );
     }
+}
+
+#[test]
+fn geographic_point_on_line_interior_is_an_exact_curve_contact() {
+    for (name, coordinates, x) in [
+        ("ordinary", [[0.0, 0.0], [10.0, 0.0]], 5.0),
+        ("seam-crossing", [[170.0, 0.0], [-170.0, 0.0]], 175.0),
+    ] {
+        let line = line(&coordinates);
+        let point = Shape::Point(Point::new_raw_xy(x, 0.0));
+        assert_eq!(
+            graph_relate_shapes_geographic(&line, &point).text(),
+            "0F1FF0FF2",
+            "{name} line interior contact"
+        );
+    }
+}
+
+#[test]
+fn geographic_shared_multiline_endpoint_is_not_a_boundary() {
+    let lines = Shape::geometry_collection(vec![
+        line(&[[0.0, 0.0], [1.0, 0.0]]),
+        line(&[[1.0, 0.0], [2.0, 0.0]]),
+    ])
+    .unwrap();
+    let junction = Shape::Point(Point::new_raw_xy(1.0, 0.0));
+    assert_eq!(
+        graph_relate_shapes_geographic(&lines, &junction).text(),
+        "0F1FF0FF2"
+    );
 }

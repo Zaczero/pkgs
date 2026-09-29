@@ -473,14 +473,14 @@ impl Latitude {
         Ok(admitted)
     }
 
-    /// Fold the one-exterior-ULP pole neighbor and signed zero. Ingress must
-    /// already have rejected non-finite values; range is checked by
-    /// [`Self::try_new`].
+    /// Fold the one-exterior-ULP pole neighbor and signed zero after ingress
+    /// has validated the value. Geographic topology uses this admitted latitude
+    /// while the native point retains its original ordinate.
     #[expect(
         clippy::float_cmp,
         reason = "admission matches exactly the measured adjacent binary64 values"
     )]
-    pub(super) fn from_admitted(frame: GeographicFrame, value: f64) -> Self {
+    pub(crate) fn from_admitted(frame: GeographicFrame, value: f64) -> Self {
         debug_assert!(
             value.is_finite(),
             "from_admitted requires a finite latitude"

@@ -32,11 +32,11 @@ pub(crate) use snap::{
     segmentize_points_budgeted, snap_ring_to_reference, verify_planar_segmentize_output,
     verify_planar_segmentize_shape,
 };
+pub(in crate::geometry) use walk::winding_region;
 pub(crate) use walk::{
     WalkColumns, WalkCount, WalkJoin, WalkJoinRule, WalkPlan, WalkSink, close_xy_loop, emit_cap,
     extend_cleaned, materialize_walk, middle_outside_segment_bounds,
 };
-pub(in crate::geometry) use walk::{assemble_region_polygons, winding_region};
 #[cfg(test)]
 pub(crate) use walk::{reset_walk_plan_construction_count, walk_plan_construction_count};
 #[cfg(test)]

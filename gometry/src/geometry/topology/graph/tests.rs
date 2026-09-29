@@ -728,7 +728,7 @@ fn geographic_seam_bundles_keep_endpoint_provenance() {
 fn geographic_chart_keeps_exact_one_ulp_source_endpoint() {
     let one_ulp_shape = geographic_one_ulp_endpoint_fixture();
     let one_ulp_graph = geographic_graph(&one_ulp_shape);
-    let endpoint = f64::from_bits((-170.0_f64).to_bits() + 1);
+    let endpoint = (-170.0_f64).next_down();
     // A rounded `start + delta` would leave a second node at the shared
     // source endpoint instead of selecting its exact canonical copy.
     assert_eq!(one_ulp_graph.nodes.len(), 6);
@@ -743,7 +743,7 @@ fn geographic_chart_keeps_exact_one_ulp_source_endpoint() {
 }
 
 fn geographic_one_ulp_endpoint_fixture() -> Shape {
-    let endpoint = f64::from_bits((-170.0_f64).to_bits() + 1);
+    let endpoint = (-170.0_f64).next_down();
     Shape::Polygon(polygon(
         &[
             (170.0, 0.0),

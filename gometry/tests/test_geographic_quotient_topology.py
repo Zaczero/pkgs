@@ -20,7 +20,6 @@ def test_quotient_seam_membership_reaches_every_topology_consumer() -> None:
 
     assert gm.intersects(source, point)
     assert gm.intersects(point, source)
-    assert gm.intersects(source, point)
     assert gm.intersects(gm.GeometryArray([source, source]), point).tolist() == [
         True,
         True,
@@ -55,6 +54,39 @@ def test_quotient_seam_membership_reaches_every_topology_consumer() -> None:
     assert gm.intersection(source, point).to_wkt() == point.to_wkt()
     assert len(gm.h3_cover(source, resolution=2, cell_rule='center')) > 0
     assert gm.intersects(source, gm.box(179, -1, 180, 1, crs=4326))
+
+
+def test_subnormal_seam_crossing_keeps_exact_predicate_and_nary_contacts() -> None:
+    """S2's lifted edge reaches the seam at t=1/4 and exact latitude δ/4."""
+    point = gm.Point(180, 0, crs=4326)
+    delta = math.ulp(0.0)
+    cases = (
+        (
+            gm.LineString([(170, 0), (-160, delta)], crs=4326),
+            False,
+            'FF1FF00F2',
+        ),
+        (
+            gm.LineString([(170, 0), (-150, delta)], crs=4326),
+            False,
+            'FF1FF00F2',
+        ),
+        (
+            gm.LineString([(170, 0), (-160, 0)], crs=4326),
+            True,
+            '0F1FF0FF2',
+        ),
+    )
+    for line, intersects, matrix in cases:
+        assert gm.intersects(line, point) is intersects
+        assert gm.contains(line, point) is intersects
+        assert gm.within(point, line) is intersects
+        assert gm.relate(line, point) == matrix
+        result = gm.intersection_all([line, point])
+        assert result.is_empty is (not intersects)
+        if intersects:
+            assert result.geometry_type == 'Point'
+            assert gm.equals(result, point)
 
 
 def test_ordinary_geographic_polygons_relate_like_their_planar_twins() -> None:
@@ -140,6 +172,73 @@ def test_geographic_overlay_keeps_seam_and_polar_area_membership() -> None:
     assert gm.equals(gm.intersection(cap, polar_triangle), polar_triangle)
     assert gm.intersection(polar_hole, polar_triangle).is_empty
     assert gm.equals(gm.intersection(full_band, band_window), band_window)
+
+
+def test_south_full_turn_ring_emits_its_polar_shell() -> None:
+    cap = gm.Polygon(
+        [(0, -80), (90, -80), (180, -80), (-90, -80), (0, -80)], crs=4326
+    )
+
+    result = gm.union_all([cap])
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert gm.contains(result, gm.Point(0, -85, crs=4326))
+    assert not gm.contains(result, gm.Point(0, -70, crs=4326))
+
+
+def test_intersection_emits_a_new_shell_at_the_north_pole() -> None:
+    cap = gm.Polygon(
+        [(0, 80), (90, 80), (180, 80), (-90, 80), (0, 80)], crs=4326
+    )
+    wedge = gm.Polygon([(120, 90), (110, 75), (130, 75), (120, 90)], crs=4326)
+
+    result = gm.intersection(cap, wedge)
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert gm.contains(result, gm.Point(120, 85, crs=4326))
+    assert not gm.contains(result, gm.Point(120, 78, crs=4326))
+    assert not gm.equals(result, cap)
+    assert not gm.equals(result, wedge)
+
+
+def test_difference_emits_a_new_shell_across_the_seam() -> None:
+    source = gm.Polygon(
+        [(170, 0), (-170, 0), (-170, 20), (170, 20), (170, 0)], crs=4326
+    )
+    cutter = gm.Polygon(
+        [(175, 10), (-175, 10), (-175, 30), (175, 30), (175, 10)], crs=4326
+    )
+
+    result = gm.difference(source, cutter)
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert gm.contains(result, gm.Point(172, 15, crs=4326))
+    assert gm.contains(result, gm.Point(180, 5, crs=4326))
+    assert not gm.contains(result, gm.Point(180, 15, crs=4326))
+    assert not gm.equals(result, source)
+    assert not gm.equals(result, cutter)
+
+
+def test_union_merges_seam_adjacent_source_rings_into_one_shell() -> None:
+    east = gm.Polygon(
+        [(170, 0), (180, 0), (180, 10), (170, 10), (170, 0)], crs=4326
+    )
+    west = gm.Polygon(
+        [(-180, 0), (-170, 0), (-170, 10), (-180, 10), (-180, 0)], crs=4326
+    )
+
+    result = gm.union_all([east, west])
+
+    assert result.geometry_type == 'Polygon'
+    assert result.is_valid
+    assert gm.contains(result, gm.Point(175, 5, crs=4326))
+    assert gm.contains(result, gm.Point(-175, 5, crs=4326))
+    assert not gm.contains(result, gm.Point(0, 5, crs=4326))
+    assert not gm.equals(result, east)
+    assert not gm.equals(result, west)
 
 
 def test_geographic_array_candidates_keep_periodic_envelope_selectivity() -> None:

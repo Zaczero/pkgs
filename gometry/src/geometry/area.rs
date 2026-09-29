@@ -142,23 +142,8 @@ impl RingWinding {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub(crate) struct RingDecisionArea {
-    sign: AreaSign,
-    magnitude: AreaMeasure,
-}
-
-impl RingDecisionArea {
-    pub(crate) const fn sign(self) -> AreaSign {
-        self.sign
-    }
-
-    pub(crate) const fn magnitude(self) -> AreaMeasure {
-        self.magnitude
-    }
-}
-
 impl AreaSign {
+    #[cfg(test)]
     /// True when a face walk with this sign is a better outer-face candidate
     /// for its component than one with `other`. A nondegenerate component's
     /// outer face is its negative walk; when every walk is nonnegative the
@@ -734,9 +719,10 @@ pub(crate) fn closed_columns_winding(xs: &[f64], ys: &[f64], pairs: usize) -> Ri
 }
 
 pub(crate) fn open_xy_cycle_winding(points: &[XY]) -> RingWinding {
-    area_sign_to_winding(open_xy_cycle_sign(points))
+    area_sign_to_winding(exact_open_xy_sign(points))
 }
 
+#[cfg(test)]
 pub(crate) fn open_xy_cycle_sign(points: &[XY]) -> AreaSign {
     exact_open_xy_sign(points)
 }
@@ -745,41 +731,13 @@ pub(crate) fn open_point_cycle_winding(points: &[Point]) -> RingWinding {
     area_sign_to_winding(exact_open_point_sign(points))
 }
 
-pub(crate) fn open_xy_cycle_decision(points: &[XY]) -> RingDecisionArea {
-    RingDecisionArea {
-        sign: exact_open_xy_sign(points),
-        magnitude: open_xy_cycle_magnitude(points),
-    }
-}
-
-pub(crate) fn open_point_cycle_decision(points: &[Point]) -> RingDecisionArea {
-    RingDecisionArea {
-        sign: exact_open_point_sign(points),
-        magnitude: open_point_cycle_magnitude(points),
-    }
-}
-
+#[cfg(test)]
 pub(crate) fn open_point_cycle_magnitude(points: &[Point]) -> AreaMeasure {
     unsigned_area(&open_cycle_sum(points))
 }
 
 pub(crate) fn open_xy_cycle_magnitude(points: &[XY]) -> AreaMeasure {
     unsigned_area(&open_cycle_sum(points))
-}
-
-pub(crate) fn cmp_area_keys_then_open_columns(
-    left_key: f64,
-    right_key: f64,
-    left_xs: &[f64],
-    left_ys: &[f64],
-    right_xs: &[f64],
-    right_ys: &[f64],
-) -> std::cmp::Ordering {
-    match left_key.total_cmp(&right_key) {
-        std::cmp::Ordering::Equal => open_cycle_sum_columns(left_xs, left_ys)
-            .compare_unsigned(&open_cycle_sum_columns(right_xs, right_ys)),
-        ordering => ordering,
-    }
 }
 
 #[cfg(test)]

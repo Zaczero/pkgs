@@ -650,6 +650,7 @@ mod geographic_tests {
                     Point::new_raw_xy(-170.0, 80.0),
                     Point::new_raw_xy(-170.0, 90.0),
                     Point::new_raw_xy(170.0, 90.0),
+                    Point::new_raw_xy(170.0, 80.0),
                 ])
                 .unwrap(),
             )

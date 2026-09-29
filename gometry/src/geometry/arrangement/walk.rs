@@ -1,75 +1,22 @@
 use std::cmp::Ordering;
 
+#[cfg(test)]
 use crate::error::{ResourceError, Result};
+#[cfg(test)]
 use crate::geometry::arrangement::{Face, IndexedTopology, WindingWeight};
-use crate::geometry::{
-    HashMap, Orientation, PointKey, Segment, XY, open_xy_cycle_sign, orientation, same_point,
-};
+#[cfg(test)]
+use crate::geometry::{HashMap, PointKey, Segment, open_xy_cycle_sign, same_point};
+use crate::geometry::{Orientation, XY, orientation};
 
-pub(crate) fn split_ring_at_pinches(
-    ring: &[XY],
-    ids: &[u32],
-    rings: &mut Vec<Vec<XY>>,
-    position_of: &mut [(u32, u32)],
-    generation: u32,
-    path: &mut Vec<XY>,
-    path_ids: &mut Vec<u32>,
-) {
-    path.clear();
-    path_ids.clear();
-    path.reserve(ring.len());
-    path_ids.reserve(ids.len());
-    for (&point, &id) in std::iter::zip(ring, ids) {
-        let (stamp, position) = position_of[id as usize];
-        if stamp == generation {
-            let start = position as usize;
-            let mut piece = Vec::with_capacity(path.len() - start + 1);
-            piece.extend_from_slice(&path[start..]);
-            for &inner in &path_ids[start + 1..] {
-                // Inner vertices may legitimately repeat later — drop them
-                // from the open path's table (stamp 0 is never current).
-                position_of[inner as usize].0 = 0;
-            }
-            path.truncate(start);
-            path_ids.truncate(start);
-            piece.push(point);
-            rings.push(piece);
-            // The pinch vertex stays on the open path (its table entry
-            // still maps to `start`).
-        } else {
-            position_of[id as usize] = (generation, path.len() as u32);
-        }
-        path.push(point);
-        path_ids.push(id);
-    }
-    debug_assert!(path.len() <= 1, "closed walk must consume the path");
-}
-
-/// Face walks over the CSR adjacency: the successor of arriving `u -> v`
-/// departs `v` along the neighbor immediately clockwise of the reversal
-/// `v -> u`. Every directed half-edge lands on exactly one face. `RINGS`
-/// gates ring and exact-magnitude materialization: winding consumers read only
-/// exact signs and the face CSR (boundaries come from
-/// [`Arrangement::region_rings`]), so their walks skip both costs.
-pub(crate) fn arrangement_faces<const RINGS: bool>(
-    points: &[XY],
-    topology: &IndexedTopology,
-) -> Vec<Face> {
+/// Assign one face to every directed half-edge and retain its exact area sign.
+#[cfg(test)]
+pub(crate) fn arrangement_faces(points: &[XY], topology: &IndexedTopology) -> Vec<Face> {
     let mut faces = Vec::with_capacity(topology.face_starts.len() - 1);
-    // One cycle scratch for sign classification when rings are not kept
-    // (`RINGS=false`); for `RINGS=true` each completed cycle is moved into the
-    // face and the next face reuses a fresh buffer (no free-list needed —
-    // faces own their rings for the arrangement lifetime).
-    let mut cycle_scratch = Vec::new();
+    let mut cycle = Vec::new();
     for face in 0..topology.face_starts.len() - 1 {
         let cycle_len = (topology.face_starts[face + 1] - topology.face_starts[face]) as usize + 1;
-        let mut cycle = if RINGS {
-            Vec::with_capacity(cycle_len)
-        } else {
-            cycle_scratch.clear();
-            cycle_scratch.reserve(cycle_len);
-            std::mem::take(&mut cycle_scratch)
-        };
+        cycle.clear();
+        cycle.reserve(cycle_len);
         for &slot in &topology.face_slots
             [topology.face_starts[face] as usize..topology.face_starts[face + 1] as usize]
         {
@@ -82,12 +29,6 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
         }
         let area_sign = open_xy_cycle_sign(&cycle);
         faces.push(Face {
-            ring: if RINGS {
-                cycle
-            } else {
-                cycle_scratch = cycle;
-                Vec::new()
-            },
             area_sign,
             component: topology.component_of[topology.owners
                 [topology.face_slots[topology.face_starts[face] as usize] as usize]
@@ -102,6 +43,7 @@ pub(crate) fn arrangement_faces<const RINGS: bool>(
 /// order), so the previous piece's end id usually answers the next
 /// piece's start without a hash lookup; edges dedup by sort-and-merge —
 /// no edge map at all.
+#[cfg(test)]
 #[expect(clippy::type_complexity, reason = "private construction plumbing")]
 pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
     segments: impl ExactSizeIterator<Item = Segment>,
@@ -171,6 +113,7 @@ pub(crate) fn dedup_vertices_and_edges<W: WindingWeight>(
 }
 
 /// Two-pass CSR fill over the deduplicated edges (both half-edges placed).
+#[cfg(test)]
 #[expect(clippy::type_complexity, reason = "private construction plumbing")]
 pub(crate) fn build_csr<W: WindingWeight>(
     vertex_count: usize,
@@ -221,6 +164,7 @@ pub(crate) fn build_csr<W: WindingWeight>(
 }
 
 /// Sort every CSR row counter-clockwise by departure angle.
+#[cfg(test)]
 pub(crate) fn sort_rows_counterclockwise<W: WindingWeight>(
     points: &[XY],
     starts: &[u32],

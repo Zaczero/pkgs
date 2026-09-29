@@ -1,13 +1,15 @@
 use std::collections::hash_map::Entry;
 
 use crate::error::{ResourceError, Result};
+#[cfg(test)]
 use crate::geometry::segments::{
     PairOrientations, point_in_segment_envelope, segment_cross_point_with_orientations,
     segment_envelopes_disjoint,
 };
+use crate::geometry::{HashMap, PointKey, Segment, same_point, undirected_segment_edge_key};
+#[cfg(test)]
 use crate::geometry::{
-    HashMap, Orientation, PointKey, Segment, XY, dedup_consecutive_xy, for_each_candidate_pair,
-    same_point, segments, single_chain, undirected_segment_edge_key,
+    Orientation, XY, dedup_consecutive_xy, for_each_candidate_pair, segments, single_chain,
 };
 
 /// One original source ordinal that owned a unique undirected edge, plus
@@ -42,13 +44,6 @@ impl SegmentProvenance {
 
     pub(crate) const fn len(&self) -> usize {
         self.offsets.len().saturating_sub(1)
-    }
-
-    /// True when every unique edge has exactly one forward owner (identity
-    /// multiplicity — expand is a no-op).
-    #[cfg(test)]
-    fn all_single_forward(&self) -> bool {
-        self.entries.len() == self.len() && self.entries.iter().all(|&(_, reversed)| !reversed)
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = &[SegmentSource]> + '_ {
@@ -156,37 +151,9 @@ pub(super) fn placement_offsets(counts: &mut [u32]) -> Result<Vec<u32>> {
     Ok(offsets)
 }
 
-/// Expand noded unique pieces once per original directed source so unit-weight
-/// consumers ([`Arrangement::new`], even-odd repair) keep directed multiplicity:
-/// same-direction stacks accumulate, opposite directions on a shared edge
-/// cancel. Noding runs on the unique undirected set (O(U²)); expansion is O(E).
-#[cfg(test)]
-fn expand_directed_atoms(
-    atomic: Vec<Segment>,
-    unique_sources: &[u32],
-    provenance: &SegmentProvenance,
-) -> Vec<Segment> {
-    if provenance.all_single_forward() {
-        return atomic;
-    }
-    let mut out = Vec::with_capacity(atomic.len().saturating_mul(2));
-    for (piece, &unique_index) in atomic.iter().zip(unique_sources) {
-        for &(_, reversed) in provenance.owners(unique_index as usize) {
-            out.push(if reversed {
-                Segment {
-                    start: piece.end,
-                    end: piece.start,
-                }
-            } else {
-                *piece
-            });
-        }
-    }
-    out
-}
-
 /// Map per-unique provenance onto per-atomic-piece provenance (each atomic
 /// piece inherits the full owner set of its unique parent edge).
+#[cfg(test)]
 fn expand_provenance_to_atoms(
     unique_sources: &[u32],
     provenance: &SegmentProvenance,
@@ -214,65 +181,17 @@ fn expand_provenance_to_atoms(
     Ok(SegmentProvenance { offsets, entries })
 }
 
-/// Self-node one segment set: split every segment at its interior contacts
-/// with every other, via the pair-once candidate sweep — no index build,
-/// the same atomic output as [`node_segments`] against itself (the cut
-/// consumer sorts and dedups per segment, so collection order is free).
-///
-/// Exact undirected XY duplicates always collapse for the pair scan via flat
-/// CSR provenance (no size threshold — thresholds are cliffs for cascade
-/// callers that re-enter below a floor). Unique input stays linear: dedup is
-/// one HashMap + two flat vecs, then noding on U = E. Duplicate-rich input
-/// nodes O(U²) and re-expands directed multiplicity for unit-weight consumers.
-#[cfg(test)]
-pub(crate) fn self_node_segments(segments: &[Segment]) -> Result<Vec<Segment>> {
-    if segments.is_empty() {
-        return Ok(Vec::new());
-    }
-    let (unique, provenance) = dedup_undirected_segments_sourced(segments.iter().copied())?;
-    if provenance.all_single_forward() {
-        // Unique (or pure forward 1:1 after collapse of identical copies that
-        // still leave single forward — actually identical dups make len>1).
-        // all_single_forward ⇒ U owners, each single forward ⇒ U == E and no
-        // reverse; unique may still be a proper subset only if... never when
-        // all single. So unique.len() == segments.len() and we can node unique
-        // (equal to original order of first occurrence = original order).
-        return self_node_segments_unique(&unique);
-    }
-    let (atomic, unique_sources) = self_node_segments_sourced_unique(&unique)?;
-    Ok(expand_directed_atoms(atomic, &unique_sources, &provenance))
-}
-
-/// Node a pre-deduped segment set (collinear-overlap pre-pass + full pass).
-#[cfg(test)]
-fn self_node_segments_unique(segments: &[Segment]) -> Result<Vec<Segment>> {
-    // Collinear OVERLAPS need a pre-pass: splitting them at each other's
-    // endpoints first (exact points) makes coincident strokes
-    // BIT-IDENTICAL, so the main pass's canonicalized crossing placement
-    // lands on the same point for every copy — a third segment crossing an
-    // overlapped run can no longer mint ulp-twin cut points by being
-    // solved against two different host extents. Overlaps only exist in
-    // folded linework (inverted offsets); the common case detects their
-    // absence in the single main sweep and pays nothing extra.
-    let (atomic, overlaps_found) = full_noding_pass(segments)?;
-    if !overlaps_found {
-        return Ok(atomic);
-    }
-    let pre_split = collinear_overlap_pass(segments)?;
-    Ok(full_noding_pass(&pre_split)?.0)
-}
-
-/// [`self_node_segments`] with multi-source provenance per atomic piece.
+/// Noding for the geographic graph test oracle, with multi-source provenance
+/// retained per atomic piece.
 ///
 /// Exact undirected duplicates always collapse before noding so the pair scan
 /// is O(U²) in unique edges, not O(E²) in duplicate multiplicity. Each atomic
 /// piece carries the **full** set of original ordinals that owned that
-/// undirected edge (with reverse flags) in flat CSR form — binary overlay
-/// winding depends on every operand's contribution, not just the first source.
+/// undirected edge, including each source direction.
 ///
-/// Atoms stay in the representative direction; consumers fold reverse flags
-/// into weights rather than re-expanding E copies of each piece. One uniform
-/// path (no size threshold, no probe-vs-no-probe fork).
+/// Atoms stay in the representative direction; the geographic graph test
+/// oracle folds reverse flags into its source transitions.
+#[cfg(test)]
 pub(crate) fn self_node_segments_sourced(
     segments: impl IntoIterator<Item = Segment>,
 ) -> Result<(Vec<Segment>, SegmentProvenance)> {
@@ -285,6 +204,7 @@ pub(crate) fn self_node_segments_sourced(
     Ok((atomic, multi))
 }
 
+#[cfg(test)]
 fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segment>, Vec<u32>)> {
     let NodingScan {
         events,
@@ -303,13 +223,8 @@ fn self_node_segments_sourced_unique(segments: &[Segment]) -> Result<(Vec<Segmen
     Ok((atomic, sources))
 }
 
-/// Pass 1 of [`self_node_segments`]: collinear-overlap endpoint cuts only.
+/// Endpoint cuts for collinear overlaps in the geographic graph test oracle.
 #[cfg(test)]
-pub(crate) fn collinear_overlap_pass(segments: &[Segment]) -> Result<Vec<Segment>> {
-    split_by_events(segments, collinear_overlap_events(segments)?)
-}
-
-/// The cut events of [`collinear_overlap_pass`].
 pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32, XY)>> {
     let mut events: Vec<(u32, XY)> = Vec::new();
     let mut failure = Ok(());
@@ -330,6 +245,7 @@ pub(crate) fn collinear_overlap_events(segments: &[Segment]) -> Result<Vec<(u32,
     Ok(events)
 }
 
+#[cfg(test)]
 fn push_collinear_overlap_cuts(
     segments: &[Segment],
     left: usize,
@@ -375,19 +291,8 @@ fn push_collinear_overlap_cuts(
     Ok(cut_any)
 }
 
-/// The main pass of [`self_node_segments`]: full pairwise interior cuts,
-/// also reporting whether any collinear OVERLAP pair was seen (the trigger
-/// for the exactness pre-pass).
-#[cfg(test)]
-pub(crate) fn full_noding_pass(segments: &[Segment]) -> Result<(Vec<Segment>, bool)> {
-    let NodingScan {
-        events,
-        overlaps_found,
-    } = full_noding_events(segments)?;
-    Ok((split_by_events(segments, events)?, overlaps_found))
-}
-
 /// What one pass of the candidate sweep learned about a segment pool.
+#[cfg(test)]
 pub(in crate::geometry) struct NodingScan {
     /// Interior cut points, per segment ordinal.
     pub(in crate::geometry) events: Vec<(u32, XY)>,
@@ -396,18 +301,14 @@ pub(in crate::geometry) struct NodingScan {
     pub(in crate::geometry) overlaps_found: bool,
 }
 
-/// The cut events of [`full_noding_pass`], plus what else the sweep saw.
-/// Also the noding front end of [`Arrangement::from_single_loop`], which
-/// replays [`split_by_events`]' ordering bit-for-bit without materializing
-/// the atomic segment soup.
+/// Pairwise cut events and collinear-overlap observations for the geographic
+/// graph test oracle.
+#[cfg(test)]
 pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<NodingScan> {
     let mut events: Vec<(u32, XY)> = Vec::new();
     let mut overlaps_found = false;
     let mut failure = Ok(());
-    // L1-aware sweep: large pools take the monotone-run path, avoiding the flat
-    // SweepEntry sort that exceeds L1 at ~1 K segments (the arrangement noding
-    // behind union/difference fallback, symmetric_difference, intersection,
-    // relate, and polygonize all flow through here).
+    // Large pools take the monotone-run path and avoid a flat sweep-entry sort.
     let _ = for_each_candidate_pair(segments, single_chain, |left, right| {
         // Endpoint-sharing pairs (every ADJACENT pair of a chain) cannot
         // cross at an interior point — the only interior cuts they can
@@ -484,35 +385,8 @@ pub(in crate::geometry) fn full_noding_events(segments: &[Segment]) -> Result<No
     })
 }
 
-/// Split every segment at its collected `(ordinal, cut)` events — the
-/// shared tail of both noding passes (the splitter sorts and dedups cuts
-/// per segment).
-#[cfg(test)]
-pub(crate) fn split_by_events(
-    segments: &[Segment],
-    mut events: Vec<(u32, XY)>,
-) -> Result<Vec<Segment>> {
-    events.sort_unstable_by_key(|&(ordinal, _)| ordinal);
-    let mut atomic = Vec::with_capacity(
-        segments
-            .len()
-            .checked_add(events.len())
-            .ok_or(ResourceError::SizeOverflow)?,
-    );
-    let mut cuts: Vec<XY> = Vec::new();
-    let mut cursor = 0;
-    for (index, &segment) in segments.iter().enumerate() {
-        cuts.clear();
-        while cursor < events.len() && events[cursor].0 as usize == index {
-            cuts.push(events[cursor].1);
-            cursor += 1;
-        }
-        split_segment_at(segment, &mut cuts, &mut atomic)?;
-    }
-    Ok(atomic)
-}
-
 /// [`split_by_events`] also reporting each piece's source ordinal.
+#[cfg(test)]
 pub(crate) fn split_by_events_sourced(
     segments: &[Segment],
     mut events: Vec<(u32, XY)>,
@@ -532,7 +406,9 @@ pub(crate) fn split_by_events_sourced(
         cuts.clear();
         while cursor < events.len() && events[cursor].0 as usize == index {
             cuts.push(events[cursor].1);
-            cursor += 1;
+            cursor = cursor
+                .checked_add(1)
+                .expect("the event cursor is below its vector length");
         }
         split_segment_at(segment, &mut cuts, &mut atomic)?;
         sources.resize(
@@ -545,6 +421,7 @@ pub(crate) fn split_by_events_sourced(
 
 /// Split `segment` at `cuts` (ordered along the segment, deduped) into atomic
 /// sub-segments appended to `out`.
+#[cfg(test)]
 pub(crate) fn split_segment_at(
     segment: Segment,
     cuts: &mut Vec<XY>,

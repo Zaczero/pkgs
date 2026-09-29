@@ -19,24 +19,6 @@ use crate::geometry::{
 };
 use crate::heap_size::HeapSize;
 
-/// Coordinate domain of a topology operation: Cartesian operands run on the
-/// exact partition, geographic operands on a [`TopologyGraph`] built in the
-/// variant's frame.
-///
-/// Geographic topology cannot exist without the native frame that defines its
-/// quotient seam and poles, so the frame travels in the variant.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum TopologyDomain {
-    Cartesian,
-    Geographic(crate::geographic::GeographicFrame),
-}
-
-impl TopologyDomain {
-    pub(crate) const fn is_geographic(self) -> bool {
-        matches!(self, Self::Geographic(_))
-    }
-}
-
 /// Dense graph node identifier.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(crate) struct TopologyNodeId(u32);
@@ -225,16 +207,6 @@ impl TopologyGraph {
         builder.finish(shape)
     }
 
-    pub(crate) fn geographic_many(
-        inputs: &crate::geographic::GeographicInputs<'_>,
-    ) -> crate::error::Result<Self> {
-        let mut builder = GraphBuilder::new(inputs.frame());
-        for (source_row, view) in inputs.views().iter().enumerate() {
-            builder.collect(view.shape(), source_row as u32)?;
-        }
-        builder.finish_many(inputs.views().iter().map(|view| view.shape()))
-    }
-
     pub(crate) fn geographic(
         view: crate::geographic::ScalarGeographicView<'_>,
     ) -> crate::error::Result<Self> {
@@ -320,62 +292,6 @@ impl TopologyGraph {
 
     pub(crate) fn has_point_support_any(&self) -> bool {
         !self.source_points.is_empty()
-    }
-
-    pub(crate) const fn edge_has_line_source(&self, edge: &TopologyEdge) -> bool {
-        edge.line_support
-    }
-
-    pub(crate) fn edge_has_line_source_for_row(
-        &self,
-        edge: &TopologyEdge,
-        source_row: u32,
-    ) -> bool {
-        edge.sources.iter().any(|&source| {
-            let source = self.source_edges[source as usize];
-            source.source_row == source_row && matches!(source.support, SourceSupport::Line)
-        })
-    }
-
-    pub(crate) fn has_line_source_at_node(&self, point: XY, source_row: u32) -> bool {
-        self.line_source_nodes
-            .contains(&(self.key(point), source_row))
-    }
-
-    pub(crate) fn edge_has_area_source(&self, edge: &TopologyEdge) -> bool {
-        edge.sources.iter().any(|&source| {
-            matches!(
-                self.source_edges[source as usize].support,
-                SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
-            )
-        })
-    }
-
-    pub(crate) fn area_source_side_for_row(
-        &self,
-        edge: &TopologyEdge,
-        start: XY,
-        end: XY,
-        source_row: u32,
-    ) -> Option<bool> {
-        let mut side = None;
-        for &source in &edge.sources {
-            let source = self.source_edges[source as usize];
-            if source.source_row == source_row
-                && matches!(
-                    source.support,
-                    SourceSupport::AreaBoundary | SourceSupport::AreaInterior { .. }
-                )
-            {
-                let direction = segment_direction_matches(Segment { start, end }, source.segment);
-                // Opposite traversals can be a zero-area spur, not a face boundary.
-                if side.is_some_and(|previous| previous != direction) {
-                    return None;
-                }
-                side = Some(direction);
-            }
-        }
-        side
     }
 
     pub(crate) fn has_interior_support_other_than(&self, point: XY) -> bool {
@@ -561,16 +477,6 @@ fn point_on_graph_segment(
     let period = frame.longitude().period();
     let x = translated_longitude(&[segment.start, segment.end], point.x, period);
     point_on_segment(XY::new(x, point.y), segment.start, segment.end)
-}
-
-fn segment_direction_matches(left: Segment, right: Segment) -> bool {
-    let use_x = (right.end.x - right.start.x).abs() >= (right.end.y - right.start.y).abs();
-    let (left_start, left_end, right_start, right_end) = if use_x {
-        (left.start.x, left.end.x, right.start.x, right.end.x)
-    } else {
-        (left.start.y, left.end.y, right.start.y, right.end.y)
-    };
-    left_end.total_cmp(&left_start) == right_end.total_cmp(&right_start)
 }
 
 struct ChartEdge {
@@ -1299,23 +1205,6 @@ impl GraphBuilder {
             matches!(shape, Shape::GeometryCollection(_)),
             shape_has_polygonal_members(shape),
         )
-    }
-
-    fn finish_many<'s>(
-        self,
-        shapes: impl IntoIterator<Item = &'s Shape>,
-    ) -> crate::error::Result<TopologyGraph> {
-        let mut effective_dimension = None;
-        let mut has_polygonal_members = false;
-        for shape in shapes {
-            effective_dimension = match (effective_dimension, dimension(shape)) {
-                (current, None) => current,
-                (None, next) => next,
-                (Some(current), Some(next)) => Some(current.max(next)),
-            };
-            has_polygonal_members |= shape_has_polygonal_members(shape);
-        }
-        self.finish_dimensions(effective_dimension, true, has_polygonal_members)
     }
 
     fn finish_dimensions(

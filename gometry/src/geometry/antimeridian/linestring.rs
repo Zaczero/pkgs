@@ -221,6 +221,7 @@ fn crossing_points(west: Point, east: Point) -> (Point, Point) {
     (make(-180.0), make(180.0))
 }
 
+#[cfg(test)]
 pub(crate) fn crossing_latitude_in_frame(
     start: Point,
     end: Point,

@@ -17,8 +17,8 @@ use std::sync::{Arc, OnceLock};
 use rstar::AABB;
 
 use crate::geometry::{
-    Bounds, CoordSeq, Point, PointBatchTester, Polygon, PreparedPlan, RectContact, Segment, Shape,
-    Strictness, XY, bounds_to_shape, graph_intersects_bounds, line_segments, segment_vs_rect,
+    Bounds, CoordSeq, ExactGeographicTopology, Loc, Point, PointBatchTester, Polygon, PreparedPlan,
+    RectContact, Segment, Shape, Strictness, XY, bounds_to_shape, line_segments, segment_vs_rect,
 };
 use crate::grid::affine_source::{
     GeographicCoverageSource, PackedBvh, PackedBvhEntry, RectClass as AffineRectClass,
@@ -161,7 +161,7 @@ struct GeographicCandidateClassifier<'a> {
     authority: GeographicCoverageSource,
     working: NativeRectClassifier,
     prepared: crate::geometry::GeographicPrepared<'a>,
-    authority_graph: OnceLock<Arc<crate::geometry::TopologyGraph>>,
+    authority_topology: OnceLock<Arc<ExactGeographicTopology>>,
 }
 
 impl<'a> GeographicCandidateClassifier<'a> {
@@ -181,7 +181,7 @@ impl<'a> GeographicCandidateClassifier<'a> {
             authority,
             working,
             prepared,
-            authority_graph: OnceLock::new(),
+            authority_topology: OnceLock::new(),
         })
     }
 
@@ -198,7 +198,11 @@ impl<'a> GeographicCandidateClassifier<'a> {
         match (affine, working) {
             (AffineRectClass::Outside, RectClass::Outside) => Ok(RectClass::Outside),
             (AffineRectClass::Interior, RectClass::Interior) => Ok(RectClass::Interior),
-            _ => Ok(RectClass::Boundary),
+            (AffineRectClass::Boundary, _)
+            | (AffineRectClass::Outside, RectClass::Boundary | RectClass::Interior)
+            | (AffineRectClass::Interior, RectClass::Outside | RectClass::Boundary) => {
+                Ok(RectClass::Boundary)
+            },
         }
     }
 
@@ -208,45 +212,47 @@ impl<'a> GeographicCandidateClassifier<'a> {
         self.classify_candidate(&candidate)
     }
 
-    /// Refine a provisional rectangle against the source-owned geographic
-    /// graph. A pre-certified interior remains on the fast path; every other
-    /// candidate reaches the cached authority graph.
+    /// Refine a provisional rectangle against the source-owned exact Q. A
+    /// pre-certified interior remains on the fast path; other candidates reuse
+    /// the frame-cached source topology.
     fn refine_candidate(
         &self,
         candidate: &RectangularCandidate,
     ) -> Result<RectClass, crate::error::Error> {
-        let graph = self.authority_graph()?;
         let bounds = candidate.bounds();
-        Ok(match graph.covers_rectangle(bounds) {
-            Some(true) => RectClass::Interior,
-            Some(false) => {
-                if graph_intersects_bounds(graph, bounds) {
-                    RectClass::Boundary
-                } else {
-                    RectClass::Outside
-                }
-            },
-            None => {
-                let candidate = bounds_to_shape(bounds)?;
-                let candidate_plan = PreparedPlan::transient(&candidate);
-                let candidate_cache = crate::geometry::FrameDependentCaches::default();
-                let operands = PreparedTopologyPair::Geographic {
-                    left: self.prepared,
-                    right: crate::geometry::GeographicPrepared::try_new(
-                        &candidate_plan,
-                        &candidate_cache,
-                        self.prepared.frame(),
-                    )?,
-                };
-                if topology_scalar_pair(&Predicate::Covers.spec(), &operands)? {
+        Ok(
+            match self.authority_topology()?.classify_rectangle(bounds)? {
+                Some(crate::geometry::ExactGeographicRectangleLocation::Interior) => {
                     RectClass::Interior
-                } else if topology_scalar_pair(&Predicate::Intersects.spec(), &operands)? {
+                },
+                Some(crate::geometry::ExactGeographicRectangleLocation::Boundary) => {
                     RectClass::Boundary
-                } else {
+                },
+                Some(crate::geometry::ExactGeographicRectangleLocation::Outside) => {
                     RectClass::Outside
-                }
+                },
+                None => {
+                    let candidate = bounds_to_shape(bounds)?;
+                    let candidate_plan = PreparedPlan::transient(&candidate);
+                    let candidate_cache = crate::geometry::FrameDependentCaches::default();
+                    let operands = PreparedTopologyPair::Geographic {
+                        left: self.prepared,
+                        right: crate::geometry::GeographicPrepared::try_new(
+                            &candidate_plan,
+                            &candidate_cache,
+                            self.prepared.frame(),
+                        )?,
+                    };
+                    if topology_scalar_pair(&Predicate::Covers.spec(), &operands)? {
+                        RectClass::Interior
+                    } else if topology_scalar_pair(&Predicate::Intersects.spec(), &operands)? {
+                        RectClass::Boundary
+                    } else {
+                        RectClass::Outside
+                    }
+                },
             },
-        })
+        )
     }
 
     #[cfg(test)]
@@ -255,14 +261,14 @@ impl<'a> GeographicCandidateClassifier<'a> {
         self.refine_candidate(&candidate)
     }
 
-    fn authority_graph(&self) -> crate::error::Result<&crate::geometry::TopologyGraph> {
-        self.authority_graph
-            .get_or_try_init(|| self.prepared.graph())
+    fn authority_topology(&self) -> crate::error::Result<&ExactGeographicTopology> {
+        self.authority_topology
+            .get_or_try_init(|| self.prepared.exact_topology())
             .map(Arc::as_ref)
     }
 
     fn covers_point(&self, point: Point) -> crate::error::Result<bool> {
-        Ok(self.authority_graph()?.covers_point(point.xy()))
+        Ok(self.authority_topology()?.locate_point(point)?.geometry != Loc::Exterior)
     }
 }
 
@@ -516,7 +522,7 @@ const fn rect_probe(bounds: Bounds) -> Segment {
 /// Cover `source` with `roots`' descendants at `target_depth`.
 ///
 /// Candidate branches descend until their terminal refinement; provisional
-/// boundaries receive authority-graph refinement before output.
+/// boundaries receive exact-Q refinement before output.
 /// `roots` must be DISJOINT cells (every caller passes
 /// the system's base cells), so each target-depth cell is classified exactly
 /// once and the outputs need ordering but never dedup.
@@ -900,17 +906,13 @@ mod tests {
             None,
         )
         .expect("cover");
-        let graph = authority_cache
-            .geographic_topology_graph(
-                crate::geometry::GeographicPrepared::try_new(
-                    &authority_plan,
-                    &authority_cache,
-                    crate::geographic::GeographicFrame::crs84(),
-                )
-                .expect("fixture admits")
-                .view(),
-            )
-            .unwrap();
+        let prepared = crate::geometry::GeographicPrepared::try_new(
+            &authority_plan,
+            &authority_cache,
+            crate::geographic::GeographicFrame::crs84(),
+        )
+        .expect("fixture admits");
+        let graph = crate::geometry::TopologyGraph::geographic(prepared.view()).unwrap();
         let filtered: Vec<_> = overlap
             .into_iter()
             .filter(|cell| {
@@ -926,7 +928,7 @@ mod tests {
     }
 
     #[test]
-    fn rectangle_refinement_reuses_one_authority_graph() {
+    fn rectangle_refinement_reuses_one_cached_exact_q() {
         use crate::geometry::Ring;
 
         let source = Shape::Polygon(Polygon::new(
@@ -962,8 +964,8 @@ mod tests {
             classifier.refine_bounds(bounds).expect("fixture admits"),
             RectClass::Interior
         );
-        assert_eq!(cache.geographic_topology_accesses(), 1);
-        assert_eq!(cache.geographic_topology_builds(), 1);
+        assert_eq!(cache.geographic_exact_topology_accesses(), 1);
+        assert_eq!(cache.geographic_exact_topology_builds(), 1);
     }
 
     #[test]
@@ -1024,7 +1026,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_hole_cell_stays_outside_after_graph_refinement() {
+    fn exact_hole_cell_stays_outside_after_q_refinement() {
         use crate::geometry::Ring;
 
         let source = Shape::Polygon(Polygon::new(
@@ -1071,10 +1073,11 @@ mod tests {
         );
         assert_eq!(
             classifier
-                .authority_graph()
+                .authority_topology()
                 .unwrap()
-                .covers_rectangle(bounds),
-            Some(false)
+                .classify_rectangle(bounds)
+                .unwrap(),
+            Some(crate::geometry::ExactGeographicRectangleLocation::Boundary)
         );
         assert_eq!(
             classifier.refine_bounds(bounds).expect("fixture admits"),
@@ -1117,9 +1120,10 @@ mod tests {
         for bounds in [disjoint, intersects, covers] {
             assert_eq!(
                 classifier
-                    .authority_graph()
+                    .authority_topology()
                     .unwrap()
-                    .covers_rectangle(bounds),
+                    .classify_rectangle(bounds)
+                    .unwrap(),
                 None
             );
         }

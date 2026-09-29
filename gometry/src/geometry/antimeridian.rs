@@ -25,8 +25,10 @@ pub(crate) use crs::{
     GeographicDerivedPointScan, antimeridian_frame, chain_crosses_antimeridian,
     crosses_antimeridian_in_frame, geographic_crossing, topology_domain,
 };
+#[cfg(test)]
+pub(crate) use linestring::crossing_latitude_in_frame;
+pub(crate) use linestring::segment_coords;
 use linestring::{SeamRing, collect_points, ring_follows_seam, split_ring_at_seam};
-pub(crate) use linestring::{crossing_latitude_in_frame, segment_coords};
 pub(crate) use normalize::{
     DerivedPointStrategy, geographic_crossing_bounds,
     geographic_crossing_bounds_for_shapes_in_frame, geographic_crossing_bounds_in_frame,

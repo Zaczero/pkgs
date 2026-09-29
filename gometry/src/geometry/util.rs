@@ -208,6 +208,7 @@ pub(crate) fn dedup_consecutive_points(v: &mut Vec<Point>) {
 }
 
 /// Collapse consecutive duplicate planar coordinates (order-preserving).
+#[cfg(test)]
 pub(crate) fn dedup_consecutive_xy(v: &mut Vec<XY>) {
     v.dedup_by(|right, left| same_point(*left, *right));
 }

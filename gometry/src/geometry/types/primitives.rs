@@ -304,14 +304,6 @@ pub(crate) struct Segment {
     pub end: XY,
 }
 
-pub(crate) const fn segment_midpoint_xy(start: XY, end: XY) -> XY {
-    XY::new(f64::midpoint(start.x, end.x), f64::midpoint(start.y, end.y))
-}
-
-pub(crate) const fn segment_midpoint(segment: Segment) -> Point {
-    segment_midpoint_xy(segment.start, segment.end).point()
-}
-
 /// Reusable distance/dwithin working set for one shape.
 ///
 /// Its packed linework (facet columns, which double as the vertex probe

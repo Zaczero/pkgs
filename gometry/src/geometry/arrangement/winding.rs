@@ -56,23 +56,15 @@ impl WindingWeight for [i32; 2] {
     }
 }
 
-/// One face of the arrangement: its boundary ring (closed, first point
-/// repeated), exact face decision (sign-only for winding consumers, signed-area
-/// magnitude when rings are retained), and component id.
+/// One arrangement face's exact area sign and component id.
 pub(crate) struct Face {
-    /// Materialized only by [`Arrangement::new_with_rings`] — empty under
-    /// every other constructor (winding consumers walk boundaries through
-    /// [`Arrangement::region_rings`] instead).
-    pub ring: Vec<XY>,
     pub area_sign: AreaSign,
     pub component: u32,
 }
 
-/// Reusable W-independent construction buffers: the bulk lanes build one
-/// arrangement PER ROW, and these vectors plus the vertex-dedup map were
-/// the row's dominant allocations. One spare set per thread; a nested or
-/// concurrent construction simply allocates fresh (the pool is empty
-/// while a set is checked out) and the last drop restocks it.
+/// Reusable geometry-independent buffers for the geographic graph test oracle.
+/// Each thread keeps one spare set; a nested or concurrent build allocates a
+/// fresh set while the pooled one is checked out.
 #[derive(Default)]
 pub(crate) struct ArrangementSpares {
     pub(crate) points: Vec<XY>,
@@ -140,45 +132,8 @@ impl ArrangementSpares {
     }
 }
 
-/// Reusable `region_rings` scratch (separate from the construction set:
-/// a consumer may walk regions on a still-alive arrangement).
-#[derive(Default)]
-pub(crate) struct RegionSpares {
-    pub(crate) used: Vec<bool>,
-    pub(crate) position_of: Vec<(u32, u32)>,
-    pub(crate) ring: Vec<XY>,
-    pub(crate) ring_ids: Vec<u32>,
-    pub(crate) path: Vec<XY>,
-    pub(crate) path_ids: Vec<u32>,
-}
-
-impl RetainScratch for RegionSpares {
-    fn clear_for_reuse(&mut self) {
-        self.used.clear();
-        self.position_of.clear();
-        self.ring.clear();
-        self.ring_ids.clear();
-        self.path.clear();
-        self.path_ids.clear();
-    }
-
-    fn retained_bytes(&self) -> usize {
-        flat_vec_retained_bytes(&self.used)
-            .saturating_add(flat_vec_retained_bytes(&self.position_of))
-            .saturating_add(flat_vec_retained_bytes(&self.ring))
-            .saturating_add(flat_vec_retained_bytes(&self.ring_ids))
-            .saturating_add(flat_vec_retained_bytes(&self.path))
-            .saturating_add(flat_vec_retained_bytes(&self.path_ids))
-    }
-}
-
-thread_local! {
-    static REGION_SPARES: ScratchPool<RegionSpares> = ScratchPool::new(RegionSpares::default());
-}
-
-/// Weight-typed construction buffers, pooled per `W` (the two real
-/// instantiations are `i32` and `[i32; 2]`): edges and multiplicities
-/// were the remaining per-row allocations after the W-independent set.
+/// Weight-typed buffers for the geographic graph test oracle, pooled per `W`.
+/// Its weights are `i32` or `[i32; 2]`.
 pub(crate) struct TypedSpares<W> {
     pub(crate) edges: Vec<(u32, u32, W)>,
     pub(crate) multiplicities: Vec<W>,
@@ -222,10 +177,6 @@ thread_local! {
 
 pub(crate) fn arrangement_spares() -> ScratchLease<ArrangementSpares> {
     ScratchPool::checkout(&SPARES)
-}
-
-pub(crate) fn region_spares() -> ScratchLease<RegionSpares> {
-    ScratchPool::checkout(&REGION_SPARES)
 }
 
 /// The arrangement over one noded segment set.
@@ -292,13 +243,6 @@ mod tests {
                 .reserve_exact(over_budget_capacity(size_of::<XY>()));
         }
         assert_eq!(arrangement_spares().points.capacity(), 0);
-    }
-
-    fn clear_region_pool() {
-        region_spares()
-            .ring
-            .reserve_exact(over_budget_capacity(size_of::<XY>()));
-        assert_eq!(region_spares().ring.capacity(), 0);
     }
 
     fn clear_typed_pool<W: WindingWeight>() {
@@ -457,51 +401,6 @@ mod tests {
     }
 
     #[test]
-    fn region_pooled_buffers_evict_when_each_lane_exceeds_budget() {
-        let _budget = crate::scratch_pool::RetainBudgetGuard::new();
-        assert_lane_evicted(
-            "used",
-            size_of::<bool>(),
-            clear_region_pool,
-            region_spares,
-            |scratch, capacity| scratch.used.reserve_exact(capacity),
-            |scratch| scratch.used.capacity(),
-        );
-        assert_lane_evicted(
-            "position_of",
-            size_of::<(u32, u32)>(),
-            clear_region_pool,
-            region_spares,
-            |scratch, capacity| scratch.position_of.reserve_exact(capacity),
-            |scratch| scratch.position_of.capacity(),
-        );
-        assert_lane_evicted(
-            "ring_ids",
-            size_of::<u32>(),
-            clear_region_pool,
-            region_spares,
-            |scratch, capacity| scratch.ring_ids.reserve_exact(capacity),
-            |scratch| scratch.ring_ids.capacity(),
-        );
-        assert_lane_evicted(
-            "path",
-            size_of::<XY>(),
-            clear_region_pool,
-            region_spares,
-            |scratch, capacity| scratch.path.reserve_exact(capacity),
-            |scratch| scratch.path.capacity(),
-        );
-        assert_lane_evicted(
-            "path_ids",
-            size_of::<u32>(),
-            clear_region_pool,
-            region_spares,
-            |scratch, capacity| scratch.path_ids.reserve_exact(capacity),
-            |scratch| scratch.path_ids.capacity(),
-        );
-    }
-
-    #[test]
     fn typed_edge_buffers_evict_when_each_lane_exceeds_budget() {
         let _budget = crate::scratch_pool::RetainBudgetGuard::new();
         assert_lane_evicted(
@@ -536,15 +435,6 @@ mod tests {
         });
         assert_eq!(allocations, 0);
 
-        {
-            let mut region = region_spares();
-            region.ring.reserve_exact(64);
-        }
-        let ((), allocations) = crate::test_support::allocation_count(|| {
-            region_spares().ring.reserve_exact(64);
-        });
-        assert_eq!(allocations, 0);
-
         for pair in [false, true] {
             if pair {
                 let mut scratch = typed_spares::<[i32; 2]>();
@@ -575,14 +465,6 @@ mod tests {
             arrangement_spares().points.reserve_exact(64);
         });
         assert_eq!(allocations, 0);
-
-        {
-            let mut region = region_spares();
-            region
-                .ring
-                .reserve_exact(SCRATCH_RETAIN_BYTES / size_of::<XY>() + 1);
-        }
-        assert_eq!(region_spares().ring.capacity(), 0);
 
         {
             let mut scratch = typed_spares::<i32>();

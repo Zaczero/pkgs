@@ -2,9 +2,37 @@ use std::ops::ControlFlow;
 
 use crate::geometry::segment_index::{
     for_each_candidate_pair, for_each_indexed_overlapping_bounds_pair,
-    for_each_overlapping_bounds_pair, single_chain,
+    for_each_overlapping_bounds_cross_pair, for_each_overlapping_bounds_pair, single_chain,
 };
 use crate::geometry::{Bounds, Segment, XY, segments_intersect};
+
+#[test]
+fn cross_bounds_sweep_preserves_each_side_ordinal() {
+    for count in [2, 32, 2_048] {
+        let left = (0..count)
+            .map(|index| {
+                let x = index as f64 * 10.0;
+                Bounds::new_raw(x, x, x + 2.0, x + 2.0)
+            })
+            .collect::<Vec<_>>();
+        let right = (0..count)
+            .map(|index| {
+                let x = index as f64 * 10.0 - 1.0;
+                Bounds::new_raw(x, x + 2.0, x + 2.0, x + 3.0)
+            })
+            .collect::<Vec<_>>();
+        let expected = (0..count).map(|index| (index, index)).collect::<Vec<_>>();
+        let mut actual = Vec::new();
+        let flow = for_each_overlapping_bounds_cross_pair(&left, &right, |left, right| {
+            actual.push((left, right));
+            ControlFlow::<()>::Continue(())
+        })
+        .unwrap();
+        assert!(matches!(flow, ControlFlow::Continue(())));
+        actual.sort_unstable();
+        assert_eq!(actual, expected);
+    }
+}
 
 #[cfg(test)]
 mod sweep_characterization {

@@ -28,7 +28,7 @@ pub(crate) use error::GeometryErrorKind;
 pub(in crate::geometry) use primitives::GeodesicPartsKey;
 pub(crate) use primitives::{
     Bounds, CoordinateAxes, DistanceParts, GeodesicParts, GeodesicSegment, HasM, HasZ, MOrdinate,
-    Point, Polygon, Segment, XY, ZOrdinate, segment_midpoint,
+    Point, Polygon, Segment, XY, ZOrdinate,
 };
 pub(crate) use ring::{Coordinates, Ring};
 pub(crate) use shape::{
@@ -42,7 +42,7 @@ pub(crate) use shape_data::{
     GeodesicSegmentMinimum, GeodesicSegmentQuery, GeodesicSegmentQueryResult,
     GeodesicSegmentSample, GeodesicSegmentScratch, GeodesicWitnessNeed, IndexedSegment,
     IntoSharedShape, PointKey, PolygonizeFull, PolylabelCell, PreparedPlan, SegmentContact,
-    SegmentPairWitness, ShapeData, ValidationIssue, canonical_f64_bits, ordered_edge,
+    SegmentPairWitness, ShapeData, ValidationIssue, canonical_f64_bits,
 };
 pub(crate) use shared_slice::{SharedSlice, SharedSliceIter};
 

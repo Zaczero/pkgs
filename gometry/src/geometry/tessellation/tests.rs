@@ -39,7 +39,7 @@ use crate::geometry::tessellation::earcut::{
 use crate::geometry::{
     CdtRefinement, CoordSeq, CoordinateAxes, Coordinates as _, ExpansionBudget,
     GENERATED_ITEM_LIMIT, GeometryErrorKind, LineSeq, MOrdinate, MultiMember, MultiPolygon, Point,
-    Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_decision, orientation,
+    Polygon, Ring, Shape, Strictness, ZOrdinate, open_point_cycle_magnitude, orientation,
     ring_contains_interior,
 };
 
@@ -913,14 +913,14 @@ fn polygon_area_for_oracle(polygon: &Polygon) -> f64 {
     let shell = open_ring(polygon.shell.coords());
     let holes = polygon.holes.iter().map(|hole| open_ring(hole.coords()));
     let hole_area = holes
-        .map(|hole| open_point_cycle_decision(&hole).magnitude().get())
+        .map(|hole| open_point_cycle_magnitude(&hole).get())
         .sum::<f64>();
-    open_point_cycle_decision(&shell).magnitude().get() - hole_area
+    open_point_cycle_magnitude(&shell).get() - hole_area
 }
 
 fn triangle_area_for_oracle(triangle: &Shape) -> f64 {
     let corners = triangle_corners(triangle).expect("triangle polygon");
-    open_point_cycle_decision(&corners).magnitude().get()
+    open_point_cycle_magnitude(&corners).get()
 }
 
 fn assert_earcut_oracle(polygon: Polygon, expected_triangles: usize) -> Vec<Shape> {

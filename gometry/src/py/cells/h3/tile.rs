@@ -1,9 +1,9 @@
 use crate::collections::{HashSet, HashSetExt as _};
 use crate::geometry::{
-    Component, CoordSeq, GeographicPrepared, Point, Polygon, PreparedPlan, Ring, Shape,
+    Component, CoordSeq, ExactGeographicTopology, GeographicPrepared, Point, Polygon, PreparedPlan,
+    Ring, Shape,
 };
 use crate::grid::{CoverBudgetExceeded, ensure_cover_budget};
-use crate::predicates::engine::{Predicate, PreparedTopologyPair, topology_scalar_pair};
 use crate::py::cells::h3::{CellIndex, LatLng, Resolution, TiledCell, h3_latlng};
 
 #[derive(Debug)]
@@ -20,28 +20,24 @@ fn check_budget(produced: usize, max_cells: Option<usize>) -> Result<(), H3TileE
     ensure_cover_budget(produced, max_cells).map_err(H3TileError::Budget)
 }
 
-/// Geographic classifier against the shared authority (H3 covers are always
-/// WGS84). Every candidate reaches the frame-keyed quotient topology graph;
-/// the flood's edge walk is only a cheap candidate generator.
+/// Geographic classifier against the shared WGS84 authority. Each center
+/// candidate queries the cached exact Q; the flood's edge walk only generates
+/// candidates.
 fn checked_predicate(
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     cell: CellIndex,
 ) -> Result<bool, H3TileError> {
     let center = LatLng::from(cell);
-    let probe = PreparedPlan::new(Shape::Point(Point::new_raw_xy(center.lng(), center.lat())));
-    let probe_cache = crate::geometry::FrameDependentCaches::default();
-    let operands = PreparedTopologyPair::Geographic {
-        left: *authority,
-        right: GeographicPrepared::try_new(&probe, &probe_cache, authority.frame())
-            .map_err(H3TileError::Preparation)?,
-    };
-    topology_scalar_pair(&Predicate::Covers.spec(), &operands).map_err(H3TileError::Preparation)
+    authority
+        .locate_point(Point::new_raw_xy(center.lng(), center.lat()))
+        .map(|location| location.geometry != crate::geometry::Loc::Exterior)
+        .map_err(H3TileError::Preparation)
 }
 
 /// A native H3 polyfill: each polygon is flood-filled independently from the
 /// cells containing its vertices and an interior point, then the per-polygon
 /// coverages are unioned. Every center candidate uses the unsplit source's
-/// geographic topology authority.
+/// cached exact Q; the H3 edge walk only generates candidates.
 pub(super) fn h3_tile(
     shape: &Shape,
     authority: &PreparedPlan,
@@ -51,6 +47,9 @@ pub(super) fn h3_tile(
     max_cells: Option<usize>,
 ) -> Result<Vec<TiledCell>, H3TileError> {
     let authority = GeographicPrepared::try_new(authority, authority_cache, frame)
+        .map_err(H3TileError::Preparation)?;
+    let authority = authority
+        .exact_topology()
         .map_err(H3TileError::Preparation)?;
     // Union every part's coverage. One pass; the set is bounded by
     // `max_cells` (when set), checked at every insertion, so a
@@ -80,7 +79,7 @@ pub(super) fn h3_tile(
 /// decomposed by `visit_grid_cover_components` before reaching this owner.
 pub(super) fn h3_tile_shape(
     component: Component<'_>,
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -104,7 +103,7 @@ pub(super) fn h3_tile_shape(
 /// Non-area `within` is owned by the certified traversal, not this tiler.
 pub(super) fn h3_tile_point(
     point: Point,
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -131,7 +130,7 @@ fn points_equal_signed_zero(a: Point, b: Point) -> bool {
 /// Center-rule cells for a line.  Exact overlap/bbox line contact belongs to
 /// the affine carrier and ordered H3 arcs, never this sample-ring helper.
 pub(super) fn h3_tile_line(
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     coords: &crate::geometry::CoordSeq,
     resolution: Resolution,
     max_cells: Option<usize>,
@@ -157,7 +156,7 @@ pub(super) fn h3_tile_line(
 /// Checked inward flood: every first-seen neighbor is tested against the
 /// authority; only matched cells are recorded and enqueued.
 fn flood_checked(
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
     seen: &mut HashSet<CellIndex>,
@@ -185,14 +184,13 @@ fn flood_checked(
 /// Flood-fill one polygon's center-rule H3 coverage into `coverage`.
 pub(super) fn h3_tile_polygon(
     polygon: &Polygon,
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
 ) -> Result<(), H3TileError> {
     // Outline / first-inner never allocate hexagonal `Shape`s. Every center
-    // candidate is classified through the one frame-keyed geographic graph;
-    // the H3 edge walk only supplies seed candidates.
+    // candidate uses the prepared exact Q; the H3 edge walk only supplies seeds.
     let part_source = Shape::Polygon(polygon.clone());
     let mut seen: HashSet<CellIndex> = HashSet::new();
     let mut scratch = [0_u64; 7];
@@ -260,7 +258,7 @@ pub(super) fn h3_tile_polygon(
 fn h3_tile_polygon_seeds_center(
     polygon: &Polygon,
     part_source: &Shape,
-    authority: &GeographicPrepared<'_>,
+    authority: &ExactGeographicTopology,
     resolution: Resolution,
     max_cells: Option<usize>,
     coverage: &mut HashSet<CellIndex>,
@@ -296,6 +294,11 @@ fn h3_tile_polygon_seeds_center(
     Ok(())
 }
 
+#[expect(
+    clippy::indexing_slicing,
+    clippy::arithmetic_side_effects,
+    reason = "H3 radius-one disks contain at most seven entries, and count tracks the initialized prefix"
+)]
 fn h3_one_ring(cell: CellIndex, scratch: &mut [u64; 7]) -> &[u64] {
     let mut count = 0_usize;
     for candidate in cell.grid_disk_fast(1) {
@@ -567,5 +570,15 @@ mod edge_trace_tests {
         assert!(first.len() >= 2);
         assert!(first.array_windows::<2>().all(|[a, b]| a < b));
         assert_eq!(first, second);
+        assert_eq!(
+            cache.geographic_exact_topology_builds(),
+            1,
+            "repeated center checks reuse the frame-cached exact Q"
+        );
+        assert_eq!(
+            cache.geographic_exact_topology_accesses(),
+            2,
+            "each cover acquires the cached exact Q once, not once per candidate"
+        );
     }
 }

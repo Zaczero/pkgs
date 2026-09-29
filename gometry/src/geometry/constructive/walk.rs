@@ -1,14 +1,10 @@
-use rstar::AABB;
-use rstar::primitives::{GeomWithData, Rectangle};
-
 use crate::geometry::constructive::offset::{MiterConstruction, miter_join};
 use crate::geometry::constructive::{Result, emit_arc, unit_right_normal};
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    AreaSign, Bounds, BufferCapStyle, BufferJoinStyle, BulkRTree, Contact, CoordSeq,
-    ExpansionBudget, Ordering, Orientation, Point, Polygon, PolygonPointIndex, Ring, Segment,
-    SegmentIndex, SegmentProjection, XY, line_segments, open_xy_cycle_decision, orientation,
-    segment_cross_point, segment_projection, segments_intersect, wrap_index,
+    BufferCapStyle, BufferJoinStyle, ExpansionBudget, Ordering, Orientation, Point, Polygon,
+    Segment, SegmentProjection, XY, orientation, segment_cross_point, segment_projection,
+    segments_intersect, wrap_index,
 };
 
 /// One planned join of a right-offset walk, between consecutive offset
@@ -17,10 +13,6 @@ pub(crate) enum WalkJoin {
     /// Outside turn, round rule: inscribed arc from the incoming normal's
     /// angle, sweeping counter-clockwise.
     Arc { from_angle: f64, sweep: f64 },
-    /// Exact 180-degree line reversal under the round rule. The midpoint is
-    /// emitted from the incoming normal directly so it coincides exactly with
-    /// a perpendicular stroke that meets the reversal tip.
-    ReversalArc { normal: (f64, f64) },
     /// Outside turn, miter rule within the limit: the offset carrier
     /// lines' crossing. Pure extension — never consumes an edge, so no
     /// clip parameters.
@@ -100,12 +92,6 @@ pub(crate) fn reflex_cross(
     debug_assert!(t_in.is_start() || t_in.is_end() || (0.0..=1.0).contains(&t_in.fraction()));
     debug_assert!(t_out.is_start() || t_out.is_end() || (0.0..=1.0).contains(&t_out.fraction()));
     Ok(Some((point, t_in, t_out)))
-}
-
-/// For three collinear points, whether `b` lies outside the closed segment
-/// between its neighbors.
-pub(crate) fn middle_outside_segment_bounds(a: Point, b: Point, c: Point) -> bool {
-    b.x < a.x.min(c.x) || b.x > a.x.max(c.x) || b.y < a.y.min(c.y) || b.y > a.y.max(c.y)
 }
 
 /// The outside miter join at `vertex`: the crossing of the two offset
@@ -226,7 +212,7 @@ pub(crate) struct WalkCount<'a> {
     len: usize,
     previous: Option<(u64, u64)>,
     all_finite: bool,
-    budget: &'a ExpansionBudget,
+    budget: Option<&'a ExpansionBudget>,
 }
 
 impl WalkCount<'_> {
@@ -245,7 +231,7 @@ impl<'a> WalkCount<'a> {
             len: 0,
             previous: None,
             all_finite: true,
-            budget,
+            budget: Some(budget),
         }
     }
 }
@@ -257,8 +243,10 @@ impl WalkSink for WalkCount<'_> {
             return Ok(());
         }
         self.previous = Some(point);
-        let next = self.len.wrapping_add(1);
-        self.budget.check_additional(next)?;
+        let next = self.len.saturating_add(1);
+        if let Some(budget) = self.budget {
+            budget.check_additional(next)?;
+        }
         self.len = next;
         self.all_finite &= x.is_finite() && y.is_finite();
         Ok(())
@@ -328,42 +316,12 @@ impl<'a> WalkPlan<'a> {
         distance: f64,
         rule: WalkJoinRule,
     ) -> crate::error::Result<Option<Self>> {
-        Self::plan(points, cyclic, distance, rule, false)
-    }
-
-    /// Plan a buffer walk, where exact 180-degree reversals use the requested
-    /// join style just like other interior vertices.
-    pub(crate) fn new_stroke(
-        points: &'a [Point],
-        cyclic: bool,
-        distance: f64,
-        rule: WalkJoinRule,
-    ) -> crate::error::Result<Option<Self>> {
-        Self::plan(points, cyclic, distance, rule, true)
-    }
-
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "count >= 2 and edge/join bounds keep wrapped point and normal indices in range"
-    )]
-    fn plan(
-        points: &'a [Point],
-        cyclic: bool,
-        distance: f64,
-        rule: WalkJoinRule,
-        style_reversals: bool,
-    ) -> crate::error::Result<Option<Self>> {
         let count = points.len();
-        if count < 2 {
-            return Ok(None);
-        }
-        let edges = if cyclic { count } else { count.wrapping_sub(1) };
+        let edges = if cyclic { count } else { count - 1 };
         let mut normals = Vec::with_capacity(edges);
         for edge in 0..edges {
-            let Some(normal) = unit_right_normal(
-                points[edge],
-                points[wrap_index(edge.wrapping_add(1), count)],
-            ) else {
+            let Some(normal) = unit_right_normal(points[edge], points[wrap_index(edge + 1, count)])
+            else {
                 return Ok(None);
             };
             normals.push(normal);
@@ -372,17 +330,17 @@ impl<'a> WalkPlan<'a> {
             start: Point::new_raw_xy(from.x + distance * nx, from.y + distance * ny).into(),
             end: Point::new_raw_xy(to.x + distance * nx, to.y + distance * ny).into(),
         };
-        let join_count = if cyclic { edges } else { edges.wrapping_sub(1) };
+        let join_count = if cyclic { edges } else { edges - 1 };
         let mut joins = Vec::with_capacity(join_count);
         for join in 0..join_count {
             let v = points[join];
-            let w = points[wrap_index(join.wrapping_add(1), count)];
-            let u = points[wrap_index(join.wrapping_add(2), count)];
+            let w = points[wrap_index(join + 1, count)];
+            let u = points[wrap_index(join + 2, count)];
             let planned = match orientation(v, w, u) {
                 Orientation::CounterClockwise => match rule {
                     WalkJoinRule::Arc => {
                         let (nx, ny) = normals[join];
-                        let (mx, my) = normals[wrap_index(join.wrapping_add(1), edges)];
+                        let (mx, my) = normals[wrap_index(join + 1, edges)];
                         let from_angle = ny.atan2(nx);
                         let mut sweep = my.atan2(mx) - from_angle;
                         if sweep < 0.0 {
@@ -397,7 +355,7 @@ impl<'a> WalkPlan<'a> {
                     WalkJoinRule::Bevel => WalkJoin::Straight,
                     WalkJoinRule::Miter { limit } => convex_miter(
                         offset_edge(v, w, normals[join]),
-                        offset_edge(w, u, normals[wrap_index(join.wrapping_add(1), edges)]),
+                        offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
                         w,
                         distance,
                         limit,
@@ -405,20 +363,10 @@ impl<'a> WalkPlan<'a> {
                 },
                 Orientation::Clockwise => match reflex_cross(
                     offset_edge(v, w, normals[join]),
-                    offset_edge(w, u, normals[wrap_index(join.wrapping_add(1), edges)]),
+                    offset_edge(w, u, normals[wrap_index(join + 1, edges)]),
                 )? {
                     Some((point, t_in, t_out)) => WalkJoin::Cross { point, t_in, t_out },
                     None => WalkJoin::Excursion,
-                },
-                Orientation::Collinear
-                    if style_reversals && middle_outside_segment_bounds(v, w, u) =>
-                {
-                    match rule {
-                        WalkJoinRule::Arc => WalkJoin::ReversalArc {
-                            normal: normals[join],
-                        },
-                        WalkJoinRule::Bevel | WalkJoinRule::Miter { .. } => WalkJoin::Straight,
-                    }
                 },
                 Orientation::Collinear => WalkJoin::Straight,
             };
@@ -433,7 +381,7 @@ impl<'a> WalkPlan<'a> {
         };
         plan.validate()?;
         #[cfg(test)]
-        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get().wrapping_add(1)));
+        WALK_PLAN_CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
         Ok(Some(plan))
     }
 
@@ -470,40 +418,18 @@ impl<'a> WalkPlan<'a> {
         let edges = self.normals.len();
         for edge in 0..edges {
             let entry_join = if edge == 0 {
-                self.cyclic.then(|| joins.wrapping_sub(1))
+                self.cyclic.then(|| joins - 1)
             } else {
-                Some(edge.wrapping_sub(1))
+                Some(edge - 1)
             };
             let exit_join = (edge < joins).then_some(edge);
-            let entry = entry_join.and_then(|join| {
-                match self
-                    .joins
-                    .get(join)
-                    .expect("walk entry join belongs to the validated plan")
-                {
-                    WalkJoin::Cross { t_out, .. } => Some(t_out),
-                    WalkJoin::Arc { .. }
-                    | WalkJoin::ReversalArc { .. }
-                    | WalkJoin::Miter { .. }
-                    | WalkJoin::MiterCut { .. }
-                    | WalkJoin::Excursion
-                    | WalkJoin::Straight => None,
-                }
+            let entry = entry_join.and_then(|join| match &self.joins[join] {
+                WalkJoin::Cross { t_out, .. } => Some(t_out),
+                _ => None,
             });
-            let exit = exit_join.and_then(|join| {
-                match self
-                    .joins
-                    .get(join)
-                    .expect("walk exit join belongs to the validated plan")
-                {
-                    WalkJoin::Cross { t_in, .. } => Some(t_in),
-                    WalkJoin::Arc { .. }
-                    | WalkJoin::ReversalArc { .. }
-                    | WalkJoin::Miter { .. }
-                    | WalkJoin::MiterCut { .. }
-                    | WalkJoin::Excursion
-                    | WalkJoin::Straight => None,
-                }
+            let exit = exit_join.and_then(|join| match &self.joins[join] {
+                WalkJoin::Cross { t_in, .. } => Some(t_in),
+                _ => None,
             });
             let backwards = match (entry, exit) {
                 (Some(entry), Some(exit)) => entry.cmp_along(exit)? != Ordering::Less,
@@ -513,17 +439,8 @@ impl<'a> WalkPlan<'a> {
             };
             if backwards {
                 for join in [entry_join, exit_join].into_iter().flatten() {
-                    if matches!(
-                        self.joins
-                            .get(join)
-                            .expect("walk endpoint join belongs to the validated plan"),
-                        WalkJoin::Cross { .. }
-                    ) {
-                        *self
-                            .joins
-                            .get_mut(join)
-                            .expect("walk endpoint join belongs to the validated plan") =
-                            WalkJoin::Excursion;
+                    if matches!(self.joins[join], WalkJoin::Cross { .. }) {
+                        self.joins[join] = WalkJoin::Excursion;
                     }
                 }
             }
@@ -544,32 +461,20 @@ impl<'a> WalkPlan<'a> {
         let count = self.points.len();
         for (edge, &(nx, ny)) in self.normals.iter().enumerate() {
             let previous = if edge == 0 {
-                self.cyclic.then(|| self.joins.len().wrapping_sub(1))
+                self.cyclic.then(|| self.joins.len() - 1)
             } else {
-                Some(edge.wrapping_sub(1))
+                Some(edge - 1)
             };
-            if !previous.is_some_and(|join| {
-                self.joins
-                    .get(join)
-                    .expect("walk predecessor join belongs to the plan")
-                    .replaces_endpoints()
-            }) {
-                let v = *self
-                    .points
-                    .get(edge)
-                    .expect("walk edge belongs to the source vertices");
+            if !previous.is_some_and(|join| self.joins[join].replaces_endpoints()) {
+                let v = self.points[edge];
                 sink.push(
                     v.x + self.distance * nx,
                     v.y + self.distance * ny,
                     edge as u32,
                 )?;
             }
-            let source_index = wrap_index(edge.wrapping_add(1), count);
-            let source = source_index as u32;
-            let w = *self
-                .points
-                .get(source_index)
-                .expect("walk destination belongs to the source vertices");
+            let source = wrap_index(edge + 1, count) as u32;
+            let w = self.points[source as usize];
             match self.joins.get(edge) {
                 Some(WalkJoin::Cross { point, .. } | WalkJoin::Miter { point }) => {
                     sink.push(point.x, point.y, source)?;
@@ -590,20 +495,6 @@ impl<'a> WalkPlan<'a> {
                         sink,
                     )?;
                 },
-                Some(WalkJoin::ReversalArc {
-                    normal: (normal_x, normal_y),
-                }) => {
-                    sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
-                    emit_reversal_arc(
-                        w,
-                        *normal_x,
-                        *normal_y,
-                        self.distance,
-                        step_angle,
-                        source,
-                        sink,
-                    )?;
-                },
                 Some(WalkJoin::Excursion) => {
                     sink.push(w.x + self.distance * nx, w.y + self.distance * ny, source)?;
                     sink.push(w.x, w.y, source)?;
@@ -615,47 +506,6 @@ impl<'a> WalkPlan<'a> {
         }
         Ok(())
     }
-}
-
-fn emit_reversal_arc<S: WalkSink>(
-    center: Point,
-    nx: f64,
-    ny: f64,
-    distance: f64,
-    step_angle: f64,
-    source: u32,
-    sink: &mut S,
-) -> crate::error::Result<()> {
-    let half_steps = (std::f64::consts::FRAC_PI_2 / step_angle).ceil() as usize;
-    let step = std::f64::consts::FRAC_PI_2 / half_steps as f64;
-    let (sin_step, cos_step) = step.sin_cos();
-    let (mut cos_theta, mut sin_theta) = (nx, ny);
-    for index in 1..=half_steps {
-        (cos_theta, sin_theta) = (
-            cos_theta * cos_step - sin_theta * sin_step,
-            sin_theta * cos_step + cos_theta * sin_step,
-        );
-        if index == half_steps {
-            (cos_theta, sin_theta) = (-ny, nx);
-        }
-        sink.push(
-            center.x + distance * cos_theta,
-            center.y + distance * sin_theta,
-            source,
-        )?;
-    }
-    for _ in 1..half_steps {
-        (cos_theta, sin_theta) = (
-            cos_theta * cos_step - sin_theta * sin_step,
-            sin_theta * cos_step + cos_theta * sin_step,
-        );
-        sink.push(
-            center.x + distance * cos_theta,
-            center.y + distance * sin_theta,
-            source,
-        )?;
-    }
-    Ok(())
 }
 
 /// Emit one cap at `tip` continuing from offset normal `(nx, ny)` (the
@@ -740,211 +590,10 @@ pub(in crate::geometry) fn winding_region(
     inventory.winding_polygons(&partition, |winding| keep(winding as i32))
 }
 
-/// Temporary shell owner used while nesting boundary rings. Line coverage is a
-/// shell operation: the point index deliberately has no hole state, while the
-/// segment index supplies exact boundary contacts for concave shells.
-struct ShellCoverageIndex {
-    point_index: PolygonPointIndex,
-    boundary: SegmentIndex,
-}
-
-impl ShellCoverageIndex {
-    fn new(shell: &Ring) -> Result<Self> {
-        Ok(Self {
-            point_index: PolygonPointIndex::build_shell(shell)?,
-            boundary: SegmentIndex::build_from_iter(line_segments(shell)),
-        })
-    }
-
-    fn covers_xy(&self, x: f64, y: f64) -> bool {
-        self.point_index.covers_point(Point::new_raw_xy(x, y))
-    }
-
-    /// Boundary-inclusive coverage for a linework chain. Endpoint tests alone
-    /// are insufficient for a concave shell: a segment can leave and re-enter
-    /// between two covered vertices. The boundary index supplies exact contact
-    /// intervals, and one classified midpoint per interval settles each open
-    /// portion without constructing a source topology graph.
-    fn covers_line(&self, points: &[XY]) -> crate::error::Result<bool> {
-        if points.len() < 2 {
-            return Ok(true);
-        }
-        for point in points {
-            if !self.covers_xy(point.x, point.y) {
-                return Ok(false);
-            }
-        }
-        for [start, end] in points.array_windows::<2>() {
-            let segment = Segment {
-                start: *start,
-                end: *end,
-            };
-            let mut contacts = Vec::new();
-            for entry in self.boundary.intersecting_candidates(segment) {
-                match crate::geometry::segment_contact_exact(segment, entry.segment) {
-                    Contact::Disjoint => {},
-                    Contact::Cross => return Ok(false),
-                    Contact::Touch { point } => {
-                        contacts.push((segment_projection(point, segment)?, point));
-                    },
-                    Contact::Collinear { span } => {
-                        contacts.push((segment_projection(span.start, segment)?, span.start));
-                        contacts.push((segment_projection(span.end, segment)?, span.end));
-                    },
-                }
-            }
-            contacts.push((
-                crate::geometry::segment_projection(*start, segment)?,
-                *start,
-            ));
-            contacts.push((crate::geometry::segment_projection(*end, segment)?, *end));
-            crate::geometry::try_sort_by(&mut contacts, |left, right| left.0.cmp_along(&right.0))?;
-
-            let (first_projection, first_point) = contacts
-                .first()
-                .expect("hole edge contacts include both endpoints");
-            let mut previous_projection = first_projection;
-            let mut previous_point = *first_point;
-            for (projection, point) in contacts.iter().skip(1) {
-                if projection.cmp_along(previous_projection)?.is_eq() {
-                    continue;
-                }
-                let midpoint = crate::geometry::segment_midpoint(Segment {
-                    start: previous_point,
-                    end: *point,
-                });
-                if !self.covers_xy(midpoint.x, midpoint.y) {
-                    return Ok(false);
-                }
-                previous_projection = projection;
-                previous_point = *point;
-            }
-        }
-        Ok(true)
-    }
-}
-
-/// Nest boundary rings (shells CCW, holes CW — the
-/// exact boundary-walk convention) into polygons: each hole goes
-/// to the SMALLEST containing shell.
-pub(in crate::geometry) fn assemble_region_polygons(rings: Vec<Vec<XY>>) -> Result<Vec<Polygon>> {
-    let mut shells: Vec<(Ring, f64, Bounds)> = Vec::new();
-    let mut holes: Vec<Vec<XY>> = Vec::new();
-    for ring in rings {
-        let decision = open_xy_cycle_decision(&ring);
-        let (sign, magnitude) = (decision.sign(), decision.magnitude());
-        match sign {
-            AreaSign::Positive => {
-                let bounds = Bounds::from_xy_iter(ring.iter().copied());
-                shells.push((
-                    Ring::try_from_closed(CoordSeq::try_from_xy(&ring)?)?,
-                    magnitude.get(),
-                    bounds,
-                ));
-            },
-            AreaSign::Negative => holes.push(ring),
-            AreaSign::Zero => {},
-        }
-    }
-    shells.sort_unstable_by(|left, right| {
-        crate::geometry::cmp_area_keys_then_open_columns(
-            left.1,
-            right.1,
-            left.0.coords().xs(),
-            left.0.coords().ys(),
-            right.0.coords().xs(),
-            right.0.coords().ys(),
-        )
-    });
-    let mut shell_indexes: Vec<Option<ShellCoverageIndex>> =
-        std::iter::repeat_with(|| None).take(shells.len()).collect();
-    let shell_tree: BulkRTree<GeomWithData<Rectangle<[f64; 2]>, usize>> =
-        BulkRTree::bulk_load_with_params(
-            shells
-                .iter()
-                .enumerate()
-                .map(|(index, (_, _, bounds))| {
-                    GeomWithData::new(
-                        Rectangle::from_corners([bounds.minx(), bounds.miny()], [
-                            bounds.maxx(),
-                            bounds.maxy(),
-                        ]),
-                        index,
-                    )
-                })
-                .collect(),
-        );
-    let mut assigned: Vec<Vec<Ring>> = vec![Vec::new(); shells.len()];
-    for hole in holes {
-        // R-tree traversal has no shell-area order. Restore the sorted position
-        // before the exact test so the first result remains the smallest shell.
-        let mut candidates: Vec<usize> = hole
-            .iter()
-            .flat_map(|probe| {
-                shell_tree
-                    .locate_in_envelope_intersecting(AABB::from_point([probe.x, probe.y]))
-                    .map(|entry| entry.data)
-            })
-            .collect();
-        candidates.sort_unstable();
-        candidates.dedup();
-        // Coverage is boundary-inclusive, so a pinch vertex may lie on the
-        // shell. Exact boundary contacts split every hole edge into intervals,
-        // which also rejects an edge that leaves and re-enters a concave shell.
-        let mut owner = None;
-        for shell_index in candidates {
-            let index = shell_indexes
-                .get_mut(shell_index)
-                .expect("R-tree shell ordinal belongs to the sorted shell list");
-            if index.is_none() {
-                let shell = &shells
-                    .get(shell_index)
-                    .expect("R-tree shell ordinal belongs to the sorted shell list")
-                    .0;
-                *index = Some(ShellCoverageIndex::new(shell)?);
-            }
-            if index
-                .as_ref()
-                .expect("shell index was initialized")
-                .covers_line(&hole)?
-            {
-                owner = Some(shell_index);
-                break;
-            }
-        }
-        if let Some(owner) = owner {
-            assigned
-                .get_mut(owner)
-                .expect("assigned shell ordinal belongs to the sorted shell list")
-                .push(Ring::try_from_closed(CoordSeq::try_from_xy(&hole)?)?);
-        }
-    }
-    drop(shell_indexes);
-    Ok(shells
-        .into_iter()
-        .zip(assigned)
-        .map(|((shell, ..), holes)| Polygon::new(shell, holes))
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::{GENERATED_ITEM_LIMIT, Shape};
-
-    fn rectangle(minx: f64, miny: f64, maxx: f64, maxy: f64, clockwise: bool) -> Vec<XY> {
-        let mut ring = vec![
-            XY::new(minx, miny),
-            XY::new(maxx, miny),
-            XY::new(maxx, maxy),
-            XY::new(minx, maxy),
-            XY::new(minx, miny),
-        ];
-        if clockwise {
-            ring.reverse();
-        }
-        ring
-    }
+    use crate::geometry::GENERATED_ITEM_LIMIT;
 
     #[test]
     fn loop_closure_charges_before_appending_the_public_coordinate() {
@@ -971,136 +620,5 @@ mod tests {
         budget.add(GENERATED_ITEM_LIMIT).unwrap();
 
         assert!(materialize_walk(&plan, 0.1, false, &mut budget, false).is_err());
-    }
-
-    #[test]
-    fn region_assembly_assigns_holes_to_smallest_shell_after_envelope_filtering() {
-        let l_shell = vec![
-            XY::new(30.0, 30.0),
-            XY::new(70.0, 30.0),
-            XY::new(70.0, 40.0),
-            XY::new(40.0, 40.0),
-            XY::new(40.0, 70.0),
-            XY::new(30.0, 70.0),
-            XY::new(30.0, 30.0),
-        ];
-        let pinch_hole = vec![
-            XY::new(120.0, 20.0),
-            XY::new(130.0, 25.0),
-            XY::new(130.0, 15.0),
-            XY::new(120.0, 20.0),
-        ];
-        let polygons = assemble_region_polygons(vec![
-            rectangle(0.0, 0.0, 100.0, 100.0, false),
-            rectangle(10.0, 10.0, 90.0, 90.0, true),
-            rectangle(20.0, 20.0, 80.0, 80.0, false),
-            rectangle(30.0, 30.0, 70.0, 70.0, true),
-            rectangle(40.0, 40.0, 60.0, 60.0, false),
-            rectangle(45.0, 45.0, 55.0, 55.0, true),
-            l_shell,
-            rectangle(120.0, 0.0, 160.0, 40.0, false),
-            pinch_hole,
-        ])
-        .unwrap();
-
-        let assignments: Vec<((f64, f64), usize)> = polygons
-            .iter()
-            .map(|polygon| {
-                let first = polygon.shell.first().unwrap();
-                ((first.x, first.y), polygon.holes.len())
-            })
-            .collect();
-        assert_eq!(assignments, vec![
-            ((40.0, 40.0), 1),
-            ((30.0, 30.0), 0),
-            ((120.0, 0.0), 1),
-            ((20.0, 20.0), 1),
-            ((0.0, 0.0), 1),
-        ]);
-    }
-
-    #[test]
-    fn region_assembly_rejects_hole_edges_leaving_a_concave_shell() {
-        let shell = vec![
-            XY::new(0.0, 0.0),
-            XY::new(6.0, 0.0),
-            XY::new(6.0, 2.0),
-            XY::new(2.0, 2.0),
-            XY::new(2.0, 6.0),
-            XY::new(0.0, 6.0),
-            XY::new(0.0, 0.0),
-        ];
-        let hole = vec![
-            XY::new(5.0, 1.0),
-            XY::new(1.0, 5.0),
-            XY::new(5.5, 1.0),
-            XY::new(5.0, 1.0),
-        ];
-        let shell_shape = Shape::Polygon(Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
-            Vec::new(),
-        ));
-        assert!(
-            hole.iter()
-                .all(|point| { shell_shape.covers_point(Point::new_raw_xy(point.x, point.y)) })
-        );
-        let polygon = assemble_region_polygons(vec![shell, hole]).unwrap();
-
-        assert_eq!(polygon.len(), 1);
-        assert!(polygon[0].holes.is_empty());
-    }
-
-    #[test]
-    fn indexed_shell_coverage_keeps_boundary_and_rejects_boundary_exit() {
-        let shell = vec![
-            XY::new(0.0, 0.0),
-            XY::new(6.0, 0.0),
-            XY::new(6.0, 2.0),
-            XY::new(2.0, 2.0),
-            XY::new(2.0, 6.0),
-            XY::new(0.0, 6.0),
-            XY::new(0.0, 0.0),
-        ];
-        let ring = Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap();
-        let index = ShellCoverageIndex::new(&ring).unwrap();
-        assert!(
-            index
-                .covers_line(&[
-                    XY::new(0.0, 0.0),
-                    XY::new(6.0, 0.0),
-                    XY::new(6.0, 2.0),
-                    XY::new(2.0, 2.0),
-                ])
-                .unwrap()
-        );
-        assert!(
-            !index
-                .covers_line(&[XY::new(5.0, 1.0), XY::new(1.0, 5.0), XY::new(5.5, 1.0)])
-                .unwrap()
-        );
-    }
-
-    #[test]
-    fn region_assembly_uses_shell_owner_not_holed_polygon_coverage() {
-        let shell = rectangle(0.0, 0.0, 10.0, 10.0, false);
-        let outer_hole = rectangle(2.0, 2.0, 8.0, 8.0, true);
-        let inner_hole = rectangle(3.0, 3.0, 7.0, 7.0, true);
-        let holed_shell = Shape::Polygon(Polygon::new(
-            Ring::from_closed(CoordSeq::try_from_xy(&shell).unwrap()).unwrap(),
-            vec![Ring::from_closed(CoordSeq::try_from_xy(&outer_hole).unwrap()).unwrap()],
-        ));
-        // The second negative ring is inside the first. A completed polygon
-        // would exclude it, but assembly owns each negative ring against the
-        // shell before those holes become polygon state.
-        assert!(
-            inner_hole
-                .iter()
-                .all(|point| { !holed_shell.covers_point(Point::new_raw_xy(point.x, point.y)) })
-        );
-
-        let polygons = assemble_region_polygons(vec![shell, outer_hole, inner_hole]).unwrap();
-
-        assert_eq!(polygons.len(), 1);
-        assert_eq!(polygons[0].holes.len(), 2);
     }
 }

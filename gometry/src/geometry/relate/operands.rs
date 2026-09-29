@@ -1,4 +1,6 @@
-use crate::geometry::{CoordSeq, Coordinates as _, Polygon, ring_winding, same_point};
+use crate::geometry::{CoordSeq, Coordinates as _, same_point};
+#[cfg(test)]
+use crate::geometry::{Polygon, ring_winding};
 
 pub(crate) fn line_has_nonzero_segment(coords: &CoordSeq) -> bool {
     coords
@@ -12,6 +14,7 @@ pub(crate) fn multiline_has_nonzero_segment<L: AsRef<CoordSeq>>(lines: &[L]) -> 
         .any(|line| line_has_nonzero_segment(line.as_ref()))
 }
 
+#[cfg(test)]
 pub(crate) fn polygon_has_nondegenerate_area(polygon: &Polygon) -> bool {
     polygon
         .rings()

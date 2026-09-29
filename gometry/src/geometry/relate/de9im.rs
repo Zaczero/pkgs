@@ -26,12 +26,7 @@ impl De9im {
         }
     }
 
-    /// Force one cell empty (`F`).
-    ///
-    /// Named access so consumers stop poking `matrix.0[3] = b'F'` directly:
-    /// the ASCII `[u8; 9]` layout is an implementation detail, and a raw index
-    /// gives no hint whether `3` is `(B,I)` or `(I,B)`. Every external writer
-    /// now goes through here or [`Self::set_at_least`].
+    #[cfg(test)]
     pub(crate) const fn clear(&mut self, row: Loc, col: Loc) {
         self.0[row as usize * 3 + col as usize] = b'F';
     }

@@ -152,13 +152,13 @@ impl OrdinateSource {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct AxisValue {
+pub(super) struct AxisValue {
     value: Option<f64>,
     conflict: bool,
 }
 
 impl AxisValue {
-    const fn observe(&mut self, candidate: Option<f64>) {
+    pub(super) const fn observe(&mut self, candidate: Option<f64>) {
         let Some(candidate) = candidate else {
             return;
         };
@@ -169,7 +169,7 @@ impl AxisValue {
         }
     }
 
-    fn value(self) -> Option<f64> {
+    pub(super) fn value(self) -> Option<f64> {
         (!self.conflict).then_some(self.value).flatten()
     }
 }

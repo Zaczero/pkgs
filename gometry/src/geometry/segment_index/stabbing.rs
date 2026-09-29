@@ -126,10 +126,7 @@ impl<T> YStabbingIndex<T> {
     /// Visit every item whose Y-interval contains `y` (closed).
     ///
     /// Stops early when `visit` returns [`ControlFlow::Break`].
-    #[expect(
-        clippy::indexing_slicing,
-        reason = "band ranges and item/tree IDs are emitted by this admitted Y plan"
-    )]
+    #[cfg(test)]
     pub(crate) fn for_each_at_y<B>(
         &self,
         y: f64,
@@ -280,6 +277,7 @@ impl<T> YStabbingIndex<T> {
         }
     }
 
+    #[cfg(test)]
     pub(crate) const fn len(&self) -> usize {
         self.items.len()
     }
@@ -325,6 +323,7 @@ impl EdgeYIndex {
     /// Build over an open ring, including its closing edge from the last point
     /// back to the first. Chart rings use this representation so seam lifting
     /// does not need to repeat the first coordinate.
+    #[cfg(test)]
     pub(crate) fn build_closed(ys: &[f64]) -> Result<Self> {
         let edge_count = ys.len();
         let item_count = checked_index_count(edge_count)?;
