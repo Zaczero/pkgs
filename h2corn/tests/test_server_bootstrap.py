@@ -11,12 +11,13 @@ import threading
 import time
 import tomllib
 import warnings
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
-from h2corn import Config
+from h2corn import Config, Server
 
 from tests._support import HANG_BOUND, open_fd_count
 
@@ -60,6 +61,77 @@ def _assert_listener_accepts(listener: socket.socket) -> None:
         assert readable, 'listener never became readable'
         accepted, _ = listener.accept()
         accepted.close()
+
+
+def _run_with_eager_task_factory(scenario: Callable[[], Awaitable[None]]) -> None:
+    eager_task_factory = getattr(asyncio, 'eager_task_factory', None)
+    if eager_task_factory is None:
+        pytest.skip('asyncio.eager_task_factory requires Python 3.12 or newer')
+
+    with asyncio.Runner() as runner:
+        runner.get_loop().set_task_factory(eager_task_factory)
+        runner.run(scenario())
+
+
+def test_server_starts_and_stops_with_eager_task_factory() -> None:
+    async def scenario() -> None:
+        lifecycle: list[str] = []
+
+        async def app(scope, receive, send):
+            assert scope['type'] == 'lifespan'
+            startup = await receive()
+            assert startup['type'] == 'lifespan.startup'
+            lifecycle.append('startup')
+            await send({'type': 'lifespan.startup.complete'})
+            shutdown = await receive()
+            assert shutdown['type'] == 'lifespan.shutdown'
+            lifecycle.append('shutdown')
+            await send({'type': 'lifespan.shutdown.complete'})
+
+        server = Server(
+            app,
+            Config(
+                bind=('127.0.0.1:0',),
+                access_log=False,
+                lifespan='on',
+            ),
+        )
+        serving = asyncio.create_task(server.serve())
+        await asyncio.wait_for(server.wait_started(), timeout=HANG_BOUND)
+        server.shutdown()
+        await asyncio.wait_for(serving, timeout=HANG_BOUND)
+
+        assert lifecycle == ['startup', 'shutdown']
+        assert server.addresses == ()
+
+    _run_with_eager_task_factory(scenario)
+
+
+def test_server_startup_failure_with_eager_task_factory() -> None:
+    async def scenario() -> None:
+        async def app(scope, receive, send):
+            assert scope['type'] == 'lifespan'
+            startup = await receive()
+            assert startup['type'] == 'lifespan.startup'
+            await send({
+                'type': 'lifespan.startup.failed',
+                'message': 'eager startup failure',
+            })
+
+        server = Server(
+            app,
+            Config(
+                bind=('127.0.0.1:0',),
+                access_log=False,
+                lifespan='on',
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match='eager startup failure'):
+            await asyncio.wait_for(server.serve(), timeout=HANG_BOUND)
+        assert server.addresses == ()
+
+    _run_with_eager_task_factory(scenario)
 
 
 def _gil_is_disabled() -> bool:

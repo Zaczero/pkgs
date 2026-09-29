@@ -586,10 +586,10 @@ class Server:
 
             shutdown = loop.create_future()
             returned = loop.create_future()
-            holder: list[_ServeGeneration] = []
+            published: asyncio.Future[_ServeGeneration] = loop.create_future()
 
             async def _lifecycle() -> None:
-                generation = holder[0]
+                generation = await published
                 error: BaseException | None = None
                 try:
                     await body(generation)
@@ -612,7 +612,6 @@ class Server:
                 returned=returned,
                 released=released,
             )
-            holder.append(generation)
             released.add_done_callback(
                 lambda task: self._clear_generation(generation, task)
             )
@@ -621,6 +620,7 @@ class Server:
             # observe STARTING with the generation it is stopping, never a
             # later write that resurrects readiness after STOPPING.
             self._readiness = _Readiness.STARTING
+            published.set_result(generation)
         return generation
 
     async def serve(self) -> None:
