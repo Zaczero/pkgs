@@ -1,14 +1,20 @@
-use crate::geometry::{CoordinateAxes, MultiLineString, MultiMember, MultiPoint, MultiPolygon};
+use std::collections::HashMap;
+
+use crate::geometry::{
+    CoordinateAxes, MultiLineString, MultiMember, MultiPoint, MultiPolygon, ShapeOwnerKey,
+};
 use crate::io::wkb::{
     Coordinates, EWKB_SRID_FLAG, GeometryKind, IoError, LineSeq, Point, Polygon, Result, Shape,
-    WKB_COUNT, WKB_HEADER_BASE, extended_srid_code, wkb_coords_len, wkb_dimension, wkb_type,
+    WKB_COUNT, WKB_HEADER_BASE, extended_srid_code, wkb_dimension, wkb_type,
 };
+
+const WKB_HEADER_WITH_SRID: usize = WKB_HEADER_BASE + size_of::<u32>();
 
 pub(crate) fn to_wkb(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Result<Vec<u8>> {
     // Resolve the SRID once and thread it through length + header so the
     // wire-alias table (CRS84→4326) cannot diverge between the two.
     let srid = extended_srid_code(crs, include_srid, "EWKB")?;
-    let preflight = preflight_wkb(shape, srid.is_some())?;
+    let preflight = preflight_wkb(shape, srid.is_some(), 0)?;
     let mut out = Vec::with_capacity(preflight.length);
     preflight.write(&mut out, srid);
     Ok(out)
@@ -20,7 +26,7 @@ pub(crate) fn to_wkb(shape: &Shape, crs: Option<&str>, include_srid: bool) -> Re
 /// every row. The batch path resolves once and still validates each shape's
 /// axes here, preserving row-level axis errors and notes.
 pub(crate) fn write_wkb_to_srid(out: &mut Vec<u8>, shape: &Shape, srid: Option<u32>) -> Result<()> {
-    let preflight = preflight_wkb(shape, srid.is_some())?;
+    let preflight = preflight_wkb(shape, srid.is_some(), out.len())?;
     out.reserve(preflight.length);
     preflight.write(out, srid);
     Ok(())
@@ -37,10 +43,17 @@ impl WkbPreflight<'_> {
     }
 }
 
-fn preflight_wkb(shape: &Shape, srid: bool) -> Result<WkbPreflight<'_>> {
+fn preflight_wkb(shape: &Shape, srid: bool, existing_len: usize) -> Result<WkbPreflight<'_>> {
     crate::io::require_serializable_axes(shape)?;
     let geometry = WkbShape::classify(shape);
-    let length = geometry.encoded_len(srid)?;
+    let mut memo = WkbLengthMemo::default();
+    let length = geometry.encoded_len(srid, &mut memo)?.into_usize()?;
+    if existing_len
+        .checked_add(length)
+        .is_none_or(|total| isize::try_from(total).is_err())
+    {
+        return Err(crate::error::ResourceError::SizeOverflow.into());
+    }
     Ok(WkbPreflight { geometry, length })
 }
 
@@ -55,12 +68,20 @@ fn write_columns(
     debug_assert_eq!(ys.len(), count);
     debug_assert!(zs.is_none_or(|z| z.len() == count));
     debug_assert!(ms.is_none_or(|m| m.len() == count));
-    let dimension = 2_usize
-        .wrapping_add(usize::from(zs.is_some()))
-        .wrapping_add(usize::from(ms.is_some()));
-    let byte_len = count.wrapping_mul(dimension).wrapping_mul(size_of::<f64>());
-    let expected_end = out.len().wrapping_add(byte_len);
-    debug_assert!(out.capacity().wrapping_sub(out.len()) >= byte_len);
+    let dimension = match (zs.is_some(), ms.is_some()) {
+        (false, false) => 2,
+        (true, false) | (false, true) => 3,
+        (true, true) => 4,
+    };
+    let byte_len = count
+        .checked_mul(dimension)
+        .and_then(|count| count.checked_mul(size_of::<f64>()))
+        .expect("WKB coordinate width was checked during preflight");
+    let expected_end = out
+        .len()
+        .checked_add(byte_len)
+        .expect("WKB output width was checked during preflight");
+    debug_assert!(out.capacity().saturating_sub(out.len()) >= byte_len);
     match (zs, ms) {
         (None, None) => {
             for (&x, &y) in std::iter::zip(xs, ys) {
@@ -114,7 +135,7 @@ enum WkbBody<'a> {
     MultiLineString(&'a MultiLineString),
     Polygon(&'a Polygon),
     MultiPolygon(&'a MultiPolygon),
-    GeometryCollection(&'a [Shape]),
+    GeometryCollection(&'a [Shape], bool),
     EmptyPoint,
     EmptyMultiPoint,
     EmptyLineString,
@@ -147,7 +168,10 @@ impl<'a> WkbShape<'a> {
             Shape::GeometryCollection(geometries) => Self {
                 kind: GeometryKind::GeometryCollection,
                 axes: shape.axes(),
-                body: WkbBody::GeometryCollection(geometries),
+                body: WkbBody::GeometryCollection(
+                    geometries.as_slice(),
+                    geometries.members_are_shared(),
+                ),
             },
             // A typed empty writes its declared axes into the header type code
             // (1001-style for `POINT Z EMPTY`) with an axes-matched body: the
@@ -189,7 +213,7 @@ impl<'a> WkbShape<'a> {
                     GeometryKind::GeometryCollection => Self {
                         kind: GeometryKind::GeometryCollection,
                         axes,
-                        body: WkbBody::GeometryCollection(&[]),
+                        body: WkbBody::GeometryCollection(&[], false),
                     },
                 }
             },
@@ -220,9 +244,13 @@ impl<'a> WkbShape<'a> {
         }
     }
 
-    fn encoded_len(self, srid: bool) -> Result<usize> {
-        let header = WKB_HEADER_BASE.wrapping_add(if srid { 4 } else { 0 });
-        Ok(header.wrapping_add(self.body.encoded_len(self.axes)?))
+    fn encoded_len(self, srid: bool, memo: &mut WkbLengthMemo) -> Result<WkbWidth> {
+        let header = if srid {
+            WKB_HEADER_WITH_SRID
+        } else {
+            WKB_HEADER_BASE
+        };
+        Ok(WkbWidth::Exact(header).checked_add(self.body.encoded_len(self.axes, memo)?))
     }
 
     fn write(self, out: &mut Vec<u8>, srid: Option<u32>) {
@@ -232,50 +260,72 @@ impl<'a> WkbShape<'a> {
 }
 
 impl WkbBody<'_> {
-    fn encoded_len(self, axes: CoordinateAxes) -> Result<usize> {
+    fn encoded_len(self, axes: CoordinateAxes, memo: &mut WkbLengthMemo) -> Result<WkbWidth> {
         match self {
             Self::Point(_) | Self::EmptyPoint => Ok(wkb_coords_len(1, axes)),
             Self::MultiPoint(points) => wkb_counted_body_len(points.member_count(), || {
-                let child = WKB_HEADER_BASE.wrapping_add(wkb_coords_len(1, axes));
-                Ok(points.member_count().wrapping_mul(child))
+                let child = WkbWidth::Exact(WKB_HEADER_BASE).checked_add(wkb_coords_len(1, axes));
+                Ok(child.checked_mul(points.member_count()))
             }),
-            Self::LineString(line) => Ok(WKB_COUNT.wrapping_add(wkb_coords_len(line.len(), axes))),
+            Self::LineString(line) => wkb_sequence_len(line.len(), axes),
             // Admitted homogeneous multipart members share the parent's axes,
             // so each child header and body is sized against that one layout.
             Self::MultiLineString(lines) => wkb_counted_body_len(lines.member_count(), || {
-                let prefix = WKB_HEADER_BASE.wrapping_add(WKB_COUNT);
-                Ok(lines.members_with_values().fold(0_usize, |total, member| {
-                    let body = match member {
-                        MultiMember::Empty => 0,
-                        MultiMember::Value(line) => wkb_coords_len(line.len(), axes),
+                let header = WkbWidth::Exact(WKB_HEADER_BASE);
+                let mut total = WkbWidth::Exact(0);
+                for member in lines.members_with_values() {
+                    let child = match member {
+                        MultiMember::Empty => header.checked_add(WkbWidth::Exact(WKB_COUNT)),
+                        MultiMember::Value(line) => {
+                            header.checked_add(wkb_sequence_len(line.len(), axes)?)
+                        },
                     };
-                    total.wrapping_add(prefix).wrapping_add(body)
-                }))
+                    total = total.checked_add(child);
+                }
+                Ok(total)
             }),
             Self::Polygon(polygon) => wkb_polygon_body_len(polygon, axes),
             Self::MultiPolygon(polygons) => wkb_counted_body_len(polygons.member_count(), || {
-                polygons
-                    .members_with_values()
-                    .try_fold(0_usize, |total, member| {
-                        let child = match member {
-                            MultiMember::Empty => WKB_HEADER_BASE.wrapping_add(WKB_COUNT),
-                            MultiMember::Value(polygon) => {
-                                WKB_HEADER_BASE.wrapping_add(wkb_polygon_body_len(polygon, axes)?)
-                            },
-                        };
-                        Ok(total.wrapping_add(child))
-                    })
+                let mut total = WkbWidth::Exact(0);
+                for member in polygons.members_with_values() {
+                    let child = match member {
+                        MultiMember::Empty => WkbWidth::Exact(WKB_HEADER_BASE + WKB_COUNT),
+                        MultiMember::Value(polygon) => WkbWidth::Exact(WKB_HEADER_BASE)
+                            .checked_add(wkb_polygon_body_len(polygon, axes)?),
+                    };
+                    total = total.checked_add(child);
+                }
+                Ok(total)
             }),
-            Self::GeometryCollection(geometries) => wkb_counted_body_len(geometries.len(), || {
-                geometries.iter().try_fold(0_usize, |total, geometry| {
-                    Ok(total.wrapping_add(WkbShape::classify(geometry).encoded_len(false)?))
-                })
-            }),
+            Self::GeometryCollection(geometries, shared) => {
+                let owner = shared.then(|| ShapeOwnerKey::new(geometries));
+                if let Some(&length) = owner.as_ref().and_then(|owner| {
+                    memo.collections
+                        .as_ref()
+                        .and_then(|collections| collections.get(owner))
+                }) {
+                    return Ok(length);
+                }
+                let length = wkb_counted_body_len(geometries.len(), || {
+                    let mut total = WkbWidth::Exact(0);
+                    for geometry in geometries {
+                        total = total
+                            .checked_add(WkbShape::classify(geometry).encoded_len(false, memo)?);
+                    }
+                    Ok(total)
+                })?;
+                if let Some(owner) = owner {
+                    memo.collections
+                        .get_or_insert_with(HashMap::new)
+                        .insert(owner, length);
+                }
+                Ok(length)
+            },
             Self::EmptyMultiPoint
             | Self::EmptyLineString
             | Self::EmptyMultiLineString
             | Self::EmptyMultiPolygon
-            | Self::EmptyPolygon => Ok(WKB_COUNT),
+            | Self::EmptyPolygon => Ok(WkbWidth::Exact(WKB_COUNT)),
         }
     }
 
@@ -287,7 +337,7 @@ impl WkbBody<'_> {
             // Every homogeneous-multipart member is written with the parent's
             // axes, and explicit empty members retain their count and position.
             Self::MultiPoint(points) => {
-                write_u32(out, points.member_count() as u32);
+                write_count(out, points.member_count());
                 for member in points.members() {
                     write_wkb_header(out, GeometryKind::Point, axes, None);
                     match member {
@@ -304,7 +354,7 @@ impl WkbBody<'_> {
             },
             Self::LineString(line) => write_wkb_sequence(out, line, axes),
             Self::MultiLineString(lines) => {
-                write_u32(out, lines.member_count() as u32);
+                write_count(out, lines.member_count());
                 for member in lines.members_with_values() {
                     write_wkb_header(out, GeometryKind::LineString, axes, None);
                     match member {
@@ -315,7 +365,7 @@ impl WkbBody<'_> {
             },
             Self::Polygon(polygon) => write_wkb_polygon(out, polygon, axes),
             Self::MultiPolygon(polygons) => {
-                write_u32(out, polygons.member_count() as u32);
+                write_count(out, polygons.member_count());
                 for member in polygons.members_with_values() {
                     write_wkb_header(out, GeometryKind::Polygon, axes, None);
                     match member {
@@ -324,8 +374,8 @@ impl WkbBody<'_> {
                     }
                 }
             },
-            Self::GeometryCollection(geometries) => {
-                write_u32(out, geometries.len() as u32);
+            Self::GeometryCollection(geometries, _) => {
+                write_count(out, geometries.len());
                 for geometry in geometries {
                     WkbShape::classify(geometry).write(out, None);
                 }
@@ -352,28 +402,88 @@ impl WkbBody<'_> {
 /// Exact serialized WKB/EWKB byte length from the same classification used by
 /// the writer. `srid` means the top-level header carries an EWKB SRID.
 pub(crate) fn wkb_len(shape: &Shape, srid: bool) -> Result<usize> {
-    Ok(preflight_wkb(shape, srid)?.length)
+    Ok(preflight_wkb(shape, srid, 0)?.length)
 }
 
-fn wkb_counted_body_len<F>(count: usize, body: F) -> Result<usize>
+#[derive(Clone, Copy)]
+enum WkbWidth {
+    Exact(usize),
+    Overflow,
+}
+
+impl WkbWidth {
+    const fn checked_add(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Exact(left), Self::Exact(right)) => match left.checked_add(right) {
+                Some(value) => Self::Exact(value),
+                None => Self::Overflow,
+            },
+            _ => Self::Overflow,
+        }
+    }
+
+    const fn checked_mul(self, multiplier: usize) -> Self {
+        match self {
+            Self::Exact(value) => match value.checked_mul(multiplier) {
+                Some(value) => Self::Exact(value),
+                None => Self::Overflow,
+            },
+            Self::Overflow => Self::Overflow,
+        }
+    }
+
+    fn into_usize(self) -> Result<usize> {
+        match self {
+            Self::Exact(length) => Ok(length),
+            Self::Overflow => Err(crate::error::ResourceError::SizeOverflow.into()),
+        }
+    }
+}
+
+#[derive(Default)]
+struct WkbLengthMemo {
+    collections: Option<HashMap<ShapeOwnerKey, WkbWidth>>,
+}
+
+const fn wkb_coords_len(count: usize, axes: CoordinateAxes) -> WkbWidth {
+    WkbWidth::Exact(count)
+        .checked_mul(wkb_dimension(axes))
+        .checked_mul(size_of::<f64>())
+}
+
+fn wkb_sequence_len(count: usize, axes: CoordinateAxes) -> Result<WkbWidth> {
+    checked_len(count)?;
+    Ok(WkbWidth::Exact(WKB_COUNT).checked_add(wkb_coords_len(count, axes)))
+}
+
+fn wkb_counted_body_len<F>(count: usize, body: F) -> Result<WkbWidth>
 where
-    F: FnOnce() -> Result<usize>,
+    F: FnOnce() -> Result<WkbWidth>,
 {
     checked_len(count)?;
-    Ok(WKB_COUNT.wrapping_add(body()?))
+    Ok(WkbWidth::Exact(WKB_COUNT).checked_add(body()?))
 }
 
-fn wkb_polygon_body_len(polygon: &Polygon, axes: CoordinateAxes) -> Result<usize> {
-    let ring_count = polygon.holes.len().wrapping_add(1);
+fn wkb_polygon_body_len(polygon: &Polygon, axes: CoordinateAxes) -> Result<WkbWidth> {
+    let ring_count = polygon
+        .holes
+        .len()
+        .checked_add(1)
+        .ok_or_else(|| IoError::wkb("geometry is too large for WKB"))?;
     wkb_counted_body_len(ring_count, || {
-        Ok(std::iter::once(&polygon.shell)
-            .chain(polygon.holes.iter())
-            .fold(0_usize, |total, ring| {
-                total
-                    .wrapping_add(WKB_COUNT)
-                    .wrapping_add(wkb_coords_len(ring.coord_count(), axes))
-            }))
+        let mut total = WkbWidth::Exact(0);
+        for ring in std::iter::once(&polygon.shell).chain(polygon.holes.iter()) {
+            total = total.checked_add(wkb_sequence_len(ring.coord_count(), axes)?);
+        }
+        Ok(total)
     })
+}
+
+fn write_count(out: &mut Vec<u8>, count: usize) {
+    write_u32(
+        out,
+        u32::try_from(count).expect("WKB count was checked during preflight"),
+    );
 }
 
 fn write_wkb_header(
@@ -397,7 +507,12 @@ fn write_wkb_header(
 }
 
 fn write_wkb_polygon(out: &mut Vec<u8>, polygon: &Polygon, axes: CoordinateAxes) {
-    write_u32(out, polygon.holes.len().wrapping_add(1) as u32);
+    let ring_count = polygon
+        .holes
+        .len()
+        .checked_add(1)
+        .expect("WKB ring count was checked during preflight");
+    write_count(out, ring_count);
     write_wkb_sequence(out, &polygon.shell, axes);
     for hole in polygon.holes.iter() {
         write_wkb_sequence(out, hole, axes);
@@ -410,7 +525,7 @@ fn write_wkb_sequence<C: Coordinates + ?Sized>(
     points: &C,
     axes: CoordinateAxes,
 ) {
-    write_u32(out, points.coord_count() as u32);
+    write_count(out, points.coord_count());
     let (xs, ys) = points
         .xy_columns()
         .expect("WKB coordinate sequences expose columns");
@@ -495,15 +610,24 @@ mod tests {
         .unwrap()
     }
 
+    fn mixed_ring_shape() -> Shape {
+        let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
+        Shape::MultiPolygon(
+            MultiPolygon::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(polygon)])
+                .expect("polygon aggregate axes match"),
+        )
+    }
+
     #[cfg(target_pointer_width = "64")]
     #[test]
     fn counted_body_length_rejects_wire_count_before_body() {
         let mut called = false;
         let error = wkb_counted_body_len((u32::MAX as usize) + 1, || {
             called = true;
-            Ok(0)
+            Ok(WkbWidth::Overflow)
         })
-        .expect_err("wire count must be checked before the body");
+        .err()
+        .expect("wire count must be checked before the body");
         assert!(matches!(
             error.kind(),
             crate::error::ErrorKind::Io(crate::io::IoError { .. })
@@ -511,13 +635,104 @@ mod tests {
         assert!(!called, "oversized count must not traverse its body");
     }
 
+    #[cfg(target_pointer_width = "64")]
+    #[test]
+    fn coordinate_sequence_length_rejects_an_oversized_wire_count() {
+        let error = wkb_sequence_len((u32::MAX as usize) + 1, CoordinateAxes::XY)
+            .err()
+            .expect("coordinate sequence count must fit in u32");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Io(crate::io::IoError { .. })
+        ));
+    }
+
+    fn doubled_collection(depth: usize) -> Shape {
+        let mut shape = Shape::Point(xy(0.0, 0.0));
+        for _ in 0..depth {
+            let child = shape.clone();
+            shape = Shape::geometry_collection(vec![child.clone(), child])
+                .expect("collection stays within the nesting limit");
+        }
+        shape
+    }
+
+    #[test]
+    fn shared_collection_wkb_lengths_match_occurrence_output() {
+        for (depth, expected) in [(8, 7_671), (10, 30_711)] {
+            let shape = doubled_collection(depth);
+            let bytes = to_wkb(&shape, None, false).expect("representable WKB writes");
+            assert_eq!(bytes.len(), expected);
+            assert_eq!(
+                wkb_len(&shape, false).expect("length is representable"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn shared_collection_wkb_width_fails_before_appending() {
+        let shape = doubled_collection(128);
+        let mut out = vec![7, 8];
+        let error = write_wkb_to_srid(&mut out, &shape, None)
+            .expect_err("depth-128 WKB cannot fit in a Vec");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+        assert_eq!(out, [7, 8]);
+    }
+
+    #[test]
+    fn append_preflight_includes_existing_buffer_length() {
+        let shape = Shape::Point(xy(0.0, 0.0));
+        let error = preflight_wkb(&shape, false, isize::MAX.unsigned_abs())
+            .err()
+            .expect("append length cannot exceed the Vec byte limit");
+        assert!(matches!(
+            error.kind(),
+            crate::error::ErrorKind::Resource(crate::error::ResourceError::SizeOverflow)
+        ));
+    }
+
+    #[test]
+    fn sparse_multiline_wkb_counts_empty_member_slots() {
+        let lines = MultiLineString::try_new(CoordinateAxes::XY, vec![
+            MultiMember::Empty,
+            MultiMember::Value(line(&[xy(0.0, 0.0), xy(1.0, 1.0)])),
+            MultiMember::Empty,
+        ])
+        .expect("sparse multipart retains empty slots");
+        let bytes = to_wkb(&Shape::MultiLineString(lines), None, false).expect("sparse WKB writes");
+        assert_eq!(bytes.len(), 68);
+    }
+
+    #[test]
+    fn extended_srid_and_axes_errors_precede_width_preflight() {
+        let shape = mixed_ring_shape();
+        let srid_error = to_wkb(&shape, Some("ESRI:102003"), true)
+            .expect_err("an unsupported SRID is rejected before axes inspection");
+        assert!(matches!(srid_error.kind(), crate::error::ErrorKind::Crs(_)));
+
+        let axes_error = to_wkb(&shape, Some("EPSG:4326"), true)
+            .expect_err("valid SRID resolution proceeds to axes preflight");
+        assert!(matches!(
+            axes_error.kind(),
+            crate::error::ErrorKind::Geometry(_)
+        ));
+
+        let width_error = preflight_wkb(&shape, false, isize::MAX.unsigned_abs())
+            .err()
+            .expect("axes error precedes append-width rejection");
+        assert!(matches!(
+            width_error.kind(),
+            crate::error::ErrorKind::Geometry(_)
+        ));
+    }
+
     #[test]
     fn mixed_ring_sizing_rejects_before_append_mutation() {
-        let polygon = Polygon::new(ring(CoordinateAxes::XYZ), vec![ring(CoordinateAxes::XY)]);
-        let shape = Shape::MultiPolygon(
-            MultiPolygon::try_new(CoordinateAxes::XYZ, vec![MultiMember::Value(polygon)])
-                .expect("polygon aggregate axes match"),
-        );
+        let shape = mixed_ring_shape();
         let mut out = vec![7_u8, 8];
         let error = write_wkb_to_srid(&mut out, &shape, None)
             .expect_err("mixed rings must be rejected before writing");

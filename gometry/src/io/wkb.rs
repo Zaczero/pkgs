@@ -53,12 +53,6 @@ const fn wkb_dimension(axes: CoordinateAxes) -> usize {
     axes.dimension()
 }
 
-const fn wkb_coords_len(count: usize, axes: CoordinateAxes) -> usize {
-    count
-        .wrapping_mul(wkb_dimension(axes))
-        .wrapping_mul(size_of::<f64>())
-}
-
 const fn iso_dimension_offset(z: bool, m: bool) -> u32 {
     match (z, m) {
         (false, false) => 0,
