@@ -97,11 +97,17 @@ impl CompactLimbs {
 
     fn inline_from_slice(limbs: &[u64]) -> Self {
         debug_assert!(limbs.len() <= INLINE_DYADIC_LIMBS);
-        let mut inline = [0; INLINE_DYADIC_LIMBS];
-        inline[..limbs.len()].copy_from_slice(limbs);
-        Self::Inline {
-            limbs: inline,
-            len: limbs.len() as u8,
+        match limbs {
+            [] => Self::zero(),
+            [limb] => Self::Inline {
+                limbs: [*limb, 0],
+                len: 1,
+            },
+            [low, high] => Self::Inline {
+                limbs: [*low, *high],
+                len: 2,
+            },
+            _ => unreachable!("inline dyadic storage has two limbs"),
         }
     }
 
@@ -121,6 +127,10 @@ impl CompactLimbs {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "private inline lengths are initialized and maintained in 0..=2, matching the fixed limb array capacity"
+    )]
     pub(in crate::geometry) fn as_slice(&self) -> &[u64] {
         match self {
             Self::Inline { limbs, len } => &limbs[..usize::from(*len)],
@@ -128,6 +138,10 @@ impl CompactLimbs {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "private inline lengths are initialized and maintained in 0..=2, matching the fixed limb array capacity"
+    )]
     pub(in crate::geometry) fn as_mut_slice(&mut self) -> &mut [u64] {
         match self {
             Self::Inline { limbs, len } => &mut limbs[..usize::from(*len)],
@@ -142,26 +156,30 @@ impl CompactLimbs {
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "write_product reserves the operand-length sum after the one-limb case; aligned addition reserves its carry limb, and subtraction reserves the larger length, so every inline writer stays within two limbs"
+    )]
     pub(in crate::geometry) fn push(&mut self, value: u64) {
         match self {
             Self::Inline { limbs, len } => {
                 let index = usize::from(*len);
-                assert!(
-                    index < INLINE_DYADIC_LIMBS,
-                    "inline dyadic capacity exceeded"
-                );
                 limbs[index] = value;
-                *len += 1;
+                *len = (*len).wrapping_add(1);
             },
             Self::Heap(limbs) => limbs.push(value),
         }
     }
 
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "checked_sub selects the preceding limb of the private 0..=2 inline length, so the index is within the two-limb array"
+    )]
     pub(in crate::geometry) fn pop(&mut self) -> Option<u64> {
         match self {
             Self::Inline { limbs, len } => {
                 let index = usize::from(*len).checked_sub(1)?;
-                *len -= 1;
+                *len = (*len).wrapping_sub(1);
                 Some(limbs[index])
             },
             Self::Heap(limbs) => limbs.pop(),
@@ -176,8 +194,11 @@ impl CompactLimbs {
             Self::Inline { limbs, len } => {
                 let length = usize::from(*len);
                 limbs.copy_within(count..length, 0);
-                limbs[length - count..length].fill(0);
-                *len -= count as u8;
+                // `copy_within` returns only when count <= length.
+                let new_length = length.wrapping_sub(count);
+                limbs.split_at_mut(new_length).1.fill(0);
+                // The successful copy and two-limb invariant also bound this cast.
+                *len = (*len).wrapping_sub(count as u8);
             },
             Self::Heap(limbs) => {
                 limbs.drain(..count);
@@ -245,15 +266,15 @@ impl ExactLine {
 /// word directly, so every operation uses the same words in the same order
 /// with no temporary.
 #[derive(Clone, Copy)]
-pub(in crate::geometry) struct Aligned<'a> {
-    pub(in crate::geometry) limbs: &'a [u64],
-    pub(in crate::geometry) word_shift: usize,
-    pub(in crate::geometry) bit_shift: u32,
-    pub(in crate::geometry) len: usize,
+struct Aligned<'a> {
+    limbs: &'a [u64],
+    word_shift: usize,
+    bit_shift: u32,
+    len: usize,
 }
 
 impl<'a> Aligned<'a> {
-    pub(in crate::geometry) fn new(limbs: &'a [u64], shift: usize) -> Self {
+    fn new(limbs: &'a [u64], shift: usize) -> Self {
         Self {
             limbs,
             word_shift: shift / 64,
@@ -262,7 +283,7 @@ impl<'a> Aligned<'a> {
         }
     }
 
-    pub(in crate::geometry) fn word(&self, index: usize) -> u64 {
+    fn word(&self, index: usize) -> u64 {
         ExactDyadic::shifted_word(self.limbs, self.word_shift, self.bit_shift, index)
     }
 }
@@ -309,7 +330,10 @@ impl ExactDyadic {
         let (significand, exponent) = if encoded_exponent == 0 {
             (fraction, -1074)
         } else {
-            ((1_u64 << 52) | fraction, encoded_exponent - 1023 - 52)
+            (
+                (1_u64 << 52) | fraction,
+                encoded_exponent.wrapping_sub(1023).wrapping_sub(52),
+            )
         };
         let mut value = Self {
             negative: bits >> 63 != 0,
@@ -352,7 +376,7 @@ impl ExactDyadic {
         if zero_bits != 0 {
             let mut carry = 0_u64;
             for limb in self.limbs.iter_mut().rev() {
-                let next = *limb << (64 - zero_bits);
+                let next = *limb << 64_u32.wrapping_sub(zero_bits);
                 *limb = (*limb >> zero_bits) | carry;
                 carry = next;
             }
@@ -360,7 +384,14 @@ impl ExactDyadic {
                 self.limbs.pop();
             }
         }
-        debug_assert_eq!(self.limbs[0] & 1, 1);
+        debug_assert_eq!(
+            *self
+                .limbs
+                .first()
+                .expect("a trimmed nonzero dyadic has a first limb")
+                & 1,
+            1
+        );
         self.limbs.shrink_inline();
         Ok(())
     }
@@ -398,45 +429,44 @@ impl ExactDyadic {
     /// Read limb `index` of a slice as if it had been shifted left by
     /// `word_shift` words and `bit_shift` bits, without materializing the
     /// shifted vector. Same words, same order, no allocation.
-    pub(in crate::geometry) fn shifted_word(
-        limbs: &[u64],
-        word_shift: usize,
-        bit_shift: u32,
-        index: usize,
-    ) -> u64 {
+    fn shifted_word(limbs: &[u64], word_shift: usize, bit_shift: u32, index: usize) -> u64 {
         if index < word_shift {
             return 0;
         }
-        let position = index - word_shift;
+        let position = index.wrapping_sub(word_shift);
         let low = limbs.get(position).copied().unwrap_or(0);
         if bit_shift == 0 {
             return low;
         }
-        let carry = if position == 0 || position > limbs.len() {
-            0
-        } else {
-            limbs[position - 1] >> (64 - bit_shift)
-        };
+        let carry = position
+            .checked_sub(1)
+            .and_then(|previous| limbs.get(previous))
+            .map_or(0, |limb| limb >> 64_u32.wrapping_sub(bit_shift));
         (low << bit_shift) | carry
     }
 
-    pub(in crate::geometry) fn shifted_len(limbs: &[u64], shift: usize) -> usize {
+    fn shifted_len(limbs: &[u64], shift: usize) -> usize {
         if limbs.is_empty() {
             return 0;
         }
-        limbs.len() + shift / 64 + usize::from(!shift.is_multiple_of(64))
+        // A Vec<u64> has at most isize::MAX / 8 limbs and shift is a usize;
+        // this aligned span stays below 2^61 on supported 64-bit targets,
+        // leaving room for a carry limb as well.
+        limbs
+            .len()
+            .wrapping_add(shift / 64)
+            .wrapping_add(usize::from(!shift.is_multiple_of(64)))
     }
 
-    pub(in crate::geometry) fn write_sum_aligned(
-        left: Aligned<'_>,
-        right: Aligned<'_>,
-        out: &mut CompactLimbs,
-    ) {
+    fn write_sum_aligned(left: Aligned<'_>, right: Aligned<'_>, out: &mut CompactLimbs) {
         debug_assert!(out.is_empty());
         let length = left.len.max(right.len);
+        // Two u64 words and a one-bit carry always fit exactly in u128.
         let mut carry = 0_u128;
         for index in 0..length {
-            let sum = u128::from(left.word(index)) + u128::from(right.word(index)) + carry;
+            let sum = u128::from(left.word(index))
+                .wrapping_add(u128::from(right.word(index)))
+                .wrapping_add(carry);
             out.push(sum as u64);
             carry = sum >> 64;
         }
@@ -445,18 +475,16 @@ impl ExactDyadic {
         }
     }
 
-    pub(in crate::geometry) fn write_diff_aligned(
-        larger: Aligned<'_>,
-        smaller: Aligned<'_>,
-        out: &mut CompactLimbs,
-    ) {
+    fn write_diff_aligned(larger: Aligned<'_>, smaller: Aligned<'_>, out: &mut CompactLimbs) {
         debug_assert!(out.is_empty());
+        // Two u64 words and a one-bit borrow stay within the i128 range.
         let mut borrow = 0_i128;
         for index in 0..larger.len {
-            let difference =
-                i128::from(larger.word(index)) - i128::from(smaller.word(index)) - borrow;
+            let difference = i128::from(larger.word(index))
+                .wrapping_sub(i128::from(smaller.word(index)))
+                .wrapping_sub(borrow);
             if difference < 0 {
-                out.push((difference + (1_i128 << 64)) as u64);
+                out.push(difference.wrapping_add(1_i128 << 64) as u64);
                 borrow = 1;
             } else {
                 out.push(difference as u64);
@@ -466,7 +494,7 @@ impl ExactDyadic {
         debug_assert_eq!(borrow, 0);
     }
 
-    pub(in crate::geometry) fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> CompactLimbs {
+    fn add_aligned(left: Aligned<'_>, right: Aligned<'_>) -> CompactLimbs {
         let length = left.len.max(right.len);
         if length <= INLINE_DYADIC_LIMBS {
             // The extra limb is needed only when the final word carries. The
@@ -475,41 +503,45 @@ impl ExactDyadic {
             let mut words = [0_u64; INLINE_DYADIC_LIMBS + 1];
             let mut carry = 0_u128;
             for (index, word) in words.iter_mut().take(length).enumerate() {
-                let sum = u128::from(left.word(index)) + u128::from(right.word(index)) + carry;
+                let sum = u128::from(left.word(index))
+                    .wrapping_add(u128::from(right.word(index)))
+                    .wrapping_add(carry);
                 *word = sum as u64;
                 carry = sum >> 64;
             }
-            let result_length = length.wrapping_add(usize::from(carry != 0));
             if carry != 0 {
-                words[length] = carry as u64;
+                let (_, suffix) = words.split_at_mut(length);
+                *suffix.first_mut().expect("the inline sum has a carry limb") = carry as u64;
             }
+            let result_length = length.wrapping_add(usize::from(carry != 0));
+            let (result_words, _) = words.split_at(result_length);
             let mut result = CompactLimbs::with_capacity(result_length);
-            for &word in &words[..result_length] {
+            for &word in result_words {
                 result.push(word);
             }
             return result;
         }
-        let mut result = CompactLimbs::with_capacity(length.wrapping_add(1));
+        // `Aligned::len` is bounded by the vector and exponent ranges in
+        // `shifted_len`, so the carry limb count fits usize.
+        let capacity = length.wrapping_add(1);
+        let mut result = CompactLimbs::with_capacity(capacity);
         Self::write_sum_aligned(left, right, &mut result);
         result
     }
 
-    pub(in crate::geometry) fn subtract_aligned(
-        larger: Aligned<'_>,
-        smaller: Aligned<'_>,
-    ) -> CompactLimbs {
+    fn subtract_aligned(larger: Aligned<'_>, smaller: Aligned<'_>) -> CompactLimbs {
         let mut result = CompactLimbs::with_capacity(larger.len);
         Self::write_diff_aligned(larger, smaller, &mut result);
         result
     }
 
-    pub(in crate::geometry) fn compare_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Ordering {
-        let mut index = left.len.max(right.len);
-        while index > 0 {
-            index -= 1;
-            match left.word(index).cmp(&right.word(index)) {
+    fn compare_aligned(left: Aligned<'_>, right: Aligned<'_>) -> Ordering {
+        for index in (0..left.len.max(right.len)).rev() {
+            let order = left.word(index).cmp(&right.word(index));
+            match order {
                 Ordering::Equal => {},
-                order => return order,
+                Ordering::Less => return Ordering::Less,
+                Ordering::Greater => return Ordering::Greater,
             }
         }
         Ordering::Equal
@@ -598,11 +630,23 @@ impl ExactDyadic {
             let left_value = u128::from(*left_limb) << left_shift;
             let right_value = u128::from(*right_limb) << right_shift;
             return if left_negative == right_negative {
-                Self::try_from_u128(left_negative, left_value + right_value, exponent)
+                Self::try_from_u128(
+                    left_negative,
+                    left_value.wrapping_add(right_value),
+                    exponent,
+                )
             } else if left_value >= right_value {
-                Self::try_from_u128(left_negative, left_value - right_value, exponent)
+                Self::try_from_u128(
+                    left_negative,
+                    left_value.wrapping_sub(right_value),
+                    exponent,
+                )
             } else {
-                Self::try_from_u128(right_negative, right_value - left_value, exponent)
+                Self::try_from_u128(
+                    right_negative,
+                    right_value.wrapping_sub(left_value),
+                    exponent,
+                )
             };
         }
         let left = Aligned::new(&left.limbs, left_shift);
@@ -699,11 +743,20 @@ impl ExactDyadic {
         )
     }
 
-    pub(in crate::geometry) fn write_product(short: &[u64], long: &[u64], out: &mut CompactLimbs) {
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "try_product rejects zero operands, so canonical short limbs are nonempty; schoolbook row r touches offsets below r + long.len(), while prior rows publish that prefix and the operand-length sum is reserved"
+    )]
+    fn write_product(short: &[u64], long: &[u64], out: &mut CompactLimbs) {
         debug_assert!(out.is_empty());
+        let first = short[0];
+        // A u64 product plus an existing limb and a one-limb carry is at most
+        // 2^128 - 1, so these low-word operations preserve the full sum.
         let mut carry = 0_u128;
         for &right in long {
-            let value = u128::from(short[0]) * u128::from(right) + carry;
+            let value = u128::from(first)
+                .wrapping_mul(u128::from(right))
+                .wrapping_add(carry);
             out.push(value as u64);
             carry = value >> 64;
         }
@@ -711,8 +764,10 @@ impl ExactDyadic {
         for (left_index, &left) in short.iter().enumerate().skip(1) {
             let mut carry = 0_u128;
             for (right_index, &right) in long.iter().enumerate() {
-                let index = left_index + right_index;
-                let value = u128::from(out[index]) + u128::from(left) * u128::from(right) + carry;
+                let index = left_index.wrapping_add(right_index);
+                let value = u128::from(out[index])
+                    .wrapping_add(u128::from(left).wrapping_mul(u128::from(right)))
+                    .wrapping_add(carry);
                 out[index] = value as u64;
                 carry = value >> 64;
             }
@@ -731,7 +786,7 @@ impl ExactDyadic {
         if let ([left], [right]) = (self.limbs.as_slice(), other.limbs.as_slice()) {
             return Self::try_from_u128(
                 self.negative != other.negative,
-                u128::from(*left) * u128::from(*right),
+                u128::from(*left).wrapping_mul(u128::from(*right)),
                 exponent,
             );
         }
@@ -740,6 +795,8 @@ impl ExactDyadic {
         } else {
             (&other.limbs, &self.limbs)
         };
+        // Each heap limb vector is bounded by its allocation layout, so the
+        // combined limb-count upper bound fits usize on supported 64-bit targets.
         let needed = short.len().wrapping_add(long.len());
         let mut limbs = CompactLimbs::with_capacity(needed);
         Self::write_product(short, long, &mut limbs);
@@ -757,12 +814,14 @@ impl ExactDyadic {
         let right_len = right.len();
         match left_len.cmp(&right_len) {
             Ordering::Equal => {},
-            order => return order,
+            Ordering::Less => return Ordering::Less,
+            Ordering::Greater => return Ordering::Greater,
         }
-        for (&left, &right) in left.iter().rev().zip(right.iter().rev()) {
-            match left.cmp(&right) {
+        for (&left_word, &right_word) in left.iter().rev().zip(right.iter().rev()) {
+            match left_word.cmp(&right_word) {
                 Ordering::Equal => {},
-                order => return order,
+                Ordering::Less => return Ordering::Less,
+                Ordering::Greater => return Ordering::Greater,
             }
         }
         Ordering::Equal
@@ -771,6 +830,16 @@ impl ExactDyadic {
     /// Quotient and remainder of trimmed magnitudes, one 64-bit digit at a
     /// time (Knuth, Algorithm D): the divisor is normalized so its top bit is
     /// set, which keeps every estimated digit at most two above the true one.
+    /// Callers pass a nonzero trimmed divisor; the one-limb case and normalized
+    /// high word therefore both divide by nonzero values.
+    #[expect(
+        clippy::indexing_slicing,
+        reason = "for a nonzero divisor, n >= 2 after the one-limb case and m >= n after the magnitude comparison; shifted u has m + 1 limbs, v has n, and j <= m - n with i < n bounds every offset"
+    )]
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the one-limb divisor is nonzero after the top-limb invariant, and Algorithm D's normalized divisor top is nonzero"
+    )]
     pub(in crate::geometry) fn div_rem_unsigned(
         dividend: &[u64],
         divisor: &[u64],
@@ -803,13 +872,17 @@ impl ExactDyadic {
         }
         let n = divisor.len();
         let m = dividend.len();
-        let shift = divisor[n - 1].leading_zeros();
+        let shift = divisor[n.wrapping_sub(1)].leading_zeros();
         let shifted = |limbs: &[u64], extra: usize| -> Vec<u64> {
             let mut out = Vec::with_capacity(limbs.len().wrapping_add(extra));
             let mut carry = 0_u64;
             for &limb in limbs {
                 out.push((limb << shift) | carry);
-                carry = if shift == 0 { 0 } else { limb >> (64 - shift) };
+                carry = if shift == 0 {
+                    0
+                } else {
+                    limb >> 64_u32.wrapping_sub(shift)
+                };
             }
             if extra > 0 {
                 out.push(carry);
@@ -818,54 +891,73 @@ impl ExactDyadic {
         };
         let v = shifted(divisor, 0);
         let mut u = shifted(dividend, 1);
-        let mut quotient = vec![0; m.wrapping_sub(n).wrapping_add(1)];
-        let (top, next) = (u128::from(v[n - 1]), u128::from(v[n - 2]));
-        for j in (0..=m - n).rev() {
-            let numerator = (u128::from(u[j + n]) << 64) | u128::from(u[j + n - 1]);
+        let final_digit = m.wrapping_sub(n);
+        let mut quotient = vec![0; final_digit.wrapping_add(1)];
+        let (top, next) = (
+            u128::from(v[n.wrapping_sub(1)]),
+            u128::from(v[n.wrapping_sub(2)]),
+        );
+        for j in (0..=final_digit).rev() {
+            let numerator = (u128::from(u[j.wrapping_add(n)]) << 64)
+                | u128::from(u[j.wrapping_add(n).wrapping_sub(1)]);
             let mut estimate = numerator / top;
             let mut rest = numerator % top;
+            // Algorithm D bounds q̂ by 2^64 + 1, so q̂ times one divisor
+            // digit fits u128. A failed comparison cannot decrement zero;
+            // rest + top fits u128 and the loop breaks before rest reaches 2^64.
             while estimate > u128::from(u64::MAX)
-                || estimate * next > ((rest << 64) | u128::from(u[j + n - 2]))
+                || estimate.wrapping_mul(next)
+                    > ((rest << 64) | u128::from(u[j.wrapping_add(n).wrapping_sub(2)]))
             {
-                estimate -= 1;
-                rest += top;
+                estimate = estimate.wrapping_sub(1);
+                rest = rest.wrapping_add(top);
                 if rest > u128::from(u64::MAX) {
                     break;
                 }
             }
             // Multiply and subtract; a negative result means the estimate was
             // one too large, and one addback of the divisor corrects it.
+            // A u64-sized estimate times one limb fits u128; one limb and its
+            // borrow fit i128 exactly.
             let mut borrow = 0_i128;
             for i in 0..n {
-                let product = estimate * u128::from(v[i]);
-                let difference = i128::from(u[i + j]) - borrow - i128::from(product as u64);
-                u[i + j] = difference as u64;
-                borrow = (product >> 64) as i128 - (difference >> 64);
+                let offset = i.wrapping_add(j);
+                let product = estimate.wrapping_mul(u128::from(v[i]));
+                let difference = i128::from(u[offset])
+                    .wrapping_sub(borrow)
+                    .wrapping_sub(i128::from(product as u64));
+                u[offset] = difference as u64;
+                borrow = ((product >> 64) as i128).wrapping_sub(difference >> 64);
             }
-            let difference = i128::from(u[j + n]) - borrow;
-            u[j + n] = difference as u64;
+            let high = j.wrapping_add(n);
+            let difference = i128::from(u[high]).wrapping_sub(borrow);
+            u[high] = difference as u64;
             quotient[j] = estimate as u64;
             if difference < 0 {
-                quotient[j] -= 1;
+                quotient[j] = quotient[j].wrapping_sub(1);
                 let mut carry = 0_u128;
                 for i in 0..n {
-                    let sum = u128::from(u[i + j]) + u128::from(v[i]) + carry;
-                    u[i + j] = sum as u64;
+                    let offset = i.wrapping_add(j);
+                    let sum = u128::from(u[offset])
+                        .wrapping_add(u128::from(v[i]))
+                        .wrapping_add(carry);
+                    u[offset] = sum as u64;
                     carry = sum >> 64;
                 }
-                u[j + n] = u[j + n].wrapping_add(carry as u64);
+                u[high] = u[high].wrapping_add(carry as u64);
             }
         }
         trim(&mut quotient);
         u.truncate(n);
         if shift != 0 {
             for i in 0..n {
-                let high = if i + 1 < n {
-                    u[i + 1] << (64 - shift)
+                let high = if i.wrapping_add(1) < n {
+                    u[i.wrapping_add(1)] << 64_u32.wrapping_sub(shift)
                 } else {
                     0
                 };
-                u[i] = (u[i] >> shift) | high;
+                let limb = u[i];
+                u[i] = (limb >> shift) | high;
             }
         }
         trim(&mut u);
@@ -899,7 +991,7 @@ impl ExactDyadic {
                 if left > right {
                     std::mem::swap(&mut left, &mut right);
                 }
-                right -= left;
+                right = right.wrapping_sub(left);
                 if right == 0 {
                     return Self::from_odd_u128(false, left, exponent);
                 }
@@ -925,6 +1017,10 @@ impl ExactDyadic {
     /// Rational-area reduction only calls this with a common divisor, so a
     /// nonzero remainder is an internal exactness failure rather than a
     /// rounded result.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "the divisor is rejected as zero first, and a canonical nonzero dyadic has a positive small magnitude"
+    )]
     pub(in crate::geometry) fn try_exact_quotient(&self, divisor: &Self) -> Result<Self> {
         if divisor.is_zero() {
             return Err(crate::geometry::GeometryErrorKind::ExactRatioZeroDenominator.into());

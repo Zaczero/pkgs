@@ -7,7 +7,9 @@ use crate::geometry::{Point, Shape};
 /// only need relative consistency).
 pub(crate) fn weight_scale(largest: f64) -> f64 {
     if largest > 2.0_f64.powi(500) {
-        2.0_f64.powi(500 - largest.log2().ceil() as i32)
+        // Admitted finite binary64 coordinates have a ceiling exponent at most 1024.
+        let exponent = largest.log2().ceil() as i32;
+        2.0_f64.powi(500_i32.wrapping_sub(exponent))
     } else {
         1.0
     }
@@ -38,10 +40,12 @@ pub(crate) fn sample_weighted<T>(
     let mut state = seed;
     for _ in 0..count {
         let pick = uniform_f64(&mut state) * total;
-        let index = cumulative
-            .partition_point(|&edge| edge <= pick)
-            .min(pieces.len() - 1);
-        let point = place(&pieces[index], &mut state)?;
+        let index = cumulative.partition_point(|&edge| edge <= pick);
+        let piece = pieces
+            .get(index)
+            .or_else(|| pieces.last())
+            .expect("a positive finite total comes from at least one piece");
+        let point = place(piece, &mut state)?;
         points.push(point);
     }
     Ok(Some(points))
@@ -70,7 +74,11 @@ pub(crate) fn collect_sample_triangles(shape: &Shape, out: &mut Vec<[Point; 3]>)
                 collect_sample_triangles(geometry, out)?;
             }
         },
-        _ => {},
+        Shape::Point(_)
+        | Shape::MultiPoint(_)
+        | Shape::LineString(_)
+        | Shape::MultiLineString(_)
+        | Shape::Empty(..) => {},
     }
     Ok(())
 }
@@ -123,10 +131,13 @@ mod tests {
         )
         .expect("positive weight")
         .expect("samples");
-        assert_eq!(points.len(), 2);
-        assert_eq!(points[0].x.to_bits(), 0.745_781_757_262_701_1_f64.to_bits());
-        assert_eq!(points[0].y.to_bits(), 0.0_f64.to_bits());
-        assert_eq!(points[1].x.to_bits(), 0.444_359_217_055_772_1_f64.to_bits());
-        assert_eq!(points[1].y.to_bits(), 0.0_f64.to_bits());
+        let mut points = points.into_iter();
+        let first = points.next().expect("two samples were requested");
+        let second = points.next().expect("two samples were requested");
+        assert!(points.next().is_none());
+        assert_eq!(first.x.to_bits(), 0.745_781_757_262_701_1_f64.to_bits());
+        assert_eq!(first.y.to_bits(), 0.0_f64.to_bits());
+        assert_eq!(second.x.to_bits(), 0.444_359_217_055_772_1_f64.to_bits());
+        assert_eq!(second.y.to_bits(), 0.0_f64.to_bits());
     }
 }

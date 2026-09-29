@@ -41,11 +41,14 @@ pub(crate) fn multiline_boundary<L: AsRef<CoordSeq>>(
     lines: &[L],
     empty_axes: CoordinateAxes,
 ) -> crate::error::Result<Shape> {
+    // This is only an initial reservation; if the doubled hint does not fit,
+    // normal collection growth still admits every published endpoint.
+    let endpoint_capacity = lines.len().checked_mul(2).unwrap_or(lines.len());
     // First-seen order preserved in `endpoints`; the key map makes each
     // parity toggle O(1) (`PointKey` canonicalizes exactly like
     // `same_point` — ±0.0 only).
-    let mut endpoints: Vec<(Point, bool)> = Vec::with_capacity(lines.len() * 2);
-    let mut slots: HashMap<PointKey, usize> = HashMap::with_capacity(lines.len() * 2);
+    let mut endpoints: Vec<(Point, bool)> = Vec::with_capacity(endpoint_capacity);
+    let mut slots: HashMap<PointKey, usize> = HashMap::with_capacity(endpoint_capacity);
     for line in lines {
         let Shape::MultiPoint(boundary) = line_boundary(line.as_ref(), empty_axes)? else {
             continue;
@@ -53,8 +56,10 @@ pub(crate) fn multiline_boundary<L: AsRef<CoordSeq>>(
         for point in &boundary {
             match slots.entry(PointKey::new(point)) {
                 Entry::Occupied(slot) => {
-                    let odd = &mut endpoints[*slot.get()].1;
-                    *odd = !*odd;
+                    let endpoint = endpoints
+                        .get_mut(*slot.get())
+                        .expect("each endpoint slot names its inserted vector entry");
+                    endpoint.1 = !endpoint.1;
                 },
                 Entry::Vacant(slot) => {
                     slot.insert(endpoints.len());
