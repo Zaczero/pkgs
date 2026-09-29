@@ -7,9 +7,7 @@ use crate::geometry::{
 use crate::io::wkb::{
     CoordSeq, EWKB_M_FLAG, EWKB_SRID_FLAG, EWKB_Z_FLAG, GeometryErrorKind, GeometryKind, IoError,
     LineSeq, MAX_NESTING, ParseFormat, Point, Polygon, Result, Ring, Shape, WKB_COUNT,
-    WKB_GEOMETRYCOLLECTION, WKB_HEADER_BASE, WKB_LINESTRING, WKB_MULTILINESTRING, WKB_MULTIPOINT,
-    WKB_MULTIPOLYGON, WKB_POINT, WKB_POLYGON, WkbGeometry, iso_dimension_offset, parse_content,
-    wkb_dimension,
+    WKB_HEADER_BASE, WkbGeometry, iso_dimension_offset, parse_content, wkb_dimension,
 };
 
 pub(crate) fn parse_wkb(value: &[u8]) -> Result<WkbGeometry> {
@@ -231,23 +229,13 @@ impl WkbMemberPath<'_> {
         while let Some(current) = node {
             segments.push(format!(
                 "{} member {}",
-                wkb_container_name(current.container),
+                super::wkb_container_name(current.container),
                 current.index
             ));
             node = current.parent;
         }
         segments.reverse();
         segments.join(" > ")
-    }
-}
-
-const fn wkb_container_name(code: u32) -> &'static str {
-    match code {
-        WKB_MULTIPOINT => "MULTIPOINT",
-        WKB_MULTILINESTRING => "MULTILINESTRING",
-        WKB_MULTIPOLYGON => "MULTIPOLYGON",
-        WKB_GEOMETRYCOLLECTION => "GEOMETRYCOLLECTION",
-        _ => "geometry",
     }
 }
 
@@ -314,9 +302,15 @@ impl WkbReader<'_> {
         };
         let local_srid = crate::io::normalize_wire_srid(local_srid);
         let mut srid = resolve_nested_srid(inherited, local_srid, path)?;
-        let shape = match geometry_type {
-            WKB_POINT => self.read_point_shape(byte_order, axes)?,
-            WKB_MULTIPOINT => {
+        let Some(kind) = super::wkb_geometry_kind(geometry_type) else {
+            return Err(IoError::wkb(unsupported_wkb_geometry_type_message(
+                raw_geometry_type,
+                geometry_type,
+            )));
+        };
+        let shape = match kind {
+            GeometryKind::Point => self.read_point_shape(byte_order, axes)?,
+            GeometryKind::MultiPoint => {
                 let (members, effective) = self.read_nested_typed(
                     byte_order,
                     geometry_type,
@@ -348,7 +342,7 @@ impl WkbReader<'_> {
                     Shape::MultiPoint(MultiPoint::try_new(axes, members)?)
                 }
             },
-            WKB_LINESTRING => {
+            GeometryKind::LineString => {
                 let count = self.read_u32(byte_order)? as usize;
                 if count == 0 {
                     return Ok((Shape::typed_empty(GeometryKind::LineString, axes), srid));
@@ -356,7 +350,7 @@ impl WkbReader<'_> {
                 let points = self.read_coordseq(byte_order, axes, count)?;
                 Shape::LineString(LineSeq::try_new(points)?)
             },
-            WKB_MULTILINESTRING => {
+            GeometryKind::MultiLineString => {
                 let (members, effective) = self.read_nested_typed(
                     byte_order,
                     geometry_type,
@@ -390,8 +384,8 @@ impl WkbReader<'_> {
                     Shape::MultiLineString(MultiLineString::try_new(axes, members)?)
                 }
             },
-            WKB_POLYGON => self.read_polygon_shape(byte_order, axes)?,
-            WKB_MULTIPOLYGON => {
+            GeometryKind::Polygon => self.read_polygon_shape(byte_order, axes)?,
+            GeometryKind::MultiPolygon => {
                 let (members, effective) = self.read_nested_typed(
                     byte_order,
                     geometry_type,
@@ -427,7 +421,7 @@ impl WkbReader<'_> {
                     Shape::MultiPolygon(MultiPolygon::try_new(axes, members)?)
                 }
             },
-            WKB_GEOMETRYCOLLECTION => {
+            GeometryKind::GeometryCollection => {
                 let (members, effective) =
                     self.read_nested_shapes(byte_order, geometry_type, srid, path, depth)?;
                 srid = effective;
@@ -436,12 +430,6 @@ impl WkbReader<'_> {
                 } else {
                     Shape::geometry_collection(members)?
                 }
-            },
-            value => {
-                return Err(IoError::wkb(unsupported_wkb_geometry_type_message(
-                    raw_geometry_type,
-                    value,
-                )));
             },
         };
         Ok((shape, srid))

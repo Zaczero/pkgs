@@ -11,10 +11,6 @@ use crate::geometry::{
     Polygon, Ring, Shape, SharedShapeOwners,
 };
 
-const WKB_MULTIPOINT: u32 = 4;
-const WKB_MULTILINESTRING: u32 = 5;
-const WKB_MULTIPOLYGON: u32 = 6;
-const WKB_GEOMETRYCOLLECTION: u32 = 7;
 const WKB_Z_OFFSET: u32 = 1000;
 const WKB_M_OFFSET: u32 = 2000;
 const WKB_ZM_OFFSET: u32 = 3000;
