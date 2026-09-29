@@ -298,6 +298,8 @@ impl PyGeometry {
     /// Whether the geometry is topologically valid in its coordinate frame.
     /// Geographic antimeridian crossings are normalized first; projected and
     /// CRS-free geometry uses ordinary planar OGC validity.
+    /// A nonempty LineString needs at least two distinct XY positions;
+    /// consecutive repeats remain valid when another position is present.
     /// ``True`` exactly when `validate` finds no issue; call
     /// `validate` for the reason, location, and path of a failure, and
     /// ``repair`` to fix it.

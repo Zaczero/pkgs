@@ -1,9 +1,62 @@
+use super::validate::{collapsed_line_point, validate_line};
 use crate::error::Result;
 use crate::geometry::overlay::ExactSourceInventory;
 use crate::geometry::{
-    CoordSeq, Coordinates as _, Polygon, RepairMethod, Ring, Shape, XY, polygon_parts_to_shape,
-    same_point, wrap_index,
+    CoordSeq, Coordinates as _, GeometryErrorKind, LineSeq, MultiLineString, MultiMember,
+    MultiPoint, Polygon, RepairMethod, Ring, Shape, XY, polygon_parts_to_shape, same_point,
+    wrap_index,
 };
+
+pub(crate) fn line_repair(line: &LineSeq) -> Result<Shape> {
+    if let Some(point) = collapsed_line_point(line) {
+        return Ok(Shape::Point(point));
+    }
+    if validate_line(line, "line string").is_none() {
+        return Ok(Shape::LineString(line.clone()));
+    }
+    Err(GeometryErrorKind::UnrepairableLineString.into())
+}
+
+pub(crate) fn multiline_repair(lines: &MultiLineString) -> Result<Shape> {
+    let mut points = Vec::new();
+    let mut line_members = Vec::new();
+    for member in lines.members_with_values() {
+        let MultiMember::Value(line) = member else {
+            continue;
+        };
+        match line_repair(line)? {
+            Shape::Point(point) => points.push(point),
+            Shape::LineString(line) => line_members.push(line),
+            _ => unreachable!("line repair only returns points or lines"),
+        }
+    }
+
+    let axes = lines.axes();
+    let point_shape = match points.as_slice() {
+        [] => None,
+        [point] => Some(Shape::Point(*point)),
+        _ => Some(Shape::MultiPoint(MultiPoint::try_new(
+            axes,
+            points.into_iter().map(MultiMember::Value).collect(),
+        )?)),
+    };
+    let line_shape = match line_members.as_slice() {
+        [] => None,
+        [line] => Some(Shape::LineString(line.clone())),
+        _ => Some(Shape::MultiLineString(MultiLineString::try_new(
+            axes,
+            line_members.into_iter().map(MultiMember::Value).collect(),
+        )?)),
+    };
+
+    match (point_shape, line_shape) {
+        (Some(points), Some(lines)) => Shape::geometry_collection(vec![points, lines]),
+        (Some(points), None) => Ok(points),
+        (None, Some(lines)) => Ok(lines),
+        (None, None) => Err(GeometryErrorKind::UnrepairableMultiLineString.into()),
+    }
+}
+
 ///
 /// `Linework` is the original stored ring's directed winding modulo two on the
 /// exact noded partition, so opposite occurrences cancel and duplicate

@@ -40,6 +40,94 @@ def test_single_vertex_lines_are_rejected_at_every_boundary() -> None:
     assert gm.LineString([(0, 0), (1, 1)]).length > 0
 
 
+def test_collapsed_line_is_invalid_and_repairs_to_its_first_coordinate() -> None:
+    collapsed = gm.from_wkt(
+        'LINESTRING ZM (3 4 8 9, 3 4 10 11)',
+        crs=3857,
+    )
+    report = collapsed.validate()
+
+    assert not collapsed.is_valid
+    assert (report.code, report.detail, report.location, report.path) == (
+        'line_collapsed',
+        'line string collapses to fewer than two distinct XY positions',
+        (3.0, 4.0),
+        '$',
+    )
+    with pytest.raises(gm.InvalidGeometryError) as invalid:
+        gm.require(collapsed)
+    assert (invalid.value.code, invalid.value.location, invalid.value.path) == (
+        'line_collapsed',
+        (3.0, 4.0),
+        '$',
+    )
+    repaired = collapsed.repair()
+    assert repaired.to_wkt() == 'POINT ZM (3 4 8 9)'
+    assert repaired.crs == 'EPSG:3857'
+    assert repaired.is_valid
+
+    values = gm.GeometryArray([
+        collapsed,
+        gm.from_wkt('LINESTRING (0 0, 0 0, 1 0)', crs=3857),
+    ])
+    np.testing.assert_array_equal(values.is_valid, [False, True])
+    assert [report.code for report in values.validate()] == ['line_collapsed', None]
+    assert [geometry.to_wkt() for geometry in values.repair()] == [
+        'POINT ZM (3 4 8 9)',
+        'LINESTRING (0 0, 0 0, 1 0)',
+    ]
+
+
+@pytest.mark.parametrize(
+    ('source', 'expected'),
+    [
+        pytest.param(
+            'MULTILINESTRING ((0 0, 0 0), EMPTY, EMPTY)',
+            'POINT (0 0)',
+            id='one-collapsed-member-and-empties',
+        ),
+        pytest.param(
+            'MULTILINESTRING ((0 0, 0 0), (0 0, 0 0))',
+            'MULTIPOINT ((0 0), (0 0))',
+            id='duplicate-collapsed-members',
+        ),
+        pytest.param(
+            'MULTILINESTRING ((0 0, 0 0), (1 1, 2 2))',
+            'GEOMETRYCOLLECTION (POINT (0 0), LINESTRING (1 1, 2 2))',
+            id='one-surviving-line',
+        ),
+        pytest.param(
+            'MULTILINESTRING ((0 0, 0 0), (0 0, 0 0), (1 1, 2 2), (3 3, 4 4))',
+            'GEOMETRYCOLLECTION (MULTIPOINT ((0 0), (0 0)), MULTILINESTRING ((1 1, 2 2), (3 3, 4 4)))',
+            id='multiple-points-and-lines',
+        ),
+    ],
+)
+def test_collapsed_multiline_members_repair_to_geos_geometry_types(
+    source: str,
+    expected: str,
+) -> None:
+    geometry = gm.from_wkt(source)
+
+    assert not geometry.is_valid
+    repaired = geometry.repair()
+    assert repaired.to_wkt() == expected
+    assert repaired.is_valid
+
+
+def test_geometry_collection_repair_keeps_its_outer_type() -> None:
+    geometry = gm.from_wkt(
+        'GEOMETRYCOLLECTION (LINESTRING (0 0, 0 0), POINT (4 5))'
+    )
+
+    repaired = geometry.repair()
+
+    assert repaired.to_wkt() == (
+        'GEOMETRYCOLLECTION (POINT (0 0), POINT (4 5))'
+    )
+    assert repaired.is_valid
+
+
 def test_geojson_rejects_dimensionally_mixed_coordinate_sequences() -> None:
     message = 'dimensionally uniform'
     with pytest.raises(ValueError, match=message):

@@ -52,9 +52,33 @@ pub(crate) fn validate_line<C: Coordinates + ?Sized>(
             points.first_coord(),
             "$",
         ))
+    } else if let Some(issue) = validate_points(points, "$") {
+        Some(issue)
     } else {
-        validate_points(points, "$")
+        collapsed_line_point(points).map(|point| {
+            ValidationIssue::new(
+                "line_collapsed",
+                format!("{name} collapses to fewer than two distinct XY positions"),
+                Some(point),
+                "$",
+            )
+        })
     }
+}
+
+pub(crate) fn collapsed_line_point<C: Coordinates + ?Sized>(points: &C) -> Option<Point> {
+    if points.coord_count() < 2 {
+        return None;
+    }
+    let first = points.nth_coord(0);
+    if !first.x.is_finite() || !first.y.is_finite() {
+        return None;
+    }
+    points
+        .iter_coords()
+        .skip(1)
+        .all(|point| point.x.is_finite() && point.y.is_finite() && same_point(first, point))
+        .then_some(first)
 }
 
 pub(crate) fn validate_ring<C: Coordinates + ?Sized>(

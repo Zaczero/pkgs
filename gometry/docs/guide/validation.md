@@ -44,9 +44,14 @@ Either way, you **detect** invalidity with
 [`validate()`][gometry.Geometry.validate] and **fix** it with [`repair()`][gometry.Geometry.repair].
 
 Cosmetic noise that does *not* change the shape is, by contrast, **valid**: a
-repeated consecutive vertex or a clockwise shell describes a perfectly good
-region — ring orientation does not affect validity — and [`remove_repeated_points`][gometry.Geometry.remove_repeated_points]
-and [`orient_polygons`][gometry.Geometry.orient_polygons] can canonicalize it when required.
+repeated consecutive vertex does not itself invalidate a line with at least two
+distinct XY positions or a ring with at least three; a clockwise shell is also
+valid because ring orientation does not affect validity. A nonempty line whose
+coordinates all share one XY position is invalid;
+[`repair()`][gometry.Geometry.repair] converts it to a Point.
+[`remove_repeated_points`][gometry.Geometry.remove_repeated_points] and
+[`orient_polygons`][gometry.Geometry.orient_polygons] can canonicalize valid
+redundancy when required.
 
 ## Diagnosing: `is_valid` and `validate`
 
@@ -148,6 +153,21 @@ overlap = gm.from_wkt(
 )
 print("linework:", overlap.repair().area)
 print("structure:", overlap.repair(method="structure").area)
+
+```
+
+A collapsed line repairs to its first coordinate as a Point. Collapsed
+MultiLineString members become Point or MultiPoint values; surviving linework
+is retained alongside them in a GeometryCollection:
+
+```python exec="on" source="block" result="text"
+import gometry as gm
+
+collapsed = gm.from_wkt("LINESTRING (2 3, 2 3)")
+print(collapsed.is_valid, collapsed.validate().code, collapsed.repair().to_wkt())
+
+mixed = gm.from_wkt("MULTILINESTRING ((0 0, 0 0), (1 1, 2 2))")
+print(mixed.repair().to_wkt())
 
 ```
 

@@ -5,14 +5,14 @@ use ahash::HashSetExt as _;
 use crate::error::Result;
 use crate::geometry::predicates::{
     LineworkChains, MinimumClearanceWitness, collect_duplicate_points, collect_offending_pair,
-    line_is_ccw, line_is_closed, line_is_simple, minimum_clearance_witness,
-    multi_polygon_members_issue, multiline_is_simple, polygonal_repair, shell_is_convex,
-    validate_line, validate_point, validate_points,
+    line_is_ccw, line_is_closed, line_is_simple, line_repair, minimum_clearance_witness,
+    multi_polygon_members_issue, multiline_is_simple, multiline_repair, polygonal_repair,
+    shell_is_convex, validate_line, validate_point, validate_points,
 };
 use crate::geometry::{
-    CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq,
-    MultiLineString, Point, PointKey, RepairMethod, Shape, SharedShapeOwners, ValidationIssue,
-    carry_ordinates, emit_from_original, point_distance, unique_xy_points,
+    CoordinateAxes, Coordinates as _, GeometryErrorKind, GeometryKind, HashSet, LineSeq, Point,
+    PointKey, RepairMethod, Shape, SharedShapeOwners, ValidationIssue, carry_ordinates,
+    emit_from_original, point_distance, unique_xy_points,
 };
 
 impl Shape {
@@ -229,31 +229,8 @@ impl Shape {
             Self::Point(_) | Self::MultiPoint(_) | Self::Empty(..) => Err(
                 GeometryErrorKind::repair_failed("non-finite coordinates cannot be repaired"),
             ),
-            Self::LineString(_) => Err(GeometryErrorKind::UnrepairableLineString.into()),
-            Self::MultiLineString(lines) => {
-                let repaired = lines
-                    .members()
-                    .filter_map(|member| match member {
-                        crate::geometry::MultiMember::Empty => {
-                            Some(crate::geometry::MultiMember::Empty)
-                        },
-                        crate::geometry::MultiMember::Value(index) => {
-                            let line = &lines.as_slice()[index];
-                            validate_line(line, "multi line string member")
-                                .is_none()
-                                .then(|| crate::geometry::MultiMember::Value(line.clone()))
-                        },
-                    })
-                    .collect::<Vec<_>>();
-                if repaired.is_empty() && !lines.is_empty() {
-                    Err(GeometryErrorKind::UnrepairableMultiLineString.into())
-                } else {
-                    Ok(Self::MultiLineString(MultiLineString::try_new(
-                        lines.axes(),
-                        repaired,
-                    )?))
-                }
-            },
+            Self::LineString(line) => line_repair(line),
+            Self::MultiLineString(lines) => multiline_repair(lines),
             Self::Polygon(polygon) => {
                 let rebuilt = polygonal_repair(std::slice::from_ref(polygon), method)?;
                 carry_ordinates(rebuilt, &[self], "repair", drop)

@@ -24,7 +24,7 @@ pub(crate) use pole::{
     shape_reaches_geographic_pole_in_frame,
 };
 pub(in crate::geometry) use relate::LineworkChains;
-pub(crate) use repair::polygonal_repair;
+pub(crate) use repair::{line_repair, multiline_repair, polygonal_repair};
 pub(in crate::geometry) use shape_data::classify_ring_pair_with_contacts;
 pub(crate) use shape_data::{
     classify_ring_pair, ring_probe_point, settle_touches, visit_interacting_pairs,

@@ -180,7 +180,9 @@ method_doc! {
     doc_validate;
     body: r"Structured validity report in the geometry's coordinate frame.
 Geographic antimeridian crossings are normalized before validation;
-projected and CRS-free geometry uses ordinary planar OGC validity.";
+projected and CRS-free geometry uses ordinary planar OGC validity. A nonempty
+LineString with fewer than two distinct XY positions is invalid and reports
+``line_collapsed``.";
     scalar: r"
 
 Returns
@@ -218,7 +220,10 @@ input is returned unchanged at validation cost. Geographic antimeridian
 crossings are normalized before validity is decided, so a valid seam-crossing
 geometry is never destructively repaired; an invalid crossing repairs from its
 seam-split form. Projected and CRS-free geometry remains planar. Z/M ordinates
-are carried through the rebuild.
+are carried through the rebuild. A collapsed LineString becomes a Point at its
+first coordinate. Collapsed MultiLineString members become a Point or
+MultiPoint, combined with surviving linework in a GeometryCollection when both
+dimensions remain.
 
 Parameters
 ----------
